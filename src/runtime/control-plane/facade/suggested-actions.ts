@@ -18,6 +18,13 @@ function expectedActionRisk(action: SuggestedNextAction): SuggestedNextAction['r
     case 'runtime_rollback':
     case 'runtime_unlock_and_recover':
       return 'workspace_write';
+    case 'plan_create':
+    case 'plan_get':
+    case 'plan_list':
+      return 'readonly';
+    case 'plan_approve':
+    case 'plan_supersede':
+      return 'workspace_write';
     case 'finalize':
       return 'local_repo_write';
     default:
@@ -30,7 +37,7 @@ const ALLOWED_FACADE_OPERATIONS: Record<FacadeTool, readonly string[]> = {
   rh_status: ['list', 'get', 'repair', 'runtime_status', 'runtime_operation_get'],
   rh_inbox: ['list', 'get', 'ack', 'resolve', 'dismiss', 'create'],
   rh_context: ['list', 'get'],
-  rh_work: ['start', 'continue', 'verify', 'repair', 'finalize', 'stop', 'delegate', 'runtime_status', 'runtime_operation_get', 'runtime_restart_controller', 'runtime_restart_gateway', 'runtime_restart_full', 'runtime_rollout', 'runtime_rollback', 'runtime_unlock_and_recover'],
+  rh_work: ['start', 'continue', 'verify', 'repair', 'finalize', 'stop', 'delegate', 'plan_create', 'plan_get', 'plan_list', 'plan_approve', 'plan_supersede', 'runtime_status', 'runtime_operation_get', 'runtime_restart_controller', 'runtime_restart_gateway', 'runtime_restart_full', 'runtime_rollout', 'runtime_rollback', 'runtime_unlock_and_recover'],
 };
 
 export interface SuggestedActionValidationOptions {

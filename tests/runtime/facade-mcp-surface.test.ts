@@ -305,6 +305,65 @@ describe('facade MCP surface wiring', () => {
     expect((validVerify.data as { verification: { outcome: string } }).verification.outcome).toBe('valid_pass');
   });
 
+  test('rh_work persists and approves bounded plans without expanding the facade', async () => {
+    const { ctx, repository } = controllerFixture();
+    const created = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'plan_create',
+      plan_id: 'plan-facade-contract',
+      scope_key: 'src/runtime/gateway/mcp',
+      source_revision: 'abc123',
+      objective: 'Add a durable plan before complex execution',
+      plan_steps: [{
+        id: 'inspect',
+        objective: 'Inspect facade routing',
+        authoritative_files: ['src/runtime/gateway/mcp/runtime-tools.ts'],
+        allowed_paths: ['src/runtime/'],
+        forbidden_paths: ['_ops/'],
+        check_ids: ['package:check:type'],
+        acceptance_criteria: ['Plan can be approved without execution.'],
+      }],
+    }));
+    expect(created).toMatchObject({
+      status: 'ok',
+      data: { executionStarted: false, plan: { planId: 'plan-facade-contract', status: 'draft' } },
+    });
+
+    const approved = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'plan_approve',
+      plan_id: 'plan-facade-contract',
+    }));
+    expect(approved).toMatchObject({ data: { executionStarted: false, plan: { status: 'approved', sourceRevision: 'abc123' } } });
+
+    const listed = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'plan_list',
+    }));
+    expect((listed.data as { plans: Array<{ planId: string }> }).plans.map((plan) => plan.planId)).toContain('plan-facade-contract');
+    expect(PREFERRED_FACADE_TOOL_NAMES).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work']);
+  });
+
+  test('rh_work blocks approval for an overlapping or incomplete plan', async () => {
+    const { ctx, repository } = controllerFixture();
+    for (const planId of ['plan-first', 'plan-second']) {
+      structured(await callRuntimeTool(ctx, 'rh_work', {
+        repo_id: repository.repoId,
+        operation: 'plan_create',
+        plan_id: planId,
+        scope_key: 'src/runtime/control-plane',
+        source_revision: planId === 'plan-first' ? 'abc123' : '',
+        objective: 'Persist plan state',
+        plan_steps: [{ id: 'step', objective: 'Create plan', check_ids: ['package:check:type'], acceptance_criteria: ['Created.'] }],
+      }));
+    }
+    const first = structured(await callRuntimeTool(ctx, 'rh_work', { repo_id: repository.repoId, operation: 'plan_approve', plan_id: 'plan-first' }));
+    expect(first.status).toBe('ok');
+    const second = structured(await callRuntimeTool(ctx, 'rh_work', { repo_id: repository.repoId, operation: 'plan_approve', plan_id: 'plan-second' }));
+    expect(second).toMatchObject({ status: 'blocked', data: { executionStarted: false } });
+    expect(second.summary).toMatch(/source_revision/i);
+  });
+
   test('rh_work.delegate codex/grok are bounded and cannot finalize', async () => {
     const { ctx, repository } = controllerFixture();
     const started = structured(await callRuntimeTool(ctx, 'rh_work', {

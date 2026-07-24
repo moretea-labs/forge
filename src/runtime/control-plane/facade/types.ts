@@ -288,6 +288,80 @@ export interface WorkContractStore {
   contracts: WorkContract[];
 }
 
+export const PLAN_CONTRACT_STATUSES = [
+  'draft',
+  'inspecting',
+  'reviewing',
+  'approved',
+  'executing',
+  'replanning',
+  'verifying',
+  'ready_to_finalize',
+  'finalized',
+  'superseded',
+  'cancelled',
+  'invalidated_by_drift',
+] as const;
+export type PlanContractStatus = (typeof PLAN_CONTRACT_STATUSES)[number];
+
+export const TERMINAL_PLAN_CONTRACT_STATUSES: readonly PlanContractStatus[] = [
+  'finalized',
+  'superseded',
+  'cancelled',
+  'invalidated_by_drift',
+];
+
+export const PLAN_STEP_STATUSES = ['pending', 'ready', 'executing', 'validating', 'completed'] as const;
+export type PlanStepStatus = (typeof PLAN_STEP_STATUSES)[number];
+
+export interface PlanStep {
+  id: string;
+  objective: string;
+  dependencies: string[];
+  authoritativeFiles: string[];
+  allowedPaths: string[];
+  forbiddenPaths: string[];
+  checks: string[];
+  acceptanceCriteria: string[];
+  status: PlanStepStatus;
+  evidenceRefs: EvidenceRef[];
+}
+
+/**
+ * A durable pre-execution decision record. WorkContract remains the unit that
+ * owns dispatch, workspace, worker, and verification lifecycle.
+ */
+export interface PlanContract {
+  schemaVersion: 1;
+  planId: string;
+  repoId: string;
+  scopeKey: string;
+  sourceRevision: string;
+  goal: string;
+  nonGoals: string[];
+  assumptions: string[];
+  resolvedDecisions: string[];
+  stopConditions: string[];
+  replanConditions: string[];
+  integrationStrategy?: string;
+  status: PlanContractStatus;
+  steps: PlanStep[];
+  evidenceRefs: EvidenceRef[];
+  supersededBy?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PlanContractStore {
+  schemaVersion: 1;
+  updatedAt: string;
+  contracts: PlanContract[];
+}
+
+export function isTerminalPlanContractStatus(status: PlanContractStatus): boolean {
+  return TERMINAL_PLAN_CONTRACT_STATUSES.includes(status);
+}
+
 export interface CapabilityDescriptor {
   capabilityId: string;
   domain: CapabilityDomain;

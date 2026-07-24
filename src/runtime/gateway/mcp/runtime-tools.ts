@@ -168,6 +168,12 @@ import {
   summarizeHandoffItem,
   listWorkContracts,
   getWorkContract,
+  approvePlanContract,
+  createPlanContract,
+  getPlanContract,
+  listPlanContracts,
+  summarizePlanContract,
+  supersedePlanContract,
   verifyGoalWorkloop,
   type FacadeTool,
 } from '../../control-plane/facade';
@@ -246,11 +252,22 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     work_id: { type: 'string' },
     detail_level: { type: 'string', enum: ['summary', 'detail', 'raw'], description: 'Defaults to summary; raw is still bounded.' },
   }),
-  definition('rh_work', 'Preferred ChatGPT facade: direct control, goal workloop, verify, finalize, stop, repair, and small-brain delegate (codex/grok/claude).', {
+  definition('rh_work', 'Preferred ChatGPT facade: bounded planning, direct control, goal workloop, verification, repair, and small-brain delegate (codex/grok/claude).', {
     repo_id: repoId,
-    operation: { type: 'string', enum: ['start', 'continue', 'verify', 'repair', 'finalize', 'stop', 'delegate', 'runtime_status', 'runtime_operation_get', 'runtime_restart_controller', 'runtime_restart_gateway', 'runtime_restart_full', 'runtime_rollout', 'runtime_rollback', 'runtime_unlock_and_recover'], description: 'Defaults to start.' },
+    operation: { type: 'string', enum: ['start', 'continue', 'verify', 'repair', 'finalize', 'stop', 'delegate', 'plan_create', 'plan_get', 'plan_list', 'plan_approve', 'plan_supersede', 'runtime_status', 'runtime_operation_get', 'runtime_restart_controller', 'runtime_restart_gateway', 'runtime_restart_full', 'runtime_rollout', 'runtime_rollback', 'runtime_unlock_and_recover'], description: 'Defaults to start.' },
     objective: { type: 'string' },
     work_id: { type: 'string' },
+    plan_id: { type: 'string' },
+    scope_key: { type: 'string', description: 'Stable normalized scope identity used to prevent overlapping active plans.' },
+    source_revision: { type: 'string', description: 'Repository revision observed during read-only planning preflight.' },
+    plan_steps: { type: 'array', items: { type: 'object' }, description: 'Bounded plan steps with id, objective, dependencies, authoritative_files, allowed_paths, forbidden_paths, check_ids, and acceptance_criteria.' },
+    non_goals: { type: 'array', items: { type: 'string' } },
+    assumptions: { type: 'array', items: { type: 'string' } },
+    resolved_decisions: { type: 'array', items: { type: 'string' } },
+    stop_conditions: { type: 'array', items: { type: 'string' } },
+    replan_conditions: { type: 'array', items: { type: 'string' } },
+    integration_strategy: { type: 'string' },
+    superseded_by: { type: 'string' },
     expected_files: { type: 'number' },
     expected_changed_lines: { type: 'number' },
     scope_clear: { type: 'boolean' },
@@ -2252,6 +2269,72 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           repoId: repository.repoId,
           availableChecks: checks,
         };
+
+        if (operation.startsWith('plan_')) {
+          try {
+            if (operation === 'plan_create') {
+              const rawSteps = Array.isArray(args.plan_steps) ? args.plan_steps : [];
+              const plan = createPlanContract(store, {
+                planId: String(args.plan_id ?? ''),
+                repoId: repository.repoId,
+                scopeKey: String(args.scope_key ?? ''),
+                sourceRevision: String(args.source_revision ?? ''),
+                goal: String(args.objective ?? ''),
+                nonGoals: Array.isArray(args.non_goals) ? args.non_goals.map(String) : undefined,
+                assumptions: Array.isArray(args.assumptions) ? args.assumptions.map(String) : undefined,
+                resolvedDecisions: Array.isArray(args.resolved_decisions) ? args.resolved_decisions.map(String) : undefined,
+                stopConditions: Array.isArray(args.stop_conditions) ? args.stop_conditions.map(String) : undefined,
+                replanConditions: Array.isArray(args.replan_conditions) ? args.replan_conditions.map(String) : undefined,
+                integrationStrategy: typeof args.integration_strategy === 'string' ? args.integration_strategy : undefined,
+                steps: rawSteps.filter((step): step is Record<string, unknown> => Boolean(step) && typeof step === 'object' && !Array.isArray(step)).map((step) => ({
+                  id: String(step.id ?? ''),
+                  objective: String(step.objective ?? ''),
+                  dependencies: Array.isArray(step.dependencies) ? step.dependencies.map(String) : [],
+                  authoritativeFiles: Array.isArray(step.authoritative_files) ? step.authoritative_files.map(String) : [],
+                  allowedPaths: Array.isArray(step.allowed_paths) ? step.allowed_paths.map(String) : [],
+                  forbiddenPaths: Array.isArray(step.forbidden_paths) ? step.forbidden_paths.map(String) : [],
+                  checks: Array.isArray(step.check_ids) ? step.check_ids.map(String) : [],
+                  acceptanceCriteria: Array.isArray(step.acceptance_criteria) ? step.acceptance_criteria.map(String) : [],
+                })),
+              });
+              const facade = buildFacadeResult({
+                summary: `PlanContract ${plan.planId} created as draft; no execution was started.`,
+                data: { plan: summarizePlanContract(plan), executionStarted: false },
+                suggestedNextActions: [{ label: 'Approve reviewed plan', tool: 'rh_work', operation: 'plan_approve', payload: { plan_id: plan.planId }, risk: 'workspace_write', confidence: 'medium' }],
+              });
+              return result(facade as unknown as Record<string, unknown>);
+            }
+            if (operation === 'plan_list') {
+              const plans = listPlanContracts({ ...store, status: 'active', limit: typeof args.limit === 'number' ? args.limit : 20 });
+              const facade = buildFacadeResult({
+                summary: `${plans.length} active PlanContract(s) in this repository.`,
+                data: { plans: plans.map(summarizePlanContract), bounded: true },
+              });
+              return result(facade as unknown as Record<string, unknown>);
+            }
+            if (operation === 'plan_get') {
+              const plan = getPlanContract(store, String(args.plan_id ?? ''));
+              const facade = plan
+                ? buildFacadeResult({ summary: `PlanContract ${plan.planId} retrieved.`, data: { plan: args.detail_level === 'detail' ? plan : summarizePlanContract(plan) }, detailLevel: args.detail_level === 'detail' ? 'detail' : 'summary' })
+                : buildFacadeResult({ status: 'not_found', summary: `PlanContract ${String(args.plan_id ?? '')} not found.`, data: { planId: String(args.plan_id ?? '') } });
+              return result(facade as unknown as Record<string, unknown>, !plan);
+            }
+            if (operation === 'plan_approve') {
+              const plan = approvePlanContract(store, String(args.plan_id ?? ''));
+              const facade = buildFacadeResult({
+                summary: `PlanContract ${plan.planId} approved at source revision ${plan.sourceRevision}; execution remains explicit.`,
+                data: { plan: summarizePlanContract(plan), executionStarted: false },
+              });
+              return result(facade as unknown as Record<string, unknown>);
+            }
+            const plan = supersedePlanContract(store, String(args.plan_id ?? ''), String(args.superseded_by ?? ''));
+            const facade = buildFacadeResult({ summary: `PlanContract ${plan.planId} superseded by ${plan.supersededBy}.`, data: { plan: summarizePlanContract(plan) } });
+            return result(facade as unknown as Record<string, unknown>);
+          } catch (error) {
+            const facade = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'PlanContract operation failed.', data: { operation, executionStarted: false } });
+            return result(facade as unknown as Record<string, unknown>, true);
+          }
+        }
 
         if (operation === 'repair') {
           return await runFacadeRepair(ctx, repository, args);

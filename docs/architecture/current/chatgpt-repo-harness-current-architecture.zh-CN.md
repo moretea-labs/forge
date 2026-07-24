@@ -48,7 +48,8 @@ flowchart TD
     F -->|rh_status / rh_context / rh_inbox| R[Direct Read Plane]
     F -->|rh_work / typed operations| D[Durable Work Plane]
 
-    C --> WC[WorkContract / Work Handle]
+    C --> PC[PlanContract]
+    PC --> WC[WorkContract / Work Handle]
     C --> GC[GoalContract / Campaign]
     C --> P[Policy and Capability Routing]
     C --> H[Handoff Inbox]
@@ -299,7 +300,22 @@ Issue
 
 用于正式项目账本、依赖、多次 Agent 尝试和外部 Issue 同步。Run 失败不能静默取消 Task。
 
-### 9.2 WorkContract
+### 9.2 PlanContract
+
+复杂工作在开始执行前可以使用 PlanContract 固化读阶段得到的决策。它是预执行控制面，不持有 Worker、Lease、Worktree 或 Git 收尾职责：
+
+```text
+draft -> approved -> (future execution binding) -> finalized
+   |         |
+   |         -> superseded / invalidated_by_drift
+   -> superseded / cancelled
+```
+
+当前第一阶段通过 `rh_work.plan_create`、`plan_get`、`plan_list`、`plan_approve` 和 `plan_supersede` 提供有界操作，仍保持五个顶层 facade 工具。审批要求冻结的 source revision、唯一步骤 ID、机器可执行 checks、验收条件、有效依赖和不与已批准/执行计划重叠的 scope key。草稿可以并行评审；只有批准或执行中的计划会占用 scope。
+
+PlanContract 包含 goal、non-goals、assumptions、resolved decisions、stop/replan conditions、integration strategy 和步骤定义。执行派发尚未绑定 PlanContract；因此它不会改变现有 `rh_work.start`、GoalContract 或 WorkContract 状态机。后续切片必须在执行前校验 HEAD 漂移，并把 `planId + stepId` 写入 WorkContract 证据链。
+
+### 9.3 WorkContract
 
 WorkContract 是 ChatGPT facade 下最重要的持久工作单元，包含：
 
@@ -328,7 +344,7 @@ failed
 cancelled
 ```
 
-### 9.3 GoalContract
+### 9.4 GoalContract
 
 GoalContract 是显式自治 Goal Loop 使用的目标级状态：
 
@@ -343,11 +359,11 @@ created -> planning -> ready -> dispatching -> running -> verifying -> finalized
 
 每次 scheduler tick 最多推进一个有界状态转换，并管理 provider routing、retry budget、failure taxonomy、verification evidence 和 handoff packet。
 
-### 9.4 Campaign
+### 9.5 Campaign
 
 Campaign 是多个任务或长期工程的容器，可拥有长期 workspace、review policy、budget 和 supervisor。它适合发布治理和跨模块工程，不应成为普通小修复的默认入口。
 
-### 9.5 ExecutionJob / Local Job
+### 9.6 ExecutionJob / Local Job
 
 ExecutionJob 记录一次持久系统操作；Local Job 承载本地子进程执行和 stdout/stderr artifact。Job 成功仅表示该操作执行完成，不自动代表 WorkContract 满足验收。
 

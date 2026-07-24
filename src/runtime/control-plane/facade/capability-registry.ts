@@ -123,6 +123,16 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     summary: 'Persist and advance WorkContract records for goal workloop start, continue, verify, finalize, and stop.',
   },
   {
+    capabilityId: 'controller.plan_contract',
+    domain: 'controller',
+    group: 'controller',
+    operationClass: 'read',
+    risk: 'readonly',
+    exposedVia: 'rh_work',
+    schemaExposure: 'stable_static',
+    summary: 'Persist bounded pre-execution plans with frozen revisions, step acceptance criteria, explicit approval, and supersession before complex work creates an execution contract.',
+  },
+  {
     capabilityId: 'repository.git',
     domain: 'repository',
     group: 'git',
