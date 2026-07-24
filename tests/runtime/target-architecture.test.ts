@@ -434,7 +434,7 @@ describe('target architecture runtime', () => {
     expect(listActiveLeases(controllerHome, 'repo-a')).toHaveLength(0);
   });
 
-  test('creates idempotent bounded Schedule occurrences in shadow mode', async () => {
+  test('records idempotent external-controller handoffs for non-deterministic schedules', async () => {
     const controllerHome = home();
     const schedule = createSchedule(controllerHome, {
       requestId: 'schedule-request-1',
@@ -448,7 +448,10 @@ describe('target architecture runtime', () => {
     });
     const first = await evaluateSchedule(controllerHome, schedule, true);
     const second = await evaluateSchedule(controllerHome, schedule, true);
-    expect(first?.status).toBe('shadowed');
+    expect(first?.status).toBe('skipped');
+    expect(first?.decision).toBe('operation_blocked');
+    expect(first?.handoffId).toBeTruthy();
+    expect(first?.jobId).toBeUndefined();
     expect(second?.occurrenceId).toBe(first?.occurrenceId);
     expect(listOccurrences(controllerHome, 'repo-a')).toHaveLength(1);
     expect(listActiveOccurrences(controllerHome, 'repo-a')).toHaveLength(0);

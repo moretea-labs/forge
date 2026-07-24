@@ -2,12 +2,17 @@ import { createHash, randomUUID } from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { getRepository } from '../../../cli/repositories/registry';
-import { createExecutionJob, findExecutionJob, listActiveExecutionJobs, listExecutionJobs } from '../../execution/jobs/store';
+import { findExecutionJob, listActiveExecutionJobs, listExecutionJobs } from '../../execution/jobs/store';
 import { readRepositoryProjection } from '../../projections/materialized-view';
-import { previewAutomaticRuntimeMaintenance } from '../../recovery/maintenance-executor';
+import {
+  applyRuntimeMaintenance,
+  previewAutomaticRuntimeMaintenance,
+  type RuntimeMaintenanceActionId,
+} from '../../recovery/maintenance-executor';
 import { listCandidateFindings } from '../findings/store';
 import {
   getOccurrence,
+  getSchedule,
   listActiveOccurrences,
   listOccurrences,
   recordScheduleOccurrenceHandoff,
@@ -27,8 +32,10 @@ import type {
 const execFileAsync = promisify(execFile);
 const LIVE_MAINTENANCE_OPERATION = 'runtime_maintenance_apply';
 
-function scheduleExecutionRetired(): boolean {
-  return true;
+function isDeterministicSchedule(schedule: RepositorySchedule): boolean {
+  // Kernel may execute only fully deterministic, allowlisted schedule operations.
+  // Semantic / model-backed schedules remain external-controller handoffs.
+  return schedule.action.operation === LIVE_MAINTENANCE_OPERATION;
 }
 
 function normalizedWindow(minutes: number, at = Date.now()): string {
@@ -252,12 +259,18 @@ async function stopReason(controllerHome: string, schedule: RepositorySchedule):
 function dailyRuntimeMinutes(controllerHome: string, occurrences: ScheduleOccurrence[]): number {
   const today = new Date().toISOString().slice(0, 10);
   return occurrences
-    .filter((entry) => entry.createdAt.startsWith(today) && entry.jobId)
+    .filter((entry) => entry.createdAt.startsWith(today) && ['succeeded', 'failed', 'queued', 'running'].includes(entry.status))
     .reduce((total, entry) => {
-      const job = entry.jobId ? findExecutionJob(controllerHome, entry.jobId) : undefined;
-      if (!job) return total;
-      const started = Date.parse(job.startedAt ?? job.createdAt);
-      const finished = Date.parse(job.finishedAt ?? new Date().toISOString());
+      if (entry.jobId) {
+        const job = findExecutionJob(controllerHome, entry.jobId);
+        if (job) {
+          const started = Date.parse(job.startedAt ?? job.createdAt);
+          const finished = Date.parse(job.finishedAt ?? new Date().toISOString());
+          return total + Math.max(1, Math.ceil(Math.max(0, finished - started) / 60_000));
+        }
+      }
+      const started = Date.parse(entry.createdAt);
+      const finished = Date.parse(entry.updatedAt ?? entry.createdAt);
       return total + Math.max(1, Math.ceil(Math.max(0, finished - started) / 60_000));
     }, 0);
 }
@@ -326,9 +339,9 @@ export async function evaluateSchedule(
     updatedAt: timestamp,
   });
 
-  // A Schedule records an external trigger; it never creates a Kernel-owned
-  // ExecutionJob. Thin Launcher or another Controller consumes this Handoff.
-  if (scheduleExecutionRetired()) {
+  // Semantic / model-backed schedules only record a trigger + Handoff.
+  // Deterministic allowlisted operations continue into the local engine path.
+  if (!isDeterministicSchedule(schedule)) {
     const externalControllerHandoff = recordScheduleOccurrenceHandoff(
       controllerHome,
       schedule,
@@ -499,27 +512,96 @@ export async function evaluateSchedule(
     }
   }
 
-  const requestId = `${schedule.scheduleId}:${schedule.repoId}:${key}`;
-  const decision = decideOccurrence(controllerHome, schedule, occurrence, 'execute', 'created', 'Bounded occurrence accepted for durable execution.', due.evidence);
-  const created = createExecutionJob(controllerHome, {
-    repoId: schedule.repoId,
-    type: 'scheduled-occurrence',
-    requestId,
-    semanticKey: `schedule:${schedule.scheduleId}:${key}`,
-    priority: schedule.action.priority ?? 'P3',
-    origin: { surface: 'schedule', actor: schedule.scheduleId, correlationId: occurrenceId },
-    payload: {
+  const args = schedule.action.arguments ?? {};
+  const actionIdRaw = typeof args.action_id === 'string'
+    ? args.action_id
+    : typeof args.actionId === 'string'
+      ? args.actionId
+      : undefined;
+  const decision = decideOccurrence(
+    controllerHome,
+    schedule,
+    occurrence,
+    'execute',
+    'running',
+    'Deterministic schedule occurrence executing inline without an ExecutionJob.',
+    occurrenceDecisionEvidence({
+      ...due.evidence,
       operation: schedule.action.operation,
-      arguments: schedule.action.arguments,
-      scheduleId: schedule.scheduleId,
-      occurrenceId,
-      target: schedule.action.target ?? 'mcp-tool',
-    },
-    resourceClaims: schedule.action.resourceClaims,
-    timeoutMs: Math.max(60_000, schedule.policy.dailyBudgetMinutes * 60_000),
-  });
-  saveSchedule(controllerHome, { ...schedule, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
-  return saveOccurrence(controllerHome, { ...decision, status: 'queued', jobId: created.job.jobId, reason: 'Durable Schedule Job queued.' });
+      actionId: actionIdRaw,
+    }),
+  );
+
+  try {
+    if (!actionIdRaw) {
+      throw new Error('SCHEDULE_ACTION_ID_REQUIRED: deterministic maintenance schedules require action_id.');
+    }
+    const repository = getRepository(schedule.repoId, controllerHome, { includeRemoved: true });
+    const result = applyRuntimeMaintenance(repository, controllerHome, {
+      confirmMaintenance: true,
+      actionId: actionIdRaw as RuntimeMaintenanceActionId,
+      minAgeMinutes: typeof args.min_age_minutes === 'number'
+        ? args.min_age_minutes
+        : typeof args.minAgeMinutes === 'number'
+          ? args.minAgeMinutes
+          : undefined,
+      maxCandidates: typeof args.max_candidates === 'number'
+        ? args.max_candidates
+        : typeof args.maxCandidates === 'number'
+          ? args.maxCandidates
+          : undefined,
+      cancelPendingApprovals: false,
+    });
+    const appliedCount = result.applied.filter((candidate) => candidate.applied).length;
+    const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
+    saveSchedule(controllerHome, {
+      ...latest,
+      lastTriggeredAt: timestamp,
+      lastOccurrenceId: occurrenceId,
+      consecutiveFailures: 0,
+      nextEligibleAt: undefined,
+      pausedReason: undefined,
+    });
+    return saveOccurrence(controllerHome, {
+      ...decision,
+      status: 'succeeded',
+      reason: `Deterministic maintenance applied ${appliedCount} candidate(s) for ${actionIdRaw}.`,
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    const failed = applyScheduleFailure(controllerHome, schedule.scheduleId, schedule.repoId, occurrence.occurrenceId, {
+      outcome: 'failed',
+      decision: 'execute',
+      reason,
+      handoff: {
+        title: `Scheduled maintenance occurrence ${occurrence.occurrenceId} failed`,
+        summary: 'A bounded live maintenance occurrence failed during deterministic apply and requires review before the schedule continues unattended.',
+        reason,
+        creationReason: 'repeated_infrastructure_failure',
+        blockingDecision: 'Review the failed maintenance occurrence and decide whether the schedule should continue automatically.',
+        recommendedDecision: 'Inspect the failed occurrence, fix the runtime blocker, then re-enable or retrigger the schedule intentionally.',
+        recommendedPrompt: `Review schedule occurrence ${occurrence.occurrenceId} for ${schedule.scheduleId}, inspect the failed runtime maintenance action, and decide whether to resume automatic maintenance.`,
+        statusSummary: 'Scheduled maintenance execution failed.',
+        blockedBy: ['scheduled_execution_failed'],
+        attemptedActions: [
+          `schedule:${schedule.scheduleId}`,
+          `operation:${schedule.action.operation}`,
+          actionIdRaw ? `action:${actionIdRaw}` : 'action:unknown',
+        ],
+      },
+    });
+    const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
+    saveSchedule(controllerHome, {
+      ...latest,
+      lastTriggeredAt: timestamp,
+      lastOccurrenceId: occurrenceId,
+    });
+    return failed.occurrence ?? saveOccurrence(controllerHome, {
+      ...decision,
+      status: 'failed',
+      reason,
+    });
+  }
 }
 
 export async function tickSchedules(controllerHome: string, repoIds: string[]): Promise<ScheduleOccurrence[]> {

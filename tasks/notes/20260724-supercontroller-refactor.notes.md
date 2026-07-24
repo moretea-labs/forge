@@ -385,3 +385,22 @@ Date: 2026-07-24
 - Request-id receipt index provides idempotent replay.
 - MCP `plugin_action_execute` returns bounded result/receipt instead of Job polling.
 - Focused plugin suite: **39 pass / 0 fail**.
+
+## Stage: deterministic schedule split
+
+Date: 2026-07-24
+
+### Design
+
+- Non-deterministic schedules record occurrence + external-controller Handoff only.
+- Deterministic allowlist currently is `runtime_maintenance_apply`.
+- Allowlisted schedules preview, then call `applyRuntimeMaintenance` inline.
+- Success/failure is an occurrence receipt (`succeeded`/`failed`/`skipped`).
+- No ExecutionJob is created, and temporary failures do not auto-retry; they
+  account consecutiveFailures, write one Handoff, and may pause the schedule.
+
+### Verification
+
+- `tests/runtime/live-maintenance-schedule.test.ts`: **6 pass / 0 fail**
+- Target-architecture schedule test migrated to external-controller handoff expectations.
+- `bun x tsc --noEmit`: pass

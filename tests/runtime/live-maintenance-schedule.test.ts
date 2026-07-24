@@ -5,9 +5,8 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { listHandoffItems } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
-import { createExecutionJob, getExecutionJob, updateExecutionJob } from '../../src/runtime/execution/jobs/store';
+import { listExecutionJobs } from '../../src/runtime/execution/jobs/store';
 import { evaluateSchedule } from '../../src/runtime/workflow/schedules/engine';
-import { settleScheduledExecution } from '../../src/runtime/workflow/schedules/settlement';
 import { createSchedule, getSchedule, listOccurrences, saveOccurrence, saveSchedule } from '../../src/runtime/workflow/schedules/store';
 
 const workspaces: string[] = [];
@@ -104,7 +103,7 @@ afterEach(() => {
 });
 
 describe('live maintenance schedules', () => {
-  test('queues one bounded live maintenance occurrence for an allowlisted safe action', async () => {
+  test('applies one bounded live maintenance occurrence directly with a deterministic receipt', async () => {
     const { controllerHome, localJobs, repository } = maintenanceWorkspace();
     const jobPath = writeLocalJob(localJobs, 'JOB-stale');
     const before = readFileSync(jobPath, 'utf8');
@@ -112,17 +111,13 @@ describe('live maintenance schedules', () => {
 
     const occurrence = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'dispatch-1' });
 
-    expect(occurrence?.status).toBe('queued');
+    expect(occurrence?.status).toBe('succeeded');
     expect(occurrence?.decision).toBe('execute');
-    expect(occurrence?.jobId).toBeTruthy();
-    expect(readFileSync(jobPath, 'utf8')).toBe(before);
-    const job = getExecutionJob(controllerHome, repository.repoId, occurrence!.jobId!);
-    expect(job.payload.operation).toBe('runtime_maintenance_apply');
-    expect(job.payload.arguments).toMatchObject({
-      action_id: 'local_jobs_reconcile',
-      confirm_maintenance: true,
-      authorization: 'local_jobs_reconcile',
-    });
+    expect(occurrence?.jobId).toBeUndefined();
+    expect(occurrence?.reason).toContain('local_jobs_reconcile');
+    expect(readFileSync(jobPath, 'utf8')).not.toBe(before);
+    expect(['orphaned', 'failed', 'cancelled']).toContain(JSON.parse(readFileSync(jobPath, 'utf8')).status);
+    expect(listExecutionJobs(controllerHome, repository.repoId, 100)).toHaveLength(0);
     expect(listHandoffItems({ controllerHome, repoId: repository.repoId, status: 'all' })).toHaveLength(0);
   });
 
@@ -140,14 +135,15 @@ describe('live maintenance schedules', () => {
     expect(occurrence?.status).toBe('skipped');
     expect(occurrence?.decision).toBe('maintenance_not_ready');
     expect(occurrence?.handoffId).toBeTruthy();
+    expect(occurrence?.jobId).toBeUndefined();
     expect(readFileSync(jobPath, 'utf8')).toBe(before);
     const stored = getSchedule(controllerHome, repository.repoId, schedule.scheduleId);
     expect(stored.consecutiveFailures).toBe(1);
     expect(stored.nextEligibleAt).toBeTruthy();
     const handoffs = listHandoffItems({ controllerHome, repoId: repository.repoId, status: 'all' });
     expect(handoffs).toHaveLength(1);
-    expect(occurrence?.handoffId).toBeTruthy();
     expect(handoffs[0]?.id).toBe(occurrence!.handoffId!);
+    expect(listExecutionJobs(controllerHome, repository.repoId, 100)).toHaveLength(0);
   });
 
   test('pauses misconfigured automatic maintenance outside the allowlist', async () => {
@@ -162,14 +158,18 @@ describe('live maintenance schedules', () => {
     expect(occurrence?.status).toBe('skipped');
     expect(occurrence?.decision).toBe('operation_blocked');
     expect(occurrence?.handoffId).toBeTruthy();
+    expect(occurrence?.jobId).toBeUndefined();
     const stored = getSchedule(controllerHome, repository.repoId, schedule.scheduleId);
     expect(stored.enabled).toBe(false);
     expect(stored.pausedReason).toContain('allowlisted actions');
+    expect(listExecutionJobs(controllerHome, repository.repoId, 100)).toHaveLength(0);
   });
 
-  test('settlement applies exponential backoff, writes one handoff per failed occurrence, and pauses at the failure limit', async () => {
+  test('records explicit handoff and exponential backoff for temporary failures without jobs or auto-retry', async () => {
     const { controllerHome, localJobs, repository } = maintenanceWorkspace();
-    writeLocalJob(localJobs, 'JOB-stale');
+    const brokenRoot = join(localJobs, 'JOB-broken');
+    mkdirSync(brokenRoot, { recursive: true });
+    writeFileSync(join(brokenRoot, 'job.json'), '{not-json\n');
     const schedule = createLiveMaintenanceSchedule(controllerHome, repository.repoId, {
       maxFailures: 2,
       backoffBaseMinutes: 5,
@@ -177,52 +177,41 @@ describe('live maintenance schedules', () => {
     });
 
     const first = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'failure-1' });
-    const firstJob = getExecutionJob(controllerHome, repository.repoId, first!.jobId!);
-    settleScheduledExecution(controllerHome, firstJob, 'failed', 'Maintenance execution failed on first attempt.');
+    expect(first?.status).toBe('skipped');
+    expect(first?.decision).toBe('maintenance_not_ready');
+    expect(first?.jobId).toBeUndefined();
+    expect(first?.handoffId).toBeTruthy();
     const afterFirst = getSchedule(controllerHome, repository.repoId, schedule.scheduleId);
     const firstBackoffMs = Date.parse(afterFirst.nextEligibleAt ?? '') - Date.now();
 
     expect(afterFirst.consecutiveFailures).toBe(1);
+    expect(afterFirst.enabled).toBe(true);
     expect(firstBackoffMs).toBeGreaterThan(4 * 60_000);
     expect(listHandoffItems({ controllerHome, repoId: repository.repoId, status: 'all' })).toHaveLength(1);
 
     const second = await evaluateSchedule(controllerHome, afterFirst, true, { source: 'manual', eventId: 'failure-2' });
-    const secondJob = getExecutionJob(controllerHome, repository.repoId, second!.jobId!);
-    settleScheduledExecution(controllerHome, secondJob, 'failed', 'Maintenance execution failed on second attempt.');
+    expect(second?.status).toBe('skipped');
+    expect(second?.decision).toBe('maintenance_not_ready');
+    expect(second?.jobId).toBeUndefined();
+    expect(second?.handoffId).toBeTruthy();
     const afterSecond = getSchedule(controllerHome, repository.repoId, schedule.scheduleId);
-    const secondBackoffMs = Date.parse(afterSecond.nextEligibleAt ?? '') - Date.now();
 
     expect(afterSecond.consecutiveFailures).toBe(2);
     expect(afterSecond.enabled).toBe(false);
-    expect(afterSecond.pausedReason).toContain('Maximum consecutive failures reached');
-    expect(secondBackoffMs).toBeGreaterThan(firstBackoffMs + 2 * 60_000);
+    expect(afterSecond.pausedReason).toContain('Maximum consecutive failures');
     expect(listHandoffItems({ controllerHome, repoId: repository.repoId, status: 'all' })).toHaveLength(2);
-    const occurrences = listOccurrences(controllerHome, repository.repoId, schedule.scheduleId, 10);
-    expect(occurrences.filter((entry) => entry.status === 'failed')).toHaveLength(2);
-    expect(occurrences.every((entry) => entry.handoffId)).toBe(true);
+    expect(listExecutionJobs(controllerHome, repository.repoId, 100)).toHaveLength(0);
+    expect(listOccurrences(controllerHome, repository.repoId, schedule.scheduleId, 10).every((entry) => !entry.jobId)).toBe(true);
   });
 
-  test('enforces daily runtime budget before dispatching another live occurrence', async () => {
+  test('skips when daily occurrence budget is exhausted without relying on ExecutionJobs', async () => {
     const { controllerHome, repository } = maintenanceWorkspace();
     const schedule = createLiveMaintenanceSchedule(controllerHome, repository.repoId, {
-      trigger: { type: 'interval', everyMinutes: 60 },
+      requestId: 'maintenance-budget',
       dailyBudgetMinutes: 1,
+      trigger: { type: 'interval', everyMinutes: 1 },
     });
     const timestamp = new Date().toISOString();
-    const priorJob = createExecutionJob(controllerHome, {
-      repoId: repository.repoId,
-      type: 'scheduled-occurrence',
-      requestId: 'budget-history',
-      semanticKey: 'budget-history',
-      origin: { surface: 'schedule', actor: schedule.scheduleId },
-      payload: { operation: 'runtime_maintenance_apply', scheduleId: schedule.scheduleId, occurrenceId: 'OCC-budget-history', target: 'mcp-tool' },
-    }).job;
-    updateExecutionJob(controllerHome, repository.repoId, priorJob.jobId, (current) => ({
-      ...current,
-      status: 'succeeded',
-      startedAt: new Date(Date.now() - (2 * 60_000)).toISOString(),
-      finishedAt: timestamp,
-    }));
     saveOccurrence(controllerHome, {
       schemaVersion: 1,
       revision: 0,
@@ -234,31 +223,39 @@ describe('live maintenance schedules', () => {
       decision: 'execute',
       createdAt: timestamp,
       updatedAt: timestamp,
-      jobId: priorJob.jobId,
+      reason: 'Prior deterministic maintenance receipt for budget accounting.',
+    });
+    saveSchedule(controllerHome, {
+      ...getSchedule(controllerHome, repository.repoId, schedule.scheduleId),
+      lastTriggeredAt: new Date(Date.now() - 120_000).toISOString(),
     });
 
     const occurrence = await evaluateSchedule(controllerHome, getSchedule(controllerHome, repository.repoId, schedule.scheduleId), false, { source: 'timer' });
 
     expect(occurrence?.status).toBe('skipped');
     expect(occurrence?.decision).toBe('budget_exhausted');
+    expect(occurrence?.jobId).toBeUndefined();
+    expect(listExecutionJobs(controllerHome, repository.repoId, 100)).toHaveLength(0);
   });
 
-  test('enforces cooldown before dispatching another live occurrence', async () => {
-    const { controllerHome, localJobs, repository } = maintenanceWorkspace();
-    writeLocalJob(localJobs, 'JOB-stale');
+  test('honors cooldown without creating jobs or external-controller handoffs', async () => {
+    const { controllerHome, repository } = maintenanceWorkspace();
     const schedule = createLiveMaintenanceSchedule(controllerHome, repository.repoId, {
-      trigger: { type: 'interval', everyMinutes: 60 },
+      requestId: 'maintenance-cooldown',
       cooldownMinutes: 30,
+      trigger: { type: 'interval', everyMinutes: 1 },
     });
     const warmed = saveSchedule(controllerHome, {
       ...schedule,
       lastTriggeredAt: new Date().toISOString(),
-      lastOccurrenceId: 'OCC-recent',
     });
 
     const occurrence = await evaluateSchedule(controllerHome, warmed, false, { source: 'timer' });
 
     expect(occurrence?.status).toBe('skipped');
     expect(occurrence?.decision).toBe('cooldown');
+    expect(occurrence?.jobId).toBeUndefined();
+    expect(listHandoffItems({ controllerHome, repoId: repository.repoId, status: 'all' })).toHaveLength(0);
+    expect(listExecutionJobs(controllerHome, repository.repoId, 100)).toHaveLength(0);
   });
 });
