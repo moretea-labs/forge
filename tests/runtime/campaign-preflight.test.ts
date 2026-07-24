@@ -58,7 +58,8 @@ describe('campaign preflight ordering', () => {
       supervisor: { mode: 'operation' },
       workspace: { mode: 'isolated' },
     }));
-    expect(result.error.code).toBe('CAMPAIGN_SUPERVISOR_OPERATION_REQUIRED');
+    // Campaign creation is retired at the gateway before supervisor validation runs.
+    expect(result.error.code).toBe('CAMPAIGN_DEPRECATED');
     const after = execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: repoRoot, encoding: 'utf8' });
     expect(after).toBe(before);
     expect(existsSync(join(repoRoot, '.ai/harness/worktrees'))).toBe(false);

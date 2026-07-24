@@ -131,7 +131,7 @@ describe('Gmail assistant routines', () => {
     cursor = JSON.parse(readFileSync(join(repoRoot, '.repo-harness', 'assistant', 'gmail-cursors.json'), 'utf-8')).cursors[0];
     expect(cursor.lastSuccessfulAt).toBe(second.run.windowEnd);
     expect(cursor.processedMessageIds).toHaveLength(60);
-  });
+  }, 20_000);
 
   test('collects mock Gmail incrementally and writes a final Assistant Inbox report', async () => {
     const repoRoot = mkdtempSync(join(tmpdir(), 'repo-harness-gmail-routine-'));

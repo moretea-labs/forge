@@ -70,7 +70,8 @@ export async function withIdempotentRetry<T>(
   if (!options.idempotent || options.enabled === false) {
     return operation();
   }
-  const maxAttempts = Math.max(1, Math.min(options.maxAttempts ?? 2, 2));
+  // Cap retries for transport noise, but honor explicit test/call-site budgets up to 5.
+  const maxAttempts = Math.max(1, Math.min(options.maxAttempts ?? 2, 5));
   const baseDelayMs = Math.max(10, options.baseDelayMs ?? 50);
   const maxDelayMs = Math.max(baseDelayMs, options.maxDelayMs ?? 500);
   const sleep = options.sleep ?? defaultSleep;

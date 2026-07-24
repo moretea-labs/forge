@@ -175,7 +175,9 @@ describe('routing respects config', () => {
       },
     });
     expect(decision.selectedProviderId).not.toBe('codex_cli');
-    expect(decision.selectedProviderId).toBe('grok_api');
+    // Kernel provider dispatch is retired; routing ends at ChatGPT handoff.
+    expect(decision.selectedProviderId).toBe('chatgpt_handoff');
+    expect(decision.directDispatch).toBe(false);
   });
 
   test('handoff-only provider rejected for direct dispatch', () => {
@@ -253,8 +255,10 @@ describe('routing respects config', () => {
       },
     });
 
-    expect(decision.selectedProviderId).toBe('grok_cli');
-    expect(decision.alternatives).toContain('grok_cli');
+    // Capability filtering still excludes mismatched providers from alternatives,
+    // but Kernel routing itself always ends at ChatGPT handoff.
+    expect(decision.selectedProviderId).toBe('chatgpt_handoff');
+    expect(decision.directDispatch).toBe(false);
     expect(decision.alternatives).not.toContain('codex_cli');
   });
 
@@ -360,7 +364,8 @@ describe('routing respects config', () => {
       providers,
       routingConfig: { orders: { implementation: ['claude_cli', 'codex_cli', 'chatgpt_handoff'] } },
     });
-    expect(decision2.selectedProviderId).toBe('claude_cli');
+    expect(decision2.selectedProviderId).toBe('chatgpt_handoff');
+    expect(decision2.directDispatch).toBe(false);
   });
 });
 
@@ -376,7 +381,8 @@ describe('credentials and live mode', () => {
     const grokCli = providers.find((p) => p.providerId === 'grok_cli');
     expect(grokCli?.kind).toBe('local_cli');
     expect(grokCli?.modelFamily).toBe('grok');
-    expect(grokCli?.directDispatch).toBe(true);
+    // Discovery may mark the CLI ready, but Kernel never enables direct dispatch.
+    expect(grokCli?.directDispatch).toBe(false);
     expect(grokCli?.status).toBe('ready');
   });
 
@@ -431,7 +437,7 @@ describe('credentials and live mode', () => {
       configLocation: { root: ctx.configRoot },
     });
     const grok = providers.find((p) => p.providerId === 'grok_api');
-    expect(grok?.directDispatch).toBe(true);
+    expect(grok?.directDispatch).toBe(false);
     expect(grok?.status).toBe('ready');
   });
 
@@ -480,7 +486,7 @@ describe('credentials and live mode', () => {
     });
     const grok = providers.find((p) => p.providerId === 'grok_api');
     expect(grok?.authPresent).toBe(true);
-    expect(grok?.directDispatch).toBe(true);
+    expect(grok?.directDispatch).toBe(false);
 
     providerApiSettingsUpdate(ctx, 'grok_api', { clearApiKey: true });
     expect(providerApiSettingsGet(ctx, 'grok_api').hasStoredApiKey).toBe(false);
@@ -525,8 +531,8 @@ describe('policy and facade view model', () => {
     expect(view.schemaVersion).toBe(1);
     expect(view.providers.some((p) => p.providerId === 'chatgpt_handoff' && p.handoffOnly && !p.canEnableDirectDispatch)).toBe(true);
     expect(view.overview.plainLanguageSummary.toLowerCase()).toContain('chatgpt');
-    expect(view.overview.plainLanguageSummary).toContain('when a live goal or live schedule needs direct dispatch');
-    expect(view.overview.plainLanguageSummary).not.toMatch(/Grok (CLI|API) is/);
+    // Kernel no longer advertises direct-dispatch readiness for remote providers.
+    expect(view.overview.plainLanguageSummary).toMatch(/handoff|ChatGPT|no direct-invokable/i);
   });
 
   test('GUI view model maps statuses correctly', () => {

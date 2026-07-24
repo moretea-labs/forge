@@ -146,7 +146,8 @@ describe('mcp policy and paths', () => {
       const enabled = getMcpPolicy('orchestrator', { devAgentRunner: true, allowedAgents: ['codex'], runnerTimeoutMs: 5000 });
       expect(enabled.execution.agentRunner).toBe(true);
       expect(enabled.execution.allowedAgents).toEqual(['codex']);
-      expect(buildMcpToolDefinitions(enabled).some((tool) => tool.name === 'run_agent_goal')).toBe(true);
+      // Tool remains unregistered; stale callers hit the deprecation handler only.
+      expect(buildMcpToolDefinitions(enabled).some((tool) => tool.name === 'run_agent_goal')).toBe(false);
       expect(resolveMcpPath(tmp, '.ai/harness/handoff/codex-goal.md', enabled, 'read')).toMatchObject({ ok: true });
       expect(resolveMcpPath(tmp, 'src/index.ts', enabled, 'read')).toMatchObject({ ok: false });
     } finally {

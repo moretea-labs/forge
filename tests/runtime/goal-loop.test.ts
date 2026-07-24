@@ -117,7 +117,7 @@ describe('daemon tick transitions', () => {
 });
 
 describe('ExecutorRouter', () => {
-  test('chooses direct_edit for low-risk deterministic change', () => {
+  test('Kernel no longer direct-dispatches; low-risk work becomes ChatGPT handoff', () => {
     const providers = providersFor();
     const decision = routeExecutor({
       goal: {
@@ -136,11 +136,12 @@ describe('ExecutorRouter', () => {
       risk: 'local_repo_write',
       providers,
     });
-    expect(decision.selectedProviderId).toBe('direct_edit');
-    expect(decision.directDispatch).toBe(true);
+    expect(decision.selectedProviderId).toBe('chatgpt_handoff');
+    expect(decision.directDispatch).toBe(false);
+    expect(decision.handoffOnly).toBe(true);
   });
 
-  test('chooses codex_cli when ready for normal code task', () => {
+  test('Kernel no longer selects codex_cli for code tasks; handoff is required', () => {
     const providers = providersFor();
     const decision = routeExecutor({
       goal: {
@@ -159,10 +160,11 @@ describe('ExecutorRouter', () => {
       risk: 'workspace_write',
       providers,
     });
-    expect(decision.selectedProviderId).toBe('codex_cli');
+    expect(decision.selectedProviderId).toBe('chatgpt_handoff');
+    expect(decision.directDispatch).toBe(false);
   });
 
-  test('chooses grok_cli when ready after codex failed', () => {
+  test('Kernel no longer re-routes repair to grok_cli; handoff owns provider choice', () => {
     const providers = providersFor({
       grok_cli: { status: 'ready', directDispatch: true, configured: true, authPresent: true },
       grok_api: { status: 'missing_auth', directDispatch: false },
@@ -186,8 +188,9 @@ describe('ExecutorRouter', () => {
       risk: 'workspace_write',
       providers,
     });
-    expect(decision.selectedProviderId).toBe('grok_cli');
-    expect(decision.directDispatch).toBe(true);
+    expect(decision.selectedProviderId).toBe('chatgpt_handoff');
+    expect(decision.directDispatch).toBe(false);
+    expect(decision.handoffOnly).toBe(true);
   });
 
   test('chooses grok_api when configured and codex/grok_cli unavailable', () => {
@@ -214,8 +217,8 @@ describe('ExecutorRouter', () => {
       risk: 'workspace_write',
       providers,
     });
-    expect(decision.selectedProviderId).toBe('grok_api');
-    expect(decision.directDispatch).toBe(true);
+    expect(decision.selectedProviderId).toBe('chatgpt_handoff');
+    expect(decision.directDispatch).toBe(false);
   });
 
   test('does not choose chatgpt_handoff for direct dispatch', () => {
@@ -261,7 +264,7 @@ describe('provider health and config', () => {
     expect(health.redacted).toBe(true);
   });
 
-  test('configured XAI_API_KEY marks grok_api ready for direct dispatch only when live effective', () => {
+  test('configured XAI_API_KEY never enables Kernel direct dispatch', () => {
     const withoutLive = checkProviderHealth('grok_api', {
       env: { XAI_API_KEY: 'xai-test-placeholder' },
       skipExecutableProbe: true,
@@ -277,7 +280,8 @@ describe('provider health and config', () => {
     });
     expect(withLive.status).toBe('ready');
     expect(withLive.authPresent).toBe(true);
-    expect(withLive.directDispatchAllowed).toBe(true);
+    // Kernel keeps provider discovery but never advertises direct dispatch.
+    expect(withLive.directDispatchAllowed).toBe(false);
   });
 
   test('chatgpt_handoff is always handoff_only', () => {
@@ -297,7 +301,8 @@ describe('provider health and config', () => {
         grok_api: { status: 'ready', directDispatch: true, authPresent: true },
       },
     });
-    expect(status.invokable.some((p) => p.providerId === 'grok_api' || p.providerId === 'codex_cli')).toBe(true);
+    // Kernel discovery may still list providers as ready, but none are invokable for direct dispatch.
+    expect(status.invokable).toEqual([]);
     expect(status.handoffOnly.some((p) => p.providerId === 'chatgpt_handoff')).toBe(true);
     expect(status.redacted).toBe(true);
   });
@@ -338,7 +343,7 @@ describe('handoff packet', () => {
 });
 
 describe('Grok structured dispatch and safety', () => {
-  test('configured mock Grok provider can return structured patch proposal', () => {
+  test('Kernel provider dispatch is retired; mock payloads are not executed', () => {
     const result = dispatchProvider({
       providerId: 'grok_api',
       objective: 'Fix failing typecheck',
@@ -352,12 +357,13 @@ describe('Grok structured dispatch and safety', () => {
         risk_notes: ['bounded'],
       },
     });
-    expect(result.ok).toBe(true);
-    expect(result.appliedByRepoHarness).toBe(true);
-    expect(result.output?.changed_files).toContain('src/foo.ts');
+    expect(result.ok).toBe(false);
+    expect(result.directDispatch).toBe(false);
+    expect(result.appliedByRepoHarness).toBe(false);
+    expect(result.rejectionReason).toBe('PROVIDER_DISPATCH_RETIRED');
   });
 
-  test('unsafe provider output is rejected', () => {
+  test('unsafe provider output is rejected by the retained pure validator; dispatch stays retired', () => {
     const validated = validateStructuredProviderOutput({
       summary: 'wipe disk',
       proposed_patch: 'rm -rf /',
@@ -374,7 +380,7 @@ describe('Grok structured dispatch and safety', () => {
       mockResponse: 'unsafe',
     });
     expect(dispatch.ok).toBe(false);
-    expect(dispatch.rejectionReason).toMatch(/unsafe|rejected/i);
+    expect(dispatch.rejectionReason).toBe('PROVIDER_DISPATCH_RETIRED');
   });
 
   test('chatgpt_handoff cannot be direct-dispatched', () => {
@@ -429,7 +435,7 @@ describe('policy gates', () => {
 });
 
 describe('repair and finalization', () => {
-  test('source failure enters repairing', () => {
+  test('without Kernel dispatch, source work becomes handoff_ready instead of verifying', () => {
     const { ctx } = fixture({ XAI_API_KEY: 'xai-test' }, {
       overrides: {
         grok_api: { status: 'ready', directDispatch: true, configured: true, authPresent: true },
@@ -441,29 +447,13 @@ describe('repair and finalization', () => {
       objective: 'Implement feature then fix tests',
       checkIds: ['package:test'],
     });
-    // created -> planning -> ready -> dispatching -> running -> verifying
     goalTickOnce(ctx, goal.goalId);
     goalTickOnce(ctx, goal.goalId);
-    goalTickOnce(ctx, goal.goalId, { taskIntent: 'code_implementation' });
-    goalTickOnce(ctx, goal.goalId, {
-      taskIntent: 'code_implementation',
-      dispatchMock: {
-        summary: 'patch',
-        changed_files: ['a.ts'],
-        proposed_patch: 'diff',
-        verification_commands: ['bun test'],
-        risk_notes: [],
-      },
-    });
-    goalTickOnce(ctx, goal.goalId);
-    const verifying = getGoalContract(ctx.goalStore, goal.goalId);
-    expect(verifying?.status).toBe('verifying');
-
-    const failTick = goalTickOnce(ctx, goal.goalId, {
-      verificationResult: { checkId: 'package:test', ok: false, summary: '1 test failed' },
-      forceFailureClass: 'test_failure',
-    });
-    expect(failTick.to).toBe('repairing');
+    const readyTick = goalTickOnce(ctx, goal.goalId, { taskIntent: 'code_implementation' });
+    expect(readyTick.to).toBe('handoff_ready');
+    const contract = getGoalContract(ctx.goalStore, goal.goalId);
+    expect(contract?.status).toBe('handoff_ready');
+    expect(contract?.handoffPacketIds?.length ?? 0).toBeGreaterThan(0);
   });
 
   test('repeated provider failure creates handoff packet', () => {
@@ -538,7 +528,7 @@ describe('repair and finalization', () => {
     expect(getGoalContract(ctx.goalStore, g2.goalId)?.status).toBe('finalized');
   });
 
-  test('repair_continue re-dispatches after source failure', () => {
+  test('repair_continue produces handoff instead of Kernel re-dispatch', () => {
     const { ctx } = fixture({ XAI_API_KEY: 'xai-test' }, {
       overrides: {
         grok_cli: { status: 'ready', directDispatch: true, configured: true, authPresent: true },
@@ -557,8 +547,8 @@ describe('repair and finalization', () => {
       retryBudget: 5,
     });
     const tick = repairContinue(ctx, goal.goalId);
-    expect(tick.to).toBe('dispatching');
-    expect(tick.providerId).toBe('grok_cli');
+    expect(tick.to).toBe('handoff_ready');
+    expect(tick.providerId === 'chatgpt_handoff' || Boolean(tick.handoffPacketId)).toBe(true);
   });
 });
 
@@ -582,15 +572,20 @@ describe('secrets hygiene', () => {
 });
 
 describe('route preview helper', () => {
-  test('previewExecutorRoute mirrors routeExecutor', () => {
+  test('previewExecutorRoute mirrors retired Kernel routing to handoff', () => {
     const { ctx } = fixture();
     const goal = goalCreate(ctx, { title: 'Preview', objective: 'route preview' });
-    const preview = previewExecutorRoute({
+    const providers = listProviders(ctx.providerEnv);
+    const input = {
       goal: getGoalContract(ctx.goalStore, goal.goalId)!,
-      taskIntent: 'deterministic_edit',
-      risk: 'local_repo_write',
-      providers: listProviders(ctx.providerEnv),
-    });
-    expect(preview.selectedProviderId).toBe('direct_edit');
+      taskIntent: 'deterministic_edit' as const,
+      risk: 'local_repo_write' as const,
+      providers,
+    };
+    const preview = previewExecutorRoute(input);
+    const routed = routeExecutor(input);
+    expect(preview.selectedProviderId).toBe(routed.selectedProviderId);
+    expect(preview.selectedProviderId).toBe('chatgpt_handoff');
+    expect(preview.directDispatch).toBe(false);
   });
 });

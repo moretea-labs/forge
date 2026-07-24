@@ -454,3 +454,26 @@ Date: 2026-07-24
 - Focused suite after residual fix: agent-delegation, scheduler-capacity, target-architecture, work-submit, thin-harness, live-maintenance: **65 pass / 0 fail**.
 - `bun x tsc --noEmit`: pass.
 
+## Full-suite test migration (P2 residual)
+
+After the architecture stages landed, the full suite still had 27 failures that
+asserted pre-retirement Kernel behavior. They were migrated rather than restoring
+the retired paths:
+
+- Goal Loop / provider-config: route and health expectations now assert
+  `chatgpt_handoff` + `directDispatch=false` and `PROVIDER_DISPATCH_RETIRED`.
+- Campaign preflight: invalid supervisor now fails with `CAMPAIGN_DEPRECATED`
+  before workspace allocation (gateway retirement precedes store validation).
+- MCP policy/tools/setup: `run_agent_goal` is unregistered; enabled and disabled
+  orchestrator runners both return `AGENT_GOAL_DEPRECATED`. Guide asserts
+  WorkContract / Thin Launcher retirement language.
+- Standing Grants: assertions use plugin action receipts (`findPluginActionReceipt`)
+  instead of `findExecutionJob`; Gmail archive mock covers `/modify` because grants
+  execute the plugin action immediately.
+- Idempotent transport retry: explicit `maxAttempts` honor up to 5 (still bounded),
+  matching the performance baseline test.
+- Gmail backlog cursor test: timeout raised to 20s for multi-page hydration.
+
+Not mergeable until full `bun test` is green on this worktree and the user
+explicitly requests merge/rollout. Main remains untouched; no push.
+

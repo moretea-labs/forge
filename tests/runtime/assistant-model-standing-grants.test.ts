@@ -12,9 +12,8 @@ import {
   revokeAssistantStandingGrant,
 } from '../../src/runtime/assistant/standing-grants';
 import { createAssistantRoutine } from '../../src/runtime/assistant/store';
-import { findExecutionJob } from '../../src/runtime/execution/jobs/store';
 import { clearGoogleAuthCachesForTest } from '../../src/runtime/plugins/google-shared';
-import { executeAssistantPluginAction } from '../../src/runtime/plugins/store';
+import { executeAssistantPluginAction, findPluginActionReceipt } from '../../src/runtime/plugins/store';
 
 const originalFetch = globalThis.fetch;
 const tempRoots: string[] = [];
@@ -146,9 +145,10 @@ describe('Assistant model analysis and Standing Grants', () => {
     });
     const first = await applyAssistantStandingGrants(controllerHome, repo, { routineId: 'routine-1', runId: 'run-1', proposals });
     expect(first.results.filter((entry) => entry.status === 'submitted')).toHaveLength(1);
-    const jobId = first.results[0]?.executionJobId;
-    expect(jobId).toBeString();
-    expect(findExecutionJob(controllerHome, jobId!)?.origin.surface).toBe('standing-grant');
+    const receiptId = first.results[0]?.executionJobId;
+    expect(receiptId).toBeString();
+    // Plugin actions now persist receipts (compatibility job id), not ExecutionJobs.
+    expect(findPluginActionReceipt(controllerHome, receiptId!)?.origin?.surface).toBe('standing-grant');
     const stored = listAssistantActionProposals(controllerHome, repo).proposals;
     expect(stored.filter((proposal) => proposal.standingGrantId === grant.grantId)).toHaveLength(1);
     const repeated = await applyAssistantStandingGrants(controllerHome, repo, { routineId: 'routine-1', runId: 'run-1', proposals: stored });
@@ -191,6 +191,10 @@ describe('Assistant model analysis and Standing Grants', () => {
           id: 'newsletter-1', threadId: 'thread-1', snippet: 'Weekly newsletter digest', labelIds: ['INBOX'],
           payload: { headers: [{ name: 'From', value: 'News <news@example.com>' }, { name: 'Subject', value: 'Weekly newsletter' }], body: {} },
         }), { status: 200 });
+      }
+      // Standing-grant archive now executes the plugin action immediately (receipt path).
+      if (url.pathname.endsWith('/messages/newsletter-1/modify')) {
+        return new Response(JSON.stringify({ id: 'newsletter-1', labelIds: [] }), { status: 200 });
       }
       throw new Error(`Unexpected request: ${url}`);
     }) as typeof fetch;

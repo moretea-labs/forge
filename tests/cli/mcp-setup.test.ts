@@ -443,7 +443,9 @@ describe("mcp setup", () => {
     expect(guide).toContain("mcp keepalive");
     expect(guide).toContain("## Dev Mode Agent Runner");
     expect(guide).toContain("--enable-dev-runner");
-    expect(guide).toContain("run_agent_goal");
+    // Kernel-managed agent goals are retired; guide still documents the opt-in runner surface
+    // while pointing new work at WorkContract + Thin Launcher.
+    expect(guide).toMatch(/WorkContract|Thin Launcher|external SuperController|retired/i);
     expect(guide).toContain("repo-harness mcp restart --repo .");
     expect(guide).toContain("repo-harness repo rollout --repo-id <current-repo-id>");
     expect(guide).toContain("repository_latest_source_diagnose");
