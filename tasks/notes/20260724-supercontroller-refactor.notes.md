@@ -598,7 +598,7 @@ Date: 2026-07-24
 - Removed dormant repository registration, runtime binding, deduplication, approval, persistence, and creation-event code from the write boundary.
 - Added regression coverage proving the write boundary creates no Local Bridge records.
 - Runtime architecture gate now requires the direct fail-closed function shape and forbids the hidden retirement helper.
-- Focused Local Bridge, recovery, repository-command lifecycle, and target-architecture suite: **41 pass / 0 fail**.
+- Focused Local Bridge, repository-command, and target-architecture suite: **51 pass / 0 fail**.
 - `package:check:type`: pass.
 - `package:check:runtime-architecture`: pass, 32 modules/documents checked.
 
