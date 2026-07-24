@@ -8,7 +8,6 @@ import { buildGmailPluginManifest, executeGmailPluginAction } from '../../src/ru
 import { buildGoogleCalendarPluginManifest } from '../../src/runtime/plugins/google-calendar-adapter';
 import { buildGoogleTasksPluginManifest } from '../../src/runtime/plugins/google-tasks-adapter';
 import { submitAssistantPluginAction } from '../../src/runtime/plugins/store';
-import { executeExecutionJob } from '../../src/runtime/execution/workers/executor';
 
 const roots: string[] = [];
 
@@ -56,7 +55,7 @@ describe('gmail plugin readiness and gates', () => {
       ['mark_message_read', { message_id: 'm1' }],
       ['mark_message_unread', { message_id: 'm1' }],
     ] as const) {
-      const submitted = submitAssistantPluginAction(controllerHome, repository, {
+      const submitted = await submitAssistantPluginAction(controllerHome, repository, {
         pluginId: 'gmail',
         actionId,
         requestId: `gmail-${actionId}`,
@@ -64,11 +63,11 @@ describe('gmail plugin readiness and gates', () => {
         confirmAuthorization: true,
         origin: { surface: 'local-ui', actor: 'test' },
       });
-      const execution = await executeExecutionJob(controllerHome, submitted.job);
+      const execution = { ok: submitted.receipt.status === "succeeded", result: submitted.result, repoRoot: undefined as string | undefined };
       expect(execution.ok).toBe(true);
     }
 
-    const send = submitAssistantPluginAction(controllerHome, repository, {
+    const send = await submitAssistantPluginAction(controllerHome, repository, {
       pluginId: 'gmail',
       actionId: 'send_message',
       requestId: 'gmail-send',
@@ -77,9 +76,9 @@ describe('gmail plugin readiness and gates', () => {
       confirmationText: 'send-gmail-message',
       origin: { surface: 'local-ui', actor: 'test' },
     });
-    expect((await executeExecutionJob(controllerHome, send.job)).ok).toBe(true);
+    expect(send.receipt.status).toBe("succeeded");
 
-    const trash = submitAssistantPluginAction(controllerHome, repository, {
+    const trash = await submitAssistantPluginAction(controllerHome, repository, {
       pluginId: 'gmail',
       actionId: 'trash_message',
       requestId: 'gmail-trash',
@@ -88,7 +87,7 @@ describe('gmail plugin readiness and gates', () => {
       confirmationText: 'trash-gmail-message',
       origin: { surface: 'local-ui', actor: 'test' },
     });
-    expect((await executeExecutionJob(controllerHome, trash.job)).ok).toBe(true);
+    expect(trash.receipt.status).toBe("succeeded");
   });
 
   test('live mode without token is not generically failed and returns structured auth_required', async () => {
@@ -109,16 +108,13 @@ describe('gmail plugin readiness and gates', () => {
     expect(manifest.health.errors).toEqual([]);
     expect(manifest.health.warnings.some((entry) => /ACCESS_TOKEN/i.test(entry))).toBe(true);
 
-    const submitted = submitAssistantPluginAction(controllerHome, repository, {
+    await expect(submitAssistantPluginAction(controllerHome, repository, {
       pluginId: 'gmail',
       actionId: 'list_messages',
       requestId: 'gmail-auth-required',
       args: {},
       origin: { surface: 'local-ui', actor: 'test' },
-    });
-    const execution = await executeExecutionJob(controllerHome, submitted.job);
-    expect(execution.ok).toBe(false);
-    expect(execution.error?.code).toBe('PLUGIN_AUTH_REQUIRED');
+    })).rejects.toThrow(/PLUGIN_AUTH_REQUIRED/);
   });
 
   test('live mode reads token from _ops/env/.env.local when shell env is absent', async () => {
@@ -148,16 +144,16 @@ describe('gmail plugin readiness and gates', () => {
       origin: { surface: 'local-ui', actor: 'test' },
     });
 
-    expect(() => submitAssistantPluginAction(controllerHome, repository, {
+    await expect(submitAssistantPluginAction(controllerHome, repository, {
       pluginId: 'gmail',
       actionId: 'send_message',
       requestId: 'send-bad',
       args: { to: ['a@example.com'], subject: 's', body_text: 'b' },
       confirmAuthorization: true,
       origin: { surface: 'local-ui', actor: 'test' },
-    })).toThrow('PLUGIN_CONFIRMATION_TEXT_REQUIRED');
+    })).rejects.toThrow('PLUGIN_CONFIRMATION_TEXT_REQUIRED');
 
-    expect(() => submitAssistantPluginAction(controllerHome, repository, {
+    await expect(submitAssistantPluginAction(controllerHome, repository, {
       pluginId: 'gmail',
       actionId: 'trash_message',
       requestId: 'trash-bad',
@@ -165,7 +161,7 @@ describe('gmail plugin readiness and gates', () => {
       confirmAuthorization: true,
       confirmationText: 'nope',
       origin: { surface: 'local-ui', actor: 'test' },
-    })).toThrow('PLUGIN_CONFIRMATION_TEXT_REQUIRED');
+    })).rejects.toThrow('PLUGIN_CONFIRMATION_TEXT_REQUIRED');
   });
 
   test('calendar and tasks mock mode are usable when enabled', async () => {

@@ -197,7 +197,7 @@ describe('Google OAuth, Gmail History, and Assistant proposals', () => {
     expect(cursor.continuation).toBeUndefined();
   });
 
-  test('approves proposals idempotently through a separate authorized plugin Job and supports rejection', () => {
+  test('approves proposals idempotently through a separate authorized plugin Job and supports rejection', async () => {
     const repoRoot = mkdtempSync(join(tmpdir(), 'repo-harness-proposals-'));
     const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-controller-'));
     tempRoots.push(repoRoot, controllerHome);
@@ -210,11 +210,11 @@ describe('Google OAuth, Gmail History, and Assistant proposals', () => {
         { pluginId: 'gmail', actionId: 'archive_message', arguments: { message_id: 'message-2' }, evidenceMessageIds: ['message-2'], reason: 'Archive digest', confidence: 0.8 },
       ],
     });
-    const approved = approveAssistantActionProposal(controllerHome, repository, {
+    const approved = await approveAssistantActionProposal(controllerHome, repository, {
       proposalId: created[0]!.proposalId,
       requestId: 'proposal-approval-1',
     });
-    const repeated = approveAssistantActionProposal(controllerHome, repository, {
+    const repeated = await approveAssistantActionProposal(controllerHome, repository, {
       proposalId: created[0]!.proposalId,
       requestId: 'proposal-approval-1',
     });

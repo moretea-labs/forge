@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import type { RepositoryRecord } from '../../cli/repositories/types';
-import { withControllerLock } from '../../cli/repositories/locks';
+import { withControllerLock, withControllerLockAsync } from '../../cli/repositories/locks';
 import { findExecutionJob } from '../execution/jobs/store';
 import { appendRuntimeEvent } from '../evidence/event-ledger';
 import { getAssistantPluginManifest, submitAssistantPluginAction } from '../plugins/store';
@@ -215,7 +215,7 @@ export function rejectAssistantActionProposal(
   }, 10_000);
 }
 
-export function approveAssistantActionProposal(
+export async function approveAssistantActionProposal(
   controllerHome: string,
   repository: RepositoryRecord,
   input: {
@@ -225,8 +225,8 @@ export function approveAssistantActionProposal(
     origin?: { surface: 'mcp' | 'local-ui' | 'standing-grant'; actor: string };
     standingGrantId?: string;
   },
-): AssistantActionProposal {
-  return withControllerLock(controllerHome, { scope: 'repository', repoId: repository.repoId }, `assistant-proposal-approve:${input.proposalId}`, () => {
+): Promise<AssistantActionProposal> {
+  return withControllerLockAsync(controllerHome, { scope: 'repository', repoId: repository.repoId }, `assistant-proposal-approve:${input.proposalId}`, async () => {
     const store = readStore(repository.canonicalRoot);
     const proposal = store.proposals.find((entry) => entry.proposalId === input.proposalId);
     if (!proposal) throw new Error(`ASSISTANT_ACTION_PROPOSAL_NOT_FOUND: ${input.proposalId}`);
@@ -241,7 +241,7 @@ export function approveAssistantActionProposal(
     if (action.confirmation === 'strong_confirmation' && input.confirmationText !== action.requiredConfirmationText) {
       throw new Error(`ASSISTANT_ACTION_STRONG_CONFIRMATION_REQUIRED: ${action.requiredConfirmationText}`);
     }
-    const submitted = submitAssistantPluginAction(controllerHome, repository, {
+    const submitted = await submitAssistantPluginAction(controllerHome, repository, {
       pluginId: proposal.pluginId,
       actionId: proposal.actionId,
       requestId: input.requestId.trim() || `assistant-proposal:${proposal.proposalId}`,

@@ -3805,7 +3805,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         }
         if (args.confirm_authorization !== true) throw new Error('ASSISTANT_ACTION_APPROVAL_REQUIRED: confirm_authorization=true');
         const requestId = String(args.request_id ?? `assistant-proposal:${proposalId}`).trim();
-        return result({ proposal: approveAssistantActionProposal(ctx.controllerHome, repository, {
+        return result({ proposal: await approveAssistantActionProposal(ctx.controllerHome, repository, {
           proposalId,
           requestId,
           confirmationText: typeof args.confirmation_text === 'string' ? args.confirmation_text : undefined,
@@ -4229,11 +4229,12 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             next: 'Continue with the returned bounded result; no Job polling is required.',
           });
         }
-        const submitted = submitAssistantPluginAction(ctx.controllerHome, repository, request);
-        const daemon = ensureControllerDaemon(ctx.controllerHome);
+        const submitted = await submitAssistantPluginAction(ctx.controllerHome, repository, request);
         return result({
           accepted: true,
           deduplicated: submitted.deduplicated,
+          direct: true,
+          durable: false,
           plugin: summarizePlugin(submitted.manifest),
           action: {
             actionId: submitted.action.actionId,
@@ -4242,9 +4243,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             requiredConfirmationText: submitted.action.requiredConfirmationText,
           },
           scope: repository.repoId === '__controller__' ? 'controller' : 'repository',
-          job: summarizeWork(submitted.job, repository.canonicalRoot),
-          daemon: { status: daemon.status, pid: daemon.pid },
-          next: `Call get_job with job_id ${submitted.job.jobId}.`,
+          receiptId: submitted.receipt.receiptId,
+          requestId: submitted.receipt.requestId,
+          result: submitted.result,
+          next: 'Continue with the returned bounded plugin result; no ExecutionJob polling is required.',
         });
       }
       case 'toolchain_plugin_summary': {
@@ -4292,7 +4294,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         };
         const requestId = String(args.request_id ?? '').trim();
         if (!requestId) throw new Error('REQUEST_ID_REQUIRED: web_target_snapshot requires request_id');
-        const submitted = submitAssistantPluginAction(ctx.controllerHome, repository, {
+        const submitted = await submitAssistantPluginAction(ctx.controllerHome, repository, {
           pluginId: 'browser',
           actionId,
           requestId,
@@ -4333,7 +4335,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const requestId = String(args.request_id ?? '').trim();
         if (!requestId) throw new Error('REQUEST_ID_REQUIRED: web_domain_access_apply requires request_id');
         const allowedDomains = mergeAllowedDomains(repository.canonicalRoot, args.domain, manifest);
-        const submitted = submitAssistantPluginAction(ctx.controllerHome, repository, {
+        const submitted = await submitAssistantPluginAction(ctx.controllerHome, repository, {
           pluginId: 'browser',
           actionId: 'configure',
           requestId,

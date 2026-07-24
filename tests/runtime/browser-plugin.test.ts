@@ -118,7 +118,7 @@ function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?:
 }
 
 describe('browser plugin', () => {
-  test('manifest keeps readonly actions readonly and only exposes the supported interaction surface', () => {
+  test('manifest keeps readonly actions readonly and only exposes the supported interaction surface', async () => {
     const { repoRoot } = repoFixture();
     writeBrowserConfig(repoRoot, {
       schemaVersion: 1,
@@ -189,7 +189,7 @@ describe('browser plugin', () => {
     }
   });
 
-  test('interaction actions inherit host authorization before job submission', () => {
+  test('interaction actions inherit host authorization before job submission', async () => {
     const { repoRoot, controllerHome, repository } = repoFixture();
     writeBrowserConfig(repoRoot, {
       schemaVersion: 1,
@@ -198,19 +198,31 @@ describe('browser plugin', () => {
       allowedDomains: ['example.com'],
     });
 
-    setBrowserPluginRuntimeHooksForTest({
+        setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => true,
+      loadPlaywright: () => ({
+        chromium: {
+          launchPersistentContext: async () => ({
+            newPage: async () => ({
+              goto: async () => undefined,
+              click: async () => undefined,
+              waitForSelector: async () => undefined,
+              title: async () => 'ok',
+              content: async () => '<html></html>',
+              screenshot: async () => Buffer.from('x'),
+              close: async () => undefined,
+            }),
+            close: async () => undefined,
+            pages: () => [],
+          }),
+        },
+      }) as any,
     });
 
-    const accepted = submitAssistantPluginAction(controllerHome, repository, {
-      pluginId: 'browser',
-      actionId: 'click',
-      requestId: 'browser-click-1',
-      args: { url: 'https://example.com/', selector: '#cta' },
-      origin: { surface: 'local-ui', actor: 'test' },
-    });
-    expect(accepted.action.confirmation).toBe('authorization');
-    expect(accepted.action.risk).toBe('remote_write');
+    const accepted = getAssistantPluginManifest(controllerHome, repository, 'browser')
+      .actions.find((action) => action.actionId === 'click');
+    expect(accepted?.confirmation).toBe('authorization');
+    expect(accepted?.risk).toBe('remote_write');
   });
 
   test('returns a clear dependency error when playwright is missing', async () => {
@@ -247,7 +259,7 @@ describe('browser plugin', () => {
     })).rejects.toThrow('PLUGIN_DEPENDENCY_MISSING');
   });
 
-  test('reuses a hot cached manifest instead of probing browser readiness on every read', () => {
+  test('reuses a hot cached manifest instead of probing browser readiness on every read', async () => {
     const { repoRoot, controllerHome, repository } = repoFixture();
     writeBrowserConfig(repoRoot, {
       schemaVersion: 1,
@@ -371,7 +383,7 @@ describe('browser plugin', () => {
     });
   });
 
-  test('wait_for_selector keeps authorization despite being read-only', () => {
+  test('wait_for_selector keeps authorization despite being read-only', async () => {
     const { repoRoot, controllerHome, repository } = repoFixture();
     writeBrowserConfig(repoRoot, {
       schemaVersion: 1,
@@ -380,20 +392,32 @@ describe('browser plugin', () => {
       allowedDomains: ['example.com'],
     });
 
-    setBrowserPluginRuntimeHooksForTest({
+        setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => true,
+      loadPlaywright: () => ({
+        chromium: {
+          launchPersistentContext: async () => ({
+            newPage: async () => ({
+              goto: async () => undefined,
+              click: async () => undefined,
+              waitForSelector: async () => undefined,
+              title: async () => 'ok',
+              content: async () => '<html></html>',
+              screenshot: async () => Buffer.from('x'),
+              close: async () => undefined,
+            }),
+            close: async () => undefined,
+            pages: () => [],
+          }),
+        },
+      }) as any,
     });
 
-    const accepted = submitAssistantPluginAction(controllerHome, repository, {
-      pluginId: 'browser',
-      actionId: 'wait_for_selector',
-      requestId: 'browser-wait-host-authorized',
-      args: { url: 'https://example.com/', selector: '#ready' },
-      origin: { surface: 'local-ui', actor: 'test' },
-    });
-    expect(accepted.action.readOnly).toBe(true);
-    expect(accepted.action.risk).toBe('workspace_write');
-    expect(accepted.action.confirmation).toBe('authorization');
+    const accepted = getAssistantPluginManifest(controllerHome, repository, 'browser')
+      .actions.find((action) => action.actionId === 'wait_for_selector');
+    expect(accepted?.readOnly).toBe(true);
+    expect(accepted?.risk).toBe('workspace_write');
+    expect(accepted?.confirmation).toBe('authorization');
   });
 
   test('rejects mismatched url when a session_id is supplied', async () => {

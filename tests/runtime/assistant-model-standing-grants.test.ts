@@ -103,7 +103,7 @@ describe('Assistant model analysis and Standing Grants', () => {
     expect(assistantModelReadiness().secretsReturned).toBe(false);
   });
 
-  test('requires explicit authorization and rejects unsafe Standing Grant actions', () => {
+  test('requires explicit authorization and rejects unsafe Standing Grant actions', async () => {
     const { repoRoot, controllerHome } = createRoots();
     const repo = repository(repoRoot, 'repo_grant_safety');
     expect(() => createAssistantStandingGrant(controllerHome, repo, {
@@ -126,7 +126,7 @@ describe('Assistant model analysis and Standing Grants', () => {
     }
   });
 
-  test('matches scoped grants, enforces per-run limits, and remains idempotent', () => {
+  test('matches scoped grants, enforces per-run limits, and remains idempotent', async () => {
     const { repoRoot, controllerHome } = createRoots();
     mkdirSync(join(repoRoot, '.repo-harness', 'plugins'), { recursive: true });
     writeFileSync(join(repoRoot, '.repo-harness', 'plugins', 'gmail.json'), JSON.stringify({ schemaVersion: 1, enabled: true, provider: 'mock' }));
@@ -144,14 +144,14 @@ describe('Assistant model analysis and Standing Grants', () => {
         { pluginId: 'gmail', actionId: 'archive_message', arguments: { message_id: 'm3' }, evidenceMessageIds: ['m3'], context: { sender: 'outside@other.com', subject: 'Newsletter' }, reason: 'Outside scope', confidence: 0.99 },
       ],
     });
-    const first = applyAssistantStandingGrants(controllerHome, repo, { routineId: 'routine-1', runId: 'run-1', proposals });
+    const first = await applyAssistantStandingGrants(controllerHome, repo, { routineId: 'routine-1', runId: 'run-1', proposals });
     expect(first.results.filter((entry) => entry.status === 'submitted')).toHaveLength(1);
     const jobId = first.results[0]?.executionJobId;
     expect(jobId).toBeString();
     expect(findExecutionJob(controllerHome, jobId!)?.origin.surface).toBe('standing-grant');
     const stored = listAssistantActionProposals(controllerHome, repo).proposals;
     expect(stored.filter((proposal) => proposal.standingGrantId === grant.grantId)).toHaveLength(1);
-    const repeated = applyAssistantStandingGrants(controllerHome, repo, { routineId: 'routine-1', runId: 'run-1', proposals: stored });
+    const repeated = await applyAssistantStandingGrants(controllerHome, repo, { routineId: 'routine-1', runId: 'run-1', proposals: stored });
     expect(repeated.results).toHaveLength(0);
     const revoked = revokeAssistantStandingGrant(controllerHome, repo, {
       grantId: grant.grantId, confirmAuthorization: true, reason: 'Done', origin: { surface: 'mcp', actor: 'test' },

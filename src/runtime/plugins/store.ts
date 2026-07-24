@@ -1,8 +1,8 @@
 import { createHash } from 'crypto';
 import { join } from 'path';
 import type { RepositoryRecord } from '../../cli/repositories/types';
-import { CONTROLLER_SCOPE_REPO_ID, controllerSystemRoot, repositoryControllerRoot } from '../../cli/repositories/controller-home';
-import { createExecutionJob } from '../execution/jobs/store';
+import { CONTROLLER_SCOPE_REPO_ID, controllerSystemRoot, ensureControllerHome, repositoryControllerRoot } from '../../cli/repositories/controller-home';
+import { existsSync, mkdirSync } from 'fs';
 import type { ExecutionJob, ResourceClaimSpec } from '../execution/jobs/types';
 import { appendRuntimeEvent } from '../evidence/event-ledger';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
@@ -38,9 +38,6 @@ const PLUGIN_ADAPTERS = new Map<string, AssistantPluginAdapter>([
 
 const PLUGIN_MANIFEST_CACHE_TTL_MS = 5_000;
 
-function executionJobCreationRetired(): boolean {
-  return true;
-}
 
 interface PluginManifestCacheEntry<T> {
   createdAt: number;
@@ -490,11 +487,98 @@ export async function executeAssistantPluginReadDirect(
   return { manifest, action, result };
 }
 
-export function submitAssistantPluginAction(
+export interface PluginActionReceipt {
+  schemaVersion: 1;
+  receiptId: string;
+  requestId: string;
+  repoId: string;
+  pluginId: string;
+  actionId: string;
+  semanticKey: string;
+  status: 'succeeded' | 'failed';
+  createdAt: string;
+  result?: Record<string, unknown>;
+  error?: { code: string; message: string };
+}
+
+interface PluginActionRequestIndex {
+  requestId: string;
+  repoId: string;
+  receiptId: string;
+  semanticKey: string;
+  createdAt: string;
+}
+
+function pluginActionReceiptRoot(controllerHome: string, repoId: string): string {
+  const root = join(repositoryControllerRoot(controllerHome, repoId), 'plugin-action-receipts');
+  mkdirSync(root, { recursive: true });
+  return root;
+}
+
+function pluginActionRequestPath(controllerHome: string, requestId: string): string {
+  const hash = createHash('sha256').update(requestId).digest('hex');
+  const root = join(ensureControllerHome(controllerHome), 'indexes', 'plugin-actions', 'requests');
+  mkdirSync(root, { recursive: true });
+  return join(root, `${hash}.json`);
+}
+
+function pluginActionReceiptPath(controllerHome: string, repoId: string, receiptId: string): string {
+  return join(pluginActionReceiptRoot(controllerHome, repoId), `${sanitizeFileComponent(receiptId)}.json`);
+}
+
+function readPluginActionReceipt(controllerHome: string, repoId: string, receiptId: string): PluginActionReceipt | undefined {
+  const path = pluginActionReceiptPath(controllerHome, repoId, receiptId);
+  if (!existsSync(path)) return undefined;
+  return readJsonFile<PluginActionReceipt>(path);
+}
+
+function compatibilityJobFromReceipt(receipt: PluginActionReceipt, checkoutId: string): ExecutionJob {
+  return {
+    schemaVersion: 1,
+    revision: 1,
+    jobId: receipt.receiptId,
+    repoId: receipt.repoId,
+    checkoutId,
+    type: 'plugin-action',
+    status: receipt.status === 'succeeded' ? 'succeeded' : 'failed',
+    priority: 'P2',
+    requestId: receipt.requestId,
+    semanticKey: receipt.semanticKey,
+    payload: {
+      operation: 'plugin_action_execute',
+      target: 'runtime',
+      arguments: {
+        pluginId: receipt.pluginId,
+        actionId: receipt.actionId,
+      },
+    },
+    origin: { surface: 'mcp', actor: 'plugin_action_execute', correlationId: receipt.requestId },
+    resourceClaims: [],
+    createdAt: receipt.createdAt,
+    updatedAt: receipt.createdAt,
+    attempt: 1,
+    maxAttempts: 1,
+    result: receipt.result,
+    error: receipt.error ? { code: receipt.error.code, message: receipt.error.message } : undefined,
+  } as unknown as ExecutionJob;
+}
+
+/**
+ * Deterministic plugin action path: validate → authorize/confirm → invoke adapter → receipt.
+ * Does not create ExecutionJobs or call a model.
+ */
+export async function submitAssistantPluginAction(
   controllerHome: string,
   repository: RepositoryRecord,
   request: AssistantPluginActionRequest,
-): { manifest: AssistantPluginManifest; action: AssistantPluginActionDescriptor; job: ExecutionJob; deduplicated: boolean } {
+): Promise<{
+  manifest: AssistantPluginManifest;
+  action: AssistantPluginActionDescriptor;
+  job: ExecutionJob;
+  deduplicated: boolean;
+  result?: Record<string, unknown>;
+  receipt: PluginActionReceipt;
+}> {
   const manifest = getAssistantPluginManifest(controllerHome, repository, request.pluginId);
   const action = actionForManifest(manifest, request.actionId);
   if (!manifest.enabled && action.actionId !== 'configure') {
@@ -502,52 +586,114 @@ export function submitAssistantPluginAction(
   }
   const normalizedArgs = validateActionArguments(action, request.args ?? {});
   enforceConfirmation(action, { ...request, args: normalizedArgs });
-  if (executionJobCreationRetired()) {
-    throw new Error(
-      'EXTERNAL_CONTROLLER_REQUIRED: Plugin actions no longer create ExecutionJobs. Claim Work and execute the action through an explicit external Controller.',
-    );
+
+  const key = semanticKey(repository, request.pluginId, request.actionId, normalizedArgs);
+  const requestPath = pluginActionRequestPath(controllerHome, request.requestId);
+  if (existsSync(requestPath)) {
+    const index = readJsonFile<PluginActionRequestIndex>(requestPath);
+    if (index.semanticKey !== key) {
+      throw new Error(`REQUEST_ID_CONFLICT: ${request.requestId} already belongs to ${index.semanticKey}`);
+    }
+    if (index.repoId !== repository.repoId) {
+      throw new Error(`REQUEST_ID_REPO_CONFLICT: ${request.requestId} already belongs to repository ${index.repoId}`);
+    }
+    const existing = readPluginActionReceipt(controllerHome, index.repoId, index.receiptId);
+    if (!existing) {
+      throw new Error(`PLUGIN_RECEIPT_LOST: ${request.requestId}`);
+    }
+    return {
+      manifest,
+      action,
+      job: compatibilityJobFromReceipt(existing, repository.activeCheckoutId),
+      deduplicated: true,
+      result: existing.result,
+      receipt: existing,
+    };
   }
-  const timeoutMs = typeof request.timeoutMs === 'number' ? request.timeoutMs : action.defaultTimeoutMs;
-  const created = createExecutionJob(controllerHome, {
+
+  const createdAt = new Date().toISOString();
+  const receiptId = `PLG-${Date.now()}-${createHash('sha256').update(request.requestId).digest('hex').slice(0, 8)}`;
+  appendRuntimeEvent(controllerHome, {
     repoId: repository.repoId,
-    checkoutId: repository.activeCheckoutId,
-    type: 'plugin-action',
+    entityType: 'plugin',
+    entityId: manifest.pluginId,
+    eventType: 'plugin_action_requested',
     requestId: request.requestId,
-    semanticKey: semanticKey(repository, request.pluginId, request.actionId, normalizedArgs),
-    priority: action.risk === 'destructive' ? 'P0' : action.risk === 'remote_write' ? 'P1' : 'P2',
-    origin: request.origin,
-    payload: {
-      operation: 'plugin_action_execute',
-      target: 'runtime',
-      timeoutMs,
-      arguments: {
-        pluginId: request.pluginId,
-        actionId: request.actionId,
-        actionArguments: normalizedArgs,
-        manifestRevision: manifest.revision,
-      },
+    revision: manifest.revision,
+    data: {
+      actionId: action.actionId,
+      receiptId,
+      risk: action.risk,
+      confirmation: action.confirmation,
     },
-    resourceClaims: mapResourceClaims(action, repository),
-    timeoutMs,
-    maxAttempts: 1,
   });
-  if (!created.deduplicated) {
-    appendRuntimeEvent(controllerHome, {
+
+  try {
+    const result = await executeAssistantPluginAction({
+      controllerHome,
       repoId: repository.repoId,
-      entityType: 'plugin',
-      entityId: manifest.pluginId,
-      eventType: 'plugin_action_requested',
+      repoRoot: repository.canonicalRoot,
+      pluginId: request.pluginId,
+      actionId: request.actionId,
       requestId: request.requestId,
-      revision: manifest.revision,
-      data: {
-        actionId: action.actionId,
-        jobId: created.job.jobId,
-        risk: action.risk,
-        confirmation: action.confirmation,
-      },
+      args: normalizedArgs,
+      origin: request.origin,
+      jobId: receiptId,
     });
+    const receipt: PluginActionReceipt = {
+      schemaVersion: 1,
+      receiptId,
+      requestId: request.requestId,
+      repoId: repository.repoId,
+      pluginId: request.pluginId,
+      actionId: request.actionId,
+      semanticKey: key,
+      status: 'succeeded',
+      createdAt,
+      result,
+    };
+    writeJsonAtomic(pluginActionReceiptPath(controllerHome, repository.repoId, receiptId), receipt);
+    writeJsonAtomic(requestPath, {
+      requestId: request.requestId,
+      repoId: repository.repoId,
+      receiptId,
+      semanticKey: key,
+      createdAt,
+    } satisfies PluginActionRequestIndex);
+    const nextManifest = getAssistantPluginManifest(controllerHome, repository, request.pluginId);
+    return {
+      manifest: nextManifest,
+      action,
+      job: compatibilityJobFromReceipt(receipt, repository.activeCheckoutId),
+      deduplicated: false,
+      result,
+      receipt,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const code = /^([A-Z][A-Z0-9_]+)/.exec(message)?.[1] ?? 'PLUGIN_ACTION_FAILED';
+    const receipt: PluginActionReceipt = {
+      schemaVersion: 1,
+      receiptId,
+      requestId: request.requestId,
+      repoId: repository.repoId,
+      pluginId: request.pluginId,
+      actionId: request.actionId,
+      semanticKey: key,
+      status: 'failed',
+      createdAt,
+      error: { code, message },
+    };
+    writeJsonAtomic(pluginActionReceiptPath(controllerHome, repository.repoId, receiptId), receipt);
+    writeJsonAtomic(requestPath, {
+      requestId: request.requestId,
+      repoId: repository.repoId,
+      receiptId,
+      semanticKey: key,
+      createdAt,
+    } satisfies PluginActionRequestIndex);
+    throw error;
   }
-  return { manifest, action, job: created.job, deduplicated: created.deduplicated };
 }
 
 export async function executeAssistantPluginAction(

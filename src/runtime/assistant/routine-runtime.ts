@@ -373,7 +373,7 @@ export async function executeAssistantRoutineRuntime(input: {
     const modelAnalysis = await analyzeAssistantMessages({ messages, routineGoal: routine.naturalLanguageGoal });
     const proposalInputs = modelAnalysis.usedModel ? modelAnalysis.proposals : proposalsFor(messages);
     const proposals = createAssistantActionProposals(input.controllerHome, input.repository, { routineId: routine.routineId, runId, proposals: proposalInputs });
-    const standingGrantApplication = applyAssistantStandingGrants(input.controllerHome, input.repository, { routineId: routine.routineId, runId, proposals });
+    const standingGrantApplication = await applyAssistantStandingGrants(input.controllerHome, input.repository, { routineId: routine.routineId, runId, proposals });
     const persistedProposals = listAssistantActionProposals(input.controllerHome, input.repository, { limit: 500 }).proposals
       .filter((proposal) => proposal.runId === runId);
     const analysis: AssistantModelAnalysis = {

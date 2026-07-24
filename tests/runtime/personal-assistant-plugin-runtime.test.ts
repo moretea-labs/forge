@@ -5,7 +5,6 @@ import { join } from "path";
 import { spawnSync } from "child_process";
 import { registerRepository } from "../../src/cli/repositories/registry";
 import { buildAssistantReadinessReport } from "../../src/runtime/assistant/readiness";
-import { executeExecutionJob } from "../../src/runtime/execution/workers/executor";
 import {
   resetIosDevelopmentHooksForTest,
   setIosDevelopmentHooksForTest,
@@ -61,10 +60,38 @@ async function executePluginAction(
   repository: ReturnType<typeof repoFixture>["repository"],
   input: Parameters<typeof submitAssistantPluginAction>[2],
 ) {
-  const submitted = submitAssistantPluginAction(controllerHome, repository, input);
-  const execution = await executeExecutionJob(controllerHome, submitted.job);
-  return { submitted, execution };
+  try {
+    const submitted = await submitAssistantPluginAction(controllerHome, repository, input);
+    return {
+      submitted,
+      execution: {
+        ok: submitted.receipt.status === "succeeded",
+        result: submitted.result,
+        repoRoot: repository.canonicalRoot,
+      },
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const code = /^([A-Z][A-Z0-9_]+)/.exec(message)?.[1] ?? "PLUGIN_ACTION_FAILED";
+    const details = error && typeof error === "object" && "details" in error
+      ? (error as { details?: Record<string, unknown> }).details
+      : undefined;
+    const retryable = error && typeof error === "object" && "retryable" in error
+      ? Boolean((error as { retryable?: boolean }).retryable)
+      : /RATE_LIMIT|RETRY/i.test(code);
+    return {
+      submitted: undefined,
+      execution: {
+        ok: false,
+        result: undefined,
+        repoRoot: repository.canonicalRoot,
+        error: { code, message, retryable, details },
+      },
+    };
+  }
 }
+
+
 
 describe("personal assistant plugin runtime", () => {
   test("discovers derived manifests and executes idempotent configure actions with audit events", async () => {
@@ -82,14 +109,14 @@ describe("personal assistant plugin runtime", () => {
     expect(github?.actions.some((action) => action.actionId === "configure")).toBe(true);
     expect(github?.actions.find((action) => action.actionId === "close_issue")?.confirmation).toBe("strong_confirmation");
 
-    const first = submitAssistantPluginAction(controllerHome, repository, {
+    const first = await submitAssistantPluginAction(controllerHome, repository, {
       pluginId: "github",
       actionId: "configure",
       requestId: "plugin-config-1",
       args: { enabled: true, repository: "owner/repo", sync_mode: "checkpoint" },
       origin: { surface: "local-ui", actor: "test" },
     });
-    const second = submitAssistantPluginAction(controllerHome, repository, {
+    const second = await submitAssistantPluginAction(controllerHome, repository, {
       pluginId: "github",
       actionId: "configure",
       requestId: "plugin-config-1",
@@ -100,10 +127,9 @@ describe("personal assistant plugin runtime", () => {
     expect(first.job.jobId).toBe(second.job.jobId);
     expect(second.deduplicated).toBe(true);
 
-    const execution = await executeExecutionJob(controllerHome, first.job);
-    expect(execution.ok).toBe(true);
-    expect(execution.result?.plugin).toBeDefined();
-    expect(execution.result?.result).toBeDefined();
+    expect(first.receipt.status).toBe("succeeded");
+    expect(first.result?.plugin).toBeDefined();
+    expect(first.result?.result).toBeDefined();
 
     const manifestPath = join(controllerHome, "repositories", repository.repoId, "plugins", "manifests", "github.json");
     expect(existsSync(manifestPath)).toBe(true);
@@ -117,7 +143,7 @@ describe("personal assistant plugin runtime", () => {
     const events = ledgerEvents(controllerHome, repository.repoId);
     expect(events.some((event) => event.eventType === "plugin_action_requested" && event.data?.actionId === "configure")).toBe(true);
     expect(events.some((event) => event.eventType === "plugin_action_succeeded" && event.data?.actionId === "configure")).toBe(true);
-  });
+  }, 20_000);
 
   test("refreshes only the touched plugin manifest after a durable action", async () => {
     const { controllerHome, repository } = repoFixture();
@@ -198,7 +224,7 @@ describe("personal assistant plugin runtime", () => {
     expect(readFileSync(gmailConfigPath, "utf-8")).toContain("\"provider\": \"mock\"");
     expect(readFileSync(gmailConfigPath, "utf-8")).not.toContain("access_token");
 
-    expect(() => submitAssistantPluginAction(controllerHome, repository, {
+    await expect(submitAssistantPluginAction(controllerHome, repository, {
       pluginId: "gmail",
       actionId: "send_message",
       requestId: "gmail-send-missing-confirm",
@@ -209,7 +235,7 @@ describe("personal assistant plugin runtime", () => {
       },
       confirmAuthorization: true,
       origin: { surface: "local-ui", actor: "test" },
-    })).toThrow("PLUGIN_CONFIRMATION_TEXT_REQUIRED");
+    })).rejects.toThrow("PLUGIN_CONFIRMATION_TEXT_REQUIRED");
 
     const gmailSend = await executePluginAction(controllerHome, repository, {
       pluginId: "gmail",

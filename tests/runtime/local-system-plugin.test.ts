@@ -14,7 +14,6 @@ import {
   listAssistantPluginManifests,
   submitAssistantPluginAction,
 } from '../../src/runtime/plugins/store';
-import { executeExecutionJob } from '../../src/runtime/execution/workers/executor';
 
 const roots: string[] = [];
 
@@ -60,7 +59,7 @@ describe('controller-scoped local_system plugin', () => {
     expect(manifests.map((manifest) => manifest.pluginId)).toEqual(['local_system']);
     expect(listRepositories(controllerHome)).toEqual([]);
 
-    const submitted = submitAssistantPluginAction(controllerHome, repository, {
+    const submitted = await submitAssistantPluginAction(controllerHome, repository, {
       pluginId: 'local_system',
       actionId: 'system_snapshot',
       requestId: 'local-system-durable-snapshot',
@@ -68,10 +67,10 @@ describe('controller-scoped local_system plugin', () => {
       origin: { surface: 'mcp', actor: 'test' },
     });
     expect(submitted.job.repoId).toBe(CONTROLLER_SCOPE_REPO_ID);
-    const result = await executeExecutionJob(controllerHome, submitted.job);
-    expect(result.ok).toBe(true);
-    expect(result.repoRoot).toBe(controllerSystemRoot(controllerHome));
-    expect(JSON.stringify(result.result).length).toBeLessThan(90_000);
+    expect(submitted.receipt.status).toBe('succeeded');
+    expect(submitted.result).toBeDefined();
+    // Controller-scoped plugin actions must not register a repository.
+    expect(JSON.stringify(submitted.result).length).toBeLessThan(90_000);
     expect(listRepositories(controllerHome)).toEqual([]);
   });
 

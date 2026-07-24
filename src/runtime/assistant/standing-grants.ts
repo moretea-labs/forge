@@ -324,11 +324,11 @@ function grantMatches(grant: AssistantStandingGrant, proposal: AssistantActionPr
   return subjectMatches(proposal.context?.subject, grant.constraints.subjectContains);
 }
 
-export function applyAssistantStandingGrants(
+export async function applyAssistantStandingGrants(
   controllerHome: string,
   repository: RepositoryRecord,
   input: { routineId: string; runId: string; proposals: AssistantActionProposal[] },
-): { results: StandingGrantExecutionResult[]; warnings: string[] } {
+): Promise<{ results: StandingGrantExecutionResult[]; warnings: string[] }> {
   const active = listAssistantStandingGrants(controllerHome, repository, { status: 'active', limit: 500 }).grants;
   const current = listAssistantActionProposals(controllerHome, repository, { limit: 500 }).proposals;
   const byId = new Map(current.map((proposal) => [proposal.proposalId, proposal]));
@@ -341,7 +341,7 @@ export function applyAssistantStandingGrants(
       const proposal = byId.get(supplied.proposalId) ?? supplied;
       if (proposal.runId !== input.runId || !grantMatches(grant, proposal, input.routineId)) continue;
       try {
-        const approved = approveAssistantActionProposal(controllerHome, repository, {
+        const approved = await approveAssistantActionProposal(controllerHome, repository, {
           proposalId: proposal.proposalId,
           requestId: `standing-grant:${grant.grantId}:${proposal.proposalId}`,
           origin: { surface: 'standing-grant', actor: `standing-grant:${grant.grantId}` },

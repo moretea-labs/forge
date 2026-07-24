@@ -128,7 +128,7 @@ describe('app store connect plugin', () => {
   test('ordinary writes inherit host authorization at the submission boundary', async () => {
     const { repoRoot, controllerHome, repository } = fullFixture();
     await enableMock(repoRoot);
-    const accepted = submitAssistantPluginAction(controllerHome, repository, {
+    const accepted = await submitAssistantPluginAction(controllerHome, repository, {
       pluginId: 'app_store_connect',
       actionId: 'update_app_info_localization',
       requestId: 'asc-write-1',
@@ -136,13 +136,13 @@ describe('app store connect plugin', () => {
       origin: { surface: 'local-ui', actor: 'test' },
     });
     expect(accepted.action.confirmation).toBe('authorization');
-    expect(accepted.job.status).toBe('queued');
+    expect(accepted.job.status).toBe('succeeded');
   });
 
   test('strong confirmation mismatch fails for production actions', async () => {
     const { repoRoot, controllerHome, repository } = fullFixture();
     await enableMock(repoRoot);
-    expect(() => submitAssistantPluginAction(controllerHome, repository, {
+    await expect(submitAssistantPluginAction(controllerHome, repository, {
       pluginId: 'app_store_connect',
       actionId: 'submit_beta_app_review',
       requestId: 'asc-beta-1',
@@ -150,9 +150,9 @@ describe('app store connect plugin', () => {
       confirmAuthorization: true,
       confirmationText: 'wrong-text',
       origin: { surface: 'local-ui', actor: 'test' },
-    })).toThrow('PLUGIN_CONFIRMATION_TEXT_REQUIRED');
+    })).rejects.toThrow('PLUGIN_CONFIRMATION_TEXT_REQUIRED');
 
-    const accepted = submitAssistantPluginAction(controllerHome, repository, {
+    const accepted = await submitAssistantPluginAction(controllerHome, repository, {
       pluginId: 'app_store_connect',
       actionId: 'submit_beta_app_review',
       requestId: 'asc-beta-2',

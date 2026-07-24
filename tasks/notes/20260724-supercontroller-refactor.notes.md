@@ -375,3 +375,13 @@ Date: 2026-07-24
 - work-submit, goal-authorization, work-session-finalize-recovery, repository-mcp-command, thin-harness, facade-mcp-surface:
   **91 pass / 0 fail**
 - `bun x tsc --noEmit`: pass
+
+## Stage: deterministic plugin actions
+
+Date: 2026-07-24
+
+- `submitAssistantPluginAction` validates, confirms, invokes the adapter, and stores a receipt.
+- No ExecutionJob creation for plugin actions.
+- Request-id receipt index provides idempotent replay.
+- MCP `plugin_action_execute` returns bounded result/receipt instead of Job polling.
+- Focused plugin suite: **39 pass / 0 fail**.

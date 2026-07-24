@@ -189,7 +189,7 @@ function initialResult(input: AssistantIntentInput, source: AssistantIntentSourc
   };
 }
 
-function submitPlanSteps(
+async function submitPlanSteps(
   controllerHome: string,
   repository: RepositoryRecord,
   input: AssistantIntentInput,
@@ -197,8 +197,9 @@ function submitPlanSteps(
   source: AssistantIntentSource,
   id: string,
   options: { automatedRoutine?: boolean } = {},
-): AssistantPlanStepResult[] {
-  return steps.map((step, index) => {
+): Promise<AssistantPlanStepResult[]> {
+  const results: AssistantPlanStepResult[] = [];
+  for (const [index, step] of steps.entries()) {
     const stepId = planStepId(index, step);
     try {
       const manifest = getAssistantPluginManifest(controllerHome, repository, step.pluginId);
@@ -207,7 +208,7 @@ function submitPlanSteps(
       const args = objectValue(step.arguments);
       const policy = evaluateAssistantActionPolicy(step.pluginId, action, args, options);
       if (policy.decision !== 'allow') {
-        return {
+        results.push({
           stepId,
           pluginId: step.pluginId,
           actionId: step.actionId,
@@ -216,9 +217,10 @@ function submitPlanSteps(
           decision: policy.decision,
           reason: policy.reason,
           requiredConfirmationText: policy.requiredConfirmationText,
-        } satisfies AssistantPlanStepResult;
+        });
+        continue;
       }
-      const submitted = submitAssistantPluginAction(controllerHome, repository, {
+      const submitted = await submitAssistantPluginAction(controllerHome, repository, {
         pluginId: step.pluginId,
         actionId: step.actionId,
         requestId: step.requestId?.trim() || `${id}:${stepId}`,
@@ -227,7 +229,7 @@ function submitPlanSteps(
         confirmationText: step.confirmationText,
         origin: { surface: sourceToSurface(source), actor: source, correlationId: id },
       });
-      return {
+      results.push({
         stepId,
         pluginId: step.pluginId,
         actionId: step.actionId,
@@ -236,9 +238,9 @@ function submitPlanSteps(
         decision: policy.decision,
         reason: policy.reason,
         job: submitted.job,
-      } satisfies AssistantPlanStepResult;
+      });
     } catch (error) {
-      return {
+      results.push({
         stepId,
         pluginId: step.pluginId,
         actionId: step.actionId,
@@ -246,16 +248,17 @@ function submitPlanSteps(
         risk: 'unknown',
         decision: 'reject',
         reason: error instanceof Error ? error.message : String(error),
-      } satisfies AssistantPlanStepResult;
+      });
     }
-  });
+  }
+  return results;
 }
 
-export function submitAssistantIntent(
+export async function submitAssistantIntent(
   controllerHome: string,
   repository: RepositoryRecord,
   input: AssistantIntentInput,
-): AssistantIntentResult {
+): Promise<AssistantIntentResult> {
   const source = normalizeSource(input.source);
   const mode = normalizeMode(input.mode);
   const id = requestId(input);
@@ -322,7 +325,7 @@ export function submitAssistantIntent(
       plan,
     };
   }
-  const plan = submitPlanSteps(controllerHome, repository, input, steps, source, id);
+  const plan = await submitPlanSteps(controllerHome, repository, input, steps, source, id);
   const submitted = plan.filter((step) => step.status === 'submitted');
   const blocked = plan.filter((step) => step.status === 'blocked');
   const inboxItem = addAssistantInboxItem(repository.canonicalRoot, {

@@ -1066,7 +1066,7 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.post("/mobile/intent", (request, response) => {
+  app.post("/mobile/intent", async (request, response) => {
     try {
       const verified = verifyMobileIntentRequest(repoRoot, request);
       const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
@@ -1153,7 +1153,7 @@ export async function startLocalBridgeServer(
         });
         return;
       }
-      const submitted = submitAssistantPluginAction(controllerHome, repository, {
+      const submitted = await submitAssistantPluginAction(controllerHome, repository, {
         pluginId,
         actionId,
         requestId: queryString(body.requestId) ?? `${verified.principal.deviceId}:${Date.now()}`,
@@ -2068,10 +2068,10 @@ export async function startLocalBridgeServer(
     response.json(assistantOpenApiSchema(`${request.protocol}://${request.get("host") ?? "127.0.0.1:8766"}`));
   });
 
-  app.post("/api/assistant/intent", (request, response) => {
+  app.post("/api/assistant/intent", async (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
-      response.json(submitAssistantIntent(controllerHome, repository, {
+      response.json(await submitAssistantIntent(controllerHome, repository, {
         ...(request.body && typeof request.body === "object" && !Array.isArray(request.body) ? request.body as Record<string, unknown> : {}),
         source: request.body?.source === "mcp" || request.body?.source === "local-ui" || request.body?.source === "mobile" || request.body?.source === "system"
           ? request.body.source
@@ -2167,12 +2167,12 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.post("/api/assistant/self-test/gmail-read", (request, response) => {
+  app.post("/api/assistant/self-test/gmail-read", async (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
       const query = queryString(request.body?.query) ?? "newer_than:1d";
       const maxResults = typeof request.body?.maxResults === "number" ? Math.max(1, Math.min(Math.trunc(request.body.maxResults), 10)) : 3;
-      response.status(202).json(submitAssistantIntent(controllerHome, repository, {
+      response.status(202).json(await submitAssistantIntent(controllerHome, repository, {
         utterance: `测试读取 Gmail：${query}`,
         source: "local-ui",
         mode: "execute",
@@ -2259,10 +2259,10 @@ export async function startLocalBridgeServer(
     } catch (error) { response.status(400).json({ error: errorMessage(error) }); }
   });
 
-  app.post("/api/assistant/proposals/:proposalId/approve", (request, response) => {
+  app.post("/api/assistant/proposals/:proposalId/approve", async (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
-      response.status(202).json({ proposal: approveAssistantActionProposal(controllerHome, repository, {
+      response.status(202).json({ proposal: await approveAssistantActionProposal(controllerHome, repository, {
         proposalId: request.params.proposalId,
         requestId: queryString(request.body?.requestId) ?? `proposal-approval-${request.params.proposalId}`,
         confirmationText: queryString(request.body?.confirmationText),
@@ -2286,10 +2286,10 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.post("/api/assistant/routines", (request, response) => {
+  app.post("/api/assistant/routines", async (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
-      const result = submitAssistantIntent(controllerHome, repository, {
+      const result = await submitAssistantIntent(controllerHome, repository, {
         utterance: queryString(request.body?.naturalLanguageGoal) ?? queryString(request.body?.utterance) ?? queryString(request.body?.name) ?? "create routine",
         source: "chatgpt",
         mode: "plan_then_execute",
@@ -3030,10 +3030,10 @@ export async function startLocalBridgeServer(
       response.status(404).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/plugins/:pluginId/actions/:actionId", (request, response) => {
+  app.post("/api/plugins/:pluginId/actions/:actionId", async (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
-      const submitted = submitAssistantPluginAction(controllerHome, repository, {
+      const submitted = await submitAssistantPluginAction(controllerHome, repository, {
         pluginId: request.params.pluginId,
         actionId: request.params.actionId,
         requestId: queryString(request.body?.requestId) ?? '',
