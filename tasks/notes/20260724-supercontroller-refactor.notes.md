@@ -526,3 +526,15 @@ Date: 2026-07-24
 - `package:check:type`: pass.
 - `package:check:runtime-architecture`: pass, 32 modules/documents checked.
 
+## Portfolio engine convergence
+
+Date: 2026-07-24
+
+- Collapsed the retired Portfolio engine from automatic Job synchronization, queueing, and compensation to one explicit external-Controller pause transition.
+- Pending and queued steps become blocked with a stable external-Controller handoff reason; no ExecutionJob is created.
+- Added runtime coverage proving Portfolio tick pauses the workflow and leaves ExecutionJob storage empty.
+- Runtime architecture gate now forbids ExecutionJob creation or lookup in the Portfolio engine.
+- Focused target-architecture, control-plane hardening, and runtime-cutover suite: **50 pass / 0 fail**.
+- `package:check:type`: pass.
+- `package:check:runtime-architecture`: pass, 32 modules/documents checked.
+

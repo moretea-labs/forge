@@ -4,12 +4,13 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { assertAutomatedOperationAllowed } from '../../src/runtime/control-plane/governance/external-effects';
 import { touchSchedulerWakeSignal, waitForSchedulerWakeSignal } from '../../src/runtime/control-plane/global-scheduler/wake-signal';
-import { createExecutionJob } from '../../src/runtime/execution/jobs/store';
+import { createExecutionJob, listExecutionJobs } from '../../src/runtime/execution/jobs/store';
 import {
   acquireExecutionLeases,
   listActiveLeases,
 } from '../../src/runtime/resources/leases/store';
 import { recordCandidateFinding } from '../../src/runtime/workflow/findings/store';
+import { tickPortfolioWorkflow } from '../../src/runtime/workflow/portfolio/engine';
 import { createPortfolioWorkflow } from '../../src/runtime/workflow/portfolio/store';
 import { evaluateSchedule } from '../../src/runtime/workflow/schedules/engine';
 import { createSchedule, listActiveOccurrences, listOccurrences } from '../../src/runtime/workflow/schedules/store';
@@ -88,6 +89,22 @@ describe('target architecture runtime', () => {
         { stepId: 'b', repoId: 'repo-b', operation: 'controller_context', dependsOn: ['a'], priority: 'P2', resourceClaims: [], status: 'pending' },
       ],
     })).toThrow('PORTFOLIO_DEPENDENCY_CYCLE');
+  });
+
+  test('pauses Portfolio execution for an external Controller without creating ExecutionJobs', () => {
+    const controllerHome = home();
+    const workflow = createPortfolioWorkflow(controllerHome, {
+      name: 'external portfolio', requestId: 'external-portfolio', failurePolicy: 'stop',
+      steps: [
+        { stepId: 'a', repoId: 'repo-a', operation: 'controller_context', dependsOn: [], priority: 'P2', resourceClaims: [], status: 'pending' },
+      ],
+    });
+
+    const ticked = tickPortfolioWorkflow(controllerHome, workflow);
+
+    expect(ticked.status).toBe('paused');
+    expect(ticked.steps[0]).toMatchObject({ status: 'blocked', error: expect.stringContaining('external Controller') });
+    expect(listExecutionJobs(controllerHome, 'repo-a')).toHaveLength(0);
   });
 
   test('release freeze blocks writers while preserving read-only observation', () => {

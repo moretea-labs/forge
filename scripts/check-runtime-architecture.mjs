@@ -117,6 +117,11 @@ forbid(
   /\bcreateExecutionJob\b|\bdispatchLegacyLocalJob\b/,
   'Legacy Local Bridge compatibility must be read-only and must not dispatch new ExecutionJobs',
 );
+forbid(
+  'src/runtime/workflow/portfolio/engine.ts',
+  /\bcreateExecutionJob\b|\bfindExecutionJob\b/,
+  'Portfolio definitions are planning records; Kernel-owned Portfolio execution is retired',
+);
 forbid('src/runtime/gateway/mcp/router.ts', /Use process_get \/ process_wait \/ process_logs/, 'Gateway follow-up instructions must use an always-exposed neutral Work facade');
 requireMatch(
   'src/runtime/gateway/mcp/router.ts',
