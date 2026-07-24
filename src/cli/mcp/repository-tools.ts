@@ -765,8 +765,14 @@ export async function callRepositoryTool(
                 const detailLevel = args.detail_level === 'detail' || args.detail === true
                   ? 'detail'
                   : 'summary';
+                const completed = handle?.completed === true;
+                const status = !handle
+                  ? 'rejected'
+                  : completed
+                    ? (handle.cancelled ? 'cancelled' : handle.timedOut ? 'timed_out' : processResult.ok === true ? 'succeeded' : 'failed')
+                    : 'running';
                 const payload = compactProcessCommandPayload({
-                  accepted: processResult.ok === true,
+                  accepted: true,
                   mode: processResult.route,
                   path: processResult.route,
                   route: processResult.route,
@@ -781,12 +787,24 @@ export async function callRepositoryTool(
                   stdout: processResult.stdout,
                   stderr: processResult.stderr,
                   durableSideEffects: processResult.durableSideEffects,
-                  next: processResult.route === 'process_direct'
-                    ? 'Process Runtime Direct completed without Local Job / ExecutionJob / Worker.'
-                    : `Process Runtime is managing ${handle?.processId}; poll work_status_digest instead of creating a Local Job.`,
+                  next: processResult.route === 'process_direct' || completed
+                    ? 'Process Runtime completed without Local Job / ExecutionJob / Worker.'
+                    : `Process Runtime is managing ${handle?.processId}; poll process_get/process_wait instead of creating a Local Job.`,
                   detailLevel,
                 });
-                return processResult.ok === true
+                payload.status = status;
+                payload.processId = handle?.processId;
+                payload.authorization = {
+                  decision: 'allow',
+                  source: 'process_runtime',
+                  reason: 'Repository command executed through Unified Process Runtime.',
+                };
+                if (handle?.processId) {
+                  payload.resultRef = { kind: 'process_logs', processId: handle.processId };
+                }
+                // Keep accepted true once the command was admitted to Process Runtime.
+                payload.accepted = true;
+                return processResult.ok === true || !completed
                   ? result(payload)
                   : { ...result(payload), isError: true };
               }

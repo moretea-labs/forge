@@ -3,6 +3,7 @@ import { existsSync } from 'fs';
 import { collectRuntimePerformanceDiagnostics, inferLocalControllerProcess } from '../../diagnostics/performance';
 import type { McpToolDefinition, CallToolResult } from '../../../cli/mcp/tools';
 import type { MultiRepositoryMcpToolContext } from '../../../cli/mcp/multi-repository';
+import { repositoryScopedToolArgs } from '../../../cli/mcp/multi-repository';
 import { listRepositories, repositorySummary, resolveRepositorySelection } from '../../../cli/repositories/registry';
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import { cancelExecutionJob, createExecutionJob, findExecutionJob, getExecutionJob, getExecutionJobByRequestId, listExecutionJobs } from '../../execution/jobs/store';
@@ -32,7 +33,15 @@ import { applyScheduleDedupe, buildScheduleDedupeReport, createSchedule, getSche
 import { evaluateSchedule } from '../../workflow/schedules/engine';
 import { createPortfolioWorkflow, getPortfolioWorkflow, listPortfolioWorkflows } from '../../workflow/portfolio/store';
 import { claimsForMcpOperation } from './resource-policy';
-import { routeDurableMcpCall } from './router';
+import {
+  getMcpToolDefinition,
+  hashMcpToolArguments,
+  injectDurableCommandFields,
+  operationMetadataForTool,
+  RETIRED_AGENT_OPERATIONS,
+  routeDurableMcpCall,
+  validateMcpToolArguments,
+} from './router';
 import { assertAutomatedOperationAllowed } from '../../control-plane/governance/external-effects';
 import { getCandidateFinding, listCandidateFindings, recordCandidateFinding, updateCandidateFinding } from '../../workflow/findings/store';
 import { addCampaignTask, createCampaign, getCampaign, listCampaigns, setCampaignStatus, validateCreateCampaignTasks } from '../../workflow/campaigns/store';
@@ -168,6 +177,8 @@ import {
   summarizeHandoffItem,
   listWorkContracts,
   getWorkContract,
+  getWorkContractByRequestId,
+  acceptSubmittedWorkContract,
   approvePlanContract,
   createPlanContract,
   getPlanContract,
@@ -1460,6 +1471,46 @@ function summarizeWorkListItem(job: ExecutionJob): Record<string, unknown> {
   };
 }
 
+function summarizeSubmittedWorkContract(contract: NonNullable<ReturnType<typeof getWorkContract>>): Record<string, unknown> {
+  const operation = contract.submittedOperation;
+  const nextAction = contract.status === 'open' || contract.status === 'ready'
+    ? 'Claim ownership with rh_work.controller_claim, then execute through Process Runtime or rh_work.launcher_start.'
+    : contract.status === 'running'
+      ? 'Inspect process/work status; do not resubmit the same request_id.'
+      : 'Inspect retained evidence and decide whether to continue, finalize, or stop.';
+  return {
+    kind: 'work_contract',
+    workId: contract.workId,
+    repoId: contract.repoId,
+    status: contract.status,
+    operation: operation?.name,
+    requestId: contract.requestId,
+    deduplicated: undefined,
+    nextAction,
+    mode: contract.mode,
+    objective: contract.objective,
+    updatedAt: contract.updatedAt,
+    resourceClaims: operation?.resourceClaims ?? [],
+    operationMetadata: operation
+      ? {
+          mode: operation.mode,
+          idempotent: operation.idempotent,
+          replayable: operation.replayable,
+          resourceClaims: operation.resourceClaims,
+        }
+      : undefined,
+    summary: contract.objective.slice(0, 240),
+    phase: contract.status === 'running'
+      ? 'running'
+      : contract.status === 'failed' || contract.status === 'cancelled'
+        ? 'attention'
+        : contract.status === 'completed'
+          ? 'completed'
+          : 'queued',
+    statusLabel: contract.status,
+  };
+}
+
 function summarizeWorkContractListItem(contract: NonNullable<ReturnType<typeof getWorkContract>>): Record<string, unknown> {
   const terminal = ['succeeded', 'failed', 'cancelled'].includes(contract.status);
   return {
@@ -2438,54 +2489,112 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const repository = selected(ctx, args);
         const requestId = String(args.request_id ?? '').trim();
         const operation = String(args.operation ?? '').trim();
-        if (!requestId) throw new Error('REQUEST_ID_REQUIRED: work_submit requires request_id');
-        if (!operation || operation.startsWith('work_')) throw new Error('WORK_OPERATION_INVALID: choose an existing durable controller operation');
+        if (!requestId) throw new Error('INVALID_ARGUMENT: work_submit is missing required argument(s): request_id');
+        if (!operation) throw new Error('INVALID_ARGUMENT: work_submit is missing required argument(s): operation');
+        if (operation.startsWith('work_')) {
+          throw new Error('WORK_OPERATION_INVALID: choose an existing durable controller operation');
+        }
+        if (RETIRED_AGENT_OPERATIONS.has(operation)) {
+          throw new Error('AGENT_RUN_RETIRED: Kernel-managed Agent Runs are retired. Accept a WorkContract and launch an external SuperController instead.');
+        }
+        const definition = getMcpToolDefinition(ctx, operation);
+        if (!definition) {
+          throw new Error(`WORK_OPERATION_INVALID: ${operation} is unknown or not eligible for durable execution`);
+        }
+
         const operationArgs = args.arguments && typeof args.arguments === 'object' && !Array.isArray(args.arguments)
-          ? args.arguments as Record<string, unknown>
+          ? { ...(args.arguments as Record<string, unknown>) }
           : {};
-        const existingRequest = getExecutionJobByRequestId(ctx.controllerHome, requestId);
+        const isRepositoryTool = operation.startsWith('repository_');
+        const workerArgs = isRepositoryTool
+          ? { ...operationArgs, repo_id: repository.repoId }
+          : repositoryScopedToolArgs(operation, {
+              ...operationArgs,
+              repo_id: repository.repoId,
+              ...(typeof args.timeout_ms === 'number' ? { timeout_ms: args.timeout_ms } : {}),
+            }, repository);
+        // Validate the target operation before any WorkContract / index write.
+        validateMcpToolArguments(operation, injectDurableCommandFields(definition), workerArgs);
+        delete workerArgs.request_id;
+        delete workerArgs.apply_mode;
+        delete workerArgs.wait;
+        delete workerArgs.wait_ms;
+        delete workerArgs.await_result;
+        delete workerArgs.wait_for_result;
+
+        const existingRequest = getWorkContractByRequestId(ctx.controllerHome, requestId);
         if (existingRequest && existingRequest.repoId !== repository.repoId) {
           throw new Error(`REQUEST_ID_REPO_CONFLICT: ${requestId} already belongs to repository ${existingRequest.repoId}`);
         }
-        const routed = await routeDurableMcpCall(ctx, operation, {
-          ...operationArgs,
-          repo_id: repository.repoId,
-          request_id: requestId,
-          ...(typeof args.timeout_ms === 'number' ? { timeout_ms: args.timeout_ms } : {}),
-        }, { allowReadOnly: true, forceDurable: true });
-        if (!routed?.structuredContent || routed.isError) {
-          throw new Error(`WORK_OPERATION_NOT_DURABLE: ${operation} is unknown or not eligible for durable execution`);
-        }
-        const accepted = routed.structuredContent as Record<string, unknown>;
-        const workId = String(accepted.jobId ?? '').trim();
-        const job = workId
-          ? getExecutionJob(ctx.controllerHome, repository.repoId, workId)
-          : getExecutionJobByRequestId(ctx.controllerHome, requestId, repository.repoId);
-        if (!job) throw new Error('WORK_ACCEPTANCE_LOST: durable operation was accepted without a readable Work record');
-        return result({ accepted: true, deduplicated: accepted.deduplicated === true, work: summarizeWork(job, repository.canonicalRoot) });
+
+        const argumentHash = hashMcpToolArguments(workerArgs);
+        const semanticKey = `${isRepositoryTool ? 'repository-tool' : 'mcp-tool'}:${operation}:${repository.repoId}:${argumentHash}`;
+        const claims = claimsForMcpOperation(operation, workerArgs, repository.repoId, repository.activeCheckoutId);
+        const operationMetadata = operationMetadataForTool(
+          operation,
+          definition,
+          claims,
+          typeof args.timeout_ms === 'number' ? args.timeout_ms : 30_000,
+          workerArgs,
+          repository.defaultBranch,
+        );
+
+        const accepted = acceptSubmittedWorkContract(ctx.controllerHome, {
+          requestId,
+          repoId: repository.repoId,
+          semanticKey,
+          operation: {
+            name: operation,
+            semanticKey,
+            argumentHash,
+            mode: operationMetadata.mode,
+            idempotent: operationMetadata.idempotent,
+            replayable: operationMetadata.replayable,
+            resourceClaims: operationMetadata.resourceClaims.map((claim) => ({
+              resourceKey: claim.resourceKey,
+              mode: claim.mode,
+              ...(claim.quantity !== undefined ? { quantity: claim.quantity } : {}),
+            })),
+          },
+          objective: `Accepted operation ${operation}`,
+          mode: 'direct_control',
+        });
+
+        const work = summarizeSubmittedWorkContract(accepted.contract);
+        return result({
+          accepted: true,
+          deduplicated: accepted.deduplicated,
+          operation,
+          nextAction: work.nextAction,
+          work,
+          workContract: accepted.contract,
+        });
       }
       case 'work_get': {
         const repository = selected(ctx, args);
         let job = resolveWorkJob(ctx, repository.repoId, args);
         if (!job) {
           const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+          const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
           const contract = workId
             ? getWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, workId)
-            : undefined;
+            : requestId
+              ? getWorkContractByRequestId(ctx.controllerHome, requestId, repository.repoId)
+              : undefined;
           if (contract) {
-            const work = summarizeWorkContractListItem(contract);
+            const work = summarizeSubmittedWorkContract(contract);
+            const waited = args.wait === true || typeof args.wait_ms === 'number';
+            const terminal = contract.status === 'completed' || contract.status === 'failed' || contract.status === 'cancelled';
             return result({
               work,
               workContract: contract,
               summary: work.summary,
               phase: work.phase,
               statusLabel: work.statusLabel,
-              waited: false,
-              timedOut: false,
-              waitedMs: 0,
-              next: contract.status === 'running'
-                ? 'Continue or verify this WorkContract through rh_work.'
-                : 'Inspect retained evidence and decide whether to continue, finalize, or stop through rh_work.',
+              waited,
+              timedOut: waited ? !terminal : false,
+              waitedMs: waited && typeof args.wait_ms === 'number' ? args.wait_ms : 0,
+              next: work.nextAction,
             });
           }
           return result({ error: { code: 'WORK_NOT_FOUND', message: 'No Work matched this repository and identifier.', errorClass: 'not_found', summary: '未找到对应任务。' } }, true);

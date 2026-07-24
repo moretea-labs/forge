@@ -1,10 +1,13 @@
-import { mkdirSync } from 'fs';
+import { createHash, randomUUID } from 'crypto';
+import { existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
-import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
+import { ensureControllerHome, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
+import { withControllerLock } from '../../../cli/repositories/locks';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
 import {
   type EvidenceRef,
   type PolicyDecision,
+  type SubmittedWorkOperation,
   type SuggestedNextAction,
   type VerificationRecord,
   type WorkContract,
@@ -178,6 +181,8 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
     continuationPrompt: input.continuationPrompt?.slice(0, 2_000),
     worktreeRef: input.worktreeRef,
     workerRef: input.workerRef,
+    requestId: input.requestId?.trim() || undefined,
+    submittedOperation: input.submittedOperation,
   };
 
   const store = readWorkContractStore(options);
@@ -191,6 +196,139 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
   };
   writeWorkContractStore(options, nextStore);
   return contract;
+}
+
+interface WorkRequestIndexRecord {
+  requestId: string;
+  repoId: string;
+  workId: string;
+  semanticKey: string;
+  createdAt: string;
+}
+
+function workRequestIndexPath(controllerHome: string, requestId: string): string {
+  const hash = createHash('sha256').update(requestId).digest('hex');
+  const root = join(ensureControllerHome(controllerHome), 'indexes', 'work-contracts', 'requests');
+  mkdirSync(root, { recursive: true });
+  return join(root, `${hash}.json`);
+}
+
+export interface AcceptSubmittedWorkInput {
+  requestId: string;
+  repoId: string;
+  semanticKey: string;
+  operation: SubmittedWorkOperation;
+  objective?: string;
+  mode?: WorkContract['mode'];
+  requestedBy?: WorkContract['requestedBy'];
+  allowedPaths?: string[];
+  forbiddenPaths?: string[];
+  checks?: string[];
+  acceptanceCriteria?: string[];
+  constraints?: WorkContract['constraints'];
+}
+
+export function getWorkContractByRequestId(
+  controllerHome: string,
+  requestId: string,
+  expectedRepoId?: string,
+): WorkContract | undefined {
+  const normalizedRequestId = requestId.trim();
+  if (!normalizedRequestId) return undefined;
+  const recordPath = workRequestIndexPath(controllerHome, normalizedRequestId);
+  if (!existsSync(recordPath)) return undefined;
+  try {
+    const record = readJsonFile<WorkRequestIndexRecord>(recordPath);
+    if (record.requestId !== normalizedRequestId) return undefined;
+    if (expectedRepoId && record.repoId !== expectedRepoId) return undefined;
+    return getWorkContract({ controllerHome, repoId: record.repoId }, record.workId);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Accept one work_submit operation as a WorkContract without creating ExecutionJobs.
+ * Same controllerHome + requestId + semanticKey returns the original contract.
+ */
+export function acceptSubmittedWorkContract(
+  controllerHome: string,
+  input: AcceptSubmittedWorkInput,
+  options: WorkContractStoreOptions = {},
+): { contract: WorkContract; deduplicated: boolean } {
+  const home = ensureControllerHome(controllerHome);
+  const normalizedRequestId = input.requestId.trim();
+  if (!normalizedRequestId) {
+    throw new Error('INVALID_ARGUMENT: work_submit is missing required argument(s): request_id');
+  }
+  const normalizedSemanticKey = input.semanticKey.trim();
+  if (!normalizedSemanticKey) {
+    throw new Error('INVALID_ARGUMENT: work_submit requires a semantic operation key');
+  }
+  if (!input.repoId.trim()) {
+    throw new Error('INVALID_ARGUMENT: work_submit is missing required argument(s): repo_id');
+  }
+  if (!input.operation?.name?.trim()) {
+    throw new Error('INVALID_ARGUMENT: work_submit is missing required argument(s): operation');
+  }
+
+  const requestLockId = createHash('sha256').update(normalizedRequestId).digest('hex').slice(0, 24);
+  return withControllerLock(home, { scope: 'global', resource: `work-request-${requestLockId}` }, `accept-work:${normalizedRequestId}`, () => {
+    const recordPath = workRequestIndexPath(home, normalizedRequestId);
+    if (existsSync(recordPath)) {
+      const record = readJsonFile<WorkRequestIndexRecord>(recordPath);
+      if (record.repoId !== input.repoId) {
+        throw new Error(`REQUEST_ID_REPO_CONFLICT: ${normalizedRequestId} already belongs to repository ${record.repoId}`);
+      }
+      if (record.semanticKey !== normalizedSemanticKey) {
+        throw new Error(`REQUEST_ID_CONFLICT: ${normalizedRequestId} already belongs to ${record.semanticKey}`);
+      }
+      const existing = getWorkContract({ controllerHome: home, repoId: record.repoId, now: options.now }, record.workId);
+      if (!existing) {
+        throw new Error(`WORK_ACCEPTANCE_LOST: request ${normalizedRequestId} is indexed without a readable WorkContract`);
+      }
+      return { contract: existing, deduplicated: true };
+    }
+
+    const contract = createWorkContract({ controllerHome: home, repoId: input.repoId, now: options.now }, {
+      workId: `WORK-${Date.now()}-${randomUUID().slice(0, 8)}`,
+      repoId: input.repoId,
+      mode: input.mode ?? 'direct_control',
+      objective: (input.objective ?? `Accepted operation ${input.operation.name}`).slice(0, 2_000),
+      acceptanceCriteria: input.acceptanceCriteria ?? [],
+      constraints: input.constraints ?? { requireHandoffOnAmbiguity: true },
+      allowedPaths: input.allowedPaths ?? [],
+      forbiddenPaths: input.forbiddenPaths ?? [],
+      checks: input.checks ?? [],
+      requestedBy: input.requestedBy ?? 'chatgpt',
+      status: 'open',
+      requestId: normalizedRequestId,
+      submittedOperation: input.operation,
+      driver: {
+        preferred: 'external_controller',
+        allowWorker: false,
+        allowDirectEdit: input.operation.mode === 'readonly' || input.operation.mode === 'mutating',
+      },
+      suggestedNextActions: [{
+        label: 'Claim controller ownership',
+        tool: 'rh_work',
+        operation: 'controller_claim',
+        risk: 'readonly',
+        confidence: 'high',
+        reason: 'Claim this Work before launching an external SuperController or Process Runtime command.',
+      }],
+    });
+
+    writeJsonAtomic(recordPath, {
+      requestId: normalizedRequestId,
+      repoId: input.repoId,
+      workId: contract.workId,
+      semanticKey: normalizedSemanticKey,
+      createdAt: contract.createdAt,
+    } satisfies WorkRequestIndexRecord);
+
+    return { contract, deduplicated: false };
+  });
 }
 
 export function listWorkContracts(options: ListWorkContractOptions): WorkContract[] {

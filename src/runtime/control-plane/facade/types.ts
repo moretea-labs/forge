@@ -284,6 +284,25 @@ export interface WorkContract {
   continuationPrompt?: string;
   worktreeRef?: string;
   workerRef?: string;
+  /** Stable idempotency key when this Work was accepted via work_submit. */
+  requestId?: string;
+  /** Accepted Kernel operation envelope. Does not imply ExecutionJob creation. */
+  submittedOperation?: SubmittedWorkOperation;
+}
+
+/** Operation metadata retained on WorkContracts accepted through work_submit. */
+export interface SubmittedWorkOperation {
+  name: string;
+  semanticKey: string;
+  argumentHash: string;
+  mode: 'readonly' | 'mutating' | 'remote_write' | 'destructive';
+  idempotent: boolean;
+  replayable: boolean;
+  resourceClaims: Array<{
+    resourceKey: string;
+    mode: string;
+    quantity?: number;
+  }>;
 }
 
 export interface WorkContractStore {

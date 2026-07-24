@@ -35,7 +35,7 @@ import {
 } from '../../execution/process-runtime';
 
 const DIRECT_REPOSITORY_TOOLS = new Set(['repository_list', 'repository_get', 'repository_workbench', 'repository_command_preview']);
-const RETIRED_AGENT_OPERATIONS = new Set([
+export const RETIRED_AGENT_OPERATIONS = new Set([
   'dispatch_task',
   'launch_issue',
   'dispatch_ready_tasks',
@@ -213,7 +213,7 @@ function result(value: Record<string, unknown>): CallToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }], structuredContent: value };
 }
 
-function toolDefinition(ctx: MultiRepositoryMcpToolContext, name: string): McpToolDefinition | undefined {
+export function getMcpToolDefinition(ctx: MultiRepositoryMcpToolContext, name: string): McpToolDefinition | undefined {
   return [...runtimeToolDefinitions, ...executionToolDefinitions, ...processToolDefinitions, ...repositoryToolDefinitions, ...buildMultiRepositoryToolDefinitions(ctx)]
     .find((tool) => tool.name === name);
 }
@@ -342,7 +342,7 @@ export function shouldCreateDurableJob(
   opts: { allowReadOnly?: boolean; forceDurable?: boolean } = {},
 ): boolean {
   if (executionJobCreationRetired()) return false;
-  const definition = toolDefinition(ctx, name);
+  const definition = getMcpToolDefinition(ctx, name);
   if (!definition) return false;
   if (isSelfManagedDurableTool(name)) return false;
   if (opts.forceDurable === true || isGatewayIsolatedTool(name)) return true;
@@ -386,16 +386,16 @@ function canonical(value: unknown): unknown {
   return value;
 }
 
-function hashArguments(args: Record<string, unknown>): string {
+export function hashMcpToolArguments(args: Record<string, unknown>): string {
   return createHash('sha256').update(JSON.stringify(canonical(args))).digest('hex').slice(0, 20);
 }
 
 function automaticRequestId(name: string, repoId: string, args: Record<string, unknown>): string {
   const window = Math.floor(Date.now() / (5 * 60_000));
-  return `mcp:auto:${name}:${repoId}:${hashArguments(args)}:${window}`;
+  return `mcp:auto:${name}:${repoId}:${hashMcpToolArguments(args)}:${window}`;
 }
 
-function validateDurableArguments(name: string, definition: McpToolDefinition, args: Record<string, unknown>): void {
+export function validateMcpToolArguments(name: string, definition: McpToolDefinition, args: Record<string, unknown>): void {
   const schema = definition.inputSchema as { required?: unknown; properties?: Record<string, unknown>; additionalProperties?: unknown };
   const required = Array.isArray(schema.required) ? schema.required.filter((value): value is string => typeof value === 'string') : [];
   const missing = required.filter((key) => args[key] === undefined || args[key] === null || args[key] === '');
@@ -526,7 +526,7 @@ export async function routeDurableMcpCall(
   args: Record<string, unknown>,
   opts: { allowReadOnly?: boolean; forceDurable?: boolean } = {},
 ): Promise<CallToolResult | undefined> {
-  const definition = toolDefinition(ctx, name);
+  const definition = getMcpToolDefinition(ctx, name);
   if (!definition) return undefined;
 
   if (RETIRED_AGENT_OPERATIONS.has(name)) {
@@ -697,7 +697,7 @@ export async function routeDurableMcpCall(
   if (name === 'repository_command_execute' || name === 'repository_command_preview') {
     workerArgs.command = commandValue(normalizeRepositoryCommand(workerArgs.command));
   }
-  validateDurableArguments(name, injectDurableCommandFields(definition), workerArgs);
+  validateMcpToolArguments(name, injectDurableCommandFields(definition), workerArgs);
   delete workerArgs.request_id;
   delete workerArgs.apply_mode;
   delete workerArgs.wait;
@@ -711,7 +711,7 @@ export async function routeDurableMcpCall(
   delete workerArgs.queue_timeout_ms;
   delete workerArgs.execution_timeout_ms;
   delete workerArgs.interactive_wait_ms;
-  const semanticKey = `${isRepositoryTool ? 'repository-tool' : 'mcp-tool'}:${name}:${repoId}:${hashArguments(workerArgs)}`;
+  const semanticKey = `${isRepositoryTool ? 'repository-tool' : 'mcp-tool'}:${name}:${repoId}:${hashMcpToolArguments(workerArgs)}`;
   const claims = claimsForMcpOperation(name, workerArgs, repoId, checkoutId);
   const timeoutPolicy = executionTimeoutPolicyForMcpCall(name, args);
   const operationMetadata = operationMetadataForTool(

@@ -100,10 +100,12 @@ export function classifyRepositoryCommandRoute(
     return { route: 'durable', reason: 'force_durable_or_async' };
   }
   const classification = classifyRepositoryCommand(command, options.defaultBranch);
+  // ExecutionJobs are retired. Authorized local destructive/remote-risk commands
+  // still execute through Process Runtime; SuperController owns retry/replay policy.
   if (classification.risk === 'remote_write' || classification.risk === 'destructive') {
     return {
-      route: 'durable',
-      reason: `risk_${classification.risk}_requires_durable_workflow`,
+      route: 'process_managed',
+      reason: `risk_${classification.risk}_via_process_runtime`,
     };
   }
   // release / rollback style commands
@@ -185,7 +187,8 @@ export async function executeRepositoryCommandViaProcessRuntime(
     workId: input.workId,
     commandId: input.commandId,
     command: toProcessCommand(input.command, cwd),
-    interactiveWaitMs: decision.route === 'process_direct' ? interactiveWaitMs : 0,
+    // Short commands complete inside this budget; longer ones return a running handle.
+    interactiveWaitMs,
     timeoutMs,
     maxOutputBytes: input.maxOutputBytes,
     resourceClaims: toProcessClaims(claims),
@@ -196,7 +199,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
       correlationId: input.workId,
     },
     signal: input.signal,
-    returnHandleImmediately: decision.route === 'process_managed' && interactiveWaitMs === 0,
+    returnHandleImmediately: input.forceDurable === true,
   });
 
   const route: RepositoryCommandRoute = handle.completed ? 'process_direct' : 'process_managed';

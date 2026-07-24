@@ -342,3 +342,36 @@ P0 before any Plugin/Schedule bulk migration:
 - No nested Codex/Claude/Grok/Copilot agent used for the checkpoint
 - Isolated processes from prior tests may exist in temp controller homes; they are not
   product state for this branch and were not used as acceptance evidence
+
+## Stage: close work and process runtime contracts
+
+Date: 2026-07-24
+
+### work_submit
+
+- Validates operation + arguments before any WorkContract/index write.
+- Missing required args return stable `INVALID_ARGUMENT` (no Work/ExecutionJob/Process).
+- Accepts WorkContracts via request-id index; same repo+request+input dedupes; cross-repo request reuse conflicts.
+- Response authority is WorkContract: `workId`, `repoId`, `status`, `deduplicated`, `operation`, `nextAction`.
+- Does not create ExecutionJobs.
+
+### Controller ownership / recovery
+
+- `work_prepare` atomically claims the authenticated Controller session.
+- `work_inspect` is read-only and does not require the write lease.
+- `work_execute` / `work_validate` / `work_finalize` still require the owner claim.
+- Explicit `work_id` remains readable across MCP sessions/controller restarts.
+
+### Process Runtime
+
+- `work_execute` uses per-invocation request IDs and stable per-command IDs.
+- Command results include processId/commandId/status/authorization fields.
+- Process Runtime waits the interactive budget for short commands; long ones return handles.
+- Local destructive/remote-risk commands no longer require retired ExecutionJobs.
+- `repository_command_execute` Process path returns `accepted`, `status`, `processId`, `ok`, `exitCode`, `authorization`, `resultRef`.
+
+### Focused verification
+
+- work-submit, goal-authorization, work-session-finalize-recovery, repository-mcp-command, thin-harness, facade-mcp-surface:
+  **91 pass / 0 fail**
+- `bun x tsc --noEmit`: pass

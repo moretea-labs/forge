@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { existsSync, readFileSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { basename, isAbsolute, relative, resolve } from 'path';
@@ -243,6 +244,25 @@ function assertWorkControllerOwnership(
   });
 }
 
+function claimPreparedWorkOwnership(
+  ctx: MultiRepositoryMcpToolContext,
+  session: ExecutionSessionContext,
+  handle: WorkHandleState,
+  args: Record<string, unknown>,
+): void {
+  const workIdValue = handle.workContractId ?? handle.workId;
+  const controllerId = typeof args.controller_id === 'string' && args.controller_id.trim()
+    ? args.controller_id.trim()
+    : session.principalId;
+  claimControllerSession({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, {
+    workId: workIdValue,
+    controllerId,
+    controllerType: 'chatgpt',
+    sessionId: session.sessionId,
+    leaseMs: 3_600_000,
+  });
+}
+
 function invalidateActiveWork(ctx: MultiRepositoryMcpToolContext, session: ExecutionSessionContext, reason: string): void {
   if (!session.activeRepositoryId || !session.activeWorkId) return;
   const handle = readWorkHandle(ctx.controllerHome, session.activeRepositoryId, session.activeWorkId);
@@ -278,7 +298,8 @@ function prepareWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, un
     if (existing.principalId !== session.principalId) throw new Error('WORK_HANDLE_ACCESS_DENIED');
     validateWorkHandle(ctx.controllerHome, existing, identityFor(ctx, args), 'cheap', 'inspect');
     updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), { activeRepositoryId: existing.repositoryId, activeCheckoutId: existing.checkoutId, activeWorkId: existing.workId, permissionSnapshotVersion: existing.permissionSnapshotVersion });
-    return { session: requireSession(ctx, args), work: compactHandle(existing), reused: true };
+    claimPreparedWorkOwnership(ctx, session, existing, args);
+    return { session: requireSession(ctx, args), work: compactHandle(existing), reused: true, controllerClaimed: true };
   }
 
   const isolation = args.isolation === 'reuse' || args.isolation === 'new_worktree' || args.isolation === 'auto' ? args.isolation : 'auto';
@@ -332,7 +353,8 @@ function prepareWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, un
     writeWorkHandle(ctx.controllerHome, handle);
     updateWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, contract.workId, { status: 'running', worktreeRef: checkout.canonicalRoot });
     const nextSession = updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), { activeRepositoryId: repository.repoId, activeCheckoutId: checkout.activeCheckoutId, activeWorkId: createdWorkId, permissionSnapshotVersion: policy.revision, goalDelegation: delegation, lastValidatedAt: new Date().toISOString() });
-    return { session: nextSession, work: compactHandle(handle), reused: false, isolation: workspace.mode };
+    claimPreparedWorkOwnership(ctx, nextSession, handle, args);
+    return { session: nextSession, work: compactHandle(handle), reused: false, isolation: workspace.mode, controllerClaimed: true };
   } catch (error) {
     updateWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, contract.workId, { status: 'failed' });
     throw error;
@@ -341,8 +363,8 @@ function prepareWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, un
 
 function inspectWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Record<string, unknown> {
   const session = requireSession(ctx, args);
+  // work_inspect is authorized read-only evidence; it must not require the write lease.
   const handle = workForSession(ctx, session, args);
-  assertWorkControllerOwnership(ctx, session, handle, args);
   const started = performance.now();
   const validationStarted = performance.now();
   const validated = validateWorkHandle(ctx.controllerHome, handle, identityFor(ctx, args), 'cheap', 'inspect');
@@ -437,17 +459,57 @@ async function executeWork(ctx: MultiRepositoryMcpToolContext, args: Record<stri
     decisions.push(decision);
     if (decision.decision !== 'allow') return { authorization: decision, work: compactHandle(handle), command: entry.command };
   }
-  const run = (entry: typeof inputs[number], index: number) => executeRepositoryCommandViaProcessRuntime({
-    controllerHome: ctx.controllerHome,
-    repository: cheap.worktreeRepository,
-    command: entry.command,
-    cwd: entry.cwd,
-    workId: handle.workId,
-    commandId: `${handle.workId}:command:${index + 1}`,
-    requestId: `${session.sessionId}:${handle.workId}:command:${index + 1}`,
-    timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
-    maxOutputBytes: typeof args.max_output_bytes === 'number' ? args.max_output_bytes : undefined,
-  });
+  const invocationId = typeof args.request_id === 'string' && args.request_id.trim()
+    ? args.request_id.trim()
+    : `invoke-${session.sessionId}-${handle.workId}-${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const run = async (entry: typeof inputs[number], index: number) => {
+    const commandId = `${invocationId}:command:${index + 1}`;
+    const execution = await executeRepositoryCommandViaProcessRuntime({
+      controllerHome: ctx.controllerHome,
+      repository: cheap.worktreeRepository,
+      command: entry.command,
+      cwd: entry.cwd,
+      workId: handle.workId,
+      commandId,
+      requestId: invocationId,
+      timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
+      maxOutputBytes: typeof args.max_output_bytes === 'number' ? args.max_output_bytes : undefined,
+    });
+    const process = execution.process;
+    const completed = process?.completed === true || execution.route === 'process_direct';
+    const ok = process ? process.ok === true : execution.ok === true;
+    const status = process
+      ? (process.completed
+        ? (process.cancelled ? 'cancelled' : process.timedOut ? 'timed_out' : ok ? 'executed' : 'failed')
+        : 'running')
+      : execution.route === 'durable'
+        ? 'deferred_durable'
+        : 'rejected';
+    return {
+      processId: process?.processId,
+      commandId,
+      requestId: invocationId,
+      status,
+      ok,
+      exitCode: process?.exitCode ?? execution.exitCode,
+      timedOut: process?.timedOut === true,
+      cancelled: process?.cancelled === true,
+      startedAt: process?.startedAt,
+      finishedAt: process?.completed ? process.startedAt : undefined,
+      stdout: process?.stdout ?? execution.stdout,
+      stderr: process?.stderr ?? execution.stderr,
+      logArtifact: process?.processId ? { processId: process.processId, kind: 'process_logs' } : undefined,
+      route: execution.route,
+      reason: execution.reason,
+      authorizationDecision: decisions[index],
+      approvalRequestId: resolvedRequest?.approvalRequestId,
+      authorization: decisions[index]?.decision === 'allow'
+        ? (resolvedRequest ? 'confirmed_plan' : decisions[index]?.source)
+        : 'explicit_user_request',
+      durableSideEffects: execution.durableSideEffects,
+      process,
+    };
+  };
   const started = performance.now();
   const executions = classifications.every((classification) => classification.risk === 'readonly')
     ? await Promise.all(inputs.map((entry, index) => run(entry, index)))
@@ -470,9 +532,11 @@ async function executeWork(ctx: MultiRepositoryMcpToolContext, args: Record<stri
   const value = {
     work: compactHandle(nextHandle),
     commands: executions,
-    executedCount: executions.filter((entry) => entry.ok === true).length,
+    executedCount: executions.filter((entry) => entry.status === 'executed' && entry.ok === true).length,
     managedProcessCount: executions.filter((entry) => entry.process && !entry.process.completed).length,
     deferredCommandCount: Math.max(0, inputs.length - executions.length),
+    authorization: decisions[0],
+    requestId: invocationId,
   };
   const response = makeBoundedResult(ctx, session, handle.repositoryId, handle.workId, 'command', value);
   recordMcpTiming(ctx.controllerHome, { tool: 'work_execute', workHandleValidationMs: 0, commandExecutionMs: Math.round((performance.now() - started) * 100) / 100, totalToolDurationMs: Math.round((performance.now() - started) * 100) / 100, sessionId: session.sessionId, repoId: handle.repositoryId, workId: handle.workId });

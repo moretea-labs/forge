@@ -8,7 +8,7 @@ import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repo
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { getExecutionJob, listExecutionJobs } from '../../src/runtime/execution/jobs/store';
+import { listExecutionJobs } from '../../src/runtime/execution/jobs/store';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from '../runtime/process-hygiene';
 
@@ -67,6 +67,11 @@ describe('work_submit hardening', () => {
     expect(result?.isError).toBe(true);
     expect(JSON.stringify(result?.structuredContent ?? {})).toContain('INVALID_ARGUMENT');
     expect(listExecutionJobs(controllerHome, repository.repoId, 20)).toHaveLength(0);
+    const listed = structured(await callRuntimeTool(ctx, 'work_list', {
+      repo_id: repository.repoId,
+      limit: 20,
+    }));
+    expect((listed.works as unknown[] | undefined) ?? []).toHaveLength(0);
   });
 
   test('work_get and work_list include resumable WorkContracts as well as Execution Jobs', async () => {
@@ -109,11 +114,29 @@ describe('work_submit hardening', () => {
       operation: 'controller_context',
       arguments: {},
     }));
-    const work = accepted.work as { workId: string };
-    const job = getExecutionJob(controllerHome, repository.repoId, work.workId);
-    expect(job.resourceClaims).toEqual([]);
-    expect(job.operationMetadata?.mode).toBe('readonly');
-    expect(job.operationMetadata?.replayable).toBe(true);
+    expect(accepted.accepted).toBe(true);
+    expect(accepted.deduplicated).toBe(false);
+    expect(accepted.operation).toBe('controller_context');
+    const work = accepted.work as {
+      kind?: string;
+      workId: string;
+      repoId?: string;
+      status?: string;
+      operation?: string;
+      nextAction?: string;
+      resourceClaims?: unknown[];
+      operationMetadata?: { mode?: string; replayable?: boolean };
+    };
+    expect(work.kind).toBe('work_contract');
+    expect(work.repoId).toBe(repository.repoId);
+    expect(work.status).toBeTruthy();
+    expect(work.operation).toBe('controller_context');
+    expect(typeof work.nextAction).toBe('string');
+    expect(work.resourceClaims).toEqual([]);
+    expect(work.operationMetadata?.mode).toBe('readonly');
+    expect(work.operationMetadata?.replayable).toBe(true);
+    // work_submit must not create ExecutionJobs for compatibility.
+    expect(listExecutionJobs(controllerHome, repository.repoId, 20)).toHaveLength(0);
 
     const resumedByWorkId = structured(await callRuntimeTool(ctx, 'work_get', {
       repo_id: repository.repoId,
@@ -128,5 +151,15 @@ describe('work_submit hardening', () => {
       request_id: 'readonly-context-1',
     }));
     expect(String((resumedByRequestId.work as { workId?: string }).workId)).toBe(work.workId);
+
+    const deduped = structured(await callRuntimeTool(ctx, 'work_submit', {
+      repo_id: repository.repoId,
+      request_id: 'readonly-context-1',
+      operation: 'controller_context',
+      arguments: {},
+    }));
+    expect(deduped.deduplicated).toBe(true);
+    expect(String((deduped.work as { workId?: string }).workId)).toBe(work.workId);
+    expect(listExecutionJobs(controllerHome, repository.repoId, 20)).toHaveLength(0);
   });
 });
