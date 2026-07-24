@@ -502,3 +502,15 @@ Date: 2026-07-24
 - `package:check:mcp-compatibility`: pass.
 - `package:check:runtime-architecture`: pass, 32 modules/documents checked.
 
+## Assistant Routine trigger convergence
+
+Date: 2026-07-24
+
+- Removed the unreachable Assistant Routine `createExecutionJob` branch and its retirement helper.
+- `runAssistantRoutineNow` now has one explicit behavior: record the trigger, write an Inbox handoff, and require a claimed external Controller.
+- Added regression coverage proving the trigger creates zero ExecutionJobs and records no Job IDs.
+- Runtime architecture gate now forbids `createExecutionJob` references in `assistant/intent.ts`.
+- Focused Gmail Assistant + Local Bridge + target-architecture suite: **39 pass / 0 fail**.
+- `package:check:type`: pass.
+- `package:check:runtime-architecture`: pass, 32 modules/documents checked.
+

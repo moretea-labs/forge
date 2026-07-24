@@ -4,8 +4,10 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { bindAssistantRoutineSchedule, parseAssistantScheduleText, updateAssistantRoutineLifecycle } from '../../src/runtime/assistant/schedule-binding';
 import { getSchedule } from '../../src/runtime/workflow/schedules/store';
+import { runAssistantRoutineNow } from '../../src/runtime/assistant/intent';
 import { executeAssistantRoutineRuntime } from '../../src/runtime/assistant/routine-runtime';
 import { createAssistantRoutine, listAssistantInbox } from '../../src/runtime/assistant/store';
+import { listExecutionJobs } from '../../src/runtime/execution/jobs/store';
 import { cronDue } from '../../src/runtime/workflow/schedules/engine';
 import {
   clearGoogleAuthCachesForTest,
@@ -91,6 +93,26 @@ describe('Gmail assistant routines', () => {
     const deleted = updateAssistantRoutineLifecycle(controllerHome, repository, routine.routineId, 'deleted');
     expect(deleted.routine.status).toBe('deleted');
     expect(getSchedule(controllerHome, repository.repoId, binding.scheduleId).enabled).toBe(false);
+  });
+
+  test('records a routine trigger as an external-controller handoff without creating an ExecutionJob', () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'repo-harness-routine-handoff-'));
+    const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-controller-'));
+    tempRoots.push(repoRoot, controllerHome);
+    const routine = createAssistantRoutine(repoRoot, {
+      name: 'External Controller Routine', naturalLanguageGoal: 'review mail daily', scheduleText: '每天 09:00',
+      timezone: 'UTC', dataSources: ['gmail'], output: 'assistant_inbox',
+      allowedActions: ['gmail.list_messages'], forbiddenActions: ['gmail.send_message'],
+    });
+    const repository = { repoId: 'repo_handoff', canonicalRoot: repoRoot, activeCheckoutId: 'checkout_test' } as any;
+
+    const result = runAssistantRoutineNow(controllerHome, repository, routine.routineId);
+
+    expect(result.accepted).toBe(false);
+    expect(result.displayText).toContain('No ExecutionJob was created');
+    expect(result.inboxItem?.data?.externalControllerRequired).toBe(true);
+    expect(result.inboxItem?.jobIds).toEqual([]);
+    expect(listExecutionJobs(controllerHome, repository.repoId)).toHaveLength(0);
   });
 
   test('keeps a fixed cursor window while a Gmail backlog is truncated, then advances after draining it', async () => {

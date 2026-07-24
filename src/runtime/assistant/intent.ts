@@ -1,15 +1,12 @@
 import { createHash, randomUUID } from 'crypto';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { getAssistantPluginManifest, submitAssistantPluginAction } from '../plugins/store';
-import { createExecutionJob } from '../execution/jobs/store';
 import { bindAssistantRoutineSchedule } from './schedule-binding';
 import type { AssistantIntentResult, AssistantIntentInput, AssistantIntentMode, AssistantIntentSource, AssistantPlanStepInput, AssistantPlanStepResult, AssistantRoutine, AssistantRoutineDraft } from './types';
 import { addAssistantInboxItem, createAssistantRoutine, getAssistantRoutine, touchAssistantRoutineRun } from './store';
 import { defaultRoutineAllowedActions, defaultRoutineForbiddenActions, evaluateAssistantActionPolicy } from './policy';
 
 function now(): string { return new Date().toISOString(); }
-
-function executionJobCreationRetired(): boolean { return true; }
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
@@ -363,88 +360,30 @@ export function runAssistantRoutineNow(
   const routine = getAssistantRoutine(repository.canonicalRoot, routineId);
   if (routine.status !== 'enabled') throw new Error(`ASSISTANT_ROUTINE_NOT_ENABLED: ${routineId}`);
   const requestId = `routine-run-${routine.routineId}-${Date.now()}`;
-  if (executionJobCreationRetired()) {
-    const touched = touchAssistantRoutineRun(repository.canonicalRoot, routineId);
-    const inboxItem = addAssistantInboxItem(repository.canonicalRoot, {
-      kind: 'routine_result',
-      title: `Routine requires an external Controller: ${routine.name}`,
-      summary: 'The routine trigger was recorded without creating an ExecutionJob.',
-      body: routine.naturalLanguageGoal,
-      source: 'routine',
-      relatedRoutineId: routine.routineId,
-      relatedRequestId: requestId,
-      jobIds: [],
-      recommendations: ['Claim or create Work for this routine, then execute it through an explicit external Controller.'],
-      data: { routine: touched, externalControllerRequired: true },
-    });
-    return {
-      schemaVersion: 1,
-      accepted: false,
-      mode: 'execute',
-      source: 'system',
-      requestId,
-      understoodIntent: 'run_routine',
-      displayTitle: `Routine requires an external Controller: ${routine.name}`,
-      displayText: 'No ExecutionJob was created. Continue this routine from the recorded Inbox item with an explicitly claimed Controller session.',
-      requiresConfirmation: false,
-      plan: [],
-      routine: touched,
-      inboxItem,
-      clarifyingQuestions: [],
-    };
-  }
-  const created = createExecutionJob(controllerHome, {
-    repoId: repository.repoId,
-    checkoutId: repository.activeCheckoutId,
-    type: 'mcp-tool',
-    requestId,
-    semanticKey: `assistant-routine:${routine.routineId}:${requestId}`,
-    priority: 'P2',
-    origin: { surface: 'assistant-routine', actor: routine.routineId, correlationId: requestId },
-    payload: {
-      operation: 'assistant_routine_execute',
-      target: 'runtime',
-      arguments: { routineId: routine.routineId },
-      timeoutMs: 30 * 60_000,
-    },
-    resourceClaims: [{ resourceKey: `assistant-routine:${repository.repoId}:${routine.routineId}`, mode: 'exclusive' }],
-    timeoutMs: 30 * 60_000,
-    maxAttempts: 1,
-  });
   const touched = touchAssistantRoutineRun(repository.canonicalRoot, routineId);
-  const plan: AssistantPlanStepResult[] = [{
-    stepId: 'routine-runtime',
-    pluginId: 'assistant',
-    actionId: 'assistant_routine_execute',
-    status: 'submitted',
-    risk: 'readonly',
-    decision: 'allow',
-    reason: 'A durable read-only Routine Runtime Job was queued.',
-    job: created.job,
-  }];
   const inboxItem = addAssistantInboxItem(repository.canonicalRoot, {
     kind: 'routine_result',
-    title: `Routine 已排队：${routine.name}`,
-    summary: '已提交持久化 Routine Runtime Job；完成后会生成最终邮件报告。',
+    title: `Routine requires an external Controller: ${routine.name}`,
+    summary: 'The routine trigger was recorded without creating an ExecutionJob.',
     body: routine.naturalLanguageGoal,
     source: 'routine',
     relatedRoutineId: routine.routineId,
     relatedRequestId: requestId,
-    jobIds: [created.job.jobId],
-    recommendations: ['等待最终 Routine 报告；发送邮件和移入垃圾箱仍需单独确认。'],
-    data: { routine: touched, jobId: created.job.jobId },
+    jobIds: [],
+    recommendations: ['Claim or create Work for this routine, then execute it through an explicit external Controller.'],
+    data: { routine: touched, externalControllerRequired: true },
   });
   return {
     schemaVersion: 1,
-    accepted: true,
+    accepted: false,
     mode: 'execute',
     source: 'system',
     requestId,
     understoodIntent: 'run_routine',
-    displayTitle: `Routine 已排队：${routine.name}`,
-    displayText: `已为「${routine.name}」提交持久化执行 Job ${created.job.jobId}。`,
+    displayTitle: `Routine requires an external Controller: ${routine.name}`,
+    displayText: 'No ExecutionJob was created. Continue this routine from the recorded Inbox item with an explicitly claimed Controller session.',
     requiresConfirmation: false,
-    plan,
+    plan: [],
     routine: touched,
     inboxItem,
     clarifyingQuestions: [],

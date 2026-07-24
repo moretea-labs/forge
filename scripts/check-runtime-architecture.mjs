@@ -107,6 +107,11 @@ forbid(
   /\bcreateExecutionJob\b/,
   'Runtime MCP tools must not retain dormant ExecutionJob creation paths',
 );
+forbid(
+  'src/runtime/assistant/intent.ts',
+  /\bcreateExecutionJob\b/,
+  'Assistant intent and routine triggers must use direct plugin actions or external-Controller handoffs',
+);
 forbid('src/runtime/gateway/mcp/router.ts', /Use process_get \/ process_wait \/ process_logs/, 'Gateway follow-up instructions must use an always-exposed neutral Work facade');
 requireMatch(
   'src/runtime/gateway/mcp/router.ts',
