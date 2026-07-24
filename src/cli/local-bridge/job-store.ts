@@ -529,134 +529,13 @@ function findExistingRepositoryCommandJob(
   return ["approved", "running"].includes(refreshed.status) ? refreshed : undefined;
 }
 
-function localBridgeJobCreationRetired(): boolean {
-  return true;
-}
-
 export function submitLocalBridgeJob(
-  repoRoot: string,
-  request: LocalBridgeJobRequest,
+  _repoRoot: string,
+  _request: LocalBridgeJobRequest,
 ): LocalBridgeJob {
-  if (localBridgeJobCreationRetired()) {
-    throw new Error(
-      "LOCAL_BRIDGE_JOB_RETIRED: New Local Bridge Jobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.",
-    );
-  }
-  if (
-    !["launch-task", "quick-agent-session", "run-check", "verify-edit-session", "repository-command"].includes(
-      request.action,
-    )
-  ) {
-    throw new Error(
-      `unsupported local bridge action: ${String(request.action)}`,
-    );
-  }
-
-  if (request.action === "repository-command") {
-    const payload = request.payload as RepositoryCommandPayload;
-    const normalized = normalizeRepositoryCommand(payload.command);
-    request = { ...request, payload: { ...payload, command: commandValue(normalized) } };
-  }
-
-  // Bind runtime storage before the first Local Job is persisted when the
-  // action requires the durable runtime. Lightweight compatibility flows still
-  // need to work in temporary non-git fixtures and other legacy local-only
-  // contexts.
-  const controllerHome = resolveControllerHome(
-    request.action === "repository-command" &&
-      "controllerHome" in request.payload &&
-      typeof (request.payload as RepositoryCommandPayload).controllerHome === "string"
-      ? (request.payload as RepositoryCommandPayload).controllerHome
-      : undefined,
+  throw new Error(
+    "LOCAL_BRIDGE_JOB_RETIRED: New Local Bridge Jobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.",
   );
-  const requireRuntimeBinding = request.action === "run-check"
-    || request.action === "verify-edit-session"
-    || request.action === "repository-command"
-    || request.action === "launch-task"
-    || request.action === "quick-agent-session";
-  try {
-    const repository = registerRepository({ path: repoRoot, controllerHome });
-    const runtimeStorage = ensureRepositoryRuntimeStorage(repository, controllerHome);
-    if (!runtimeStorage.readyForExecution) {
-      throw new Error(`RUNTIME_STORAGE_NOT_READY: ${runtimeStorage.warnings.join("; ") || repository.activeCheckoutId}`);
-    }
-    repoRoot = repository.canonicalRoot;
-  } catch (error) {
-    if (requireRuntimeBinding) throw error;
-  }
-  let revision: string | undefined;
-  if (request.action === "run-check") {
-    const payload = request.payload as RunCheckPayload;
-    let snapshot = payload.checkSnapshot;
-    if (!snapshot) {
-      try { snapshot = snapshotControllerCheck(repoRoot, payload.checkId); }
-      catch (error) {
-        if (!(error instanceof Error) || !error.message.startsWith("check not found:")) throw error;
-      }
-    }
-    if (snapshot) payload.checkSnapshot = snapshot;
-    revision = snapshot?.registryRevision ?? currentControllerCheckRevision(repoRoot);
-    const duplicate = findExistingRunCheckJob(repoRoot, payload, revision);
-    if (duplicate) return duplicate;
-  }
-  if (request.action === "launch-task") {
-    const existing = findExistingLaunchJob(repoRoot, request.payload as LaunchTaskPayload);
-    if (existing) return refreshLocalBridgeJob(repoRoot, existing);
-  }
-  if (request.action === "quick-agent-session") {
-    const existing = findExistingQuickSessionJob(repoRoot, request.payload as QuickAgentSessionPayload);
-    if (existing) return refreshLocalBridgeJob(repoRoot, existing);
-  }
-  if (request.action === "verify-edit-session") {
-    const existing = findExistingVerifyEditSessionJob(repoRoot, request.payload as VerifyEditSessionPayload);
-    if (existing) return refreshLocalBridgeJob(repoRoot, existing);
-  }
-  if (request.action === "repository-command") {
-    const existing = findExistingRepositoryCommandJob(repoRoot, request.payload as RepositoryCommandPayload);
-    if (existing) return refreshLocalBridgeJob(repoRoot, existing);
-  }
-  const policyApproval = executionApproval(
-    repoRoot,
-    request.action,
-    request.payload,
-  );
-  // V8 has no approval queue. Risk is metadata; only destructive work needs
-  // an explicit authorization flag in the same request.
-  const destructiveAuthorized = request.action === "launch-task"
-    ? Boolean((request.payload as LaunchTaskPayload).approveDestructive)
-    : request.action === "quick-agent-session"
-      ? Boolean((request.payload as QuickAgentSessionPayload).approveDestructive)
-      : true;
-  if (policyApproval === "manual-only" && !destructiveAuthorized) {
-    throw new Error("destructive execution requires approve_destructive in the same request");
-  }
-  const approval: LocalBridgeApproval = "auto";
-  const createdAt = now();
-  const job: LocalBridgeJob = {
-    schemaVersion: 1,
-    jobId: `JOB-${Date.now()}-${shortId()}`,
-    action: request.action,
-    payload: request.payload,
-    requestedBy: request.requestedBy?.trim() || "local-user",
-    approval,
-    status: "approved",
-    createdAt,
-    updatedAt: createdAt,
-    ...(revision ? { revision } : {}),
-    ...(request.action === "quick-agent-session" && (request.payload as QuickAgentSessionPayload).ephemeral !== false ? { ephemeral: true } : {}),
-    approvedAt: createdAt,
-  };
-  saveJob(repoRoot, job);
-  if (request.action === "repository-command") ensureJobLogFiles(repoRoot, job.jobId);
-  appendEvent(repoRoot, job.jobId, {
-    type: "job_created",
-    message: `${job.action} job created with ${approval} approval.`,
-  });
-  appendEvent(repoRoot, job.jobId, {
-    type: "job_approved",
-    message: "Accepted for immediate local execution; no approval queue is used.",
-  });
-  return job;
 }
 
 function readLocalBridgeJob(repoRoot: string, jobId: string): LocalBridgeJob {
