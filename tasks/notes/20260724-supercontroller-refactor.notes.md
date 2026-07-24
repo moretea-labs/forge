@@ -590,3 +590,15 @@ Date: 2026-07-24
 - `package:check:mcp-compatibility`: pass.
 - `package:check:runtime-architecture`: pass, 32 modules/documents checked.
 
+## Local Bridge Job write-boundary convergence
+
+Date: 2026-07-24
+
+- Collapsed `submitLocalBridgeJob` from a retired guard around the full creation pipeline to a direct `LOCAL_BRIDGE_JOB_RETIRED` error.
+- Removed dormant repository registration, runtime binding, deduplication, approval, persistence, and creation-event code from the write boundary.
+- Added regression coverage proving the write boundary creates no Local Bridge records.
+- Runtime architecture gate now requires the direct fail-closed function shape and forbids the hidden retirement helper.
+- Focused Local Bridge, recovery, repository-command lifecycle, and target-architecture suite: **41 pass / 0 fail**.
+- `package:check:type`: pass.
+- `package:check:runtime-architecture`: pass, 32 modules/documents checked.
+

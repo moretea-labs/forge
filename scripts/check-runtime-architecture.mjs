@@ -147,6 +147,16 @@ forbid(
   /\bsubmitLocalBridgeJob\b|\bexecuteLocalBridgeJob\b|\bacceptTaskJob\b|\bdispatchAcceptedTaskJob\b|\bstartTaskJob\b|\blegacy_agent_run\b/,
   'Legacy MCP compatibility may read or cancel historical Jobs and Runs but must not create or dispatch new ones',
 );
+forbid(
+  'src/cli/local-bridge/job-store.ts',
+  /\blocalBridgeJobCreationRetired\b/,
+  'The Local Bridge write boundary must be a direct retirement error, not a hidden guard around dormant creation code',
+);
+requireMatch(
+  'src/cli/local-bridge/job-store.ts',
+  /export function submitLocalBridgeJob\([\s\S]*?\{\s*throw new Error\([\s\S]*?LOCAL_BRIDGE_JOB_RETIRED[\s\S]*?\);\s*\}/,
+  'submitLocalBridgeJob must fail closed directly with LOCAL_BRIDGE_JOB_RETIRED',
+);
 forbid('src/runtime/gateway/mcp/router.ts', /Use process_get \/ process_wait \/ process_logs/, 'Gateway follow-up instructions must use an always-exposed neutral Work facade');
 requireMatch(
   'src/runtime/gateway/mcp/router.ts',

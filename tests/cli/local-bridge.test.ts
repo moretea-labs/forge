@@ -142,6 +142,16 @@ async function waitForRun(
 }
 
 describe("Local Execution Bridge", () => {
+  test('fails closed at the Local Bridge Job write boundary', () => {
+    const root = repo();
+    expect(() => submitLocalBridgeJob(root, {
+      action: 'run-check',
+      requestedBy: 'test',
+      payload: { checkId: 'package:test' },
+    })).toThrow(/LOCAL_BRIDGE_JOB_RETIRED/);
+    expect(listLocalBridgeJobs(root)).toHaveLength(0);
+  });
+
   test('returns stable 410 handoffs for retired Local Bridge creation routes', async () => {
     const root = repo();
     const handle = await startLocalBridgeServer({ repoRoot: root, port: 0, openBrowser: false });
