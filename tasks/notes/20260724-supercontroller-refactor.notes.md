@@ -404,3 +404,12 @@ Date: 2026-07-24
 - `tests/runtime/live-maintenance-schedule.test.ts`: **6 pass / 0 fail**
 - Target-architecture schedule test migrated to external-controller handoff expectations.
 - `bun x tsc --noEmit`: pass
+
+### Residual risks after schedule stage
+
+- Full suite still has legacy Agent/Job/Worker expectations to retire or rewrite.
+- Remote grok_com_repo-harness MCP returns HTTP 530; implementation continues in the
+  isolated worktree via the local worktree source and Bun test harness.
+- Remaining createExecutionJob call sites exist but storage rejects new creation.
+- Regression after schedule stage: work-submit-hardening + thin-harness **48 pass / 0 fail**.
+
