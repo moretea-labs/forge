@@ -1,6 +1,7 @@
 import { mkdirSync } from 'fs';
 import { join } from 'path';
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
+import { withControllerLock } from '../../../cli/repositories/locks';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
 import {
   isTerminalPlanContractStatus,
@@ -72,8 +73,34 @@ function normalizeStep(step: CreatePlanContractInput['steps'][number]): PlanStep
     checks: bounded(step.checks, 30, 200),
     acceptanceCriteria: bounded(step.acceptanceCriteria, 20),
     status: step.status ?? 'pending',
+    workId: undefined,
     evidenceRefs: (step.evidenceRefs ?? []).slice(0, 20),
   };
+}
+
+function updatePlanContract(
+  options: PlanContractStoreOptions,
+  planId: string,
+  mutate: (current: PlanContract) => PlanContract,
+): PlanContract {
+  const apply = (): PlanContract => {
+    const store = readPlanContractStore(options);
+    const index = store.contracts.findIndex((contract) => contract.planId === sanitizeFileComponent(planId));
+    if (index < 0) throw new Error(`plan contract not found: ${sanitizeFileComponent(planId)}`);
+    const next = mutate(store.contracts[index]);
+    const contracts = [...store.contracts];
+    contracts[index] = next;
+    writePlanContractStore(options, { schemaVersion: 1, updatedAt: next.updatedAt, contracts });
+    return next;
+  };
+  if (!options.controllerHome || !options.repoId) return apply();
+  return withControllerLock(
+    options.controllerHome,
+    { scope: 'task', repoId: options.repoId, taskId: `plan-${sanitizeFileComponent(planId)}` },
+    'plan-contract-store',
+    apply,
+    15_000,
+  );
 }
 
 export function planContractRoot(location: PlanContractStoreLocation): string {
@@ -230,4 +257,60 @@ export function supersedePlanContract(options: PlanContractStoreOptions, planId:
   contracts[index] = next;
   writePlanContractStore(options, { schemaVersion: 1, updatedAt: at, contracts });
   return next;
+}
+
+/**
+ * Atomically reserve one eligible step for one WorkContract. This is the
+ * Plan-to-Work concurrency boundary: competing callers cannot bind the same
+ * step, and a stale source revision causes no WorkContract side effect.
+ */
+export function claimPlanStepForWork(
+  options: PlanContractStoreOptions,
+  input: { planId: string; stepId: string; workId: string; sourceRevision: string },
+): PlanContract {
+  return updatePlanContract(options, input.planId, (current) => {
+    if (current.status !== 'approved' && current.status !== 'executing') {
+      throw new Error(`PLAN_NOT_EXECUTABLE: ${current.planId} is ${current.status}`);
+    }
+    if (current.sourceRevision !== input.sourceRevision) {
+      return { ...current, status: 'invalidated_by_drift', updatedAt: nowIso(options) };
+    }
+    const stepIndex = current.steps.findIndex((step) => step.id === sanitizeFileComponent(input.stepId));
+    if (stepIndex < 0) throw new Error(`PLAN_STEP_NOT_FOUND: ${input.stepId}`);
+    const step = current.steps[stepIndex];
+    if (step.status === 'executing' || step.workId) throw new Error(`PLAN_STEP_ALREADY_ACTIVE: ${step.id}`);
+    if (step.status === 'completed') throw new Error(`PLAN_STEP_ALREADY_COMPLETED: ${step.id}`);
+    const unresolved = step.dependencies.filter((dependency) => current.steps.find((candidate) => candidate.id === dependency)?.status !== 'completed');
+    if (unresolved.length > 0) throw new Error(`PLAN_STEP_DEPENDENCIES_PENDING: ${unresolved.join(', ')}`);
+    const at = nowIso(options);
+    const steps = [...current.steps];
+    steps[stepIndex] = { ...step, status: 'executing', workId: input.workId };
+    return { ...current, status: 'executing', steps, updatedAt: at };
+  });
+}
+
+export function completePlanStepForWork(
+  options: PlanContractStoreOptions,
+  input: { planId: string; stepId: string; workId: string; succeeded: boolean; evidenceRefs?: EvidenceRef[] },
+): PlanContract {
+  return updatePlanContract(options, input.planId, (current) => {
+    const stepIndex = current.steps.findIndex((step) => step.id === sanitizeFileComponent(input.stepId));
+    if (stepIndex < 0) throw new Error(`PLAN_STEP_NOT_FOUND: ${input.stepId}`);
+    const step = current.steps[stepIndex];
+    if (step.workId !== input.workId) throw new Error(`PLAN_STEP_WORK_MISMATCH: ${input.stepId}`);
+    const at = nowIso(options);
+    const steps = [...current.steps];
+    steps[stepIndex] = {
+      ...step,
+      status: input.succeeded ? 'completed' : 'validating',
+      evidenceRefs: input.evidenceRefs ? input.evidenceRefs.slice(0, 20) : step.evidenceRefs,
+    };
+    const allCompleted = steps.every((candidate) => candidate.status === 'completed');
+    return {
+      ...current,
+      status: input.succeeded ? (allCompleted ? 'ready_to_finalize' : 'executing') : 'replanning',
+      steps,
+      updatedAt: at,
+    };
+  });
 }

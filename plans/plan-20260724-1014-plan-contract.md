@@ -1,6 +1,6 @@
 # Plan: Controller Durable Plan Contract
 
-> **Status**: Completed
+> **Status**: In Progress
 > **Created**: 20260724-1014
 > **Slug**: plan-contract
 > **Planning Source**: codex-plan
@@ -127,6 +127,52 @@ Make planning a durable, controller-owned pre-execution contract for complex wor
 
 ## Annotations
 <!-- [NOTE]: prefixed inline. Claude processes all and revises. -->
+
+## Incremental Runtime Convergence (2026-07-24)
+
+This extends the same durable PlanContract goal. Phase 1 persistence remains
+complete and is reused; this is not a parallel execution-runtime rewrite.
+
+### Current capability to target mapping
+
+| Target capability | Current location | Maturity | Gap / change | Reuse / retirement | Plan impact |
+|---|---|---|---|---|---|
+| Durable Plan and DAG | `facade/plan-contract-store.ts` | Phase 1 complete | Plans are not bound to a WorkContract or source HEAD at dispatch | Reuse store and validation; add execution linkage, never another plan store | C |
+| Durable execution fact | `execution/jobs/{types,store,wait,timeouts,restart-resume}.ts` | Production-grade | Existing status names map to requested semantics; expose async use consistently | Reuse as the sole Job authority; no Job V2 | D/E/F |
+| Worker scheduling and ownership | `global-scheduler/*`, `execution/workers/*`, `resources/leases/*` | Production-grade | Scheduler must remain dispatcher, not process authority | Reuse leases, fencing, claims, recovery and clean-exit race fix | D/G |
+| Process observation and command execution | `execution/process-runtime/*` | Mature substrate | Process record must remain observation/substrate, not a second orchestration fact | Preserve as an ExecutionJob adapter/substrate | D/E/H |
+| Agent/Codex execution | `cli/agent-jobs/*`, `execution/jobs/legacy-adapter.ts`, worker executor | Transitional adapter | Agent-local records project into durable jobs and require explicit compatibility classification | Reuse child refs and adapter; prohibit new direct paths | E/H |
+| Campaign DAG | `workflow/campaigns/*` | Mature orchestration | Step waits must consume Job terminal events | Reuse DAG and workspace cleanup, not another scheduler | F/G |
+| MCP execution surface | `gateway/mcp/router.ts`, `runtime-tools.ts` | Mixed | Some facade operations wait inside an MCP request | Preserve bounded compatibility waits; new Plan path returns quickly | E/F/H |
+| Logs, retries, cancellation, restart | Job store, worker entry, Process Runtime stores | Largely complete | Need one documented source and Plan-boundary regressions | Reuse job events/artifacts, timeout/retry/lease handling | G/H |
+
+### Architecture invariants
+
+1. `ExecutionJob` is the durable authority for an execution attempt; Process
+   Runtime records process observation and command substrate details.
+2. Plan, WorkContract, Task and Campaign are business orchestration records;
+   none owns a PID, timeout or worker lease.
+3. An approved Plan step creates at most one active WorkContract and records
+   plan ID, step ID and frozen source revision. Retries create a new Job
+   attempt, never revive a terminal Job.
+4. Existing request-id/semantic-key, lease/fencing-token, terminal-state,
+   resource-claim and restart-recovery mechanisms remain the concurrency
+   controls. New code must call them, not reproduce them.
+5. Direct small work remains plan-free. Complex work rejects stale or
+   unapproved plans before WorkContract creation.
+6. New Plan execution returns a Work or Job reference promptly; dependencies
+   and scheduler wakeups, never unbounded MCP calls, represent waiting.
+
+### Incremental Task Breakdown
+
+- [x] A. Read current plan, worktrees, runtime state, MCP paths and latest scheduler race fix.
+- [x] B. Save mapping and invariants; retain completed Phase 1 artifacts.
+- [x] C. Bind approved Plan steps to WorkContracts, including source drift rejection and one-active-step enforcement.
+- [x] D. Classify execution entry points as semantic facade, Job adapter, or process substrate; no duplicate path was safe to delete.
+- [x] E. Reuse the existing immediate-return `work_submit` / ExecutionJob path; keep only explicit bounded compatibility waits.
+- [x] F. Advance Plan steps from Work verification/finalization and prove the transition with focused tests.
+- [x] G. Add focused claim, work-match, drift and completion regressions at the new boundary.
+- [x] H. Update docs and run available strict validation; record isolated-worktree bootstrap and dependency-lock blockers.
 
 ## Task Breakdown
 - [x] Define PlanContract state, validation rules, and persistent store with targeted tests.

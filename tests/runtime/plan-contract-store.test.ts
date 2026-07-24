@@ -4,6 +4,8 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   approvePlanContract,
+  claimPlanStepForWork,
+  completePlanStepForWork,
   createPlanContract,
   getPlanContract,
   listPlanContracts,
@@ -93,5 +95,54 @@ describe('PlanContract store', () => {
 
     expect(() => approvePlanContract(options, plan.planId)).toThrow(/cannot be approved from superseded/i);
     expect(() => supersedePlanContract(options, plan.planId, 'another-plan')).toThrow(/is terminal/i);
+  });
+
+  test('atomically reserves an eligible step and advances only the matching WorkContract', () => {
+    const options = store();
+    const plan = approvePlanContract(options, createPlanContract(options, input()).planId);
+    const claimed = claimPlanStepForWork(options, {
+      planId: plan.planId,
+      stepId: 'inspect',
+      workId: 'work-1',
+      sourceRevision: 'abc123',
+    });
+
+    expect(claimed).toMatchObject({ status: 'executing' });
+    expect(claimed.steps[0]).toMatchObject({ status: 'executing', workId: 'work-1' });
+    expect(() => claimPlanStepForWork(options, {
+      planId: plan.planId,
+      stepId: 'inspect',
+      workId: 'work-2',
+      sourceRevision: 'abc123',
+    })).toThrow('PLAN_STEP_ALREADY_ACTIVE');
+    expect(() => completePlanStepForWork(options, {
+      planId: plan.planId,
+      stepId: 'inspect',
+      workId: 'work-2',
+      succeeded: true,
+    })).toThrow('PLAN_STEP_WORK_MISMATCH');
+
+    const completed = completePlanStepForWork(options, {
+      planId: plan.planId,
+      stepId: 'inspect',
+      workId: 'work-1',
+      succeeded: true,
+    });
+    expect(completed).toMatchObject({ status: 'ready_to_finalize' });
+    expect(completed.steps[0]).toMatchObject({ status: 'completed', workId: 'work-1' });
+  });
+
+  test('invalidates a plan on source-revision drift before a step can be claimed', () => {
+    const options = store();
+    const plan = approvePlanContract(options, createPlanContract(options, input()).planId);
+    const drifted = claimPlanStepForWork(options, {
+      planId: plan.planId,
+      stepId: 'inspect',
+      workId: 'work-stale',
+      sourceRevision: 'def456',
+    });
+    expect(drifted.status).toBe('invalidated_by_drift');
+    expect(drifted.steps[0]?.status).toBe('pending');
+    expect(drifted.steps[0]?.workId).toBeUndefined();
   });
 });

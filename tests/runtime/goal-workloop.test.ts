@@ -12,6 +12,7 @@ import {
 } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { appendWorkEvidence, getWorkContract, listWorkContracts, reconcileStaleWorkContracts, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { listHandoffItems } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
+import { approvePlanContract, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 
 const roots: string[] = [];
 
@@ -113,6 +114,63 @@ describe('goal workloop engine', () => {
       allowWorker: true,
       allowDirectEdit: false,
     });
+  });
+
+  test('runtime complex work requires an approved matching Plan step and completes that step with Work evidence', () => {
+    const { ctx } = fixture();
+    const planStore = { root: join((ctx.workStore as { root: string }).root, '..', 'plans'), now: ctx.now };
+    const plan = createPlanContract(planStore, {
+      planId: 'plan-bound-work',
+      repoId: ctx.repoId,
+      scopeKey: 'facade-goal-workloop',
+      sourceRevision: 'head-1',
+      goal: 'Bind a complex workloop to an approved plan.',
+      steps: [{
+        id: 'implement', objective: 'Implement the bounded change.', dependencies: [],
+        authoritativeFiles: ['src/runtime/control-plane/facade/goal-workloop.ts'],
+        allowedPaths: ['src/runtime/control-plane/facade/'], forbiddenPaths: [],
+        checks: ['package:check:type'], acceptanceCriteria: ['The contract is bound to this plan step.'],
+      }],
+    });
+    approvePlanContract(planStore, plan.planId);
+    const guardedCtx = { ...ctx, planStore, sourceRevision: 'head-1', requirePlanForGoalWorkloop: true };
+
+    const missing = routeWorkStart(guardedCtx, {
+      objective: 'Complex work without a plan',
+      modeInput: { scopeClear: true, expectedFiles: 8, expectedChangedLines: 300 },
+    });
+    expect(missing.status).toBe('blocked');
+
+    const started = routeWorkStart(guardedCtx, {
+      objective: 'Complex work with a plan', planId: plan.planId, planStepId: 'implement',
+      checks: ['package:check:type'],
+      modeInput: { scopeClear: true, expectedFiles: 8, expectedChangedLines: 300 },
+    });
+    expect(started.status).toBe('ok');
+    const workId = (started.data as { work: { workId: string } }).work.workId;
+    expect(getWorkContract(ctx.workStore, workId)).toMatchObject({ planId: plan.planId, planStepId: 'implement', planSourceRevision: 'head-1' });
+    expect(getPlanContract(planStore, plan.planId)?.steps[0]).toMatchObject({ status: 'executing', workId });
+
+    verifyGoalWorkloop(guardedCtx, { workId, checkId: 'package:check:type' });
+    finalizeGoalWorkloop(guardedCtx, { workId });
+    expect(getPlanContract(planStore, plan.planId)?.steps[0]).toMatchObject({ status: 'completed', workId });
+  });
+
+  test('source drift invalidates the plan and creates no WorkContract', () => {
+    const { ctx } = fixture();
+    const planStore = { root: join((ctx.workStore as { root: string }).root, '..', 'plans-drift'), now: ctx.now };
+    const plan = createPlanContract(planStore, {
+      planId: 'plan-drift', repoId: ctx.repoId, scopeKey: 'facade-drift', sourceRevision: 'old-head', goal: 'Reject stale work.',
+      steps: [{ id: 'implement', objective: 'Implement.', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['package:test'], acceptanceCriteria: ['No stale work starts.'] }],
+    });
+    approvePlanContract(planStore, plan.planId);
+    const result = routeWorkStart({ ...ctx, planStore, sourceRevision: 'new-head', requirePlanForGoalWorkloop: true }, {
+      objective: 'Stale complex work', planId: plan.planId, planStepId: 'implement',
+      modeInput: { scopeClear: true, expectedFiles: 8, expectedChangedLines: 300 },
+    });
+    expect(result.status).toBe('blocked');
+    expect(listWorkContracts({ ...ctx.workStore, status: 'all' })).toEqual([]);
+    expect(getPlanContract(planStore, plan.planId)?.status).toBe('invalidated_by_drift');
   });
 
   test('high-risk missing-authorization tasks create handoff_only without WorkContract', () => {

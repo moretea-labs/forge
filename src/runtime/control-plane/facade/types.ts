@@ -262,6 +262,10 @@ export interface WorkContract {
   /** @deprecated Prefer workId; kept for phase-1 contract compatibility. */
   issueId?: string;
   taskId?: string;
+  /** Provenance for complex work dispatched from a durable PlanContract step. */
+  planId?: string;
+  planStepId?: string;
+  planSourceRevision?: string;
   scopeSummary?: string;
   allowedPaths: string[];
   forbiddenPaths: string[];
@@ -324,6 +328,8 @@ export interface PlanStep {
   checks: string[];
   acceptanceCriteria: string[];
   status: PlanStepStatus;
+  /** WorkContract currently executing this step, when dispatched. */
+  workId?: string;
   evidenceRefs: EvidenceRef[];
 }
 

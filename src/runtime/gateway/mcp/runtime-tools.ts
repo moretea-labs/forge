@@ -254,10 +254,11 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
   }),
   definition('rh_work', 'Preferred ChatGPT facade: bounded planning, direct control, goal workloop, verification, repair, and small-brain delegate (codex/grok/claude).', {
     repo_id: repoId,
-    operation: { type: 'string', enum: ['start', 'continue', 'verify', 'repair', 'finalize', 'stop', 'delegate', 'plan_create', 'plan_get', 'plan_list', 'plan_approve', 'plan_supersede', 'runtime_status', 'runtime_operation_get', 'runtime_restart_controller', 'runtime_restart_gateway', 'runtime_restart_full', 'runtime_rollout', 'runtime_rollback', 'runtime_unlock_and_recover'], description: 'Defaults to start.' },
+    operation: { type: 'string', enum: ['start', 'continue', 'verify', 'repair', 'finalize', 'stop', 'delegate', 'plan_create', 'plan_get', 'plan_list', 'plan_approve', 'plan_supersede', 'runtime_status', 'runtime_operation_get', 'runtime_restart_controller', 'runtime_restart_gateway', 'runtime_restart_full', 'runtime_rollout', 'runtime_rollback', 'runtime_unlock_and_recover'], description: 'Defaults to start. Complex starts require plan_id and plan_step_id.' },
     objective: { type: 'string' },
     work_id: { type: 'string' },
     plan_id: { type: 'string' },
+    plan_step_id: { type: 'string', description: 'Approved PlanContract step to bind to a complex Goal Workloop start.' },
     scope_key: { type: 'string', description: 'Stable normalized scope identity used to prevent overlapping active plans.' },
     source_revision: { type: 'string', description: 'Repository revision observed during read-only planning preflight.' },
     plan_steps: { type: 'array', items: { type: 'object' }, description: 'Bounded plan steps with id, objective, dependencies, authoritative_files, allowed_paths, forbidden_paths, check_ids, and acceptance_criteria.' },
@@ -2266,8 +2267,11 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const workloopCtx = {
           workStore: store,
           handoffStore: store,
+          planStore: store,
           repoId: repository.repoId,
           availableChecks: checks,
+          sourceRevision: gitSnapshot(repository.canonicalRoot).head,
+          requirePlanForGoalWorkloop: true,
         };
 
         if (operation.startsWith('plan_')) {

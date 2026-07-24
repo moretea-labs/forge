@@ -31,6 +31,13 @@ MCP request
 | Managed Process | long typecheck/test that exceeds interactive wait | Same process, return `processId` |
 | Durable Workflow | approval, schedule, release/rollback, multi-phase, non-idempotent remote write | ExecutionJob |
 
+`ExecutionJob` is the durable authority whenever an operation needs scheduling,
+idempotency, cancellation, retry, lease recovery, or Plan dependency tracking.
+The Process Runtime is not a competing business workflow state machine: it is
+the command/process substrate and telemetry record used by direct and managed
+execution. A managed-process handle must not be used to advance a Plan step;
+Plan/Work dependencies consume durable Job or Work completion evidence.
+
 ## `run_check`
 
 - Ordinary package checks → Process Runtime (no LocalBridgeJob / ExecutionJob / Worker).

@@ -302,10 +302,10 @@ Issue
 
 ### 9.2 PlanContract
 
-复杂工作在开始执行前可以使用 PlanContract 固化读阶段得到的决策。它是预执行控制面，不持有 Worker、Lease、Worktree 或 Git 收尾职责：
+复杂工作在开始执行前使用 PlanContract 固化读阶段得到的决策。它是预执行控制面，不持有 Worker、Lease、Worktree 或 Git 收尾职责：
 
 ```text
-draft -> approved -> (future execution binding) -> finalized
+draft -> approved -> executing -> ready_to_finalize -> finalized
    |         |
    |         -> superseded / invalidated_by_drift
    -> superseded / cancelled
@@ -313,7 +313,7 @@ draft -> approved -> (future execution binding) -> finalized
 
 当前第一阶段通过 `rh_work.plan_create`、`plan_get`、`plan_list`、`plan_approve` 和 `plan_supersede` 提供有界操作，仍保持五个顶层 facade 工具。审批要求冻结的 source revision、唯一步骤 ID、机器可执行 checks、验收条件、有效依赖和不与已批准/执行计划重叠的 scope key。草稿可以并行评审；只有批准或执行中的计划会占用 scope。
 
-PlanContract 包含 goal、non-goals、assumptions、resolved decisions、stop/replan conditions、integration strategy 和步骤定义。执行派发尚未绑定 PlanContract；因此它不会改变现有 `rh_work.start`、GoalContract 或 WorkContract 状态机。后续切片必须在执行前校验 HEAD 漂移，并把 `planId + stepId` 写入 WorkContract 证据链。
+PlanContract 包含 goal、non-goals、assumptions、resolved decisions、stop/replan conditions、integration strategy 和步骤定义。复杂 `rh_work.start` 在创建 WorkContract 前必须提供已批准的 `plan_id + plan_step_id`；控制面以 repository HEAD 对比冻结的 source revision。漂移会把计划标记为 `invalidated_by_drift`，且不会创建 WorkContract。步骤使用持久锁按 `planId` 原子领取，记录 `workId`，并在 WorkContract 的验证/最终完成后推进到 `completed`；失败进入 `replanning`。Direct Control 仍不要求 PlanContract。
 
 ### 9.3 WorkContract
 
@@ -328,6 +328,7 @@ constraints and accessMode snapshot
 driver and worktreePolicy
 evidencePolicy and recoveryPolicy
 workerRef / worktreeRef
+planId / planStepId / planSourceRevision (complex work only)
 checkRefs / evidenceRefs / handoffRefs
 status and continuationPrompt
 ```

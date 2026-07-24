@@ -14,6 +14,11 @@ import {
   type WorkContractStoreOptions,
 } from './work-contract-store';
 import {
+  claimPlanStepForWork,
+  completePlanStepForWork,
+  type PlanContractStoreOptions,
+} from './plan-contract-store';
+import {
   classifyVerificationOutcome,
   normalizeCheckIds,
   reconcileVerificationHistory,
@@ -27,6 +32,7 @@ import type {
   EvidenceRef,
   ExecutionModeSelectionInput,
   FacadeResult,
+  PlanContract,
   PolicyDecision,
   SuggestedNextAction,
   VerificationRecord,
@@ -41,6 +47,10 @@ export interface GoalWorkloopContext {
   handoffStore: HandoffInboxStoreOptions;
   repoId: string;
   availableChecks?: readonly CheckDefinitionLike[];
+  planStore?: PlanContractStoreOptions;
+  sourceRevision?: string;
+  /** Runtime facade enables this for complex work; unit helpers remain reusable. */
+  requirePlanForGoalWorkloop?: boolean;
   now?: () => string;
 }
 
@@ -58,6 +68,8 @@ export interface GoalWorkloopStartInput {
   approvalConfirmed?: boolean;
   dryRun?: boolean;
   forceMode?: WorkContract['mode'];
+  planId?: string;
+  planStepId?: string;
 }
 
 export interface GoalWorkloopContinueInput {
@@ -396,8 +408,45 @@ export function startGoalWorkloop(
   const needsWorktree = input.constraints?.requireWorktree
     ?? (workspaceMode === 'isolated'
       || (workspaceMode === 'auto' && input.modeInput.requiresParallelism === true));
+  const generatedWorkId = workIdFor(input.objective);
+  const planRequired = ctx.requirePlanForGoalWorkloop === true;
+  if (planRequired && (!input.planId || !input.planStepId)) {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: 'PLAN_REQUIRED: complex Goal Workloop start requires an approved plan_id and plan_step_id.',
+      data: { executionStarted: false },
+      suggestedNextActions: [{ label: 'List active plans', tool: 'rh_work', operation: 'plan_list', risk: 'readonly', confidence: 'high' }],
+    });
+  }
+  if (input.planId || input.planStepId) {
+    if (!input.planId || !input.planStepId || !ctx.planStore || !ctx.sourceRevision) {
+      return buildFacadeResult({ status: 'blocked', summary: 'PLAN_CONTEXT_REQUIRED: plan_id, plan_step_id and a current source revision are required.', data: { executionStarted: false } });
+    }
+    let claimed: PlanContract;
+    try {
+      claimed = claimPlanStepForWork(ctx.planStore, {
+        planId: input.planId,
+        stepId: input.planStepId,
+        workId: generatedWorkId,
+        sourceRevision: ctx.sourceRevision,
+      });
+    } catch (error) {
+      return buildFacadeResult({
+        status: 'blocked',
+        summary: error instanceof Error ? error.message : 'PLAN_STEP_CLAIM_FAILED',
+        data: { planId: input.planId, planStepId: input.planStepId, executionStarted: false },
+      });
+    }
+    if (claimed.status === 'invalidated_by_drift') {
+      return buildFacadeResult({
+        status: 'blocked',
+        summary: `PLAN_SOURCE_DRIFT: ${claimed.planId} was invalidated because its source revision no longer matches. Replan before execution.`,
+        data: { planId: claimed.planId, executionStarted: false, replanRequired: true },
+      });
+    }
+  }
   const work = createWorkContract(ctx.workStore, {
-    workId: workIdFor(input.objective),
+    workId: generatedWorkId,
     repoId: ctx.repoId,
     mode: 'goal_workloop',
     objective: input.objective,
@@ -406,6 +455,9 @@ export function startGoalWorkloop(
     status: 'running',
     issueId: input.issueId,
     taskId: input.taskId,
+    planId: input.planId,
+    planStepId: input.planStepId,
+    planSourceRevision: input.planId ? ctx.sourceRevision : undefined,
     scopeSummary: input.modeInput.scopeClear ? 'scope declared at start' : 'scope incomplete',
     allowedPaths: input.allowedPaths ?? [],
     forbiddenPaths: input.forbiddenPaths ?? [],
@@ -821,6 +873,9 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
 
   if (input.forceFailed || completionEvidence.status === 'failed') {
     const updated = updateWorkContract(ctx.workStore, work.workId, { status: 'failed' });
+    if (updated.planId && updated.planStepId && ctx.planStore) {
+      completePlanStepForWork(ctx.planStore, { planId: updated.planId, stepId: updated.planStepId, workId: updated.workId, succeeded: false, evidenceRefs: updated.evidenceRefs });
+    }
     return buildFacadeResult({
       status: 'failed',
       summary: `Finalize result: failed. Acceptance failures: ${history.acceptanceFailures.join(', ') || 'forced'}.`,
@@ -877,6 +932,9 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
   }
 
   const updated = updateWorkContract(ctx.workStore, work.workId, { status: 'succeeded' });
+  if (updated.planId && updated.planStepId && ctx.planStore) {
+    completePlanStepForWork(ctx.planStore, { planId: updated.planId, stepId: updated.planStepId, workId: updated.workId, succeeded: true, evidenceRefs: updated.evidenceRefs });
+  }
   return buildFacadeResult({
     status: 'ok',
     summary: `Finalize result: succeeded for ${work.workId}.`,
@@ -982,6 +1040,8 @@ export function runGoalWorkloop(
         forceMode: args.force_mode === 'direct_control' || args.force_mode === 'goal_workloop' || args.force_mode === 'handoff_only'
           ? args.force_mode
           : undefined,
+        planId: typeof args.plan_id === 'string' ? args.plan_id : undefined,
+        planStepId: typeof args.plan_step_id === 'string' ? args.plan_step_id : undefined,
       });
     case 'continue':
       return continueGoalWorkloop(ctx, {
