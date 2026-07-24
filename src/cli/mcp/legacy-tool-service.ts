@@ -26,15 +26,12 @@ import {
   type EditOperation,
 } from "../editing/edit-session";
 import {
-  acceptTaskJob,
-  dispatchAcceptedTaskJob,
   cancelAgentJob,
   getAgentJob,
   getAgentJobEvents,
   getAgentJobLog,
   listAgentJobs,
   retryAgentJob,
-  startTaskJob,
 } from "../agent-jobs/job-manager";
 import {
   classifyGitHubCopilotPreflight,
@@ -82,7 +79,7 @@ import {
 import { exportControllerWorklog, parseWorklogCategory } from "../controller/worklog";
 import { inspectProjectGovernance, reconcileProjectGovernance } from "../controller/governance";
 import { assessWorkMode } from "../controller/work-mode";
-import { taskExecutionPolicy, taskWriteScopesConflict } from "../controller/execution-policy";
+import { taskExecutionPolicy } from "../controller/execution-policy";
 import { finishEditSession, finishTaskRun } from "../controller/completion-orchestrator";
 import { buildControllerTaskLedgerProjection } from "../controller/task-ledger";
 import { buildControllerContextPack } from "../controller/context-pack";
@@ -126,17 +123,12 @@ import {
   saveGitHubPluginConfig,
 } from "../github/plugin";
 import {
-  executeLocalBridgeJob,
   getLocalBridgeJobEvents,
   getLocalBridgeJobSnapshot,
   listLocalBridgeJobs,
   readLocalBridgeJobOutput,
   reconcileLocalBridgeJobs,
-  submitLocalBridgeJob,
 } from "../local-bridge/job-store";
-import type {
-  LocalBridgeJobAction,
-} from "../local-bridge/types";
 import { runHelper } from "../runtime/helper-runner";
 import {
   listSessions,
@@ -186,11 +178,6 @@ export type CallToolResult = Omit<SdkCallToolResult, "content"> & {
 };
 
 const EMPTY_SCHEMA = { type: "object", additionalProperties: false };
-
-// Preserve historical Local Bridge reads while preventing new Job creation.
-function localBridgeExecutionRetired(): boolean {
-  return true;
-}
 
 function textResult(
   value: unknown,
@@ -700,96 +687,6 @@ function resolveDispatchAgent(
   if (task.recommendedAgent) return task.recommendedAgent;
   const firstLocal = ctx.policy.execution.allowedAgents[0];
   return firstLocal ?? task.recommendedAgent ?? null;
-}
-
-function parseLocalBridgeAction(value: unknown): LocalBridgeJobAction | null {
-  const normalized = String(value ?? "").trim();
-  return normalized === "launch-task" ||
-    normalized === "quick-agent-session" ||
-    normalized === "run-check" ||
-    normalized === "verify-edit-session" ||
-    normalized === "repository-command"
-    ? normalized
-    : null;
-}
-
-function localBridgeRequestFromArgs(args: Record<string, unknown>) {
-  const action = parseLocalBridgeAction(args.action);
-  if (!action)
-    throw new Error(
-      "action must be launch-task, quick-agent-session, or run-check",
-    );
-  const requestedBy =
-    String(args.requested_by ?? "chatgpt").trim() || "chatgpt";
-  if (action === "launch-task") {
-    const issueId = String(args.issue_id ?? "").trim();
-    const taskId = String(args.task_id ?? "").trim();
-    if (!issueId || !taskId)
-      throw new Error("launch-task requires issue_id and task_id");
-    return {
-      action,
-      requestedBy,
-      payload: {
-        issueId,
-        taskId,
-        requestId: typeof args.request_id === "string" ? args.request_id.trim() || undefined : undefined,
-        agent: parseControllerAgent(args.agent) ?? undefined,
-        isolate: typeof args.isolate === "boolean" ? args.isolate : undefined,
-        timeoutMs:
-          typeof args.timeout_ms === "number" ? args.timeout_ms : undefined,
-        githubRepo:
-          typeof args.github_repo === "string" ? args.github_repo : undefined,
-        baseRef: typeof args.base_ref === "string" ? args.base_ref : undefined,
-        model: typeof args.model === "string" ? args.model : undefined,
-        createPullRequest:
-          typeof args.create_pull_request === "boolean"
-            ? args.create_pull_request
-            : undefined,
-        approveDestructive: args.approve_destructive === true,
-      },
-    } as const;
-  }
-  if (action === "run-check") {
-    const checkId = String(args.check_id ?? "").trim();
-    if (!checkId) throw new Error("run-check requires check_id");
-    return {
-      action,
-      requestedBy,
-      payload: {
-        checkId,
-        timeoutMs:
-          typeof args.timeout_ms === "number" ? args.timeout_ms : undefined,
-      },
-    } as const;
-  }
-  const title = String(args.title ?? "").trim();
-  const objective = String(args.objective ?? "").trim();
-  if (!title || !objective)
-    throw new Error("quick-agent-session requires title and objective");
-  const agent = parseControllerAgent(args.agent);
-  if (agent === "github-copilot")
-    throw new Error("quick-agent-session supports local codex or claude only");
-  return {
-    action,
-    requestedBy,
-    payload: {
-      title,
-      objective,
-      requestId: typeof args.request_id === "string" ? args.request_id.trim() || undefined : undefined,
-      summary: typeof args.summary === "string" ? args.summary : undefined,
-      allowedPaths: stringList(args.allowed_paths),
-      forbiddenPaths: stringList(args.forbidden_paths),
-      checks: stringList(args.checks),
-      acceptanceCriteria: stringList(args.acceptance_criteria),
-      risk: ["readonly", "low", "medium", "high", "destructive"].includes(String(args.risk)) ? args.risk as TaskRisk : "low",
-      agent: agent === "claude" || agent === "codex" ? agent : undefined,
-      isolate: typeof args.isolate === "boolean" ? args.isolate : undefined,
-      timeoutMs:
-        typeof args.timeout_ms === "number" ? args.timeout_ms : undefined,
-      ephemeral: typeof args.ephemeral === "boolean" ? args.ephemeral : true,
-      approveDestructive: args.approve_destructive === true,
-    },
-  } as const;
 }
 
 function runnerTimeoutMs(ctx: McpToolContext, value: unknown): number {
@@ -3268,53 +3165,15 @@ export async function callMcpTool(
         return textResult(payload);
       }
       case "quick_agent_session":
-        if (args.legacy_agent_run !== true) return errorResult("AGENT_RUN_DEPRECATED", "Kernel-managed Agent Runs are retired. Use rh_work controller_claim and the Thin Launcher.");
       case "submit_local_job": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult(
-            "TOOL_DISABLED",
-            `${name} requires the controller profile`,
-          );
-        if (localBridgeExecutionRetired()) {
-          audit(ctx, name, "blocked", args);
-          return errorResult(
-            "LOCAL_BRIDGE_JOB_RETIRED",
-            "New Local Bridge Jobs are retired. Create or claim WorkContract and use the Process Runtime or Thin Launcher.",
-          );
+        if (ctx.policy.profile !== "controller") {
+          return errorResult("TOOL_DISABLED", `${name} requires the controller profile`);
         }
-        const requestArgs = name === "quick_agent_session"
-          ? { ...args, action: "quick-agent-session" }
-          : args;
-        const request = localBridgeRequestFromArgs(requestArgs);
-        const job = submitLocalBridgeJob(ctx.repoRoot, request);
-        const result =
-          job.status === "approved"
-            ? executeLocalBridgeJob(ctx.repoRoot, job.jobId)
-            : job;
-        audit(ctx, name, "ok", args, undefined);
-        return textResult({
-          accepted: true,
-          job: {
-            jobId: result.jobId,
-            action: result.action,
-            status: result.status,
-            runId: result.runId,
-            issueId: result.issueId,
-            taskId: result.taskId,
-            updatedAt: result.updatedAt,
-          },
-          localController:
-            resolveLocalBridgeSurface({
-              controllerHome: resolveRepoPreferredControllerHome(ctx.repoRoot),
-              repoRoot: ctx.repoRoot,
-              allowProcessScan: false,
-            }).endpoint
-            ?? loadMcpRuntimeState(ctx.repoRoot)?.localController?.endpoint
-            ?? null,
-          next: result.runId
-            ? `Inspect Run ${result.runId}.`
-            : "Inspect the Job result.",
-        });
+        audit(ctx, name, "blocked", args);
+        return errorResult(
+          name === "quick_agent_session" ? "AGENT_RUN_DEPRECATED" : "LOCAL_BRIDGE_JOB_RETIRED",
+          "Kernel-managed Agent and Local Bridge Jobs are retired. Create or claim WorkContract and use Process Runtime or the Thin Launcher.",
+        );
       }
       case "list_local_jobs": {
         if (ctx.policy.profile !== "controller")
@@ -3621,39 +3480,12 @@ export async function callMcpTool(
             void error;
           }
         }
-        if (localBridgeExecutionRetired()) {
-          audit(ctx, name, "blocked", args);
-          return errorResult(
-            "PROCESS_RUNTIME_REQUIRED",
-            "This check cannot create a Local Bridge Job. Run a registered ordinary check through Process Runtime or use external Controller handling for durable checks.",
-            { checkId },
-          );
-        }
-        const job = submitLocalBridgeJob(ctx.repoRoot, {
-          action: "run-check",
-          requestedBy: "mcp:run_check",
-          payload: {
-            checkId,
-            timeoutMs: typeof args.timeout_ms === "number" ? args.timeout_ms : undefined,
-            requestId: typeof args.request_id === "string" ? args.request_id.trim() || undefined : undefined,
-          },
-        });
-        const result = job.status === "approved"
-          ? executeLocalBridgeJob(ctx.repoRoot, job.jobId)
-          : job;
-        audit(ctx, name, "ok", args);
-        return textResult({
-          job: result,
-          localController:
-            resolveLocalBridgeSurface({
-              controllerHome: resolveRepoPreferredControllerHome(ctx.repoRoot),
-              repoRoot: ctx.repoRoot,
-              allowProcessScan: false,
-            }).endpoint
-            ?? loadMcpRuntimeState(ctx.repoRoot)?.localController?.endpoint
-            ?? null,
-          next: `Inspect Job ${result.jobId} with get_local_job.`,
-        });
+        audit(ctx, name, "blocked", args);
+        return errorResult(
+          "PROCESS_RUNTIME_REQUIRED",
+          "This check cannot create a Local Bridge Job. Run a registered ordinary check through Process Runtime or use external Controller handling for durable checks.",
+          { checkId },
+        );
       }
       case "list_issues": {
         if (ctx.policy.profile !== "controller")
@@ -4169,216 +4001,32 @@ export async function callMcpTool(
       }
       case "dispatch_task": {
         if (ctx.policy.profile !== "controller") return errorResult("TOOL_DISABLED", "dispatch_task requires the controller profile");
-        if (args.legacy_agent_run !== true) return errorResult("AGENT_RUN_DEPRECATED", "Kernel-managed Agent Runs are retired. Create or claim a WorkContract through rh_work, then start an external SuperController session through the Thin Launcher.");
-        const issueId = String(args.issue_id ?? "").trim();
-        const taskId = String(args.task_id ?? "").trim();
-        if (!issueId) return errorResult("ISSUE_ID_REQUIRED", "dispatch_task requires issue_id. Use quick_agent_session for direct Codex/Claude work without an Issue.");
-        if (!taskId) return errorResult("TASK_ID_REQUIRED", "dispatch_task requires task_id. Use quick_agent_session for direct Codex/Claude work without a Task.");
-        const issue = getIssue(ctx.repoRoot, issueId);
-        const task = issue.tasks.find((entry) => entry.id === taskId);
-        if (!task) return errorResult("TASK_NOT_FOUND", `task not found: ${issueId}/${taskId}`);
-        const requested = resolveDispatchAgent(ctx, task, args.agent);
-        if (!requested) return errorResult("AGENT_REQUIRED", "No agent is selected or enabled. Pass agent explicitly or enable a local agent in the controller profile.");
-        const requestId = typeof args.request_id === "string" ? args.request_id.trim() || undefined : undefined;
-        const health = taskExecutorHealth(
-          ctx,
-          task,
-          requested,
-          typeof args.github_repo === "string" ? args.github_repo : undefined,
+        audit(ctx, name, "blocked", args);
+        return errorResult(
+          "AGENT_RUN_DEPRECATED",
+          "Kernel-managed Agent Runs are retired. Create or claim a WorkContract through rh_work, then start an external SuperController session through the Thin Launcher.",
         );
-        if (health) return dispatchExecutorHealthResult(health, { requestId, retryable: false });
-        try {
-          const accepted = acceptTaskJob({
-            repoRoot: ctx.repoRoot,
-            issueId,
-            taskId,
-            agent: requested,
-            executorPolicy: {
-              agentRunner: ctx.policy.execution.agentRunner,
-              allowedAgents: ctx.policy.execution.allowedAgents,
-            },
-            timeoutMs: runnerTimeoutMs(ctx, args.timeout_ms),
-            isolate: typeof args.isolate === "boolean" ? args.isolate : undefined,
-            githubRepo: typeof args.github_repo === "string" ? args.github_repo : undefined,
-            baseRef: typeof args.base_ref === "string" ? args.base_ref : undefined,
-            model: typeof args.model === "string" ? args.model : undefined,
-            createPullRequest: args.create_pull_request !== false,
-            requestId,
-            approveDestructive: args.approve_destructive === true,
-          });
-          dispatchAcceptedTaskJob(ctx.repoRoot, accepted.runId);
-          audit(ctx, name, "ok", args, accepted.runId);
-          return textResult(compactDispatchRun(accepted as unknown as Record<string, unknown>));
-        } catch (error) {
-          if (isExecutorHealthError(error)) {
-            audit(ctx, name, "blocked", args, undefined, error.message);
-            return dispatchExecutorHealthResult(error.executorHealth, { requestId, retryable: false });
-          }
-          const message = error instanceof Error ? error.message : String(error);
-          audit(ctx, name, "failed", args, undefined, message);
-          return dispatchErrorResult("RUN_PERSIST_FAILED", message, { requestId, retryable: true });
-        }
       }
       case "launch_issue": {
         if (ctx.policy.profile !== "controller") return errorResult("TOOL_DISABLED", "launch_issue requires the controller profile");
-        if (args.legacy_agent_run !== true) return errorResult("AGENT_RUN_DEPRECATED", "Kernel-managed Agent Runs are retired. Convert the Issue tasks to WorkContracts and claim them through rh_work.");
-        const issueId = String(args.issue_id ?? "");
-        const issue = getIssue(ctx.repoRoot, issueId);
-        const maxParallel = Math.min(Math.max(typeof args.max_parallel === "number" ? Math.trunc(args.max_parallel) : 2, 1), 4);
-        const selected: ControllerTask[] = [];
-        const skipped: Array<{ taskId: string; reason: string; readiness?: unknown; executorHealth?: ExecutorHealth }> = [];
-        for (const task of issue.tasks) {
-          const readiness = inspectTaskReadiness(ctx.repoRoot, issueId, task.id, {
-            approveDestructive: args.approve_destructive === true,
-          });
-          if (!readiness.ready) {
-            skipped.push({ taskId: task.id, reason: readiness.blockers.map((entry) => entry.code).join(", ") || "not dispatchable", readiness });
-            continue;
-          }
-          if (selected.length >= maxParallel) break;
-          if (selected.some((entry) => taskWriteScopesConflict(entry, task))) {
-            skipped.push({ taskId: task.id, reason: "allowed path scope overlaps another selected Task" });
-            continue;
-          }
-          selected.push(task);
-        }
-        const runs = [];
-        for (const task of selected) {
-          const agent = resolveDispatchAgent(ctx, task, args.agent);
-          if (!agent) {
-            skipped.push({ taskId: task.id, reason: "no runtime agent selected or enabled" });
-            continue;
-          }
-          const health = taskExecutorHealth(
-            ctx,
-            task,
-            agent,
-            typeof args.github_repo === "string" ? args.github_repo : undefined,
-          );
-          if (health) {
-            skipped.push({ taskId: task.id, reason: health.message, executorHealth: health });
-            continue;
-          }
-          runs.push(startTaskJob({
-            repoRoot: ctx.repoRoot,
-            issueId,
-            taskId: task.id,
-            agent,
-            executorPolicy: {
-              agentRunner: ctx.policy.execution.agentRunner,
-              allowedAgents: ctx.policy.execution.allowedAgents,
-            },
-            timeoutMs: runnerTimeoutMs(ctx, args.timeout_ms),
-            isolate: typeof args.isolate === "boolean" ? args.isolate : undefined,
-            githubRepo: typeof args.github_repo === "string" ? args.github_repo : undefined,
-            baseRef: typeof args.base_ref === "string" ? args.base_ref : undefined,
-            model: typeof args.model === "string" ? args.model : undefined,
-            createPullRequest: args.create_pull_request !== false,
-            approveDestructive: args.approve_destructive === true,
-          }));
-        }
-        const readiness = inspectIssueReadiness(ctx.repoRoot, issueId);
-        audit(ctx, name, runs.length > 0 ? "ok" : "failed", args, `tasks/issues/${issue.id}`);
-        return textResult({
-          readiness,
-          dispatched: runs.length,
-          runs: runs.map((run) => compactDispatchRun(run as unknown as Record<string, unknown>)),
-          skipped,
-        });
+        audit(ctx, name, "blocked", args);
+        return errorResult(
+          "AGENT_RUN_DEPRECATED",
+          "Kernel-managed Agent Runs are retired. Convert the Issue tasks to WorkContracts and claim them through rh_work.",
+        );
       }
       case "dispatch_ready_tasks": {
         if (ctx.policy.profile !== "controller") return errorResult("TOOL_DISABLED", "dispatch_ready_tasks requires the controller profile");
-        const requestedIssue = typeof args.issue_id === "string" && args.issue_id.trim() ? args.issue_id.trim() : undefined;
-        const maxParallel = Math.min(Math.max(typeof args.max_parallel === "number" ? Math.trunc(args.max_parallel) : 2, 1), 4);
-        const batchRequestId = typeof args.request_id === "string" ? args.request_id.trim() || undefined : undefined;
-        const candidates: Array<{ issueId: string; task: ControllerTask }> = [];
-        const skipped: Array<{ issueId: string; taskId: string; reason: string; executorHealth?: ExecutorHealth }> = [];
-        for (const issue of listIssues(ctx.repoRoot)) {
-          if (requestedIssue && issue.id !== requestedIssue) continue;
-          if (issue.archivedAt || ["done", "cancelled"].includes(issue.status)) continue;
-          for (const task of issue.tasks) {
-            const readiness = inspectTaskReadiness(ctx.repoRoot, issue.id, task.id, {
-                approveDestructive: args.approve_destructive === true,
-            });
-            if (readiness.ready) candidates.push({ issueId: issue.id, task });
-            else if (readiness.blockers.length > 0) skipped.push({ issueId: issue.id, taskId: task.id, reason: readiness.blockers.map((entry) => entry.code).join(", ") });
-          }
-        }
-        const selected: Array<{ issueId: string; task: ControllerTask }> = [];
-        for (const candidate of candidates) {
-          if (selected.length >= maxParallel) break;
-          if (selected.some((entry) => taskWriteScopesConflict(entry.task, candidate.task))) {
-            skipped.push({ issueId: candidate.issueId, taskId: candidate.task.id, reason: "allowed path scope overlaps another selected Task" });
-            continue;
-          }
-          selected.push(candidate);
-        }
-        const accepted = [];
-        for (const candidate of selected) {
-          const agent = resolveDispatchAgent(ctx, candidate.task, args.agent);
-          if (!agent) {
-            skipped.push({ issueId: candidate.issueId, taskId: candidate.task.id, reason: "no runtime agent selected or enabled" });
-            continue;
-          }
-          const health = taskExecutorHealth(
-            ctx,
-            candidate.task,
-            agent,
-            typeof args.github_repo === "string" ? args.github_repo : undefined,
-          );
-          if (health) {
-            skipped.push({ issueId: candidate.issueId, taskId: candidate.task.id, reason: health.message, executorHealth: health });
-            continue;
-          }
-          const requestId = batchRequestId ? `${batchRequestId}:${candidate.issueId}:${candidate.task.id}` : undefined;
-          try {
-            const summary = acceptTaskJob({
-              repoRoot: ctx.repoRoot,
-              issueId: candidate.issueId,
-              taskId: candidate.task.id,
-              agent,
-              executorPolicy: {
-                agentRunner: ctx.policy.execution.agentRunner,
-                allowedAgents: ctx.policy.execution.allowedAgents,
-              },
-              timeoutMs: runnerTimeoutMs(ctx, args.timeout_ms),
-              isolate: typeof args.isolate === "boolean" ? args.isolate : undefined,
-              githubRepo: typeof args.github_repo === "string" ? args.github_repo : undefined,
-              baseRef: typeof args.base_ref === "string" ? args.base_ref : undefined,
-              model: typeof args.model === "string" ? args.model : undefined,
-              createPullRequest: args.create_pull_request !== false,
-              requestId,
-              approveDestructive: args.approve_destructive === true,
-            });
-            dispatchAcceptedTaskJob(ctx.repoRoot, summary.runId);
-            accepted.push(summary);
-          } catch (error) {
-            if (isExecutorHealthError(error)) {
-              skipped.push({
-                issueId: candidate.issueId,
-                taskId: candidate.task.id,
-                reason: error.executorHealth.message,
-                executorHealth: error.executorHealth,
-              });
-              continue;
-            }
-            skipped.push({
-              issueId: candidate.issueId,
-              taskId: candidate.task.id,
-              reason: error instanceof Error ? error.message : String(error),
-            });
-          }
-        }
-        audit(ctx, name, accepted.length > 0 ? "ok" : "failed", args);
-        return textResult({
-          requestedIssue,
-          dispatched: accepted.length,
-          runIds: accepted.map((entry) => entry.runId),
-          accepted: accepted.map((entry) => compactDispatchRun(entry as unknown as Record<string, unknown>)),
-          skipped,
-          currentFocus: loadControllerProjectState(ctx.repoRoot).currentIssueId,
-          focusIsInformational: true,
-        });
+        audit(ctx, name, "blocked", args);
+        return errorResult(
+          "AGENT_RUN_DEPRECATED",
+          "Kernel-managed batch dispatch is retired. Convert ready Tasks into WorkContracts, claim them explicitly, and launch peer external Controllers through the Thin Launcher.",
+          {
+            requestedIssue: typeof args.issue_id === "string" && args.issue_id.trim() ? args.issue_id.trim() : undefined,
+            currentFocus: loadControllerProjectState(ctx.repoRoot).currentIssueId,
+            focusIsInformational: true,
+          },
+        );
       }
       case "get_task_run": {
         if (ctx.policy.profile !== "controller")
@@ -4882,46 +4530,12 @@ export async function callMcpTool(
           return errorResult("TOOL_DISABLED", "verify_edit_session requires the controller profile");
         const session = getEditSession(ctx.repoRoot, String(args.session_id ?? ""));
         const requestId = typeof args.request_id === "string" ? args.request_id.trim() || undefined : undefined;
-        if (localBridgeExecutionRetired()) {
-          audit(ctx, name, "blocked", args, session.diffPath);
-          return errorResult(
-            "VERIFY_EDIT_SESSION_LOCAL_JOB_RETIRED",
-            "Edit-session verification no longer creates a Local Bridge Job. Run checks through Process Runtime, then finalize with the recorded evidence.",
-            { sessionId: session.sessionId, revision: session.currentRevision, requestId },
-          );
-        }
-        const job = submitLocalBridgeJob(ctx.repoRoot, {
-          action: "verify-edit-session",
-          requestedBy: "mcp:verify_edit_session",
-          payload: {
-            sessionId: session.sessionId,
-            revision: session.currentRevision,
-            requestId,
-            checkIds: Array.isArray(args.check_ids) ? stringList(args.check_ids) : undefined,
-            reviewer: typeof args.reviewer === "string" ? args.reviewer : undefined,
-            note: typeof args.note === "string" ? args.note : undefined,
-          },
-        });
-        const result = job.status === "approved"
-          ? executeLocalBridgeJob(ctx.repoRoot, job.jobId)
-          : job;
-        audit(ctx, name, "ok", args, session.diffPath);
-        return textResult({
-          accepted: true,
-          job: {
-            jobId: result.jobId,
-            action: result.action,
-            status: result.status,
-            updatedAt: result.updatedAt,
-          },
-          editSession: {
-            sessionId: session.sessionId,
-            revision: session.currentRevision,
-            status: session.status,
-            diffPath: session.diffPath,
-          },
-          next: `Inspect Job ${result.jobId} with get_local_job.`,
-        });
+        audit(ctx, name, "blocked", args, session.diffPath);
+        return errorResult(
+          "VERIFY_EDIT_SESSION_LOCAL_JOB_RETIRED",
+          "Edit-session verification no longer creates a Local Bridge Job. Run checks through Process Runtime, then finalize with the recorded evidence.",
+          { sessionId: session.sessionId, revision: session.currentRevision, requestId },
+        );
       }
       case "rollback_edit_session": {
         if (ctx.policy.profile !== "controller")

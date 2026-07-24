@@ -142,6 +142,11 @@ forbid(
   /\bsubmitLocalBridgeJob\b|\bexecuteLocalBridgeJob\b|\bwaitForRepositoryCommandHandoff\b/,
   'Repository command MCP fallback must use Process Runtime or an external-Controller handoff, never Local Bridge Jobs',
 );
+forbid(
+  'src/cli/mcp/legacy-tool-service.ts',
+  /\bsubmitLocalBridgeJob\b|\bexecuteLocalBridgeJob\b|\bacceptTaskJob\b|\bdispatchAcceptedTaskJob\b|\bstartTaskJob\b|\blegacy_agent_run\b/,
+  'Legacy MCP compatibility may read or cancel historical Jobs and Runs but must not create or dispatch new ones',
+);
 forbid('src/runtime/gateway/mcp/router.ts', /Use process_get \/ process_wait \/ process_logs/, 'Gateway follow-up instructions must use an always-exposed neutral Work facade');
 requireMatch(
   'src/runtime/gateway/mcp/router.ts',

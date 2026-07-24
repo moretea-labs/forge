@@ -575,3 +575,18 @@ Date: 2026-07-24
 - `package:check:type`: pass.
 - `package:check:runtime-architecture`: pass, 32 modules/documents checked.
 
+## Legacy MCP Job and Agent dispatch convergence
+
+Date: 2026-07-24
+
+- Removed the `legacy_agent_run=true` backdoors from `dispatch_task` and `launch_issue`.
+- Retired the previously unguarded `dispatch_ready_tasks` Agent Run creation and batch dispatch path.
+- Removed Local Bridge Job creation from `quick_agent_session`, `submit_local_job`, `run_check` fallback, and `verify_edit_session`.
+- Historical Run and Local Bridge Job read/cancel tools remain available; compatibility tool names now return stable structured retirement responses.
+- Removed obsolete parser, request-construction, submission, and dispatch imports/helpers.
+- Runtime architecture gate now forbids Agent/Local Bridge creation and the legacy opt-in flag in `legacy-tool-service.ts`.
+- Focused MCP controller/tools, direct-agent, Local Bridge, and target-architecture suite: **70 pass / 0 fail**.
+- `package:check:type`: pass.
+- `package:check:mcp-compatibility`: pass.
+- `package:check:runtime-architecture`: pass, 32 modules/documents checked.
+
