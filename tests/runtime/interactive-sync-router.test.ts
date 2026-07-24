@@ -12,9 +12,10 @@ describe('interactive sync routing policy', () => {
     expect(source).toContain('begin_edit_session');
     expect(source).toContain('apply_patch');
     expect(source).toContain('wantsAsyncExecution');
-    expect(source).toContain('waitForExecutionJob');
-    expect(source).toContain('buildJobOperationDigest');
-    expect(source).toContain('buildAcceptedQueuedDigest');
+    expect(source).toContain('EXECUTION_JOB_RETIRED');
+    expect(source).not.toContain('createExecutionJob');
+    expect(source).not.toContain('waitForExecutionJob');
+    expect(source).not.toContain('buildAcceptedQueuedDigest');
   });
 
   test('legacy Run terminalization remains synchronous while relocation is blocked', () => {

@@ -475,5 +475,18 @@ the retired paths:
 - Gmail backlog cursor test: timeout raised to 20s for multi-page hydration.
 
 Not mergeable until full `bun test` is green on this worktree and the user
-explicitly requests merge/rollout. Main remains untouched; no push.
+explicitly requests merge/rollout. Main remains unmerged; no push.
+
+## Independent final-suite verification and Router convergence
+
+Date: 2026-07-24
+
+- Independent rerun at `0cd734b3`: **1944 pass / 0 fail** across 224 files.
+- Removed the unreachable Gateway Router ExecutionJob creation, wait, and queued-response branch.
+- Router durable classifications now stop at the explicit `EXECUTION_JOB_RETIRED` external-controller handoff.
+- Runtime architecture gate now forbids `createExecutionJob` / `getExecutionJob` references in the Gateway Router.
+- Focused Router + target-architecture tests: **10 pass / 0 fail**.
+- `package:check:type`: pass.
+- `package:check:runtime-architecture`: pass, 32 modules/documents checked.
+- The original main checkout has untracked review/research files, so describe main as unmerged rather than an untouched working tree.
 

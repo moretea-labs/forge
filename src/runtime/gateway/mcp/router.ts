@@ -2,7 +2,6 @@ import { createHash } from 'crypto';
 import type { CallToolResult, McpToolDefinition } from '../../../cli/mcp/tools';
 import {
   buildMultiRepositoryToolDefinitions,
-  repositoryScopedToolArgs,
   type MultiRepositoryMcpToolContext,
 } from '../../../cli/mcp/multi-repository';
 import { repositoryToolDefinitions } from '../../../cli/mcp/repository-tools';
@@ -10,19 +9,11 @@ import { runtimeToolDefinitions } from './runtime-tools';
 import { executionToolDefinitions } from './execution-tools';
 import { processToolDefinitions } from './process-tools';
 import { resolveRepositorySelection } from '../../../cli/repositories/registry';
-import { ensureRepositoryRuntimeStorage } from '../../../cli/repositories/runtime-storage';
-import { createExecutionJob, getExecutionJob } from '../../execution/jobs/store';
 import type {
-  ExecutionJobPriority,
-  ExecutionJobType,
   ExecutionOperationMetadata,
   ExecutionTimeoutPolicy,
 } from '../../execution/jobs/types';
-import { waitForExecutionJob } from '../../execution/jobs/wait';
-import { ensureControllerDaemon } from '../../control-plane/daemon-client';
-import { buildAcceptedQueuedDigest, buildJobOperationDigest } from '../../control-plane/facade/operation-digest';
 import { claimsForMcpOperation } from './resource-policy';
-import { commandValue, normalizeRepositoryCommand } from '../../../cli/repositories/command-normalization';
 import { classifyRepositoryCommand, classifyRepositoryCommandReplay } from '../../../cli/repositories/command-classifier';
 import {
   isFastEligibleTool,
@@ -128,8 +119,6 @@ const INTERACTIVE_SYNC_WRITE_TOOLS = new Set([
   'finish_task_run',
   'cancel_task_run',
 ]);
-const P0_TOOLS = new Set(['run_check', 'verify_edit_session', 'finish_edit_session', 'repository_command_execute']);
-const P2_TOOLS = new Set(['write_prd', 'write_sprint', 'write_plan', 'publish_issue_to_github']);
 const AGENT_DELEGATION_TOOLS = new Set([
   'dispatch_task',
   'launch_issue',
@@ -359,22 +348,6 @@ export function shouldCreateDurableJob(
   return true;
 }
 
-function jobType(name: string): ExecutionJobType {
-  if (name === 'run_check') return 'check';
-  if (name === 'verify_edit_session' || name === 'finish_edit_session') return 'verify-edit';
-  if (name === 'repository_command_execute' || name === 'repository_command_preview') return 'repository-command';
-  if (name === 'integrate_task_run') return 'integration';
-  if (['dispatch_task', 'launch_issue', 'dispatch_ready_tasks', 'retry_task_run'].includes(name)) return 'dispatch-task';
-  if (['quick_agent_session', 'submit_local_job'].includes(name)) return 'agent-run';
-  return 'mcp-tool';
-}
-
-function priority(name: string): ExecutionJobPriority {
-  if (P0_TOOLS.has(name)) return 'P0';
-  if (P2_TOOLS.has(name)) return 'P2';
-  return 'P1';
-}
-
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === 'object') {
@@ -388,11 +361,6 @@ function canonical(value: unknown): unknown {
 
 export function hashMcpToolArguments(args: Record<string, unknown>): string {
   return createHash('sha256').update(JSON.stringify(canonical(args))).digest('hex').slice(0, 20);
-}
-
-function automaticRequestId(name: string, repoId: string, args: Record<string, unknown>): string {
-  const window = Math.floor(Date.now() / (5 * 60_000));
-  return `mcp:auto:${name}:${repoId}:${hashMcpToolArguments(args)}:${window}`;
 }
 
 export function validateMcpToolArguments(name: string, definition: McpToolDefinition, args: Record<string, unknown>): void {
@@ -658,175 +626,8 @@ export async function routeDurableMcpCall(
     });
   }
 
-  if (!shouldCreateDurableJob(ctx, name, args, opts)) {
-    // Fast/direct: leave execution to repository facade / runtime tool handlers.
-    // Returning undefined lets the MCP server call the direct tool path without
-    // durable side effects (no ExecutionJob, LocalJob, Worker, or Scheduler wake).
-    return undefined;
-  }
-
-  const restoringDisabledRepository = name === 'repository_update'
-    && typeof args.repo_id === 'string'
-    && args.enabled === true;
-  const isRepositoryTool = name.startsWith('repository_');
-  const controllerScopedRepositoryTool = name === 'repository_register'
-    || (name === 'repository_workbench' && typeof args.repo_id !== 'string' && typeof args.checkout_id !== 'string');
-  const repository = controllerScopedRepositoryTool
-    ? undefined
-    : resolveRepositorySelection({
-      repoId: typeof args.repo_id === 'string' ? args.repo_id : undefined,
-      checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
-      explicitPath: ctx.explicitRepository?.canonicalRoot,
-      controllerHome: ctx.controllerHome,
-      allowSoleRepository: true,
-      ...(restoringDisabledRepository ? { allowDisabledReason: 'restore' as const } : {}),
-    });
-  const repoId = repository?.repoId ?? '__controller__';
-  const checkoutId = repository?.activeCheckoutId;
-  if (repository) {
-    const storage = ensureRepositoryRuntimeStorage(repository, ctx.controllerHome);
-    if (!storage.readyForExecution) throw new Error(`RUNTIME_STORAGE_NOT_READY: ${storage.warnings.join('; ')}`);
-  }
-
-  const requestId = typeof args.request_id === 'string' && args.request_id.trim()
-    ? args.request_id.trim()
-    : automaticRequestId(name, repoId, args);
-  const workerArgs = isRepositoryTool
-    ? { ...args }
-    : repositoryScopedToolArgs(name, args, repository!);
-  if (name === 'repository_command_execute' || name === 'repository_command_preview') {
-    workerArgs.command = commandValue(normalizeRepositoryCommand(workerArgs.command));
-  }
-  validateMcpToolArguments(name, injectDurableCommandFields(definition), workerArgs);
-  delete workerArgs.request_id;
-  delete workerArgs.apply_mode;
-  delete workerArgs.wait;
-  delete workerArgs.wait_ms;
-  delete workerArgs.await_result;
-  delete workerArgs.wait_for_result;
-  const agentDelegation = AGENT_DELEGATION_TOOLS.has(name);
-  const operationExecutionTimeoutMs = operationExecutionTimeoutMsForMcpCall(name, args);
-  if (agentDelegation) workerArgs.timeout_ms = operationExecutionTimeoutMs;
-  delete workerArgs.admission_timeout_ms;
-  delete workerArgs.queue_timeout_ms;
-  delete workerArgs.execution_timeout_ms;
-  delete workerArgs.interactive_wait_ms;
-  const semanticKey = `${isRepositoryTool ? 'repository-tool' : 'mcp-tool'}:${name}:${repoId}:${hashMcpToolArguments(workerArgs)}`;
-  const claims = claimsForMcpOperation(name, workerArgs, repoId, checkoutId);
-  const timeoutPolicy = executionTimeoutPolicyForMcpCall(name, args);
-  const operationMetadata = operationMetadataForTool(
-    name,
-    definition,
-    claims,
-    operationExecutionTimeoutMs,
-    workerArgs,
-    repository?.defaultBranch,
-    timeoutPolicy,
-  );
-  // Refresh and fence the daemon before persisting work. Creating the Job first
-  // can leave a newly submitted operation associated with a stale Controller
-  // epoch when the long-lived Gateway survives a daemon restart.
-  const daemon = ensureControllerDaemon(ctx.controllerHome);
-  const created = createExecutionJob(ctx.controllerHome, {
-    repoId,
-    checkoutId,
-    type: jobType(name),
-    requestId,
-    semanticKey,
-    priority: priority(name),
-    origin: { surface: 'mcp', actor: name, correlationId: requestId },
-    payload: {
-      operation: name,
-      arguments: workerArgs,
-      target: isRepositoryTool ? 'repository-tool' : 'mcp-tool',
-      profile: ctx.policy.profile,
-      toolset: ctx.toolset,
-      enableChatgptBrowser: ctx.enableChatgptBrowser === true,
-      enableDevRunner: ctx.policy.execution.agentRunner,
-      allowedAgents: [...ctx.policy.execution.allowedAgents],
-      runnerTimeoutMs: ctx.policy.execution.runnerTimeoutMs,
-      runnerMaxTimeoutMs: ctx.policy.execution.runnerMaxTimeoutMs,
-      // Preserve authenticated Controller identity for worker-side execution of
-      // durable Work operations. The public request may omit session_id because
-      // the MCP transport binds it in the context.
-      sessionId: typeof args.session_id === 'string' && args.session_id.trim()
-        ? args.session_id.trim()
-        : ctx.sessionId,
-      principalId: ctx.principalId,
-      controllerInstanceId: ctx.controllerInstanceId,
-    },
-    resourceClaims: claims,
-    timeoutMs: timeoutPolicy.executionTimeoutMs,
-    timeoutPolicy,
-    maxAttempts: 1,
-    operationMetadata,
-  });
-  if (wantsWaitForResult(args)) {
-    const waited = await waitForExecutionJob({
-      controllerHome: ctx.controllerHome,
-      repoId,
-      jobId: created.job.jobId,
-      timeoutMs: waitTimeoutMs(args),
-    });
-    const digest = buildJobOperationDigest(waited.job, {
-      waited: true,
-      stillRunning: waited.timedOut,
-    });
-    return result({
-      accepted: true,
-      waited: true,
-      timedOut: waited.timedOut,
-      waitedMs: waited.waitedMs,
-      jobId: waited.job.jobId,
-      repoId,
-      checkoutId,
-      status: waited.job.status,
-      requestId: waited.job.requestId,
-      deduplicated: created.deduplicated,
-      daemon: { status: daemon.status, pid: daemon.pid },
-      digest,
-      summary: digest.summary,
-      phase: digest.phase,
-      statusLabel: digest.statusLabel,
-      errorClass: digest.errorClass,
-      errorMessage: digest.errorMessage,
-      changedFiles: digest.changedFiles,
-      suggestedNextActions: digest.suggestedNextActions,
-      next: waited.timedOut
-        ? `Still ${waited.job.status}. Poll get_job/work_get without waiting; use work_wait only when blocking is explicitly required.`
-        : digest.summary,
-    });
-  }
-
-  const queued = getExecutionJob(ctx.controllerHome, repoId, created.job.jobId);
-  const digest = buildAcceptedQueuedDigest({
-    jobId: queued.jobId,
-    requestId: queued.requestId,
-    operation: name,
-    status: queued.status,
-    deduplicated: created.deduplicated,
-  });
-  return result({
-    accepted: true,
-    mode: 'durable',
-    path: 'durable',
-    routing: {
-      path: 'durable',
-      reasons: classification.reasons,
-      ...(classification.decision ? { decision: classification.decision } : {}),
-    },
-    jobId: created.job.jobId,
-    repoId,
-    checkoutId,
-    status: created.job.status,
-    requestId: created.job.requestId,
-    deduplicated: created.deduplicated,
-    daemon: { status: daemon.status, pid: daemon.pid },
-    digest,
-    summary: digest.summary,
-    phase: digest.phase,
-    statusLabel: digest.statusLabel,
-    suggestedNextActions: digest.suggestedNextActions,
-    next: `Continue independent work, then poll get_job/work_get without waiting. Use work_wait only when blocking is explicitly required.`,
-  });
+  // Durable classifications have already returned the explicit external-controller
+  // handoff above. All remaining tools are direct, fast, or self-managed and must
+  // not retain a dormant ExecutionJob creation branch.
+  return undefined;
 }

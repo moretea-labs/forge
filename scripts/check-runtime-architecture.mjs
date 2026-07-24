@@ -88,9 +88,13 @@ const executionRegion = executionToolCall >= 0 && durableCallAfterExecution > ex
 if (executionRegion.includes('forceDurable: true') && executionRegion.includes('isDurableWorkOperation')) {
   failures.push('Public MCP Work mutations must not force the retired durable ExecutionJob path');
 }
-requireText('src/runtime/gateway/mcp/router.ts', 'createExecutionJob');
-requireText('src/runtime/gateway/mcp/router.ts', 'requestId');
-requireText('src/runtime/gateway/mcp/router.ts', 'semanticKey');
+forbid(
+  'src/runtime/gateway/mcp/router.ts',
+  /\bcreateExecutionJob\b|\bgetExecutionJob\b/,
+  'Gateway Router must not retain dormant ExecutionJob creation or lookup paths',
+);
+requireText('src/runtime/gateway/mcp/router.ts', 'executionJobCreationRetired');
+requireText('src/runtime/gateway/mcp/router.ts', "'EXECUTION_JOB_RETIRED'");
 requireText('src/runtime/gateway/mcp/execution-tools.ts', 'isDurableWorkOperation');
 requireText('src/runtime/gateway/mcp/execution-tools.ts', "'work_execute'");
 requireText('src/runtime/gateway/mcp/execution-tools.ts', "'work_validate'");
@@ -101,10 +105,9 @@ requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'managedProcessOperation
 forbid('src/runtime/gateway/mcp/router.ts', /Use process_get \/ process_wait \/ process_logs/, 'Gateway follow-up instructions must use an always-exposed neutral Work facade');
 requireMatch(
   'src/runtime/gateway/mcp/router.ts',
-  /const DIRECT_REPOSITORY_TOOLS = new Set\(\[[\s\S]*?'repository_list'[\s\S]*?'repository_get'[\s\S]*?\]\);/,
-  'declare DIRECT_REPOSITORY_TOOLS with repository_list and repository_get',
+  /const DIRECT_REPOSITORY_TOOLS = new Set\(\[[\s\S]*?'repository_list'[\s\S]*?'repository_get'[\s\S]*?'repository_workbench'[\s\S]*?\]\);/,
+  'declare DIRECT_REPOSITORY_TOOLS with repository_list, repository_get, and repository_workbench',
 );
-requireText('src/runtime/gateway/mcp/router.ts', "name === 'repository_workbench'");
 requireText('src/runtime/gateway/mcp/runtime-tools.ts', "case 'controller_context'");
 requireText('src/runtime/gateway/mcp/runtime-tools.ts', "case 'local_bridge_status'");
 requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'readAgentExecutableReadinessSnapshot');
