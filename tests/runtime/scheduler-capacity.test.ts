@@ -34,8 +34,8 @@ Pages occupied by compressor:            999999.
     )).toBe(false);
   });
 
-  test('samples host available memory without throwing', () => {
-    expect(() => sampleDarwinAvailableMemoryMb()).not.toThrow();
+  test('samples host available memory without throwing', async () => {
+    await expect(sampleDarwinAvailableMemoryMb(512)).resolves.toBeGreaterThanOrEqual(0);
   });
 
   test('refuses new ExecutionJob creation used by the retired worker capacity path', () => {

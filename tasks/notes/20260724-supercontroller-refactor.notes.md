@@ -443,3 +443,14 @@ Date: 2026-07-24
   - local-bridge + controller-execution-first + ephemeral: 50 pass
   - check-runtime-architecture: OK
   - check-mcp-compatibility: ok
+
+## Stage: residual TypeScript and Local Bridge verify contract
+
+Date: 2026-07-24
+
+- `verifyEditSession` response uses `checkResults` / `verifiedAt` (EditSession fields), not a non-existent `verification` property.
+- Deprecation tests use valid `ExecutionJobType` (`agent-run`) and correct scheduler/wake-signal APIs.
+- MCP controller deprecation assertion reads `raw.isError` when present.
+- Focused suite after residual fix: agent-delegation, scheduler-capacity, target-architecture, work-submit, thin-harness, live-maintenance: **65 pass / 0 fail**.
+- `bun x tsc --noEmit`: pass.
+

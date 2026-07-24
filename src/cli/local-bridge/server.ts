@@ -2877,7 +2877,8 @@ export async function startLocalBridgeServer(
         status: "succeeded",
         sessionId: verified.sessionId,
         revision: verified.currentRevision,
-        verification: verified.verification ?? null,
+        checkResults: verified.checkResults ?? [],
+        verifiedAt: verified.verifiedAt ?? null,
       });
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });

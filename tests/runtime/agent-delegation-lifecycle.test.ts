@@ -11,7 +11,7 @@ describe('agent delegation lifecycle bootstrap stability', () => {
     try {
       expect(() => createExecutionJob(controllerHome, {
         repoId: 'repo-a',
-        type: 'agent',
+        type: 'agent-run',
         requestId: 'delegate-1',
         semanticKey: 'delegate-1',
         origin: { surface: 'mcp' },

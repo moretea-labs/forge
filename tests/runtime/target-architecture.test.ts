@@ -123,8 +123,9 @@ describe('target architecture runtime', () => {
 
   test('scheduler wake signals interrupt idle backoff waits', async () => {
     const controllerHome = home();
-    const waiter = waitForSchedulerWakeSignal(controllerHome, 5_000);
-    touchSchedulerWakeSignal(controllerHome);
-    await waiter;
+    const before = 0;
+    const waiter = waitForSchedulerWakeSignal(controllerHome, before, 5_000);
+    touchSchedulerWakeSignal(controllerHome, 'test-wakeup');
+    await expect(waiter).resolves.toBe('wakeup');
   });
 });

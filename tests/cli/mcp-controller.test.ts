@@ -253,7 +253,7 @@ test("returns a structured retirement response for Kernel Agent dispatch", async
       task_id: "T1",
       isolate: false,
       timeout_ms: 10_000});
-    expect(dispatched.isError || dispatched.value?.error).toBeTruthy();
+    expect(Boolean((dispatched as { raw?: { isError?: boolean } }).raw?.isError) || Boolean(dispatched.value?.error)).toBe(true);
     const code = dispatched.value?.error?.code ?? dispatched.value?.code;
     expect(String(code)).toMatch(/AGENT_RUN_(DEPRECATED|RETIRED)/);
     expect(JSON.stringify(dispatched.value)).toMatch(/WorkContract|Thin Launcher|external SuperController/i);
