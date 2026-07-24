@@ -72,6 +72,7 @@ import {
   getEditSessionDiff,
   listEditSessions,
   rollbackEditSession,
+  verifyEditSession,
 } from "../editing/edit-session";
 import { localBridgeDashboardHtml } from "./dashboard";
 import type { LocalBridgeJobRequest } from "./types";
@@ -153,7 +154,7 @@ import { ensureControllerDaemon, readControllerDaemonStatus } from "../../runtim
 import { readRuntimeGeneration } from "../../runtime/control-plane/runtime-generation";
 import { findExecutionJob, listExecutionJobs } from "../../runtime/execution/jobs/store";
 import { rebuildRepositoryProjection, readRepositoryProjectionSnapshot } from "../../runtime/projections/materialized-view";
-import { getAssistantPluginManifest, listAssistantPluginManifests, submitAssistantPluginAction } from "../../runtime/plugins/store";
+import { getAssistantPluginManifest, listAssistantPluginManifests, submitAssistantPluginAction, findPluginActionReceipt, compatibilityPluginJobFromReceipt} from "../../runtime/plugins/store";
 import {
   createMobileIntentDevice,
   listMobileIntentDevices,
@@ -1116,7 +1117,11 @@ export async function startLocalBridgeServer(
         if (!mobileIntentHasScope(verified.principal.scopes, "jobs:read")) throw new Error("MOBILE_INTENT_SCOPE_DENIED: jobs:read is required");
         const jobId = queryString(body.jobId);
         if (!jobId) throw new Error("MOBILE_INTENT_JOB_REQUIRED: jobId is required");
-        const job = findExecutionJob(controllerHome, jobId);
+        const job = findExecutionJob(controllerHome, jobId)
+          ?? (() => {
+            const receipt = findPluginActionReceipt(controllerHome, jobId);
+            return receipt ? compatibilityPluginJobFromReceipt(receipt) : undefined;
+          })();
         if (!job) {
           response.status(404).json({ error: `Execution Job not found: ${jobId}` });
           return;
@@ -2859,31 +2864,20 @@ export async function startLocalBridgeServer(
   });
   app.post("/api/edit-sessions/:sessionId/verify", (request, response) => {
     try {
-      if (localBridgeExecutionRetired()) {
-        response.status(410).json(localBridgeExecutionRetiredPayload());
-        return;
-      }
+      // Deterministic Direct Edit verification no longer creates a Local Bridge Job.
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
       const session = getEditSession(repoRoot, request.params.sessionId);
-      const job = submitLocalBridgeJob(repoRoot, {
-        action: "verify-edit-session",
-        requestedBy: "local-controller",
-        payload: {
-          sessionId: session.sessionId,
-          revision: session.currentRevision,
-          requestId: queryString(request.body?.requestId),
-          checkIds: Array.isArray(request.body?.checkIds) ? request.body.checkIds.map(String) : undefined,
-          reviewer: queryString(request.body?.reviewer) ?? "local-controller-human",
-          note: queryString(request.body?.note),
-        },
+      const verified = verifyEditSession(repoRoot, session.sessionId, {
+        checkIds: Array.isArray(request.body?.checkIds) ? request.body.checkIds.map(String) : undefined,
+        reviewer: queryString(request.body?.reviewer) ?? "local-controller-human",
+        note: queryString(request.body?.note),
       });
-      if (job.status === "approved") asyncExecute(repoRoot, job.jobId);
-      response.status(202).json({
+      response.status(200).json({
         accepted: true,
-        jobId: job.jobId,
-        status: job.status,
-        sessionId: session.sessionId,
-        revision: session.currentRevision,
+        status: "succeeded",
+        sessionId: verified.sessionId,
+        revision: verified.currentRevision,
+        verification: verified.verification ?? null,
       });
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });

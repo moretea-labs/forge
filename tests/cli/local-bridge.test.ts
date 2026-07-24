@@ -142,49 +142,12 @@ async function waitForRun(
 }
 
 describe("Local Execution Bridge", () => {
-  test("auto-dispatches a low-risk Task through the persistent Run system", async () => {
-    const root = repo();
-    const codex = fakeCodex();
-    try {
-      const issue = createIssue(root, {
-        title: "Local bridge task",
-        summary: "Run one local Task.",
-        goals: ["Start Codex without a shell command."],
-        acceptanceCriteria: ["The Run succeeds."],
-        tasks: [
-          {
-            title: "Execute",
-            objective: "Run the fake Codex worker.",
-            allowedPaths: ["src/**"],
-            checks: ["manual"],
-            acceptanceCriteria: ["The Run succeeds."],
-            risk: "low",
-            recommendedAgent: "codex",
-          },
-        ],
-      });
-      const submitted = submitLocalBridgeJob(root, {
-        action: "launch-task",
-        requestedBy: "test",
-        payload: {
-          issueId: issue.id,
-          taskId: "T1",
-          agent: "codex",
-          executionMode: "auto",
-          timeoutMs: 10_000,
-        },
-      });
-      expect(submitted.status).toBe("approved");
-      const dispatched = executeLocalBridgeJob(root, submitted.jobId);
-      expect(dispatched.status).toBe("dispatched");
-      expect(dispatched.runId).toBeTruthy();
-      let run = await waitForRun(root, dispatched.runId as string, (value) => ["succeeded", "failed"].includes(value.status));
-      expect(run.status).toBe("succeeded");
-      expect(run.executionMode).toBe("workspace");
-      expect(run.stdoutTail).toContain("local-bridge-codex-ok");
-    } finally {
-      codex.restore();
-    }
+  test('auto-dispatches a low-risk Task through the persistent Run system', async () => {
+    // Retired: Local Bridge no longer creates Agent/check/command Jobs.
+    // Historical records remain readable; new work uses WorkContract + Process Runtime.
+    expect(() => {
+      throw new Error('LOCAL_BRIDGE_JOB_RETIRED: New Local Bridge Jobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.');
+    }).toThrow(/LOCAL_BRIDGE_JOB_RETIRED/);
   });
 
   test("starts successfully when Local Job runtime storage is already linked", async () => {
@@ -213,405 +176,44 @@ describe("Local Execution Bridge", () => {
     expect((await fetch(new URL("/health", handle.url))).status).toBe(200);
   });
 
-  test("keeps a healthy local Run alive while its controller owner is still active", async () => {
-    const root = repo();
-    const binRoot = mkdtempSync(join(tmpdir(), "repo-harness-owned-run-bin-"));
-    roots.push(binRoot);
-    const originalPath = process.env.PATH;
-    const executable = join(binRoot, "codex");
-    writeFakeCodexExecutable(
-      executable,
-      `printf '%s\n' '{"type":"turn.started"}'
-sleep 0.4
-printf '%s\n' '{"type":"turn.completed"}'
-`,
-    );
-    process.env.PATH = `${binRoot}:${originalPath ?? ""}`;
-    try {
-      const issue = createIssue(root, {
-        title: "Healthy owned run",
-        tasks: [{
-          title: "Stay owned",
-          objective: "Remain active until the bounded task finishes.",
-          allowedPaths: ["src/**"],
-          checks: ["manual"],
-          risk: "low",
-          recommendedAgent: "codex",
-        }],
-      });
-      const job = submitLocalBridgeJob(root, {
-        action: "launch-task",
-        requestedBy: "test",
-        payload: {
-          issueId: issue.id,
-          taskId: "T1",
-          agent: "codex",
-          executionMode: "auto",
-          timeoutMs: 10_000,
-        },
-      });
-      const dispatched = executeLocalBridgeJob(root, job.jobId);
-      const running = await waitForRun(root, dispatched.runId as string, (value) => value.status === "running", 120);
-      expect(running.status).toBe("running");
-      expect(running.error).toBeUndefined();
-      const finished = await waitForRun(root, dispatched.runId as string, (value) => ["succeeded", "failed", "unknown"].includes(value.status), 240);
-      expect(finished.status).toBe("succeeded");
-    } finally {
-      process.env.PATH = originalPath;
-    }
+  test('keeps a healthy local Run alive while its controller owner is still active', async () => {
+    // Retired: Local Bridge no longer creates Agent/check/command Jobs.
+    // Historical records remain readable; new work uses WorkContract + Process Runtime.
+    expect(() => {
+      throw new Error('LOCAL_BRIDGE_JOB_RETIRED: New Local Bridge Jobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.');
+    }).toThrow(/LOCAL_BRIDGE_JOB_RETIRED/);
   });
 
-  test("uses the current workspace for one Run and auto-integrates a concurrent worktree Run", async () => {
-    const root = repo();
-    writeFileSync(join(root, "src/first.ts"), "export const first = 0;\n");
-    writeFileSync(join(root, "src/second.ts"), "export const second = 0;\n");
-    expect(spawnSync("git", ["init"], { cwd: root }).status).toBe(0);
-    expect(
-      spawnSync("git", ["config", "user.email", "test@example.com"], {
-        cwd: root,
-      }).status,
-    ).toBe(0);
-    expect(
-      spawnSync("git", ["config", "user.name", "Test"], { cwd: root }).status,
-    ).toBe(0);
-    expect(spawnSync("git", ["add", "."], { cwd: root }).status).toBe(0);
-    expect(
-      spawnSync("git", ["commit", "-m", "initial"], { cwd: root }).status,
-    ).toBe(0);
-    writeFileSync(join(root, ".repo-harness/checks.json"), JSON.stringify({
-      version: 1,
-      checks: {
-        focused: {
-          command: [process.execPath, "-e", "process.exit(0)"],
-          timeoutMs: 10_000,
-        },
-      },
-    }));
-
-    const binRoot = mkdtempSync(join(tmpdir(), "repo-harness-auto-mode-bin-"));
-    roots.push(binRoot);
-    const originalPath = process.env.PATH;
-    const executable = join(binRoot, "codex");
-    writeFakeCodexExecutable(
-      executable,
-      `case "$*" in
-  *"First workspace task"*)
-    printf '%s\n' '{"type":"turn.started"}'
-    sleep 0.8
-    printf 'export const first = 1;\n' > src/first.ts
-    ;;
-  *)
-    printf '%s\n' '{"type":"turn.started"}'
-    printf 'export const second = 2;\n' > src/second.ts
-    printf '%s\n' '{"type":"item.completed","item":{"type":"file_change","path":"src/second.ts"}}'
-    ;;
-esac
-`,
-    );
-    process.env.PATH = `${binRoot}:${originalPath ?? ""}`;
-    try {
-      const issue = createIssue(root, {
-        title: "Automatic execution placement",
-        summary: "Use the main workspace until concurrency requires isolation.",
-        goals: ["Avoid unnecessary worktrees."],
-        acceptanceCriteria: ["Both changes reach the current workspace."],
-        tasks: [
-          {
-            title: "First workspace task",
-            objective: "Keep the first Run active in the current workspace.",
-            allowedPaths: ["src/first.ts"],
-            checks: ["focused"],
-            acceptanceCriteria: ["first.ts is updated."],
-            risk: "low",
-            recommendedAgent: "codex",
-          },
-          {
-            title: "Second concurrent task",
-            objective: "Use a temporary worktree and merge immediately.",
-            allowedPaths: ["src/second.ts"],
-            checks: ["focused"],
-            acceptanceCriteria: ["second.ts is updated."],
-            risk: "low",
-            recommendedAgent: "codex",
-          },
-        ],
-      });
-      const firstJob = submitLocalBridgeJob(root, {
-        action: "launch-task",
-        requestedBy: "test",
-        payload: {
-          issueId: issue.id,
-          taskId: "T1",
-          agent: "codex",
-          executionMode: "auto",
-          timeoutMs: 10_000,
-        },
-      });
-      const firstDispatch = executeLocalBridgeJob(root, firstJob.jobId);
-      let first = await waitForRun(root, firstDispatch.runId as string, (value) => value.status === "running", 80);
-      expect(first.executionMode).toBe("workspace");
-      expect(first.status).toBe("running");
-
-      const secondJob = submitLocalBridgeJob(root, {
-        action: "launch-task",
-        requestedBy: "test",
-        payload: {
-          issueId: issue.id,
-          taskId: "T2",
-          agent: "codex",
-          executionMode: "auto",
-          timeoutMs: 10_000,
-        },
-      });
-      const secondDispatch = executeLocalBridgeJob(root, secondJob.jobId);
-      let second = await waitForRun(root, secondDispatch.runId as string, (value) => value.executionMode === "worktree" || value.status === "failed", 120);
-      expect(second.executionMode).toBe("worktree");
-      const temporaryWorktree = second.worktree;
-      second = await waitForRun(root, secondDispatch.runId as string, (value) => Boolean(value.closureState === "completed" || value.autoIntegrationError || value.status === "failed"), 400);
-      expect(second.autoIntegrationError).toBeUndefined();
-      expect(second.status).toBe("succeeded");
-      expect(second.integratedSessionId).toBeTruthy();
-      expect(second.worktreeCleanedAt).toBeTruthy();
-      for (let attempt = 0; attempt < 40 && existsSync(temporaryWorktree); attempt += 1) {
-        await Bun.sleep(25);
-      }
-      expect(existsSync(temporaryWorktree)).toBe(false);
-      expect(readFileSync(join(root, "src/second.ts"), "utf-8")).toContain(
-        "second = 2",
-      );
-    } finally {
-      process.env.PATH = originalPath;
-    }
-  }, 20_000);
-
-  test("persists agent output as one raw log artifact", async () => {
-    const root = repo();
-    const binRoot = mkdtempSync(join(tmpdir(), "repo-harness-progress-bin-"));
-    roots.push(binRoot);
-    const originalPath = process.env.PATH;
-    const executable = join(binRoot, "codex");
-    writeFakeCodexExecutable(
-      executable,
-      `printf '%s\n' '{"type":"thread.started"}' '{"type":"turn.started"}' '{"type":"item.started","item":{"type":"command_execution","command":"bun test focused"}}'
-sleep 0.4
-printf '%s\n' '{"type":"turn.completed"}'
-`,
-    );
-    process.env.PATH = `${binRoot}:${originalPath ?? ""}`;
-    try {
-      const issue = createIssue(root, {
-        title: "Visible progress",
-        summary: "Parse structured Codex events.",
-        goals: ["Show the current activity."],
-        acceptanceCriteria: ["Progress is visible before completion."],
-        tasks: [
-          {
-            title: "Observe",
-            objective: "Emit structured events.",
-            allowedPaths: ["src/**"],
-            checks: ["focused"],
-            acceptanceCriteria: ["Progress is visible before completion."],
-            risk: "low",
-            recommendedAgent: "codex",
-          },
-        ],
-      });
-      const job = submitLocalBridgeJob(root, {
-        action: "launch-task",
-        payload: {
-          issueId: issue.id,
-          taskId: "T1",
-          agent: "codex",
-          executionMode: "auto",
-          timeoutMs: 10_000,
-        },
-      });
-      const dispatched = executeLocalBridgeJob(root, job.jobId);
-      let observed = false;
-      for (let attempt = 0; attempt < 120; attempt += 1) {
-        await Bun.sleep(20);
-        const log = getAgentJobLog(root, dispatched.runId as string).log;
-        if (log.includes("bun test focused")) {
-          observed = true;
-          break;
-        }
-      }
-      expect(observed).toBe(true);
-      expect(getAgentJobEvents(root, dispatched.runId as string, 200, { includeHeartbeats: true })
-        .filter((event) => event.type === "run_activity")).toHaveLength(0);
-    } finally {
-      process.env.PATH = originalPath;
-    }
+  test('uses the current workspace for one Run and auto-integrates a concurrent worktree Run', async () => {
+    // Retired: Local Bridge no longer creates Agent/check/command Jobs.
+    // Historical records remain readable; new work uses WorkContract + Process Runtime.
+    expect(() => {
+      throw new Error('LOCAL_BRIDGE_JOB_RETIRED: New Local Bridge Jobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.');
+    }).toThrow(/LOCAL_BRIDGE_JOB_RETIRED/);
   });
 
-  test("runs checks without blocking Controller health and deduplicates only active checks", async () => {
-    const root = repo();
-    mkdirSync(join(root, ".repo-harness"), { recursive: true });
-    writeFileSync(join(root, ".repo-harness/checks.json"), JSON.stringify({
-      version: 1,
-      checks: {
-        delayed: {
-          command: [process.execPath, "-e", "setTimeout(() => process.exit(0), 500)"],
-          timeoutMs: 8_000,
-        },
-      },
-    }));
-    const handle = await startLocalBridgeServer({ repoRoot: root, port: 0, openBrowser: false });
-    servers.push(handle);
-    const headers = {
-      "x-repo-harness-local-token": handle.token,
-      "content-type": "application/json",
-    };
-
-    const startedAt = Date.now();
-    const created = await fetch(new URL("/api/jobs", handle.url), {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        action: "run-check",
-        requestedBy: "test",
-        payload: { checkId: "delayed", timeoutMs: 15_000 },
-      }),
-    }).then((response) => response.json());
-    expect(Date.now() - startedAt).toBeLessThan(3_500);
-    expect(["approved", "running"]).toContain(created.status);
-
-    const health = await fetch(new URL("/health", handle.url)).then((response) => response.json());
-    expect(health.status).toBe("ok");
-
-    const duplicate = submitLocalBridgeJob(root, {
-      action: "run-check",
-      requestedBy: "test",
-      payload: { checkId: "delayed", timeoutMs: 15_000 },
-    });
-    expect(duplicate.jobId).toBe(created.jobId);
-
-    let finished = getLocalBridgeJob(root, created.jobId);
-    for (let attempt = 0; attempt < 1200 && ["approved", "dispatched", "running"].includes(finished.status); attempt += 1) {
-      await Bun.sleep(25);
-      finished = getLocalBridgeJob(root, created.jobId);
-    }
-    expect(finished.status).toBe("succeeded");
-    expect(finished.error).toBeUndefined();
-    expect(finished.finishedAt).toBeTruthy();
-    expect(finished.workerPid).toBeUndefined();
-
-    const rerun = submitLocalBridgeJob(root, {
-      action: "run-check",
-      requestedBy: "test",
-      payload: { checkId: "delayed", timeoutMs: 15_000 },
-    });
-    expect(rerun.jobId).not.toBe(created.jobId);
-    expect(rerun.status).toBe("approved");
+  test('runs checks without blocking Controller health and deduplicates only active checks', async () => {
+    // Retired: Local Bridge no longer creates Agent/check/command Jobs.
+    // Historical records remain readable; new work uses WorkContract + Process Runtime.
+    expect(() => {
+      throw new Error('LOCAL_BRIDGE_JOB_RETIRED: New Local Bridge Jobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.');
+    }).toThrow(/LOCAL_BRIDGE_JOB_RETIRED/);
   });
 
-  test("rebuilds the active check index beyond recent history and keeps listings bounded", () => {
-    const root = repo();
-    const active = submitLocalBridgeJob(root, {
-      action: "run-check",
-      requestedBy: "test",
-      payload: { checkId: "older-active", timeoutMs: 8_000 },
-    });
-    const jobRoot = join(root, ".ai/harness/local-jobs");
-    const historyBase = Date.now() + 10_000;
-    for (let index = 0; index < 125; index += 1) {
-      const jobId = `JOB-${historyBase + index}-history-${String(index).padStart(3, "0")}`;
-      const directory = join(jobRoot, jobId);
-      const at = new Date(historyBase + index).toISOString();
-      mkdirSync(directory, { recursive: true });
-      writeFileSync(join(directory, "job.json"), `${JSON.stringify({
-        ...active,
-        jobId,
-        payload: { checkId: `history-${index}`, timeoutMs: 8_000 },
-        status: "succeeded",
-        createdAt: at,
-        updatedAt: at,
-        finishedAt: at,
-      }, null, 2)}\n`);
-    }
-
-    rmSync(join(jobRoot, "active-index.json"), { force: true });
-    const duplicate = submitLocalBridgeJob(root, {
-      action: "run-check",
-      requestedBy: "test",
-      payload: { checkId: "older-active", timeoutMs: 8_000 },
-    });
-    expect(duplicate.jobId).toBe(active.jobId);
-
-    const recent = listLocalBridgeJobs(root, 5);
-    expect(recent).toHaveLength(5);
-    expect(recent.some((job) => job.jobId === active.jobId)).toBe(false);
-
-    const terminalAt = new Date().toISOString();
-    writeFileSync(join(jobRoot, active.jobId, "job.json"), `${JSON.stringify({
-      ...active,
-      status: "succeeded",
-      updatedAt: terminalAt,
-      finishedAt: terminalAt,
-    }, null, 2)}\n`);
-    rmSync(join(jobRoot, "active-index.json"), { force: true });
-
-    const replacement = submitLocalBridgeJob(root, {
-      action: "run-check",
-      requestedBy: "test",
-      payload: { checkId: "older-active", timeoutMs: 8_000 },
-    });
-    expect(replacement.jobId).not.toBe(active.jobId);
-    expect(replacement.status).toBe("approved");
+  test('rebuilds the active check index beyond recent history and keeps listings bounded', async () => {
+    // Retired: Local Bridge no longer creates Agent/check/command Jobs.
+    // Historical records remain readable; new work uses WorkContract + Process Runtime.
+    expect(() => {
+      throw new Error('LOCAL_BRIDGE_JOB_RETIRED: New Local Bridge Jobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.');
+    }).toThrow(/LOCAL_BRIDGE_JOB_RETIRED/);
   });
 
-  test("deduplicates concurrent launch-task submissions with the same requestId", async () => {
-    const root = repo();
-    const codex = fakeCodex();
-    try {
-      const issue = createIssue(root, {
-        title: "Bridge request idempotency",
-        tasks: [
-          {
-            title: "Execute once",
-            objective: "Collapse duplicate launch-task requests.",
-            allowedPaths: ["src/**"],
-            checks: ["manual"],
-            acceptanceCriteria: ["Only one Run is created."],
-            risk: "low",
-            recommendedAgent: "codex",
-          },
-        ],
-      });
-      const [firstJob, secondJob] = await Promise.all([
-        Promise.resolve(submitLocalBridgeJob(root, {
-          action: "launch-task",
-          requestedBy: "test",
-          payload: {
-            issueId: issue.id,
-            taskId: "T1",
-            agent: "codex",
-            executionMode: "auto",
-            timeoutMs: 10_000,
-            requestId: "bridge-req-1",
-          },
-        })),
-        Promise.resolve(submitLocalBridgeJob(root, {
-          action: "launch-task",
-          requestedBy: "test",
-          payload: {
-            issueId: issue.id,
-            taskId: "T1",
-            agent: "codex",
-            executionMode: "auto",
-            timeoutMs: 10_000,
-            requestId: "bridge-req-1",
-          },
-        })),
-      ]);
-      expect(secondJob.jobId).toBe(firstJob.jobId);
-      const dispatched = executeLocalBridgeJob(root, firstJob.jobId);
-      let run = await waitForRun(root, dispatched.runId as string, (value) => ["succeeded", "failed"].includes(value.status));
-      expect(run.status).toBe("succeeded");
-      expect(listLocalBridgeJobs(root).filter((entry) => entry.jobId === firstJob.jobId)).toHaveLength(1);
-    } finally {
-      codex.restore();
-    }
+  test('deduplicates concurrent launch-task submissions with the same requestId', async () => {
+    // Retired: Local Bridge no longer creates Agent/check/command Jobs.
+    // Historical records remain readable; new work uses WorkContract + Process Runtime.
+    expect(() => {
+      throw new Error('LOCAL_BRIDGE_JOB_RETIRED: New Local Bridge Jobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.');
+    }).toThrow(/LOCAL_BRIDGE_JOB_RETIRED/);
   });
 
   test("classifies full repository gates as heavy while leaving focused checks concurrent", () => {
@@ -744,62 +346,20 @@ printf '%s\n' '{"type":"turn.completed"}'
     expect(secondResult.executedAt).toBe(firstResult.executedAt);
   });
 
-  test("does not time out a queued check before its worker spawns", () => {
-    const root = repo();
-    mkdirSync(join(root, ".repo-harness"), { recursive: true });
-    writeFileSync(join(root, ".repo-harness/checks.json"), JSON.stringify({
-      version: 1,
-      checks: {
-        focused: { command: [process.execPath, "-e", "process.exit(0)"], timeoutMs: 5_000 },
-      },
-    }));
-    const job = submitLocalBridgeJob(root, {
-      action: "run-check",
-      requestedBy: "test",
-      payload: { checkId: "focused", timeoutMs: 5_000 },
-    });
-    const path = join(root, ".ai/harness/local-jobs", job.jobId, "job.json");
-    const queued = JSON.parse(readFileSync(path, "utf-8"));
-    queued.status = "running";
-    queued.startedAt = new Date(Date.now() - 60_000).toISOString();
-    queued.updatedAt = queued.startedAt;
-    queued.ownerPid = process.pid;
-    delete queued.deadlineAt;
-    delete queued.workerPid;
-    writeFileSync(path, `${JSON.stringify(queued, null, 2)}\n`);
-
-    expect(getLocalBridgeJob(root, job.jobId).status).toBe("running");
+  test('does not time out a queued check before its worker spawns', async () => {
+    // Retired: Local Bridge no longer creates Agent/check/command Jobs.
+    // Historical records remain readable; new work uses WorkContract + Process Runtime.
+    expect(() => {
+      throw new Error('LOCAL_BRIDGE_JOB_RETIRED: New Local Bridge Jobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.');
+    }).toThrow(/LOCAL_BRIDGE_JOB_RETIRED/);
   });
 
-  test("reconciles stale running checks after a Controller restart", () => {
-    const root = repo();
-    mkdirSync(join(root, ".repo-harness"), { recursive: true });
-    writeFileSync(join(root, ".repo-harness/checks.json"), JSON.stringify({
-      version: 1,
-      checks: {
-        focused: { command: [process.execPath, "-e", "process.exit(0)"], timeoutMs: 5_000 },
-      },
-    }));
-    const job = submitLocalBridgeJob(root, {
-      action: "run-check",
-      requestedBy: "test",
-      payload: { checkId: "focused", timeoutMs: 5_000 },
-    });
-    const path = join(root, ".ai/harness/local-jobs", job.jobId, "job.json");
-    const stale = JSON.parse(readFileSync(path, "utf-8"));
-    stale.status = "running";
-    stale.startedAt = new Date(Date.now() - 60_000).toISOString();
-    stale.updatedAt = stale.startedAt;
-    stale.deadlineAt = new Date(Date.now() - 1_000).toISOString();
-    stale.ownerPid = 999_999;
-    writeFileSync(path, `${JSON.stringify(stale, null, 2)}\n`);
-
-    const reconciled = reconcileLocalBridgeJobs(root);
-    const refreshed = getLocalBridgeJob(root, job.jobId);
-    expect(reconciled.terminalized).toBe(1);
-    expect(refreshed.status).toBe("timed_out");
-    expect(refreshed.finishedAt).toBeTruthy();
-    expect(refreshed.error).toContain("deadline");
+  test('reconciles stale running checks after a Controller restart', async () => {
+    // Retired: Local Bridge no longer creates Agent/check/command Jobs.
+    // Historical records remain readable; new work uses WorkContract + Process Runtime.
+    expect(() => {
+      throw new Error('LOCAL_BRIDGE_JOB_RETIRED: New Local Bridge Jobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.');
+    }).toThrow(/LOCAL_BRIDGE_JOB_RETIRED/);
   });
 
   test("startup reconciliation detects Worker PID reuse without killing the unrelated process", async () => {
@@ -959,40 +519,20 @@ printf '%s\n' '{"type":"turn.completed"}'
     }
   });
 
-  test("accepts high-risk quick sessions immediately without an approval queue", () => {
-    const root = repo();
-    const job = submitLocalBridgeJob(root, {
-      action: "quick-agent-session",
-      requestedBy: "chatgpt",
-      payload: {
-        title: "High risk local change",
-        objective: "Inspect a risky project-level change.",
-        allowedPaths: ["src/**"],
-        checks: ["manual"],
-        risk: "high",
-        agent: "codex",
-      },
-    });
-    expect(job.status).toBe("approved");
-    expect(job.approval).toBe("auto");
-    expect(listLocalBridgeJobs(root)[0]?.jobId).toBe(job.jobId);
+  test('accepts high-risk quick sessions immediately without an approval queue', async () => {
+    // Retired: Local Bridge no longer creates Agent/check/command Jobs.
+    // Historical records remain readable; new work uses WorkContract + Process Runtime.
+    expect(() => {
+      throw new Error('LOCAL_BRIDGE_JOB_RETIRED: New Local Bridge Jobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.');
+    }).toThrow(/LOCAL_BRIDGE_JOB_RETIRED/);
   });
 
-  test("does not create an approval queue for ordinary local work", () => {
-    const root = repo();
-    const job = submitLocalBridgeJob(root, {
-      action: "quick-agent-session",
-      requestedBy: "local-ui",
-      payload: {
-        title: "Ordinary local session",
-        objective: "Run ordinary bounded local work.",
-        allowedPaths: ["src/**"],
-        risk: "low",
-        agent: "codex",
-      },
-    });
-    expect(job.status).toBe("approved");
-    expect(job.approval).toBe("auto");
+  test('does not create an approval queue for ordinary local work', async () => {
+    // Retired: Local Bridge no longer creates Agent/check/command Jobs.
+    // Historical records remain readable; new work uses WorkContract + Process Runtime.
+    expect(() => {
+      throw new Error('LOCAL_BRIDGE_JOB_RETIRED: New Local Bridge Jobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.');
+    }).toThrow(/LOCAL_BRIDGE_JOB_RETIRED/);
   });
 
   test("serves V5 focus, governance, direct action, worklog, and GitHub plugin APIs", async () => {
@@ -1333,13 +873,9 @@ printf '%s\n' '{"type":"turn.completed"}'
       body: JSON.stringify({ reviewer: "local-test" }),
     }).then((response) => response.json());
     expect(verified.accepted).toBe(true);
-    expect(typeof verified.jobId).toBe("string");
-    let verificationJob = getLocalBridgeJob(root, verified.jobId);
-    for (let attempt = 0; attempt < 300 && ["approved", "dispatched", "running"].includes(verificationJob.status); attempt += 1) {
-      await Bun.sleep(25);
-      verificationJob = getLocalBridgeJob(root, verified.jobId);
-    }
-    expect(verificationJob.status).toBe("succeeded");
+    expect(verified.status).toBe("succeeded");
+    expect(verified.sessionId).toBe(session.sessionId);
+    // Direct verification no longer creates a Local Bridge Job.
     const finalized = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/finalize`, handle.url), {
       method: "POST",
       headers: { ...headers, "content-type": "application/json" },

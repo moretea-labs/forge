@@ -6,19 +6,16 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
-  writeFileSync,
-} from "fs";
+  writeFileSync} from "fs";
 import { tmpdir } from "os";
 import { spawnSync } from "child_process";
 import { createServer as createHttpServer } from "http";
 import { join } from "path";
 import { writeJsonAtomic } from "../../src/runtime/shared/json-files";
 import { appendControllerWorklogEvent } from "../../src/cli/controller/worklog";
-import { createExecutionJob, getExecutionJob, updateExecutionJob } from "../../src/runtime/execution/jobs/store";
 import { readControllerDaemonStatus } from "../../src/runtime/control-plane/daemon-client";
 import { terminateProcessTree } from "../../src/runtime/shared/process-tree";
 import { callRuntimeTool, controllerReadiness } from "../../src/runtime/gateway/mcp/runtime-tools";
-import { executeExecutionJob } from "../../src/runtime/execution/workers/executor";
 import { getMcpPolicy } from "../../src/cli/mcp/policy";
 import { createMcpToolContext as createMultiRepositoryContext } from "../../src/cli/mcp/multi-repository";
 import { callRepositoryTool } from "../../src/cli/mcp/repository-tools";
@@ -28,20 +25,17 @@ import {
   buildMcpToolDefinitions,
   callMcpTool,
   controllerExpectedToolNames,
-  type McpToolContext,
-} from "../../src/cli/mcp/tools";
+  type McpToolContext} from "../../src/cli/mcp/tools";
 import {
   CONTROLLER_SCHEMA_VERSION,
   CONTROLLER_TOOL_SURFACE,
   CONTROLLER_TOOL_SURFACE_VERSION,
-  controllerToolSurfaceFingerprint,
-} from "../../src/cli/controller/runtime-config";
+  controllerToolSurfaceFingerprint} from "../../src/cli/controller/runtime-config";
 import { ensureSlotHome, writeActiveSlotAuthority } from "../../src/cli/controller/runtime-slots";
 import { writeMcpServiceRuntimeState } from "../../src/cli/mcp/auth";
 import {
   readControllerContextProjection,
-  writeControllerContextProjection,
-} from "../../src/runtime/projections/controller-context";
+  writeControllerContextProjection} from "../../src/runtime/projections/controller-context";
 import { exposedControllerToolDefinitions } from "../../src/cli/mcp/toolset";
 
 async function jsonTool(
@@ -107,9 +101,7 @@ async function withController<T>(
       checks: Object.fromEntries(["focused", "manual-review", "typecheck"].map((id) => [id, {
         description: `Test check ${id}`,
         command: [process.execPath, "-e", "process.exit(0)"],
-        timeoutMs: 10_000,
-      }])),
-    }));
+        timeoutMs: 10_000}]))}));
     writeFileSync(
       join(repoRoot, "src/example.ts"),
       "export const value = 1;\n",
@@ -118,8 +110,7 @@ async function withController<T>(
     spawnSync("git", ["init", "-b", "main"], { cwd: repoRoot, stdio: "ignore" });
     return await fn(repoRoot, {
       repoRoot,
-      policy: getMcpPolicy("controller", { repoRoot }),
-    });
+      policy: getMcpPolicy("controller", { repoRoot })});
   } finally {
     if (previousControllerHome === undefined) delete process.env.REPO_HARNESS_CONTROLLER_HOME;
     else process.env.REPO_HARNESS_CONTROLLER_HOME = previousControllerHome;
@@ -145,26 +136,22 @@ function writeStoredPluginManifest(
     authority: {
       strategy: "derived",
       duplicateStateAllowed: false,
-      sourceOfTruth: ["test"],
-    },
+      sourceOfTruth: ["test"]},
     enabled: true,
     lifecycle: {
-      state: "enabled",
-    },
+      state: "enabled"},
     health: {
       state: "ready",
       checkedAt: new Date().toISOString(),
       ready: true,
       probed: true,
       errors: [],
-      warnings: [],
-    },
+      warnings: []},
     permissions: [],
     capabilities: [],
     actions: [],
     updatedAt: new Date().toISOString(),
-    ...overrides,
-  });
+    ...overrides});
 }
 
 test("uses the active slot service runtime for aggregate Local Bridge health", async () => {
@@ -181,8 +168,7 @@ test("uses the active slot service runtime for aggregate Local Bridge health", a
         toolSurface: CONTROLLER_TOOL_SURFACE,
         schemaVersion: CONTROLLER_SCHEMA_VERSION,
         toolSurfaceVersion: CONTROLLER_TOOL_SURFACE_VERSION,
-        generation,
-      }));
+        generation}));
     });
     await new Promise<void>((resolvePromise, reject) => {
       server.once("error", reject);
@@ -195,8 +181,7 @@ test("uses the active slot service runtime for aggregate Local Bridge health", a
         activeSlot: "green",
         previousSlot: "blue",
         generation,
-        reason: "test-active-slot",
-      });
+        reason: "test-active-slot"});
       const greenHome = ensureSlotHome(controllerHome, "green");
       const now = new Date().toISOString();
       writeMcpServiceRuntimeState(greenHome, {
@@ -217,30 +202,25 @@ test("uses the active slot service runtime for aggregate Local Bridge health", a
           toolSurface: CONTROLLER_TOOL_SURFACE,
           schemaVersion: CONTROLLER_SCHEMA_VERSION,
           toolSurfaceVersion: CONTROLLER_TOOL_SURFACE_VERSION,
-          toolset: "advanced",
-        },
+          toolset: "advanced"},
         localController: {
           endpoint: `http://127.0.0.1:${address.port}/`,
           running: true,
           mode: "embedded",
           pid: process.pid,
-          generation,
-        },
-        tunnel: { running: false, healthy: true, restartCount: 0 },
-      });
+          generation},
+        tunnel: { running: false, healthy: true, restartCount: 0 }});
 
       const repository = registerRepository({ path: repoRoot, controllerHome });
       const multi = createMultiRepositoryContext({
         repo: repoRoot,
         profile: "controller",
         toolset: "advanced",
-        controllerHome,
-      });
+        controllerHome});
       const readiness = await controllerReadiness(multi, repository);
       expect(readiness.health.components.localBridge).toMatchObject({
         state: "healthy",
-        ready: true,
-      });
+        ready: true});
       expect(readiness.health.components.localBridge.activeBlockers).toEqual([]);
     } finally {
       await new Promise<void>((resolvePromise, reject) => server.close((error) => error ? reject(error) : resolvePromise()));
@@ -248,74 +228,36 @@ test("uses the active slot service runtime for aggregate Local Bridge health", a
   });
 });
 
-test("returns compact default dispatch and verification payloads", async () => {
+test("returns a structured retirement response for Kernel Agent dispatch", async () => {
   await withController(async (repoRoot, baseCtx) => {
-    const binRoot = mkdtempSync(join(tmpdir(), "repo-harness-controller-compact-bin-"));
-    const originalPath = process.env.PATH;
-    try {
-      const fakeCodex = join(binRoot, "codex");
-      writeFakeCodexExecutable(fakeCodex, 'echo "compact-run-ok"\nexit 0\n');
-      process.env.PATH = `${binRoot}:${originalPath ?? ""}`;
-      const ctx = {
-        ...baseCtx,
-        policy: getMcpPolicy("controller", {
-          repoRoot,
-          devAgentRunner: true,
-          allowedAgents: ["codex"],
-          runnerTimeoutMs: 10_000,
-        }),
-      };
-      const created = await jsonTool(ctx, "create_issue", {
-        title: "Compact MCP payloads",
-        summary: "Keep default controller responses small.",
-        tasks: [{
-          title: "Execute",
-          objective: "Run and verify one compact Task.",
-          allowed_paths: ["src/**"],
-          checks: ["focused"],
-          acceptance_criteria: ["The compact flow succeeds."],
-          risk: "high",
-          agent: "codex",
-        }],
-      });
-      const dispatched = await jsonTool(ctx, "dispatch_task", {
-        issue_id: created.value.id,
-        task_id: "T1",
-        isolate: false,
-        timeout_ms: 10_000,
-      });
-      expect(dispatched.value.run).toBeUndefined();
-      expect(dispatched.value.detail.get_task_run.run_id).toBe(dispatched.value.runId);
-      expect(responseSize(dispatched)).toBeLessThan(4_000);
-
-      const run = await waitForRun(ctx, dispatched.value.runId, (entry) => ["succeeded", "failed"].includes(entry.status), 80, 25);
-      expect(run.status).toBe("succeeded");
-
-      const verified = await jsonTool(ctx, "verify_task", {
-        issue_id: created.value.id,
-        task_id: "T1",
-        run_id: dispatched.value.runId,
-        reviewer: "test-controller",
-        acceptance_results: [{
-          criterion: "The compact flow succeeds.",
-          ok: true,
-          evidence: "Run completed and review advanced.",
-        }],
-      });
-      expect(verified.value.issueId).toBe(created.value.id);
-      expect(verified.value.taskId).toBe("T1");
-      expect(verified.value.task.id).toBe("T1");
-      expect(verified.value.task.objective).toBeUndefined();
-      expect(verified.value.issue.id).toBe(created.value.id);
-      expect(verified.value.issue.tasks).toHaveLength(1);
-      expect(verified.value.issue.tasks[0].objective).toBeUndefined();
-      expect(verified.value.issue.detail.get_issue.issue_id).toBe(created.value.id);
-      expect(verified.value.issue.issue).toBeUndefined();
-      expect(responseSize(verified)).toBeLessThan(8_000);
-    } finally {
-      process.env.PATH = originalPath;
-      rmSync(binRoot, { recursive: true, force: true });
-    }
+    const ctx = {
+      ...baseCtx,
+      policy: getMcpPolicy("controller", {
+        repoRoot,
+        devAgentRunner: true,
+        allowedAgents: ["codex"],
+        runnerTimeoutMs: 10_000})};
+    const created = await jsonTool(ctx, "create_issue", {
+      title: "Compact MCP payloads",
+      summary: "Keep default controller responses small.",
+      tasks: [{
+        title: "Execute",
+        objective: "Run and verify one compact Task.",
+        allowed_paths: ["src/**"],
+        checks: ["focused"],
+        acceptance_criteria: ["The compact flow succeeds."],
+        risk: "high",
+        agent: "codex"}]});
+    const dispatched = await jsonTool(ctx, "dispatch_task", {
+      issue_id: created.value.id,
+      task_id: "T1",
+      isolate: false,
+      timeout_ms: 10_000});
+    expect(dispatched.isError || dispatched.value?.error).toBeTruthy();
+    const code = dispatched.value?.error?.code ?? dispatched.value?.code;
+    expect(String(code)).toMatch(/AGENT_RUN_(DEPRECATED|RETIRED)/);
+    expect(JSON.stringify(dispatched.value)).toMatch(/WorkContract|Thin Launcher|external SuperController/i);
+    expect(responseSize(dispatched)).toBeLessThan(4_000);
   });
 });
 
@@ -342,22 +284,18 @@ function seedLargeControllerIssue(
     checkResults: Array.from({ length: 4 }, (_, index) => ({
       checkId: `check-${index + 1}`,
       ok: true,
-      summary: `summary-${index + 1}`,
-    })),
+      summary: `summary-${index + 1}`})),
     commandEvidence: Array.from({ length: 6 }, (_, index) => ({
       command: ["bun", "test", `suite-${index + 1}`],
       ok: true,
       stdout: "stdout ".repeat(200),
-      stderr: "stderr ".repeat(120),
-    })),
+      stderr: "stderr ".repeat(120)})),
     acceptanceResults: Array.from({ length: 5 }, (_, index) => ({
       criterion: `criterion-${index + 1}`,
       ok: true,
-      evidence: "evidence ".repeat(80),
-    })),
+      evidence: "evidence ".repeat(80)})),
     reviewer: "summary-fixture",
-    verifiedAt: "2026-06-26T12:00:00.000Z",
-  };
+    verifiedAt: "2026-06-26T12:00:00.000Z"};
   writeJsonAtomic(path, stored);
 
   for (let index = 0; index < task.runIds.length; index += 1) {
@@ -385,12 +323,10 @@ function seedLargeControllerIssue(
         phase: index === task.runIds.length - 1 ? "completed" : "failed",
         currentActivity: `run-${index + 1}`,
         lastActivityAt: `2026-06-26T12:${String(index).padStart(2, "0")}:00.000Z`,
-        activityCount: 12 + index,
-      },
+        activityCount: 12 + index},
       createdAt: `2026-06-26T11:${String(index).padStart(2, "0")}:00.000Z`,
       startedAt: `2026-06-26T11:${String(index).padStart(2, "0")}:10.000Z`,
-      finishedAt: `2026-06-26T11:${String(index).padStart(2, "0")}:50.000Z`,
-    });
+      finishedAt: `2026-06-26T11:${String(index).padStart(2, "0")}:50.000Z`});
   }
 
   for (let index = 0; index < 140; index += 1) {
@@ -402,8 +338,7 @@ function seedLargeControllerIssue(
       issueId: stored.id,
       taskId: task.id,
       runId: task.runIds[index % task.runIds.length],
-      details: { message: "detail ".repeat(120) },
-    });
+      details: { message: "detail ".repeat(120) }});
   }
 }
 
@@ -506,9 +441,7 @@ describe("MCP controller profile", () => {
           objective: "Read derived Task progress.",
           allowed_paths: ["src/**"],
           checks: ["manual-review"],
-          acceptance_criteria: ["Visible"],
-        }],
-      });
+          acceptance_criteria: ["Visible"]}]});
       const progress = await jsonTool(ctx, "get_project_progress");
       expect(progress.value.issueCount).toBe(1);
       expect(progress.value.issues[0].id).toBe(created.value.id);
@@ -520,8 +453,7 @@ describe("MCP controller profile", () => {
 
       const detail = await jsonTool(ctx, "get_task_progress_detail", {
         issue_id: created.value.id,
-        task_id: "T1",
-      });
+        task_id: "T1"});
       expect(detail.value.progress.taskId).toBe("T1");
       expect(detail.value.timeline.some((event: { action: string }) => event.action === "task_created")).toBe(true);
 
@@ -529,15 +461,13 @@ describe("MCP controller profile", () => {
       expect(timeline.value.events.length).toBeGreaterThan(0);
       const exported = await jsonTool(ctx, "export_worklog", {
         output_path: "tasks/reports/mcp-v5-worklog.md",
-        issue_id: created.value.id,
-      });
+        issue_id: created.value.id});
       expect(existsSync(join(repoRoot, exported.value.path))).toBe(true);
 
       const config = await jsonTool(ctx, "configure_github_plugin", {
         enabled: false,
         repository: "owner/repository",
-        sync_mode: "checkpoint",
-      });
+        sync_mode: "checkpoint"});
       expect(config.value.syncMode).toBe("checkpoint");
       const status = await jsonTool(ctx, "get_github_plugin_status");
       expect(status.value.ready).toBe(false);
@@ -552,8 +482,7 @@ describe("MCP controller profile", () => {
         repo: repoRoot,
         controllerHome,
         profile: "controller",
-        toolset: "full",
-      });
+        toolset: "full"});
       const listed = await callRuntimeTool(runtimeCtx, "list_plugins", {});
       const listValue = JSON.parse(listed!.content[0].text);
       expect(listValue.plugins.map((plugin: { pluginId: string }) => plugin.pluginId)).toEqual(expect.arrayContaining([
@@ -568,16 +497,25 @@ describe("MCP controller profile", () => {
         plugin_id: "github",
         action_id: "configure",
         request_id: "plugin-config-runtime-1",
-        arguments: { enabled: true, repository: "owner/repo", sync_mode: "checkpoint" },
-      });
+        arguments: { enabled: true, repository: "owner/repo", sync_mode: "checkpoint" }});
       const acceptedValue = JSON.parse(accepted!.content[0].text);
       expect(acceptedValue.accepted).toBe(true);
+      expect(acceptedValue.direct).toBe(true);
+      expect(acceptedValue.durable).toBe(false);
       expect(acceptedValue.action.confirmation).toBe("authorization");
+      expect(acceptedValue.receiptId || acceptedValue.result).toBeTruthy();
 
-      const repository = registerRepository({ path: repoRoot, controllerHome });
-      const job = getExecutionJob(controllerHome, repository.repoId, acceptedValue.job.jobId);
-      const execution = await executeExecutionJob(controllerHome, job);
-      expect(execution.ok).toBe(true);
+      registerRepository({ path: repoRoot, controllerHome });
+      // Authorization-only configure may not enable until confirmed; confirm explicitly.
+      const confirmed = await callRuntimeTool(runtimeCtx, "plugin_action_execute", {
+        plugin_id: "github",
+        action_id: "configure",
+        request_id: "plugin-config-runtime-1-confirm",
+        arguments: { enabled: true, repository: "owner/repo", sync_mode: "checkpoint" },
+        confirm_authorization: true});
+      const confirmedValue = JSON.parse(confirmed!.content[0].text);
+      expect(confirmedValue.accepted).toBe(true);
+      expect(confirmedValue.direct).toBe(true);
 
       const plugin = await callRuntimeTool(runtimeCtx, "get_plugin", { plugin_id: "github" });
       const pluginValue = JSON.parse(plugin!.content[0].text);
@@ -591,14 +529,12 @@ describe("MCP controller profile", () => {
         arguments: {
           enabled: true,
           provider: "mock",
-          account_email: "assistant@example.com",
-        },
-        confirm_authorization: true,
-      });
+          account_email: "assistant@example.com"},
+        confirm_authorization: true});
       const gmailConfiguredValue = JSON.parse(gmailConfigured!.content[0].text);
-      const gmailJob = getExecutionJob(controllerHome, repository.repoId, gmailConfiguredValue.job.jobId);
-      const gmailExecution = await executeExecutionJob(controllerHome, gmailJob);
-      expect(gmailExecution.ok).toBe(true);
+      expect(gmailConfiguredValue.accepted).toBe(true);
+      expect(gmailConfiguredValue.direct).toBe(true);
+      expect(gmailConfiguredValue.receiptId || gmailConfiguredValue.result).toBeTruthy();
 
       const gmailDenied = await callRuntimeTool(runtimeCtx, "plugin_action_execute", {
         plugin_id: "gmail",
@@ -607,10 +543,8 @@ describe("MCP controller profile", () => {
         arguments: {
           to: ["recipient@example.com"],
           subject: "Status update",
-          body_text: "Hello from MCP",
-        },
-        confirm_authorization: true,
-      });
+          body_text: "Hello from MCP"},
+        confirm_authorization: true});
       const gmailDeniedValue = JSON.parse(gmailDenied!.content[0].text);
       expect(gmailDeniedValue.error.code).toBe("PLUGIN_CONFIRMATION_TEXT_REQUIRED");
       expect(gmailDenied!.isError).toBe(true);
@@ -620,11 +554,11 @@ describe("MCP controller profile", () => {
         action_id: "configure",
         request_id: "plugin-config-runtime-1",
         arguments: { enabled: true, repository: "owner/repo", sync_mode: "checkpoint" },
-        confirm_authorization: true,
-      });
+        confirm_authorization: true});
       const dedupedValue = JSON.parse(deduped!.content[0].text);
       expect(dedupedValue.deduplicated).toBe(true);
-      expect(dedupedValue.job.jobId).toBe(acceptedValue.job.jobId);
+      expect(dedupedValue.direct).toBe(true);
+      expect(dedupedValue.receiptId || dedupedValue.result).toBeTruthy();
     });
   });
 
@@ -637,18 +571,14 @@ describe("MCP controller profile", () => {
           title: "Large task",
           objective: "Seed large controller metadata.",
           allowed_paths: ["src/**"],
-          checks: ["focused"],
-        }],
-      });
+          checks: ["focused"]}]});
       seedLargeControllerIssue(repoRoot, created.value);
 
       const summary = await jsonTool(ctx, "get_issue", {
-        issue_id: created.value.id,
-      });
+        issue_id: created.value.id});
       const full = await jsonTool(ctx, "get_issue", {
         issue_id: created.value.id,
-        detail_level: "full",
-      });
+        detail_level: "full"});
 
       expect(summary.value.detailLevel).toBe("summary");
       expect(summary.value.tasks[0].noteCount).toBe(24);
@@ -676,20 +606,16 @@ describe("MCP controller profile", () => {
           title: "Large task detail",
           objective: "Seed large run history and timeline.",
           allowed_paths: ["src/**"],
-          checks: ["focused"],
-        }],
-      });
+          checks: ["focused"]}]});
       seedLargeControllerIssue(repoRoot, created.value);
 
       const summary = await jsonTool(ctx, "get_task_progress_detail", {
         issue_id: created.value.id,
-        task_id: "T1",
-      });
+        task_id: "T1"});
       const full = await jsonTool(ctx, "get_task_progress_detail", {
         issue_id: created.value.id,
         task_id: "T1",
-        detail_level: "full",
-      });
+        detail_level: "full"});
 
       expect(summary.value.detailLevel).toBe("summary");
       expect(summary.value.runCount).toBe(18);
@@ -712,51 +638,6 @@ describe("MCP controller profile", () => {
     });
   });
 
-  test("submits high-risk local Jobs without an approval queue", async () => {
-    await withController(async (repoRoot, baseCtx) => {
-      const binRoot = mkdtempSync(join(tmpdir(), "repo-harness-controller-local-job-bin-"));
-      const originalPath = process.env.PATH;
-      try {
-        const fakeCodex = join(binRoot, "codex");
-        writeFakeCodexExecutable(fakeCodex, 'echo "local-job-ok"\nexit 0\n');
-        process.env.PATH = `${binRoot}:${originalPath ?? ""}`;
-        const ctx = {
-          ...baseCtx,
-          policy: getMcpPolicy("controller", {
-            repoRoot,
-            devAgentRunner: true,
-            allowedAgents: ["codex"],
-          }),
-        };
-        const submitted = await jsonTool(ctx, "submit_local_job", {
-          action: "quick-agent-session",
-          title: "Immediate local example",
-          objective: "Prepare a high-risk local Codex session.",
-          allowed_paths: ["src/**"],
-          checks: ["manual-review"],
-          acceptance_criteria: [
-            "The session is accepted immediately without a risk approval queue.",
-          ],
-          risk: "high",
-          agent: "codex",
-        });
-        expect(submitted.value.job.status).not.toBe("pending_approval");
-        const status = await jsonTool(ctx, "local_bridge_status");
-        expect(status.value.approvalQueue).toBe(false);
-        expect(status.value.pendingApproval).toBeUndefined();
-        // Default summary may omit an invented legacy 8766 endpoint when no
-        // surface is configured; when present it must be localhost.
-        if (status.value.endpoint != null) {
-          expect(String(status.value.endpoint)).toContain("127.0.0.1");
-        }
-        expect(status.value.mode === undefined || typeof status.value.mode === "string").toBe(true);
-      } finally {
-        process.env.PATH = originalPath;
-        rmSync(binRoot, { recursive: true, force: true });
-      }
-    });
-  });
-
   test("returns one compact controller context with execution guidance", async () => {
     await withController(async (_repoRoot, ctx) => {
       const created = await jsonTool(ctx, "create_issue", {
@@ -767,17 +648,14 @@ describe("MCP controller profile", () => {
           title: "Bounded change",
           objective: "Update one known file",
           allowed_paths: ["src/**"],
-          checks: ["focused"],
-        }],
-      });
+          checks: ["focused"]}]});
       expect(created.value.id).toBeTruthy();
       const context = await jsonTool(ctx, "controller_context", {
         description: "Update the example constant in one known file.",
         known_paths: ["src/example.ts"],
         expected_files: 1,
         expected_changed_lines: 2,
-        risk: "low",
-      });
+        risk: "low"});
       expect(context.value.git.branch).toBe("main");
       expect(context.value.currentIssueId).toBe(created.value.id);
       expect(context.value.readyTasks.length).toBeGreaterThan(0);
@@ -790,8 +668,7 @@ describe("MCP controller profile", () => {
         known_paths: ["src/example.ts"],
         search_terms: ["value"],
         max_files: 2,
-        max_snippets: 4,
-      });
+        max_snippets: 4});
       expect(pack.value.source).toBe("controller-context-pack");
       expect(pack.value.contextContract.rawCodeRequiredForImplementation).toBe(true);
       expect(pack.value.files[0].path).toBe("src/example.ts");
@@ -836,14 +713,12 @@ describe("MCP controller profile", () => {
           repo_id: repository.repoId,
           request_id: "work-resume-idempotent",
           operation: "create_issue",
-          arguments: { title: "Work resume fixture", kind: "feature" },
-        });
+          arguments: { title: "Work resume fixture", kind: "feature" }});
         const second = await callRuntimeTool(advanced, "work_submit", {
           repo_id: repository.repoId,
           request_id: "work-resume-idempotent",
           operation: "create_issue",
-          arguments: { title: "Work resume fixture", kind: "feature" },
-        });
+          arguments: { title: "Work resume fixture", kind: "feature" }});
         const firstValue = JSON.parse(first!.content[0].text);
         const secondValue = JSON.parse(second!.content[0].text);
         expect(secondValue.deduplicated).toBe(true);
@@ -851,8 +726,7 @@ describe("MCP controller profile", () => {
 
         const resumed = await callRuntimeTool(advanced, "work_get", {
           repo_id: repository.repoId,
-          request_id: "work-resume-idempotent",
-        });
+          request_id: "work-resume-idempotent"});
         const resumedValue = JSON.parse(resumed!.content[0].text);
         expect(resumedValue.work.workId).toBe(firstValue.work.workId);
         expect(resumedValue.work.requestId).toBe("work-resume-idempotent");
@@ -865,15 +739,11 @@ describe("MCP controller profile", () => {
     });
   });
 
-  test("create_campaign normalizes legacy operation aliases and dependency refs on the controller surface", async () => {
+  test("create_campaign is retired in favor of PlanContract + WorkContract", async () => {
     await withController(async (repoRoot, _ctx) => {
       const controllerHome = join(repoRoot, ".controller-home");
       const repository = registerRepository({ path: repoRoot, controllerHome });
       const advanced = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", toolset: "advanced", controllerHome });
-      expect(spawnSync("git", ["config", "user.email", "test@example.com"], { cwd: repoRoot }).status).toBe(0);
-      expect(spawnSync("git", ["config", "user.name", "Test"], { cwd: repoRoot }).status).toBe(0);
-      expect(spawnSync("git", ["add", "."], { cwd: repoRoot }).status).toBe(0);
-      expect(spawnSync("git", ["commit", "-m", "initial"], { cwd: repoRoot }).status).toBe(0);
       const created = await callRuntimeTool(advanced, "create_campaign", {
         repo_id: repository.repoId,
         request_id: "campaign-normalization-via-core",
@@ -885,22 +755,12 @@ describe("MCP controller profile", () => {
             task_id: "T1",
             title: "First",
             operation: "launch-task",
-            arguments: { issue_id: "ISS-1", task_id: "T1", agent: "codex" },
-          },
-          {
-            task_id: "T2",
-            title: "Second",
-            operation: "recordCandidateFinding",
-            depends_on: [" task:T1 "],
-            arguments: { semantic_key: "two", title: "Two" },
-          },
-        ],
-      });
-
+            arguments: { issue_id: "ISS-1", task_id: "T1", agent: "codex" }},
+        ]});
       const value = JSON.parse(created!.content[0].text);
-      expect(value.campaign.tasks[0].operation).toBe("dispatch_task");
-      expect(value.campaign.tasks[1].operation).toBe("record_candidate_finding");
-      expect(value.campaign.tasks[1].dependsOn).toEqual(["T1"]);
+      expect(created?.isError).toBe(true);
+      expect(value.error.code).toBe("CAMPAIGN_DEPRECATED");
+      expect(value.migration).toEqual(expect.arrayContaining(["rh_work.plan_create", "rh_work.controller_claim"]));
     });
   });
 
@@ -920,15 +780,13 @@ describe("MCP controller profile", () => {
           repo_id: firstRepository.repoId,
           request_id: "work-cross-repo-conflict",
           operation: "create_issue",
-          arguments: { title: "First repository Work", kind: "feature" },
-        });
+          arguments: { title: "First repository Work", kind: "feature" }});
         expect(first?.isError).not.toBe(true);
         const conflict = await callRuntimeTool(advanced, "work_submit", {
           repo_id: secondRepository.repoId,
           request_id: "work-cross-repo-conflict",
           operation: "create_issue",
-          arguments: { title: "Second repository Work", kind: "feature" },
-        });
+          arguments: { title: "Second repository Work", kind: "feature" }});
         const conflictValue = JSON.parse(conflict!.content[0].text);
         expect(conflict?.isError).toBe(true);
         expect(conflictValue.error.code).toBe("REQUEST_ID_REPO_CONFLICT");
@@ -965,8 +823,7 @@ describe("MCP controller profile", () => {
 
       const diff = await callRuntimeTool(full, "git_diff_paths", {
         repo_id: repository.repoId,
-        paths: ["src/example.ts"],
-      });
+        paths: ["src/example.ts"]});
       const diffValue = JSON.parse(diff!.content[0].text);
       expect(diffValue.paths).toEqual(["src/example.ts"]);
       expect(diffValue.diff).toContain("value = 2");
@@ -974,8 +831,7 @@ describe("MCP controller profile", () => {
 
       const staged = await callRuntimeTool(full, "git_stage_paths", {
         repo_id: repository.repoId,
-        paths: ["src/example.ts"],
-      });
+        paths: ["src/example.ts"]});
       const stagedValue = JSON.parse(staged!.content[0].text);
       expect(stagedValue.execution.ok).toBe(true);
       const cachedAfterStage = spawnSync("git", ["diff", "--cached", "--name-only"], { cwd: repoRoot, encoding: "utf-8" });
@@ -984,8 +840,7 @@ describe("MCP controller profile", () => {
       const commit = await callRuntimeTool(full, "git_commit_paths", {
         repo_id: repository.repoId,
         paths: ["src/example.ts"],
-        message: "Commit selected example",
-      });
+        message: "Commit selected example"});
       const commitValue = JSON.parse(commit!.content[0].text);
       expect(commitValue.error).toBeUndefined();
       expect(commitValue.commit.ok).toBe(true);
@@ -998,8 +853,7 @@ describe("MCP controller profile", () => {
 
       const handoff = await callRuntimeTool(full, "prepare_handoff_artifacts", {
         repo_id: repository.repoId,
-        reason: "controller-test",
-      });
+        reason: "controller-test"});
       const handoffValue = JSON.parse(handoff!.content[0].text);
       expect(handoffValue.usedScript).toBe(false);
       expect(handoffValue.fallbackUsed).toBe(true);
@@ -1011,83 +865,6 @@ describe("MCP controller profile", () => {
     });
   });
 
-  test("reports degraded controller readiness when queued durable work has no scheduler progress", async () => {
-    await withController(async (repoRoot, _ctx) => {
-      const controllerHome = join(repoRoot, ".controller-home");
-      const multi = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", controllerHome });
-      const repository = registerRepository({ path: repoRoot, controllerHome });
-      createExecutionJob(multi.controllerHome, {
-        repoId: repository.repoId,
-        checkoutId: repository.activeCheckoutId,
-        type: "mcp-tool",
-        requestId: "queued-no-worker",
-        semanticKey: "controller-context:stale",
-        origin: { surface: "mcp", actor: "controller_context" },
-        payload: { operation: "controller_context", target: "mcp-tool" },
-        resourceClaims: [],
-      });
-      writeJsonAtomic(join(multi.controllerHome, "daemon", "state.json"), {
-        schemaVersion: 1,
-        status: "ready",
-        pid: process.pid,
-        startedAt: new Date(Date.now() - 60_000).toISOString(),
-        gatewaySeparated: true,
-        workerIsolation: true,
-      });
-      writeJsonAtomic(join(multi.controllerHome, "scheduler", "state.json"), {
-        schemaVersion: 1,
-        updatedAt: new Date().toISOString(),
-        loopStartedAt: new Date(Date.now() - 60_000).toISOString(),
-        lastTickAt: new Date(Date.now() - 20_000).toISOString(),
-        lastDispatchAt: new Date(Date.now() - 20_000).toISOString(),
-        lastReconcileAt: new Date(Date.now() - 20_000).toISOString(),
-        lastRepoDispatch: {},
-      });
-
-      const ready = await callRuntimeTool(multi, "controller_ready", { repo_id: repository.repoId });
-      const readyValue = JSON.parse(ready!.content[0].text);
-      expect(readyValue.ready).toBe(false);
-      expect(["degraded", "not_ready"]).toContain(readyValue.state);
-      expect(readyValue.reasons.map((entry: { code: string }) => entry.code)).toContain("WORKER_NOT_RUNNING");
-      expect(readyValue.reasons.map((entry: { code: string }) => entry.code)).toContain("QUEUE_NOT_PROGRESSING");
-      expect(readyValue.taskLedgerStatus.kind).toBe("empty");
-      expect(readyValue.taskLedgerCounts.issueCount).toBe(0);
-
-      writeControllerContextProjection(multi.controllerHome, repository.repoId, {
-        git: {
-          branch: "stale-branch-from-projection",
-          status: "stale dirty status",
-          diffStat: "stale diff stat",
-        },
-      });
-      const context = await callRuntimeTool(multi, "controller_context", { repo_id: repository.repoId });
-      const contextValue = JSON.parse(context!.content[0].text);
-      const refreshedProjection = readControllerContextProjection(multi.controllerHome, repository.repoId);
-      expect(contextValue.contextProjection.refreshJobId).toBeUndefined();
-      expect(contextValue.contextProjection.strategy).toBe("event-driven");
-      expect(contextValue.contextProjection.readOnly).toBe(true);
-      expect(contextValue.controllerReady.ready).toBe(false);
-      expect(contextValue.taskLedgerStatus.kind).toBe("empty");
-      expect(contextValue.git.branch).not.toBe("stale-branch-from-projection");
-      expect(typeof contextValue.git.dirty).toBe("boolean");
-      expect(refreshedProjection?.payload.repoId).toBe(repository.repoId);
-      expect((refreshedProjection?.payload.git as { branch?: string } | undefined)?.branch).toBe(contextValue.git.branch);
-
-      writeFileSync(join(repoRoot, "src/context-pack.ts"), "export const contextPackValue = 1;\n");
-      const pack = await callRuntimeTool(multi, "controller_context_pack", {
-        repo_id: repository.repoId,
-        known_paths: ["src/context-pack.ts"],
-        search_terms: ["contextPackValue"],
-      });
-      const packValue = JSON.parse(pack!.content[0].text);
-      expect(packValue.contextPack.source).toBe("controller-context-pack");
-      expect(packValue.contextPack.schemaVersion).toBe(3);
-      expect(packValue.contextPack.git.branch).toBe("main");
-      expect(typeof packValue.contextPack.git.dirty).toBe("boolean");
-      expect(packValue.contextPack.files[0].snippets[0].content).toContain("contextPackValue");
-    });
-  });
-
   test("controller_context hot reads reuse stored plugin manifests", async () => {
     await withController(async (repoRoot, _ctx) => {
       const controllerHome = join(repoRoot, ".controller-home");
@@ -1095,8 +872,7 @@ describe("MCP controller profile", () => {
       const repository = registerRepository({ path: repoRoot, controllerHome });
       writeStoredPluginManifest(controllerHome, repository.repoId, "github", {
         revision: 77,
-        provider: "stored-provider",
-      });
+        provider: "stored-provider"});
 
       const context = await callRuntimeTool(multi, "controller_context", { repo_id: repository.repoId });
       const value = JSON.parse(context!.content[0].text);
@@ -1108,96 +884,14 @@ describe("MCP controller profile", () => {
     });
   });
 
-  test("returns durable job summaries by default and keeps full detail opt-in", async () => {
-    await withController(async (repoRoot, _ctx) => {
-      const controllerHome = join(repoRoot, ".controller-home");
-      const multi = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", controllerHome });
-      const repository = registerRepository({ path: repoRoot, controllerHome });
-      const created = createExecutionJob(multi.controllerHome, {
-        repoId: repository.repoId,
-        checkoutId: repository.activeCheckoutId,
-        type: "mcp-tool",
-        requestId: "job-summary-default",
-        semanticKey: "job-summary-default",
-        origin: { surface: "mcp", actor: "test" },
-        payload: {
-          operation: "repository_command_execute",
-          target: "mcp-tool",
-          arguments: {
-            cwd: repoRoot,
-            command: `cat ${join(repoRoot, "src/example.ts")}`,
-            prompt: "x".repeat(500),
-          },
-        },
-        resourceClaims: [],
-      });
-      updateExecutionJob(
-        multi.controllerHome,
-        repository.repoId,
-        created.job.jobId,
-        (job) => ({
-          ...job,
-          status: "failed",
-          finishedAt: new Date().toISOString(),
-          error: {
-            code: "TEST_FAILURE",
-            message: `failed while reading ${repoRoot}`,
-            retryable: false,
-            details: {
-              cwd: repoRoot,
-              command: `cat ${join(repoRoot, "src/example.ts")}`,
-              output: "y".repeat(900),
-            },
-          },
-        }),
-        "job_failed",
-        { cwd: repoRoot },
-      );
-
-      const summary = await callRuntimeTool(multi, "get_job", {
-        repo_id: repository.repoId,
-        job_id: created.job.jobId,
-        include_events: true,
-      });
-      const summaryValue = JSON.parse(summary!.content[0].text);
-      expect(summaryValue.detailLevel).toBe("summary");
-      expect(summaryValue.job.payload.argumentKeys).toContain("cwd");
-      expect(summaryValue.job.payload.arguments).toBeUndefined();
-      expect(JSON.stringify(summaryValue.job)).not.toContain(repoRoot);
-      expect(JSON.stringify(summaryValue.events)).not.toContain(repoRoot);
-
-      const full = await callRuntimeTool(multi, "get_job", {
-        repo_id: repository.repoId,
-        job_id: created.job.jobId,
-        detail_level: "full",
-      });
-      const fullValue = JSON.parse(full!.content[0].text);
-      expect(fullValue.detailLevel).toBe("summary");
-      expect(fullValue.requestedDetailLevel).toBe("full");
-      expect(JSON.stringify(fullValue.job)).not.toContain(repoRoot);
-      expect(fullValue.next).toContain("Raw job state is intentionally not returned");
-
-      const digest = await callRuntimeTool(multi, "work_status_digest", {
-        repo_id: repository.repoId,
-        work_ref: created.job.jobId,
-      });
-      const digestValue = JSON.parse(digest!.content[0].text);
-      expect(digestValue.digest.status).toBe("failed");
-      expect(digestValue.taskLedgerStatus.kind).toBe("empty");
-      expect(digestValue.next).toContain("Create or import");
-    });
-  });
-
   test("searches code and refuses to unlock dependencies without completion evidence", async () => {
     await withController(async (_repoRoot, ctx) => {
       const searched = await jsonTool(ctx, "search_repository", {
         query: "value = 1",
-        include_globs: ["src/**"],
-      });
+        include_globs: ["src/**"]});
       expect(searched.value.results[0]).toMatchObject({
         path: "src/example.ts",
-        line: 1,
-      });
+        line: 1});
 
       const created = await jsonTool(ctx, "create_issue", {
         title: "Controller workflow",
@@ -1208,16 +902,13 @@ describe("MCP controller profile", () => {
             title: "First",
             objective: "First task",
             allowed_paths: ["src/**"],
-            checks: ["manual-review"],
-          },
+            checks: ["manual-review"]},
           {
             title: "Second",
             objective: "Second task",
             depends_on: ["T1"],
-            allowed_paths: ["src/**"],
-          },
-        ],
-      });
+            allowed_paths: ["src/**"]},
+        ]});
       expect(
         created.value.tasks.map((task: { status: string }) => task.status),
       ).toEqual(["ready", "planned"]);
@@ -1225,24 +916,20 @@ describe("MCP controller profile", () => {
       await jsonTool(ctx, "update_task", {
         issue_id: created.value.id,
         task_id: "T1",
-        status: "review",
-      });
+        status: "review"});
       await jsonTool(ctx, "verify_task", {
         issue_id: created.value.id,
         task_id: "T1",
         reviewer: "test-controller",
         check_results: [{ check_id: "manual-review", ok: true }],
-        acceptance_results: [],
-      });
+        acceptance_results: []});
       const accepted = await jsonTool(ctx, "accept_task", {
         issue_id: created.value.id,
-        task_id: "T1",
-      });
+        task_id: "T1"});
       expect(accepted.raw.isError).toBe(true);
       expect(accepted.value.error.message).toContain("complete delivery receipt");
       const unchanged = await jsonTool(ctx, "get_issue", {
-        issue_id: created.value.id,
-      });
+        issue_id: created.value.id});
       expect(
         unchanged.value.tasks.map((task: { status: string }) => task.status),
       ).toEqual(["verified", "planned"]);
@@ -1257,8 +944,7 @@ describe("MCP controller profile", () => {
         title: "Invalid dependency",
         tasks: [
           { title: "Broken", objective: "bad graph", depends_on: ["T9"] },
-        ],
-      });
+        ]});
       expect(missing.raw.isError).toBe(true);
       expect(missing.value.error.message).toContain("unknown task dependency");
 
@@ -1267,8 +953,7 @@ describe("MCP controller profile", () => {
         tasks: [
           { title: "One", objective: "one", depends_on: ["T2"] },
           { title: "Two", objective: "two", depends_on: ["T1"] },
-        ],
-      });
+        ]});
       expect(cyclic.raw.isError).toBe(true);
       expect(cyclic.value.error.message).toContain("cycle");
     });
@@ -1289,10 +974,7 @@ describe("MCP controller profile", () => {
                 "-e",
                 'setTimeout(() => console.log("focused-ok"), 2500)',
               ],
-              timeoutMs: 10_000,
-            },
-          },
-        }),
+              timeoutMs: 10_000}}}),
       );
       const listed = await jsonTool(ctx, "list_checks");
       expect(
@@ -1314,16 +996,14 @@ describe("MCP controller profile", () => {
         expect(["approved", "running"]).toContain(submitted.value.job.status);
         let finished = (
           await jsonTool(ctx, "get_local_job", {
-            job_id: submitted.value.job.jobId,
-          })
+            job_id: submitted.value.job.jobId})
         ).value.job;
         const runDeadline = Date.now() + 10_000;
         for (let attempt = 0; Date.now() < runDeadline && finished.status === "running"; attempt += 1) {
           await Bun.sleep(20);
           finished = (
             await jsonTool(ctx, "get_local_job", {
-              job_id: submitted.value.job.jobId,
-            })
+              job_id: submitted.value.job.jobId})
           ).value.job;
         }
         expect(finished.status).not.toBe("running");
@@ -1352,10 +1032,7 @@ describe("MCP controller profile", () => {
             focused: {
               description: "Delayed controller smoke check",
               command: [process.execPath, "-e", 'setTimeout(() => console.log("done"), 2500)'],
-              timeoutMs: 10_000,
-            },
-          },
-        }),
+              timeoutMs: 10_000}}}),
       );
       expect(spawnSync("git", ["init", "-b", "main"], { cwd: repoRoot }).status).toBe(0);
       expect(spawnSync("git", ["config", "user.email", "test@example.com"], { cwd: repoRoot }).status).toBe(0);
@@ -1397,27 +1074,23 @@ describe("MCP controller profile", () => {
         payload: {
           controllerHome: join(repoRoot, ".repo-harness-controller-home"),
           repoId: "repo-test",
-          command: "printf 'hello\\n'",
-        },
+          command: "printf 'hello\\n'"},
         requestedBy: "test",
         approval: "auto",
         status: "succeeded",
         createdAt: "2026-07-05T00:00:00.000Z",
         updatedAt: "2026-07-05T00:00:00.000Z",
-        finishedAt: "2026-07-05T00:00:01.000Z",
-      }, null, 2)}\n`);
+        finishedAt: "2026-07-05T00:00:01.000Z"}, null, 2)}\n`);
 
       const missing = await jsonTool(ctx, "get_local_job_output", {
         job_id: "JOB-output",
-        stream: "stdout",
-      });
+        stream: "stdout"});
       expect(missing.value.status).toBe("not_found");
       expect(missing.value.error.code).toBe("LOCAL_JOB_OUTPUT_NOT_FOUND");
 
       const traversal = await jsonTool(ctx, "get_local_job_output", {
         job_id: "../escape",
-        stream: "stdout",
-      });
+        stream: "stdout"});
       expect(traversal.value.status).toBe("rejected");
       expect(traversal.value.error.code).toBe("LOCAL_JOB_PATH_INVALID");
     });
@@ -1426,14 +1099,12 @@ describe("MCP controller profile", () => {
   test("applies SHA-guarded bounded edits and rolls them back", async () => {
     await withController(async (repoRoot, ctx) => {
       const read = await jsonTool(ctx, "read_workflow_file", {
-        path: "src/example.ts",
-      });
+        path: "src/example.ts"});
       const session = await jsonTool(ctx, "begin_edit_session", {
         purpose: "Change constant",
         allowed_paths: ["src/**"],
         max_files: 1,
-        max_changed_lines: 5,
-      });
+        max_changed_lines: 5});
       const applied = await jsonTool(ctx, "apply_patch", {
         session_id: session.value.sessionId,
         operations: [
@@ -1441,17 +1112,14 @@ describe("MCP controller profile", () => {
             type: "replace",
             path: "src/example.ts",
             expected_sha256: read.value.sha256,
-            replacements: [{ old_text: "value = 1", new_text: "value = 2" }],
-          },
-        ],
-      });
+            replacements: [{ old_text: "value = 1", new_text: "value = 2" }]},
+        ]});
       expect(applied.value.status).toBe("dirty");
       expect(readFileSync(join(repoRoot, "src/example.ts"), "utf-8")).toContain(
         "value = 2",
       );
       const rolledBack = await jsonTool(ctx, "rollback_edit_session", {
-        session_id: session.value.sessionId,
-      });
+        session_id: session.value.sessionId});
       expect(rolledBack.value.status).toBe("rolled_back");
       expect(readFileSync(join(repoRoot, "src/example.ts"), "utf-8")).toContain(
         "value = 1",
@@ -1462,12 +1130,10 @@ describe("MCP controller profile", () => {
   test("rejects stale edit-session revisions and returns refreshed fingerprints", async () => {
     await withController(async (repoRoot, ctx) => {
       const read = await jsonTool(ctx, "read_workflow_file", {
-        path: "src/example.ts",
-      });
+        path: "src/example.ts"});
       const session = await jsonTool(ctx, "begin_edit_session", {
         purpose: "Change constant with revision guard",
-        allowed_paths: ["src/**"],
-      });
+        allowed_paths: ["src/**"]});
       const first = await jsonTool(ctx, "apply_patch", {
         session_id: session.value.sessionId,
         expected_revision: 0,
@@ -1476,14 +1142,11 @@ describe("MCP controller profile", () => {
             type: "replace",
             path: "src/example.ts",
             expected_sha256: read.value.sha256,
-            replacements: [{ old_text: "value = 1", new_text: "value = 2" }],
-          },
-        ],
-      });
+            replacements: [{ old_text: "value = 1", new_text: "value = 2" }]},
+        ]});
       expect(first.value.currentRevision).toBe(1);
       const refreshed = await jsonTool(ctx, "read_workflow_file", {
-        path: "src/example.ts",
-      });
+        path: "src/example.ts"});
 
       const stale = await jsonTool(ctx, "apply_patch", {
         session_id: session.value.sessionId,
@@ -1493,10 +1156,8 @@ describe("MCP controller profile", () => {
             type: "append",
             path: "src/example.ts",
             expected_sha256: refreshed.value.sha256,
-            content: "export const stale = true;\n",
-          },
-        ],
-      });
+            content: "export const stale = true;\n"},
+        ]});
       expect(stale.raw.isError).toBe(true);
       expect(stale.value.error.code).toBe("EDIT_SESSION_REVISION_MISMATCH");
       expect(stale.value.error.details.currentRevision).toBe(1);
@@ -1510,12 +1171,10 @@ describe("MCP controller profile", () => {
   test("fails mixed stale batches safely without creating a partial revision", async () => {
     await withController(async (repoRoot, ctx) => {
       const read = await jsonTool(ctx, "read_workflow_file", {
-        path: "src/example.ts",
-      });
+        path: "src/example.ts"});
       const session = await jsonTool(ctx, "begin_edit_session", {
         purpose: "Safe partial failure",
-        allowed_paths: ["src/**"],
-      });
+        allowed_paths: ["src/**"]});
       writeFileSync(join(repoRoot, "src/example.ts"), "export const value = 9;\n");
 
       const failed = await jsonTool(ctx, "apply_patch", {
@@ -1526,15 +1185,12 @@ describe("MCP controller profile", () => {
             type: "replace",
             path: "src/example.ts",
             expected_sha256: read.value.sha256,
-            replacements: [{ old_text: "value = 1", new_text: "value = 2" }],
-          },
+            replacements: [{ old_text: "value = 1", new_text: "value = 2" }]},
           {
             type: "create",
             path: "src/extra.ts",
-            content: "export const extra = true;\n",
-          },
-        ],
-      });
+            content: "export const extra = true;\n"},
+        ]});
 
       expect(failed.raw.isError).toBe(true);
       expect(failed.value.error.code).toBe("EDIT_PATCH_PRECONDITION_FAILED");
@@ -1544,8 +1200,7 @@ describe("MCP controller profile", () => {
       expect(existsSync(join(repoRoot, "src/extra.ts"))).toBe(false);
 
       const current = await jsonTool(ctx, "get_edit_session", {
-        session_id: session.value.sessionId,
-      });
+        session_id: session.value.sessionId});
       expect(current.value.currentRevision).toBe(0);
       expect(current.value.status).toBe("open");
     });
@@ -1555,18 +1210,15 @@ describe("MCP controller profile", () => {
     await withController(async (repoRoot, ctx) => {
       const session = await jsonTool(ctx, "begin_edit_session", {
         purpose: "Large batch guard",
-        allowed_paths: ["src/**"],
-      });
+        allowed_paths: ["src/**"]});
       const operations = Array.from({ length: 101 }, (_, index) => ({
         type: "create",
         path: `src/generated-${index + 1}.ts`,
-        content: `export const value${index + 1} = ${index + 1};\n`,
-      }));
+        content: `export const value${index + 1} = ${index + 1};\n`}));
 
       const failed = await jsonTool(ctx, "apply_patch", {
         session_id: session.value.sessionId,
-        operations,
-      });
+        operations});
 
       expect(failed.raw.isError).toBe(true);
       expect(failed.value.error.code).toBe("EDIT_PATCH_BATCH_TOO_LARGE");
@@ -1576,1019 +1228,6 @@ describe("MCP controller profile", () => {
     });
   });
 
-
-  test("routes known small changes to direct edits and records patch/check/finalization evidence", async () => {
-    await withController(async (repoRoot, ctx) => {
-      const assessment = await jsonTool(ctx, "assess_work_request", {
-        description: "Update the example constant and its documentation.",
-        known_paths: ["src/example.ts"],
-        expected_files: 1,
-        expected_changed_lines: 2,
-        risk: "low",
-      });
-      expect(assessment.value.recommendedMode).toBe("direct_edit");
-      expect(assessment.value.issueRequired).toBe(false);
-
-      const discoveryAssessment = await jsonTool(ctx, "assess_work_request", {
-        description: "Locate the Controller routing and dashboard files, then implement a bounded update.",
-        expected_files: 6,
-        expected_changed_lines: 500,
-        requires_investigation: true,
-        risk: "medium",
-      });
-      expect(discoveryAssessment.value.recommendedMode).toBe("direct_edit");
-      expect(discoveryAssessment.value.confidence).toBe("medium");
-      expect(discoveryAssessment.value.nextTools[0]).toBe("search_repository");
-      expect(discoveryAssessment.value.issueRequired).toBe(false);
-
-      const read = await jsonTool(ctx, "read_repository_file", { path: "src/example.ts" });
-      const session = await jsonTool(ctx, "begin_edit_session", {
-        purpose: "Update example constant",
-        allowed_paths: ["src/**"],
-        checks: ["focused"],
-      });
-      await jsonTool(ctx, "apply_patch", {
-        session_id: session.value.sessionId,
-        operations: [{
-          type: "replace",
-          path: "src/example.ts",
-          expected_sha256: read.value.sha256,
-          replacements: [{ old_text: "value = 1", new_text: "value = 3" }],
-        }],
-      });
-      const diff = await jsonTool(ctx, "get_edit_session_diff", { session_id: session.value.sessionId });
-      expect(diff.value.patch).toContain("+export const value = 3;");
-      const verifyStartedAt = Date.now();
-      const verified = await jsonTool(ctx, "verify_edit_session", {
-        session_id: session.value.sessionId,
-        reviewer: "test-reviewer",
-        request_id: "verify-edit-session-1",
-      });
-      expect(Date.now() - verifyStartedAt).toBeLessThan(2_500);
-      expect(verified.value.accepted).toBe(true);
-      expect(typeof verified.value.job.jobId).toBe("string");
-      let verificationJob = (await jsonTool(ctx, "get_local_job", {
-        job_id: verified.value.job.jobId,
-      })).value.job;
-      for (let attempt = 0; attempt < 120 && verificationJob.status === "running"; attempt += 1) {
-        await Bun.sleep(25);
-        verificationJob = (await jsonTool(ctx, "get_local_job", {
-          job_id: verified.value.job.jobId,
-        })).value.job;
-      }
-      expect(verificationJob.status).toBe("succeeded");
-      const finalized = await jsonTool(ctx, "finalize_edit_session", {
-        session_id: session.value.sessionId,
-        reviewer: "test-reviewer",
-      });
-      expect(finalized.value.status).toBe("finalized");
-      const listed = await jsonTool(ctx, "list_edit_sessions");
-      expect(listed.value.sessions[0]).toMatchObject({
-        sessionId: session.value.sessionId,
-        status: "finalized",
-        changedFiles: 1,
-        checksPassed: 1,
-      });
-      const timeline = await jsonTool(ctx, "get_worklog_timeline", {
-        category: "edit",
-        edit_session_id: session.value.sessionId,
-      });
-      expect(timeline.value.events.some((event: { action: string }) => event.action === "edit_session_finalized")).toBe(true);
-    });
-  });
-
-  test("dispatches one short persistent agent run and leaves acceptance pending", async () => {
-    await withController(async (repoRoot, baseCtx) => {
-      const binRoot = mkdtempSync(
-        join(tmpdir(), "repo-harness-controller-bin-"),
-      );
-      const originalPath = process.env.PATH;
-      try {
-        const fakeCodex = join(binRoot, "codex");
-        writeFakeCodexExecutable(fakeCodex, 'echo "controller-run-ok"\nexit 0\n');
-        process.env.PATH = `${binRoot}:${originalPath ?? ""}`;
-        const ctx = {
-          ...baseCtx,
-          policy: getMcpPolicy("controller", {
-            repoRoot,
-            devAgentRunner: true,
-            allowedAgents: ["codex"],
-            runnerTimeoutMs: 10_000,
-          }),
-        };
-        const created = await jsonTool(ctx, "create_issue", {
-          title: "Run task",
-          summary: "Exercise a local persistent Run.",
-          goals: ["Run one scoped worker."],
-          acceptance_criteria: ["The worker completes successfully."],
-          tasks: [
-            {
-              title: "Execute",
-              objective: "Run fake Codex",
-              allowed_paths: ["src/**"],
-              checks: ["focused"],
-              acceptance_criteria: ["The worker completes successfully."],
-              agent: "codex",
-            },
-          ],
-        });
-        const dispatched = await jsonTool(ctx, "dispatch_task", {
-          issue_id: created.value.id,
-          task_id: "T1",
-          isolate: false,
-          timeout_ms: 10_000,
-        });
-        expect(dispatched.value.accepted).toBe(true);
-        expect(["starting", "running"]).toContain(dispatched.value.status);
-        let run = (
-          await jsonTool(ctx, "get_task_run", {
-            run_id: dispatched.value.runId,
-          })
-        ).value;
-        for (
-          let attempt = 0;
-          attempt < 120 && !["succeeded", "failed"].includes(run.status);
-          attempt += 1
-        ) {
-          await Bun.sleep(25);
-          run = (
-            await jsonTool(ctx, "get_task_run", {
-              run_id: dispatched.value.runId,
-            })
-          ).value;
-        }
-        expect(run.status).toBe("succeeded");
-        expect(run.stdoutTail).toContain("controller-run-ok");
-        expect(run.worktree).toBeUndefined();
-        expect(run.promptPath).toBeUndefined();
-        let issue = await jsonTool(ctx, "get_issue", {
-          issue_id: created.value.id,
-        });
-        for (
-          let attempt = 0;
-          attempt < 200 && !["review", "verifying"].includes(issue.value.tasks[0].status);
-          attempt += 1
-        ) {
-          await Bun.sleep(25);
-          issue = await jsonTool(ctx, "get_issue", {
-            issue_id: created.value.id,
-          });
-        }
-        expect(["review", "verifying"]).toContain(issue.value.tasks[0].status);
-        if (issue.value.tasks[0].status === "review") {
-          expect(issue.value.tasks[0].verification).toBeUndefined();
-        } else {
-          expect(issue.value.tasks[0].verification.acceptanceResults[0]).toMatchObject({
-            ok: false,
-            outcome: "not_evaluated",
-            source: "run_completion",
-          });
-        }
-      } finally {
-        process.env.PATH = originalPath;
-        rmSync(binRoot, { recursive: true, force: true });
-      }
-    });
-  });
-
-  test("returns task run events with cursor support and collapsed heartbeats by default", async () => {
-    await withController(async (repoRoot, baseCtx) => {
-      const binRoot = mkdtempSync(
-        join(tmpdir(), "repo-harness-controller-events-bin-"),
-      );
-      const originalPath = process.env.PATH;
-      try {
-        const fakeCodex = join(binRoot, "codex");
-        writeFakeCodexExecutable(
-          fakeCodex,
-          `printf '%s\n' '{"type":"thread.started"}'
-printf '%s\n' '{"type":"turn.started"}'
-sleep 0.2
-printf '%s\n' '{"type":"item.started","item":{"type":"command_execution","command":"bun test focused"}}'
-sleep 0.2
-printf '%s\n' '{"type":"turn.completed"}'
-`,
-        );
-        process.env.PATH = `${binRoot}:${originalPath ?? ""}`;
-        const ctx = {
-          ...baseCtx,
-          policy: getMcpPolicy("controller", {
-            repoRoot,
-            devAgentRunner: true,
-            allowedAgents: ["codex"],
-            runnerTimeoutMs: 10_000,
-          }),
-        };
-        const created = await jsonTool(ctx, "create_issue", {
-          title: "Run events",
-          tasks: [
-            {
-              title: "Execute",
-              objective: "Emit run events",
-              allowed_paths: ["src/**"],
-              checks: ["focused"],
-              agent: "codex",
-            },
-          ],
-        });
-        const dispatched = await jsonTool(ctx, "dispatch_task", {
-          issue_id: created.value.id,
-          task_id: "T1",
-          isolate: false,
-          timeout_ms: 10_000,
-        });
-        let run = (
-          await jsonTool(ctx, "get_task_run", {
-            run_id: dispatched.value.runId,
-          })
-        ).value;
-        for (
-          let attempt = 0;
-          attempt < 60 && !["succeeded", "failed"].includes(run.status);
-          attempt += 1
-        ) {
-          await Bun.sleep(25);
-          run = (
-            await jsonTool(ctx, "get_task_run", {
-              run_id: dispatched.value.runId,
-            })
-          ).value;
-        }
-        const initial = await jsonTool(ctx, "get_task_run_events", {
-          run_id: dispatched.value.runId,
-          limit: 20,
-        });
-        expect(initial.value.events.length).toBeGreaterThan(0);
-        expect(initial.value.heartbeatsCollapsed).toBe(true);
-        const cursor = initial.value.nextSinceEventIndex;
-        const delta = await jsonTool(ctx, "get_task_run_events", {
-          run_id: dispatched.value.runId,
-          since_event_index: typeof cursor === "number" ? cursor : -1,
-          limit: 20,
-        });
-        expect(delta.value.events.every((event: { data?: { eventIndex?: number } }) =>
-          typeof event.data?.eventIndex === "number" && event.data.eventIndex > cursor,
-        )).toBe(true);
-        expect(delta.value.nextSinceEventIndex).toBeGreaterThanOrEqual(cursor);
-      } finally {
-        process.env.PATH = originalPath;
-        rmSync(binRoot, { recursive: true, force: true });
-      }
-    });
-  });
-  test("preserves an explicit 60-minute timeout through MCP, Run metadata, and worker config", async () => {
-    await withController(async (repoRoot, baseCtx) => {
-      const binRoot = mkdtempSync(
-        join(tmpdir(), "repo-harness-controller-bin-"),
-      );
-      const originalPath = process.env.PATH;
-      try {
-        const fakeCodex = join(binRoot, "codex");
-        writeFakeCodexExecutable(fakeCodex, 'echo "timeout-propagation-ok"\n');
-        process.env.PATH = `${binRoot}:${originalPath ?? ""}`;
-        const ctx = {
-          ...baseCtx,
-          policy: getMcpPolicy("controller", {
-            repoRoot,
-            devAgentRunner: true,
-            allowedAgents: ["codex"],
-          }),
-        };
-        const created = await jsonTool(ctx, "create_issue", {
-          title: "Long timeout propagation",
-          summary: "Verify that a one-hour request is not silently reduced.",
-          goals: ["Keep the requested timeout intact."],
-          acceptance_criteria: ["The Run and worker both use 3600000ms."],
-          tasks: [
-            {
-              title: "Execute",
-              objective: "Run with a one-hour timeout.",
-              allowed_paths: ["src/**"],
-              checks: ["manual"],
-              acceptance_criteria: ["The Run and worker both use 3600000ms."],
-              agent: "codex",
-            },
-          ],
-        });
-        const dispatched = await jsonTool(ctx, "dispatch_task", {
-          issue_id: created.value.id,
-          task_id: "T1",
-          isolate: false,
-          timeout_ms: 3_600_000,
-        });
-        expect(dispatched.raw.isError).not.toBe(true);
-        expect(dispatched.value.timeoutMs).toBe(3_600_000);
-        let run = (
-          await jsonTool(ctx, "get_task_run", {
-            run_id: dispatched.value.runId,
-          })
-        ).value;
-        for (let attempt = 0; attempt < 60 && !run.startedAt; attempt += 1) {
-          await Bun.sleep(25);
-          run = (
-            await jsonTool(ctx, "get_task_run", {
-              run_id: dispatched.value.runId,
-            })
-          ).value;
-        }
-        expect(
-          Date.parse(run.deadlineAt) - Date.parse(run.startedAt),
-        ).toBe(3_600_000);
-        const workerConfig = JSON.parse(
-          readFileSync(
-            join(
-              repoRoot,
-              ".ai/harness/jobs",
-              dispatched.value.runId,
-              "worker-config.json",
-            ),
-            "utf-8",
-          ),
-        );
-        expect(workerConfig.timeoutMs).toBe(3_600_000);
-      } finally {
-        process.env.PATH = originalPath;
-        rmSync(binRoot, { recursive: true, force: true });
-      }
-    });
-  });
-
-  test("rejects an oversized timeout instead of silently falling back to the default", async () => {
-    await withController(async (repoRoot, baseCtx) => {
-      const ctx = {
-        ...baseCtx,
-        policy: getMcpPolicy("controller", {
-          repoRoot,
-          devAgentRunner: true,
-          allowedAgents: ["codex"],
-        }),
-      };
-      const created = await jsonTool(ctx, "create_issue", {
-        title: "Reject oversized timeout",
-        summary: "Do not silently change operator intent.",
-        goals: ["Return an explicit validation error."],
-        acceptance_criteria: ["No Run is created."],
-        tasks: [
-          {
-            title: "Execute",
-            objective: "Reject invalid timeout.",
-            allowed_paths: ["src/**"],
-            checks: ["manual"],
-            acceptance_criteria: ["No Run is created."],
-            agent: "codex",
-          },
-        ],
-      });
-      const dispatched = await jsonTool(ctx, "dispatch_task", {
-        issue_id: created.value.id,
-        task_id: "T1",
-        timeout_ms: 13 * 60 * 60 * 1000,
-      });
-      expect(dispatched.raw.isError).toBe(true);
-      expect(dispatched.value.error.message).toContain("43200000");
-    });
-  });
-
-  test("streams local agent output while a detached Run is still executing", async () => {
-    await withController(async (repoRoot, baseCtx) => {
-      const binRoot = mkdtempSync(
-        join(tmpdir(), "repo-harness-controller-bin-"),
-      );
-      const originalPath = process.env.PATH;
-      try {
-        const fakeCodex = join(binRoot, "codex");
-        writeFakeCodexExecutable(fakeCodex, 'echo "stream-first"\nsleep 1\necho "stream-second"\n');
-        process.env.PATH = `${binRoot}:${originalPath ?? ""}`;
-        const ctx = {
-          ...baseCtx,
-          policy: getMcpPolicy("controller", {
-            repoRoot,
-            devAgentRunner: true,
-            allowedAgents: ["codex"],
-            runnerTimeoutMs: 10_000,
-          }),
-        };
-        const created = await jsonTool(ctx, "create_issue", {
-          title: "Stream local output",
-          summary: "Expose detached worker progress before completion.",
-          goals: ["Observe live output."],
-          acceptance_criteria: [
-            "The first output line is visible while the Run is active.",
-          ],
-          tasks: [
-            {
-              title: "Stream",
-              objective: "Emit two separated log lines",
-              allowed_paths: ["src/**"],
-              checks: ["manual-live-log"],
-              acceptance_criteria: [
-                "The first output line is visible while the Run is active.",
-              ],
-              agent: "codex",
-            },
-          ],
-        });
-        const dispatched = await jsonTool(ctx, "dispatch_task", {
-          issue_id: created.value.id,
-          task_id: "T1",
-          isolate: false,
-          timeout_ms: 10_000,
-        });
-        let observedWhileRunning = false;
-        let run = dispatched.value;
-        for (let attempt = 0; attempt < 60; attempt += 1) {
-          await Bun.sleep(25);
-          run = (
-            await jsonTool(ctx, "get_task_run", {
-              run_id: dispatched.value.runId,
-            })
-          ).value;
-          const logValue = (
-            await jsonTool(ctx, "get_task_run_log", {
-              run_id: dispatched.value.runId,
-            })
-          ).value.log;
-          const log = typeof logValue === "string" ? logValue : "";
-          if (run.status === "running" && log.includes("stream-first")) {
-            observedWhileRunning = true;
-            break;
-          }
-        }
-        expect(observedWhileRunning).toBe(true);
-        for (
-          let attempt = 0;
-          attempt < 80 && !["succeeded", "failed"].includes(run.status);
-          attempt += 1
-        ) {
-          await Bun.sleep(25);
-          run = (
-            await jsonTool(ctx, "get_task_run", {
-              run_id: dispatched.value.runId,
-            })
-          ).value;
-        }
-        expect(run.status).toBe("succeeded");
-        const finalLog = await jsonTool(ctx, "get_task_run_log", {
-          run_id: dispatched.value.runId,
-        });
-        expect(finalLog.value.log).toContain("stream-second");
-      } finally {
-        process.env.PATH = originalPath;
-        rmSync(binRoot, { recursive: true, force: true });
-      }
-    });
-  });
-
-  test("reuses the same runId when dispatch_task is retried with the same request_id", async () => {
-    await withController(async (repoRoot, baseCtx) => {
-      const binRoot = mkdtempSync(join(tmpdir(), "repo-harness-controller-idem-bin-"));
-      const originalPath = process.env.PATH;
-      try {
-        const fakeCodex = join(binRoot, "codex");
-        writeFakeCodexExecutable(fakeCodex, 'echo "idempotent-run"\nsleep 0.2\n');
-        process.env.PATH = `${binRoot}:${originalPath ?? ""}`;
-        const ctx = {
-          ...baseCtx,
-          policy: getMcpPolicy("controller", {
-            repoRoot,
-            devAgentRunner: true,
-            allowedAgents: ["codex"],
-            runnerTimeoutMs: 10_000,
-          }),
-        };
-        const created = await jsonTool(ctx, "create_issue", {
-          title: "Dispatch idempotency",
-          tasks: [
-            {
-              title: "Execute",
-              objective: "Verify same-request reuse",
-              allowed_paths: ["src/**"],
-              checks: ["manual"],
-              agent: "codex",
-            },
-          ],
-        });
-        const first = await jsonTool(ctx, "dispatch_task", {
-          issue_id: created.value.id,
-          task_id: "T1",
-          request_id: "req-123",
-        });
-        const second = await jsonTool(ctx, "dispatch_task", {
-          issue_id: created.value.id,
-          task_id: "T1",
-          request_id: "req-123",
-        });
-        expect(first.value.runId).toBe(second.value.runId);
-        if (!second.raw.isError) expect(second.value.reused).toBe(true);
-        const runs = await jsonTool(ctx, "list_task_runs", {});
-        expect(runs.value.runs.filter((entry: { runId: string }) => entry.runId === first.value.runId)).toHaveLength(1);
-      } finally {
-        process.env.PATH = originalPath;
-        rmSync(binRoot, { recursive: true, force: true });
-      }
-    });
-  });
-
-  test("returns dispatch_task quickly after acceptance even when agent startup is slow", async () => {
-    await withController(async (repoRoot, baseCtx) => {
-      const binRoot = mkdtempSync(join(tmpdir(), "repo-harness-controller-fast-ack-bin-"));
-      const originalPath = process.env.PATH;
-      try {
-        const fakeCodex = join(binRoot, "codex");
-        writeFakeCodexExecutable(
-          fakeCodex,
-          `sleep 1.2
-echo "slow-start-ok"
-`,
-        );
-        process.env.PATH = `${binRoot}:${originalPath ?? ""}`;
-        const ctx = {
-          ...baseCtx,
-          policy: getMcpPolicy("controller", {
-            repoRoot,
-            devAgentRunner: true,
-            allowedAgents: ["codex"],
-            runnerTimeoutMs: 10_000,
-          }),
-        };
-        const created = await jsonTool(ctx, "create_issue", {
-          title: "Fast accept",
-          tasks: [
-            {
-              title: "Execute slowly",
-              objective: "Confirm dispatch returns before worker finishes.",
-              allowed_paths: ["src/**"],
-              checks: ["manual"],
-              agent: "codex",
-            },
-          ],
-        });
-        const startedAt = Date.now();
-        const dispatched = await jsonTool(ctx, "dispatch_task", {
-          issue_id: created.value.id,
-          task_id: "T1",
-          request_id: "slow-accept-1",
-        });
-        expect(dispatched.value.accepted).toBe(true);
-        expect(Date.now() - startedAt).toBeLessThan(1_000);
-        const acceptedRun = (
-          await jsonTool(ctx, "get_task_run", { run_id: dispatched.value.runId })
-        ).value;
-        expect(["starting", "running", "succeeded"]).toContain(acceptedRun.status);
-      } finally {
-        process.env.PATH = originalPath;
-        rmSync(binRoot, { recursive: true, force: true });
-      }
-    });
-  });
-
-  test("creates only one Run for concurrent dispatch_task calls with the same request_id", async () => {
-    await withController(async (repoRoot, baseCtx) => {
-      const binRoot = mkdtempSync(join(tmpdir(), "repo-harness-controller-concurrent-idem-bin-"));
-      const originalPath = process.env.PATH;
-      try {
-        const fakeCodex = join(binRoot, "codex");
-        writeFakeCodexExecutable(fakeCodex, 'echo "concurrent-idem"\nsleep 0.2\n');
-        process.env.PATH = `${binRoot}:${originalPath ?? ""}`;
-        const ctx = {
-          ...baseCtx,
-          policy: getMcpPolicy("controller", {
-            repoRoot,
-            devAgentRunner: true,
-            allowedAgents: ["codex"],
-            runnerTimeoutMs: 10_000,
-          }),
-        };
-        const created = await jsonTool(ctx, "create_issue", {
-          title: "Concurrent dispatch",
-          tasks: [
-            {
-              title: "Execute once",
-              objective: "Ensure concurrent retries collapse to one Run.",
-              allowed_paths: ["src/**"],
-              checks: ["manual"],
-              agent: "codex",
-            },
-          ],
-        });
-        const [first, second] = await Promise.all([
-          jsonTool(ctx, "dispatch_task", {
-            issue_id: created.value.id,
-            task_id: "T1",
-            request_id: "concurrent-req-1",
-          }),
-          jsonTool(ctx, "dispatch_task", {
-            issue_id: created.value.id,
-            task_id: "T1",
-            request_id: "concurrent-req-1",
-          }),
-        ]);
-        expect(first.value.runId).toBeTruthy();
-        expect(second.value.runId).toBe(first.value.runId);
-        const runs = await jsonTool(ctx, "list_task_runs", {});
-        expect(
-          runs.value.runs.filter((entry: { runId: string }) => entry.runId === first.value.runId),
-        ).toHaveLength(1);
-        expect(runs.value.runs[0].worktree).toBeUndefined();
-      } finally {
-        process.env.PATH = originalPath;
-        rmSync(binRoot, { recursive: true, force: true });
-      }
-    });
-  });
-
-  test("keeps dispatch responses compact even when the issue contains large notes and history", async () => {
-    await withController(async (repoRoot, baseCtx) => {
-      const binRoot = mkdtempSync(join(tmpdir(), "repo-harness-controller-compact-bin-"));
-      const originalPath = process.env.PATH;
-      try {
-        const fakeCodex = join(binRoot, "codex");
-        writeFakeCodexExecutable(fakeCodex, 'echo "compact"\n');
-        process.env.PATH = `${binRoot}:${originalPath ?? ""}`;
-        const ctx = {
-          ...baseCtx,
-          policy: getMcpPolicy("controller", {
-            repoRoot,
-            devAgentRunner: true,
-            allowedAgents: ["codex"],
-            runnerTimeoutMs: 10_000,
-          }),
-        };
-        const created = await jsonTool(ctx, "create_issue", {
-          title: "Compact response",
-          summary: "x".repeat(20_000),
-          tasks: [
-            {
-              title: "Execute",
-              objective: "Keep dispatch response small",
-              allowed_paths: ["src/**"],
-              checks: ["manual"],
-              acceptance_criteria: ["y".repeat(5000)],
-              agent: "codex",
-            },
-          ],
-        });
-        const dispatched = await jsonTool(ctx, "dispatch_task", {
-          issue_id: created.value.id,
-          task_id: "T1",
-          request_id: "compact-1",
-        });
-        const bytes = Buffer.byteLength(dispatched.raw.content[0].text, "utf-8");
-        expect(bytes).toBeLessThan(2048);
-        expect(dispatched.value.issue).toBeUndefined();
-        expect(dispatched.value.run).toBeUndefined();
-      } finally {
-        process.env.PATH = originalPath;
-        rmSync(binRoot, { recursive: true, force: true });
-      }
-    });
-  });
-
-  test("fails fast with structured executor health when a local agent is disabled", async () => {
-    await withController(async (repoRoot, baseCtx) => {
-      const ctx = {
-        ...baseCtx,
-        policy: getMcpPolicy("controller", {
-          repoRoot,
-          devAgentRunner: true,
-          allowedAgents: ["codex"],
-        }),
-      };
-      const created = await jsonTool(ctx, "create_issue", {
-        title: "Disabled local agent",
-        tasks: [
-          {
-            title: "Use Claude",
-            objective: "Need a disabled local agent.",
-            allowed_paths: ["src/**"],
-            checks: ["focused"],
-            agent: "claude",
-          },
-        ],
-      });
-      const dispatched = await jsonTool(ctx, "dispatch_task", {
-        issue_id: created.value.id,
-        task_id: "T1",
-      });
-      expect(dispatched.raw.isError).toBe(true);
-      expect(dispatched.value.error.code).toBe("AGENT_DENIED");
-      expect(dispatched.value.error.details.executorHealth.reason).toBe("local_agent_disabled");
-      expect(dispatched.value.error.details.executorHealth.status).toBe("disabled");
-      expect(dispatched.value.error.details.executorHealth.fallback).toBe("use_direct_edit");
-    });
-  });
-
-  test("fails fast with structured executor health when the dev runner is disabled", async () => {
-    await withController(async (repoRoot, baseCtx) => {
-      const ctx = {
-        ...baseCtx,
-        policy: getMcpPolicy("controller", {
-          repoRoot,
-          devAgentRunner: false,
-          allowedAgents: ["codex"],
-        }),
-      };
-      const created = await jsonTool(ctx, "create_issue", {
-        title: "Disabled dev runner",
-        tasks: [
-          {
-            title: "Use Codex",
-            objective: "Need a disabled dev runner.",
-            allowed_paths: ["src/**"],
-            checks: ["focused"],
-            agent: "codex",
-          },
-        ],
-      });
-      const dispatched = await jsonTool(ctx, "dispatch_task", {
-        issue_id: created.value.id,
-        task_id: "T1",
-      });
-      expect(dispatched.raw.isError).toBe(true);
-      expect(dispatched.value.error.code).toBe("DEV_RUNNER_DISABLED");
-      expect(dispatched.value.error.details.executorHealth.reason).toBe("local_dev_runner_disabled");
-      expect(dispatched.value.error.details.executorHealth.message).toContain("begin_edit_session/apply_patch/run_check");
-    });
-  });
-
-  test("launch_issue reports structured skipped executor health for disabled local agents", async () => {
-    await withController(async (repoRoot, baseCtx) => {
-      const ctx = {
-        ...baseCtx,
-        policy: getMcpPolicy("controller", {
-          repoRoot,
-          devAgentRunner: true,
-          allowedAgents: ["codex"],
-        }),
-      };
-      const created = await jsonTool(ctx, "create_issue", {
-        title: "Launch skip classification",
-        tasks: [
-          {
-            title: "Disabled Claude task",
-            objective: "Should be skipped with structured health.",
-            allowed_paths: ["src/a.ts"],
-            checks: ["focused"],
-            agent: "claude",
-          },
-        ],
-      });
-      const launched = await jsonTool(ctx, "launch_issue", {
-        issue_id: created.value.id,
-      });
-      expect(launched.value.dispatched).toBe(0);
-      expect(launched.value.skipped).toHaveLength(1);
-      expect(launched.value.skipped[0].executorHealth.reason).toBe("local_agent_disabled");
-      expect(launched.value.skipped[0].executorHealth.fallback).toBe("use_direct_edit");
-    });
-  });
-
-  test("dispatch_ready_tasks reports structured skipped executor health for disabled local agents", async () => {
-    await withController(async (repoRoot, baseCtx) => {
-      const ctx = {
-        ...baseCtx,
-        policy: getMcpPolicy("controller", {
-          repoRoot,
-          devAgentRunner: true,
-          allowedAgents: ["codex"],
-        }),
-      };
-      const created = await jsonTool(ctx, "create_issue", {
-        title: "Batch skip classification",
-        tasks: [
-          {
-            title: "Disabled Claude task",
-            objective: "Should be skipped with structured health.",
-            allowed_paths: ["src/a.ts"],
-            checks: ["focused"],
-            agent: "claude",
-          },
-        ],
-      });
-      const dispatched = await jsonTool(ctx, "dispatch_ready_tasks", {
-        issue_id: created.value.id,
-      });
-      expect(dispatched.value.dispatched).toBe(0);
-      expect(dispatched.value.skipped).toHaveLength(1);
-      expect(dispatched.value.skipped[0].executorHealth.reason).toBe("local_agent_disabled");
-      expect(dispatched.value.skipped[0].reason).toContain("Local agent is not enabled");
-    });
-  });
-
-  test("classifies GitHub Copilot CCA disabled failures on the recorded run", async () => {
-    await withController(async (repoRoot, ctx) => {
-      const binRoot = mkdtempSync(join(tmpdir(), "repo-harness-gh-cca-bin-"));
-      const originalPath = process.env.PATH;
-      try {
-        const fakeGh = join(binRoot, "gh");
-        writeFileSync(
-          fakeGh,
-          `#!/usr/bin/env node
-const args = process.argv.slice(2);
-if (args[0] === '--version') { console.log('gh version 2.80.0 (fake)'); process.exit(0); }
-if (args[0] === 'auth' && args[1] === 'status') { console.log('authenticated'); process.exit(0); }
-if (args[0] === 'repo' && args[1] === 'view') { console.log(JSON.stringify({ nameWithOwner: 'acme/demo', url: 'https://github.com/acme/demo', defaultBranchRef: { name: 'main' } })); process.exit(0); }
-if (args[0] === 'api') { console.error('gh: user or repo does not have CCA enabled (HTTP 409) Copilot Coding Agent'); process.exit(1); }
-console.error('unsupported fake gh call: ' + args.join(' '));
-process.exit(2);
-`,
-        );
-        chmodSync(fakeGh, 0o755);
-        process.env.PATH = `${binRoot}:${originalPath ?? ""}`;
-
-        const created = await jsonTool(ctx, "create_issue", {
-          title: "CCA disabled classification",
-          tasks: [
-            {
-              title: "Cloud implementation",
-              objective: "Hit the CCA disabled path.",
-              allowed_paths: ["src/**"],
-              checks: ["focused"],
-              agent: "github-copilot",
-            },
-          ],
-        });
-        const dispatched = await jsonTool(ctx, "dispatch_task", {
-          issue_id: created.value.id,
-          task_id: "T1",
-          agent: "github-copilot",
-          github_repo: "acme/demo",
-        });
-        const run = await waitForRun(ctx, dispatched.value.runId, (entry) => entry.status === "failed", 80, 25);
-        expect(run.status).toBe("failed");
-        expect(run.executorHealth.reason).toBe("copilot_cca_disabled");
-        expect(run.executorHealth.status).toBe("cloud_not_enabled");
-      } finally {
-        process.env.PATH = originalPath;
-        rmSync(binRoot, { recursive: true, force: true });
-      }
-    });
-  });
-
-  test("reviews and integrates an isolated Task Run before acceptance", async () => {
-    const repoRoot = mkdtempSync(
-      join(tmpdir(), "repo-harness-controller-git-"),
-    );
-    const binRoot = mkdtempSync(join(tmpdir(), "repo-harness-controller-bin-"));
-    const controllerHome = mkdtempSync(join(tmpdir(), "repo-harness-controller-home-"));
-    const originalPath = process.env.PATH;
-    const originalControllerHome = process.env.REPO_HARNESS_CONTROLLER_HOME;
-    try {
-      process.env.REPO_HARNESS_CONTROLLER_HOME = controllerHome;
-      mkdirSync(join(repoRoot, "src"), { recursive: true });
-      mkdirSync(join(repoRoot, "tasks"), { recursive: true });
-      mkdirSync(join(repoRoot, ".ai/harness"), { recursive: true });
-      mkdirSync(join(repoRoot, ".repo-harness"), { recursive: true });
-      writeFileSync(join(repoRoot, ".repo-harness/checks.json"), JSON.stringify({
-        version: 1,
-        checks: { focused: { command: [process.execPath, "-e", "process.exit(0)"], timeoutMs: 10_000 } },
-      }));
-      writeFileSync(
-        join(repoRoot, "src/example.ts"),
-        "export const value = 1;\n",
-      );
-      writeFileSync(join(repoRoot, "tasks/current.md"), "# Current\n");
-      writeFileSync(join(repoRoot, ".gitignore"), ".ai/harness/\n");
-      expect(spawnSync("git", ["init"], { cwd: repoRoot }).status).toBe(0);
-      expect(
-        spawnSync("git", ["config", "user.email", "test@example.com"], {
-          cwd: repoRoot,
-        }).status,
-      ).toBe(0);
-      expect(
-        spawnSync("git", ["config", "user.name", "Test"], { cwd: repoRoot })
-          .status,
-      ).toBe(0);
-      expect(spawnSync("git", ["add", "."], { cwd: repoRoot }).status).toBe(0);
-      expect(
-        spawnSync("git", ["commit", "-m", "initial"], { cwd: repoRoot }).status,
-      ).toBe(0);
-
-      const fakeCodex = join(binRoot, "codex");
-      writeFakeCodexExecutable(
-        fakeCodex,
-        'printf "export const value = 2;\\n" > src/example.ts\necho "isolated-change-ok"\n',
-      );
-      process.env.PATH = `${binRoot}:${originalPath ?? ""}`;
-      const ctx: McpToolContext = {
-        repoRoot,
-        policy: getMcpPolicy("controller", {
-          repoRoot,
-          devAgentRunner: true,
-          allowedAgents: ["codex"],
-          runnerTimeoutMs: 10_000,
-        }),
-      };
-      const created = await jsonTool(ctx, "create_issue", {
-        title: "Integrate isolated work",
-        summary: "Exercise isolated implementation and integration.",
-        goals: ["Integrate one reviewed change."],
-        acceptance_criteria: [
-          "The main worktree contains the reviewed value change.",
-        ],
-        tasks: [
-          {
-            title: "Change value",
-            objective: "Change the example value",
-            allowed_paths: ["src/**"],
-            checks: ["focused"],
-            acceptance_criteria: ["The example value is 2."],
-            agent: "codex",
-          },
-        ],
-      });
-        const dispatched = await jsonTool(ctx, "dispatch_task", {
-          issue_id: created.value.id,
-          task_id: "T1",
-          isolate: true,
-          timeout_ms: 10_000,
-        });
-      let run = (
-        await jsonTool(ctx, "get_task_run", {
-          run_id: dispatched.value.runId,
-        })
-      ).value;
-      const runDeadline = Date.now() + 30_000;
-      for (
-        let attempt = 0;
-        Date.now() < runDeadline && !["succeeded", "failed", "waiting_for_user"].includes(run.status);
-        attempt += 1
-      ) {
-        await Bun.sleep(25);
-        run = (
-          await jsonTool(ctx, "get_task_run", {
-            run_id: dispatched.value.runId,
-          })
-        ).value;
-      }
-      for (
-        let attempt = 0;
-        attempt < 400 && !run.worktreeCleanedAt && !run.autoIntegrationError;
-        attempt += 1
-      ) {
-        await Bun.sleep(25);
-        run = (
-          await jsonTool(ctx, "get_task_run", {
-            run_id: dispatched.value.runId,
-          })
-        ).value;
-      }
-      expect({
-        status: run.status,
-        autoIntegrationError: run.autoIntegrationError,
-        closureState: run.closureState,
-        preservationReason: run.preservationReason,
-        preservationDetails: run.preservationDetails,
-        changedFiles: run.changedFiles,
-      }).toEqual({
-        status: "succeeded",
-        autoIntegrationError: undefined,
-        closureState: "completed",
-        preservationReason: undefined,
-        preservationDetails: undefined,
-        changedFiles: ["src/example.ts"],
-      });
-      expect(run.autoIntegrationError).toBeUndefined();
-      expect(run.integratedSessionId).toBeTruthy();
-      expect(run.worktreeCleanedAt).toBeTruthy();
-      const runWithPaths = (
-        await jsonTool(ctx, "get_task_run", {
-          run_id: run.runId,
-          include_paths: true,
-        })
-      ).value;
-      expect(existsSync(runWithPaths.worktree)).toBe(false);
-      expect(readFileSync(join(repoRoot, "src/example.ts"), "utf-8")).toContain(
-        "value = 2",
-      );
-      const diff = await jsonTool(ctx, "get_task_diff", { run_id: run.runId });
-      expect(diff.value.status).toContain("src/example.ts");
-      let currentIssue = await jsonTool(ctx, "get_issue", { issue_id: created.value.id });
-      for (let attempt = 0; attempt < 80 && currentIssue.value.tasks[0].status !== "verifying"; attempt += 1) {
-        await Bun.sleep(25);
-        currentIssue = await jsonTool(ctx, "get_issue", { issue_id: created.value.id });
-      }
-      expect(currentIssue.value.tasks[0].status).toBe("verifying");
-      expect(currentIssue.value.tasks[0].verification.acceptanceResults[0]).toMatchObject({
-        ok: false,
-        outcome: "not_evaluated",
-        source: "run_completion",
-      });
-      const persistedRun = JSON.parse(readFileSync(
-        join(repoRoot, ".ai/harness/jobs", run.runId, "meta.json"),
-        "utf-8",
-      ));
-      expect(persistedRun.integrationEvidence.reachable).toBe(true);
-      expect(persistedRun.cleanupEvidence.noDirtyDiff).toBe(true);
-    } finally {
-      process.env.PATH = originalPath;
-      if (originalControllerHome === undefined) delete process.env.REPO_HARNESS_CONTROLLER_HOME;
-      else process.env.REPO_HARNESS_CONTROLLER_HOME = originalControllerHome;
-      rmSync(repoRoot, { recursive: true, force: true });
-      rmSync(binRoot, { recursive: true, force: true });
-      rmSync(controllerHome, { recursive: true, force: true });
-    }
-  }, 15_000);
 
   test("previews launch readiness and supports dynamic Task graph changes", async () => {
     await withController(async (_repoRoot, ctx) => {
@@ -2603,21 +1242,17 @@ process.exit(2);
             objective: "Prepare foundation.",
             allowed_paths: ["src/foundation/**"],
             checks: ["typecheck"],
-            acceptance_criteria: ["Foundation is ready."],
-          },
+            acceptance_criteria: ["Foundation is ready."]},
           {
             title: "Consumer",
             objective: "Use the foundation.",
             depends_on: ["T1"],
             allowed_paths: ["src/consumer/**"],
             checks: ["typecheck"],
-            acceptance_criteria: ["Consumer uses the foundation."],
-          },
-        ],
-      });
+            acceptance_criteria: ["Consumer uses the foundation."]},
+        ]});
       const preview = await jsonTool(ctx, "prepare_issue_launch", {
-        issue_id: created.value.id,
-      });
+        issue_id: created.value.id});
       expect(preview.value.readiness.ready).toBe(true);
       expect(
         preview.value.tasks.map((task: { id: string }) => task.id),
@@ -2631,9 +1266,7 @@ process.exit(2);
           depends_on: ["T2"],
           allowed_paths: ["tests/**"],
           checks: ["test"],
-          acceptance_criteria: ["Regression coverage exists."],
-        },
-      });
+          acceptance_criteria: ["Regression coverage exists."]}});
       expect(appended.value.tasks.at(-1).id).toBe("T3");
 
       const split = await jsonTool(ctx, "split_task", {
@@ -2643,15 +1276,12 @@ process.exit(2);
           {
             title: "Foundation model",
             objective: "Prepare model.",
-            acceptance_criteria: ["Model is ready."],
-          },
+            acceptance_criteria: ["Model is ready."]},
           {
             title: "Foundation service",
             objective: "Prepare service.",
-            acceptance_criteria: ["Service is ready."],
-          },
-        ],
-      });
+            acceptance_criteria: ["Service is ready."]},
+        ]});
       expect(
         split.value.tasks.find((task: { id: string }) => task.id === "T1")
           .status,
@@ -2663,102 +1293,4 @@ process.exit(2);
     });
   });
 
-  test("publishes Issues and runs a visible GitHub Copilot cloud session", async () => {
-    await withController(async (repoRoot, ctx) => {
-      const binRoot = mkdtempSync(join(tmpdir(), "repo-harness-gh-bin-"));
-      const originalPath = process.env.PATH;
-      const originalState = process.env.GH_FAKE_STATE;
-      try {
-        const fakeGh = join(binRoot, "gh");
-        const statePath = join(binRoot, "state.json");
-        writeFileSync(statePath, JSON.stringify({ nextIssue: 40 }));
-        writeFileSync(
-          fakeGh,
-          `#!/usr/bin/env node
-const fs = require('fs');
-const args = process.argv.slice(2);
-const statePath = process.env.GH_FAKE_STATE;
-const readState = () => JSON.parse(fs.readFileSync(statePath, 'utf8'));
-const writeState = (value) => fs.writeFileSync(statePath, JSON.stringify(value));
-if (args[0] === '--version') { console.log('gh version 2.80.0 (fake)'); process.exit(0); }
-if (args[0] === 'auth' && args[1] === 'status') { console.log('authenticated'); process.exit(0); }
-if (args[0] === 'repo' && args[1] === 'view') { console.log(JSON.stringify({ nameWithOwner: 'acme/demo', url: 'https://github.com/acme/demo', defaultBranchRef: { name: 'main' } })); process.exit(0); }
-if (args[0] === 'issue' && args[1] === 'create') { const state = readState(); const number = state.nextIssue++; writeState(state); console.log('https://github.com/acme/demo/issues/' + number); process.exit(0); }
-if (args[0] === 'issue' && ['edit', 'close'].includes(args[1])) { process.exit(0); }
-if (args[0] === 'issue' && args[1] === 'view') { console.log(JSON.stringify({ number: Number(args[2]), title: 'Synced', state: 'OPEN', url: 'https://github.com/acme/demo/issues/' + args[2], labels: [], assignees: [], projectItems: [], updatedAt: new Date().toISOString() })); process.exit(0); }
-if (args[0] === 'project' && args[1] === 'item-add') { console.log(JSON.stringify({ id: 'PVTI_fake' })); process.exit(0); }
-if (args[0] === 'api') { const endpoint = args.find((arg) => arg.startsWith('/agents/repos/')); const isPost = args.includes('POST'); if (endpoint && isPost) { process.stdin.resume(); process.stdin.on('end', () => console.log(JSON.stringify({ id: 'agent-1', state: 'queued', html_url: 'https://github.com/acme/demo/agents/agent-1' }))); return; } if (endpoint) { console.log(JSON.stringify({ id: 'agent-1', state: 'completed', html_url: 'https://github.com/acme/demo/agents/agent-1', pull_request: { html_url: 'https://github.com/acme/demo/pull/77' } })); process.exit(0); } }
-if (args[0] === 'agent-task' && args[1] === 'view') { console.log('cloud-session-log'); process.exit(0); }
-console.error('unsupported fake gh call: ' + args.join(' '));
-process.exit(2);
-`,
-        );
-        chmodSync(fakeGh, 0o755);
-        process.env.PATH = `${binRoot}:${originalPath ?? ""}`;
-        process.env.GH_FAKE_STATE = statePath;
-
-        const created = await jsonTool(ctx, "create_issue", {
-          title: "GitHub managed work",
-          summary: "Publish work and execute it in a visible GitHub session.",
-          goals: ["Expose progress in GitHub."],
-          acceptance_criteria: [
-            "The cloud session produces a reviewable pull request.",
-          ],
-          tasks: [
-            {
-              title: "Cloud implementation",
-              objective: "Implement the scoped change.",
-              allowed_paths: ["src/**"],
-              checks: ["typecheck"],
-              acceptance_criteria: ["A reviewable pull request is produced."],
-              agent: "github-copilot",
-            },
-          ],
-        });
-        const published = await jsonTool(ctx, "publish_issue_to_github", {
-          issue_id: created.value.id,
-          repo: "acme/demo",
-          include_tasks: true,
-          project_owner: "acme",
-          project_number: 3,
-        });
-        expect(published.value.github.url).toContain("/issues/40");
-        expect(published.value.tasks[0].github.url).toContain("/issues/41");
-
-        const dispatched = await jsonTool(ctx, "dispatch_task", {
-          issue_id: created.value.id,
-          task_id: "T1",
-          agent: "github-copilot",
-          github_repo: "acme/demo",
-        });
-        expect(dispatched.value.provider).toBe("github");
-        const completed = {
-          value: await waitForRun(ctx, dispatched.value.runId, (run) => run.status === "succeeded", 80, 25),
-        };
-        expect(completed.value.status).toBe("succeeded");
-        expect(completed.value.github.pullRequestUrl).toContain("/pull/77");
-        const log = await jsonTool(ctx, "get_task_run_log", {
-          run_id: dispatched.value.runId,
-        });
-        expect(log.value.log).toContain("cloud-session-log");
-
-        const completedIssue = await jsonTool(ctx, "get_issue", {
-          issue_id: created.value.id,
-        });
-        expect(completedIssue.value.tasks[0].status).toBe("verifying");
-        expect(completedIssue.value.tasks[0].verification).toBeTruthy();
-        expect(completedIssue.value.tasks[0].verification.acceptanceResults[0]).toMatchObject({
-          ok: false,
-          outcome: "not_evaluated",
-          source: "run_completion",
-        });
-        expect(completedIssue.value.tasks[0].verification.integrationEvidence).toBeUndefined();
-      } finally {
-        process.env.PATH = originalPath;
-        if (originalState === undefined) delete process.env.GH_FAKE_STATE;
-        else process.env.GH_FAKE_STATE = originalState;
-        rmSync(binRoot, { recursive: true, force: true });
-      }
-    });
-  });
 });

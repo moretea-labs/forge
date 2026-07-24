@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { join } from 'path';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { CONTROLLER_SCOPE_REPO_ID, controllerSystemRoot, ensureControllerHome, repositoryControllerRoot } from '../../cli/repositories/controller-home';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync} from 'fs';
 import type { ExecutionJob, ResourceClaimSpec } from '../execution/jobs/types';
 import { appendRuntimeEvent } from '../evidence/event-ledger';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
@@ -497,6 +497,7 @@ export interface PluginActionReceipt {
   semanticKey: string;
   status: 'succeeded' | 'failed';
   createdAt: string;
+  origin?: { surface: string; actor?: string; correlationId?: string };
   result?: Record<string, unknown>;
   error?: { code: string; message: string };
 }
@@ -532,6 +533,30 @@ function readPluginActionReceipt(controllerHome: string, repoId: string, receipt
   return readJsonFile<PluginActionReceipt>(path);
 }
 
+export function findPluginActionReceipt(
+  controllerHome: string,
+  receiptId: string,
+): PluginActionReceipt | undefined {
+  const home = ensureControllerHome(controllerHome);
+  const repositoriesRoot = join(home, 'repositories');
+  try {
+    for (const repoId of readdirSync(repositoriesRoot)) {
+      const receipt = readPluginActionReceipt(home, repoId, receiptId);
+      if (receipt) return receipt;
+    }
+  } catch {
+    /* no repositories */
+  }
+  return undefined;
+}
+
+export function compatibilityPluginJobFromReceipt(
+  receipt: PluginActionReceipt,
+  checkoutId = 'unknown',
+): ExecutionJob {
+  return compatibilityJobFromReceipt(receipt, checkoutId);
+}
+
 function compatibilityJobFromReceipt(receipt: PluginActionReceipt, checkoutId: string): ExecutionJob {
   return {
     schemaVersion: 1,
@@ -552,7 +577,7 @@ function compatibilityJobFromReceipt(receipt: PluginActionReceipt, checkoutId: s
         actionId: receipt.actionId,
       },
     },
-    origin: { surface: 'mcp', actor: 'plugin_action_execute', correlationId: receipt.requestId },
+    origin: receipt.origin ?? { surface: 'mcp', actor: 'plugin_action_execute', correlationId: receipt.requestId },
     resourceClaims: [],
     createdAt: receipt.createdAt,
     updatedAt: receipt.createdAt,
@@ -650,6 +675,7 @@ export async function submitAssistantPluginAction(
       semanticKey: key,
       status: 'succeeded',
       createdAt,
+      origin: request.origin,
       result,
     };
     writeJsonAtomic(pluginActionReceiptPath(controllerHome, repository.repoId, receiptId), receipt);
@@ -682,6 +708,7 @@ export async function submitAssistantPluginAction(
       semanticKey: key,
       status: 'failed',
       createdAt,
+      origin: request.origin,
       error: { code, message },
     };
     writeJsonAtomic(pluginActionReceiptPath(controllerHome, repository.repoId, receiptId), receipt);

@@ -426,3 +426,20 @@ Date: 2026-07-24
   and recovery suites; Process Runtime / argv / fencing coverage remains.
 - Schedule and target-architecture tests assert external-controller handoffs for
   non-deterministic operations.
+
+## Stage: architecture gates + MCP surface migration
+
+Date: 2026-07-24
+
+- Updated `scripts/check-runtime-architecture.mjs` so Work mutations execute through
+  `callExecutionTool` (WorkContract/Process Runtime) instead of forcing durable
+  ExecutionJob admission.
+- Fixed Local Bridge Direct Edit verify path syntax and deterministic verify response.
+- Migrated MCP controller / Local Bridge / V7 compatibility suites away from Agent
+  Run and ExecutionJob creation expectations.
+- Focused verification:
+  - live-maintenance schedules: 6 pass
+  - mcp-controller: 23 pass
+  - local-bridge + controller-execution-first + ephemeral: 50 pass
+  - check-runtime-architecture: OK
+  - check-mcp-compatibility: ok

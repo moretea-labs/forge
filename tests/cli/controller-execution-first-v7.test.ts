@@ -443,7 +443,7 @@ describe("Controller v7 compatibility on the V8 execution bridge", () => {
       agent: "codex",
       timeoutMs: 10_000,
       isolate: false,
-    })).toThrow("DRIFT_PREVENTION_BLOCKED");
+    })).toThrow(/AGENT_RUN_RETIRED|DRIFT_PREVENTION_BLOCKED/);
   });
 
   test("does not delete a live launch lock while allowing the current Controller to proceed", () => {
@@ -466,15 +466,16 @@ describe("Controller v7 compatibility on the V8 execution bridge", () => {
 
     const lockPath = join(lockDir, "run-launch.lock");
     expect(readFileSync(lockPath, "utf-8")).toContain(`"pid":${process.pid}`);
-    const run = startTaskJob({
+    expect(() => startTaskJob({
       repoRoot: root,
       issueId: issue.id,
       taskId: "T1",
       agent: "codex",
       isolate: false,
       timeoutMs: 10_000,
-    });
-    expect(run.runId).toContain("RUN-");
+    })).toThrow(/AGENT_RUN_RETIRED/);
+    // Lock file is no longer consumed by Kernel Agent launch.
+    expect(readFileSync(lockPath, "utf-8")).toContain(`"pid":${process.pid}`);
   });
 
   test("queued Runs that never start become terminal unknown evidence with finishedAt", () => {

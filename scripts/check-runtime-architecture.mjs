@@ -75,16 +75,18 @@ const legacyCall = server.indexOf('callMultiRepositoryTool(ctx, name, args)');
 if (!(runtimeCall >= 0 && durableCall > runtimeCall && legacyCall > durableCall)) {
   failures.push('MCP routing must evaluate runtime reads/control, then durable acceptance, before the legacy Worker-only implementation');
 }
-const durableWorkGuard = server.indexOf('if (isDurableWorkOperation(name))');
 const executionToolCall = server.indexOf('const executionResult = await callExecutionTool(ctx, name, args)');
-if (!(durableWorkGuard >= 0 && executionToolCall > durableWorkGuard)) {
-  failures.push('Public MCP Work mutations must enter durable admission before callExecutionTool can run');
+const durableCallAfterExecution = server.indexOf('const durableResult = await routeDurableMcpCall(ctx, name, args)');
+if (!(executionToolCall >= 0 && durableCallAfterExecution > executionToolCall)) {
+  failures.push('Public MCP Work mutations must execute through callExecutionTool before any durable Operation admission');
 }
-const durableWorkRegion = durableWorkGuard >= 0 && executionToolCall > durableWorkGuard
-  ? server.slice(durableWorkGuard, executionToolCall)
+// SuperController peer model: Work mutations are owned by WorkContract + Process Runtime.
+// They must not be forced back onto the retired ExecutionJob durable path at the gateway.
+const executionRegion = executionToolCall >= 0 && durableCallAfterExecution > executionToolCall
+  ? server.slice(executionToolCall, durableCallAfterExecution)
   : '';
-if (!durableWorkRegion.includes('routeDurableMcpCall') || !durableWorkRegion.includes('forceDurable: true')) {
-  failures.push('Public MCP Work mutations must force the durable Operation path');
+if (executionRegion.includes('forceDurable: true') && executionRegion.includes('isDurableWorkOperation')) {
+  failures.push('Public MCP Work mutations must not force the retired durable ExecutionJob path');
 }
 requireText('src/runtime/gateway/mcp/router.ts', 'createExecutionJob');
 requireText('src/runtime/gateway/mcp/router.ts', 'requestId');
