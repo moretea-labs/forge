@@ -3,7 +3,6 @@ import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { getAgentJob, getAgentJobEvents, getAgentJobLog, listAgentJobs } from '../agent-jobs/job-manager';
 import { archiveIssue, getIssue, inspectIssueReadiness, projectBoard, restoreIssue } from '../controller/issue-store';
-import { taskWriteScopesConflict } from '../controller/execution-policy';
 import { getControllerTimeline, getProjectProgress } from '../controller/progress';
 import { finishEditSession, finishTaskRun, type TaskReviewDecision } from '../controller/completion-orchestrator';
 import { applyCompletionDecision, completionDecisionQueues, finishCompletionBacklog, inspectCompletionBacklog, type CompletionBacklogReport, type CompletionDecisionAction } from '../controller/completion-backlog';
@@ -30,8 +29,7 @@ import {
   controllerRestartVerify,
   repositoryChangeVerify,
 } from '../controller/composite-operations';
-import { dispatchLocalBridgeJob,
-  executeLocalBridgeJob, submitLocalBridgeJob } from '../local-bridge/job-store';
+import { executeLocalBridgeJob } from '../local-bridge/job-store';
 
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
 
@@ -42,10 +40,6 @@ function output(value: unknown, json = false): void {
 
 function repoRoot(value?: string): string {
   return resolve(value ?? process.cwd());
-}
-
-function localBridgeExecutionRetired(): boolean {
-  return true;
 }
 
 function formatBoard(board: ReturnType<typeof projectBoard>): string {
@@ -504,39 +498,12 @@ export function buildControllerCommand(): Command {
       const root = repoRoot(opts.repo);
       const readiness = inspectIssueReadiness(root, issueId);
       if (!readiness.queueable) throw new Error(`Issue has no queueable Tasks: ${[...readiness.blockers, ...readiness.taskBlockers].map((entry) => entry.code).join(', ') || 'no queueable Tasks'}`);
-      if (localBridgeExecutionRetired()) {
-        output({
-          accepted: false,
-          code: 'LOCAL_BRIDGE_JOB_RETIRED',
-          readiness,
-          message: 'controller launch no longer creates Local Bridge Jobs. Create or claim WorkContract and start an external Controller through the Thin Launcher.',
-        }, opts.json === true);
-        return;
-      }
-      saveControllerProjectState(root, { currentIssueId: issueId }, 'controller-cli');
-      const issue = getIssue(root, issueId);
-      const count = Math.max(1, Math.min(Number(opts.maxParallel ?? 1), readiness.queueableTaskIds.length));
-      const selected = [] as typeof issue.tasks;
-      const skipped: Array<{ taskId: string; reason: string }> = [];
-      for (const taskId of readiness.queueableTaskIds) {
-        if (selected.length >= count) break;
-        const task = issue.tasks.find((entry) => entry.id === taskId);
-        if (!task) continue;
-        if (selected.some((entry) => taskWriteScopesConflict(entry, task))) {
-          skipped.push({ taskId, reason: 'allowed path scope overlaps another selected Task' });
-          continue;
-        }
-        selected.push(task);
-      }
-      const jobs = selected.map((task) => {
-        const job = submitLocalBridgeJob(root, {
-          action: 'launch-task',
-          requestedBy: 'controller-cli',
-          payload: { issueId, taskId: task.id, timeoutMs: opts.timeoutMs ? Number(opts.timeoutMs) : undefined },
-        });
-        return job.status === 'approved' ? dispatchLocalBridgeJob(root, job.jobId) : job;
-      });
-      output({ readiness, jobs, skipped }, opts.json === true);
+      output({
+        accepted: false,
+        code: 'LOCAL_BRIDGE_JOB_RETIRED',
+        readiness,
+        message: 'controller launch no longer creates Local Bridge Jobs. Create or claim WorkContract and start an external Controller through the Thin Launcher.',
+      }, opts.json === true);
     });
 
   command.command('archive')

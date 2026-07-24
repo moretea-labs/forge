@@ -15,7 +15,6 @@ import {
   validateRepository,
 } from '../repositories/registry';
 import { buildControllerWorkbench } from '../repositories/workbench';
-import { buildLocalBridgeJobHandoff, executeLocalBridgeJob, getLocalBridgeJobSnapshot, submitLocalBridgeJob } from '../local-bridge/job-store';
 import { applySafePatch, buildSafePatchPlan } from '../repositories/safe-patch';
 import { buildSyncOperationDigest, classifyUserFacingError } from '../../runtime/control-plane/facade/operation-digest';
 import { diagnoseRepositoryStuckState, listRepositoryGoalRuns, readRepositoryGoalRegistry, runRepositoryGoal, upsertRepositoryGoal } from '../repositories/goal-registry';
@@ -80,11 +79,6 @@ function definition(
 }
 
 const repoId = { type: 'string', description: 'Stable Repository Registry repoId.' };
-
-// Kept as a policy seam while legacy Local Bridge code remains for historical reads.
-function localBridgeRepositoryExecutionRetired(): boolean {
-  return true;
-}
 
 export const repositoryToolDefinitions: McpToolDefinition[] = [
   definition('repository_register', 'Register a Git repository with the Controller.', {
@@ -388,26 +382,6 @@ function compactProcessCommandPayload(input: {
     next: input.next,
     detailLevel: 'detail',
   };
-}
-
-function settledLocalJobStatus(status: string): boolean {
-  return ['pending_approval', 'succeeded', 'failed', 'timed_out', 'orphaned', 'stale', 'cancelled'].includes(status);
-}
-
-async function waitForRepositoryCommandHandoff(
-  repoRoot: string,
-  jobId: string,
-  maxOutputBytes?: number,
-): Promise<ReturnType<typeof buildLocalBridgeJobHandoff>> {
-  const deadline = Date.now() + 400;
-  while (Date.now() < deadline) {
-    const snapshot = getLocalBridgeJobSnapshot(repoRoot, jobId);
-    if (snapshot.status !== 'ok' || !snapshot.job || settledLocalJobStatus(snapshot.job.status)) {
-      break;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  return buildLocalBridgeJobHandoff(repoRoot, jobId, { maxBytes: maxOutputBytes });
 }
 
 export async function callRepositoryTool(
@@ -941,84 +915,13 @@ export async function callRepositoryTool(
             }
           }
         }
-        if (localBridgeRepositoryExecutionRetired()) {
-          return result({
-            accepted: false,
-            mode: 'durable',
-            path: 'external_controller_required',
-            routing: compactRoutingSummary({ path: 'durable', mode: 'durable', reasons: [routingDecision.reasons.join(','), 'local_bridge_execution_retired'] }),
-            message: 'This command requires explicit external Controller handling; Local Bridge Jobs are retired for repository commands.',
-            suggestedOperation: 'Create or claim WorkContract, then use rh_work.launcher_start or a Process Runtime-compatible command.',
-          });
-        }
-        const preview = previewRepositoryCommandExecution(repository, {
-          command: args.command as string | string[],
-          cwd: typeof args.cwd === 'string' ? args.cwd : undefined,
-          authorization: 'confirmed_plan',
-          approvalToken: typeof args.approval_token === 'string' ? args.approval_token : undefined,
-          approvalRequestId: typeof args.approval_request_id === 'string' ? args.approval_request_id : undefined,
-          timeoutMs,
-          maxOutputBytes,
-        }, controllerHome);
-        if (!preview.executable) {
-          return result(preview.execution as unknown as Record<string, unknown>);
-        }
-        const job = submitLocalBridgeJob(repository.canonicalRoot, {
-          action: 'repository-command',
-          requestedBy: 'mcp:repository_command_execute',
-          payload: {
-            controllerHome,
-            repoId: repository.repoId,
-            checkoutId: repository.activeCheckoutId,
-            requestId: typeof args.request_id === 'string' ? args.request_id.trim() || undefined : undefined,
-            command: args.command as string | string[],
-            cwd: typeof args.cwd === 'string' ? args.cwd : undefined,
-            approvalToken: typeof args.approval_token === 'string' ? args.approval_token : undefined,
-            approvalRequestId: typeof args.approval_request_id === 'string' ? args.approval_request_id : undefined,
-            timeoutMs,
-            maxOutputBytes,
-          },
-        });
-        const accepted = job.status === 'approved'
-          ? executeLocalBridgeJob(repository.canonicalRoot, job.jobId)
-          : job;
-        const handoff = await waitForRepositoryCommandHandoff(repository.canonicalRoot, accepted.jobId, maxOutputBytes);
-        const handoffOutput = compactCommandOutput(handoff.stdout, handoff.stderr, {
-          ok: handoff.status === 'succeeded',
-          maxInlineBytes: typeof maxOutputBytes === 'number' ? Math.min(maxOutputBytes, RESPONSE_BUDGET.inlineOutputBytes) : undefined,
-        });
-        // Compact localJob keeps legacy fields without nesting full job/repo state.
-        const localJob = {
-          jobId: handoff.jobId ?? accepted.jobId,
-          status: handoff.status,
-          stdout: handoffOutput.stdout,
-          stderr: handoffOutput.stderr,
-          stdoutBytes: handoffOutput.stdoutBytes,
-          stderrBytes: handoffOutput.stderrBytes,
-          stdoutTruncated: handoffOutput.stdoutTruncated,
-          stderrTruncated: handoffOutput.stderrTruncated,
-          stdoutPath: handoff.stdoutPath,
-          stderrPath: handoff.stderrPath,
-          outputStatus: handoff.outputStatus,
-          nextLocalCommand: handoff.nextLocalCommand,
-        };
         return result({
-          accepted: true,
+          accepted: false,
           mode: 'durable',
-          path: 'durable',
-          routing: compactRoutingSummary({
-            path: 'durable',
-            mode: 'durable',
-            reasons: routingDecision.reasons.length > 0 ? routingDecision.reasons : ['policy_requires_durable'],
-          }),
-          repoId: repository.repoId,
-          checkoutId: repository.activeCheckoutId,
-          jobId: accepted.jobId,
-          status: handoff.status,
-          ...handoffOutput,
-          localJob,
-          outputStatus: handoff.outputStatus,
-          next: handoff.nextLocalCommand ?? `Inspect Job ${accepted.jobId} with get_local_job or get_job.`,
+          path: 'external_controller_required',
+          routing: compactRoutingSummary({ path: 'durable', mode: 'durable', reasons: [routingDecision.reasons.join(','), 'local_bridge_execution_retired'] }),
+          message: 'This command requires explicit external Controller handling; Local Bridge Jobs are retired for repository commands.',
+          suggestedOperation: 'Create or claim WorkContract, then use rh_work.launcher_start or a Process Runtime-compatible command.',
         });
       }
       case 'repository_batch_execute': {

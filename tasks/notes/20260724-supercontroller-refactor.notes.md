@@ -563,3 +563,15 @@ Date: 2026-07-24
 - `package:check:type`: pass.
 - `package:check:runtime-architecture`: pass, 32 modules/documents checked.
 
+## Controller CLI and Repository MCP Local Bridge convergence
+
+Date: 2026-07-24
+
+- Removed unreachable Local Bridge Job construction and dispatch from deprecated `controller launch` while preserving Issue readiness in the external-Controller response.
+- Removed the Repository MCP fallback Local Bridge submission, polling, and compact legacy Job response path.
+- Repository commands continue through direct/managed Process Runtime when eligible; non-deterministic durable fallbacks return an external-Controller handoff.
+- Runtime architecture gate now forbids Local Bridge submission/dispatch symbols in both surfaces.
+- Focused Repository MCP, Controller compatibility, direct-agent, command-builder, and target-architecture suite: **50 pass / 0 fail**.
+- `package:check:type`: pass.
+- `package:check:runtime-architecture`: pass, 32 modules/documents checked.
+

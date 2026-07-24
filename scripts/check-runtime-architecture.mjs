@@ -132,6 +132,16 @@ forbid(
   /\bsubmitLocalBridgeJob\b|\bdispatchLocalBridgeJob\b|\basyncExecute\b/,
   'Local Bridge HTTP creation routes must return retirement handoffs without dormant Job submission or dispatch code',
 );
+forbid(
+  'src/cli/commands/controller.ts',
+  /\bsubmitLocalBridgeJob\b|\bdispatchLocalBridgeJob\b/,
+  'Controller CLI launch must return an external-Controller handoff without dormant Local Bridge Job code',
+);
+forbid(
+  'src/cli/mcp/repository-tools.ts',
+  /\bsubmitLocalBridgeJob\b|\bexecuteLocalBridgeJob\b|\bwaitForRepositoryCommandHandoff\b/,
+  'Repository command MCP fallback must use Process Runtime or an external-Controller handoff, never Local Bridge Jobs',
+);
 forbid('src/runtime/gateway/mcp/router.ts', /Use process_get \/ process_wait \/ process_logs/, 'Gateway follow-up instructions must use an always-exposed neutral Work facade');
 requireMatch(
   'src/runtime/gateway/mcp/router.ts',
