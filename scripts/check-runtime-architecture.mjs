@@ -102,6 +102,11 @@ requireText('src/runtime/gateway/mcp/execution-tools.ts', "'work_finalize'");
 requireText('src/runtime/execution/workers/executor.ts', 'callExecutionTool(runtimeContext');
 requireText('src/runtime/execution/workers/executor.ts', '__from_durable_worker');
 requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'managedProcessOperationDigest');
+forbid(
+  'src/runtime/gateway/mcp/runtime-tools.ts',
+  /\bcreateExecutionJob\b/,
+  'Runtime MCP tools must not retain dormant ExecutionJob creation paths',
+);
 forbid('src/runtime/gateway/mcp/router.ts', /Use process_get \/ process_wait \/ process_logs/, 'Gateway follow-up instructions must use an always-exposed neutral Work facade');
 requireMatch(
   'src/runtime/gateway/mcp/router.ts',

@@ -490,3 +490,15 @@ Date: 2026-07-24
 - `package:check:runtime-architecture`: pass, 32 modules/documents checked.
 - The original main checkout has untracked review/research files, so describe main as unmerged rather than an untouched working tree.
 
+## Runtime MCP release/candidate dead-path convergence
+
+Date: 2026-07-24
+
+- Removed unreachable `createExecutionJob` branches from `request_release_gate` and `promote_candidate_finding`.
+- Updated both public tool descriptions to state external-Controller handoff semantics instead of durable Job creation.
+- Runtime architecture gate now forbids `createExecutionJob` references in `runtime-tools.ts`.
+- Focused MCP/controller/target-architecture suite: **45 pass / 0 fail**.
+- `package:check:type`: pass.
+- `package:check:mcp-compatibility`: pass.
+- `package:check:runtime-architecture`: pass, 32 modules/documents checked.
+

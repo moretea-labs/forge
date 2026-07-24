@@ -6,7 +6,7 @@ import type { MultiRepositoryMcpToolContext } from '../../../cli/mcp/multi-repos
 import { repositoryScopedToolArgs } from '../../../cli/mcp/multi-repository';
 import { listRepositories, repositorySummary, resolveRepositorySelection } from '../../../cli/repositories/registry';
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
-import { cancelExecutionJob, createExecutionJob, findExecutionJob, getExecutionJob, getExecutionJobByRequestId, listExecutionJobs } from '../../execution/jobs/store';
+import { cancelExecutionJob, findExecutionJob, getExecutionJob, getExecutionJobByRequestId, listExecutionJobs } from '../../execution/jobs/store';
 import { waitForExecutionJob } from '../../execution/jobs/wait';
 import type { ExecutionJob } from '../../execution/jobs/types';
 import { getProcessHandle, waitForProcess } from '../../execution/process-runtime';
@@ -43,7 +43,7 @@ import {
   validateMcpToolArguments,
 } from './router';
 import { assertAutomatedOperationAllowed } from '../../control-plane/governance/external-effects';
-import { getCandidateFinding, listCandidateFindings, recordCandidateFinding, updateCandidateFinding } from '../../workflow/findings/store';
+import { getCandidateFinding, listCandidateFindings, recordCandidateFinding } from '../../workflow/findings/store';
 import { addCampaignTask, createCampaign, getCampaign, listCampaigns, setCampaignStatus, validateCreateCampaignTasks } from '../../workflow/campaigns/store';
 import { reconcileCampaign } from '../../workflow/campaigns/engine';
 import { submitCampaignReview } from '../../workflow/campaigns/review';
@@ -979,7 +979,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     event_id: { type: 'string' },
     event_data: { type: 'object' },
   }, ['schedule_id'], false),
-  definition('request_release_gate', 'Create a durable exclusive Release Gate Job. Push, tag, and publish remain separately authorized.', { repo_id: repoId, request_id: { type: 'string' } }, [], false),
+  definition('request_release_gate', 'Return an explicit external-Controller handoff for release evidence. Push, tag, and publish remain separately authorized.', { repo_id: repoId, request_id: { type: 'string' } }, [], false),
   definition('create_portfolio_workflow', 'Create a cross-repository DAG with deterministic Saga stop/compensation semantics.', {
     name: { type: 'string' }, request_id: { type: 'string' }, failure_policy: { type: 'string', enum: ['stop', 'compensate'] }, steps: { type: 'array', items: { type: 'object' } },
   }, ['name', 'request_id', 'steps'], false),
@@ -989,7 +989,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     repo_id: repoId, request_id: { type: 'string' }, semantic_key: { type: 'string' }, title: { type: 'string' }, summary: { type: 'string' }, severity: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] }, reference: { type: 'string' }, evidence: { type: 'object' },
   }, ['semantic_key', 'title'], false),
   definition('list_candidate_findings', 'List bounded candidate findings awaiting human promotion or dismissal.', { repo_id: repoId, include_terminal: { type: 'boolean' }, limit: { type: 'number' } }),
-  definition('promote_candidate_finding', 'Explicitly promote one candidate finding into a durable Issue-creation Job.', {
+  definition('promote_candidate_finding', 'Return the candidate finding and an explicit external-Controller handoff for Issue creation.', {
     repo_id: repoId, finding_id: { type: 'string' }, request_id: { type: 'string' }, kind: { type: 'string', enum: ['bug', 'feature', 'governance', 'investigation'] }, goals: { type: 'array', items: { type: 'string' } }, acceptance_criteria: { type: 'array', items: { type: 'string' } },
   }, ['finding_id'], false),
 ];
@@ -997,10 +997,6 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
 function result(value: Record<string, unknown>, isError = false): CallToolResult {
   // Compact text channel by default (no pretty-print bloat).
   return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value, ...(isError ? { isError: true } : {}) };
-}
-
-function executionJobCreationRetired(): boolean {
-  return true;
 }
 
 function repositoryRootForRepoId(controllerHome: string, repoId: string): string | undefined {
@@ -4720,32 +4716,18 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
       }
       case 'request_release_gate': {
         const repository = selected(ctx, args);
-        const requestId = typeof args.request_id === 'string' && args.request_id.trim() ? args.request_id.trim() : `release:${repository.repoId}:${Math.floor(Date.now() / 60_000)}`;
-        if (executionJobCreationRetired()) {
-          return result({
-            accepted: false,
-            mode: 'external_controller_required',
-            requestId,
-            repoId: repository.repoId,
-            rejectCode: 'EXECUTION_JOB_RETIRED',
-            message: 'Release Gate no longer creates an ExecutionJob. An external Controller must claim the related Work and execute release evidence explicitly.',
-            suggestedOperation: 'rh_work.controller_claim followed by Process Runtime checks and explicit release authorization.',
-          });
-        }
-        const created = createExecutionJob(ctx.controllerHome, {
-          repoId: repository.repoId,
-          checkoutId: repository.activeCheckoutId,
-          type: 'release-gate',
+        const requestId = typeof args.request_id === 'string' && args.request_id.trim()
+          ? args.request_id.trim()
+          : `release:${repository.repoId}:${Math.floor(Date.now() / 60_000)}`;
+        return result({
+          accepted: false,
+          mode: 'external_controller_required',
           requestId,
-          semanticKey: `release-gate:${repository.repoId}`,
-          origin: { surface: 'mcp', actor: 'request_release_gate' },
-          payload: { operation: 'release-gate', target: 'runtime' },
-          priority: 'P1',
-          resourceClaims: [{ resourceKey: `release:${repository.repoId}`, mode: 'exclusive' }],
-          timeoutMs: 15 * 60_000,
+          repoId: repository.repoId,
+          rejectCode: 'EXECUTION_JOB_RETIRED',
+          message: 'Release Gate no longer creates an ExecutionJob. An external Controller must claim the related Work and execute release evidence explicitly.',
+          suggestedOperation: 'rh_work.controller_claim followed by Process Runtime checks and explicit release authorization.',
         });
-        const daemon = ensureControllerDaemon(ctx.controllerHome);
-        return result({ accepted: true, jobId: created.job.jobId, status: created.job.status, deduplicated: created.deduplicated, daemon, next: `Call get_job with ${created.job.jobId}.` });
       }
       case 'create_portfolio_workflow': {
         const rawSteps = Array.isArray(args.steps) ? args.steps : [];
@@ -4825,60 +4807,15 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
       case 'promote_candidate_finding': {
         const repository = selected(ctx, args);
         const finding = getCandidateFinding(ctx.controllerHome, repository.repoId, String(args.finding_id ?? ''));
-        if (executionJobCreationRetired()) {
-          return result({
-            accepted: false,
-            mode: 'external_controller_required',
-            repoId: repository.repoId,
-            finding,
-            rejectCode: 'EXECUTION_JOB_RETIRED',
-            message: 'Candidate promotion no longer creates an ExecutionJob. An external Controller must create the Issue after claiming the related Work.',
-            suggestedOperation: 'Create or claim WorkContract, then use the explicit issue-creation tool from the external Controller session.',
-          });
-        }
-        if (finding.promotedJobId) {
-          const existing = findExecutionJob(ctx.controllerHome, finding.promotedJobId);
-          if (existing && !['failed', 'timed_out', 'cancelled', 'orphaned', 'stale', 'human_attention_required'].includes(existing.status)) {
-            return result({ accepted: true, finding, jobId: finding.promotedJobId, status: existing.status, deduplicated: true });
-          }
-          if (existing?.status === 'succeeded' && finding.status === 'promoted') {
-            return result({ accepted: true, finding, jobId: finding.promotedJobId, status: existing.status, deduplicated: true });
-          }
-        }
-        const requestId = typeof args.request_id === 'string' && args.request_id.trim()
-          ? args.request_id.trim()
-          : `candidate-promotion:${repository.repoId}:${finding.findingId}`;
-        const created = createExecutionJob(ctx.controllerHome, {
+        return result({
+          accepted: false,
+          mode: 'external_controller_required',
           repoId: repository.repoId,
-          checkoutId: repository.activeCheckoutId,
-          type: 'mcp-tool',
-          requestId,
-          semanticKey: `candidate-promotion:${finding.findingId}:${finding.semanticKey}`,
-          origin: { surface: 'mcp', actor: 'promote_candidate_finding', correlationId: finding.findingId },
-          payload: {
-            operation: 'create_issue',
-            target: 'mcp-tool',
-            profile: ctx.policy.profile,
-            arguments: {
-              title: finding.title,
-              summary: finding.summary,
-              kind: typeof args.kind === 'string' ? args.kind : 'investigation',
-              goals: Array.isArray(args.goals) ? args.goals.map(String) : [],
-              acceptance_criteria: Array.isArray(args.acceptance_criteria) ? args.acceptance_criteria.map(String) : [],
-              related_artifacts: finding.evidence.map((entry) => entry.reference).filter((value): value is string => Boolean(value)),
-            },
-          },
-          priority: finding.severity === 'critical' ? 'P0' : finding.severity === 'high' ? 'P1' : 'P2',
-          resourceClaims: [{ resourceKey: 'repo-state', mode: 'write' }],
-          maxAttempts: 1,
+          finding,
+          rejectCode: 'EXECUTION_JOB_RETIRED',
+          message: 'Candidate promotion no longer creates an ExecutionJob. An external Controller must create the Issue after claiming the related Work.',
+          suggestedOperation: 'Create or claim WorkContract, then use the explicit issue-creation tool from the external Controller session.',
         });
-        const promoted = updateCandidateFinding(ctx.controllerHome, repository.repoId, finding.findingId, (current) => ({
-          ...current,
-          status: 'candidate',
-          promotedJobId: created.job.jobId,
-        }), requestId, 'candidate_promotion_requested');
-        const daemon = ensureControllerDaemon(ctx.controllerHome);
-        return result({ accepted: true, finding: promoted, jobId: created.job.jobId, status: created.job.status, deduplicated: created.deduplicated, daemon, next: `Call get_job with ${created.job.jobId}.` });
       }
       default: return undefined;
     }
