@@ -82,7 +82,7 @@ describe('work_submit hardening', () => {
       forbiddenPaths: [],
       checks: [],
       requestedBy: 'chatgpt',
-      status: 'waiting_for_review',
+      status: 'ready',
     });
 
     const fetched = structured(await callRuntimeTool(ctx, 'work_get', {

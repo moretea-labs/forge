@@ -274,6 +274,17 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function localBridgeExecutionRetired(): boolean {
+  return true;
+}
+
+function localBridgeExecutionRetiredPayload(): Record<string, unknown> {
+  return {
+    error: "LOCAL_BRIDGE_JOB_RETIRED",
+    message: "New Local Bridge Jobs are retired. Claim Work through an external Controller, or use the Process Runtime for deterministic commands and checks.",
+  };
+}
+
 function asyncExecute(repoRoot: string, jobId: string): void {
   setTimeout(() => {
     try {
@@ -2454,6 +2465,10 @@ export async function startLocalBridgeServer(
   });
   app.post("/api/tasks/launch-ready", (request, response) => {
     try {
+      if (localBridgeExecutionRetired()) {
+        response.status(410).json(localBridgeExecutionRetiredPayload());
+        return;
+      }
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
       const board = projectBoard(repoRoot);
       const maxParallel = Math.max(1, Math.min(Number(request.body?.maxParallel ?? 2), 4));
@@ -2500,6 +2515,10 @@ export async function startLocalBridgeServer(
   });
   app.post("/api/issues/:issueId/launch", (request, response) => {
     try {
+      if (localBridgeExecutionRetired()) {
+        response.status(410).json(localBridgeExecutionRetiredPayload());
+        return;
+      }
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
       const readiness = inspectIssueReadiness(repoRoot, request.params.issueId);
       if (!readiness.queueable) {
@@ -2557,6 +2576,10 @@ export async function startLocalBridgeServer(
   });
   app.post("/api/issues/:issueId/tasks/:taskId/launch", (request, response) => {
     try {
+      if (localBridgeExecutionRetired()) {
+        response.status(410).json(localBridgeExecutionRetiredPayload());
+        return;
+      }
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
       const readiness = inspectTaskReadiness(repoRoot, request.params.issueId, request.params.taskId);
       if (!readiness.queueable) {
@@ -2836,6 +2859,10 @@ export async function startLocalBridgeServer(
   });
   app.post("/api/edit-sessions/:sessionId/verify", (request, response) => {
     try {
+      if (localBridgeExecutionRetired()) {
+        response.status(410).json(localBridgeExecutionRetiredPayload());
+        return;
+      }
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
       const session = getEditSession(repoRoot, request.params.sessionId);
       const job = submitLocalBridgeJob(repoRoot, {
@@ -3085,6 +3112,10 @@ export async function startLocalBridgeServer(
   });
   app.post("/api/jobs", (request, response) => {
     try {
+      if (localBridgeExecutionRetired()) {
+        response.status(410).json(localBridgeExecutionRetiredPayload());
+        return;
+      }
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
       const job = submitLocalBridgeJob(
         repoRoot,

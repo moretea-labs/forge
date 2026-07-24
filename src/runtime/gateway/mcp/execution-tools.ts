@@ -12,12 +12,13 @@ import {
 } from '../../../cli/repositories/registry';
 import { withControllerLock } from '../../../cli/repositories/locks';
 import { repositoryGitCommit, repositoryGitDeleteBranch, repositoryGitFinishWorkflow, repositoryGitStatus, repositoryGitDiff } from '../../../cli/repositories/structured-git';
-import { executeRepositoryCommand, previewRepositoryCommandExecution } from '../../../cli/repositories/command-executor';
+import { previewRepositoryCommandExecution } from '../../../cli/repositories/command-executor';
 import { classifyRepositoryCommand } from '../../../cli/repositories/command-classifier';
-import { ensureCampaignWorkspace } from '../../workflow/campaigns/workspace';
-import { listControllerChecks, runControllerCheck } from '../../../cli/controller/check-runner';
+import { ensureManagedWorkspace } from '../../workflow/campaigns/workspace';
+import { listControllerChecks } from '../../../cli/controller/check-runner';
 import { readRepositoryAccessPolicy } from '../../control-plane/governance/access-policy';
 import { createWorkContract, getWorkContract, updateWorkContract, appendVerificationRecord } from '../../control-plane/facade/work-contract-store';
+import { claimControllerSession, getControllerSession } from '../../control-plane/facade/controller-session-store';
 import { currentControllerInstanceId, requireExecutionSession, startExecutionSession, updateExecutionSession, type ExecutionSessionContext, type SessionIdentity } from '../../control-plane/execution/session-store';
 import { currentPermissionSnapshotVersion, validateWorkHandle } from '../../control-plane/execution/validation';
 import { markWorkHandleFailed, newWorkId, readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkFinalizationStages, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
@@ -27,6 +28,8 @@ import { resumeExecutionJobAfterApproval } from '../../execution/jobs/store';
 import { recordMcpTiming, type McpTimingTrace } from '../../diagnostics/mcp-timing';
 import { commandValue, normalizeRepositoryCommand, type RepositoryCommandValue } from '../../../cli/repositories/command-normalization';
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
+import { executeRepositoryCommandViaProcessRuntime } from '../../execution/process-runtime/command-facade';
+import { runCheckViaProcessRuntime } from '../../execution/process-runtime/check-facade';
 
 const MAX_INLINE_RESULT_BYTES = 64 * 1024;
 
@@ -48,15 +51,15 @@ export const executionToolDefinitions: McpToolDefinition[] = [
   }, [], false),
   definition('work_inspect', 'Collect bounded Git, WorkContract, path, check, and readiness evidence through one work handle.', { session_id: sessionId, repo_id: repoId, work_id: workId, detail: { type: 'string', enum: ['summary', 'detail'] } }, ['work_id'], true),
   definition('work_execute', 'Execute approved, repository-scoped commands against a validated work handle while preserving the existing command policy and audit path.', {
-    session_id: sessionId, repo_id: repoId, work_id: workId,
+    session_id: sessionId, controller_id: { type: 'string', description: 'Controller identity that holds the Work lease. Defaults to the authenticated principal.' }, repo_id: repoId, work_id: workId,
     command: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }] }, approval_token: { type: 'string' }, cwd: { type: 'string' }, timeout_ms: { type: 'number' }, max_output_bytes: { type: 'number' },
     commands: { type: 'array', items: { type: 'object' } }, approval_request_id: { type: 'string' },
   }, ['work_id'], false),
   definition('work_validate', 'Run targeted checks or read-only validation commands against a work handle with full current-state validation.', {
-    session_id: sessionId, repo_id: repoId, work_id: workId, check_ids: { type: 'array', items: { type: 'string' } }, commands: { type: 'array', items: { type: 'object' } },
+    session_id: sessionId, controller_id: { type: 'string', description: 'Controller identity that holds the Work lease. Defaults to the authenticated principal.' }, repo_id: repoId, work_id: workId, check_ids: { type: 'array', items: { type: 'string' } }, commands: { type: 'array', items: { type: 'object' } },
   }, ['work_id'], false),
   definition('work_finalize', 'Idempotently validate, commit, merge, clean a managed worktree, and complete the existing WorkContract in independently recorded stages.', {
-    session_id: sessionId, repo_id: repoId, work_id: workId, commit: { type: 'boolean' }, message: { type: 'string' }, merge: { type: 'boolean' }, target_branch: { type: 'string' }, delete_branch: { type: 'boolean' }, cleanup: { type: 'boolean' }, no_ff: { type: 'boolean' }, approval_request_id: { type: 'string' },
+    session_id: sessionId, controller_id: { type: 'string', description: 'Controller identity that holds the Work lease. Defaults to the authenticated principal.' }, repo_id: repoId, work_id: workId, commit: { type: 'boolean' }, message: { type: 'string' }, merge: { type: 'boolean' }, target_branch: { type: 'string' }, delete_branch: { type: 'boolean' }, cleanup: { type: 'boolean' }, no_ff: { type: 'boolean' }, approval_request_id: { type: 'string' },
   }, ['work_id'], false, true),
   definition('approval_resolve', 'Resolve a controller approval request from the current conversation; GUI approval is optional and not required for continuation.', { session_id: sessionId, repo_id: repoId, work_id: workId, approval_request_id: { type: 'string' }, confirm_authorization: { type: 'boolean' } }, ['approval_request_id', 'confirm_authorization'], false),
   definition('result_read', 'Read a session-scoped result reference with bounded pagination.', { session_id: sessionId, result_ref: { type: 'string' }, work_id: workId, cursor: { type: 'number' }, limit: { type: 'number' } }, ['result_ref'], true),
@@ -214,6 +217,32 @@ function workForSession(ctx: MultiRepositoryMcpToolContext, session: ExecutionSe
   return handle;
 }
 
+function assertWorkControllerOwnership(
+  ctx: MultiRepositoryMcpToolContext,
+  session: ExecutionSessionContext,
+  handle: WorkHandleState,
+  args: Record<string, unknown>,
+): void {
+  const workIdValue = handle.workContractId ?? handle.workId;
+  const owner = getControllerSession({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, workIdValue);
+  if (!owner) throw new Error(`WORK_CONTROLLER_CLAIM_REQUIRED: ${workIdValue}`);
+  const controllerId = typeof args.controller_id === 'string' && args.controller_id.trim()
+    ? args.controller_id.trim()
+    : session.principalId;
+  if (owner.controllerId !== controllerId || owner.sessionId !== session.sessionId) {
+    throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${workIdValue} is owned by ${owner.controllerId}/${owner.sessionId}`);
+  }
+  // A foreground Work operation proves this Controller is still present. Renew
+  // only at an explicit command boundary; no background lease retry is added.
+  claimControllerSession({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, {
+    workId: workIdValue,
+    controllerId,
+    controllerType: owner.controllerType,
+    sessionId: session.sessionId,
+    leaseMs: 3_600_000,
+  });
+}
+
 function invalidateActiveWork(ctx: MultiRepositoryMcpToolContext, session: ExecutionSessionContext, reason: string): void {
   if (!session.activeRepositoryId || !session.activeWorkId) return;
   const handle = readWorkHandle(ctx.controllerHome, session.activeRepositoryId, session.activeWorkId);
@@ -286,7 +315,7 @@ function prepareWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, un
   });
   try {
     const workspace = useWorktree
-      ? ensureCampaignWorkspace(ctx.controllerHome, repository, { requestId: createdWorkId, title: objective, baseRef: typeof args.base_ref === 'string' ? args.base_ref : undefined })
+      ? ensureManagedWorkspace(ctx.controllerHome, repository, { requestId: createdWorkId, title: objective, baseRef: typeof args.base_ref === 'string' ? args.base_ref : undefined })
       : { mode: 'current' as const, checkoutId: baseCheckoutId, root: repository.canonicalRoot, branch: baseStatus.branch ?? 'detached', baseRevision: baseStatus.head ?? undefined, managed: false };
     const refreshed = getRepository(repository.repoId, ctx.controllerHome);
     const checkout = selectRepositoryCheckout(refreshed, workspace.checkoutId);
@@ -313,6 +342,7 @@ function prepareWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, un
 function inspectWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Record<string, unknown> {
   const session = requireSession(ctx, args);
   const handle = workForSession(ctx, session, args);
+  assertWorkControllerOwnership(ctx, session, handle, args);
   const started = performance.now();
   const validationStarted = performance.now();
   const validated = validateWorkHandle(ctx.controllerHome, handle, identityFor(ctx, args), 'cheap', 'inspect');
@@ -359,6 +389,7 @@ function authorizationRisk(command: RepositoryCommandValue, classification: Retu
 async function executeWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const session = requireSession(ctx, args);
   const handle = workForSession(ctx, session, args);
+  assertWorkControllerOwnership(ctx, session, handle, args);
   const commands = commandInputs(args);
   if (commands.length > 16) throw new Error('COMMAND_BATCH_TOO_LARGE: at most 16 commands per work_execute');
   const cheap = validateWorkHandle(ctx.controllerHome, handle, identityFor(ctx, args), 'cheap', 'execute');
@@ -406,35 +437,49 @@ async function executeWork(ctx: MultiRepositoryMcpToolContext, args: Record<stri
     decisions.push(decision);
     if (decision.decision !== 'allow') return { authorization: decision, work: compactHandle(handle), command: entry.command };
   }
-  const run = (entry: typeof inputs[number], index: number) => executeRepositoryCommand(ctx.controllerHome, cheap.worktreeRepository, {
+  const run = (entry: typeof inputs[number], index: number) => executeRepositoryCommandViaProcessRuntime({
+    controllerHome: ctx.controllerHome,
+    repository: cheap.worktreeRepository,
     command: entry.command,
     cwd: entry.cwd,
-    approvalToken: resolvedRequest?.approvalToken ?? entry.approvalToken,
-    authorization: resolvedRequest
-      ? 'confirmed_plan'
-      : decisions[index]?.decision === 'allow' ? decisions[index].source : 'explicit_user_request',
-    authorizationDecision: decisions[index],
-    approvalRequestId: resolvedRequest?.approvalRequestId,
-    sessionId: session.sessionId,
-    principalId: session.principalId,
     workId: handle.workId,
+    commandId: `${handle.workId}:command:${index + 1}`,
+    requestId: `${session.sessionId}:${handle.workId}:command:${index + 1}`,
     timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
     maxOutputBytes: typeof args.max_output_bytes === 'number' ? args.max_output_bytes : undefined,
   });
   const started = performance.now();
-  const executions = classifications.every((classification) => classification.risk === 'readonly') ? await Promise.all(inputs.map(async (entry, index) => run(entry, index))) : inputs.map(run);
+  const executions = classifications.every((classification) => classification.risk === 'readonly')
+    ? await Promise.all(inputs.map((entry, index) => run(entry, index)))
+    : await (async () => {
+      const ordered: Awaited<ReturnType<typeof run>>[] = [];
+      for (const [index, entry] of inputs.entries()) {
+        const execution = await run(entry, index);
+        ordered.push(execution);
+        // Do not launch another mutating command while this Work-owned Process
+        // still owns workspace leases. The caller resumes through process_wait.
+        if (execution.process && !execution.process.completed) break;
+      }
+      return ordered;
+    })();
   const branch = repositoryGitStatus(cheap.worktreeRepository).branch;
   const head = gitHead(cheap.worktreeRepository.canonicalRoot);
   let nextHandle = handle;
   if (branch !== handle.branch) nextHandle = markWorkHandleFailed(ctx.controllerHome, handle, `command changed the bound branch to ${branch ?? 'detached'}`);
   else nextHandle = transitionWorkHandle(ctx.controllerHome, handle, 'editing', { expectedHead: head, failureReason: undefined });
-  const value = { work: compactHandle(nextHandle), commands: executions, executedCount: executions.filter((entry) => entry.status === 'executed' && entry.ok === true).length };
+  const value = {
+    work: compactHandle(nextHandle),
+    commands: executions,
+    executedCount: executions.filter((entry) => entry.ok === true).length,
+    managedProcessCount: executions.filter((entry) => entry.process && !entry.process.completed).length,
+    deferredCommandCount: Math.max(0, inputs.length - executions.length),
+  };
   const response = makeBoundedResult(ctx, session, handle.repositoryId, handle.workId, 'command', value);
   recordMcpTiming(ctx.controllerHome, { tool: 'work_execute', workHandleValidationMs: 0, commandExecutionMs: Math.round((performance.now() - started) * 100) / 100, totalToolDurationMs: Math.round((performance.now() - started) * 100) / 100, sessionId: session.sessionId, repoId: handle.repositoryId, workId: handle.workId });
   return response;
 }
 
-function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Record<string, unknown> {
+async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const session = requireSession(ctx, args);
   const handle = workForSession(ctx, session, args);
   const validated = validateWorkHandle(ctx.controllerHome, handle, identityFor(ctx, args), 'full', 'validate');
@@ -442,17 +487,50 @@ function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, u
   const contract = contractFor(ctx, current);
   const requestedChecks = Array.isArray(args.check_ids) ? args.check_ids.map(String).filter(Boolean) : contract?.checks ?? [];
   const available = new Set(listControllerChecks(validated.worktreeRepository.canonicalRoot).map((check) => check.id));
-  const checks = requestedChecks.map((checkId) => {
-    if (!available.has(checkId)) return { checkId, ok: false, status: 'missing', summary: `Check not found: ${checkId}` };
-    const executed = runControllerCheck(validated.worktreeRepository.canonicalRoot, checkId);
-    appendVerificationRecord({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, handle.workId, { checkId, outcome: executed.ok ? 'valid_pass' : executed.timedOut ? 'infrastructure_failure' : 'valid_fail', summary: executed.ok ? 'passed' : executed.timedOut ? 'timed out' : 'failed', recordedAt: new Date().toISOString(), evidenceRef: executed.artifactPath ? { title: checkId, summary: executed.artifactPath, detailLevel: 'summary' } : undefined });
-    return { checkId, ok: executed.ok, status: executed.ok ? 'passed' : executed.timedOut ? 'infrastructure_failure' : 'failed', summary: executed.ok ? 'passed' : executed.timedOut ? 'timed out' : 'failed', artifactPath: executed.artifactPath };
-  });
-  const passed = checks.every((check) => check.ok === true);
-  const nextState = passed ? (handle.state === 'committed' ? 'committed' : handle.state === 'merged' ? 'merged' : 'editing') : 'failed';
+  const checks: Array<Record<string, unknown>> = [];
+  for (const [index, checkId] of requestedChecks.entries()) {
+    if (!available.has(checkId)) {
+      checks.push({ checkId, ok: false, status: 'missing', summary: `Check not found: ${checkId}` });
+      break;
+    }
+    const executed = await runCheckViaProcessRuntime({
+      controllerHome: ctx.controllerHome,
+      repoId: handle.repositoryId,
+      checkoutId: handle.checkoutId,
+      repoRoot: validated.worktreeRepository.canonicalRoot,
+      checkId,
+      requestId: `${session.sessionId}:${handle.workId}:check:${index + 1}`,
+      workId: handle.workId,
+      commandId: `${handle.workId}:check:${index + 1}`,
+    });
+    if (executed.mode === 'durable') {
+      checks.push({ checkId, ok: undefined, status: 'deferred', summary: executed.durable?.reason, durable: executed.durable });
+      break;
+    }
+    const process = executed.process!;
+    if (!process.completed) {
+      checks.push({ checkId, ok: undefined, status: 'running', process });
+      break;
+    }
+    const ok = process.ok === true;
+    appendVerificationRecord({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, handle.workId, {
+      checkId,
+      outcome: ok ? 'valid_pass' : process.timedOut ? 'infrastructure_failure' : 'valid_fail',
+      summary: ok ? 'passed' : process.timedOut ? 'timed out' : 'failed',
+      recordedAt: new Date().toISOString(),
+      evidenceRef: { title: checkId, summary: process.processId, detailLevel: 'summary' },
+    });
+    checks.push({ checkId, ok, status: ok ? 'passed' : process.timedOut ? 'infrastructure_failure' : 'failed', process });
+    if (!ok) break;
+  }
+  const completed = checks.length === requestedChecks.length && checks.every((check) => check.ok !== undefined);
+  const passed = completed && checks.every((check) => check.ok === true);
+  const nextState = !completed
+    ? 'validating'
+    : passed ? (handle.state === 'committed' ? 'committed' : handle.state === 'merged' ? 'merged' : 'editing') : 'failed';
   const next = transitionWorkHandle(ctx.controllerHome, current, nextState, { finalization: { ...current.finalization, validation: passed ? 'done' : 'failed', ...(passed ? {} : { lastError: 'targeted validation failed' }) } });
-  if (contract) updateWorkContract({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, handle.workId, { status: passed ? 'running' : 'failed' });
-  const value = { work: compactHandle(next), validation: { passed, checks, targeted: true } };
+  if (contract) updateWorkContract({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, handle.workId, { status: completed && !passed ? 'failed' : 'running' });
+  const value = { work: compactHandle(next), validation: { passed, completed, checks, targeted: true } };
   return makeBoundedResult(ctx, session, handle.repositoryId, handle.workId, 'validation', value);
 }
 
@@ -515,6 +593,7 @@ function finalStateForStages(stages: WorkFinalizationStages, fallback: WorkHandl
 function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Record<string, unknown> {
   const session = requireSession(ctx, args);
   let current = workForSession(ctx, session, args);
+  assertWorkControllerOwnership(ctx, session, current, args);
   if (current.state === 'cleaned') {
     validateWorkHandle(ctx.controllerHome, current, identityFor(ctx, args), 'none', 'finalize');
     return { idempotent: true, work: compactHandle(current) };
@@ -657,7 +736,7 @@ function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, u
   if (complete) {
     const finalState = finalStateForStages(current.finalization, current.state);
     current = transact('complete', (fresh) => transitionWorkHandle(ctx.controllerHome, fresh, finalState, { finalization: current.finalization, failureReason: undefined }));
-    updateWorkContract({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId ?? current.workId, { status: 'succeeded' });
+    updateWorkContract({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId ?? current.workId, { status: 'completed' });
     if (finalState === 'cleaned') {
       updateExecutionSession(ctx.controllerHome, identity, { activeWorkId: undefined, activeCheckoutId: current.sourceCheckoutId ?? session.activeCheckoutId });
     }
@@ -677,7 +756,7 @@ export async function callExecutionTool(ctx: MultiRepositoryMcpToolContext, name
       case 'work_prepare': return result(prepareWork(ctx, args));
       case 'work_inspect': return result(inspectWork(ctx, args));
       case 'work_execute': return result(await executeWork(ctx, args));
-      case 'work_validate': return result(validateWork(ctx, args));
+      case 'work_validate': return result(await validateWork(ctx, args));
       case 'work_finalize': return result(finalizeWork(ctx, args));
       case 'approval_resolve': {
         const session = requireSession(ctx, args);

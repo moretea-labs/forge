@@ -139,7 +139,10 @@ function requireRepoAndProcess(
 function handleToPayload(handle: NonNullable<ReturnType<typeof getProcessHandle>>): Record<string, unknown> {
   return {
     processId: handle.processId,
+    workId: handle.workId,
+    commandId: handle.commandId,
     status: handle.status,
+    contractStatus: handle.contractStatus,
     route: handle.route,
     pid: handle.pid,
     startedAt: handle.startedAt,

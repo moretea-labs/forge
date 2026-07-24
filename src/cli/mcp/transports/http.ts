@@ -28,7 +28,7 @@ import {
   controllerExposureSnapshot,
 } from '../toolset';
 import { ensureControllerDaemon, readControllerDaemonStatus } from '../../../runtime/control-plane/daemon-client';
-import { projectionBlocksReadiness, readRepositoryProjectionSnapshot, rebuildRepositoryProjection } from '../../../runtime/projections/materialized-view';
+import { projectionBlocksReadiness, readRepositoryProjectionSnapshot } from '../../../runtime/projections/materialized-view';
 import { readRuntimeGeneration } from '../../../runtime/control-plane/runtime-generation';
 import { getRepository, listRepositories } from '../../repositories/registry';
 import {
@@ -947,8 +947,17 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     }
     try {
       const repository = getRepository(req.params.repoId, runtimeControllerHome, { includeRemoved: true });
-      const projection = rebuildRepositoryProjection(runtimeControllerHome, repository.repoId);
-      res.json({ status: repository.enabled && !repository.removedAt ? 'ok' : 'disabled', repository: { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, enabled: repository.enabled, removedAt: repository.removedAt }, projection });
+      const projection = readRepositoryProjectionSnapshot(runtimeControllerHome, repository.repoId);
+      res.json({
+        status: repository.enabled && !repository.removedAt ? 'ok' : 'disabled',
+        repository: {
+          repoId: repository.repoId,
+          checkoutId: repository.activeCheckoutId,
+          enabled: repository.enabled,
+          removedAt: repository.removedAt,
+        },
+        projection,
+      });
     } catch (error) {
       res.status(404).json({ error: error instanceof Error ? error.message : String(error) });
     }

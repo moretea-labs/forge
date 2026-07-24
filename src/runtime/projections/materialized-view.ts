@@ -6,7 +6,7 @@ import { listActiveLeases } from '../resources/leases/store';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
 import { listRepositories } from '../../cli/repositories/registry';
-import { clearRepositoryProjectionDirty, readRepositoryProjectionDirty, repositoryProjectionIsDirty } from './invalidation';
+import { clearRepositoryProjectionDirty, readRepositoryProjectionDirty } from './invalidation';
 import { listCampaigns } from '../workflow/campaigns/store';
 import { listAssistantPluginManifests } from '../plugins/store';
 import type { ProjectionObservation } from '../health';
@@ -360,7 +360,5 @@ export function readRepositoryProjectionSnapshot(
 }
 
 export function readRepositoryProjection(controllerHome: string, repoId: string): RepositoryRuntimeProjection {
-  if (repositoryProjectionIsDirty(controllerHome, repoId)) return rebuildRepositoryProjection(controllerHome, repoId);
-  try { return readJsonFile<RepositoryRuntimeProjection>(projectionPath(controllerHome, repoId)); }
-  catch { return rebuildRepositoryProjection(controllerHome, repoId); }
+  return readRepositoryProjectionSnapshot(controllerHome, repoId).projection;
 }

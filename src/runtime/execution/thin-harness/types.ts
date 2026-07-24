@@ -87,6 +87,21 @@ export interface LatencyBreakdown {
   responseSerializationMs?: number;
 }
 
+/**
+ * Stable, controller-facing measurements. These deliberately describe only
+ * deterministic Kernel facts; a controller may add semantic diagnosis from
+ * the returned logs and evidence.
+ */
+export interface RuntimeObservability {
+  framework_overhead_ms: number;
+  command_runtime_ms: number;
+  controller_wait_ms: number;
+  duplicate_event_count: number;
+  automatic_retry_count: number;
+  /** State/projection writes caused by a read path. Audit receipt writes are excluded. */
+  read_path_write_count: number;
+}
+
 export const EMPTY_LATENCY: LatencyBreakdown = {
   routingMs: 0,
   policyMs: 0,
@@ -125,6 +140,7 @@ export interface FastExecutionReceipt {
   outputSummary?: string;
   artifactRefs?: string[];
   latency?: LatencyBreakdown;
+  observability?: RuntimeObservability;
   stepCount?: number;
   laneCount?: number;
   reasons?: string[];

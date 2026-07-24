@@ -17,7 +17,7 @@ import {
 import { markOperationCompleted, markOperationStarted, operationReceiptMatchesJobOwnership, readOperationReceipt } from '../jobs/receipt-store';
 import { markScheduledExecutionRunning } from '../../workflow/schedules/settlement';
 import { invalidateExecutionWorker } from './ownership';
-import { rebuildRepositoryProjection } from '../../projections/materialized-view';
+import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { bindRuntimeWriterClaim } from '../../../cli/controller/stable-state/runtime-writer-context';
 
 function option(name: string): string | undefined {
@@ -72,13 +72,7 @@ let exitingForOwnershipLoss = false;
 let executionStarted = false;
 
 function refreshRepositoryProjection(): void {
-  try {
-    rebuildRepositoryProjection(controllerHome, repoId);
-  } catch {
-    // Projection refresh is best-effort at process shutdown. The durable
-    // dirty marker remains when the rebuild itself cannot be completed, so
-    // startup recovery and the scheduler can retry it safely.
-  }
+  markRepositoryProjectionDirty(controllerHome, repoId, `worker:${jobId}:state-change`);
 }
 
 function recoverDelegatedChildIfPresent(message: string): boolean {

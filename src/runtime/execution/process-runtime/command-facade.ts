@@ -38,6 +38,8 @@ export interface RepositoryCommandProcessInput {
   /** Force durable workflow (async apply, release, remote). */
   forceDurable?: boolean;
   requestId?: string;
+  workId?: string;
+  commandId?: string;
   signal?: AbortSignal;
 }
 
@@ -180,6 +182,8 @@ export async function executeRepositoryCommandViaProcessRuntime(
     controllerHome: input.controllerHome,
     repoId: input.repository.repoId,
     checkoutId: input.repository.activeCheckoutId,
+    workId: input.workId,
+    commandId: input.commandId,
     command: toProcessCommand(input.command, cwd),
     interactiveWaitMs: decision.route === 'process_direct' ? interactiveWaitMs : 0,
     timeoutMs,
@@ -189,6 +193,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
       surface: 'command',
       toolName: 'repository_command_execute',
       requestId: input.requestId,
+      correlationId: input.workId,
     },
     signal: input.signal,
     returnHandleImmediately: decision.route === 'process_managed' && interactiveWaitMs === 0,

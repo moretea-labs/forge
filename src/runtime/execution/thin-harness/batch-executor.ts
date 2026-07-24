@@ -557,7 +557,8 @@ export async function executeRepositoryBatch(
 
   const ok = stepResults.length > 0 && stepResults.every((entry) => entry.ok) && !stoppedEarly;
   const finishedAt = new Date().toISOString();
-  const preReceipt = trace.snapshot(false);
+  const preReceipt = trace.snapshot(true);
+  preReceipt.executionMs = Math.round(stepResults.reduce((sum, entry) => sum + entry.durationMs, 0) * 100) / 100;
   const receiptStarted = performance.now();
   const written = writeFastReceipt(ctx.controllerHome, {
     repoId: ctx.repository.repoId,
@@ -576,10 +577,11 @@ export async function executeRepositoryBatch(
     reasons: decision.reasons,
     requestId,
     inputHash,
+    observabilityLatency: preReceipt,
   });
   trace.add('receiptMs', performance.now() - receiptStarted);
   const latency = trace.snapshot(request.includeLatencyBreakdown === true);
-  latency.executionMs = Math.round(stepResults.reduce((sum, entry) => sum + entry.durationMs, 0) * 100) / 100;
+  latency.executionMs = preReceipt.executionMs;
   if (written.receipt) {
     written.receipt.durationMs = preReceipt.totalMs;
     if (request.includeLatencyBreakdown === true) written.receipt.latency = latency;

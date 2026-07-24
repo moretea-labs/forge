@@ -1,4 +1,3 @@
-import { randomUUID } from 'crypto';
 import { realpathSync } from 'fs';
 import { dirname, resolve, sep } from 'path';
 import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState, writeMcpServiceLocalConfig } from '../../cli/mcp/auth';
@@ -15,9 +14,7 @@ import {
   type ActiveSlotAuthority,
   type RuntimeSlotId,
 } from '../../cli/controller/runtime-slots';
-import { CONTROLLER_SCOPE_REPO_ID } from '../../cli/repositories/controller-home';
 import { readControllerDaemonStatus } from '../control-plane/daemon-client';
-import { createExecutionJob, getExecutionJob } from '../execution/jobs/store';
 import { readRuntimeGeneration } from '../control-plane/runtime-generation';
 import { createSupervisorControlServer, type SupervisorControlServerHandle, type SupervisorControlHandlers } from './control-server';
 import { createStableIngressProcess, type StableIngressProcessHandle } from './ingress-process';
@@ -749,35 +746,10 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       if (gatewayRuntime.server.profile !== 'controller') throw new Error('SUPERVISOR_CANDIDATE_PROFILE_MISMATCH');
       const toolFingerprint = gatewayRuntime.server.toolSurfaceFingerprint ?? gatewayRuntime.server.runtimeToolSurfaceFingerprint;
       if (!toolFingerprint) throw new Error('SUPERVISOR_CANDIDATE_TOOL_FINGERPRINT_MISSING');
-      // Candidate slots are passive writers until cutover. They must not drain the
-      // shared durable queue. Verify durable-store write/read paths only (queued is OK),
-      // matching bluegreen-rollout verifySlotHealth, and rely on daemon/Gateway readiness
-      // + generation/tool-surface checks above for process health.
-      const requestId = `supervisor-slot-smoke-${Date.now()}-${randomUUID().slice(0, 8)}`;
-      let durableJobId: string;
-      try {
-        const created = createExecutionJob(daemon.controllerHome, {
-          repoId: CONTROLLER_SCOPE_REPO_ID,
-          type: 'mcp-tool',
-          requestId,
-          semanticKey: `supervisor-slot-smoke:${requestId}`,
-          payload: {
-            operation: 'controller_ready',
-            arguments: { repo: this.options.repoRoot },
-            target: 'runtime',
-          },
-          origin: { surface: 'system', actor: 'stable-supervisor-slot-verify' },
-          timeoutMs: 30_000,
-          maxAttempts: 1,
-        });
-        durableJobId = created.job.jobId;
-        const loaded = getExecutionJob(daemon.controllerHome, CONTROLLER_SCOPE_REPO_ID, durableJobId);
-        if (!loaded?.jobId) throw new Error('SUPERVISOR_CANDIDATE_DURABLE_JOB_UNREADABLE');
-      } catch (error) {
-        if (error instanceof Error && error.message.startsWith('SUPERVISOR_CANDIDATE_')) throw error;
-        const detail = (error instanceof Error ? error.message : String(error)).slice(0, 500);
-        throw new Error(`SUPERVISOR_CANDIDATE_DURABLE_STORE_FAILED: ${detail}`);
-      }
+      // Candidate readiness is proven by the daemon/Gateway health and the
+      // generation/tool-surface checks above. It must not create a Job merely
+      // to test storage before the slot owns write authority.
+      const durableJobId = 'process-runtime-readiness';
       writeSlotIdentity(this.options.controllerHome, {
         schemaVersion: 1,
         slot,

@@ -44,6 +44,11 @@ interface RequestIndexRecord {
 function now(): string { return new Date().toISOString(); }
 function safeRepoId(repoId: string): string { return sanitizeFileComponent(repoId); }
 
+/** ExecutionJobs are historical diagnostics; new work is owned by Work + Process. */
+export function executionJobCreationRetired(): boolean {
+  return true;
+}
+
 export function executionJobRoot(controllerHome: string, repoId: string): string {
   ensureRepositoryControllerLayout(controllerHome, repoId);
   return join(repositoryControllerRoot(controllerHome, safeRepoId(repoId)), 'execution-jobs');
@@ -339,6 +344,11 @@ export function findExecutionJob(controllerHome: string, jobId: string): Executi
 }
 
 export function createExecutionJob(controllerHome: string, input: CreateExecutionJobInput): { job: ExecutionJob; deduplicated: boolean } {
+  if (executionJobCreationRetired()) {
+    throw new Error(
+      'EXECUTION_JOB_RETIRED: New ExecutionJobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.',
+    );
+  }
   const home = ensureControllerHome(controllerHome);
   const normalizedRequestId = input.requestId.trim();
   if (!normalizedRequestId) throw new Error('REQUEST_ID_REQUIRED: every durable command must have a requestId');

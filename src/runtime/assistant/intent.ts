@@ -9,6 +9,8 @@ import { defaultRoutineAllowedActions, defaultRoutineForbiddenActions, evaluateA
 
 function now(): string { return new Date().toISOString(); }
 
+function executionJobCreationRetired(): boolean { return true; }
+
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
@@ -358,6 +360,36 @@ export function runAssistantRoutineNow(
   const routine = getAssistantRoutine(repository.canonicalRoot, routineId);
   if (routine.status !== 'enabled') throw new Error(`ASSISTANT_ROUTINE_NOT_ENABLED: ${routineId}`);
   const requestId = `routine-run-${routine.routineId}-${Date.now()}`;
+  if (executionJobCreationRetired()) {
+    const touched = touchAssistantRoutineRun(repository.canonicalRoot, routineId);
+    const inboxItem = addAssistantInboxItem(repository.canonicalRoot, {
+      kind: 'routine_result',
+      title: `Routine requires an external Controller: ${routine.name}`,
+      summary: 'The routine trigger was recorded without creating an ExecutionJob.',
+      body: routine.naturalLanguageGoal,
+      source: 'routine',
+      relatedRoutineId: routine.routineId,
+      relatedRequestId: requestId,
+      jobIds: [],
+      recommendations: ['Claim or create Work for this routine, then execute it through an explicit external Controller.'],
+      data: { routine: touched, externalControllerRequired: true },
+    });
+    return {
+      schemaVersion: 1,
+      accepted: false,
+      mode: 'execute',
+      source: 'system',
+      requestId,
+      understoodIntent: 'run_routine',
+      displayTitle: `Routine requires an external Controller: ${routine.name}`,
+      displayText: 'No ExecutionJob was created. Continue this routine from the recorded Inbox item with an explicitly claimed Controller session.',
+      requiresConfirmation: false,
+      plan: [],
+      routine: touched,
+      inboxItem,
+      clarifyingQuestions: [],
+    };
+  }
   const created = createExecutionJob(controllerHome, {
     repoId: repository.repoId,
     checkoutId: repository.activeCheckoutId,

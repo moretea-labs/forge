@@ -35,6 +35,19 @@ import {
 } from '../../execution/process-runtime';
 
 const DIRECT_REPOSITORY_TOOLS = new Set(['repository_list', 'repository_get', 'repository_workbench', 'repository_command_preview']);
+const RETIRED_AGENT_OPERATIONS = new Set([
+  'dispatch_task',
+  'launch_issue',
+  'dispatch_ready_tasks',
+  'retry_task_run',
+  'quick_agent_session',
+  'submit_local_job',
+]);
+
+// Historical ExecutionJobs remain readable migration evidence only.
+function executionJobCreationRetired(): boolean {
+  return true;
+}
 
 /**
  * Tools whose Fast/Durable boundary is owned by Thin Harness classification.
@@ -328,6 +341,7 @@ export function shouldCreateDurableJob(
   args: Record<string, unknown> = {},
   opts: { allowReadOnly?: boolean; forceDurable?: boolean } = {},
 ): boolean {
+  if (executionJobCreationRetired()) return false;
   const definition = toolDefinition(ctx, name);
   if (!definition) return false;
   if (isSelfManagedDurableTool(name)) return false;
@@ -515,6 +529,17 @@ export async function routeDurableMcpCall(
   const definition = toolDefinition(ctx, name);
   if (!definition) return undefined;
 
+  if (RETIRED_AGENT_OPERATIONS.has(name)) {
+    return result({
+      accepted: false,
+      mode: 'reject',
+      path: 'reject',
+      rejectCode: 'AGENT_RUN_DEPRECATED',
+      message: 'Kernel-managed Agent Runs are retired. Create or resume a WorkContract, claim it, then start the external Controller through rh_work.launcher_start.',
+      migration: ['rh_work.plan_create', 'rh_work.controller_claim', 'rh_work.launcher_start', 'rh_inbox.create'],
+    });
+  }
+
   // Classify BEFORE creating any ExecutionJob / LocalJob / Worker.
   const classification = classifyGatewayExecutionPath(name, args, opts);
   if (classification.path === 'reject' && classification.decision) {
@@ -530,6 +555,22 @@ export async function routeDurableMcpCall(
       rejectCode: classification.decision.rejectCode,
       message: classification.reasons.join('; ') || 'operation rejected by Thin Harness routing',
       suggestedOperation: classification.decision.suggestedOperation,
+    });
+  }
+
+  if (classification.path === 'durable' && executionJobCreationRetired()) {
+    return result({
+      accepted: false,
+      mode: 'external_controller_required',
+      path: 'external_controller_required',
+      routing: {
+        path: 'external_controller_required',
+        reasons: [...classification.reasons, 'execution_job_creation_retired'],
+        ...(classification.decision ? { decision: classification.decision } : {}),
+      },
+      rejectCode: 'EXECUTION_JOB_RETIRED',
+      message: 'This operation requires an explicitly claimed external Controller; the Kernel no longer creates ExecutionJobs.',
+      suggestedOperation: 'Create or resume a WorkContract, claim it with controller_claim, then use Process Runtime commands or rh_work.launcher_start.',
     });
   }
 
@@ -717,7 +758,7 @@ export async function routeDurableMcpCall(
     resourceClaims: claims,
     timeoutMs: timeoutPolicy.executionTimeoutMs,
     timeoutPolicy,
-    maxAttempts: 2,
+    maxAttempts: 1,
     operationMetadata,
   });
   if (wantsWaitForResult(args)) {

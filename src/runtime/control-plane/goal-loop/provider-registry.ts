@@ -396,6 +396,13 @@ export function listProviders(options: ProviderRegistryEnv = {}): ProviderDescri
     }
   }
 
+  // The Kernel no longer selects or invokes a model provider. Keep provider
+  // discovery for external-controller handoffs, but prevent configuration or
+  // test overrides from advertising a direct-dispatch capability.
+  for (const provider of providers) {
+    provider.directDispatch = false;
+  }
+
   // Always force ChatGPT handoff-only after all overrides.
   const chat = providers.find((p) => p.providerId === 'chatgpt_handoff');
   if (chat) {

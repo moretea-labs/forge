@@ -1155,7 +1155,7 @@ export async function executeFast(
   let ledgerWarning: string | undefined;
 
   // Snapshot latency before receipt so persisted duration is complete for op time.
-  const preReceiptLatency = trace.snapshot(false);
+  const preReceiptLatency = trace.snapshot(true);
   const durationForReceipt = preReceiptLatency.totalMs;
 
   if (receiptMode === 'standalone') {
@@ -1178,6 +1178,7 @@ export async function executeFast(
       fencingToken,
       baseHead,
       inputHash,
+      observabilityLatency: preReceiptLatency,
     });
     receipt = written.receipt;
     receiptPersisted = written.persisted;

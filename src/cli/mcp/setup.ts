@@ -364,7 +364,10 @@ Issue
 - \`execute\`: dispatch a ready Task to an allowed local agent in an isolated worktree or to a visible GitHub Copilot cloud session.
 - Protected operations such as secrets, Git internals, package lockfiles, CI workflow changes, commits, merges, and pushes are not default controller actions.
 
-The legacy planner/orchestrator handoff remains available for compatibility. When explicitly enabled, \`run_agent_goal\` reads only \`.ai/harness/handoff/codex-goal.md\`; new work should prefer \`dispatch_task\` and persistent Task Runs.
+Kernel-managed Agent goals and persistent Task Runs are retired. New work uses
+\`rh_work\` to create or continue a WorkContract, \`controller_claim\` to
+establish ownership, and \`launcher_start\` to begin an external
+SuperController session.
 
 ## Dev Mode Agent Runner
 

@@ -49,7 +49,6 @@ export interface TaskProgressSnapshot {
   issueLifecycleStatus: string;
   requiresExplicitRetry: boolean;
   retryable: boolean;
-  percent: number;
   completion: TaskCompletionEvidence;
   latestRunId?: string;
   latestRunStatus?: string;
@@ -70,7 +69,6 @@ export interface IssueProgressSnapshot {
   title: string;
   kind: string;
   status: string;
-  percent: number;
   completedGates: number;
   totalGates: number;
   completedTasks: number;
@@ -99,7 +97,6 @@ export interface ProgressAttentionItem {
 
 export interface ProjectProgressSnapshot {
   generatedAt: string;
-  overallPercent: number;
   completedGates: number;
   totalGates: number;
   issueCount: number;
@@ -249,7 +246,7 @@ function completionEvidence(task: ControllerTask, run?: AgentJobMeta): TaskCompl
   const execution = !run
     ? gate("Implementation Run", "pending")
     : ["queued", "starting", "running", "waiting_for_user"].includes(run.status)
-      ? gate("Implementation Run", "in_progress", `${run.runId}: ${run.progress?.percent ?? 0}%`)
+      ? gate("Implementation Run", "in_progress", `${run.runId}: ${run.progress?.currentActivity ?? "active"}`)
       : run.status === "succeeded"
         ? gate("Implementation Run", "passed", run.runId)
         : gate("Implementation Run", "failed", `${run.runId}: ${run.status}`);
@@ -309,25 +306,6 @@ function completionEvidence(task: ControllerTask, run?: AgentJobMeta): TaskCompl
   };
 }
 
-function dynamicTaskPercent(
-  task: ControllerTask,
-  effectiveStatus: string,
-  run: AgentJobMeta | undefined,
-  completion: TaskCompletionEvidence,
-): number {
-  if (effectiveStatus === "done") return 100;
-  const applicable = Math.max(1, completion.totalGates);
-  let fractional = completion.completedGates;
-  if (completion.execution.state === "in_progress") fractional += Math.max(0.02, Math.min(0.98, (run?.progress?.percent ?? 5) / 100));
-  else if (completion.integration.state === "in_progress") fractional += 0.65;
-  else if (completion.checks.state === "in_progress") fractional += 0.7;
-  else if (completion.acceptance.state === "in_progress") fractional += 0.8;
-  else if (completion.closure.state === "in_progress") fractional += 0.9;
-  let percent = Math.round((fractional / applicable) * 100);
-  if (["blocked", "changes_requested", "launch_blocked"].includes(effectiveStatus)) percent = Math.min(percent, 94);
-  if (task.status === "verified") percent = Math.max(percent, 96);
-  return Math.max(0, Math.min(99, percent));
-}
 function taskProgress(
   issue: ControllerIssue,
   task: ControllerTask,
@@ -351,7 +329,6 @@ function taskProgress(
     issueLifecycleStatus: state.issueLifecycleStatus,
     requiresExplicitRetry: state.requiresExplicitRetry,
     retryable: state.retryable,
-    percent: dynamicTaskPercent(task, state.effectiveStatus, run, completion),
     completion,
     latestRunId: state.latestRunId,
     latestRunStatus: state.latestRunStatus,
@@ -395,11 +372,6 @@ function issueProgress(repoRoot: string, issue: ControllerIssue, currentIssueId?
     title: issue.title,
     kind: issue.kind,
     status: issue.status,
-    percent: counted.length
-      ? Math.round(counted.reduce((sum, task) => sum + task.percent, 0) / counted.length)
-      : issue.status === "done"
-        ? 100
-        : 0,
     completedGates,
     totalGates,
     completedTasks: counted.filter((task) => task.effectiveStatus === "done").length,
@@ -465,9 +437,6 @@ export function getProjectProgress(repoRoot: string): ProjectProgressSnapshot {
   attention.sort((a, b) => b.at.localeCompare(a.at));
   return {
     generatedAt: new Date().toISOString(),
-    overallPercent: countedTasks.length
-      ? Math.round(countedTasks.reduce((sum, task) => sum + task.percent, 0) / countedTasks.length)
-      : 0,
     completedGates,
     totalGates,
     issueCount: allIssues.length,

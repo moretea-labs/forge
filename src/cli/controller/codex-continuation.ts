@@ -1,4 +1,3 @@
-import { spawnSync } from 'child_process';
 import { mkdirSync, writeFileSync } from 'fs';
 import { join, relative } from 'path';
 import { inspectCompletionBacklog, type CompletionBacklogReport } from './completion-backlog';
@@ -33,6 +32,7 @@ export interface CodexContinuationResult {
   promptPath: string;
   prompt: string;
   launched: boolean;
+  launchRejected?: boolean;
   exitCode?: number | null;
   stdoutTail?: string;
   stderrTail?: string;
@@ -41,10 +41,6 @@ export interface CodexContinuationResult {
 
 function timestampId(): string {
   return new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
-}
-
-function tail(text: string, max = 8000): string {
-  return text.length <= max ? text : text.slice(-max);
 }
 
 function continuationDir(repoRoot: string): string {
@@ -149,17 +145,9 @@ export function prepareCodexContinuation(repoRoot: string, options: CodexContinu
     launched: false,
   };
   if (options.mode !== 'launch') return result;
-  const launched = spawnSync('codex', ['exec', '--json', '--cd', repoRoot, prompt], {
-    cwd: repoRoot,
-    encoding: 'utf-8',
-    maxBuffer: 1024 * 1024,
-  });
   return {
     ...result,
-    launched: true,
-    exitCode: launched.status,
-    stdoutTail: tail(typeof launched.stdout === 'string' ? launched.stdout : ''),
-    stderrTail: tail(typeof launched.stderr === 'string' ? launched.stderr : ''),
-    error: launched.error?.message,
+    launchRejected: true,
+    error: 'CONTINUATION_LAUNCH_DEPRECATED: start an external Codex session through rh_work.launcher_start after claiming a WorkContract.',
   };
 }

@@ -190,10 +190,10 @@ function mapSuggested(actions: SuggestedNextAction[] = []): SuggestedActionViewM
 function workStatusLabel(status: WorkContract['status']): { label: string; tone: PlainStatusTone; phase: UserFacingPhase } {
   switch (status) {
     case 'running': return { label: '进行中', tone: 'blue', phase: 'running' };
-    case 'pending': return { label: '待开始', tone: 'gray', phase: 'queued' };
+    case 'open': return { label: '待开始', tone: 'gray', phase: 'queued' };
     case 'blocked': return { label: '已阻塞', tone: 'red', phase: 'blocked' };
-    case 'waiting_for_review': return { label: '需要你审阅', tone: 'amber', phase: 'needs_attention' };
-    case 'succeeded': return { label: '已完成', tone: 'green', phase: 'succeeded' };
+    case 'ready': return { label: '需要你审阅', tone: 'amber', phase: 'needs_attention' };
+    case 'completed': return { label: '已完成', tone: 'green', phase: 'succeeded' };
     case 'failed': return { label: '未通过验收', tone: 'red', phase: 'failed' };
     case 'cancelled': return { label: '已停止', tone: 'gray', phase: 'cancelled' };
     default: return { label: String(status), tone: 'gray', phase: 'running' };
@@ -338,8 +338,8 @@ function progressSteps(work: WorkContract): WorkSummaryViewModel['progressSteps'
   const hasPass = checks.some((entry) => entry.outcome === 'valid_pass');
   const hasFail = checks.some((entry) => entry.outcome === 'valid_fail');
   const hasDelegate = Boolean(work.workerRef);
-  const review = work.status === 'waiting_for_review';
-  const done = work.status === 'succeeded';
+  const review = work.status === 'ready';
+  const done = work.status === 'completed';
   const failed = work.status === 'failed';
   const cancelled = work.status === 'cancelled';
   return [
@@ -387,9 +387,9 @@ export function mapWorkSummary(
   const verification = latestVerification(work);
   const suggested = mapSuggested(work.suggestedNextActions);
   const nextAction = suggested[0]?.label
-    ?? (work.status === 'waiting_for_review' ? '请审阅后继续或收尾'
+    ?? (work.status === 'ready' ? '请审阅后继续或收尾'
       : work.status === 'running' ? '继续或运行检查'
-        : work.status === 'succeeded' ? '任务已完成'
+        : work.status === 'completed' ? '任务已完成'
           : work.status === 'failed' ? '查看失败原因并决定是否重试'
             : '查看任务状态');
   const storeOpts = opts.controllerHome && opts.repoId
@@ -402,9 +402,9 @@ export function mapWorkSummary(
       verification?.isInfrastructureIssue ? 'infrastructure_failure' : 'acceptance_failure',
       verification?.summary,
     );
-  } else if (work.status === 'blocked' || work.status === 'waiting_for_review') {
+  } else if (work.status === 'blocked' || work.status === 'ready') {
     error = describeConsoleError(
-      work.status === 'waiting_for_review' ? 'handoff_required' : 'handoff_required',
+      'handoff_required',
       work.suggestedNextActions[0]?.reason,
     );
   }
@@ -1390,13 +1390,12 @@ export function delegateConsoleWork(
   ctx: ConsoleFacadeContext,
   input: { workId?: string; target?: 'codex' | 'grok' | 'claude'; objective?: string; available?: boolean },
 ): FacadeResult {
-  const work = input.workId ? getWorkContract(store(ctx), input.workId) : undefined;
   return delegateToCodexCerebellum(
-    { repoId: ctx.repository.repoId, workStore: store(ctx), handoffStore: store(ctx) },
+    { repoId: ctx.repository.repoId },
     {
       workId: input.workId,
       target: input.target ?? 'codex',
-      objective: input.objective || work?.objective || '请协助完成当前任务',
+      objective: input.objective || '请协助完成当前任务',
       available: input.available,
       codexAvailable: input.available,
     },

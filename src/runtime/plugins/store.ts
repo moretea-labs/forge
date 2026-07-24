@@ -38,6 +38,10 @@ const PLUGIN_ADAPTERS = new Map<string, AssistantPluginAdapter>([
 
 const PLUGIN_MANIFEST_CACHE_TTL_MS = 5_000;
 
+function executionJobCreationRetired(): boolean {
+  return true;
+}
+
 interface PluginManifestCacheEntry<T> {
   createdAt: number;
   value: T;
@@ -498,6 +502,11 @@ export function submitAssistantPluginAction(
   }
   const normalizedArgs = validateActionArguments(action, request.args ?? {});
   enforceConfirmation(action, { ...request, args: normalizedArgs });
+  if (executionJobCreationRetired()) {
+    throw new Error(
+      'EXTERNAL_CONTROLLER_REQUIRED: Plugin actions no longer create ExecutionJobs. Claim Work and execute the action through an explicit external Controller.',
+    );
+  }
   const timeoutMs = typeof request.timeoutMs === 'number' ? request.timeoutMs : action.defaultTimeoutMs;
   const created = createExecutionJob(controllerHome, {
     repoId: repository.repoId,

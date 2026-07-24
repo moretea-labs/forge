@@ -71,18 +71,18 @@ export const TERMINAL_HANDOFF_STATUSES: readonly HandoffStatus[] = [
 ] as const;
 
 export const WORK_CONTRACT_STATUSES = [
-  'pending',
+  'open',
   'running',
   'blocked',
-  'waiting_for_review',
-  'succeeded',
+  'ready',
+  'completed',
   'failed',
   'cancelled',
 ] as const;
 export type WorkContractStatus = (typeof WORK_CONTRACT_STATUSES)[number];
 
 export const TERMINAL_WORK_CONTRACT_STATUSES: readonly WorkContractStatus[] = [
-  'succeeded',
+  'completed',
   'failed',
   'cancelled',
 ] as const;
@@ -210,7 +210,7 @@ export interface WorkContractConstraints {
 }
 
 export interface WorkContractDriverPolicy {
-  preferred: 'direct_edit' | 'isolated_worktree' | 'codex_worker' | 'handoff_only';
+  preferred: 'direct_edit' | 'isolated_worktree' | 'external_controller' | 'handoff_only';
   allowWorker: boolean;
   allowDirectEdit: boolean;
 }
@@ -290,6 +290,24 @@ export interface WorkContractStore {
   schemaVersion: 1;
   updatedAt: string;
   contracts: WorkContract[];
+}
+
+export type ControllerType = 'chatgpt' | 'codex' | 'grok' | 'claude' | 'human';
+
+export interface ControllerSession {
+  schemaVersion: 1;
+  workId: string;
+  controllerId: string;
+  controllerType: ControllerType;
+  sessionId: string;
+  claimedAt: string;
+  leaseExpiresAt: string;
+}
+
+export interface ControllerSessionStore {
+  schemaVersion: 1;
+  updatedAt: string;
+  sessions: ControllerSession[];
 }
 
 export const PLAN_CONTRACT_STATUSES = [

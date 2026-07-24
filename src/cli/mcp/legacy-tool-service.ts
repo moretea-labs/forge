@@ -158,7 +158,7 @@ import { normalizeMcpRelativePath, resolveMcpPath } from "./paths";
 import { currentGitBranch, isRepoHarnessAdopted } from "./repo";
 import { repositoryToolNames } from "./repository-tools";
 import { redactMcpText } from "./redaction";
-import type { McpAgentRunnerName, McpPolicy } from "./types";
+import type { McpPolicy } from "./types";
 
 export interface McpToolContext {
   repoRoot: string;
@@ -186,6 +186,11 @@ export type CallToolResult = Omit<SdkCallToolResult, "content"> & {
 };
 
 const EMPTY_SCHEMA = { type: "object", additionalProperties: false };
+
+// Preserve historical Local Bridge reads while preventing new Job creation.
+function localBridgeExecutionRetired(): boolean {
+  return true;
+}
 
 function textResult(
   value: unknown,
@@ -674,13 +679,6 @@ function timestampPrefix(date = new Date()): string {
   return `${yyyy}${mm}${dd}-${hh}${min}`;
 }
 
-function parseRunnerAgent(value: unknown): McpAgentRunnerName | null {
-  const normalized = String(value ?? "")
-    .trim()
-    .toLowerCase();
-  return normalized === "codex" || normalized === "claude" ? normalized : null;
-}
-
 function parseControllerAgent(value: unknown): ControllerAgent | null {
   const normalized = String(value ?? "")
     .trim()
@@ -794,10 +792,6 @@ function localBridgeRequestFromArgs(args: Record<string, unknown>) {
   } as const;
 }
 
-function runnerGoalPath(args: Record<string, unknown>): string {
-  return String(args.goal_path ?? ".ai/harness/handoff/codex-goal.md").trim();
-}
-
 function runnerTimeoutMs(ctx: McpToolContext, value: unknown): number {
   return normalizeAgentTimeoutMs(value, {
     defaultMs: ctx.policy.execution.runnerTimeoutMs,
@@ -810,108 +804,18 @@ function runAgentGoal(
   ctx: McpToolContext,
   args: Record<string, unknown>,
 ): CallToolResult {
-  if (!ctx.policy.execution.agentRunner || !ctx.policy.execution.codexRunner) {
-    audit(
-      ctx,
-      "run_agent_goal",
-      "blocked",
-      args,
-      undefined,
-      "dev runner is disabled",
-    );
-    return errorResult(
-      "DEV_RUNNER_DISABLED",
-      "MCP dev runner is disabled. Start the orchestrator profile with an explicit dev-runner setting.",
-    );
-  }
-
-  const agent = parseRunnerAgent(args.agent);
-  if (!agent) {
-    audit(ctx, "run_agent_goal", "blocked", args, undefined, "invalid agent");
-    return errorResult("INVALID_AGENT", "agent must be codex or claude");
-  }
-  if (!ctx.policy.execution.allowedAgents.includes(agent)) {
-    audit(
-      ctx,
-      "run_agent_goal",
-      "blocked",
-      args,
-      undefined,
-      `agent is not allowed: ${agent}`,
-    );
-    return errorResult(
-      "AGENT_DENIED",
-      `agent is not enabled for this MCP dev runner: ${agent}`,
-    );
-  }
-
-  const goalPath = runnerGoalPath(args);
-  const decision = resolveMcpPath(ctx.repoRoot, goalPath, ctx.policy, "read");
-  if (!decision.ok || !decision.absolutePath || !decision.relativePath) {
-    audit(ctx, "run_agent_goal", "blocked", args, goalPath, decision.reason);
-    return errorResult("POLICY_DENIED", decision.reason ?? "goal path denied", {
-      path: goalPath,
-    });
-  }
-
-  const fileStat = statSync(decision.absolutePath);
-  if (!fileStat.isFile())
-    return errorResult(
-      "NOT_A_FILE",
-      `goal path is not a file: ${decision.relativePath}`,
-    );
-  if (fileStat.size > ctx.policy.maxFileBytes)
-    return errorResult(
-      "FILE_TOO_LARGE",
-      `goal exceeds ${ctx.policy.maxFileBytes} bytes`,
-    );
-
-  const rawGoal = readFileSync(decision.absolutePath, "utf-8");
-  const redactedGoal = redactMcpText(rawGoal);
-  const prompt = [
-    "Execute this repo-harness dev-mode agent handoff from the local repository.",
-    "Respect the goal text exactly. Do not reveal secrets or credentials in your final output.",
-    "",
-    redactedGoal.text,
-  ].join("\n");
-  const timeoutMs = runnerTimeoutMs(ctx, args.timeout_ms);
-  const command =
-    agent === "codex"
-      ? {
-          bin: "codex",
-          args: ["exec", "--json", "--cd", ctx.repoRoot, prompt],
-          preview: `codex exec --json --cd ${ctx.repoRoot} <goal>`,
-        }
-      : { bin: "claude", args: ["-p", prompt], preview: "claude -p <goal>" };
-  const result = runProcess(command.bin, command.args, {
-    cwd: ctx.repoRoot,
-    timeoutMs,
-    maxOutputBytes: 128 * 1024,
-  });
-  const stdout = redactMcpText(result.stdout);
-  const stderr = redactMcpText(result.stderr || result.error);
   audit(
     ctx,
     "run_agent_goal",
-    result.ok ? "ok" : "failed",
+    "blocked",
     args,
-    decision.relativePath,
-    stderr.text,
+    undefined,
+    "Kernel-managed model execution is retired; use Thin Launcher.",
   );
-  return textResult({
-    agent,
-    goalPath: decision.relativePath,
-    command: command.preview,
-    exitCode: result.status,
-    timedOut: result.timedOut,
-    stdout: stdout.text,
-    stderr: stderr.text,
-    redactions: [
-      ...redactedGoal.redactions,
-      ...stdout.redactions,
-      ...stderr.redactions,
-    ],
-  });
+  return errorResult(
+    "AGENT_GOAL_DEPRECATED",
+    "Kernel-managed model execution is retired. Create or claim a WorkContract, then start an external SuperController through rh_work.launcher_start.",
+  );
 }
 
 function prdArtifactPath(slug: string): string {
@@ -1450,20 +1354,6 @@ export function buildMcpToolDefinitions(
     maximum: policy.execution.runnerMaxTimeoutMs,
     description: `Execution limit in milliseconds. Defaults to ${policy.execution.runnerTimeoutMs}; maximum ${policy.execution.runnerMaxTimeoutMs}. The value is never silently reduced.`,
   };
-  const agentRunnerSchema = {
-    type: "object",
-    properties: {
-      agent: { type: "string", enum: ["codex", "claude"] },
-      goal_path: {
-        type: "string",
-        default: ".ai/harness/handoff/codex-goal.md",
-      },
-      timeout_ms: agentTimeoutSchema,
-    },
-    required: ["agent"],
-    additionalProperties: false,
-  };
-
   const tools: McpToolDefinition[] = [
     {
       name: "harness_status",
@@ -2953,15 +2843,6 @@ export function buildMcpToolDefinitions(
       },
     );
   }
-  if (policy.execution.agentRunner && policy.execution.codexRunner) {
-    tools.push({
-      name: "run_agent_goal",
-      description:
-        "Dev mode only: run the fixed Codex goal handoff through an explicitly enabled local Codex or Claude CLI.",
-      inputSchema: agentRunnerSchema,
-      annotations: write,
-    });
-  }
   return tools;
 }
 
@@ -3387,12 +3268,20 @@ export async function callMcpTool(
         return textResult(payload);
       }
       case "quick_agent_session":
+        if (args.legacy_agent_run !== true) return errorResult("AGENT_RUN_DEPRECATED", "Kernel-managed Agent Runs are retired. Use rh_work controller_claim and the Thin Launcher.");
       case "submit_local_job": {
         if (ctx.policy.profile !== "controller")
           return errorResult(
             "TOOL_DISABLED",
             `${name} requires the controller profile`,
           );
+        if (localBridgeExecutionRetired()) {
+          audit(ctx, name, "blocked", args);
+          return errorResult(
+            "LOCAL_BRIDGE_JOB_RETIRED",
+            "New Local Bridge Jobs are retired. Create or claim WorkContract and use the Process Runtime or Thin Launcher.",
+          );
+        }
         const requestArgs = name === "quick_agent_session"
           ? { ...args, action: "quick-agent-session" }
           : args;
@@ -3666,8 +3555,8 @@ export async function callMcpTool(
             "TOOL_DISABLED",
             "run_check requires the controller profile",
           );
-        // Prefer Unified Process Runtime for ordinary checks. Only multi-phase /
-        // release checks (or explicit force_durable) fall back to LocalBridgeJob.
+        // Prefer Unified Process Runtime for ordinary checks. Multi-phase and
+        // release checks require an explicit external Controller instead.
         const checkId = String(args.check_id ?? "").trim();
         // Self-hosting controller-v8 nests Local Jobs and must not be scheduled
         // through outer Heavy Check / durable exclusive claims (deadlock risk).
@@ -3731,6 +3620,14 @@ export async function callMcpTool(
             // Fall through to legacy LocalBridge path if Process Runtime is unavailable.
             void error;
           }
+        }
+        if (localBridgeExecutionRetired()) {
+          audit(ctx, name, "blocked", args);
+          return errorResult(
+            "PROCESS_RUNTIME_REQUIRED",
+            "This check cannot create a Local Bridge Job. Run a registered ordinary check through Process Runtime or use external Controller handling for durable checks.",
+            { checkId },
+          );
         }
         const job = submitLocalBridgeJob(ctx.repoRoot, {
           action: "run-check",
@@ -4272,6 +4169,7 @@ export async function callMcpTool(
       }
       case "dispatch_task": {
         if (ctx.policy.profile !== "controller") return errorResult("TOOL_DISABLED", "dispatch_task requires the controller profile");
+        if (args.legacy_agent_run !== true) return errorResult("AGENT_RUN_DEPRECATED", "Kernel-managed Agent Runs are retired. Create or claim a WorkContract through rh_work, then start an external SuperController session through the Thin Launcher.");
         const issueId = String(args.issue_id ?? "").trim();
         const taskId = String(args.task_id ?? "").trim();
         if (!issueId) return errorResult("ISSUE_ID_REQUIRED", "dispatch_task requires issue_id. Use quick_agent_session for direct Codex/Claude work without an Issue.");
@@ -4323,6 +4221,7 @@ export async function callMcpTool(
       }
       case "launch_issue": {
         if (ctx.policy.profile !== "controller") return errorResult("TOOL_DISABLED", "launch_issue requires the controller profile");
+        if (args.legacy_agent_run !== true) return errorResult("AGENT_RUN_DEPRECATED", "Kernel-managed Agent Runs are retired. Convert the Issue tasks to WorkContracts and claim them through rh_work.");
         const issueId = String(args.issue_id ?? "");
         const issue = getIssue(ctx.repoRoot, issueId);
         const maxParallel = Math.min(Math.max(typeof args.max_parallel === "number" ? Math.trunc(args.max_parallel) : 2, 1), 4);
@@ -4983,6 +4882,14 @@ export async function callMcpTool(
           return errorResult("TOOL_DISABLED", "verify_edit_session requires the controller profile");
         const session = getEditSession(ctx.repoRoot, String(args.session_id ?? ""));
         const requestId = typeof args.request_id === "string" ? args.request_id.trim() || undefined : undefined;
+        if (localBridgeExecutionRetired()) {
+          audit(ctx, name, "blocked", args, session.diffPath);
+          return errorResult(
+            "VERIFY_EDIT_SESSION_LOCAL_JOB_RETIRED",
+            "Edit-session verification no longer creates a Local Bridge Job. Run checks through Process Runtime, then finalize with the recorded evidence.",
+            { sessionId: session.sessionId, revision: session.currentRevision, requestId },
+          );
+        }
         const job = submitLocalBridgeJob(ctx.repoRoot, {
           action: "verify-edit-session",
           requestedBy: "mcp:verify_edit_session",

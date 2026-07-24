@@ -18,6 +18,18 @@ export type ProcessRuntimeStatus =
 
 export type ProcessRouteMode = 'direct' | 'managed' | 'durable';
 
+/** Stable Process state exposed to SuperControllers. */
+export type ProcessContractStatus = 'created' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'unknown';
+
+export function processContractStatus(status: ProcessRuntimeStatus): ProcessContractStatus {
+  if (status === 'starting') return 'created';
+  if (status === 'running' || status === 'running_recovered') return 'running';
+  if (status === 'succeeded') return 'succeeded';
+  if (status === 'cancelled') return 'cancelled';
+  if (status === 'failed' || status === 'timed_out' || status === 'orphaned') return 'failed';
+  return 'unknown';
+}
+
 export interface ProcessIdentityRecord {
   pid: number;
   processStartTime: string;
@@ -52,6 +64,10 @@ export interface ManagedProcessRecord {
   processId: string;
   repoId: string;
   checkoutId?: string;
+  /** Optional facade WorkContract that owns this command. */
+  workId?: string;
+  /** Caller-stable command identity; defaults to processId when omitted. */
+  commandId?: string;
   controllerHome: string;
   status: ProcessRuntimeStatus;
   route: ProcessRouteMode;
@@ -109,6 +125,8 @@ export interface SpawnManagedProcessInput {
   controllerHome: string;
   repoId: string;
   checkoutId?: string;
+  workId?: string;
+  commandId?: string;
   command: ProcessCommandSpec;
   interactiveWaitMs?: number;
   timeoutMs?: number;
@@ -123,7 +141,10 @@ export interface SpawnManagedProcessInput {
 
 export interface ProcessHandle {
   processId: string;
+  workId?: string;
+  commandId: string;
   status: ProcessRuntimeStatus;
+  contractStatus: ProcessContractStatus;
   route: ProcessRouteMode;
   pid?: number;
   startedAt: string;

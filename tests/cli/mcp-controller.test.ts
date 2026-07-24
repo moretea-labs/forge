@@ -383,7 +383,6 @@ function seedLargeControllerIssue(
       error: index === task.runIds.length - 1 ? undefined : "failure ".repeat(80),
       progress: {
         phase: index === task.runIds.length - 1 ? "completed" : "failed",
-        percent: index === task.runIds.length - 1 ? 100 : 0,
         currentActivity: `run-${index + 1}`,
         lastActivityAt: `2026-06-26T12:${String(index).padStart(2, "0")}:00.000Z`,
         activityCount: 12 + index,

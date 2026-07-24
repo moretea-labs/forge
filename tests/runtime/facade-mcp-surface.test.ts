@@ -98,6 +98,11 @@ describe('facade MCP surface wiring', () => {
       expect(def?.inputSchema).toBeTruthy();
       expect((def?.inputSchema as { properties?: Record<string, unknown> }).properties?.operation).toBeTruthy();
     }
+    const inbox = all.find((tool) => tool.name === 'rh_inbox');
+    const work = all.find((tool) => tool.name === 'rh_work');
+    expect(JSON.stringify(inbox?.inputSchema)).toContain('accept');
+    expect(JSON.stringify(work?.inputSchema)).toContain('controller_claim');
+    expect(JSON.stringify(work?.inputSchema)).toContain('launcher_start');
   });
 
   test('runtime source snapshot ignores workflow artifacts but detects runtime code edits', () => {
@@ -255,6 +260,22 @@ describe('facade MCP surface wiring', () => {
     expect((small.data as { workContractCreated: boolean; mode: { mode: string } }).workContractCreated).toBe(false);
     expect((small.data as { mode: { mode: string } }).mode.mode).toBe('direct_control');
 
+    const sourceRevision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repository.canonicalRoot, encoding: 'utf8' }).stdout.trim();
+    structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'plan_create',
+      plan_id: 'plan-complex-start',
+      scope_key: 'src/runtime/control-plane',
+      source_revision: sourceRevision,
+      objective: 'Refactor facade routing and recovery loop',
+      plan_steps: [{ id: 'implement', objective: 'Implement the reviewed refactor', check_ids: ['typecheck'], acceptance_criteria: ['Typecheck passes.'] }],
+    }));
+    structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'plan_approve',
+      plan_id: 'plan-complex-start',
+    }));
+
     const complex = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,
       operation: 'start',
@@ -264,6 +285,8 @@ describe('facade MCP surface wiring', () => {
       requires_long_running_checks: true,
       scope_clear: true,
       check_ids: ['typecheck'],
+      plan_id: 'plan-complex-start',
+      plan_step_id: 'implement',
     }));
     expect((complex.data as { workContractCreated: boolean }).workContractCreated).toBe(true);
     expect((complex.data as { mode: { mode: string } }).mode.mode).toBe('goal_workloop');
@@ -364,17 +387,9 @@ describe('facade MCP surface wiring', () => {
     expect(second.summary).toMatch(/source_revision/i);
   });
 
-  test('rh_work.delegate codex/grok are bounded and cannot finalize', async () => {
+  test('rh_work.delegate is deprecated and read-only', async () => {
     const { ctx, repository } = controllerFixture();
-    const started = structured(await callRuntimeTool(ctx, 'rh_work', {
-      repo_id: repository.repoId,
-      operation: 'start',
-      objective: 'Delegate bounded patch',
-      expected_files: 8,
-      expected_changed_lines: 300,
-      scope_clear: true,
-    }));
-    const workId = (started.data as { work: { workId: string } }).work.workId;
+    const workId = 'legacy-delegate-work';
 
     const codex = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,
@@ -385,10 +400,10 @@ describe('facade MCP surface wiring', () => {
       available: true,
       worker_output: { summary: 'patch ready', patchProposal: 'diff --git a/x' },
     }));
-    expect((codex.data as { canFinalize: boolean; target: string }).canFinalize).toBe(false);
+    expect(codex.status).toBe('blocked');
+    expect((codex.data as { canFinalize: boolean; target: string; deprecated: boolean }).canFinalize).toBe(false);
     expect((codex.data as { target: string }).target).toBe('codex');
-    expect((codex.data as { contextPack: { expectedOutputFormat: { mustNot: string[] } } }).contextPack.expectedOutputFormat.mustNot)
-      .toContain('finalize_work_contract');
+    expect((codex.data as { deprecated: boolean }).deprecated).toBe(true);
 
     const grok = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,
@@ -397,11 +412,10 @@ describe('facade MCP surface wiring', () => {
       work_id: workId,
       objective: 'Parallel review',
     }));
-    expect((grok.data as { target: string; directExecutionAvailable: boolean; canFinalize: boolean }).target).toBe('grok');
-    expect((grok.data as { directExecutionAvailable: boolean }).directExecutionAvailable).toBe(false);
+    expect(grok.status).toBe('blocked');
+    expect((grok.data as { target: string; deprecated: boolean; canFinalize: boolean }).target).toBe('grok');
+    expect((grok.data as { deprecated: boolean }).deprecated).toBe(true);
     expect((grok.data as { canFinalize: boolean }).canFinalize).toBe(false);
-    expect((grok.data as { grokDelegateRequest: { requestId: string } }).grokDelegateRequest.requestId).toMatch(/^grok-req-/);
-    expect((grok.data as { isAcceptanceFailure: boolean }).isAcceptanceFailure).toBe(false);
   });
 
   test('repair diagnose defaults dry_run; destructive requires approval', async () => {

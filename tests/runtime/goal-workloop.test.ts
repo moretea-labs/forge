@@ -110,8 +110,8 @@ describe('goal workloop engine', () => {
     expect(result.status).toBe('ok');
     const [contract] = listWorkContracts({ ...ctx.workStore, status: 'all' });
     expect(contract?.driver).toEqual({
-      preferred: 'codex_worker',
-      allowWorker: true,
+      preferred: 'external_controller',
+      allowWorker: false,
       allowDirectEdit: false,
     });
   });
@@ -253,7 +253,7 @@ describe('goal workloop engine', () => {
     expect(cont.status).toBe('blocked');
     expect((cont.data as { backgroundCompleted: boolean }).backgroundCompleted).toBe(false);
     expect(listHandoffItems(ctx.handoffStore).length).toBe(1);
-    expect(getWorkContract(ctx.workStore, workId)?.status).toBe('waiting_for_review');
+    expect(getWorkContract(ctx.workStore, workId)?.status).toBe('ready');
   });
 
   test('finalize succeeds when checks pass; stop retains evidence', () => {
@@ -266,8 +266,8 @@ describe('goal workloop engine', () => {
     const workId = (started.data as { work: { workId: string } }).work.workId;
     verifyGoalWorkloop(ctx, { workId, checkId: 'package:check:type' });
     const finalized = finalizeGoalWorkloop(ctx, { workId });
-    expect((finalized.data as { finalStatus: string }).finalStatus).toBe('succeeded');
-    expect(getWorkContract(ctx.workStore, workId)?.status).toBe('succeeded');
+    expect((finalized.data as { finalStatus: string }).finalStatus).toBe('completed');
+    expect(getWorkContract(ctx.workStore, workId)?.status).toBe('completed');
 
     const started2 = startGoalWorkloop(ctx, {
       objective: 'Stop path',
@@ -295,8 +295,8 @@ describe('goal workloop engine', () => {
 
     const finalized = finalizeGoalWorkloop(ctx, { workId });
     expect(finalized.status).toBe('blocked');
-    expect((finalized.data as { finalStatus: string }).finalStatus).toBe('waiting_for_review');
-    expect(getWorkContract(ctx.workStore, workId)?.status).toBe('waiting_for_review');
+    expect((finalized.data as { finalStatus: string }).finalStatus).toBe('ready');
+    expect(getWorkContract(ctx.workStore, workId)?.status).toBe('ready');
   });
 
   test('generic delegate evidence without a patch, worker, worktree, or check cannot unlock success', () => {
@@ -318,7 +318,7 @@ describe('goal workloop engine', () => {
 
     const finalized = finalizeGoalWorkloop(ctx, { workId });
     expect(finalized.status).toBe('blocked');
-    expect((finalized.data as { finalStatus: string }).finalStatus).toBe('waiting_for_review');
+    expect((finalized.data as { finalStatus: string }).finalStatus).toBe('ready');
   });
 
   test('workerRef and worktreeRef alone cannot unlock completion', () => {
@@ -335,7 +335,7 @@ describe('goal workloop engine', () => {
 
     const finalized = finalizeGoalWorkloop(ctx, { workId });
     expect(finalized.status).toBe('blocked');
-    expect((finalized.data as { finalStatus: string }).finalStatus).toBe('waiting_for_review');
+    expect((finalized.data as { finalStatus: string }).finalStatus).toBe('ready');
     expect((finalized.data as { ignoredWeakReferences: { workerRef: boolean; worktreeRef: boolean } }).ignoredWeakReferences).toEqual({
       workerRef: true,
       worktreeRef: true,
@@ -373,7 +373,7 @@ describe('goal workloop engine', () => {
 
     const finalized = finalizeGoalWorkloop(ctx, { workId });
     expect(finalized.status).toBe('ok');
-    expect((finalized.data as { finalStatus: string }).finalStatus).toBe('succeeded');
+    expect((finalized.data as { finalStatus: string }).finalStatus).toBe('completed');
   });
 
   test('successful completion preserves access and approval snapshots', () => {
@@ -428,7 +428,7 @@ describe('goal workloop engine', () => {
       now: '2026-07-09T03:00:00.000Z',
     });
     expect(reconciled.workIds).toEqual([workId]);
-    expect(getWorkContract(ctx.workStore, workId)?.status).toBe('waiting_for_review');
+    expect(getWorkContract(ctx.workStore, workId)?.status).toBe('ready');
     expect(getWorkContract(ctx.workStore, workId)?.evidenceRefs[0]?.title).toBe('runtime reconciliation required');
   });
 

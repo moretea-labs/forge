@@ -6,7 +6,7 @@
 export type RetryableTransportStatus = 408 | 429 | 502 | 503 | 504;
 
 export interface IdempotentRetryOptions {
-  /** Max attempts including the first call. Default 3. */
+  /** Max attempts including the first call. Default 2 (one retry). */
   maxAttempts?: number;
   /** Base backoff in ms. Default 50. */
   baseDelayMs?: number;
@@ -70,7 +70,7 @@ export async function withIdempotentRetry<T>(
   if (!options.idempotent || options.enabled === false) {
     return operation();
   }
-  const maxAttempts = Math.max(1, Math.min(options.maxAttempts ?? 3, 4));
+  const maxAttempts = Math.max(1, Math.min(options.maxAttempts ?? 2, 2));
   const baseDelayMs = Math.max(10, options.baseDelayMs ?? 50);
   const maxDelayMs = Math.max(baseDelayMs, options.maxDelayMs ?? 500);
   const sleep = options.sleep ?? defaultSleep;

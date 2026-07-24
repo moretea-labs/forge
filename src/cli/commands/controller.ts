@@ -44,6 +44,10 @@ function repoRoot(value?: string): string {
   return resolve(value ?? process.cwd());
 }
 
+function localBridgeExecutionRetired(): boolean {
+  return true;
+}
+
 function formatBoard(board: ReturnType<typeof projectBoard>): string {
   const lines = ['repo-harness Controller board', ''];
   const counts = Object.entries(board.counts).sort(([a], [b]) => a.localeCompare(b));
@@ -420,11 +424,11 @@ export function buildControllerCommand(): Command {
     });
 
   command.command('codex-continuation')
-    .description('Prepare or launch a local Codex continuation packet for remaining completion work')
+    .description('Prepare a Codex continuation packet; provider startup belongs to Thin Launcher')
     .option('--repo <path>', 'Repository root')
     .option('--objective <text>', 'Continuation objective')
     .option('--max-items <count>', 'Maximum backlog/stuck items', '100')
-    .option('--launch', 'Launch codex exec after writing the packet')
+    .option('--launch', 'Deprecated: returns a Thin Launcher migration instruction')
     .option('--json', 'Output JSON')
     .action((opts: { repo?: string; objective?: string; maxItems?: string; launch?: boolean; json?: boolean }) => {
       output(prepareCodexContinuation(repoRoot(opts.repo), {
@@ -490,7 +494,7 @@ export function buildControllerCommand(): Command {
     });
 
   command.command('launch')
-    .description('Queue Task-local launch candidates from one Issue through the risk-adaptive approval bridge')
+    .description('Deprecated: prepare Task-local launch candidates for an external SuperController')
     .argument('<issue-id>', 'Controller Issue ID')
     .option('--repo <path>', 'Repository root')
     .option('--max-parallel <count>', 'Maximum Tasks to launch', '1')
@@ -500,6 +504,15 @@ export function buildControllerCommand(): Command {
       const root = repoRoot(opts.repo);
       const readiness = inspectIssueReadiness(root, issueId);
       if (!readiness.queueable) throw new Error(`Issue has no queueable Tasks: ${[...readiness.blockers, ...readiness.taskBlockers].map((entry) => entry.code).join(', ') || 'no queueable Tasks'}`);
+      if (localBridgeExecutionRetired()) {
+        output({
+          accepted: false,
+          code: 'LOCAL_BRIDGE_JOB_RETIRED',
+          readiness,
+          message: 'controller launch no longer creates Local Bridge Jobs. Create or claim WorkContract and start an external Controller through the Thin Launcher.',
+        }, opts.json === true);
+        return;
+      }
       saveControllerProjectState(root, { currentIssueId: issueId }, 'controller-cli');
       const issue = getIssue(root, issueId);
       const count = Math.max(1, Math.min(Number(opts.maxParallel ?? 1), readiness.queueableTaskIds.length));

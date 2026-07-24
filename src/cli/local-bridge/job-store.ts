@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "fs";
 import { dirname, join, relative, resolve, sep } from "path";
-import { acceptTaskJob, cancelAgentJob, dispatchAcceptedTaskJob, getAgentJob, startTaskJob } from "../agent-jobs/job-manager";
+import { acceptTaskJob, cancelAgentJob, getAgentJob } from "../agent-jobs/job-manager";
 import { createIssue, getIssue, removeEphemeralIssue } from "../controller/issue-store";
 import {
   currentControllerCheckRevision,
@@ -530,10 +530,19 @@ function findExistingRepositoryCommandJob(
   return ["approved", "running"].includes(refreshed.status) ? refreshed : undefined;
 }
 
+function localBridgeJobCreationRetired(): boolean {
+  return true;
+}
+
 export function submitLocalBridgeJob(
   repoRoot: string,
   request: LocalBridgeJobRequest,
 ): LocalBridgeJob {
+  if (localBridgeJobCreationRetired()) {
+    throw new Error(
+      "LOCAL_BRIDGE_JOB_RETIRED: New Local Bridge Jobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.",
+    );
+  }
   if (
     !["launch-task", "quick-agent-session", "run-check", "verify-edit-session", "repository-command"].includes(
       request.action,
@@ -1327,18 +1336,18 @@ function executeLaunchTask(
     requestId: payload.requestId,
     approveDestructive: payload.approveDestructive === true,
   });
-  dispatchAcceptedTaskJob(repoRoot, accepted.runId);
   const run = getAgentJob(repoRoot, accepted.runId);
   job.runId = accepted.runId;
   job.issueId = payload.issueId;
   job.taskId = payload.taskId;
-  job.status = "dispatched";
+  job.status = "approved";
   delete job.finishedAt;
   job.result = {
     runId: accepted.runId,
     provider: run.provider,
     status: accepted.status,
-    delegated: true,
+    delegated: false,
+    launcherRequired: true,
     childReference: {
       localJobId: job.jobId,
       runId: accepted.runId,
@@ -1416,12 +1425,11 @@ function executeQuickSession(
     requestId,
     approveDestructive: payload.approveDestructive === true,
   });
-  dispatchAcceptedTaskJob(repoRoot, accepted.runId);
   const run = getAgentJob(repoRoot, accepted.runId);
   job.runId = accepted.runId;
   job.issueId = issue.id;
   job.taskId = task.id;
-  job.status = "dispatched";
+  job.status = "approved";
   delete job.finishedAt;
   job.result = {
     issueId: issue.id,

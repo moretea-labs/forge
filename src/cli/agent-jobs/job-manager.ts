@@ -253,6 +253,10 @@ function eventPath(repoRoot: string, runId: string): string {
   return join(jobDir(repoRoot, runId), "events.jsonl");
 }
 
+function eventReceiptPath(repoRoot: string, runId: string, eventId: string): string {
+  return join(jobDir(repoRoot, runId), "event-receipts", `${createHash("sha256").update(eventId).digest("hex")}.json`);
+}
+
 function rawJobMetaPath(repoRoot: string, runId: string): string {
   return join(jobDir(repoRoot, runId), "meta.json");
 }
@@ -648,14 +652,20 @@ export function appendAgentJobEvent(
   const path = eventPath(repoRoot, runId);
   mkdirSync(dirname(path), { recursive: true });
   const at = event.at ?? new Date().toISOString();
+  const metaFile = metaPath(repoRoot, runId);
+  const meta = existsSync(metaFile) ? readJson<AgentJobMeta>(metaFile) : undefined;
+  const commandId = event.commandId ?? meta?.runId;
+  const terminal = ["run_succeeded", "run_failed", "run_cancelled"].includes(event.type);
+  const eventId = event.eventId ?? (commandId && (event.type === "run_started" || terminal)
+    ? `${commandId}:${event.type}`
+    : undefined);
+  if (eventId && !atomicCreateJson(eventReceiptPath(repoRoot, runId, eventId), { eventId, at })) return;
   appendFileSync(
     path,
-    `${JSON.stringify({ ...event, at })}\n`,
+    `${JSON.stringify({ ...event, at, eventId, requestId: event.requestId ?? meta?.requestId, commandId, executionId: event.executionId ?? commandId })}\n`,
     "utf-8",
   );
   try {
-    const metaFile = metaPath(repoRoot, runId);
-    const meta = existsSync(metaFile) ? readJson<AgentJobMeta>(metaFile) : undefined;
     tryAppendControllerWorklogEvent(repoRoot, {
       at,
       category: "run",
@@ -814,7 +824,6 @@ function reconcileIncompleteAutoIntegration(
   delete meta.finishedAt;
   meta.progress = {
     phase: "waiting",
-    percent: 96,
     currentActivity: `实现完成，但自动集成需要处理：${message}`,
     lastActivityAt: progressedAt,
     activityCount: (meta.progress?.activityCount ?? 0) + 1,
@@ -1216,7 +1225,6 @@ function baseMeta(
     autoIntegrate: executionMode === "worktree",
     progress: {
       phase: "starting",
-      percent: 2,
       currentActivity: "已受理，等待异步启动",
       lastActivityAt: new Date().toISOString(),
       activityCount: 0,
@@ -1234,6 +1242,10 @@ function baseMeta(
       })]
       : undefined,
   };
+}
+
+function agentRunCreationRetired(): boolean {
+  return true;
 }
 
 export function acceptTaskJob(opts: StartTaskJobOptions): DispatchTaskAcceptance {
@@ -1272,6 +1284,13 @@ export function acceptTaskJob(opts: StartTaskJobOptions): DispatchTaskAcceptance
   });
   if (!readiness.ready) {
     throw new Error(`task-local launch blocked: ${readiness.blockers.map((entry) => `${entry.code}: ${entry.message}`).join("; ")}`);
+  }
+  if (agentRunCreationRetired()) {
+    // Agent Runs are historical evidence only. New execution ownership lives
+    // in WorkContract + ControllerSession and starts through Thin Launcher.
+    throw new Error(
+      "AGENT_RUN_RETIRED: New Agent Runs are disabled. Claim a WorkContract and start an external SuperController through Thin Launcher.",
+    );
   }
   const agent = opts.agent!;
   const provider = agent === "github-copilot" ? "github" : "local";
@@ -1333,6 +1352,19 @@ export function launchAcceptedTaskJob(
   repoRoot: string,
   runId: string,
 ): AgentJobMeta {
+  // This compatibility export used to be a direct model-process entrypoint.
+  // Keep legacy Run records readable, but never let a Kernel caller spawn one.
+  return getAgentJob(repoRoot, runId);
+}
+
+// Provider launch implementation retained only as migration reference for
+// Thin Launcher adapters. It is intentionally unreachable from the Kernel.
+function legacyLaunchAcceptedTaskJob(
+  repoRoot: string,
+  runId: string,
+): AgentJobMeta {
+  throw new Error(`AGENT_RUN_LAUNCH_RETIRED: ${runId}. Use rh_work.launcher_start with an external Controller.`);
+  /* Retired provider implementation retained in source history only.
   const absoluteMetaPath = metaPath(repoRoot, runId);
   if (!existsSync(absoluteMetaPath)) throw new Error(`agent job not found: ${runId}`);
   const meta = readJson<AgentJobMeta>(absoluteMetaPath);
@@ -1546,7 +1578,6 @@ ${meta.supervisorInstructions}
     meta.status = "running";
     meta.progress = {
       phase: "starting",
-      percent: 5,
       currentActivity: `正在启动 ${meta.agent}`,
       lastActivityAt: new Date().toISOString(),
       activityCount: 0,
@@ -1597,10 +1628,13 @@ ${meta.supervisorInstructions}
     closeSync(outFd);
     closeSync(errFd);
   }
+  */
 }
 
 export function startAcceptedTaskJob(repoRoot: string, runId: string): AgentJobMeta {
-  return withRunLaunchLock(repoRoot, () => launchAcceptedTaskJob(repoRoot, runId));
+  // Legacy accepted Run records are inspectable, but Kernel-owned Agent
+  // spawning has moved to Thin Launcher provider adapters.
+  return getAgentJob(repoRoot, runId);
 }
 
 export function startTaskJob(opts: StartTaskJobOptions): AgentJobMeta {
@@ -1995,15 +2029,10 @@ export function dispatchAcceptedTaskJob(
   repoRoot: string,
   runId: string,
 ): void {
-  try {
-    // Agent delegation already runs inside a durable/local Worker. Start the
-    // accepted Run there and let startAcceptedTaskJob spawn the isolated Agent
-    // worker. A second detached TypeScript launcher is both redundant and
-    // invalid inside immutable bundled Supervisor releases.
-    startAcceptedTaskJob(repoRoot, runId);
-  } catch (error) {
-    failAcceptedTaskJob(repoRoot, runId, error);
-  }
+  // Retained solely for callers reading legacy accepted Run records. Provider
+  // process spawning belongs to Thin Launcher adapters, never the Kernel.
+  void repoRoot;
+  void runId;
 }
 
 export function cancelAgentJob(repoRoot: string, runId: string): AgentJobMeta {
@@ -2036,7 +2065,6 @@ export function cancelAgentJob(repoRoot: string, runId: string): AgentJobMeta {
   meta.lastHeartbeatAt = requestedAt;
   meta.progress = {
     phase: "finalizing",
-    percent: 100,
     currentActivity: "Cancellation persisted; process cleanup continues independently.",
     lastActivityAt: requestedAt,
     activityCount: (meta.progress?.activityCount ?? 0) + 1,
@@ -2255,7 +2283,6 @@ export function markAgentJobReviewedCompletion(
   delete meta.preservationDetails;
   meta.progress = {
     phase: "completed",
-    percent: 100,
     currentActivity: "Run review, integration, and completion orchestration finished",
     lastActivityAt: completedAt,
     activityCount: (meta.progress?.activityCount ?? 0) + 1,

@@ -16,6 +16,12 @@ export interface EnsureCampaignWorkspaceInput {
   branchName?: string;
 }
 
+/**
+ * Neutral worktree contract used by WorkContract and legacy Campaign views.
+ * The persistence location remains compatible with existing Campaign records.
+ */
+export type EnsureManagedWorkspaceInput = EnsureCampaignWorkspaceInput;
+
 interface CampaignWorkspaceManifest {
   schemaVersion: 1;
   repoId: string;
@@ -95,7 +101,7 @@ export function currentCampaignWorkspace(repository: RepositoryRecord): Campaign
   };
 }
 
-export function ensureCampaignWorkspace(
+export function ensureManagedWorkspace(
   controllerHome: string,
   repository: RepositoryRecord,
   input: EnsureCampaignWorkspaceInput,
@@ -176,3 +182,6 @@ export function ensureCampaignWorkspace(
     120_000,
   );
 }
+
+/** @deprecated Campaign compatibility alias. New Work paths use ensureManagedWorkspace. */
+export const ensureCampaignWorkspace = ensureManagedWorkspace;

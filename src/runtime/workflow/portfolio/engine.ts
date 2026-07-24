@@ -7,6 +7,10 @@ function terminalFailure(status: string): boolean {
   return ['failed', 'timed_out', 'cancelled', 'orphaned', 'stale', 'human_attention_required'].includes(status);
 }
 
+function portfolioExecutionRetired(): boolean {
+  return true;
+}
+
 function synchronizeStep(step: PortfolioStep): PortfolioStep {
   return { ...step };
 }
@@ -48,7 +52,7 @@ function queueStep(controllerHome: string, workflow: PortfolioWorkflow, step: Po
     payload: { operation: step.operation, arguments: step.arguments, target: 'mcp-tool', portfolioWorkflowId: workflow.workflowId, portfolioStepId: step.stepId },
     resourceClaims: step.resourceClaims,
     dependencies: dependencyJobIds,
-    maxAttempts: 2,
+    maxAttempts: 1,
   });
   return { ...step, status: 'queued', jobId: created.job.jobId };
 }
@@ -80,6 +84,12 @@ function beginCompensation(controllerHome: string, workflow: PortfolioWorkflow):
 }
 
 export function tickPortfolioWorkflow(controllerHome: string, source: PortfolioWorkflow): PortfolioWorkflow {
+  if (portfolioExecutionRetired()) {
+    const steps = source.steps.map((step) => step.status === 'pending' || step.status === 'queued'
+      ? { ...step, status: 'blocked' as const, error: 'Portfolio execution requires an explicitly claimed external Controller.' }
+      : step);
+    return savePortfolioWorkflow(controllerHome, { ...source, status: 'paused', steps });
+  }
   let workflow = updateFromJobs(controllerHome, source);
   const failed = workflow.steps.some((step) => step.status === 'failed' || step.status === 'blocked');
   if (failed) {

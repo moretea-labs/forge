@@ -81,6 +81,11 @@ function definition(
 
 const repoId = { type: 'string', description: 'Stable Repository Registry repoId.' };
 
+// Kept as a policy seam while legacy Local Bridge code remains for historical reads.
+function localBridgeRepositoryExecutionRetired(): boolean {
+  return true;
+}
+
 export const repositoryToolDefinitions: McpToolDefinition[] = [
   definition('repository_register', 'Register a Git repository with the Controller.', {
     path: { type: 'string' },
@@ -745,9 +750,7 @@ export async function callRepositoryTool(
               defaultBranch: repository.defaultBranch,
               timeoutMs,
             });
-            // Only short readonly commands skip Local Job. Workspace mutations and
-            // managed long builds keep the durable settlement surface (jobId/localJob).
-            if (routeClass.route === 'process_direct') {
+            if (routeClass.route === 'process_direct' || routeClass.route === 'process_managed') {
               const processResult = await executeRepositoryCommandViaProcessRuntime({
                 controllerHome,
                 repository,
@@ -757,7 +760,7 @@ export async function callRepositoryTool(
                 maxOutputBytes,
                 requestId: typeof args.request_id === 'string' ? args.request_id : undefined,
               });
-              if (processResult.route === 'process_direct') {
+              if (processResult.route === 'process_direct' || processResult.route === 'process_managed') {
                 const handle = processResult.process;
                 const detailLevel = args.detail_level === 'detail' || args.detail === true
                   ? 'detail'
@@ -778,7 +781,9 @@ export async function callRepositoryTool(
                   stdout: processResult.stdout,
                   stderr: processResult.stderr,
                   durableSideEffects: processResult.durableSideEffects,
-                  next: 'Process Runtime Direct completed without Local Job / ExecutionJob / Worker.',
+                  next: processResult.route === 'process_direct'
+                    ? 'Process Runtime Direct completed without Local Job / ExecutionJob / Worker.'
+                    : `Process Runtime is managing ${handle?.processId}; poll work_status_digest instead of creating a Local Job.`,
                   detailLevel,
                 });
                 return processResult.ok === true
@@ -917,6 +922,16 @@ export async function callRepositoryTool(
               console.error('[repository_command_execute] durable worker inline process runtime error', error);
             }
           }
+        }
+        if (localBridgeRepositoryExecutionRetired()) {
+          return result({
+            accepted: false,
+            mode: 'durable',
+            path: 'external_controller_required',
+            routing: compactRoutingSummary({ path: 'durable', mode: 'durable', reasons: [routingDecision.reasons.join(','), 'local_bridge_execution_retired'] }),
+            message: 'This command requires explicit external Controller handling; Local Bridge Jobs are retired for repository commands.',
+            suggestedOperation: 'Create or claim WorkContract, then use rh_work.launcher_start or a Process Runtime-compatible command.',
+          });
         }
         const preview = previewRepositoryCommandExecution(repository, {
           command: args.command as string | string[],

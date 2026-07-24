@@ -3,7 +3,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { getRepository } from '../../../cli/repositories/registry';
 import { createExecutionJob, findExecutionJob, listActiveExecutionJobs, listExecutionJobs } from '../../execution/jobs/store';
-import { rebuildRepositoryProjection } from '../../projections/materialized-view';
+import { readRepositoryProjection } from '../../projections/materialized-view';
 import { previewAutomaticRuntimeMaintenance } from '../../recovery/maintenance-executor';
 import { listCandidateFindings } from '../findings/store';
 import {
@@ -26,6 +26,10 @@ import type {
 
 const execFileAsync = promisify(execFile);
 const LIVE_MAINTENANCE_OPERATION = 'runtime_maintenance_apply';
+
+function scheduleExecutionRetired(): boolean {
+  return true;
+}
 
 function normalizedWindow(minutes: number, at = Date.now()): string {
   return String(Math.floor(at / (Math.max(1, minutes) * 60_000)));
@@ -219,7 +223,7 @@ async function triggerDue(
 }
 
 async function stopReason(controllerHome: string, schedule: RepositorySchedule): Promise<string | undefined> {
-  const projection = rebuildRepositoryProjection(controllerHome, schedule.repoId);
+  const projection = readRepositoryProjection(controllerHome, schedule.repoId);
   if (schedule.stopConditions.includes('human_review_required') && projection.currentAttention.length > 0) return 'Repository has jobs requiring human attention.';
   if (schedule.stopConditions.includes('release_ready') && projection.releaseFrozen) return 'Repository is in release freeze.';
   if (schedule.stopConditions.includes('external_blocker')) {
@@ -321,6 +325,38 @@ export async function evaluateSchedule(
     createdAt: timestamp,
     updatedAt: timestamp,
   });
+
+  // A Schedule records an external trigger; it never creates a Kernel-owned
+  // ExecutionJob. Thin Launcher or another Controller consumes this Handoff.
+  if (scheduleExecutionRetired()) {
+    const externalControllerHandoff = recordScheduleOccurrenceHandoff(
+      controllerHome,
+      schedule,
+      decideOccurrence(
+        controllerHome,
+        schedule,
+        occurrence,
+        'operation_blocked',
+        'skipped',
+        'Schedule execution is external-controller-owned; no ExecutionJob was created.',
+        occurrenceDecisionEvidence({ operation: schedule.action.operation, trigger: occurrence.triggerContext?.source }),
+      ),
+      {
+        title: `Schedule ${schedule.name} requires an external Controller`,
+        summary: 'The scheduled trigger was recorded without dispatching a Kernel Job.',
+        reason: 'Schedule execution is external-controller-owned.',
+        creationReason: 'ambiguous_outcome',
+        blockingDecision: 'Claim or create the related Work before executing the scheduled operation.',
+        recommendedDecision: 'Review the trigger evidence and continue it through an explicitly claimed external Controller session.',
+        recommendedPrompt: `Review schedule ${schedule.scheduleId} occurrence ${occurrence.occurrenceId}; create or claim Work for ${schedule.action.operation} and continue through Process Runtime or Thin Launcher.`,
+        statusSummary: 'Schedule trigger is waiting for external Controller ownership.',
+        blockedBy: ['external_controller_required'],
+        attemptedActions: [`operation:${schedule.action.operation}`],
+      },
+    );
+    saveSchedule(controllerHome, { ...schedule, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
+    return externalControllerHandoff;
+  }
 
   const recent = listOccurrences(controllerHome, schedule.repoId, schedule.scheduleId, 1000);
   const stop = await stopReason(controllerHome, schedule);

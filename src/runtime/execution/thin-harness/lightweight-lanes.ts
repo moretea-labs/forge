@@ -415,6 +415,7 @@ export async function executeLightweightLanes(
     policyDecision: 'allowed',
     outputSummary: `readLanes=${readResults.length} proposals=${proposalResults.length} conflicts=${conflicts.length} concurrent=${concurrent}`,
     latency: request.includeLatencyBreakdown === true ? latency : undefined,
+    observabilityLatency: latency,
     laneCount: readResults.length + proposalResults.length,
   });
 

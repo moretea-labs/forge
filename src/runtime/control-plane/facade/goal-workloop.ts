@@ -463,8 +463,8 @@ export function startGoalWorkloop(
     forbiddenPaths: input.forbiddenPaths ?? [],
     checks: normalized.validCheckIds,
     driver: {
-      preferred: input.modeInput.requiresWorker === true ? 'codex_worker' : needsWorktree ? 'isolated_worktree' : 'direct_edit',
-      allowWorker: input.modeInput.requiresWorker === true,
+      preferred: input.modeInput.requiresWorker === true ? 'external_controller' : needsWorktree ? 'isolated_worktree' : 'direct_edit',
+      allowWorker: false,
       allowDirectEdit: input.modeInput.requiresWorker !== true && !needsWorktree,
     },
     worktreePolicy: {
@@ -484,8 +484,8 @@ export function startGoalWorkloop(
       confirmed: input.approvalConfirmed === true,
     },
     recoveryPolicy: {
-      allowSelfHealing: true,
-      maxInfrastructureRetries: 3,
+      allowSelfHealing: false,
+      maxInfrastructureRetries: 0,
       handoffOnAmbiguity: true,
     },
     requestedBy: input.requestedBy ?? 'chatgpt',
@@ -530,7 +530,7 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     });
   }
 
-  if (work.status === 'cancelled' || work.status === 'succeeded' || work.status === 'failed') {
+  if (work.status === 'cancelled' || work.status === 'completed' || work.status === 'failed') {
     return buildFacadeResult({
       status: 'blocked',
       summary: `WorkContract ${work.workId} is terminal (${work.status}); continue is not allowed.`,
@@ -586,7 +586,7 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
       ],
     });
     const updated = updateWorkContract(ctx.workStore, work.workId, {
-      status: 'waiting_for_review',
+      status: 'ready',
       handoffRefs: [handoff.id, ...work.handoffRefs],
     });
     appendWorkHandoffRef(ctx.workStore, work.workId, handoff.id);
@@ -901,13 +901,13 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
 
   // Weak refs, partial checks, invalid ids, and infrastructure issues never imply successful completion.
   if (completionEvidence.status === 'incomplete') {
-    const updated = updateWorkContract(ctx.workStore, work.workId, { status: 'waiting_for_review' });
+    const updated = updateWorkContract(ctx.workStore, work.workId, { status: 'ready' });
     return buildFacadeResult({
       status: 'blocked',
       summary: `Finalize result: waiting_for_review. ${completionEvidence.reasons.join(' ')}`,
       data: {
         work: summarizeWorkContract(updated),
-        finalStatus: 'waiting_for_review',
+        finalStatus: 'ready',
         infrastructureIssues: history.infrastructureIssues,
         invalidCheckIds: history.invalidCheckIds,
         validPasses: history.validPasses,
@@ -931,7 +931,7 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     });
   }
 
-  const updated = updateWorkContract(ctx.workStore, work.workId, { status: 'succeeded' });
+  const updated = updateWorkContract(ctx.workStore, work.workId, { status: 'completed' });
   if (updated.planId && updated.planStepId && ctx.planStore) {
     completePlanStepForWork(ctx.planStore, { planId: updated.planId, stepId: updated.planStepId, workId: updated.workId, succeeded: true, evidenceRefs: updated.evidenceRefs });
   }
@@ -940,7 +940,7 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     summary: `Finalize result: succeeded for ${work.workId}.`,
     data: {
       work: summarizeWorkContract(updated),
-      finalStatus: 'succeeded',
+      finalStatus: 'completed',
       validPasses: history.validPasses,
       hiddenFailure: false,
     },

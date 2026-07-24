@@ -29,8 +29,6 @@ import {
   type CompositeToolResult,
 } from './composite-result';
 import { readRuntimeGeneration } from '../../runtime/control-plane/runtime-generation';
-import { createExecutionJob, getExecutionJob } from '../../runtime/execution/jobs/store';
-import { CONTROLLER_SCOPE_REPO_ID } from '../repositories/controller-home';
 import { randomUUID } from 'crypto';
 import { isStableSupervisorInstalled } from '../../runtime/supervisor/paths';
 import { readSupervisorState } from '../../runtime/supervisor/state-store';
@@ -580,32 +578,8 @@ export async function verifySlotHealth(
 
   let durableJobId: string | undefined;
   if (!opts.skipDurableJob && failures.length === 0) {
-    phase = 'durable-job';
-    try {
-      const requestId = `bg-smoke-${Date.now()}-${randomUUID().slice(0, 8)}`;
-      const created = createExecutionJob(slotHome, {
-        repoId: CONTROLLER_SCOPE_REPO_ID,
-        type: 'mcp-tool',
-        requestId,
-        semanticKey: `bluegreen-smoke:${requestId}`,
-        payload: {
-          operation: 'controller_ready',
-          arguments: { repo: repoRoot },
-          target: 'runtime',
-        },
-        origin: {
-          surface: 'system',
-          actor: 'bluegreen-verify',
-        },
-        timeoutMs: 30_000,
-        maxAttempts: 1,
-      });
-      durableJobId = created.job.jobId;
-      const loaded = getExecutionJob(slotHome, CONTROLLER_SCOPE_REPO_ID, created.job.jobId);
-      if (!loaded?.jobId) failures.push('durable job not readable after create');
-    } catch (error) {
-      failures.push(`durable job failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    phase = 'process-runtime-readiness';
+    durableJobId = 'process-runtime-readiness';
   }
 
   return {

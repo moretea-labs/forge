@@ -16,6 +16,7 @@ import { campaignProgress, openCampaignCheckpoint } from './review';
 import { campaignSupervisorAdapter } from './supervisor';
 import { getCampaign, listActiveCampaigns, updateCampaign } from './store';
 import { assertCampaignOperationSupported, normalizeCampaignOperationName } from './normalize';
+import { createHandoffItem, createWorkContract, getWorkContract } from '../../control-plane/facade';
 
 const AGENT_OPERATIONS = new Set(['dispatch_task', 'launch_issue', 'dispatch_ready_tasks', 'retry_task_run', 'quick_agent_session']);
 const CAMPAIGN_CONTROL_OPERATIONS = new Set(['create_campaign', 'add_campaign_task', 'pause_campaign', 'resume_campaign', 'cancel_campaign', 'submit_campaign_review', 'accept_campaign', 'reconcile_campaign']);
@@ -288,6 +289,53 @@ function dispatchTask(controllerHome: string, campaign: Campaign, task: Campaign
     return false;
   }
   if (CAMPAIGN_CONTROL_OPERATIONS.has(execution.operation)) throw new Error(`CAMPAIGN_RECURSIVE_OPERATION_DENIED: ${execution.operation}`);
+  if (AGENT_OPERATIONS.has(execution.operation)) {
+    const workId = `campaign-${campaign.campaignId}-${task.taskId}`;
+    const store = { controllerHome, repoId: campaign.repoId };
+    const work = getWorkContract(store, workId) ?? createWorkContract(store, {
+      workId,
+      repoId: campaign.repoId,
+      mode: 'direct_control',
+      objective: task.objective || task.title,
+      acceptanceCriteria: campaign.goals.at(-1)?.acceptanceCriteria ?? [],
+      constraints: { requireHandoffOnAmbiguity: true, workspaceMode: campaign.workspace.mode === 'isolated' ? 'isolated' : 'current' },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'scheduler',
+      scopeSummary: `Migrated from Campaign ${campaign.campaignId} task ${task.taskId}.`,
+    });
+    const handoffId = `campaign-migration-${campaign.campaignId}-${task.taskId}`;
+    try {
+      createHandoffItem(store, {
+        id: handoffId,
+        repoId: campaign.repoId,
+        workId: work.workId,
+        title: `Campaign task migrated: ${task.title}`,
+        severity: 'ready_to_continue',
+        creationReason: 'ambiguous_outcome',
+        reason: 'Campaign-managed Agent dispatch was frozen during the SuperController migration.',
+        summary: `Continue migrated Campaign task ${task.taskId} through rh_work after claiming ${work.workId}.`,
+        currentState: { repoId: campaign.repoId, workId: work.workId, statusSummary: task.status, blockedBy: task.dependsOn },
+        attemptedActions: task.runId ? [`legacy Agent Run: ${task.runId}`] : [],
+        evidenceRefs: task.evidenceIds.map((evidenceId) => ({ evidenceId, title: 'Campaign evidence' })),
+        recommendedDecision: 'Claim the WorkContract and continue with an external SuperController.',
+        recommendedPrompt: `Claim Work ${work.workId} and continue the migrated Campaign task.`,
+        suggestedNextActions: [],
+      });
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.startsWith('handoff already exists:')) throw error;
+    }
+    task.status = 'blocked';
+    task.executionFinishedAt = now();
+    task.nextAttemptAt = undefined;
+    task.error = {
+      code: 'CAMPAIGN_AGENT_DISPATCH_DEPRECATED',
+      message: 'Campaign Agent dispatch is frozen. Claim the corresponding Work through rh_work and continue with an external SuperController.',
+      retryable: false,
+    };
+    return false;
+  }
   const executionArguments = withCampaignWorkspaceDefaults(campaign, execution.operation, execution.arguments);
   assertAutomatedOperationAllowed(execution.operation, executionArguments);
   const requestId = `${campaign.requestId}:task:${task.taskId}:attempt:${nextAttempt}`;
@@ -481,7 +529,102 @@ function campaignNeedsReconcile(campaign: Campaign, timestamp = Date.now()): boo
 
 const ACTIVE_CAMPAIGN_RECONCILE_INTERVAL_MS = Math.max(2_000, Number(process.env.REPO_HARNESS_ACTIVE_CAMPAIGN_RECONCILE_INTERVAL_MS ?? 5_000));
 
+/**
+ * Campaign is a historical view. Explicit reconciliation migrates unfinished
+ * tasks into the facade instead of dispatching any legacy operation.
+ */
+function migrateFrozenCampaign(controllerHome: string, repoId: string, campaignId: string): CampaignReconcileResult {
+  const before = getCampaign(controllerHome, repoId, campaignId);
+  if (before.pauseReason?.startsWith('Campaign automation frozen;')) {
+    return { campaignId, changed: false, dispatched: 0, checkpointsOpened: 0, status: before.status };
+  }
+  const migratable = before.tasks.filter((task) => !SUCCESS_TASK_STATUSES.has(task.status));
+  let migrated = 0;
+  for (const task of migratable) {
+    const store = { controllerHome, repoId };
+    const workId = `campaign-${before.campaignId}-${task.taskId}`;
+    const terminalFailure = ['failed', 'failed_no_effect', 'cancelled'].includes(task.status);
+    const work = getWorkContract(store, workId) ?? createWorkContract(store, {
+      workId,
+      repoId,
+      mode: 'direct_control',
+      objective: task.objective || task.title,
+      acceptanceCriteria: before.goals.at(-1)?.acceptanceCriteria ?? [],
+      constraints: {
+        requireHandoffOnAmbiguity: true,
+        workspaceMode: before.workspace.mode === 'isolated' ? 'isolated' : 'current',
+      },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      status: terminalFailure ? 'failed' : task.status === 'waiting_review' ? 'ready' : 'blocked',
+      requestedBy: 'system',
+      scopeSummary: `Migrated from frozen Campaign ${before.campaignId} task ${task.taskId}.`,
+    });
+    const handoffId = `campaign-migration-${before.campaignId}-${task.taskId}`;
+    try {
+      createHandoffItem(store, {
+        id: handoffId,
+        repoId,
+        workId: work.workId,
+        title: `Campaign task migrated: ${task.title}`,
+        severity: terminalFailure ? 'failed' : task.status === 'waiting_review' ? 'ready_to_continue' : 'blocked',
+        creationReason: 'ambiguous_outcome',
+        reason: 'Campaign automation is frozen; an external SuperController must inspect and continue this WorkContract.',
+        summary: `Campaign task ${task.taskId} was migrated without dispatching a legacy Job.`,
+        currentState: {
+          repoId,
+          workId: work.workId,
+          statusSummary: task.status,
+          blockedBy: task.dependsOn,
+          checks: task.jobId ? [{ checkId: task.jobId, ok: false, summary: 'Legacy Campaign Job reference retained for inspection.' }] : undefined,
+        },
+        attemptedActions: [
+          ...(task.jobId ? [`legacy ExecutionJob: ${task.jobId}`] : []),
+          ...(task.runId ? [`legacy Agent Run: ${task.runId}`] : []),
+        ],
+        evidenceRefs: task.evidenceIds.map((evidenceId) => ({ evidenceId, title: 'Campaign evidence' })),
+        recommendedDecision: 'Claim the WorkContract and inspect retained evidence before continuation.',
+        recommendedPrompt: `Claim Work ${work.workId}, inspect the Campaign handoff, and continue through the repository MCP facade.`,
+        suggestedNextActions: [],
+      });
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes('already exists')) throw error;
+    }
+    migrated += 1;
+  }
+  const updated = updateCampaign(controllerHome, repoId, campaignId, `migration:${campaignId}:${before.revision}`, (campaign) => {
+    for (const task of campaign.tasks) {
+      if (SUCCESS_TASK_STATUSES.has(task.status)) continue;
+      task.status = 'blocked';
+      task.nextAttemptAt = undefined;
+      task.executionFinishedAt ??= now();
+      task.error = {
+        code: 'CAMPAIGN_MIGRATED_TO_WORK',
+        message: 'Campaign automation is frozen; continue through the linked WorkContract and HandoffItem.',
+        retryable: false,
+      };
+    }
+    campaign.status = 'paused';
+    campaign.pauseReason = `Campaign automation frozen; ${migrated} task(s) migrated to WorkContracts.`;
+    campaign.nextReconcileAt = undefined;
+    return campaign;
+  }, {
+    eventType: 'campaign_migrated_to_work',
+    eventData: { migrated },
+    wakeScheduler: false,
+  });
+  return { campaignId, changed: updated.revision !== before.revision, dispatched: 0, checkpointsOpened: 0, status: updated.status };
+}
+
 export function reconcileCampaign(controllerHome: string, repoId: string, campaignId: string): CampaignReconcileResult {
+  return migrateFrozenCampaign(controllerHome, repoId, campaignId);
+}
+
+/** Historical dispatch implementation retained only for migration archaeology. */
+function legacyReconcileCampaign(controllerHome: string, repoId: string, campaignId: string): CampaignReconcileResult {
+  throw new Error(`CAMPAIGN_RECONCILE_RETIRED: ${campaignId}. Migrate frozen tasks through reconcileCampaign instead.`);
+  /* Retired automation implementation retained in source history only.
   let dispatched = 0;
   let checkpointsOpened = 0;
   let changed = false;
@@ -532,10 +675,6 @@ export function reconcileCampaign(controllerHome: string, repoId: string, campai
     checkpointsOpened += openFinalCheckpointIfReady(campaign);
     if (checkpointsOpened > 0) changed = true;
 
-    for (const checkpoint of campaign.checkpoints.filter((entry) => entry.status === 'open')) {
-      if (triggerSupervisor(controllerHome, campaign, checkpoint)) changed = true;
-    }
-
     setDerivedCampaignStatus(campaign);
     const active = campaign.tasks.some((task) => ACTIVE_TASK_STATUSES.has(task.status));
     const retryTimes = campaign.tasks
@@ -560,6 +699,7 @@ export function reconcileCampaign(controllerHome: string, repoId: string, campai
     wakeScheduler: dispatched > 0,
   });
   return { campaignId, changed: changed || updated.revision !== before.revision, dispatched, checkpointsOpened, status: updated.status };
+  */
 }
 
 export interface TickCampaignsOptions {
@@ -567,25 +707,10 @@ export interface TickCampaignsOptions {
 }
 
 export function tickCampaigns(controllerHome: string, repoIds: string[], options: TickCampaignsOptions = {}): CampaignReconcileResult[] {
-  const maximum = Math.max(1, Math.min(options.maxCampaigns ?? 64, 1_000));
-  const campaigns = repoIds
-    .flatMap((repoId) => listActiveCampaigns(controllerHome, repoId, maximum))
-    .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt) || left.campaignId.localeCompare(right.campaignId))
-    .slice(0, maximum);
-  const results: CampaignReconcileResult[] = [];
-  for (const campaign of campaigns) {
-    try {
-      results.push(reconcileCampaign(controllerHome, campaign.repoId, campaign.campaignId));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.startsWith('LOCK_HELD:')) continue;
-      try {
-        updateCampaign(controllerHome, campaign.repoId, campaign.campaignId, `reconcile-error:${campaign.campaignId}:${campaign.revision}`, (current) => {
-          current.nextReconcileAt = new Date(Date.now() + 5_000).toISOString();
-          return current;
-        }, { eventType: 'campaign_reconcile_failed', eventData: { message }, wakeScheduler: false });
-      } catch { /* preserve the original campaign for the next bounded tick */ }
-    }
-  }
-  return results;
+  // Campaign is now a historical/migration view. Automatic reconcile, retry,
+  // dispatch, and supervisor triggering are owned by external SuperControllers.
+  void controllerHome;
+  void repoIds;
+  void options;
+  return [];
 }

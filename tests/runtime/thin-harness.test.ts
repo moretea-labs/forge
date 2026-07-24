@@ -207,6 +207,11 @@ describe('Thin Harness fast execution', () => {
     expect(read.durableSideEffects.workerSpawnCount).toBe(0);
     expect(read.durableSideEffects.projectionUpdateCount).toBe(0);
     expect(read.receipt?.mode).toBe('fast');
+    expect(read.receipt?.observability).toMatchObject({
+      duplicate_event_count: 0,
+      automatic_retry_count: 0,
+      read_path_write_count: 0,
+    });
     expect(executionJobCount(controllerHome, repository.repoId)).toBe(beforeJobs);
     expect(localJobCount(repoRoot)).toBe(beforeLocal);
 

@@ -21,15 +21,11 @@ import type { ExecutionWorkerLifecycle } from '../../execution/jobs/types';
 import { releaseExecutionLeases } from '../../resources/leases/store';
 import { RepoActorRegistry } from '../repo-actor/registry';
 import { reconcileExecutionJobsAsync } from './reconciliation';
-import { tickSchedules } from '../../workflow/schedules/engine';
-import { tickPortfolioWorkflows } from '../../workflow/portfolio/engine';
-import { tickCampaigns } from '../../workflow/campaigns/engine';
-import { tickGoalLoopsForController } from '../goal-loop';
 import { readJsonFile, writeJsonAtomic } from '../../shared/json-files';
 import { isProcessAlive, terminateProcessTree } from '../../shared/process-tree';
 import { readSchedulerWakeSignal, waitForSchedulerWakeSignal } from './wake-signal';
 import { cleanupControllerRuntimeState } from '../runtime-cleanup';
-import { rebuildRepositoryProjection } from '../../projections/materialized-view';
+import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { sampleRepositoryGitStatusForRepositories } from '../../projections/git-status-sampler';
 
 const DARWIN_MEMORY_SAMPLE_TTL_MS = 5_000;
@@ -170,10 +166,6 @@ export class GlobalScheduler {
   private readonly runtimeSourceRoot?: string;
   private readonly workerEntrypoint?: string;
   private readonly ownerEpoch?: string;
-  private lastScheduleTick = 0;
-  private lastPortfolioTick = 0;
-  private lastCampaignTick = 0;
-  private lastGoalLoopTick = 0;
   private lastReconcile = 0;
   private lastPersistedAt = 0;
   private readonly lastRepoDispatch = new Map<string, number>();
@@ -302,7 +294,7 @@ export class GlobalScheduler {
       const mergedLifecycle = { ...currentLifecycle, ...diagnosticLifecycle };
       if (['succeeded', 'failed', 'timed_out', 'cancelled', 'orphaned', 'stale', 'human_attention_required'].includes(current.status)) {
         updateExecutionJob(this.controllerHome, repoId, jobId, (latest) => ({ ...latest, workerLifecycle: mergedLifecycle }));
-        try { rebuildRepositoryProjection(this.controllerHome, repoId); } catch { /* the next scheduler/status read can retry */ }
+        markRepositoryProjectionDirty(this.controllerHome, repoId, `worker:${jobId}:terminal`);
         return;
       }
 
@@ -318,7 +310,7 @@ export class GlobalScheduler {
         const recheckedMerged = { ...recheckedLifecycle, ...diagnosticLifecycle };
         if (['succeeded', 'failed', 'timed_out', 'cancelled', 'orphaned', 'stale', 'human_attention_required'].includes(rechecked.status)) {
           updateExecutionJob(this.controllerHome, repoId, jobId, (latest) => ({ ...latest, workerLifecycle: recheckedMerged }));
-          try { rebuildRepositoryProjection(this.controllerHome, repoId); } catch { /* the next scheduler/status read can retry */ }
+          markRepositoryProjectionDirty(this.controllerHome, repoId, `worker:${jobId}:terminal`);
           return;
         }
       }
@@ -343,15 +335,14 @@ export class GlobalScheduler {
       const startupSummary = startupError ? ` Startup error: ${startupError}.` : '';
       const message = `Execution Worker ${mergedLifecycle.executable} exited before completion (cwd ${mergedLifecycle.cwd}, exit code ${exitCode ?? 'unknown'}${signal ? `, signal ${signal}` : ''}).${startupSummary}${stderrSummary}`;
       releaseExecutionLeases(this.controllerHome, repoId, jobId, current.leaseRefs);
-      const retryable = current.attempt < current.maxAttempts;
-      transitionExecutionJob(this.controllerHome, repoId, jobId, retryable ? 'queued' : 'failed', {
+      transitionExecutionJob(this.controllerHome, repoId, jobId, 'human_attention_required', {
         workerPid: undefined,
         heartbeatAt: undefined,
         leaseRefs: [],
         workerLifecycle: mergedLifecycle,
-        error: { code: startupError ? 'WORKER_START_FAILED' : 'WORKER_EXITED', message, retryable, details },
+        error: { code: startupError ? 'TRANSPORT_FAILURE' : 'PROCESS_FAILURE', message, retryable: false, details },
       });
-      try { rebuildRepositoryProjection(this.controllerHome, repoId); } catch { /* the next scheduler/status read can retry */ }
+      markRepositoryProjectionDirty(this.controllerHome, repoId, `worker:${jobId}:attention`);
     } catch { /* the Job may have been finalized by the Worker or reconciliation */ }
   }
 
@@ -600,14 +591,8 @@ export class GlobalScheduler {
         // Another scheduler or a terminal transition won the Job-local race.
       }
     }
-    if (now - this.lastScheduleTick >= 30_000) {
-      await tickSchedules(this.controllerHome, repositories.map((repo) => repo.repoId));
-      this.lastScheduleTick = now;
-    }
-    if (now - this.lastPortfolioTick >= 1_000) {
-      tickPortfolioWorkflows(this.controllerHome);
-      this.lastPortfolioTick = now;
-    }
+    // Schedule and Portfolio execution are external-Controller owned. The
+    // Scheduler retains no semantic ticks that could create ExecutionJobs.
     let activeJobs = 0;
     const pendingSpawns: Array<{ repoId: string; jobId: string }> = [];
     try {
@@ -719,24 +704,9 @@ export class GlobalScheduler {
     for (const pending of pendingSpawns) {
       this.spawnWorker(pending.repoId, pending.jobId);
     }
-    // Dispatch is latency-sensitive. Run repository workflow maintenance only
-    // after queued Jobs have had a chance to claim capacity. Campaign and Goal
-    // state transitions still wake the scheduler immediately when they enqueue work.
-    if (now - this.lastCampaignTick >= 1_000) {
-      tickCampaigns(this.controllerHome, repositories.map((repo) => repo.repoId));
-      this.lastCampaignTick = now;
-    }
-    if (now - this.lastGoalLoopTick >= 5_000) {
-      try {
-        tickGoalLoopsForController(
-          this.controllerHome,
-          repositories.map((repo) => repo.repoId),
-        );
-      } catch (error) {
-        console.error('[repo-harness goal-loop] tick failed:', error);
-      }
-      this.lastGoalLoopTick = now;
-    }
+    // Semantic Campaign/Goal progression belongs to an external
+    // SuperController. The Scheduler only dispatches explicit deterministic
+    // Kernel jobs; it never wakes a model or creates a follow-up objective.
     this.persistState();
     return { activeJobs };
   }

@@ -63,7 +63,6 @@ export type AgentProgressPhase =
 
 export interface AgentJobProgress {
   phase: AgentProgressPhase;
-  percent: number;
   currentActivity: string;
   lastActivityAt: string;
   activityCount: number;
@@ -71,6 +70,11 @@ export interface AgentJobProgress {
 
 export interface AgentJobEvent {
   at: string;
+  eventId?: string;
+  requestId?: string;
+  workId?: string;
+  commandId?: string;
+  executionId?: string;
   type:
     | "run_created"
     | "run_started"

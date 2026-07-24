@@ -8,6 +8,7 @@ import {
   type FastExecutionReceipt,
   type FastOutcome,
   type LatencyBreakdown,
+  type RuntimeObservability,
 } from './types';
 
 export interface CreateFastReceiptInput {
@@ -25,6 +26,8 @@ export interface CreateFastReceiptInput {
   outputSummary?: string;
   artifactRefs?: string[];
   latency?: LatencyBreakdown;
+  /** Internal measurement used for receipt observability even when latency detail is not returned. */
+  observabilityLatency?: LatencyBreakdown;
   stepCount?: number;
   laneCount?: number;
   reasons?: string[];
@@ -33,6 +36,22 @@ export interface CreateFastReceiptInput {
   fencingToken?: number;
   baseHead?: string | null;
   inputHash?: string;
+}
+
+function observabilityFor(input: CreateFastReceiptInput): RuntimeObservability {
+  const latency = input.observabilityLatency ?? input.latency;
+  const commandRuntimeMs = Math.max(0, latency?.executionMs ?? 0);
+  const controllerWaitMs = Math.max(0, latency?.schedulerWaitMs ?? 0);
+  return {
+    framework_overhead_ms: Math.max(0, Math.round((input.durationMs - commandRuntimeMs - controllerWaitMs) * 100) / 100),
+    command_runtime_ms: Math.round(commandRuntimeMs * 100) / 100,
+    controller_wait_ms: Math.round(controllerWaitMs * 100) / 100,
+    // A Fast receipt is the single durable command event for its executionId.
+    duplicate_event_count: 0,
+    automatic_retry_count: 0,
+    // Read operations do not refresh projections or write runtime state.
+    read_path_write_count: 0,
+  };
 }
 
 export interface WriteReceiptResult {
@@ -84,6 +103,7 @@ export function writeFastReceipt(controllerHome: string, input: CreateFastReceip
     outputSummary: boundSummary(input.outputSummary),
     artifactRefs: input.artifactRefs?.slice(0, 20),
     latency: input.latency,
+    observability: observabilityFor(input),
     stepCount: input.stepCount,
     laneCount: input.laneCount,
     reasons: input.reasons?.slice(0, 20),

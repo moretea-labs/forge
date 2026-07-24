@@ -67,7 +67,6 @@ function writeRun(
     ...(status === "succeeded" ? { finishedAt: now } : { finishedAt: now, error: "agent timed out" }),
     progress: {
       phase: status,
-      percent: 100,
       currentActivity: status === "succeeded" ? "completed" : "agent timed out",
       lastActivityAt: now,
       activityCount: 3,

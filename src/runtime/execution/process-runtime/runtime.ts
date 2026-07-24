@@ -54,6 +54,7 @@ import {
   type ProcessResourceClaim,
   type SpawnManagedProcessInput,
   type WaitProcessOptions,
+  processContractStatus,
 } from './types';
 import type {
   ProcessCommandDescriptor,
@@ -638,7 +639,10 @@ function recordToHandle(
     ?? ['succeeded', 'failed', 'timed_out', 'cancelled', 'orphaned', 'completed_unknown'].includes(record.status);
   return {
     processId: record.processId,
+    workId: record.workId,
+    commandId: record.commandId ?? record.processId,
     status: record.status,
+    contractStatus: processContractStatus(record.status),
     route: record.route,
     pid: record.identity?.pid,
     startedAt: record.startedAt,
@@ -737,6 +741,8 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     processId,
     repoId: input.repoId,
     checkoutId: input.checkoutId,
+    workId: input.workId,
+    commandId: input.commandId?.trim() || processId,
     controllerHome: input.controllerHome,
     status: 'starting',
     route: input.returnHandleImmediately || interactiveWaitMs === 0 ? 'managed' : 'direct',

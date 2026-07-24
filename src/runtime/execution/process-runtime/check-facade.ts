@@ -3,7 +3,7 @@
  *
  * Short checks complete via Process Runtime and return results directly.
  * Long checks return a Managed Process handle for the same OS process.
- * Only multi-phase / release / recovery checks remain Durable Workflow.
+ * Multi-phase and release checks require explicit external Controller handling.
  */
 
 import {
@@ -28,6 +28,8 @@ export interface RunCheckFacadeInput {
   timeoutMs?: number;
   interactiveWaitMs?: number;
   requestId?: string;
+  workId?: string;
+  commandId?: string;
   /** Force durable workflow (release / multi-phase). */
   forceDurable?: boolean;
   signal?: AbortSignal;
@@ -39,7 +41,7 @@ export interface RunCheckFacadeResult {
   check?: ControllerCheck;
   /** Present when mode is direct or managed. */
   process?: ProcessHandle;
-  /** Present when mode is durable — caller must create ExecutionJob. */
+  /** Present when mode is durable — Kernel must not create a compatibility Job. */
   durable?: {
     reason: string;
     suggestedOperation: string;
@@ -59,7 +61,7 @@ const DURABLE_CHECK_ID = /(?:^|:)(?:release|migration|integrate|public-export|de
 const SELF_HOSTING_CHECK_ID = /(?:^|:)(?:check:controller-v8|package:check:controller-v8|controller-v8)(?:$|:)/i;
 
 /**
- * True when a check must stay on Durable Workflow (multi-phase / release).
+ * True when a check requires external Controller handling (multi-phase / release).
  * Ordinary typecheck / lint / package test / focused validation stay on Process Runtime.
  * Self-hosting controller-v8 is NOT durable via run_check — it deadlocks on nested heavy-check.
  */
@@ -113,7 +115,7 @@ export async function runCheckViaProcessRuntime(
       check,
       durable: {
         reason: 'multi_phase_or_release_check_requires_durable_workflow',
-        suggestedOperation: 'run_check via Durable Work (ExecutionJob)',
+        suggestedOperation: 'Claim the related WorkContract and run this check through an external Controller.',
       },
       durableSideEffects: emptyEffects,
     };
@@ -136,6 +138,8 @@ export async function runCheckViaProcessRuntime(
     controllerHome: input.controllerHome,
     repoId: input.repoId,
     checkoutId: input.checkoutId,
+    workId: input.workId,
+    commandId: input.commandId,
     command: {
       kind: 'argv',
       executable: check.command[0],
@@ -150,6 +154,7 @@ export async function runCheckViaProcessRuntime(
       toolName: 'run_check',
       checkId: input.checkId,
       requestId: input.requestId,
+      correlationId: input.workId,
     },
     signal: input.signal,
   });

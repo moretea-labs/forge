@@ -67,7 +67,7 @@ function writeRunningRun(root: string, issueId: string): string {
     createdAt: now,
     startedAt: now,
     lastHeartbeatAt: now,
-    progress: { phase: "editing", percent: 60, currentActivity: "Editing implementation", lastActivityAt: now, activityCount: 3 },
+    progress: { phase: "editing", currentActivity: "Editing implementation", lastActivityAt: now, activityCount: 3 },
   }, null, 2)}\n`);
   return runId;
 }

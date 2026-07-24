@@ -44,7 +44,7 @@ function writeRun(
   issueId: string,
   taskId: string,
   runId: string,
-  percent: number,
+  activityVersion: number,
   scope: { executionClass: "read_only" | "low_risk_change" | "medium_risk_change" | "high_risk_change" | "destructive_change"; allowedPaths: string[] } = { executionClass: "low_risk_change", allowedPaths: [] },
 ): void {
   const dir = join(root, ".ai/harness/jobs", runId);
@@ -76,8 +76,7 @@ function writeRun(
     workerPid: process.pid,
     progress: {
       phase: "editing",
-      percent,
-      currentActivity: `working at ${percent}%`,
+      currentActivity: `working activity ${activityVersion}`,
       lastActivityAt: now,
       activityCount: 1,
     },
@@ -373,7 +372,7 @@ describe("Controller v7 compatibility on the V8 execution bridge", () => {
     expect(dependency.supersededMigrations).toEqual([]);
   });
 
-  test("progress follows live Run evidence instead of fixed lifecycle percentages", () => {
+  test("progress reports current Run activity without lifecycle percentages", () => {
     const root = repo();
     const issue = createIssue(root, {
       title: "Dynamic progress",
@@ -382,10 +381,11 @@ describe("Controller v7 compatibility on the V8 execution bridge", () => {
     const runId = "RUN-dynamic-progress";
     writeRun(root, issue.id, "T1", runId, 20);
     updateTask(root, issue.id, "T1", { status: "running", runId });
-    const first = getProjectProgress(root).issues.find((entry) => entry.id === issue.id)!.tasks[0]!.percent;
+    const first = getProjectProgress(root).issues.find((entry) => entry.id === issue.id)!.tasks[0]!;
     writeRun(root, issue.id, "T1", runId, 80);
-    const second = getProjectProgress(root).issues.find((entry) => entry.id === issue.id)!.tasks[0]!.percent;
-    expect(second).toBeGreaterThan(first);
+    const second = getProjectProgress(root).issues.find((entry) => entry.id === issue.id)!.tasks[0]!;
+    expect(first.currentActivity).not.toBe(second.currentActivity);
+    expect(second.completion.execution.state).toBe("in_progress");
   });
   test("only overlapping active write scopes block concurrent launch", () => {
     const root = repo();
@@ -558,7 +558,6 @@ describe("Controller v7 compatibility on the V8 execution bridge", () => {
       createdAt: now,
       progress: {
         phase: "starting",
-        percent: 2,
         currentActivity: "Accepted but never launched",
         lastActivityAt: now,
         activityCount: 0,
@@ -652,7 +651,6 @@ describe("Controller v7 compatibility on the V8 execution bridge", () => {
       lastHeartbeatAt: now,
       progress: {
         phase: "finalizing",
-        percent: 96,
         currentActivity: "Agent implementation finished; automatic integration is finalizing",
         lastActivityAt: now,
         activityCount: 1,
@@ -736,7 +734,6 @@ describe("Controller v7 compatibility on the V8 execution bridge", () => {
       autoIntegrate: true,
       progress: {
         phase: "finalizing",
-        percent: 96,
         currentActivity: "finalizing",
         lastActivityAt: now,
         activityCount: 1,

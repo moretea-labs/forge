@@ -101,7 +101,18 @@ export function emptyWorkContractStore(updatedAt: string): WorkContractStore {
 }
 
 export function readWorkContractStore(options: WorkContractStoreOptions): WorkContractStore {
-  return readJsonFile<WorkContractStore>(workContractStorePath(options), emptyWorkContractStore(nowIso(options)));
+  const store = readJsonFile<WorkContractStore>(workContractStorePath(options), emptyWorkContractStore(nowIso(options)));
+  // Read legacy facade records without retaining the old state machine.
+  return {
+    ...store,
+    contracts: store.contracts.map((contract) => ({
+      ...contract,
+      status: ({ pending: 'open', waiting_for_review: 'ready', succeeded: 'completed' } as Record<string, WorkContractStatus>)[String(contract.status)] ?? contract.status,
+      driver: (contract.driver as unknown as { preferred?: string } | undefined)?.preferred === 'codex_worker'
+        ? { ...contract.driver, preferred: 'external_controller', allowWorker: false }
+        : contract.driver,
+    })),
+  };
 }
 
 export function writeWorkContractStore(options: WorkContractStoreOptions, store: WorkContractStore): WorkContractStore {
@@ -130,7 +141,7 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
     objective: input.objective.slice(0, 2_000),
     acceptanceCriteria: (input.acceptanceCriteria ?? []).slice(0, 20).map((item) => item.slice(0, 500)),
     constraints: input.constraints ?? { requireHandoffOnAmbiguity: true },
-    status: input.status ?? 'pending',
+    status: input.status ?? 'open',
     createdAt: at,
     updatedAt: input.updatedAt ?? at,
     issueId: input.issueId,
@@ -154,8 +165,8 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
     },
     approvalPolicy: input.approvalPolicy ?? { required: false, reasons: [], confirmed: false },
     recoveryPolicy: input.recoveryPolicy ?? {
-      allowSelfHealing: true,
-      maxInfrastructureRetries: 3,
+      allowSelfHealing: false,
+      maxInfrastructureRetries: 0,
       handoffOnAmbiguity: true,
     },
     requestedBy: input.requestedBy ?? 'chatgpt',
@@ -241,7 +252,7 @@ export function reconcileStaleWorkContracts(
     };
     return {
       ...contract,
-      status: 'waiting_for_review' as const,
+      status: 'ready' as const,
       updatedAt: now,
       evidenceRefs: [evidence, ...contract.evidenceRefs].slice(0, contract.evidencePolicy.maxEvidenceRefs),
       suggestedNextActions: [inspectAction, ...contract.suggestedNextActions]

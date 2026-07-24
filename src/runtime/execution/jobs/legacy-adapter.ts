@@ -118,7 +118,7 @@ export function dispatchLegacyLocalJob(repoRoot: string, legacyJob: LocalBridgeJ
     },
     resourceClaims: claims(legacyJob, repository.repoId, repository.activeCheckoutId),
     timeoutMs: settlementTimeoutMs,
-    maxAttempts: agentDelegation ? 3 : 2,
+    maxAttempts: 1,
   });
   const daemon = ensureControllerDaemon(controllerHome);
   return { controllerHome, repository, executionJob: created.job, deduplicated: created.deduplicated, daemon };

@@ -30,11 +30,11 @@ function fixture() {
     allowedPaths: ['src/runtime/control-plane/facade/**'],
     forbiddenPaths: ['.env'],
     checks: ['package:check:type'],
-    driver: { preferred: 'codex_worker', allowWorker: true, allowDirectEdit: false },
+    driver: { preferred: 'external_controller', allowWorker: false, allowDirectEdit: false },
     worktreePolicy: { required: true },
     evidencePolicy: { defaultDetailLevel: 'summary', allowRawOptIn: true, maxEvidenceRefs: 20 },
     approvalPolicy: { required: false, reasons: [], confirmed: false },
-    recoveryPolicy: { allowSelfHealing: true, maxInfrastructureRetries: 3, handoffOnAmbiguity: true },
+    recoveryPolicy: { allowSelfHealing: false, maxInfrastructureRetries: 0, handoffOnAmbiguity: true },
     requestedBy: 'chatgpt',
   });
   return {
@@ -66,7 +66,7 @@ describe('codex cerebellum delegation', () => {
     expect(pack.target).toBe('codex');
   });
 
-  test('grok target prepares bounded request packet without direct execution or finalize', () => {
+  test('delegate is deprecated and read-only for grok', () => {
     const { ctx, work } = fixture();
     const result = delegateToCodexCerebellum(ctx, {
       workId: work.workId,
@@ -74,16 +74,15 @@ describe('codex cerebellum delegation', () => {
       target: 'grok',
     });
     expect(result.status).toBe('blocked');
-    expect((result.data as { target: string; directExecutionAvailable: boolean; canFinalize: boolean }).target).toBe('grok');
-    expect((result.data as { directExecutionAvailable: boolean }).directExecutionAvailable).toBe(false);
+    expect(result.status).toBe('blocked');
+    expect((result.data as { target: string; deprecated: boolean; canFinalize: boolean }).target).toBe('grok');
+    expect((result.data as { deprecated: boolean }).deprecated).toBe(true);
     expect((result.data as { canFinalize: boolean }).canFinalize).toBe(false);
-    expect((result.data as { isAcceptanceFailure: boolean }).isAcceptanceFailure).toBe(false);
-    expect((result.data as { grokDelegateRequest: { requestId: string; mode: string } }).grokDelegateRequest.mode)
-      .toBe('bounded_handoff_request');
-    expect(listHandoffItems(ctx.handoffStore).length).toBe(1);
+    expect(listHandoffItems(ctx.handoffStore).length).toBe(0);
+    expect(getWorkContract(ctx.workStore, work.workId)?.status).toBe('open');
   });
 
-  test('codex unavailable creates handoff/recovery suggestion and is not acceptance failure', () => {
+  test('delegate ignores availability and does not mutate work', () => {
     const { ctx, work } = fixture();
     const result = delegateToCodexCerebellum(ctx, {
       workId: work.workId,
@@ -92,14 +91,13 @@ describe('codex cerebellum delegation', () => {
     });
 
     expect(result.status).toBe('blocked');
-    expect((result.data as { isAcceptanceFailure: boolean; isInfrastructureIssue: boolean }).isAcceptanceFailure).toBe(false);
-    expect((result.data as { isInfrastructureIssue: boolean }).isInfrastructureIssue).toBe(true);
+    expect((result.data as { deprecated: boolean }).deprecated).toBe(true);
     expect((result.data as { canFinalize: boolean }).canFinalize).toBe(false);
-    expect(listHandoffItems(ctx.handoffStore).length).toBe(1);
-    expect(getWorkContract(ctx.workStore, work.workId)?.status).toBe('blocked');
+    expect(listHandoffItems(ctx.handoffStore).length).toBe(0);
+    expect(getWorkContract(ctx.workStore, work.workId)?.status).toBe('open');
   });
 
-  test('uncertain codex output creates waiting_for_review handoff and cannot finalize', () => {
+  test('delegate ignores worker output and cannot finalize', () => {
     const { ctx, work } = fixture();
     const result = delegateToCodexCerebellum(ctx, {
       workId: work.workId,
@@ -114,32 +112,13 @@ describe('codex cerebellum delegation', () => {
     });
 
     expect(result.status).toBe('blocked');
-    expect((result.data as { canFinalize: boolean; uncertain: boolean }).canFinalize).toBe(false);
-    expect((result.data as { uncertain: boolean }).uncertain).toBe(true);
-    expect(getWorkContract(ctx.workStore, work.workId)?.status).toBe('waiting_for_review');
-    expect(listHandoffItems(ctx.handoffStore).length).toBe(1);
+    expect((result.data as { canFinalize: boolean; workerOutputIgnored: boolean }).canFinalize).toBe(false);
+    expect((result.data as { workerOutputIgnored: boolean }).workerOutputIgnored).toBe(true);
+    expect(getWorkContract(ctx.workStore, work.workId)?.status).toBe('open');
+    expect(listHandoffItems(ctx.handoffStore).length).toBe(0);
   });
 
-  test('codex output without a patch remains waiting_for_review and does not create worker ownership', () => {
-    const { ctx, work } = fixture();
-    const result = delegateToCodexCerebellum(ctx, {
-      workId: work.workId,
-      objective: work.objective,
-      codexAvailable: true,
-      workerOutput: {
-        summary: 'Investigation only',
-        evidenceSummary: 'No implementation output was produced',
-      },
-    });
-
-    expect(result.status).toBe('blocked');
-    expect((result.data as { outputs: { patchProposal: { present: boolean } } }).outputs.patchProposal.present).toBe(false);
-    const contract = getWorkContract(ctx.workStore, work.workId);
-    expect(contract?.status).toBe('waiting_for_review');
-    expect(contract?.workerRef).toBeUndefined();
-  });
-
-  test('successful codex output lands as evidence and suggested actions without finalize', () => {
+  test('delegate keeps successful-looking output outside the Kernel', () => {
     const { ctx, work } = fixture();
     const result = delegateToCodexCerebellum(ctx, {
       workId: work.workId,
@@ -152,13 +131,11 @@ describe('codex cerebellum delegation', () => {
       },
     });
 
-    expect(result.status).toBe('ok');
+    expect(result.status).toBe('blocked');
     expect((result.data as { canFinalize: boolean }).canFinalize).toBe(false);
-    expect((result.data as { finalizeBlockedReason: string }).finalizeBlockedReason).toContain('cannot finalize');
-    const outputs = (result.data as { outputs: { evidenceArtifact: unknown; patchProposal: { present: boolean } } }).outputs;
-    expect(outputs.evidenceArtifact).toBeTruthy();
-    expect(outputs.patchProposal.present).toBe(true);
-    expect(result.suggestedNextActions.every((action) => action.operation !== 'finalize' || action.tool === 'rh_work')).toBe(true);
+    expect((result.data as { workerOutputIgnored: boolean }).workerOutputIgnored).toBe(true);
+    expect(result.suggestedNextActions.map((action) => action.operation)).toEqual(['controller_claim', 'launcher_start']);
     expect(getWorkContract(ctx.workStore, work.workId)?.workerRef).toBeUndefined();
+    expect(listHandoffItems(ctx.handoffStore).length).toBe(0);
   });
 });

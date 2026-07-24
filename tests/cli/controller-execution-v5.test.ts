@@ -78,7 +78,7 @@ function writeFailedRun(root: string, issueId: string, taskId: string): string {
     startedAt: now,
     finishedAt: now,
     error: "agent timed out",
-    progress: { phase: "failed", percent: 100, currentActivity: "agent timed out", lastActivityAt: now, activityCount: 4 },
+    progress: { phase: "failed", currentActivity: "agent timed out", lastActivityAt: now, activityCount: 4 },
   }, null, 2)}\n`);
   return runId;
 }
@@ -162,7 +162,6 @@ describe("Controller V5 execution and closure", () => {
     const taskProgress = progress.issues[0].tasks[0];
     expect(taskProgress.completion.totalGates).toBe(3);
     expect(taskProgress.completion.completedGates).toBe(0);
-    expect(taskProgress.percent).toBe(0);
     expect(taskProgress.completion.summary).toBe("0/3 applicable evidence gates complete (low_risk_change)");
   });
 

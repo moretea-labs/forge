@@ -176,7 +176,11 @@ import {
   supersedePlanContract,
   verifyGoalWorkloop,
   type FacadeTool,
+  claimControllerSession,
+  getControllerSession,
+  releaseControllerSession,
 } from '../../control-plane/facade';
+import { launchSuperController } from '../../control-plane/launcher/thin-launcher';
 import {
   executorDispatch,
   executorRoutePreview,
@@ -232,7 +236,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
   }),
   definition('rh_inbox', 'Preferred ChatGPT facade: pending handoff decisions only (not logs).', {
     repo_id: repoId,
-    operation: { type: 'string', enum: ['list', 'get', 'ack', 'resolve', 'dismiss', 'create'], description: 'Defaults to list (pending).' },
+    operation: { type: 'string', enum: ['list', 'get', 'ack', 'accept', 'resolve', 'dismiss', 'create'], description: 'Defaults to list (pending).' },
     handoff_id: { type: 'string' },
     work_id: { type: 'string' },
     title: { type: 'string' },
@@ -252,11 +256,18 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     work_id: { type: 'string' },
     detail_level: { type: 'string', enum: ['summary', 'detail', 'raw'], description: 'Defaults to summary; raw is still bounded.' },
   }),
-  definition('rh_work', 'Preferred ChatGPT facade: bounded planning, direct control, goal workloop, verification, repair, and small-brain delegate (codex/grok/claude).', {
+  definition('rh_work', 'Preferred ChatGPT facade: bounded planning, direct control, controller ownership, and external SuperController launch.', {
     repo_id: repoId,
-    operation: { type: 'string', enum: ['start', 'continue', 'verify', 'repair', 'finalize', 'stop', 'delegate', 'plan_create', 'plan_get', 'plan_list', 'plan_approve', 'plan_supersede', 'runtime_status', 'runtime_operation_get', 'runtime_restart_controller', 'runtime_restart_gateway', 'runtime_restart_full', 'runtime_rollout', 'runtime_rollback', 'runtime_unlock_and_recover'], description: 'Defaults to start. Complex starts require plan_id and plan_step_id.' },
+    operation: { type: 'string', enum: ['start', 'continue', 'verify', 'repair', 'finalize', 'stop', 'delegate', 'controller_claim', 'controller_release', 'controller_get_owner', 'launcher_start', 'plan_create', 'plan_get', 'plan_list', 'plan_approve', 'plan_supersede', 'runtime_status', 'runtime_operation_get', 'runtime_restart_controller', 'runtime_restart_gateway', 'runtime_restart_full', 'runtime_rollout', 'runtime_rollback', 'runtime_unlock_and_recover'], description: 'Defaults to start. Complex starts require plan_id and plan_step_id.' },
     objective: { type: 'string' },
     work_id: { type: 'string' },
+    handoff_id: { type: 'string', description: 'Optional existing HandoffItem used to resume controller context.' },
+    controller_id: { type: 'string', description: 'Stable external SuperController identity for controller_claim/release.' },
+    controller_type: { type: 'string', enum: ['chatgpt', 'codex', 'grok', 'claude', 'human'], description: 'Controller kind for claims and launcher_start.' },
+    session_id: { type: 'string', description: 'Controller-owned session identity used for an exclusive Work lease.' },
+    lease_ms: { type: 'number', description: 'Controller lease duration, bounded to one hour.' },
+    executable: { type: 'string', description: 'External controller executable for launcher_start. This is owned by the Launcher, not the Kernel.' },
+    launch_args: { type: 'array', items: { type: 'string' }, description: 'Provider-specific arguments for launcher_start.' },
     plan_id: { type: 'string' },
     plan_step_id: { type: 'string', description: 'Approved PlanContract step to bind to a complex Goal Workloop start.' },
     scope_key: { type: 'string', description: 'Stable normalized scope identity used to prevent overlapping active plans.' },
@@ -472,7 +483,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     objective: { type: 'string' },
     active_mode: { type: 'boolean', description: 'Defaults to false. Active mode may recommend authorized local maintenance but still does not mutate state in this tool.' },
   }),
-  definition('goal_create', 'Create a durable GoalContract (objective-level loop state above Issue/Task).', {
+  definition('goal_create', 'Deprecated historical GoalContract creation. Use rh_work PlanContract/WorkContract instead.', {
     repo_id: repoId,
     title: { type: 'string' },
     objective: { type: 'string' },
@@ -494,11 +505,11 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     repo_id: repoId,
     goal_id: { type: 'string' },
   }, ['goal_id']),
-  definition('goal_start', 'Start a GoalContract (created -> planning) or tick if already active.', {
+  definition('goal_start', 'Deprecated historical GoalContract execution. Use controller_claim and launcher_start.', {
     repo_id: repoId,
     goal_id: { type: 'string' },
   }, ['goal_id'], false),
-  definition('goal_continue', 'Advance a GoalContract by one bounded daemon-style transition.', {
+  definition('goal_continue', 'Deprecated historical GoalContract execution. Use WorkContract and HandoffItem.', {
     repo_id: repoId,
     goal_id: { type: 'string' },
   }, ['goal_id'], false),
@@ -516,7 +527,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     repo_id: repoId,
     goal_id: { type: 'string' },
   }),
-  definition('goal_tick_once', 'Daemon-owned single tick for one goal (or all active goals when goal_id omitted).', {
+  definition('goal_tick_once', 'Deprecated. Kernel no longer ticks or dispatches Goal providers.', {
     repo_id: repoId,
     goal_id: { type: 'string' },
     task_intent: { type: 'string', enum: ['deterministic_edit', 'code_implementation', 'code_repair', 'architecture_planning', 'ios_build_or_sim', 'browser_automation', 'verification_repair', 'review', 'unknown'] },
@@ -977,6 +988,10 @@ function result(value: Record<string, unknown>, isError = false): CallToolResult
   return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value, ...(isError ? { isError: true } : {}) };
 }
 
+function executionJobCreationRetired(): boolean {
+  return true;
+}
+
 function repositoryRootForRepoId(controllerHome: string, repoId: string): string | undefined {
   return listRepositories(controllerHome).find((repository) => repository.repoId === repoId)?.canonicalRoot;
 }
@@ -1102,6 +1117,10 @@ function selected(ctx: MultiRepositoryMcpToolContext, args: Record<string, unkno
 
 const CAMPAIGN_AGENT_OPERATIONS = new Set(['dispatch_task', 'launch_issue', 'dispatch_ready_tasks', 'retry_task_run', 'quick_agent_session']);
 const CAMPAIGN_CONTROL_OPERATIONS = new Set(['create_campaign', 'add_campaign_task', 'pause_campaign', 'resume_campaign', 'cancel_campaign', 'submit_campaign_review', 'accept_campaign', 'reconcile_campaign']);
+
+function campaignAutomationDeprecated(): boolean {
+  return true;
+}
 
 function campaignTaskInput(
   raw: unknown,
@@ -2094,10 +2113,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           });
           return result(facade as unknown as Record<string, unknown>, facade.status === 'not_found');
         }
-        if (operation === 'ack') {
+        if (operation === 'ack' || operation === 'accept') {
           const item = acknowledgeHandoffItem(store, String(args.handoff_id ?? '').trim());
           return result(buildFacadeResult({
-            summary: `Acknowledged handoff ${item.id}.`,
+            summary: `${operation === 'accept' ? 'Accepted' : 'Acknowledged'} handoff ${item.id}.`,
             data: { item },
             suggestedNextActions: item.suggestedNextActions,
           }) as unknown as Record<string, unknown>);
@@ -2263,6 +2282,50 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         if (operation.startsWith('runtime_')) {
           return await runRuntimeSupervisorFacade(ctx, repository, operation, args);
         }
+        if (operation === 'controller_get_owner') {
+          const owner = getControllerSession(store, String(args.work_id ?? '').trim());
+          return result(buildFacadeResult({ summary: owner ? `Work is claimed by ${owner.controllerId}.` : 'Work has no active controller owner.', data: { owner } }) as unknown as Record<string, unknown>);
+        }
+        if (operation === 'controller_claim') {
+          try {
+            const workId = String(args.work_id ?? '').trim();
+            if (!getWorkContract(store, workId)) throw new Error(`WORK_NOT_FOUND: ${workId}`);
+            const session = claimControllerSession(store, {
+              workId,
+              controllerId: String(args.controller_id ?? '').trim(),
+              controllerType: ['chatgpt', 'codex', 'grok', 'claude', 'human'].includes(String(args.controller_type)) ? String(args.controller_type) as 'chatgpt' | 'codex' | 'grok' | 'claude' | 'human' : 'human',
+              sessionId: String(args.session_id ?? '').trim(),
+              leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
+            });
+            return result(buildFacadeResult({ summary: `Controller ${session.controllerId} claimed ${session.workId}.`, data: { session } }) as unknown as Record<string, unknown>);
+          } catch (error) {
+            return result(buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Controller claim failed.', data: {} }) as unknown as Record<string, unknown>, true);
+          }
+        }
+        if (operation === 'controller_release') {
+          releaseControllerSession(store, String(args.work_id ?? '').trim(), String(args.controller_id ?? '').trim());
+          return result(buildFacadeResult({ summary: 'Controller lease released.', data: {} }) as unknown as Record<string, unknown>);
+        }
+        if (operation === 'launcher_start') {
+          try {
+            const controllerType = String(args.controller_type ?? 'codex');
+            if (!['chatgpt', 'codex', 'grok', 'claude'].includes(controllerType)) throw new Error('CONTROLLER_TYPE_INVALID');
+            const launched = launchSuperController({ work: store, handoff: store }, {
+              controllerType: controllerType as 'chatgpt' | 'codex' | 'grok' | 'claude',
+              executable: typeof args.executable === 'string' && args.executable.trim() ? args.executable.trim() : undefined,
+              args: Array.isArray(args.launch_args) ? args.launch_args.map(String) : [],
+              workId: String(args.work_id ?? '').trim(),
+              controllerId: String(args.controller_id ?? '').trim(),
+              sessionId: String(args.session_id ?? '').trim(),
+              leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
+              handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
+              cwd: repository.canonicalRoot,
+            });
+            return result(buildFacadeResult({ summary: `Thin Launcher started ${launched.controllerType}.`, data: { pid: launched.pid, executable: launched.executable, workId: String(args.work_id ?? ''), controllerId: launched.controllerId, sessionId: launched.sessionId } }) as unknown as Record<string, unknown>);
+          } catch (error) {
+            return result(buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Launcher failed.', data: {} }) as unknown as Record<string, unknown>, true);
+          }
+        }
         const checks = listControllerChecks(repository.canonicalRoot);
         const workloopCtx = {
           workStore: store,
@@ -2270,7 +2333,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           planStore: store,
           repoId: repository.repoId,
           availableChecks: checks,
-          sourceRevision: gitSnapshot(repository.canonicalRoot).head,
+          sourceRevision: gitSnapshot(repository.canonicalRoot).head ?? undefined,
           requirePlanForGoalWorkloop: true,
         };
 
@@ -2350,7 +2413,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
 
         if (operation === 'delegate') {
           const facade = delegateToCodexCerebellum(
-            { repoId: repository.repoId, workStore: store, handoffStore: store },
+            { repoId: repository.repoId },
             {
               workId: typeof args.work_id === 'string' ? args.work_id : undefined,
               target: args.target === 'grok' || args.target === 'claude' || args.target === 'codex' ? args.target : 'codex',
@@ -3439,6 +3502,16 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
       case 'repair_plan':
       case 'repair_continue': {
         const repository = selected(ctx, args);
+        if (['goal_create', 'goal_start', 'goal_continue', 'goal_tick_once', 'executor_dispatch', 'repair_continue'].includes(name)) {
+          return result({
+            error: {
+              code: 'GOAL_LOOP_DEPRECATED',
+              message: 'Goal provider dispatch is retired. Use rh_work.plan_create/plan_approve, rh_work.controller_claim, rh_work.launcher_start, and rh_inbox for continuation.',
+            },
+            deprecated: true,
+            migration: ['rh_work.plan_create', 'rh_work.controller_claim', 'rh_work.launcher_start', 'rh_inbox.create'],
+          }, true);
+        }
         const goalCtx: GoalLoopContext = {
           goalStore: { controllerHome: ctx.controllerHome, repoId: repository.repoId },
           packetStore: { controllerHome: ctx.controllerHome, repoId: repository.repoId },
@@ -4252,6 +4325,17 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
       }
       case 'create_campaign': {
         const repository = selected(ctx, args);
+        if (campaignAutomationDeprecated()) {
+          return result({
+            error: {
+              code: 'CAMPAIGN_DEPRECATED',
+              message: 'Campaign creation is retired. Create a PlanContract and WorkContracts, then launch an external Controller.',
+            },
+            deprecated: true,
+            migration: ['rh_work.plan_create', 'rh_work.plan_approve', 'rh_work.controller_claim', 'rh_work.launcher_start'],
+            repoId: repository.repoId,
+          }, true);
+        }
         const rawTasks = Array.isArray(args.tasks) ? args.tasks : [];
         const requestId = String(args.request_id ?? '').trim();
         const title = String(args.title ?? '').trim();
@@ -4365,6 +4449,13 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
       }
       case 'add_campaign_task': {
         const repository = selected(ctx, args);
+        if (campaignAutomationDeprecated()) {
+          return result({
+            error: { code: 'CAMPAIGN_DEPRECATED', message: 'Campaign task creation is retired. Add a WorkContract to an approved PlanContract instead.' },
+            deprecated: true,
+            repoId: repository.repoId,
+          }, true);
+        }
         const campaignId = String(args.campaign_id ?? '');
         const existingCampaign = getCampaign(ctx.controllerHome, repository.repoId, campaignId);
         const campaign = addCampaignTask(
@@ -4384,10 +4475,15 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
       }
       case 'resume_campaign': {
         const repository = selected(ctx, args);
+        if (campaignAutomationDeprecated()) {
+          return result({
+            error: { code: 'CAMPAIGN_DEPRECATED', message: 'Campaign automation cannot be resumed. Use reconcile_campaign once to migrate outstanding tasks to WorkContracts.' },
+            deprecated: true,
+            repoId: repository.repoId,
+          }, true);
+        }
         const campaign = setCampaignStatus(ctx.controllerHome, repository.repoId, String(args.campaign_id ?? ''), String(args.request_id ?? ''), 'active', undefined, expectedRevision(args));
-        reconcileCampaign(ctx.controllerHome, repository.repoId, campaign.campaignId);
-        ensureControllerDaemon(ctx.controllerHome);
-        return result({ campaign });
+        return result({ campaign, warning: 'Campaign reconcile is frozen; use reconcile_campaign once to migrate pending tasks to WorkContracts.' });
       }
       case 'cancel_campaign': {
         const repository = selected(ctx, args);
@@ -4430,9 +4526,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             submittedBy: typeof args.submitted_by === 'string' ? args.submitted_by : 'chatgpt',
           },
         });
-        if (campaign.status === 'active') reconcileCampaign(ctx.controllerHome, repository.repoId, campaign.campaignId);
-        ensureControllerDaemon(ctx.controllerHome);
-        return result({ campaign });
+        return result({ campaign, warning: 'Campaign reconcile is frozen; review state is retained for migration.' });
       }
       case 'accept_campaign': {
         const repository = selected(ctx, args);
@@ -4441,13 +4535,11 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const requestId = String(args.request_id ?? '');
         setCampaignStatus(ctx.controllerHome, repository.repoId, current.campaignId, requestId, 'completed', 'Accepted by human.', expectedRevision(args));
         const campaign = completeCampaignWorkspace(ctx.controllerHome, repository.repoId, current.campaignId, requestId);
-        ensureControllerDaemon(ctx.controllerHome);
         return result({ campaign });
       }
       case 'reconcile_campaign': {
         const repository = selected(ctx, args);
         const reconciliation = reconcileCampaign(ctx.controllerHome, repository.repoId, String(args.campaign_id ?? ''));
-        ensureControllerDaemon(ctx.controllerHome);
         return result({ reconciliation, campaign: getCampaign(ctx.controllerHome, repository.repoId, reconciliation.campaignId) });
       }
       case 'create_schedule': {
@@ -4518,6 +4610,17 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
       case 'request_release_gate': {
         const repository = selected(ctx, args);
         const requestId = typeof args.request_id === 'string' && args.request_id.trim() ? args.request_id.trim() : `release:${repository.repoId}:${Math.floor(Date.now() / 60_000)}`;
+        if (executionJobCreationRetired()) {
+          return result({
+            accepted: false,
+            mode: 'external_controller_required',
+            requestId,
+            repoId: repository.repoId,
+            rejectCode: 'EXECUTION_JOB_RETIRED',
+            message: 'Release Gate no longer creates an ExecutionJob. An external Controller must claim the related Work and execute release evidence explicitly.',
+            suggestedOperation: 'rh_work.controller_claim followed by Process Runtime checks and explicit release authorization.',
+          });
+        }
         const created = createExecutionJob(ctx.controllerHome, {
           repoId: repository.repoId,
           checkoutId: repository.activeCheckoutId,
@@ -4611,6 +4714,17 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
       case 'promote_candidate_finding': {
         const repository = selected(ctx, args);
         const finding = getCandidateFinding(ctx.controllerHome, repository.repoId, String(args.finding_id ?? ''));
+        if (executionJobCreationRetired()) {
+          return result({
+            accepted: false,
+            mode: 'external_controller_required',
+            repoId: repository.repoId,
+            finding,
+            rejectCode: 'EXECUTION_JOB_RETIRED',
+            message: 'Candidate promotion no longer creates an ExecutionJob. An external Controller must create the Issue after claiming the related Work.',
+            suggestedOperation: 'Create or claim WorkContract, then use the explicit issue-creation tool from the external Controller session.',
+          });
+        }
         if (finding.promotedJobId) {
           const existing = findExecutionJob(ctx.controllerHome, finding.promotedJobId);
           if (existing && !['failed', 'timed_out', 'cancelled', 'orphaned', 'stale', 'human_attention_required'].includes(existing.status)) {

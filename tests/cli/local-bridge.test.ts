@@ -15,7 +15,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { createHmac } from "crypto";
 import { spawn, spawnSync } from "child_process";
-import { cancelAgentJob, getAgentJob, getAgentJobEvents, listAgentJobs } from "../../src/cli/agent-jobs/job-manager";
+import { cancelAgentJob, getAgentJob, getAgentJobEvents, getAgentJobLog, listAgentJobs } from "../../src/cli/agent-jobs/job-manager";
 import {
   controllerCheckConcurrencyClass,
   releaseControllerCheckSubscription,
@@ -384,7 +384,7 @@ esac
     }
   }, 20_000);
 
-  test("parses agent output into visible phase and activity progress", async () => {
+  test("persists agent output as one raw log artifact", async () => {
     const root = repo();
     const binRoot = mkdtempSync(join(tmpdir(), "repo-harness-progress-bin-"));
     roots.push(binRoot);
@@ -427,25 +427,18 @@ printf '%s\n' '{"type":"turn.completed"}'
         },
       });
       const dispatched = executeLocalBridgeJob(root, job.jobId);
-      let run = getAgentJob(root, dispatched.runId as string);
       let observed = false;
       for (let attempt = 0; attempt < 120; attempt += 1) {
         await Bun.sleep(20);
-        run = getAgentJob(root, dispatched.runId as string);
-        if (
-          run.progress?.phase === "testing" &&
-          run.progress.currentActivity.includes("bun test focused")
-        ) {
+        const log = getAgentJobLog(root, dispatched.runId as string).log;
+        if (log.includes("bun test focused")) {
           observed = true;
           break;
         }
       }
-      const durableTestingActivity = getAgentJobEvents(root, dispatched.runId as string, 200, { includeHeartbeats: true })
-        .some((event) => event.type === "run_activity"
-          && event.data?.phase === "testing"
-          && (event.message ?? "").includes("bun test focused"));
-      expect(observed || durableTestingActivity).toBe(true);
-      if (observed) expect(run.progress?.percent).toBeGreaterThanOrEqual(72);
+      expect(observed).toBe(true);
+      expect(getAgentJobEvents(root, dispatched.runId as string, 200, { includeHeartbeats: true })
+        .filter((event) => event.type === "run_activity")).toHaveLength(0);
     } finally {
       process.env.PATH = originalPath;
     }
@@ -861,7 +854,6 @@ printf '%s\n' '{"type":"turn.completed"}'
       lastHeartbeatAt: now,
       progress: {
         phase: "editing",
-        percent: 40,
         currentActivity: "stale worker",
         lastActivityAt: now,
         activityCount: 1,
@@ -939,7 +931,6 @@ printf '%s\n' '{"type":"turn.completed"}'
       lastHeartbeatAt: now,
       progress: {
         phase: "editing",
-        percent: 40,
         currentActivity: "ownership disappeared",
         lastActivityAt: now,
         activityCount: 1,
@@ -1031,7 +1022,7 @@ printf '%s\n' '{"type":"turn.completed"}'
     const now = new Date().toISOString();
     for (const name of ["stdout.log", "stderr.log", "events.jsonl"]) writeFileSync(join(runDir, name), "");
     writeFileSync(join(runDir, "meta.json"), JSON.stringify({
-      schemaVersion: 2, runId, issueId: issue.id, taskId: "T1", agent: "codex", provider: "local", executionMode: "workspace", status: "succeeded", repoRoot: realpathSync(root), worktree: realpathSync(root), branch: null, baseRevision: null, promptPath: `.ai/harness/jobs/${runId}/prompt.md`, stdoutPath: `.ai/harness/jobs/${runId}/stdout.log`, stderrPath: `.ai/harness/jobs/${runId}/stderr.log`, resultPath: `.ai/harness/jobs/${runId}/result.json`, eventsPath: `.ai/harness/jobs/${runId}/events.jsonl`, timeoutMs: 10_000, createdAt: now, startedAt: now, finishedAt: now, integratedSessionId: "EDIT-v5-api-fixture", progress: { phase: "completed", percent: 100, currentActivity: "complete", lastActivityAt: now, activityCount: 1 },
+      schemaVersion: 2, runId, issueId: issue.id, taskId: "T1", agent: "codex", provider: "local", executionMode: "workspace", status: "succeeded", repoRoot: realpathSync(root), worktree: realpathSync(root), branch: null, baseRevision: null, promptPath: `.ai/harness/jobs/${runId}/prompt.md`, stdoutPath: `.ai/harness/jobs/${runId}/stdout.log`, stderrPath: `.ai/harness/jobs/${runId}/stderr.log`, resultPath: `.ai/harness/jobs/${runId}/result.json`, eventsPath: `.ai/harness/jobs/${runId}/events.jsonl`, timeoutMs: 10_000, createdAt: now, startedAt: now, finishedAt: now, integratedSessionId: "EDIT-v5-api-fixture", progress: { phase: "completed", currentActivity: "complete", lastActivityAt: now, activityCount: 1 },
     }, null, 2));
     updateTask(root, issue.id, "T1", { status: "review", runId, note: "Ready for verification." });
     const handle = await startLocalBridgeServer({ repoRoot: root, port: 0, openBrowser: false });
