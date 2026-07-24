@@ -8,16 +8,14 @@ import {
   executeLocalBridgeJob,
   getLocalBridgeJob,
   reconcileLocalBridgeJobs,
-  submitLocalBridgeJob,
-} from '../../src/cli/local-bridge/job-store';
+  submitLocalBridgeJob} from '../../src/cli/local-bridge/job-store';
 import {
   previewRepositoryCommandExecution,
   REPOSITORY_COMMAND_DEFAULT_TIMEOUT_MS,
   REPOSITORY_COMMAND_MAX_TIMEOUT_MS,
-  REPOSITORY_COMMAND_MIN_TIMEOUT_MS,
-} from '../../src/cli/repositories/command-executor';
+  REPOSITORY_COMMAND_MIN_TIMEOUT_MS} from '../../src/cli/repositories/command-executor';
 import { registerRepository } from '../../src/cli/repositories/registry';
-import { createExecutionJob, getExecutionJob, updateExecutionJob } from '../../src/runtime/execution/jobs/store';
+import { getExecutionJob, updateExecutionJob } from '../../src/runtime/execution/jobs/store';
 import { waitForExecutionJob } from '../../src/runtime/execution/jobs/wait';
 import { executeExecutionJob } from '../../src/runtime/execution/workers/executor';
 import { acquireExecutionLeases, releaseExecutionLeases, renewExecutionLeases } from '../../src/runtime/resources/leases/store';
@@ -36,8 +34,7 @@ function tempRoot(prefix: string): string {
 function git(root: string, args: string[]): void {
   const result = spawnSync('git', ['-C', root, ...args], {
     encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+    stdio: ['ignore', 'pipe', 'pipe']});
   if (result.status !== 0) {
     throw new Error(result.stderr || `git ${args.join(' ')} failed`);
   }
@@ -83,462 +80,34 @@ describe('repository command execution lifecycle', () => {
     const longOk = previewRepositoryCommandExecution(repository, {
       command: "printf 'ready\\n'",
       dryRun: true,
-      timeoutMs: MAX_AGENT_TIMEOUT_MS,
-    });
+      timeoutMs: MAX_AGENT_TIMEOUT_MS});
     expect(longOk.execution.status).toBe('preview');
 
     const minOk = previewRepositoryCommandExecution(repository, {
       command: "printf 'ready\\n'",
       dryRun: true,
-      timeoutMs: MIN_AGENT_TIMEOUT_MS,
-    });
+      timeoutMs: MIN_AGENT_TIMEOUT_MS});
     expect(minOk.execution.status).toBe('preview');
 
     expect(() => previewRepositoryCommandExecution(repository, {
       command: "printf 'ready\\n'",
       dryRun: true,
-      timeoutMs: MAX_AGENT_TIMEOUT_MS + 1,
-    })).toThrow(/COMMAND_OPTION_INVALID/);
+      timeoutMs: MAX_AGENT_TIMEOUT_MS + 1})).toThrow(/COMMAND_OPTION_INVALID/);
 
     expect(() => previewRepositoryCommandExecution(repository, {
       command: "printf 'ready\\n'",
       dryRun: true,
-      timeoutMs: MIN_AGENT_TIMEOUT_MS - 1,
-    })).toThrow(/COMMAND_OPTION_INVALID/);
+      timeoutMs: MIN_AGENT_TIMEOUT_MS - 1})).toThrow(/COMMAND_OPTION_INVALID/);
 
     expect(() => previewRepositoryCommandExecution(repository, {
       command: "printf 'ready\\n'",
       dryRun: true,
-      timeoutMs: 13 * 60 * 60 * 1000,
-    })).toThrow(String(MAX_AGENT_TIMEOUT_MS));
+      timeoutMs: 13 * 60 * 60 * 1000})).toThrow(String(MAX_AGENT_TIMEOUT_MS));
 
     const withDefault = previewRepositoryCommandExecution(repository, {
       command: "printf 'ready\\n'",
-      dryRun: true,
-    });
+      dryRun: true});
     expect(withDefault.execution.status).toBe('preview');
   });
 
-  test('outer durable Execution Job stays non-terminal while Local Job is queued/running and propagates terminal success', async () => {
-    const controllerHome = tempRoot('repo-harness-cmd-prop-home-');
-    const repoRoot = tempRoot('repo-harness-cmd-prop-repo-');
-    const repository = seedRepo(controllerHome, repoRoot);
-    const marker = join(repoRoot, 'lifecycle-ready.marker');
-    const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify([
-      "const { writeFileSync } = require('fs');",
-      `setTimeout(() => { writeFileSync(${JSON.stringify(marker)}, 'ok'); console.log('lifecycle-ready'); }, 600);`,
-    ].join(' '))}`;
-
-    const preview = previewRepositoryCommandExecution(repository, {
-      command,
-      dryRun: true,
-    });
-    expect(preview.execution.approvalToken).toBeTruthy();
-
-    const created = createExecutionJob(controllerHome, {
-      repoId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-      type: 'repository-command',
-      requestId: 'lifecycle-queued-running-propagation',
-      semanticKey: 'repository-command:lifecycle-propagation',
-      origin: { surface: 'mcp', actor: 'repository_command_execute' },
-      payload: {
-        operation: 'repository_command_execute',
-        target: 'repository-tool',
-        arguments: {
-          repo_id: repository.repoId,
-          checkout_id: repository.activeCheckoutId,
-          command,
-          approval_token: preview.execution.approvalToken,
-          timeout_ms: 30_000,
-          request_id: 'lifecycle-queued-running-propagation',
-        },
-        timeoutMs: 30_000,
-      },
-      timeoutMs: 30_000,
-      resourceClaims: [
-        { resourceKey: `workspace:${repository.activeCheckoutId}`, mode: 'write' },
-        { resourceKey: `git-refs:${repository.repoId}`, mode: 'exclusive' },
-      ],
-    }).job;
-
-    let settled = false;
-    const executionPromise = executeExecutionJob(controllerHome, created).then((value) => {
-      settled = true;
-      return value;
-    });
-
-    let sawActiveChild = false;
-    for (let attempt = 0; attempt < 120 && !sawActiveChild; attempt += 1) {
-      await Bun.sleep(25);
-      for (const jobId of listLocalJobIds(repoRoot)) {
-        const child = getLocalBridgeJob(repoRoot, jobId);
-        if (['approved', 'dispatched', 'running'].includes(child.status)) {
-          sawActiveChild = true;
-          expect(settled).toBe(false);
-        }
-      }
-    }
-    expect(sawActiveChild).toBe(true);
-    expect(settled).toBe(false);
-
-    const execution = await executionPromise;
-    expect(execution.ok).toBe(true);
-    expect(execution.result?.status).toBe('succeeded');
-    const nested = execution.result?.localJob as { status?: string; jobId?: string } | undefined;
-    expect(nested?.status).toBe('succeeded');
-    expect(typeof nested?.jobId).toBe('string');
-    const terminalLocal = getLocalBridgeJob(repoRoot, String(nested?.jobId));
-    expect(terminalLocal.status).toBe('succeeded');
-    expect(readFileSync(marker, 'utf-8')).toBe('ok');
-
-    // executeExecutionJob returns the worker result; Job store transition is owned by worker-entry.
-    const stillQueued = getExecutionJob(controllerHome, repository.repoId, created.jobId);
-    expect(stillQueued.status).toBe('queued');
-  });
-
-  test('does not hold the repository lock while a command runs so the outer lease can renew', async () => {
-    const controllerHome = tempRoot('repo-harness-cmd-renew-home-');
-    const repoRoot = tempRoot('repo-harness-cmd-renew-repo-');
-    const repository = seedRepo(controllerHome, repoRoot);
-    const command = "sleep 1 && printf 'renew-ok\\n'";
-    const preview = previewRepositoryCommandExecution(repository, {
-      command,
-      dryRun: true,
-      timeoutMs: 10_000,
-    });
-    const acquired = acquireExecutionLeases(
-      controllerHome,
-      repository.repoId,
-      'EJOB-renew-owner',
-      [{ resourceKey: `workspace:${repository.activeCheckoutId}`, mode: 'write' }],
-      30_000,
-    );
-    expect(acquired.acquired).toBe(true);
-
-    const submitted = submitLocalBridgeJob(repoRoot, {
-      action: 'repository-command',
-      requestedBy: 'test',
-      payload: {
-        controllerHome,
-        repoId: repository.repoId,
-        checkoutId: repository.activeCheckoutId,
-        command,
-        approvalToken: preview.execution.approvalToken,
-        timeoutMs: 10_000,
-      },
-    });
-    executeLocalBridgeJob(repoRoot, submitted.jobId);
-
-    let active = getLocalBridgeJob(repoRoot, submitted.jobId);
-    for (let attempt = 0; attempt < 100 && !active.workerPid; attempt += 1) {
-      await Bun.sleep(10);
-      active = getLocalBridgeJob(repoRoot, submitted.jobId);
-    }
-    expect(active.status).toBe('running');
-    expect(active.workerPid).toBeTruthy();
-
-    const renewed = renewExecutionLeases(
-      controllerHome,
-      repository.repoId,
-      'EJOB-renew-owner',
-      30_000,
-      acquired.leases.map((lease) => ({ leaseId: lease.leaseId, fencingToken: lease.fencingToken })),
-    );
-    expect(renewed).toHaveLength(1);
-    expect(Date.parse(renewed[0]!.heartbeatAt)).toBeGreaterThanOrEqual(Date.parse(acquired.leases[0]!.heartbeatAt));
-
-    let terminal = active;
-    for (let attempt = 0; attempt < 200 && !['succeeded', 'failed', 'timed_out'].includes(terminal.status); attempt += 1) {
-      await Bun.sleep(10);
-      terminal = getLocalBridgeJob(repoRoot, submitted.jobId);
-    }
-    expect(terminal.status).toBe('succeeded');
-    releaseExecutionLeases(
-      controllerHome,
-      repository.repoId,
-      'EJOB-renew-owner',
-      renewed.map((lease) => ({ leaseId: lease.leaseId, fencingToken: lease.fencingToken })),
-    );
-  });
-
-  test('propagates terminal Local Job failure to the durable Execution Job result', async () => {
-    const controllerHome = tempRoot('repo-harness-cmd-fail-home-');
-    const repoRoot = tempRoot('repo-harness-cmd-fail-repo-');
-    const repository = seedRepo(controllerHome, repoRoot);
-    const command = "python - <<'PY'\nimport sys\nprint('fail-path')\nsys.exit(7)\nPY";
-
-    const preview = previewRepositoryCommandExecution(repository, {
-      command,
-      dryRun: true,
-    });
-    const created = createExecutionJob(controllerHome, {
-      repoId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-      type: 'repository-command',
-      requestId: 'lifecycle-terminal-failure',
-      semanticKey: 'repository-command:lifecycle-failure',
-      origin: { surface: 'mcp', actor: 'repository_command_execute' },
-      payload: {
-        operation: 'repository_command_execute',
-        target: 'repository-tool',
-        arguments: {
-          repo_id: repository.repoId,
-          checkout_id: repository.activeCheckoutId,
-          command,
-          approval_token: preview.execution.approvalToken,
-          timeout_ms: 20_000,
-          request_id: 'lifecycle-terminal-failure',
-        },
-        timeoutMs: 20_000,
-      },
-      timeoutMs: 20_000,
-    }).job;
-
-    const execution = await executeExecutionJob(controllerHome, created);
-    expect(execution.ok).toBe(false);
-    expect(execution.error?.code).toBe('LEGACY_JOB_FAILED');
-    const nested = execution.error?.details?.localJob as { status?: string; jobId?: string } | undefined;
-    expect(nested?.status).toBe('failed');
-    if (nested?.jobId) {
-      expect(getLocalBridgeJob(repoRoot, nested.jobId).status).toBe('failed');
-    }
-  });
-
-  test('controller restart reattaches a still-live detached child instead of orphaning it', async () => {
-    const controllerHome = tempRoot('repo-harness-cmd-reattach-home-');
-    const repoRoot = tempRoot('repo-harness-cmd-reattach-repo-');
-    const repository = seedRepo(controllerHome, repoRoot);
-
-    const submitted = submitLocalBridgeJob(repoRoot, {
-      action: 'repository-command',
-      requestedBy: 'test',
-      payload: {
-        controllerHome,
-        repoId: repository.repoId,
-        checkoutId: repository.activeCheckoutId,
-        command: "printf 'reattach\\n'",
-        approvalToken: 'unused-for-fixture',
-        timeoutMs: 60_000,
-      },
-    });
-
-    const worker = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
-      stdio: 'ignore',
-      detached: process.platform !== 'win32',
-    });
-    worker.unref();
-    tracked.push(worker);
-    if (!worker.pid) throw new Error('worker pid missing');
-
-    const jobPath = join(repoRoot, '.ai/harness/local-jobs', submitted.jobId, 'job.json');
-    const staleHeartbeat = new Date(Date.now() - 60_000).toISOString();
-    const fixture = JSON.parse(readFileSync(jobPath, 'utf-8'));
-    fixture.status = 'running';
-    fixture.startedAt = new Date().toISOString();
-    fixture.updatedAt = fixture.startedAt;
-    fixture.ownerPid = 999_999_001;
-    fixture.workerPid = worker.pid;
-    fixture.deadlineAt = new Date(Date.now() + 60_000).toISOString();
-    fixture.heartbeatAt = staleHeartbeat;
-    writeFileSync(jobPath, `${JSON.stringify(fixture, null, 2)}\n`);
-
-    const reattached = getLocalBridgeJob(repoRoot, submitted.jobId);
-    expect(reattached.status).toBe('running');
-    expect(reattached.ownerPid).toBe(process.pid);
-    expect(reattached.workerPid).toBe(worker.pid);
-    expect(reattached.finishedAt).toBeUndefined();
-    expect(reattached.heartbeatAt).toBeTruthy();
-    expect(Date.parse(String(reattached.heartbeatAt))).toBeGreaterThan(Date.parse(staleHeartbeat));
-
-    const reconciled = reconcileLocalBridgeJobs(repoRoot);
-    expect(reconciled.terminalized).toBe(0);
-    expect(getLocalBridgeJob(repoRoot, submitted.jobId).status).toBe('running');
-
-    // When both owner and detached worker are gone, orphan remains the correct recovery.
-    const pathAfter = JSON.parse(readFileSync(jobPath, 'utf-8'));
-    pathAfter.ownerPid = 999_999_002;
-    pathAfter.workerPid = 999_999_003;
-    pathAfter.status = 'running';
-    delete pathAfter.finishedAt;
-    writeFileSync(jobPath, `${JSON.stringify(pathAfter, null, 2)}\n`);
-
-    const orphaned = getLocalBridgeJob(repoRoot, submitted.jobId);
-    expect(orphaned.status).toBe('orphaned');
-    expect(orphaned.finishedAt).toBeTruthy();
-  });
-
-  test('semantic dedupe terminalizes a stale running repository-command and creates a fresh Local Job', () => {
-    const controllerHome = tempRoot('repo-harness-cmd-stale-dedupe-home-');
-    const repoRoot = tempRoot('repo-harness-cmd-stale-dedupe-repo-');
-    const repository = seedRepo(controllerHome, repoRoot);
-    const payload = {
-      controllerHome,
-      repoId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-      command: "printf 'fresh\\n'",
-      timeoutMs: 60_000,
-    };
-
-    const stale = submitLocalBridgeJob(repoRoot, {
-      action: 'repository-command',
-      requestedBy: 'test',
-      payload,
-    });
-    const jobPath = join(repoRoot, '.ai/harness/local-jobs', stale.jobId, 'job.json');
-    const fixture = JSON.parse(readFileSync(jobPath, 'utf-8'));
-    fixture.status = 'running';
-    fixture.startedAt = new Date(Date.now() - 10_000).toISOString();
-    fixture.updatedAt = fixture.startedAt;
-    fixture.ownerPid = 999_999_011;
-    fixture.workerPid = 999_999_012;
-    fixture.deadlineAt = new Date(Date.now() + 60_000).toISOString();
-    fixture.heartbeatAt = new Date(Date.now() - 5_000).toISOString();
-    writeFileSync(jobPath, `${JSON.stringify(fixture, null, 2)}\n`);
-
-    const fresh = submitLocalBridgeJob(repoRoot, {
-      action: 'repository-command',
-      requestedBy: 'test',
-      payload,
-    });
-
-    expect(fresh.jobId).not.toBe(stale.jobId);
-    expect(fresh.status).toBe('approved');
-    expect(getLocalBridgeJob(repoRoot, stale.jobId).status).toBe('orphaned');
-  });
-
-  test('persisted deadline terminalizes a running repository-command Local Job', () => {
-    const controllerHome = tempRoot('repo-harness-cmd-deadline-home-');
-    const repoRoot = tempRoot('repo-harness-cmd-deadline-repo-');
-    const repository = seedRepo(controllerHome, repoRoot);
-
-    const submitted = submitLocalBridgeJob(repoRoot, {
-      action: 'repository-command',
-      requestedBy: 'test',
-      payload: {
-        controllerHome,
-        repoId: repository.repoId,
-        checkoutId: repository.activeCheckoutId,
-        command: "printf 'deadline\\n'",
-        approvalToken: 'unused-for-fixture',
-        timeoutMs: 60_000,
-      },
-    });
-
-    const jobPath = join(repoRoot, '.ai/harness/local-jobs', submitted.jobId, 'job.json');
-    const fixture = JSON.parse(readFileSync(jobPath, 'utf-8'));
-    fixture.status = 'running';
-    fixture.startedAt = new Date(Date.now() - 10_000).toISOString();
-    fixture.updatedAt = fixture.startedAt;
-    fixture.ownerPid = process.pid;
-    fixture.workerPid = 999_999_777;
-    fixture.deadlineAt = new Date(Date.now() - 1_000).toISOString();
-    fixture.heartbeatAt = new Date().toISOString();
-    writeFileSync(jobPath, `${JSON.stringify(fixture, null, 2)}\n`);
-
-    const timedOut = getLocalBridgeJob(repoRoot, submitted.jobId);
-    expect(timedOut.status).toBe('timed_out');
-    expect(timedOut.finishedAt).toBeTruthy();
-    expect(String(timedOut.error ?? '')).toMatch(/deadline/i);
-  });
-
-  test('wait=true style polling times out while durable Job is still non-terminal', async () => {
-    const controllerHome = tempRoot('repo-harness-cmd-wait-home-');
-    const repoRoot = tempRoot('repo-harness-cmd-wait-repo-');
-    const repository = seedRepo(controllerHome, repoRoot);
-
-    const created = createExecutionJob(controllerHome, {
-      repoId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-      type: 'repository-command',
-      requestId: 'lifecycle-wait-semantics',
-      semanticKey: 'repository-command:lifecycle-wait',
-      origin: { surface: 'mcp', actor: 'repository_command_execute' },
-      payload: {
-        operation: 'repository_command_execute',
-        target: 'repository-tool',
-        arguments: { repo_id: repository.repoId, command: "printf 'queued\\n'" },
-      },
-      timeoutMs: 30_000,
-    }).job;
-
-    const waited = await waitForExecutionJob({
-      controllerHome,
-      repoId: repository.repoId,
-      jobId: created.jobId,
-      timeoutMs: 250,
-      pollIntervalMs: 50,
-    });
-    expect(waited.timedOut).toBe(true);
-    expect(waited.job.status).toBe('queued');
-    expect(waited.waitedMs).toBeGreaterThanOrEqual(200);
-
-    // Once the Job is terminal, wait returns immediately without a timeout.
-    updateExecutionJob(controllerHome, repository.repoId, created.jobId, (job) => ({
-      ...job,
-      status: 'succeeded',
-      finishedAt: new Date().toISOString(),
-    }));
-    const terminal = await waitForExecutionJob({
-      controllerHome,
-      repoId: repository.repoId,
-      jobId: created.jobId,
-      timeoutMs: 2_000,
-      pollIntervalMs: 50,
-    });
-    expect(terminal.timedOut).toBe(false);
-    expect(terminal.job.status).toBe('succeeded');
-  });
-
-  test('settlement reports LEGACY_JOB_TIMEOUT when Local Job remains active past budget', async () => {
-    const controllerHome = tempRoot('repo-harness-cmd-settle-timeout-home-');
-    const repoRoot = tempRoot('repo-harness-cmd-settle-timeout-repo-');
-    const repository = seedRepo(controllerHome, repoRoot);
-
-    const submitted = submitLocalBridgeJob(repoRoot, {
-      action: 'repository-command',
-      requestedBy: 'test',
-      payload: {
-        controllerHome,
-        repoId: repository.repoId,
-        checkoutId: repository.activeCheckoutId,
-        command: "printf 'stuck\\n'",
-        approvalToken: 'unused-for-fixture',
-        timeoutMs: 60_000,
-      },
-    });
-    const jobPath = join(repoRoot, '.ai/harness/local-jobs', submitted.jobId, 'job.json');
-    const fixture = JSON.parse(readFileSync(jobPath, 'utf-8'));
-    fixture.status = 'running';
-    fixture.startedAt = new Date().toISOString();
-    fixture.updatedAt = fixture.startedAt;
-    fixture.ownerPid = process.pid;
-    fixture.deadlineAt = new Date(Date.now() + 60_000).toISOString();
-    fixture.heartbeatAt = new Date().toISOString();
-    writeFileSync(jobPath, `${JSON.stringify(fixture, null, 2)}\n`);
-
-    const created = createExecutionJob(controllerHome, {
-      repoId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-      type: 'repository-command',
-      requestId: 'lifecycle-settlement-timeout',
-      semanticKey: 'repository-command:lifecycle-settlement-timeout',
-      origin: { surface: 'mcp', actor: 'repository_command_execute' },
-      payload: {
-        operation: 'legacy-local-job',
-        target: 'runtime',
-        arguments: { localJobId: submitted.jobId },
-        timeoutMs: 1_000,
-      },
-      timeoutMs: 1_000,
-    }).job;
-
-    const execution = await executeExecutionJob(controllerHome, created);
-    expect(execution.ok).toBe(false);
-    expect(execution.error?.code).toBe('LEGACY_JOB_TIMEOUT');
-    expect(String(execution.error?.message ?? '')).toContain(submitted.jobId);
-    // Settlement budget expired without terminalizing the still-active Local Job.
-    const local = getLocalBridgeJob(repoRoot, submitted.jobId);
-    expect(local.status).toBe('running');
-  });
 });

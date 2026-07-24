@@ -3,17 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { ensureControllerDaemon, readControllerDaemonStatus } from '../../src/runtime/control-plane/daemon-client';
-import { reconcileControllerStartup } from '../../src/runtime/control-plane/startup-recovery';
-import { CONTROLLER_SCOPE_REPO_ID } from '../../src/cli/repositories/controller-home';
-import {
-  createExecutionJob,
-  getExecutionJob,
-  resumeExecutionJobAfterApproval,
-  updateExecutionJob,
-} from '../../src/runtime/execution/jobs/store';
-import { waitForExecutionJob } from '../../src/runtime/execution/jobs/wait';
+import { createExecutionJob } from '../../src/runtime/execution/jobs/store';
 import { TERMINAL_JOB_STATUSES } from '../../src/runtime/execution/jobs/types';
-import { readExecutionEvidence, recordExecutionEvidence } from '../../src/runtime/evidence/evidence-store';
 
 const roots: string[] = [];
 
@@ -21,19 +12,6 @@ function temp(prefix: string): string {
   const value = mkdtempSync(join(tmpdir(), prefix));
   roots.push(value);
   return value;
-}
-
-function createJob(controllerHome: string, repoId = 'repo-test') {
-  return createExecutionJob(controllerHome, {
-    repoId,
-    checkoutId: 'checkout-test',
-    type: 'mcp-tool',
-    requestId: `request-${Date.now()}-${Math.random()}`,
-    semanticKey: `test:${Date.now()}:${Math.random()}`,
-    origin: { surface: 'system', actor: 'test' },
-    payload: { operation: 'controller_ready', target: 'runtime', profile: 'controller', arguments: {} },
-    resourceClaims: [],
-  }).job;
 }
 
 afterEach(() => {
@@ -74,7 +52,6 @@ describe('control-plane hardening', () => {
       pid: process.pid,
       startedAt,
     }, null, 2)}\n`);
-    // A live scheduler heartbeat keeps status ready without degraded noise.
     mkdirSync(join(controllerHome, 'scheduler'), { recursive: true });
     writeFileSync(join(controllerHome, 'scheduler', 'state.json'), `${JSON.stringify({
       schemaVersion: 1,
@@ -91,62 +68,22 @@ describe('control-plane hardening', () => {
     expect(first.pid).toBe(process.pid);
     expect(second.pid).toBe(process.pid);
     expect(second.startedAt).toBe(startedAt);
-    // Fast path must not spawn a replacement daemon or rewrite state.
     expect(readControllerDaemonStatus(controllerHome).pid).toBe(process.pid);
   });
 
-  test('returns immediately for waiting approval and resumes the same durable Job', async () => {
-    const controllerHome = temp('repo-harness-approval-wait-');
-    const created = createJob(controllerHome);
-    updateExecutionJob(controllerHome, created.repoId, created.jobId, (job) => ({
-      ...job,
-      status: 'waiting_for_approval',
-      result: {
-        approvalRequestId: 'apr-test-1',
-        authorization: {
-          decision: 'user_confirmation_required',
-          approvalRequestId: 'apr-test-1',
-          humanSummary: 'Confirm test operation.',
-        },
-      },
-    }));
-
+  test('refuses new ExecutionJobs for approval-wait and controller-scope recovery paths', () => {
+    const controllerHome = temp('repo-harness-job-retired-');
+    expect(() => createExecutionJob(controllerHome, {
+      repoId: 'repo-test',
+      checkoutId: 'checkout-test',
+      type: 'mcp-tool',
+      requestId: `request-${Date.now()}`,
+      semanticKey: `test:${Date.now()}`,
+      origin: { surface: 'system', actor: 'test' },
+      payload: { operation: 'controller_ready', target: 'runtime', profile: 'controller', arguments: {} },
+      resourceClaims: [],
+    })).toThrow(/EXECUTION_JOB_RETIRED/);
+    // waiting_for_approval remains a non-terminal historical status for old records.
     expect(TERMINAL_JOB_STATUSES.has('waiting_for_approval')).toBe(false);
-    const waited = await waitForExecutionJob({
-      controllerHome,
-      repoId: created.repoId,
-      jobId: created.jobId,
-      timeoutMs: 2_000,
-      pollIntervalMs: 50,
-    });
-    expect(waited.timedOut).toBe(false);
-    expect(waited.job.status).toBe('waiting_for_approval');
-
-    const resumed = resumeExecutionJobAfterApproval(controllerHome, created.repoId, 'apr-test-1');
-    expect(resumed?.jobId).toBe(created.jobId);
-    expect(resumed?.status).toBe('queued');
-    expect(resumed?.payload.arguments?.approval_request_id).toBe('apr-test-1');
-    expect(getExecutionJob(controllerHome, created.repoId, created.jobId).jobId).toBe(created.jobId);
-  });
-
-  test('reconciles controller-scoped Jobs without a Repository Registry entry', () => {
-    const controllerHome = temp('repo-harness-controller-scope-recovery-');
-    createJob(controllerHome, CONTROLLER_SCOPE_REPO_ID);
-    const recovery = reconcileControllerStartup(controllerHome);
-    const controller = recovery.repositories.find((entry) => entry.repoId === CONTROLLER_SCOPE_REPO_ID);
-    expect(controller?.degraded).toBe(false);
-    expect(controller?.executionIndexesRebuilt).toBe(true);
-    expect(controller?.executionJobs).toBeDefined();
-  });
-
-  test('reads recorded EVD references through the evidence store', () => {
-    const controllerHome = temp('repo-harness-evidence-read-');
-    const repoRoot = temp('repo-harness-evidence-repo-');
-    const job = createJob(controllerHome, 'repo-evidence');
-    const recorded = recordExecutionEvidence(controllerHome, repoRoot, job, 'succeeded', { marker: 'readable' });
-    expect(recorded.evidenceId.startsWith('EVD-')).toBe(true);
-    const read = readExecutionEvidence(controllerHome, job.repoId, recorded.evidenceId);
-    expect(read.evidenceId).toBe(recorded.evidenceId);
-    expect(read.details?.marker).toBe('readable');
   });
 });

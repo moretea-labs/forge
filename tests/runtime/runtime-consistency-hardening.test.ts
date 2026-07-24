@@ -14,7 +14,7 @@ import { createCampaign, getCampaign, updateCampaign } from '../../src/runtime/w
 import { openCampaignCheckpoint } from '../../src/runtime/workflow/campaigns/review';
 import { reconcileCampaign } from '../../src/runtime/workflow/campaigns/engine';
 import { cancelCampaign } from '../../src/runtime/workflow/campaigns/cleanup';
-import { createExecutionJob, getExecutionJob, transitionExecutionJob } from '../../src/runtime/execution/jobs/store';
+import { getExecutionJob, transitionExecutionJob } from '../../src/runtime/execution/jobs/store';
 import { legacySettlementTimeoutMs } from '../../src/runtime/execution/jobs/legacy-adapter';
 import type { LocalBridgeJob } from '../../src/cli/local-bridge/types';
 
@@ -52,8 +52,7 @@ function repository(root: string, controllerHome: string, repoId = 'repo-hardeni
       branch: 'main',
       createdAt: at,
       updatedAt: at,
-      lastSeenAt: at,
-    }],
+      lastSeenAt: at}],
     defaultBranch: 'main',
     repositoryType: 'local-git',
     enabled: true,
@@ -61,8 +60,7 @@ function repository(root: string, controllerHome: string, repoId = 'repo-hardeni
     updatedAt: at,
     lastSeenAt: at,
     configurationPath: join(root, '.ai', 'harness', 'repository.json'),
-    stateStorageStrategy: 'hybrid',
-  };
+    stateStorageStrategy: 'hybrid'};
 }
 
 function forceReconcile(controllerHome: string, campaignId: string) {
@@ -121,8 +119,7 @@ describe('runtime consistency hardening', () => {
 
   test('gives durable legacy settlement more time than the inner operation timeout', () => {
     const job = {
-      payload: { timeoutMs: 8_000 },
-    } as unknown as LocalBridgeJob;
+      payload: { timeoutMs: 8_000 }} as unknown as LocalBridgeJob;
     expect(legacySettlementTimeoutMs(job)).toBe(38_000);
 
     const defaulted = { payload: {} } as unknown as LocalBridgeJob;
@@ -135,9 +132,7 @@ describe('runtime consistency hardening', () => {
     writeFileSync(join(root, '.repo-harness', 'checks.json'), JSON.stringify({
       version: 1,
       checks: {
-        fixture: { command: [process.execPath, '-e', "process.stdout.write('snapshot-ok')"] },
-      },
-    }));
+        fixture: { command: [process.execPath, '-e', "process.stdout.write('snapshot-ok')"] }}}));
     const snapshot = snapshotControllerCheck(root, 'fixture');
     writeFileSync(join(root, '.repo-harness', 'checks.json'), JSON.stringify({ version: 1, checks: {} }));
     const result = await runControllerCheckAsync(root, 'fixture', { snapshot });
@@ -157,14 +152,12 @@ describe('runtime consistency hardening', () => {
     writeFileSync(join(root, 'README.md'), 'pre-existing user change\n');
     const record = repository(root, controllerHome);
     const execution = await executeRepositoryCommandAsync(controllerHome, record, {
-      command: 'git status --short',
-    }, {
+      command: 'git status --short'}, {
       onSpawn: () => {
         const path = join(root, '.ai', 'harness', 'local-jobs', 'fixture');
         mkdirSync(path, { recursive: true });
         writeFileSync(join(path, 'job.json'), '{}\n');
-      },
-    });
+      }});
     expect(execution.ok).toBe(true);
     expect(execution.repositoryChanged).toBe(false);
     expect(execution.changedPaths).toEqual([]);
@@ -183,10 +176,8 @@ describe('runtime consistency hardening', () => {
     writeFileSync(join(root, 'README.md'), 'dirty before command\n');
     const record = repository(root, controllerHome);
     const execution = await executeRepositoryCommandAsync(controllerHome, record, {
-      command: 'git status --short',
-    }, {
-      onSpawn: () => writeFileSync(join(root, 'README.md'), 'changed while command ran\n'),
-    });
+      command: 'git status --short'}, {
+      onSpawn: () => writeFileSync(join(root, 'README.md'), 'changed while command ran\n')});
     expect(execution.repositoryChanged).toBe(true);
     expect(execution.changedPaths).toEqual(['README.md']);
   });
@@ -216,85 +207,4 @@ describe('runtime consistency hardening', () => {
     expect(existsSync(join(quarantineRoot, quarantinedEntry, 'node_modules'))).toBe(false);
   });
 
-  test('terminates no-change Campaign tasks without review or rescheduling', () => {
-    const controllerHome = temporary('repo-harness-campaign-no-change-');
-    const created = createCampaign(controllerHome, {
-      repoId: 'repo-a', checkoutId: 'checkout-a', requestId: 'no-change', semanticKey: 'no-change',
-      title: 'No change', goal: 'Already satisfied', reviewPolicy: 'every_task',
-      tasks: [{ taskId: 'T1', title: 'Inspect', operation: 'record_candidate_finding' }],
-    }).campaign;
-    reconcileCampaign(controllerHome, 'repo-a', created.campaignId);
-    let campaign = getCampaign(controllerHome, 'repo-a', created.campaignId);
-    transitionExecutionJob(controllerHome, 'repo-a', campaign.tasks[0].jobId!, 'running');
-    transitionExecutionJob(controllerHome, 'repo-a', campaign.tasks[0].jobId!, 'succeeded', {
-      result: { changeOutcome: 'no_change' },
-    });
-    forceReconcile(controllerHome, created.campaignId);
-    campaign = getCampaign(controllerHome, 'repo-a', created.campaignId);
-    expect(campaign.tasks[0].status).toBe('succeeded_no_change');
-    expect(campaign.tasks[0].outcome).toBe('already_satisfied');
-    expect(campaign.status).toBe('ready_for_human_acceptance');
-    expect(campaign.checkpoints).toHaveLength(0);
-    expect(campaign.tasks[0].jobId).toBeTruthy();
-  });
-
-  test('fails required-change tasks explicitly as no-effect', () => {
-    const controllerHome = temporary('repo-harness-campaign-no-effect-');
-    const created = createCampaign(controllerHome, {
-      repoId: 'repo-a', checkoutId: 'checkout-a', requestId: 'no-effect', semanticKey: 'no-effect',
-      title: 'Must change', goal: 'Create a diff',
-      tasks: [{ taskId: 'T1', title: 'Change', operation: 'record_candidate_finding', requiresChanges: true }],
-    }).campaign;
-    reconcileCampaign(controllerHome, 'repo-a', created.campaignId);
-    let campaign = getCampaign(controllerHome, 'repo-a', created.campaignId);
-    transitionExecutionJob(controllerHome, 'repo-a', campaign.tasks[0].jobId!, 'running');
-    transitionExecutionJob(controllerHome, 'repo-a', campaign.tasks[0].jobId!, 'succeeded', {
-      result: { changeOutcome: 'no_change' },
-    });
-    forceReconcile(controllerHome, created.campaignId);
-    campaign = getCampaign(controllerHome, 'repo-a', created.campaignId);
-    expect(campaign.tasks[0].status).toBe('failed_no_effect');
-    expect(campaign.tasks[0].error?.code).toBe('CAMPAIGN_NO_EFFECT');
-    expect(campaign.status).toBe('failed');
-    expect(campaign.checkpoints.some((entry) => entry.kind === 'task_review')).toBe(false);
-  });
-
-  test('cancels supervisor trigger Jobs as part of the Campaign cleanup barrier', async () => {
-    const controllerHome = temporary('repo-harness-campaign-supervisor-cancel-');
-    const created = createCampaign(controllerHome, {
-      repoId: 'repo-a', checkoutId: 'checkout-a', requestId: 'cancel-supervisor', semanticKey: 'cancel-supervisor',
-      title: 'Cancel supervisor', goal: 'Cancel all children',
-      tasks: [{ taskId: 'T1', title: 'Task', operation: 'record_candidate_finding' }],
-    }).campaign;
-    const supervisorJob = createExecutionJob(controllerHome, {
-      repoId: 'repo-a', type: 'reconciliation', requestId: 'supervisor-trigger', semanticKey: 'supervisor-trigger',
-      payload: { operation: 'campaign-supervisor' }, origin: { surface: 'system' },
-    }).job;
-    updateCampaign(controllerHome, 'repo-a', created.campaignId, 'open-supervisor-checkpoint', (campaign) => {
-      const opened = openCampaignCheckpoint(campaign, 'failure', 'T1');
-      opened.checkpoint.triggerJobId = supervisorJob.jobId;
-      return campaign;
-    }, { wakeScheduler: false });
-    const cancelled = await cancelCampaign(controllerHome, 'repo-a', created.campaignId, 'cancel-supervisor-request', 'test');
-    expect(cancelled.status).toBe('cancelled');
-    expect(getExecutionJob(controllerHome, 'repo-a', supervisorJob.jobId).status).toBe('cancelled');
-    expect(cancelled.cleanup?.resources.some((entry) => entry.kind === 'job' && entry.id === supervisorJob.jobId)).toBe(true);
-  });
-
-  test('cancels child Jobs before declaring a Campaign cancelled', async () => {
-    const controllerHome = temporary('repo-harness-campaign-cancel-');
-    const created = createCampaign(controllerHome, {
-      repoId: 'repo-a', checkoutId: 'checkout-a', requestId: 'cancel', semanticKey: 'cancel',
-      title: 'Cancel', goal: 'Cancel safely',
-      tasks: [{ taskId: 'T1', title: 'Task', operation: 'record_candidate_finding' }],
-    }).campaign;
-    reconcileCampaign(controllerHome, 'repo-a', created.campaignId);
-    const active = getCampaign(controllerHome, 'repo-a', created.campaignId);
-    const cancelled = await cancelCampaign(controllerHome, 'repo-a', created.campaignId, 'cancel-request', 'test');
-    expect(cancelled.status).toBe('cancelled');
-    expect(cancelled.tasks[0].status).toBe('cancelled');
-    expect(cancelled.cleanup?.finishedAt).toBeTruthy();
-    expect(cancelled.cleanup?.resources.some((entry) => entry.kind === 'job' && entry.id === active.tasks[0].jobId)).toBe(true);
-    expect(cancelled.cleanup?.leaks).toEqual([]);
-  });
 });

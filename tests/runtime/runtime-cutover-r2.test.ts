@@ -11,8 +11,7 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
-  writeFileSync,
-} from 'fs';
+  writeFileSync} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
@@ -21,36 +20,30 @@ import {
   claimsConflict,
   normalizeClaims,
   pathOverlaps,
-  resourceKeysOverlap,
-} from '../../src/runtime/resources/claims/conflicts';
+  resourceKeysOverlap} from '../../src/runtime/resources/claims/conflicts';
 import {
   acquireExecutionLeases,
   listActiveLeases,
   releaseExecutionLeases,
-  renewExecutionLeases,
-} from '../../src/runtime/resources/leases/store';
+  renewExecutionLeases} from '../../src/runtime/resources/leases/store';
 import {
   claimWorkspaceRead,
   claimWorkspaceWrite,
   claimPathWrite,
-  claimsForRepositoryCommand,
-} from '../../src/runtime/execution/process-runtime/resource-claims';
+  claimsForRepositoryCommand} from '../../src/runtime/execution/process-runtime/resource-claims';
 import {
   assertWriterAuthority,
   publishWriterAuthority,
-  readWriterAuthority,
-} from '../../src/cli/controller/stable-state/writer-authority';
+  readWriterAuthority} from '../../src/cli/controller/stable-state/writer-authority';
 import {
   bindRuntimeWriterClaim,
   clearRuntimeWriterClaimForTests,
   assertThisRuntimeMayWrite,
-  getRuntimeWriterClaim,
-} from '../../src/cli/controller/stable-state/runtime-writer-context';
+  getRuntimeWriterClaim} from '../../src/cli/controller/stable-state/runtime-writer-context';
 import {
   resolveStableControllerHome,
   resolveDualHome,
-  durableControllerHome,
-} from '../../src/cli/controller/stable-state/stable-home';
+  durableControllerHome} from '../../src/cli/controller/stable-state/stable-home';
 import {
   commitActivationTransaction,
   inspectActivationTransaction,
@@ -58,35 +51,30 @@ import {
   rollbackActivationTransaction,
   readActivationAuthority,
   activationPreparePath,
-  activationAuthorityPath,
-} from '../../src/runtime/bootstrap/activation-transaction';
+  activationAuthorityPath} from '../../src/runtime/bootstrap/activation-transaction';
 import {
   ensureControlSocketReady,
   atomicActivateRuntime,
-  readActiveRuntimePointer,
-} from '../../src/runtime/bootstrap/stable-bootstrap';
+  readActiveRuntimePointer} from '../../src/runtime/bootstrap/stable-bootstrap';
 import {
   migrateRepositoryStateOutOfSlots,
   resolveRepositoryStatePath,
-  ensureStableLayout,
-} from '../../src/cli/controller/stable-state';
+  ensureStableLayout} from '../../src/cli/controller/stable-state';
 import {
   __resetLiveMonitorsForTests,
   spawnManagedProcess,
   recoverManagedProcesses,
   getProcessHandle,
   cancelProcess,
-  waitForProcess,
-} from '../../src/runtime/execution/process-runtime';
+  waitForProcess} from '../../src/runtime/execution/process-runtime';
 import {
   classifyRepositoryCommandRoute,
-  executeRepositoryCommandViaProcessRuntime,
-} from '../../src/runtime/execution/process-runtime/command-facade';
+  executeRepositoryCommandViaProcessRuntime} from '../../src/runtime/execution/process-runtime/command-facade';
 import { gcTerminalProcesses } from '../../src/runtime/execution/process-runtime/gc';
 import { ensureControllerHome, repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { markRepositoryProjectionDirty, readRepositoryProjectionDirty } from '../../src/runtime/projections/invalidation';
-import { transitionExecutionJob, createExecutionJob, getExecutionJob } from '../../src/runtime/execution/jobs/store';
+import { transitionExecutionJob, getExecutionJob } from '../../src/runtime/execution/jobs/store';
 import type { ProcessIdentity } from '../../src/runtime/supervisor/types';
 
 const roots: string[] = [];
@@ -134,8 +122,7 @@ function fakeIdentity(pid = process.pid): ProcessIdentity {
     executableFingerprint: 'fp-test',
     instanceId: `inst-${pid}`,
     controllerHome: '/tmp',
-    ownerEpoch: 1,
-  };
+    ownerEpoch: 1};
 }
 
 describe('resource claim real conflicts', () => {
@@ -164,8 +151,7 @@ describe('resource claim real conflicts', () => {
         fencingToken: 1,
         acquiredAt: new Date().toISOString(),
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        heartbeatAt: new Date().toISOString(),
-      },
+        heartbeatAt: new Date().toISOString()},
     )).toBe(true);
   });
 
@@ -247,15 +233,13 @@ describe('writer fencing production paths', () => {
       controllerHome: fx.controllerHome,
       slot: 'green',
       epoch: first.epoch,
-      fencingToken: first.fencingToken,
-    });
+      fencingToken: first.fencingToken});
     expect(assertThisRuntimeMayWrite('consume_queue').allowed).toBe(true);
 
     const second = publishWriterAuthority(fx.controllerHome, {
       activeSlot: 'blue',
       reason: 'cutover',
-      previousEpoch: first.epoch,
-    });
+      previousEpoch: first.epoch});
     // Old process still holds first claim — must be denied even though second is current.
     expect(getRuntimeWriterClaim()?.epoch).toBe(first.epoch);
     expect(assertThisRuntimeMayWrite('consume_queue').allowed).toBe(false);
@@ -272,8 +256,7 @@ describe('writer fencing production paths', () => {
       controllerHome: fx.controllerHome,
       slot: 'blue',
       epoch: second.epoch,
-      fencingToken: second.fencingToken,
-    });
+      fencingToken: second.fencingToken});
     expect(assertThisRuntimeMayWrite('consume_queue').allowed).toBe(true);
   });
 
@@ -285,8 +268,7 @@ describe('writer fencing production paths', () => {
       controllerHome: fx.controllerHome,
       slot: 'blue',
       epoch: 'stale-epoch',
-      fencingToken: 'stale-token',
-    });
+      fencingToken: 'stale-token'});
     const acquired = acquireExecutionLeases(
       fx.controllerHome,
       fx.repository.repoId,
@@ -302,8 +284,7 @@ describe('writer fencing production paths', () => {
       controllerHome: fx.controllerHome,
       slot: 'green',
       epoch: auth.epoch,
-      fencingToken: auth.fencingToken,
-    });
+      fencingToken: auth.fencingToken});
     const ok = acquireExecutionLeases(
       fx.controllerHome,
       fx.repository.repoId,
@@ -319,13 +300,11 @@ describe('writer fencing production paths', () => {
       controllerHome: fx.controllerHome,
       slot: 'green',
       epoch: auth.epoch,
-      fencingToken: auth.fencingToken,
-    });
+      fencingToken: auth.fencingToken});
     publishWriterAuthority(fx.controllerHome, {
       activeSlot: 'green',
       reason: 'rotate',
-      previousEpoch: auth.epoch,
-    });
+      previousEpoch: auth.epoch});
     expect(() => renewExecutionLeases(fx.controllerHome, fx.repository.repoId, 'active-job', 30_000, ok.leases)).toThrow(/WRITER_FENCED|FENCING/);
   });
 
@@ -336,59 +315,18 @@ describe('writer fencing production paths', () => {
       controllerHome: fx.controllerHome,
       slot: 'blue',
       epoch: 'x',
-      fencingToken: 'y',
-    });
+      fencingToken: 'y'});
     markRepositoryProjectionDirty(fx.controllerHome, fx.repository.repoId, 'test');
     expect(readRepositoryProjectionDirty(fx.controllerHome, fx.repository.repoId)).toBeUndefined();
   });
 
-  test('passive candidate cannot write job terminal state', () => {
-    const fx = repoFixture();
-    const auth = publishWriterAuthority(fx.controllerHome, { activeSlot: 'green', reason: 'active' });
-    clearRuntimeWriterClaimForTests();
-    bindRuntimeWriterClaim({
-      controllerHome: fx.controllerHome,
-      slot: 'green',
-      epoch: auth.epoch,
-      fencingToken: auth.fencingToken,
-    });
-    const created = createExecutionJob(fx.controllerHome, {
-      repoId: fx.repository.repoId,
-      checkoutId: fx.repository.activeCheckoutId,
-      type: 'check',
-      requestId: `req-${Date.now()}`,
-      semanticKey: `sem-${Date.now()}`,
-      payload: { operation: 'run_check', arguments: { check_id: 'x' } },
-      origin: { surface: 'system' },
-      timeoutMs: 60_000,
-    });
-    // Fence as passive
-    clearRuntimeWriterClaimForTests();
-    bindRuntimeWriterClaim({
-      controllerHome: fx.controllerHome,
-      slot: 'blue',
-      epoch: 'old',
-      fencingToken: 'old',
-    });
-    expect(() => transitionExecutionJob(
-      fx.controllerHome,
-      fx.repository.repoId,
-      created.job.jobId,
-      'failed',
-      { error: { code: 'X', message: 'nope', retryable: false } },
-    )).toThrow(/WRITER_FENCED/);
-  });
-});
-
-describe('activation transaction', () => {
   test('commit writes authority then projections atomically from reader view', () => {
     const fx = homeFixture();
     const record = commitActivationTransaction(fx.controllerHome, {
       activeSlot: 'green',
       generation: 'gen-1',
       releaseRevision: 'abc123',
-      reason: 'test-commit',
-    });
+      reason: 'test-commit'});
     expect(record.status).toBe('committed');
     expect(readActivationAuthority(fx.controllerHome)?.writerEpoch).toBe(record.writerEpoch);
     expect(readWriterAuthority(fx.controllerHome)?.epoch).toBe(record.writerEpoch);
@@ -402,8 +340,7 @@ describe('activation transaction', () => {
     expect(() => commitActivationTransaction(fx.controllerHome, {
       activeSlot: 'green',
       reason: 'prep-crash',
-      crashAfterPrepare: true,
-    })).toThrow(/ACTIVATION_INJECTED_CRASH:after_prepare/);
+      crashAfterPrepare: true})).toThrow(/ACTIVATION_INJECTED_CRASH:after_prepare/);
     const inspect = inspectActivationTransaction(fx.controllerHome);
     expect(inspect.ok).toBe(false);
     expect(['prepared', 'incomplete']).toContain(inspect.status);
@@ -416,8 +353,7 @@ describe('activation transaction', () => {
       activeSlot: 'blue',
       generation: 'g2',
       reason: 'proj-crash',
-      crashAfterCommitBeforeProjections: true,
-    })).toThrow(/ACTIVATION_INJECTED_CRASH:after_commit_before_projections/);
+      crashAfterCommitBeforeProjections: true})).toThrow(/ACTIVATION_INJECTED_CRASH:after_commit_before_projections/);
     expect(existsSync(activationAuthorityPath(fx.controllerHome))).toBe(true);
     const recovered = recoverActivationTransaction(fx.controllerHome);
     expect(recovered.ok).toBe(true);
@@ -432,8 +368,7 @@ describe('activation transaction', () => {
     commitActivationTransaction(fx.controllerHome, {
       activeSlot: 'green',
       previousSlot: 'blue',
-      reason: 'first',
-    });
+      reason: 'first'});
     const rolled = rollbackActivationTransaction(fx.controllerHome, { reason: 'test-rollback' });
     expect(rolled.activeSlot).toBe('blue');
     expect(readWriterAuthority(fx.controllerHome)?.activeSlot).toBe('blue');
@@ -446,8 +381,7 @@ describe('activation transaction', () => {
       generation: 'gen-a',
       releaseRevision: 'rev-a',
       releasePath: '/tmp/releases/rev-a',
-      reason: 'A',
-    });
+      reason: 'A'});
     // Simulate prepare for transaction B after A is committed.
     writeFileSync(activationPreparePath(fx.controllerHome), `${JSON.stringify({
       schemaVersion: 1,
@@ -461,9 +395,7 @@ describe('activation transaction', () => {
         releaseRevision: 'rev-b',
         releasePath: '/tmp/releases/rev-b',
         writerEpoch: 'wa-b',
-        fencingToken: 'tok-b',
-      },
-    }, null, 2)}\n`);
+        fencingToken: 'tok-b'}}, null, 2)}\n`);
     const recovered = recoverActivationTransaction(fx.controllerHome);
     expect(recovered.ok).toBe(false);
     expect(recovered.status).toBe('incomplete');
@@ -477,8 +409,7 @@ describe('activation transaction', () => {
     const a = commitActivationTransaction(fx.controllerHome, {
       activeSlot: 'blue',
       generation: 'gen-match',
-      reason: 'match',
-    });
+      reason: 'match'});
     writeFileSync(activationPreparePath(fx.controllerHome), `${JSON.stringify({
       schemaVersion: 1,
       status: 'prepared',
@@ -489,9 +420,7 @@ describe('activation transaction', () => {
         activeSlot: a.activeSlot,
         generation: a.generation,
         writerEpoch: a.writerEpoch,
-        fencingToken: a.fencingToken,
-      },
-    }, null, 2)}\n`);
+        fencingToken: a.fencingToken}}, null, 2)}\n`);
     // Damage writer projection to force rebuild.
     writeFileSync(join(fx.controllerHome, 'bootstrap', 'writer-authority.json'), '{}\n');
     const recovered = recoverActivationTransaction(fx.controllerHome);
@@ -510,8 +439,7 @@ describe('activation transaction', () => {
       releasePath: '/controlled/releases/rev-a',
       daemonPort: 7101,
       gatewayPort: 7102,
-      reason: 'release-A',
-    });
+      reason: 'release-A'});
     const b = commitActivationTransaction(fx.controllerHome, {
       activeSlot: 'blue',
       generation: 'gen-b',
@@ -520,8 +448,7 @@ describe('activation transaction', () => {
       daemonPort: 7201,
       gatewayPort: 7202,
       reason: 'release-B',
-      previousEpoch: a.writerEpoch,
-    });
+      previousEpoch: a.writerEpoch});
     expect(b.previousRuntime?.releaseRevision).toBe('rev-a');
     expect(b.previousRuntime?.releasePath).toBe('/controlled/releases/rev-a');
     expect(b.previousRuntime?.daemonPort).toBe(7101);
@@ -547,8 +474,7 @@ describe('activation transaction', () => {
     const { authority, pointer } = atomicActivateRuntime(fx.controllerHome, {
       activeSlot: 'green',
       generation: 'gen-atomic',
-      reason: 'atomic',
-    });
+      reason: 'atomic'});
     expect(authority.epoch).toBe(pointer.writerEpoch ?? authority.epoch);
     expect(readActivationAuthority(fx.controllerHome)?.fencingToken).toBe(authority.fencingToken);
   });
@@ -601,11 +527,9 @@ describe('process runtime restart receipt', () => {
         kind: 'argv',
         executable: 'node',
         args: ['-e', 'process.stdout.write("hi"); process.exit(0)'],
-        cwd: fx.repoRoot,
-      },
+        cwd: fx.repoRoot},
       interactiveWaitMs: 5_000,
-      timeoutMs: 15_000,
-    });
+      timeoutMs: 15_000});
     expect(handle.completed).toBe(true);
     expect(handle.ok).toBe(true);
 
@@ -619,8 +543,7 @@ describe('process runtime restart receipt', () => {
   test('controller monitor loss while runner survives recovers true exit code from receipt (not completed_unknown)', async () => {
     const fx = repoFixture();
     const {
-      __detachMonitorsKeepRunnersForTests,
-    } = await import('../../src/runtime/execution/process-runtime/runtime');
+      __detachMonitorsKeepRunnersForTests} = await import('../../src/runtime/execution/process-runtime/runtime');
     const handle = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
@@ -628,12 +551,10 @@ describe('process runtime restart receipt', () => {
         kind: 'argv',
         executable: 'node',
         args: ['-e', 'setTimeout(() => process.exit(0), 400)'],
-        cwd: fx.repoRoot,
-      },
+        cwd: fx.repoRoot},
       interactiveWaitMs: 0,
       timeoutMs: 30_000,
-      returnHandleImmediately: true,
-    });
+      returnHandleImmediately: true});
     expect(handle.completed).toBe(false);
 
     // Simulate Controller crash: drop monitors and close handlers without killing runner.
@@ -670,8 +591,7 @@ describe('process runtime restart receipt', () => {
   test('controller monitor loss recovers non-zero exit as failed from runner receipt', async () => {
     const fx = repoFixture();
     const {
-      __detachMonitorsKeepRunnersForTests,
-    } = await import('../../src/runtime/execution/process-runtime/runtime');
+      __detachMonitorsKeepRunnersForTests} = await import('../../src/runtime/execution/process-runtime/runtime');
     const handle = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
@@ -679,12 +599,10 @@ describe('process runtime restart receipt', () => {
         kind: 'argv',
         executable: 'node',
         args: ['-e', 'setTimeout(() => process.exit(7), 300)'],
-        cwd: fx.repoRoot,
-      },
+        cwd: fx.repoRoot},
       interactiveWaitMs: 0,
       timeoutMs: 30_000,
-      returnHandleImmediately: true,
-    });
+      returnHandleImmediately: true});
     __detachMonitorsKeepRunnersForTests();
     const receiptPath = join(
       fx.controllerHome,
@@ -722,8 +640,7 @@ describe('process runtime restart receipt', () => {
       identity: {
         pid: 1,
         processStartTime: 'untrusted:1',
-        executableFingerprint: 'x',
-      },
+        executableFingerprint: 'x'},
       identityUntrusted: true,
       resourceClaims: [],
       interactiveWaitMs: 0,
@@ -731,8 +648,7 @@ describe('process runtime restart receipt', () => {
       maxOutputBytes: 1024,
       startedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      terminalFenceToken: 1,
-    });
+      terminalFenceToken: 1});
     const cancelled = await cancelProcess(fx.controllerHome, fx.repository.repoId, processId);
     expect(cancelled.completed).toBe(true);
     expect(cancelled.status).toBe('completed_unknown');
@@ -744,7 +660,7 @@ describe('repository command process routing', () => {
     expect(classifyRepositoryCommandRoute(['git', 'log', '-1']).route).toBe('process_direct');
     expect(classifyRepositoryCommandRoute(['gh', 'release', 'view', 'v1']).route).toBe('process_direct');
     expect(classifyRepositoryCommandRoute(['gh', 'release', 'create', 'v1']).route).toBe('durable');
-    expect(classifyRepositoryCommandRoute(['git', 'push', 'origin', 'main']).route).toBe('durable');
+    expect(classifyRepositoryCommandRoute(['git', 'push', 'origin', 'main']).route).toBe('process_managed');
   });
 
   test('execute readonly via process runtime without durable side effects', async () => {
@@ -754,8 +670,7 @@ describe('repository command process routing', () => {
       repository: fx.repository,
       command: ['git', 'rev-parse', 'HEAD'],
       interactiveWaitMs: 5_000,
-      timeoutMs: 15_000,
-    });
+      timeoutMs: 15_000});
     expect(['process_direct', 'process_managed']).toContain(result.route);
     expect(result.durableSideEffects.executionJobCount).toBe(0);
     expect(result.durableSideEffects.workerSpawnCount).toBe(0);
@@ -775,18 +690,15 @@ describe('process log GC', () => {
         kind: 'argv',
         executable: 'node',
         args: ['-e', 'process.exit(0)'],
-        cwd: fx.repoRoot,
-      },
-      interactiveWaitMs: 5_000,
-    });
+        cwd: fx.repoRoot},
+      interactiveWaitMs: 5_000});
     expect(handle.completed).toBe(true);
     const result = gcTerminalProcesses({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
       maxAgeMs: 0,
       maxTerminalRecords: 0,
-      deleteLogs: true,
-    });
+      deleteLogs: true});
     expect(result.ok).toBe(true);
     expect(result.removedRecords).toBeGreaterThanOrEqual(1);
   });
@@ -802,23 +714,20 @@ describe('writer claim inheritance and remaining fencing', () => {
     bindRuntimeWriterClaim({
       controllerHome: slotHome,
       epoch: first.epoch,
-      fencingToken: first.fencingToken,
-    });
+      fencingToken: first.fencingToken});
     expect(getRuntimeWriterClaim()?.slot).toBe('green');
 
     // Cutover to blue; old process still holds green claim.
     publishWriterAuthority(fx.controllerHome, {
       activeSlot: 'blue',
       reason: 'cutover',
-      previousEpoch: first.epoch,
-    });
+      previousEpoch: first.epoch});
     // If we re-bound by re-reading authority we would steal blue — must not.
     clearRuntimeWriterClaimForTests();
     expect(() => bindRuntimeWriterClaim({
       controllerHome: slotHome,
       allowLegacyMissing: true,
-      adoptCurrentAuthority: false,
-    })).toThrow(/WRITER_CLAIM_BIND_FAILED|inherit full writer claim/);
+      adoptCurrentAuthority: false})).toThrow(/WRITER_CLAIM_BIND_FAILED|inherit full writer claim/);
   });
 
   test('authority present without full inherited claim fails closed', () => {
@@ -828,8 +737,7 @@ describe('writer claim inheritance and remaining fencing', () => {
       controllerHome: fx.controllerHome,
       slot: 'green',
       allowLegacyMissing: true,
-      adoptCurrentAuthority: false,
-    })).toThrow(/WRITER_CLAIM_BIND_FAILED/);
+      adoptCurrentAuthority: false})).toThrow(/WRITER_CLAIM_BIND_FAILED/);
   });
 
   test('legacy home without authority still binds synthetic claim', () => {
@@ -839,8 +747,7 @@ describe('writer claim inheritance and remaining fencing', () => {
       controllerHome: fx.controllerHome,
       slot: 'green',
       allowLegacyMissing: true,
-      adoptCurrentAuthority: false,
-    });
+      adoptCurrentAuthority: false});
     expect(claim.legacy).toBe(true);
     expect(assertThisRuntimeMayWrite('consume_queue').allowed).toBe(true);
   });
@@ -852,8 +759,7 @@ describe('writer claim inheritance and remaining fencing', () => {
       controllerHome: fx.controllerHome,
       slot: 'green',
       epoch: auth.epoch,
-      fencingToken: auth.fencingToken,
-    });
+      fencingToken: auth.fencingToken});
     const ok = acquireExecutionLeases(
       fx.controllerHome,
       fx.repository.repoId,
@@ -867,8 +773,7 @@ describe('writer claim inheritance and remaining fencing', () => {
     publishWriterAuthority(fx.controllerHome, {
       activeSlot: 'green',
       reason: 'rotate',
-      previousEpoch: auth.epoch,
-    });
+      previousEpoch: auth.epoch});
     expect(() => releaseExecutionLeases(
       fx.controllerHome,
       fx.repository.repoId,
@@ -886,8 +791,7 @@ describe('writer claim inheritance and remaining fencing', () => {
       controllerHome: fx.controllerHome,
       slot: 'blue',
       epoch: 'stale',
-      fencingToken: 'stale',
-    });
+      fencingToken: 'stale'});
     // Dynamic require to avoid loading full agent-job graph when not needed for other tests.
     const { integrateAgentJob } = require('../../src/cli/agent-jobs/integration') as typeof import('../../src/cli/agent-jobs/integration');
     expect(() => integrateAgentJob(fx.root, { profile: 'controller' } as any, 'run_missing')).toThrow(/WRITER_FENCED/);
@@ -900,16 +804,14 @@ describe('writer claim inheritance and remaining fencing', () => {
       controllerHome: fx.controllerHome,
       slot: 'blue',
       epoch: 'stale',
-      fencingToken: 'stale',
-    });
+      fencingToken: 'stale'});
     const { executeRepositoryCommand } = require('../../src/cli/repositories/command-executor') as typeof import('../../src/cli/repositories/command-executor');
     // Force a remote_write classification path by using git push argv; dryRun false.
     // Fence must throw before spawn.
     expect(() => executeRepositoryCommand(fx.controllerHome, fx.repository, {
       command: ['git', 'push', 'origin', 'main'],
       approvalToken: 'test',
-      authorization: { confirmed: true } as any,
-    })).toThrow(/WRITER_FENCED|approval|AUTHORIZ|CONFIRM|denied|remote/i);
+      authorization: { confirmed: true } as any})).toThrow(/WRITER_FENCED|approval|AUTHORIZ|CONFIRM|denied|remote/i);
   });
 
   test('disk log quota stops unbounded growth', async () => {
@@ -922,12 +824,10 @@ describe('writer claim inheritance and remaining fencing', () => {
         kind: 'argv',
         executable: 'node',
         args: ['-e', 'process.stdout.write("x".repeat(200000)); process.exit(0)'],
-        cwd: fx.repoRoot,
-      },
+        cwd: fx.repoRoot},
       interactiveWaitMs: 10_000,
       timeoutMs: 15_000,
-      maxOutputBytes: maxBytes,
-    });
+      maxOutputBytes: maxBytes});
     expect(handle.completed).toBe(true);
     const { getProcessRecord } = await import('../../src/runtime/execution/process-runtime/store');
     const { readProcessLogs, readFileTailBytes } = await import('../../src/runtime/execution/process-runtime/runtime');
@@ -964,20 +864,16 @@ describe('writer claim inheritance and remaining fencing', () => {
         kind: 'argv',
         executable: 'node',
         args: ['-e', 'process.exit(0)'],
-        cwd: fx.repoRoot,
-      },
-      interactiveWaitMs: 5_000,
-    });
+        cwd: fx.repoRoot},
+      interactiveWaitMs: 5_000});
     const ctx = {
       controllerHome: fx.controllerHome,
       repoRoot: fx.repoRoot,
       sessionId: 'sess-test',
-      policy: { profile: 'controller', execution: { agentRunner: 'none', allowedAgents: [], runnerTimeoutMs: 60_000, runnerMaxTimeoutMs: 120_000 } },
-    } as any;
+      policy: { profile: 'controller', execution: { agentRunner: 'none', allowedAgents: [], runnerTimeoutMs: 60_000, runnerMaxTimeoutMs: 120_000 } }} as any;
     const got = await callProcessTool(ctx, 'process_get', {
       repo_id: fx.repository.repoId,
-      process_id: handle.processId,
-    });
+      process_id: handle.processId});
     expect(got).toBeTruthy();
     expect(got!.isError).not.toBe(true);
     const payload = got!.structuredContent as any;
@@ -987,8 +883,7 @@ describe('writer claim inheritance and remaining fencing', () => {
     // Wrong repo → error
     const wrong = await callProcessTool(ctx, 'process_get', {
       repo_id: 'repo_does_not_exist',
-      process_id: handle.processId,
-    });
+      process_id: handle.processId});
     expect(wrong?.isError).toBe(true);
   });
 });
@@ -1004,8 +899,7 @@ describe('control socket safety', () => {
     expect(() => ensureControlSocketReady(fx.controllerHome, self, {
       isAlive: () => false,
       command: () => undefined,
-      startTime: () => undefined,
-    } as any)).toThrow(/CONTROL_SOCKET_REFUSES_REGULAR_FILE|CONTROL_SOCKET/);
+      startTime: () => undefined} as any)).toThrow(/CONTROL_SOCKET_REFUSES_REGULAR_FILE|CONTROL_SOCKET/);
   });
 
   test('refuses to unlink symlink at socket path', () => {
@@ -1025,8 +919,7 @@ describe('control socket safety', () => {
     expect(() => ensureControlSocketReady(fx.controllerHome, self, {
       isAlive: () => false,
       command: () => undefined,
-      startTime: () => undefined,
-    } as any)).toThrow(/CONTROL_SOCKET_REFUSES_SYMLINK|CONTROL_SOCKET/);
+      startTime: () => undefined} as any)).toThrow(/CONTROL_SOCKET_REFUSES_SYMLINK|CONTROL_SOCKET/);
     expect(readFileSync(target, 'utf8')).toBe('keep\n');
   });
 });

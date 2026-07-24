@@ -24,18 +24,27 @@ function value(result: Awaited<ReturnType<typeof callMcpTool>>): Record<string, 
 }
 
 describe('direct local agent entrypoint', () => {
-  test('publishes quick_agent_session as a first-class Codex/Claude tool', () => {
+  test('keeps quick_agent_session visible only as a compatibility surface', () => {
     const definitions = buildMcpToolDefinitions(fixture().policy);
     const quick = definitions.find((tool) => tool.name === 'quick_agent_session');
-    expect(quick).toBeTruthy();
-    expect(JSON.stringify(quick?.inputSchema)).toContain('objective');
-    expect(JSON.stringify(quick?.inputSchema)).not.toContain('issue_id');
+    // May still be advertised for clients, but execution is retired.
+    if (quick) {
+      expect(JSON.stringify(quick.inputSchema)).toContain('objective');
+      expect(JSON.stringify(quick.inputSchema)).not.toContain('issue_id');
+    }
   });
 
-  test('dispatch_task returns actionable input errors instead of issue not found for empty ids', async () => {
+  test('dispatch_task returns a structured Agent Run retirement response', async () => {
     const result = value(await callMcpTool(fixture(), 'dispatch_task', { agent: 'codex' }));
-    expect(result.error.code).toBe('ISSUE_ID_REQUIRED');
-    expect(result.error.message).toContain('quick_agent_session');
-    expect(result.error.message).not.toContain('issue not found');
+    expect(result.error.code).toMatch(/AGENT_RUN_(DEPRECATED|RETIRED)/);
+    expect(result.error.message).toMatch(/external SuperController|Thin Launcher|retired|deprecated/i);
+  });
+
+  test('quick_agent_session returns a structured Agent Run retirement response', async () => {
+    const result = value(await callMcpTool(fixture(), 'quick_agent_session', {
+      objective: 'noop',
+      agent: 'codex',
+    }));
+    expect(result.error?.code ?? result.code ?? result.rejectCode ?? '').toMatch(/AGENT_RUN|LOCAL_BRIDGE|RETIRED|DEPRECATED|EXTERNAL_CONTROLLER/i);
   });
 });

@@ -413,3 +413,16 @@ Date: 2026-07-24
 - Remaining createExecutionJob call sites exist but storage rejects new creation.
 - Regression after schedule stage: work-submit-hardening + thin-harness **48 pass / 0 fail**.
 
+
+## Stage: retire embedded agent and legacy job expectations
+
+Date: 2026-07-24
+
+- Campaign supervised tests now assert frozen migration to Work + Handoff, zero
+  ExecutionJobs, and empty automatic ticks.
+- ExecutionJob / Agent worker lifecycle suites assert `EXECUTION_JOB_RETIRED`
+  and the absence of `job-worker.ts`.
+- Local Bridge Job creation expectations were stripped from repository-command
+  and recovery suites; Process Runtime / argv / fencing coverage remains.
+- Schedule and target-architecture tests assert external-controller handoffs for
+  non-deterministic operations.

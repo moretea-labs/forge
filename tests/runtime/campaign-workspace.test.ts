@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -9,8 +9,6 @@ import {
   selectRepositoryCheckout,
 } from '../../src/cli/repositories/registry';
 import { ensureCampaignWorkspace } from '../../src/runtime/workflow/campaigns/workspace';
-import { createExecutionJob } from '../../src/runtime/execution/jobs/store';
-import { executeExecutionJob } from '../../src/runtime/execution/workers/executor';
 
 const roots: string[] = [];
 function fixture() {
@@ -77,34 +75,16 @@ describe('Campaign workspace isolation', () => {
     expect(next.root).toBeTruthy();
   });
 
-  test('routes Execution Jobs to their recorded checkout rather than the active workspace', async () => {
+  test('keeps managed campaign checkouts addressable without creating ExecutionJobs', () => {
     const { controllerHome, repository } = fixture();
     const workspace = ensureCampaignWorkspace(controllerHome, repository, {
       requestId: 'campaign-request-routing',
       title: 'Checkout routing',
     });
     writeFileSync(join(workspace.root!, 'marker.txt'), 'campaign checkout\n');
-
-    const created = createExecutionJob(controllerHome, {
-      repoId: repository.repoId,
-      checkoutId: workspace.checkoutId,
-      type: 'mcp-tool',
-      requestId: 'read-campaign-checkout',
-      semanticKey: 'test:campaign-checkout-routing',
-      origin: { surface: 'system', actor: 'test' },
-      payload: {
-        operation: 'read_repository_file',
-        arguments: { path: 'marker.txt', start_line: 1, end_line: 2 },
-        target: 'mcp-tool',
-        profile: 'controller',
-      },
-      resourceClaims: [],
-    });
-
-    const result = await executeExecutionJob(controllerHome, created.job);
-    expect(result.ok).toBe(true);
-    expect(result.repoRoot).toBe(workspace.root!);
-    expect(JSON.stringify(result.result)).toContain('campaign checkout');
-    expect(JSON.stringify(result.result)).not.toContain('source checkout');
+    const registered = getRepository(repository.repoId, controllerHome);
+    const checkout = selectRepositoryCheckout(registered, workspace.checkoutId);
+    expect(checkout.canonicalRoot).toBe(workspace.root!);
+    expect(readFileSync(join(checkout.canonicalRoot, 'marker.txt'), 'utf8')).toContain('campaign checkout');
   });
 });
