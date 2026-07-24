@@ -55,15 +55,12 @@ import {
 } from "../github/plugin";
 import {
   cancelLocalBridgeJob,
-  dispatchLocalBridgeJob,
   executeLocalBridgeJob,
-  failLocalBridgeJob,
   getLocalBridgeJob,
   getLocalBridgeJobEvents,
   listLocalBridgeJobs,
   localBridgeTimeoutPolicy,
   reconcileLocalBridgeJobs,
-  submitLocalBridgeJob,
 } from "./job-store";
 import {
   createEditSavepoint,
@@ -75,7 +72,6 @@ import {
   verifyEditSession,
 } from "../editing/edit-session";
 import { localBridgeDashboardHtml } from "./dashboard";
-import type { LocalBridgeJobRequest } from "./types";
 import {
   ackConsoleHandoff,
   approveConsoleHandoff,
@@ -275,30 +271,11 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function localBridgeExecutionRetired(): boolean {
-  return true;
-}
-
 function localBridgeExecutionRetiredPayload(): Record<string, unknown> {
   return {
     error: "LOCAL_BRIDGE_JOB_RETIRED",
     message: "New Local Bridge Jobs are retired. Claim Work through an external Controller, or use the Process Runtime for deterministic commands and checks.",
   };
-}
-
-function asyncExecute(repoRoot: string, jobId: string): void {
-  setTimeout(() => {
-    try {
-      dispatchLocalBridgeJob(repoRoot, jobId);
-    } catch (error) {
-      failLocalBridgeJob(
-        repoRoot,
-        jobId,
-        `JOB_DISPATCH_FAILED: ${errorMessage(error)}`,
-        { stage: "dispatch", retryable: false },
-      );
-    }
-  }, 0);
 }
 
 function queryString(value: unknown): string | undefined {
@@ -2468,102 +2445,11 @@ export async function startLocalBridgeServer(
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/tasks/launch-ready", (request, response) => {
-    try {
-      if (localBridgeExecutionRetired()) {
-        response.status(410).json(localBridgeExecutionRetiredPayload());
-        return;
-      }
-      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      const board = projectBoard(repoRoot);
-      const maxParallel = Math.max(1, Math.min(Number(request.body?.maxParallel ?? 2), 4));
-      const selected: Array<{ issueId: string; taskId: string }> = [];
-      const selectedTasks: Array<ReturnType<typeof getIssue>["tasks"][number]> = [];
-      const skipped: Array<{ issueId: string; taskId: string; reason: string }> = [];
-      for (const candidate of board.queueableTasks) {
-        if (selected.length >= maxParallel) break;
-        const issueId = String(candidate.issueId ?? "");
-        const taskId = String(candidate.taskId ?? "");
-        const issue = getIssue(repoRoot, issueId);
-        const task = issue.tasks.find((entry) => entry.id === taskId);
-        if (!task) continue;
-        if (selectedTasks.some((entry) => taskWriteScopesConflict(entry, task))) {
-          skipped.push({ issueId, taskId, reason: "allowed path scope overlaps another selected Task" });
-          continue;
-        }
-        selected.push({ issueId, taskId });
-        selectedTasks.push(task);
-      }
-      const jobs = selected.map(({ issueId, taskId }) => {
-        const job = submitLocalBridgeJob(repoRoot, {
-          action: "launch-task",
-          requestedBy: "local-ui",
-          payload: {
-            issueId,
-            taskId,
-            timeoutMs: typeof request.body?.timeoutMs === "number" ? request.body.timeoutMs : undefined,
-            isolate: typeof request.body?.isolate === "boolean" ? request.body.isolate : undefined,
-          },
-        });
-        if (job.status === "approved") asyncExecute(repoRoot, job.jobId);
-        return job;
-      });
-      response.status(202).json({
-        jobs,
-        skipped,
-        currentFocus: loadControllerProjectState(repoRoot).currentIssueId,
-        focusIsInformational: true,
-      });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
+  app.post("/api/tasks/launch-ready", (_request, response) => {
+    response.status(410).json(localBridgeExecutionRetiredPayload());
   });
-  app.post("/api/issues/:issueId/launch", (request, response) => {
-    try {
-      if (localBridgeExecutionRetired()) {
-        response.status(410).json(localBridgeExecutionRetiredPayload());
-        return;
-      }
-      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      const readiness = inspectIssueReadiness(repoRoot, request.params.issueId);
-      if (!readiness.queueable) {
-        response.status(409).json({ error: "Issue has no queueable Tasks.", readiness });
-        return;
-      }
-      saveControllerProjectState(repoRoot, { currentIssueId: request.params.issueId }, "local-ui");
-      const issue = getIssue(repoRoot, request.params.issueId);
-      const maxParallel = Math.max(1, Math.min(Number(request.body?.maxParallel ?? readiness.suggestedMaxParallel), readiness.queueableTaskIds.length));
-      const selected = [] as typeof issue.tasks;
-      const skipped: Array<{ taskId: string; reason: string }> = [];
-      for (const taskId of readiness.queueableTaskIds) {
-        if (selected.length >= maxParallel) break;
-        const task = issue.tasks.find((entry) => entry.id === taskId);
-        if (!task) continue;
-        if (selected.some((entry) => taskWriteScopesConflict(entry, task))) {
-          skipped.push({ taskId, reason: "allowed path scope overlaps another selected Task" });
-          continue;
-        }
-        selected.push(task);
-      }
-      const jobs = selected.map((task) => {
-        const job = submitLocalBridgeJob(repoRoot, {
-          action: "launch-task",
-          requestedBy: "local-ui",
-          payload: {
-            issueId: request.params.issueId,
-            taskId: task.id,
-            agent: ["codex", "claude", "github-copilot"].includes(String(request.body?.agent)) ? request.body.agent : undefined,
-            timeoutMs: typeof request.body?.timeoutMs === "number" ? request.body.timeoutMs : undefined,
-            isolate: typeof request.body?.isolate === "boolean" ? request.body.isolate : undefined,
-          },
-        });
-        if (job.status === "approved") asyncExecute(repoRoot, job.jobId);
-        return job;
-      });
-      response.status(202).json({ readiness, jobs, skipped });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
+  app.post("/api/issues/:issueId/launch", (_request, response) => {
+    response.status(410).json(localBridgeExecutionRetiredPayload());
   });
   app.post("/api/issues/:issueId/archive", (request, response) => {
     try {
@@ -2579,35 +2465,8 @@ export async function startLocalBridgeServer(
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/issues/:issueId/tasks/:taskId/launch", (request, response) => {
-    try {
-      if (localBridgeExecutionRetired()) {
-        response.status(410).json(localBridgeExecutionRetiredPayload());
-        return;
-      }
-      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      const readiness = inspectTaskReadiness(repoRoot, request.params.issueId, request.params.taskId);
-      if (!readiness.queueable) {
-        response.status(409).json({ error: "Task has launch blockers.", readiness });
-        return;
-      }
-      saveControllerProjectState(repoRoot, { currentIssueId: request.params.issueId }, "local-ui");
-      const job = submitLocalBridgeJob(repoRoot, {
-        action: "launch-task",
-        requestedBy: "local-ui",
-        payload: {
-          issueId: request.params.issueId,
-          taskId: request.params.taskId,
-          agent: ["codex", "claude", "github-copilot"].includes(String(request.body?.agent)) ? request.body.agent : undefined,
-          timeoutMs: typeof request.body?.timeoutMs === "number" ? request.body.timeoutMs : undefined,
-          isolate: typeof request.body?.isolate === "boolean" ? request.body.isolate : undefined,
-        },
-      });
-      if (job.status === "approved") asyncExecute(repoRoot, job.jobId);
-      response.status(202).json(job);
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
+  app.post("/api/issues/:issueId/tasks/:taskId/launch", (_request, response) => {
+    response.status(410).json(localBridgeExecutionRetiredPayload());
   });
   app.post("/api/issues/:issueId/tasks/:taskId/verify", async (request, response) => {
     try {
@@ -3105,22 +2964,8 @@ export async function startLocalBridgeServer(
       response.status(404).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/jobs", (request, response) => {
-    try {
-      if (localBridgeExecutionRetired()) {
-        response.status(410).json(localBridgeExecutionRetiredPayload());
-        return;
-      }
-      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      const job = submitLocalBridgeJob(
-        repoRoot,
-        request.body as LocalBridgeJobRequest,
-      );
-      if (job.status === "approved") asyncExecute(repoRoot, job.jobId);
-      response.status(202).json(job);
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
+  app.post("/api/jobs", (_request, response) => {
+    response.status(410).json(localBridgeExecutionRetiredPayload());
   });
   app.post("/api/jobs/:jobId/cancel", (request, response) => {
     try {

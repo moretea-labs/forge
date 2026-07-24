@@ -142,12 +142,20 @@ async function waitForRun(
 }
 
 describe("Local Execution Bridge", () => {
-  test('auto-dispatches a low-risk Task through the persistent Run system', async () => {
-    // Retired: Local Bridge no longer creates Agent/check/command Jobs.
-    // Historical records remain readable; new work uses WorkContract + Process Runtime.
-    expect(() => {
-      throw new Error('LOCAL_BRIDGE_JOB_RETIRED: New Local Bridge Jobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.');
-    }).toThrow(/LOCAL_BRIDGE_JOB_RETIRED/);
+  test('returns stable 410 handoffs for retired Local Bridge creation routes', async () => {
+    const root = repo();
+    const handle = await startLocalBridgeServer({ repoRoot: root, port: 0, openBrowser: false });
+    servers.push(handle);
+
+    for (const path of ['/api/jobs', '/api/tasks/launch-ready', '/api/issues/ISS-test/launch', '/api/issues/ISS-test/tasks/T1/launch']) {
+      const response = await fetch(new URL(path, handle.url), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-repo-harness-local-token': handle.token },
+        body: '{}',
+      });
+      expect(response.status).toBe(410);
+      expect(await response.json()).toMatchObject({ error: 'LOCAL_BRIDGE_JOB_RETIRED' });
+    }
   });
 
   test("starts successfully when Local Job runtime storage is already linked", async () => {

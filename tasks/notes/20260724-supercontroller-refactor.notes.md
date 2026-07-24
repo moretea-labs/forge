@@ -550,3 +550,16 @@ Date: 2026-07-24
 - `package:check:type`: pass.
 - `package:check:runtime-architecture`: pass, 32 modules/documents checked.
 
+## Local Bridge HTTP creation-route convergence
+
+Date: 2026-07-24
+
+- Removed unreachable Local Bridge Job construction and asynchronous dispatch from the four historical HTTP creation routes.
+- `/api/jobs`, launch-ready, Issue launch, and Task launch now return the same authenticated HTTP 410 retirement handoff directly.
+- Removed server-side `submitLocalBridgeJob`, `dispatchLocalBridgeJob`, and async dispatch dependencies while preserving historical Job read/cancel APIs.
+- Replaced a synthetic throw assertion with authenticated end-to-end HTTP coverage for all four retired routes.
+- Runtime architecture gate now forbids dormant Local Bridge submission or dispatch code in the HTTP server.
+- Focused Local Bridge, ephemeral lifecycle, repository-command, and target-architecture suite: **50 pass / 0 fail**.
+- `package:check:type`: pass.
+- `package:check:runtime-architecture`: pass, 32 modules/documents checked.
+

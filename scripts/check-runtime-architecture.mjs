@@ -127,6 +127,11 @@ forbid(
   /\bcreateExecutionJob\b|\bfindExecutionJob\b|\bgetExecutionJob\b|\bdispatchTask\b|\btriggerSupervisor\b/,
   'Campaign Engine is migration-only and must not retain automatic Job dispatch, retry, or supervisor trigger code',
 );
+forbid(
+  'src/cli/local-bridge/server.ts',
+  /\bsubmitLocalBridgeJob\b|\bdispatchLocalBridgeJob\b|\basyncExecute\b/,
+  'Local Bridge HTTP creation routes must return retirement handoffs without dormant Job submission or dispatch code',
+);
 forbid('src/runtime/gateway/mcp/router.ts', /Use process_get \/ process_wait \/ process_logs/, 'Gateway follow-up instructions must use an always-exposed neutral Work facade');
 requireMatch(
   'src/runtime/gateway/mcp/router.ts',
