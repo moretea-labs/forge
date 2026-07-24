@@ -122,6 +122,11 @@ forbid(
   /\bcreateExecutionJob\b|\bfindExecutionJob\b/,
   'Portfolio definitions are planning records; Kernel-owned Portfolio execution is retired',
 );
+forbid(
+  'src/runtime/workflow/campaigns/engine.ts',
+  /\bcreateExecutionJob\b|\bfindExecutionJob\b|\bgetExecutionJob\b|\bdispatchTask\b|\btriggerSupervisor\b/,
+  'Campaign Engine is migration-only and must not retain automatic Job dispatch, retry, or supervisor trigger code',
+);
 forbid('src/runtime/gateway/mcp/router.ts', /Use process_get \/ process_wait \/ process_logs/, 'Gateway follow-up instructions must use an always-exposed neutral Work facade');
 requireMatch(
   'src/runtime/gateway/mcp/router.ts',

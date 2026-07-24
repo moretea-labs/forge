@@ -538,3 +538,15 @@ Date: 2026-07-24
 - `package:check:type`: pass.
 - `package:check:runtime-architecture`: pass, 32 modules/documents checked.
 
+## Campaign Engine migration-only convergence
+
+Date: 2026-07-24
+
+- Collapsed Campaign Engine from automatic ExecutionJob synchronization, retry, task dispatch, Agent Run tracking, and supervisor triggering to a migration-only adapter.
+- Explicit `reconcileCampaign` still migrates unfinished tasks into idempotent WorkContracts and HandoffItems while retaining historical Job/Run references as evidence.
+- Automatic `tickCampaigns` remains a zero-side-effect empty result.
+- Runtime architecture gate now forbids ExecutionJob access, task dispatch, and supervisor trigger symbols in Campaign Engine.
+- Focused Campaign, workspace, consistency, preflight, and target-architecture suite: **25 pass / 0 fail**.
+- `package:check:type`: pass.
+- `package:check:runtime-architecture`: pass, 32 modules/documents checked.
+
