@@ -514,3 +514,15 @@ Date: 2026-07-24
 - `package:check:type`: pass.
 - `package:check:runtime-architecture`: pass, 32 modules/documents checked.
 
+## Historical Local Bridge dispatch convergence
+
+Date: 2026-07-24
+
+- Removed `dispatchLegacyLocalJob` and all ExecutionJob creation from the legacy adapter.
+- The adapter now retains only read-only historical settlement-timeout compatibility.
+- Approved historical Local Bridge Jobs now fail closed directly with `LOCAL_BRIDGE_JOB_RETIRED`; they are not projected into new ExecutionJobs.
+- Runtime architecture gate now forbids ExecutionJob dispatch symbols in the legacy adapter.
+- Focused recovery, consistency, repository-command, and Local Bridge suite: **54 pass / 0 fail**.
+- `package:check:type`: pass.
+- `package:check:runtime-architecture`: pass, 32 modules/documents checked.
+

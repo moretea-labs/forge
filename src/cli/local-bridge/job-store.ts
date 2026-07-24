@@ -36,7 +36,6 @@ import { tryAppendControllerWorklogEvent } from "../controller/worklog";
 import { resolveControllerHome, resolveRepoPreferredControllerHome } from "../repositories/controller-home";
 import { ensureRepositoryRuntimeStorage } from "../repositories/runtime-storage";
 import { commandValue, normalizeRepositoryCommand } from "../repositories/command-normalization";
-import { dispatchLegacyLocalJob } from "../../runtime/execution/jobs/legacy-adapter";
 import { findExecutionJob } from "../../runtime/execution/jobs/store";
 import type { McpAgentRunnerName } from "../mcp/types";
 import type { LocalExecutorPolicy } from "../agent-jobs/executor-health";
@@ -1766,52 +1765,19 @@ export function executeLocalBridgeJobInline(
 
 
 /**
- * Compatibility entry point. Local UI and CLI callers retain Local Job IDs,
- * while execution ownership moves to the unified durable ExecutionJob plane.
- * Worker processes bypass this adapter and execute the legacy projection inline.
+ * Historical Local Bridge Jobs remain readable, but dispatch ownership has moved
+ * to WorkContract + Process Runtime or an explicitly claimed external Controller.
  */
 export function dispatchLocalBridgeJob(repoRoot: string, jobId: string): LocalBridgeJob {
   const job = getLocalBridgeJob(repoRoot, jobId);
   if (job.status !== "approved") return job;
-  let dispatched: ReturnType<typeof dispatchLegacyLocalJob>;
-  try {
-    dispatched = dispatchLegacyLocalJob(repoRoot, job);
-  } catch (error) {
-    return markJobTerminal(
-      repoRoot,
-      job,
-      "failed",
-      error instanceof Error ? error.message : String(error),
-      { dispatchProjectionFailed: true },
-    );
-  }
-  const readableExecution = findExecutionJob(dispatched.controllerHome, dispatched.executionJob.jobId);
-  if (!readableExecution) {
-    job.result = {
-      ...(job.result ?? {}),
-      executionJobId: dispatched.executionJob.jobId,
-      repoId: dispatched.repository.repoId,
-      controllerHome: dispatched.controllerHome,
-      daemonStatus: dispatched.daemon.status,
-    };
-    return failMissingProjectedExecutionJob(repoRoot, job, dispatched.executionJob.jobId);
-  }
-  if (job.action === "run-check") job.revision = currentControllerCheckRevision(repoRoot);
-  job.status = "dispatched";
-  job.result = {
-    ...(job.result ?? {}),
-    executionJobId: dispatched.executionJob.jobId,
-    repoId: dispatched.repository.repoId,
-    controllerHome: dispatched.controllerHome,
-    daemonStatus: dispatched.daemon.status,
-  };
-  job.updatedAt = now();
-  appendEvent(repoRoot, job.jobId, {
-    type: "job_dispatched",
-    message: `Legacy Local Job projected to durable Execution Job ${dispatched.executionJob.jobId}.`,
-    data: { executionJobId: dispatched.executionJob.jobId, repoId: dispatched.repository.repoId, controllerHome: dispatched.controllerHome },
-  });
-  return saveJob(repoRoot, job);
+  return markJobTerminal(
+    repoRoot,
+    job,
+    "failed",
+    "LOCAL_BRIDGE_JOB_RETIRED: Historical Local Bridge Jobs are read-only and cannot be dispatched. Resume through WorkContract + Process Runtime or an explicitly claimed external Controller.",
+    { legacyDispatchRetired: true },
+  );
 }
 
 
