@@ -11,8 +11,8 @@ import {
   writeFileSync,
 } from "fs";
 import { dirname, join, relative, resolve, sep } from "path";
-import { acceptTaskJob, cancelAgentJob, getAgentJob } from "../agent-jobs/job-manager";
-import { createIssue, getIssue, removeEphemeralIssue } from "../controller/issue-store";
+import { cancelAgentJob, getAgentJob } from "../agent-jobs/job-manager";
+import { getIssue, removeEphemeralIssue } from "../controller/issue-store";
 import {
   currentControllerCheckRevision,
   releaseControllerCheckSubscription,
@@ -30,15 +30,13 @@ import {
   executeRepositoryCommandAsync,
 } from "../repositories/command-executor";
 import { registerRepository, resolveRepositorySelection } from "../repositories/registry";
-import type { ControllerAgent, ControllerTask } from "../controller/types";
+import type { ControllerTask } from "../controller/types";
 import { taskExecutionPolicy } from "../controller/execution-policy";
 import { tryAppendControllerWorklogEvent } from "../controller/worklog";
 import { resolveControllerHome, resolveRepoPreferredControllerHome } from "../repositories/controller-home";
 import { ensureRepositoryRuntimeStorage } from "../repositories/runtime-storage";
 import { commandValue, normalizeRepositoryCommand } from "../repositories/command-normalization";
 import { findExecutionJob } from "../../runtime/execution/jobs/store";
-import type { McpAgentRunnerName } from "../mcp/types";
-import type { LocalExecutorPolicy } from "../agent-jobs/executor-health";
 import type {
   LaunchTaskPayload,
   LocalBridgeApproval,
@@ -1157,181 +1155,6 @@ export function cancelLocalBridgeJob(
   return saveJob(repoRoot, job);
 }
 
-function resolveExecutionAgent(
-  repoRoot: string,
-  value: ControllerAgent | undefined,
-): ControllerAgent {
-  if (value) return value;
-  const controllerHome = resolveRepoPreferredControllerHome(repoRoot);
-  const configured = (loadMcpServiceLocalConfig(controllerHome, repoRoot) ?? loadMcpLocalConfig(repoRoot))?.devMode?.allowedAgents ?? [];
-  const local = configured.find((entry) => entry === "codex" || entry === "claude");
-  if (local === "codex" || local === "claude") return local;
-  throw new Error("no local Agent is configured; select an Agent explicitly or enable one in MCP settings");
-}
-
-function localExecutorPolicy(repoRoot: string): LocalExecutorPolicy {
-  const controllerHome = resolveRepoPreferredControllerHome(repoRoot);
-  const configured = (loadMcpServiceLocalConfig(controllerHome, repoRoot) ?? loadMcpLocalConfig(repoRoot))?.devMode;
-  const allowedAgents = Array.isArray(configured?.allowedAgents)
-    ? configured.allowedAgents.filter(
-        (entry): entry is McpAgentRunnerName =>
-          entry === "codex" || entry === "claude",
-      )
-    : [];
-  return {
-    agentRunner: configured?.agentRunner === true,
-    allowedAgents,
-  };
-}
-
-function resolvedIsolation(payload: {
-  executionMode?: "auto" | "workspace" | "worktree";
-  isolate?: boolean;
-}): boolean | undefined {
-  if (payload.executionMode === "worktree") return true;
-  if (payload.executionMode === "workspace") return false;
-  if (payload.executionMode === "auto") return undefined;
-  return payload.isolate;
-}
-
-function executeLaunchTask(
-  repoRoot: string,
-  job: LocalBridgeJob,
-  payload: LaunchTaskPayload,
-): void {
-  const accepted = acceptTaskJob({
-    repoRoot,
-    issueId: payload.issueId,
-    taskId: payload.taskId,
-    agent: resolveExecutionAgent(repoRoot, payload.agent),
-    executorPolicy: localExecutorPolicy(repoRoot),
-    timeoutMs: resolvedJobTimeout(repoRoot, payload.timeoutMs),
-    isolate: resolvedIsolation(payload),
-    githubRepo: payload.githubRepo,
-    baseRef: payload.baseRef,
-    model: payload.model,
-    createPullRequest: payload.createPullRequest,
-    requestId: payload.requestId,
-    approveDestructive: payload.approveDestructive === true,
-  });
-  const run = getAgentJob(repoRoot, accepted.runId);
-  job.runId = accepted.runId;
-  job.issueId = payload.issueId;
-  job.taskId = payload.taskId;
-  job.status = "approved";
-  delete job.finishedAt;
-  job.result = {
-    runId: accepted.runId,
-    provider: run.provider,
-    status: accepted.status,
-    delegated: false,
-    launcherRequired: true,
-    childReference: {
-      localJobId: job.jobId,
-      runId: accepted.runId,
-      issueId: payload.issueId,
-      taskId: payload.taskId,
-      requestId: payload.requestId,
-      delegatedAt: now(),
-    },
-  };
-  appendEvent(repoRoot, job.jobId, {
-    type: "job_dispatched",
-    message: accepted.reused ? `Task reused ${accepted.runId}.` : `Task accepted as ${accepted.runId}.`,
-    data: { runId: accepted.runId, reused: accepted.reused, requestId: accepted.requestId },
-  });
-}
-
-function executeQuickSession(
-  repoRoot: string,
-  job: LocalBridgeJob,
-  payload: QuickAgentSessionPayload,
-): void {
-  const title = payload.title?.trim();
-  const objective = payload.objective?.trim();
-  if (!title || !objective)
-    throw new Error("quick-agent-session requires title and objective");
-  // Default ephemeral. Explicit durable (ephemeral=false) keeps tasks/issues files.
-  const ephemeral = payload.ephemeral !== false;
-  job.ephemeral = ephemeral;
-  const acceptance = normalizeStringList(payload.acceptanceCriteria);
-  const issue = createIssue(repoRoot, {
-    title,
-    kind: "investigation",
-    allowWhileFocused: true,
-    ephemeral,
-    ephemeralOwnerJobId: job.jobId,
-    summary: payload.summary?.trim() || objective,
-    goals: [objective],
-    nonGoals: [
-      "Do not make unrelated changes outside the declared Task scope.",
-    ],
-    acceptanceCriteria: acceptance.length
-      ? acceptance
-      : [`Complete: ${objective}`],
-    tasks: [
-      {
-        title,
-        objective,
-        allowedPaths: normalizeStringList(payload.allowedPaths),
-        forbiddenPaths: normalizeStringList(payload.forbiddenPaths),
-        checks: normalizeStringList(payload.checks),
-        acceptanceCriteria: acceptance.length
-          ? acceptance
-          : [`Complete: ${objective}`],
-        risk: payload.risk ?? "low",
-        recommendedAgent: payload.agent,
-      },
-    ],
-  });
-  if (ephemeral && !issue.ephemeral) {
-    throw new Error("EPHEMERAL_ISSUE_PATH_INVALID: quick-agent-session ephemeral metadata must not use durable tasks/issues");
-  }
-  const task = issue.tasks[0];
-  if (!task) throw new Error("quick session issue was created without a Task");
-  // Prefer the parent Execution Job requestId so Agent Run idempotency aligns
-  // with the durable control plane; fall back to the Local Job payload key.
-  const requestId = payload.requestId?.trim() || job.jobId;
-  const accepted = acceptTaskJob({
-    repoRoot,
-    issueId: issue.id,
-    taskId: task.id,
-    agent: resolveExecutionAgent(repoRoot, payload.agent),
-    executorPolicy: localExecutorPolicy(repoRoot),
-    timeoutMs: resolvedJobTimeout(repoRoot, payload.timeoutMs),
-    isolate: resolvedIsolation(payload),
-    requestId,
-    approveDestructive: payload.approveDestructive === true,
-  });
-  const run = getAgentJob(repoRoot, accepted.runId);
-  job.runId = accepted.runId;
-  job.issueId = issue.id;
-  job.taskId = task.id;
-  job.status = "approved";
-  delete job.finishedAt;
-  job.result = {
-    issueId: issue.id,
-    taskId: task.id,
-    runId: accepted.runId,
-    provider: run.provider,
-    status: accepted.status,
-    delegated: true,
-    childReference: {
-      localJobId: job.jobId,
-      runId: accepted.runId,
-      issueId: issue.id,
-      taskId: task.id,
-      requestId,
-      delegatedAt: now(),
-    },
-  };
-  appendEvent(repoRoot, job.jobId, {
-    type: "job_dispatched",
-    message: accepted.reused ? `Quick session reused ${accepted.runId}.` : `Quick session accepted as ${accepted.runId}.`,
-    data: { issueId: issue.id, taskId: task.id, runId: accepted.runId, reused: accepted.reused, requestId: accepted.requestId },
-  });
-}
-
 async function executeRunCheck(
   repoRoot: string,
   jobId: string,
@@ -1599,47 +1422,7 @@ export function executeLocalBridgeJobInline(
   repoRoot: string,
   jobId: string,
 ): LocalBridgeJob {
-  const job = getLocalBridgeJob(repoRoot, jobId);
-  if (job.status === "pending_approval")
-    throw new Error("legacy pending-approval jobs cannot execute in V8; cancel and resubmit the work");
-  if (job.approval === "manual-only" && !job.approvedAt)
-    throw new Error("legacy manual-only jobs cannot execute in V8; cancel and resubmit with same-request destructive authorization");
-  const projectedExecutionJobId = job.result && typeof job.result.executionJobId === "string" ? job.result.executionJobId : undefined;
-  const projectedDispatchPending = Boolean(projectedExecutionJobId)
-    && (job.status === "dispatched" || (job.status === "running" && job.ownerPid === undefined));
-  if (job.status !== "approved" && !projectedDispatchPending) return job;
-  job.status = "running";
-  job.startedAt = job.startedAt ?? now();
-  saveJob(repoRoot, job);
-  appendEvent(repoRoot, job.jobId, {
-    type: "job_started",
-    message: `${job.action} execution started.`,
-  });
-  try {
-    if (job.action === "launch-task")
-      executeLaunchTask(repoRoot, job, job.payload as LaunchTaskPayload);
-    else if (job.action === "quick-agent-session")
-      executeQuickSession(
-        repoRoot,
-        job,
-        job.payload as QuickAgentSessionPayload,
-      );
-    else if (job.action === "run-check") void executeRunCheck(repoRoot, job.jobId, job.payload as RunCheckPayload);
-    else if (job.action === "verify-edit-session") void executeVerifyEditSession(repoRoot, job.jobId, job.payload as VerifyEditSessionPayload);
-    else void executeRepositoryCommand(repoRoot, job.jobId, job.payload as RepositoryCommandPayload);
-  } catch (error) {
-    job.status = "failed";
-    job.error = error instanceof Error ? error.message : String(error);
-    job.finishedAt = now();
-    cleanupEphemeralJob(repoRoot, job);
-    appendEvent(repoRoot, job.jobId, {
-      type: "job_failed",
-      message: job.error,
-    });
-  }
-  return ["run-check", "verify-edit-session", "repository-command"].includes(job.action)
-    ? readLocalBridgeJob(repoRoot, job.jobId)
-    : saveJob(repoRoot, job);
+  return dispatchLocalBridgeJob(repoRoot, jobId);
 }
 
 

@@ -157,6 +157,16 @@ requireMatch(
   /export function submitLocalBridgeJob\([\s\S]*?\{\s*throw new Error\([\s\S]*?LOCAL_BRIDGE_JOB_RETIRED[\s\S]*?\);\s*\}/,
   'submitLocalBridgeJob must fail closed directly with LOCAL_BRIDGE_JOB_RETIRED',
 );
+forbid(
+  'src/cli/local-bridge/job-store.ts',
+  /\bacceptTaskJob\b|\bexecuteLaunchTask\b|\bexecuteQuickSession\b/,
+  'Historical Local Bridge records must not retain an Agent dispatch path',
+);
+requireMatch(
+  'src/cli/local-bridge/job-store.ts',
+  /export function executeLocalBridgeJobInline\([\s\S]*?return dispatchLocalBridgeJob\(repoRoot, jobId\);\s*\}/,
+  'The Local Bridge compatibility execution API must terminate through the read-only retirement path',
+);
 forbid('src/runtime/gateway/mcp/router.ts', /Use process_get \/ process_wait \/ process_logs/, 'Gateway follow-up instructions must use an always-exposed neutral Work facade');
 requireMatch(
   'src/runtime/gateway/mcp/router.ts',

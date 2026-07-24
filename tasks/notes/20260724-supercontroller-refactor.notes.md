@@ -488,6 +488,15 @@ Date: 2026-07-24
 - Focused Router + target-architecture tests: **10 pass / 0 fail**.
 - `package:check:type`: pass.
 - `package:check:runtime-architecture`: pass, 32 modules/documents checked.
+
+## Historical Local Bridge execution retirement
+
+Date: 2026-07-24
+
+- `executeLocalBridgeJobInline` now delegates only to `dispatchLocalBridgeJob`, which terminalizes approved historical records with `LOCAL_BRIDGE_JOB_RETIRED` instead of executing them.
+- Removed the remaining Local Bridge `acceptTaskJob` paths and the launch-task / quick-agent execution helpers.
+- Historical Local Bridge records remain readable, cancellable, reconcilable, and inspectable, but are no longer executable through compatibility APIs.
+- Focused Local Bridge, legacy lifecycle, and target-architecture suite: **37 pass / 0 fail**.
 - The original main checkout has untracked review/research files, so describe main as unmerged rather than an untouched working tree.
 
 ## Runtime MCP release/candidate dead-path convergence
