@@ -167,6 +167,42 @@ requireMatch(
   /export function executeLocalBridgeJobInline\([\s\S]*?return dispatchLocalBridgeJob\(repoRoot, jobId\);\s*\}/,
   'The Local Bridge compatibility execution API must terminate through the read-only retirement path',
 );
+// Agent Run write boundaries: creation and retry must fail closed at the function entry.
+requireMatch(
+  'src/cli/agent-jobs/job-manager.ts',
+  /export function startTaskJob\([\s\S]*?\{\s*throw new Error\([\s\S]*?AGENT_RUN_RETIRED[\s\S]*?\);\s*\}/,
+  'startTaskJob must fail closed directly with AGENT_RUN_RETIRED',
+);
+requireMatch(
+  'src/cli/agent-jobs/job-manager.ts',
+  /export function retryAgentJob\([\s\S]*?\{\s*\/\/ Fail closed[\s\S]*?throw new Error\([\s\S]*?AGENT_RUN_RETIRED[\s\S]*?\);\s*\}/,
+  'retryAgentJob must fail closed before any Task mutation with AGENT_RUN_RETIRED',
+);
+forbid(
+  'src/cli/local-bridge/server.ts',
+  /\bretryAgentJob\b|\bacceptTaskJob\b|\bstartTaskJob\b/,
+  'Local Bridge HTTP must not call Agent Run create/start/retry write boundaries',
+);
+forbid(
+  'src/cli/mcp/legacy-tool-service.ts',
+  /\bretryAgentJob\b/,
+  'Legacy MCP must not call Agent Run retry',
+);
+forbid(
+  'src/runtime/workflow/campaigns/engine.ts',
+  /\bacceptTaskJob\b|\bstartTaskJob\b|\bretryAgentJob\b|\blaunchAgent\b/,
+  'Campaign Engine must not start or retry Kernel-managed Agent Runs',
+);
+forbid(
+  'src/runtime/workflow/portfolio/engine.ts',
+  /\bacceptTaskJob\b|\bstartTaskJob\b|\bretryAgentJob\b/,
+  'Portfolio Engine must not start or retry Kernel-managed Agent Runs',
+);
+forbid(
+  'src/runtime/control-plane/goal-loop/goal-loop-engine.ts',
+  /\bcreateExecutionJob\b|\bsubmitLocalBridgeJob\b|\bacceptTaskJob\b|\bstartTaskJob\b/,
+  'Goal Loop must not create ExecutionJobs, LocalBridgeJobs, or Agent Runs',
+);
 forbid('src/runtime/gateway/mcp/router.ts', /Use process_get \/ process_wait \/ process_logs/, 'Gateway follow-up instructions must use an always-exposed neutral Work facade');
 requireMatch(
   'src/runtime/gateway/mcp/router.ts',
