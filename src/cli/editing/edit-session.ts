@@ -254,8 +254,76 @@ function normalizeStoredSession(value: Partial<EditSession> & { sessionId: strin
     appliedAt: value.appliedAt,
     verifiedAt: value.verifiedAt,
     finalizedAt: value.finalizedAt,
+    supersededAt: value.supersededAt,
+    supersededPaths: value.supersededPaths,
     rolledBackAt: value.rolledBackAt,
   };
+}
+
+function sessionTrackedPaths(session: EditSession): string[] {
+  return [...new Set(session.operations.map((operation) => operation.path).filter(Boolean))];
+}
+
+function requestedChecksPassed(session: EditSession): boolean {
+  return session.requestedChecks.every((checkId) =>
+    session.checkResults.some((result) => result.checkId === checkId && result.ok),
+  );
+}
+
+function uncommittedSessionPaths(repoRoot: string, paths: string[]): string[] {
+  if (paths.length === 0) return [];
+  const result = runProcess('git', ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--', ...paths], {
+    cwd: repoRoot,
+    timeoutMs: 10_000,
+    maxOutputBytes: 512 * 1024,
+  });
+  if (!result.ok) return paths;
+
+  const dirty = new Set<string>();
+  const records = result.stdout.split('\0');
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    if (!record || record.length < 4) continue;
+    const status = record.slice(0, 2);
+    const relative = record.slice(3);
+    if (relative) dirty.add(relative);
+    if (/[RC]/.test(status)) {
+      const originalPath = records[index + 1];
+      if (originalPath) dirty.add(originalPath);
+      index += 1;
+    }
+  }
+  return paths.filter((path) => dirty.has(path));
+}
+
+function markEditSessionFinalized(repoRoot: string, session: EditSession, input: {
+  reviewer?: string;
+  note?: string;
+} = {}): EditSession {
+  session.status = 'finalized';
+  session.reviewer = input.reviewer?.trim() || session.reviewer || 'chatgpt-controller';
+  session.reviewNote = input.note?.trim() || session.reviewNote;
+  session.finalizedAt = now();
+  session.updatedAt = session.finalizedAt;
+  writeSession(repoRoot, session);
+  tryAppendControllerWorklogEvent(repoRoot, {
+    category: 'edit',
+    action: 'edit_session_finalized',
+    summary: `${session.purpose}: ${new Set(session.operations.map((operation) => operation.path)).size} file(s), ${session.currentRevision} revision(s) finalized`,
+    actor: session.reviewer,
+    issueId: session.issueId,
+    taskId: session.taskId,
+    editSessionId: session.sessionId,
+    details: {
+      files: [...new Set(session.operations.map((operation) => operation.path))],
+      revisions: session.revisions,
+      diffPath: session.diffPath,
+      diffSha256: session.diffSha256,
+      checkResults: session.checkResults,
+      note: session.reviewNote,
+    },
+  });
+  return session;
 }
 
 function changedLineEstimate(before: string, after: string): number {
@@ -435,6 +503,95 @@ export function revalidateEditSessionOwnership(repoRoot: string, sessionId: stri
   const emptyOpenSession = session.status === 'open' && session.operations.length === 0;
   const mismatches = emptyOpenSession ? [] : currentHashMismatches(repoRoot, session);
   return mismatches.length > 0 ? markEditSessionSuperseded(repoRoot, session, mismatches, input) : session;
+}
+
+/**
+ * Reconcile an edit session against the live workspace and Git tree.
+ *
+ * - Terminal sessions (finalized / superseded / rolled_back) are returned unchanged (idempotent).
+ * - Hash mismatches against session after-images mark the session superseded without rewriting files.
+ * - When session paths match the after-image and Git has no uncommitted changes for those paths,
+ *   a dirty/checked session is finalized so committed work cannot permanently block follow-on edits.
+ * - Sessions that still own unique uncommitted content stay open/dirty.
+ */
+export function reconcileEditSession(repoRoot: string, sessionId: string, input: {
+  reviewer?: string;
+  note?: string;
+} = {}): EditSession {
+  const session = getEditSession(repoRoot, sessionId);
+  if (['finalized', 'superseded', 'rolled_back'].includes(session.status)) return session;
+
+  const emptyOpenSession = session.status === 'open' && session.operations.length === 0;
+  if (emptyOpenSession) return session;
+
+  const mismatches = currentHashMismatches(repoRoot, session);
+  if (mismatches.length > 0) {
+    return markEditSessionSuperseded(repoRoot, session, mismatches, {
+      reviewer: input.reviewer,
+      note: input.note?.trim() || 'Closed because workspace content no longer matches this edit session.',
+    });
+  }
+
+  if (!['dirty', 'checked', 'check_failed'].includes(session.status)) return session;
+  if (session.requestedChecks.length > 0 && !requestedChecksPassed(session)) return session;
+
+  const paths = sessionTrackedPaths(session);
+  const dirtyPaths = uncommittedSessionPaths(repoRoot, paths);
+  if (dirtyPaths.length > 0) return session;
+
+  return markEditSessionFinalized(repoRoot, session, {
+    reviewer: input.reviewer,
+    note: input.note?.trim()
+      || 'Reconciled after commit: session content matches the workspace and Git has no uncommitted changes for session paths.',
+  });
+}
+
+export function reconcileOpenEditSessions(repoRoot: string, input: {
+  reviewer?: string;
+  note?: string;
+  limit?: number;
+} = {}): EditSessionSummary[] {
+  const limit = Math.max(1, Math.min(input.limit ?? 100, 500));
+  const openLike = listEditSessions(repoRoot, limit).filter((entry) =>
+    ['open', 'dirty', 'checked', 'check_failed'].includes(entry.status),
+  );
+  return openLike.map((entry) => sessionSummary(reconcileEditSession(repoRoot, entry.sessionId, input)));
+}
+
+/**
+ * Safe cleanup for sessions that must not permanently block later work.
+ * Refuses to discard sessions that still own unique uncommitted content.
+ */
+export function cleanupEditSession(repoRoot: string, sessionId: string, input: {
+  reviewer?: string;
+  note?: string;
+  allowFinalized?: boolean;
+} = {}): EditSession {
+  const session = getEditSession(repoRoot, sessionId);
+  if (['finalized', 'superseded', 'rolled_back'].includes(session.status)) return session;
+
+  if (session.status === 'open' && session.operations.length === 0) {
+    return rollbackEditSession(repoRoot, sessionId);
+  }
+
+  const reconciled = reconcileEditSession(repoRoot, sessionId, input);
+  if (['finalized', 'superseded', 'rolled_back'].includes(reconciled.status)) return reconciled;
+
+  const paths = sessionTrackedPaths(reconciled);
+  const mismatches = currentHashMismatches(repoRoot, reconciled);
+  const dirtyPaths = uncommittedSessionPaths(repoRoot, paths);
+  if (mismatches.length === 0 && dirtyPaths.length > 0) {
+    throw new Error(
+      `edit session owns unique uncommitted changes and cannot be cleaned up without rollback: ${dirtyPaths.join(', ')}`,
+    );
+  }
+  if (mismatches.length > 0) {
+    return markEditSessionSuperseded(repoRoot, reconciled, mismatches, {
+      reviewer: input.reviewer,
+      note: input.note?.trim() || 'Cleanup closed a session superseded by newer workspace content.',
+    });
+  }
+  throw new Error(`edit session cannot be cleaned up from ${reconciled.status}`);
 }
 
 interface PatchItem {
@@ -1195,32 +1352,8 @@ export function finalizeEditSession(repoRoot: string, sessionId: string, input: 
   }
   const revalidated = revalidateEditSessionOwnership(repoRoot, session.sessionId, input);
   if (revalidated.status === 'superseded') return revalidated;
-  if (!emptyOpenSession && session.requestedChecks.length > 0) {
-    const allRequestedPassed = session.requestedChecks.every((checkId) => session.checkResults.some((result) => result.checkId === checkId && result.ok));
-    if (!allRequestedPassed) throw new Error('configured checks must pass before finalization');
+  if (!emptyOpenSession && revalidated.requestedChecks.length > 0 && !requestedChecksPassed(revalidated)) {
+    throw new Error('configured checks must pass before finalization');
   }
-  session.status = 'finalized';
-  session.reviewer = input.reviewer?.trim() || session.reviewer || 'chatgpt-controller';
-  session.reviewNote = input.note?.trim() || session.reviewNote;
-  session.finalizedAt = now();
-  session.updatedAt = session.finalizedAt;
-  writeSession(repoRoot, session);
-  tryAppendControllerWorklogEvent(repoRoot, {
-    category: 'edit',
-    action: 'edit_session_finalized',
-    summary: `${session.purpose}: ${new Set(session.operations.map((operation) => operation.path)).size} file(s), ${session.currentRevision} revision(s) finalized`,
-    actor: session.reviewer,
-    issueId: session.issueId,
-    taskId: session.taskId,
-    editSessionId: session.sessionId,
-    details: {
-      files: [...new Set(session.operations.map((operation) => operation.path))],
-      revisions: session.revisions,
-      diffPath: session.diffPath,
-      diffSha256: session.diffSha256,
-      checkResults: session.checkResults,
-      note: session.reviewNote,
-    },
-  });
-  return session;
+  return markEditSessionFinalized(repoRoot, revalidated, input);
 }
