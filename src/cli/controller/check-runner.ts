@@ -10,6 +10,7 @@ import {
 } from '../../effects/process-runner';
 import { atomicWriteFileSync } from '../installer/shared';
 import { listProcessTreeMembers, terminateProcessTree } from '../../runtime/shared/process-tree';
+import { repositoryChildProcessEnvironment } from '../../runtime/shared/process-environment';
 
 export interface ControllerCheck {
   id: string;
@@ -354,6 +355,8 @@ export function runControllerCheck(repoRoot: string, id: string, requestedTimeou
   try {
     result = runProcess(check.command[0], check.command.slice(1), {
       cwd: resolve(repoRoot, check.cwd),
+      env: repositoryChildProcessEnvironment(),
+      replaceEnv: true,
       timeoutMs,
       maxOutputBytes: 256 * 1024,
     });
@@ -588,7 +591,7 @@ async function executeControllerCheckAsync(
   }>((resolvePromise) => {
     const child = spawn(check.command[0], check.command.slice(1), {
       cwd: resolve(repoRoot, check.cwd),
-      env: { ...process.env },
+      env: repositoryChildProcessEnvironment(),
       detached: process.platform !== 'win32',
       stdio: ['ignore', 'pipe', 'pipe'],
     });

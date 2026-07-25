@@ -29,6 +29,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { capProcessOutput, redactProcessOutput } from '../../../effects/process-runner';
 import { isProcessAlive, terminateProcessTree } from '../../shared/process-tree';
+import { repositoryChildProcessEnvironment } from '../../shared/process-environment';
 import { acquireExecutionLeases, releaseExecutionLeases, renewExecutionLeases } from '../../resources/leases/store';
 import { assertThisRuntimeMayWrite, assertThisRuntimeMayWriteOrThrow } from '../../../cli/controller/stable-state/runtime-writer-context';
 import { readWriterAuthority } from '../../../cli/controller/stable-state/writer-authority';
@@ -667,19 +668,7 @@ function recordToHandle(
 }
 
 export function processRunnerEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const sanitized = { ...env };
-  // Repository commands are untrusted relative to the Controller authority
-  // boundary. Never leak the Gateway's writer identity or Supervisor-child
-  // marker into Process Runner / actual command environments.
-  delete sanitized.REPO_HARNESS_WRITER_SLOT;
-  delete sanitized.REPO_HARNESS_WRITER_EPOCH;
-  delete sanitized.REPO_HARNESS_WRITER_FENCING_TOKEN;
-  delete sanitized.REPO_HARNESS_WRITER_GENERATION;
-  delete sanitized.REPO_HARNESS_SUPERVISOR_CHILD;
-  delete sanitized.REPO_HARNESS_SUPERVISOR_EPOCH;
-  delete sanitized.REPO_HARNESS_CONTROLLER_LIFECYCLE_OWNER;
-  delete sanitized.REPO_HARNESS_DAEMON_INSTANCE_ID;
-  return sanitized;
+  return repositoryChildProcessEnvironment(env);
 }
 
 function spawnProcessRunner(descriptor: ProcessCommandDescriptor, descriptorPath: string): ChildProcess {

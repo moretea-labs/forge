@@ -119,6 +119,51 @@ describe('controller-owned Work recovery and finalize cleanup', () => {
     expect(listExecutionJobs(controllerHome, repository.repoId).length).toBe(jobCountBefore);
   });
 
+  test('executes against the explicitly bound repository instead of the ambient connector repository', async () => {
+    const { repoRoot: ambientRoot, controllerHome, repository: ambientRepository, context } = fixture();
+    const targetRoot = mkdtempSync(join(tmpdir(), 'repo-harness-work-target-repo-'));
+    roots.push(targetRoot);
+    git(targetRoot, 'init', '-b', 'main');
+    git(targetRoot, 'config', 'user.email', 'test@example.com');
+    git(targetRoot, 'config', 'user.name', 'Repo Harness Test');
+    writeFileSync(join(targetRoot, 'package.json'), JSON.stringify({ name: 'work-target-fixture' }, null, 2));
+    git(targetRoot, 'add', 'package.json');
+    git(targetRoot, 'commit', '-m', 'init');
+    const targetRepository = registerRepository({
+      path: targetRoot,
+      controllerHome,
+      displayName: 'work target fixture',
+    });
+    writeRepositoryAccessPolicy(controllerHome, targetRepository.repoId, 'full_access');
+
+    const ctx = context('session-cross-repository', 'controller-cross-repository');
+    expect(ctx.explicitRepository?.repoId).toBe(ambientRepository.repoId);
+    structured(await callExecutionTool(ctx, 'session_start', {}));
+    structured(await callExecutionTool(ctx, 'session_bind_repository', {
+      repo_id: targetRepository.repoId,
+    }));
+    const prepared = structured(await callExecutionTool(ctx, 'work_prepare', {
+      repo_id: targetRepository.repoId,
+      objective: 'Execute only in the explicitly bound target repository',
+      isolation: 'reuse',
+    }));
+    const workId = String(prepared.work.workId);
+    expect(prepared.work.repoId).toBe(targetRepository.repoId);
+    expect(prepared.work.worktreePath).toBe(targetRepository.canonicalRoot);
+
+    const executed = structured(await callExecutionTool(ctx, 'work_execute', {
+      repo_id: targetRepository.repoId,
+      work_id: workId,
+      request_id: 'cross-repository-work-execute-test',
+      command: 'printf target-only > cross-repository.txt',
+    }));
+
+    expect(executed.executedCount).toBe(1);
+    expect(executed.work.repoId).toBe(targetRepository.repoId);
+    expect(existsSync(join(targetRoot, 'cross-repository.txt'))).toBe(true);
+    expect(existsSync(join(ambientRoot, 'cross-repository.txt'))).toBe(false);
+  });
+
   test('finalize commits, merges, removes managed checkout, deletes branch, and clears session focus', async () => {
     const { repoRoot, controllerHome, repository, context } = fixture();
     const ctx = context('session-finalize', 'controller-finalize');

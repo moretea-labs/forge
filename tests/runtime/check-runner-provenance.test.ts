@@ -56,6 +56,35 @@ describe('controller check provenance and failure classification', () => {
     });
   });
 
+  test('strips Controller writer and Supervisor authority from sync and async check children', async () => {
+    const authorityKeys = [
+      'REPO_HARNESS_WRITER_SLOT',
+      'REPO_HARNESS_WRITER_EPOCH',
+      'REPO_HARNESS_WRITER_FENCING_TOKEN',
+      'REPO_HARNESS_WRITER_GENERATION',
+      'REPO_HARNESS_SUPERVISOR_CHILD',
+      'REPO_HARNESS_SUPERVISOR_EPOCH',
+      'REPO_HARNESS_CONTROLLER_LIFECYCLE_OWNER',
+      'REPO_HARNESS_DAEMON_INSTANCE_ID',
+    ];
+    const probe = `const keys=${JSON.stringify(authorityKeys)}; const leaked=keys.filter((key)=>process.env[key]); if (leaked.length) { console.error(leaked.join(',')); process.exit(9); }`;
+    const repoRoot = fixture({
+      sync_env: { command: [process.execPath, '-e', probe] },
+      async_env: { command: [process.execPath, '-e', probe] },
+    });
+    const previous = new Map(authorityKeys.map((key) => [key, process.env[key]]));
+    try {
+      for (const key of authorityKeys) process.env[key] = 'inherited-controller-authority';
+      expect(runControllerCheck(repoRoot, 'sync_env').ok).toBe(true);
+      expect((await runControllerCheckAsync(repoRoot, 'async_env')).ok).toBe(true);
+    } finally {
+      for (const [key, value] of previous) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   test('classifies a named nonzero check as acceptance and a missing runtime as infrastructure', async () => {
     const repoRoot = fixture({
       assertion: { command: [process.execPath, '-e', 'console.error("expected value mismatch"); process.exit(3)'] },
