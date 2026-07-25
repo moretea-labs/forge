@@ -17,6 +17,13 @@ describe("portable test runner", () => {
     expect(script).not.toContain("bun test --parallel");
   });
 
+  test("keeps the CI gate on per-file process isolation by default", () => {
+    const script = readFileSync(join(ROOT, "scripts", "check-ci.sh"), "utf8");
+
+    expect(script).toContain('BUN_TEST_ISOLATE_FILES="${BUN_TEST_ISOLATE_FILES:-1}"');
+    expect(script).toContain('bun test --isolate --timeout "$BUN_TEST_TIMEOUT_MS" --max-concurrency "$BUN_TEST_MAX_CONCURRENCY" "$file"');
+  });
+
   test("keeps explicit file invocations focused and isolated", () => {
     const script = readFileSync(join(ROOT, "scripts", "run-tests-portable.sh"), "utf8");
 
