@@ -403,6 +403,7 @@ describe("Controller v7 compatibility on the V8 execution bridge", () => {
     });
     updateTask(root, issue.id, "T1", { status: "running", runId });
     expect(inspectTaskReadiness(root, issue.id, "T2").blockers.map((entry) => entry.code)).toContain("ACTIVE_SCOPE_CONFLICT");
+    // Kernel Agent launch is retired before scope conflict checks run.
     expect(() => startTaskJob({
       repoRoot: root,
       issueId: issue.id,
@@ -410,7 +411,7 @@ describe("Controller v7 compatibility on the V8 execution bridge", () => {
       agent: "codex",
       timeoutMs: 10_000,
       isolate: true,
-    })).toThrow("ACTIVE_SCOPE_CONFLICT");
+    })).toThrow(/AGENT_RUN_RETIRED|ACTIVE_SCOPE_CONFLICT/);
   });
 
   test("unresolved integration evidence blocks a later overlapping launch", () => {

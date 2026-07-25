@@ -13,9 +13,7 @@ import {
   getAgentJobLog,
   listAgentJobs,
   reconcileAgentJobs,
-  retryAgentJob,
 } from "../agent-jobs/job-manager";
-import { classifyLocalExecutorHealth, isExecutorHealthError } from "../agent-jobs/executor-health";
 import {
   cleanupIntegratedWorktree,
   integrateAgentJob,
@@ -3058,54 +3056,16 @@ export async function startLocalBridgeServer(
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/runs/:runId/retry", (request, response) => {
-    try {
-      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      const previous = getAgentJob(repoRoot, request.params.runId);
-      if (previous.agent !== "github-copilot") {
-        const mcpConfig = loadMcpServiceLocalConfig(controllerHome, repoRoot) ?? loadMcpLocalConfig(repoRoot);
-        const health = classifyLocalExecutorHealth(
-          previous.agent,
-          {
-            agentRunner: mcpConfig?.devMode?.agentRunner === true,
-            allowedAgents: ((mcpConfig?.devMode?.allowedAgents ?? []).filter(
-              (entry): entry is "codex" | "claude" => entry === "codex" || entry === "claude",
-            )),
-          },
-          { allowedPaths: previous.allowedPaths ?? [] },
-        );
-        if (health) {
-          response.status(400).json({ error: health.message, executorHealth: health });
-          return;
-        }
-      }
-      const timeoutMs =
-        typeof request.body?.timeoutMs === "number"
-          ? request.body.timeoutMs
-          : undefined;
-      const mcpConfig = loadMcpServiceLocalConfig(controllerHome, repoRoot) ?? loadMcpLocalConfig(repoRoot);
-      response.status(202).json(
-        retryAgentJob(repoRoot, request.params.runId, {
-          timeoutMs,
-          executorPolicy: {
-            agentRunner: mcpConfig?.devMode?.agentRunner === true,
-            allowedAgents: ((mcpConfig?.devMode?.allowedAgents ?? []).filter(
-              (entry): entry is "codex" | "claude" => entry === "codex" || entry === "claude",
-            )),
-          },
-          isolate:
-            typeof request.body?.isolate === "boolean"
-              ? request.body.isolate
-              : undefined,
-        }),
-      );
-    } catch (error) {
-      if (isExecutorHealthError(error)) {
-        response.status(400).json({ error: error.executorHealth.message, executorHealth: error.executorHealth });
-        return;
-      }
-      response.status(400).json({ error: errorMessage(error) });
-    }
+  app.post("/api/runs/:runId/retry", (_request, response) => {
+    // Fail closed: Kernel-managed Agent Run retry is retired. Do not probe
+    // providers, mutate Task state, or create Runs/Jobs from this route.
+    response.status(410).json({
+      error: "AGENT_RUN_RETIRED",
+      message: "Kernel-managed Agent Run retry is disabled. Create or claim a WorkContract and start an external SuperController through Thin Launcher.",
+      migration: {
+        path: ["WorkContract", "controller_claim", "Process Runtime", "external SuperController"],
+      },
+    });
   });
 
   const server = createServer(app);

@@ -343,88 +343,11 @@ export function findExecutionJob(controllerHome: string, jobId: string): Executi
   return undefined;
 }
 
-export function createExecutionJob(controllerHome: string, input: CreateExecutionJobInput): { job: ExecutionJob; deduplicated: boolean } {
-  if (executionJobCreationRetired()) {
-    throw new Error(
-      'EXECUTION_JOB_RETIRED: New ExecutionJobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.',
-    );
-  }
-  const home = ensureControllerHome(controllerHome);
-  const normalizedRequestId = input.requestId.trim();
-  if (!normalizedRequestId) throw new Error('REQUEST_ID_REQUIRED: every durable command must have a requestId');
-  const normalizedSemanticKey = input.semanticKey.trim();
-  if (!normalizedSemanticKey) throw new Error('SEMANTIC_KEY_REQUIRED: every durable command must have a semanticKey');
-
-  const requestLockId = createHash('sha256').update(normalizedRequestId).digest('hex').slice(0, 24);
-  return withControllerLock(home, { scope: 'global', resource: `execution-request-${requestLockId}` }, `create-job:${normalizedRequestId}`, () => {
-    const requestRecordPath = requestPath(home, normalizedRequestId);
-    if (existsSync(requestRecordPath)) {
-      const record = readJsonFile<RequestIndexRecord>(requestRecordPath);
-      const existing = getExecutionJob(home, record.repoId, record.jobId);
-      if (record.semanticKey !== normalizedSemanticKey) {
-        throw new Error(`REQUEST_ID_CONFLICT: ${normalizedRequestId} already belongs to ${record.semanticKey}`);
-      }
-      return { job: existing, deduplicated: true };
-    }
-    const createdAt = now();
-    const timeoutPolicy = normalizeExecutionTimeoutPolicy(input.timeoutPolicy, input.timeoutMs);
-    const admissionDeadlineAt = deadlineAfter(createdAt, timeoutPolicy.admissionTimeoutMs);
-    const operationMetadata = input.operationMetadata
-      ? {
-          ...input.operationMetadata,
-          admissionTimeoutMs: timeoutPolicy.admissionTimeoutMs,
-          queueTimeoutMs: timeoutPolicy.queueTimeoutMs,
-          executionTimeoutMs: input.operationMetadata.executionTimeoutMs ?? input.operationMetadata.timeoutMs,
-          interactiveWaitMs: timeoutPolicy.interactiveWaitMs,
-        }
-      : undefined;
-    const job: ExecutionJob = {
-      schemaVersion: 1,
-      revision: 1,
-      jobId: `EJOB-${Date.now()}-${randomUUID().slice(0, 8)}`,
-      repoId: input.repoId,
-      checkoutId: input.checkoutId,
-      type: input.type,
-      status: 'queued',
-      priority: input.priority ?? 'P1',
-      requestId: normalizedRequestId,
-      semanticKey: normalizedSemanticKey,
-      payload: input.payload,
-      origin: input.origin,
-      resourceClaims: input.resourceClaims ?? [],
-      dependencies: input.dependencies ?? [],
-      leaseRefs: [],
-      createdAt,
-      updatedAt: createdAt,
-      queuedAt: createdAt,
-      timeoutPolicy,
-      admissionDeadlineAt,
-      deadlineAt: admissionDeadlineAt,
-      attempt: 0,
-      maxAttempts: Math.max(1, Math.min(input.maxAttempts ?? 1, 10)),
-      operationMetadata,
-      resources: input.resources,
-      timings: {
-        durablePersistedAt: createdAt,
-        schedulerNotifiedAt: createdAt,
-      },
-      evidenceIds: [],
-    };
-    writeJsonAtomic(jobPath(home, job.repoId, job.jobId), job);
-    writeJsonAtomic(requestRecordPath, {
-      schemaVersion: 1,
-      requestId: normalizedRequestId,
-      semanticKey: normalizedSemanticKey,
-      jobId: job.jobId,
-      repoId: job.repoId,
-      createdAt,
-    } satisfies RequestIndexRecord);
-    upsertIndexes(home, job);
-    markRepositoryProjectionDirty(home, job.repoId, `job:${job.jobId}:created`);
-    appendJobEvent(home, job, 'job_created', { type: job.type, priority: job.priority });
-    touchSchedulerWakeSignal(home, `job-created:${job.jobId}`);
-    return { job, deduplicated: false };
-  }, 10_000);
+export function createExecutionJob(_controllerHome: string, _input: CreateExecutionJobInput): { job: ExecutionJob; deduplicated: boolean } {
+  // Fail closed at the write boundary. Historical ExecutionJobs remain readable via get/list APIs.
+  throw new Error(
+    'EXECUTION_JOB_RETIRED: New ExecutionJobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.',
+  );
 }
 
 export function updateExecutionJob(

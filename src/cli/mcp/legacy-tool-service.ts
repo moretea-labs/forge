@@ -31,7 +31,6 @@ import {
   getAgentJobEvents,
   getAgentJobLog,
   listAgentJobs,
-  retryAgentJob,
 } from "../agent-jobs/job-manager";
 import {
   classifyGitHubCopilotPreflight,
@@ -4180,52 +4179,12 @@ export async function callMcpTool(
             "TOOL_DISABLED",
             "retry_task_run requires the controller profile",
           );
-        const previous = getAgentJob(ctx.repoRoot, String(args.run_id ?? ""));
-        if (
-          !["failed", "cancelled", "unknown", "waiting_for_user"].includes(
-            previous.status,
-          )
-        )
-          return errorResult(
-            "RUN_NOT_RETRYABLE",
-            `run status is ${previous.status}`,
-          );
-        const issue = getIssue(ctx.repoRoot, previous.issueId);
-        const task = issue.tasks.find((entry) => entry.id === previous.taskId);
-        const health = task
-          ? taskExecutorHealth(
-              ctx,
-              task,
-              previous.agent,
-              previous.github
-                ? `${previous.github.owner}/${previous.github.repo}`
-                : undefined,
-            )
-          : null;
-        if (health) return dispatchExecutorHealthResult(health, { retryable: false });
-        const run = retryAgentJob(ctx.repoRoot, previous.runId, {
-          executorPolicy: {
-            agentRunner: ctx.policy.execution.agentRunner,
-            allowedAgents: ctx.policy.execution.allowedAgents,
-          },
-          timeoutMs:
-            args.timeout_ms === undefined
-              ? undefined
-              : runnerTimeoutMs(ctx, args.timeout_ms),
-          isolate: typeof args.isolate === "boolean" ? args.isolate : undefined,
-          supervisorInstructions: typeof args.supervisor_instructions === "string"
-            ? args.supervisor_instructions
-            : undefined,
-        });
-        audit(
-          ctx,
-          name,
-          run.status === "failed" ? "failed" : "ok",
-          args,
-          run.github?.url ?? run.promptPath,
-          run.error,
+        // Fail closed before Task/provider side effects. Historical Runs remain readable.
+        audit(ctx, name, "failed", args, undefined, "AGENT_RUN_RETIRED");
+        return errorResult(
+          "AGENT_RUN_RETIRED",
+          "Kernel-managed Agent Run retry is disabled. Create or claim a WorkContract and start an external SuperController through Thin Launcher.",
         );
-        return textResult(run);
       }
       case "finish_task_run": {
         if (ctx.policy.profile !== "controller") return errorResult("TOOL_DISABLED", "finish_task_run requires the controller profile");
