@@ -39,7 +39,7 @@ run_typecheck() {
 run_bun_test_file() {
   local file="$1"
   echo "[ci] test $file"
-  bun test --isolate --timeout "$BUN_TEST_TIMEOUT_MS" --max-concurrency "$BUN_TEST_MAX_CONCURRENCY" "$file"
+  bun test --timeout "$BUN_TEST_TIMEOUT_MS" --max-concurrency "$BUN_TEST_MAX_CONCURRENCY" "$file"
 }
 
 run_bun_tests() {
