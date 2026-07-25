@@ -11,7 +11,9 @@ import {
   getWorkContract,
   getWorkContractByRequestId,
   updateWorkContract,
+  type CreateWorkContractInput,
 } from '../../src/runtime/control-plane/facade/work-contract-store';
+import type { SubmittedWorkOperation } from '../../src/runtime/control-plane/facade/types';
 import {
   claimControllerSession,
   getControllerSession,
@@ -38,6 +40,38 @@ afterEach(() => {
     }
   }
 });
+
+function submittedOperation(
+  name: string,
+  semanticKey: string,
+  mode: SubmittedWorkOperation['mode'],
+): SubmittedWorkOperation {
+  return {
+    name,
+    semanticKey,
+    argumentHash: `test:${semanticKey}`,
+    mode,
+    idempotent: true,
+    replayable: true,
+    resourceClaims: [],
+  };
+}
+
+function workContractInput(
+  repoId: string,
+  input: Pick<CreateWorkContractInput, 'workId' | 'mode' | 'objective'> & Partial<CreateWorkContractInput>,
+): CreateWorkContractInput {
+  return {
+    acceptanceCriteria: [],
+    constraints: { requireHandoffOnAmbiguity: true },
+    allowedPaths: [],
+    forbiddenPaths: [],
+    checks: [],
+    requestedBy: 'chatgpt',
+    ...input,
+    repoId,
+  };
+}
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'repo-harness-work-e2e-'));
@@ -68,7 +102,7 @@ describe('WorkContract lifecycle E2E', () => {
       requestId: 'e2e-success-1',
       repoId: repository.repoId,
       semanticKey: 'process:echo-success',
-      operation: { name: 'repository_command', mode: 'mutating' },
+      operation: submittedOperation('repository_command', 'process:echo-success', 'mutating'),
       objective: 'Echo a success marker through Process Runtime',
       checks: [],
     });
@@ -116,7 +150,11 @@ describe('WorkContract lifecycle E2E', () => {
 
     const completed = updateWorkContract({ controllerHome, repoId: repository.repoId }, accepted.contract.workId, {
       status: 'completed',
-      evidenceRefs: [`process:${handle.processId}`],
+      evidenceRefs: [{
+        title: 'Process Runtime success',
+        summary: `process:${handle.processId}`,
+        detailLevel: 'detail',
+      }],
     });
     expect(completed.status).toBe('completed');
     expect(listExecutionJobs(controllerHome, repository.repoId, 20)).toHaveLength(0);
@@ -125,13 +163,15 @@ describe('WorkContract lifecycle E2E', () => {
 
   test('B: Process Runtime non-zero exit marks Work failed without success evidence', async () => {
     const { repoRoot, controllerHome, repository } = fixture();
-    const work = createWorkContract({ controllerHome, repoId: repository.repoId }, {
-      workId: `WORK-fail-${Date.now()}`,
-      repoId: repository.repoId,
-      mode: 'direct_control',
-      objective: 'Fail a deterministic command',
-      status: 'open',
-    });
+    const work = createWorkContract(
+      { controllerHome, repoId: repository.repoId },
+      workContractInput(repository.repoId, {
+        workId: `WORK-fail-${Date.now()}`,
+        mode: 'direct_control',
+        objective: 'Fail a deterministic command',
+        status: 'open',
+      }),
+    );
     claimControllerSession(
       { controllerHome, repoId: repository.repoId },
       {
@@ -163,21 +203,27 @@ describe('WorkContract lifecycle E2E', () => {
     expect(handle.contractStatus).toBe('failed');
     const failed = updateWorkContract({ controllerHome, repoId: repository.repoId }, work.workId, {
       status: 'failed',
-      evidenceRefs: [`process:${handle.processId}:failed`],
+      evidenceRefs: [{
+        title: 'Process Runtime failure',
+        summary: `process:${handle.processId}:failed`,
+        detailLevel: 'detail',
+      }],
     });
     expect(failed.status).toBe('failed');
-    expect(failed.evidenceRefs?.some((ref) => ref.includes('failed'))).toBe(true);
+    expect(failed.evidenceRefs?.some((ref) => ref.summary?.includes('failed'))).toBe(true);
   });
 
   test('C: cancel long process terminates Work and process group', async () => {
     const { repoRoot, controllerHome, repository } = fixture();
-    const work = createWorkContract({ controllerHome, repoId: repository.repoId }, {
-      workId: `WORK-cancel-${Date.now()}`,
-      repoId: repository.repoId,
-      mode: 'direct_control',
-      objective: 'Cancel a long sleep',
-      status: 'running',
-    });
+    const work = createWorkContract(
+      { controllerHome, repoId: repository.repoId },
+      workContractInput(repository.repoId, {
+        workId: `WORK-cancel-${Date.now()}`,
+        mode: 'direct_control',
+        objective: 'Cancel a long sleep',
+        status: 'running',
+      }),
+    );
     claimControllerSession(
       { controllerHome, repoId: repository.repoId },
       {
@@ -212,13 +258,15 @@ describe('WorkContract lifecycle E2E', () => {
 
   test('D: release then re-claim by a new Controller succeeds', () => {
     const { controllerHome, repository } = fixture();
-    const work = createWorkContract({ controllerHome, repoId: repository.repoId }, {
-      workId: `WORK-release-${Date.now()}`,
-      repoId: repository.repoId,
-      mode: 'direct_control',
-      objective: 'Release recovery',
-      status: 'running',
-    });
+    const work = createWorkContract(
+      { controllerHome, repoId: repository.repoId },
+      workContractInput(repository.repoId, {
+        workId: `WORK-release-${Date.now()}`,
+        mode: 'direct_control',
+        objective: 'Release recovery',
+        status: 'running',
+      }),
+    );
     claimControllerSession(
       { controllerHome, repoId: repository.repoId },
       {
@@ -253,14 +301,16 @@ describe('WorkContract lifecycle E2E', () => {
 
   test('E: non-deterministic Work creates Handoff without Jobs or Agent Runs', () => {
     const { controllerHome, repository, repoRoot } = fixture();
-    const work = createWorkContract({ controllerHome, repoId: repository.repoId }, {
-      workId: `WORK-handoff-${Date.now()}`,
-      repoId: repository.repoId,
-      mode: 'handoff_only',
-      objective: 'Requires external SuperController reasoning',
-      status: 'open',
-      driver: { preferred: 'external_controller', allowWorker: false, allowDirectEdit: false },
-    });
+    const work = createWorkContract(
+      { controllerHome, repoId: repository.repoId },
+      workContractInput(repository.repoId, {
+        workId: `WORK-handoff-${Date.now()}`,
+        mode: 'handoff_only',
+        objective: 'Requires external SuperController reasoning',
+        status: 'open',
+        driver: { preferred: 'external_controller', allowWorker: false, allowDirectEdit: false },
+      }),
+    );
     createHandoffItem({ controllerHome, repoId: repository.repoId }, {
       id: `HO-${work.workId}`,
       repoId: repository.repoId,
@@ -291,7 +341,7 @@ describe('WorkContract lifecycle E2E', () => {
       requestId: `job-${work.workId}`,
       semanticKey: `job-${work.workId}`,
       origin: { surface: 'mcp' },
-      payload: { operation: 'agent', target: 'codex' },
+      payload: { operation: 'agent', target: 'runtime' },
       resourceClaims: [],
     })).toThrow(/EXECUTION_JOB_RETIRED/);
     expect(() => acceptTaskJob({
@@ -312,14 +362,14 @@ describe('WorkContract lifecycle E2E', () => {
       requestId: 'e2e-idempotent-1',
       repoId: repository.repoId,
       semanticKey: 'process:idempotent',
-      operation: { name: 'controller_context', mode: 'readonly' },
+      operation: submittedOperation('controller_context', 'process:idempotent', 'readonly'),
       objective: 'Idempotent accept',
     });
     const second = acceptSubmittedWorkContract(controllerHome, {
       requestId: 'e2e-idempotent-1',
       repoId: repository.repoId,
       semanticKey: 'process:idempotent',
-      operation: { name: 'controller_context', mode: 'readonly' },
+      operation: submittedOperation('controller_context', 'process:idempotent', 'readonly'),
       objective: 'Idempotent accept',
     });
     expect(second.deduplicated).toBe(true);

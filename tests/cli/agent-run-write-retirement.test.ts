@@ -46,7 +46,7 @@ function writeHistoricalFailedRun(repoRoot: string, issueId: string, taskId: str
     error: 'historical failure',
   }, null, 2)}\n`);
   updateTask(repoRoot, issueId, taskId, {
-    status: 'failed',
+    status: 'changes_requested',
     runId,
     note: 'Historical failure recorded for retirement regression.',
   });
@@ -134,7 +134,7 @@ describe('Agent Run write-boundary retirement', () => {
 
     const taskAfter = getIssue(repoRoot, issue.id).tasks.find((entry) => entry.id === 'T1')!;
     expect(JSON.stringify(taskAfter)).toBe(taskJsonBefore);
-    expect(taskAfter.status).toBe('failed');
+    expect(taskAfter.status).toBe('changes_requested');
     expect(taskAfter.runIds ?? []).toContain(runId);
     expect(JSON.stringify(getIssue(repoRoot, issue.id))).toBe(issueJsonBefore);
     expect(snapshotTree(join(repoRoot, '.ai/harness/jobs'))).toEqual(jobsBefore);
