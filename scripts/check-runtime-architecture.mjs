@@ -77,6 +77,14 @@ forbid(
 requireText('scripts/smoke-runtime-recovery.ts', 'acceptSubmittedWorkContract');
 requireText('scripts/smoke-runtime-recovery.ts', 'recoverManagedProcesses');
 requireText('scripts/smoke-runtime-recovery.ts', 'listExecutionJobs');
+forbid(
+  'scripts/smoke-schedule-engine.ts',
+  /\bcreateExecutionJob\b|\bgetExecutionJob\b|\btransitionExecutionJob\b|\bsettleScheduledExecution\b/,
+  'Schedule smoke must validate external-controller handoffs and deterministic maintenance without reviving ExecutionJob dispatch',
+);
+requireText('scripts/smoke-schedule-engine.ts', 'listHandoffItems');
+requireText('scripts/smoke-schedule-engine.ts', 'listExecutionJobs');
+requireText('scripts/smoke-schedule-engine.ts', "operation: 'runtime_maintenance_apply'");
 
 const server = text('src/cli/mcp/server.ts');
 const runtimeCall = server.indexOf('callRuntimeTool(ctx, name, args)');
