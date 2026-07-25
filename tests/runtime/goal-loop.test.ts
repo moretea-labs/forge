@@ -432,6 +432,38 @@ describe('policy gates', () => {
     expect(result.approvalState).toBe('strong_confirmation_required');
     expect(result.dispatched).toBe(false);
   });
+
+  test('executor_dispatch always creates a handoff after approval instead of invoking a provider', () => {
+    const { ctx } = fixture({}, {
+      overrides: {
+        grok_api: { status: 'ready', directDispatch: true, configured: true, authPresent: true },
+      },
+    });
+    const goal = goalCreate(ctx, {
+      title: 'External approved',
+      objective: 'send approved email',
+      constraints: { allowExternalWrite: true },
+    });
+    const result = executorDispatch(ctx, {
+      goalId: goal.goalId,
+      externalWrite: true,
+      risk: 'remote_write',
+      approvalConfirmed: true,
+      strongConfirmationText: 'confirm-destructive-or-external-effect',
+      mockResponse: {
+        summary: 'must never be applied by the Kernel',
+        changed_files: ['README.md'],
+        patch_instructions: 'mutate directly',
+        verification_commands: [],
+        risk_notes: [],
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.dispatched).toBe(false);
+    expect(result.directDispatch).toBe(false);
+    expect(result.handoffOnly).toBe(true);
+    expect(typeof result.handoffPacketId).toBe('string');
+  });
 });
 
 describe('repair and finalization', () => {

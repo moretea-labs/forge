@@ -200,8 +200,8 @@ forbid(
 );
 forbid(
   'src/runtime/control-plane/goal-loop/goal-loop-engine.ts',
-  /\bcreateExecutionJob\b|\bsubmitLocalBridgeJob\b|\bacceptTaskJob\b|\bstartTaskJob\b/,
-  'Goal Loop must not create ExecutionJobs, LocalBridgeJobs, or Agent Runs',
+  /\bcreateExecutionJob\b|\bsubmitLocalBridgeJob\b|\bacceptTaskJob\b|\bstartTaskJob\b|\bdispatchProvider\b/,
+  'Goal Loop must not create Jobs, Agent Runs, or invoke Kernel Provider dispatch',
 );
 forbid('src/runtime/gateway/mcp/router.ts', /Use process_get \/ process_wait \/ process_logs/, 'Gateway follow-up instructions must use an always-exposed neutral Work facade');
 requireMatch(

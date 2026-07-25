@@ -1,4 +1,3 @@
-import { randomUUID } from 'crypto';
 import {
   createGoalContract,
   getGoalContract,
@@ -26,7 +25,6 @@ import {
   providerConfigStatus,
   type ProviderRegistryEnv,
 } from './provider-registry';
-import { dispatchProvider } from './provider-dispatch';
 import { readProviderConfig, readRoutingConfig, type GoalLoopConfigLocation } from './config-store';
 import type {
   FailureClass,
@@ -412,7 +410,7 @@ export function goalTickOnce(ctx: GoalLoopContext, goalId: string, options: Goal
         };
       }
       const updated = transitionGoalStatus(storeOpts(ctx), goalId, 'dispatching', `Selected provider ${route.selectedProviderId}`, {
-        providerId: route.selectedProviderId,
+        providerId: route.selectedProviderId ?? undefined,
         currentStep: `dispatching:${route.selectedProviderId}`,
         nextSafeAction: `Dispatch bounded work to ${route.selectedProviderId}`,
       });
@@ -435,69 +433,20 @@ export function goalTickOnce(ctx: GoalLoopContext, goalId: string, options: Goal
         });
         return tickResult(goalId, from, updated, route.reason);
       }
-      if (!route.directDispatch || !route.selectedProviderId || route.handoffOnly) {
-        const packet = attachHandoff(ctx, goal, 'No direct-dispatch provider for dispatching step', 'chatgpt_handoff');
-        const updated = transitionGoalStatus(storeOpts(ctx), goalId, 'handoff_ready', 'Provider not directly invokable', {
-          providerId: 'chatgpt_handoff',
-          nextSafeAction: 'Use handoff packet',
-        });
-        return { ...tickResult(goalId, from, updated, 'dispatching -> handoff_ready'), handoffPacketId: packet.packetId };
-      }
-
-      if (options.providerFailure) {
-        return handleProviderFailure(ctx, goal, route.selectedProviderId, options.forceFailureClass ?? 'provider_unavailable');
-      }
-
-      const dispatch = dispatchProvider({
-        providerId: route.selectedProviderId,
-        objective: goal.objective,
-        acceptanceCriteria: goal.acceptanceCriteria,
-        allowedPaths: goal.constraints.allowedPaths,
-        mockResponse: options.dispatchMock,
+      const recommendedProvider = route.selectedProviderId ?? 'chatgpt_handoff';
+      const reason = route.directDispatch && !route.handoffOnly
+        ? 'Kernel Provider dispatch is retired; external SuperController handoff is required.'
+        : 'No direct-dispatch provider for dispatching step.';
+      const packet = attachHandoff(ctx, goal, reason, recommendedProvider);
+      const updated = transitionGoalStatus(storeOpts(ctx), goalId, 'handoff_ready', reason, {
+        providerId: recommendedProvider,
+        nextSafeAction: 'Use the handoff packet from an external SuperController.',
       });
-
-      if (!dispatch.ok) {
-        if (dispatch.rejectionReason?.includes('handoff-only')) {
-          const packet = attachHandoff(ctx, goal, dispatch.summary, 'chatgpt_handoff');
-          const updated = transitionGoalStatus(storeOpts(ctx), goalId, 'handoff_ready', dispatch.summary, {
-            providerId: 'chatgpt_handoff',
-          });
-          return { ...tickResult(goalId, from, updated, dispatch.summary), handoffPacketId: packet.packetId };
-        }
-        return handleProviderFailure(
-          ctx,
-          goal,
-          route.selectedProviderId,
-          options.forceFailureClass ?? 'provider_unavailable',
-          dispatch.rejectionReason ?? dispatch.summary,
-        );
-      }
-
-      const runId = `run-${randomUUID().slice(0, 8)}`;
-      const updated = updateGoalContract(storeOpts(ctx), goalId, {
-        status: 'running',
-        currentStep: `running:${route.selectedProviderId}`,
-        lastProviderId: route.selectedProviderId,
-        lastRunId: runId,
-        nextSafeAction: 'Wait for provider proposal then verify via repo-harness',
-        appendArtifact: {
-          kind: 'provider_proposal',
-          id: runId,
-          title: `Proposal from ${route.selectedProviderId}`,
-          summary: dispatch.summary.slice(0, 400),
-          createdAt: nowIso(ctx),
-        },
-        appendTransition: {
-          from,
-          to: 'running',
-          reason: `Dispatched to ${route.selectedProviderId}; repo-harness owns apply/verify`,
-          at: nowIso(ctx),
-          providerId: route.selectedProviderId,
-        },
-      });
-      return tickResult(goalId, from, updated, `dispatching -> running (${route.selectedProviderId})`, {
-        providerId: route.selectedProviderId,
-      });
+      return {
+        ...tickResult(goalId, from, updated, 'dispatching -> handoff_ready'),
+        handoffPacketId: packet.packetId,
+        providerId: route.selectedProviderId ?? undefined,
+      };
     }
     case 'running': {
       // Model work completed (or simulated): move to verification owned by harness.
@@ -968,62 +917,21 @@ export function executorDispatch(
     externalWrite: input.externalWrite,
   });
 
-  if (route.handoffOnly || !route.directDispatch || !route.selectedProviderId) {
-    const packet = goalHandoffPacketCreate(ctx, goal.goalId, {
-      blockers: [route.reason],
-      recommendedProvider: route.selectedProviderId ?? 'chatgpt_handoff',
-    });
-    return {
-      ok: false,
-      dispatched: false,
-      handoffOnly: true,
-      reason: route.reason,
-      handoffPacketId: packet.packetId,
-      // Never treat chatgpt as direct
-      directDispatch: false,
-    };
-  }
-
-  if (route.selectedProviderId === 'chatgpt_handoff') {
-    return {
-      ok: false,
-      dispatched: false,
-      reason: 'chatgpt_handoff cannot be direct-dispatched',
-      directDispatch: false,
-    };
-  }
-
-  const result = dispatchProvider({
-    providerId: route.selectedProviderId,
-    objective: goal.objective,
-    acceptanceCriteria: goal.acceptanceCriteria,
-    allowedPaths: goal.constraints.allowedPaths,
-    mockResponse: input.mockResponse,
+  const reason = route.directDispatch && route.selectedProviderId && !route.handoffOnly
+    ? 'Kernel Provider dispatch is retired; continue through an external SuperController.'
+    : route.reason;
+  const packet = goalHandoffPacketCreate(ctx, goal.goalId, {
+    blockers: [reason],
+    recommendedProvider: route.selectedProviderId ?? 'chatgpt_handoff',
   });
-
-  if (result.ok) {
-    updateGoalContract(storeOpts(ctx), goal.goalId, {
-      lastProviderId: route.selectedProviderId,
-      lastRunId: `run-${randomUUID().slice(0, 8)}`,
-      appendArtifact: {
-        kind: 'provider_proposal',
-        title: `Dispatch ${route.selectedProviderId}`,
-        summary: result.summary.slice(0, 400),
-        createdAt: nowIso(ctx),
-      },
-    });
-  }
-
   return {
-    ok: result.ok,
-    dispatched: result.ok,
+    ok: false,
+    dispatched: false,
+    handoffOnly: true,
+    reason,
+    handoffPacketId: packet.packetId,
+    directDispatch: false,
     providerId: route.selectedProviderId,
-    directDispatch: true,
-    appliedByRepoHarness: true,
-    summary: result.summary,
-    rejectionReason: result.rejectionReason,
-    output: result.output,
-    routeReason: route.reason,
   };
 }
 
