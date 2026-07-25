@@ -56,6 +56,7 @@ const required = [
   'src/runtime/workflow/schedules/engine.ts',
   'scripts/smoke-runtime-recovery.ts',
   'scripts/smoke-schedule-engine.ts',
+  'scripts/smoke-runtime-recovery.ts',
   'src/runtime/workflow/portfolio/engine.ts',
   'src/runtime/workflow/findings/store.ts',
   'src/runtime/release/release-gate.ts',
@@ -68,6 +69,15 @@ const required = [
   'docs/architecture/current/approved-target-architecture.zh-CN.md',
 ];
 for (const path of required) text(path);
+
+forbid(
+  'scripts/smoke-runtime-recovery.ts',
+  /\bcreateExecutionJob\b|\battachExecutionWorker\b|\btransitionExecutionJobFromWorker\b/,
+  'Runtime recovery smoke must validate WorkContract and Process Runtime recovery without creating or driving ExecutionJobs',
+);
+requireText('scripts/smoke-runtime-recovery.ts', 'acceptSubmittedWorkContract');
+requireText('scripts/smoke-runtime-recovery.ts', 'recoverManagedProcesses');
+requireText('scripts/smoke-runtime-recovery.ts', 'listExecutionJobs');
 
 const server = text('src/cli/mcp/server.ts');
 const runtimeCall = server.indexOf('callRuntimeTool(ctx, name, args)');
