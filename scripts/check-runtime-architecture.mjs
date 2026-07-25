@@ -56,6 +56,7 @@ const required = [
   'src/runtime/workflow/schedules/engine.ts',
   'scripts/smoke-runtime-recovery.ts',
   'scripts/smoke-schedule-engine.ts',
+  'scripts/smoke-runtime-control-plane.ts',
   'src/runtime/workflow/portfolio/engine.ts',
   'src/runtime/workflow/findings/store.ts',
   'src/runtime/release/release-gate.ts',
@@ -85,6 +86,14 @@ forbid(
 requireText('scripts/smoke-schedule-engine.ts', 'listHandoffItems');
 requireText('scripts/smoke-schedule-engine.ts', 'listExecutionJobs');
 requireText('scripts/smoke-schedule-engine.ts', "operation: 'runtime_maintenance_apply'");
+forbid(
+  'scripts/smoke-runtime-control-plane.ts',
+  /\bcreateExecutionJob\b|\bgetExecutionJob\b/,
+  'Runtime control-plane smoke must exercise direct Workbench and materialized reads without ExecutionJob polling',
+);
+requireText('scripts/smoke-runtime-control-plane.ts', 'callRepositoryTool');
+requireText('scripts/smoke-runtime-control-plane.ts', 'callRuntimeTool');
+requireText('scripts/smoke-runtime-control-plane.ts', 'listExecutionJobs');
 
 const server = text('src/cli/mcp/server.ts');
 const runtimeCall = server.indexOf('callRuntimeTool(ctx, name, args)');
