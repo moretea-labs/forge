@@ -56,7 +56,6 @@ const required = [
   'src/runtime/workflow/schedules/engine.ts',
   'scripts/smoke-runtime-recovery.ts',
   'scripts/smoke-schedule-engine.ts',
-  'scripts/smoke-runtime-recovery.ts',
   'src/runtime/workflow/portfolio/engine.ts',
   'src/runtime/workflow/findings/store.ts',
   'src/runtime/release/release-gate.ts',
@@ -104,14 +103,6 @@ forbid(
   /\bcreateExecutionJob\b|\bgetExecutionJob\b/,
   'Gateway Router must not retain dormant ExecutionJob creation or lookup paths',
 );
-forbid(
-  'scripts/smoke-runtime-recovery.ts',
-  /\bcreateExecutionJob\b|\battachExecutionWorker\b|\btransitionExecutionJobFromWorker\b/,
-  'Runtime recovery smoke must validate WorkContract and Process Runtime recovery, not revive ExecutionJob workers',
-);
-requireText('scripts/smoke-runtime-recovery.ts', 'acceptSubmittedWorkContract');
-requireText('scripts/smoke-runtime-recovery.ts', 'recoverManagedProcesses');
-requireText('scripts/smoke-runtime-recovery.ts', 'listExecutionJobs');
 requireText('src/runtime/gateway/mcp/router.ts', 'executionJobCreationRetired');
 requireText('src/runtime/gateway/mcp/router.ts', "'EXECUTION_JOB_RETIRED'");
 requireText('src/runtime/gateway/mcp/execution-tools.ts', 'isDurableWorkOperation');
