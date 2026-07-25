@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
 import { findExecutionJob } from '../execution/jobs/store';
+import { isProcessAlive } from '../shared/process-tree';
 import type { LocalBridgeJob } from '../../cli/local-bridge/types';
 
 export type RuntimeStorageRepairCandidateKind =
@@ -216,6 +217,8 @@ function collectRoot(
       continue;
     }
     if (oldEnough) {
+      const workerPid = job.workerPid ?? job.ownerPid;
+      const workerAlive = isProcessAlive(workerPid);
       candidates.push({
         candidateId: buildCandidateId(rootKind, job.jobId || jobId, 'stale_active_local_job'),
         repoId: repository.repoId,
@@ -226,8 +229,10 @@ function collectRoot(
         kind: 'stale_active_local_job',
         status: job.status,
         action: 'terminalize',
-        safe: job.status !== 'running' || job.ownerPid === undefined,
-        reason: 'Local Job remains active without a durable projection. Terminalization is safe when no worker ownership is present.',
+        safe: job.status !== 'running' || !workerAlive,
+        reason: job.status === 'running' && workerAlive
+          ? `Local Job remains protected because worker PID ${workerPid} is still alive.`
+          : 'Local Job remains active without a durable projection and has no live worker ownership.',
         ageMinutes: age,
       });
     }

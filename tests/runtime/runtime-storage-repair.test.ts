@@ -83,6 +83,40 @@ describe('runtime storage local-jobs repair', () => {
     expect(applied.auditPath).toBe('.ai/harness/controller/runtime-storage-repair.jsonl');
   });
 
+  it('terminalizes stale running controller-home jobs only after their worker exits', () => {
+    const { controllerHome, repository } = fixture();
+    const controllerLocalJobsRoot = join(repositoryControllerRoot(controllerHome, repository.repoId), 'local-jobs');
+    writeJobAtLocalJobsRoot(controllerLocalJobsRoot, 'JOB-dead-worker', {
+      status: 'running',
+      workerPid: 999_999_999,
+      ownerPid: process.pid,
+    });
+    writeJobAtLocalJobsRoot(controllerLocalJobsRoot, 'JOB-live-worker', {
+      status: 'running',
+      workerPid: process.pid,
+    });
+
+    const preview = previewRuntimeStorageRepair(repository, controllerHome, { minAgeMinutes: 0 });
+    const dead = preview.candidates.find((candidate) => candidate.jobId === 'JOB-dead-worker');
+    const live = preview.candidates.find((candidate) => candidate.jobId === 'JOB-live-worker');
+    expect(dead?.safe).toBe(true);
+    expect(live?.safe).toBe(false);
+    expect(live?.reason).toContain(`worker PID ${process.pid} is still alive`);
+
+    const applied = applyRuntimeMaintenance(repository, controllerHome, {
+      actionId: 'local_jobs_reconcile',
+      confirmMaintenance: true,
+      minAgeMinutes: 0,
+    });
+    expect(applied.runtimeStorageRepairApply?.applied.some((entry) =>
+      entry.candidateId === dead?.candidateId && entry.status === 'applied'
+    )).toBe(true);
+    const repairedDead = JSON.parse(readFileSync(join(controllerLocalJobsRoot, 'JOB-dead-worker/job.json'), 'utf-8')) as { status: string };
+    const preservedLive = JSON.parse(readFileSync(join(controllerLocalJobsRoot, 'JOB-live-worker/job.json'), 'utf-8')) as { status: string };
+    expect(repairedDead.status).toBe('failed');
+    expect(preservedLive.status).toBe('running');
+  });
+
   it('routes controller-home local job repair through runtime maintenance status and apply', () => {
     const { controllerHome, repository } = fixture();
     const controllerLocalJobsRoot = join(repositoryControllerRoot(controllerHome, repository.repoId), 'local-jobs');
