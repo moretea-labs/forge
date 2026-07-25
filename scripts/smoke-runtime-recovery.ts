@@ -1,60 +1,127 @@
-import { mkdtempSync, rmSync } from 'fs';
+import { spawnSync } from 'child_process';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { RepoActor } from '../src/runtime/control-plane/repo-actor/actor';
-import { reconcileExecutionJobs } from '../src/runtime/control-plane/global-scheduler/reconciliation';
-import { attachExecutionWorker, createExecutionJob, getExecutionJob, heartbeatExecutionJob, transitionExecutionJobFromWorker, updateExecutionJob } from '../src/runtime/execution/jobs/store';
-import { markOperationCompleted, markOperationStarted } from '../src/runtime/execution/jobs/receipt-store';
-import { readRepositoryProjection } from '../src/runtime/projections/materialized-view';
+import { ensureControllerHome } from '../src/cli/repositories/controller-home';
+import { registerRepository } from '../src/cli/repositories/registry';
+import {
+  acceptSubmittedWorkContract,
+  getWorkContract,
+  getWorkContractByRequestId,
+  updateWorkContract,
+} from '../src/runtime/control-plane/facade/work-contract-store';
+import {
+  claimControllerSession,
+  getControllerSession,
+  releaseControllerSession,
+} from '../src/runtime/control-plane/facade/controller-session-store';
+import { listExecutionJobs } from '../src/runtime/execution/jobs/store';
+import {
+  __resetLiveMonitorsForTests,
+  recoverManagedProcesses,
+  spawnManagedProcess,
+  waitForProcess,
+} from '../src/runtime/execution/process-runtime';
 import { createSchedule } from '../src/runtime/workflow/schedules/store';
 import { createPortfolioWorkflow } from '../src/runtime/workflow/portfolio/store';
 import { recordCandidateFinding } from '../src/runtime/workflow/findings/store';
 import { assertAutomatedOperationAllowed } from '../src/runtime/control-plane/governance/external-effects';
-import { listActiveLeases, releaseExecutionLeases, renewExecutionLeases } from '../src/runtime/resources/leases/store';
 
-const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-recovery-smoke-'));
+const root = mkdtempSync(join(tmpdir(), 'repo-harness-recovery-smoke-'));
+const controllerHome = join(root, 'controller');
+const repoRoot = join(root, 'repo');
+
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
-try {
-  const mutating = createExecutionJob(controllerHome, {
-    repoId: 'repo-a', type: 'mcp-tool', requestId: 'mutating-1', semanticKey: 'mutating-1',
-    origin: { surface: 'system' }, payload: { operation: 'create_issue', target: 'mcp-tool' },
-    resourceClaims: [{ resourceKey: 'repo-state', mode: 'write' }], maxAttempts: 3,
-  }).job;
-  const claimed = new RepoActor(controllerHome, 'repo-a').tryClaimNext();
-  assert(claimed?.job.jobId === mutating.jobId, 'mutating job was not claimed');
-  const mutatingRunning = attachExecutionWorker(controllerHome, 'repo-a', mutating.jobId, 99999999);
-  assert(mutatingRunning?.status === 'running', 'mutating worker was not attached');
-  markOperationStarted(controllerHome, mutatingRunning, 99999999);
-  updateExecutionJob(controllerHome, 'repo-a', mutating.jobId, (job) => ({ ...job, heartbeatAt: '2000-01-01T00:00:00.000Z' }));
-  reconcileExecutionJobs(controllerHome);
-  const ambiguous = getExecutionJob(controllerHome, 'repo-a', mutating.jobId);
-  assert(ambiguous.status === 'human_attention_required', `ambiguous mutation was replayed as ${ambiguous.status}`);
+function git(args: string[]): void {
+  const result = spawnSync('git', args, { cwd: repoRoot, stdio: 'ignore' });
+  assert(result.status === 0, `git ${args.join(' ')} failed`);
+}
 
-  const recoverable = createExecutionJob(controllerHome, {
-    repoId: 'repo-b', type: 'mcp-tool', requestId: 'recover-1', semanticKey: 'recover-1',
-    origin: { surface: 'system' }, payload: { operation: 'controller_context', target: 'mcp-tool' },
-    resourceClaims: [], maxAttempts: 2,
-  }).job;
-  const readClaimed = new RepoActor(controllerHome, 'repo-b').tryClaimNext();
-  assert(readClaimed?.job.jobId === recoverable.jobId, 'read job was not claimed');
-  const recoverableRunning = attachExecutionWorker(controllerHome, 'repo-b', recoverable.jobId, 99999998);
-  assert(recoverableRunning?.status === 'running', 'recoverable worker was not attached');
-  markOperationStarted(controllerHome, recoverableRunning, 99999998);
-  markOperationCompleted(controllerHome, recoverableRunning, 99999998, {
-    outcome: 'succeeded', result: { recovered: true }, evidenceIds: ['EVD-recovered'],
+try {
+  mkdirSync(repoRoot, { recursive: true });
+  writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({ name: 'runtime-recovery-smoke' }, null, 2));
+  writeFileSync(join(repoRoot, 'README.md'), '# runtime recovery smoke\n');
+  git(['init', '-b', 'main']);
+  git(['config', 'user.email', 'smoke@example.com']);
+  git(['config', 'user.name', 'Runtime Recovery Smoke']);
+  git(['add', '.']);
+  git(['commit', '-m', 'init']);
+
+  ensureControllerHome(controllerHome);
+  const repository = registerRepository({ path: repoRoot, controllerHome, repoIdOverride: 'repo-runtime-recovery-smoke' });
+  const operation = {
+    name: 'repository_command',
+    semanticKey: 'runtime-recovery:process',
+    argumentHash: 'runtime-recovery:process',
+    mode: 'mutating' as const,
+    idempotent: true,
+    replayable: true,
+    resourceClaims: [],
+  };
+  const request = {
+    requestId: 'runtime-recovery-work-1',
+    repoId: repository.repoId,
+    semanticKey: operation.semanticKey,
+    operation,
+    objective: 'Verify WorkContract and Process Runtime recovery without ExecutionJobs',
+    checks: [],
+  };
+  const accepted = acceptSubmittedWorkContract(controllerHome, request);
+  const duplicate = acceptSubmittedWorkContract(controllerHome, request);
+  assert(duplicate.deduplicated, 'WorkContract requestId was not idempotent');
+  assert(duplicate.contract.workId === accepted.contract.workId, 'duplicate request returned a different WorkContract');
+  assert(getWorkContractByRequestId({ controllerHome, repoId: repository.repoId }, request.requestId)?.workId === accepted.contract.workId, 'request index did not resolve the WorkContract');
+  assert(listExecutionJobs(controllerHome, repository.repoId, 20).length === 0, 'Work acceptance created an ExecutionJob');
+
+  claimControllerSession({ controllerHome, repoId: repository.repoId }, {
+    workId: accepted.contract.workId,
+    controllerId: 'controller-recovery-a',
+    controllerType: 'codex',
+    sessionId: 'session-recovery-a',
+    leaseMs: 60_000,
   });
-  updateExecutionJob(controllerHome, 'repo-b', recoverable.jobId, (job) => ({ ...job, heartbeatAt: '2000-01-01T00:00:00.000Z' }));
-  const recovery = reconcileExecutionJobs(controllerHome);
-  const recovered = getExecutionJob(controllerHome, 'repo-b', recoverable.jobId);
-  assert(recovered.status === 'succeeded', `completed receipt was not recovered: ${recovered.status}`);
-  assert(recovered.result?.recovered === true, 'recovered result missing');
-  assert(recovery.recovered >= 1, 'recovery counter missing');
+  updateWorkContract({ controllerHome, repoId: repository.repoId }, accepted.contract.workId, { status: 'running' });
+  const handle = await spawnManagedProcess({
+    controllerHome,
+    repoId: repository.repoId,
+    command: { kind: 'argv', executable: process.execPath, args: ['-e', 'setTimeout(() => process.exit(0), 75);'], cwd: repoRoot },
+    timeoutMs: 15_000,
+    interactiveWaitMs: 5,
+    workId: accepted.contract.workId,
+    commandId: `cmd-${accepted.contract.workId}-recovery`,
+    origin: { surface: 'command', toolName: 'smoke-runtime-recovery' },
+  });
+  assert(!handle.completed, 'managed process unexpectedly completed before recovery');
+
+  __resetLiveMonitorsForTests();
+  const recovery = recoverManagedProcesses(controllerHome, repository.repoId);
+  const processRecovered = recovery.recovered.includes(handle.processId) || recovery.completedFromReceipt.includes(handle.processId);
+  assert(processRecovered, 'Process Runtime record was neither recovered nor completed from its receipt');
+  const completed = await waitForProcess(controllerHome, repository.repoId, handle.processId, { timeoutMs: 5_000 });
+  assert(completed.completed && completed.ok, 'recovered process did not complete successfully');
+
+  releaseControllerSession({ controllerHome, repoId: repository.repoId }, accepted.contract.workId, 'controller-recovery-a');
+  const replacement = claimControllerSession({ controllerHome, repoId: repository.repoId }, {
+    workId: accepted.contract.workId,
+    controllerId: 'controller-recovery-b',
+    controllerType: 'codex',
+    sessionId: 'session-recovery-b',
+    leaseMs: 60_000,
+  });
+  assert(replacement.controllerId === 'controller-recovery-b', 'released Work could not be reclaimed');
+  assert(getControllerSession({ controllerHome, repoId: repository.repoId }, accepted.contract.workId)?.sessionId === 'session-recovery-b', 'replacement Controller session missing');
+  updateWorkContract({ controllerHome, repoId: repository.repoId }, accepted.contract.workId, {
+    status: 'completed',
+    evidenceRefs: [{ title: 'Process Runtime recovery smoke', summary: `process:${handle.processId}:recovered`, detailLevel: 'detail' }],
+  });
+  assert(getWorkContract({ controllerHome, repoId: repository.repoId }, accepted.contract.workId)?.status === 'completed', 'completed WorkContract was not persisted');
+  assert(listExecutionJobs(controllerHome, repository.repoId, 20).length === 0, 'runtime recovery created an ExecutionJob');
 
   const scheduleInput = {
-    requestId: 'schedule-idempotency', repoId: 'repo-a', name: 'bounded triage', enabled: true,
+    requestId: 'schedule-idempotency', repoId: repository.repoId, name: 'bounded triage', enabled: true,
     trigger: { type: 'manual' as const },
     policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 0, dailyBudgetMinutes: 10, shadowMode: true },
     action: { operation: 'controller_context', resourceClaims: [{ resourceKey: 'repo-state', mode: 'read' as const }] },
@@ -66,59 +133,21 @@ try {
 
   const portfolioInput = {
     name: 'portfolio-idempotency', requestId: 'portfolio-idempotency', failurePolicy: 'stop' as const,
-    steps: [{ stepId: 'one', repoId: 'repo-a', operation: 'controller_context', dependsOn: [], priority: 'P2' as const, resourceClaims: [], status: 'pending' as const }],
+    steps: [{ stepId: 'one', repoId: repository.repoId, operation: 'controller_context', dependsOn: [], priority: 'P2' as const, resourceClaims: [], status: 'pending' as const }],
   };
   const portfolioA = createPortfolioWorkflow(controllerHome, portfolioInput);
   const portfolioB = createPortfolioWorkflow(controllerHome, portfolioInput);
   assert(portfolioA.workflowId === portfolioB.workflowId, 'Portfolio requestId was not idempotent');
 
-  const zombie = createExecutionJob(controllerHome, {
-    repoId: 'repo-zombie', type: 'mcp-tool', requestId: 'zombie-1', semanticKey: 'zombie-1',
-    origin: { surface: 'system' }, payload: { operation: 'controller_context', target: 'mcp-tool' },
-    resourceClaims: [{ resourceKey: 'repo-state', mode: 'read' }], maxAttempts: 3,
-  }).job;
-  const zombieFirst = new RepoActor(controllerHome, 'repo-zombie').tryClaimNext();
-  assert(zombieFirst?.job.jobId === zombie.jobId, 'zombie test first attempt was not claimed');
-  const zombieFirstRunning = attachExecutionWorker(controllerHome, 'repo-zombie', zombie.jobId, 99999997);
-  assert(zombieFirstRunning?.status === 'running', 'zombie first worker was not attached');
-  const oldLeaseRefs = zombieFirstRunning.leaseRefs.map((ref) => ({ leaseId: ref.leaseId, fencingToken: ref.fencingToken }));
-  updateExecutionJob(controllerHome, 'repo-zombie', zombie.jobId, (job) => ({ ...job, heartbeatAt: '2000-01-01T00:00:00.000Z' }));
-  reconcileExecutionJobs(controllerHome);
-  const zombieSecond = new RepoActor(controllerHome, 'repo-zombie').tryClaimNext();
-  assert(zombieSecond?.job.attempt === zombieFirstRunning.attempt + 1, 'zombie test second attempt was not claimed');
-  const zombieSecondRunning = attachExecutionWorker(controllerHome, 'repo-zombie', zombie.jobId, 99999996);
-  assert(zombieSecondRunning?.status === 'running', 'zombie replacement worker was not attached');
-  const newLeaseRefs = zombieSecondRunning.leaseRefs.map((ref) => ({ leaseId: ref.leaseId, fencingToken: ref.fencingToken }));
-  heartbeatExecutionJob(controllerHome, 'repo-zombie', zombie.jobId, 99999996, zombieSecondRunning.attempt);
-  let staleHeartbeatRejected = false;
-  try { heartbeatExecutionJob(controllerHome, 'repo-zombie', zombie.jobId, 99999997, zombieFirstRunning.attempt); }
-  catch { staleHeartbeatRejected = true; }
-  assert(staleHeartbeatRejected, 'stale Worker heartbeat was accepted');
-  let staleRenewRejected = false;
-  try { renewExecutionLeases(controllerHome, 'repo-zombie', zombie.jobId, 30_000, oldLeaseRefs); }
-  catch { staleRenewRejected = true; }
-  assert(staleRenewRejected, 'stale Worker renewed a replacement lease');
-  releaseExecutionLeases(controllerHome, 'repo-zombie', zombie.jobId, oldLeaseRefs);
-  assert(listActiveLeases(controllerHome, 'repo-zombie').some((lease) => newLeaseRefs.some((ref) => ref.leaseId === lease.leaseId)), 'stale Worker released the replacement lease');
-  let staleCompletionRejected = false;
-  try {
-    transitionExecutionJobFromWorker(controllerHome, 'repo-zombie', zombie.jobId, {
-      workerPid: 99999997, attempt: zombieFirstRunning.attempt, leaseRefs: oldLeaseRefs,
-    }, 'succeeded');
-  } catch { staleCompletionRejected = true; }
-  assert(staleCompletionRejected, 'stale Worker published a terminal result');
-
   const candidateA = recordCandidateFinding(controllerHome, {
-    repoId: 'repo-a', requestId: 'candidate-observation-1', semanticKey: 'frequent-502:mcp-timeout',
-    title: 'Frequent MCP 502', summary: 'Observed during bounded triage.',
-    evidence: { source: 'schedule', reference: 'OCC-1' },
+    repoId: repository.repoId, requestId: 'candidate-observation-1', semanticKey: 'frequent-502:mcp-timeout',
+    title: 'Frequent MCP 502', summary: 'Observed during bounded triage.', evidence: { source: 'schedule', reference: 'OCC-1' },
   });
   const candidateB = recordCandidateFinding(controllerHome, {
-    repoId: 'repo-a', requestId: 'candidate-observation-2', semanticKey: 'frequent-502:mcp-timeout',
-    title: 'Frequent MCP 502', summary: 'Observed again.',
-    evidence: { source: 'schedule', reference: 'OCC-2' },
+    repoId: repository.repoId, requestId: 'candidate-observation-2', semanticKey: 'frequent-502:mcp-timeout',
+    title: 'Frequent MCP 502', summary: 'Observed again.', evidence: { source: 'schedule', reference: 'OCC-2' },
   });
-  assert(candidateA.findingId === candidateB.findingId && candidateB.observationCount === 2, 'candidate finding was not semantically deduplicated');
+  assert(candidateA.findingId === candidateB.findingId && candidateB.observationCount === 2, 'candidate finding was not deduplicated');
   let automaticIssueBlocked = false;
   try { assertAutomatedOperationAllowed('create_issue'); } catch { automaticIssueBlocked = true; }
   assert(automaticIssueBlocked, 'Schedule/Portfolio could create an Issue without candidate promotion');
@@ -128,28 +157,26 @@ try {
     createPortfolioWorkflow(controllerHome, {
       name: 'cycle', requestId: 'portfolio-cycle', failurePolicy: 'stop',
       steps: [
-        { stepId: 'a', repoId: 'repo-a', operation: 'controller_context', dependsOn: ['b'], priority: 'P2', resourceClaims: [], status: 'pending' },
-        { stepId: 'b', repoId: 'repo-b', operation: 'controller_context', dependsOn: ['a'], priority: 'P2', resourceClaims: [], status: 'pending' },
+        { stepId: 'a', repoId: repository.repoId, operation: 'controller_context', dependsOn: ['b'], priority: 'P2', resourceClaims: [], status: 'pending' },
+        { stepId: 'b', repoId: repository.repoId, operation: 'controller_context', dependsOn: ['a'], priority: 'P2', resourceClaims: [], status: 'pending' },
       ],
     });
   } catch { cycleRejected = true; }
   assert(cycleRejected, 'Portfolio dependency cycle was accepted');
 
-  const projection = readRepositoryProjection(controllerHome, 'repo-a');
-  assert(projection.attention.some((entry) => entry.jobId === mutating.jobId), 'terminal attention state is absent from projection');
-
   console.log(JSON.stringify({
     status: 'ok',
-    ambiguousMutation: ambiguous.status,
-    recoveredReceipt: recovered.status,
+    workId: accepted.contract.workId,
+    processRecovered,
+    replacementController: replacement.controllerId,
     scheduleId: scheduleA.scheduleId,
     portfolioWorkflowId: portfolioA.workflowId,
-    projectionAttention: projection.attention.length,
-    zombieWorkerFenced: staleHeartbeatRejected && staleRenewRejected && staleCompletionRejected,
     candidateFindingDeduplicated: candidateB.observationCount,
     automaticIssueBlocked,
     portfolioCycleRejected: cycleRejected,
+    executionJobCount: listExecutionJobs(controllerHome, repository.repoId, 20).length,
   }, null, 2));
 } finally {
-  rmSync(controllerHome, { recursive: true, force: true });
+  __resetLiveMonitorsForTests();
+  rmSync(root, { recursive: true, force: true });
 }
