@@ -73,7 +73,10 @@ try {
   const duplicate = acceptSubmittedWorkContract(controllerHome, request);
   assert(duplicate.deduplicated, 'WorkContract requestId was not idempotent');
   assert(duplicate.contract.workId === accepted.contract.workId, 'duplicate request returned a different WorkContract');
-  assert(getWorkContractByRequestId({ controllerHome, repoId: repository.repoId }, request.requestId)?.workId === accepted.contract.workId, 'request index did not resolve the WorkContract');
+  assert(
+    getWorkContractByRequestId(controllerHome, request.requestId, repository.repoId)?.workId === accepted.contract.workId,
+    'request index did not resolve the WorkContract',
+  );
   assert(listExecutionJobs(controllerHome, repository.repoId, 20).length === 0, 'Work acceptance created an ExecutionJob');
 
   claimControllerSession({ controllerHome, repoId: repository.repoId }, {
@@ -87,9 +90,15 @@ try {
   const handle = await spawnManagedProcess({
     controllerHome,
     repoId: repository.repoId,
-    command: { kind: 'argv', executable: process.execPath, args: ['-e', 'setTimeout(() => process.exit(0), 75);'], cwd: repoRoot },
+    command: {
+      kind: 'argv',
+      executable: process.execPath,
+      args: ['-e', 'setTimeout(() => process.exit(0), 250);'],
+      cwd: repoRoot,
+    },
     timeoutMs: 15_000,
-    interactiveWaitMs: 5,
+    interactiveWaitMs: 0,
+    returnHandleImmediately: true,
     workId: accepted.contract.workId,
     commandId: `cmd-${accepted.contract.workId}-recovery`,
     origin: { surface: 'command', toolName: 'smoke-runtime-recovery' },
