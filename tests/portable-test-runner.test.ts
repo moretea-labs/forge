@@ -21,7 +21,9 @@ describe("portable test runner", () => {
     const script = readFileSync(join(ROOT, "scripts", "check-ci.sh"), "utf8");
 
     expect(script).toContain('BUN_TEST_ISOLATE_FILES="${BUN_TEST_ISOLATE_FILES:-1}"');
+    expect(script).toContain('BUN_TEST_FILE_COOLDOWN_SECONDS="${BUN_TEST_FILE_COOLDOWN_SECONDS:-0.1}"');
     expect(script).toContain('bun test --timeout "$BUN_TEST_TIMEOUT_MS" --max-concurrency "$BUN_TEST_MAX_CONCURRENCY" "$file"');
+    expect(script).toContain('sleep "$BUN_TEST_FILE_COOLDOWN_SECONDS"');
     expect(script).not.toContain('bun test --isolate --timeout "$BUN_TEST_TIMEOUT_MS"');
   });
 
