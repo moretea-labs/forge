@@ -17,8 +17,9 @@ const roots: string[] = [];
 const originalPath = process.env.PATH;
 
 test('Agent process env preserves or derives Volta authority from the original HOME', () => {
-  expect(agentProcessEnv({ HOME: '/Users/test', VOLTA_HOME: '/opt/volta' }).VOLTA_HOME).toBe('/opt/volta');
-  expect(agentProcessEnv({ HOME: '/Users/test' }).VOLTA_HOME).toBe('/Users/test/.volta');
+  const home = join(tmpdir(), 'repo-harness-agent-home');
+  expect(agentProcessEnv({ HOME: home, VOLTA_HOME: '/opt/volta' }).VOLTA_HOME).toBe('/opt/volta');
+  expect(agentProcessEnv({ HOME: home }).VOLTA_HOME).toBe(join(home, '.volta'));
   expect(agentProcessEnv({}).VOLTA_HOME).toBeUndefined();
 });
 
