@@ -955,6 +955,110 @@ function persistVerification(
   return { issue: updated, task: taskForRun(updated, task.id) };
 }
 
+function migrateHistoricalInertRun(
+  repoRoot: string,
+  run: AgentJobMeta,
+  issue: ControllerIssue,
+  task: ControllerTask,
+  reviewer: string,
+): FinishTaskRunResult | undefined {
+  if (task.status !== 'done' || completionEvidenceComplete(task.verification, {
+    issueId: issue.id,
+    taskId: task.id,
+    targetBranch: resolveCompletionTargetBranch(repoRoot),
+  })) return undefined;
+  const historicalVerification = task.verification as TaskVerification | undefined;
+  if (!historicalVerification) return undefined;
+  if (
+    run.provider !== 'local'
+    || run.executionMode !== 'worktree'
+    || run.closureState !== 'integration_pending'
+    || !['unknown', 'cancelled', 'failed'].includes(run.status)
+    || run.startedAt
+    || run.launchPid
+    || run.workerPid
+    || run.agentPid
+    || run.integratedSessionId
+    || (run.changedFiles?.length ?? 0) > 0
+    || (run.diffArtifactPath && existsSync(join(repoRoot, run.diffArtifactPath)))
+    || run.worktree === repoRoot
+    || existsSync(run.worktree)
+    || !runLeasesReleased(repoRoot, run)
+  ) return undefined;
+
+  const target = currentCompletionTarget(repoRoot);
+  if (!target.onTargetBranch || !revisionReachable(repoRoot, target.revision, target.branch)) return undefined;
+  if (run.branch) {
+    const branchExists = gitText(repoRoot, ['show-ref', '--verify', '--quiet', `refs/heads/${run.branch}`]).ok;
+    if (branchExists && !gitText(repoRoot, ['merge-base', '--is-ancestor', run.branch, target.branch]).ok) return undefined;
+  }
+
+  const integrationEvidence: IntegrationEvidence = {
+    runId: run.runId,
+    kind: 'no_change',
+    targetBranch: target.branch,
+    targetRevision: target.revision,
+    sourceRevision: run.baseRevision ?? undefined,
+    baseRevision: run.baseRevision ?? undefined,
+    strategy: 'no_change',
+    reachable: true,
+    recordedAt: nowIso(),
+  };
+  const cleanupEvidence = buildCleanupEvidence({
+    run,
+    worktreeRemovedOrNotCreated: true,
+    branchDeletedOrRetained: true,
+    editSessionClosedOrNotCreated: true,
+    noDirtyDiff: true,
+  });
+  const completionReceipt = buildCompletionReceipt({
+    source: 'remote_no_change_execution',
+    issueId: issue.id,
+    taskId: task.id,
+    runId: run.runId,
+    integrationEvidence,
+    changedPaths: [],
+    cleanupBlockers: cleanupEvidence.resourceBlockers,
+  });
+  const completedRun = markAgentJobReviewedCompletion(repoRoot, run.runId, {
+    changeOutcome: 'no_change',
+    changedFiles: [],
+    worktreeCleaned: true,
+    branchDeleted: !run.branch || !gitText(repoRoot, ['show-ref', '--verify', '--quiet', `refs/heads/${run.branch}`]).ok,
+    integrationEvidence,
+    cleanupEvidence,
+  });
+  if (completedRun.status !== 'succeeded' || !completedRun.cleanupEvidence?.runTerminal) return undefined;
+
+  const updated = updateTask(repoRoot, issue.id, task.id, {
+    verification: {
+      ...historicalVerification,
+      runId: run.runId,
+      integratedRevision: target.revision,
+      reviewer: historicalVerification.reviewer || reviewer,
+      integrationEvidence,
+      cleanupEvidence: completedRun.cleanupEvidence,
+      completionReceipt,
+      verifiedAt: historicalVerification.verifiedAt || nowIso(),
+    },
+    note: `Migrated inert historical Run ${run.runId}: it never started, owns no live resources or diff, and target ${target.revision} is reachable.`,
+  });
+  return result(repoRoot, {
+    action: 'already_done',
+    runId: run.runId,
+    issueId: issue.id,
+    taskId: task.id,
+    decision: 'auto',
+    taskStatus: taskForRun(updated, task.id).status,
+    integrated: true,
+    cleaned: true,
+    branchDeleted: completedRun.cleanupBranchDeletedAt !== undefined,
+    changedPaths: [],
+    changeOutcome: 'no_change',
+    reason: 'Historical inert Run lifecycle migrated with explicit no-change delivery and cleanup evidence.',
+  });
+}
+
 function finishTaskRunUnlocked(repoRoot: string, options: FinishTaskRunOptions): FinishTaskRunResult {
   const decision = options.decision ?? 'auto';
   const reviewer = options.reviewer?.trim() || (decision === 'auto' ? 'repo-harness-completion-orchestrator' : 'controller-review');
@@ -969,9 +1073,11 @@ function finishTaskRunUnlocked(repoRoot: string, options: FinishTaskRunOptions):
       taskId: task.id,
       targetBranch: resolveCompletionTargetBranch(repoRoot),
     })) {
+      const migrated = migrateHistoricalInertRun(repoRoot, run, issue, task, reviewer);
+      if (migrated) return migrated;
       return result(repoRoot, {
         action: 'blocked', runId: run.runId, issueId: issue.id, taskId: task.id, decision,
-        taskStatus: task.status, reason: 'Task is declared done without a complete delivery receipt; run lifecycle migration before accepting it.',
+        taskStatus: task.status, reason: 'Task is declared done without a complete delivery receipt; Run is not provably inert and requires explicit lifecycle review.',
       });
     }
     return result(repoRoot, {

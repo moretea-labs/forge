@@ -144,6 +144,80 @@ describe('completion orchestrator', () => {
     expect(execFileSync('git', ['status', '--porcelain', '--', 'src/unrelated-user-work.ts'], { cwd: repoRoot, encoding: 'utf-8' }).trim()).toBe('?? src/unrelated-user-work.ts');
   }));
 
+  test('migrates a never-started historical worktree Run without weakening active or unmerged Run safety', () => withRepo((repoRoot) => {
+    const issue = createIssue(repoRoot, {
+      title: 'Historical inert Run migration',
+      tasks: [{ title: 'Close legacy Run', objective: 'Record explicit delivery evidence.', allowedPaths: ['src/**'], risk: 'medium' }],
+      allowDuplicate: true,
+    });
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf-8' }).trim();
+    updateTask(repoRoot, issue.id, 'T1', {
+      status: 'done',
+      verification: {
+        reviewer: 'legacy-reviewer',
+        checkResults: [],
+        commandEvidence: [],
+        acceptanceResults: [],
+        verifiedAt: new Date().toISOString(),
+      },
+    });
+    const missingWorktree = join(repoRoot, '.ai/harness/worktrees/missing-run');
+    seedRun(repoRoot, {
+      runId: 'RUN-historical-inert',
+      issueId: issue.id,
+      taskId: 'T1',
+      executionMode: 'worktree',
+      status: 'unknown',
+      closureState: 'integration_pending',
+      worktree: missingWorktree,
+      branch: 'agent/missing-historical-run',
+      baseRevision: head,
+      startedAt: undefined,
+      finishedAt: undefined,
+      exitCode: undefined,
+    });
+
+    const result = finishTaskRun(repoRoot, { runId: 'RUN-historical-inert' });
+
+    expect(result.action).toBe('already_done');
+    expect(result.reason).toContain('Historical inert Run lifecycle migrated');
+    const completedRun = getAgentJob(repoRoot, 'RUN-historical-inert');
+    const completedTask = getIssue(repoRoot, issue.id).tasks[0]!;
+    expect(completedRun.status).toBe('succeeded');
+    expect(completedRun.closureState).toBe('completed');
+    expect(completedRun.changeOutcome).toBe('no_change');
+    expect(completedRun.cleanupEvidence?.runTerminal).toBe(true);
+    expect(completedTask.status).toBe('done');
+    expect(completedTask.verification?.completionReceipt?.delivery.strategy).toBe('no_change');
+    expect(completedTask.verification?.completionReceipt?.cleanup.status).toBe('complete');
+  }));
+
+  test('keeps historical Run migration fail-closed when execution actually started', () => withRepo((repoRoot) => {
+    const issue = createIssue(repoRoot, {
+      title: 'Started historical Run',
+      tasks: [{ title: 'Preserve started Run', objective: 'Do not erase possible execution output.', allowedPaths: ['src/**'], risk: 'medium' }],
+      allowDuplicate: true,
+    });
+    updateTask(repoRoot, issue.id, 'T1', {
+      status: 'done',
+      verification: {
+        reviewer: 'legacy-reviewer', checkResults: [], commandEvidence: [], acceptanceResults: [], verifiedAt: new Date().toISOString(),
+      },
+    });
+    seedRun(repoRoot, {
+      runId: 'RUN-historical-started', issueId: issue.id, taskId: 'T1', executionMode: 'worktree', status: 'unknown',
+      closureState: 'integration_pending', worktree: join(repoRoot, '.ai/harness/worktrees/missing-started-run'),
+      branch: 'agent/missing-started-run', startedAt: new Date().toISOString(), finishedAt: undefined,
+    });
+
+    const result = finishTaskRun(repoRoot, { runId: 'RUN-historical-started' });
+
+    expect(result.action).toBe('blocked');
+    expect(result.reason).toContain('not provably inert');
+    expect(getAgentJob(repoRoot, 'RUN-historical-started').closureState).toBe('integration_pending');
+    expect(getIssue(repoRoot, issue.id).tasks[0]?.verification?.completionReceipt).toBeUndefined();
+  }));
+
   test('auto-finishes a low/medium workspace run without human review', () => withRepo((repoRoot) => {
     const issue = createIssue(repoRoot, {
       title: 'Finishable task',
