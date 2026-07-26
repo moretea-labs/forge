@@ -1,6 +1,6 @@
 import { realpathSync } from 'fs';
 import { dirname, resolve, sep } from 'path';
-import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState, writeMcpServiceLocalConfig } from '../../cli/mcp/auth';
+import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState, readMcpServiceBearerToken, writeMcpServiceLocalConfig } from '../../cli/mcp/auth';
 import {
   ensureSlotHome,
   isRollbackWindowOpen,
@@ -26,6 +26,7 @@ import { readCurrentSupervisorRelease, readPreviousSupervisorRelease, readSuperv
 import { publishSupervisorRelease } from './installer';
 import {
   publishAndScheduleSupervisorRelease,
+  readServiceActivationState,
   scheduleServiceActivation,
   type SupervisorReleaseActivationResult,
 } from './service-activation';
@@ -169,6 +170,151 @@ export async function probeSupervisorGatewayHealth(
   }
 }
 
+interface McpProbeCallResult {
+  ok: boolean;
+  detail: string;
+  status?: number;
+  payload?: Record<string, unknown>;
+  sessionId?: string;
+}
+
+function parseMcpProbePayload(text: string): Record<string, unknown> | undefined {
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    for (const line of text.split(/\r?\n/)) {
+      if (!line.startsWith('data:')) continue;
+      try {
+        return JSON.parse(line.slice(5).trim()) as Record<string, unknown>;
+      } catch {
+        // Continue to the next SSE data frame.
+      }
+    }
+    return undefined;
+  }
+}
+
+async function callMcpProbe(input: {
+  endpoint: string;
+  token?: string;
+  sessionId?: string;
+  id: number;
+  method: string;
+  params?: Record<string, unknown>;
+  timeoutMs: number;
+}): Promise<McpProbeCallResult> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), input.timeoutMs);
+  try {
+    const response = await fetch(input.endpoint, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        accept: 'application/json, text/event-stream',
+        'content-type': 'application/json',
+        ...(input.token ? { authorization: `Bearer ${input.token}` } : {}),
+        ...(input.sessionId ? { 'mcp-session-id': input.sessionId } : {}),
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: input.id,
+        method: input.method,
+        ...(input.params ? { params: input.params } : {}),
+      }),
+    });
+    const text = await response.text();
+    const payload = parseMcpProbePayload(text);
+    const rpcError = payload?.error;
+    return {
+      ok: response.ok && !rpcError,
+      detail: `HTTP ${response.status}${rpcError ? ' JSON-RPC error' : ''}`,
+      status: response.status,
+      ...(payload ? { payload } : {}),
+      ...(response.headers.get('mcp-session-id') ? { sessionId: response.headers.get('mcp-session-id')! } : {}),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      detail: (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').slice(0, 200),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function probeAuthenticatedMcpReadiness(input: {
+  baseUrl: string;
+  token: string;
+  timeoutMs?: number;
+}): Promise<{ healthy: boolean; detail: string; toolCount?: number; readOnlyTool?: string }> {
+  const baseUrl = input.baseUrl.replace(/\/$/, '');
+  const timeoutMs = Math.max(1_000, input.timeoutMs ?? 8_000);
+  const oauthChallenge = await callMcpProbe({
+    endpoint: `${baseUrl}/mcp`,
+    id: 1,
+    method: 'initialize',
+    params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'stable-supervisor-probe', version: '1' } },
+    timeoutMs,
+  });
+  if (oauthChallenge.status !== 401) {
+    return { healthy: false, detail: `OAuth MCP challenge expected HTTP 401, received ${oauthChallenge.detail}` };
+  }
+
+  const endpoint = `${baseUrl}/mcp-bearer`;
+  const initialized = await callMcpProbe({
+    endpoint,
+    token: input.token,
+    id: 2,
+    method: 'initialize',
+    params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'stable-supervisor-probe', version: '1' } },
+    timeoutMs,
+  });
+  if (!initialized.ok) return { healthy: false, detail: `MCP initialize failed: ${initialized.detail}` };
+
+  const listed = await callMcpProbe({
+    endpoint,
+    token: input.token,
+    sessionId: initialized.sessionId,
+    id: 3,
+    method: 'tools/list',
+    timeoutMs,
+  });
+  const tools = Array.isArray((listed.payload?.result as { tools?: unknown } | undefined)?.tools)
+    ? ((listed.payload!.result as { tools: Array<{ name?: unknown }> }).tools)
+    : [];
+  const names = tools.map((tool) => typeof tool.name === 'string' ? tool.name : '').filter(Boolean);
+  if (!listed.ok || names.length === 0) {
+    return { healthy: false, detail: `MCP tools/list failed: ${listed.detail}; count=${names.length}` };
+  }
+
+  const readOnlyTool = names.includes('controller_ready')
+    ? { name: 'controller_ready', arguments: {} }
+    : names.includes('rh_status')
+      ? { name: 'rh_status', arguments: { operation: 'get', detail_level: 'summary' } }
+      : undefined;
+  if (!readOnlyTool) {
+    return { healthy: false, detail: `MCP tool surface lacks a cutover-safe readiness tool; count=${names.length}`, toolCount: names.length };
+  }
+  const called = await callMcpProbe({
+    endpoint,
+    token: input.token,
+    sessionId: initialized.sessionId,
+    id: 4,
+    method: 'tools/call',
+    params: { name: readOnlyTool.name, arguments: readOnlyTool.arguments },
+    timeoutMs,
+  });
+  if (!called.ok) {
+    return { healthy: false, detail: `MCP ${readOnlyTool.name} failed: ${called.detail}`, toolCount: names.length, readOnlyTool: readOnlyTool.name };
+  }
+  return {
+    healthy: true,
+    detail: `OAuth challenge and authenticated MCP initialize/tools/list/${readOnlyTool.name} passed`,
+    toolCount: names.length,
+    readOnlyTool: readOnlyTool.name,
+  };
+}
+
 function processState(spawned: SpawnedSupervisorProcess, previous?: SupervisorManagedProcess): SupervisorManagedProcess {
   const now = new Date().toISOString();
   const generation = readRuntimeGeneration(spawned.identity.controllerHome)?.generation;
@@ -186,6 +332,66 @@ function operationActive(operation: SupervisorOperation): boolean {
   return !['succeeded', 'failed', 'locked_out'].includes(operation.phase);
 }
 
+interface SupervisorActivationReference {
+  activationId: string;
+  expectedReleaseRevision?: string;
+}
+
+function operationActivationReference(operation: SupervisorOperation): SupervisorActivationReference | undefined {
+  const value = operation.result?.supervisorActivation;
+  if (!value || typeof value !== 'object') return undefined;
+  const activation = value as Record<string, unknown>;
+  if (typeof activation.activationId !== 'string') return undefined;
+  return {
+    activationId: activation.activationId,
+    ...(typeof activation.expectedReleaseRevision === 'string'
+      ? { expectedReleaseRevision: activation.expectedReleaseRevision }
+      : {}),
+  };
+}
+
+export function reconcilePendingSupervisorActivations(controllerHome: string): number {
+  const activationState = readServiceActivationState(controllerHome);
+  if (!activationState) return 0;
+  let reconciled = 0;
+  for (const operation of listSupervisorOperations(controllerHome, 100)) {
+    if (operation.phase !== 'cutover') continue;
+    const reference = operationActivationReference(operation);
+    if (!reference || reference.activationId !== activationState.activationId) continue;
+    if (activationState.phase === 'succeeded') {
+      const actualRevision = activationState.expectedReleaseRevision
+        ?? (typeof activationState.releaseRevision === 'string' ? activationState.releaseRevision : undefined);
+      if (reference.expectedReleaseRevision && actualRevision !== reference.expectedReleaseRevision) {
+        updateSupervisorOperation(controllerHome, operation.operationId, {
+          phase: 'failed',
+          completedAt: new Date().toISOString(),
+          failureClass: 'identity',
+          error: `SUPERVISOR_ACTIVATION_RELEASE_MISMATCH: expected=${reference.expectedReleaseRevision} actual=${actualRevision ?? 'missing'}`,
+        });
+      } else {
+        updateSupervisorOperation(controllerHome, operation.operationId, {
+          phase: 'succeeded',
+          completedAt: new Date().toISOString(),
+          evidence: [
+            ...(operation.evidence ?? []),
+            { kind: 'supervisor_activation', summary: `Supervisor activation ${reference.activationId} completed and matched the expected release.`, at: new Date().toISOString() },
+          ],
+        });
+      }
+      reconciled += 1;
+    } else if (activationState.phase === 'failed') {
+      updateSupervisorOperation(controllerHome, operation.operationId, {
+        phase: 'failed',
+        completedAt: new Date().toISOString(),
+        failureClass: 'startup',
+        error: activationState.error ?? 'SUPERVISOR_ACTIVATION_FAILED',
+      });
+      reconciled += 1;
+    }
+  }
+  return reconciled;
+}
+
 function operationKindForComponent(component: SupervisorComponentName): SupervisorOperationKind {
   return component === 'controllerDaemon' ? 'restart_controller' : 'restart_gateway';
 }
@@ -198,6 +404,10 @@ export function terminalizeInterruptedSupervisorOperations(controllerHome: strin
   let terminalized = 0;
   for (const operation of listSupervisorOperations(controllerHome, 100)) {
     if (!operationActive(operation) || operation.phase === 'accepted' || operation.phase === 'scheduled') continue;
+    // A rollout/rollback that has switched traffic and scheduled Supervisor
+    // activation is intentionally resumed by the new Supervisor. It must not be
+    // misclassified as an interrupted mutation during the handoff.
+    if (operation.phase === 'cutover' && operationActivationReference(operation)) continue;
     updateSupervisorOperation(controllerHome, operation.operationId, {
       phase: 'failed',
       completedAt: new Date().toISOString(),
@@ -689,8 +899,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     const template = rootTemplate
       ?? loadMcpServiceLocalConfig(activeHome, this.options.repoRoot);
     if (!template) throw new Error('SUPERVISOR_SLOT_CONFIG_UNAVAILABLE');
-    const baseLocalPort = template.localController?.port ?? 8766;
-    const localControllerPort = baseLocalPort + (slot === 'green' ? 10 : 0);
+    const localControllerPort = manager.localControllerBinding(slot).port;
     const binding = manager.gatewayBinding(slot);
     writeMcpServiceLocalConfig(home, {
       ...template,
@@ -774,7 +983,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     }
   }
 
-  private async verifyStableIngress(expectedGeneration?: string): Promise<void> {
+  private async verifyStableIngress(expectedGeneration?: string, activeControllerHome?: string): Promise<void> {
     const configuredHost = this.options.stableIngressHost ?? '127.0.0.1';
     const host = configuredHost === '0.0.0.0' || configuredHost === '::' ? '127.0.0.1' : configuredHost;
     const port = this.options.stableIngressPort ?? 8765;
@@ -788,6 +997,10 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       if (expectedGeneration && payload.generation !== expectedGeneration) {
         throw new Error(`generation=${String(payload.generation)} expected=${expectedGeneration}`);
       }
+      const token = readMcpServiceBearerToken(activeControllerHome ?? this.options.controllerHome, this.options.repoRoot);
+      if (!token) throw new Error('authenticated MCP probe token is unavailable');
+      const mcp = await probeAuthenticatedMcpReadiness({ baseUrl: `http://${host}:${port}`, token });
+      if (!mcp.healthy) throw new Error(mcp.detail);
       this.persist({
         ingress: {
           ...this.state.ingress,
@@ -914,7 +1127,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
           activeUpstreamPort: activatedCandidate.manager.gatewayBinding(candidateSlot).port,
         },
       });
-      await this.verifyStableIngress(activatedCandidate.generation);
+      await this.verifyStableIngress(activatedCandidate.generation, activatedCandidate.controllerDaemon.controllerHome);
       writeSlotIdentity(this.options.controllerHome, {
         ...(readSlotIdentity(this.options.controllerHome, candidateSlot) ?? {
           schemaVersion: 1,
@@ -1048,7 +1261,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
           activeUpstreamPort: activatedTarget.manager.gatewayBinding(targetSlot).port,
         },
       });
-      await this.verifyStableIngress(activatedTarget.generation);
+      await this.verifyStableIngress(activatedTarget.generation, activatedTarget.controllerDaemon.controllerHome);
     } catch (error) {
       let restoredDaemon = failedDaemon;
       let restoredGateway = failedGateway;
@@ -1249,18 +1462,34 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
         releaseActivation = await this.rollback(current.operationId);
       }
       this.synchronizeActiveRuntimeGeneration(true);
+      const result = {
+        operationId: current.operationId,
+        runtimeGeneration: this.state.activeGeneration,
+        reconnectContract: 'stable_domain_retry',
+        ...(releaseActivation ? {
+          supervisorReleaseRevision: releaseActivation.publication.releaseRevision,
+          supervisorActivation: releaseActivation.activation,
+        } : {}),
+      };
+      if (releaseActivation) {
+        // Scheduling a self-replacing Supervisor is not success. Persist a
+        // resumable nonterminal handoff; the newly activated Supervisor marks
+        // it succeeded only after activation.json records verified readiness.
+        current = updateSupervisorOperation(this.options.controllerHome, current.operationId, {
+          phase: 'cutover',
+          result,
+          evidence: [
+            ...(current.evidence ?? []),
+            { kind: 'supervisor_activation', summary: `Supervisor activation ${releaseActivation.activation.activationId} scheduled; awaiting verified terminal state.`, at: new Date().toISOString() },
+          ],
+        });
+        this.persist({ currentOperationId: null, observedState: 'healthy' });
+        return;
+      }
       current = updateSupervisorOperation(this.options.controllerHome, current.operationId, {
         phase: 'succeeded',
         completedAt: new Date().toISOString(),
-        result: {
-          operationId: current.operationId,
-          runtimeGeneration: this.state.activeGeneration,
-          reconnectContract: 'stable_domain_retry',
-          ...(releaseActivation ? {
-            supervisorReleaseRevision: releaseActivation.publication.releaseRevision,
-            supervisorActivation: releaseActivation.activation,
-          } : {}),
-        },
+        result,
       });
       this.persist({ currentOperationId: null, observedState: 'healthy' });
     } catch (error) {
@@ -1355,6 +1584,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
 
   private async monitorTick(): Promise<void> {
     if (this.stopping || this.selfRestartRequested || this.state.desiredState !== 'running') return;
+    reconcilePendingSupervisorActivations(this.options.controllerHome);
     let degraded = !this.synchronizeActiveRuntimeGeneration(false);
     let ingressDegraded = false;
     if (!this.ingressProcess?.alive()) {

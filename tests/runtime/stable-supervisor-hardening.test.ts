@@ -9,13 +9,14 @@ import { installSupervisorRelease, publishSupervisorRelease, renderLaunchdSuperv
 import { stableSupervisorActivatesPublishedRelease, stableSupervisorExitCode } from '../../src/runtime/supervisor/entry';
 import { createStableIngressRouter } from '../../src/runtime/supervisor/ingress-router';
 import { createStableIngressProcess } from '../../src/runtime/supervisor/ingress-process';
-import { controllerDaemonMaxLifetimeMs } from '../../src/runtime/control-plane/daemon-entry';
+import { controllerDaemonMaxLifetimeMs, controllerDaemonPassiveMode, publishReadyAfterStartupRecovery } from '../../src/runtime/control-plane/daemon-entry';
 import { createSupervisorOperation, readSupervisorOperation, updateSupervisorOperation } from '../../src/runtime/supervisor/operation-store';
-import { StableSupervisorRuntime, SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_MONITOR_FAILURE_THRESHOLD, automaticRecoveryRequestId, managedProcessNeedsReleaseRefresh, probeSupervisorGatewayHealth, reconcileActiveManagedGenerations, reconcileSupervisorStateWithAuthority, supervisorGatewayHealthDecision, supervisorIngressHealthDecision, supervisorMonitorFailureDecision, terminalizeInterruptedSupervisorOperations } from '../../src/runtime/supervisor/supervisor-runtime';
+import { StableSupervisorRuntime, SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_MONITOR_FAILURE_THRESHOLD, automaticRecoveryRequestId, managedProcessNeedsReleaseRefresh, probeAuthenticatedMcpReadiness, probeSupervisorGatewayHealth, reconcileActiveManagedGenerations, reconcilePendingSupervisorActivations, reconcileSupervisorStateWithAuthority, supervisorGatewayHealthDecision, supervisorIngressHealthDecision, supervisorMonitorFailureDecision, terminalizeInterruptedSupervisorOperations } from '../../src/runtime/supervisor/supervisor-runtime';
 import { decideRestart, newRestartBudgetRecord, recordFailure, recordRestart, recordStable } from '../../src/runtime/supervisor/restart-policy';
-import { SupervisorProcessManager } from '../../src/runtime/supervisor/process-manager';
+import { SupervisorProcessManager, runtimeWriterEnvironment } from '../../src/runtime/supervisor/process-manager';
 import { writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
 import { writeActiveSlotAuthority } from '../../src/cli/controller/runtime-slots';
+import { publishWriterAuthority } from '../../src/cli/controller/stable-state/writer-authority';
 import { readCurrentRelease, readCurrentSupervisorRelease, supervisorReleasesRoot } from '../../src/runtime/supervisor/paths';
 import { createSupervisorControlServer } from '../../src/runtime/supervisor/control-server';
 import type { SupervisorManagedProcess, SupervisorOperation, SupervisorState } from '../../src/runtime/supervisor/types';
@@ -213,6 +214,87 @@ describe('Stable Supervisor production hardening', () => {
     expect(spaced).toContain('ExecStart="/Users/example/My Tools/bun"');
     expect(supervisorSystemdUnitName('/tmp/a/controller-home')).not.toBe(supervisorSystemdUnitName('/tmp/b/controller-home'));
     expect(supervisorServiceLabel('/tmp/a/controller-home')).not.toBe(supervisorServiceLabel('/tmp/b/controller-home'));
+  });
+
+  test('passive candidate daemon skips startup recovery and is explicitly marked read-only', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-passive-daemon-'));
+    try {
+      let recoveryCalls = 0;
+      const result = publishReadyAfterStartupRecovery(
+        controllerHome,
+        '2026-07-26T00:00:00.000Z',
+        () => {
+          recoveryCalls += 1;
+          return { completedAt: new Date().toISOString(), repositories: [], errors: [], degraded: false };
+        },
+        { passive: true },
+      );
+      expect(recoveryCalls).toBe(0);
+      expect(result.degraded).toBe(false);
+      const state = JSON.parse(readFileSync(join(controllerHome, 'daemon', 'state.json'), 'utf8')) as {
+        status?: string;
+        passive?: boolean;
+        recovery?: { repositories?: unknown[]; errors?: unknown[] };
+      };
+      expect(state.status).toBe('ready');
+      expect(state.passive).toBe(true);
+      expect(state.recovery?.repositories).toEqual([]);
+      expect(state.recovery?.errors).toEqual([]);
+      expect(controllerDaemonPassiveMode({ REPO_HARNESS_RUNTIME_PASSIVE: '1' })).toBe(true);
+      expect(controllerDaemonPassiveMode({ REPO_HARNESS_RUNTIME_PASSIVE: '0' })).toBe(false);
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
+  test('writer environment marks only the non-authoritative slot passive', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-passive-writer-env-'));
+    try {
+      publishWriterAuthority(controllerHome, { activeSlot: 'blue', generation: 'generation-blue', reason: 'test' });
+      expect(runtimeWriterEnvironment(controllerHome, 'blue').REPO_HARNESS_RUNTIME_PASSIVE).toBe('0');
+      expect(runtimeWriterEnvironment(controllerHome, 'green').REPO_HARNESS_RUNTIME_PASSIVE).toBe('1');
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
+  test('authenticated cutover probe exercises OAuth, MCP initialize, tools/list, and a read-only call', async () => {
+    const observed: string[] = [];
+    const endpoint = await listen(async (request, response) => {
+      if (request.url === '/mcp') {
+        response.writeHead(401, { 'content-type': 'application/json', 'www-authenticate': 'Bearer resource_metadata="/.well-known/oauth-protected-resource"' });
+        response.end(JSON.stringify({ error: 'unauthorized' }));
+        return;
+      }
+      if (request.url !== '/mcp-bearer' || request.headers.authorization !== 'Bearer probe-token') {
+        response.writeHead(401, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ error: 'unauthorized' }));
+        return;
+      }
+      let body = '';
+      for await (const chunk of request) body += String(chunk);
+      const rpc = JSON.parse(body) as { id: number; method: string; params?: { name?: string } };
+      observed.push(rpc.method);
+      response.setHeader('content-type', 'application/json');
+      response.setHeader('mcp-session-id', 'probe-session');
+      if (rpc.method === 'initialize') {
+        response.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { protocolVersion: '2025-06-18', capabilities: {}, serverInfo: { name: 'fixture', version: '1' } } }));
+      } else if (rpc.method === 'tools/list') {
+        expect(request.headers['mcp-session-id']).toBe('probe-session');
+        response.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { tools: [{ name: 'controller_ready' }] } }));
+      } else {
+        expect(rpc.params?.name).toBe('controller_ready');
+        response.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: '{"ready":true}' }] } }));
+      }
+    });
+
+    const result = await probeAuthenticatedMcpReadiness({
+      baseUrl: `http://127.0.0.1:${endpoint.port}`,
+      token: 'probe-token',
+      timeoutMs: 2_000,
+    });
+    expect(result).toMatchObject({ healthy: true, toolCount: 1, readOnlyTool: 'controller_ready' });
+    expect(observed).toEqual(['initialize', 'tools/list', 'tools/call']);
   });
 
   test('Gateway health probe distinguishes live process state from MCP readiness', async () => {
@@ -835,6 +917,9 @@ describe('Stable Supervisor production hardening', () => {
     const args = manager.gatewayArgs(home);
     expect(args[args.indexOf('--port') + 1]).toBe('8785');
     expect(args[args.indexOf('--tunnel') + 1]).toBe('none');
+    expect(manager.localControllerBinding('blue').port).toBe(8786);
+    expect(manager.localControllerBinding('green').port).toBe(8796);
+    expect(manager.localControllerBinding('blue').port).not.toBe(8766);
   });
 
   test('a new failure resets the stable recovery window', () => {
@@ -980,6 +1065,88 @@ describe('Stable Supervisor production hardening', () => {
         actor: 'test',
         candidateReleasePath: candidate,
       })).toThrow('SUPERVISOR_RELEASE_PATH_ONLY_VALID_FOR_ROLLOUT');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('rollout scheduling remains nonterminal until the replacement Supervisor verifies activation', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'repo-harness-supervisor-activation-operation-'));
+    try {
+      const runtime = new StableSupervisorRuntime({
+        repoRoot: process.cwd(),
+        controllerHome: home,
+        runtimeSourceRoot: process.cwd(),
+        ownerEpoch: 1,
+        logPath: join(home, 'supervisor.log'),
+      });
+      const created = createSupervisorOperation({
+        controllerHome: home,
+        repoRoot: process.cwd(),
+        requestId: 'rollout-activation-1',
+        kind: 'rollout',
+        requestedBy: 'test',
+        actor: 'test',
+      });
+      const internal = runtime as unknown as {
+        executeOperation: (operation: SupervisorOperation) => Promise<void>;
+        rollout: (operation: SupervisorOperation) => Promise<{
+          publication: {
+            controllerHome: string;
+            releaseRevision: string;
+            releasePath: string;
+            currentPath: string;
+            launchdPlistPath: string;
+            systemdUnitPath: string;
+          };
+          activation: {
+            activationId: string;
+            pid: number;
+            statePath: string;
+            logPath: string;
+            expectedReleaseRevision: string;
+          };
+        }>;
+        synchronizeActiveRuntimeGeneration: () => string;
+      };
+      internal.rollout = async () => ({
+        publication: {
+          controllerHome: home,
+          releaseRevision: 'revision-v2',
+          releasePath: join(home, 'releases', 'revision-v2'),
+          currentPath: join(home, 'current'),
+          launchdPlistPath: join(home, 'supervisor.plist'),
+          systemdUnitPath: join(home, 'supervisor.service'),
+        },
+        activation: {
+          activationId: 'activation-v2',
+          pid: 123,
+          statePath: serviceActivationStatePath(home),
+          logPath: join(home, 'activation.log'),
+          expectedReleaseRevision: 'revision-v2',
+        },
+      });
+      internal.synchronizeActiveRuntimeGeneration = () => 'generation-v2';
+
+      await internal.executeOperation(created.operation);
+      const pending = readSupervisorOperation(home, created.operation.operationId);
+      expect(pending?.phase).toBe('cutover');
+      expect(pending?.completedAt).toBeUndefined();
+      expect(terminalizeInterruptedSupervisorOperations(home)).toBe(0);
+      expect(readSupervisorOperation(home, created.operation.operationId)?.phase).toBe('cutover');
+
+      mkdirSync(join(home, 'supervisor'), { recursive: true });
+      writeFileSync(serviceActivationStatePath(home), `${JSON.stringify({
+        schemaVersion: 1,
+        activationId: 'activation-v2',
+        phase: 'succeeded',
+        repoRoot: process.cwd(),
+        releaseRevision: 'revision-v2',
+        releasePath: join(home, 'releases', 'revision-v2'),
+        updatedAt: new Date().toISOString(),
+      })}\n`);
+      expect(reconcilePendingSupervisorActivations(home)).toBe(1);
+      expect(readSupervisorOperation(home, created.operation.operationId)?.phase).toBe('succeeded');
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

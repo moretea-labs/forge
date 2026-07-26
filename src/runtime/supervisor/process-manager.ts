@@ -60,14 +60,16 @@ function processCommand(command: string, args: string[]): string {
 export function runtimeWriterEnvironment(controllerHome: string, slot: RuntimeSlotId): NodeJS.ProcessEnv {
   const authority = readWriterAuthority(controllerHome);
   if (!authority) return {};
-  // Passive candidates still need a complete inherited claim so they can boot
-  // and serve readiness. The child slot intentionally differs from the active
-  // authority slot, so every mutation remains fenced until cutover commits and
-  // the candidate is restarted with the new authority.
+  const passive = authority.activeSlot !== slot;
+  // Passive candidates still inherit a complete claim so they can prove
+  // process and Gateway readiness. The explicit passive marker prevents the
+  // daemon from running startup reconciliation, cleanup, Scheduler, Workers,
+  // or any other mutation loop before authority cutover.
   return {
     REPO_HARNESS_WRITER_SLOT: slot,
     REPO_HARNESS_WRITER_EPOCH: authority.epoch,
     REPO_HARNESS_WRITER_FENCING_TOKEN: authority.fencingToken,
+    REPO_HARNESS_RUNTIME_PASSIVE: passive ? '1' : '0',
     ...(authority.generation ? { REPO_HARNESS_WRITER_GENERATION: authority.generation } : {}),
   };
 }
@@ -97,6 +99,16 @@ export class SupervisorProcessManager {
       // binding that may follow the configured LAN/public host.
       host: '127.0.0.1',
       port: stablePort + offset + (slot === 'green' ? 10 : 0),
+    };
+  }
+
+  localControllerBinding(slot = this.options.slot ?? readActiveSlotAuthority(this.options.controllerHome).activeSlot): { host: string; port: number } {
+    const gateway = this.gatewayBinding(slot);
+    return {
+      host: '127.0.0.1',
+      // Keep every slot-local UI away from the legacy/root Local Bridge port
+      // (8766) and adjacent to its private Gateway backend.
+      port: gateway.port + 1,
     };
   }
 

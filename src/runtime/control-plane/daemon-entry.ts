@@ -48,6 +48,10 @@ function numericEnv(name: string, fallback: number, minimum: number): number {
   return Number.isFinite(parsed) ? Math.max(minimum, Math.trunc(parsed)) : fallback;
 }
 
+export function controllerDaemonPassiveMode(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.REPO_HARNESS_RUNTIME_PASSIVE?.trim() === '1';
+}
+
 export interface AutomaticRuntimeCleanupOptions {
   initialDelayMs?: number;
   intervalMs?: number;
@@ -68,6 +72,19 @@ function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
       signal.removeEventListener('abort', finish);
       resolveDelay();
     }
+  });
+}
+
+function runPassiveControllerLoop(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((resolveLoop) => {
+    const keepAlive = setInterval(() => undefined, 1_000);
+    const finish = () => {
+      clearInterval(keepAlive);
+      signal.removeEventListener('abort', finish);
+      resolveLoop();
+    };
+    signal.addEventListener('abort', finish, { once: true });
   });
 }
 
@@ -152,6 +169,7 @@ export function startControllerDaemon(controllerHome: string): void {
   const abort = new AbortController();
   const startedAt = new Date().toISOString();
   const ownership = childOwnershipMetadata();
+  const passive = controllerDaemonPassiveMode();
   for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => abort.abort());
   const effectiveMaxLifetimeMs = controllerDaemonMaxLifetimeMs(controllerHome);
   const maxLifetimeTimer = effectiveMaxLifetimeMs
@@ -159,13 +177,20 @@ export function startControllerDaemon(controllerHome: string): void {
     : undefined;
   maxLifetimeTimer?.unref?.();
 
-  const runtime = publishReadyAfterStartupRecovery(controllerHome, startedAt);
-  void runAutomaticRuntimeCleanupLoop(runtime.generationRecord.source.repoRoot, abort.signal);
+  const runtime = publishReadyAfterStartupRecovery(
+    controllerHome,
+    startedAt,
+    reconcileControllerStartup,
+    { passive },
+  );
+  if (!passive) {
+    void runAutomaticRuntimeCleanupLoop(runtime.generationRecord.source.repoRoot, abort.signal);
+  }
   const bundledWorkerPath = process.argv[1]
     ? join(dirname(resolve(process.argv[1])), 'worker.js')
     : undefined;
 
-  const scheduler = new GlobalScheduler(controllerHome, {}, {
+  const scheduler = passive ? undefined : new GlobalScheduler(controllerHome, {}, {
     controllerPid: process.pid,
     controllerStartedAt: startedAt,
     runtimeSourceRoot: runtime.generationRecord.source.repoRoot,
@@ -173,7 +198,10 @@ export function startControllerDaemon(controllerHome: string): void {
     ...(ownership.ownerEpoch !== undefined ? { ownerEpoch: String(ownership.ownerEpoch) } : {}),
   });
   let schedulerFailure: string | undefined;
-  scheduler.run(abort.signal)
+  const lifecycle = scheduler
+    ? scheduler.run(abort.signal)
+    : runPassiveControllerLoop(abort.signal);
+  lifecycle
     .catch((error) => {
       schedulerFailure = error instanceof Error ? error.message : String(error);
       process.exitCode = 1;
@@ -196,6 +224,7 @@ export function startControllerDaemon(controllerHome: string): void {
         recovery: runtime,
         generation: runtime.generationRecord.generation,
         source: runtime.generationRecord.source,
+        passive,
         ...ownership,
       });
       // The scheduler loop is the daemon lifecycle. Once it terminates, do not
@@ -209,6 +238,7 @@ export function publishReadyAfterStartupRecovery(
   controllerHome: string,
   startedAt: string,
   recover: (home: string) => ControllerStartupRecoveryResult = reconcileControllerStartup,
+  options: { passive?: boolean } = {},
 ): ControllerStartupRecoveryResult & {
   generationRecord: RuntimeGenerationRecord;
 } {
@@ -304,21 +334,31 @@ export function publishReadyAfterStartupRecovery(
     workerIsolation: true,
     generation: generation.generation,
     source: generation.source,
+    passive: options.passive === true,
     ...ownership,
   });
   writeFileSync(pidPath, `${process.pid}\n`, 'utf8');
 
   let recovery: ControllerStartupRecoveryResult;
-  try {
-    recovery = recover(controllerHome);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+  if (options.passive) {
     recovery = {
       completedAt: new Date().toISOString(),
       repositories: [],
-      errors: [{ repoId: '__controller__', phase: 'execution-indexes', code: 'RECOVERY_FAILED', message }],
-      degraded: true,
+      errors: [],
+      degraded: false,
     };
+  } else {
+    try {
+      recovery = recover(controllerHome);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      recovery = {
+        completedAt: new Date().toISOString(),
+        repositories: [],
+        errors: [{ repoId: '__controller__', phase: 'execution-indexes', code: 'RECOVERY_FAILED', message }],
+        degraded: true,
+      };
+    }
   }
   writeJsonAtomic(statePath, {
     schemaVersion: 1,
@@ -332,6 +372,7 @@ export function publishReadyAfterStartupRecovery(
     recovery,
     generation: generation.generation,
     source: generation.source,
+    passive: options.passive === true,
     ...ownership,
   });
   return { ...recovery, generationRecord: generation };
