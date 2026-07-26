@@ -1,7 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { resolve } from 'path';
 import {
-  attestKnownGood,
   diagnose,
   gatewayToken,
   listSlots,
@@ -31,12 +30,23 @@ function controllerHome(): string {
 function output(value: unknown): void { process.stdout.write(`${JSON.stringify(value, null, 2)}\n`); }
 
 function usage(): never {
-  throw new Error('RECOVERY_USAGE: status | verify | verify-external | list-slots | rollback-previous | restart-supervisor | diagnose | reconnect-main | attest-known-good | gateway | watchdog');
+  throw new Error('RECOVERY_USAGE: status | verify | verify-external | list-slots | rollback-previous | restart-supervisor | diagnose | reconnect-main');
 }
 
 async function cli(): Promise<void> {
   const command = process.argv.find((value, index) => index >= 2 && !value.startsWith('-') && process.argv[index - 1] !== '--controller-home') ?? 'status';
   const config = loadRecoveryConfig(controllerHome(), option('--config'));
+  const executable = process.argv[1]?.split('/').pop() ?? '';
+  if (executable === 'repo-harness-recovery-gateway') {
+    if (command !== 'gateway') throw new Error('RECOVERY_GATEWAY_ROLE_ONLY');
+    await startGateway(config);
+    return;
+  }
+  if (executable === 'repo-harness-recovery-watchdog') {
+    if (command !== 'watchdog') throw new Error('RECOVERY_WATCHDOG_ROLE_ONLY');
+    await startWatchdog(config);
+    return;
+  }
   switch (command) {
     case 'status': output(await supervisorStatus(config)); return;
     case 'verify': output(await verifyStableRuntime(config)); return;
@@ -50,9 +60,6 @@ async function cli(): Promise<void> {
     case 'restart-supervisor': output(await restartSupervisor(config)); return;
     case 'diagnose': output(await diagnose(config)); return;
     case 'reconnect-main': output(await reconnectMain(config)); return;
-    case 'attest-known-good': output(await attestKnownGood(config)); return;
-    case 'gateway': await startGateway(config); return;
-    case 'watchdog': await startWatchdog(config); return;
     default: usage();
   }
 }
