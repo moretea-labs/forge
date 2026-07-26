@@ -173,6 +173,7 @@ describe('completion orchestrator', () => {
       branch: 'agent/missing-historical-run',
       baseRevision: head,
       startedAt: undefined,
+      launchPid: 2147483647,
       finishedAt: undefined,
       exitCode: undefined,
     });
@@ -190,6 +191,31 @@ describe('completion orchestrator', () => {
     expect(completedTask.status).toBe('done');
     expect(completedTask.verification?.completionReceipt?.delivery.strategy).toBe('no_change');
     expect(completedTask.verification?.completionReceipt?.cleanup.status).toBe('complete');
+  }));
+
+  test('keeps historical Run migration fail-closed while a recorded startup process is still alive', () => withRepo((repoRoot) => {
+    const issue = createIssue(repoRoot, {
+      title: 'Live startup historical Run',
+      tasks: [{ title: 'Preserve live startup Run', objective: 'Do not erase a live executor startup.', allowedPaths: ['src/**'], risk: 'medium' }],
+      allowDuplicate: true,
+    });
+    updateTask(repoRoot, issue.id, 'T1', {
+      status: 'done',
+      verification: {
+        reviewer: 'legacy-reviewer', checkResults: [], commandEvidence: [], acceptanceResults: [], verifiedAt: new Date().toISOString(),
+      },
+    });
+    seedRun(repoRoot, {
+      runId: 'RUN-historical-live-startup', issueId: issue.id, taskId: 'T1', executionMode: 'worktree', status: 'unknown',
+      closureState: 'integration_pending', worktree: join(repoRoot, '.ai/harness/worktrees/missing-live-startup-run'),
+      branch: 'agent/missing-live-startup-run', startedAt: undefined, launchPid: process.pid, finishedAt: undefined,
+    });
+
+    const result = finishTaskRun(repoRoot, { runId: 'RUN-historical-live-startup' });
+
+    expect(result.action).toBe('blocked');
+    expect(result.reason).toContain('not provably inert');
+    expect(getAgentJob(repoRoot, 'RUN-historical-live-startup').closureState).toBe('integration_pending');
   }));
 
   test('keeps historical Run migration fail-closed when execution actually started', () => withRepo((repoRoot) => {

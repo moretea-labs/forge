@@ -975,9 +975,9 @@ function migrateHistoricalInertRun(
     || run.closureState !== 'integration_pending'
     || !['unknown', 'cancelled', 'failed'].includes(run.status)
     || run.startedAt
-    || run.launchPid
-    || run.workerPid
-    || run.agentPid
+    || processAlive(run.launchPid)
+    || processAlive(run.workerPid)
+    || processAlive(run.agentPid)
     || run.integratedSessionId
     || (run.changedFiles?.length ?? 0) > 0
     || (run.diffArtifactPath && existsSync(join(repoRoot, run.diffArtifactPath)))
