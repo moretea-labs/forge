@@ -90,6 +90,14 @@ function rpcError(id: unknown, code: number, message: string): Record<string, un
   return { jsonrpc: '2.0', id: id ?? null, error: { code, message } };
 }
 
+function matchesPath(url: string | undefined, path: string): boolean {
+  return url === path || Boolean(url?.startsWith(`${path}?`));
+}
+
+function matchesAnyPath(url: string | undefined, paths: string[]): boolean {
+  return paths.some((path) => matchesPath(url, path));
+}
+
 const TOOLS = [
   { name: 'supervisor_status', description: 'Read the Stable Supervisor state.', inputSchema: { type: 'object', additionalProperties: false } },
   { name: 'list_slots', description: 'Read active, previous, and known-good release evidence.', inputSchema: { type: 'object', additionalProperties: false } },
@@ -146,8 +154,8 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
   }
   const recentMutations = new Map<string, number[]>();
   const server = createServer(async (request, response) => {
-    if (request.method === 'GET' && request.url === '/health') { json(response, 200, { status: 'ok', service: 'repo-harness-standalone-recovery' }); return; }
-    if (request.method !== 'POST' || !(request.url === '/mcp' || request.url?.startsWith('/mcp?'))) { json(response, 404, { error: 'NOT_FOUND' }); return; }
+    if (request.method === 'GET' && matchesAnyPath(request.url, ['/health', '/recovery/health'])) { json(response, 200, { status: 'ok', service: 'repo-harness-standalone-recovery' }); return; }
+    if (request.method !== 'POST' || !matchesAnyPath(request.url, ['/mcp', '/recovery/mcp'])) { json(response, 404, { error: 'NOT_FOUND' }); return; }
     const expected = gatewayToken(config);
     const supplied = request.headers.authorization?.replace(/^Bearer\s+/i, '').trim();
     if (!expected || !supplied || !secureEqual(supplied, expected)) { response.setHeader('www-authenticate', 'Bearer realm="repo-harness-recovery"'); json(response, 401, { error: 'RECOVERY_AUTH_REQUIRED' }); return; }
