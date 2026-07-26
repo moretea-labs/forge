@@ -1,44 +1,35 @@
 # Current Status Snapshot
 
-<!-- updated_at: 2026-07-24 -->
+<!-- updated_at: 2026-07-26 -->
 <!-- stale_after: 24h -->
 
-> **Status**: Worker 终态误判竞态修复完成
-> **Updated At**: 2026-07-24
-> **Source**: 自恢复测试结果分析
-> **Target**: 修复进程 exit 0 但被误判为 "exited before completion" 的竞态
+> **Status**: Standalone disaster-recovery core implemented; system-level activation remains intentionally blocked pending administrator approval.
+> **Updated At**: 2026-07-26
+> **Source**: Stable Supervisor state, release manifests, and isolated recovery-core tests.
+> **Target**: Establish a recovery path that never relies on the active Gateway or an unverified previous release.
 > **Stale After**: 24h
 
 This snapshot is a read model, not an execution gate.
 
 ## Current Focus
 
-- ✅ **问题 1：Worker 终态误判**（已修复）
-  - **根因**：Worker 写入 success result 与进程 exit(0) 信号之间存在竞态窗口
-  - **修复**：当 exitCode=0 时，给 worker 150ms 写入窗口，重新检查 job status
-  - **影响**：消除"任务成功却被判失败"的误报
-
-- ⏭ **问题 2：Local Job 复用语义不一致**（待修复）
-  - 2 个独立 Execution Job 标记 deduplicated:false，却共享同一个 Local Job
-  - 第二个任务提前随第一个结束，审计链不一致
-
-- ⏭ **问题 3：临时 Daemon 未自动退出**（待修复）
-  - 测试产生的临时 Daemon 超过 3 分钟未退出
-  - Watchdog 已标记 safeToTerminate，但缺少执行路径
+- ✅ Standalone compiled recovery binary installed under stable Controller Home; no symlink to the active release or worktree.
+- ✅ Recovery core checks Supervisor state, slot manifests, manifest hashes, primary health, MCP initialize/tools/list/read-only-call, and records separate audit/quarantine data.
+- ✅ Rollback is fail-closed: the active release is no-op when known-good, and an un-attested previous slot is refused.
+- ✅ Isolated tests cover known-good attestation, no-op rollback, and the six-observation/two-signal watchdog threshold.
+- ⏭ Bootstrap the independently rendered system LaunchDaemons only after one administrator-approved operation.
+- ⏭ Provision a separate Tailscale Funnel hostname and independently authenticate a ChatGPT Recovery Connector.
+- ⏭ Configure the forced-command recovery SSH key after administrator approval; no SSH setting has been changed.
 
 ## Validation Completed
 
-- `bun tsc --noEmit`: 0 errors.
-- `bun test ./tests/runtime/durable-worker-execution.test.ts`: 6 pass.
-- `bun test ./tests/runtime/scheduler-capacity.test.ts`: 4 pass.
-- `bun scripts/inspect-project-state.ts --repo . --format text`.
-- `bash scripts/migrate-project-template.sh --repo . --dry-run`.
-- Historical stuck-state migration: four false completions reopened, zero remaining false completions, four `integration_blocked`, zero `cleanup_blocked`.
-- Protected recovery files remain present at `/private/tmp/repo-harness-quarantine-node-modules.txt` and `/private/tmp/repo-harness-terminal-issue-files.nul`.
+- `bun x tsc --noEmit`: 0 errors.
+- `bun test tests/runtime/standalone-recovery.test.ts`: 2 pass.
+- Compiled recovery binary and two system LaunchDaemon plists rendered under the stable Controller Home.
+- Independent recovery Gateway MCP initialize and fixed seven-tool list verified locally; no shell tool is exposed.
 
 ## Remaining Before Delivery
 
-- Pass the task-sync gate with this updated snapshot and complete the final independent Claude review.
-- Commit the final lifecycle/Worker corrections, fast-forward `main`, and push `origin/main`.
-- Install the immutable release from final `main`; confirm the live release revision matches `main`.
-- Run real repository-command twice, Local Job once, minimal Task lifecycle, drift-gate, cleanup, and orphan-Worker acceptance.
+- Do not bootstrap the LaunchDaemons, configure SSH, or expose a Funnel without explicit administrator authorization.
+- Obtain an MCP probe credential accepted by the OAuth-protected primary endpoint before attesting the live active release as known-good.
+- Complete isolated fault injection, reboot, Tailscale SSH, Grok, Funnel, and ChatGPT Connector exercises before declaring unattended operation ready.
