@@ -442,6 +442,29 @@ describe('automatic runtime cleanup loop', () => {
     expect(errors).toHaveLength(1);
   });
 
+  test('does not overlap a re-entered daemon cleanup cycle', async () => {
+    const { runAutomaticRuntimeCleanupCycle } = await import('../../src/runtime/control-plane/daemon-entry');
+    let runs = 0;
+    let nestedResult: unknown;
+
+    const result = runAutomaticRuntimeCleanupCycle('/repo', {
+      cleanup: () => {
+        runs += 1;
+        nestedResult = runAutomaticRuntimeCleanupCycle('/repo', {
+          cleanup: () => {
+            runs += 1;
+            return { mode: 'apply' } as never;
+          },
+        });
+        return { mode: 'apply' } as never;
+      },
+    });
+
+    expect(result).toBeDefined();
+    expect(nestedResult).toBeUndefined();
+    expect(runs).toBe(1);
+  });
+
   test('stops the periodic loop when the daemon aborts', async () => {
     const { runAutomaticRuntimeCleanupLoop } = await import('../../src/runtime/control-plane/daemon-entry');
     const abort = new AbortController();
