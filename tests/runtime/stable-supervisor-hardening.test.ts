@@ -13,7 +13,7 @@ import { createStableIngressRouter } from '../../src/runtime/supervisor/ingress-
 import { createStableIngressProcess } from '../../src/runtime/supervisor/ingress-process';
 import { controllerDaemonMaxLifetimeMs } from '../../src/runtime/control-plane/daemon-entry';
 import { createSupervisorOperation, readSupervisorOperation, updateSupervisorOperation } from '../../src/runtime/supervisor/operation-store';
-import { StableSupervisorRuntime, SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_MONITOR_FAILURE_THRESHOLD, automaticRecoveryRequestId, managedProcessNeedsReleaseRefresh, probeSupervisorGatewayHealth, reconcileActiveManagedGenerations, reconcileSupervisorStateWithAuthority, supervisorGatewayHealthDecision, supervisorIngressHealthDecision, supervisorMonitorFailureDecision, terminalizeInterruptedSupervisorOperations } from '../../src/runtime/supervisor/supervisor-runtime';
+import { StableSupervisorRuntime, SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_MONITOR_FAILURE_THRESHOLD, automaticRecoveryRequestId, managedProcessNeedsReleaseRefresh, probeSupervisorGatewayHealth, reconcileActiveManagedGenerations, reconcileSupervisorStateWithAuthority, supervisorGatewayHealthDecision, supervisorGatewayOperational, supervisorIngressHealthDecision, supervisorMonitorFailureDecision, terminalizeInterruptedSupervisorOperations } from '../../src/runtime/supervisor/supervisor-runtime';
 import { decideRestart, newRestartBudgetRecord, recordFailure, recordRestart, recordStable } from '../../src/runtime/supervisor/restart-policy';
 import { SupervisorProcessManager } from '../../src/runtime/supervisor/process-manager';
 import { ensureMcpControllerHomeBearerToken, writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
@@ -389,6 +389,20 @@ describe('Stable Supervisor production hardening', () => {
       consecutiveFailures: 0,
       shouldRecover: false,
     });
+    // The monitor aggregation must also keep a live Gateway operational below
+    // the recovery threshold; otherwise one transient failure still degrades Ingress.
+    expect(supervisorGatewayOperational(true, 'running', 1)).toBe(true);
+    expect(supervisorGatewayOperational(
+      true,
+      'running',
+      SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD - 1,
+    )).toBe(true);
+    expect(supervisorGatewayOperational(
+      true,
+      'running',
+      SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD,
+    )).toBe(false);
+    expect(supervisorGatewayOperational(false, 'running', 0)).toBe(false);
 
     const invalidBody = await listen((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/plain' });

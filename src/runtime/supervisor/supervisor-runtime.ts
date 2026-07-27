@@ -85,6 +85,16 @@ export function supervisorGatewayHealthDecision(
   };
 }
 
+export function supervisorGatewayOperational(
+  alive: boolean,
+  state: SupervisorManagedProcess['state'] | undefined,
+  consecutiveFailures: number | undefined,
+): boolean {
+  return alive
+    && state === 'running'
+    && Math.max(0, consecutiveFailures ?? 0) < SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD;
+}
+
 export const SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD = SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD;
 
 export function supervisorIngressHealthDecision(
@@ -1643,9 +1653,11 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     }
     if (this.state.observedState !== 'locked_out') {
       const gatewayAlive = this.manager.observe(this.state.gatewayHost) === 'alive';
-      const gatewayHealthy = gatewayAlive
-        && this.state.gatewayHost?.state === 'running'
-        && this.state.gatewayHost.consecutiveFailures === 0;
+      const gatewayHealthy = supervisorGatewayOperational(
+        gatewayAlive,
+        this.state.gatewayHost?.state,
+        this.state.gatewayHost?.consecutiveFailures,
+      );
       const operationActive = Boolean(this.state.currentOperationId);
       let ingressPathHealthy = false;
       if (gatewayHealthy && this.ingressProcess?.alive()) {
