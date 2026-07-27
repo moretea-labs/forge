@@ -429,6 +429,44 @@ export function supervisorOperationRecoverySuppressed(currentOperationId: string
   return Boolean(currentOperationId?.trim());
 }
 
+function supervisorErrorMessage(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').slice(0, 600);
+}
+
+export function recoverableCutoverObservationFailure(error: unknown): boolean {
+  return /^SUPERVISOR_CUTOVER_(?:DAEMON|GATEWAY)_(?:LIVENESS|READINESS)_FAILED/.test(supervisorErrorMessage(error));
+}
+
+export async function observeCutoverCandidateWithSingleRecovery<T>(
+  candidate: T,
+  observe: (value: T) => Promise<void>,
+  recover: (value: T, firstFailure: string) => Promise<T>,
+): Promise<{ candidate: T; recovered: boolean; firstFailure?: string }> {
+  try {
+    await observe(candidate);
+    return { candidate, recovered: false };
+  } catch (error) {
+    if (!recoverableCutoverObservationFailure(error)) throw error;
+    const firstFailure = supervisorErrorMessage(error);
+    let recovered: T;
+    try {
+      recovered = await recover(candidate, firstFailure);
+    } catch (recoveryError) {
+      throw new Error(
+        `SUPERVISOR_CUTOVER_RECOVERY_FAILED: initial=${firstFailure}; recovery=${supervisorErrorMessage(recoveryError)}`,
+      );
+    }
+    try {
+      await observe(recovered);
+      return { candidate: recovered, recovered: true, firstFailure };
+    } catch (secondError) {
+      throw new Error(
+        `SUPERVISOR_CUTOVER_RECOVERY_EXHAUSTED: initial=${firstFailure}; second=${supervisorErrorMessage(secondError)}`,
+      );
+    }
+  }
+}
+
 function operationActivationReference(operation: SupervisorOperation): SupervisorActivationReference | undefined {
   const value = operation.result?.supervisorActivation;
   if (!value || typeof value !== 'object') return undefined;
@@ -1078,11 +1116,21 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     // persisted PID/start-time/fingerprint tuple; an unproven PID is never
     // terminated during release handoff.
     if (gateway) {
-      const result = await this.managerForManaged(gateway).stop(gateway);
+      const result = await this.stopManagedProcess(
+        this.managerForManaged(gateway),
+        gateway,
+        'gatewayHost',
+        'managed_release_handoff',
+      );
       if (!result.stopped) throw new Error('SUPERVISOR_GATEWAYHOST_RELEASE_HANDOFF_STOP_INCOMPLETE');
     }
     if (daemon) {
-      const result = await this.managerForManaged(daemon).stop(daemon);
+      const result = await this.stopManagedProcess(
+        this.managerForManaged(daemon),
+        daemon,
+        'controllerDaemon',
+        'managed_release_handoff',
+      );
       if (!result.stopped) throw new Error('SUPERVISOR_CONTROLLERDAEMON_RELEASE_HANDOFF_STOP_INCOMPLETE');
     }
     this.persist({
@@ -1203,8 +1251,14 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
         mcpReadiness,
       };
     } catch (error) {
-      if (gateway) await prepared.manager.stop(gateway).catch(() => undefined);
-      if (daemon) await prepared.manager.stop(daemon).catch(() => undefined);
+      if (gateway) {
+        await this.stopManagedProcess(prepared.manager, gateway, 'gatewayHost', 'candidate_start_failure_cleanup')
+          .catch(() => undefined);
+      }
+      if (daemon) {
+        await this.stopManagedProcess(prepared.manager, daemon, 'controllerDaemon', 'candidate_start_failure_cleanup')
+          .catch(() => undefined);
+      }
       throw error;
     }
   }
@@ -1283,9 +1337,39 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     }
   }
 
-  private async stopSlotProcesses(input: { slot: RuntimeSlotId; controllerDaemon: SupervisorManagedProcess; gatewayHost: SupervisorManagedProcess }): Promise<void> {
-    await this.managerForManaged(input.gatewayHost, input.slot).stop(input.gatewayHost).catch(() => undefined);
-    await this.managerForManaged(input.controllerDaemon, input.slot).stop(input.controllerDaemon).catch(() => undefined);
+  private async stopManagedProcess(
+    manager: SupervisorProcessManager,
+    identity: SupervisorManagedProcess,
+    component: SupervisorComponentName,
+    reason: string,
+    operationId = this.state.currentOperationId ?? undefined,
+  ): Promise<{ stopped: boolean; observation: 'alive' | 'dead' | 'unknown' }> {
+    return manager.stop(identity, {
+      reason,
+      component,
+      ...(operationId ? { operationId } : {}),
+    });
+  }
+
+  private async stopSlotProcesses(
+    input: { slot: RuntimeSlotId; controllerDaemon: SupervisorManagedProcess; gatewayHost: SupervisorManagedProcess },
+    reason = 'slot_cleanup',
+    operationId = this.state.currentOperationId ?? undefined,
+  ): Promise<void> {
+    await this.stopManagedProcess(
+      this.managerForManaged(input.gatewayHost, input.slot),
+      input.gatewayHost,
+      'gatewayHost',
+      reason,
+      operationId,
+    ).catch(() => undefined);
+    await this.stopManagedProcess(
+      this.managerForManaged(input.controllerDaemon, input.slot),
+      input.controllerDaemon,
+      'controllerDaemon',
+      reason,
+      operationId,
+    ).catch(() => undefined);
   }
 
   /**
@@ -1294,15 +1378,32 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
    * restart the candidate pair so both processes inherit the committed
    * slot/epoch/token before stable ingress is switched.
    */
-  private async refreshSlotWriterClaim(input: StartedRuntimeSlot): Promise<StartedRuntimeSlot> {
+  private async refreshSlotWriterClaim(
+    input: StartedRuntimeSlot,
+    context: { operationId?: string; reason?: string } = {},
+  ): Promise<StartedRuntimeSlot> {
     syncMcpControllerHomeBearerToken(
       input.controllerDaemon.controllerHome,
       this.options.controllerHome,
       this.options.repoRoot,
     );
-    const stoppedGateway = await input.manager.stop(input.gatewayHost);
+    const reason = context.reason ?? 'writer_claim_refresh';
+    const operationId = context.operationId ?? this.state.currentOperationId ?? undefined;
+    const stoppedGateway = await this.stopManagedProcess(
+      input.manager,
+      input.gatewayHost,
+      'gatewayHost',
+      `${reason}:stop_previous_gateway`,
+      operationId,
+    );
     if (!stoppedGateway.stopped) throw new Error('SUPERVISOR_GATEWAY_WRITER_REFRESH_STOP_INCOMPLETE');
-    const stoppedDaemon = await input.manager.stop(input.controllerDaemon);
+    const stoppedDaemon = await this.stopManagedProcess(
+      input.manager,
+      input.controllerDaemon,
+      'controllerDaemon',
+      `${reason}:stop_previous_daemon`,
+      operationId,
+    );
     if (!stoppedDaemon.stopped) throw new Error('SUPERVISOR_DAEMON_WRITER_REFRESH_STOP_INCOMPLETE');
 
     let daemon: SupervisorManagedProcess | undefined;
@@ -1338,8 +1439,24 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       }
       return { ...input, generation, controllerDaemon: daemon, gatewayHost: gateway, mcpReadiness };
     } catch (error) {
-      if (gateway) await input.manager.stop(gateway).catch(() => undefined);
-      if (daemon) await input.manager.stop(daemon).catch(() => undefined);
+      if (gateway) {
+        await this.stopManagedProcess(
+          input.manager,
+          gateway,
+          'gatewayHost',
+          `${reason}:failed_refresh_cleanup`,
+          operationId,
+        ).catch(() => undefined);
+      }
+      if (daemon) {
+        await this.stopManagedProcess(
+          input.manager,
+          daemon,
+          'controllerDaemon',
+          `${reason}:failed_refresh_cleanup`,
+          operationId,
+        ).catch(() => undefined);
+      }
       throw error;
     }
   }
@@ -1416,7 +1533,10 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       }
       // The candidate was intentionally passive before commit. Restart it with
       // the committed claim while ingress still routes to the previous slot.
-      activatedCandidate = await this.refreshSlotWriterClaim(candidate);
+      activatedCandidate = await this.refreshSlotWriterClaim(candidate, {
+        operationId,
+        reason: 'rollout_writer_claim_refresh',
+      });
       this.persist({
         activeSlot: candidateSlot,
         activeGeneration: activatedCandidate.generation,
@@ -1431,7 +1551,43 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
         },
       });
       await this.verifyStableIngress(activatedCandidate.generation, activatedCandidate.controllerDaemon.controllerHome);
-      await this.observeActivatedSlot(activatedCandidate);
+      const observed = await observeCutoverCandidateWithSingleRecovery(
+        activatedCandidate,
+        (current) => this.observeActivatedSlot(current),
+        async (failedCandidate, firstFailure) => {
+          const daemonStatus = readControllerDaemonStatus(failedCandidate.controllerDaemon.controllerHome);
+          const latest = readSupervisorOperation(this.options.controllerHome, operationId) ?? operation;
+          updateSupervisorOperation(this.options.controllerHome, operationId, {
+            phase: latest.phase,
+            evidence: [
+              ...(latest.evidence ?? []),
+              {
+                kind: 'candidate_cutover_recovery',
+                summary: `Candidate ${candidateSlot} observation failed once (${firstFailure}); daemonStatus=${daemonStatus.status} shutdownReason=${daemonStatus.shutdownReason ?? 'unknown'}. Refreshing the authority-owned pair once before rollback.`,
+                at: new Date().toISOString(),
+              },
+            ],
+          });
+          const refreshed = await this.refreshSlotWriterClaim(failedCandidate, {
+            operationId,
+            reason: 'rollout_cutover_observation_recovery',
+          });
+          this.persist({
+            activeSlot: candidateSlot,
+            activeGeneration: refreshed.generation,
+            controllerDaemon: refreshed.controllerDaemon,
+            gatewayHost: refreshed.gatewayHost,
+            ingress: {
+              ...this.state.ingress,
+              activeUpstreamSlot: candidateSlot,
+              activeUpstreamPort: refreshed.manager.gatewayBinding(candidateSlot).port,
+            },
+          });
+          await this.verifyStableIngress(refreshed.generation, refreshed.controllerDaemon.controllerHome);
+          return refreshed;
+        },
+      );
+      activatedCandidate = observed.candidate;
       writeSlotIdentity(this.options.controllerHome, {
         ...(readSlotIdentity(this.options.controllerHome, candidateSlot) ?? {
           schemaVersion: 1,
@@ -1496,7 +1652,10 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
           localControllerPort: loadMcpServiceLocalConfig(previousDaemon.controllerHome, this.options.repoRoot)?.localController?.port ?? 8766,
           durableJobId: 'cutover-rollback-restore',
         };
-        const restored = await this.refreshSlotWriterClaim(previousTarget);
+        const restored = await this.refreshSlotWriterClaim(previousTarget, {
+          operationId,
+          reason: 'rollout_rollback_restore_previous',
+        });
         restoredDaemon = restored.controllerDaemon;
         restoredGateway = restored.gatewayHost;
       }
@@ -1513,7 +1672,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
           activeUpstreamPort: this.managerForManaged(restoredGateway, previousSlot).gatewayBinding(previousSlot).port,
         },
       });
-      await this.stopSlotProcesses(activatedCandidate);
+      await this.stopSlotProcesses(activatedCandidate, 'rollout_failed_candidate_cleanup', operationId);
       const identity = readSlotIdentity(this.options.controllerHome, candidateSlot);
       if (identity) writeSlotIdentity(this.options.controllerHome, { ...identity, role: 'failed' });
       throw error;
@@ -1688,7 +1847,12 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       && daemonGeneration
       && this.observedGatewayGeneration(currentGateway) !== daemonGeneration
     ) {
-      const stopped = await this.managerForManaged(currentGateway).stop(currentGateway);
+      const stopped = await this.stopManagedProcess(
+        this.managerForManaged(currentGateway),
+        currentGateway,
+        'gatewayHost',
+        'gateway_generation_refresh',
+      );
       if (!stopped.stopped) throw new Error('SUPERVISOR_GATEWAYHOST_GENERATION_REFRESH_STOP_INCOMPLETE');
       this.setComponent('gatewayHost', { ...currentGateway, state: 'stopped', lastLivenessAt: new Date().toISOString() });
     }
@@ -1731,7 +1895,12 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
   private async stopComponent(component: SupervisorComponentName): Promise<void> {
     const current = this.componentState(component);
     if (!current) return;
-    const result = await this.managerForManaged(current).stop(current);
+    const result = await this.stopManagedProcess(
+      this.managerForManaged(current),
+      current,
+      component,
+      `component_stop:${component}`,
+    );
     if (!result.stopped) throw new Error(`SUPERVISOR_${component.toUpperCase()}_STOP_INCOMPLETE`);
     this.setComponent(component, { ...current, state: 'stopped', lastLivenessAt: new Date().toISOString() });
   }

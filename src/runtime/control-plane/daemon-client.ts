@@ -16,12 +16,21 @@ import { cleanupControllerRuntimeState } from './runtime-cleanup';
 import type { ControllerStartupRecoveryResult } from './startup-recovery';
 import { isStableSupervisorInstalled, supervisorStatePath } from '../supervisor/paths';
 
+export type ControllerDaemonShutdownReason =
+  | 'SIGINT'
+  | 'SIGTERM'
+  | 'max_lifetime'
+  | 'scheduler_error'
+  | 'lifecycle_complete'
+  | 'process_missing';
+
 export interface ControllerDaemonStatus {
   schemaVersion: 1;
   status: 'starting' | 'ready' | 'failed' | 'stopped' | 'unavailable';
   pid?: number;
   startedAt?: string;
   stoppedAt?: string;
+  shutdownReason?: ControllerDaemonShutdownReason;
   error?: string;
   gatewaySeparated?: boolean;
   workerIsolation?: boolean;
@@ -65,7 +74,12 @@ export function readControllerDaemonStatus(controllerHome: string): ControllerDa
   let pid = state.pid;
   try { pid = Number(readFileSync(daemonPidPath(home), 'utf8').trim()) || pid; } catch { /* no pid */ }
   if ((withGeneration.status === 'ready' || withGeneration.status === 'starting') && !pidAlive(pid)) {
-    return { ...withGeneration, status: 'stopped', pid };
+    return {
+      ...withGeneration,
+      status: 'stopped',
+      pid,
+      shutdownReason: withGeneration.shutdownReason ?? 'process_missing',
+    };
   }
   if (withGeneration.status === 'ready' && !schedulerHeartbeatHealthy(home)) {
     const startedAt = withGeneration.startedAt ? Date.parse(withGeneration.startedAt) : Number.NaN;

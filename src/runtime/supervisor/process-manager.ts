@@ -1,4 +1,4 @@
-import { closeSync, mkdirSync, openSync } from 'fs';
+import { appendFileSync, closeSync, mkdirSync, openSync } from 'fs';
 import { spawn, type ChildProcess } from 'child_process';
 import { dirname, join, resolve } from 'path';
 import { randomUUID } from 'crypto';
@@ -37,6 +37,51 @@ export interface SpawnedSupervisorProcess {
 }
 
 export type ProcessObservation = 'alive' | 'dead' | 'unknown';
+
+export interface SupervisorProcessStopContext {
+  reason: string;
+  operationId?: string;
+  component?: SupervisorComponentName;
+}
+
+export function supervisorProcessStopAuditPath(logPath: string): string {
+  return join(dirname(resolve(logPath)), 'process-stops.jsonl');
+}
+
+function boundedAuditText(value: string | undefined, fallback: string): string {
+  return (value?.replace(/\s+/g, ' ').trim() || fallback).slice(0, 300);
+}
+
+function appendSupervisorProcessStopAudit(
+  logPath: string,
+  identity: ProcessIdentity,
+  context: SupervisorProcessStopContext,
+  phase: 'requested' | 'completed' | 'refused',
+  detail: Record<string, unknown> = {},
+): void {
+  try {
+    const path = supervisorProcessStopAuditPath(logPath);
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    appendFileSync(path, `${JSON.stringify({
+      schemaVersion: 1,
+      at: new Date().toISOString(),
+      phase,
+      reason: boundedAuditText(context.reason, 'unspecified_supervisor_stop'),
+      ...(context.operationId ? { operationId: boundedAuditText(context.operationId, 'unknown') } : {}),
+      component: context.component ?? 'unknown',
+      pid: identity.pid,
+      instanceId: identity.instanceId,
+      controllerHome: identity.controllerHome,
+      ...(identity.slot ? { slot: identity.slot } : {}),
+      ...(identity.generation ? { generation: identity.generation } : {}),
+      ...(identity.releaseRevision ? { releaseRevision: identity.releaseRevision } : {}),
+      ownerEpoch: identity.ownerEpoch,
+      ...detail,
+    })}\n`, { encoding: 'utf8', mode: 0o600 });
+  } catch {
+    // Stop audit is best-effort evidence and must not block identity-safe cleanup.
+  }
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
@@ -264,13 +309,39 @@ export class SupervisorProcessManager {
     return executablePaths.some((path) => command.includes(resolve(path)));
   }
 
-  async stop(identity: ProcessIdentity | undefined): Promise<{ stopped: boolean; observation: ProcessObservation }> {
+  async stop(
+    identity: ProcessIdentity | undefined,
+    context: SupervisorProcessStopContext = { reason: 'unspecified_supervisor_stop' },
+  ): Promise<{ stopped: boolean; observation: ProcessObservation }> {
     const observation = this.observe(identity);
-    if (!identity || observation === 'dead') return { stopped: true, observation };
+    if (!identity) return { stopped: true, observation };
+    appendSupervisorProcessStopAudit(this.options.logPath, identity, context, 'requested', { observation });
+    if (observation === 'dead') {
+      appendSupervisorProcessStopAudit(this.options.logPath, identity, context, 'completed', {
+        observation,
+        stopped: true,
+        alreadyDead: true,
+      });
+      return { stopped: true, observation };
+    }
     // When the OS probe is unavailable, observe returns 'alive' after
     // verifying liveness.  Proceed with termination.
-    if (observation === 'unknown') throw new Error(`SUPERVISOR_PROCESS_IDENTITY_MISMATCH: refusing to terminate pid=${identity.pid}`);
+    if (observation === 'unknown') {
+      appendSupervisorProcessStopAudit(this.options.logPath, identity, context, 'refused', {
+        observation,
+        stopped: false,
+        error: 'SUPERVISOR_PROCESS_IDENTITY_MISMATCH',
+      });
+      throw new Error(`SUPERVISOR_PROCESS_IDENTITY_MISMATCH: refusing to terminate pid=${identity.pid}`);
+    }
     const result = await terminateProcessTree(identity.pid, { gracePeriodMs: 1_500, killAfterMs: 8_000, pollIntervalMs: 100 });
+    appendSupervisorProcessStopAudit(this.options.logPath, identity, context, 'completed', {
+      observation: result.exited ? 'dead' : 'unknown',
+      stopped: result.exited,
+      signaled: result.signaled,
+      escalated: result.escalated,
+      remainingPids: result.remainingPids.slice(0, 20),
+    });
     return { stopped: result.exited, observation: result.exited ? 'dead' : 'unknown' };
   }
 }

@@ -19,6 +19,7 @@ import {
 import { reconcileControllerStartup, type ControllerStartupRecoveryResult } from './startup-recovery';
 import { applyRuntimeCleanup, type RuntimeCleanupApplyResult } from '../maintenance/cleanup';
 import { recoverActivationTransaction, readActivationAuthority } from '../bootstrap/activation-transaction';
+import type { ControllerDaemonShutdownReason } from './daemon-client';
 
 function option(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -145,6 +146,17 @@ export function controllerDaemonMaxLifetimeMs(controllerHome: string, configured
   return temporaryHarnessHome ? 5 * 60_000 : undefined;
 }
 
+export function resolveControllerDaemonShutdownReason(input: {
+  signal?: 'SIGINT' | 'SIGTERM';
+  maxLifetimeExpired?: boolean;
+  schedulerFailure?: string;
+}): ControllerDaemonShutdownReason {
+  if (input.schedulerFailure) return 'scheduler_error';
+  if (input.signal) return input.signal;
+  if (input.maxLifetimeExpired) return 'max_lifetime';
+  return 'lifecycle_complete';
+}
+
 export function startControllerDaemon(controllerHome: string): void {
   // Capture writer identity once for this daemon process (slot path → stable root authority).
   // Daemon is the active-runtime owner and may adopt current authority at startup.
@@ -178,10 +190,19 @@ export function startControllerDaemon(controllerHome: string): void {
   const startedAt = new Date().toISOString();
   const ownership = childOwnershipMetadata();
   const passive = controllerDaemonPassiveMode();
-  for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => abort.abort());
+  let receivedSignal: 'SIGINT' | 'SIGTERM' | undefined;
+  let maxLifetimeExpired = false;
+  const requestShutdown = (reason: 'SIGINT' | 'SIGTERM' | 'max_lifetime'): void => {
+    if (reason === 'max_lifetime') maxLifetimeExpired = true;
+    else receivedSignal ??= reason;
+    abort.abort();
+  };
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.on(signal, () => requestShutdown(signal));
+  }
   const effectiveMaxLifetimeMs = controllerDaemonMaxLifetimeMs(controllerHome);
   const maxLifetimeTimer = effectiveMaxLifetimeMs
-    ? setTimeout(() => abort.abort(), effectiveMaxLifetimeMs)
+    ? setTimeout(() => requestShutdown('max_lifetime'), effectiveMaxLifetimeMs)
     : undefined;
   maxLifetimeTimer?.unref?.();
 
@@ -223,10 +244,16 @@ export function startControllerDaemon(controllerHome: string): void {
       }
       rmSync(pidPath, { force: true });
       const stoppedAt = new Date().toISOString();
+      const shutdownReason = resolveControllerDaemonShutdownReason({
+        signal: receivedSignal,
+        maxLifetimeExpired,
+        schedulerFailure,
+      });
       writeJsonAtomic(statePath, {
         schemaVersion: 1,
         status: schedulerFailure ? 'failed' : 'stopped',
         pid: process.pid,
+        shutdownReason,
         ...(schedulerFailure ? { error: schedulerFailure, updatedAt: stoppedAt } : { stoppedAt }),
         degraded: schedulerFailure ? true : runtime.degraded,
         recovery: runtime,

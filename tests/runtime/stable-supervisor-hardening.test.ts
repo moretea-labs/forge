@@ -11,11 +11,11 @@ import { installSupervisorRelease, publishSupervisorRelease, renderLaunchdSuperv
 import { stableSupervisorActivatesPublishedRelease, stableSupervisorExitCode } from '../../src/runtime/supervisor/entry';
 import { createStableIngressRouter } from '../../src/runtime/supervisor/ingress-router';
 import { createStableIngressProcess } from '../../src/runtime/supervisor/ingress-process';
-import { controllerDaemonMaxLifetimeMs, controllerDaemonPassiveMode, publishReadyAfterStartupRecovery } from '../../src/runtime/control-plane/daemon-entry';
+import { controllerDaemonMaxLifetimeMs, controllerDaemonPassiveMode, publishReadyAfterStartupRecovery, resolveControllerDaemonShutdownReason } from '../../src/runtime/control-plane/daemon-entry';
 import { createSupervisorOperation, readSupervisorOperation, updateSupervisorOperation } from '../../src/runtime/supervisor/operation-store';
-import { StableSupervisorRuntime, SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_MONITOR_FAILURE_THRESHOLD, automaticRecoveryRequestId, managedProcessNeedsReleaseRefresh, probeAuthenticatedMcpReadiness, probeSupervisorGatewayHealth, reconcileActiveManagedGenerations, reconcilePendingSupervisorActivations, reconcileSupervisorStateWithAuthority, resumableInterruptedRollout, supervisorGatewayHealthDecision, supervisorGatewayOperational, supervisorIngressHealthDecision, supervisorMonitorFailureDecision, supervisorOperationRecoverySuppressed, terminalizeInterruptedSupervisorOperations } from '../../src/runtime/supervisor/supervisor-runtime';
+import { StableSupervisorRuntime, SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_MONITOR_FAILURE_THRESHOLD, automaticRecoveryRequestId, managedProcessNeedsReleaseRefresh, observeCutoverCandidateWithSingleRecovery, probeAuthenticatedMcpReadiness, probeSupervisorGatewayHealth, reconcileActiveManagedGenerations, reconcilePendingSupervisorActivations, reconcileSupervisorStateWithAuthority, recoverableCutoverObservationFailure, resumableInterruptedRollout, supervisorGatewayHealthDecision, supervisorGatewayOperational, supervisorIngressHealthDecision, supervisorMonitorFailureDecision, supervisorOperationRecoverySuppressed, terminalizeInterruptedSupervisorOperations } from '../../src/runtime/supervisor/supervisor-runtime';
 import { decideRestart, newRestartBudgetRecord, recordFailure, recordRestart, recordStable } from '../../src/runtime/supervisor/restart-policy';
-import { SupervisorProcessManager, runtimeWriterEnvironment } from '../../src/runtime/supervisor/process-manager';
+import { SupervisorProcessManager, runtimeWriterEnvironment, supervisorProcessStopAuditPath } from '../../src/runtime/supervisor/process-manager';
 import { ensureMcpControllerHomeBearerToken, writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
 import { writeActiveSlotAuthority } from '../../src/cli/controller/runtime-slots';
 import { publishWriterAuthority } from '../../src/cli/controller/stable-state/writer-authority';
@@ -773,6 +773,18 @@ describe('Stable Supervisor production hardening', () => {
     expect(controllerDaemonMaxLifetimeMs('/Users/example/controller-home', '2500')).toBe(2500);
   });
 
+  test('Controller Daemon shutdown attribution preserves the highest-signal cause', () => {
+    expect(resolveControllerDaemonShutdownReason({ signal: 'SIGTERM' })).toBe('SIGTERM');
+    expect(resolveControllerDaemonShutdownReason({ signal: 'SIGINT' })).toBe('SIGINT');
+    expect(resolveControllerDaemonShutdownReason({ maxLifetimeExpired: true })).toBe('max_lifetime');
+    expect(resolveControllerDaemonShutdownReason({
+      signal: 'SIGTERM',
+      maxLifetimeExpired: true,
+      schedulerFailure: 'scheduler failed',
+    })).toBe('scheduler_error');
+    expect(resolveControllerDaemonShutdownReason({})).toBe('lifecycle_complete');
+  });
+
   test('stable ingress does not impose a five-second timeout on valid MCP streams', async () => {
     const main = await listen((_request, response) => {
       setTimeout(() => {
@@ -889,8 +901,24 @@ describe('Stable Supervisor production hardening', () => {
       expect(spawned.identity.releasePath).toBe(descriptor!.releasePath);
       expect(spawned.identity.releaseRevision).toBe('revision-a');
     } finally {
-      await manager.stop(spawned.identity);
+      await manager.stop(spawned.identity, {
+        reason: 'test_release_identity_cleanup',
+        component: 'controllerDaemon',
+        operationId: 'test-release-identity',
+      });
     }
+    const stopEvents = readFileSync(supervisorProcessStopAuditPath(join(home, 'supervisor.log')), 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(stopEvents.some((event) => (
+      event.phase === 'requested'
+      && event.reason === 'test_release_identity_cleanup'
+      && event.component === 'controllerDaemon'
+      && event.operationId === 'test-release-identity'
+      && event.instanceId === spawned.identity.instanceId
+    ))).toBe(true);
+    expect(stopEvents.some((event) => event.phase === 'completed' && event.stopped === true)).toBe(true);
   });
 
   test('new Supervisor release handoff replaces healthy persisted children from an older release', () => {
@@ -1286,6 +1314,49 @@ describe('Stable Supervisor production hardening', () => {
     expect(supervisorOperationRecoverySuppressed('sup-op-active')).toBe(true);
     expect(supervisorOperationRecoverySuppressed(null)).toBe(false);
     expect(supervisorOperationRecoverySuppressed(undefined)).toBe(false);
+  });
+
+  test('cutover observation refreshes a recoverable candidate exactly once', async () => {
+    let observations = 0;
+    let recoveries = 0;
+    const result = await observeCutoverCandidateWithSingleRecovery(
+      'candidate-v1',
+      async (candidate) => {
+        observations += 1;
+        if (candidate === 'candidate-v1') {
+          throw new Error('SUPERVISOR_CUTOVER_DAEMON_READINESS_FAILED: status=stopped');
+        }
+      },
+      async (candidate, firstFailure) => {
+        recoveries += 1;
+        expect(candidate).toBe('candidate-v1');
+        expect(firstFailure).toContain('status=stopped');
+        return 'candidate-v2';
+      },
+    );
+    expect(result).toEqual({
+      candidate: 'candidate-v2',
+      recovered: true,
+      firstFailure: 'SUPERVISOR_CUTOVER_DAEMON_READINESS_FAILED: status=stopped',
+    });
+    expect(observations).toBe(2);
+    expect(recoveries).toBe(1);
+    expect(recoverableCutoverObservationFailure(new Error('SUPERVISOR_CUTOVER_GENERATION_MISMATCH'))).toBe(false);
+  });
+
+  test('cutover observation fails closed after the single recovery is exhausted', async () => {
+    let recoveries = 0;
+    await expect(observeCutoverCandidateWithSingleRecovery(
+      'candidate-v1',
+      async (candidate) => {
+        throw new Error(`SUPERVISOR_CUTOVER_GATEWAY_READINESS_FAILED: ${candidate}`);
+      },
+      async () => {
+        recoveries += 1;
+        return 'candidate-v2';
+      },
+    )).rejects.toThrow(/SUPERVISOR_CUTOVER_RECOVERY_EXHAUSTED: initial=.*candidate-v1; second=.*candidate-v2/);
+    expect(recoveries).toBe(1);
   });
 
   test('published Controller Home release authority outranks the boot release for managed runtime recovery', () => {
