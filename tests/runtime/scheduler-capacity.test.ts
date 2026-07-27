@@ -8,6 +8,12 @@ import {
   sampleDarwinAvailableMemoryMb,
 } from '../../src/runtime/control-plane/global-scheduler/scheduler';
 import { createExecutionJob } from '../../src/runtime/execution/jobs/store';
+import {
+  compareExecutionJobDispatchRanks,
+  isExecutionJobDispatchCandidate,
+  PRIORITY_AGING_WINDOW_MS,
+  rankExecutionJobForDispatch,
+} from '../../src/runtime/control-plane/dispatch-priority';
 
 const roots: string[] = [];
 
@@ -36,6 +42,34 @@ Pages occupied by compressor:            999999.
 
   test('samples host available memory without throwing', async () => {
     await expect(sampleDarwinAvailableMemoryMb(512)).resolves.toBeGreaterThanOrEqual(0);
+  });
+
+  test('uses one immutable dispatch timestamp and excludes approval-gated Jobs', () => {
+    const scheduleNow = Date.parse('2026-07-27T00:00:00.000Z');
+    const aged = rankExecutionJobForDispatch({
+      priority: 'P2',
+      queuedAt: new Date(scheduleNow - 2 * PRIORITY_AGING_WINDOW_MS).toISOString(),
+      createdAt: new Date(scheduleNow - 2 * PRIORITY_AGING_WINDOW_MS).toISOString(),
+      jobId: 'aged',
+    }, scheduleNow);
+    const recent = rankExecutionJobForDispatch({
+      priority: 'P0',
+      queuedAt: new Date(scheduleNow - 1_000).toISOString(),
+      createdAt: new Date(scheduleNow - 1_000).toISOString(),
+      jobId: 'recent',
+    }, scheduleNow);
+    const malformed = rankExecutionJobForDispatch({
+      priority: 'P2',
+      queuedAt: 'not-a-date',
+      createdAt: new Date(scheduleNow - PRIORITY_AGING_WINDOW_MS).toISOString(),
+      jobId: 'malformed',
+    }, scheduleNow);
+
+    expect(aged.effectivePriority).toBe(0);
+    expect(compareExecutionJobDispatchRanks(aged, recent)).toBeLessThan(0);
+    expect(malformed.effectivePriority).toBe(1);
+    expect(isExecutionJobDispatchCandidate({ status: 'waiting_for_approval' })).toBe(false);
+    expect(isExecutionJobDispatchCandidate({ status: 'waiting_for_workspace' })).toBe(true);
   });
 
   test('refuses new ExecutionJob creation used by the retired worker capacity path', () => {

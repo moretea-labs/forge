@@ -4,7 +4,7 @@
   "title": "Stop runtime temporary resource accumulation",
   "slug": "stop-runtime-temporary-resource-accumulation",
   "kind": "bug",
-  "status": "planned",
+  "status": "in_progress",
   "summary": "Complete the existing uncommitted runtime health/resource lifecycle changes by adding bounded automatic garbage collection for abandoned repo-harness temp directories and validating lifecycle ownership protections.",
   "goals": [
     "Run bounded automatic cleanup after daemon startup and periodically",
@@ -32,7 +32,7 @@
       "id": "T1",
       "title": "Complete bounded automatic runtime GC",
       "objective": "Review and complete the current main working tree changes. Add daemon-owned startup/periodic bounded GC for repo-harness temp directories using existing safe cleanup primitives, add regression tests, run focused and package checks, commit on main, then restart to the latest commit and verify readiness.",
-      "status": "ready",
+      "status": "verified",
       "dependsOn": [],
       "allowedPaths": [
         "src/runtime/**",
@@ -58,14 +58,17 @@
       ],
       "risk": "medium",
       "recommendedAgent": "codex",
-      "notes": [],
+      "notes": [
+        "Implemented and committed non-overlapping automatic runtime cleanup cycle guard at f426ce9c99700463762e26260e7e11825bddc49f. Focused runtime cleanup test passed 17/17. Full declared verification is blocked by pre-existing baseline type errors: untracked scripts/test-worker-race.ts uses invalid requestSource 'test' and priority 'normal'; tracked src/runtime/gateway/mcp/runtime-tools.ts passes sourceRevision string|null to GoalWorkloopContext string|undefined. Unrelated untracked files were preserved unchanged. V2 cutover remains unsafe until baseline checks pass and historical integration/evidence blockers are resolved.",
+        "Completed automatic runtime GC guard and baseline sourceRevision normalization. Focused runtime-cleanup tests passed 17/17. Declared checks all passed on main: package:check:type, package:check:mcp-compatibility, package:check:runtime-architecture, package:check:controller-v8. Source commits: f426ce9c99700463762e26260e7e11825bddc49f and the subsequent fix(runtime): normalize optional source revision commit. Untracked research files and worker-race stress script remain outside commits."
+      ],
       "runIds": [],
       "createdAt": "2026-07-16T11:28:35.847Z",
-      "updatedAt": "2026-07-16T11:28:35.847Z",
+      "updatedAt": "2026-07-26T15:59:54.468Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     }
   ],
   "createdAt": "2026-07-16T11:28:35.847Z",
-  "updatedAt": "2026-07-16T11:28:35.847Z",
+  "updatedAt": "2026-07-26T15:59:54.468Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }

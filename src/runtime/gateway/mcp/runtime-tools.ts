@@ -2478,7 +2478,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           return result(facade as unknown as Record<string, unknown>, facade.status === 'blocked');
         }
 
-        const facade = runGoalWorkloop(workloopCtx, operation as 'start' | 'continue' | 'finalize' | 'stop', args);
+        const facade = runGoalWorkloop({ ...workloopCtx, sourceRevision: workloopCtx.sourceRevision ?? undefined }, operation as 'start' | 'continue' | 'finalize' | 'stop', args);
         return result(facade as unknown as Record<string, unknown>, facade.status === 'blocked' || facade.status === 'failed' || facade.status === 'not_found');
       }
       case 'work_submit': {

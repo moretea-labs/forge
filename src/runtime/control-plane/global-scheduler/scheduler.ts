@@ -18,15 +18,25 @@ import {
   updateExecutionJob,
 } from '../../execution/jobs/store';
 import type { ExecutionWorkerLifecycle } from '../../execution/jobs/types';
+import { tryRecoverJobFromWorkerReceipt } from '../../execution/jobs/receipt-recovery';
 import { releaseExecutionLeases } from '../../resources/leases/store';
 import { RepoActorRegistry } from '../repo-actor/registry';
 import { reconcileExecutionJobsAsync } from './reconciliation';
+import { tickSchedules } from '../../workflow/schedules/engine';
+import { tickPortfolioWorkflows } from '../../workflow/portfolio/engine';
+import { tickCampaigns } from '../../workflow/campaigns/engine';
+import { tickGoalLoopsForController } from '../goal-loop';
 import { readJsonFile, writeJsonAtomic } from '../../shared/json-files';
 import { isProcessAlive, terminateProcessTree } from '../../shared/process-tree';
 import { readSchedulerWakeSignal, waitForSchedulerWakeSignal } from './wake-signal';
 import { cleanupControllerRuntimeState } from '../runtime-cleanup';
-import { markRepositoryProjectionDirty } from '../../projections/invalidation';
+import { rebuildRepositoryProjection } from '../../projections/materialized-view';
 import { sampleRepositoryGitStatusForRepositories } from '../../projections/git-status-sampler';
+import {
+  compareExecutionJobDispatchRanks,
+  isExecutionJobDispatchCandidate,
+  rankExecutionJobForDispatch,
+} from '../dispatch-priority';
 
 const DARWIN_MEMORY_SAMPLE_TTL_MS = 5_000;
 const MAX_WORKER_STDERR_BYTES = 16 * 1024;
@@ -166,6 +176,10 @@ export class GlobalScheduler {
   private readonly runtimeSourceRoot?: string;
   private readonly workerEntrypoint?: string;
   private readonly ownerEpoch?: string;
+  private lastScheduleTick = 0;
+  private lastPortfolioTick = 0;
+  private lastCampaignTick = 0;
+  private lastGoalLoopTick = 0;
   private lastReconcile = 0;
   private lastPersistedAt = 0;
   private readonly lastRepoDispatch = new Map<string, number>();
@@ -294,55 +308,58 @@ export class GlobalScheduler {
       const mergedLifecycle = { ...currentLifecycle, ...diagnosticLifecycle };
       if (['succeeded', 'failed', 'timed_out', 'cancelled', 'orphaned', 'stale', 'human_attention_required'].includes(current.status)) {
         updateExecutionJob(this.controllerHome, repoId, jobId, (latest) => ({ ...latest, workerLifecycle: mergedLifecycle }));
-        markRepositoryProjectionDirty(this.controllerHome, repoId, `worker:${jobId}:terminal`);
+        try { rebuildRepositoryProjection(this.controllerHome, repoId); } catch { /* the next scheduler/status read can retry */ }
         return;
       }
 
-      // Race mitigation: when worker exits cleanly (exit code 0), give it a short grace period
-      // to write success result before declaring premature exit. Worker may complete successfully
-      // but the file write + job transition races with the process exit signal.
-      const cleanExit = exitCode === 0 && !signal && !startupError;
-      if (cleanExit) {
-        await new Promise((resolve) => setTimeout(resolve, 150));
-        const rechecked = getExecutionJob(this.controllerHome, repoId, jobId);
-        if (rechecked.attempt !== attempt) return;
-        const recheckedLifecycle = rechecked.workerLifecycle ?? lifecycle;
-        const recheckedMerged = { ...recheckedLifecycle, ...diagnosticLifecycle };
-        if (['succeeded', 'failed', 'timed_out', 'cancelled', 'orphaned', 'stale', 'human_attention_required'].includes(rechecked.status)) {
-          updateExecutionJob(this.controllerHome, repoId, jobId, (latest) => ({ ...latest, workerLifecycle: recheckedMerged }));
-          markRepositoryProjectionDirty(this.controllerHome, repoId, `worker:${jobId}:terminal`);
-          return;
-        }
+      // Prefer durable receipt recovery over sleep-based grace. When the Worker
+      // already wrote a completed/delegated receipt for this attempt/PID/epoch/
+      // lease ownership, finalize from that receipt and never emit WORKER_EXITED.
+      const recovered = tryRecoverJobFromWorkerReceipt(this.controllerHome, current);
+      if (recovered) {
+        updateExecutionJob(this.controllerHome, repoId, jobId, (latest) => ({ ...latest, workerLifecycle: mergedLifecycle }));
+        try { rebuildRepositoryProjection(this.controllerHome, repoId); } catch { /* the next scheduler/status read can retry */ }
+        return;
+      }
+      const rechecked = getExecutionJob(this.controllerHome, repoId, jobId);
+      if (rechecked.attempt !== attempt) return;
+      const recheckedLifecycle = rechecked.workerLifecycle ?? lifecycle;
+      const recheckedMerged = { ...recheckedLifecycle, ...diagnosticLifecycle };
+      if (['succeeded', 'failed', 'timed_out', 'cancelled', 'orphaned', 'stale', 'human_attention_required'].includes(rechecked.status)) {
+        updateExecutionJob(this.controllerHome, repoId, jobId, (latest) => ({ ...latest, workerLifecycle: recheckedMerged }));
+        try { rebuildRepositoryProjection(this.controllerHome, repoId); } catch { /* the next scheduler/status read can retry */ }
+        return;
       }
 
       const details: Record<string, unknown> = {
         workerLostReason: startupError ? 'spawn_failed' : 'process_exit',
-        executable: mergedLifecycle.executable,
-        cwd: mergedLifecycle.cwd,
+        executable: recheckedMerged.executable,
+        cwd: recheckedMerged.cwd,
         exitCode,
         signal,
         stderr,
         stderrTruncated,
-        stderrPath: mergedLifecycle.stderrPath,
-        processGroupId: mergedLifecycle.processGroupId,
-        ownerPid: mergedLifecycle.ownerPid,
-        ownerEpoch: mergedLifecycle.ownerEpoch,
-        attempt: current.attempt,
-        maxAttempts: current.maxAttempts,
+        stderrPath: recheckedMerged.stderrPath,
+        processGroupId: recheckedMerged.processGroupId,
+        ownerPid: recheckedMerged.ownerPid,
+        ownerEpoch: recheckedMerged.ownerEpoch,
+        attempt: rechecked.attempt,
+        maxAttempts: rechecked.maxAttempts,
         ...(startupError ? { startupError } : {}),
       };
       const stderrSummary = stderr.trim() ? ` Worker stderr: ${stderr.trim()}` : '';
       const startupSummary = startupError ? ` Startup error: ${startupError}.` : '';
-      const message = `Execution Worker ${mergedLifecycle.executable} exited before completion (cwd ${mergedLifecycle.cwd}, exit code ${exitCode ?? 'unknown'}${signal ? `, signal ${signal}` : ''}).${startupSummary}${stderrSummary}`;
-      releaseExecutionLeases(this.controllerHome, repoId, jobId, current.leaseRefs);
-      transitionExecutionJob(this.controllerHome, repoId, jobId, 'human_attention_required', {
+      const message = `Execution Worker ${recheckedMerged.executable} exited before completion (cwd ${recheckedMerged.cwd}, exit code ${exitCode ?? 'unknown'}${signal ? `, signal ${signal}` : ''}).${startupSummary}${stderrSummary}`;
+      releaseExecutionLeases(this.controllerHome, repoId, jobId, rechecked.leaseRefs);
+      const retryable = rechecked.attempt < rechecked.maxAttempts;
+      transitionExecutionJob(this.controllerHome, repoId, jobId, retryable ? 'queued' : 'failed', {
         workerPid: undefined,
         heartbeatAt: undefined,
         leaseRefs: [],
-        workerLifecycle: mergedLifecycle,
-        error: { code: startupError ? 'TRANSPORT_FAILURE' : 'PROCESS_FAILURE', message, retryable: false, details },
+        workerLifecycle: recheckedMerged,
+        error: { code: startupError ? 'WORKER_START_FAILED' : 'WORKER_EXITED', message, retryable, details },
       });
-      markRepositoryProjectionDirty(this.controllerHome, repoId, `worker:${jobId}:attention`);
+      try { rebuildRepositoryProjection(this.controllerHome, repoId); } catch { /* the next scheduler/status read can retry */ }
     } catch { /* the Job may have been finalized by the Worker or reconciliation */ }
   }
 
@@ -591,10 +608,18 @@ export class GlobalScheduler {
         // Another scheduler or a terminal transition won the Job-local race.
       }
     }
-    // Schedule and Portfolio execution are external-Controller owned. The
-    // Scheduler retains no semantic ticks that could create ExecutionJobs.
+    if (now - this.lastScheduleTick >= 30_000) {
+      await tickSchedules(this.controllerHome, repositories.map((repo) => repo.repoId));
+      this.lastScheduleTick = now;
+    }
+    if (now - this.lastPortfolioTick >= 1_000) {
+      tickPortfolioWorkflows(this.controllerHome);
+      this.lastPortfolioTick = now;
+    }
     let activeJobs = 0;
     const pendingSpawns: Array<{ repoId: string; jobId: string }> = [];
+    const projectionRefreshRepos = new Set<string>();
+    const pressure = this.resourcePressure();
     try {
       activeJobs = withControllerLock(
         this.controllerHome,
@@ -619,7 +644,6 @@ export class GlobalScheduler {
             ['claude', this.config.maxClaudeProcesses - reservedAgents.filter((job) => this.agentProvider(job) === 'claude').length],
             ['github-copilot', this.config.maxGitHubProcesses - reservedAgents.filter((job) => this.agentProvider(job) === 'github-copilot').length],
           ] as const);
-          const pressure = this.resourcePressure();
           if (pressure.pressured) {
             // Under host pressure, keep one recovery slot available so queued read-only
             // or bounded repository work does not stall forever behind a global stop.
@@ -632,19 +656,13 @@ export class GlobalScheduler {
           }
           if (capacity <= 0) return active.length;
 
-          const priorityWeight: Record<string, number> = { P0: 0, P1: 1, P2: 2, P3: 3, P4: 4 };
-          const agingWindowMs = 30 * 60_000;
-          const effectivePriority = (job: (typeof active)[number], at = Date.now()): number => {
-            const age = Math.max(0, at - Date.parse(job.queuedAt));
-            return Math.max(0, priorityWeight[job.priority] - Math.floor(age / agingWindowMs));
-          };
-          const compareWaiting = (left: (typeof active)[number], right: (typeof active)[number]): number => {
-            const at = Date.now();
-            return effectivePriority(left, at) - effectivePriority(right, at)
-              || left.queuedAt.localeCompare(right.queuedAt)
-              || left.jobId.localeCompare(right.jobId);
-          };
-          const waiting = active.filter((job) => job.status !== 'running' && job.status !== 'dispatched');
+          const scheduleNow = Date.now();
+          const waiting = active.filter(isExecutionJobDispatchCandidate);
+          const rankByJobId = new Map(
+            waiting.map((job) => [job.jobId, rankExecutionJobForDispatch(job, scheduleNow)] as const),
+          );
+          const compareWaiting = (left: (typeof active)[number], right: (typeof active)[number]): number =>
+            compareExecutionJobDispatchRanks(rankByJobId.get(left.jobId)!, rankByJobId.get(right.jobId)!);
           const topByRepo = new Map<string, (typeof active)[number]>();
           for (const job of waiting.slice().sort(compareWaiting)) {
             if (!topByRepo.has(job.repoId)) topByRepo.set(job.repoId, job);
@@ -652,23 +670,43 @@ export class GlobalScheduler {
           const repoIds = [...topByRepo.keys()].sort((left, right) => {
             const leftTop = topByRepo.get(left)!;
             const rightTop = topByRepo.get(right)!;
-            const priority = effectivePriority(leftTop) - effectivePriority(rightTop);
+            const leftRank = rankByJobId.get(leftTop.jobId)!;
+            const rightRank = rankByJobId.get(rightTop.jobId)!;
+            const priority = leftRank.effectivePriority - rightRank.effectivePriority;
             if (priority !== 0) return priority;
             const fairness = (this.lastRepoDispatch.get(left) ?? 0) - (this.lastRepoDispatch.get(right) ?? 0);
-            return fairness || leftTop.queuedAt.localeCompare(rightTop.queuedAt) || left.localeCompare(right);
+            return fairness
+              || leftRank.queuedAtMs - rightRank.queuedAtMs
+              || leftRank.jobId.localeCompare(rightRank.jobId)
+              || left.localeCompare(right);
           });
           const reservedRepos = new Set(reserved.map((job) => job.repoId));
+          let dispatchStateChanged = false;
+          const canDispatch = (job: (typeof active)[number]): boolean => {
+            if ((job.type === 'check' || job.type === 'verify-edit') && heavyCapacity <= 0) return false;
+            if (job.type === 'agent-run' || job.type === 'dispatch-task') {
+              if (agentCapacity <= 0) return false;
+              if ((providerCapacity.get(this.agentProvider(job)) ?? 0) <= 0) return false;
+            }
+            return true;
+          };
           for (const repoId of repoIds) {
             if (capacity <= 0) break;
             if (!reservedRepos.has(repoId) && reservedRepos.size >= this.config.maxConcurrentRepositories) continue;
-            const top = topByRepo.get(repoId);
-            if (top && (top.type === 'check' || top.type === 'verify-edit') && heavyCapacity <= 0) continue;
-            if (top && (top.type === 'agent-run' || top.type === 'dispatch-task')) {
-              if (agentCapacity <= 0) continue;
-              if ((providerCapacity.get(this.agentProvider(top)) ?? 0) <= 0) continue;
+            const actor = this.actors.get(repoId);
+            let dispatch: ReturnType<typeof actor.tryClaimNext>;
+            try {
+              dispatch = actor.tryClaimNext({
+                scheduleNow,
+                canDispatch,
+                refreshProjection: false,
+                lockWaitMs: 0,
+              });
+              projectionRefreshRepos.add(repoId);
+            } catch (error) {
+              if (error instanceof Error && error.message.startsWith('LOCK_HELD:')) continue;
+              throw error;
             }
-
-            const dispatch = this.actors.get(repoId).tryClaimNext();
             if (!dispatch) continue;
 
             // A successful claim is the capacity reservation. Count it immediately,
@@ -685,9 +723,10 @@ export class GlobalScheduler {
             const dispatchedAt = Date.now();
             this.lastRepoDispatch.set(repoId, dispatchedAt);
             this.lastDispatchAt = new Date(dispatchedAt).toISOString();
-            this.persistState(true);
+            dispatchStateChanged = true;
             pendingSpawns.push({ repoId, jobId: dispatch.job.jobId });
           }
+          if (dispatchStateChanged) this.persistState(true);
           return active.length;
         },
         5_000,
@@ -698,15 +737,39 @@ export class GlobalScheduler {
       // leave all jobs queued for the next wake/tick rather than risking overrun.
       activeJobs = listActiveExecutionJobs(this.controllerHome).length;
     }
+    // Repo Actor mutations leave projection dirty markers. Refresh materialized
+    // views only after both the repo mailbox and global dispatch lock are free.
+    for (const repoId of projectionRefreshRepos) {
+      try {
+        rebuildRepositoryProjection(this.controllerHome, repoId);
+      } catch {
+        // Startup recovery, reconciliation, or the next status read can retry.
+      }
+    }
     // Process creation, lifecycle file writes, and Worker attachment are all
     // deliberately outside the global dispatch reservation lock. The durable
     // dispatched state is the capacity reservation while spawn proceeds.
     for (const pending of pendingSpawns) {
       this.spawnWorker(pending.repoId, pending.jobId);
     }
-    // Semantic Campaign/Goal progression belongs to an external
-    // SuperController. The Scheduler only dispatches explicit deterministic
-    // Kernel jobs; it never wakes a model or creates a follow-up objective.
+    // Dispatch is latency-sensitive. Run repository workflow maintenance only
+    // after queued Jobs have had a chance to claim capacity. Campaign and Goal
+    // state transitions still wake the scheduler immediately when they enqueue work.
+    if (now - this.lastCampaignTick >= 1_000) {
+      tickCampaigns(this.controllerHome, repositories.map((repo) => repo.repoId));
+      this.lastCampaignTick = now;
+    }
+    if (now - this.lastGoalLoopTick >= 5_000) {
+      try {
+        tickGoalLoopsForController(
+          this.controllerHome,
+          repositories.map((repo) => repo.repoId),
+        );
+      } catch (error) {
+        console.error('[repo-harness goal-loop] tick failed:', error);
+      }
+      this.lastGoalLoopTick = now;
+    }
     this.persistState();
     return { activeJobs };
   }

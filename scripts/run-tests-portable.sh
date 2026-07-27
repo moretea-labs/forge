@@ -13,37 +13,32 @@ if command -v bun >/dev/null 2>&1; then
     fi
   done
 
+  test_timeout_ms="${BUN_TEST_TIMEOUT_MS:-60000}"
+  test_max_concurrency="${BUN_TEST_MAX_CONCURRENCY:-1}"
+  file_cooldown_seconds="${BUN_TEST_FILE_COOLDOWN_SECONDS:-0.1}"
+
   if [[ "$focused" -eq 1 ]]; then
-    exec bun test --isolate "$@"
+    exec bun test --timeout "$test_timeout_ms" --max-concurrency "$test_max_concurrency" "$@"
   fi
 
-  test_parallelism="${REPO_HARNESS_TEST_PARALLELISM:-1}"
-  case "$test_parallelism" in
-    ''|*[!0-9]*)
-      echo "[tests] REPO_HARNESS_TEST_PARALLELISM must be a positive integer." >&2
-      exit 2
-      ;;
-  esac
-  if [[ "$test_parallelism" -lt 1 ]]; then
-    echo "[tests] REPO_HARNESS_TEST_PARALLELISM must be at least 1." >&2
-    exit 2
-  fi
+  run_test_file() {
+    local test_file="$1"
+    echo "[tests] $test_file" >&2
+    bun test --timeout "$test_timeout_ms" --max-concurrency "$test_max_concurrency" "$test_file"
+    sleep "$file_cooldown_seconds"
+  }
 
-  max_test_parallelism=4
-  if [[ "$test_parallelism" -gt "$max_test_parallelism" ]]; then
-    echo "[tests] bounding file-level parallelism to ${max_test_parallelism} to preserve subprocess headroom." >&2
-    test_parallelism="$max_test_parallelism"
-  fi
-
-  # Run the exhaustive suite in one Bun process. File isolation is provided by
-  # --isolate, while bounded concurrency prevents shared host-level Git, hook,
-  # launchd, process-tree, and user-tooling state from racing across files.
-  test_files=()
+  found=0
   while IFS= read -r -d '' test_file; do
-    test_files+=("$test_file")
-  done < <(git ls-files -z 'tests/*.test.ts' 'tests/**/*.test.ts' 'tests/**/*.test.mjs')
+    found=1
+    run_test_file "$test_file"
+  done < <(git ls-files -z 'tests/*.test.ts' 'tests/**/*.test.ts' 'tests/**/*.test.mjs' | LC_ALL=C sort -z)
 
-  exec bun test --isolate --max-concurrency "$test_parallelism" "$@" "${test_files[@]}"
+  if [[ "$found" -ne 1 ]]; then
+    echo "[tests] no test files matched." >&2
+    exit 1
+  fi
+  exit 0
 fi
 
 cat >&2 <<'MSG'

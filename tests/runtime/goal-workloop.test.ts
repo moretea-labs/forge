@@ -428,8 +428,86 @@ describe('goal workloop engine', () => {
       now: '2026-07-09T03:00:00.000Z',
     });
     expect(reconciled.workIds).toEqual([workId]);
-    expect(getWorkContract(ctx.workStore, workId)?.status).toBe('ready');
+    expect(reconciled.paused).toBe(1);
+    expect(reconciled.cancelled).toBe(0);
+    expect(getWorkContract(ctx.workStore, workId)?.status).toBe('blocked');
     expect(getWorkContract(ctx.workStore, workId)?.evidenceRefs[0]?.title).toBe('runtime reconciliation required');
+  });
+
+  test('cancels a previously reconciled orphan only after its checkout is unavailable', () => {
+    const { ctx } = fixture();
+    const started = startGoalWorkloop(ctx, {
+      objective: 'Orphaned isolated work',
+      modeInput: { scopeClear: true, expectedFiles: 5, expectedChangedLines: 250 },
+    });
+    const workId = (started.data as { work: { workId: string } }).work.workId;
+    updateWorkContract(ctx.workStore, workId, { worktreeRef: '/tmp/archived-worktree' });
+
+    reconcileStaleWorkContracts(ctx.workStore, {
+      activeExecutionJobs: 0,
+      activeLocalJobs: 0,
+      activeLeases: 0,
+      staleAfterMs: 60_000,
+      now: '2026-07-09T03:00:00.000Z',
+      worktreeAvailability: () => 'inactive',
+    });
+    const cancelled = reconcileStaleWorkContracts(ctx.workStore, {
+      activeExecutionJobs: 0,
+      activeLocalJobs: 0,
+      activeLeases: 0,
+      staleAfterMs: 60_000,
+      now: '2026-07-09T05:00:00.000Z',
+      worktreeAvailability: () => 'inactive',
+    });
+
+    expect(cancelled.cancelled).toBe(1);
+    expect(cancelled.paused).toBe(0);
+    expect(getWorkContract(ctx.workStore, workId)?.status).toBe('cancelled');
+    expect(getWorkContract(ctx.workStore, workId)?.evidenceRefs[0]?.title)
+      .toBe('runtime reconciliation cancelled orphaned work');
+  });
+
+  test('keeps reconciled work reviewable when durable output exists or checkout remains active', () => {
+    const { ctx } = fixture();
+    const artifactWork = startGoalWorkloop(ctx, {
+      objective: 'Reviewable artifact work',
+      modeInput: { scopeClear: true, expectedFiles: 5, expectedChangedLines: 250 },
+    });
+    const artifactWorkId = (artifactWork.data as { work: { workId: string } }).work.workId;
+    updateWorkContract(ctx.workStore, artifactWorkId, { worktreeRef: '/tmp/missing-artifact-worktree' });
+    appendWorkEvidence(ctx.workStore, artifactWorkId, {
+      artifactId: 'ART-reviewable-output',
+      title: 'implementation result',
+      summary: 'Durable result still requires review.',
+    });
+
+    const activeWork = startGoalWorkloop(ctx, {
+      objective: 'Active checkout work',
+      modeInput: { scopeClear: true, expectedFiles: 5, expectedChangedLines: 250 },
+    });
+    const activeWorkId = (activeWork.data as { work: { workId: string } }).work.workId;
+    updateWorkContract(ctx.workStore, activeWorkId, { worktreeRef: '/tmp/active-worktree' });
+
+    reconcileStaleWorkContracts(ctx.workStore, {
+      activeExecutionJobs: 0,
+      activeLocalJobs: 0,
+      activeLeases: 0,
+      staleAfterMs: 60_000,
+      now: '2026-07-09T03:00:00.000Z',
+      worktreeAvailability: (ref) => ref.includes('active') ? 'active' : 'missing',
+    });
+    const retained = reconcileStaleWorkContracts(ctx.workStore, {
+      activeExecutionJobs: 0,
+      activeLocalJobs: 0,
+      activeLeases: 0,
+      staleAfterMs: 60_000,
+      now: '2026-07-09T05:00:00.000Z',
+      worktreeAvailability: (ref) => ref.includes('active') ? 'active' : 'missing',
+    });
+
+    expect(retained.cancelled).toBe(0);
+    expect(getWorkContract(ctx.workStore, artifactWorkId)?.status).toBe('blocked');
+    expect(getWorkContract(ctx.workStore, activeWorkId)?.status).toBe('blocked');
   });
 
   test('isolated worktree is opt-in or selected only for parallel work', () => {

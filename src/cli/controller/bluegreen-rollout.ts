@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { writeMcpServiceLocalConfig, loadMcpServiceLocalConfig, type McpLocalConfig } from '../mcp/auth';
+import { loadMcpServiceLocalConfig, syncMcpControllerHomeBearerToken, writeMcpServiceLocalConfig, type McpLocalConfig } from '../mcp/auth';
 import { resolveMcpRepoRoot } from '../mcp/repo';
 import { resolveRepoPreferredControllerHome } from '../repositories/controller-home';
 import {
@@ -37,6 +37,7 @@ import { stageSupervisorRelease } from '../../runtime/supervisor/installer';
 import { resolveControllerRuntimeSourceRoot } from '../../runtime/control-plane/runtime-generation';
 import { sendSupervisorCommand } from '../../runtime/supervisor/control-server';
 import { readSupervisorOperation } from '../../runtime/supervisor/operation-store';
+import { probeSupervisorMcpReadiness, type SupervisorMcpReadinessResult } from '../../runtime/supervisor/mcp-readiness';
 import {
   waitForServiceActivation,
   type SupervisorActivationSchedule,
@@ -66,6 +67,15 @@ export interface BlueGreenRolloutOptions {
 }
 
 const TERMINAL_SUPERVISOR_PHASES = new Set(['succeeded', 'failed', 'locked_out']);
+
+function endpointHost(value: string | undefined): string {
+  if (!value?.trim()) return '127.0.0.1';
+  try {
+    return new URL(value).hostname;
+  } catch {
+    return '127.0.0.1';
+  }
+}
 
 function operationTimeoutMs(opts: BlueGreenRolloutOptions): number {
   return Math.max(180_000, (opts.startTimeoutMs ?? 60_000) * 3);
@@ -496,6 +506,7 @@ export interface SlotVerification {
   generation?: string;
   sourceCommit?: string;
   toolFingerprint?: string;
+  mcpReadiness?: SupervisorMcpReadinessResult;
   durableJobId?: string;
 }
 
@@ -543,6 +554,7 @@ export async function verifySlotHealth(
   if (status.daemon.status !== 'ready') failures.push(`daemon status=${status.daemon.status}`);
   if (status.daemon.degraded) failures.push(`daemon degraded: ${status.daemon.error ?? 'unknown'}`);
   if (!status.readiness.scheduler) failures.push('scheduler not healthy');
+  if (status.healthEvaluation?.components.workers.ready === false) failures.push('worker isolation not healthy');
   if (!status.runtimeGeneration) failures.push('runtime generation missing');
   if (opts.requireGeneration && status.runtimeGeneration !== opts.requireGeneration) {
     failures.push(`generation ${status.runtimeGeneration} != required ${opts.requireGeneration}`);
@@ -553,6 +565,18 @@ export async function verifySlotHealth(
   }
   const toolFingerprint = status.mcpRuntime?.server.toolSurfaceFingerprint
     ?? status.mcpRuntime?.server.runtimeToolSurfaceFingerprint;
+  let mcpReadiness: SupervisorMcpReadinessResult | undefined;
+  if (failures.length === 0) {
+    phase = 'mcp-readiness';
+    mcpReadiness = await probeSupervisorMcpReadiness({
+      controllerHome: slotHome,
+      repoRoot,
+      host: endpointHost(status.mcpRuntime?.server.endpoint),
+      port: status.ports.mcp,
+      clientName: 'repo-harness-bluegreen-slot-smoke',
+    });
+    if (!mcpReadiness.ok) failures.push(`mcp readiness failed: ${mcpReadiness.error ?? 'unknown'}`);
+  }
   // Only fail on true worker/daemon orphans for THIS slot. Sibling-slot supervisors,
   // tunnels, and generic "unknown" processes that merely share a repo path are noise
   // during blue/green operation and must not block cutover.
@@ -590,8 +614,15 @@ export async function verifySlotHealth(
     generation: status.runtimeGeneration,
     sourceCommit,
     toolFingerprint,
+    mcpReadiness,
     durableJobId,
   };
+}
+
+function mcpAuthRefreshMayHelp(failures: string[]): boolean {
+  return failures.some((failure) =>
+    /mcp readiness failed/i.test(failure)
+    && /(AUTH_TOKEN_MISSING|auth_not_configured|status=401|invalid Authorization|invalid_token|Bearer token is not configured)/i.test(failure));
 }
 
 export async function startInactiveSlot(
@@ -608,6 +639,7 @@ export async function startInactiveSlot(
   // Bootstrap active slot config from legacy root if needed so active remains stable.
   const rootConfig = loadMcpServiceLocalConfig(rootHome, repoRoot);
   if (rootConfig && !loadMcpServiceLocalConfig(activeHome, repoRoot)) {
+    syncMcpControllerHomeBearerToken(activeHome, rootHome, repoRoot);
     writeSlotConfig(activeHome, {
       mcpPort: rootConfig.server?.port ?? 8765,
       localControllerPort: rootConfig.localController?.port ?? 8766,
@@ -626,6 +658,7 @@ export async function startInactiveSlot(
   // Root Controller Home owns operational policy. Active-slot configuration may
   // contain stale rollout-era values, so it is only a fallback when the root
   // configuration is unavailable.
+  syncMcpControllerHomeBearerToken(candidateHome, rootHome, repoRoot);
   writeSlotConfig(candidateHome, ports, rootConfig ?? loadMcpServiceLocalConfig(activeHome, repoRoot));
 
   // Ensure active is not sharing candidate home.
@@ -737,6 +770,7 @@ export async function controllerRollout(opts: BlueGreenRolloutOptions = {}): Pro
   // For first rollout from legacy single-home, migrate config into active slot.
   const rootConfig = loadMcpServiceLocalConfig(rootHome, repoRoot);
   if (rootConfig) {
+    syncMcpControllerHomeBearerToken(activeHome, rootHome, repoRoot);
     writeSlotConfig(activeHome, {
       mcpPort: rootConfig.server?.port ?? 8765,
       localControllerPort: rootConfig.localController?.port ?? 8766,
@@ -876,6 +910,7 @@ export async function controllerRollback(opts: BlueGreenRolloutOptions = {}): Pr
   const restoreSlot = authority.previousSlot;
   const restoreHome = ensureSlotHome(rootHome, restoreSlot);
   const failedHome = ensureSlotHome(rootHome, failedSlot);
+  syncMcpControllerHomeBearerToken(restoreHome, rootHome, repoRoot);
 
   // Ensure restore slot is healthy BEFORE stopping the failed slot, so the
   // control plane never has zero healthy owners during rollback.
@@ -900,9 +935,39 @@ export async function controllerRollback(opts: BlueGreenRolloutOptions = {}): Pr
     }
   }
 
-  const preVerify = await verifySlotHealth(repoRoot, restoreHome, {
+  let preVerify = await verifySlotHealth(repoRoot, restoreHome, {
     skipDurableJob: opts.skipDurableJob,
   });
+  if (!preVerify.ok && mcpAuthRefreshMayHelp(preVerify.failures)) {
+    try {
+      await stopControllerService({
+        repo: repoRoot,
+        controllerHome: restoreHome,
+        stopTimeoutMs: opts.stopTimeoutMs,
+        protectCallerAncestry: false,
+        requireFullStop: true,
+        slotLocalLifecycle: true,
+      });
+      await startControllerService({
+        repo: repoRoot,
+        controllerHome: restoreHome,
+        startTimeoutMs: opts.startTimeoutMs,
+        logFile: join(restoreHome, 'logs', 'controller.log'),
+        slotLocalLifecycle: true,
+      });
+      restoreStatus = await controllerServiceStatus({ repo: repoRoot, controllerHome: restoreHome, slotLocalLifecycle: true });
+      preVerify = await verifySlotHealth(repoRoot, restoreHome, {
+        skipDurableJob: opts.skipDurableJob,
+      });
+    } catch (error) {
+      return compositeFailed({
+        phase: 'rollback-start',
+        summary: 'Failed to refresh previous slot authentication before rollback',
+        failedCheck: 'restore_auth_refresh',
+        keyOutput: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
   if (!preVerify.ok) {
     return compositeFailed({
       phase: 'rollback-preverify',

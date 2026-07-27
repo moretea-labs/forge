@@ -11,7 +11,11 @@ import {
 } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
 import { tmpdir } from 'os';
-import { ensureControllerHome, ensureRepositoryControllerLayout, resolveControllerHome } from './controller-home';
+import {
+  durableControllerHome,
+  ensureControllerHome,
+  ensureRepositoryControllerLayout,
+} from './controller-home';
 import {
   inferDisplayName,
   newLocalRepoId,
@@ -133,12 +137,64 @@ function git(root: string, args: string[]): string | undefined {
   return result.status === 0 && result.stdout.trim() ? result.stdout.trim() : undefined;
 }
 
+function gitTopLevel(root: string): string | undefined {
+  const value = git(root, ['rev-parse', '--show-toplevel']);
+  if (!value) return undefined;
+  try {
+    return realpathSync(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function gitCommonDirectory(root: string): string | undefined {
+  const value = git(root, ['rev-parse', '--git-common-dir']);
+  if (!value) return undefined;
+  try {
+    return realpathSync(resolve(root, value));
+  } catch {
+    return undefined;
+  }
+}
+
+export function repositoryCheckoutRootMatches(record: RepositoryRecord, root: string): boolean {
+  if (!existsSync(root)) return false;
+  if (git(root, ['rev-parse', '--is-inside-work-tree']) !== 'true') return false;
+  const checkoutTopLevel = gitTopLevel(root);
+  if (!checkoutTopLevel || comparablePath(checkoutTopLevel) !== comparablePath(root)) return false;
+  const repositoryCommon = gitCommonDirectory(record.canonicalRoot);
+  const checkoutCommon = gitCommonDirectory(root);
+  return Boolean(repositoryCommon && checkoutCommon && comparablePath(repositoryCommon) === comparablePath(checkoutCommon));
+}
+
+function managedCheckoutMatchesRepository(record: RepositoryRecord, checkout: RepositoryCheckout): boolean {
+  return repositoryCheckoutRootMatches(record, checkout.canonicalRoot);
+}
+
+function registryHome(controllerHome?: string): string {
+  return durableControllerHome(controllerHome);
+}
+
+function ensureRegistryHome(controllerHome?: string): string {
+  return ensureControllerHome(registryHome(controllerHome));
+}
+
 function registryPath(controllerHome?: string): string {
-  return join(resolveControllerHome(controllerHome), REGISTRY_FILE);
+  return join(registryHome(controllerHome), REGISTRY_FILE);
+}
+
+function legacyRegistryPaths(controllerHome?: string): string[] {
+  const home = registryHome(controllerHome);
+  return ['blue', 'green'].map((slot) => join(home, 'runtime-slots', slot, REGISTRY_FILE));
 }
 
 function focusPath(controllerHome?: string): string {
-  return join(resolveControllerHome(controllerHome), FOCUS_FILE);
+  return join(registryHome(controllerHome), FOCUS_FILE);
+}
+
+function legacyFocusPaths(controllerHome?: string): string[] {
+  const home = registryHome(controllerHome);
+  return ['blue', 'green'].map((slot) => join(home, 'runtime-slots', slot, FOCUS_FILE));
 }
 
 function atomicJson(path: string, value: unknown): void {
@@ -152,31 +208,105 @@ function defaultRegistry(): RepositoryRegistry {
   return { schemaVersion: 1, repositories: [], updatedAt: now() };
 }
 
-export function loadRepositoryRegistry(controllerHome?: string): RepositoryRegistry {
-  const path = registryPath(controllerHome);
-  if (!existsSync(path)) return defaultRegistry();
+function normalizeRegistry(parsed: Partial<RepositoryRegistry>): RepositoryRegistry {
+  return {
+    schemaVersion: 1,
+    repositories: Array.isArray(parsed.repositories)
+      ? parsed.repositories.map((record) => ({
+        ...record,
+        checkouts: Array.isArray(record.checkouts) ? record.checkouts.map(normalizeCheckout) : [],
+      }))
+      : [],
+    updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : now(),
+  };
+}
+
+function readRegistryFile(path: string, strict: boolean): RepositoryRegistry | undefined {
+  if (!existsSync(path)) return undefined;
   try {
-    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as Partial<RepositoryRegistry>;
-    return {
-      schemaVersion: 1,
-      repositories: Array.isArray(parsed.repositories)
-        ? parsed.repositories.map((record) => ({
-          ...record,
-          checkouts: Array.isArray(record.checkouts) ? record.checkouts.map(normalizeCheckout) : [],
-        }))
-        : [],
-      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : now(),
-    };
+    return normalizeRegistry(JSON.parse(readFileSync(path, 'utf-8')) as Partial<RepositoryRegistry>);
   } catch (error) {
+    if (!strict) return undefined;
     throw new Error(`repository registry is unreadable: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
+function timestampValue(value: string | undefined): number {
+  const parsed = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function preferredCheckout(left: RepositoryCheckout, right: RepositoryCheckout): RepositoryCheckout {
+  const leftTime = timestampValue(left.updatedAt);
+  const rightTime = timestampValue(right.updatedAt);
+  if (leftTime !== rightTime) return rightTime > leftTime ? right : left;
+  const leftLifecycle = repositoryCheckoutLifecycle(left);
+  const rightLifecycle = repositoryCheckoutLifecycle(right);
+  if (leftLifecycle === 'active' && rightLifecycle !== 'active') return right;
+  return left;
+}
+
+function mergeRepositorySources(
+  primary: RepositoryRegistry,
+  supplements: RepositoryRegistry[],
+): RepositoryRegistry {
+  const supplementRecords = new Map<string, RepositoryRecord[]>();
+  for (const registry of supplements) {
+    for (const record of registry.repositories) {
+      const records = supplementRecords.get(record.repoId) ?? [];
+      records.push(record);
+      supplementRecords.set(record.repoId, records);
+    }
+  }
+  const primaryRecords = new Map(primary.repositories.map((record) => [record.repoId, record]));
+  const repoIds = new Set([...primaryRecords.keys(), ...supplementRecords.keys()]);
+  const repositories = [...repoIds].map((repoId) => {
+    const primaryRecord = primaryRecords.get(repoId);
+    const legacyRecords = supplementRecords.get(repoId) ?? [];
+    const base = primaryRecord ?? [...legacyRecords]
+      .sort((left, right) => timestampValue(right.updatedAt) - timestampValue(left.updatedAt))[0];
+    if (!base) throw new Error(`repository registry merge lost record: ${repoId}`);
+    const checkouts = new Map(base.checkouts.map((checkout) => [checkout.checkoutId, checkout]));
+    for (const record of legacyRecords) {
+      for (const checkout of record.checkouts) {
+        const existing = checkouts.get(checkout.checkoutId);
+        if (!existing) {
+          checkouts.set(checkout.checkoutId, checkout);
+          continue;
+        }
+        if (checkout.checkoutId === base.activeCheckoutId) continue;
+        checkouts.set(checkout.checkoutId, preferredCheckout(existing, checkout));
+      }
+    }
+    return { ...base, checkouts: [...checkouts.values()] };
+  });
+  const updatedAt = [primary, ...supplements]
+    .map((registry) => registry.updatedAt)
+    .sort((left, right) => timestampValue(right) - timestampValue(left))[0] ?? now();
+  return { schemaVersion: 1, repositories, updatedAt };
+}
+
+export function loadRepositoryRegistry(controllerHome?: string): RepositoryRegistry {
+  const primary = readRegistryFile(registryPath(controllerHome), true) ?? defaultRegistry();
+  const supplements = legacyRegistryPaths(controllerHome)
+    .map((path) => readRegistryFile(path, false))
+    .filter((registry): registry is RepositoryRegistry => Boolean(registry));
+  return mergeRepositorySources(primary, supplements);
+}
+
 export function saveRepositoryRegistry(registry: RepositoryRegistry, controllerHome?: string): RepositoryRegistry {
-  const home = ensureControllerHome(controllerHome);
+  const home = ensureControllerHome(registryHome(controllerHome));
   const next = { ...registry, schemaVersion: 1 as const, updatedAt: now() };
   atomicJson(join(home, REGISTRY_FILE), next);
   return next;
+}
+
+export function consolidateRepositoryRegistry(controllerHome?: string): RepositoryRegistry {
+  const merged = loadRepositoryRegistry(controllerHome);
+  const persisted = readRegistryFile(registryPath(controllerHome), true) ?? defaultRegistry();
+  const persistedShape = JSON.stringify({ schemaVersion: 1, repositories: persisted.repositories });
+  const mergedShape = JSON.stringify({ schemaVersion: 1, repositories: merged.repositories });
+  return persistedShape === mergedShape ? merged : saveRepositoryRegistry(merged, controllerHome);
 }
 
 function resolveGitRoot(inputPath: string): string {
@@ -403,7 +533,7 @@ export function selectRepositoryCheckout(record: RepositoryRecord, checkoutId?: 
 }
 
 export function registerRepository(input: RegisterRepositoryInput): RepositoryRecord {
-  const home = ensureControllerHome(input.controllerHome);
+  const home = ensureRegistryHome(input.controllerHome);
   if (!input.path?.trim()) throw new Error('REPOSITORY_PATH_REQUIRED');
   const canonicalRoot = resolveGitRoot(input.path);
   registrationPathPolicy(home, canonicalRoot);
@@ -473,7 +603,7 @@ export function registerRepository(input: RegisterRepositoryInput): RepositoryRe
 }
 
 export function addRepositoryCheckout(input: AddRepositoryCheckoutInput): RepositoryRecord {
-  const home = ensureControllerHome(input.controllerHome);
+  const home = ensureRegistryHome(input.controllerHome);
   const canonicalRoot = resolveGitRoot(input.path);
   const registry = loadRepositoryRegistry(home);
   const index = registry.repositories.findIndex((record) => record.repoId === input.repoId);
@@ -518,7 +648,7 @@ export function addRepositoryCheckout(input: AddRepositoryCheckoutInput): Reposi
 }
 
 export function setRepositoryCheckoutLifecycle(input: SetRepositoryCheckoutLifecycleInput): RepositoryRecord {
-  const home = ensureControllerHome(input.controllerHome);
+  const home = ensureRegistryHome(input.controllerHome);
   const registry = loadRepositoryRegistry(home);
   const repositoryIndex = registry.repositories.findIndex((record) => record.repoId === input.repoId);
   if (repositoryIndex < 0) throw new Error(`repository not found: ${input.repoId}`);
@@ -549,7 +679,7 @@ export function setRepositoryCheckoutLifecycle(input: SetRepositoryCheckoutLifec
 }
 
 export function reconcileRepositoryCheckouts(repoId: string, controllerHome?: string): ReconcileRepositoryCheckoutsResult {
-  const home = ensureControllerHome(controllerHome);
+  const home = ensureRegistryHome(controllerHome);
   const registry = loadRepositoryRegistry(home);
   const repositoryIndex = registry.repositories.findIndex((record) => record.repoId === repoId);
   if (repositoryIndex < 0) throw new Error(`repository not found: ${repoId}`);
@@ -561,15 +691,18 @@ export function reconcileRepositoryCheckouts(repoId: string, controllerHome?: st
       checkout.checkoutId === repository.activeCheckoutId
       || !checkout.worktree
       || repositoryCheckoutLifecycle(checkout) !== 'active'
-      || existsSync(checkout.canonicalRoot)
     ) return checkout;
+    const rootExists = existsSync(checkout.canonicalRoot);
+    if (rootExists && managedCheckoutMatchesRepository(repository, checkout)) return checkout;
     archivedCheckoutIds.push(checkout.checkoutId);
     return {
       ...checkout,
       lifecycle: 'archived' as const,
       archivedAt: timestamp,
       removedAt: undefined,
-      lifecycleReason: 'Managed worktree root no longer exists.',
+      lifecycleReason: rootExists
+        ? 'Managed checkout is no longer a valid Git worktree for this repository.'
+        : 'Managed worktree root no longer exists.',
       updatedAt: timestamp,
     };
   });
@@ -629,7 +762,7 @@ export function removeRepository(repoId: string, controllerHome?: string): Repos
 }
 
 export function purgeRepository(repoId: string, controllerHome?: string): void {
-  const home = resolveControllerHome(controllerHome);
+  const home = registryHome(controllerHome);
   const registry = loadRepositoryRegistry(home);
   registry.repositories = registry.repositories.filter((record) => record.repoId !== repoId);
   saveRepositoryRegistry(registry, home);
@@ -685,7 +818,7 @@ export function validateRepository(repoId: string, controllerHome?: string): Rep
 }
 
 export function refreshRepository(repoId: string, controllerHome?: string): RepositoryRecord {
-  const home = ensureControllerHome(controllerHome);
+  const home = ensureRegistryHome(controllerHome);
   const registry = loadRepositoryRegistry(home);
   const index = registry.repositories.findIndex((candidate) => candidate.repoId === repoId);
   if (index < 0) throw new Error(`repository not found: ${repoId}`);
@@ -737,7 +870,7 @@ export function refreshRepository(repoId: string, controllerHome?: string): Repo
 }
 
 export function focusRepository(repoId: string | undefined, controllerHome?: string): { repoId?: string; updatedAt: string } {
-  const home = ensureControllerHome(controllerHome);
+  const home = ensureRegistryHome(controllerHome);
   if (repoId) getRepository(repoId, home);
   const value = { repoId, updatedAt: now() };
   atomicJson(focusPath(home), value);
@@ -745,13 +878,18 @@ export function focusRepository(repoId: string | undefined, controllerHome?: str
 }
 
 export function getRepositoryFocus(controllerHome?: string): { repoId?: string; updatedAt?: string } {
-  const path = focusPath(controllerHome);
-  if (!existsSync(path)) return {};
-  try {
-    return JSON.parse(readFileSync(path, 'utf-8')) as { repoId?: string; updatedAt?: string };
-  } catch (_error) {
-    return {};
-  }
+  const candidates = [focusPath(controllerHome), ...legacyFocusPaths(controllerHome)]
+    .map((path) => {
+      if (!existsSync(path)) return undefined;
+      try {
+        return JSON.parse(readFileSync(path, 'utf-8')) as { repoId?: string; updatedAt?: string };
+      } catch {
+        return undefined;
+      }
+    })
+    .filter((value): value is { repoId?: string; updatedAt?: string } => Boolean(value))
+    .sort((left, right) => timestampValue(right.updatedAt) - timestampValue(left.updatedAt));
+  return candidates[0] ?? {};
 }
 
 export function resolveRepositorySelection(input: {

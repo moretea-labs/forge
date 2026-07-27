@@ -74,6 +74,11 @@ function configuredChecks(repoRoot: string): ControllerCheck[] {
   });
 }
 
+function packageScriptTimeoutMs(name: string): number {
+  if (name === 'test') return Math.max(DEFAULT_TIMEOUT_MS, 30 * 60 * 1000);
+  return DEFAULT_TIMEOUT_MS;
+}
+
 function packageChecks(repoRoot: string): ControllerCheck[] {
   const packagePath = join(repoRoot, 'package.json');
   if (!existsSync(packagePath)) return [];
@@ -85,7 +90,7 @@ function packageChecks(repoRoot: string): ControllerCheck[] {
       description: `Run package script ${name}`,
       command: ['bun', 'run', name],
       cwd: '.',
-      timeoutMs: DEFAULT_TIMEOUT_MS,
+      timeoutMs: packageScriptTimeoutMs(name),
       source: 'package-script' as const,
     }];
   });

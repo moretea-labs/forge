@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { spawnSync } from "child_process";
@@ -103,7 +103,8 @@ function tmpRepo(fn: (cwd: string) => void): void {
     ]) {
       copyFileSync(join(ROOT, "scripts", file), join(cwd, "scripts", file));
     }
-    expect(run("chmod", ["+x", "scripts/check-architecture-sync.sh", "scripts/architecture-queue.sh"], cwd).status).toBe(0);
+    chmodSync(join(cwd, "scripts/check-architecture-sync.sh"), 0o755);
+    chmodSync(join(cwd, "scripts/architecture-queue.sh"), 0o755);
     writeFileSync(
       join(cwd, ".ai/context/capabilities.json"),
       JSON.stringify(

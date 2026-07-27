@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { createSupervisorOperation, findSupervisorOperationByRequestId, readSupervisorOperation, updateSupervisorOperation } from '../../src/runtime/supervisor/operation-store';
+import { activationStatePath, readActivationState } from '../../src/runtime/supervisor/activation-state-machine';
 import { acquireSupervisorLock } from '../../src/runtime/supervisor/lock';
 import { captureProcessIdentity, defaultProcessIdentityProbe, executableFingerprint, processIdentityMatches, type ProcessIdentityProbe } from '../../src/runtime/supervisor/identity';
 import { DEFAULT_RESTART_POLICY, decideRestart, lockout, newRestartBudgetRecord, recordFailure, recordRestart, recordStable } from '../../src/runtime/supervisor/restart-policy';
@@ -67,6 +68,63 @@ describe('stable external supervisor contract', () => {
     expect(readSupervisorOperation(home, first.operation.operationId)?.phase).toBe('verifying');
     expect(findSupervisorOperationByRequestId(home, 'request-1')?.operationId).toBe(first.operation.operationId);
     expect(verifying.updatedAt).toBeTruthy();
+  });
+
+  test('rejects a second Supervisor operation while another request owns the operation lifecycle', () => {
+    const home = temporary('repo-harness-supervisor-operation-owner-');
+    const first = createSupervisorOperation({
+      controllerHome: home,
+      requestId: 'owner-request-1',
+      kind: 'rollout',
+      requestedBy: 'chatgpt',
+      actor: 'Repo Harness',
+    });
+    expect(() => createSupervisorOperation({
+      controllerHome: home,
+      requestId: 'owner-request-2',
+      kind: 'restart_gateway',
+      requestedBy: 'supervisor',
+      actor: 'supervisor',
+    })).toThrow(/SUPERVISOR_OPERATION_OWNER_BUSY/);
+
+    updateSupervisorOperation(home, first.operation.operationId, {
+      phase: 'failed',
+      completedAt: new Date().toISOString(),
+      error: 'test complete',
+    });
+    const second = createSupervisorOperation({
+      controllerHome: home,
+      requestId: 'owner-request-2',
+      kind: 'restart_gateway',
+      requestedBy: 'supervisor',
+      actor: 'supervisor',
+    });
+    expect(second.deduplicated).toBe(false);
+  });
+
+  test('reconciles a stale dead activation coordinator before accepting a new Supervisor operation', () => {
+    const home = temporary('repo-harness-supervisor-stale-activation-');
+    ensureStableSupervisorLayout(home);
+    const old = new Date(Date.now() - 10 * 60_000).toISOString();
+    writeFileSync(activationStatePath(home), `${JSON.stringify({
+      schemaVersion: 2,
+      activationId: 'stale-activation',
+      phase: 'waiting_supervisor_ready',
+      repoRoot: '/tmp/repo',
+      startedAt: old,
+      updatedAt: old,
+      pid: 2_147_483_647,
+      phases: [],
+    })}\n`);
+
+    const accepted = createSupervisorOperation({
+      controllerHome: home,
+      requestId: 'after-stale-activation',
+      kind: 'restart_gateway',
+    });
+    expect(accepted.operation.phase).toBe('accepted');
+    expect(readActivationState(home)?.phase).toBe('failed');
+    expect(readActivationState(home)?.error).toContain('SUPERVISOR_ACTIVATION_COORDINATOR_STALE');
   });
 
   test('does not delete an active operation schedule lock when a second writer is rejected', () => {

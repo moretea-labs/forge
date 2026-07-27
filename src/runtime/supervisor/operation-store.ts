@@ -10,6 +10,8 @@ import {
   supervisorOperationsRoot,
   supervisorReleasesRoot,
 } from './paths';
+import { failActivation, readActivationState } from './activation-state-machine';
+import { isProcessAlive } from '../shared/process-tree';
 import type { ProcessIdentity, SupervisorOperation, SupervisorOperationKind, SupervisorOperationPhase } from './types';
 
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,160}$/;
@@ -59,6 +61,35 @@ function readOperationPath(path: string): SupervisorOperation | null {
     return value?.schemaVersion === 1 && typeof value.operationId === 'string' ? value : null;
   } catch {
     return null;
+  }
+}
+
+function operationActive(operation: SupervisorOperation): boolean {
+  return !['succeeded', 'failed', 'locked_out'].includes(operation.phase);
+}
+
+const ACTIVATION_COORDINATOR_START_GRACE_MS = 120_000;
+
+function activeServiceActivation(controllerHome: string): string | undefined {
+  const activation = readActivationState(controllerHome);
+  if (!activation || activation.phase === 'succeeded' || activation.phase === 'failed') return undefined;
+  const pid = typeof activation.pid === 'number' && Number.isInteger(activation.pid) && activation.pid > 0
+    ? activation.pid
+    : undefined;
+  const updatedAt = Date.parse(activation.updatedAt);
+  const ageMs = Number.isFinite(updatedAt) ? Math.max(0, Date.now() - updatedAt) : Number.POSITIVE_INFINITY;
+  if ((pid !== undefined && isProcessAlive(pid)) || (pid === undefined && ageMs <= ACTIVATION_COORDINATOR_START_GRACE_MS)) {
+    return `${activation.activationId}:${activation.phase}`;
+  }
+  try {
+    failActivation(
+      controllerHome,
+      activation.activationId,
+      `SUPERVISOR_ACTIVATION_COORDINATOR_STALE: phase=${activation.phase} pid=${pid ?? 'missing'} ageMs=${ageMs}`,
+    );
+    return undefined;
+  } catch {
+    return `${activation.activationId}:${activation.phase}:stale_unreconciled`;
   }
 }
 
@@ -163,6 +194,14 @@ export function createSupervisorOperation(input: {
   return withOperationScheduleLock(input.controllerHome, () => {
     const existing = findSupervisorOperationByRequestId(input.controllerHome, requestId);
     if (existing) return { operation: existing, deduplicated: true };
+    const activeOperation = listSupervisorOperations(input.controllerHome, 100).find(operationActive);
+    if (activeOperation) {
+      throw new Error(`SUPERVISOR_OPERATION_OWNER_BUSY: active=${activeOperation.operationId} phase=${activeOperation.phase}`);
+    }
+    const activation = activeServiceActivation(input.controllerHome);
+    if (activation) {
+      throw new Error(`SUPERVISOR_OPERATION_OWNER_BUSY: activation=${activation}`);
+    }
     const acceptedAt = new Date().toISOString();
     const operation: SupervisorOperation = {
       schemaVersion: 1,

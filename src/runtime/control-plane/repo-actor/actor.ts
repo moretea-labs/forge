@@ -8,6 +8,11 @@ import { executionTimeoutDecision } from '../../execution/jobs/timeouts';
 import { normalizeClaims } from '../../resources/claims/conflicts';
 import { acquireExecutionLeases, releaseExecutionLeases } from '../../resources/leases/store';
 import { rebuildRepositoryProjection } from '../../projections/materialized-view';
+import {
+  compareExecutionJobDispatchRanks,
+  isExecutionJobDispatchCandidate,
+  rankExecutionJobForDispatch,
+} from '../dispatch-priority';
 
 export type ControllerRestartStateReader = (
   controllerHome: string,
@@ -25,7 +30,12 @@ export interface RepoActorDispatch {
   fencingTokens: Array<{ leaseId: string; resourceKey: string; fencingToken: number }>;
 }
 
-const PRIORITY_WEIGHT: Record<ExecutionJob['priority'], number> = { P0: 0, P1: 1, P2: 2, P3: 3, P4: 4 };
+export interface RepoActorClaimOptions {
+  scheduleNow?: number;
+  canDispatch?: (job: ExecutionJob) => boolean;
+  refreshProjection?: boolean;
+  lockWaitMs?: number;
+}
 
 const AUTO_ISOLATABLE_OPERATIONS = new Set(['dispatch_task', 'launch_issue', 'dispatch_ready_tasks', 'retry_task_run', 'quick_agent_session', 'submit_local_job']);
 
@@ -60,21 +70,6 @@ function dependencyState(controllerHome: string, job: ExecutionJob): 'ready' | '
     return 'waiting';
   }
   return 'ready';
-}
-
-const PRIORITY_AGING_WINDOW_MS = 30 * 60_000;
-
-function effectivePriority(job: ExecutionJob, now = Date.now()): number {
-  const age = Math.max(0, now - Date.parse(job.queuedAt));
-  const promotions = Math.floor(age / PRIORITY_AGING_WINDOW_MS);
-  return Math.max(0, PRIORITY_WEIGHT[job.priority] - promotions);
-}
-
-function candidateSort(left: ExecutionJob, right: ExecutionJob): number {
-  const now = Date.now();
-  const priority = effectivePriority(left, now) - effectivePriority(right, now);
-  if (priority !== 0) return priority;
-  return left.queuedAt.localeCompare(right.queuedAt) || left.jobId.localeCompare(right.jobId);
 }
 
 export function shouldDeferControllerRestartRetry(
@@ -112,7 +107,8 @@ export class RepoActor {
     };
   }
 
-  tryClaimNext(): RepoActorDispatch | undefined {
+  tryClaimNext(options: RepoActorClaimOptions = {}): RepoActorDispatch | undefined {
+    const scheduleNow = options.scheduleNow ?? Date.now();
     const dispatch = withControllerLock(
       this.controllerHome,
       { scope: 'worktree', repoId: this.repoId, worktreeId: 'repo-actor-mailbox' },
@@ -123,10 +119,13 @@ export class RepoActor {
         if (running.length >= this.config.maxConcurrentWorkers) return undefined;
 
         const candidates = active
-          .filter((job) => ['queued', 'waiting_for_dependency', 'waiting_for_workspace', 'waiting_for_heavy_check', 'waiting_for_integration', 'waiting_for_release_barrier'].includes(job.status))
-          .sort(candidateSort);
+          .filter(isExecutionJobDispatchCandidate)
+          .map((job) => ({ job, rank: rankExecutionJobForDispatch(job, scheduleNow) }))
+          .sort((left, right) => compareExecutionJobDispatchRanks(left.rank, right.rank))
+          .map(({ job }) => job);
 
         for (const job of candidates) {
+          if (options.canDispatch && !options.canDispatch(job)) continue;
           if (shouldDeferControllerRestartRetry(
             this.controllerHome,
             job,
@@ -200,14 +199,17 @@ export class RepoActor {
         return undefined;
       },
       10_000,
+      options.lockWaitMs,
     );
-    // Projection materialization performs filesystem scans and must never extend
-    // the Repo Actor mailbox critical section. Durable mutations above already
-    // leave a dirty marker, so a failed refresh remains recoverable.
-    try {
-      rebuildRepositoryProjection(this.controllerHome, this.repoId);
-    } catch {
-      // Startup recovery, scheduler reconciliation, or the next status read can retry.
+    if (options.refreshProjection !== false) {
+      // Projection materialization performs filesystem scans and must never extend
+      // the Repo Actor mailbox critical section. Scheduler callers defer it until
+      // after their global dispatch reservation lock is also released.
+      try {
+        rebuildRepositoryProjection(this.controllerHome, this.repoId);
+      } catch {
+        // Startup recovery, scheduler reconciliation, or the next status read can retry.
+      }
     }
     return dispatch;
   }

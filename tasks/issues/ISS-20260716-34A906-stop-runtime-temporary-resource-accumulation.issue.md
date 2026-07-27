@@ -1,8 +1,8 @@
 ---
 id: "ISS-20260716-34A906"
 kind: "bug"
-status: "planned"
-updated_at: "2026-07-16T11:28:35.847Z"
+status: "in_progress"
+updated_at: "2026-07-26T15:59:54.468Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -41,7 +41,7 @@ Complete the existing uncommitted runtime health/resource lifecycle changes by a
 
 ### T1 — Complete bounded automatic runtime GC
 
-- Status: `ready`
+- Status: `verified`
 - Objective: Review and complete the current main working tree changes. Add daemon-owned startup/periodic bounded GC for repo-harness temp directories using existing safe cleanup primitives, add regression tests, run focused and package checks, commit on main, then restart to the latest commit and verify readiness.
 - Depends on: none
 - Allowed paths: `src/runtime/**`, `src/cli/**`, `tests/runtime/**`, `tests/cli/**`, `docs/architecture/current/**`, `tasks/notes/**`

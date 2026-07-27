@@ -48,19 +48,20 @@ export function controllerSystemRoot(controllerHome: string): string {
   return join(resolveControllerHome(controllerHome), 'system');
 }
 
-function resolveDurableControllerHome(controllerHome: string): string {
-  const normalized = resolve(controllerHome).replace(/\\/g, '/');
+export function durableControllerHome(controllerHome?: string): string {
+  const resolved = resolveControllerHome(controllerHome);
+  const normalized = resolved.replace(/\\/g, '/');
   const match = SLOT_HOME_RE.exec(normalized);
   if (match?.[1]) return resolve(match[1]);
   const nested = normalized.match(/^(.*)\/runtime-slots\/(blue|green)(?:\/|$)/);
   if (nested?.[1]) return resolve(nested[1]);
-  return resolveControllerHome(controllerHome);
+  return resolved;
 }
 
 export function repositoryControllerRoot(controllerHome: string, repoId: string): string {
   // Durable repository state always lives under the stable root controller home,
   // even when the caller passes a blue/green slot runtime home.
-  const durableHome = resolveDurableControllerHome(controllerHome);
+  const durableHome = durableControllerHome(controllerHome);
   return repoId === CONTROLLER_SCOPE_REPO_ID
     ? controllerSystemRoot(durableHome)
     : join(resolveControllerHome(durableHome), 'repositories', repoId);

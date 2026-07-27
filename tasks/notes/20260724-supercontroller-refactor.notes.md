@@ -611,3 +611,23 @@ Date: 2026-07-24
 - `package:check:type`: pass.
 - `package:check:runtime-architecture`: pass, 32 modules/documents checked.
 
+
+## V2 / main convergence follow-up
+
+Date: 2026-07-27
+
+- Rebased the V2 SuperController line onto the single future runtime direction and semantically incorporated main-only fixes through `5bfee8fa` without restoring retired Agent Worker or Local Bridge write paths.
+- Main-only commit disposition:
+  - `f426ce9c` automatic cleanup serialization: integrated through repository registry authority and startup recovery serialization.
+  - `1682cb48` optional source revision normalization: integrated through release source identity and runtime-slot source metadata.
+  - `f2b5f45e` runtime GC verification task record: task-record-only; no production path required.
+  - `088a96f6` inert historical runs migration and `87de8ff6` stale startup pid ignore: superseded by V2 historical read-only run boundaries and startup recovery cleanup.
+  - `89f0a1d9` reproducible blue-green rollout: integrated, including manifest hashing, source identity, MCP readiness, previous-slot retention, and rollback readiness.
+  - `f7fd8bf8` worker/local job completion race fixes: ported only to V2-owned receipt/process/work boundaries; retired Agent/Local Bridge write closeout was not restored.
+  - `a655f56c` probe grace: integrated through threshold-aware gateway and ingress health decisions.
+  - `cb12a51b` plan binding and rollback readiness: integrated through WorkContract/finalization checks and activated-slot MCP token synchronization.
+  - `b5870146` bounded blue-green fixture cleanup: integrated in isolated supervisor test fixtures.
+  - `21d7db94` scheduler critical-section reduction: integrated as V2 dispatch-priority sorting and reduced locked section work.
+  - `8b1c1b6a` orphan WorkContract retirement: integrated as `running -> blocked -> cancelled` reconciliation, avoiding automatic requeue.
+  - `5bfee8fa` repository registry authority: integrated through controller-home registry authority and runtime storage startup recovery.
+- Added full-suite infrastructure hardening: `package:test` now has a long-check budget and `scripts/run-tests-portable.sh` executes exhaustive tests per file with a cooldown, matching `check-ci.sh` and avoiding Bun process resource accumulation.

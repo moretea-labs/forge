@@ -1,6 +1,6 @@
 import { realpathSync } from 'fs';
 import { dirname, resolve, sep } from 'path';
-import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState, readMcpServiceBearerToken, writeMcpServiceLocalConfig } from '../../cli/mcp/auth';
+import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState, readMcpServiceBearerToken, syncMcpControllerHomeBearerToken, writeMcpServiceLocalConfig } from '../../cli/mcp/auth';
 import {
   ensureSlotHome,
   isRollbackWindowOpen,
@@ -51,6 +51,7 @@ interface StartedRuntimeSlot {
   gatewayHost: SupervisorManagedProcess;
   localControllerPort: number;
   durableJobId: string;
+  mcpReadiness?: Awaited<ReturnType<typeof probeAuthenticatedMcpReadiness>>;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -97,7 +98,22 @@ export function supervisorIngressHealthDecision(
   };
 }
 
+const SUPERVISOR_CUTOVER_OBSERVATION_MS = Math.max(
+  1_000,
+  Number(process.env.REPO_HARNESS_SUPERVISOR_CUTOVER_OBSERVATION_MS ?? 5_000) || 5_000,
+);
+
 export const SUPERVISOR_MONITOR_FAILURE_THRESHOLD = 3;
+
+export function supervisorGatewayOperational(
+  processAlive: boolean,
+  state: SupervisorManagedProcess['state'] | undefined,
+  consecutiveFailures: number,
+): boolean {
+  return processAlive
+    && state === 'running'
+    && Math.max(0, consecutiveFailures) < SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD;
+}
 
 export function supervisorMonitorFailureDecision(
   previousFailures: number,
@@ -134,8 +150,11 @@ export async function probeSupervisorGatewayHealth(
       readiness = payload?.ready;
       recoveryRecommended = payload?.sessionCapacity?.recoveryRecommended === true;
     } catch {
-      healthStatus = undefined;
-      readiness = undefined;
+      return {
+        healthy: false,
+        statusCode: response.status,
+        detail: 'invalid_health_body',
+      };
     }
     if (readiness === false) {
       return {
@@ -901,6 +920,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     if (!template) throw new Error('SUPERVISOR_SLOT_CONFIG_UNAVAILABLE');
     const localControllerPort = manager.localControllerBinding(slot).port;
     const binding = manager.gatewayBinding(slot);
+    syncMcpControllerHomeBearerToken(home, this.options.controllerHome, this.options.repoRoot);
     writeMcpServiceLocalConfig(home, {
       ...template,
       server: { ...template.server, host: binding.host, port: binding.port },
@@ -955,9 +975,19 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       if (gatewayRuntime.server.profile !== 'controller') throw new Error('SUPERVISOR_CANDIDATE_PROFILE_MISMATCH');
       const toolFingerprint = gatewayRuntime.server.toolSurfaceFingerprint ?? gatewayRuntime.server.runtimeToolSurfaceFingerprint;
       if (!toolFingerprint) throw new Error('SUPERVISOR_CANDIDATE_TOOL_FINGERPRINT_MISSING');
-      // Candidate readiness is proven by the daemon/Gateway health and the
-      // generation/tool-surface checks above. It must not create a Job merely
-      // to test storage before the slot owns write authority.
+      const candidateToken = readMcpServiceBearerToken(daemon.controllerHome, this.options.repoRoot);
+      if (!candidateToken) throw new Error('SUPERVISOR_CANDIDATE_MCP_TOKEN_MISSING');
+      const candidateBinding = prepared.manager.gatewayBinding(slot);
+      const mcpReadiness = await probeAuthenticatedMcpReadiness({
+        baseUrl: `http://${candidateBinding.host}:${candidateBinding.port}`,
+        token: candidateToken,
+      });
+      if (!mcpReadiness.healthy) {
+        throw new Error(`SUPERVISOR_CANDIDATE_MCP_READINESS_FAILED: ${mcpReadiness.detail}`);
+      }
+      // Passive candidates must not create or consume durable Jobs before the
+      // authority transaction commits. MCP initialize/auth/tools-list/tool-call
+      // plus process/generation checks prove readiness without acquiring writes.
       const durableJobId = 'process-runtime-readiness';
       writeSlotIdentity(this.options.controllerHome, {
         schemaVersion: 1,
@@ -975,7 +1005,16 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
         updatedAt: new Date().toISOString(),
         logDir: dirname(this.options.logPath),
       });
-      return { slot, generation, manager: prepared.manager, controllerDaemon: daemon, gatewayHost: gateway, localControllerPort: prepared.localControllerPort, durableJobId }; 
+      return {
+        slot,
+        generation,
+        manager: prepared.manager,
+        controllerDaemon: daemon,
+        gatewayHost: gateway,
+        localControllerPort: prepared.localControllerPort,
+        durableJobId,
+        mcpReadiness,
+      };
     } catch (error) {
       if (gateway) await prepared.manager.stop(gateway).catch(() => undefined);
       if (daemon) await prepared.manager.stop(daemon).catch(() => undefined);
@@ -999,7 +1038,11 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       }
       const token = readMcpServiceBearerToken(activeControllerHome ?? this.options.controllerHome, this.options.repoRoot);
       if (!token) throw new Error('authenticated MCP probe token is unavailable');
-      const mcp = await probeAuthenticatedMcpReadiness({ baseUrl: `http://${host}:${port}`, token });
+      let mcp = await probeAuthenticatedMcpReadiness({ baseUrl: `http://${host}:${port}`, token });
+      for (let attempt = 0; attempt < 10 && !mcp.healthy; attempt += 1) {
+        await sleep(250);
+        mcp = await probeAuthenticatedMcpReadiness({ baseUrl: `http://${host}:${port}`, token });
+      }
       if (!mcp.healthy) throw new Error(mcp.detail);
       this.persist({
         ingress: {
@@ -1021,6 +1064,38 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     }
   }
 
+  private async observeActivatedSlot(
+    input: StartedRuntimeSlot,
+    timeoutMs = SUPERVISOR_CUTOVER_OBSERVATION_MS,
+  ): Promise<void> {
+    const deadline = Date.now() + Math.max(1_000, timeoutMs);
+    while (Date.now() < deadline) {
+      if (input.manager.observe(input.controllerDaemon) !== 'alive') {
+        throw new Error('SUPERVISOR_CUTOVER_DAEMON_LIVENESS_FAILED');
+      }
+      if (input.manager.observe(input.gatewayHost) !== 'alive') {
+        throw new Error('SUPERVISOR_CUTOVER_GATEWAY_LIVENESS_FAILED');
+      }
+      const daemon = readControllerDaemonStatus(input.controllerDaemon.controllerHome);
+      if (daemon.status !== 'ready' || daemon.degraded) {
+        throw new Error(`SUPERVISOR_CUTOVER_DAEMON_READINESS_FAILED: status=${daemon.status}${daemon.error ? ` error=${daemon.error}` : ''}`);
+      }
+      const binding = input.manager.gatewayBinding(input.slot);
+      const gateway = await probeSupervisorGatewayHealth(`http://${binding.host}:${binding.port}/ready`);
+      if (!gateway.healthy || gateway.ready === false) {
+        throw new Error(`SUPERVISOR_CUTOVER_GATEWAY_READINESS_FAILED: ${gateway.detail}`);
+      }
+      const daemonGeneration = readRuntimeGeneration(input.controllerDaemon.controllerHome)?.generation;
+      const gatewayGeneration = loadMcpServiceRuntimeState(input.gatewayHost.controllerHome, this.options.repoRoot)?.server.generation;
+      if (input.generation && (daemonGeneration !== input.generation || gatewayGeneration !== input.generation)) {
+        throw new Error(
+          `SUPERVISOR_CUTOVER_GENERATION_MISMATCH: expected=${input.generation} daemon=${daemonGeneration ?? 'missing'} gateway=${gatewayGeneration ?? 'missing'}`,
+        );
+      }
+      await sleep(500);
+    }
+  }
+
   private async stopSlotProcesses(input: { slot: RuntimeSlotId; controllerDaemon: SupervisorManagedProcess; gatewayHost: SupervisorManagedProcess }): Promise<void> {
     await this.managerForManaged(input.gatewayHost, input.slot).stop(input.gatewayHost).catch(() => undefined);
     await this.managerForManaged(input.controllerDaemon, input.slot).stop(input.controllerDaemon).catch(() => undefined);
@@ -1033,6 +1108,11 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
    * slot/epoch/token before stable ingress is switched.
    */
   private async refreshSlotWriterClaim(input: StartedRuntimeSlot): Promise<StartedRuntimeSlot> {
+    syncMcpControllerHomeBearerToken(
+      input.controllerDaemon.controllerHome,
+      this.options.controllerHome,
+      this.options.repoRoot,
+    );
     const stoppedGateway = await input.manager.stop(input.gatewayHost);
     if (!stoppedGateway.stopped) throw new Error('SUPERVISOR_GATEWAY_WRITER_REFRESH_STOP_INCOMPLETE');
     const stoppedDaemon = await input.manager.stop(input.controllerDaemon);
@@ -1053,7 +1133,23 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       if (gatewayRuntime?.generation !== generation || gatewayRuntime.server.generation !== generation) {
         throw new Error('SUPERVISOR_ACTIVATED_GATEWAY_GENERATION_MISMATCH');
       }
-      return { ...input, generation, controllerDaemon: daemon, gatewayHost: gateway };
+      syncMcpControllerHomeBearerToken(
+        daemon.controllerHome,
+        this.options.controllerHome,
+        this.options.repoRoot,
+      );
+      const token = readMcpServiceBearerToken(daemon.controllerHome, this.options.repoRoot)
+        ?? readMcpServiceBearerToken(this.options.controllerHome, this.options.repoRoot);
+      if (!token) throw new Error('SUPERVISOR_ACTIVATED_MCP_TOKEN_MISSING');
+      const binding = input.manager.gatewayBinding(input.slot);
+      const mcpReadiness = await probeAuthenticatedMcpReadiness({
+        baseUrl: `http://${binding.host}:${binding.port}`,
+        token,
+      });
+      if (!mcpReadiness.healthy) {
+        throw new Error(`SUPERVISOR_ACTIVATED_MCP_READINESS_FAILED: ${mcpReadiness.detail}`);
+      }
+      return { ...input, generation, controllerDaemon: daemon, gatewayHost: gateway, mcpReadiness };
     } catch (error) {
       if (gateway) await input.manager.stop(gateway).catch(() => undefined);
       if (daemon) await input.manager.stop(daemon).catch(() => undefined);
@@ -1089,7 +1185,11 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     const candidate = await this.startSlot(candidateSlot, candidateRelease);
     updateSupervisorOperation(this.options.controllerHome, operationId, {
       phase: 'verifying',
-      evidence: [{ kind: 'candidate_verification', summary: `Candidate ${candidateSlot} passed generation, tool-surface, daemon/Gateway readiness, and durable-store write/read verification (${candidate.durableJobId}; consumption deferred until active writer).`, at: new Date().toISOString() }],
+      evidence: [{
+        kind: 'candidate_verification',
+        summary: `Candidate ${candidateSlot} passed generation, tool-surface, daemon/Gateway readiness, and authenticated MCP readiness (${candidate.mcpReadiness?.toolCount ?? 'unknown'} tools); passive candidates do not create durable Jobs before writer activation (${candidate.durableJobId}).`,
+        at: new Date().toISOString(),
+      }],
     });
     const previousGeneration = previousDaemon.generation ?? this.state.activeGeneration;
     this.persist({
@@ -1128,6 +1228,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
         },
       });
       await this.verifyStableIngress(activatedCandidate.generation, activatedCandidate.controllerDaemon.controllerHome);
+      await this.observeActivatedSlot(activatedCandidate);
       writeSlotIdentity(this.options.controllerHome, {
         ...(readSlotIdentity(this.options.controllerHome, candidateSlot) ?? {
           schemaVersion: 1,
@@ -1262,6 +1363,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
         },
       });
       await this.verifyStableIngress(activatedTarget.generation, activatedTarget.controllerDaemon.controllerHome);
+      await this.observeActivatedSlot(activatedTarget);
     } catch (error) {
       let restoredDaemon = failedDaemon;
       let restoredGateway = failedGateway;
@@ -1628,7 +1730,6 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
           const binding = this.managerForManaged(managed, slot).gatewayBinding(slot);
           const health = await probeSupervisorGatewayHealth(`http://${binding.host}:${binding.port}/ready`);
           if (!health.healthy || health.ready === false) {
-            degraded = true;
             if (health.healthy && health.recoveryRecommended !== true) {
               this.setComponent('gatewayHost', {
                 ...managed,
@@ -1641,6 +1742,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
             }
             const decision = supervisorGatewayHealthDecision(managed.consecutiveFailures, false);
             const consecutiveFailures = decision.consecutiveFailures;
+            degraded = degraded || decision.shouldRecover;
             const failureReason = `gatewayHost readiness probe requires recovery ${consecutiveFailures}/${SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD}: ${health.detail}`;
             this.setComponent('gatewayHost', {
               ...managed,
@@ -1678,9 +1780,11 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     }
     if (this.state.observedState !== 'locked_out') {
       const gatewayAlive = this.manager.observe(this.state.gatewayHost) === 'alive';
-      const gatewayHealthy = gatewayAlive
-        && this.state.gatewayHost?.state === 'running'
-        && this.state.gatewayHost.consecutiveFailures === 0;
+      const gatewayHealthy = supervisorGatewayOperational(
+        gatewayAlive,
+        this.state.gatewayHost?.state,
+        this.state.gatewayHost?.consecutiveFailures ?? 0,
+      );
       const operationActive = Boolean(this.state.currentOperationId);
       let ingressPathHealthy = false;
       if (gatewayHealthy && this.ingressProcess?.alive()) {
@@ -1709,7 +1813,8 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
               },
             });
           } else {
-            ingressDegraded = true;
+            ingressDegraded = decision.shouldReplace;
+            ingressPathHealthy = !decision.shouldReplace;
             const now = new Date().toISOString();
             const failureReason = `stable ingress full-path probe failed ${decision.consecutiveFailures}/${SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD} slot=${this.state.activeSlot} targetPort=${this.manager.gatewayBinding(this.state.activeSlot).port}: ${health.detail}`;
             if (decision.shouldReplace) {
@@ -1770,7 +1875,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
               this.persist({
                 ingress: {
                   ...this.state.ingress,
-                  state: 'degraded',
+                  state: 'running',
                   pid: this.ingressProcess.pid,
                   consecutiveFailures: decision.consecutiveFailures,
                   lastFailureAt: now,

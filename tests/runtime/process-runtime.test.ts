@@ -596,6 +596,7 @@ describe('installed release Process Runner smoke', () => {
       controllerHome,
       repoRoot: sourceRoot,
       sourceRoot,
+      allowDirtyRuntimeSourceForTests: true,
     });
     expect(existsSync(join(staged.releasePath, 'process-runner.js'))).toBe(true);
     const manifest = JSON.parse(readFileSync(join(staged.releasePath, 'manifest.json'), 'utf8')) as {

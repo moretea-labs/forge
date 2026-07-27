@@ -389,6 +389,7 @@ function updateRunIndexes(repoRoot: string, meta: AgentJobMeta): void {
 }
 
 function writeAgentMeta(repoRoot: string, path: string, meta: AgentJobMeta): void {
+  if (meta.status === "succeeded") normalizeSuccessfulAgentRunMeta(meta);
   writeJson(path, meta);
   updateRunIndexes(repoRoot, meta);
 }
@@ -1078,10 +1079,33 @@ function executorFailureMessage(meta: Pick<AgentJobMeta, "agent" | "error">, std
 }
 
 function attachExecutorFailureHealth(meta: AgentJobMeta, stdoutTail?: string, stderrTail?: string): AgentJobMeta {
-  if (meta.executorHealth || meta.status === "succeeded") return meta;
+  if (meta.status === "succeeded") {
+    // Successful Runs must not retain stale failure classification.
+    delete meta.executorHealth;
+    if (meta.terminationReason && meta.terminationReason !== "cancelled") {
+      delete meta.terminationReason;
+    }
+    if (meta.error) delete meta.error;
+    return meta;
+  }
+  if (meta.executorHealth) return meta;
   const message = executorFailureMessage(meta, stdoutTail, stderrTail);
   const health = classifyExecutorFailure(meta.agent, message, { allowedPaths: meta.allowedPaths ?? [] });
   if (health) meta.executorHealth = health;
+  return meta;
+}
+
+/**
+ * Normalize terminal success metadata so prior executorHealth / error /
+ * terminationReason do not linger after a recovered or reconciled success.
+ */
+export function normalizeSuccessfulAgentRunMeta(meta: AgentJobMeta): AgentJobMeta {
+  if (meta.status !== "succeeded") return meta;
+  delete meta.executorHealth;
+  if (meta.error) delete meta.error;
+  if (meta.terminationReason && meta.terminationReason !== "cancelled") {
+    delete meta.terminationReason;
+  }
   return meta;
 }
 
@@ -1466,8 +1490,22 @@ export function getAgentJob(
       ? Math.max(0, deadlineMs - Date.now())
       : null;
   const beforeReason = meta.executorHealth?.reason;
-  attachExecutorFailureHealth(meta, tail(meta.stdoutPath), tail(meta.stderrPath));
-  if (beforeReason !== meta.executorHealth?.reason) metaMutated = true;
+  if (meta.status === "succeeded") {
+    const beforeHealth = meta.executorHealth;
+    const beforeError = meta.error;
+    const beforeTermination = meta.terminationReason;
+    normalizeSuccessfulAgentRunMeta(meta);
+    if (
+      beforeHealth !== undefined
+      || beforeError !== undefined
+      || beforeTermination !== meta.terminationReason
+    ) {
+      metaMutated = true;
+    }
+  } else {
+    attachExecutorFailureHealth(meta, tail(meta.stdoutPath), tail(meta.stderrPath));
+    if (beforeReason !== meta.executorHealth?.reason) metaMutated = true;
+  }
   if (metaMutated) writeAgentMeta(repoRoot, path, meta);
   return {
     ...meta,

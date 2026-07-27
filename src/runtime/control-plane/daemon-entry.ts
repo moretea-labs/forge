@@ -42,6 +42,7 @@ const DEFAULT_AUTOMATIC_CLEANUP_INITIAL_DELAY_MS = 60_000;
 const DEFAULT_AUTOMATIC_CLEANUP_INTERVAL_MS = 60 * 60_000;
 const DEFAULT_AUTOMATIC_CLEANUP_MIN_AGE_MINUTES = 24 * 60;
 const DEFAULT_AUTOMATIC_CLEANUP_MAX_REMOVALS = 50;
+let automaticRuntimeCleanupInFlight = false;
 
 function numericEnv(name: string, fallback: number, minimum: number): number {
   const parsed = Number(process.env[name]);
@@ -92,6 +93,11 @@ export function runAutomaticRuntimeCleanupCycle(
   repoRoot: string,
   options: AutomaticRuntimeCleanupOptions = {},
 ): RuntimeCleanupApplyResult | undefined {
+  // The daemon owns this loop, but startup/retry hooks can still re-enter it.
+  // Keep a single cleanup pass in flight so two passes never race over the
+  // same global temp-directory candidates.
+  if (automaticRuntimeCleanupInFlight) return undefined;
+  automaticRuntimeCleanupInFlight = true;
   try {
     const maxRemovals = options.maxRemovals
       ?? numericEnv('REPO_HARNESS_AUTOMATIC_CLEANUP_MAX_REMOVALS', DEFAULT_AUTOMATIC_CLEANUP_MAX_REMOVALS, 1);
@@ -109,6 +115,8 @@ export function runAutomaticRuntimeCleanupCycle(
   } catch (error) {
     (options.onError ?? ((failure) => console.error('[repo-harness cleanup] automatic cleanup failed:', failure)))(error);
     return undefined;
+  } finally {
+    automaticRuntimeCleanupInFlight = false;
   }
 }
 

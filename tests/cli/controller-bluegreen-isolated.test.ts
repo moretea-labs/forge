@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { cpSync, existsSync, mkdirSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { join, relative, sep } from 'path';
+import { spawnSync } from 'child_process';
 import {
   allocateFreePort,
   createIsolatedControllerFixture,
@@ -25,10 +26,44 @@ import { installSupervisorRelease } from '../../src/runtime/supervisor/installer
 import { readCurrentRelease } from '../../src/runtime/supervisor/paths';
 
 const ROOT = join(import.meta.dir, '../..');
+const cleanRuntimeSources: string[] = [];
 
 afterEach(async () => {
+  for (const path of cleanRuntimeSources.splice(0)) rmSync(path, { recursive: true, force: true });
   await destroyAllIsolatedControllerFixtures();
-});
+}, 120_000);
+
+function git(cwd: string, args: string[]): string {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
+  return result.stdout.trim();
+}
+
+function createCleanRuntimeSourceRoot(name: string): string {
+  const path = join(ROOT, '_ops', `test-runtime-source-${name}-${Date.now()}`);
+  rmSync(path, { recursive: true, force: true });
+  mkdirSync(path, { recursive: true });
+  const excluded = new Set(['.git', '.codegraph', '.repo-harness', '_ops', 'node_modules']);
+  for (const entry of readdirSync(ROOT)) {
+    if (excluded.has(entry)) continue;
+    cpSync(join(ROOT, entry), join(path, entry), {
+      recursive: true,
+      filter: (source) => {
+        const rel = relative(ROOT, source);
+        if (!rel) return true;
+        const top = rel.split(sep)[0];
+        return !excluded.has(top);
+      },
+    });
+  }
+  git(path, ['init']);
+  git(path, ['config', 'user.email', 'bluegreen-test@example.invalid']);
+  git(path, ['config', 'user.name', 'Bluegreen Test']);
+  git(path, ['add', '.']);
+  git(path, ['commit', '-m', 'clean runtime source snapshot']);
+  cleanRuntimeSources.push(path);
+  return path;
+}
 
 function seedSlotConfig(
   slotHome: string,
@@ -216,8 +251,9 @@ describe('blue/green isolated lifecycle (level 2)', () => {
     const previousSource = process.env.REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT;
     const previousControlPort = process.env.REPO_HARNESS_SUPERVISOR_CONTROL_PORT;
     const controlPort = await allocateFreePort();
+    const cleanSourceRoot = createCleanRuntimeSourceRoot('stable-rollout');
     Object.assign(process.env, isolatedControllerEnv(fixture, {
-      REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT: ROOT,
+      REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT: cleanSourceRoot,
       REPO_HARNESS_SUPERVISOR_CONTROL_PORT: String(controlPort),
     }));
 
@@ -245,7 +281,7 @@ describe('blue/green isolated lifecycle (level 2)', () => {
       const initialRelease = installSupervisorRelease({
         controllerHome: fixture.controllerHome,
         repoRoot: fixture.repoRoot,
-        sourceRoot: ROOT,
+        sourceRoot: cleanSourceRoot,
       });
       const started = await startControllerService({
         repo: fixture.repoRoot,

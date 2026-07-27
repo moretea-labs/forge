@@ -57,11 +57,13 @@ describe("Bootstrap Script Contracts", () => {
 
   test("portable test runner preserves subprocess headroom", () => {
     const runner = read("scripts/run-tests-portable.sh");
-    expect(runner).toContain('REPO_HARNESS_TEST_PARALLELISM:-1');
-    expect(runner).toContain('max_test_parallelism=4');
-    expect(runner).toContain('test_files=()');
-    expect(runner).toContain('exec bun test --isolate --max-concurrency "$test_parallelism" "$@" "${test_files[@]}"');
+    expect(runner).toContain('BUN_TEST_TIMEOUT_MS:-60000');
+    expect(runner).toContain('BUN_TEST_MAX_CONCURRENCY:-1');
+    expect(runner).toContain('BUN_TEST_FILE_COOLDOWN_SECONDS:-0.1');
+    expect(runner).toContain('run_test_file "$test_file"');
+    expect(runner).toContain("LC_ALL=C sort -z");
     expect(runner).not.toContain("xargs -0");
+    expect(runner).not.toContain('"${test_files[@]}"');
   });
 
   test("repo package should expose workflow verification scripts", () => {
