@@ -1,6 +1,10 @@
 import { existsSync } from 'fs';
-import { join } from 'path';
-import { listRepositories, reconcileRepositoryCheckouts } from '../../cli/repositories/registry';
+import { join, resolve } from 'path';
+import {
+  listRepositories,
+  reconcileRepositoryCheckouts,
+  repositoryCheckoutLifecycle,
+} from '../../cli/repositories/registry';
 import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
 import { listLocalBridgeJobs, reconcileLocalBridgeJobs } from '../../cli/local-bridge/job-store';
 import { listExecutionJobs, rebuildExecutionJobIndexes } from '../execution/jobs/store';
@@ -94,8 +98,9 @@ export function reconcileControllerStartup(controllerHome: string): ControllerSt
       }
     };
 
-    result.archivedCheckoutIds = run('checkouts', () =>
-      reconcileRepositoryCheckouts(repository.repoId, controllerHome).archivedCheckoutIds);
+    const checkoutReconciliation = run('checkouts', () =>
+      reconcileRepositoryCheckouts(repository.repoId, controllerHome));
+    result.archivedCheckoutIds = checkoutReconciliation?.archivedCheckoutIds;
 
     // Rebuild from records first so a lost/stale active or request index
     // cannot hide accepted work from reconciliation or idempotency lookup.
@@ -112,9 +117,24 @@ export function reconcileControllerStartup(controllerHome: string): ControllerSt
       const activeLocalJobs = listLocalBridgeJobs(repository.canonicalRoot, 500)
         .filter((job) => ['approved', 'dispatched', 'running'].includes(job.status)).length;
       const activeLeases = listActiveLeases(controllerHome, repository.repoId).length;
+      const checkouts = checkoutReconciliation?.repository.checkouts ?? repository.checkouts;
       return reconcileStaleWorkContracts(
         { controllerHome, repoId: repository.repoId },
-        { activeExecutionJobs, activeLocalJobs, activeLeases },
+        {
+          activeExecutionJobs,
+          activeLocalJobs,
+          activeLeases,
+          worktreeAvailability: (worktreeRef) => {
+            const worktreePath = resolve(worktreeRef);
+            const checkout = checkouts.find((candidate) =>
+              resolve(candidate.localRoot) === worktreePath
+              || resolve(candidate.canonicalRoot) === worktreePath);
+            if (checkout) {
+              return repositoryCheckoutLifecycle(checkout) === 'active' ? 'active' : 'inactive';
+            }
+            return existsSync(worktreePath) ? 'unknown' : 'missing';
+          },
+        },
       );
     });
     result.projectionRebuilt = run('projection', () => {

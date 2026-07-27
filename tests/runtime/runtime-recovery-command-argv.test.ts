@@ -6,7 +6,7 @@ import { join } from 'path';
 import { submitLocalBridgeJob, executeLocalBridgeJob, getLocalBridgeJob } from '../../src/cli/local-bridge/job-store';
 import { dispatchLegacyLocalJob } from '../../src/runtime/execution/jobs/legacy-adapter';
 import { executeRepositoryCommand, previewRepositoryCommandExecution } from '../../src/cli/repositories/command-executor';
-import { loadRepositoryRegistry, registerRepository, saveRepositoryRegistry } from '../../src/cli/repositories/registry';
+import { addRepositoryCheckout, loadRepositoryRegistry, registerRepository, saveRepositoryRegistry } from '../../src/cli/repositories/registry';
 import { createExecutionJob, getExecutionJob, getExecutionJobByRequestId, removeRequestIndex, transitionExecutionJob, attachExecutionWorker, claimExecutionJobForDispatch } from '../../src/runtime/execution/jobs/store';
 import { reconcileControllerStartup } from '../../src/runtime/control-plane/startup-recovery';
 import { publishReadyAfterStartupRecovery } from '../../src/runtime/control-plane/daemon-entry';
@@ -15,6 +15,7 @@ import { repositoryControllerRoot } from '../../src/cli/repositories/controller-
 import { readJsonFile, writeJsonAtomic } from '../../src/runtime/shared/json-files';
 import { markRepositoryProjectionDirty, readRepositoryProjectionDirty } from '../../src/runtime/projections/invalidation';
 import { rebuildRepositoryProjection } from '../../src/runtime/projections/materialized-view';
+import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 
 const roots: string[] = [];
 const daemonPids: number[] = [];
@@ -170,6 +171,51 @@ describe('runtime recovery and repository argv boundary', () => {
     reconcileControllerStartup(home);
     expect(getExecutionJob(home, repository.repoId, running.jobId).status).toBe('failed');
     expect(existsSync(leasePath)).toBe(false);
+  });
+
+  test('cancels reconciled ownerless work after its managed checkout disappears', () => {
+    const home = tempRoot('runtime-recovery-work-home-');
+    const root = tempRoot('runtime-recovery-work-repo-');
+    const worktreeParent = tempRoot('runtime-recovery-worktree-parent-');
+    const worktreeRoot = join(worktreeParent, 'orphaned-worktree');
+    const repository = seedRepo(home, root, 'orphaned-work');
+    git(root, ['worktree', 'add', '-b', 'orphaned-work', worktreeRoot]);
+    const withCheckout = addRepositoryCheckout({
+      repoId: repository.repoId,
+      path: worktreeRoot,
+      controllerHome: home,
+    });
+    const checkout = withCheckout.checkouts.find((candidate) =>
+      candidate.checkoutId !== repository.activeCheckoutId && candidate.worktree)!;
+    createWorkContract({ controllerHome: home, repoId: repository.repoId }, {
+      workId: 'work-orphaned-checkout',
+      repoId: repository.repoId,
+      mode: 'goal_workloop',
+      objective: 'Orphaned managed checkout work',
+      acceptanceCriteria: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      status: 'waiting_for_review',
+      createdAt: '2026-07-01T00:00:00.000Z',
+      updatedAt: '2026-07-01T00:00:00.000Z',
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      evidenceRefs: [{
+        title: 'runtime reconciliation required',
+        summary: 'Owner disappeared before completion.',
+        detailLevel: 'summary',
+      }],
+      worktreeRef: worktreeRoot,
+    });
+    rmSync(worktreeRoot, { recursive: true, force: true });
+
+    const recovered = reconcileControllerStartup(home);
+
+    expect(recovered.repositories.find((entry) => entry.repoId === repository.repoId)?.archivedCheckoutIds)
+      .toContain(checkout.checkoutId);
+    expect(getWorkContract({ controllerHome: home, repoId: repository.repoId }, 'work-orphaned-checkout')?.status)
+      .toBe('cancelled');
   });
 
   test('executes typed argv through the bounded Local Worker path', async () => {
