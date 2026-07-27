@@ -287,11 +287,10 @@ function mergeRepositorySources(
 }
 
 export function loadRepositoryRegistry(controllerHome?: string): RepositoryRegistry {
-  const primary = readRegistryFile(registryPath(controllerHome), true) ?? defaultRegistry();
-  const supplements = legacyRegistryPaths(controllerHome)
-    .map((path) => readRegistryFile(path, false))
-    .filter((registry): registry is RepositoryRegistry => Boolean(registry));
-  return mergeRepositorySources(primary, supplements);
+  // Normal reads must use only the stable Controller Home authority. Slot-local
+  // files are migration inputs, not live replicas; continuously merging them
+  // can resurrect stale checkouts after a blue/green cutover.
+  return readRegistryFile(registryPath(controllerHome), true) ?? defaultRegistry();
 }
 
 export function saveRepositoryRegistry(registry: RepositoryRegistry, controllerHome?: string): RepositoryRegistry {
@@ -302,8 +301,11 @@ export function saveRepositoryRegistry(registry: RepositoryRegistry, controllerH
 }
 
 export function consolidateRepositoryRegistry(controllerHome?: string): RepositoryRegistry {
-  const merged = loadRepositoryRegistry(controllerHome);
   const persisted = readRegistryFile(registryPath(controllerHome), true) ?? defaultRegistry();
+  const supplements = legacyRegistryPaths(controllerHome)
+    .map((path) => readRegistryFile(path, false))
+    .filter((registry): registry is RepositoryRegistry => Boolean(registry));
+  const merged = mergeRepositorySources(persisted, supplements);
   const persistedShape = JSON.stringify({ schemaVersion: 1, repositories: persisted.repositories });
   const mergedShape = JSON.stringify({ schemaVersion: 1, repositories: merged.repositories });
   return persistedShape === mergedShape ? merged : saveRepositoryRegistry(merged, controllerHome);
@@ -878,7 +880,16 @@ export function focusRepository(repoId: string | undefined, controllerHome?: str
 }
 
 export function getRepositoryFocus(controllerHome?: string): { repoId?: string; updatedAt?: string } {
-  const candidates = [focusPath(controllerHome), ...legacyFocusPaths(controllerHome)]
+  const stablePath = focusPath(controllerHome);
+  if (existsSync(stablePath)) {
+    try {
+      return JSON.parse(readFileSync(stablePath, 'utf-8')) as { repoId?: string; updatedAt?: string };
+    } catch {
+      // Fail closed instead of reviving a newer-looking slot-local focus record.
+      return {};
+    }
+  }
+  const candidates = legacyFocusPaths(controllerHome)
     .map((path) => {
       if (!existsSync(path)) return undefined;
       try {
