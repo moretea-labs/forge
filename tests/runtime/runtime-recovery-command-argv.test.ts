@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -173,7 +173,7 @@ describe('runtime recovery and repository argv boundary', () => {
     expect(existsSync(leasePath)).toBe(false);
   });
 
-  test('cancels reconciled ownerless work after its managed checkout disappears', () => {
+  test('cancels reconciled ownerless work after its managed checkout loses Git identity', () => {
     const home = tempRoot('runtime-recovery-work-home-');
     const root = tempRoot('runtime-recovery-work-repo-');
     const worktreeParent = tempRoot('runtime-recovery-worktree-parent-');
@@ -187,6 +187,16 @@ describe('runtime recovery and repository argv boundary', () => {
     });
     const checkout = withCheckout.checkouts.find((candidate) =>
       candidate.checkoutId !== repository.activeCheckoutId && candidate.worktree)!;
+    const misleadingNestedRoot = join(root, '_ops', 'controller-home', 'worktrees', 'campaign-orphaned');
+    mkdirSync(misleadingNestedRoot, { recursive: true });
+    const registry = loadRepositoryRegistry(home);
+    const registryRepository = registry.repositories.find((candidate) => candidate.repoId === repository.repoId)!;
+    registryRepository.checkouts = registryRepository.checkouts.map((candidate) =>
+      candidate.checkoutId === checkout.checkoutId
+        ? { ...candidate, localRoot: misleadingNestedRoot, canonicalRoot: misleadingNestedRoot }
+        : candidate);
+    saveRepositoryRegistry(registry, home);
+
     createWorkContract({ controllerHome: home, repoId: repository.repoId }, {
       workId: 'work-orphaned-checkout',
       repoId: repository.repoId,
@@ -206,15 +216,76 @@ describe('runtime recovery and repository argv boundary', () => {
         summary: 'Owner disappeared before completion.',
         detailLevel: 'summary',
       }],
-      worktreeRef: worktreeRoot,
+      worktreeRef: misleadingNestedRoot,
     });
-    rmSync(worktreeRoot, { recursive: true, force: true });
+    expect(existsSync(misleadingNestedRoot)).toBe(true);
 
     const recovered = reconcileControllerStartup(home);
 
     expect(recovered.repositories.find((entry) => entry.repoId === repository.repoId)?.archivedCheckoutIds)
       .toContain(checkout.checkoutId);
     expect(getWorkContract({ controllerHome: home, repoId: repository.repoId }, 'work-orphaned-checkout')?.status)
+      .toBe('cancelled');
+  });
+
+  test('consolidates slot Registry history into stable root before retiring an orphaned checkout', () => {
+    const home = tempRoot('runtime-recovery-registry-home-');
+    const blueHome = join(home, 'runtime-slots', 'blue');
+    const root = tempRoot('runtime-recovery-registry-repo-');
+    const repository = seedRepo(home, root, 'registry-authority');
+    const misleadingNestedRoot = join(root, '_ops', 'controller-home', 'worktrees', 'campaign-slot-orphaned');
+    mkdirSync(misleadingNestedRoot, { recursive: true });
+
+    const slotRegistry = loadRepositoryRegistry(home);
+    const slotRepository = slotRegistry.repositories.find((candidate) => candidate.repoId === repository.repoId)!;
+    slotRepository.checkouts.push({
+      checkoutId: 'checkout_slot_orphaned',
+      localRoot: misleadingNestedRoot,
+      canonicalRoot: misleadingNestedRoot,
+      worktree: true,
+      branch: 'campaign/slot-orphaned',
+      createdAt: '2026-07-01T00:00:00.000Z',
+      updatedAt: '2026-07-01T00:00:00.000Z',
+      lastSeenAt: '2026-07-01T00:00:00.000Z',
+      lifecycle: 'active',
+    });
+    slotRegistry.updatedAt = '2026-07-01T00:00:00.000Z';
+    mkdirSync(blueHome, { recursive: true });
+    writeFileSync(join(blueHome, 'repositories.json'), `${JSON.stringify(slotRegistry, null, 2)}\n`);
+
+    createWorkContract({ controllerHome: blueHome, repoId: repository.repoId }, {
+      workId: 'work-slot-registry-orphan',
+      repoId: repository.repoId,
+      mode: 'goal_workloop',
+      objective: 'Ownerless work from a slot-only checkout record',
+      acceptanceCriteria: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      status: 'waiting_for_review',
+      createdAt: '2026-07-01T00:00:00.000Z',
+      updatedAt: '2026-07-01T00:00:00.000Z',
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      evidenceRefs: [{
+        title: 'runtime reconciliation required',
+        summary: 'Owner disappeared before completion.',
+        detailLevel: 'summary',
+      }],
+      worktreeRef: misleadingNestedRoot,
+    });
+
+    const recovered = reconcileControllerStartup(blueHome);
+    const consolidated = loadRepositoryRegistry(home)
+      .repositories.find((candidate) => candidate.repoId === repository.repoId)!;
+    const archived = consolidated.checkouts.find((candidate) => candidate.checkoutId === 'checkout_slot_orphaned');
+
+    expect(recovered.repositories.find((entry) => entry.repoId === repository.repoId)?.archivedCheckoutIds)
+      .toContain('checkout_slot_orphaned');
+    expect(consolidated.activeCheckoutId).toBe(repository.activeCheckoutId);
+    expect(archived?.lifecycle).toBe('archived');
+    expect(archived?.lifecycleReason).toContain('no longer a valid Git worktree');
+    expect(getWorkContract({ controllerHome: blueHome, repoId: repository.repoId }, 'work-slot-registry-orphan')?.status)
       .toBe('cancelled');
   });
 

@@ -1,9 +1,11 @@
-import { existsSync } from 'fs';
+import { existsSync, realpathSync } from 'fs';
 import { join, resolve } from 'path';
 import {
+  consolidateRepositoryRegistry,
   listRepositories,
   reconcileRepositoryCheckouts,
   repositoryCheckoutLifecycle,
+  repositoryCheckoutRootMatches,
 } from '../../cli/repositories/registry';
 import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
 import { listLocalBridgeJobs, reconcileLocalBridgeJobs } from '../../cli/local-bridge/job-store';
@@ -19,7 +21,7 @@ import { recoverManagedProcesses } from '../execution/process-runtime/runtime';
 
 export interface ControllerRecoveryError {
   repoId: string;
-  phase: 'checkouts' | 'execution-indexes' | 'execution-jobs' | 'local-jobs' | 'leases' | 'work-contracts' | 'projection';
+  phase: 'registry' | 'checkouts' | 'execution-indexes' | 'execution-jobs' | 'local-jobs' | 'leases' | 'work-contracts' | 'projection';
   code: string;
   message: string;
 }
@@ -43,6 +45,17 @@ export interface ControllerStartupRecoveryResult {
   degraded: boolean;
 }
 
+function comparableCheckoutPath(value: string): string {
+  const resolved = resolve(value);
+  try {
+    return realpathSync(resolved);
+  } catch {
+    return process.platform === 'darwin' && resolved.startsWith('/var/')
+      ? `/private${resolved}`
+      : resolved;
+  }
+}
+
 function errorCode(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   const separator = message.indexOf(':');
@@ -64,6 +77,18 @@ function projectionNeedsRebuild(controllerHome: string, repoId: string): boolean
  * recorded and cannot prevent healthy repositories from becoming ready.
  */
 export function reconcileControllerStartup(controllerHome: string): ControllerStartupRecoveryResult {
+  const recovered: ControllerRecoveryRepositoryResult[] = [];
+  const errors: ControllerRecoveryError[] = [];
+  try {
+    consolidateRepositoryRegistry(controllerHome);
+  } catch (error) {
+    errors.push({
+      repoId: CONTROLLER_SCOPE_REPO_ID,
+      phase: 'registry',
+      code: errorCode(error),
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
   // Recover activation authority projections before durable reconciliation.
   try {
     recoverActivationTransaction(controllerHome);
@@ -83,8 +108,6 @@ export function reconcileControllerStartup(controllerHome: string): ControllerSt
     /* process runtime optional in early fixtures */
   }
   const repositories = listRepositories(controllerHome).filter((repo) => repo.enabled && !repo.removedAt);
-  const recovered: ControllerRecoveryRepositoryResult[] = [];
-  const errors: ControllerRecoveryError[] = [];
   for (const repository of repositories) {
     const result: ControllerRecoveryRepositoryResult = { repoId: repository.repoId, degraded: false };
     const run = <T>(phase: ControllerRecoveryError['phase'], action: () => T): T | undefined => {
@@ -125,14 +148,16 @@ export function reconcileControllerStartup(controllerHome: string): ControllerSt
           activeLocalJobs,
           activeLeases,
           worktreeAvailability: (worktreeRef) => {
-            const worktreePath = resolve(worktreeRef);
+            const worktreePath = comparableCheckoutPath(worktreeRef);
             const checkout = checkouts.find((candidate) =>
-              resolve(candidate.localRoot) === worktreePath
-              || resolve(candidate.canonicalRoot) === worktreePath);
+              comparableCheckoutPath(candidate.localRoot) === worktreePath
+              || comparableCheckoutPath(candidate.canonicalRoot) === worktreePath);
             if (checkout) {
               return repositoryCheckoutLifecycle(checkout) === 'active' ? 'active' : 'inactive';
             }
-            return existsSync(worktreePath) ? 'unknown' : 'missing';
+            if (!existsSync(worktreePath)) return 'missing';
+            const reconciledRepository = checkoutReconciliation?.repository ?? repository;
+            return repositoryCheckoutRootMatches(reconciledRepository, worktreeRef) ? 'unknown' : 'inactive';
           },
         },
       );
