@@ -36,6 +36,7 @@ import { readWriterAuthority } from '../../../cli/controller/stable-state/writer
 import { resolveStableControllerHome } from '../../../cli/controller/stable-state/stable-home';
 import { defaultProcessIdentityProbe, executableFingerprint } from '../../supervisor/identity';
 import {
+  claimProcessRequest,
   createProcessRecord,
   getProcessRecord,
   listActiveProcessIds,
@@ -97,6 +98,24 @@ function nowIso(): string {
 
 function newProcessId(): string {
   return `proc_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`;
+}
+
+function canonicalProcessCommand(command: SpawnManagedProcessInput['command']): Record<string, unknown> {
+  return {
+    kind: command.kind,
+    executable: command.executable ?? null,
+    args: command.args ?? [],
+    shellCommand: command.shellCommand ?? null,
+    cwd: command.cwd,
+    env: command.env
+      ? Object.fromEntries(Object.entries(command.env).sort(([left], [right]) => left.localeCompare(right)))
+      : null,
+  };
+}
+
+/** Stable semantic command fingerprint used by request-id idempotency. */
+export function fingerprintProcessCommand(command: SpawnManagedProcessInput['command']): string {
+  return createHash('sha256').update(JSON.stringify(canonicalProcessCommand(command))).digest('hex');
 }
 
 function tailText(buffer: Buffer, maxBytes: number): string {
@@ -634,7 +653,7 @@ function attachRunnerMonitor(
 
 function recordToHandle(
   record: ManagedProcessRecord,
-  extras?: { stdout?: string; stderr?: string; completed?: boolean },
+  extras?: { stdout?: string; stderr?: string; completed?: boolean; deduplicated?: boolean },
 ): ProcessHandle {
   const completed = extras?.completed
     ?? ['succeeded', 'failed', 'timed_out', 'cancelled', 'orphaned', 'completed_unknown'].includes(record.status);
@@ -650,6 +669,8 @@ function recordToHandle(
     interactiveWaitMs: record.interactiveWaitMs,
     timeoutMs: record.timeoutMs,
     completed,
+    deduplicated: extras?.deduplicated,
+    requestId: record.origin?.requestId,
     ok: completed ? record.status === 'succeeded' : undefined,
     exitCode: record.exitCode,
     timedOut: record.timedOut,
@@ -714,7 +735,28 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     Math.min(input.timeoutMs ?? DEFAULT_PROCESS_TIMEOUT_MS, 24 * 60 * 60_000),
   );
   const maxOutputBytes = Math.max(4_096, Math.min(input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES, 8 * 1024 * 1024));
-  const processId = newProcessId();
+  const candidateProcessId = newProcessId();
+  const requestId = input.origin?.requestId?.trim() || undefined;
+  const commandFingerprint = fingerprintProcessCommand(input.command);
+  let processId = candidateProcessId;
+  if (requestId) {
+    const claim = claimProcessRequest({
+      controllerHome: input.controllerHome,
+      repoId: input.repoId,
+      checkoutId: input.checkoutId,
+      requestId,
+      commandFingerprint,
+      processId: candidateProcessId,
+    });
+    processId = claim.binding.processId;
+    if (claim.status === 'existing') {
+      const existing = getProcessHandle(input.controllerHome, input.repoId, processId);
+      if (!existing) {
+        throw new Error(`PROCESS_REQUEST_INCOMPLETE: request ${requestId} is bound to missing process ${processId}; refusing re-execution`);
+      }
+      return { ...existing, deduplicated: true, requestId };
+    }
+  }
   const fenceToken = 1;
   const startedAt = nowIso();
   const logDir = processLogDir(input.controllerHome, input.repoId);
@@ -732,6 +774,7 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     checkoutId: input.checkoutId,
     workId: input.workId,
     commandId: input.commandId?.trim() || processId,
+    requestFingerprint: requestId ? commandFingerprint : undefined,
     controllerHome: input.controllerHome,
     status: 'starting',
     route: input.returnHandleImmediately || interactiveWaitMs === 0 ? 'managed' : 'direct',

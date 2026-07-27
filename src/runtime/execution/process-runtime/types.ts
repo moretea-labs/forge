@@ -59,6 +59,17 @@ export interface ProcessCommandSpec {
   env?: Record<string, string | undefined>;
 }
 
+/** Persistent request binding claimed before any Process Runner is spawned. */
+export interface ProcessRequestBinding {
+  schemaVersion: 1;
+  repoId: string;
+  checkoutId?: string;
+  requestId: string;
+  commandFingerprint: string;
+  processId: string;
+  createdAt: string;
+}
+
 export interface ManagedProcessRecord {
   schemaVersion: 1;
   processId: string;
@@ -68,6 +79,8 @@ export interface ManagedProcessRecord {
   workId?: string;
   /** Caller-stable command identity; defaults to processId when omitted. */
   commandId?: string;
+  /** Fingerprint bound to origin.requestId before spawn. */
+  requestFingerprint?: string;
   controllerHome: string;
   status: ProcessRuntimeStatus;
   route: ProcessRouteMode;
@@ -151,6 +164,9 @@ export interface ProcessHandle {
   interactiveWaitMs: number;
   timeoutMs: number;
   completed?: boolean;
+  /** True when this response reused a previously claimed request binding. */
+  deduplicated?: boolean;
+  requestId?: string;
   ok?: boolean;
   exitCode?: number;
   timedOut?: boolean;

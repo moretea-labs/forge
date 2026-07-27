@@ -550,6 +550,9 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
   const current = transitionWorkHandle(ctx.controllerHome, handle, 'validating', { finalization: { ...handle.finalization, validation: 'pending' } });
   const contract = contractFor(ctx, current);
   const requestedChecks = Array.isArray(args.check_ids) ? args.check_ids.map(String).filter(Boolean) : contract?.checks ?? [];
+  const validationInvocationId = typeof args.request_id === 'string' && args.request_id.trim()
+    ? args.request_id.trim()
+    : `validate-${session.sessionId}-${handle.workId}-${Date.now()}-${randomUUID().slice(0, 8)}`;
   const available = new Set(listControllerChecks(validated.worktreeRepository.canonicalRoot).map((check) => check.id));
   const checks: Array<Record<string, unknown>> = [];
   for (const [index, checkId] of requestedChecks.entries()) {
@@ -563,9 +566,9 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       checkoutId: handle.checkoutId,
       repoRoot: validated.worktreeRepository.canonicalRoot,
       checkId,
-      requestId: `${session.sessionId}:${handle.workId}:check:${index + 1}`,
+      requestId: `${validationInvocationId}:check:${index + 1}`,
       workId: handle.workId,
-      commandId: `${handle.workId}:check:${index + 1}`,
+      commandId: `${validationInvocationId}:check:${index + 1}`,
     });
     if (executed.mode === 'durable') {
       checks.push({ checkId, ok: undefined, status: 'deferred', summary: executed.durable?.reason, durable: executed.durable });

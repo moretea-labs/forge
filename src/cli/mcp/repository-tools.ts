@@ -784,13 +784,19 @@ export async function callRepositoryTool(
               }
             }
           } catch (error) {
-            // Fall through to existing Fast/Durable paths on unexpected errors.
+            // Process Runtime is authoritative. Falling through could spawn the
+            // same command again through the legacy Fast/Local Job path.
             if (process.env.REPO_HARNESS_DEBUG_PROCESS_RUNTIME === '1') {
               console.error('[repository_command_execute] process runtime error', error);
             }
+            return failure(error);
           }
         }
-        if (!forceDurable && routingDecision.mode === 'fast' && isFastEligibleTool('repository_command_execute', {
+        // Historical compatibility code is intentionally disabled. A typed
+        // runtime flag preserves legacy branch compilation/narrowing without
+        // permitting a second executor after Process Runtime failure.
+        const legacyFastFallbackEnabled: boolean = false;
+        if (legacyFastFallbackEnabled && !forceDurable && routingDecision.mode === 'fast' && isFastEligibleTool('repository_command_execute', {
           command: args.command,
           timeout_ms: timeoutMs,
           mode: typeof args.mode === 'string' ? args.mode : 'auto',

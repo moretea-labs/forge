@@ -6,8 +6,10 @@ import { spawnSync } from 'child_process';
 import {
   __resetLiveMonitorsForTests,
   cancelProcess,
+  claimProcessRequest,
   claimsForCheck,
   claimsForRepositoryCommand,
+  fingerprintProcessCommand,
   getProcessHandle,
   getProcessRecord,
   recoverManagedProcesses,
@@ -148,6 +150,106 @@ describe('Unified Process Runtime', () => {
     expect(waited.processId).toBe(handle.processId);
   });
 
+  test('same request id concurrently reuses one process and survives monitor restart', async () => {
+    const fx = fixture();
+    const counter = join(fx.root, 'request-counter.txt');
+    const requestId = 'same-request-once';
+    const command = {
+      kind: 'argv' as const,
+      executable: 'node',
+      args: [
+        '-e',
+        'const fs=require("fs"); fs.appendFileSync(process.argv[1], "x"); setTimeout(() => process.exit(0), 300);',
+        counter,
+      ],
+      cwd: fx.repoRoot,
+    };
+    const start = () => spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      command,
+      interactiveWaitMs: 25,
+      timeoutMs: 10_000,
+      origin: { surface: 'command' as const, toolName: 'repository_command_execute', requestId },
+    });
+
+    const [first, retry] = await Promise.all([start(), start()]);
+    expect(retry.processId).toBe(first.processId);
+    expect([first.deduplicated, retry.deduplicated].filter(Boolean).length).toBe(1);
+    const completed = first.completed
+      ? first
+      : await waitForProcess(fx.controllerHome, fx.repository.repoId, first.processId, { timeoutMs: 5_000 });
+    expect(completed.ok).toBe(true);
+    expect(readFileSync(counter, 'utf8')).toBe('x');
+
+    __resetLiveMonitorsForTests();
+    const afterRestartRetry = await start();
+    expect(afterRestartRetry.processId).toBe(first.processId);
+    expect(afterRestartRetry.deduplicated).toBe(true);
+    expect(readFileSync(counter, 'utf8')).toBe('x');
+  });
+
+  test('same request id with a different command fails closed', async () => {
+    const fx = fixture();
+    const output = join(fx.root, 'request-conflict.txt');
+    const requestId = 'conflicting-request';
+    const first = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      command: {
+        kind: 'argv', executable: 'node',
+        args: ['-e', 'require("fs").appendFileSync(process.argv[1], "a")', output],
+        cwd: fx.repoRoot,
+      },
+      interactiveWaitMs: 5_000,
+      timeoutMs: 10_000,
+      origin: { surface: 'command', requestId },
+    });
+    expect(first.ok).toBe(true);
+    await expect(spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      command: {
+        kind: 'argv', executable: 'node',
+        args: ['-e', 'require("fs").appendFileSync(process.argv[1], "b")', output],
+        cwd: fx.repoRoot,
+      },
+      interactiveWaitMs: 5_000,
+      timeoutMs: 10_000,
+      origin: { surface: 'command', requestId },
+    })).rejects.toThrow('PROCESS_REQUEST_ID_CONFLICT');
+    expect(readFileSync(output, 'utf8')).toBe('a');
+  });
+
+  test('request binding without a process record refuses re-execution', async () => {
+    const fx = fixture();
+    const requestId = 'incomplete-request';
+    const command = {
+      kind: 'argv' as const,
+      executable: 'node',
+      args: ['-e', 'process.exit(0)'],
+      cwd: fx.repoRoot,
+    };
+    claimProcessRequest({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      requestId,
+      commandFingerprint: fingerprintProcessCommand(command),
+      processId: 'proc_missing_record',
+    });
+    await expect(spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      command,
+      origin: { surface: 'command', requestId },
+    })).rejects.toThrow('PROCESS_REQUEST_INCOMPLETE');
+  });
+
   test('terminal fencing rejects second completion', async () => {
     const fx = fixture();
     const handle = await spawnManagedProcess({
@@ -269,6 +371,16 @@ describe('run_check Process Runtime facade', () => {
       check_id: 'check:release',
     });
     expect(classification.path).toBe('durable');
+  });
+
+  test('gateway routes long local tests to Process Runtime regardless of timeout', () => {
+    const classification = classifyGatewayExecutionPath('repository_command_execute', {
+      command: ['bun', 'test', 'tests/runtime/process-runtime.test.ts'],
+      timeout_ms: 600_000,
+    });
+    expect(classification.path).toBe('fast');
+    expect(classification.reasons).toContain('repository_command_process_runtime');
+    expect(classification.reasons.some((reason) => reason.includes('timeout_exceeds_fast_cap'))).toBe(false);
   });
 });
 

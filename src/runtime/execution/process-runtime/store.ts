@@ -4,9 +4,12 @@
  * Index: repositories/<repoId>/processes/active-index.json
  */
 
+import { createHash } from 'crypto';
 import {
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   renameSync,
@@ -15,7 +18,7 @@ import {
 } from 'fs';
 import { dirname, join } from 'path';
 import { ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
-import type { ManagedProcessRecord, ProcessRuntimeStatus } from './types';
+import type { ManagedProcessRecord, ProcessRequestBinding, ProcessRuntimeStatus } from './types';
 
 const ACTIVE_STATUSES = new Set<ProcessRuntimeStatus>(['starting', 'running', 'running_recovered']);
 
@@ -29,6 +32,19 @@ function processesRoot(controllerHome: string, repoId: string): string {
 
 function processPath(controllerHome: string, repoId: string, processId: string): string {
   return join(processesRoot(controllerHome, repoId), `${processId}.json`);
+}
+
+function requestBindingsRoot(controllerHome: string, repoId: string): string {
+  const dir = join(processesRoot(controllerHome, repoId), 'request-bindings');
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function requestBindingPath(controllerHome: string, repoId: string, checkoutId: string | undefined, requestId: string): string {
+  const key = createHash('sha256')
+    .update(JSON.stringify({ repoId, checkoutId: checkoutId?.trim() || null, requestId }))
+    .digest('hex');
+  return join(requestBindingsRoot(controllerHome, repoId), `${key}.json`);
 }
 
 function indexPath(controllerHome: string, repoId: string): string {
@@ -49,6 +65,74 @@ function readJson<T>(path: string): T | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Atomically claim one request id before creating a process record or spawning.
+ * Existing matching bindings are reusable; conflicting or unreadable bindings
+ * fail closed so a transport retry can never create a second process.
+ */
+export function claimProcessRequest(input: {
+  controllerHome: string;
+  repoId: string;
+  checkoutId?: string;
+  requestId: string;
+  commandFingerprint: string;
+  processId: string;
+}): { status: 'claimed' | 'existing'; binding: ProcessRequestBinding } {
+  const requestId = input.requestId.trim();
+  if (!requestId) throw new Error('PROCESS_REQUEST_ID_REQUIRED: requestId must not be empty');
+  const path = requestBindingPath(input.controllerHome, input.repoId, input.checkoutId, requestId);
+  const binding: ProcessRequestBinding = {
+    schemaVersion: 1,
+    repoId: input.repoId,
+    checkoutId: input.checkoutId,
+    requestId,
+    commandFingerprint: input.commandFingerprint,
+    processId: input.processId,
+    createdAt: new Date().toISOString(),
+  };
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, 'wx', 0o600);
+    writeFileSync(fd, `${JSON.stringify(binding, null, 2)}\n`, 'utf8');
+    closeSync(fd);
+    fd = undefined;
+    return { status: 'claimed', binding };
+  } catch (error) {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* ignore */ }
+    }
+    const code = typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code?: unknown }).code ?? '')
+      : '';
+    if (code !== 'EEXIST') throw error;
+  }
+  const existing = readJson<ProcessRequestBinding>(path);
+  if (!existing || existing.schemaVersion !== 1 || !existing.processId || !existing.commandFingerprint) {
+    throw new Error(`PROCESS_REQUEST_BINDING_CORRUPT: ${requestId}`);
+  }
+  if (
+    existing.repoId !== input.repoId
+    || (existing.checkoutId?.trim() || undefined) !== (input.checkoutId?.trim() || undefined)
+    || existing.requestId !== requestId
+    || existing.commandFingerprint !== input.commandFingerprint
+  ) {
+    throw new Error(`PROCESS_REQUEST_ID_CONFLICT: ${requestId}`);
+  }
+  return { status: 'existing', binding: existing };
+}
+
+export function getProcessRequestBinding(
+  controllerHome: string,
+  repoId: string,
+  checkoutId: string | undefined,
+  requestId: string,
+): ProcessRequestBinding | undefined {
+  const normalized = requestId.trim();
+  if (!normalized) return undefined;
+  const binding = readJson<ProcessRequestBinding>(requestBindingPath(controllerHome, repoId, checkoutId, normalized));
+  return binding?.schemaVersion === 1 ? binding : undefined;
 }
 
 function rebuildActiveIndex(controllerHome: string, repoId: string): string[] {

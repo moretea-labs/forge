@@ -124,11 +124,8 @@ export function classifyRepositoryCommandRoute(
   if (isFocusedCheckCommand(command) || /\b(?:test|typecheck|lint|build|check)\b/i.test(text)) {
     return { route: 'process_managed', reason: 'local_build_or_test' };
   }
-  // Unknown mutating local command — managed process with workspace write claims,
-  // not a second executor. Extremely long / approval-gated still durable.
-  if (options.timeoutMs && options.timeoutMs > 15 * 60_000) {
-    return { route: 'durable', reason: 'very_long_timeout_requires_durable' };
-  }
+  // Unknown mutating local command remains one local Managed Process. Timeout is
+  // a process lifecycle budget and must never select a different architecture.
   return { route: 'process_managed', reason: 'local_workspace_mutation' };
 }
 

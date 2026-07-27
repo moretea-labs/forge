@@ -22,6 +22,7 @@ import {
 } from '../../execution/thin-harness';
 import {
   checkRequiresDurableWorkflow,
+  classifyRepositoryCommandRoute,
   runCheckViaProcessRuntime,
 } from '../../execution/process-runtime';
 
@@ -275,7 +276,26 @@ export function classifyGatewayExecutionPath(
     };
   }
 
-  if (THIN_ROUTED_TOOLS.has(name) || name === 'repository_command_execute') {
+  // repository_command_execute has one authoritative classifier. Process Runtime
+  // owns every local single-process command regardless of timeout; explicit
+  // async/durable requests were handled above and remain external-controller work.
+  if (name === 'repository_command_execute') {
+    const command = args.command;
+    if (!(typeof command === 'string' || Array.isArray(command))) {
+      return { path: 'reject', reasons: ['repository_command_missing'] };
+    }
+    const route = classifyRepositoryCommandRoute(command as string | string[], {
+      defaultBranch: typeof args.default_branch === 'string' ? args.default_branch : undefined,
+      timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
+    });
+    if (route.route === 'process_direct' || route.route === 'process_managed') {
+      return { path: 'fast', reasons: ['repository_command_process_runtime', route.reason] };
+    }
+    if (route.route === 'reject') return { path: 'reject', reasons: [route.reason] };
+    return { path: 'durable', reasons: [route.reason] };
+  }
+
+  if (THIN_ROUTED_TOOLS.has(name)) {
     const decision = routeExecution({
       operation: name,
       mode: args.mode === 'fast' ? 'fast' : 'auto',
@@ -452,7 +472,7 @@ export function injectDurableCommandFields(tool: McpToolDefinition): McpToolDefi
         ...(schema.properties ?? {}),
         request_id: {
           type: 'string',
-          description: 'Idempotency key. Retries with the same request_id return the original durable Job.',
+          description: 'Idempotency key. Process Runtime retries return the original Process; durable operations return the original Work or historical Job.',
         },
         apply_mode: {
           type: 'string',
