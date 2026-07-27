@@ -116,6 +116,8 @@ interface SchedulerState {
   schemaVersion: 1;
   updatedAt: string;
   loopStartedAt?: string;
+  lastHeartbeatAt?: string;
+  heartbeatTimeoutMs?: number;
   lastTickAt?: string;
   lastDispatchAt?: string;
   lastReconcileAt?: string;
@@ -130,6 +132,8 @@ export interface SchedulerHealthSnapshot {
   schemaVersion: 1;
   updatedAt: string;
   loopStartedAt?: string;
+  lastHeartbeatAt?: string;
+  heartbeatTimeoutMs?: number;
   lastTickAt?: string;
   lastDispatchAt?: string;
   lastReconcileAt?: string;
@@ -149,6 +153,8 @@ export interface SchedulerConfig {
   maxConcurrentRepositories: number;
   pollIntervalMs: number;
   idleBackoffMaxMs: number;
+  heartbeatIntervalMs: number;
+  heartbeatTimeoutMs: number;
   maxHeavyChecks: number;
   maxAgentProcesses: number;
   maxCodexProcesses: number;
@@ -184,6 +190,7 @@ export class GlobalScheduler {
   private lastPersistedAt = 0;
   private readonly lastRepoDispatch = new Map<string, number>();
   private readonly loopStartedAt = new Date().toISOString();
+  private lastHeartbeatAt = this.loopStartedAt;
   private lastTickAt = this.loopStartedAt;
   private lastDispatchAt: string | undefined;
   private lastReconcileAt: string | undefined;
@@ -203,11 +210,21 @@ export class GlobalScheduler {
     this.controllerPid = runtime.controllerPid ?? process.pid;
     this.controllerStartedAt = runtime.controllerStartedAt;
     this.actors = new RepoActorRegistry(controllerHome);
+    const pollIntervalMs = Math.max(50, config.pollIntervalMs ?? 250);
+    const idleBackoffMaxMs = Math.max(250, config.idleBackoffMaxMs ?? Number(process.env.REPO_HARNESS_IDLE_BACKOFF_MAX_MS ?? 2_000));
+    const heartbeatIntervalMs = Math.max(25, config.heartbeatIntervalMs ?? Number(process.env.REPO_HARNESS_SCHEDULER_HEARTBEAT_INTERVAL_MS ?? 1_000));
+    const heartbeatTimeoutMs = Math.max(
+      heartbeatIntervalMs * 4,
+      idleBackoffMaxMs * 4,
+      config.heartbeatTimeoutMs ?? Number(process.env.REPO_HARNESS_SCHEDULER_HEARTBEAT_TIMEOUT_MS ?? 60_000),
+    );
     this.config = {
       maxWorkers: Math.max(1, config.maxWorkers ?? Number(process.env.REPO_HARNESS_MAX_WORKERS ?? 4)),
       maxConcurrentRepositories: Math.max(1, config.maxConcurrentRepositories ?? Number(process.env.REPO_HARNESS_MAX_ACTIVE_REPOS ?? 4)),
-      pollIntervalMs: Math.max(50, config.pollIntervalMs ?? 250),
-      idleBackoffMaxMs: Math.max(250, config.idleBackoffMaxMs ?? Number(process.env.REPO_HARNESS_IDLE_BACKOFF_MAX_MS ?? 2_000)),
+      pollIntervalMs,
+      idleBackoffMaxMs,
+      heartbeatIntervalMs,
+      heartbeatTimeoutMs,
       maxHeavyChecks: Math.max(1, config.maxHeavyChecks ?? Number(process.env.REPO_HARNESS_MAX_HEAVY_CHECKS ?? 2)),
       maxAgentProcesses: Math.max(1, config.maxAgentProcesses ?? Number(process.env.REPO_HARNESS_MAX_AGENT_PROCESSES ?? 4)),
       maxCodexProcesses: Math.max(1, config.maxCodexProcesses ?? Number(process.env.REPO_HARNESS_MAX_CODEX_PROCESSES ?? 3)),
@@ -233,6 +250,8 @@ export class GlobalScheduler {
       schemaVersion: 1,
       updatedAt: new Date().toISOString(),
       loopStartedAt: this.loopStartedAt,
+      lastHeartbeatAt: this.lastHeartbeatAt,
+      heartbeatTimeoutMs: this.config.heartbeatTimeoutMs,
       lastTickAt: this.lastTickAt,
       lastDispatchAt: this.lastDispatchAt,
       lastReconcileAt: this.lastReconcileAt,
@@ -572,7 +591,9 @@ export class GlobalScheduler {
 
   async tick(): Promise<{ activeJobs: number }> {
     const now = Date.now();
-    this.lastTickAt = new Date(now).toISOString();
+    this.lastHeartbeatAt = new Date(now).toISOString();
+    this.lastTickAt = this.lastHeartbeatAt;
+    this.persistState();
     if (now - this.lastCleanupAt >= RUNTIME_CLEANUP_INTERVAL_MS) {
       // Advance the interval before cleanup so a failing pass cannot create a
       // tight retry loop on every scheduler tick.
@@ -770,6 +791,7 @@ export class GlobalScheduler {
       }
       this.lastGoalLoopTick = now;
     }
+    this.lastHeartbeatAt = new Date().toISOString();
     this.persistState();
     return { activeJobs };
   }
@@ -783,7 +805,13 @@ export class GlobalScheduler {
         error instanceof Error ? error.message : String(error),
       );
     }
+    this.lastHeartbeatAt = new Date().toISOString();
     this.persistState(true);
+    const heartbeatTimer = setInterval(() => {
+      this.lastHeartbeatAt = new Date().toISOString();
+      this.persistState(true);
+    }, this.config.heartbeatIntervalMs);
+    heartbeatTimer.unref?.();
     let idleStreak = 0;
     try {
       while (!signal?.aborted) {
@@ -792,7 +820,8 @@ export class GlobalScheduler {
           idleStreak = activeJobs === 0 ? idleStreak + 1 : 0;
         } catch (error) {
           idleStreak = 0;
-          this.lastTickAt = new Date().toISOString();
+          this.lastHeartbeatAt = new Date().toISOString();
+          this.lastTickAt = this.lastHeartbeatAt;
           this.persistState(true);
           console.error('[repo-harness scheduler] tick failed:', error);
         }
@@ -807,6 +836,7 @@ export class GlobalScheduler {
         if (waitResult === 'aborted') break;
       }
     } finally {
+      clearInterval(heartbeatTimer);
       await this.cleanupSpawnedWorkers();
     }
   }

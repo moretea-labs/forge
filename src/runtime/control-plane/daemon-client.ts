@@ -47,7 +47,8 @@ export interface ControllerDaemonStatus {
 
 function daemonPidPath(controllerHome: string): string { return join(ensureControllerHome(controllerHome), 'daemon', 'controller.pid'); }
 function daemonStatePath(controllerHome: string): string { return join(ensureControllerHome(controllerHome), 'daemon', 'state.json'); }
-const SCHEDULER_HEARTBEAT_STALE_MS = 5_000;
+export const LEGACY_SCHEDULER_HEARTBEAT_TIMEOUT_MS = 60_000;
+const MIN_SCHEDULER_HEARTBEAT_TIMEOUT_MS = 5_000;
 const DAEMON_STARTUP_GRACE_MS = 15_000;
 
 function pidAlive(pid: number | undefined): boolean {
@@ -55,11 +56,23 @@ function pidAlive(pid: number | undefined): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
+export function schedulerHeartbeatSnapshotHealthy(
+  scheduler: ReturnType<typeof readSchedulerHealthSnapshot>,
+  nowMs = Date.now(),
+): boolean {
+  if (!scheduler.loopStartedAt) return false;
+  const heartbeat = scheduler.lastHeartbeatAt ?? scheduler.lastTickAt;
+  if (!heartbeat) return false;
+  const heartbeatAt = Date.parse(heartbeat);
+  const configuredTimeout = Number(scheduler.heartbeatTimeoutMs);
+  const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0
+    ? Math.max(MIN_SCHEDULER_HEARTBEAT_TIMEOUT_MS, configuredTimeout)
+    : LEGACY_SCHEDULER_HEARTBEAT_TIMEOUT_MS;
+  return Number.isFinite(heartbeatAt) && nowMs - heartbeatAt <= timeoutMs;
+}
+
 function schedulerHeartbeatHealthy(controllerHome: string): boolean {
-  const scheduler = readSchedulerHealthSnapshot(controllerHome);
-  if (!scheduler.loopStartedAt || !scheduler.lastTickAt) return false;
-  const lastTick = Date.parse(scheduler.lastTickAt);
-  return Number.isFinite(lastTick) && Date.now() - lastTick <= SCHEDULER_HEARTBEAT_STALE_MS;
+  return schedulerHeartbeatSnapshotHealthy(readSchedulerHealthSnapshot(controllerHome));
 }
 
 export function resolveControllerDaemonStatusHome(controllerHome: string): string {

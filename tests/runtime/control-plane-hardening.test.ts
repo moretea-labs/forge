@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { ensureControllerDaemon, readControllerDaemonStatus } from '../../src/runtime/control-plane/daemon-client';
+import { ensureControllerDaemon, readControllerDaemonStatus, schedulerHeartbeatSnapshotHealthy } from '../../src/runtime/control-plane/daemon-client';
 import { createExecutionJob } from '../../src/runtime/execution/jobs/store';
 import { TERMINAL_JOB_STATUSES } from '../../src/runtime/execution/jobs/types';
 
@@ -39,6 +39,30 @@ describe('control-plane hardening', () => {
     const ensured = ensureControllerDaemon(controllerHome);
     expect(ensured.pid).toBe(process.pid);
     expect(ensured.startedAt).toBe(startedAt);
+  });
+
+  test('uses the Scheduler-published heartbeat timeout and a safe legacy fallback', () => {
+    const now = Date.now();
+    const base = {
+      schemaVersion: 1 as const,
+      updatedAt: new Date(now).toISOString(),
+      loopStartedAt: new Date(now - 120_000).toISOString(),
+      lastRepoDispatch: {},
+    };
+    expect(schedulerHeartbeatSnapshotHealthy({
+      ...base,
+      lastTickAt: new Date(now - 20_000).toISOString(),
+    }, now)).toBe(true);
+    expect(schedulerHeartbeatSnapshotHealthy({
+      ...base,
+      lastHeartbeatAt: new Date(now - 20_000).toISOString(),
+      heartbeatTimeoutMs: 30_000,
+    }, now)).toBe(true);
+    expect(schedulerHeartbeatSnapshotHealthy({
+      ...base,
+      lastHeartbeatAt: new Date(now - 31_000).toISOString(),
+      heartbeatTimeoutMs: 30_000,
+    }, now)).toBe(false);
   });
 
   test('ensureControllerDaemon skips startup cleanup when the daemon PID is live', () => {
