@@ -204,6 +204,51 @@ describe('controller-owned Work recovery and finalize cleanup', () => {
     expect(repositoryCheckoutLifecycle(managedCheckout)).toBe('removed');
   });
 
+  test('finalize merges and cleans a precommitted managed branch without creating another commit', async () => {
+    const { repoRoot, controllerHome, repository, context } = fixture();
+    const ctx = context('session-precommitted-finalize', 'controller-precommitted-finalize');
+    structured(await callExecutionTool(ctx, 'session_start', {}));
+    structured(await callExecutionTool(ctx, 'session_bind_repository', { repo_id: repository.repoId }));
+    const prepared = structured(await callExecutionTool(ctx, 'work_prepare', {
+      repo_id: repository.repoId,
+      objective: 'Finalize a branch committed before Work stages recorded the commit',
+      isolation: 'new_worktree',
+    }));
+    const workId = String(prepared.work.workId);
+    const branch = String(prepared.work.branch);
+    const checkoutId = String(prepared.work.checkoutId);
+    const worktreePath = String(prepared.work.worktreePath);
+
+    const precommitted = structured(await callExecutionTool(ctx, 'work_execute', {
+      repo_id: repository.repoId,
+      work_id: workId,
+      command: 'printf precommitted-before-finalize > precommitted.txt && git add precommitted.txt && git commit -m "precommit managed branch"',
+    }));
+    expect(precommitted.executedCount).toBe(1);
+    const featureHead = git(worktreePath, 'rev-parse', 'HEAD');
+
+    const finalized = structured(await callExecutionTool(ctx, 'work_finalize', {
+      repo_id: repository.repoId,
+      work_id: workId,
+      commit: false,
+      merge: true,
+      cleanup: true,
+      target_branch: 'main',
+    }));
+    expect(finalized.completed).toBe(true);
+    expect(finalized.work.state).toBe('cleaned');
+    expect(finalized.stages.commit).toBe('skipped');
+    expect(finalized.stages.merge).toBe('done');
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(git(repoRoot, 'branch', '--list', branch)).toBe('');
+    expect(git(repoRoot, 'rev-parse', 'HEAD')).toBe(featureHead);
+    expect(git(repoRoot, 'show', 'HEAD:precommitted.txt')).toBe('precommitted-before-finalize');
+
+    const refreshed = listRepositories(controllerHome, { includeRemoved: true }).find((entry) => entry.repoId === repository.repoId)!;
+    const managedCheckout = refreshed.checkouts.find((checkout) => checkout.checkoutId === checkoutId)!;
+    expect(repositoryCheckoutLifecycle(managedCheckout)).toBe('removed');
+  });
+
   test('finalize commits, merges, removes managed checkout, deletes branch, and clears session focus', async () => {
     const { repoRoot, controllerHome, repository, context } = fixture();
     const ctx = context('session-finalize', 'controller-finalize');

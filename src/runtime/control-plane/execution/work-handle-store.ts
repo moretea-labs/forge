@@ -74,7 +74,7 @@ export function writeWorkHandle(controllerHome: string, handle: WorkHandleState)
 
 const TRANSITIONS: Record<WorkHandleStateName, readonly WorkHandleStateName[]> = {
   prepared: ['editing', 'validating', 'committed', 'failed'],
-  editing: ['validating', 'committed', 'failed'],
+  editing: ['validating', 'committed', 'merged', 'failed'],
   validating: ['editing', 'committed', 'merged', 'failed'],
   committed: ['validating', 'merged', 'cleaned', 'failed'],
   merged: ['cleaned', 'failed'],
