@@ -20,7 +20,7 @@ import { ensureMcpControllerHomeBearerToken, writeMcpServiceLocalConfig } from '
 import { writeActiveSlotAuthority } from '../../src/cli/controller/runtime-slots';
 import { publishWriterAuthority } from '../../src/cli/controller/stable-state/writer-authority';
 import { readCurrentRelease, readCurrentSupervisorRelease, supervisorReleasesRoot } from '../../src/runtime/supervisor/paths';
-import { createSupervisorControlServer } from '../../src/runtime/supervisor/control-server';
+import { createSupervisorControlServer, sendSupervisorCommand } from '../../src/runtime/supervisor/control-server';
 import type { SupervisorManagedProcess, SupervisorOperation, SupervisorState } from '../../src/runtime/supervisor/types';
 import { evaluateRuntimeReleaseCoherence, evaluateSupervisorServiceReleaseCoherence, extractSupervisorServiceRelease } from '../../src/runtime/supervisor/release-coherence';
 import { publishAndScheduleSupervisorRelease } from '../../src/runtime/supervisor/service-activation';
@@ -840,6 +840,38 @@ describe('Stable Supervisor production hardening', () => {
     }
   });
 
+  test('Supervisor handoff invokes the non-destructive handler without full stop', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'repo-harness-supervisor-handoff-control-'));
+    let handoffCalls = 0;
+    let stopCalls = 0;
+    let callbackCalls = 0;
+    const control = await createSupervisorControlServer({
+      controllerHome: home,
+      repoRoot: process.cwd(),
+      controlPort: 0,
+      authToken: 'test-token',
+      onHandoff: () => { callbackCalls += 1; },
+      handlers: {
+        getState: () => null,
+        getOperation: () => null,
+        submitOperation: () => { throw new Error('unexpected mutation'); },
+        submitCommand: () => { throw new Error('unexpected mutation'); },
+        handoff: async () => { handoffCalls += 1; },
+        stop: async () => { stopCalls += 1; },
+      },
+    });
+    try {
+      const result = await sendSupervisorCommand(home, { command: 'handoff' });
+      expect(result.ok).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(handoffCalls).toBe(1);
+      expect(stopCalls).toBe(0);
+      expect(callbackCalls).toBe(1);
+    } finally {
+      await control.close();
+    }
+  });
+
   test('Rescue MCP accepts query paths and rejects oversized bodies without dropping the response', async () => {
     const home = mkdtempSync(join(tmpdir(), 'repo-harness-supervisor-control-'));
     const control = await createSupervisorControlServer({
@@ -852,6 +884,7 @@ describe('Stable Supervisor production hardening', () => {
         getOperation: () => null,
         submitOperation: () => { throw new Error('unexpected mutation'); },
         submitCommand: () => { throw new Error('unexpected mutation'); },
+        handoff: async () => undefined,
         stop: async () => undefined,
       },
     });
@@ -936,7 +969,27 @@ describe('Stable Supervisor production hardening', () => {
       daemonExecutable: '/tmp/releases/current/daemon.js',
     };
     expect(managedProcessNeedsReleaseRefresh(oldDaemon, expected, 8, true)).toBe(true);
-    expect(managedProcessNeedsReleaseRefresh({ ...oldDaemon, releasePath: expected.releasePath, releaseRevision: expected.releaseRevision, ownerEpoch: 8 }, expected, 8, true)).toBe(false);
+    const matchingOldEpoch = {
+      ...oldDaemon,
+      releasePath: expected.releasePath,
+      releaseRevision: expected.releaseRevision,
+    };
+    expect(managedProcessNeedsReleaseRefresh(matchingOldEpoch, expected, 8, true)).toBe(true);
+    expect(managedProcessNeedsReleaseRefresh(
+      matchingOldEpoch,
+      expected,
+      8,
+      true,
+      { allowOwnerEpochAdoption: true },
+    )).toBe(false);
+    expect(managedProcessNeedsReleaseRefresh(
+      oldDaemon,
+      expected,
+      8,
+      true,
+      { allowOwnerEpochAdoption: true },
+    )).toBe(true);
+    expect(managedProcessNeedsReleaseRefresh({ ...matchingOldEpoch, ownerEpoch: 8 }, expected, 8, true)).toBe(false);
   });
 
   test('healthy Supervisor status from an older release cannot satisfy activation', () => {

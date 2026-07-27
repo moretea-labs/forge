@@ -13,6 +13,7 @@ export const DEFAULT_SUPERVISOR_CONTROL_HOST = '127.0.0.1';
 export const DEFAULT_SUPERVISOR_CONTROL_PORT = 8770;
 
 export interface SupervisorControlHandlers extends RescueDispatchContext {
+  handoff(): Promise<void>;
   stop(): Promise<void>;
   submitCommand(input: { requestId: string; kind: SupervisorOperationKind; actor: string; reason?: string; candidateReleasePath?: string }): { operation: SupervisorOperation; deduplicated: boolean };
 }
@@ -24,6 +25,7 @@ export interface SupervisorControlServerOptions {
   controlPort?: number;
   authToken?: string;
   handlers: SupervisorControlHandlers;
+  onHandoff?: () => void;
   onStopped?: () => void;
 }
 
@@ -195,7 +197,12 @@ function parseCommand(value: string): SupervisorCommandRequest | null {
   }
 }
 
-function commandResponse(request: SupervisorCommandRequest, handlers: SupervisorControlHandlers, onStopped?: () => void): SupervisorCommandResponse {
+function commandResponse(
+  request: SupervisorCommandRequest,
+  handlers: SupervisorControlHandlers,
+  onStopped?: () => void,
+  onHandoff?: () => void,
+): SupervisorCommandResponse {
   if (request.command === 'ping') return { ok: true };
   if (request.command === 'status') return { ok: true, state: handlers.getState() ?? undefined };
   if (request.command === 'operation_get') {
@@ -212,6 +219,10 @@ function commandResponse(request: SupervisorCommandRequest, handlers: Supervisor
       candidateReleasePath: request.candidateReleasePath,
     });
     return { ok: true, deduplicated: accepted.deduplicated, operation: accepted.operation };
+  }
+  if (request.command === 'handoff') {
+    void handlers.handoff().then(() => onHandoff?.());
+    return { ok: true, state: handlers.getState() ?? undefined };
   }
   if (request.command === 'stop') {
     void handlers.stop().then(() => onStopped?.());
@@ -258,7 +269,9 @@ export async function createSupervisorControlServer(options: SupervisorControlSe
         const line = buffer.slice(0, newline);
         buffer = buffer.slice(newline + 1);
         const request = parseCommand(line);
-        const response = request ? commandResponse(request, options.handlers, options.onStopped) : { ok: false, error: { code: 'INVALID_COMMAND', message: 'Invalid JSON command.' } };
+        const response = request
+          ? commandResponse(request, options.handlers, options.onStopped, options.onHandoff)
+          : { ok: false, error: { code: 'INVALID_COMMAND', message: 'Invalid JSON command.' } };
         socket.write(`${JSON.stringify(response)}\n`);
         newline = buffer.indexOf('\n');
       }

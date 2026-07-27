@@ -46,6 +46,7 @@ describe('stable Supervisor Rescue MCP', () => {
           operations.set(accepted.operation.operationId, accepted.operation);
           return accepted;
         },
+        handoff: async () => {},
         stop: async () => {},
       },
     });

@@ -1,6 +1,6 @@
 import { spawn } from 'child_process';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { durableControllerHome, ensureControllerHome } from '../../cli/repositories/controller-home';
 import { withControllerLock } from '../../cli/repositories/locks';
@@ -62,8 +62,24 @@ function schedulerHeartbeatHealthy(controllerHome: string): boolean {
   return Number.isFinite(lastTick) && Date.now() - lastTick <= SCHEDULER_HEARTBEAT_STALE_MS;
 }
 
+export function resolveControllerDaemonStatusHome(controllerHome: string): string {
+  const requestedHome = ensureControllerHome(controllerHome);
+  const stableHome = durableControllerHome(requestedHome);
+  // Direct slot callers must stay slot-local. Root callers, including
+  // controller_ready and lifecycle diagnostics, follow the Supervisor-owned
+  // active process pair instead of reading a stale pre-blue/green state file.
+  if (resolve(stableHome) !== resolve(requestedHome) || !isStableSupervisorInstalled(stableHome)) {
+    return requestedHome;
+  }
+  const supervisor = readJsonFile<{
+    controllerDaemon?: { controllerHome?: string };
+  }>(supervisorStatePath(stableHome), {});
+  const activeHome = supervisor.controllerDaemon?.controllerHome?.trim();
+  return activeHome ? ensureControllerHome(activeHome) : requestedHome;
+}
+
 export function readControllerDaemonStatus(controllerHome: string): ControllerDaemonStatus {
-  const home = ensureControllerHome(controllerHome);
+  const home = resolveControllerDaemonStatusHome(controllerHome);
   const generation = readRuntimeGeneration(home);
   const state = readJsonFile<ControllerDaemonStatus>(daemonStatePath(home), { schemaVersion: 1, status: 'unavailable' });
   const withGeneration: ControllerDaemonStatus = {

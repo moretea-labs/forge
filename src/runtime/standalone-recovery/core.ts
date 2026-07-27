@@ -222,39 +222,129 @@ function mainToken(config: RecoveryConfig): string | undefined {
   return typeof parsed?.bearerToken === 'string' && parsed.bearerToken.length >= 24 ? parsed.bearerToken : undefined;
 }
 
-async function mcpCall(url: string, token: string, id: number, method: string, params?: Record<string, unknown>): Promise<{ ok: boolean; payload?: Record<string, unknown>; detail: string }> {
+interface RecoveryMcpCallResult {
+  ok: boolean;
+  payload?: Record<string, unknown>;
+  detail: string;
+  sessionId?: string;
+}
+
+function parseRecoveryMcpPayload(text: string, contentType: string): Record<string, unknown> | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+  if (contentType.includes('text/event-stream')) {
+    const data = trimmed
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trim())
+      .find((line) => line && line !== '[DONE]');
+    if (!data) return undefined;
+    try { return JSON.parse(data) as Record<string, unknown>; } catch { return undefined; }
+  }
+  try { return JSON.parse(trimmed) as Record<string, unknown>; } catch { return undefined; }
+}
+
+async function mcpCall(
+  url: string,
+  token: string,
+  id: number | undefined,
+  method: string,
+  params?: Record<string, unknown>,
+  sessionId?: string,
+): Promise<RecoveryMcpCallResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 8_000);
   try {
     const response = await fetch(url, {
       method: 'POST', signal: controller.signal,
-      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id, method, ...(params ? { params } : {}) }),
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        ...(sessionId ? { 'mcp-session-id': sessionId } : {}),
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', ...(id === undefined ? {} : { id }), method, ...(params ? { params } : {}) }),
     });
-    const payload = await response.json().catch(() => undefined) as Record<string, unknown> | undefined;
-    return { ok: response.ok && !payload?.error, payload, detail: `HTTP ${response.status}` };
+    const text = await response.text();
+    const payload = parseRecoveryMcpPayload(text, response.headers.get('content-type') ?? '');
+    const returnedSessionId = response.headers.get('mcp-session-id')?.trim() || sessionId;
+    return {
+      ok: response.ok && !payload?.error,
+      payload,
+      detail: `HTTP ${response.status}`,
+      ...(returnedSessionId ? { sessionId: returnedSessionId } : {}),
+    };
   } catch (error) { return { ok: false, detail: error instanceof Error ? error.message.slice(0, 180) : 'MCP request failed' }; } finally { clearTimeout(timer); }
+}
+
+async function closeRecoveryMcpSession(url: string, token: string, sessionId: string): Promise<{ ok: boolean; detail: string }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5_000);
+  try {
+    const response = await fetch(url, {
+      method: 'DELETE',
+      signal: controller.signal,
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: 'application/json, text/event-stream',
+        'mcp-session-id': sessionId,
+      },
+    });
+    return { ok: response.ok, detail: `HTTP ${response.status}` };
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message.slice(0, 180) : 'MCP session close failed' };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function probeMcp(config: RecoveryConfig): Promise<Record<string, { ok: boolean; detail: string; value?: unknown }>> {
   const url = config.publicMcpUrl ?? `${config.stableIngressUrl.replace(/\/$/, '')}/mcp`;
   const token = mainToken(config);
   if (!token) return { mcp_initialize: { ok: false, detail: 'main MCP probe credential is unavailable' } };
-  const initialized = await mcpCall(url, token, 1, 'initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'standalone-recovery', version: '1' } });
-  if (!initialized.ok) return { mcp_initialize: { ok: false, detail: initialized.detail } };
-  const listed = await mcpCall(url, token, 2, 'tools/list');
-  const tools = Array.isArray((listed.payload?.result as { tools?: unknown } | undefined)?.tools) ? ((listed.payload!.result as { tools: Array<{ name?: unknown }> }).tools) : [];
+  const initialized = await mcpCall(url, token, 1, 'initialize', {
+    protocolVersion: '2025-06-18',
+    capabilities: {},
+    clientInfo: { name: 'standalone-recovery', version: '1' },
+  });
+  if (!initialized.ok || !initialized.sessionId) {
+    return {
+      mcp_initialize: {
+        ok: false,
+        detail: initialized.ok ? `${initialized.detail}; session id missing` : initialized.detail,
+      },
+    };
+  }
+  const sessionId = initialized.sessionId;
+  const acknowledged = await mcpCall(url, token, undefined, 'notifications/initialized', undefined, sessionId);
+  if (!acknowledged.ok) {
+    const closed = await closeRecoveryMcpSession(url, token, sessionId);
+    return {
+      mcp_initialize: { ok: true, detail: initialized.detail },
+      mcp_initialized_notification: { ok: false, detail: acknowledged.detail },
+      mcp_session_close: { ok: closed.ok, detail: closed.detail },
+    };
+  }
+  const listed = await mcpCall(url, token, 2, 'tools/list', undefined, sessionId);
+  const tools = Array.isArray((listed.payload?.result as { tools?: unknown } | undefined)?.tools)
+    ? ((listed.payload!.result as { tools: Array<{ name?: unknown }> }).tools)
+    : [];
   const names = tools.map((tool) => typeof tool.name === 'string' ? tool.name : '').filter(Boolean).sort();
   const fingerprint = createHash('sha256').update(names.join('\n')).digest('hex');
   const expected = config.expectedToolFingerprint;
   const expectedMatches = !expected || (expected.length === fingerprint.length && timingSafeEqual(Buffer.from(expected), Buffer.from(fingerprint)));
   const toolListOk = listed.ok && names.length > 0 && expectedMatches;
   const readOnly = config.readOnlyTool ?? { name: 'controller_context' };
-  const called = toolListOk ? await mcpCall(url, token, 3, 'tools/call', { name: readOnly.name, arguments: readOnly.arguments ?? {} }) : undefined;
+  const called = toolListOk
+    ? await mcpCall(url, token, 3, 'tools/call', { name: readOnly.name, arguments: readOnly.arguments ?? {} }, sessionId)
+    : undefined;
+  const closed = await closeRecoveryMcpSession(url, token, sessionId);
   return {
     mcp_initialize: { ok: initialized.ok, detail: initialized.detail },
+    mcp_initialized_notification: { ok: acknowledged.ok, detail: acknowledged.detail },
     mcp_tools_list: { ok: toolListOk, detail: `${listed.detail}; count=${names.length}; fingerprint=${fingerprint}`, value: { count: names.length, fingerprint } },
     mcp_read_only_call: { ok: Boolean(called?.ok), detail: called?.detail ?? 'tools/list failed' },
+    mcp_session_close: { ok: closed.ok, detail: closed.detail },
   };
 }
 
@@ -385,11 +475,50 @@ export async function listSlots(config: RecoveryConfig): Promise<Record<string, 
   return { activeSlot: state.activeSlot, previousSlot: state.previousSlot, active: slotRelease(config, state.activeSlot), previous: slotRelease(config, state.previousSlot), knownGood: knownGood(config).releases };
 }
 
-export async function restartSupervisor(config: RecoveryConfig): Promise<{ ok: boolean; operationId?: string; detail: string }> {
+export function recoveryReconnectOperation(verified: VerifyResult): 'none' | 'restart_gateway' {
+  // MCP/session probe failures are never grounds for restarting the whole
+  // runtime. Only an independently failed active-Gateway health probe can
+  // select a bounded Gateway-only restart.
+  if (!verified.probes.supervisor_socket?.ok) return 'none';
+  if (verified.probes.active_gateway?.ok) return 'none';
+  return 'restart_gateway';
+}
+
+export async function restartSupervisor(config: RecoveryConfig): Promise<{ ok: boolean; noOp?: boolean; operationId?: string; detail: string }> {
+  const verified = await verifyStableRuntime(config);
+  const kind = recoveryReconnectOperation(verified);
+  if (kind === 'none') {
+    const healthyTransport = verified.probes.supervisor_socket?.ok === true
+      && verified.probes.stable_ingress?.ok === true
+      && verified.probes.active_gateway?.ok === true;
+    audit(config, 'restart_supervisor_refused', {
+      healthyTransport,
+      reason: healthyTransport
+        ? 'transport healthy; MCP/session probe failure must not restart runtime'
+        : 'Supervisor control unavailable; refusing blind full-runtime restart',
+    });
+    return {
+      ok: healthyTransport,
+      noOp: true,
+      detail: healthyTransport
+        ? 'Runtime transport is healthy; no restart performed. The client may retry or refresh its MCP session.'
+        : 'Supervisor control is unavailable; blind full-runtime restart was refused.',
+    };
+  }
   const state = await supervisorStatus(config);
   if (state.currentOperationId) return { ok: false, detail: 'Supervisor already has an operation in flight' };
-  const accepted = await operation(config, `recovery-restart-supervisor:${Date.now()}`, 'restart_full', 'bounded standalone recovery restart');
-  return { ok: Boolean(accepted.operationId), operationId: accepted.operationId, detail: accepted.operationId ? 'Supervisor restart accepted' : 'Supervisor restart rejected' };
+  const accepted = await operation(
+    config,
+    `recovery-restart-gateway:${Date.now()}`,
+    kind,
+    'bounded standalone recovery Gateway restart after independent active-Gateway failure',
+  );
+  audit(config, 'restart_gateway_requested', { operationId: accepted.operationId });
+  return {
+    ok: Boolean(accepted.operationId),
+    operationId: accepted.operationId,
+    detail: accepted.operationId ? 'Gateway-only recovery accepted' : 'Gateway-only recovery rejected',
+  };
 }
 
 export function gatewayToken(config: RecoveryConfig): string | undefined {

@@ -242,13 +242,30 @@ async function activateInstalledService(
       resolveWait,
       Math.max(750, Math.min(Math.trunc(handoffDelayMs), 30_000)),
     ));
-    const stopped = await stopControllerService({
-      repo,
-      controllerHome: home,
-      protectCallerAncestry: false,
-      requireFullStop: true,
-      stopTimeoutMs: 15_000,
-    });
+    let stopped: { action: string; cleanedPids: number[] };
+    let gracefulHandoff = false;
+    try {
+      const handoff = await sendSupervisorCommand(home, { command: 'handoff' });
+      gracefulHandoff = handoff.ok;
+    } catch {
+      gracefulHandoff = false;
+    }
+    if (gracefulHandoff) {
+      stopped = {
+        action: 'supervisor_handoff_preserved_runtime',
+        cleanedPids: runningState?.supervisor.pid ? [runningState.supervisor.pid] : [],
+      };
+    } else {
+      // Compatibility bridge for the first upgrade from a Supervisor that does
+      // not yet implement non-destructive handoff.
+      stopped = await stopControllerService({
+        repo,
+        controllerHome: home,
+        protectCallerAncestry: false,
+        requireFullStop: true,
+        stopTimeoutMs: 15_000,
+      });
+    }
 
     // Phase: waiting_previous_exit
     transitionPhase(home, activationId, 'waiting_previous_exit', {

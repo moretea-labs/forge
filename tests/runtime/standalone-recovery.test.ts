@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { createServer as createSocketServer, type Server as SocketServer } from 'net';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { attestKnownGood, createRecoveryConfig, decideWatchdog, rollbackPrevious, verifyStableRuntime } from '../../src/runtime/standalone-recovery/core';
+import { attestKnownGood, createRecoveryConfig, decideWatchdog, recoveryReconnectOperation, rollbackPrevious, verifyStableRuntime } from '../../src/runtime/standalone-recovery/core';
 
 const httpServers: Server[] = [];
 const socketServers: SocketServer[] = [];
@@ -33,12 +33,55 @@ describe('standalone disaster recovery core', () => {
     const home = mkdtempSync(join(tmpdir(), 'standalone-recovery-'));
     const active = release(home, 'active', 'release-active');
     const previous = release(home, 'previous', 'release-previous');
+    const mcpSessionId = 'recovery-test-session';
     const port = await http((request, response) => {
-      if (request.url === '/health') { response.setHeader('content-type', 'application/json'); response.end(JSON.stringify({ status: 'ok' })); return; }
-      let body = ''; request.on('data', (chunk: Buffer) => { body += chunk.toString('utf8'); }); request.on('end', () => {
-        const rpc = JSON.parse(body) as { method: string; id: number };
-        if (rpc.method === 'tools/list') response.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { tools: [{ name: 'controller_context' }, { name: 'runtime_status' }] } }));
-        else response.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { content: [] } }));
+      if (request.url === '/health') {
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify({ status: 'ok' }));
+        return;
+      }
+      const accept = String(request.headers.accept ?? '');
+      if (!accept.includes('application/json') || !accept.includes('text/event-stream')) {
+        response.statusCode = 406;
+        response.end();
+        return;
+      }
+      if (request.method === 'DELETE') {
+        if (request.headers['mcp-session-id'] !== mcpSessionId) {
+          response.statusCode = 404;
+          response.end();
+          return;
+        }
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
+      let body = '';
+      request.on('data', (chunk: Buffer) => { body += chunk.toString('utf8'); });
+      request.on('end', () => {
+        const rpc = JSON.parse(body) as { method: string; id?: number };
+        if (rpc.method === 'initialize') {
+          response.setHeader('content-type', 'application/json');
+          response.setHeader('mcp-session-id', mcpSessionId);
+          response.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { protocolVersion: '2025-06-18' } }));
+          return;
+        }
+        if (request.headers['mcp-session-id'] !== mcpSessionId) {
+          response.statusCode = 404;
+          response.end(JSON.stringify({ error: { code: 'MCP_SESSION_EXPIRED' } }));
+          return;
+        }
+        if (rpc.method === 'notifications/initialized') {
+          response.statusCode = 202;
+          response.end();
+          return;
+        }
+        response.setHeader('content-type', 'application/json');
+        if (rpc.method === 'tools/list') {
+          response.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { tools: [{ name: 'controller_context' }, { name: 'runtime_status' }] } }));
+          return;
+        }
+        response.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { content: [] } }));
       });
     });
     mkdirSync(join(home, 'runtime-slots', 'blue'), { recursive: true });
@@ -65,5 +108,33 @@ describe('standalone disaster recovery core', () => {
     expect(decideWatchdog({ failures: 1, firstFailureAt: Date.now() - 60_000, evidenceClasses: ['external'], activeKnownGood: false, previousKnownGood: true, operationInFlight: false, rollbackUsed: false }).action).toBe('degraded');
     expect(decideWatchdog({ failures: 6, firstFailureAt: Date.now() - 31_000, evidenceClasses: ['external', 'mcp'], activeKnownGood: false, previousKnownGood: true, operationInFlight: false, rollbackUsed: false }).action).toBe('rollback');
     expect(decideWatchdog({ failures: 6, firstFailureAt: Date.now() - 31_000, evidenceClasses: ['external', 'mcp'], activeKnownGood: true, previousKnownGood: true, operationInFlight: false, rollbackUsed: false }).action).toBe('degraded');
+  });
+
+  test('reconnect recovery never selects a full runtime restart', () => {
+    const base = {
+      ok: false,
+      at: new Date().toISOString(),
+      supervisor: { ok: true, observedState: 'healthy', activeSlot: 'green', previousSlot: 'blue' },
+      releases: { coherent: true },
+      probes: {
+        supervisor_socket: { ok: true, detail: 'status received' },
+        stable_ingress: { ok: true, detail: 'HTTP 200' },
+        active_gateway: { ok: true, detail: 'HTTP 200' },
+        mcp_initialize: { ok: false, detail: 'HTTP 406' },
+      },
+    };
+    expect(recoveryReconnectOperation(base)).toBe('none');
+    expect(recoveryReconnectOperation({
+      ...base,
+      probes: { ...base.probes, active_gateway: { ok: false, detail: 'connection refused' } },
+    })).toBe('restart_gateway');
+    expect(recoveryReconnectOperation({
+      ...base,
+      probes: {
+        ...base.probes,
+        supervisor_socket: { ok: false, detail: 'unavailable' },
+        active_gateway: { ok: false, detail: 'unavailable' },
+      },
+    })).toBe('none');
   });
 });

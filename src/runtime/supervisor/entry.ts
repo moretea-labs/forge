@@ -10,6 +10,7 @@ import { supervisorLogPath } from './paths';
 import { readSupervisorState } from './state-store';
 import { StableSupervisorRuntime } from './supervisor-runtime';
 import { createStableIngressRouter } from './ingress-router';
+import { stableIngressSessionStorePath } from './ingress-session-store';
 
 function option(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -55,6 +56,7 @@ export async function runStableIngressChild(): Promise<void> {
     port,
     rescueHost,
     rescuePort,
+    sessionStorePath: stableIngressSessionStorePath(controllerHome),
     upstream: () => {
       // Routing is switched only after the newly-authoritative runtime has
       // restarted with the committed writer claim and passed readiness. The
@@ -63,6 +65,7 @@ export async function runStableIngressChild(): Promise<void> {
       return {
         host: '127.0.0.1',
         port: slot === 'green' ? greenUpstreamPort : blueUpstreamPort,
+        key: slot,
       };
     },
   });
@@ -145,6 +148,7 @@ export async function runStableSupervisor(): Promise<void> {
     // A runtime-owned stop is unexpected at the top-level service boundary.
     // Exit non-zero so launchd/systemd restart the Stable Supervisor instead
     // of treating the outage as an intentional operator shutdown.
+    onHandoff: () => completeExit(0),
     onStopped: () => completeExit(stableSupervisorExitCode('unexpected_runtime_stop')),
   });
   runtime.adoptSupervisorIdentity({

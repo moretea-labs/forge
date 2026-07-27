@@ -40,6 +40,7 @@ export interface StableSupervisorRuntimeOptions extends SupervisorProcessManager
   ingressExecutable?: string;
   serviceActivationScheduler?: typeof scheduleServiceActivation;
   activatePublishedRelease?: boolean;
+  onHandoff?: () => void;
   onStopped?: () => void;
 }
 
@@ -642,8 +643,11 @@ export function managedProcessNeedsReleaseRefresh(
   expected: SupervisorReleaseDescriptor,
   ownerEpoch: number,
   processCommandMatches: boolean,
+  options: { allowOwnerEpochAdoption?: boolean } = {},
 ): boolean {
-  return managed.ownerEpoch !== ownerEpoch
+  const ownerEpochMismatch = managed.ownerEpoch !== ownerEpoch
+    && options.allowOwnerEpochAdoption !== true;
+  return ownerEpochMismatch
     || resolve(managed.releasePath ?? '') !== expected.releasePath
     || managed.releaseRevision !== expected.releaseRevision
     || !processCommandMatches;
@@ -882,6 +886,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       controlPort: this.options.controlPort,
       authToken: this.options.rescueAuthToken,
       handlers: this,
+      onHandoff: this.options.onHandoff,
       onStopped: this.options.onStopped,
     });
     this.ingressProcess = await this.replaceIngressProcess();
@@ -1133,6 +1138,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
           expected,
           this.options.ownerEpoch,
           this.managerForManaged(daemon).processCommandMatches(daemon, [expected.daemonExecutable]),
+          { allowOwnerEpochAdoption: true },
         )
       : false;
     const gatewayNeedsRefresh = gateway
@@ -1141,6 +1147,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
           expected,
           this.options.ownerEpoch,
           this.managerForManaged(gateway).processCommandMatches(gateway, [expected.runtimeExecutable]),
+          { allowOwnerEpochAdoption: true },
         )
       : false;
     if (!daemonNeedsRefresh && !gatewayNeedsRefresh) return;
@@ -2437,6 +2444,26 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     void run.finally(() => {
       if (this.monitorPromise === run) this.monitorPromise = undefined;
     });
+  }
+
+  async handoff(): Promise<void> {
+    this.stopping = true;
+    if (this.monitorTimer) clearInterval(this.monitorTimer);
+    this.monitorTimer = undefined;
+    await this.monitorPromise?.catch(() => undefined);
+    // Service activation replaces only the Supervisor process. Keep the active
+    // and standby Daemon/Gateway pairs alive so in-memory MCP sessions survive
+    // and the next Supervisor can adopt the identity-proven processes.
+    this.persist({
+      desiredState: 'running',
+      observedState: 'degraded',
+      lastIncident: {
+        at: new Date().toISOString(),
+        reason: 'Supervisor service handoff preserved managed runtime processes.',
+      },
+    });
+    if (this.control) await this.control.close();
+    this.control = undefined;
   }
 
   async stop(): Promise<void> {

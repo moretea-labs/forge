@@ -151,7 +151,7 @@ export interface SupervisorOperation {
 }
 
 export interface SupervisorCommandRequest {
-  command: 'status' | 'operation_submit' | 'operation_get' | 'stop' | 'ping';
+  command: 'status' | 'operation_submit' | 'operation_get' | 'handoff' | 'stop' | 'ping';
   requestId?: string;
   actor?: string;
   requestedBy?: string;
