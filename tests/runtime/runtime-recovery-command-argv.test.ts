@@ -5,7 +5,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { submitLocalBridgeJob, executeLocalBridgeJob, getLocalBridgeJob } from '../../src/cli/local-bridge/job-store';
 import { executeRepositoryCommand, previewRepositoryCommandExecution } from '../../src/cli/repositories/command-executor';
-import { addRepositoryCheckout, loadRepositoryRegistry, registerRepository, saveRepositoryRegistry } from '../../src/cli/repositories/registry';
+import { addRepositoryCheckout, consolidateRepositoryRegistry, focusRepository, getRepositoryFocus, loadRepositoryRegistry, registerRepository, resolveRepositorySelection, saveRepositoryRegistry } from '../../src/cli/repositories/registry';
 import { getExecutionJob, getExecutionJobByRequestId, removeRequestIndex, transitionExecutionJob, attachExecutionWorker, claimExecutionJobForDispatch } from '../../src/runtime/execution/jobs/store';
 import { reconcileControllerStartup } from '../../src/runtime/control-plane/startup-recovery';
 import { publishReadyAfterStartupRecovery } from '../../src/runtime/control-plane/daemon-entry';
@@ -96,6 +96,67 @@ describe('runtime recovery and repository argv boundary', () => {
 
     expect(repoRecovery?.projectionRebuilt).toBe(false);
     expect(after.revision).toBe(persisted.revision);
+  });
+
+  test('keeps stable repository selection authoritative until explicit slot Registry consolidation', () => {
+    const home = tempRoot('runtime-registry-authority-home-');
+    const greenHome = join(home, 'runtime-slots', 'green');
+    const root = tempRoot('runtime-registry-authority-repo-');
+    const worktreeParent = tempRoot('runtime-registry-authority-worktree-');
+    const worktreeRoot = join(worktreeParent, 'stale-green-worktree');
+    const repository = seedRepo(home, root, 'stable-authority');
+    git(root, ['worktree', 'add', '-b', 'stale-green', worktreeRoot]);
+
+    const staleRegistry = loadRepositoryRegistry(home);
+    const staleRepository = staleRegistry.repositories.find((candidate) => candidate.repoId === repository.repoId)!;
+    staleRepository.canonicalRoot = worktreeRoot;
+    staleRepository.localRoot = worktreeRoot;
+    staleRepository.activeCheckoutId = 'checkout_stale_green';
+    staleRepository.checkouts.push({
+      checkoutId: 'checkout_stale_green',
+      localRoot: worktreeRoot,
+      canonicalRoot: worktreeRoot,
+      worktree: true,
+      branch: 'stale-green',
+      createdAt: '2026-07-27T01:00:00.000Z',
+      updatedAt: '2026-07-27T01:00:00.000Z',
+      lastSeenAt: '2026-07-27T01:00:00.000Z',
+      lifecycle: 'active',
+    });
+    staleRegistry.updatedAt = '2026-07-27T01:00:00.000Z';
+    mkdirSync(greenHome, { recursive: true });
+    writeFileSync(join(greenHome, 'repositories.json'), `${JSON.stringify(staleRegistry, null, 2)}\n`);
+
+    const before = loadRepositoryRegistry(greenHome)
+      .repositories.find((candidate) => candidate.repoId === repository.repoId)!;
+    const selected = resolveRepositorySelection({ repoId: repository.repoId, controllerHome: greenHome });
+    expect(before.activeCheckoutId).toBe(repository.activeCheckoutId);
+    expect(before.checkouts.some((checkout) => checkout.checkoutId === 'checkout_stale_green')).toBe(false);
+    expect(selected.activeCheckoutId).toBe(repository.activeCheckoutId);
+    expect(selected.canonicalRoot).toBe(repository.canonicalRoot);
+
+    const consolidated = consolidateRepositoryRegistry(greenHome)
+      .repositories.find((candidate) => candidate.repoId === repository.repoId)!;
+    expect(consolidated.activeCheckoutId).toBe(repository.activeCheckoutId);
+    expect(consolidated.canonicalRoot).toBe(repository.canonicalRoot);
+    expect(consolidated.checkouts.some((checkout) => checkout.checkoutId === 'checkout_stale_green')).toBe(true);
+  });
+
+  test('keeps stable repository focus authoritative over newer slot-local focus', () => {
+    const home = tempRoot('runtime-focus-authority-home-');
+    const greenHome = join(home, 'runtime-slots', 'green');
+    const firstRoot = tempRoot('runtime-focus-authority-first-');
+    const secondRoot = tempRoot('runtime-focus-authority-second-');
+    const first = seedRepo(home, firstRoot, 'focus-first');
+    const second = seedRepo(home, secondRoot, 'focus-second');
+    focusRepository(first.repoId, home);
+    mkdirSync(greenHome, { recursive: true });
+    writeFileSync(join(greenHome, 'focus.json'), `${JSON.stringify({
+      repoId: second.repoId,
+      updatedAt: '2099-01-01T00:00:00.000Z',
+    }, null, 2)}\n`);
+
+    expect(getRepositoryFocus(greenHome).repoId).toBe(first.repoId);
   });
 
   test('cancels reconciled ownerless work after its managed checkout loses Git identity', () => {
