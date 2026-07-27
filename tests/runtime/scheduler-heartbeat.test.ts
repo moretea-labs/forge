@@ -43,6 +43,8 @@ describe('Scheduler process heartbeat', () => {
     expect(first.lastHeartbeatAt).toBeString();
     expect(second.lastHeartbeatAt).toBeString();
     expect(Date.parse(second.lastHeartbeatAt!)).toBeGreaterThan(Date.parse(first.lastHeartbeatAt!));
+    expect(Date.parse(second.lastTickAt!)).toBeGreaterThan(Date.parse(first.lastTickAt!));
+    expect(second.lastTickAt).toBe(second.lastHeartbeatAt);
     expect(second.heartbeatTimeoutMs).toBe(1_000);
     expect(schedulerHeartbeatSnapshotHealthy(second)).toBe(true);
 

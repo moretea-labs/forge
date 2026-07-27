@@ -809,6 +809,10 @@ export class GlobalScheduler {
     this.persistState(true);
     const heartbeatTimer = setInterval(() => {
       this.lastHeartbeatAt = new Date().toISOString();
+      // Upgrade bridge: Supervisors released before lastHeartbeatAt existed
+      // still evaluate lastTickAt with a five-second timeout. Mirror the
+      // process heartbeat until those readers have been replaced.
+      this.lastTickAt = this.lastHeartbeatAt;
       this.persistState(true);
     }, this.config.heartbeatIntervalMs);
     heartbeatTimer.unref?.();
