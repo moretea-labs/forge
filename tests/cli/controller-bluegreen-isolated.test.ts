@@ -31,7 +31,7 @@ const cleanRuntimeSources: string[] = [];
 afterEach(async () => {
   for (const path of cleanRuntimeSources.splice(0)) rmSync(path, { recursive: true, force: true });
   await destroyAllIsolatedControllerFixtures();
-});
+}, 120_000);
 
 function git(cwd: string, args: string[]): string {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
