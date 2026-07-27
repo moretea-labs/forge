@@ -161,8 +161,9 @@ export function withControllerLock<T>(
   owner: string,
   operation: () => T,
   ttlMs?: number,
+  waitMs = DEFAULT_LOCK_WAIT_MS,
 ): T {
-  const lock = acquireControllerLock(controllerHome, key, owner, ttlMs);
+  const lock = acquireControllerLock(controllerHome, key, owner, ttlMs, waitMs);
   try {
     return operation();
   } finally {
@@ -176,8 +177,9 @@ export async function withControllerLockAsync<T>(
   owner: string,
   operation: () => Promise<T>,
   ttlMs?: number,
+  waitMs = DEFAULT_LOCK_WAIT_MS,
 ): Promise<T> {
-  const lock = acquireControllerLock(controllerHome, key, owner, ttlMs);
+  const lock = acquireControllerLock(controllerHome, key, owner, ttlMs, waitMs);
   try {
     return await operation();
   } finally {
