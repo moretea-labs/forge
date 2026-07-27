@@ -78,7 +78,9 @@ export function validateWorkHandle(
 
   const repository = getRepository(handle.repositoryId, controllerHome, { includeRemoved: true });
   if (repository.removedAt || repository.enabled === false) fail('REPOSITORY_NOT_EXECUTABLE', `repository ${repository.repoId} is disabled or removed`);
-  const worktreeRepository = selectRepositoryCheckout(repository, handle.checkoutId);
+  const worktreeRepository = selectRepositoryCheckout(repository, handle.checkoutId, {
+    allowArchived: operation === 'finalize' && handle.managedWorktree,
+  });
   if (worktreeRepository.activeCheckoutId !== handle.checkoutId) fail('CHECKOUT_NOT_REGISTERED', handle.checkoutId);
 
   const permissionVersion = currentPermissionSnapshotVersion(controllerHome, repository.repoId);

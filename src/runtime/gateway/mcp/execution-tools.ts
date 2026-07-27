@@ -624,7 +624,7 @@ function cleanupOnlyMergedHead(
   if (args.cleanup !== true || args.commit === true || args.merge === true || !current.managedWorktree) return undefined;
   if (!existsSync(current.worktreePath)) return undefined;
   const repository = getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true });
-  const worktree = selectRepositoryCheckout(repository, current.checkoutId);
+  const worktree = selectRepositoryCheckout(repository, current.checkoutId, { allowArchived: true });
   if (!repositoryGitStatus(worktree).clean) return undefined;
   const currentHead = gitHead(worktree.canonicalRoot);
   if (!currentHead || currentHead === current.expectedHead) return undefined;

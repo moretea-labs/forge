@@ -9,6 +9,7 @@ import {
   listRepositories,
   registerRepository,
   repositoryCheckoutLifecycle,
+  setRepositoryCheckoutLifecycle,
 } from '../../src/cli/repositories/registry';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { writeRepositoryAccessPolicy } from '../../src/runtime/control-plane/governance/access-policy';
@@ -243,6 +244,59 @@ describe('controller-owned Work recovery and finalize cleanup', () => {
     expect(git(repoRoot, 'branch', '--list', branch)).toBe('');
     expect(git(repoRoot, 'rev-parse', 'HEAD')).toBe(featureHead);
     expect(git(repoRoot, 'show', 'HEAD:precommitted.txt')).toBe('precommitted-before-finalize');
+
+    const refreshed = listRepositories(controllerHome, { includeRemoved: true }).find((entry) => entry.repoId === repository.repoId)!;
+    const managedCheckout = refreshed.checkouts.find((checkout) => checkout.checkoutId === checkoutId)!;
+    expect(repositoryCheckoutLifecycle(managedCheckout)).toBe('removed');
+  });
+
+  test('finalize reconciles and removes an archived managed checkout', async () => {
+    const { repoRoot, controllerHome, repository, context } = fixture();
+    const ctx = context('session-archived-finalize', 'controller-archived-finalize');
+    structured(await callExecutionTool(ctx, 'session_start', {}));
+    structured(await callExecutionTool(ctx, 'session_bind_repository', { repo_id: repository.repoId }));
+    const prepared = structured(await callExecutionTool(ctx, 'work_prepare', {
+      repo_id: repository.repoId,
+      objective: 'Finalize an archived managed checkout retained after rollout recovery',
+      isolation: 'new_worktree',
+    }));
+    const workId = String(prepared.work.workId);
+    const branch = String(prepared.work.branch);
+    const checkoutId = String(prepared.work.checkoutId);
+    const worktreePath = String(prepared.work.worktreePath);
+
+    const precommitted = structured(await callExecutionTool(ctx, 'work_execute', {
+      repo_id: repository.repoId,
+      work_id: workId,
+      command: 'printf archived-finalize > archived-finalize.txt && git add archived-finalize.txt && git commit -m "archive before finalize"',
+    }));
+    expect(precommitted.executedCount).toBe(1);
+    setRepositoryCheckoutLifecycle({
+      controllerHome,
+      repoId: repository.repoId,
+      checkoutId,
+      lifecycle: 'archived',
+      reason: 'simulate startup reconciliation before Work finalization',
+    });
+
+    const archived = listRepositories(controllerHome, { includeRemoved: true })
+      .find((entry) => entry.repoId === repository.repoId)!
+      .checkouts.find((checkout) => checkout.checkoutId === checkoutId)!;
+    expect(repositoryCheckoutLifecycle(archived)).toBe('archived');
+
+    const finalized = structured(await callExecutionTool(ctx, 'work_finalize', {
+      repo_id: repository.repoId,
+      work_id: workId,
+      commit: false,
+      merge: true,
+      cleanup: true,
+      target_branch: 'main',
+    }));
+    expect(finalized.completed).toBe(true);
+    expect(finalized.work.state).toBe('cleaned');
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(git(repoRoot, 'branch', '--list', branch)).toBe('');
+    expect(git(repoRoot, 'show', 'HEAD:archived-finalize.txt')).toBe('archived-finalize');
 
     const refreshed = listRepositories(controllerHome, { includeRemoved: true }).find((entry) => entry.repoId === repository.repoId)!;
     const managedCheckout = refreshed.checkouts.find((checkout) => checkout.checkoutId === checkoutId)!;

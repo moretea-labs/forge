@@ -519,12 +519,17 @@ export function getRepository(repoId: string, controllerHome?: string, options: 
   return record;
 }
 
-export function selectRepositoryCheckout(record: RepositoryRecord, checkoutId?: string): RepositoryRecord {
+export function selectRepositoryCheckout(
+  record: RepositoryRecord,
+  checkoutId?: string,
+  options: { allowArchived?: boolean } = {},
+): RepositoryRecord {
   if (!checkoutId?.trim()) return record;
   const checkout = record.checkouts.find((candidate) => candidate.checkoutId === checkoutId.trim());
   if (!checkout) throw new Error(`checkout not found for ${record.repoId}: ${checkoutId}`);
-  if (repositoryCheckoutLifecycle(checkout) !== 'active') {
-    throw new Error(`CHECKOUT_NOT_ACTIVE: ${record.repoId}/${checkout.checkoutId} is ${repositoryCheckoutLifecycle(checkout)}`);
+  const lifecycle = repositoryCheckoutLifecycle(checkout);
+  if (lifecycle !== 'active' && !(options.allowArchived === true && lifecycle === 'archived')) {
+    throw new Error(`CHECKOUT_NOT_ACTIVE: ${record.repoId}/${checkout.checkoutId} is ${lifecycle}`);
   }
   return {
     ...record,
