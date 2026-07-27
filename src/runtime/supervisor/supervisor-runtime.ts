@@ -356,6 +356,79 @@ interface SupervisorActivationReference {
   expectedReleaseRevision?: string;
 }
 
+type RolloutRecoveryCheckpointStage = 'authority_committed' | 'runtime_activated';
+
+interface RolloutRecoveryCheckpoint {
+  stage: RolloutRecoveryCheckpointStage;
+  candidateSlot: RuntimeSlotId;
+  previousSlot: RuntimeSlotId;
+  candidateReleasePath: string;
+  candidateGeneration?: string;
+  previousGeneration?: string;
+  expectedReleaseRevision?: string;
+  recordedAt: string;
+}
+
+interface InterruptedRolloutRecovery {
+  operationId: string;
+  releasePath: string;
+  candidateSlot: RuntimeSlotId;
+  candidateGeneration?: string;
+}
+
+function operationRolloutCheckpoint(operation: SupervisorOperation): RolloutRecoveryCheckpoint | undefined {
+  const value = operation.result?.rolloutCheckpoint;
+  if (!value || typeof value !== 'object') return undefined;
+  const checkpoint = value as Record<string, unknown>;
+  const stage = checkpoint.stage;
+  const candidateSlot = checkpoint.candidateSlot;
+  const previousSlot = checkpoint.previousSlot;
+  const candidateReleasePath = checkpoint.candidateReleasePath;
+  const recordedAt = checkpoint.recordedAt;
+  if (stage !== 'authority_committed' && stage !== 'runtime_activated') return undefined;
+  if ((candidateSlot !== 'blue' && candidateSlot !== 'green') || (previousSlot !== 'blue' && previousSlot !== 'green')) return undefined;
+  if (typeof candidateReleasePath !== 'string' || !candidateReleasePath.trim() || typeof recordedAt !== 'string') return undefined;
+  return {
+    stage,
+    candidateSlot,
+    previousSlot,
+    candidateReleasePath,
+    ...(typeof checkpoint.candidateGeneration === 'string' ? { candidateGeneration: checkpoint.candidateGeneration } : {}),
+    ...(typeof checkpoint.previousGeneration === 'string' ? { previousGeneration: checkpoint.previousGeneration } : {}),
+    ...(typeof checkpoint.expectedReleaseRevision === 'string' ? { expectedReleaseRevision: checkpoint.expectedReleaseRevision } : {}),
+    recordedAt,
+  };
+}
+
+function resultWithRolloutCheckpoint(operation: SupervisorOperation, checkpoint: RolloutRecoveryCheckpoint): Record<string, unknown> {
+  return { ...(operation.result ?? {}), rolloutCheckpoint: checkpoint };
+}
+
+export function resumableInterruptedRollout(
+  state: SupervisorState,
+  authority: ActiveSlotAuthority,
+  operations: SupervisorOperation[],
+): InterruptedRolloutRecovery | undefined {
+  for (const operation of operations) {
+    if (operation.kind !== 'rollout' || !operationActive(operation)) continue;
+    if (state.currentOperationId !== operation.operationId) continue;
+    const checkpoint = operationRolloutCheckpoint(operation);
+    if (!checkpoint || authority.activeSlot !== checkpoint.candidateSlot) continue;
+    if (checkpoint.candidateGeneration && authority.generation && checkpoint.candidateGeneration !== authority.generation) continue;
+    return {
+      operationId: operation.operationId,
+      releasePath: checkpoint.candidateReleasePath,
+      candidateSlot: checkpoint.candidateSlot,
+      ...(checkpoint.candidateGeneration ? { candidateGeneration: checkpoint.candidateGeneration } : {}),
+    };
+  }
+  return undefined;
+}
+
+export function supervisorOperationRecoverySuppressed(currentOperationId: string | null | undefined): boolean {
+  return Boolean(currentOperationId?.trim());
+}
+
 function operationActivationReference(operation: SupervisorOperation): SupervisorActivationReference | undefined {
   const value = operation.result?.supervisorActivation;
   if (!value || typeof value !== 'object') return undefined;
@@ -419,10 +492,14 @@ function managedKey(component: SupervisorComponentName, generation?: string): st
   return `${component}:${generation ?? 'unknown'}`;
 }
 
-export function terminalizeInterruptedSupervisorOperations(controllerHome: string): number {
+export function terminalizeInterruptedSupervisorOperations(
+  controllerHome: string,
+  preserveOperationIds: ReadonlySet<string> = new Set<string>(),
+): number {
   let terminalized = 0;
   for (const operation of listSupervisorOperations(controllerHome, 100)) {
     if (!operationActive(operation) || operation.phase === 'accepted' || operation.phase === 'scheduled') continue;
+    if (preserveOperationIds.has(operation.operationId)) continue;
     // A rollout/rollback that has switched traffic and scheduled Supervisor
     // activation is intentionally resumed by the new Supervisor. It must not be
     // misclassified as an interrupted mutation during the handoff.
@@ -593,6 +670,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
   private monitorTimer?: ReturnType<typeof setInterval>;
   private monitorPromise?: Promise<void>;
   private executionPromise?: Promise<void>;
+  private interruptedRollout?: InterruptedRolloutRecovery & { release: SupervisorReleaseDescriptor };
   private stopping = false;
   private monitorFailureCount = 0;
   private selfRestartRequested = false;
@@ -752,6 +830,8 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       },
     });
     await this.ensureRuntime();
+    await this.resumeInterruptedRolloutActivation();
+    reconcilePendingSupervisorActivations(this.options.controllerHome);
     this.state = this.persist({ observedState: 'healthy' });
     this.monitorTimer = setInterval(() => this.scheduleMonitorTick(), 5_000);
     this.monitorTimer.unref?.();
@@ -759,8 +839,114 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
   }
 
   private reconcileInterruptedOperations(): void {
-    terminalizeInterruptedSupervisorOperations(this.options.controllerHome);
-    this.state = { ...this.state, currentOperationId: null };
+    reconcilePendingSupervisorActivations(this.options.controllerHome);
+    const operations = listSupervisorOperations(this.options.controllerHome, 100);
+    const authority = readActiveSlotAuthority(this.options.controllerHome);
+    const recovery = resumableInterruptedRollout(this.state, authority, operations);
+    if (recovery) {
+      const release = readSupervisorRelease(recovery.releasePath);
+      if (release) this.interruptedRollout = { ...recovery, release };
+    }
+    terminalizeInterruptedSupervisorOperations(
+      this.options.controllerHome,
+      this.interruptedRollout ? new Set([this.interruptedRollout.operationId]) : new Set<string>(),
+    );
+    this.state = { ...this.state, currentOperationId: this.interruptedRollout?.operationId ?? null };
+  }
+
+  private async resumeInterruptedRolloutActivation(): Promise<void> {
+    const recovery = this.interruptedRollout;
+    if (!recovery) return;
+    const operation = readSupervisorOperation(this.options.controllerHome, recovery.operationId);
+    if (!operation || !operationActive(operation)) {
+      this.interruptedRollout = undefined;
+      this.persist({ currentOperationId: null });
+      return;
+    }
+    try {
+      const daemon = this.state.controllerDaemon;
+      const gateway = this.state.gatewayHost;
+      if (!daemon || !gateway) throw new Error('SUPERVISOR_INTERRUPTED_ROLLOUT_RUNTIME_MISSING');
+      if (resolve(daemon.releasePath ?? '') !== recovery.release.releasePath || resolve(gateway.releasePath ?? '') !== recovery.release.releasePath) {
+        throw new Error('SUPERVISOR_INTERRUPTED_ROLLOUT_RELEASE_MISMATCH');
+      }
+      const generation = this.synchronizeActiveRuntimeGeneration(true) ?? recovery.candidateGeneration;
+      await this.verifyStableIngress(generation, daemon.controllerHome);
+      const activeIdentity = readSlotIdentity(this.options.controllerHome, this.state.activeSlot);
+      if (activeIdentity) {
+        writeSlotIdentity(this.options.controllerHome, {
+          ...activeIdentity,
+          role: 'active',
+          releasePath: recovery.release.releasePath,
+          ...(recovery.release.releaseRevision ? { releaseRevision: recovery.release.releaseRevision } : {}),
+        });
+      }
+      if (this.state.previousSlot) {
+        const previousIdentity = readSlotIdentity(this.options.controllerHome, this.state.previousSlot);
+        if (previousIdentity) writeSlotIdentity(this.options.controllerHome, { ...previousIdentity, role: 'standby' });
+      }
+      const activation = this.options.activatePublishedRelease === false
+        ? undefined
+        : publishAndScheduleSupervisorRelease({
+            controllerHome: this.options.controllerHome,
+            repoRoot: this.options.repoRoot,
+            releasePath: recovery.release.releasePath,
+            handoffDelayMs: 2_000,
+          }, this.options.serviceActivationScheduler
+            ? { schedule: this.options.serviceActivationScheduler }
+            : undefined);
+      if (!activation) {
+        publishSupervisorRelease({
+          controllerHome: this.options.controllerHome,
+          repoRoot: this.options.repoRoot,
+          releasePath: recovery.release.releasePath,
+        });
+      }
+      const latest = readSupervisorOperation(this.options.controllerHome, recovery.operationId) ?? operation;
+      const result = {
+        ...(latest.result ?? {}),
+        operationId: recovery.operationId,
+        runtimeGeneration: generation,
+        reconnectContract: 'stable_domain_retry',
+        recoveredAfterSupervisorRestart: true,
+        ...(activation ? {
+          supervisorReleaseRevision: activation.publication.releaseRevision,
+          supervisorActivation: activation.activation,
+        } : {}),
+      };
+      updateSupervisorOperation(this.options.controllerHome, recovery.operationId, activation ? {
+        phase: 'cutover',
+        result,
+        evidence: [
+          ...(latest.evidence ?? []),
+          { kind: 'supervisor_restart_recovery', summary: `Interrupted rollout resumed from committed authority and scheduled activation ${activation.activation.activationId}.`, at: new Date().toISOString() },
+        ],
+      } : {
+        phase: 'succeeded',
+        completedAt: new Date().toISOString(),
+        result,
+        evidence: [
+          ...(latest.evidence ?? []),
+          { kind: 'supervisor_restart_recovery', summary: 'Interrupted rollout resumed from committed authority and published the candidate release.', at: new Date().toISOString() },
+        ],
+      });
+      this.persist({ currentOperationId: null, observedState: 'healthy' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      updateSupervisorOperation(this.options.controllerHome, recovery.operationId, {
+        phase: 'failed',
+        completedAt: new Date().toISOString(),
+        failureClass: message.includes('MISMATCH') ? 'identity' : 'startup',
+        error: `SUPERVISOR_INTERRUPTED_ROLLOUT_RESUME_FAILED: ${message}`,
+      });
+      this.persist({
+        currentOperationId: null,
+        observedState: 'degraded',
+        lastIncident: { at: new Date().toISOString(), reason: message, operationId: recovery.operationId },
+      });
+    } finally {
+      this.interruptedRollout = undefined;
+    }
   }
 
   private persist(patch: Partial<SupervisorState>): SupervisorState {
@@ -860,8 +1046,9 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
   }
 
   private expectedManagedRelease(): SupervisorReleaseDescriptor | undefined {
-    return readSupervisorRelease(this.options.releasePath)
-      ?? readCurrentSupervisorRelease(this.options.controllerHome);
+    return this.interruptedRollout?.release
+      ?? readCurrentSupervisorRelease(this.options.controllerHome)
+      ?? readSupervisorRelease(this.options.releasePath);
   }
 
   private async reconcileManagedRelease(): Promise<void> {
@@ -1211,6 +1398,22 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     try {
       const nextAuthority = markCutoverAuthority(this.options.controllerHome, candidateSlot, candidate.generation);
       authorityCommitted = true;
+      if (candidateRelease?.releasePath) {
+        const latest = readSupervisorOperation(this.options.controllerHome, operationId) ?? operation;
+        updateSupervisorOperation(this.options.controllerHome, operationId, {
+          phase: 'switching_ingress',
+          result: resultWithRolloutCheckpoint(latest, {
+            stage: 'authority_committed',
+            candidateSlot,
+            previousSlot,
+            candidateReleasePath: candidateRelease.releasePath,
+            ...(candidate.generation ? { candidateGeneration: candidate.generation } : {}),
+            ...(previousGeneration ? { previousGeneration } : {}),
+            ...(candidateRelease.releaseRevision ? { expectedReleaseRevision: candidateRelease.releaseRevision } : {}),
+            recordedAt: new Date().toISOString(),
+          }),
+        });
+      }
       // The candidate was intentionally passive before commit. Restart it with
       // the committed claim while ingress still routes to the previous slot.
       activatedCandidate = await this.refreshSlotWriterClaim(candidate);
@@ -1244,7 +1447,24 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       });
       const previousIdentity = readSlotIdentity(this.options.controllerHome, previousSlot);
       if (previousIdentity) writeSlotIdentity(this.options.controllerHome, { ...previousIdentity, role: 'standby' });
-      updateSupervisorOperation(this.options.controllerHome, operationId, { phase: 'cutover' });
+      const latest = readSupervisorOperation(this.options.controllerHome, operationId) ?? operation;
+      if (candidateRelease?.releasePath) {
+        updateSupervisorOperation(this.options.controllerHome, operationId, {
+          phase: 'cutover',
+          result: resultWithRolloutCheckpoint(latest, {
+            stage: 'runtime_activated',
+            candidateSlot,
+            previousSlot,
+            candidateReleasePath: candidateRelease.releasePath,
+            ...(activatedCandidate.generation ? { candidateGeneration: activatedCandidate.generation } : {}),
+            ...(previousGeneration ? { previousGeneration } : {}),
+            ...(candidateRelease.releaseRevision ? { expectedReleaseRevision: candidateRelease.releaseRevision } : {}),
+            recordedAt: new Date().toISOString(),
+          }),
+        });
+      } else {
+        updateSupervisorOperation(this.options.controllerHome, operationId, { phase: 'cutover' });
+      }
       if (!candidateRelease) return undefined;
       if (this.options.activatePublishedRelease === false) {
         publishSupervisorRelease({
@@ -1564,7 +1784,9 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
         releaseActivation = await this.rollback(current.operationId);
       }
       this.synchronizeActiveRuntimeGeneration(true);
+      const persistedOperation = readSupervisorOperation(this.options.controllerHome, current.operationId) ?? current;
       const result = {
+        ...(persistedOperation.result ?? {}),
         operationId: current.operationId,
         runtimeGeneration: this.state.activeGeneration,
         reconnectContract: 'stable_domain_retry',
@@ -1621,6 +1843,18 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
   }
 
   private async recoverComponent(component: SupervisorComponentName, failureReason = `${component} liveness failed`): Promise<void> {
+    if (supervisorOperationRecoverySuppressed(this.state.currentOperationId)) {
+      this.persist({
+        observedState: 'degraded',
+        lastIncident: {
+          at: new Date().toISOString(),
+          component,
+          reason: `${failureReason}; automatic recovery deferred while Supervisor operation ${this.state.currentOperationId} owns the writer slot`,
+          operationId: this.state.currentOperationId ?? undefined,
+        },
+      });
+      return;
+    }
     const managed = this.componentState(component);
     if (!managed) return;
     const authority = readActiveSlotAuthority(this.options.controllerHome);
@@ -1937,6 +2171,13 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     if (this.monitorPromise || this.selfRestartRequested) return;
     const run = this.monitorTick().catch((error) => {
       const detail = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').slice(0, 200);
+      if (detail.startsWith('SUPERVISOR_OPERATION_OWNER_BUSY')) {
+        this.persist({
+          observedState: 'degraded',
+          lastIncident: { at: new Date().toISOString(), reason: `Supervisor monitor recovery deferred: ${detail}` },
+        });
+        return;
+      }
       this.recordMonitorFailure(`Supervisor monitor tick failed: ${detail || 'unknown error'}`);
     });
     this.monitorPromise = run;

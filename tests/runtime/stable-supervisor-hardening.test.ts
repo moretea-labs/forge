@@ -13,7 +13,7 @@ import { createStableIngressRouter } from '../../src/runtime/supervisor/ingress-
 import { createStableIngressProcess } from '../../src/runtime/supervisor/ingress-process';
 import { controllerDaemonMaxLifetimeMs, controllerDaemonPassiveMode, publishReadyAfterStartupRecovery } from '../../src/runtime/control-plane/daemon-entry';
 import { createSupervisorOperation, readSupervisorOperation, updateSupervisorOperation } from '../../src/runtime/supervisor/operation-store';
-import { StableSupervisorRuntime, SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_MONITOR_FAILURE_THRESHOLD, automaticRecoveryRequestId, managedProcessNeedsReleaseRefresh, probeAuthenticatedMcpReadiness, probeSupervisorGatewayHealth, reconcileActiveManagedGenerations, reconcilePendingSupervisorActivations, reconcileSupervisorStateWithAuthority, supervisorGatewayHealthDecision, supervisorGatewayOperational, supervisorIngressHealthDecision, supervisorMonitorFailureDecision, terminalizeInterruptedSupervisorOperations } from '../../src/runtime/supervisor/supervisor-runtime';
+import { StableSupervisorRuntime, SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_MONITOR_FAILURE_THRESHOLD, automaticRecoveryRequestId, managedProcessNeedsReleaseRefresh, probeAuthenticatedMcpReadiness, probeSupervisorGatewayHealth, reconcileActiveManagedGenerations, reconcilePendingSupervisorActivations, reconcileSupervisorStateWithAuthority, resumableInterruptedRollout, supervisorGatewayHealthDecision, supervisorGatewayOperational, supervisorIngressHealthDecision, supervisorMonitorFailureDecision, supervisorOperationRecoverySuppressed, terminalizeInterruptedSupervisorOperations } from '../../src/runtime/supervisor/supervisor-runtime';
 import { decideRestart, newRestartBudgetRecord, recordFailure, recordRestart, recordStable } from '../../src/runtime/supervisor/restart-policy';
 import { SupervisorProcessManager, runtimeWriterEnvironment } from '../../src/runtime/supervisor/process-manager';
 import { ensureMcpControllerHomeBearerToken, writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
@@ -1199,6 +1199,116 @@ describe('Stable Supervisor production hardening', () => {
     expect(reconciled.gatewayHost?.pid).toBe(102);
     expect(reconciled.standby?.slot).toBe('green');
     expect(reconciled.ingress.activeUpstreamSlot).toBe('blue');
+  });
+
+  test('a committed rollout authority is resumable after Supervisor restart without blind replay', () => {
+    const home = mkdtempSync(join(tmpdir(), 'repo-harness-supervisor-rollout-resume-'));
+    try {
+      const candidateRelease = fakeSupervisorRelease(home, 'candidate-resume', 'revision-resume');
+      const blueDaemon = managedProcess('blue', 101, 'generation-blue');
+      const blueGateway = managedProcess('blue', 102, 'generation-blue');
+      const greenDaemon = { ...managedProcess('green', 201, 'generation-green'), releasePath: candidateRelease, releaseRevision: 'revision-resume' };
+      const greenGateway = { ...managedProcess('green', 202, 'generation-green'), releasePath: candidateRelease, releaseRevision: 'revision-resume' };
+      const created = createSupervisorOperation({
+        controllerHome: home,
+        repoRoot: process.cwd(),
+        requestId: 'interrupted-rollout-resume',
+        kind: 'rollout',
+        requestedBy: 'test',
+        actor: 'test',
+        candidateReleasePath: candidateRelease,
+      });
+      updateSupervisorOperation(home, created.operation.operationId, {
+        phase: 'switching_ingress',
+        result: {
+          rolloutCheckpoint: {
+            stage: 'authority_committed',
+            candidateSlot: 'green',
+            previousSlot: 'blue',
+            candidateReleasePath: candidateRelease,
+            candidateGeneration: 'generation-green',
+            previousGeneration: 'generation-blue',
+            expectedReleaseRevision: 'revision-resume',
+            recordedAt: new Date().toISOString(),
+          },
+        },
+      });
+      const state: SupervisorState = {
+        schemaVersion: 1,
+        supervisor: {
+          pid: 1,
+          instanceId: 'supervisor',
+          processStartTime: 'start',
+          executableFingerprint: 'fingerprint',
+          controllerHome: home,
+          ownerEpoch: 1,
+          epoch: 1,
+          startedAt: new Date().toISOString(),
+        },
+        desiredState: 'running',
+        observedState: 'degraded',
+        activeSlot: 'green',
+        previousSlot: 'blue',
+        activeGeneration: 'generation-green',
+        controllerDaemon: greenDaemon,
+        gatewayHost: greenGateway,
+        standby: { slot: 'blue', generation: 'generation-blue', controllerDaemon: blueDaemon, gatewayHost: blueGateway },
+        ingress: { state: 'running', activeUpstreamSlot: 'green', activeUpstreamPort: 8795 },
+        restartBudget: {},
+        currentOperationId: created.operation.operationId,
+        lastIncident: null,
+        updatedAt: new Date().toISOString(),
+      };
+      const authority = {
+        schemaVersion: 1 as const,
+        activeSlot: 'green' as const,
+        previousSlot: 'blue' as const,
+        generation: 'generation-green',
+        updatedAt: new Date().toISOString(),
+        reason: 'rollout-cutover',
+      };
+      const recovery = resumableInterruptedRollout(state, authority, [readSupervisorOperation(home, created.operation.operationId)!]);
+      expect(recovery).toEqual({
+        operationId: created.operation.operationId,
+        releasePath: candidateRelease,
+        candidateSlot: 'green',
+        candidateGeneration: 'generation-green',
+      });
+      expect(terminalizeInterruptedSupervisorOperations(home, new Set([created.operation.operationId]))).toBe(0);
+      expect(readSupervisorOperation(home, created.operation.operationId)?.phase).toBe('switching_ingress');
+      expect(resumableInterruptedRollout(state, { ...authority, activeSlot: 'blue' }, [readSupervisorOperation(home, created.operation.operationId)!])).toBeUndefined();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('automatic component recovery is suppressed while an operation owns the Supervisor writer slot', () => {
+    expect(supervisorOperationRecoverySuppressed('sup-op-active')).toBe(true);
+    expect(supervisorOperationRecoverySuppressed(null)).toBe(false);
+    expect(supervisorOperationRecoverySuppressed(undefined)).toBe(false);
+  });
+
+  test('published Controller Home release authority outranks the boot release for managed runtime recovery', () => {
+    const home = mkdtempSync(join(tmpdir(), 'repo-harness-supervisor-release-authority-'));
+    try {
+      const bootRelease = fakeSupervisorRelease(home, 'boot-release', 'revision-boot');
+      const publishedRelease = fakeSupervisorRelease(home, 'published-release', 'revision-published');
+      publishSupervisorRelease({ controllerHome: home, repoRoot: process.cwd(), releasePath: publishedRelease });
+      const runtime = new StableSupervisorRuntime({
+        repoRoot: process.cwd(),
+        controllerHome: home,
+        runtimeSourceRoot: process.cwd(),
+        ownerEpoch: 1,
+        releasePath: bootRelease,
+        releaseRevision: 'revision-boot',
+        logPath: join(home, 'supervisor.log'),
+      });
+      const expected = (runtime as unknown as { expectedManagedRelease: () => { releasePath: string; releaseRevision?: string } | undefined }).expectedManagedRelease();
+      expect(expected?.releasePath).toBe(publishedRelease);
+      expect(expected?.releaseRevision).toBe('revision-published');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test('active generation advances only when daemon and Gateway observations agree', () => {
