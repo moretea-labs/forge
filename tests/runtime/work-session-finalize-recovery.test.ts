@@ -64,7 +64,7 @@ function structured(result: Awaited<ReturnType<typeof callExecutionTool>>): Reco
 
 describe('controller-owned Work recovery and finalize cleanup', () => {
   test('continues an explicit Work handle across controller and MCP session changes', async () => {
-    const { repository, context } = fixture();
+    const { repoRoot, repository, context } = fixture();
     const first = context('session-original', 'controller-a');
     structured(await callExecutionTool(first, 'session_start', {}));
     structured(await callExecutionTool(first, 'session_bind_repository', { repo_id: repository.repoId }));
@@ -91,6 +91,15 @@ describe('controller-owned Work recovery and finalize cleanup', () => {
     }));
     expect(inspectedAfterSessionRestart.work.workId).toBe(workId);
     expect(inspectedAfterSessionRestart.readiness.warnings.join('\n')).toContain('different MCP session');
+
+    const executedAfterRollout = structured(await callExecutionTool(newSession, 'work_execute', {
+      repo_id: repository.repoId,
+      work_id: workId,
+      request_id: 'cross-epoch-work-resume',
+      command: 'printf resumed-after-rollout > resumed-after-rollout.txt',
+    }));
+    expect(executedAfterRollout.executedCount).toBe(1);
+    expect(existsSync(join(repoRoot, 'resumed-after-rollout.txt'))).toBe(true);
   });
 
   test('executes an admitted Work mutation through Process Runtime without creating an ExecutionJob', async () => {

@@ -61,6 +61,15 @@ function newSessionId(): string {
   return `sess_${randomUUID().replace(/-/g, '')}`;
 }
 
+export function peekExecutionSession(controllerHome: string, sessionId: string): ExecutionSessionContext | undefined {
+  const normalizedSessionId = sessionId.trim();
+  if (!normalizedSessionId) return undefined;
+  const path = sessionPath(controllerHome, normalizedSessionId);
+  if (!existsSync(path)) return undefined;
+  const session = readJsonFile<ExecutionSessionContext>(path);
+  return session.sessionId === normalizedSessionId ? session : undefined;
+}
+
 export function readExecutionSession(controllerHome: string, identity: SessionIdentity): ExecutionSessionContext | undefined {
   const sessionId = identity.sessionId?.trim();
   if (!sessionId) return undefined;

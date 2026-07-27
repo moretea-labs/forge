@@ -319,6 +319,10 @@ export interface ControllerSession {
   controllerId: string;
   controllerType: ControllerType;
   sessionId: string;
+  /** Authenticated authority that owned the claim; legacy records may omit it. */
+  principalId?: string;
+  /** Controller process/epoch that admitted the transport session. */
+  controllerInstanceId?: string;
   claimedAt: string;
   leaseExpiresAt: string;
 }

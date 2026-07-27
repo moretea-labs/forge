@@ -19,7 +19,7 @@ import { ensureManagedWorkspace } from '../../workflow/campaigns/workspace';
 import { listControllerChecks } from '../../../cli/controller/check-runner';
 import { readRepositoryAccessPolicy } from '../../control-plane/governance/access-policy';
 import { createWorkContract, getWorkContract, updateWorkContract, appendVerificationRecord } from '../../control-plane/facade/work-contract-store';
-import { claimControllerSession, getControllerSession } from '../../control-plane/facade/controller-session-store';
+import { claimControllerSession, getControllerSession, resumeControllerSession } from '../../control-plane/facade/controller-session-store';
 import { currentControllerInstanceId, requireExecutionSession, startExecutionSession, updateExecutionSession, type ExecutionSessionContext, type SessionIdentity } from '../../control-plane/execution/session-store';
 import { currentPermissionSnapshotVersion, validateWorkHandle } from '../../control-plane/execution/validation';
 import { markWorkHandleFailed, newWorkId, readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkFinalizationStages, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
@@ -226,22 +226,24 @@ function assertWorkControllerOwnership(
 ): void {
   const workIdValue = handle.workContractId ?? handle.workId;
   const owner = getControllerSession({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, workIdValue);
-  if (!owner) throw new Error(`WORK_CONTROLLER_CLAIM_REQUIRED: ${workIdValue}`);
   const controllerId = typeof args.controller_id === 'string' && args.controller_id.trim()
     ? args.controller_id.trim()
     : session.principalId;
-  if (owner.controllerId !== controllerId || owner.sessionId !== session.sessionId) {
-    throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${workIdValue} is owned by ${owner.controllerId}/${owner.sessionId}`);
+  if (controllerId !== session.principalId) {
+    throw new Error('WORK_CONTROLLER_IDENTITY_MISMATCH: controller_id must match the authenticated principal');
   }
-  // A foreground Work operation proves this Controller is still present. Renew
-  // only at an explicit command boundary; no background lease retry is added.
-  claimControllerSession({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, {
+  const resumed = resumeControllerSession({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, {
     workId: workIdValue,
     controllerId,
-    controllerType: owner.controllerType,
+    controllerType: owner?.controllerType ?? 'chatgpt',
     sessionId: session.sessionId,
+    principalId: session.principalId,
+    controllerInstanceId: session.controllerInstanceId,
     leaseMs: 3_600_000,
   });
+  if (resumed.controllerId !== controllerId || resumed.sessionId !== session.sessionId) {
+    throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${workIdValue} is owned by ${resumed.controllerId}/${resumed.sessionId}`);
+  }
 }
 
 function claimPreparedWorkOwnership(
@@ -259,6 +261,8 @@ function claimPreparedWorkOwnership(
     controllerId,
     controllerType: 'chatgpt',
     sessionId: session.sessionId,
+    principalId: session.principalId,
+    controllerInstanceId: session.controllerInstanceId,
     leaseMs: 3_600_000,
   });
 }

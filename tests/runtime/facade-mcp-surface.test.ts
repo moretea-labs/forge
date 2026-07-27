@@ -18,6 +18,9 @@ import { callRuntimeTool, runtimeSourceSnapshotStatus, runtimeToolDefinitions } 
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { collectRuntimeSourceIdentity } from '../../src/runtime/control-plane/runtime-generation';
+import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { claimControllerSession, getControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
+import { startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 
 const roots: string[] = [];
 
@@ -52,6 +55,9 @@ function controllerFixture() {
     toolset: 'core' as const,
     enableChatgptBrowser: false,
     explicitRepository: repository,
+    sessionId: 'facade-session-default',
+    principalId: 'facade-principal-default',
+    controllerInstanceId: 'facade-controller-default',
     audit: () => undefined,
   } as unknown as MultiRepositoryMcpToolContext;
   return { ctx, repository, controllerHome, repoRoot, policy };
@@ -440,6 +446,116 @@ describe('facade MCP surface wiring', () => {
     expect(destructive.status).toBe('approval_required');
     expect((destructive.data as { applied: boolean; isAcceptanceFailure: boolean }).applied).toBe(false);
     expect((destructive.data as { isAcceptanceFailure: boolean }).isAcceptanceFailure).toBe(false);
+  });
+
+  test('stale rh_work continue schema safely resumes ownership only after a controller epoch change', async () => {
+    const { ctx, repository, controllerHome } = controllerFixture();
+    const principalId = 'facade-rollout-principal';
+    const oldCtx = {
+      ...ctx,
+      sessionId: 'facade-rollout-old-session',
+      principalId,
+      controllerInstanceId: 'facade-rollout-epoch-a',
+    } as MultiRepositoryMcpToolContext;
+    const work = createWorkContract(
+      { controllerHome, repoId: repository.repoId },
+      {
+        workId: `work-facade-rollout-${Date.now()}`,
+        repoId: repository.repoId,
+        mode: 'goal_workloop',
+        objective: 'Resume through the cached continue-only rh_work schema',
+        acceptanceCriteria: ['Continue can recover ownership after rollout.'],
+        allowedPaths: ['src/runtime/'],
+        forbiddenPaths: [],
+        checks: [],
+        constraints: {
+          accessMode: 'full_access',
+          workspaceMode: 'current',
+          requireWorktree: false,
+          allowCommit: true,
+          allowMerge: true,
+          allowCleanup: true,
+        },
+        status: 'running',
+        driver: { preferred: 'direct_edit', allowWorker: false, allowDirectEdit: true },
+        worktreePolicy: { required: false, reason: 'facade compatibility test' },
+        evidencePolicy: { defaultDetailLevel: 'summary', allowRawOptIn: true, maxEvidenceRefs: 20 },
+        approvalPolicy: { required: false, reasons: [], confirmed: false },
+        recoveryPolicy: { allowSelfHealing: true, maxInfrastructureRetries: 3, handoffOnAmbiguity: true },
+        requestedBy: 'chatgpt',
+      },
+    );
+    startExecutionSession(controllerHome, {
+      sessionId: oldCtx.sessionId,
+      principalId,
+      controllerInstanceId: oldCtx.controllerInstanceId,
+    });
+    claimControllerSession(
+      { controllerHome, repoId: repository.repoId },
+      {
+        workId: work.workId,
+        controllerId: principalId,
+        controllerType: 'chatgpt',
+        sessionId: oldCtx.sessionId!,
+        principalId,
+        controllerInstanceId: oldCtx.controllerInstanceId!,
+      },
+    );
+
+    const sameEpochCtx = {
+      ...oldCtx,
+      sessionId: 'facade-rollout-same-epoch-session',
+    } as MultiRepositoryMcpToolContext;
+    startExecutionSession(controllerHome, {
+      sessionId: sameEpochCtx.sessionId,
+      principalId,
+      controllerInstanceId: sameEpochCtx.controllerInstanceId,
+    });
+    const sameEpoch = structured(await callRuntimeTool(sameEpochCtx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'continue',
+      work_id: work.workId,
+    }));
+    expect(sameEpoch.status).toBe('blocked');
+    expect(String(sameEpoch.summary)).toContain('WORK_ALREADY_CLAIMED');
+
+    const spoofed = structured(await callRuntimeTool({
+      ...sameEpochCtx,
+      controllerInstanceId: 'facade-rollout-epoch-b',
+    } as MultiRepositoryMcpToolContext, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'controller_claim',
+      work_id: work.workId,
+      controller_id: 'spoofed-controller',
+    }));
+    expect(spoofed.status).toBe('blocked');
+    expect(String(spoofed.summary)).toContain('CONTROLLER_ID_CONTEXT_MISMATCH');
+
+    const newEpochCtx = {
+      ...oldCtx,
+      sessionId: 'facade-rollout-new-session',
+      controllerInstanceId: 'facade-rollout-epoch-b',
+    } as MultiRepositoryMcpToolContext;
+    startExecutionSession(controllerHome, {
+      sessionId: newEpochCtx.sessionId,
+      principalId,
+      controllerInstanceId: newEpochCtx.controllerInstanceId,
+    });
+    const resumed = structured(await callRuntimeTool(newEpochCtx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'continue',
+      work_id: work.workId,
+    }));
+    expect(resumed.status).toBe('blocked');
+    expect(String(resumed.summary)).toContain('Controller ownership resumed');
+    expect((resumed.data as { ownershipResumed: boolean; nextStep: string }).ownershipResumed).toBe(true);
+    expect((resumed.data as { ownershipResumed: boolean; nextStep: string }).nextStep).toBe('execute');
+    expect(getControllerSession({ controllerHome, repoId: repository.repoId }, work.workId)).toMatchObject({
+      controllerId: principalId,
+      principalId,
+      sessionId: 'facade-rollout-new-session',
+      controllerInstanceId: 'facade-rollout-epoch-b',
+    });
   });
 
   test('invalid facade operation returns structured FacadeResult error', async () => {

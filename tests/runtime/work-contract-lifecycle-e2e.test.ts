@@ -18,6 +18,7 @@ import {
   claimControllerSession,
   getControllerSession,
   releaseControllerSession,
+  resumeControllerSession,
 } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { createHandoffItem, listHandoffItems } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { listExecutionJobs, createExecutionJob } from '../../src/runtime/execution/jobs/store';
@@ -27,6 +28,7 @@ import {
   spawnManagedProcess,
 } from '../../src/runtime/execution/process-runtime';
 import { acceptTaskJob } from '../../src/cli/agent-jobs/job-manager';
+import { startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 
 const roots: string[] = [];
 
@@ -297,6 +299,90 @@ describe('WorkContract lifecycle E2E', () => {
     );
     expect(next.controllerId).toBe('controller-new');
     expect(getControllerSession({ controllerHome, repoId: repository.repoId }, work.workId)?.controllerId).toBe('controller-new');
+  });
+
+  test('D2: authenticated resume fences the same epoch and permits a rollout epoch handoff', () => {
+    const { controllerHome, repository } = fixture();
+    const work = createWorkContract(
+      { controllerHome, repoId: repository.repoId },
+      workContractInput(repository.repoId, {
+        workId: `WORK-rollout-resume-${Date.now()}`,
+        mode: 'direct_control',
+        objective: 'Resume ownership after a controller rollout',
+        status: 'running',
+      }),
+    );
+    const principalId = 'principal-rollout-resume';
+    startExecutionSession(controllerHome, {
+      sessionId: 'session-rollout-old',
+      principalId,
+      controllerInstanceId: 'controller-epoch-a',
+    });
+    claimControllerSession(
+      { controllerHome, repoId: repository.repoId },
+      {
+        workId: work.workId,
+        controllerId: principalId,
+        controllerType: 'chatgpt',
+        sessionId: 'session-rollout-old',
+        principalId,
+        controllerInstanceId: 'controller-epoch-a',
+      },
+    );
+
+    startExecutionSession(controllerHome, {
+      sessionId: 'session-rollout-same-epoch',
+      principalId,
+      controllerInstanceId: 'controller-epoch-a',
+    });
+    expect(() => resumeControllerSession(
+      { controllerHome, repoId: repository.repoId },
+      {
+        workId: work.workId,
+        controllerId: principalId,
+        controllerType: 'chatgpt',
+        sessionId: 'session-rollout-same-epoch',
+        principalId,
+        controllerInstanceId: 'controller-epoch-a',
+      },
+    )).toThrow(/WORK_ALREADY_CLAIMED/);
+
+    expect(() => resumeControllerSession(
+      { controllerHome, repoId: repository.repoId },
+      {
+        workId: work.workId,
+        controllerId: 'different-principal',
+        controllerType: 'chatgpt',
+        sessionId: 'session-rollout-other-principal',
+        principalId: 'different-principal',
+        controllerInstanceId: 'controller-epoch-b',
+      },
+    )).toThrow(/WORK_ALREADY_CLAIMED/);
+
+    startExecutionSession(controllerHome, {
+      sessionId: 'session-rollout-new',
+      principalId,
+      controllerInstanceId: 'controller-epoch-b',
+    });
+    const resumed = resumeControllerSession(
+      { controllerHome, repoId: repository.repoId },
+      {
+        workId: work.workId,
+        controllerId: principalId,
+        controllerType: 'chatgpt',
+        sessionId: 'session-rollout-new',
+        principalId,
+        controllerInstanceId: 'controller-epoch-b',
+      },
+    );
+    expect(resumed.sessionId).toBe('session-rollout-new');
+    expect(resumed.controllerInstanceId).toBe('controller-epoch-b');
+    expect(getControllerSession({ controllerHome, repoId: repository.repoId }, work.workId)).toMatchObject({
+      controllerId: principalId,
+      principalId,
+      sessionId: 'session-rollout-new',
+      controllerInstanceId: 'controller-epoch-b',
+    });
   });
 
   test('E: non-deterministic Work creates Handoff without Jobs or Agent Runs', () => {

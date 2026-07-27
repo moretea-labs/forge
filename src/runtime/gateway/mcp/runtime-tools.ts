@@ -190,7 +190,9 @@ import {
   claimControllerSession,
   getControllerSession,
   releaseControllerSession,
+  resumeControllerSession,
 } from '../../control-plane/facade';
+import { currentControllerInstanceId } from '../../control-plane/execution/session-store';
 import { launchSuperController } from '../../control-plane/launcher/thin-launcher';
 import {
   executorDispatch,
@@ -1110,6 +1112,31 @@ function controllerContextAssessment(args: Record<string, unknown>) {
     requiresWorkerIsolation: args.requires_worker_isolation === true,
     risk: typeof args.risk === 'string' ? args.risk as TaskRisk : undefined,
   });
+}
+
+function authenticatedFacadeControllerIdentity(
+  ctx: MultiRepositoryMcpToolContext,
+  args: Record<string, unknown>,
+): { controllerId: string; principalId: string; sessionId: string; controllerInstanceId: string } {
+  const principalId = ctx.principalId?.trim();
+  const sessionId = ctx.sessionId?.trim();
+  if (!principalId || !sessionId) {
+    throw new Error('CONTROLLER_AUTHENTICATED_SESSION_REQUIRED: reconnect or call session_start through the authenticated MCP transport');
+  }
+  const requestedControllerId = typeof args.controller_id === 'string' ? args.controller_id.trim() : '';
+  const requestedSessionId = typeof args.session_id === 'string' ? args.session_id.trim() : '';
+  if (requestedControllerId && requestedControllerId !== principalId) {
+    throw new Error('CONTROLLER_ID_CONTEXT_MISMATCH: controller_id must match the authenticated principal');
+  }
+  if (requestedSessionId && requestedSessionId !== sessionId) {
+    throw new Error('CONTROLLER_SESSION_CONTEXT_MISMATCH: session_id must match the authenticated MCP session');
+  }
+  return {
+    controllerId: principalId,
+    principalId,
+    sessionId,
+    controllerInstanceId: ctx.controllerInstanceId?.trim() || currentControllerInstanceId(),
+  };
 }
 
 function selected(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>) {
@@ -2337,11 +2364,14 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           try {
             const workId = String(args.work_id ?? '').trim();
             if (!getWorkContract(store, workId)) throw new Error(`WORK_NOT_FOUND: ${workId}`);
-            const session = claimControllerSession(store, {
+            const identity = authenticatedFacadeControllerIdentity(ctx, args);
+            const session = resumeControllerSession(store, {
               workId,
-              controllerId: String(args.controller_id ?? '').trim(),
-              controllerType: ['chatgpt', 'codex', 'grok', 'claude', 'human'].includes(String(args.controller_type)) ? String(args.controller_type) as 'chatgpt' | 'codex' | 'grok' | 'claude' | 'human' : 'human',
-              sessionId: String(args.session_id ?? '').trim(),
+              controllerId: identity.controllerId,
+              controllerType: ['chatgpt', 'codex', 'grok', 'claude', 'human'].includes(String(args.controller_type)) ? String(args.controller_type) as 'chatgpt' | 'codex' | 'grok' | 'claude' | 'human' : 'chatgpt',
+              sessionId: identity.sessionId,
+              principalId: identity.principalId,
+              controllerInstanceId: identity.controllerInstanceId,
               leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
             });
             return result(buildFacadeResult({ summary: `Controller ${session.controllerId} claimed ${session.workId}.`, data: { session } }) as unknown as Record<string, unknown>);
@@ -2350,8 +2380,18 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           }
         }
         if (operation === 'controller_release') {
-          releaseControllerSession(store, String(args.work_id ?? '').trim(), String(args.controller_id ?? '').trim());
-          return result(buildFacadeResult({ summary: 'Controller lease released.', data: {} }) as unknown as Record<string, unknown>);
+          try {
+            const workId = String(args.work_id ?? '').trim();
+            const identity = authenticatedFacadeControllerIdentity(ctx, args);
+            const owner = getControllerSession(store, workId);
+            if (owner && owner.controllerId !== identity.controllerId) {
+              throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${workId} is owned by ${owner.controllerId}`);
+            }
+            releaseControllerSession(store, workId, identity.controllerId);
+            return result(buildFacadeResult({ summary: 'Controller lease released.', data: {} }) as unknown as Record<string, unknown>);
+          } catch (error) {
+            return result(buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Controller release failed.', data: {} }) as unknown as Record<string, unknown>, true);
+          }
         }
         if (operation === 'launcher_start') {
           try {
@@ -2478,8 +2518,43 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           return result(facade as unknown as Record<string, unknown>, facade.status === 'blocked');
         }
 
+        let resumedControllerSession: ReturnType<typeof resumeControllerSession> | undefined;
+        if (operation === 'continue') {
+          try {
+            const workId = String(args.work_id ?? '').trim();
+            const work = getWorkContract(store, workId);
+            if (work && !['cancelled', 'completed', 'failed'].includes(work.status)) {
+              const identity = authenticatedFacadeControllerIdentity(ctx, args);
+              const currentOwner = getControllerSession(store, workId);
+              resumedControllerSession = resumeControllerSession(store, {
+                workId,
+                controllerId: identity.controllerId,
+                controllerType: currentOwner?.controllerType ?? 'chatgpt',
+                sessionId: identity.sessionId,
+                principalId: identity.principalId,
+                controllerInstanceId: identity.controllerInstanceId,
+                leaseMs: 3_600_000,
+              });
+            }
+          } catch (error) {
+            const facade = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Controller resume failed.', data: { operation, executionStarted: false, ownershipResumed: false } });
+            return result(facade as unknown as Record<string, unknown>, true);
+          }
+        }
+
         const facade = runGoalWorkloop({ ...workloopCtx, sourceRevision: workloopCtx.sourceRevision ?? undefined }, operation as 'start' | 'continue' | 'finalize' | 'stop', args);
-        return result(facade as unknown as Record<string, unknown>, facade.status === 'blocked' || facade.status === 'failed' || facade.status === 'not_found');
+        const response = resumedControllerSession
+          ? {
+              ...facade,
+              summary: `Controller ownership resumed for ${resumedControllerSession.workId}. ${facade.summary}`,
+              data: {
+                ...(facade.data && typeof facade.data === 'object' ? facade.data : {}),
+                ownershipResumed: true,
+                controllerSession: resumedControllerSession,
+              },
+            }
+          : facade;
+        return result(response as unknown as Record<string, unknown>, response.status === 'blocked' || response.status === 'failed' || response.status === 'not_found');
       }
       case 'work_submit': {
         const repository = selected(ctx, args);
