@@ -164,6 +164,46 @@ describe('controller-owned Work recovery and finalize cleanup', () => {
     expect(existsSync(join(ambientRoot, 'cross-repository.txt'))).toBe(false);
   });
 
+  test('cleanup-only finalize reconciles a clean branch already merged outside the Work stages', async () => {
+    const { repoRoot, controllerHome, repository, context } = fixture();
+    const ctx = context('session-cleanup-reconcile', 'controller-cleanup-reconcile');
+    structured(await callExecutionTool(ctx, 'session_start', {}));
+    structured(await callExecutionTool(ctx, 'session_bind_repository', { repo_id: repository.repoId }));
+    const prepared = structured(await callExecutionTool(ctx, 'work_prepare', {
+      repo_id: repository.repoId,
+      objective: 'Reconcile externally completed merge before cleanup',
+      isolation: 'new_worktree',
+    }));
+    const workId = String(prepared.work.workId);
+    const branch = String(prepared.work.branch);
+    const checkoutId = String(prepared.work.checkoutId);
+    const worktreePath = String(prepared.work.worktreePath);
+
+    writeFileSync(join(worktreePath, 'already-merged.txt'), 'merged-before-finalize');
+    git(worktreePath, 'add', 'already-merged.txt');
+    git(worktreePath, 'commit', '-m', 'external commit before finalize');
+    git(repoRoot, 'merge', '--ff-only', branch);
+
+    const finalized = structured(await callExecutionTool(ctx, 'work_finalize', {
+      repo_id: repository.repoId,
+      work_id: workId,
+      commit: false,
+      merge: false,
+      cleanup: true,
+      target_branch: 'main',
+    }));
+    expect(finalized.completed).toBe(true);
+    expect(finalized.work.state).toBe('cleaned');
+    expect(finalized.stages.merge).toBe('done');
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(git(repoRoot, 'branch', '--list', branch)).toBe('');
+    expect(git(repoRoot, 'show', 'HEAD:already-merged.txt')).toBe('merged-before-finalize');
+
+    const refreshed = listRepositories(controllerHome, { includeRemoved: true }).find((entry) => entry.repoId === repository.repoId)!;
+    const managedCheckout = refreshed.checkouts.find((checkout) => checkout.checkoutId === checkoutId)!;
+    expect(repositoryCheckoutLifecycle(managedCheckout)).toBe('removed');
+  });
+
   test('finalize commits, merges, removes managed checkout, deletes branch, and clears session focus', async () => {
     const { repoRoot, controllerHome, repository, context } = fixture();
     const ctx = context('session-finalize', 'controller-finalize');

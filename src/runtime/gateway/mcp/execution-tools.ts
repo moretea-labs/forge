@@ -610,6 +610,38 @@ function runCleanup(targetRoot: string, worktreePath: string): { ok: boolean; me
   return process.status === 0 ? { ok: true } : { ok: false, message: String(process.stderr ?? 'git worktree remove failed').trim() };
 }
 
+/**
+ * Reconcile a stale Work Handle only for the narrow cleanup-only case where the
+ * managed worktree is clean and its exact current HEAD is already reachable
+ * from the requested target branch. This recovers after an operator or an older
+ * controller committed/merged successfully but failed before recording stages.
+ */
+function cleanupOnlyMergedHead(
+  ctx: MultiRepositoryMcpToolContext,
+  current: WorkHandleState,
+  args: Record<string, unknown>,
+): { currentHead: string } | undefined {
+  if (args.cleanup !== true || args.commit === true || args.merge === true || !current.managedWorktree) return undefined;
+  if (!existsSync(current.worktreePath)) return undefined;
+  const repository = getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true });
+  const worktree = selectRepositoryCheckout(repository, current.checkoutId);
+  if (!repositoryGitStatus(worktree).clean) return undefined;
+  const currentHead = gitHead(worktree.canonicalRoot);
+  if (!currentHead || currentHead === current.expectedHead) return undefined;
+  const currentBranch = spawnSync('git', ['-C', worktree.canonicalRoot, 'branch', '--show-current'], {
+    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
+  });
+  if (currentBranch.status !== 0 || String(currentBranch.stdout ?? '').trim() !== current.branch) return undefined;
+  const target = selectRepositoryCheckout(repository, current.sourceCheckoutId ?? repository.activeCheckoutId);
+  const targetBranch = typeof args.target_branch === 'string' && args.target_branch.trim()
+    ? args.target_branch.trim()
+    : repository.defaultBranch || 'main';
+  const merged = spawnSync('git', ['-C', target.canonicalRoot, 'merge-base', '--is-ancestor', currentHead, targetBranch], {
+    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
+  });
+  return merged.status === 0 ? { currentHead } : undefined;
+}
+
 function resetFailedFinalizationStages(stages: WorkFinalizationStages, wants: { commit: boolean; merge: boolean; cleanup: boolean }): WorkFinalizationStages {
   const next = { ...stages };
   let reset = false;
@@ -715,6 +747,22 @@ function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, u
     });
   if (gitAuthorization.decision !== 'allow') return { authorization: gitAuthorization, work: compactHandle(current), stages: current.finalization };
 
+  const cleanupReconciliation = cleanupOnlyMergedHead(ctx, current, args);
+  if (cleanupReconciliation) {
+    current = transact('cleanup-reconcile-merged-head', (fresh) => writeWorkHandle(ctx.controllerHome, {
+      ...fresh,
+      expectedHead: cleanupReconciliation.currentHead,
+      state: 'merged',
+      failureReason: undefined,
+      finalization: {
+        ...fresh.finalization,
+        merge: 'done',
+        branchCleanup: args.delete_branch === false ? 'skipped' : 'pending',
+        lastError: undefined,
+      },
+    }));
+  }
+
   if (current.finalization.validation !== 'done') {
     current = transact('validation-start', (fresh) => writeWorkHandle(ctx.controllerHome, {
       ...fresh,
@@ -728,7 +776,11 @@ function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, u
     }
     current = transact('validation-done', (fresh) => writeWorkHandle(ctx.controllerHome, {
       ...fresh,
-      state: fresh.state === 'validating' ? 'editing' : fresh.state,
+      state: fresh.finalization.merge === 'done'
+        ? 'merged'
+        : fresh.finalization.commit === 'done'
+          ? 'committed'
+          : fresh.state === 'validating' ? 'editing' : fresh.state,
       finalization: { ...fresh.finalization, validation: 'done', lastError: undefined },
     }));
   }
