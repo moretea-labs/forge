@@ -2,7 +2,7 @@ import { spawn } from 'child_process';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
-import { ensureControllerHome } from '../../cli/repositories/controller-home';
+import { durableControllerHome, ensureControllerHome } from '../../cli/repositories/controller-home';
 import { withControllerLock } from '../../cli/repositories/locks';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { readSchedulerHealthSnapshot } from './global-scheduler/scheduler';
@@ -112,11 +112,12 @@ export function ensureControllerDaemon(
   if (pidAlive(live.pid)) return live;
 
   // Once a stable release is installed, the external Supervisor is the only
-  // process allowed to create or replace the Controller Daemon. MCP/Gateway
-  // callers must surface the unavailable state and let the Supervisor perform
-  // identity-safe recovery instead of spawning a competing owner.
-  if (isStableSupervisorInstalled(home)) {
-    const supervisor = readJsonFile<{ desiredState?: string; supervisor?: { pid?: number } }>(supervisorStatePath(home), {});
+  // process allowed to create or replace the Controller Daemon. Blue/green
+  // Gateways run from slot homes, so ownership must be checked against the
+  // durable root rather than the slot-local filesystem.
+  const supervisorHome = durableControllerHome(home);
+  if (isStableSupervisorInstalled(supervisorHome)) {
+    const supervisor = readJsonFile<{ desiredState?: string; supervisor?: { pid?: number } }>(supervisorStatePath(supervisorHome), {});
     return {
       ...live,
       status: 'unavailable',

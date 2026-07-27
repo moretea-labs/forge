@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { ensureStableSupervisorLayout, supervisorCurrentReleasePath, supervisorReleasesRoot } from '../../src/runtime/supervisor/paths';
@@ -67,5 +67,16 @@ describe('stable Supervisor compatibility integration', () => {
     expect(status.status).toBe('unavailable');
     expect(status.error).toBe('SUPERVISOR_REQUIRED');
     expect(status.restartRequired).toBe(true);
+  });
+
+  test('slot Gateway resolves Daemon ownership through the durable Supervisor home', () => {
+    const controllerHome = installedHome();
+    const slotHome = join(controllerHome, 'runtime-slots', 'green');
+    mkdirSync(slotHome, { recursive: true });
+    const status = ensureControllerDaemon(slotHome);
+    expect(status.status).toBe('unavailable');
+    expect(status.error).toBe('SUPERVISOR_REQUIRED');
+    expect(status.restartRequired).toBe(true);
+    expect(existsSync(join(slotHome, 'daemon', 'controller.pid'))).toBe(false);
   });
 });

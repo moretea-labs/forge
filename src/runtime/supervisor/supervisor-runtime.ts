@@ -437,6 +437,39 @@ export function recoverableCutoverObservationFailure(error: unknown): boolean {
   return /^SUPERVISOR_CUTOVER_(?:DAEMON|GATEWAY)_(?:LIVENESS|READINESS)_FAILED/.test(supervisorErrorMessage(error));
 }
 
+export function recoverableWriterClaimRefreshFailure(error: unknown): boolean {
+  const message = supervisorErrorMessage(error);
+  return /^SUPERVISOR_(?:CONTROLLERDAEMON|GATEWAYHOST)_(?:PROCESS_DIED|READINESS_TIMEOUT)/.test(message)
+    || message.startsWith('SUPERVISOR_ACTIVATED_MCP_READINESS_FAILED:');
+}
+
+export async function refreshWriterClaimWithSingleRetry<T>(
+  candidate: T,
+  refresh: (value: T) => Promise<T>,
+  onRetry?: (firstFailure: string) => Promise<void> | void,
+): Promise<{ candidate: T; retried: boolean; firstFailure?: string }> {
+  try {
+    return { candidate: await refresh(candidate), retried: false };
+  } catch (error) {
+    if (!recoverableWriterClaimRefreshFailure(error)) throw error;
+    const firstFailure = supervisorErrorMessage(error);
+    await onRetry?.(firstFailure);
+    try {
+      return { candidate: await refresh(candidate), retried: true, firstFailure };
+    } catch (secondError) {
+      throw new Error(
+        `SUPERVISOR_WRITER_REFRESH_RETRY_EXHAUSTED: initial=${firstFailure}; second=${supervisorErrorMessage(secondError)}`,
+      );
+    }
+  }
+}
+
+export function combinedRolloutRollbackFailure(primary: unknown, rollback: unknown): Error {
+  return new Error(
+    `SUPERVISOR_ROLLOUT_AND_ROLLBACK_FAILED: primary=${supervisorErrorMessage(primary)}; rollback=${supervisorErrorMessage(rollback)}`,
+  );
+}
+
 export async function observeCutoverCandidateWithSingleRecovery<T>(
   candidate: T,
   observe: (value: T) => Promise<void>,
@@ -1533,10 +1566,30 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       }
       // The candidate was intentionally passive before commit. Restart it with
       // the committed claim while ingress still routes to the previous slot.
-      activatedCandidate = await this.refreshSlotWriterClaim(candidate, {
-        operationId,
-        reason: 'rollout_writer_claim_refresh',
-      });
+      // A transient process/readiness loss gets one bounded retry; identity and
+      // authority mismatches still fail closed immediately.
+      const writerRefresh = await refreshWriterClaimWithSingleRetry(
+        candidate,
+        (current) => this.refreshSlotWriterClaim(current, {
+          operationId,
+          reason: 'rollout_writer_claim_refresh',
+        }),
+        async (firstFailure) => {
+          const latest = readSupervisorOperation(this.options.controllerHome, operationId) ?? operation;
+          updateSupervisorOperation(this.options.controllerHome, operationId, {
+            phase: latest.phase,
+            evidence: [
+              ...(latest.evidence ?? []),
+              {
+                kind: 'candidate_writer_refresh_retry',
+                summary: `Candidate ${candidateSlot} writer activation failed once (${firstFailure}); retrying the same authority-owned release exactly once.`,
+                at: new Date().toISOString(),
+              },
+            ],
+          });
+        },
+      );
+      activatedCandidate = writerRefresh.candidate;
       this.persist({
         activeSlot: candidateSlot,
         activeGeneration: activatedCandidate.generation,
@@ -1639,8 +1692,10 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
         ? { schedule: this.options.serviceActivationScheduler }
         : undefined);
     } catch (error) {
-      let restoredDaemon = previousDaemon;
-      let restoredGateway = previousGateway;
+      const primaryFailure = error;
+      let rollbackFailure: unknown;
+      let restoredDaemon: SupervisorManagedProcess | undefined = previousDaemon;
+      let restoredGateway: SupervisorManagedProcess | undefined = previousGateway;
       if (authorityCommitted) {
         markRollbackAuthority(this.options.controllerHome, previousGeneration);
         const previousTarget: StartedRuntimeSlot = {
@@ -1652,12 +1707,40 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
           localControllerPort: loadMcpServiceLocalConfig(previousDaemon.controllerHome, this.options.repoRoot)?.localController?.port ?? 8766,
           durableJobId: 'cutover-rollback-restore',
         };
-        const restored = await this.refreshSlotWriterClaim(previousTarget, {
-          operationId,
-          reason: 'rollout_rollback_restore_previous',
-        });
-        restoredDaemon = restored.controllerDaemon;
-        restoredGateway = restored.gatewayHost;
+        try {
+          const restored = await this.refreshSlotWriterClaim(previousTarget, {
+            operationId,
+            reason: 'rollout_rollback_restore_previous',
+          });
+          restoredDaemon = restored.controllerDaemon;
+          restoredGateway = restored.gatewayHost;
+        } catch (caught) {
+          rollbackFailure = caught;
+          restoredDaemon = undefined;
+          restoredGateway = undefined;
+          this.persist({
+            activeSlot: previousSlot,
+            previousSlot: candidateSlot,
+            activeGeneration: previousGeneration,
+            controllerDaemon: undefined,
+            gatewayHost: undefined,
+            standby: undefined,
+            ingress: {
+              ...this.state.ingress,
+              activeUpstreamSlot: previousSlot,
+              activeUpstreamPort: this.managerForManaged(previousGateway, previousSlot).gatewayBinding(previousSlot).port,
+            },
+          });
+          try {
+            await this.ensureRuntime();
+            restoredDaemon = this.state.controllerDaemon;
+            restoredGateway = this.state.gatewayHost;
+          } catch (authorityRecoveryError) {
+            rollbackFailure = new Error(
+              `${supervisorErrorMessage(caught)}; authorityRecovery=${supervisorErrorMessage(authorityRecoveryError)}`,
+            );
+          }
+        }
       }
       this.persist({
         activeSlot: previousSlot,
@@ -1669,13 +1752,14 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
         ingress: {
           ...this.state.ingress,
           activeUpstreamSlot: previousSlot,
-          activeUpstreamPort: this.managerForManaged(restoredGateway, previousSlot).gatewayBinding(previousSlot).port,
+          activeUpstreamPort: this.managerForManaged(restoredGateway ?? previousGateway, previousSlot).gatewayBinding(previousSlot).port,
         },
       });
       await this.stopSlotProcesses(activatedCandidate, 'rollout_failed_candidate_cleanup', operationId);
       const identity = readSlotIdentity(this.options.controllerHome, candidateSlot);
       if (identity) writeSlotIdentity(this.options.controllerHome, { ...identity, role: 'failed' });
-      throw error;
+      if (rollbackFailure) throw combinedRolloutRollbackFailure(primaryFailure, rollbackFailure);
+      throw primaryFailure;
     }
   }
 

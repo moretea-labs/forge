@@ -13,7 +13,7 @@ import { createStableIngressRouter } from '../../src/runtime/supervisor/ingress-
 import { createStableIngressProcess } from '../../src/runtime/supervisor/ingress-process';
 import { controllerDaemonMaxLifetimeMs, controllerDaemonPassiveMode, publishReadyAfterStartupRecovery, resolveControllerDaemonShutdownReason } from '../../src/runtime/control-plane/daemon-entry';
 import { createSupervisorOperation, readSupervisorOperation, updateSupervisorOperation } from '../../src/runtime/supervisor/operation-store';
-import { StableSupervisorRuntime, SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_MONITOR_FAILURE_THRESHOLD, automaticRecoveryRequestId, managedProcessNeedsReleaseRefresh, observeCutoverCandidateWithSingleRecovery, probeAuthenticatedMcpReadiness, probeSupervisorGatewayHealth, reconcileActiveManagedGenerations, reconcilePendingSupervisorActivations, reconcileSupervisorStateWithAuthority, recoverableCutoverObservationFailure, resumableInterruptedRollout, supervisorGatewayHealthDecision, supervisorGatewayOperational, supervisorIngressHealthDecision, supervisorMonitorFailureDecision, supervisorOperationRecoverySuppressed, terminalizeInterruptedSupervisorOperations } from '../../src/runtime/supervisor/supervisor-runtime';
+import { StableSupervisorRuntime, SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_MONITOR_FAILURE_THRESHOLD, automaticRecoveryRequestId, combinedRolloutRollbackFailure, managedProcessNeedsReleaseRefresh, observeCutoverCandidateWithSingleRecovery, probeAuthenticatedMcpReadiness, probeSupervisorGatewayHealth, reconcileActiveManagedGenerations, reconcilePendingSupervisorActivations, reconcileSupervisorStateWithAuthority, recoverableCutoverObservationFailure, recoverableWriterClaimRefreshFailure, refreshWriterClaimWithSingleRetry, resumableInterruptedRollout, supervisorGatewayHealthDecision, supervisorGatewayOperational, supervisorIngressHealthDecision, supervisorMonitorFailureDecision, supervisorOperationRecoverySuppressed, terminalizeInterruptedSupervisorOperations } from '../../src/runtime/supervisor/supervisor-runtime';
 import { decideRestart, newRestartBudgetRecord, recordFailure, recordRestart, recordStable } from '../../src/runtime/supervisor/restart-policy';
 import { SupervisorProcessManager, runtimeWriterEnvironment, supervisorProcessStopAuditPath } from '../../src/runtime/supervisor/process-manager';
 import { ensureMcpControllerHomeBearerToken, writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
@@ -1357,6 +1357,50 @@ describe('Stable Supervisor production hardening', () => {
       },
     )).rejects.toThrow(/SUPERVISOR_CUTOVER_RECOVERY_EXHAUSTED: initial=.*candidate-v1; second=.*candidate-v2/);
     expect(recoveries).toBe(1);
+  });
+
+  test('writer-claim activation retries one transient readiness failure', async () => {
+    let attempts = 0;
+    const result = await refreshWriterClaimWithSingleRetry(
+      'candidate-v1',
+      async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('SUPERVISOR_CONTROLLERDAEMON_READINESS_TIMEOUT');
+        return 'candidate-v2';
+      },
+    );
+    expect(result).toEqual({
+      candidate: 'candidate-v2',
+      retried: true,
+      firstFailure: 'SUPERVISOR_CONTROLLERDAEMON_READINESS_TIMEOUT',
+    });
+    expect(attempts).toBe(2);
+    expect(recoverableWriterClaimRefreshFailure(new Error('SUPERVISOR_ACTIVATED_MCP_READINESS_FAILED: unavailable'))).toBe(true);
+  });
+
+  test('writer-claim activation never retries identity mismatches and exhausts after one retry', async () => {
+    let identityAttempts = 0;
+    await expect(refreshWriterClaimWithSingleRetry('candidate', async () => {
+      identityAttempts += 1;
+      throw new Error('SUPERVISOR_ACTIVATED_GENERATION_MISMATCH');
+    })).rejects.toThrow('SUPERVISOR_ACTIVATED_GENERATION_MISMATCH');
+    expect(identityAttempts).toBe(1);
+
+    let transientAttempts = 0;
+    await expect(refreshWriterClaimWithSingleRetry('candidate', async () => {
+      transientAttempts += 1;
+      throw new Error(`SUPERVISOR_GATEWAYHOST_PROCESS_DIED: attempt=${transientAttempts}`);
+    })).rejects.toThrow(/SUPERVISOR_WRITER_REFRESH_RETRY_EXHAUSTED: initial=.*attempt=1; second=.*attempt=2/);
+    expect(transientAttempts).toBe(2);
+  });
+
+  test('rollout and rollback failures retain both causal errors', () => {
+    const combined = combinedRolloutRollbackFailure(
+      new Error('SUPERVISOR_CUTOVER_GATEWAY_READINESS_FAILED: candidate'),
+      new Error('SUPERVISOR_CONTROLLERDAEMON_READINESS_TIMEOUT'),
+    );
+    expect(combined.message).toContain('primary=SUPERVISOR_CUTOVER_GATEWAY_READINESS_FAILED: candidate');
+    expect(combined.message).toContain('rollback=SUPERVISOR_CONTROLLERDAEMON_READINESS_TIMEOUT');
   });
 
   test('published Controller Home release authority outranks the boot release for managed runtime recovery', () => {
