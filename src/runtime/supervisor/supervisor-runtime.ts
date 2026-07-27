@@ -124,23 +124,38 @@ export async function probeSupervisorGatewayHealth(
   try {
     const response = await fetch(endpoint, {
       signal: controller.signal,
-      headers: { accept: 'application/json' },
+      // Disable keep-alive reuse so a stale pooled socket cannot mask a dead Gateway.
+      headers: {
+        accept: 'application/json',
+        connection: 'close',
+        'cache-control': 'no-store',
+      },
     });
     let healthStatus: unknown;
     let readiness: unknown;
     let recoveryRecommended = false;
+    let parsedBody = false;
     try {
       const payload = await response.json() as {
         status?: unknown;
         ready?: unknown;
         sessionCapacity?: { recoveryRecommended?: unknown; acceptingNewSessions?: unknown };
       };
+      parsedBody = true;
       healthStatus = payload?.status;
       readiness = payload?.ready;
       recoveryRecommended = payload?.sessionCapacity?.recoveryRecommended === true;
     } catch {
       healthStatus = undefined;
       readiness = undefined;
+    }
+    // Require a parseable JSON body so empty/HTML proxy responses count as failures.
+    if (!parsedBody) {
+      return {
+        healthy: false,
+        statusCode: response.status,
+        detail: `status=${response.status} invalid_health_body`,
+      };
     }
     if (readiness === false) {
       return {
@@ -1575,7 +1590,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
           const binding = this.managerForManaged(managed, slot).gatewayBinding(slot);
           const health = await probeSupervisorGatewayHealth(`http://${binding.host}:${binding.port}/ready`);
           if (!health.healthy || health.ready === false) {
-            degraded = true;
+            // Live-but-not-ready without recovery recommendation is capacity pressure, not failure.
             if (health.healthy && health.recoveryRecommended !== true) {
               this.setComponent('gatewayHost', {
                 ...managed,
@@ -1586,6 +1601,8 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
               this.persist({ lastIncident: { at: new Date().toISOString(), component, reason: health.detail } });
               continue;
             }
+            // Single HTTP probe failures only accumulate consecutiveFailures.
+            // Supervisor observedState stays healthy until the threshold is reached.
             const decision = supervisorGatewayHealthDecision(managed.consecutiveFailures, false);
             const consecutiveFailures = decision.consecutiveFailures;
             const failureReason = `gatewayHost readiness probe requires recovery ${consecutiveFailures}/${SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD}: ${health.detail}`;
@@ -1596,6 +1613,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
               consecutiveFailures,
             });
             if (decision.shouldRecover) {
+              degraded = true;
               await this.recoverComponent('gatewayHost', failureReason);
             } else {
               this.persist({ lastIncident: { at: new Date().toISOString(), component, reason: failureReason } });
@@ -1656,10 +1674,11 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
               },
             });
           } else {
-            ingressDegraded = true;
+            // Below threshold: count failures only; do not mark the whole Supervisor degraded yet.
             const now = new Date().toISOString();
             const failureReason = `stable ingress full-path probe failed ${decision.consecutiveFailures}/${SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD} slot=${this.state.activeSlot} targetPort=${this.manager.gatewayBinding(this.state.activeSlot).port}: ${health.detail}`;
             if (decision.shouldReplace) {
+              ingressDegraded = true;
               const previousPid = this.ingressProcess.pid;
               try {
                 this.ingressProcess = await this.replaceIngressProcess();
@@ -1714,10 +1733,11 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
                 this.requestSupervisorSelfRestart(`stable ingress replacement failed: ${detail}`);
               }
             } else {
+              // Below threshold: retain process, count failures, keep Supervisor healthy.
               this.persist({
                 ingress: {
                   ...this.state.ingress,
-                  state: 'degraded',
+                  state: 'running',
                   pid: this.ingressProcess.pid,
                   consecutiveFailures: decision.consecutiveFailures,
                   lastFailureAt: now,
@@ -1733,11 +1753,16 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       }
       const stableIngressHealthy = gatewayHealthy && ingressPathHealthy && !ingressDegraded;
       if (stableIngressHealthy) this.resetMonitorFailures();
+      const ingressBelowThreshold = !ingressPathHealthy
+        && !ingressDegraded
+        && (this.state.ingress.consecutiveFailures ?? 0) > 0
+        && (this.state.ingress.consecutiveFailures ?? 0) < SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD;
       this.persist({
+        // Single ingress probe failures below threshold do not degrade the Supervisor.
         observedState: degraded || ingressDegraded || operationActive ? 'degraded' : 'healthy',
         ingress: {
           ...this.state.ingress,
-          state: stableIngressHealthy ? 'running' : 'degraded',
+          state: stableIngressHealthy || ingressBelowThreshold ? 'running' : 'degraded',
         },
       });
       // External / public endpoint probe: verify the full path that ChatGPT

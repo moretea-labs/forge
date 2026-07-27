@@ -376,6 +376,36 @@ describe('Stable Supervisor production hardening', () => {
       shouldReplace: false,
     });
     expect(supervisorIngressHealthDecision(7, true)).toEqual({ consecutiveFailures: 0, shouldReplace: false });
+
+    // Single HTTP failures only accumulate; success resets the counter.
+    let probeFailures = 0;
+    const first = supervisorGatewayHealthDecision(probeFailures, false);
+    expect(first.shouldRecover).toBe(false);
+    probeFailures = first.consecutiveFailures;
+    const second = supervisorGatewayHealthDecision(probeFailures, false);
+    expect(second.shouldRecover).toBe(false);
+    expect(second.consecutiveFailures).toBe(2);
+    expect(supervisorGatewayHealthDecision(second.consecutiveFailures, true)).toEqual({
+      consecutiveFailures: 0,
+      shouldRecover: false,
+    });
+
+    const invalidBody = await listen((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/plain' });
+      response.end('not-json');
+    });
+    const networkDown = await listen((_request, response) => {
+      response.destroy();
+    });
+    expect(await probeSupervisorGatewayHealth(`http://127.0.0.1:${invalidBody.port}/health`)).toMatchObject({
+      healthy: false,
+      detail: expect.stringContaining('invalid_health_body'),
+    });
+    const network = await probeSupervisorGatewayHealth(`http://127.0.0.1:${networkDown.port}/health`);
+    expect(network.healthy).toBe(false);
+    // A single network/400/503 style failure must not by itself request recovery.
+    expect(supervisorGatewayHealthDecision(0, network.healthy).shouldRecover).toBe(false);
+    expect(supervisorGatewayHealthDecision(0, false).shouldRecover).toBe(false);
   });
 
   test('candidate MCP readiness fails closed on authentication failure', async () => {

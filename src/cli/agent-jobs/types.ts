@@ -120,6 +120,8 @@ export interface AgentJobMeta {
   runId: string;
   issueId: string;
   taskId: string;
+  /** Durable parent Local Bridge Job that launched this Run, when present. */
+  parentLocalJobId?: string;
   agent: ControllerAgent;
   provider: AgentExecutionProvider;
   executionMode: AgentExecutionMode;

@@ -385,8 +385,13 @@ function updateRunIndexes(repoRoot: string, meta: AgentJobMeta): void {
 }
 
 function writeAgentMeta(repoRoot: string, path: string, meta: AgentJobMeta): void {
+  if (meta.status === "succeeded") normalizeSuccessfulAgentRunMeta(meta);
   writeJson(path, meta);
   updateRunIndexes(repoRoot, meta);
+  // Active parent Local Job closeout must not wait for get/list reconciliation.
+  if (["succeeded", "failed", "cancelled", "unknown"].includes(meta.status)) {
+    notifyParentLocalJobCloseout(repoRoot, meta);
+  }
 }
 
 function terminateRunProcess(pid: number | undefined): void {
@@ -1005,6 +1010,8 @@ export interface StartTaskJobOptions {
   retryFromRunId?: string;
   supervisorInstructions?: string;
   requestId?: string;
+  /** Durable parent Local Bridge Job id when this Run was launched from Local Bridge. */
+  parentLocalJobId?: string;
   approveRisk?: boolean;
   approveDestructive?: boolean;
   executorPolicy?: LocalExecutorPolicy;
@@ -1069,11 +1076,46 @@ function executorFailureMessage(meta: Pick<AgentJobMeta, "agent" | "error">, std
 }
 
 function attachExecutorFailureHealth(meta: AgentJobMeta, stdoutTail?: string, stderrTail?: string): AgentJobMeta {
-  if (meta.executorHealth || meta.status === "succeeded") return meta;
+  if (meta.status === "succeeded") {
+    // Successful Runs must not retain stale failure classification.
+    delete meta.executorHealth;
+    if (meta.terminationReason && meta.terminationReason !== "cancelled") {
+      delete meta.terminationReason;
+    }
+    if (meta.error) delete meta.error;
+    return meta;
+  }
+  if (meta.executorHealth) return meta;
   const message = executorFailureMessage(meta, stdoutTail, stderrTail);
   const health = classifyExecutorFailure(meta.agent, message, { allowedPaths: meta.allowedPaths ?? [] });
   if (health) meta.executorHealth = health;
   return meta;
+}
+
+/**
+ * Normalize terminal success metadata so prior executorHealth / error /
+ * terminationReason do not linger after a recovered or reconciled success.
+ */
+export function normalizeSuccessfulAgentRunMeta(meta: AgentJobMeta): AgentJobMeta {
+  if (meta.status !== "succeeded") return meta;
+  delete meta.executorHealth;
+  if (meta.error) delete meta.error;
+  if (meta.terminationReason && meta.terminationReason !== "cancelled") {
+    delete meta.terminationReason;
+  }
+  return meta;
+}
+
+function notifyParentLocalJobCloseout(repoRoot: string, meta: AgentJobMeta): void {
+  if (!meta.parentLocalJobId) return;
+  if (!["succeeded", "failed", "cancelled", "unknown"].includes(meta.status)) return;
+  try {
+    // Lazy import avoids a static cycle with local-bridge/job-store.
+    const { closeoutParentLocalJobFromAgentRun } = require("../local-bridge/job-store") as typeof import("../local-bridge/job-store");
+    closeoutParentLocalJobFromAgentRun(repoRoot, meta);
+  } catch {
+    /* Parent closeout is best-effort; lazy refresh remains the crash-recovery path. */
+  }
 }
 
 function failAcceptedTaskJob(
@@ -1194,6 +1236,7 @@ function baseMeta(
     runId,
     issueId: opts.issueId,
     taskId: opts.taskId,
+    ...(opts.parentLocalJobId?.trim() ? { parentLocalJobId: opts.parentLocalJobId.trim() } : {}),
     agent: opts.agent!,
     provider,
     executionMode,
@@ -1802,9 +1845,27 @@ export function getAgentJob(
       ? Math.max(0, deadlineMs - Date.now())
       : null;
   const beforeReason = meta.executorHealth?.reason;
-  attachExecutorFailureHealth(meta, tail(meta.stdoutPath), tail(meta.stderrPath));
-  if (beforeReason !== meta.executorHealth?.reason) metaMutated = true;
+  if (meta.status === "succeeded") {
+    const beforeHealth = meta.executorHealth;
+    const beforeError = meta.error;
+    const beforeTermination = meta.terminationReason;
+    normalizeSuccessfulAgentRunMeta(meta);
+    if (
+      beforeHealth !== undefined
+      || beforeError !== undefined
+      || beforeTermination !== meta.terminationReason
+    ) {
+      metaMutated = true;
+    }
+  } else {
+    attachExecutorFailureHealth(meta, tail(meta.stdoutPath), tail(meta.stderrPath));
+    if (beforeReason !== meta.executorHealth?.reason) metaMutated = true;
+  }
   if (metaMutated) writeAgentMeta(repoRoot, path, meta);
+  else if (["succeeded", "failed", "cancelled", "unknown"].includes(meta.status) && meta.parentLocalJobId) {
+    // Ensure active parent closeout even when Run metadata was already terminal.
+    notifyParentLocalJobCloseout(repoRoot, meta);
+  }
   return {
     ...meta,
     stdoutTail: tail(meta.stdoutPath),

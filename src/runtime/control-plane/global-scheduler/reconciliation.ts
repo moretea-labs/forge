@@ -12,6 +12,7 @@ import {
   mergeChildReferences,
   buildDelegatedExecutionResult,
 } from '../../execution/jobs/child-reference';
+import { recoverCompletedReceipt } from '../../execution/jobs/receipt-recovery';
 import { operationReceiptMatchesJobOwnership, readOperationReceipt } from '../../execution/jobs/receipt-store';
 import { releaseExecutionLeases, renewExecutionLeases } from '../../resources/leases/store';
 import { isProcessAlive, terminateProcessTree, terminateProcessTreeSync, type ProcessTreeTerminationResult } from '../../shared/process-tree';
@@ -30,58 +31,6 @@ function canAutomaticallyReplay(job: ExecutionJob): boolean {
   // Legacy Jobs predate explicit operation metadata. Preserve the old safe
   // fallback: read-only claims may replay, writes fail closed.
   return !hasPotentialSideEffects(job);
-}
-
-function recoverCompletedReceipt(controllerHome: string, job: ExecutionJob): ExecutionJob | undefined {
-  const receipt = readOperationReceipt(controllerHome, job.repoId, job.jobId);
-  if (!receipt || !operationReceiptMatchesJobOwnership(receipt, job)) return undefined;
-
-  // Parent Agent-delegation Jobs that already persisted a child reference are
-  // recovered as succeeded (delegation accepted), never as ambiguous.
-  const childReference = mergeChildReferences(
-    childReferenceFromReceipt(receipt),
-    childReferenceFromJob(job),
-  );
-  if (
-    (receipt.state === 'delegated' || hasDurableChildReference(childReference))
-    && (isAgentDelegationOperation(job.payload.operation) || job.type === 'agent-run' || job.type === 'dispatch-task')
-  ) {
-    if (!hasDurableChildReference(childReference) || !childReference) return undefined;
-    releaseExecutionLeases(controllerHome, job.repoId, job.jobId, job.leaseRefs);
-    const result = receipt.result
-      ?? buildDelegatedExecutionResult({ childReference });
-    const recovered = transitionExecutionJob(controllerHome, job.repoId, job.jobId, 'succeeded', {
-      result,
-      error: undefined,
-      evidenceIds: receipt.evidenceIds ?? job.evidenceIds,
-      workerPid: undefined,
-      leaseRefs: [],
-    }, { recoveredFromReceipt: true, receiptAttempt: receipt.attempt, recoveredAs: 'delegated' });
-    settleScheduledExecution(
-      controllerHome,
-      recovered,
-      'succeeded',
-      'Scheduled agent-delegation operation recovered from a durable child reference.',
-    );
-    return recovered;
-  }
-
-  if (receipt.state !== 'completed' || !receipt.outcome || receipt.outcome === 'delegated') return undefined;
-  releaseExecutionLeases(controllerHome, job.repoId, job.jobId, job.leaseRefs);
-  const recovered = transitionExecutionJob(controllerHome, job.repoId, job.jobId, receipt.outcome, {
-    result: receipt.result,
-    error: receipt.error,
-    evidenceIds: receipt.evidenceIds ?? job.evidenceIds,
-    workerPid: undefined,
-    leaseRefs: [],
-  }, { recoveredFromReceipt: true, receiptAttempt: receipt.attempt });
-  settleScheduledExecution(
-    controllerHome,
-    recovered,
-    receipt.outcome,
-    receipt.outcome === 'succeeded' ? 'Scheduled operation recovered from a completed Worker receipt.' : 'Scheduled operation failed before Job terminal state was persisted.',
-  );
-  return recovered;
 }
 
 function isAgentDelegationJob(job: ExecutionJob): boolean {
@@ -289,6 +238,8 @@ function finalizeRunningJob(
   if (receiptRecovery) {
     return { requeued: 0, terminal: 1, recovered: 1 };
   }
+  // recoverCompletedReceipt already matched ownership; fall through only when
+  // no completed/delegated receipt exists for this attempt.
 
   releaseExecutionLeases(controllerHome, job.repoId, job.jobId, job.leaseRefs);
   // Prefer durable child recovery even when the Worker exited uncleanly.

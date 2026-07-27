@@ -687,6 +687,71 @@ function cleanupEphemeralJob(repoRoot: string, job: LocalBridgeJob): void {
   });
 }
 
+/**
+ * Actively close a parent Local Job from a terminal Agent Run.
+ * Idempotent: repeated calls with the same terminal Run leave the Job unchanged.
+ * Lazy refreshLocalBridgeJob remains the crash-recovery path.
+ */
+export function closeoutParentLocalJobFromAgentRun(
+  repoRoot: string,
+  run: Pick<
+    import("../agent-jobs/types").AgentJobMeta,
+    "runId" | "status" | "finishedAt" | "error" | "exitCode" | "integratedSessionId" | "changeOutcome" | "changedFiles" | "parentLocalJobId"
+  >,
+): LocalBridgeJob | undefined {
+  const parentJobId = run.parentLocalJobId?.trim();
+  if (!parentJobId) return undefined;
+  if (!["succeeded", "failed", "cancelled", "unknown"].includes(run.status)) return undefined;
+  const job = tryReadLocalBridgeJob(repoRoot, parentJobId);
+  if (!job) return undefined;
+  if (job.runId && job.runId !== run.runId) return job;
+  if (!job.runId) job.runId = run.runId;
+
+  const projected = projectAgentRunToLocalBridgeStatus(run.status);
+  const alreadyTerminal = ["succeeded", "failed", "timed_out", "orphaned", "stale", "cancelled"].includes(job.status);
+  if (alreadyTerminal) {
+    // Idempotent re-entry: keep terminal status, still allow ephemeral cleanup once.
+    if (job.status === projected || (job.status === "failed" && projected === "failed")) {
+      const beforeCleanup = job.cleanupAt;
+      cleanupEphemeralJob(repoRoot, job);
+      if (job.cleanupAt !== beforeCleanup) return saveJob(repoRoot, job);
+      return job;
+    }
+    return job;
+  }
+  if (!["dispatched", "running", "approved"].includes(job.status)) return job;
+
+  const previous = job.status;
+  job.status = projected;
+  job.finishedAt = run.finishedAt ?? now();
+  job.error = run.status === "succeeded" ? undefined : run.error ?? `Run ended as ${run.status}`;
+  job.result = {
+    ...(job.result ?? {}),
+    runId: run.runId,
+    runStatus: run.status,
+    exitCode: run.exitCode,
+    integratedSessionId: run.integratedSessionId,
+    changeOutcome: run.changeOutcome,
+    changedFiles: run.changedFiles,
+  };
+  job.outcome = {
+    process: { exitCode: run.exitCode },
+    infrastructureError: run.status === "succeeded" ? undefined : {
+      code: `AGENT_RUN_${run.status.toUpperCase()}`,
+      message: run.error ?? `Run ended as ${run.status}`,
+    },
+  };
+  cleanupEphemeralJob(repoRoot, job);
+  if (previous !== job.status) {
+    appendEvent(repoRoot, job.jobId, {
+      type: job.status === "succeeded" ? "job_succeeded" : job.status === "cancelled" ? "job_cancelled" : "job_failed",
+      message: `Linked Run ${run.runId} actively closed Local Job to ${job.status}.`,
+      data: { runStatus: run.status, activeCloseout: true },
+    });
+  }
+  return saveJob(repoRoot, job);
+}
+
 function runningJobTimedOut(job: LocalBridgeJob, configuredTimeoutMs: number): boolean {
   const deadlineAt = job.deadlineAt ? Date.parse(job.deadlineAt) : Number.NaN;
   const startedAt = Date.parse(job.startedAt ?? job.updatedAt);
@@ -1325,6 +1390,7 @@ function executeLaunchTask(
     model: payload.model,
     createPullRequest: payload.createPullRequest,
     requestId: payload.requestId,
+    parentLocalJobId: job.jobId,
     approveDestructive: payload.approveDestructive === true,
   });
   dispatchAcceptedTaskJob(repoRoot, accepted.runId);
@@ -1414,6 +1480,7 @@ function executeQuickSession(
     timeoutMs: resolvedJobTimeout(repoRoot, payload.timeoutMs),
     isolate: resolvedIsolation(payload),
     requestId,
+    parentLocalJobId: job.jobId,
     approveDestructive: payload.approveDestructive === true,
   });
   dispatchAcceptedTaskJob(repoRoot, accepted.runId);

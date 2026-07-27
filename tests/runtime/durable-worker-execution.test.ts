@@ -2,7 +2,9 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { createExecutionJob, getExecutionJob } from '../../src/runtime/execution/jobs/store';
+import { createExecutionJob, getExecutionJob, updateExecutionJob } from '../../src/runtime/execution/jobs/store';
+import { markOperationCompleted, markOperationStarted } from '../../src/runtime/execution/jobs/receipt-store';
+import { tryRecoverJobFromWorkerReceipt } from '../../src/runtime/execution/jobs/receipt-recovery';
 import { GlobalScheduler } from '../../src/runtime/control-plane/global-scheduler/scheduler';
 import { readRepositoryProjectionSnapshot } from '../../src/runtime/projections/materialized-view';
 import { readRepositoryProjectionDirty } from '../../src/runtime/projections/invalidation';
@@ -111,5 +113,52 @@ describe('durable Execution Worker lifecycle', () => {
     expect(finished.workerLifecycle?.exitCode).toBe(7);
     expect(finished.workerLifecycle?.processGroupId).toBeTypeOf('number');
     expect(finished.workerLifecycle?.startupState).toBe('exited');
+  });
+
+  test('recovers succeeded Job from completed receipt when terminal transition lags process exit', () => {
+    const controllerHome = home();
+    const created = createReadOnlyJob(controllerHome, 'worker-receipt-race');
+    const attempt = 1;
+    const workerPid = 424_242;
+    const ownerEpoch = 'epoch-receipt-race';
+    const running = updateExecutionJob(controllerHome, created.repoId, created.jobId, (job) => ({
+      ...job,
+      status: 'running',
+      attempt,
+      workerPid,
+      startedAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+      workerLifecycle: {
+        executable: process.execPath,
+        args: [],
+        cwd: process.cwd(),
+        environment: {},
+        ownerPid: process.pid,
+        ownerEpoch,
+        workerPid,
+        attempt,
+        maxAttempts: job.maxAttempts,
+        spawnedAt: new Date().toISOString(),
+        startupState: 'registered',
+      },
+    }));
+
+    markOperationStarted(controllerHome, running, workerPid);
+    markOperationCompleted(controllerHome, running, workerPid, {
+      outcome: 'succeeded',
+      result: { ok: true, recoveredFromReceipt: true },
+    });
+
+    // Simulate the race: receipt is durable, but Job terminal transition has not landed yet.
+    expect(getExecutionJob(controllerHome, created.repoId, created.jobId).status).toBe('running');
+    const recovered = tryRecoverJobFromWorkerReceipt(controllerHome, running);
+    expect(recovered?.status).toBe('succeeded');
+
+    const finished = getExecutionJob(controllerHome, created.repoId, created.jobId);
+    expect(finished.status).toBe('succeeded');
+    expect(finished.attempt).toBe(attempt);
+    expect(finished.error?.code).not.toBe('WORKER_EXITED');
+    expect(finished.error).toBeUndefined();
+    expect(finished.result).toMatchObject({ ok: true, recoveredFromReceipt: true });
   });
 });

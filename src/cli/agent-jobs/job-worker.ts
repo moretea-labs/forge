@@ -77,7 +77,26 @@ function persistJson(path: string, value: unknown): void {
 }
 
 function persistMeta(value: AgentJobMeta): void {
+  if (value.status === "succeeded") {
+    delete value.executorHealth;
+    if (value.error) delete value.error;
+    if (value.terminationReason && value.terminationReason !== "cancelled") {
+      delete value.terminationReason;
+    }
+  }
   persistJson(config.metaPath, value);
+  if (
+    value.parentLocalJobId
+    && ["succeeded", "failed", "cancelled", "unknown"].includes(value.status)
+  ) {
+    try {
+      // Lazy import keeps the worker bootstrap light and avoids cycles.
+      const { closeoutParentLocalJobFromAgentRun } = require("../local-bridge/job-store") as typeof import("../local-bridge/job-store");
+      closeoutParentLocalJobFromAgentRun(value.repoRoot, value);
+    } catch {
+      /* Parent closeout is best-effort; Local Bridge refresh remains the fallback. */
+    }
+  }
 }
 
 function missingOwnershipError(): Error {
@@ -743,14 +762,20 @@ const autoFinalizing = ok && config.autoIntegrate && finalMeta.executionMode ===
 // would expose a false terminal state without closure evidence.
 finalMeta.status = autoFinalizing ? "running" : ok ? "succeeded" : "failed";
 finalMeta.exitCode = result.code;
-finalMeta.error = error;
-finalMeta.terminationReason = timedOut
-  ? "timeout"
-  : spawnError
-    ? "spawn_error"
-    : result.signal
-      ? "signal"
-      : undefined;
+if (ok && !autoFinalizing) {
+  delete finalMeta.error;
+  delete finalMeta.executorHealth;
+  delete finalMeta.terminationReason;
+} else {
+  finalMeta.error = error;
+  finalMeta.terminationReason = timedOut
+    ? "timeout"
+    : spawnError
+      ? "spawn_error"
+      : result.signal
+        ? "signal"
+        : undefined;
+}
 finalMeta.lastHeartbeatAt = finishedAt;
 if (autoFinalizing) delete finalMeta.finishedAt;
 else finalMeta.finishedAt = finishedAt;

@@ -18,6 +18,7 @@ import {
   updateExecutionJob,
 } from '../../execution/jobs/store';
 import type { ExecutionWorkerLifecycle } from '../../execution/jobs/types';
+import { tryRecoverJobFromWorkerReceipt } from '../../execution/jobs/receipt-recovery';
 import { releaseExecutionLeases } from '../../resources/leases/store';
 import { RepoActorRegistry } from '../repo-actor/registry';
 import { reconcileExecutionJobsAsync } from './reconciliation';
@@ -306,49 +307,51 @@ export class GlobalScheduler {
         return;
       }
 
-      // Race mitigation: when worker exits cleanly (exit code 0), give it a short grace period
-      // to write success result before declaring premature exit. Worker may complete successfully
-      // but the file write + job transition races with the process exit signal.
-      const cleanExit = exitCode === 0 && !signal && !startupError;
-      if (cleanExit) {
-        await new Promise((resolve) => setTimeout(resolve, 150));
-        const rechecked = getExecutionJob(this.controllerHome, repoId, jobId);
-        if (rechecked.attempt !== attempt) return;
-        const recheckedLifecycle = rechecked.workerLifecycle ?? lifecycle;
-        const recheckedMerged = { ...recheckedLifecycle, ...diagnosticLifecycle };
-        if (['succeeded', 'failed', 'timed_out', 'cancelled', 'orphaned', 'stale', 'human_attention_required'].includes(rechecked.status)) {
-          updateExecutionJob(this.controllerHome, repoId, jobId, (latest) => ({ ...latest, workerLifecycle: recheckedMerged }));
-          try { rebuildRepositoryProjection(this.controllerHome, repoId); } catch { /* the next scheduler/status read can retry */ }
-          return;
-        }
+      // Prefer durable receipt recovery over sleep-based grace. When the Worker
+      // already wrote a completed/delegated receipt for this attempt/PID/epoch/
+      // lease ownership, finalize from that receipt and never emit WORKER_EXITED.
+      const recovered = tryRecoverJobFromWorkerReceipt(this.controllerHome, current);
+      if (recovered) {
+        updateExecutionJob(this.controllerHome, repoId, jobId, (latest) => ({ ...latest, workerLifecycle: mergedLifecycle }));
+        try { rebuildRepositoryProjection(this.controllerHome, repoId); } catch { /* the next scheduler/status read can retry */ }
+        return;
+      }
+      const rechecked = getExecutionJob(this.controllerHome, repoId, jobId);
+      if (rechecked.attempt !== attempt) return;
+      const recheckedLifecycle = rechecked.workerLifecycle ?? lifecycle;
+      const recheckedMerged = { ...recheckedLifecycle, ...diagnosticLifecycle };
+      if (['succeeded', 'failed', 'timed_out', 'cancelled', 'orphaned', 'stale', 'human_attention_required'].includes(rechecked.status)) {
+        updateExecutionJob(this.controllerHome, repoId, jobId, (latest) => ({ ...latest, workerLifecycle: recheckedMerged }));
+        try { rebuildRepositoryProjection(this.controllerHome, repoId); } catch { /* the next scheduler/status read can retry */ }
+        return;
       }
 
       const details: Record<string, unknown> = {
         workerLostReason: startupError ? 'spawn_failed' : 'process_exit',
-        executable: mergedLifecycle.executable,
-        cwd: mergedLifecycle.cwd,
+        executable: recheckedMerged.executable,
+        cwd: recheckedMerged.cwd,
         exitCode,
         signal,
         stderr,
         stderrTruncated,
-        stderrPath: mergedLifecycle.stderrPath,
-        processGroupId: mergedLifecycle.processGroupId,
-        ownerPid: mergedLifecycle.ownerPid,
-        ownerEpoch: mergedLifecycle.ownerEpoch,
-        attempt: current.attempt,
-        maxAttempts: current.maxAttempts,
+        stderrPath: recheckedMerged.stderrPath,
+        processGroupId: recheckedMerged.processGroupId,
+        ownerPid: recheckedMerged.ownerPid,
+        ownerEpoch: recheckedMerged.ownerEpoch,
+        attempt: rechecked.attempt,
+        maxAttempts: rechecked.maxAttempts,
         ...(startupError ? { startupError } : {}),
       };
       const stderrSummary = stderr.trim() ? ` Worker stderr: ${stderr.trim()}` : '';
       const startupSummary = startupError ? ` Startup error: ${startupError}.` : '';
-      const message = `Execution Worker ${mergedLifecycle.executable} exited before completion (cwd ${mergedLifecycle.cwd}, exit code ${exitCode ?? 'unknown'}${signal ? `, signal ${signal}` : ''}).${startupSummary}${stderrSummary}`;
-      releaseExecutionLeases(this.controllerHome, repoId, jobId, current.leaseRefs);
-      const retryable = current.attempt < current.maxAttempts;
+      const message = `Execution Worker ${recheckedMerged.executable} exited before completion (cwd ${recheckedMerged.cwd}, exit code ${exitCode ?? 'unknown'}${signal ? `, signal ${signal}` : ''}).${startupSummary}${stderrSummary}`;
+      releaseExecutionLeases(this.controllerHome, repoId, jobId, rechecked.leaseRefs);
+      const retryable = rechecked.attempt < rechecked.maxAttempts;
       transitionExecutionJob(this.controllerHome, repoId, jobId, retryable ? 'queued' : 'failed', {
         workerPid: undefined,
         heartbeatAt: undefined,
         leaseRefs: [],
-        workerLifecycle: mergedLifecycle,
+        workerLifecycle: recheckedMerged,
         error: { code: startupError ? 'WORKER_START_FAILED' : 'WORKER_EXITED', message, retryable, details },
       });
       try { rebuildRepositoryProjection(this.controllerHome, repoId); } catch { /* the next scheduler/status read can retry */ }
