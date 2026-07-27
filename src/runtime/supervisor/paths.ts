@@ -82,6 +82,9 @@ export interface SupervisorReleaseDescriptor {
   releasePath: string;
   sourceRoot?: string;
   releaseRevision?: string;
+  sourceCommit?: string;
+  cleanWorkspace?: boolean;
+  artifactHash?: string;
   supervisorExecutable: string;
   runtimeExecutable: string;
   daemonExecutable: string;
@@ -103,6 +106,9 @@ export function readSupervisorRelease(releasePath: string | undefined): Supervis
     daemonExecutable,
     ...(typeof manifest.sourceRoot === 'string' ? { sourceRoot: resolve(manifest.sourceRoot) } : {}),
     ...(typeof manifest.releaseRevision === 'string' ? { releaseRevision: manifest.releaseRevision } : {}),
+    ...(typeof manifest.sourceCommit === 'string' ? { sourceCommit: manifest.sourceCommit } : {}),
+    ...(typeof manifest.cleanWorkspace === 'boolean' ? { cleanWorkspace: manifest.cleanWorkspace } : {}),
+    ...(typeof manifest.artifactHash === 'string' ? { artifactHash: manifest.artifactHash } : {}),
   };
 }
 

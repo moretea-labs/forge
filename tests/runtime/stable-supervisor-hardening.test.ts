@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { createHash } from 'crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { spawnSync } from 'child_process';
 import { bootstrapLaunchAgentWithRetry } from '../../src/cli/controller/launch-agents';
 import { selectSupervisorRollbackRelease, serviceActivationStatePath, supervisorActivationMatchesRelease, waitForServiceActivation } from '../../src/cli/commands/supervisor';
 import { installSupervisorRelease, publishSupervisorRelease, renderLaunchdSupervisorPlist, renderSystemdSupervisorUnit, stageSupervisorRelease, supervisorServiceLabel, supervisorSystemdUnitName } from '../../src/runtime/supervisor/installer';
@@ -14,13 +16,14 @@ import { createSupervisorOperation, readSupervisorOperation, updateSupervisorOpe
 import { StableSupervisorRuntime, SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_MONITOR_FAILURE_THRESHOLD, automaticRecoveryRequestId, managedProcessNeedsReleaseRefresh, probeSupervisorGatewayHealth, reconcileActiveManagedGenerations, reconcileSupervisorStateWithAuthority, supervisorGatewayHealthDecision, supervisorIngressHealthDecision, supervisorMonitorFailureDecision, terminalizeInterruptedSupervisorOperations } from '../../src/runtime/supervisor/supervisor-runtime';
 import { decideRestart, newRestartBudgetRecord, recordFailure, recordRestart, recordStable } from '../../src/runtime/supervisor/restart-policy';
 import { SupervisorProcessManager } from '../../src/runtime/supervisor/process-manager';
-import { writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
+import { ensureMcpControllerHomeBearerToken, writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
 import { writeActiveSlotAuthority } from '../../src/cli/controller/runtime-slots';
 import { readCurrentRelease, readCurrentSupervisorRelease, supervisorReleasesRoot } from '../../src/runtime/supervisor/paths';
 import { createSupervisorControlServer } from '../../src/runtime/supervisor/control-server';
 import type { SupervisorManagedProcess, SupervisorOperation, SupervisorState } from '../../src/runtime/supervisor/types';
 import { evaluateRuntimeReleaseCoherence, evaluateSupervisorServiceReleaseCoherence, extractSupervisorServiceRelease } from '../../src/runtime/supervisor/release-coherence';
 import { publishAndScheduleSupervisorRelease } from '../../src/runtime/supervisor/service-activation';
+import { probeSupervisorMcpReadiness } from '../../src/runtime/supervisor/mcp-readiness';
 
 const servers: Server[] = [];
 
@@ -40,16 +43,44 @@ async function listen(handler: (request: IncomingMessage, response: ServerRespon
   return { server, port: address.port };
 }
 
+function git(cwd: string, args: string[]): void {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  if (result.status !== 0) {
+    throw new Error(`git ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
+  }
+}
+
 function fakeSupervisorRelease(home: string, name: string, revision: string): string {
   const releasePath = join(supervisorReleasesRoot(home), name);
   mkdirSync(releasePath, { recursive: true });
-  for (const executable of ['supervisor.js', 'repo-harness.js', 'daemon.js']) {
+  const executables = [
+    'supervisor.js',
+    'repo-harness.js',
+    'daemon.js',
+    'worker.js',
+    'agent-worker.js',
+    'process-runner.js',
+    'browser-handoff-host.js',
+  ];
+  const aggregate = createHash('sha256');
+  const artifacts: Record<string, { sha256: string }> = {};
+  for (const executable of executables) {
     writeFileSync(join(releasePath, executable), '');
+    const sha256 = createHash('sha256').update('').digest('hex');
+    artifacts[executable] = { sha256 };
+    aggregate.update(executable);
+    aggregate.update('\0');
+    aggregate.update(sha256);
+    aggregate.update('\0');
   }
   writeFileSync(join(releasePath, 'manifest.json'), `${JSON.stringify({
-    schemaVersion: 1,
+    schemaVersion: 2,
     releaseRevision: revision,
+    sourceCommit: '0123456789abcdef0123456789abcdef01234567',
     sourceRoot: process.cwd(),
+    cleanWorkspace: true,
+    artifactHash: aggregate.digest('hex'),
+    artifacts,
   })}\n`);
   return releasePath;
 }
@@ -74,7 +105,13 @@ describe('Stable Supervisor production hardening', () => {
   test('release bundles include the durable Worker entrypoint', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-worker-release-'));
     try {
-      const release = installSupervisorRelease({ controllerHome, repoRoot: process.cwd(), sourceRoot: process.cwd() });
+      const release = installSupervisorRelease({
+        controllerHome,
+        repoRoot: process.cwd(),
+        sourceRoot: process.cwd(),
+        allowDirtyRuntimeSourceForTests: true,
+        allowUnreproducibleReleaseForTests: true,
+      });
       expect(existsSync(join(release.releasePath, 'worker.js'))).toBe(true);
       expect(existsSync(join(release.releasePath, 'browser-handoff-host.js'))).toBe(true);
       const manifest = JSON.parse(readFileSync(join(release.releasePath, 'manifest.json'), 'utf8')) as {
@@ -91,10 +128,68 @@ describe('Stable Supervisor production hardening', () => {
     }
   }, 180_000);
 
+  test('release staging refuses dirty runtime source paths', () => {
+    const root = mkdtempSync(join(tmpdir(), 'repo-harness-dirty-release-source-'));
+    const controllerHome = join(root, 'controller');
+    const sourceRoot = join(root, 'source');
+    try {
+      mkdirSync(join(sourceRoot, 'src'), { recursive: true });
+      mkdirSync(join(sourceRoot, 'scripts'), { recursive: true });
+      writeFileSync(join(sourceRoot, 'src', 'runtime.ts'), 'export const version = 1;\n');
+      writeFileSync(join(sourceRoot, 'scripts', 'build.sh'), '#!/usr/bin/env bash\n');
+      writeFileSync(join(sourceRoot, 'package.json'), '{"name":"fixture"}\n');
+      writeFileSync(join(sourceRoot, 'bun.lock'), '\n');
+      git(sourceRoot, ['init']);
+      git(sourceRoot, ['config', 'user.email', 'release-test@example.invalid']);
+      git(sourceRoot, ['config', 'user.name', 'Release Test']);
+      git(sourceRoot, ['add', '.']);
+      git(sourceRoot, ['commit', '-m', 'initial runtime source']);
+      writeFileSync(join(sourceRoot, 'src', 'runtime.ts'), 'export const version = 2;\n');
+
+      expect(() => stageSupervisorRelease({ controllerHome, repoRoot: sourceRoot, sourceRoot }))
+        .toThrow(/SUPERVISOR_RELEASE_DIRTY_RUNTIME_SOURCE:.*src\/runtime\.ts/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('release publication rejects dirty or incomplete release identity', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-release-identity-'));
+    try {
+      const dirty = fakeSupervisorRelease(controllerHome, 'dirty', '87de8ff67d55-dirty');
+      writeFileSync(join(dirty, 'manifest.json'), `${JSON.stringify({
+        schemaVersion: 2,
+        releaseRevision: '87de8ff67d55-dirty',
+        sourceCommit: '0123456789abcdef0123456789abcdef01234567',
+        sourceRoot: process.cwd(),
+        cleanWorkspace: false,
+        artifactHash: 'b'.repeat(64),
+      })}\n`);
+      expect(() => publishSupervisorRelease({ controllerHome, repoRoot: process.cwd(), releasePath: dirty }))
+        .toThrow(/SUPERVISOR_RELEASE_NOT_REPRODUCIBLE/);
+
+      const incomplete = fakeSupervisorRelease(controllerHome, 'incomplete', 'revision-incomplete');
+      writeFileSync(join(incomplete, 'manifest.json'), `${JSON.stringify({
+        schemaVersion: 1,
+        releaseRevision: 'revision-incomplete',
+        sourceRoot: process.cwd(),
+      })}\n`);
+      expect(() => publishSupervisorRelease({ controllerHome, repoRoot: process.cwd(), releasePath: incomplete }))
+        .toThrow(/SUPERVISOR_RELEASE_NOT_REPRODUCIBLE/);
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
   test('staged releases remain unpublished until candidate verification succeeds', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-staged-release-'));
     try {
-      const staged = stageSupervisorRelease({ controllerHome, repoRoot: process.cwd(), sourceRoot: process.cwd() });
+      const staged = stageSupervisorRelease({
+        controllerHome,
+        repoRoot: process.cwd(),
+        sourceRoot: process.cwd(),
+        allowDirtyRuntimeSourceForTests: true,
+      });
       expect(readCurrentRelease(controllerHome)).toBeUndefined();
       expect(readCurrentSupervisorRelease(controllerHome)).toBeUndefined();
       expect(existsSync(join(staged.releasePath, 'worker.js'))).toBe(true);
@@ -104,6 +199,7 @@ describe('Stable Supervisor production hardening', () => {
         controllerHome,
         repoRoot: process.cwd(),
         releasePath: staged.releasePath,
+        allowUnreproducibleReleaseForTests: true,
       });
       expect(readCurrentRelease(controllerHome)).toBe(staged.releasePath);
       expect(published.releasePath).toBe(staged.releasePath);
@@ -280,6 +376,30 @@ describe('Stable Supervisor production hardening', () => {
       shouldReplace: false,
     });
     expect(supervisorIngressHealthDecision(7, true)).toEqual({ consecutiveFailures: 0, shouldReplace: false });
+  });
+
+  test('candidate MCP readiness fails closed on authentication failure', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-mcp-readiness-'));
+    try {
+      ensureMcpControllerHomeBearerToken(controllerHome);
+      const server = await listen((_request, response) => {
+        response.statusCode = 401;
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify({ error: 'unauthorized' }));
+      });
+      const result = await probeSupervisorMcpReadiness({
+        controllerHome,
+        repoRoot: process.cwd(),
+        host: '127.0.0.1',
+        port: server.port,
+        attempts: 1,
+        timeoutMs: 1_000,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('status=401');
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
   });
 
   test('restart_controller preserves the Gateway and delegates only conditional generation reconciliation', async () => {

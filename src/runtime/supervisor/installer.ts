@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { chmodSync, mkdirSync, realpathSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'fs';
 import { dirname, join, resolve, sep } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { resolveControllerRuntimeSourceRoot } from '../control-plane/runtime-generation';
@@ -8,6 +8,9 @@ import { readCurrentRelease, readSupervisorRelease, ensureStableSupervisorLayout
 export interface SupervisorInstallResult {
   controllerHome: string;
   releaseRevision: string;
+  sourceCommit?: string;
+  cleanWorkspace?: boolean;
+  artifactHash?: string;
   releasePath: string;
   currentPath: string;
   previousPath?: string;
@@ -15,17 +18,77 @@ export interface SupervisorInstallResult {
   systemdUnitPath: string;
 }
 
+const RUNTIME_RELEASE_PATHS = ['src', 'scripts', 'package.json', 'bun.lock'] as const;
+const RELEASE_EXECUTABLES = [
+  'supervisor.js',
+  'repo-harness.js',
+  'daemon.js',
+  'worker.js',
+  'agent-worker.js',
+  'process-runner.js',
+  'browser-handoff-host.js',
+] as const;
+
 function runtimeSourceRoot(explicit?: string): string {
   const resolved = resolveControllerRuntimeSourceRoot({ explicitRoot: explicit });
   if (!resolved.root) throw new Error(`SUPERVISOR_RUNTIME_SOURCE_UNAVAILABLE: ${resolved.detail ?? resolved.reason}`);
   return resolved.root;
 }
 
-function gitRevision(root: string): string {
-  const revision = runProcess('git', ['-C', root, 'rev-parse', '--short=12', 'HEAD'], { timeoutMs: 10_000, maxOutputBytes: 4_096 });
-  if (!revision.ok || !revision.stdout.trim()) return `local-${Date.now()}`;
-  const dirty = runProcess('git', ['-C', root, 'status', '--porcelain=v1', '--', 'src', 'scripts', 'package.json', 'bun.lock'], { timeoutMs: 10_000, maxOutputBytes: 4_096 });
-  return `${revision.stdout.trim()}${dirty.stdout.trim() ? '-dirty' : ''}`;
+interface RuntimeSourceReleaseIdentity {
+  sourceCommit: string;
+  releaseRevision: string;
+  cleanWorkspace: boolean;
+  dirtyRuntimePaths: string[];
+}
+
+function parseDirtyRuntimePaths(output: string): string[] {
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .map((line) => line.slice(3).replace(/^"|"$/g, ''))
+    .map((path) => path.includes(' -> ') ? path.split(' -> ').pop() ?? path : path)
+    .filter(Boolean);
+}
+
+function runtimeSourceIdentity(root: string, allowDirtyRuntimeSourceForTests = false): RuntimeSourceReleaseIdentity {
+  const commit = runProcess('git', ['-C', root, 'rev-parse', '--verify', 'HEAD'], { timeoutMs: 10_000, maxOutputBytes: 4_096 });
+  if (!commit.ok || !commit.stdout.trim()) {
+    throw new Error('SUPERVISOR_RELEASE_SOURCE_COMMIT_UNAVAILABLE: Supervisor releases require a Git HEAD source commit.');
+  }
+  const shortRevision = runProcess('git', ['-C', root, 'rev-parse', '--short=12', 'HEAD'], { timeoutMs: 10_000, maxOutputBytes: 4_096 });
+  const dirty = runProcess('git', [
+    '-C', root,
+    'status',
+    '--porcelain=v1',
+    '--untracked-files=all',
+    '--',
+    ...RUNTIME_RELEASE_PATHS,
+  ], { timeoutMs: 10_000, maxOutputBytes: 64 * 1024 });
+  if (!dirty.ok) {
+    throw new Error(`SUPERVISOR_RELEASE_DIRTY_CHECK_FAILED: ${dirty.stderr || dirty.stdout || 'git status failed'}`.slice(0, 2_000));
+  }
+  const dirtyRuntimePaths = parseDirtyRuntimePaths(dirty.stdout);
+  if (dirtyRuntimePaths.length > 0 && !allowDirtyRuntimeSourceForTests) {
+    const listed = dirtyRuntimePaths.slice(0, 20).join(', ');
+    const suffix = dirtyRuntimePaths.length > 20 ? `, ... ${dirtyRuntimePaths.length - 20} more` : '';
+    throw new Error(
+      `SUPERVISOR_RELEASE_DIRTY_RUNTIME_SOURCE: refusing to build Supervisor Release from dirty runtime source (${listed}${suffix}). `
+      + `Commit or revert ${RUNTIME_RELEASE_PATHS.join(', ')} before staging a release.`,
+    );
+  }
+  const sourceCommit = commit.stdout.trim();
+  const cleanWorkspace = dirtyRuntimePaths.length === 0;
+  const revision = shortRevision.ok && shortRevision.stdout.trim()
+    ? shortRevision.stdout.trim()
+    : sourceCommit.slice(0, 12);
+  return {
+    sourceCommit,
+    releaseRevision: `${revision}${cleanWorkspace ? '' : '-dirty'}`,
+    cleanWorkspace,
+    dirtyRuntimePaths,
+  };
 }
 
 function buildEntry(sourceRoot: string, entry: string, output: string): void {
@@ -119,7 +182,28 @@ export interface SupervisorStagedRelease {
   controllerHome: string;
   sourceRoot: string;
   releaseRevision: string;
+  sourceCommit?: string;
+  cleanWorkspace?: boolean;
+  artifactHash?: string;
   releasePath: string;
+}
+
+function fileSha256(path: string): string {
+  return createHash('sha256').update(readFileSync(path)).digest('hex');
+}
+
+function releaseArtifactHash(releasePath: string): { artifactHash: string; artifacts: Record<string, { sha256: string }> } {
+  const artifacts: Record<string, { sha256: string }> = {};
+  const aggregate = createHash('sha256');
+  for (const executable of RELEASE_EXECUTABLES) {
+    const sha256 = fileSha256(join(releasePath, executable));
+    artifacts[executable] = { sha256 };
+    aggregate.update(executable);
+    aggregate.update('\0');
+    aggregate.update(sha256);
+    aggregate.update('\0');
+  }
+  return { artifactHash: aggregate.digest('hex'), artifacts };
 }
 
 function assertOwnedReleasePath(controllerHome: string, releasePath: string): string {
@@ -137,11 +221,12 @@ function assertOwnedReleasePath(controllerHome: string, releasePath: string): st
   return candidate;
 }
 
-export function stageSupervisorRelease(input: { controllerHome: string; repoRoot: string; sourceRoot?: string }): SupervisorStagedRelease {
+export function stageSupervisorRelease(input: { controllerHome: string; repoRoot: string; sourceRoot?: string; allowDirtyRuntimeSourceForTests?: boolean }): SupervisorStagedRelease {
   const controllerHome = resolve(input.controllerHome);
   const sourceRoot = runtimeSourceRoot(input.sourceRoot ?? input.repoRoot);
   ensureStableSupervisorLayout(controllerHome);
-  const revision = gitRevision(sourceRoot);
+  const identity = runtimeSourceIdentity(sourceRoot, input.allowDirtyRuntimeSourceForTests === true);
+  const revision = identity.releaseRevision;
   const releasePath = join(supervisorReleasesRoot(controllerHome), `${Date.now()}-${revision.replace(/[^a-zA-Z0-9._-]/g, '-')}`);
   mkdirSync(releasePath, { recursive: true, mode: 0o700 });
   buildEntry(sourceRoot, 'src/runtime/supervisor/entry.ts', join(releasePath, 'supervisor.js'));
@@ -151,18 +236,66 @@ export function stageSupervisorRelease(input: { controllerHome: string; repoRoot
   buildEntry(sourceRoot, 'src/cli/agent-jobs/job-worker.ts', join(releasePath, 'agent-worker.js'));
   buildEntry(sourceRoot, 'src/runtime/execution/process-runtime/process-runner-entry.ts', join(releasePath, 'process-runner.js'));
   buildEntry(sourceRoot, 'src/runtime/plugins/browser-handoff-host.ts', join(releasePath, 'browser-handoff-host.js'));
-  writeFileSync(join(releasePath, 'manifest.json'), `${JSON.stringify({ schemaVersion: 1, releaseRevision: revision, sourceRoot, builtAt: new Date().toISOString(), entrypoint: 'supervisor.js', runtimeEntrypoint: 'repo-harness.js', daemonEntrypoint: 'daemon.js', workerEntrypoint: 'worker.js', agentWorkerEntrypoint: 'agent-worker.js', processRunnerEntrypoint: 'process-runner.js', browserHandoffHostEntrypoint: 'browser-handoff-host.js', capabilities: ['staged_rollout_release', 'browser_handoff_host', 'independent_process_runner'] }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-  for (const executable of ['supervisor.js', 'repo-harness.js', 'daemon.js', 'worker.js', 'agent-worker.js', 'process-runner.js', 'browser-handoff-host.js']) {
+  const artifactIdentity = releaseArtifactHash(releasePath);
+  writeFileSync(join(releasePath, 'manifest.json'), `${JSON.stringify({
+    schemaVersion: 2,
+    releaseRevision: revision,
+    sourceCommit: identity.sourceCommit,
+    sourceRoot,
+    cleanWorkspace: identity.cleanWorkspace,
+    dirtyRuntimePaths: identity.dirtyRuntimePaths,
+    artifactHash: artifactIdentity.artifactHash,
+    artifacts: artifactIdentity.artifacts,
+    builtAt: new Date().toISOString(),
+    entrypoint: 'supervisor.js',
+    runtimeEntrypoint: 'repo-harness.js',
+    daemonEntrypoint: 'daemon.js',
+    workerEntrypoint: 'worker.js',
+    agentWorkerEntrypoint: 'agent-worker.js',
+    processRunnerEntrypoint: 'process-runner.js',
+    browserHandoffHostEntrypoint: 'browser-handoff-host.js',
+    capabilities: ['staged_rollout_release', 'browser_handoff_host', 'independent_process_runner', 'reproducible_release_manifest'],
+  }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  for (const executable of RELEASE_EXECUTABLES) {
     try { chmodSync(join(releasePath, executable), 0o700); } catch { /* best effort */ }
   }
-  return { controllerHome, sourceRoot, releaseRevision: revision, releasePath };
+  return {
+    controllerHome,
+    sourceRoot,
+    releaseRevision: revision,
+    sourceCommit: identity.sourceCommit,
+    cleanWorkspace: identity.cleanWorkspace,
+    artifactHash: artifactIdentity.artifactHash,
+    releasePath,
+  };
 }
 
-export function publishSupervisorRelease(input: { controllerHome: string; repoRoot: string; releasePath: string }): SupervisorInstallResult {
+function assertPublishableRelease(release: NonNullable<ReturnType<typeof readSupervisorRelease>>, allowUnreproducibleReleaseForTests = false): void {
+  if (allowUnreproducibleReleaseForTests) return;
+  const failures: string[] = [];
+  if (!release.sourceCommit) failures.push('sourceCommit missing');
+  if (release.cleanWorkspace !== true) failures.push(`cleanWorkspace=${String(release.cleanWorkspace)}`);
+  if (!release.artifactHash) failures.push('artifactHash missing');
+  if (release.artifactHash) {
+    try {
+      const actual = releaseArtifactHash(release.releasePath).artifactHash;
+      if (actual !== release.artifactHash) failures.push('artifactHash mismatch');
+    } catch (error) {
+      failures.push(`artifactHash unreadable: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (release.releaseRevision?.includes('-dirty')) failures.push(`releaseRevision=${release.releaseRevision}`);
+  if (failures.length > 0) {
+    throw new Error(`SUPERVISOR_RELEASE_NOT_REPRODUCIBLE: refusing to publish Supervisor Release (${failures.join('; ')})`);
+  }
+}
+
+export function publishSupervisorRelease(input: { controllerHome: string; repoRoot: string; releasePath: string; allowUnreproducibleReleaseForTests?: boolean }): SupervisorInstallResult {
   const controllerHome = resolve(input.controllerHome);
   const releasePath = assertOwnedReleasePath(controllerHome, input.releasePath);
   const release = readSupervisorRelease(releasePath);
   if (!release) throw new Error('SUPERVISOR_STAGED_RELEASE_INVALID');
+  assertPublishableRelease(release, input.allowUnreproducibleReleaseForTests === true);
   const sourceRoot = runtimeSourceRoot(release.sourceRoot ?? input.repoRoot);
   const revision = release.releaseRevision ?? `local-${Date.now()}`;
   const previous = readCurrentRelease(controllerHome);
@@ -181,6 +314,9 @@ export function publishSupervisorRelease(input: { controllerHome: string; repoRo
   return {
     controllerHome,
     releaseRevision: revision,
+    ...(release.sourceCommit ? { sourceCommit: release.sourceCommit } : {}),
+    ...(release.cleanWorkspace !== undefined ? { cleanWorkspace: release.cleanWorkspace } : {}),
+    ...(release.artifactHash ? { artifactHash: release.artifactHash } : {}),
     releasePath,
     currentPath: join(supervisorRoot(controllerHome), 'current'),
     ...(previous ? { previousPath: previous } : {}),
@@ -189,9 +325,14 @@ export function publishSupervisorRelease(input: { controllerHome: string; repoRo
   };
 }
 
-export function installSupervisorRelease(input: { controllerHome: string; repoRoot: string; sourceRoot?: string }): SupervisorInstallResult {
+export function installSupervisorRelease(input: { controllerHome: string; repoRoot: string; sourceRoot?: string; allowDirtyRuntimeSourceForTests?: boolean; allowUnreproducibleReleaseForTests?: boolean }): SupervisorInstallResult {
   const staged = stageSupervisorRelease(input);
-  return publishSupervisorRelease({ controllerHome: staged.controllerHome, repoRoot: input.repoRoot, releasePath: staged.releasePath });
+  return publishSupervisorRelease({
+    controllerHome: staged.controllerHome,
+    repoRoot: input.repoRoot,
+    releasePath: staged.releasePath,
+    allowUnreproducibleReleaseForTests: input.allowUnreproducibleReleaseForTests,
+  });
 }
 
 export function supervisorServiceLabel(controllerHome: string): string {

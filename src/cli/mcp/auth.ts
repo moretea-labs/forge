@@ -345,6 +345,28 @@ export function ensureMcpControllerHomeBearerToken(controllerHome: string): { to
   return { token, path, changed: true };
 }
 
+export function writeMcpControllerHomeBearerToken(controllerHome: string, token: string): { path: string } {
+  const trimmed = token.trim();
+  if (!trimmed) throw new Error('MCP_BEARER_TOKEN_EMPTY');
+  const path = mcpControllerHomeTokenPath(controllerHome);
+  writeJsonFile(path, { version: 1, bearerToken: trimmed });
+  return { path };
+}
+
+export function syncMcpControllerHomeBearerToken(
+  targetControllerHome: string,
+  sourceControllerHome: string,
+  legacyRepoRoot?: string,
+): { path: string; changed: boolean } {
+  const source = readMcpServiceBearerToken(sourceControllerHome, legacyRepoRoot)
+    ?? ensureMcpControllerHomeBearerToken(sourceControllerHome).token;
+  const targetPath = mcpControllerHomeTokenPath(targetControllerHome);
+  const target = readMcpServiceBearerToken(targetControllerHome);
+  if (target === source) return { path: targetPath, changed: false };
+  writeMcpControllerHomeBearerToken(targetControllerHome, source);
+  return { path: targetPath, changed: true };
+}
+
 export function parseMcpHttpAuthMode(value: string | undefined): McpHttpAuthMode {
   const mode = (value ?? 'oauth').trim().toLowerCase();
   if (mode === 'oauth' || mode === 'bearer') return mode;

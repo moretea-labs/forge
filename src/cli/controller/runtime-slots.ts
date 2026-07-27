@@ -243,6 +243,7 @@ export function markCutoverAuthority(
   nextActive: RuntimeSlotId,
   generation: string | undefined,
   rollbackWindowMs = DEFAULT_ROLLBACK_WINDOW_MS,
+  release?: { releaseRevision?: string; releasePath?: string },
 ): ActiveSlotAuthority {
   const current = readActiveSlotAuthority(controllerHome);
   let authority: ActiveSlotAuthority;
@@ -266,6 +267,8 @@ export function markCutoverAuthority(
   const activated = atomicActivateRuntime(controllerHome, {
     activeSlot: authority.activeSlot,
     generation: authority.generation,
+    ...(release?.releaseRevision ? { releaseRevision: release.releaseRevision } : {}),
+    ...(release?.releasePath ? { releasePath: release.releasePath } : {}),
     reason: authority.reason,
     previousSlot: authority.previousSlot,
     rollbackUntil: authority.rollbackUntil,
@@ -282,6 +285,7 @@ export function markCutoverAuthority(
 export function markRollbackAuthority(
   controllerHome: string,
   generation: string | undefined,
+  release?: { releaseRevision?: string; releasePath?: string },
 ): ActiveSlotAuthority {
   const current = readActiveSlotAuthority(controllerHome);
   const previous = current.previousSlot ?? oppositeSlot(current.activeSlot);
@@ -289,6 +293,8 @@ export function markRollbackAuthority(
     activeSlot: previous,
     previousSlot: current.activeSlot,
     generation,
+    ...(release?.releaseRevision ? { releaseRevision: release.releaseRevision } : {}),
+    ...(release?.releasePath ? { releasePath: release.releasePath } : {}),
     reason: 'rollback',
   });
   return {
