@@ -99,7 +99,11 @@ export async function probeSupervisorMcpReadiness(input: {
   if (!token) {
     return { ok: false, endpoint, error: 'MCP_AUTH_TOKEN_MISSING: bearer token is not configured for candidate slot' };
   }
-  const attempts = Math.max(1, Math.trunc(input.attempts ?? 3));
+  // Gateway runtime state may become visible shortly before the HTTP listener
+  // accepts MCP requests after a slot restart. Keep this bounded, but allow a
+  // few seconds of connection-refused startup grace instead of failing rollback
+  // after only two 250ms retry gaps.
+  const attempts = Math.max(1, Math.trunc(input.attempts ?? 12));
   const timeoutMs = Math.max(500, Math.trunc(input.timeoutMs ?? 5_000));
   let lastError = 'MCP_READINESS_NOT_ATTEMPTED';
 

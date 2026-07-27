@@ -62,6 +62,41 @@ function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record
   return (result!.structuredContent ?? JSON.parse(result!.content[0] && 'text' in result!.content[0] ? String(result!.content[0].text) : '{}')) as Record<string, unknown>;
 }
 
+async function createApprovedFacadePlan(input: {
+  ctx: MultiRepositoryMcpToolContext;
+  repoId: string;
+  repoRoot: string;
+  planId: string;
+  stepId: string;
+  objective: string;
+}): Promise<void> {
+  const sourceRevision = String(spawnSync('git', ['rev-parse', 'HEAD'], {
+    cwd: input.repoRoot,
+    encoding: 'utf8',
+  }).stdout).trim();
+  const created = structured(await callRuntimeTool(input.ctx, 'rh_work', {
+    repo_id: input.repoId,
+    operation: 'plan_create',
+    plan_id: input.planId,
+    scope_key: `test:${input.planId}`,
+    source_revision: sourceRevision,
+    objective: input.objective,
+    plan_steps: [{
+      id: input.stepId,
+      objective: input.objective,
+      check_ids: ['package:check:type'],
+      acceptance_criteria: ['Bounded facade work can start from the approved step.'],
+    }],
+  }));
+  expect(created).toMatchObject({ status: 'ok', data: { executionStarted: false } });
+  const approved = structured(await callRuntimeTool(input.ctx, 'rh_work', {
+    repo_id: input.repoId,
+    operation: 'plan_approve',
+    plan_id: input.planId,
+  }));
+  expect(approved).toMatchObject({ status: 'ok', data: { executionStarted: false, plan: { status: 'approved' } } });
+}
+
 describe('facade MCP surface wiring', () => {
   test('preferred facade tools are part of default core exposure and runtime definitions', () => {
     expect(PREFERRED_FACADE_TOOL_NAMES).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work']);
@@ -243,7 +278,7 @@ describe('facade MCP surface wiring', () => {
   });
 
   test('rh_work start routes small/complex/high-risk modes', async () => {
-    const { ctx, repository } = controllerFixture();
+    const { ctx, repository, repoRoot } = controllerFixture();
     const small = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,
       operation: 'start',
@@ -255,6 +290,14 @@ describe('facade MCP surface wiring', () => {
     expect((small.data as { workContractCreated: boolean; mode: { mode: string } }).workContractCreated).toBe(false);
     expect((small.data as { mode: { mode: string } }).mode.mode).toBe('direct_control');
 
+    await createApprovedFacadePlan({
+      ctx,
+      repoId: repository.repoId,
+      repoRoot,
+      planId: 'plan-route-complex-work',
+      stepId: 'execute',
+      objective: 'Refactor facade routing and recovery loop',
+    });
     const complex = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,
       operation: 'start',
@@ -264,6 +307,8 @@ describe('facade MCP surface wiring', () => {
       requires_long_running_checks: true,
       scope_clear: true,
       check_ids: ['typecheck'],
+      plan_id: 'plan-route-complex-work',
+      plan_step_id: 'execute',
     }));
     expect((complex.data as { workContractCreated: boolean }).workContractCreated).toBe(true);
     expect((complex.data as { mode: { mode: string } }).mode.mode).toBe('goal_workloop');
@@ -365,7 +410,15 @@ describe('facade MCP surface wiring', () => {
   });
 
   test('rh_work.delegate codex/grok are bounded and cannot finalize', async () => {
-    const { ctx, repository } = controllerFixture();
+    const { ctx, repository, repoRoot } = controllerFixture();
+    await createApprovedFacadePlan({
+      ctx,
+      repoId: repository.repoId,
+      repoRoot,
+      planId: 'plan-delegate-bounded-patch',
+      stepId: 'delegate',
+      objective: 'Delegate bounded patch',
+    });
     const started = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,
       operation: 'start',
@@ -373,6 +426,8 @@ describe('facade MCP surface wiring', () => {
       expected_files: 8,
       expected_changed_lines: 300,
       scope_clear: true,
+      plan_id: 'plan-delegate-bounded-patch',
+      plan_step_id: 'delegate',
     }));
     const workId = (started.data as { work: { workId: string } }).work.workId;
 

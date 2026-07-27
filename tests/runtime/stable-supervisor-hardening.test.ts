@@ -422,6 +422,60 @@ describe('Stable Supervisor production hardening', () => {
     expect(supervisorGatewayHealthDecision(0, false).shouldRecover).toBe(false);
   });
 
+  test('candidate MCP readiness tolerates a bounded delayed-listener startup window', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-mcp-startup-grace-'));
+    try {
+      ensureMcpControllerHomeBearerToken(controllerHome);
+      let initializeAttempts = 0;
+      const server = await listen((request, response) => {
+        if (request.method === 'DELETE') {
+          response.statusCode = 204;
+          response.end();
+          return;
+        }
+        const chunks: Buffer[] = [];
+        request.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+        request.on('end', () => {
+          const payload = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { id?: number; method?: string };
+          response.setHeader('content-type', 'application/json');
+          if (payload.method === 'initialize') {
+            initializeAttempts += 1;
+            if (initializeAttempts <= 4) {
+              response.statusCode = 503;
+              response.end(JSON.stringify({ jsonrpc: '2.0', id: payload.id, error: { code: -32000, message: 'starting' } }));
+              return;
+            }
+            response.setHeader('mcp-session-id', 'startup-grace-session');
+            response.end(JSON.stringify({
+              jsonrpc: '2.0',
+              id: payload.id,
+              result: { protocolVersion: '2025-03-26', capabilities: {}, serverInfo: { name: 'test', version: '1' } },
+            }));
+            return;
+          }
+          if (payload.method === 'notifications/initialized') {
+            response.statusCode = 202;
+            response.end();
+            return;
+          }
+          response.end(JSON.stringify({ jsonrpc: '2.0', id: payload.id, result: { tools: [{ name: 'controller_ready' }] } }));
+        });
+      });
+      const result = await probeSupervisorMcpReadiness({
+        controllerHome,
+        repoRoot: process.cwd(),
+        host: '127.0.0.1',
+        port: server.port,
+        timeoutMs: 1_000,
+      });
+      expect(result.ok).toBe(true);
+      expect(result.toolCount).toBe(1);
+      expect(initializeAttempts).toBe(5);
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
   test('candidate MCP readiness fails closed on authentication failure', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-mcp-readiness-'));
     try {
