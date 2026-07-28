@@ -44,6 +44,15 @@ export interface SupervisorProcessStopContext {
   component?: SupervisorComponentName;
 }
 
+export interface StaleSlotDaemonCleanupResult {
+  inspected: number;
+  matched: number;
+  stopped: number;
+  refused: number;
+  failed: number;
+  errors: string[];
+}
+
 export function supervisorProcessStopAuditPath(logPath: string): string {
   return join(dirname(resolve(logPath)), 'process-stops.jsonl');
 }
@@ -100,6 +109,62 @@ function componentHome(baseHome: string, slot: RuntimeSlotId | undefined, explic
 
 function processCommand(command: string, args: string[]): string {
   return [command, ...args].join(' ');
+}
+
+function tokenizeProcessCommand(command: string): string[] {
+  const tokens: string[] = [];
+  let current = '';
+  let quote: '"' | "'" | undefined;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    if (quote) {
+      if (char === quote) {
+        quote = undefined;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (current) {
+        tokens.push(current);
+        current = '';
+      }
+      continue;
+    }
+    current += char;
+  }
+  if (current) tokens.push(current);
+  return tokens;
+}
+
+function commandOptionValue(tokens: string[], option: string): string | undefined {
+  const index = tokens.indexOf(option);
+  if (index < 0) return undefined;
+  const value = tokens[index + 1];
+  return value && !value.startsWith('--') ? value : undefined;
+}
+
+function commandOptionNumber(tokens: string[], option: string): number | undefined {
+  const value = commandOptionValue(tokens, option);
+  if (!value || !/^\d+$/.test(value)) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+function commandTargetsDaemon(tokens: string[]): boolean {
+  return tokens.some((token) => (
+    token.endsWith('/daemon.js')
+    || token.endsWith('/daemon-entry.ts')
+    || token.endsWith('/daemon-entry.js')
+    || token === 'daemon.js'
+    || token === 'daemon-entry.ts'
+    || token === 'daemon-entry.js'
+  ));
 }
 
 export function runtimeWriterEnvironment(controllerHome: string, slot: RuntimeSlotId): NodeJS.ProcessEnv {
@@ -307,6 +372,82 @@ export class SupervisorProcessManager {
     // When the OS probe is unavailable, accept any alive process as matching.
     if (!command) return true;
     return executablePaths.some((path) => command.includes(resolve(path)));
+  }
+
+  async cleanupStaleSlotDaemons(
+    slot = this.options.slot ?? readActiveSlotAuthority(this.options.controllerHome).activeSlot,
+    context: Omit<SupervisorProcessStopContext, 'component'> = { reason: 'stale_slot_daemon_cleanup' },
+  ): Promise<StaleSlotDaemonCleanupResult> {
+    const result: StaleSlotDaemonCleanupResult = {
+      inspected: 0,
+      matched: 0,
+      stopped: 0,
+      refused: 0,
+      failed: 0,
+      errors: [],
+    };
+    const entries = this.probe.listProcesses?.() ?? [];
+    const targetHome = componentHome(this.options.controllerHome, slot, true);
+    for (const entry of entries) {
+      if (entry.pid === process.pid) continue;
+      result.inspected += 1;
+      const tokens = tokenizeProcessCommand(entry.command);
+      const commandHome = commandOptionValue(tokens, '--controller-home');
+      if (!commandHome || resolve(commandHome) !== targetHome) continue;
+      const commandSlot = commandOptionValue(tokens, '--slot');
+      if (commandSlot !== slot) continue;
+      result.matched += 1;
+
+      const ownerEpoch = commandOptionNumber(tokens, '--owner-epoch');
+      const startTime = this.probe.startTime(entry.pid);
+      const instanceId = commandOptionValue(tokens, '--instance-id') ?? newProcessInstanceId('stale-daemon');
+      const identity: ProcessIdentity = {
+        pid: entry.pid,
+        instanceId,
+        processStartTime: startTime ?? 'unknown',
+        executableFingerprint: executableFingerprint(entry.command),
+        controllerHome: targetHome,
+        slot,
+        ownerEpoch: ownerEpoch ?? this.options.ownerEpoch,
+      };
+
+      if (!this.probe.isAlive(entry.pid)) continue;
+      if (!commandTargetsDaemon(tokens) || ownerEpoch === undefined || !startTime) {
+        result.refused += 1;
+        appendSupervisorProcessStopAudit(this.options.logPath, identity, {
+          ...context,
+          component: 'controllerDaemon',
+        }, 'refused', {
+          observation: 'alive',
+          stopped: false,
+          error: !commandTargetsDaemon(tokens)
+            ? 'SUPERVISOR_STALE_SLOT_DAEMON_COMMAND_MISMATCH'
+            : ownerEpoch === undefined
+              ? 'SUPERVISOR_STALE_SLOT_DAEMON_OWNER_EPOCH_MISSING'
+              : 'SUPERVISOR_STALE_SLOT_DAEMON_START_TIME_MISSING',
+          command: boundedAuditText(entry.command, 'unknown'),
+        });
+        continue;
+      }
+      if (ownerEpoch >= this.options.ownerEpoch) continue;
+
+      try {
+        const stopped = await this.stop(identity, {
+          ...context,
+          component: 'controllerDaemon',
+        });
+        if (stopped.stopped) {
+          result.stopped += 1;
+        } else {
+          result.failed += 1;
+          result.errors.push(`pid=${entry.pid}: stop incomplete`);
+        }
+      } catch (error) {
+        result.failed += 1;
+        result.errors.push(`pid=${entry.pid}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    return result;
   }
 
   async stop(

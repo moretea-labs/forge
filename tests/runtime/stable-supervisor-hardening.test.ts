@@ -21,6 +21,7 @@ import { writeActiveSlotAuthority } from '../../src/cli/controller/runtime-slots
 import { publishWriterAuthority } from '../../src/cli/controller/stable-state/writer-authority';
 import { readCurrentRelease, readCurrentSupervisorRelease, supervisorReleasesRoot } from '../../src/runtime/supervisor/paths';
 import { createSupervisorControlServer, sendSupervisorCommand } from '../../src/runtime/supervisor/control-server';
+import type { ProcessIdentityProbe } from '../../src/runtime/supervisor/identity';
 import type { SupervisorManagedProcess, SupervisorOperation, SupervisorState } from '../../src/runtime/supervisor/types';
 import { evaluateRuntimeReleaseCoherence, evaluateSupervisorServiceReleaseCoherence, extractSupervisorServiceRelease } from '../../src/runtime/supervisor/release-coherence';
 import { publishAndScheduleSupervisorRelease } from '../../src/runtime/supervisor/service-activation';
@@ -1218,6 +1219,66 @@ describe('Stable Supervisor production hardening', () => {
     expect(manager.localControllerBinding('blue').port).toBe(8786);
     expect(manager.localControllerBinding('green').port).toBe(8796);
     expect(manager.localControllerBinding('blue').port).not.toBe(8766);
+  });
+
+  test('candidate slot preflight stops only same-slot older-epoch daemon orphans', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'repo-harness-supervisor-stale-slot-'));
+    const slotHome = join(home, 'runtime-slots', 'blue');
+    const daemon = join(home, 'supervisor', 'releases', 'old', 'daemon.js');
+    mkdirSync(join(home, 'supervisor', 'releases', 'old'), { recursive: true });
+    writeActiveSlotAuthority(home, { activeSlot: 'green', reason: 'test' });
+    const commands = new Map<number, { command: string; startTime: string }>([
+      [60001, {
+        command: `${process.execPath} ${daemon} --controller-home ${slotHome} --runtime-source-root ${process.cwd()} --owner-epoch 7 --instance-id daemon-old --slot blue`,
+        startTime: 'Tue Jul 28 01:00:00 2026',
+      }],
+      [60002, {
+        command: `${process.execPath} ${daemon} --controller-home ${join(home, 'runtime-slots', 'blue-sibling')} --runtime-source-root ${process.cwd()} --owner-epoch 7 --instance-id daemon-sibling --slot blue`,
+        startTime: 'Tue Jul 28 01:01:00 2026',
+      }],
+      [60003, {
+        command: `${process.execPath} ${daemon} --controller-home ${slotHome} --runtime-source-root ${process.cwd()} --owner-epoch 9 --instance-id daemon-current --slot blue`,
+        startTime: 'Tue Jul 28 01:02:00 2026',
+      }],
+      [60004, {
+        command: `${process.execPath} ${join(home, 'not-daemon.js')} --controller-home ${slotHome} --owner-epoch 7 --instance-id suspicious --slot blue`,
+        startTime: 'Tue Jul 28 01:03:00 2026',
+      }],
+    ]);
+    const probe: ProcessIdentityProbe = {
+      isAlive: (pid) => commands.has(pid),
+      command: (pid) => commands.get(pid)?.command,
+      startTime: (pid) => commands.get(pid)?.startTime,
+      listProcesses: () => Array.from(commands.entries()).map(([pid, entry]) => ({ pid, command: entry.command })),
+    };
+    const manager = new SupervisorProcessManager({
+      repoRoot: process.cwd(),
+      controllerHome: home,
+      runtimeSourceRoot: process.cwd(),
+      ownerEpoch: 9,
+      logPath: join(home, 'supervisor.log'),
+      slot: 'blue',
+      identityProbe: probe,
+    });
+
+    const result = await manager.cleanupStaleSlotDaemons('blue', {
+      reason: 'test_candidate_slot_preflight_cleanup',
+      operationId: 'test-op',
+    });
+
+    expect(result.matched).toBe(3);
+    expect(result.stopped).toBe(1);
+    expect(result.refused).toBe(1);
+    expect(result.failed).toBe(0);
+    const stopEvents = readFileSync(supervisorProcessStopAuditPath(join(home, 'supervisor.log')), 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(stopEvents.some((event) => event.phase === 'requested' && event.pid === 60001 && event.reason === 'test_candidate_slot_preflight_cleanup')).toBe(true);
+    expect(stopEvents.some((event) => event.phase === 'completed' && event.pid === 60001 && event.stopped === true)).toBe(true);
+    expect(stopEvents.some((event) => event.phase === 'requested' && event.pid === 60002)).toBe(false);
+    expect(stopEvents.some((event) => event.phase === 'requested' && event.pid === 60003)).toBe(false);
+    expect(stopEvents.some((event) => event.phase === 'refused' && event.pid === 60004 && event.error === 'SUPERVISOR_STALE_SLOT_DAEMON_COMMAND_MISMATCH')).toBe(true);
   });
 
   test('a new failure resets the stable recovery window', () => {

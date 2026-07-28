@@ -7,6 +7,7 @@ export interface ProcessIdentityProbe {
   isAlive(pid: number): boolean;
   command(pid: number): string | undefined;
   startTime(pid: number): string | undefined;
+  listProcesses?(): Array<{ pid: number; command: string }>;
 }
 
 const defaultProbe: ProcessIdentityProbe = {
@@ -18,6 +19,16 @@ const defaultProbe: ProcessIdentityProbe = {
   startTime: (pid) => {
     const result = runProcess('ps', ['-o', 'lstart=', '-p', String(pid)], { timeoutMs: 1_000, maxOutputBytes: 4 * 1024 });
     return result.ok ? result.stdout.trim() || undefined : undefined;
+  },
+  listProcesses: () => {
+    const result = runProcess('ps', ['-axo', 'pid=,command='], { timeoutMs: 2_000, maxOutputBytes: 1024 * 1024 });
+    if (!result.ok) return [];
+    return result.stdout
+      .split('\n')
+      .map((line) => /^\s*(\d+)\s+(.+?)\s*$/.exec(line))
+      .filter((match): match is RegExpExecArray => Boolean(match))
+      .map((match) => ({ pid: Number.parseInt(match[1], 10), command: match[2] }))
+      .filter((entry) => Number.isInteger(entry.pid) && entry.pid > 0 && entry.command.length > 0);
   },
 };
 

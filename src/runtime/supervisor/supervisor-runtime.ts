@@ -1291,8 +1291,11 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     });
   }
 
-  private prepareSlotConfig(slot: RuntimeSlotId, release?: SupervisorReleaseDescriptor): { home: string; localControllerPort: number; manager: SupervisorProcessManager } {
-    const manager = this.managerForSlot(slot, release);
+  private prepareSlotConfig(
+    slot: RuntimeSlotId,
+    release?: SupervisorReleaseDescriptor,
+    manager = this.managerForSlot(slot, release),
+  ): { home: string; localControllerPort: number; manager: SupervisorProcessManager } {
     const home = ensureSlotHome(this.options.controllerHome, slot);
     const activeHome = this.state.controllerDaemon?.controllerHome ?? this.options.controllerHome;
     const rootTemplate = loadMcpServiceLocalConfig(this.options.controllerHome, this.options.repoRoot);
@@ -1337,7 +1340,15 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
   }
 
   private async startSlot(slot: RuntimeSlotId, release?: SupervisorReleaseDescriptor): Promise<StartedRuntimeSlot> {
-    const prepared = this.prepareSlotConfig(slot, release);
+    const manager = this.managerForSlot(slot, release);
+    const staleCleanup = await manager.cleanupStaleSlotDaemons(slot, {
+      reason: 'candidate_slot_preflight_cleanup',
+      ...(this.state.currentOperationId ? { operationId: this.state.currentOperationId } : {}),
+    });
+    if (staleCleanup.failed > 0) {
+      throw new Error(`SUPERVISOR_STALE_SLOT_DAEMON_CLEANUP_FAILED: ${staleCleanup.errors.join('; ')}`);
+    }
+    const prepared = this.prepareSlotConfig(slot, release, manager);
     let daemon: SupervisorManagedProcess | undefined;
     let gateway: SupervisorManagedProcess | undefined;
     try {
