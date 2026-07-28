@@ -1,8 +1,8 @@
 ---
 id: "ISS-20260727-197BBE"
 kind: "feature"
-status: "in_progress"
-updated_at: "2026-07-28T07:37:24.638Z"
+status: "planned"
+updated_at: "2026-07-28T08:11:55.593Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -51,7 +51,7 @@ source: "repo-harness-controller-v8"
 
 ### T2 — Converge resource claims for checks and local commands
 
-- Status: `planned`
+- Status: `ready`
 - Objective: 基于真实副作用收敛 Process Resource Claims。Typecheck/lint/静态分析默认 workspace read + 声明的 cache/output write，不再同时申请同一 workspace read/write；为命名检查增加显式 reads/writes/cache/temp/git/network effects，未知副作用继续 fail closed；验证长检查期间无冲突读取可并发。
 - Depends on: `T1`
 - Allowed paths: `src/runtime/execution/process-runtime/**`, `src/runtime/resources/claims/**`, `src/runtime/gateway/mcp/resource-policy.ts`, `src/cli/controller/check-runner.ts`, `tests/runtime/**`, `tests/cli/**`, `docs/operations/**`, `tasks/issues/**`
@@ -60,7 +60,7 @@ source: "repo-harness-controller-v8"
 
 ### T3 — Move read-only diagnostics to isolated process execution
 
-- Status: `planned`
+- Status: `ready`
 - Objective: 将 workflow_watchdog_report、runtime_maintenance_status、cleanup preview 等只读但可能阻塞的诊断从 ExecutionJob 包装迁到隔离诊断 Process/Worker Thread；不得直接阻塞 Gateway event loop，不创建 Evidence/Projection write/Scheduler wake，短时间未完成返回可查询句柄。apply/repair/restart 继续走受控 WorkContract/SuperController。
 - Depends on: `T1`
 - Allowed paths: `src/runtime/gateway/mcp/**`, `src/runtime/watchdog/**`, `src/runtime/diagnostics/**`, `src/runtime/execution/process-runtime/**`, `tests/runtime/**`, `docs/operations/**`, `tasks/issues/**`
@@ -69,7 +69,7 @@ source: "repo-harness-controller-v8"
 
 ### T4 — Shrink context and expose runtime coherence
 
-- Status: `planned`
+- Status: `ready`
 - Objective: 压缩 rh_context/controller_ready 默认摘要，只返回当前决策所需字段并提供 detailPointer；区分 current/historical attention；新增 stableSupervisorRevision、activeRuntimeRevision、activeSlotRevision、gatewayRevision、sourceRevision、expectedRevision 和 coherence 状态，并加入实际 route behavior fingerprint。
 - Depends on: `T1`
 - Allowed paths: `src/runtime/gateway/mcp/**`, `src/runtime/projections/**`, `src/runtime/supervisor/**`, `src/cli/controller/**`, `tests/runtime/**`, `tests/cli/**`, `docs/operations/**`, `docs/architecture/current/**`, `tasks/issues/**`

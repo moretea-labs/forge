@@ -4,7 +4,7 @@
   "title": "Converge V2 runtime performance and execution routing",
   "slug": "converge-v2-runtime-performance-and-execution-routing",
   "kind": "feature",
-  "status": "in_progress",
+  "status": "planned",
   "summary": "基于已切换的 V2 SuperController + Unified Process Runtime 架构继续收敛，不恢复新 ExecutionJob 创建。先统一公开 MCP 命令路由并补 requestId 级幂等，再收敛 Claim、只读诊断隔离、Context/版本状态、端口与历史降噪。",
   "goals": [
     "所有普通本地命令和检查统一由 Unified Process Runtime 单次 Spawn 执行",
@@ -83,18 +83,112 @@
         "2026-07-28: Stable Supervisor cutover exposed per-slot OAuth access-token authority drift. Slot Gateway now uses stable root OAuth token authority and merges root/blue/green/legacy token snapshots on startup; issue remains in_progress for remaining runtime reliability items.",
         "2026-07-28 T1 closeout implementation: identified work_execute batch commands sharing one outer requestId, causing command 2+ to conflict on different command fingerprints. Added atomic invocation-level binding before any child Process spawn, stable per-command child request IDs, exact retry deduplication, changed-batch fail-closed behavior, and preserved run_check Process Runtime errors without LocalBridge fallback. Targeted Process Runtime/authorization/Gateway suite passed in proc_ms47k28m_f036a276; typecheck proc_ms47l837_f5b029dd, runtime architecture proc_ms47lv1t_9dc6aca2, and MCP compatibility proc_ms47mao2_bc0d0d51 passed. Pending task-sync recheck, commit/merge, controller-v8, rollout, and live session verification.",
         "2026-07-28 closure: prior T1 routing/request-id implementation was already merged at main 550b5088 and live-ready. This pass integrated the verified Thin Harness latency benchmark and MCP response compaction through main 6eb7ac4b. Targeted MCP tests, typecheck, runtime architecture, MCP compatibility, controller-v8, and Thin Harness benchmark all succeeded with ExecutionJob/LocalJob/Worker deltas 0. Stable Supervisor, Controller Daemon, and Gateway now run release 6eb7ac4be7d6 with coherence true. runtime_maintenance_status remains directly callable. No claim is made that T2-T5 are complete.",
-        "Dependency closure: all T1 acceptance evidence is now integrated and live on 6eb7ac4b/6eb7ac4be7d6. Marking done so downstream T2-T4 are no longer artificially blocked by a non-terminal verified state."
+        "Dependency closure: all T1 acceptance evidence is now integrated and live on 6eb7ac4b/6eb7ac4be7d6. Marking done so downstream T2-T4 are no longer artificially blocked by a non-terminal verified state.",
+        "Reconciled missing completion evidence with receipt REC-reconciled-aecb76e09145dcff; declared Task status remains done."
       ],
       "runIds": [],
       "createdAt": "2026-07-27T09:26:56.885Z",
-      "updatedAt": "2026-07-28T07:33:54.335Z",
-      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      "updatedAt": "2026-07-28T08:11:55.593Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "verification": {
+        "integratedRevision": "b921e87ebbc85322034bd95a3c92e4193034d554",
+        "reviewer": "ChatGPT",
+        "checkResults": [
+          {
+            "checkId": "package:check:type",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-type.json"
+          },
+          {
+            "checkId": "package:check:runtime-architecture",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-runtime-architecture.json"
+          },
+          {
+            "checkId": "package:check:mcp-compatibility",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-mcp-compatibility.json"
+          },
+          {
+            "checkId": "package:check:controller-v8",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-controller-v8.json"
+          }
+        ],
+        "commandEvidence": [],
+        "acceptanceResults": [
+          {
+            "criterion": "普通本地长命令不创建 ExecutionJob、LocalJob 或 Worker",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "All closeout validation and deployment commands used Unified Process Runtime with zero ExecutionJob/LocalJob/Worker deltas."
+          },
+          {
+            "criterion": "相同 requestId+fingerprint 返回相同 processId",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Integrated T1 request binding and batch child-ID tests passed; live MCP compatibility/controller-v8 remain required by this verification."
+          },
+          {
+            "criterion": "相同 requestId 不同 fingerprint 返回明确冲突",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Changed-batch and command-fingerprint fail-closed tests passed in the integrated T1 suite."
+          },
+          {
+            "criterion": "Process 终态未知时不自动重跑",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Integrated completed_unknown/no-replay behavior remains active; no fallback ExecutionJob creation occurred."
+          },
+          {
+            "criterion": "公开路由和源码 classifier 的端到端行为一致",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Thin Harness facade benchmark, runtime architecture, MCP compatibility and controller-v8 passed on integrated code; live release coherence is b921e87ebbc8."
+          }
+        ],
+        "verifiedAt": "2026-07-28T08:11:55.530Z",
+        "autoCompleted": true,
+        "completionReceipt": {
+          "schemaVersion": 1,
+          "receiptId": "REC-reconciled-aecb76e09145dcff",
+          "source": "remote_no_change_execution",
+          "issueId": "ISS-20260727-197BBE",
+          "taskId": "T1",
+          "targetBranch": "main",
+          "targetRevision": "b921e87ebbc85322034bd95a3c92e4193034d554",
+          "sourceRevision": "b921e87ebbc85322034bd95a3c92e4193034d554",
+          "changedPaths": [],
+          "delivery": {
+            "kind": "commit",
+            "status": "integrated",
+            "strategy": "remote",
+            "reachable": true,
+            "recordedAt": "2026-07-28T08:11:55.591Z"
+          },
+          "cleanup": {
+            "status": "complete",
+            "warnings": [],
+            "blockers": [],
+            "recordedAt": "2026-07-28T08:11:55.591Z"
+          },
+          "verifiedAt": "2026-07-28T08:11:55.530Z",
+          "recordedAt": "2026-07-28T08:11:55.591Z"
+        },
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
     },
     {
       "id": "T2",
       "title": "Converge resource claims for checks and local commands",
       "objective": "基于真实副作用收敛 Process Resource Claims。Typecheck/lint/静态分析默认 workspace read + 声明的 cache/output write，不再同时申请同一 workspace read/write；为命名检查增加显式 reads/writes/cache/temp/git/network effects，未知副作用继续 fail closed；验证长检查期间无冲突读取可并发。",
-      "status": "planned",
+      "status": "ready",
       "dependsOn": [
         "T1"
       ],
@@ -126,7 +220,7 @@
       "id": "T3",
       "title": "Move read-only diagnostics to isolated process execution",
       "objective": "将 workflow_watchdog_report、runtime_maintenance_status、cleanup preview 等只读但可能阻塞的诊断从 ExecutionJob 包装迁到隔离诊断 Process/Worker Thread；不得直接阻塞 Gateway event loop，不创建 Evidence/Projection write/Scheduler wake，短时间未完成返回可查询句柄。apply/repair/restart 继续走受控 WorkContract/SuperController。",
-      "status": "planned",
+      "status": "ready",
       "dependsOn": [
         "T1"
       ],
@@ -158,7 +252,7 @@
       "id": "T4",
       "title": "Shrink context and expose runtime coherence",
       "objective": "压缩 rh_context/controller_ready 默认摘要，只返回当前决策所需字段并提供 detailPointer；区分 current/historical attention；新增 stableSupervisorRevision、activeRuntimeRevision、activeSlotRevision、gatewayRevision、sourceRevision、expectedRevision 和 coherence 状态，并加入实际 route behavior fingerprint。",
-      "status": "planned",
+      "status": "ready",
       "dependsOn": [
         "T1"
       ],
@@ -230,6 +324,6 @@
     }
   ],
   "createdAt": "2026-07-27T09:26:56.885Z",
-  "updatedAt": "2026-07-28T07:37:24.638Z",
+  "updatedAt": "2026-07-28T08:11:55.593Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }
