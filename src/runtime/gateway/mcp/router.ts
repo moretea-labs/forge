@@ -140,6 +140,74 @@ const EXPLICIT_EXTERNAL_CONTROLLER_TOOLS = new Set([
   'request_release_gate',
   'promote_candidate_finding',
 ]);
+
+const GATEWAY_ROUTE_BEHAVIOR_PROBES: ReadonlyArray<{
+  id: string;
+  operation: string;
+  args: Record<string, unknown>;
+}> = [
+  { id: 'hot-read', operation: 'controller_ready', args: {} },
+  { id: 'isolated-read-diagnostic', operation: 'workflow_watchdog_report', args: {} },
+  { id: 'readonly-command', operation: 'repository_command_execute', args: { command: ['git', 'status', '--short'] } },
+  { id: 'managed-local-command', operation: 'repository_command_execute', args: { command: ['bun', 'run', 'check:type'], timeout_ms: 120_000 } },
+  { id: 'focused-check', operation: 'run_check', args: { check_id: 'package:check:type' } },
+  { id: 'release-check', operation: 'run_check', args: { check_id: 'package:check:release' } },
+  { id: 'interactive-write', operation: 'repository_safe_patch_apply', args: { operations: [] } },
+  { id: 'external-controller', operation: 'request_release_gate', args: {} },
+  { id: 'unknown-tool', operation: '__route_behavior_probe_unknown__', args: {} },
+];
+
+export interface GatewayRouteBehaviorSnapshot {
+  schemaVersion: 1;
+  fingerprint: string;
+  probeCount: number;
+  probes: Array<{
+    id: string;
+    operation: string;
+    path: 'direct' | 'fast' | 'durable' | 'reject';
+    reasons: string[];
+    decision?: {
+      mode: string;
+      risk: string;
+      estimatedClass: string;
+      requiresIsolation: boolean;
+      requiresRecovery: boolean;
+      effects: Record<string, boolean>;
+    };
+  }>;
+}
+
+/**
+ * Fingerprint the real Gateway classifier over a fixed, bounded behavior matrix.
+ * This is deliberately distinct from the MCP schema/tool-surface fingerprint.
+ */
+export function gatewayRouteBehaviorSnapshot(): GatewayRouteBehaviorSnapshot {
+  const probes = GATEWAY_ROUTE_BEHAVIOR_PROBES.map((probe) => {
+    const classification = classifyGatewayExecutionPath(probe.operation, probe.args);
+    return {
+      id: probe.id,
+      operation: probe.operation,
+      path: classification.path,
+      reasons: [...classification.reasons],
+      ...(classification.decision ? {
+        decision: {
+          mode: classification.decision.mode,
+          risk: classification.decision.risk,
+          estimatedClass: classification.decision.estimatedClass,
+          requiresIsolation: classification.decision.requiresIsolation,
+          requiresRecovery: classification.decision.requiresRecovery,
+          effects: { ...classification.decision.effects },
+        },
+      } : {}),
+    };
+  });
+  return {
+    schemaVersion: 1,
+    fingerprint: createHash('sha256').update(JSON.stringify(probes)).digest('hex'),
+    probeCount: probes.length,
+    probes,
+  };
+}
 const MAX_DURABLE_TIMEOUT_MS = 24 * 60 * 60_000;
 
 function durableTimeoutMs(value: unknown, fallback: number): number {

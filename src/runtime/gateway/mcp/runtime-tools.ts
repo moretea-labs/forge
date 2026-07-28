@@ -34,6 +34,7 @@ import { evaluateSchedule } from '../../workflow/schedules/engine';
 import { createPortfolioWorkflow, getPortfolioWorkflow, listPortfolioWorkflows } from '../../workflow/portfolio/store';
 import { claimsForMcpOperation } from './resource-policy';
 import {
+  gatewayRouteBehaviorSnapshot,
   getMcpToolDefinition,
   hashMcpToolArguments,
   injectDurableCommandFields,
@@ -59,8 +60,8 @@ import { assessWorkMode } from '../../../cli/controller/work-mode';
 import { scheduleControllerServiceRestart } from '../../../cli/controller/restart-coordinator';
 import { stableSupervisorFacadeMutation, stableSupervisorFacadeOperation, stableSupervisorFacadeStatus } from '../../supervisor/facade';
 import { readSupervisorState } from '../../supervisor/state-store';
-import { isStableSupervisorInstalled } from '../../supervisor/paths';
-import { readSupervisorServiceReleaseCoherence } from '../../supervisor/release-coherence';
+import { isStableSupervisorInstalled, readCurrentSupervisorRelease } from '../../supervisor/paths';
+import { evaluateRuntimeReleaseCoherence, readSupervisorServiceReleaseCoherence } from '../../supervisor/release-coherence';
 import type { SupervisorOperationKind } from '../../supervisor/types';
 import { projectBoard } from '../../../cli/controller/issue-store';
 import {
@@ -93,7 +94,7 @@ import {
 } from '../../projections/controller-context';
 import { loadMcpRuntimeState } from '../../../cli/mcp/auth';
 import { isExpectedLocalControllerHealth } from '../../../cli/mcp/keepalive';
-import { readActiveSlotAuthority } from '../../../cli/controller/runtime-slots';
+import { readActiveSlotAuthority, readSlotIdentity } from '../../../cli/controller/runtime-slots';
 import { resolveStableControllerHome } from '../../../cli/controller/stable-state/stable-home';
 import { redactMcpText } from '../../../cli/mcp/redaction';
 import { resolveLocalBridgeSurface, summarizeRecentJobs } from '../../shared/local-bridge-surface';
@@ -999,6 +1000,79 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
   }, ['finding_id'], false),
 ];
 
+export interface ControllerReadyRevisionView {
+  stableSupervisorRevision?: string;
+  activeRuntimeRevision?: string;
+  activeSlotRevision?: string;
+  gatewayRevision?: string;
+  sourceRevision?: string;
+  expectedRevision?: string;
+  coherence: {
+    ok: boolean;
+    service: { ok: boolean; failures: string[] };
+    runtime: {
+      ok: boolean;
+      legacyReleaseMetadata: boolean;
+      releasePathCoherent: boolean;
+      releaseRevisionCoherent: boolean;
+      releaseCoherent: boolean;
+      generationCoherent: boolean;
+      slotCoherent: boolean;
+      failures: string[];
+    };
+  };
+}
+
+export function buildControllerReadyRevisionView(input: {
+  currentRelease?: { releaseRevision?: string; sourceCommit?: string };
+  supervisorState?: {
+    supervisor: { releaseRevision?: string };
+    controllerDaemon?: { releaseRevision?: string };
+    gatewayHost?: { releaseRevision?: string };
+  } | null;
+  activeSlotIdentity?: { releaseRevision?: string; sourceCommit?: string } | null;
+  serviceCoherence: {
+    ok: boolean;
+    expected?: { releaseRevision?: string };
+    failures: string[];
+  };
+  runtimeCoherence: {
+    ok: boolean;
+    legacyReleaseMetadata: boolean;
+    releasePathCoherent: boolean;
+    releaseRevisionCoherent: boolean;
+    releaseCoherent: boolean;
+    generationCoherent: boolean;
+    slotCoherent: boolean;
+    failures: string[];
+  };
+}): ControllerReadyRevisionView {
+  const service = input.serviceCoherence;
+  const runtime = input.runtimeCoherence;
+  return {
+    stableSupervisorRevision: input.supervisorState?.supervisor.releaseRevision,
+    activeRuntimeRevision: input.supervisorState?.controllerDaemon?.releaseRevision,
+    activeSlotRevision: input.activeSlotIdentity?.releaseRevision,
+    gatewayRevision: input.supervisorState?.gatewayHost?.releaseRevision,
+    sourceRevision: input.currentRelease?.sourceCommit ?? input.activeSlotIdentity?.sourceCommit,
+    expectedRevision: service.expected?.releaseRevision ?? input.currentRelease?.releaseRevision,
+    coherence: {
+      ok: service.ok && runtime.ok,
+      service: { ok: service.ok, failures: [...service.failures] },
+      runtime: {
+        ok: runtime.ok,
+        legacyReleaseMetadata: runtime.legacyReleaseMetadata,
+        releasePathCoherent: runtime.releasePathCoherent,
+        releaseRevisionCoherent: runtime.releaseRevisionCoherent,
+        releaseCoherent: runtime.releaseCoherent,
+        generationCoherent: runtime.generationCoherent,
+        slotCoherent: runtime.slotCoherent,
+        failures: [...runtime.failures],
+      },
+    },
+  };
+}
+
 export function summarizeControllerReadyPayload(fullPayload: Record<string, unknown>): Record<string, unknown> {
   const health = (fullPayload.health ?? {}) as Record<string, unknown>;
   const workerLoop = (fullPayload.workerLoop ?? {}) as Record<string, unknown>;
@@ -1007,6 +1081,7 @@ export function summarizeControllerReadyPayload(fullPayload: Record<string, unkn
   const localBridgeHealth = (localBridge.health ?? {}) as Record<string, unknown>;
   const stableSupervisor = (fullPayload.stableSupervisor ?? {}) as Record<string, unknown>;
   const toolSurface = (fullPayload.toolSurface ?? {}) as Record<string, unknown>;
+  const routeBehavior = (fullPayload.routeBehavior ?? {}) as Record<string, unknown>;
   const expectedTools = Array.isArray(toolSurface.expectedTools) ? toolSurface.expectedTools : [];
   const actualTools = Array.isArray(toolSurface.actualTools) ? toolSurface.actualTools : [];
   const repoIdValue = typeof fullPayload.repoId === 'string' ? fullPayload.repoId : undefined;
@@ -1037,12 +1112,17 @@ export function summarizeControllerReadyPayload(fullPayload: Record<string, unkn
     stableSupervisor: fullPayload.stableSupervisor,
     stableIngress: fullPayload.stableIngress,
     externalEndpoint: fullPayload.externalEndpoint,
-    coherence: {
-      ok: stableSupervisor.ready,
-      expectedReleaseRevision: stableSupervisor.expectedReleaseRevision,
-      runningReleaseRevision: stableSupervisor.runningReleaseRevision,
-      generatedServiceReleaseRevision: stableSupervisor.generatedServiceReleaseRevision,
-      installedServiceReleaseRevision: stableSupervisor.installedServiceReleaseRevision,
+    stableSupervisorRevision: fullPayload.stableSupervisorRevision,
+    activeRuntimeRevision: fullPayload.activeRuntimeRevision,
+    activeSlotRevision: fullPayload.activeSlotRevision,
+    gatewayRevision: fullPayload.gatewayRevision,
+    sourceRevision: fullPayload.sourceRevision,
+    expectedRevision: fullPayload.expectedRevision,
+    coherence: fullPayload.coherence,
+    routeBehavior: {
+      schemaVersion: routeBehavior.schemaVersion,
+      fingerprint: routeBehavior.fingerprint,
+      probeCount: routeBehavior.probeCount,
     },
     toolSurface: {
       ready: toolSurface.ready,
@@ -3573,10 +3653,33 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const toolSurfaceReady = exposure.ready && exposure.missingToolNames.length === 0;
         const stableHome = resolveStableControllerHome(ctx.controllerHome);
         const supervisorState = readSupervisorState(stableHome);
-        const stableSupervisorPresent = Boolean(supervisorState) || isStableSupervisorInstalled(stableHome);
+        const currentRelease = readCurrentSupervisorRelease(stableHome);
+        const stableSupervisorPresent = Boolean(supervisorState) || Boolean(currentRelease) || isStableSupervisorInstalled(stableHome);
         const supervisorServiceCoherence = stableSupervisorPresent
           ? readSupervisorServiceReleaseCoherence(stableHome, supervisorState)
           : { ok: true, serviceRegistered: false, failures: [], expected: undefined, running: undefined, generated: undefined, installed: undefined };
+        const activeSlotAuthority = readActiveSlotAuthority(stableHome);
+        const activeSlotIdentity = readSlotIdentity(stableHome, activeSlotAuthority.activeSlot);
+        const runtimeReleaseCoherence = stableSupervisorPresent
+          ? evaluateRuntimeReleaseCoherence({ supervisorState, authority: activeSlotAuthority, slotIdentity: activeSlotIdentity ?? undefined })
+          : {
+            ok: true,
+            legacyReleaseMetadata: true,
+            releasePathCoherent: true,
+            releaseRevisionCoherent: true,
+            releaseCoherent: true,
+            generationCoherent: true,
+            slotCoherent: true,
+            failures: [],
+          };
+        const revisionView = buildControllerReadyRevisionView({
+          currentRelease,
+          supervisorState,
+          activeSlotIdentity,
+          serviceCoherence: supervisorServiceCoherence,
+          runtimeCoherence: runtimeReleaseCoherence,
+        });
+        const routeBehavior = gatewayRouteBehaviorSnapshot();
         // Stable ingress health: separate from the daemon-based readiness.
         // A Supervisor that looks healthy internally can still have an
         // unreachable ingress that makes the public Connector 502.
@@ -3600,7 +3703,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const externalEndpointLastChecked = supervisorState?.externalEndpointLastCheckedAt;
         const externalEndpointDetail = supervisorState?.externalEndpointLastDetail;
         const stableIngressReady = ingressLocalReady && (externalEndpointStatus !== 'unhealthy');
-        const effectiveReady = readiness.ready && toolSurfaceReady && supervisorServiceCoherence.ok && (stableSupervisorPresent ? stableIngressReady : true);
+        const effectiveReady = readiness.ready && toolSurfaceReady && revisionView.coherence.ok && (stableSupervisorPresent ? stableIngressReady : true);
         const taskLedger = repository ? buildControllerTaskLedgerProjection(repository.canonicalRoot) : undefined;
         const agentExecutors = detail ? readAgentExecutableReadinessSnapshot(ctx.controllerHome) : undefined;
         const fullPayload: Record<string, unknown> = {
@@ -3627,7 +3730,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             ? { status: 'probed', ...agentExecutors }
             : { status: 'not_probed', executors: {} },
           stableSupervisor: stableSupervisorPresent ? {
-            ready: supervisorServiceCoherence.ok,
+            ready: revisionView.coherence.ok,
             loaded: true,
             pid: supervisorState?.supervisor.pid,
             healthy: supervisorState?.observedState === 'healthy',
@@ -3635,7 +3738,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             runningReleaseRevision: supervisorServiceCoherence.running?.releaseRevision,
             generatedServiceReleaseRevision: supervisorServiceCoherence.generated?.releaseRevision,
             installedServiceReleaseRevision: supervisorServiceCoherence.installed?.releaseRevision,
-            failures: supervisorServiceCoherence.failures,
+            failures: [...new Set([...supervisorServiceCoherence.failures, ...runtimeReleaseCoherence.failures])],
           } : { ready: true, installed: false, loaded: false, failures: [] },
           stableIngress: {
             pid: ingressState?.pid,
@@ -3652,9 +3755,14 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             ...readiness.reasons,
             ...(!toolSurfaceReady ? [{ code: 'MCP_TOOL_SURFACE_INCOMPLETE', message: 'Registered and exposed MCP tool schemas do not match.' }] : []),
             ...(!supervisorServiceCoherence.ok ? [{ code: 'SUPERVISOR_SERVICE_RELEASE_DRIFT', message: supervisorServiceCoherence.failures.join('; ') }] : []),
+            ...(!runtimeReleaseCoherence.ok ? [{ code: 'ACTIVE_RUNTIME_RELEASE_DRIFT', message: runtimeReleaseCoherence.failures.join('; ') }] : []),
             ...(stableSupervisorPresent && !ingressLocalReady ? [{ code: 'STABLE_INGRESS_NOT_READY', message: 'Stable ingress is not serving traffic or has accumulated health failures.' }] : []),
             ...(externalEndpointStatus === 'unhealthy' ? [{ code: 'PUBLIC_STABLE_ENDPOINT_UNHEALTHY', message: externalEndpointDetail ?? 'Public stable endpoint is unreachable even though localhost checks pass.' }] : []),
           ],
+          ...revisionView,
+          routeBehavior: detail
+            ? routeBehavior
+            : { schemaVersion: routeBehavior.schemaVersion, fingerprint: routeBehavior.fingerprint, probeCount: routeBehavior.probeCount },
           toolSurface: {
             ready: toolSurfaceReady,
             localExpectedTools: exposure.expectedToolNames,

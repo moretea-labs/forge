@@ -3,7 +3,7 @@ import {
   summarizeEntityMigrationReport,
   summarizeRepositoryRegistration,
 } from '../../src/cli/mcp/repository-tools';
-import { summarizeControllerReadyPayload } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { buildControllerReadyRevisionView, summarizeControllerReadyPayload } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { RESPONSE_BUDGET } from '../../src/runtime/shared/response-budget';
 
 function bytes(value: unknown): number {
@@ -64,6 +64,42 @@ describe('MCP response compaction', () => {
     expect(summarizeEntityMigrationReport(migration, true)).toBe(migration);
   });
 
+  test('controller revision view exposes authoritative identities and fails closed on runtime drift', () => {
+    const view = buildControllerReadyRevisionView({
+      currentRelease: { releaseRevision: 'release-expected', sourceCommit: 'source-commit' },
+      supervisorState: {
+        supervisor: { releaseRevision: 'release-expected' },
+        controllerDaemon: { releaseRevision: 'release-runtime' },
+        gatewayHost: { releaseRevision: 'release-gateway' },
+      },
+      activeSlotIdentity: { releaseRevision: 'release-slot', sourceCommit: 'slot-source' },
+      serviceCoherence: { ok: true, expected: { releaseRevision: 'release-expected' }, failures: [] },
+      runtimeCoherence: {
+        ok: false,
+        legacyReleaseMetadata: false,
+        releasePathCoherent: true,
+        releaseRevisionCoherent: false,
+        releaseCoherent: false,
+        generationCoherent: true,
+        slotCoherent: true,
+        failures: ['release revision mismatch'],
+      },
+    });
+    expect(view).toMatchObject({
+      stableSupervisorRevision: 'release-expected',
+      activeRuntimeRevision: 'release-runtime',
+      activeSlotRevision: 'release-slot',
+      gatewayRevision: 'release-gateway',
+      sourceRevision: 'source-commit',
+      expectedRevision: 'release-expected',
+      coherence: {
+        ok: false,
+        service: { ok: true },
+        runtime: { ok: false, releaseRevisionCoherent: false },
+      },
+    });
+  });
+
   test('controller readiness summary omits history and full tool arrays', () => {
     const toolNames = Array.from({ length: 150 }, (_, index) => `tool-${index}`);
     const full = {
@@ -88,6 +124,32 @@ describe('MCP response compaction', () => {
       },
       stableIngress: { localReady: true, state: 'running' },
       externalEndpoint: { status: 'unknown' },
+      stableSupervisorRevision: 'release-a',
+      activeRuntimeRevision: 'release-a',
+      activeSlotRevision: 'release-a',
+      gatewayRevision: 'release-a',
+      sourceRevision: 'commit-a',
+      expectedRevision: 'release-a',
+      coherence: {
+        ok: true,
+        service: { ok: true, failures: [] },
+        runtime: {
+          ok: true,
+          legacyReleaseMetadata: false,
+          releasePathCoherent: true,
+          releaseRevisionCoherent: true,
+          releaseCoherent: true,
+          generationCoherent: true,
+          slotCoherent: true,
+          failures: [],
+        },
+      },
+      routeBehavior: {
+        schemaVersion: 1,
+        fingerprint: 'route-fingerprint',
+        probeCount: 100,
+        probes: Array.from({ length: 100 }, (_, index) => ({ id: `probe-${index}`, path: 'direct', reasons: ['fixture'] })),
+      },
       toolSurface: {
         ready: true,
         expectedTools: toolNames,
@@ -97,7 +159,7 @@ describe('MCP response compaction', () => {
         missingTools: [],
         unexpectedTools: [],
         duplicateTools: [],
-        fingerprint: 'fingerprint',
+        fingerprint: 'schema-fingerprint',
         schemaStableAcrossAccessModes: true,
       },
       registeredRepositories: 12,
@@ -111,6 +173,16 @@ describe('MCP response compaction', () => {
     expect(summary.agentExecutors).toBeUndefined();
     expect(summary.repository).toBeUndefined();
     expect((summary.toolSurface as Record<string, unknown>).expectedToolCount).toBe(150);
+    expect(summary.stableSupervisorRevision).toBe('release-a');
+    expect(summary.activeRuntimeRevision).toBe('release-a');
+    expect(summary.activeSlotRevision).toBe('release-a');
+    expect(summary.gatewayRevision).toBe('release-a');
+    expect(summary.sourceRevision).toBe('commit-a');
+    expect(summary.expectedRevision).toBe('release-a');
+    expect((summary.coherence as { ok?: boolean }).ok).toBe(true);
+    expect((summary.routeBehavior as Record<string, unknown>).fingerprint).toBe('route-fingerprint');
+    expect((summary.routeBehavior as Record<string, unknown>).probes).toBeUndefined();
+    expect((summary.toolSurface as Record<string, unknown>).fingerprint).not.toBe((summary.routeBehavior as Record<string, unknown>).fingerprint);
     expect((summary.detailPointer as Record<string, unknown>).tool).toBe('controller_ready');
   });
 });

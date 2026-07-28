@@ -5,6 +5,7 @@ import { join } from 'path';
 import { spawnSync } from 'child_process';
 import {
   classifyGatewayExecutionPath,
+  gatewayRouteBehaviorSnapshot,
   routeDurableMcpCall,
 } from '../../src/runtime/gateway/mcp/router';
 import { createMcpToolContext } from '../../src/cli/mcp/server';
@@ -73,6 +74,26 @@ afterEach(() => {
 });
 
 describe('Gateway Thin Harness routing before ExecutionJob', () => {
+  test('publishes a deterministic fingerprint from the real classifier behavior matrix', () => {
+    const first = gatewayRouteBehaviorSnapshot();
+    const second = gatewayRouteBehaviorSnapshot();
+    expect(first).toEqual(second);
+    expect(first.fingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(first.probeCount).toBe(first.probes.length);
+    const paths = Object.fromEntries(first.probes.map((probe) => [probe.id, probe.path]));
+    expect(paths).toMatchObject({
+      'hot-read': 'direct',
+      'isolated-read-diagnostic': 'fast',
+      'readonly-command': 'fast',
+      'managed-local-command': 'fast',
+      'focused-check': 'fast',
+      'release-check': 'durable',
+      'interactive-write': 'direct',
+      'external-controller': 'durable',
+      'unknown-tool': 'reject',
+    });
+  });
+
   test('classifies Fast readonly argv before durable path', () => {
     const classification = classifyGatewayExecutionPath('repository_command_execute', {
       command: ['git', 'status', '--short'],
