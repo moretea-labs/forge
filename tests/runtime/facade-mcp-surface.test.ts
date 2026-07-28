@@ -19,6 +19,7 @@ import { ensureControllerHome } from '../../src/cli/repositories/controller-home
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { collectRuntimeSourceIdentity } from '../../src/runtime/control-plane/runtime-generation';
 import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { claimControllerSession, getControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 
@@ -313,6 +314,91 @@ describe('facade MCP surface wiring', () => {
     expect((detailData.repository as { canonicalRoot: string }).canonicalRoot).toBe(repository.canonicalRoot);
     expect(Array.isArray(detailData.recentExecutionJobs)).toBe(true);
     expect((detailData.capabilityGroups as Array<{ domains: string[] }>)[0]?.domains).toBeArray();
+  });
+
+  test('rh_context summary separates stale nonterminal Work and handoffs from current attention', async () => {
+    const { ctx, repository, controllerHome } = controllerFixture();
+    const oldAt = new Date(Date.now() - 72 * 60 * 60 * 1_000).toISOString();
+    const createWork = (workId: string, status: 'open' | 'running' | 'blocked' | 'ready', updatedAt?: string) => createWorkContract(
+      { controllerHome, repoId: repository.repoId, ...(updatedAt ? { now: () => updatedAt } : {}) },
+      {
+        workId,
+        repoId: repository.repoId,
+        mode: 'goal_workloop',
+        objective: `Currentness fixture ${workId}`,
+        acceptanceCriteria: [],
+        allowedPaths: ['src/runtime/'],
+        forbiddenPaths: [],
+        checks: [],
+        constraints: { accessMode: 'full_access', workspaceMode: 'current', requireWorktree: false },
+        status,
+        driver: { preferred: 'direct_edit', allowWorker: false, allowDirectEdit: true },
+        worktreePolicy: { required: false, reason: 'currentness fixture' },
+        evidencePolicy: { defaultDetailLevel: 'summary', allowRawOptIn: true, maxEvidenceRefs: 20 },
+        approvalPolicy: { required: false, reasons: [], confirmed: false },
+        recoveryPolicy: { allowSelfHealing: false, maxInfrastructureRetries: 0, handoffOnAmbiguity: true },
+        requestedBy: 'chatgpt',
+      },
+    );
+    createWork('work-stale-open', 'open', oldAt);
+    createWork('work-stale-blocked', 'blocked', oldAt);
+    createWork('work-stale-running', 'running', oldAt);
+    createWork('work-recent-blocked', 'blocked');
+
+    const createAttention = (id: string, workId: string | undefined, updatedAt?: string) => createHandoffItem(
+      { controllerHome, repoId: repository.repoId, ...(updatedAt ? { now: () => updatedAt } : {}) },
+      {
+        id,
+        repoId: repository.repoId,
+        ...(workId ? { workId } : {}),
+        title: id,
+        severity: 'needs_review',
+        reason: `Review ${id}`,
+        summary: `Summary ${id}`,
+        currentState: { repoId: repository.repoId, ...(workId ? { workId } : {}), statusSummary: 'pending' },
+        evidenceRefs: [],
+        recommendedDecision: 'review',
+        recommendedPrompt: 'Review this handoff.',
+        suggestedNextActions: [],
+      },
+    );
+    createAttention('attention-stale-work', 'work-stale-blocked', oldAt);
+    createAttention('attention-current-work', 'work-stale-running', oldAt);
+    createAttention('attention-recent-unattached', undefined);
+
+    const summary = structured(await callRuntimeTool(ctx, 'rh_context', {
+      repo_id: repository.repoId,
+      operation: 'list',
+    }));
+    const data = summary.data as Record<string, unknown>;
+    const workIds = (data.activeWork as Array<{ workId: string }>).map((entry) => entry.workId);
+    const attentionIds = (data.activeAttention as Array<{ id: string }>).map((entry) => entry.id);
+    expect(workIds).toEqual(expect.arrayContaining(['work-stale-running', 'work-recent-blocked']));
+    expect(workIds).not.toContain('work-stale-open');
+    expect(workIds).not.toContain('work-stale-blocked');
+    expect(attentionIds).toEqual(expect.arrayContaining(['attention-current-work', 'attention-recent-unattached']));
+    expect(attentionIds).not.toContain('attention-stale-work');
+    expect(data.counts).toMatchObject({
+      activeWork: 2,
+      storedNonTerminalWork: 4,
+      currentWork: 2,
+      historicalNonTerminalWork: 2,
+      currentAttention: 2,
+      currentAttentionShown: 2,
+      pendingAttentionScanned: 3,
+      historicalPendingAttention: 1,
+    });
+    expect(data.historicalExecutionJobsIncluded).toBe(false);
+    expect(Buffer.byteLength(JSON.stringify(summary), 'utf8')).toBeLessThanOrEqual(16 * 1024);
+
+    const detail = structured(await callRuntimeTool(ctx, 'rh_context', {
+      repo_id: repository.repoId,
+      operation: 'list',
+      detail_level: 'detail',
+    }));
+    const detailData = detail.data as Record<string, unknown>;
+    expect((detailData.activeWork as unknown[])).toHaveLength(4);
+    expect((detailData.activeAttention as unknown[])).toHaveLength(3);
   });
 
   test('rh_work start routes small/complex/high-risk modes', async () => {

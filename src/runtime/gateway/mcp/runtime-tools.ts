@@ -1073,6 +1073,23 @@ export function buildControllerReadyRevisionView(input: {
   };
 }
 
+const RH_CONTEXT_CURRENT_WINDOW_MS = 24 * 60 * 60 * 1_000;
+
+function timestampIsCurrent(value: string | undefined, cutoffMs: number): boolean {
+  if (!value) return false;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && timestamp >= cutoffMs;
+}
+
+function isCurrentRhContextWork(
+  contract: { status: string; updatedAt?: string },
+  cutoffMs: number,
+): boolean {
+  if (contract.status === 'running' || contract.status === 'ready') return true;
+  if (contract.status !== 'open' && contract.status !== 'blocked') return false;
+  return timestampIsCurrent(contract.updatedAt, cutoffMs);
+}
+
 export function summarizeControllerReadyPayload(fullPayload: Record<string, unknown>): Record<string, unknown> {
   const health = (fullPayload.health ?? {}) as Record<string, unknown>;
   const workerLoop = (fullPayload.workerLoop ?? {}) as Record<string, unknown>;
@@ -2432,7 +2449,11 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const activeContractScan = operation === 'list' || !workId
           ? listWorkContracts({ ...store, status: 'active', limit: 20 })
           : [];
-        const activeContracts = isSummary ? activeContractScan.slice(0, 3) : activeContractScan;
+        const currentCutoffMs = Date.now() - RH_CONTEXT_CURRENT_WINDOW_MS;
+        const currentContractScan = isSummary
+          ? activeContractScan.filter((contract) => isCurrentRhContextWork(contract, currentCutoffMs))
+          : activeContractScan;
+        const activeContracts = isSummary ? currentContractScan.slice(0, 3) : activeContractScan;
         const recentJobs = !isSummary && (operation === 'list' || !workId)
           ? listExecutionJobs(ctx.controllerHome, repository.repoId, 20)
           : [];
@@ -2446,12 +2467,15 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           .filter((check): check is (typeof checks)[number] => Boolean(check))
           .map((check) => ({ id: check.id, description: check.description, source: check.source }));
         const pendingAttention = listHandoffItems({ ...store, status: 'pending', limit: isSummary ? 20 : 5 });
-        const activeWorkIds = new Set(activeContractScan.map((entry) => entry.workId));
-        const recentAttentionCutoff = Date.now() - 24 * 60 * 60 * 1_000;
+        const currentWorkIds = new Set(currentContractScan.map((entry) => entry.workId));
+        const currentAttentionScan = isSummary
+          ? pendingAttention.filter((item) => (
+            Boolean(item.workId && currentWorkIds.has(item.workId))
+            || timestampIsCurrent(item.updatedAt, currentCutoffMs)
+          ))
+          : pendingAttention;
         const currentAttentionItems = isSummary
-          ? pendingAttention
-            .filter((item) => Boolean(item.workId && activeWorkIds.has(item.workId)) || Date.parse(item.updatedAt) >= recentAttentionCutoff)
-            .slice(0, 3)
+          ? currentAttentionScan.slice(0, 3)
           : pendingAttention;
         const attention = isSummary
           ? currentAttentionItems.map((item) => ({
@@ -2509,10 +2533,16 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             selectedChecks: selectedChecks.length,
             capabilities: capabilities.length,
             capabilityGroups: capabilityGroups.length,
-            activeWork: activeContractScan.length,
+            activeWork: currentContractScan.length,
             activeWorkShown: activeContracts.length,
-            currentAttention: attention.length,
+            storedNonTerminalWork: activeContractScan.length,
+            currentWork: currentContractScan.length,
+            historicalNonTerminalWork: Math.max(0, activeContractScan.length - currentContractScan.length),
+            currentAttention: currentAttentionScan.length,
+            currentAttentionShown: attention.length,
             pendingAttentionScanned: pendingAttention.length,
+            historicalPendingAttention: Math.max(0, pendingAttention.length - currentAttentionScan.length),
+            omittedCurrentAttention: Math.max(0, currentAttentionScan.length - attention.length),
             omittedPendingAttention: Math.max(0, pendingAttention.length - attention.length),
           },
           historicalExecutionJobsIncluded: false,
