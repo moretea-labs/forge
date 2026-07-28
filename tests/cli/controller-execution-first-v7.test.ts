@@ -252,6 +252,31 @@ describe("Controller v7 compatibility on the V8 execution bridge", () => {
     })).toThrow("no unrelated workspace changes");
   });
 
+  test("structured related artifacts survive Issue Markdown regeneration", () => {
+    const root = repo();
+    const issue = createIssue(root, {
+      title: "Structured artifact rendering",
+      tasks: [{ title: "Audit status", objective: "Inspect status.", risk: "readonly" }],
+    });
+    const jsonPath = join(root, "tasks", "issues", `${issue.id}-${issue.slug}.issue.json`);
+    const markdownPath = join(root, "tasks", "issues", `${issue.id}-${issue.slug}.issue.md`);
+    const stored = JSON.parse(readFileSync(jsonPath, "utf-8"));
+    stored.relatedArtifacts = [{
+      kind: "runtime-note",
+      path: "src/runtime/example.ts",
+      summary: "Preserve structured evidence.",
+    }];
+    writeFileSync(jsonPath, `${JSON.stringify(stored, null, 2)}\n`);
+
+    updateTask(root, issue.id, "T1", { note: "Regenerate Markdown." });
+
+    const markdown = readFileSync(markdownPath, "utf-8");
+    expect(markdown).toContain("- [runtime-note] `src/runtime/example.ts` — Preserve structured evidence.");
+    expect(markdown).not.toContain("[object Object]");
+    const rewritten = JSON.parse(readFileSync(jsonPath, "utf-8"));
+    expect(rewritten.relatedArtifacts[0]).toEqual(stored.relatedArtifacts[0]);
+  });
+
   test("real failed checks remain authoritative for change Tasks", () => {
     const root = repo();
     const issue = createIssue(root, {

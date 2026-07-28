@@ -96,6 +96,30 @@ function renderGitHubLink(link?: GitHubIssueLink): string[] {
   ];
 }
 
+function inlineArtifactText(value: unknown): string {
+  return typeof value === 'string'
+    ? value.replace(/\s+/g, ' ').trim()
+    : '';
+}
+
+function renderRelatedArtifact(item: unknown): string {
+  if (typeof item === 'string') return `- \`${item}\``;
+  if (item && typeof item === 'object') {
+    const artifact = item as Record<string, unknown>;
+    const kind = inlineArtifactText(artifact.kind);
+    const path = inlineArtifactText(artifact.path);
+    const summary = inlineArtifactText(artifact.summary);
+    const head = [kind ? `[${kind}]` : '', path ? `\`${path}\`` : ''].filter(Boolean).join(' ');
+    if (head || summary) return `- ${head || 'Artifact'}${summary ? ` — ${summary}` : ''}`;
+    try {
+      return `- \`${JSON.stringify(artifact)}\``;
+    } catch {
+      return '- Unreadable artifact metadata.';
+    }
+  }
+  return `- \`${String(item)}\``;
+}
+
 function renderIssueMarkdown(issue: ControllerIssue): string {
   const taskLines = issue.tasks.length === 0
     ? ['- No tasks planned yet.']
@@ -147,7 +171,7 @@ function renderIssueMarkdown(issue: ControllerIssue): string {
     ...taskLines,
     '## Related Artifacts',
     '',
-    ...(issue.relatedArtifacts.length ? issue.relatedArtifacts.map((item) => `- \`${item}\``) : ['- None.']),
+    ...(issue.relatedArtifacts.length ? (issue.relatedArtifacts as unknown[]).map(renderRelatedArtifact) : ['- None.']),
     '',
   ].join('\n');
 }
