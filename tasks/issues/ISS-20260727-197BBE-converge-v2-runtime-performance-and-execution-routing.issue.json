@@ -4,7 +4,7 @@
   "title": "Converge V2 runtime performance and execution routing",
   "slug": "converge-v2-runtime-performance-and-execution-routing",
   "kind": "feature",
-  "status": "planned",
+  "status": "in_progress",
   "summary": "基于已切换的 V2 SuperController + Unified Process Runtime 架构继续收敛，不恢复新 ExecutionJob 创建。先统一公开 MCP 命令路由并补 requestId 级幂等，再收敛 Claim、只读诊断隔离、Context/版本状态、端口与历史降噪。",
   "goals": [
     "所有普通本地命令和检查统一由 Unified Process Runtime 单次 Spawn 执行",
@@ -252,7 +252,7 @@
       "id": "T4",
       "title": "Shrink context and expose runtime coherence",
       "objective": "压缩 rh_context/controller_ready 默认摘要，只返回当前决策所需字段并提供 detailPointer；区分 current/historical attention；新增 stableSupervisorRevision、activeRuntimeRevision、activeSlotRevision、gatewayRevision、sourceRevision、expectedRevision 和 coherence 状态，并加入实际 route behavior fingerprint。",
-      "status": "ready",
+      "status": "running",
       "dependsOn": [
         "T1"
       ],
@@ -277,11 +277,12 @@
       "acceptanceCriteria": [],
       "risk": "medium",
       "notes": [
-        "2026-07-28 bounded slice integrated on main 6eb7ac4b and live release 6eb7ac4be7d6: controller_ready now defaults to a decision-focused summary with detailPointer, explicit release coherence, compact tool counts/fingerprint, activity, current blockers and responseMeta. Live summary is 2,887 structured bytes and 64.4ms server duration; full history/tool arrays/repository projection are detail-only. repository_register/validate/refresh also gained bounded summary/detail behavior. Remaining T4 scope (rh_context compaction, current-vs-historical attention across all facades, broader revision fields/route behavior fingerprint) remains planned."
+        "2026-07-28 bounded slice integrated on main 6eb7ac4b and live release 6eb7ac4be7d6: controller_ready now defaults to a decision-focused summary with detailPointer, explicit release coherence, compact tool counts/fingerprint, activity, current blockers and responseMeta. Live summary is 2,887 structured bytes and 64.4ms server duration; full history/tool arrays/repository projection are detail-only. repository_register/validate/refresh also gained bounded summary/detail behavior. Remaining T4 scope (rh_context compaction, current-vs-historical attention across all facades, broader revision fields/route behavior fingerprint) remains planned.",
+        "2026-07-28 next bounded MCP slice: live get_project_board default response expands all 11 Issues and full Task objectives/paths/checks/readiness. Implement summary-by-default with explicit detail opt-in, bounded recent/current/ready projections and a strict response-size regression; preserve internal projectBoard detail behavior."
       ],
       "runIds": [],
       "createdAt": "2026-07-27T09:26:56.885Z",
-      "updatedAt": "2026-07-28T07:37:03.367Z",
+      "updatedAt": "2026-07-28T08:44:36.574Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
@@ -324,6 +325,6 @@
     }
   ],
   "createdAt": "2026-07-27T09:26:56.885Z",
-  "updatedAt": "2026-07-28T08:11:55.593Z",
+  "updatedAt": "2026-07-28T08:44:36.574Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }

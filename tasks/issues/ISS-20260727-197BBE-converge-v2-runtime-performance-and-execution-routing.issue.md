@@ -1,8 +1,8 @@
 ---
 id: "ISS-20260727-197BBE"
 kind: "feature"
-status: "planned"
-updated_at: "2026-07-28T08:11:55.593Z"
+status: "in_progress"
+updated_at: "2026-07-28T08:44:36.574Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -69,7 +69,7 @@ source: "repo-harness-controller-v8"
 
 ### T4 — Shrink context and expose runtime coherence
 
-- Status: `ready`
+- Status: `running`
 - Objective: 压缩 rh_context/controller_ready 默认摘要，只返回当前决策所需字段并提供 detailPointer；区分 current/historical attention；新增 stableSupervisorRevision、activeRuntimeRevision、activeSlotRevision、gatewayRevision、sourceRevision、expectedRevision 和 coherence 状态，并加入实际 route behavior fingerprint。
 - Depends on: `T1`
 - Allowed paths: `src/runtime/gateway/mcp/**`, `src/runtime/projections/**`, `src/runtime/supervisor/**`, `src/cli/controller/**`, `tests/runtime/**`, `tests/cli/**`, `docs/operations/**`, `docs/architecture/current/**`, `tasks/issues/**`
