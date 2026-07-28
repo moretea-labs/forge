@@ -220,7 +220,7 @@
       "id": "T3",
       "title": "Move read-only diagnostics to isolated process execution",
       "objective": "将 workflow_watchdog_report、runtime_maintenance_status、cleanup preview 等只读但可能阻塞的诊断从 ExecutionJob 包装迁到隔离诊断 Process/Worker Thread；不得直接阻塞 Gateway event loop，不创建 Evidence/Projection write/Scheduler wake，短时间未完成返回可查询句柄。apply/repair/restart 继续走受控 WorkContract/SuperController。",
-      "status": "ready",
+      "status": "verified",
       "dependsOn": [
         "T1"
       ],
@@ -242,11 +242,150 @@
       ],
       "acceptanceCriteria": [],
       "risk": "medium",
-      "notes": [],
+      "notes": [
+        "2026-07-28 T3 consolidated implementation and live evidence: commit db14f592 moved workflow_watchdog_report, runtime_maintenance_status, and runtime_cleanup_preview behind Unified Process Runtime via a hidden read-only diagnostic CLI, before the generic readOnlyHint shortcut. Short diagnostics return the original JSON plus diagnosticExecution; slow diagnostics return process_get/process_wait/process_logs handles. Commit 781a5cb4 added a fixed 16KiB inline budget and apply_mode=async immediate handles, so completed large diagnostics no longer duplicate large JSON through MCP. Full focused routing tests, typecheck, runtime architecture, MCP compatibility, and controller-v8 passed with ExecutionJob/LocalJob/Worker/Projection deltas 0. Live release 781a5cb417c2 is healthy and coherent across Supervisor/Daemon/Gateway with restart/rollback 0. Live workflow_watchdog_report produced 27,943 bytes but returned only completed Process handle proc_ms4k0st2_933d7226 with reason=result_exceeds_inline_limit; same request_id returned the same processId with deduplicated=true. Live runtime_maintenance_status apply_mode=async immediately returned running handle proc_ms4k1agp_68b3a648 and later succeeded. apply/repair/restart paths were not modified.",
+        "Required verification evidence passed; a completion receipt remains required before completion."
+      ],
       "runIds": [],
       "createdAt": "2026-07-27T09:26:56.885Z",
-      "updatedAt": "2026-07-27T09:26:56.885Z",
-      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      "updatedAt": "2026-07-28T11:12:29.826Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "verification": {
+        "integratedRevision": "781a5cb417c2be8be0a3c3f8dab3b270f1833729",
+        "reviewer": "ChatGPT",
+        "checkResults": [
+          {
+            "checkId": "package:check:type",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-type.json"
+          },
+          {
+            "checkId": "package:check:runtime-architecture",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-runtime-architecture.json"
+          },
+          {
+            "checkId": "package:check:mcp-compatibility",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-mcp-compatibility.json"
+          },
+          {
+            "checkId": "package:check:controller-v8",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-controller-v8.json"
+          }
+        ],
+        "commandEvidence": [
+          {
+            "command": [
+              "bun",
+              "test",
+              "tests/runtime/thin-harness-gateway-routing.test.ts"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "Complete routing suite passed, including async handle, 16KiB completed-result boundary, request-id deduplication, fingerprint conflict, and zero durable-side-effect assertions.",
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-28T11:12:29.818Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "bun",
+              "run",
+              "check:type"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-28T11:12:29.818Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "bun",
+              "run",
+              "check:runtime-architecture"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-28T11:12:29.818Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "bun",
+              "run",
+              "check:mcp-compatibility"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-28T11:12:29.818Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "bun",
+              "run",
+              "check:controller-v8"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-28T11:12:29.818Z",
+            "source": "reported"
+          }
+        ],
+        "acceptanceResults": [
+          {
+            "criterion": "Heavy read-only diagnostics do not execute synchronously on the Gateway event loop",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Router classifies the three heavy read-only diagnostics as isolated_read_diagnostic_process before generic readOnlyHint and executes them via Unified Process Runtime."
+          },
+          {
+            "criterion": "No ExecutionJob, LocalJob, Worker, Evidence/Projection write, or Scheduler wake is created",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Focused and full gates reported ExecutionJob/LocalJob/Worker/Projection deltas 0; live handles expose the same zero side-effect counters."
+          },
+          {
+            "criterion": "Slow or explicitly asynchronous diagnostics return a queryable Process handle",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Live runtime_maintenance_status apply_mode=async returned proc_ms4k1agp_68b3a648 immediately and process_wait observed successful completion."
+          },
+          {
+            "criterion": "Large completed diagnostics do not overflow the MCP response",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Live workflow_watchdog_report produced 27,943 bytes and returned bounded handle proc_ms4k0st2_933d7226 with inlineLimitBytes=16384 and reason=result_exceeds_inline_limit."
+          },
+          {
+            "criterion": "Retries are idempotent and semantic changes fail closed",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Same live watchdog request_id returned proc_ms4k0st2_933d7226 with deduplicated=true; focused test asserts changed args return PROCESS_REQUEST_ID_CONFLICT."
+          },
+          {
+            "criterion": "Apply, repair, and restart remain on controlled paths",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Diff is limited to read-only diagnostic CLI/facade/router/tests; runtime_maintenance_apply and recovery/restart handlers were not modified."
+          }
+        ],
+        "verifiedAt": "2026-07-28T11:12:29.818Z",
+        "autoCompleted": false,
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
     },
     {
       "id": "T4",
@@ -328,6 +467,6 @@
     }
   ],
   "createdAt": "2026-07-27T09:26:56.885Z",
-  "updatedAt": "2026-07-28T09:38:30.168Z",
+  "updatedAt": "2026-07-28T11:12:29.826Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }

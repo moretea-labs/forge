@@ -2,7 +2,7 @@
 id: "ISS-20260727-197BBE"
 kind: "feature"
 status: "in_progress"
-updated_at: "2026-07-28T09:38:30.168Z"
+updated_at: "2026-07-28T11:12:29.826Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -60,7 +60,7 @@ source: "repo-harness-controller-v8"
 
 ### T3 — Move read-only diagnostics to isolated process execution
 
-- Status: `ready`
+- Status: `verified`
 - Objective: 将 workflow_watchdog_report、runtime_maintenance_status、cleanup preview 等只读但可能阻塞的诊断从 ExecutionJob 包装迁到隔离诊断 Process/Worker Thread；不得直接阻塞 Gateway event loop，不创建 Evidence/Projection write/Scheduler wake，短时间未完成返回可查询句柄。apply/repair/restart 继续走受控 WorkContract/SuperController。
 - Depends on: `T1`
 - Allowed paths: `src/runtime/gateway/mcp/**`, `src/runtime/watchdog/**`, `src/runtime/diagnostics/**`, `src/runtime/execution/process-runtime/**`, `tests/runtime/**`, `docs/operations/**`, `tasks/issues/**`
