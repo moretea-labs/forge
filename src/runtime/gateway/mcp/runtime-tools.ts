@@ -2346,26 +2346,138 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           });
           return result(facade as unknown as Record<string, unknown>, true);
         }
+        const startedAt = performance.now();
         const detailLevel = args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary';
-        const boundedSummaryLimit = 5;
-        const activeContracts = operation === 'list' || !workId
-          ? listWorkContracts({ ...store, status: 'active', limit: detailLevel === 'summary' ? boundedSummaryLimit : 20 })
+        const isSummary = detailLevel === 'summary';
+        const activeContractScan = operation === 'list' || !workId
+          ? listWorkContracts({ ...store, status: 'active', limit: 20 })
           : [];
-        const recentJobs = operation === 'list' || !workId
-          ? listExecutionJobs(ctx.controllerHome, repository.repoId, detailLevel === 'summary' ? boundedSummaryLimit : 20)
+        const activeContracts = isSummary ? activeContractScan.slice(0, 3) : activeContractScan;
+        const recentJobs = !isSummary && (operation === 'list' || !workId)
+          ? listExecutionJobs(ctx.controllerHome, repository.repoId, 20)
           : [];
         const manifests = listAssistantPluginManifests(ctx.controllerHome, repository, {
           preferStored: true,
         });
         const capabilities = listCapabilityDescriptors(manifests);
+        const capabilityGroups = summarizeCapabilityGroups(manifests);
         const selectedChecks = normalizedChecks.validCheckIds
           .map((id) => checks.find((check) => check.id === id))
           .filter((check): check is (typeof checks)[number] => Boolean(check))
           .map((check) => ({ id: check.id, description: check.description, source: check.source }));
-        const attention = listHandoffItems({ ...store, status: 'pending', limit: boundedSummaryLimit }).map(summarizeHandoffItem);
-        const checkSummaries = detailLevel === 'summary'
+        const pendingAttention = listHandoffItems({ ...store, status: 'pending', limit: isSummary ? 20 : 5 });
+        const activeWorkIds = new Set(activeContractScan.map((entry) => entry.workId));
+        const recentAttentionCutoff = Date.now() - 24 * 60 * 60 * 1_000;
+        const currentAttentionItems = isSummary
+          ? pendingAttention
+            .filter((item) => Boolean(item.workId && activeWorkIds.has(item.workId)) || Date.parse(item.updatedAt) >= recentAttentionCutoff)
+            .slice(0, 3)
+          : pendingAttention;
+        const attention = isSummary
+          ? currentAttentionItems.map((item) => ({
+            id: item.id,
+            workId: item.workId,
+            title: item.title.slice(0, 96),
+            severity: item.severity,
+            reason: item.reason.slice(0, 160),
+            blockingDecision: item.blockingDecision?.slice(0, 160),
+            updatedAt: item.updatedAt,
+          }))
+          : currentAttentionItems.map(summarizeHandoffItem);
+        const checkSummaries = isSummary
           ? selectedChecks
           : checks.map((check) => ({ id: check.id, description: check.description, source: check.source }));
+        const detailArguments = {
+          repo_id: repository.repoId,
+          operation,
+          ...(workId ? { work_id: workId } : {}),
+          ...(requested.length ? { requested_check_ids: requested } : {}),
+        };
+        const summaryData = {
+          operation,
+          repoId: repository.repoId,
+          repository: {
+            repoId: repository.repoId,
+            displayName: repository.displayName,
+            defaultBranch: repository.defaultBranch,
+            repositoryType: repository.repositoryType,
+          },
+          checks: selectedChecks,
+          selectedChecks,
+          requestedCheckIds: requested,
+          normalizedChecks,
+          invalidCheckIdsAreNotFailures: true,
+          capabilityCount: capabilities.length,
+          capabilityGroups: capabilityGroups.map((group) => ({ group: group.group, capabilityCount: group.capabilityCount })),
+          toolArchitecture: {
+            facadeTools: ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'],
+            domainSchemaLoading: 'static_stable_surface',
+          },
+          work: work
+            ? { workId: work.workId, status: work.status, mode: work.mode, objective: work.objective.slice(0, 160) }
+            : undefined,
+          executionJob: executionJob ? summarizeWorkListItem(executionJob) : undefined,
+          activeWork: activeContracts.map((entry) => ({
+            workId: entry.workId,
+            status: entry.status,
+            mode: entry.mode,
+            objective: entry.objective.slice(0, 160),
+          })),
+          activeAttention: attention,
+          counts: {
+            availableChecks: checks.length,
+            selectedChecks: selectedChecks.length,
+            capabilities: capabilities.length,
+            capabilityGroups: capabilityGroups.length,
+            activeWork: activeContractScan.length,
+            activeWorkShown: activeContracts.length,
+            currentAttention: attention.length,
+            pendingAttentionScanned: pendingAttention.length,
+            omittedPendingAttention: Math.max(0, pendingAttention.length - attention.length),
+          },
+          historicalExecutionJobsIncluded: false,
+          detailPointers: {
+            detail: { tool: 'rh_context', arguments: { ...detailArguments, detail_level: 'detail' } },
+            raw: { tool: 'rh_context', arguments: { ...detailArguments, detail_level: 'raw' } },
+          },
+          bounded: true,
+        };
+        const detailData = {
+          operation,
+          repoId: repository.repoId,
+          repository: repositorySummary(repository),
+          checks: checkSummaries,
+          selectedChecks,
+          requestedCheckIds: requested,
+          normalizedChecks,
+          invalidCheckIdsAreNotFailures: true,
+          capabilityCount: capabilities.length,
+          capabilities,
+          capabilityGroups,
+          toolArchitecture: {
+            facadeTools: ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'],
+            atomicTypedToolsRetained: true,
+            internalHandlersRetained: true,
+            domainSchemaLoading: 'static_stable_surface',
+            dynamicDomainSchemaLoadingSupported: false,
+          },
+          work,
+          executionJob: executionJob ? summarizeWorkListItem(executionJob) : undefined,
+          activeWork: activeContracts.map((entry) => ({
+            workId: entry.workId, status: entry.status, mode: entry.mode, objective: entry.objective.slice(0, 240),
+          })),
+          recentExecutionJobs: recentJobs.map(summarizeWorkListItem),
+          activeAttention: attention,
+          counts: {
+            availableChecks: checks.length,
+            selectedChecks: selectedChecks.length,
+            capabilities: capabilities.length,
+            activeWork: activeContracts.length,
+            recentExecutionJobs: recentJobs.length,
+            activeAttention: attention.length,
+          },
+          bounded: false,
+        };
         const facade = buildFacadeResult({
           status: 'ok',
           summary: work
@@ -2373,44 +2485,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             : executionJob
               ? `Bounded context for execution job ${executionJob.jobId}.`
               : 'Bounded repository context and active work summaries are available.',
-          data: {
-            operation,
-            repoId: repository.repoId,
-            repository: repositorySummary(repository),
-            checks: checkSummaries,
-            selectedChecks,
-            requestedCheckIds: requested,
-            normalizedChecks,
-            invalidCheckIdsAreNotFailures: true,
-            capabilityCount: capabilities.length,
-            ...(detailLevel === 'summary' ? {} : { capabilities }),
-            capabilityGroups: summarizeCapabilityGroups(manifests),
-            toolArchitecture: {
-              facadeTools: ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'],
-              atomicTypedToolsRetained: true,
-              internalHandlersRetained: true,
-              domainSchemaLoading: 'static_stable_surface',
-              dynamicDomainSchemaLoadingSupported: false,
-            },
-            work: work && detailLevel === 'summary'
-              ? { workId: work.workId, status: work.status, mode: work.mode, objective: work.objective.slice(0, 240) }
-              : work,
-            executionJob: executionJob ? summarizeWorkListItem(executionJob) : undefined,
-            activeWork: activeContracts.map((entry) => ({
-              workId: entry.workId, status: entry.status, mode: entry.mode, objective: entry.objective.slice(0, 240),
-            })),
-            recentExecutionJobs: recentJobs.map(summarizeWorkListItem),
-            activeAttention: attention,
-            counts: {
-              availableChecks: checks.length,
-              selectedChecks: selectedChecks.length,
-              capabilities: capabilities.length,
-              activeWork: activeContracts.length,
-              recentExecutionJobs: recentJobs.length,
-              activeAttention: attention.length,
-            },
-            bounded: detailLevel === 'summary',
-          },
+          data: isSummary ? summaryData : detailData,
           warnings: normalizedChecks.warnings,
           evidenceRefs: work?.evidenceRefs?.slice(0, 5) ?? [],
           suggestedNextActions: normalizedChecks.suggestedNextActions.length ? normalizedChecks.suggestedNextActions : [{
@@ -2423,7 +2498,15 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           detailLevel,
           rawAvailable: detailLevel === 'raw',
         });
-        return result(facade as unknown as Record<string, unknown>);
+        const payload = facade as unknown as Record<string, unknown>;
+        if (isSummary) {
+          payload.responseMeta = {
+            serverDurationMs: Number((performance.now() - startedAt).toFixed(2)),
+            structuredPayloadBytes: 0,
+          };
+          (payload.responseMeta as { structuredPayloadBytes: number }).structuredPayloadBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+        }
+        return result(payload);
       }
       case 'rh_work': {
         const repository = selected(ctx, args);

@@ -232,8 +232,47 @@ describe('facade MCP surface wiring', () => {
     });
   });
 
-  test('rh_context summary keeps the payload bounded and selects only requested checks', async () => {
-    const { ctx, repository } = controllerFixture();
+  test('rh_context summary is decision-focused, path-free, and bounded while detail stays compatible', async () => {
+    const { ctx, repository, controllerHome } = controllerFixture();
+    const longObjective = 'Keep recovery context bounded without returning repository paths or historical execution details. '.repeat(12);
+    for (let index = 0; index < 12; index += 1) {
+      createWorkContract(
+        { controllerHome, repoId: repository.repoId },
+        {
+          workId: `work-context-${index}`,
+          repoId: repository.repoId,
+          mode: 'goal_workloop',
+          objective: `${longObjective}${index}`,
+          acceptanceCriteria: ['Summary remains bounded.'],
+          allowedPaths: ['src/runtime/'],
+          forbiddenPaths: [],
+          checks: [],
+          constraints: {
+            accessMode: 'full_access',
+            workspaceMode: 'current',
+            requireWorktree: false,
+            allowCommit: true,
+            allowMerge: true,
+            allowCleanup: true,
+          },
+          status: 'running',
+          driver: { preferred: 'direct_edit', allowWorker: false, allowDirectEdit: true },
+          worktreePolicy: { required: false, reason: 'bounded context test' },
+          evidencePolicy: { defaultDetailLevel: 'summary', allowRawOptIn: true, maxEvidenceRefs: 20 },
+          approvalPolicy: { required: false, reasons: [], confirmed: false },
+          recoveryPolicy: { allowSelfHealing: false, maxInfrastructureRetries: 0, handoffOnAmbiguity: true },
+          requestedBy: 'chatgpt',
+        },
+      );
+      structured(await callRuntimeTool(ctx, 'rh_inbox', {
+        repo_id: repository.repoId,
+        operation: 'create',
+        work_id: `work-context-${index}`,
+        title: `Context decision ${index}`,
+        reason: `${longObjective}${index}`,
+      }));
+    }
+
     const summary = structured(await callRuntimeTool(ctx, 'rh_context', {
       repo_id: repository.repoId,
       operation: 'list',
@@ -242,15 +281,38 @@ describe('facade MCP surface wiring', () => {
     const data = summary.data as Record<string, unknown>;
     expect(summary.detailLevel).toBe('summary');
     expect(data.capabilities).toBeUndefined();
+    expect(data.recentExecutionJobs).toBeUndefined();
+    expect(data.historicalExecutionJobsIncluded).toBe(false);
     expect(data.requestedCheckIds).toEqual(['typecheck']);
     expect((data.selectedChecks as Array<{ id: string }>).map((entry) => entry.id)).toEqual(['package:check:type']);
-    expect((data.checks as unknown[]).length).toBeLessThanOrEqual(5);
-    expect((data.activeWork as unknown[]).length).toBeLessThanOrEqual(5);
-    expect((data.recentExecutionJobs as unknown[]).length).toBeLessThanOrEqual(5);
-    expect((data.activeAttention as unknown[]).length).toBeLessThanOrEqual(5);
-    expect((data.counts as Record<string, number>).availableChecks).toBeGreaterThanOrEqual(2);
+    expect((data.checks as unknown[]).length).toBe(1);
+    expect((data.activeWork as unknown[]).length).toBeLessThanOrEqual(3);
+    expect((data.activeAttention as unknown[]).length).toBeLessThanOrEqual(3);
+    expect((data.capabilityGroups as Array<Record<string, unknown>>).every((entry) => Object.keys(entry).sort().join(',') === 'capabilityCount,group')).toBe(true);
+    expect((data.counts as Record<string, number>).activeWork).toBe(12);
+    expect((data.counts as Record<string, number>).activeWorkShown).toBe(3);
+    expect((data.counts as Record<string, number>).omittedPendingAttention).toBeGreaterThan(0);
+    expect((data.detailPointers as { detail: { tool: string }; raw: { tool: string } })).toMatchObject({
+      detail: { tool: 'rh_context' },
+      raw: { tool: 'rh_context' },
+    });
     const encoded = JSON.stringify(summary);
-    expect(Buffer.byteLength(encoded, 'utf8')).toBeLessThan(12_000);
+    expect(encoded).not.toContain(repository.canonicalRoot);
+    expect(encoded).not.toContain(repository.localRoot);
+    if (repository.remoteUrl) expect(encoded).not.toContain(repository.remoteUrl);
+    expect(encoded).not.toContain(longObjective.slice(0, 200));
+    expect(Buffer.byteLength(encoded, 'utf8')).toBeLessThanOrEqual(16 * 1024);
+    expect((summary.responseMeta as { structuredPayloadBytes: number }).structuredPayloadBytes).toBeLessThanOrEqual(16 * 1024);
+
+    const detail = structured(await callRuntimeTool(ctx, 'rh_context', {
+      repo_id: repository.repoId,
+      operation: 'list',
+      detail_level: 'detail',
+    }));
+    const detailData = detail.data as Record<string, unknown>;
+    expect((detailData.repository as { canonicalRoot: string }).canonicalRoot).toBe(repository.canonicalRoot);
+    expect(Array.isArray(detailData.recentExecutionJobs)).toBe(true);
+    expect((detailData.capabilityGroups as Array<{ domains: string[] }>)[0]?.domains).toBeArray();
   });
 
   test('rh_work start routes small/complex/high-risk modes', async () => {
