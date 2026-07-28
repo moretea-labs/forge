@@ -66,6 +66,16 @@ export interface BlueGreenRolloutOptions {
   wait?: boolean;
 }
 
+export interface InactiveSlotLifecycleDependencies {
+  startControllerService(options: Parameters<typeof startControllerService>[0]): Promise<unknown>;
+  stopControllerService(options: Parameters<typeof stopControllerService>[0]): Promise<unknown>;
+}
+
+const DEFAULT_INACTIVE_SLOT_LIFECYCLE: InactiveSlotLifecycleDependencies = {
+  startControllerService,
+  stopControllerService,
+};
+
 const TERMINAL_SUPERVISOR_PHASES = new Set(['succeeded', 'failed', 'locked_out']);
 
 function endpointHost(value: string | undefined): string {
@@ -627,6 +637,7 @@ function mcpAuthRefreshMayHelp(failures: string[]): boolean {
 
 export async function startInactiveSlot(
   opts: BlueGreenRolloutOptions = {},
+  lifecycle: InactiveSlotLifecycleDependencies = DEFAULT_INACTIVE_SLOT_LIFECYCLE,
 ): Promise<{ slot: RuntimeSlotId; slotHome: string; identity: SlotIdentity; verification: SlotVerification }> {
   const repoRoot = resolveMcpRepoRoot(opts.repo ?? '.');
   const rootHome = resolveRepoPreferredControllerHome(repoRoot, opts.controllerHome);
@@ -700,9 +711,23 @@ export async function startInactiveSlot(
     };
   }
 
+  const bindingStartedAt = new Date().toISOString();
+  const candidateBinding = writeSlotIdentity(rootHome, {
+    schemaVersion: 1,
+    slot: candidate,
+    role: 'candidate',
+    controllerHome: rootHome,
+    slotHome: candidateHome,
+    mcpPort: ports.mcpPort,
+    localControllerPort: ports.localControllerPort,
+    startedAt: bindingStartedAt,
+    updatedAt: bindingStartedAt,
+    logDir: join(candidateHome, 'logs'),
+  });
+
   let startError: string | undefined;
   try {
-    await startControllerService({
+    await lifecycle.startControllerService({
       repo: repoRoot,
       controllerHome: candidateHome,
       startTimeoutMs: opts.startTimeoutMs,
@@ -724,23 +749,21 @@ export async function startInactiveSlot(
     });
   const generation = readRuntimeGeneration(candidateHome)?.generation ?? verification.generation;
   const identity = writeSlotIdentity(rootHome, {
-    schemaVersion: 1,
-    slot: candidate,
+    ...candidateBinding,
     role: verification.ok ? 'candidate' : 'failed',
-    controllerHome: rootHome,
-    slotHome: candidateHome,
-    mcpPort: ports.mcpPort,
-    localControllerPort: ports.localControllerPort,
     generation,
     sourceCommit: verification.sourceCommit,
-    startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-    logDir: join(candidateHome, 'logs'),
+    resources: candidateBinding.resources?.map(({ retentionReason: _retentionReason, ...resource }) => ({
+      ...resource,
+      state: verification.ok ? 'active' : 'retained',
+      ...(!verification.ok ? { retentionReason: 'candidate slot failed verification; retained for rollback diagnosis.' } : {}),
+    })),
   });
 
   if (!verification.ok) {
     try {
-      await stopControllerService({
+      await lifecycle.stopControllerService({
         repo: repoRoot,
         controllerHome: candidateHome,
         stopTimeoutMs: opts.stopTimeoutMs,

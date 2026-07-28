@@ -11,6 +11,7 @@ import {
 import {
   ensureSlotHome,
   readActiveSlotAuthority,
+  readSlotIdentity,
   writeActiveSlotAuthority,
   writeSlotIdentity,
 } from '../../src/cli/controller/runtime-slots';
@@ -155,6 +156,80 @@ describe('blue/green isolated lifecycle (level 2)', () => {
       else process.env.REPO_HARNESS_CONTROLLER_LIFECYCLE_OWNER = previousOwner;
     }
   }, 120_000);
+
+  test('candidate port binding is persisted before the candidate lifecycle starts', async () => {
+    const fixture = await createIsolatedControllerFixture();
+    const previousHome = process.env.REPO_HARNESS_CONTROLLER_HOME;
+    const previousSource = process.env.REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT;
+    const previousOwner = process.env.REPO_HARNESS_CONTROLLER_LIFECYCLE_OWNER;
+    Object.assign(process.env, isolatedControllerEnv(fixture, {
+      REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT: ROOT,
+    }));
+
+    const observedBinding: { current: ReturnType<typeof readSlotIdentity> } = { current: null };
+    try {
+      writeActiveSlotAuthority(fixture.controllerHome, { activeSlot: 'blue', reason: 'test' });
+      writeMcpServiceLocalConfig(fixture.controllerHome, {
+        version: 1,
+        profile: 'controller',
+        auth: { mode: 'bearer' },
+        server: { host: '127.0.0.1', port: fixture.mcpPort },
+        localController: {
+          enabled: true,
+          host: '127.0.0.1',
+          port: fixture.localControllerPort,
+          autoOpen: false,
+        },
+      });
+
+      const failed = await startInactiveSlot({
+        repo: fixture.repoRoot,
+        controllerHome: fixture.controllerHome,
+        candidatePorts: {
+          mcpPort: fixture.greenMcpPort,
+          localControllerPort: fixture.greenLocalPort,
+        },
+        skipDurableJob: true,
+      }, {
+        startControllerService: async () => {
+          observedBinding.current = readSlotIdentity(fixture.controllerHome, 'green');
+          throw new Error('intentional candidate start failure');
+        },
+        stopControllerService: async () => ({}),
+      });
+
+      expect(observedBinding.current).toMatchObject({
+        slot: 'green',
+        role: 'candidate',
+        mcpPort: fixture.greenMcpPort,
+        localControllerPort: fixture.greenLocalPort,
+      });
+      expect(observedBinding.current?.startedAt).toBeTruthy();
+      expect(observedBinding.current?.resources?.[0]?.state).toBe('active');
+      expect(readActiveSlotAuthority(fixture.controllerHome).activeSlot).toBe('blue');
+      expect(failed.verification).toMatchObject({ ok: false, phase: 'green-start' });
+      expect(failed.identity).toMatchObject({
+        role: 'failed',
+        mcpPort: fixture.greenMcpPort,
+        localControllerPort: fixture.greenLocalPort,
+        startedAt: observedBinding.current?.startedAt,
+      });
+      expect(failed.identity.resources?.[0]).toMatchObject({
+        resourceId: observedBinding.current?.resources?.[0]?.resourceId,
+        createdAt: observedBinding.current?.resources?.[0]?.createdAt,
+        path: observedBinding.current?.resources?.[0]?.path,
+        state: 'retained',
+        retentionReason: 'candidate slot failed verification; retained for rollback diagnosis.',
+      });
+    } finally {
+      if (previousHome === undefined) delete process.env.REPO_HARNESS_CONTROLLER_HOME;
+      else process.env.REPO_HARNESS_CONTROLLER_HOME = previousHome;
+      if (previousSource === undefined) delete process.env.REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT;
+      else process.env.REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT = previousSource;
+      if (previousOwner === undefined) delete process.env.REPO_HARNESS_CONTROLLER_LIFECYCLE_OWNER;
+      else process.env.REPO_HARNESS_CONTROLLER_LIFECYCLE_OWNER = previousOwner;
+    }
+  }, 60_000);
 
   test('rollout cutover flips active slot and rollback restores previous', async () => {
     const fixture = await createIsolatedControllerFixture();

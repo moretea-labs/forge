@@ -168,6 +168,35 @@ export function writeSlotIdentity(controllerHome: string, identity: SlotIdentity
   return next;
 }
 
+const MIN_RUNTIME_PORT = 1;
+const MAX_RUNTIME_PORT = 65_535;
+
+function validatedRuntimePort(value: number, label: keyof SlotPortAllocation): number {
+  if (!Number.isInteger(value) || value < MIN_RUNTIME_PORT || value > MAX_RUNTIME_PORT) {
+    throw new Error(`RUNTIME_SLOT_PORT_INVALID: ${label}=${String(value)} must be an integer in ${MIN_RUNTIME_PORT}..${MAX_RUNTIME_PORT}`);
+  }
+  return value;
+}
+
+export function validateSlotPorts(ports: SlotPortAllocation): SlotPortAllocation {
+  const validated = {
+    mcpPort: validatedRuntimePort(ports.mcpPort, 'mcpPort'),
+    localControllerPort: validatedRuntimePort(ports.localControllerPort, 'localControllerPort'),
+  };
+  if (validated.mcpPort === validated.localControllerPort) {
+    throw new Error(`RUNTIME_SLOT_PORT_COLLISION: mcpPort and localControllerPort both use ${validated.mcpPort}`);
+  }
+  return validated;
+}
+
+function offsetRuntimePort(basePort: number, offset: number, label: keyof SlotPortAllocation): number {
+  const value = basePort + offset;
+  if (value > MAX_RUNTIME_PORT) {
+    throw new Error(`RUNTIME_SLOT_PORT_OVERFLOW: ${label} base=${basePort} offset=${offset} result=${value}`);
+  }
+  return value;
+}
+
 /**
  * Allocate ports for a slot. Active (or sole) slot keeps base ports.
  * Inactive slot offsets by SLOT_PORT_STRIDE unless overrides are provided.
@@ -178,18 +207,14 @@ export function allocateSlotPorts(
   base: SlotPortAllocation = { mcpPort: DEFAULT_MCP_PORT, localControllerPort: DEFAULT_LOCAL_PORT },
   overrides?: Partial<SlotPortAllocation>,
 ): SlotPortAllocation {
-  if (overrides?.mcpPort && overrides?.localControllerPort) {
-    return {
-      mcpPort: overrides.mcpPort,
-      localControllerPort: overrides.localControllerPort,
-    };
-  }
-  const isActive = slot === activeSlot;
-  const offset = isActive ? 0 : SLOT_PORT_STRIDE;
-  return {
-    mcpPort: overrides?.mcpPort ?? base.mcpPort + offset,
-    localControllerPort: overrides?.localControllerPort ?? base.localControllerPort + offset,
-  };
+  const validatedBase = validateSlotPorts(base);
+  const offset = slot === activeSlot ? 0 : SLOT_PORT_STRIDE;
+  return validateSlotPorts({
+    mcpPort: overrides?.mcpPort
+      ?? offsetRuntimePort(validatedBase.mcpPort, offset, 'mcpPort'),
+    localControllerPort: overrides?.localControllerPort
+      ?? offsetRuntimePort(validatedBase.localControllerPort, offset, 'localControllerPort'),
+  });
 }
 
 export function resolveSlotControllerHome(
