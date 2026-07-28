@@ -73,6 +73,16 @@ describe('check normalization and verification pollution', () => {
     })).toMatchObject({ outcome: 'valid_pass', isAcceptanceFailure: false });
   });
 
+  test('blank invalid_check_id remains diagnostic but does not become a finalization blocker', () => {
+    const history = reconcileVerificationHistory([
+      { checkId: '', outcome: 'invalid_check_id', recordedAt: '2026-07-09T00:00:00.000Z' },
+      { checkId: 'package:check:type', outcome: 'valid_pass', recordedAt: '2026-07-09T00:01:00.000Z' },
+    ]);
+    expect(history.effectiveOutcomes).toContainEqual({ checkId: '', outcome: 'invalid_check_id' });
+    expect(history.invalidCheckIds).toEqual([]);
+    expect(history.validPasses).toEqual(['package:check:type']);
+  });
+
   test('later valid_pass supersedes prior invalid_check_id noise', () => {
     const history = reconcileVerificationHistory([
       { checkId: 'package:check:type', outcome: 'invalid_check_id', recordedAt: '2026-07-09T00:00:00.000Z' },

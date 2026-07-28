@@ -224,7 +224,9 @@ export function reconcileVerificationHistory(
   return {
     acceptanceFailures: effectiveOutcomes.filter((entry) => entry.outcome === 'valid_fail').map((entry) => entry.checkId),
     infrastructureIssues: effectiveOutcomes.filter((entry) => entry.outcome === 'infrastructure_failure').map((entry) => entry.checkId),
-    invalidCheckIds: effectiveOutcomes.filter((entry) => entry.outcome === 'invalid_check_id').map((entry) => entry.checkId),
+    invalidCheckIds: effectiveOutcomes
+      .filter((entry) => entry.outcome === 'invalid_check_id' && entry.checkId.trim().length > 0)
+      .map((entry) => entry.checkId),
     validPasses: effectiveOutcomes.filter((entry) => entry.outcome === 'valid_pass').map((entry) => entry.checkId),
     effectiveOutcomes,
   };

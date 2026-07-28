@@ -238,6 +238,9 @@ describe('goal workloop engine', () => {
     const work = getWorkContract(ctx.workStore, workId)!;
     expect(work.checkRefs.some((record) => record.outcome === 'superseded')).toBe(true);
     expect(work.checkRefs.some((record) => record.outcome === 'valid_pass')).toBe(true);
+    const finalized = finalizeGoalWorkloop(ctx, { workId });
+    expect(finalized.status).toBe('blocked');
+    expect((finalized.data as { invalidCheckIds: string[] }).invalidCheckIds).toEqual(['docs']);
   });
 
   test('continue after acceptance failure creates handoff and does not pretend background completion', () => {
@@ -340,6 +343,24 @@ describe('goal workloop engine', () => {
       workerRef: true,
       worktreeRef: true,
     });
+  });
+
+  test('blank invalid check compatibility noise does not block declared valid passes', () => {
+    const { ctx } = fixture();
+    const started = startGoalWorkloop(ctx, {
+      objective: 'Recover from a compatibility verify request with no check id',
+      checks: ['package:check:type'],
+      modeInput: { scopeClear: true, expectedFiles: 5, expectedChangedLines: 250 },
+    });
+    const workId = (started.data as { work: { workId: string } }).work.workId;
+
+    const invalid = verifyGoalWorkloop(ctx, { workId, checkId: '' });
+    expect((invalid.data as { verification: { outcome: string } }).verification.outcome).toBe('invalid_check_id');
+    verifyGoalWorkloop(ctx, { workId, checkId: 'package:check:type' });
+
+    const finalized = finalizeGoalWorkloop(ctx, { workId });
+    expect(finalized.status).toBe('ok');
+    expect((finalized.data as { finalStatus: string; invalidCheckIds: string[] }).finalStatus).toBe('completed');
   });
 
   test('partial declared check success cannot finalize', () => {
