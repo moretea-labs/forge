@@ -343,6 +343,8 @@ describe('facade MCP surface wiring', () => {
     createWork('work-stale-open', 'open', oldAt);
     createWork('work-stale-blocked', 'blocked', oldAt);
     createWork('work-stale-running', 'running', oldAt);
+    createWork('work-stale-ready', 'ready', oldAt);
+    createWork('work-recent-ready', 'ready');
     createWork('work-recent-blocked', 'blocked');
 
     const createAttention = (id: string, workId: string | undefined, updatedAt?: string) => createHandoffItem(
@@ -363,7 +365,9 @@ describe('facade MCP surface wiring', () => {
       },
     );
     createAttention('attention-stale-work', 'work-stale-blocked', oldAt);
+    createAttention('attention-stale-ready', 'work-stale-ready', oldAt);
     createAttention('attention-current-work', 'work-stale-running', oldAt);
+    createAttention('attention-recent-ready', 'work-recent-ready', oldAt);
     createAttention('attention-recent-unattached', undefined);
 
     const summary = structured(await callRuntimeTool(ctx, 'rh_context', {
@@ -373,20 +377,22 @@ describe('facade MCP surface wiring', () => {
     const data = summary.data as Record<string, unknown>;
     const workIds = (data.activeWork as Array<{ workId: string }>).map((entry) => entry.workId);
     const attentionIds = (data.activeAttention as Array<{ id: string }>).map((entry) => entry.id);
-    expect(workIds).toEqual(expect.arrayContaining(['work-stale-running', 'work-recent-blocked']));
+    expect(workIds).toEqual(expect.arrayContaining(['work-stale-running', 'work-recent-ready', 'work-recent-blocked']));
     expect(workIds).not.toContain('work-stale-open');
     expect(workIds).not.toContain('work-stale-blocked');
-    expect(attentionIds).toEqual(expect.arrayContaining(['attention-current-work', 'attention-recent-unattached']));
+    expect(workIds).not.toContain('work-stale-ready');
+    expect(attentionIds).toEqual(expect.arrayContaining(['attention-current-work', 'attention-recent-ready', 'attention-recent-unattached']));
     expect(attentionIds).not.toContain('attention-stale-work');
+    expect(attentionIds).not.toContain('attention-stale-ready');
     expect(data.counts).toMatchObject({
-      activeWork: 2,
-      storedNonTerminalWork: 4,
-      currentWork: 2,
-      historicalNonTerminalWork: 2,
-      currentAttention: 2,
-      currentAttentionShown: 2,
-      pendingAttentionScanned: 3,
-      historicalPendingAttention: 1,
+      activeWork: 3,
+      storedNonTerminalWork: 6,
+      currentWork: 3,
+      historicalNonTerminalWork: 3,
+      currentAttention: 3,
+      currentAttentionShown: 3,
+      pendingAttentionScanned: 5,
+      historicalPendingAttention: 2,
     });
     expect(data.historicalExecutionJobsIncluded).toBe(false);
     expect(Buffer.byteLength(JSON.stringify(summary), 'utf8')).toBeLessThanOrEqual(16 * 1024);
@@ -397,8 +403,8 @@ describe('facade MCP surface wiring', () => {
       detail_level: 'detail',
     }));
     const detailData = detail.data as Record<string, unknown>;
-    expect((detailData.activeWork as unknown[])).toHaveLength(4);
-    expect((detailData.activeAttention as unknown[])).toHaveLength(3);
+    expect((detailData.activeWork as unknown[])).toHaveLength(6);
+    expect((detailData.activeAttention as unknown[])).toHaveLength(5);
   });
 
   test('rh_work start routes small/complex/high-risk modes', async () => {

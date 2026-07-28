@@ -1085,8 +1085,8 @@ function isCurrentRhContextWork(
   contract: { status: string; updatedAt?: string },
   cutoffMs: number,
 ): boolean {
-  if (contract.status === 'running' || contract.status === 'ready') return true;
-  if (contract.status !== 'open' && contract.status !== 'blocked') return false;
+  if (contract.status === 'running') return true;
+  if (contract.status !== 'ready' && contract.status !== 'open' && contract.status !== 'blocked') return false;
   return timestampIsCurrent(contract.updatedAt, cutoffMs);
 }
 
