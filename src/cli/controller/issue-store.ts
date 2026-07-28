@@ -1,8 +1,9 @@
-import { randomBytes } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { spawnSync } from 'child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join, sep } from 'path';
 import type {
+  CompletionReceipt,
   ControllerAgent,
   ControllerIssue,
   ControllerTask,
@@ -902,6 +903,94 @@ export function restoreIssue(repoRoot: string, issueIdValue: string): Controller
   return written;
 }
 
+function gitText(repoRoot: string, args: string[]): string {
+  const result = spawnSync('git', args, { cwd: repoRoot, encoding: 'utf-8' });
+  if (result.status !== 0 || result.error) return '';
+  return typeof result.stdout === 'string' ? result.stdout.trim() : '';
+}
+
+function taskHasActiveRun(repoRoot: string, task: ControllerTask): boolean {
+  return readTaskRunEvidence(repoRoot, task).some((run) => ['queued', 'starting', 'running'].includes(run.status));
+}
+
+function statusPath(line: string): string {
+  const raw = line.slice(3).trim();
+  const renamed = raw.includes(' -> ') ? raw.slice(raw.lastIndexOf(' -> ') + 4) : raw;
+  return renamed.replace(/^"|"$/g, '');
+}
+
+function unrelatedWorkspaceChanges(repoRoot: string, issue: ControllerIssue): string[] | undefined {
+  const result = spawnSync('git', ['status', '--porcelain=v1', '--untracked-files=all'], {
+    cwd: repoRoot,
+    encoding: 'utf-8',
+  });
+  if (result.status !== 0 || result.error || typeof result.stdout !== 'string') return undefined;
+  const allowedPrefix = `${issueRoot(issue)}/${issue.id}-`;
+  return result.stdout
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map(statusPath)
+    .filter((path) => !path.startsWith('.ai/harness/'))
+    .filter((path) => !path.startsWith(allowedPrefix));
+}
+
+function historicalTaskCompletionReceipt(
+  repoRoot: string,
+  issue: ControllerIssue,
+  task: ControllerTask,
+  verification: TaskVerification | undefined = task.verification,
+): CompletionReceipt | undefined {
+  if (!verification || taskHasActiveRun(repoRoot, task)) return undefined;
+  const policy = taskExecutionPolicy(task);
+  const outcome = verificationEvidencePassed(task, verification, policy);
+  if (!outcome.ok) return undefined;
+  const currentBranch = gitText(repoRoot, ['branch', '--show-current']);
+  const targetBranch = verification.integrationEvidence?.targetBranch ?? resolveCompletionTargetBranch(repoRoot);
+  if (!currentBranch || currentBranch !== targetBranch) return undefined;
+  const targetRevision = verification.integratedRevision ?? verification.integrationEvidence?.targetRevision;
+  if (!targetRevision) return undefined;
+  const reachable = spawnSync(
+    'git',
+    ['merge-base', '--is-ancestor', targetRevision, targetBranch],
+    { cwd: repoRoot, encoding: 'utf-8' },
+  );
+  if (reachable.status !== 0 || reachable.error) return undefined;
+  const unrelatedChanges = unrelatedWorkspaceChanges(repoRoot, issue);
+  if (!unrelatedChanges || unrelatedChanges.length > 0) return undefined;
+  const recordedAt = new Date().toISOString();
+  return {
+    schemaVersion: 1,
+    receiptId: `REC-reconciled-${createHash('sha256').update(`${issue.id}\0${task.id}\0${targetRevision}`).digest('hex').slice(0, 16)}`,
+    source: verification.runId ? 'workspace_run' : 'remote_no_change_execution',
+    issueId: issue.id,
+    taskId: task.id,
+    runId: verification.runId,
+    editSessionId: verification.integrationEvidence?.editSessionId,
+    targetBranch,
+    targetRevision,
+    sourceRevision: verification.integrationEvidence?.sourceRevision ?? targetRevision,
+    baseRevision: verification.integrationEvidence?.baseRevision,
+    changedPaths: [],
+    delivery: {
+      kind: verification.integrationEvidence?.kind ?? 'commit',
+      status: 'integrated',
+      strategy: verification.integrationEvidence?.strategy === 'no_change' ? 'no_change'
+        : verification.integrationEvidence?.strategy === 'already_integrated' ? 'already_integrated'
+          : verification.runId ? 'already_integrated' : 'remote',
+      reachable: true,
+      recordedAt,
+    },
+    cleanup: {
+      status: 'complete',
+      warnings: [],
+      blockers: [],
+      recordedAt,
+    },
+    verifiedAt: verification.verifiedAt,
+    recordedAt,
+  };
+}
+
 export function acceptVerifiedTask(repoRoot: string, issueIdValue: string, taskId: string, note = 'Accepted after controller verification.'): ControllerIssue {
   const issue = getIssue(repoRoot, issueIdValue);
   const task = issue.tasks.find((entry) => entry.id === taskId);
@@ -946,7 +1035,10 @@ export function recordTaskVerification(
   const task = issue.tasks.find((entry) => entry.id === taskId);
   if (!task) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
   const taskState = effectiveTaskState(repoRoot, issue, task);
-  if (taskState.terminal || taskState.inactive) throw new Error(`task cannot be verified from effective status ${taskState.effectiveStatus}`);
+  const doneEvidenceBackfill = task.status === 'done' && taskState.reason === 'completion_evidence_missing';
+  if ((taskState.terminal || taskState.inactive) && !doneEvidenceBackfill) {
+    throw new Error(`task cannot be verified from effective status ${taskState.effectiveStatus}`);
+  }
   const completingRunOwnsVerification = Boolean(
     options.completingRunId && verification.runId === options.completingRunId,
   );
@@ -954,7 +1046,7 @@ export function recordTaskVerification(
     !(completingRunOwnsVerification && runId === options.completingRunId),
   );
   if (blockingRunIds.length > 0) throw new Error(`task cannot be verified while Run(s) are active: ${blockingRunIds.join(', ')}`);
-  if (!['planned', 'ready', 'launch_blocked', 'review', 'verifying', 'ready_to_integrate', 'integrating', 'integration_blocked', 'integrated', 'cleanup_pending', 'cleanup_blocked', 'changes_requested', 'verified'].includes(task.status)) {
+  if (!doneEvidenceBackfill && !['planned', 'ready', 'launch_blocked', 'review', 'verifying', 'ready_to_integrate', 'integrating', 'integration_blocked', 'integrated', 'cleanup_pending', 'cleanup_blocked', 'changes_requested', 'verified'].includes(task.status)) {
     throw new Error(`task cannot be verified from status ${task.status}`);
   }
   if (!verification.reviewer.trim()) throw new Error('verification reviewer is required');
@@ -970,6 +1062,21 @@ export function recordTaskVerification(
   const verificationTask = { ...task, checks: normalizedDeclaredChecks.validCheckIds };
   const outcome = verificationEvidencePassed(verificationTask, verification, policy);
   const successful = outcome.status === 'passed';
+  if (doneEvidenceBackfill) {
+    if (!successful) {
+      throw new Error(`done Task completion-evidence backfill requires passing verification: ${outcome.reasons.join(' ')}`);
+    }
+    const completionReceipt = historicalTaskCompletionReceipt(repoRoot, issue, task, verification);
+    if (!completionReceipt) {
+      throw new Error('done Task completion-evidence backfill requires a reachable integrated revision, target branch checkout, no active Run, and no unrelated workspace changes');
+    }
+    verification.autoCompleted = true;
+    verification.completionReceipt = completionReceipt;
+    return updateTask(repoRoot, issueIdValue, taskId, {
+      verification,
+      note: `Reconciled missing completion evidence with receipt ${completionReceipt.receiptId}; declared Task status remains done.`,
+    });
+  }
   const verificationStatus = successful
     ? 'verified'
     : outcome.status === 'failed'

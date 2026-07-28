@@ -39,6 +39,16 @@ function repo(): string {
   return root;
 }
 
+function initializeGit(root: string): string {
+  expect(Bun.spawnSync(["git", "init", "-b", "main"], { cwd: root }).exitCode).toBe(0);
+  expect(Bun.spawnSync(["git", "config", "user.email", "test@example.com"], { cwd: root }).exitCode).toBe(0);
+  expect(Bun.spawnSync(["git", "config", "user.name", "Test"], { cwd: root }).exitCode).toBe(0);
+  writeFileSync(join(root, "README.md"), "fixture\n");
+  expect(Bun.spawnSync(["git", "add", "."], { cwd: root }).exitCode).toBe(0);
+  expect(Bun.spawnSync(["git", "commit", "-m", "initial"], { cwd: root }).exitCode).toBe(0);
+  return new TextDecoder().decode(Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: root }).stdout).trim();
+}
+
 function writeRun(
   root: string,
   issueId: string,
@@ -184,6 +194,62 @@ describe("Controller v7 compatibility on the V8 execution bridge", () => {
     });
     expect(completed.tasks[0]?.status).toBe("verified");
     expect(completed.tasks[0]?.verification?.autoCompleted).toBe(false);
+  });
+
+  test("declared done Task can backfill safe completion evidence without reopening", () => {
+    const root = repo();
+    const issue = createIssue(root, {
+      title: "Legacy done receipt backfill",
+      tasks: [{
+        title: "Audit status",
+        objective: "Inspect and report current status.",
+        risk: "readonly",
+      }],
+    });
+    updateTask(root, issue.id, "T1", { status: "done" });
+    const revision = initializeGit(root);
+
+    const completed = recordTaskVerification(root, issue.id, "T1", {
+      integratedRevision: revision,
+      reviewer: "controller-test",
+      checkResults: [],
+      acceptanceResults: [],
+      verifiedAt: new Date().toISOString(),
+    });
+
+    const task = completed.tasks[0]!;
+    expect(task.status).toBe("done");
+    expect(task.verification?.completionReceipt).toMatchObject({
+      issueId: issue.id,
+      taskId: "T1",
+      targetBranch: "main",
+      targetRevision: revision,
+      cleanup: { status: "complete" },
+    });
+    const boardIssue = projectBoard(root).issues
+      .find((entry) => entry.id === issue.id) as any;
+    const boardTask = boardIssue.tasks.find((entry: any) => entry.id === "T1") as any;
+    expect(boardTask.effectiveStatus).toBe("done");
+    expect(boardTask.statusReason).toBe("declared_done");
+  });
+
+  test("declared done backfill rejects unrelated dirty workspace changes", () => {
+    const root = repo();
+    const issue = createIssue(root, {
+      title: "Unsafe legacy done backfill",
+      tasks: [{ title: "Audit status", objective: "Inspect status.", risk: "readonly" }],
+    });
+    updateTask(root, issue.id, "T1", { status: "done" });
+    const revision = initializeGit(root);
+    writeFileSync(join(root, "unrelated.txt"), "dirty\n");
+
+    expect(() => recordTaskVerification(root, issue.id, "T1", {
+      integratedRevision: revision,
+      reviewer: "controller-test",
+      checkResults: [],
+      acceptanceResults: [],
+      verifiedAt: new Date().toISOString(),
+    })).toThrow("no unrelated workspace changes");
   });
 
   test("real failed checks remain authoritative for change Tasks", () => {

@@ -938,6 +938,52 @@ describe("MCP controller profile", () => {
     });
   });
 
+  test("verify_task safely backfills a declared done Task missing completion evidence", async () => {
+    await withController(async (repoRoot, ctx) => {
+      expect(spawnSync("git", ["config", "user.email", "test@example.com"], { cwd: repoRoot }).status).toBe(0);
+      expect(spawnSync("git", ["config", "user.name", "Test"], { cwd: repoRoot }).status).toBe(0);
+      expect(spawnSync("git", ["add", "."], { cwd: repoRoot }).status).toBe(0);
+      expect(spawnSync("git", ["commit", "-m", "initial"], { cwd: repoRoot }).status).toBe(0);
+      const revision = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf-8" }).stdout.trim();
+      const created = await jsonTool(ctx, "create_issue", {
+        title: "Backfill legacy done evidence",
+        kind: "feature",
+        tasks: [
+          { title: "First", objective: "Audit status", risk: "readonly" },
+          { title: "Second", objective: "Continue after first", depends_on: ["T1"], risk: "readonly" },
+        ],
+      });
+      await jsonTool(ctx, "update_task", {
+        issue_id: created.value.id,
+        task_id: "T1",
+        status: "done",
+      });
+
+      const verified = await jsonTool(ctx, "verify_task", {
+        issue_id: created.value.id,
+        task_id: "T1",
+        integrated_revision: revision,
+        reviewer: "test-controller",
+        check_results: [],
+        acceptance_results: [],
+      });
+      expect(verified.value.error).toBeUndefined();
+      expect(verified.raw.isError).not.toBe(true);
+      expect(verified.value.task).toMatchObject({ status: "done", effectiveStatus: "done" });
+      const stored = await jsonTool(ctx, "get_issue", {
+        issue_id: created.value.id,
+        detail_level: "full",
+      });
+      const receipt = stored.value.tasks.find((task: { id: string }) => task.id === "T1")?.verification?.completionReceipt;
+      expect(receipt).toMatchObject({ targetBranch: "main", targetRevision: revision });
+
+      const board = await jsonTool(ctx, "get_project_board");
+      expect(board.value.readyTasks).toEqual(expect.arrayContaining([
+        expect.objectContaining({ issueId: created.value.id, taskId: "T2" }),
+      ]));
+    });
+  });
+
   test("rejects invalid and cyclic Task dependency graphs", async () => {
     await withController(async (_repoRoot, ctx) => {
       const missing = await jsonTool(ctx, "create_issue", {
