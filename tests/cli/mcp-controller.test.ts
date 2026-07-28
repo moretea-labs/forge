@@ -980,6 +980,52 @@ describe("MCP controller profile", () => {
     });
   });
 
+  test("update_task is bounded by default and preserves full detail opt-in", async () => {
+    await withController(async (_repoRoot, ctx) => {
+      const longObjective = "Update one status without returning every full Task definition. ".repeat(24);
+      const created = await jsonTool(ctx, "create_issue", {
+        title: "Bound update task response",
+        kind: "feature",
+        tasks: Array.from({ length: 20 }, (_unused, index) => ({
+          title: `Task ${index} ${"y".repeat(400)}`,
+          objective: `${longObjective}${index}`,
+          allowed_paths: ["src/**", "tests/**", "docs/**"],
+          checks: ["typecheck"],
+        })),
+      });
+      expect(created.raw.isError).not.toBe(true);
+
+      const summary = await jsonTool(ctx, "update_task", {
+        issue_id: created.value.id,
+        task_id: "T17",
+        status: "running",
+        note: "bounded summary",
+      });
+      expect(summary.raw.isError).not.toBe(true);
+      expect(summary.value.detailLevel).toBe("summary");
+      expect(summary.value.id).toBe(created.value.id);
+      expect(summary.value.taskCount).toBe(20);
+      expect(summary.value.tasks.length).toBeLessThanOrEqual(12);
+      expect(summary.value.taskTruncatedCount).toBe(8);
+      expect(summary.value.updatedTask).toMatchObject({ id: "T17", status: "running", effectiveStatus: "running" });
+      expect(JSON.stringify(summary.value)).not.toContain(longObjective.slice(0, 120));
+      expect(Buffer.byteLength(JSON.stringify(summary.value), "utf8")).toBeLessThanOrEqual(16 * 1024);
+      expect(summary.value.responseMeta.structuredPayloadBytes).toBeLessThanOrEqual(16 * 1024);
+
+      const detail = await jsonTool(ctx, "update_task", {
+        issue_id: created.value.id,
+        task_id: "T17",
+        note: "full detail",
+        detail_level: "detail",
+      });
+      expect(detail.raw.isError).not.toBe(true);
+      expect(detail.value.tasks.length).toBe(20);
+      expect(detail.value.tasks[0].objective).toBeString();
+      expect(detail.value.tasks[0].allowedPaths).toBeArray();
+      expect(detail.value.tasks.find((task: { id: string }) => task.id === "T17")?.notes).toContain("full detail");
+    });
+  });
+
   test("verify_task safely backfills a declared done Task missing completion evidence", async () => {
     await withController(async (repoRoot, ctx) => {
       expect(spawnSync("git", ["config", "user.email", "test@example.com"], { cwd: repoRoot }).status).toBe(0);

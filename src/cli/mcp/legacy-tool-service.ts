@@ -659,6 +659,39 @@ function summarizeProjectBoard(board: Record<string, unknown>): Record<string, u
   };
 }
 
+const UPDATE_TASK_SUMMARY_TASK_LIMIT = 12;
+
+function compactUpdatedTaskView(task: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...compactTaskView(task),
+    title: compactProjectBoardText(task.title),
+  };
+}
+
+function summarizeUpdatedIssue(
+  issue: Record<string, unknown>,
+  taskId: string,
+): Record<string, unknown> {
+  const tasks = Array.isArray(issue.tasks) ? issue.tasks as Array<Record<string, unknown>> : [];
+  const updatedTask = tasks.find((task) => task.id === taskId);
+  return {
+    detailLevel: "summary",
+    id: issue.id,
+    title: compactProjectBoardText(issue.title),
+    status: issue.status,
+    lifecycleStatus: issue.lifecycleStatus,
+    github: issue.github,
+    taskCount: tasks.length,
+    tasks: tasks.slice(0, UPDATE_TASK_SUMMARY_TASK_LIMIT).map(compactUpdatedTaskView),
+    taskTruncatedCount: Math.max(0, tasks.length - UPDATE_TASK_SUMMARY_TASK_LIMIT),
+    updatedTask: updatedTask ? compactUpdatedTaskView(updatedTask) : undefined,
+    detailPointer: {
+      tool: "get_issue",
+      arguments: { issue_id: issue.id, detail_level: "full" },
+    },
+  };
+}
+
 function dispatchExecutorHealthResult(
   health: ExecutorHealth,
   options: { requestId?: string; retryable?: boolean } = {},
@@ -2234,6 +2267,7 @@ export function buildMcpToolDefinitions(
               ],
             },
             note: { type: "string" },
+            detail_level: { type: "string", enum: ["summary", "detail", "full"] },
           },
           required: ["issue_id", "task_id"],
           additionalProperties: false,
@@ -4103,10 +4137,12 @@ export async function callMcpTool(
             "TOOL_DISABLED",
             "update_task requires the controller profile",
           );
+        const startedAt = performance.now();
+        const taskId = String(args.task_id ?? "");
         const issue = updateTask(
           ctx.repoRoot,
           String(args.issue_id ?? ""),
-          String(args.task_id ?? ""),
+          taskId,
           {
             status:
               typeof args.status === "string"
@@ -4115,8 +4151,18 @@ export async function callMcpTool(
             note: typeof args.note === "string" ? args.note : undefined,
           },
         );
+        const issueView = projectIssueEffectiveView(ctx.repoRoot, issue);
         audit(ctx, name, "ok", args, `tasks/issues/${issue.id}`);
-        return textResult(projectIssueEffectiveView(ctx.repoRoot, issue));
+        if (args.detail_level === "detail" || args.detail_level === "full") return textResult(issueView);
+        const payload = {
+          ...summarizeUpdatedIssue(issueView as unknown as Record<string, unknown>, taskId),
+          responseMeta: {
+            serverDurationMs: Number((performance.now() - startedAt).toFixed(2)),
+            structuredPayloadBytes: 0,
+          },
+        };
+        payload.responseMeta.structuredPayloadBytes = Buffer.byteLength(JSON.stringify(payload), "utf8");
+        return textResult(payload);
       }
       case "dispatch_task": {
         if (ctx.policy.profile !== "controller") return errorResult("TOOL_DISABLED", "dispatch_task requires the controller profile");
