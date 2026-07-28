@@ -526,7 +526,7 @@
       "id": "T4",
       "title": "Shrink context and expose runtime coherence",
       "objective": "压缩 rh_context/controller_ready 默认摘要，只返回当前决策所需字段并提供 detailPointer；区分 current/historical attention；新增 stableSupervisorRevision、activeRuntimeRevision、activeSlotRevision、gatewayRevision、sourceRevision、expectedRevision 和 coherence 状态，并加入实际 route behavior fingerprint。",
-      "status": "running",
+      "status": "verified",
       "dependsOn": [
         "T1"
       ],
@@ -555,12 +555,143 @@
         "2026-07-28 next bounded MCP slice: live get_project_board default response expands all 11 Issues and full Task objectives/paths/checks/readiness. Implement summary-by-default with explicit detail opt-in, bounded recent/current/ready projections and a strict response-size regression; preserve internal projectBoard detail behavior.",
         "2026-07-28 bounded get_project_board slice integrated at main addd2fe6 and live release addd2fe6a9df. Default MCP response now omits the full issues/task payload, returns counts, current Issue, at most 5 recent Issues, at most 8 ready/queueable Tasks, truncation counts and detailPointer; detail_level=detail/full preserves the previous full board. A multi-Issue long-title regression enforces <=16KB. Live production summary over 11 Issues measured 5,816 structured bytes and 2.84ms server duration. Broader T4 context/coherence work remains running.",
         "2026-07-28 bounded update_task response integrated at main 229750b2 and live release 229750b2833d. Default write response now returns compact Issue fields, at most 12 compact Task statuses, updatedTask, taskTruncatedCount, detailPointer and responseMeta; detail_level=detail/full preserves the prior full effective Issue view. Multi-Task long-title/objective regression enforces <=16KB. Broader T4 remains running.",
-        "2026-07-28 consolidated rh_context slice: code commit b0c28dfb merged to main, isolated branch/worktree cleaned, and live release b0c28dfb80d4 is healthy across Supervisor/Daemon/Gateway with zero restart/rollback. Default rh_context summary now omits absolute local paths, remote URL, full repository metadata, detailed capability descriptors, and historical ExecutionJob records; it shows at most 3 active Work summaries and 3 current/recent attention items, while preserving counts and explicit detail/raw pointers. A production-style regression with 12 active WorkContracts and 12 handoffs enforces <=16KB and detail compatibility. Full facade tests, typecheck, runtime architecture, MCP compatibility, and controller-v8 passed with ExecutionJob/LocalJob/Worker deltas 0. Live production measurement: 3,760 structured bytes and 6.05ms server duration. T4 remains running for broader revision/coherence and route-behavior fingerprint work."
+        "2026-07-28 consolidated rh_context slice: code commit b0c28dfb merged to main, isolated branch/worktree cleaned, and live release b0c28dfb80d4 is healthy across Supervisor/Daemon/Gateway with zero restart/rollback. Default rh_context summary now omits absolute local paths, remote URL, full repository metadata, detailed capability descriptors, and historical ExecutionJob records; it shows at most 3 active Work summaries and 3 current/recent attention items, while preserving counts and explicit detail/raw pointers. A production-style regression with 12 active WorkContracts and 12 handoffs enforces <=16KB and detail compatibility. Full facade tests, typecheck, runtime architecture, MCP compatibility, and controller-v8 passed with ExecutionJob/LocalJob/Worker deltas 0. Live production measurement: 3,760 structured bytes and 6.05ms server duration. T4 remains running for broader revision/coherence and route-behavior fingerprint work.",
+        "2026-07-28 T4 final coherence slice integrated at main be7429c2 and live release be7429c2a784. controller_ready now exposes stableSupervisorRevision, activeRuntimeRevision, activeSlotRevision, gatewayRevision, sourceRevision and expectedRevision from immutable release manifest, Supervisor state and active slot identity without Git subprocesses. Readiness combines Supervisor service coherence with active runtime release/path/generation/slot coherence and emits ACTIVE_RUNTIME_RELEASE_DRIFT on mismatch. routeBehavior is a distinct SHA-256 fingerprint over 9 real classifyGatewayExecutionPath probes; summary omits probes and detail preserves them. Focused response/routing tests plus typecheck, runtime architecture, MCP compatibility and controller-v8 passed with ExecutionJob/LocalJob/Worker/Projection deltas 0. Live summary: all four runtime revisions and expectedRevision be7429c2a784, sourceRevision be7429c2a7846ed6812e38277d979c7227c492cb, coherence true, route fingerprint 77598768fd720027c2fce0e609a58281f8cd9da51f32749be8b2b623e75ca860, 9 probes, 3260 bytes, 59.62ms. Work branch/worktree cleaned; code commit contains no Issue files.",
+        "Required verification evidence passed; a completion receipt remains required before completion."
       ],
       "runIds": [],
       "createdAt": "2026-07-27T09:26:56.885Z",
-      "updatedAt": "2026-07-28T09:38:30.168Z",
-      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      "updatedAt": "2026-07-28T12:24:44.310Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "verification": {
+        "integratedRevision": "be7429c2a7846ed6812e38277d979c7227c492cb",
+        "reviewer": "ChatGPT",
+        "checkResults": [
+          {
+            "checkId": "package:check:type",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-type.json"
+          },
+          {
+            "checkId": "package:check:runtime-architecture",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-runtime-architecture.json"
+          },
+          {
+            "checkId": "package:check:mcp-compatibility",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-mcp-compatibility.json"
+          },
+          {
+            "checkId": "package:check:controller-v8",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-controller-v8.json"
+          }
+        ],
+        "commandEvidence": [
+          {
+            "command": [
+              "bun",
+              "test",
+              "tests/runtime/mcp-response-compaction.test.ts",
+              "tests/runtime/thin-harness-gateway-routing.test.ts"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-28T12:24:44.303Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "bun",
+              "run",
+              "check:type"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-28T12:24:44.303Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "bun",
+              "run",
+              "check:runtime-architecture"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-28T12:24:44.303Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "bun",
+              "run",
+              "check:mcp-compatibility"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-28T12:24:44.303Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "bun",
+              "run",
+              "check:controller-v8"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-28T12:24:44.303Z",
+            "source": "reported"
+          }
+        ],
+        "acceptanceResults": [
+          {
+            "criterion": "controller_ready summary exposes six authoritative revision fields without Git subprocesses",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Live be7429c2a784 summary returned stableSupervisorRevision, activeRuntimeRevision, activeSlotRevision, gatewayRevision, sourceRevision and expectedRevision."
+          },
+          {
+            "criterion": "Active runtime release drift degrades readiness",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "controller_ready combines evaluateRuntimeReleaseCoherence with service coherence and emits ACTIVE_RUNTIME_RELEASE_DRIFT; mismatch helper regression passed."
+          },
+          {
+            "criterion": "Route behavior fingerprint reflects the actual Gateway classifier",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Fixed 9-probe matrix calls classifyGatewayExecutionPath directly; deterministic routing regression passed and live fingerprint differs from toolSurface fingerprint."
+          },
+          {
+            "criterion": "Default response remains bounded and detail preserves probes",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Response compaction regression passed; live summary was 3260 structured bytes and includes probeCount/fingerprint only."
+          },
+          {
+            "criterion": "Code is integrated and isolated resources are cleaned",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Main commit be7429c2; Work finalization recorded commit/merge/branchCleanup/worktreeCleanup done."
+          }
+        ],
+        "verifiedAt": "2026-07-28T12:24:44.303Z",
+        "autoCompleted": false,
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
     },
     {
       "id": "T5",
@@ -602,6 +733,6 @@
     }
   ],
   "createdAt": "2026-07-27T09:26:56.885Z",
-  "updatedAt": "2026-07-28T11:32:40.847Z",
+  "updatedAt": "2026-07-28T12:24:44.310Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }
