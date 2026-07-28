@@ -44,7 +44,7 @@
       "id": "T1",
       "title": "Unify Process Runtime routing and request idempotency",
       "objective": "建立唯一公开命令执行判定入口。让 repository_command_execute、run_check、work_execute 等普通本地命令共享 Process Runtime route decision，移除 timeout>15s 回退旧 ExecutionJob/LocalJob/Worker 的行为；为 Process Runtime 增加 repoId+checkoutId+requestId+command fingerprint 的持久原子幂等索引，重试返回同一 Process，指纹冲突 fail closed，completed_unknown 不自动重跑。保持远程写、破坏性操作和 WorkContract/SuperController 授权边界。增加端到端路由、502/重试、重启恢复和无重复执行测试。",
-      "status": "verifying",
+      "status": "done",
       "dependsOn": [],
       "allowedPaths": [
         "src/runtime/execution/process-runtime/**",
@@ -81,11 +81,13 @@
       "notes": [
         "已在 controller-owned isolated worktree campaign/iss-20260727-197bbe-t1-v2-process-runtime-reques-a9afc47b811e 开始实施。先增加 Process Runtime requestId+command fingerprint 原子幂等，再统一 Gateway/repository_command_execute/run_check 路由并移除旧 Fast/ExecutionJob 回退。",
         "2026-07-28: Stable Supervisor cutover exposed per-slot OAuth access-token authority drift. Slot Gateway now uses stable root OAuth token authority and merges root/blue/green/legacy token snapshots on startup; issue remains in_progress for remaining runtime reliability items.",
-        "2026-07-28 T1 closeout implementation: identified work_execute batch commands sharing one outer requestId, causing command 2+ to conflict on different command fingerprints. Added atomic invocation-level binding before any child Process spawn, stable per-command child request IDs, exact retry deduplication, changed-batch fail-closed behavior, and preserved run_check Process Runtime errors without LocalBridge fallback. Targeted Process Runtime/authorization/Gateway suite passed in proc_ms47k28m_f036a276; typecheck proc_ms47l837_f5b029dd, runtime architecture proc_ms47lv1t_9dc6aca2, and MCP compatibility proc_ms47mao2_bc0d0d51 passed. Pending task-sync recheck, commit/merge, controller-v8, rollout, and live session verification."
+        "2026-07-28 T1 closeout implementation: identified work_execute batch commands sharing one outer requestId, causing command 2+ to conflict on different command fingerprints. Added atomic invocation-level binding before any child Process spawn, stable per-command child request IDs, exact retry deduplication, changed-batch fail-closed behavior, and preserved run_check Process Runtime errors without LocalBridge fallback. Targeted Process Runtime/authorization/Gateway suite passed in proc_ms47k28m_f036a276; typecheck proc_ms47l837_f5b029dd, runtime architecture proc_ms47lv1t_9dc6aca2, and MCP compatibility proc_ms47mao2_bc0d0d51 passed. Pending task-sync recheck, commit/merge, controller-v8, rollout, and live session verification.",
+        "2026-07-28 closure: prior T1 routing/request-id implementation was already merged at main 550b5088 and live-ready. This pass integrated the verified Thin Harness latency benchmark and MCP response compaction through main 6eb7ac4b. Targeted MCP tests, typecheck, runtime architecture, MCP compatibility, controller-v8, and Thin Harness benchmark all succeeded with ExecutionJob/LocalJob/Worker deltas 0. Stable Supervisor, Controller Daemon, and Gateway now run release 6eb7ac4be7d6 with coherence true. runtime_maintenance_status remains directly callable. No claim is made that T2-T5 are complete.",
+        "Dependency closure: all T1 acceptance evidence is now integrated and live on 6eb7ac4b/6eb7ac4be7d6. Marking done so downstream T2-T4 are no longer artificially blocked by a non-terminal verified state."
       ],
       "runIds": [],
       "createdAt": "2026-07-27T09:26:56.885Z",
-      "updatedAt": "2026-07-28T05:26:31.269Z",
+      "updatedAt": "2026-07-28T07:33:54.335Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
@@ -180,10 +182,12 @@
       ],
       "acceptanceCriteria": [],
       "risk": "medium",
-      "notes": [],
+      "notes": [
+        "2026-07-28 bounded slice integrated on main 6eb7ac4b and live release 6eb7ac4be7d6: controller_ready now defaults to a decision-focused summary with detailPointer, explicit release coherence, compact tool counts/fingerprint, activity, current blockers and responseMeta. Live summary is 2,887 structured bytes and 64.4ms server duration; full history/tool arrays/repository projection are detail-only. repository_register/validate/refresh also gained bounded summary/detail behavior. Remaining T4 scope (rh_context compaction, current-vs-historical attention across all facades, broader revision fields/route behavior fingerprint) remains planned."
+      ],
       "runIds": [],
       "createdAt": "2026-07-27T09:26:56.885Z",
-      "updatedAt": "2026-07-27T09:26:56.885Z",
+      "updatedAt": "2026-07-28T07:37:03.367Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
@@ -216,14 +220,16 @@
       ],
       "acceptanceCriteria": [],
       "risk": "medium",
-      "notes": [],
+      "notes": [
+        "2026-07-28 baseline slice integrated: scripts/benchmark-thin-harness-gateway-ab.ts now records wall clock, reported latency, outer gap, phase gap, routing/policy/snapshot/execution/receipt phases, response bytes and side-effect counters. The integrated benchmark passed with zero ExecutionJob, LocalJob, Worker, runtime-event, projection-invalidation and scheduler-wake deltas. Live payload baselines after rollout: controller_ready summary 2,887 bytes / 64.4ms server duration; repository_register summary 1,918 bytes / 690.91ms while scanning 720 records and bounding 164 historical errors to 3 samples. Remaining T5 port, historical-noise and repeated package:test scope remains planned."
+      ],
       "runIds": [],
       "createdAt": "2026-07-27T09:26:56.885Z",
-      "updatedAt": "2026-07-27T09:26:56.885Z",
+      "updatedAt": "2026-07-28T07:37:24.638Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     }
   ],
   "createdAt": "2026-07-27T09:26:56.885Z",
-  "updatedAt": "2026-07-28T05:26:31.269Z",
+  "updatedAt": "2026-07-28T07:37:24.638Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }
