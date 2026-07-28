@@ -829,15 +829,16 @@
       "risk": "medium",
       "notes": [
         "2026-07-28 baseline slice integrated: scripts/benchmark-thin-harness-gateway-ab.ts now records wall clock, reported latency, outer gap, phase gap, routing/policy/snapshot/execution/receipt phases, response bytes and side-effect counters. The integrated benchmark passed with zero ExecutionJob, LocalJob, Worker, runtime-event, projection-invalidation and scheduler-wake deltas. Live payload baselines after rollout: controller_ready summary 2,887 bytes / 64.4ms server duration; repository_register summary 1,918 bytes / 690.91ms while scanning 720 records and bounding 164 historical errors to 3 samples. Remaining T5 port, historical-noise and repeated package:test scope remains planned.",
-        "2026-07-28 T5 unblocked by auditable controller Work receipts. T2 receipt REC-work-6f7e6c6c513a5643 binds work_6d9a787fb6bb4750a870e9a7507edc56 to cd5fa5ee with 5 changed paths; T3 receipt REC-work-3230aa61cf1d9a30 binds work_fb907eeefe6848cca2ca9e7a17af5c76 to 781a5cb4 with 2 changed paths; T4 receipt REC-work-933a846cc90421b8 binds work_caa9a1e5c53a459d84e61e62de528845 to be7429c2 with 4 changed paths. All receipts use source=controller_work and require completed contract, cleaned WorkHandle, exact integratedRevision equality, target-branch reachability, and complete branch/worktree cleanup. T5 starts with the slot port boundary/test port conflict slice, then historical noise reduction and repeated package:test/performance baselines."
+        "2026-07-28 T5 unblocked by auditable controller Work receipts. T2 receipt REC-work-6f7e6c6c513a5643 binds work_6d9a787fb6bb4750a870e9a7507edc56 to cd5fa5ee with 5 changed paths; T3 receipt REC-work-3230aa61cf1d9a30 binds work_fb907eeefe6848cca2ca9e7a17af5c76 to 781a5cb4 with 2 changed paths; T4 receipt REC-work-933a846cc90421b8 binds work_caa9a1e5c53a459d84e61e62de528845 to be7429c2 with 4 changed paths. All receipts use source=controller_work and require completed contract, cleaned WorkHandle, exact integratedRevision equality, target-branch reachability, and complete branch/worktree cleanup. T5 starts with the slot port boundary/test port conflict slice, then historical noise reduction and repeated package:test/performance baselines.",
+        "2026-07-28 T5 slot-port slice integrated at main df8f0de1 and live release df8f0de1fa90. allocateSlotPorts now validates integer ports in 1..65535, rejects MCP/local collisions and inactive offset overflow, and safely supports partial overrides. startInactiveSlot atomically persists candidate port ownership before invoking the candidate lifecycle; final candidate/failed identity preserves binding startedAt/resource identity while failed resources become retained with an explicit diagnostic reason. Existing tests already use OS-assigned free ports through tests/fixtures/isolated-controller-home.ts; no duplicate helper was added. Focused runtime-slot tests 7/7, candidate-binding test, complete blue/green isolated suite 5/5, response-budget port regression, typecheck, runtime architecture, MCP compatibility and controller-v8 all passed with ExecutionJob/LocalJob/Worker/Projection deltas 0. Live overflow probe returned RUNTIME_SLOT_PORT_OVERFLOW for 65530+10=65540; release bundle contains the boundary code. Work work_acd127354674420db8d96911662ec354 committed df8f0de1, merged ff-only and cleaned branch/worktree. T5 remains running for historical default-summary noise reduction and repeated package:test/performance baselines."
       ],
       "runIds": [],
       "createdAt": "2026-07-27T09:26:56.885Z",
-      "updatedAt": "2026-07-28T12:46:03.652Z",
+      "updatedAt": "2026-07-28T13:04:14.804Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     }
   ],
   "createdAt": "2026-07-27T09:26:56.885Z",
-  "updatedAt": "2026-07-28T12:46:03.652Z",
+  "updatedAt": "2026-07-28T13:04:14.804Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }
