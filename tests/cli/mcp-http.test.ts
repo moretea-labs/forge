@@ -66,6 +66,32 @@ async function stopMcpServerProcess(proc: Bun.Subprocess<'ignore', 'ignore', 'pi
   await proc.exited.catch(() => undefined);
 }
 
+function isolatedMcpProcessEnv(
+  controllerHome: string,
+  overrides: Record<string, string> = {},
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of [
+    'REPO_HARNESS_MCP_PUBLIC_ORIGIN',
+    'REPO_HARNESS_MCP_INSTANCE_ID',
+    'REPO_HARNESS_SUPERVISOR_PUBLIC_HEALTH_ENDPOINT',
+    'REPO_HARNESS_SUPERVISOR_CHILD',
+    'REPO_HARNESS_CONTROLLER_LIFECYCLE_OWNER',
+    'REPO_HARNESS_CONTROLLER_INSTANCE_ID',
+    'REPO_HARNESS_DAEMON_INSTANCE_ID',
+    'REPO_HARNESS_RUNTIME_SLOT',
+    'REPO_HARNESS_WRITER_SLOT',
+    'REPO_HARNESS_WRITER_GENERATION',
+  ]) {
+    delete env[key];
+  }
+  return {
+    ...env,
+    REPO_HARNESS_CONTROLLER_HOME: controllerHome,
+    ...overrides,
+  };
+}
+
 describe('mcp http transport', () => {
   test('requires bearer auth and accepts authenticated initialize requests', async () => {
     const repoRoot = mkdtempSync(join(tmpdir(), 'repo-harness-mcp-http-'));
@@ -97,7 +123,7 @@ describe('mcp http transport', () => {
             '--auth',
             'bearer',
           ],
-          { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: { ...process.env, REPO_HARNESS_CONTROLLER_HOME: controllerHome } },
+          { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: isolatedMcpProcessEnv(controllerHome) },
         );
         await waitForHealth(port);
 
@@ -205,13 +231,11 @@ describe('mcp http transport', () => {
             cwd: process.cwd(),
             stdout: 'ignore',
             stderr: 'pipe',
-            env: {
-              ...process.env,
-              REPO_HARNESS_CONTROLLER_HOME: controllerHome,
+            env: isolatedMcpProcessEnv(controllerHome, {
               REPO_HARNESS_MCP_MAX_SESSIONS: '16',
               REPO_HARNESS_MCP_MAX_SESSIONS_PER_PRINCIPAL: '2',
               REPO_HARNESS_MCP_MAX_INITIALIZING_SESSIONS: '32',
-            },
+            }),
           },
         );
         await waitForHealth(port);
@@ -322,12 +346,10 @@ describe('mcp http transport', () => {
             cwd: process.cwd(),
             stdout: 'ignore',
             stderr: 'pipe',
-            env: {
-              ...process.env,
-              REPO_HARNESS_CONTROLLER_HOME: controllerHome,
+            env: isolatedMcpProcessEnv(controllerHome, {
               REPO_HARNESS_MCP_MAX_SESSIONS: '2',
               REPO_HARNESS_MCP_MAX_SESSIONS_PER_PRINCIPAL: '2',
-            },
+            }),
           },
         );
         await waitForHealth(port);
@@ -413,7 +435,7 @@ describe('mcp http transport', () => {
             '--profile',
             'planner',
           ],
-          { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: { ...process.env, REPO_HARNESS_CONTROLLER_HOME: controllerHome } },
+          { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: isolatedMcpProcessEnv(controllerHome) },
         );
         await waitForHealth(port);
 
