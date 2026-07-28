@@ -59,6 +59,7 @@ export interface CleanupEvidence {
 
 export type CompletionReceiptSource =
   | 'direct_edit'
+  | 'controller_work'
   | 'isolated_agent_run'
   | 'workspace_run'
   | 'remote_no_change_execution';
@@ -102,6 +103,7 @@ export interface CompletionReceipt {
   issueId: string;
   taskId: string;
   runId?: string;
+  workId?: string;
   editSessionId?: string;
   targetBranch: string;
   targetRevision: string;
