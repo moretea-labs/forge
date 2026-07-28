@@ -27,7 +27,18 @@
     "相关 focused tests、typecheck、runtime architecture、MCP compatibility 和 controller-v8 通过",
     "最终提交合并到 main，工作树、临时分支和 worktree 清理完成"
   ],
-  "relatedArtifacts": [],
+  "relatedArtifacts": [
+    {
+      "kind": "runtime-note",
+      "path": "src/cli/mcp/auth.ts",
+      "summary": "Slot Gateway OAuth token store authority resolves through stable root controllerHome and merges root/blue/green/legacy snapshots on startup."
+    },
+    {
+      "kind": "test",
+      "path": "tests/cli/mcp-authority.test.ts",
+      "summary": "Covers stable-root OAuth token authority and slot/legacy token-store merge for cutover continuity."
+    }
+  ],
   "tasks": [
     {
       "id": "T1",
@@ -68,11 +79,12 @@
       ],
       "risk": "medium",
       "notes": [
-        "已在 controller-owned isolated worktree campaign/iss-20260727-197bbe-t1-v2-process-runtime-reques-a9afc47b811e 开始实施。先增加 Process Runtime requestId+command fingerprint 原子幂等，再统一 Gateway/repository_command_execute/run_check 路由并移除旧 Fast/ExecutionJob 回退。"
+        "已在 controller-owned isolated worktree campaign/iss-20260727-197bbe-t1-v2-process-runtime-reques-a9afc47b811e 开始实施。先增加 Process Runtime requestId+command fingerprint 原子幂等，再统一 Gateway/repository_command_execute/run_check 路由并移除旧 Fast/ExecutionJob 回退。",
+        "2026-07-28: Stable Supervisor cutover exposed per-slot OAuth access-token authority drift. Slot Gateway now uses stable root OAuth token authority and merges root/blue/green/legacy token snapshots on startup; issue remains in_progress for remaining runtime reliability items."
       ],
       "runIds": [],
       "createdAt": "2026-07-27T09:26:56.885Z",
-      "updatedAt": "2026-07-27T09:30:28.387Z",
+      "updatedAt": "2026-07-28T02:18:55Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
@@ -211,6 +223,6 @@
     }
   ],
   "createdAt": "2026-07-27T09:26:56.885Z",
-  "updatedAt": "2026-07-27T09:30:28.387Z",
+  "updatedAt": "2026-07-28T02:18:55Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }

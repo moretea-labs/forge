@@ -2,7 +2,7 @@
 id: "ISS-20260727-197BBE"
 kind: "feature"
 status: "in_progress"
-updated_at: "2026-07-27T09:30:28.387Z"
+updated_at: "2026-07-28T02:18:55Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -87,4 +87,5 @@ source: "repo-harness-controller-v8"
 
 ## Related Artifacts
 
-- None.
+- 2026-07-28: Stable Supervisor cutover exposed per-slot OAuth access-token authority drift. Slot Gateway OAuth token stores now resolve through the stable root controllerHome and merge root/blue/green/legacy snapshots on startup; issue remains in progress for the remaining runtime reliability items.
+- Code/tests: `src/cli/mcp/auth.ts`, `src/cli/mcp/oauth.ts`, `tests/cli/mcp-authority.test.ts`.

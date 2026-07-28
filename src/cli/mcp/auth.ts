@@ -2,6 +2,7 @@ import { randomBytes } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { resolveControllerHome } from '../repositories/controller-home';
+import { resolveStableControllerHome } from '../controller/stable-state/stable-home';
 import type { AccessMode } from '../../runtime/control-plane/governance/access-policy';
 import type { McpToolset } from './types';
 
@@ -169,13 +170,24 @@ export function mcpControllerHomeOAuthTokenStorePath(controllerHome: string): st
 }
 
 export function mcpServiceOAuthTokenStorePath(controllerHome: string): string {
-  return mcpControllerHomeOAuthTokenStorePath(controllerHome);
+  return mcpControllerHomeOAuthTokenStorePath(resolveStableControllerHome(controllerHome));
 }
 
-export function mcpServiceOAuthTokenStoreFallbackPaths(_controllerHome: string, legacyRepoRoot?: string): string[] {
-  if (!legacyRepoRoot) return [];
-  const legacyPath = mcpOAuthTokenStorePath(legacyRepoRoot);
-  return existsSync(legacyPath) ? [legacyPath] : [];
+export function mcpServiceOAuthTokenStoreFallbackPaths(controllerHome: string, legacyRepoRoot?: string): string[] {
+  const stableHome = resolveStableControllerHome(controllerHome);
+  const primary = mcpControllerHomeOAuthTokenStorePath(stableHome);
+  const candidates = [
+    mcpControllerHomeOAuthTokenStorePath(controllerHome),
+    join(stableHome, 'runtime-slots', 'blue', 'mcp', 'mcp.oauth-tokens.json'),
+    join(stableHome, 'runtime-slots', 'green', 'mcp', 'mcp.oauth-tokens.json'),
+    ...(legacyRepoRoot ? [mcpOAuthTokenStorePath(legacyRepoRoot)] : []),
+  ];
+  const seen = new Set<string>([primary]);
+  return candidates.filter((candidate) => {
+    if (seen.has(candidate)) return false;
+    seen.add(candidate);
+    return existsSync(candidate);
+  });
 }
 
 export function mcpControllerHomeRuntimeStatePath(controllerHome: string): string {
@@ -402,13 +414,18 @@ export function readMcpServiceOAuthPassphrase(controllerHome: string, legacyRepo
   if (process.env.REPO_HARNESS_MCP_OAUTH_PASSPHRASE?.trim()) {
     return process.env.REPO_HARNESS_MCP_OAUTH_PASSPHRASE.trim();
   }
-  const parsed = readJsonFile<{ passphrase?: unknown }>(mcpControllerHomeOAuthPath(controllerHome));
+  const stableHome = resolveStableControllerHome(controllerHome);
+  const parsed = readJsonFile<{ passphrase?: unknown }>(mcpControllerHomeOAuthPath(stableHome));
   if (typeof parsed?.passphrase === 'string' && parsed.passphrase.trim().length > 0) return parsed.passphrase.trim();
+  if (resolveControllerHome(controllerHome) !== stableHome) {
+    const slotParsed = readJsonFile<{ passphrase?: unknown }>(mcpControllerHomeOAuthPath(controllerHome));
+    if (typeof slotParsed?.passphrase === 'string' && slotParsed.passphrase.trim().length > 0) return slotParsed.passphrase.trim();
+  }
   return legacyRepoRoot ? readMcpOAuthPassphrase(legacyRepoRoot) : null;
 }
 
 export function ensureMcpControllerHomeOAuthPassphrase(controllerHome: string): { passphrase: string; path: string; changed: boolean } {
-  const path = mcpControllerHomeOAuthPath(controllerHome);
+  const path = mcpControllerHomeOAuthPath(resolveStableControllerHome(controllerHome));
   const existing = readMcpServiceOAuthPassphrase(controllerHome);
   if (existing) return { passphrase: existing, path, changed: false };
 
