@@ -30,8 +30,8 @@ import { readJsonFile, writeJsonAtomic } from '../../shared/json-files';
 import { isProcessAlive, terminateProcessTree } from '../../shared/process-tree';
 import { readSchedulerWakeSignal, waitForSchedulerWakeSignal } from './wake-signal';
 import { cleanupControllerRuntimeState } from '../runtime-cleanup';
-import { rebuildRepositoryProjection } from '../../projections/materialized-view';
-import { sampleRepositoryGitStatusForRepositories } from '../../projections/git-status-sampler';
+import { rebuildRepositoryProjection, refreshRepositoryProjectionForRepository } from '../../projections/materialized-view';
+import { readRepositoryGitStatusSample, sampleRepositoryGitStatusForRepositories } from '../../projections/git-status-sampler';
 import {
   compareExecutionJobDispatchRanks,
   isExecutionJobDispatchCandidate,
@@ -758,13 +758,38 @@ export class GlobalScheduler {
       // leave all jobs queued for the next wake/tick rather than risking overrun.
       activeJobs = listActiveExecutionJobs(this.controllerHome).length;
     }
-    // Repo Actor mutations leave projection dirty markers. Refresh materialized
-    // views only after both the repo mailbox and global dispatch lock are free.
+    // Repo Actor mutations leave projection dirty markers. Source-revision changes
+    // are independent of legacy Job dispatch, so scan every enabled repository
+    // after the global dispatch reservation lock is free.
+    const projectionRefreshCandidates = new Map(repositories.map((repository) => [repository.repoId, repository]));
     for (const repoId of projectionRefreshRepos) {
+      const repository = projectionRefreshCandidates.get(repoId);
+      if (!repository) {
+        try {
+          rebuildRepositoryProjection(this.controllerHome, repoId);
+        } catch (error) {
+          console.error('[repo-harness scheduler] projection refresh failed:', error);
+        }
+      }
+    }
+    for (const repository of projectionRefreshCandidates.values()) {
       try {
-        rebuildRepositoryProjection(this.controllerHome, repoId);
-      } catch {
-        // Startup recovery, reconciliation, or the next status read can retry.
+        const sample = readRepositoryGitStatusSample(
+          this.controllerHome,
+          repository.repoId,
+          repository.activeCheckoutId,
+        );
+        refreshRepositoryProjectionForRepository(this.controllerHome, repository, {
+          sourceRevision: sample?.head ?? undefined,
+          reason: 'scheduler-source-scan',
+          owner: {
+            pid: this.controllerPid,
+            ...(this.controllerStartedAt ? { controllerStartedAt: this.controllerStartedAt } : {}),
+            ...(this.ownerEpoch ? { ownerEpoch: this.ownerEpoch } : {}),
+          },
+        });
+      } catch (error) {
+        console.error('[repo-harness scheduler] projection refresh failed:', error);
       }
     }
     // Process creation, lifecycle file writes, and Worker attachment are all

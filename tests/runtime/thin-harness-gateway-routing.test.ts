@@ -8,14 +8,18 @@ import {
   routeDurableMcpCall,
 } from '../../src/runtime/gateway/mcp/router';
 import { createMcpToolContext } from '../../src/cli/mcp/server';
+import { callMultiRepositoryTool } from '../../src/cli/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { listExecutionJobs } from '../../src/runtime/execution/jobs/store';
 import { listLocalBridgeJobSnapshots } from '../../src/cli/local-bridge/job-store';
 import { callRepositoryTool } from '../../src/cli/mcp/repository-tools';
+import { callExecutionTool } from '../../src/runtime/gateway/mcp/execution-tools';
+import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { classifyRepositoryCommand } from '../../src/cli/repositories/command-classifier';
 import { assessWorkMode } from '../../src/cli/controller/work-mode';
 import { routeExecution, isFastEligibleTool } from '../../src/runtime/execution/thin-harness';
+import { listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
 
 function git(root: string, args: string[]): void {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8' });
@@ -28,11 +32,22 @@ function fixture() {
   const repoRoot = join(root, 'repo');
   mkdirSync(controllerHome, { recursive: true });
   mkdirSync(join(repoRoot, 'src'), { recursive: true });
+  mkdirSync(join(repoRoot, '.repo-harness'), { recursive: true });
   git(repoRoot, ['init', '-b', 'main']);
   git(repoRoot, ['config', 'user.name', 'Test']);
   git(repoRoot, ['config', 'user.email', 'test@example.com']);
   writeFileSync(join(repoRoot, 'README.md'), 'gateway routing fixture\n');
   writeFileSync(join(repoRoot, 'src', 'lib.ts'), 'export const n = 1;\n');
+  writeFileSync(join(repoRoot, '.repo-harness', 'checks.json'), JSON.stringify({
+    version: 1,
+    checks: {
+      slow: {
+        description: 'slow managed check',
+        command: [process.execPath, '-e', 'setTimeout(() => { console.log("slow-ok"); process.exit(0); }, 1200)'],
+        timeoutMs: 10_000,
+      },
+    },
+  }, null, 2));
   git(repoRoot, ['add', '.']);
   git(repoRoot, ['commit', '-m', 'init']);
   ensureControllerHome(controllerHome);
@@ -119,6 +134,170 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
 
     expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
     expect(listLocalBridgeJobSnapshots(fx.repoRoot).length).toBe(localBefore);
+  });
+
+  test('registered controller reads fall through directly without Job or Process creation', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const created = await callMultiRepositoryTool(fx.ctx, 'create_issue', {
+      title: 'Direct read routing',
+      kind: 'feature',
+      summary: 'Read routing fixture',
+      tasks: [{ title: 'Inspect', objective: 'Read state' }],
+    });
+    const issueId = String((created.structuredContent as { id?: string }).id ?? '');
+    expect(issueId).toBeTruthy();
+    const jobsBefore = listExecutionJobs(fx.controllerHome, fx.repository.repoId).length;
+    const processesBefore = listProcessRecords(fx.controllerHome, fx.repository.repoId).length;
+
+    for (const [tool, args] of [
+      ['get_project_progress', {}],
+      ['get_project_board', {}],
+      ['get_issue', { issue_id: issueId }],
+    ] as const) {
+      const durable = await routeDurableMcpCall(fx.ctx, tool, args);
+      expect(durable).toBeUndefined();
+      const direct = await callMultiRepositoryTool(fx.ctx, tool, args);
+      expect(direct.isError).not.toBe(true);
+    }
+
+    expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
+    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId).length).toBe(processesBefore);
+  });
+
+  test('registered read-only isolated tools override forceDurable and reach runtime handlers', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const jobsBefore = listExecutionJobs(fx.controllerHome, fx.repository.repoId).length;
+    const processesBefore = listProcessRecords(fx.controllerHome, fx.repository.repoId).length;
+
+    for (const [tool, args] of [
+      ['workflow_watchdog_report', { repo_id: fx.repository.repoId, include_processes: true }],
+      ['runtime_maintenance_status', { repo_id: fx.repository.repoId }],
+      ['runtime_cleanup_preview', { repo_id: fx.repository.repoId, include_temp_dirs: false }],
+    ] as const) {
+      const routed = await routeDurableMcpCall(fx.ctx, tool, args, {
+        allowReadOnly: true,
+        forceDurable: true,
+      });
+      expect(routed).toBeUndefined();
+      const direct = await callRuntimeTool(fx.ctx, tool, args);
+      expect(direct?.isError).not.toBe(true);
+      expect(JSON.stringify(direct?.structuredContent)).not.toContain('EXECUTION_JOB_RETIRED');
+    }
+
+    expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
+    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId).length).toBe(processesBefore);
+  });
+
+  test('structured local Git mutations use direct local handlers instead of retired ExecutionJob routing', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const jobsBefore = listExecutionJobs(fx.controllerHome, fx.repository.repoId).length;
+    const processesBefore = listProcessRecords(fx.controllerHome, fx.repository.repoId).length;
+
+    writeFileSync(join(fx.repoRoot, 'src', 'commit.ts'), 'export const committed = true;\n');
+    expect(await routeDurableMcpCall(fx.ctx, 'repository_git_commit', {
+      repo_id: fx.repository.repoId,
+      message: 'commit structured change',
+      paths: ['src/commit.ts'],
+    })).toBeUndefined();
+    const committed = await callRepositoryTool(fx.controllerHome, 'repository_git_commit', {
+      repo_id: fx.repository.repoId,
+      message: 'commit structured change',
+      paths: ['src/commit.ts'],
+    });
+    expect(committed?.isError).not.toBe(true);
+    expect(((committed?.structuredContent as Record<string, unknown>).commit as { committed?: boolean }).committed).toBe(true);
+
+    git(fx.repoRoot, ['switch', '-c', 'feature/merge-fixture']);
+    writeFileSync(join(fx.repoRoot, 'src', 'merge.ts'), 'export const merged = true;\n');
+    git(fx.repoRoot, ['add', 'src/merge.ts']);
+    git(fx.repoRoot, ['commit', '-m', 'feature merge fixture']);
+    git(fx.repoRoot, ['switch', 'main']);
+
+    expect(await routeDurableMcpCall(fx.ctx, 'repository_git_merge_branch', {
+      repo_id: fx.repository.repoId,
+      branch: 'feature/merge-fixture',
+    })).toBeUndefined();
+    const merged = await callRepositoryTool(fx.controllerHome, 'repository_git_merge_branch', {
+      repo_id: fx.repository.repoId,
+      branch: 'feature/merge-fixture',
+    });
+    expect(merged?.isError).not.toBe(true);
+    expect(((merged?.structuredContent as Record<string, unknown>).execution as { ok?: boolean }).ok).toBe(true);
+
+    expect(await routeDurableMcpCall(fx.ctx, 'repository_git_delete_branch', {
+      repo_id: fx.repository.repoId,
+      branch: 'feature/merge-fixture',
+    })).toBeUndefined();
+    const deleted = await callRepositoryTool(fx.controllerHome, 'repository_git_delete_branch', {
+      repo_id: fx.repository.repoId,
+      branch: 'feature/merge-fixture',
+    });
+    expect(deleted?.isError).not.toBe(true);
+    expect(((deleted?.structuredContent as Record<string, unknown>).execution as { ok?: boolean }).ok).toBe(true);
+
+    git(fx.repoRoot, ['switch', '-c', 'feature/finish-fixture']);
+    writeFileSync(join(fx.repoRoot, 'src', 'finish.ts'), 'export const finished = true;\n');
+    git(fx.repoRoot, ['add', 'src/finish.ts']);
+    git(fx.repoRoot, ['commit', '-m', 'feature finish fixture']);
+
+    expect(await routeDurableMcpCall(fx.ctx, 'repository_git_finish_workflow', {
+      repo_id: fx.repository.repoId,
+      target_branch: 'main',
+      delete_branch: true,
+    })).toBeUndefined();
+    const finished = await callRepositoryTool(fx.controllerHome, 'repository_git_finish_workflow', {
+      repo_id: fx.repository.repoId,
+      target_branch: 'main',
+      delete_branch: true,
+    });
+    expect(finished?.isError).not.toBe(true);
+    expect(((finished?.structuredContent as Record<string, unknown>).finish as { completed?: boolean }).completed).toBe(true);
+
+    expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
+    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId).length).toBe(processesBefore);
+  });
+
+  test('long run_check returns a managed Process Runtime handle without ExecutionJob creation', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const jobsBefore = listExecutionJobs(fx.controllerHome, fx.repository.repoId).length;
+
+    const started = await routeDurableMcpCall(fx.ctx, 'run_check', {
+      repo_id: fx.repository.repoId,
+      check_id: 'slow',
+      interactive_wait_ms: 100,
+    });
+
+    expect(started?.isError).not.toBe(true);
+    const payload = started?.structuredContent as Record<string, unknown>;
+    expect(payload.path).toBe('process_managed');
+    expect(typeof payload.processId).toBe('string');
+    expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
+  });
+
+  test('Work execution ownership remains fenced and unknown tools return TOOL_NOT_FOUND', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const jobsBefore = listExecutionJobs(fx.controllerHome, fx.repository.repoId).length;
+    const processesBefore = listProcessRecords(fx.controllerHome, fx.repository.repoId).length;
+
+    const work = await callExecutionTool(fx.ctx, 'work_execute', {
+      repo_id: fx.repository.repoId,
+      work_id: 'WORK-missing',
+      command: ['git', 'status', '--short'],
+    });
+    expect(work?.isError).toBe(true);
+    expect(JSON.stringify(work?.structuredContent)).toContain('SESSION');
+
+    const unknown = await routeDurableMcpCall(fx.ctx, 'definitely_not_a_tool', {});
+    expect(unknown?.isError).toBe(true);
+    expect((unknown?.structuredContent as { error?: { code?: string } }).error?.code).toBe('TOOL_NOT_FOUND');
+
+    expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
+    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId).length).toBe(processesBefore);
   });
 
   test('worker-owned repository_command_execute does not create nested Local Job', async () => {

@@ -235,8 +235,12 @@ function evaluateProjection(observation: ProjectionObservation): ComponentHealth
     }));
   }
   const refreshPending = observation.refreshPending === true
-    || observation.dirty === true
-    || observation.sourceRevisionChanged === true;
+    || observation.sourceRevisionChanged === true
+    || (
+      observation.dirty === true
+      && observation.sourceRevisionChanged !== false
+      && observation.activeInvariantAtRisk === true
+    );
   if (refreshPending) {
     const details = {
       dirty: observation.dirty,

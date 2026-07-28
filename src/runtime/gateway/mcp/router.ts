@@ -107,7 +107,10 @@ const INTERACTIVE_SYNC_WRITE_TOOLS = new Set([
   'repository_safe_patch_apply',
   'repository_git_create_branch',
   'repository_git_switch_branch',
+  'repository_git_merge_branch',
+  'repository_git_delete_branch',
   'repository_git_commit',
+  'repository_git_finish_workflow',
   'begin_edit_session',
   'apply_patch',
   'apply_edit_operations',
@@ -126,6 +129,12 @@ const AGENT_DELEGATION_TOOLS = new Set([
   'dispatch_ready_tasks',
   'retry_task_run',
   'quick_agent_session',
+]);
+const EXPLICIT_EXTERNAL_CONTROLLER_TOOLS = new Set([
+  'publish_issue_to_github',
+  'close_github_issue',
+  'request_release_gate',
+  'promote_candidate_finding',
 ]);
 const MAX_DURABLE_TIMEOUT_MS = 24 * 60 * 60_000;
 
@@ -199,8 +208,12 @@ export function executionTimeoutPolicyForMcpCall(
   };
 }
 
-function result(value: Record<string, unknown>): CallToolResult {
-  return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }], structuredContent: value };
+function result(value: Record<string, unknown>, isError = false): CallToolResult {
+  return {
+    content: [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+    structuredContent: value,
+    ...(isError ? { isError: true } : {}),
+  };
 }
 
 export function getMcpToolDefinition(ctx: MultiRepositoryMcpToolContext, name: string): McpToolDefinition | undefined {
@@ -215,23 +228,18 @@ export function getMcpToolDefinition(ctx: MultiRepositoryMcpToolContext, name: s
 export function classifyGatewayExecutionPath(
   name: string,
   args: Record<string, unknown> = {},
-  opts: { allowReadOnly?: boolean; forceDurable?: boolean } = {},
+  opts: { allowReadOnly?: boolean; forceDurable?: boolean; definition?: McpToolDefinition } = {},
 ): {
   path: 'direct' | 'fast' | 'durable' | 'reject';
   reasons: string[];
   decision?: ExecutionDecision;
 } {
-  if (opts.forceDurable === true || isGatewayIsolatedTool(name)) {
-    return {
-      path: 'durable',
-      reasons: opts.forceDurable ? ['force_durable'] : ['gateway_isolated_tool'],
-    };
-  }
-  if (wantsAsyncExecution(args)) {
-    return {
-      path: 'durable',
-      reasons: ['caller_requested_async_or_durable'],
-    };
+  // The registered MCP definition is authoritative. Read-only tools always use
+  // their real handler, even when the server isolates blocking implementations
+  // from the public event loop. Isolation is an execution concern, not a durable
+  // ownership boundary.
+  if (opts.definition?.annotations?.readOnlyHint === true) {
+    return { path: 'direct', reasons: ['registered_readonly_tool'] };
   }
   if (name.startsWith('repository_') && DIRECT_REPOSITORY_TOOLS.has(name)) {
     return { path: 'direct', reasons: ['direct_repository_tool'] };
@@ -244,6 +252,21 @@ export function classifyGatewayExecutionPath(
   }
   if (isSelfManagedDurableTool(name)) {
     return { path: 'direct', reasons: ['self_managed_durable_boundary'] };
+  }
+  if (EXPLICIT_EXTERNAL_CONTROLLER_TOOLS.has(name)) {
+    return { path: 'durable', reasons: ['explicit_external_controller_boundary'] };
+  }
+  if (opts.forceDurable === true || isGatewayIsolatedTool(name)) {
+    return {
+      path: 'durable',
+      reasons: opts.forceDurable ? ['force_durable'] : ['gateway_isolated_tool'],
+    };
+  }
+  if (wantsAsyncExecution(args)) {
+    return {
+      path: 'durable',
+      reasons: ['caller_requested_async_or_durable'],
+    };
   }
   // run_check: Process Runtime for ordinary checks; Durable only for release/multi-phase.
   if (name === 'run_check') {
@@ -289,7 +312,38 @@ export function classifyGatewayExecutionPath(
       timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
     });
     if (route.route === 'process_direct' || route.route === 'process_managed') {
-      return { path: 'fast', reasons: ['repository_command_process_runtime', route.reason] };
+      const commandClassification = classifyRepositoryCommand(
+        command as string | string[],
+        typeof args.default_branch === 'string' ? args.default_branch : undefined,
+      );
+      const risk = commandClassification.risk === 'readonly'
+        ? 'readonly'
+        : commandClassification.risk === 'remote_write'
+          ? 'remote_write'
+          : commandClassification.risk === 'destructive'
+            ? 'destructive'
+            : 'workspace_write';
+      const reasons = ['repository_command_process_runtime', route.reason];
+      return {
+        path: 'fast',
+        reasons,
+        decision: {
+          mode: 'fast',
+          reasons,
+          risk,
+          estimatedClass: route.route === 'process_direct' ? 'short' : 'long',
+          requiresIsolation: false,
+          requiresRecovery: false,
+          effects: {
+            readsWorkspace: true,
+            mutatesWorkspace: risk !== 'readonly',
+            mutatesGitRefs: risk !== 'readonly' && /(?:^|\s)git\s+(?:commit|merge|branch|switch|checkout|reset|rebase|tag)\b/i.test(
+              Array.isArray(command) ? command.join(' ') : command,
+            ),
+            remoteWrite: risk === 'remote_write',
+          },
+        },
+      };
     }
     if (route.route === 'reject') return { path: 'reject', reasons: [route.reason] };
     return { path: 'durable', reasons: [route.reason] };
@@ -341,7 +395,10 @@ export function classifyGatewayExecutionPath(
       decision,
     };
   }
-  return { path: 'durable', reasons: ['default_durable_for_mutating_or_unknown_tool'] };
+  if (opts.definition) {
+    return { path: 'direct', reasons: ['registered_tool_direct_handler'] };
+  }
+  return { path: 'reject', reasons: ['tool_not_found'] };
 }
 
 export function shouldCreateDurableJob(
@@ -353,19 +410,8 @@ export function shouldCreateDurableJob(
   if (executionJobCreationRetired()) return false;
   const definition = getMcpToolDefinition(ctx, name);
   if (!definition) return false;
-  if (isSelfManagedDurableTool(name)) return false;
-  if (opts.forceDurable === true || isGatewayIsolatedTool(name)) return true;
-  if (name.startsWith('repository_') && DIRECT_REPOSITORY_TOOLS.has(name)) return false;
-  if (definition.annotations?.readOnlyHint === true && opts.allowReadOnly !== true) return false;
-  if (isDirectHotReadTool(name)) return false;
-  // Interactive development path: sync by default unless caller opts into async queueing.
-  if (runsAsInteractiveSyncWrite(name, args)) return false;
-  // Thin Harness classification must happen before ExecutionJob creation.
-  const classification = classifyGatewayExecutionPath(name, args, opts);
-  if (classification.path === 'fast' || classification.path === 'direct' || classification.path === 'reject') {
-    return false;
-  }
-  return true;
+  // One authoritative decision: do not duplicate read/write/isolation policy here.
+  return classifyGatewayExecutionPath(name, args, { ...opts, definition }).path === 'durable';
 }
 
 function canonical(value: unknown): unknown {
@@ -515,7 +561,18 @@ export async function routeDurableMcpCall(
   opts: { allowReadOnly?: boolean; forceDurable?: boolean } = {},
 ): Promise<CallToolResult | undefined> {
   const definition = getMcpToolDefinition(ctx, name);
-  if (!definition) return undefined;
+  if (!definition) {
+    return result({
+      accepted: false,
+      mode: 'reject',
+      path: 'reject',
+      rejectCode: 'TOOL_NOT_FOUND',
+      error: {
+        code: 'TOOL_NOT_FOUND',
+        message: `${name} is not registered by this repo-harness build.`,
+      },
+    }, true);
+  }
 
   if (RETIRED_AGENT_OPERATIONS.has(name)) {
     return result({
@@ -529,7 +586,23 @@ export async function routeDurableMcpCall(
   }
 
   // Classify BEFORE creating any ExecutionJob / LocalJob / Worker.
-  const classification = classifyGatewayExecutionPath(name, args, opts);
+  const classification = classifyGatewayExecutionPath(name, args, { ...opts, definition });
+  if (classification.path === 'reject' && classification.reasons.includes('tool_not_found')) {
+    return result({
+      accepted: false,
+      mode: 'reject',
+      path: 'reject',
+      routing: {
+        path: 'reject',
+        reasons: classification.reasons,
+      },
+      rejectCode: 'TOOL_NOT_FOUND',
+      error: {
+        code: 'TOOL_NOT_FOUND',
+        message: `${name} is not registered by this repo-harness build.`,
+      },
+    }, true);
+  }
   if (classification.path === 'reject' && classification.decision) {
     return result({
       accepted: false,
@@ -543,7 +616,7 @@ export async function routeDurableMcpCall(
       rejectCode: classification.decision.rejectCode,
       message: classification.reasons.join('; ') || 'operation rejected by Thin Harness routing',
       suggestedOperation: classification.decision.suggestedOperation,
-    });
+    }, true);
   }
 
   if (classification.path === 'durable' && executionJobCreationRetired()) {

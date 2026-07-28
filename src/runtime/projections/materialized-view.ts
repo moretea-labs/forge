@@ -6,11 +6,27 @@ import { listActiveLeases } from '../resources/leases/store';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
 import { listRepositories } from '../../cli/repositories/registry';
-import { clearRepositoryProjectionDirty, readRepositoryProjectionDirty } from './invalidation';
+import type { RepositoryRecord } from '../../cli/repositories/types';
+import { repositoryGitStatus } from '../../cli/repositories/structured-git';
+import {
+  clearRepositoryProjectionDirty,
+  gitRevisionsEquivalent,
+  normalizeGitRevision,
+  persistRepositoryProjectionDirty,
+  projectionRefreshRetryDelayMs,
+  PROJECTION_REFRESH_STALE_OWNER_MS,
+  readRepositoryProjectionDirty,
+  updateRepositoryProjectionRefreshRequest,
+  withRepositoryProjectionRefreshLock,
+  type ProjectionDirtyMarker,
+  type ProjectionRefreshOwner,
+} from './invalidation';
+import { readRepositoryGitStatusSample } from './git-status-sampler';
 import { listCampaigns } from '../workflow/campaigns/store';
 import { listAssistantPluginManifests } from '../plugins/store';
 import type { ProjectionObservation } from '../health';
 import { RUNTIME_HEALTH_THRESHOLDS } from '../health';
+import { isProcessAlive } from '../shared/process-tree';
 
 export interface ProjectionMetadata {
   contentRevision: number;
@@ -54,6 +70,7 @@ export interface RepositoryRuntimeProjection {
 interface DirtyProjectionReadCacheEntry {
   dirtyNonce: string;
   persistedRevision: number | null;
+  dirtyUpdatedAt?: string;
   value: RepositoryRuntimeProjectionSnapshot;
 }
 
@@ -249,13 +266,14 @@ function buildRepositoryProjection(
 }
 
 export function rebuildRepositoryProjection(controllerHome: string, repoId: string): RepositoryRuntimeProjection {
-  dirtyProjectionReadCache.delete(dirtyProjectionReadCacheKey(controllerHome, repoId));
-  const dirtyMarker = readRepositoryProjectionDirty(controllerHome, repoId);
-  const previous = readJsonFile<RepositoryRuntimeProjection | undefined>(projectionPath(controllerHome, repoId), undefined);
-  const projection = buildRepositoryProjection(controllerHome, repoId, previous, dirtyMarker?.nonce);
-  writeJsonAtomic(projectionPath(controllerHome, repoId), projection);
-  clearRepositoryProjectionDirty(controllerHome, repoId, dirtyMarker);
-  return projection;
+  const repository = listRepositories(controllerHome).find((entry) => entry.repoId === repoId);
+  const result = refreshRepositoryProjection(controllerHome, repoId, {
+    repository,
+    reason: 'manual-rebuild',
+    force: true,
+  });
+  if (result.projection) return result.projection;
+  return readRepositoryProjectionSnapshot(controllerHome, repoId).projection;
 }
 
 export interface RepositoryRuntimeProjectionSnapshot {
@@ -264,8 +282,247 @@ export interface RepositoryRuntimeProjectionSnapshot {
   persisted: boolean;
   dirtySinceAt?: string;
   dirtyReason?: string;
+  dirtySourceRevision?: string;
+  sourceRevisionChanged?: boolean;
+  refreshStatus?: ProjectionDirtyMarker['refreshStatus'];
+  refreshAttempt?: number;
+  nextAttemptAt?: string;
   activeInvariantAtRisk?: boolean;
   buildError?: string;
+}
+
+export interface RepositoryProjectionRefreshResult {
+  refreshed: boolean;
+  skippedReason?: 'clean' | 'running' | 'retry_deferred' | 'superseded' | 'passive_runtime';
+  projection?: RepositoryRuntimeProjection;
+  marker?: ProjectionDirtyMarker;
+}
+
+export interface RepositoryProjectionRefreshOptions {
+  repository?: RepositoryRecord;
+  sourceRevision?: string;
+  reason?: string;
+  force?: boolean;
+  owner?: Omit<ProjectionRefreshOwner, 'pid' | 'acquiredAt'> & { pid?: number };
+  nowMs?: number;
+}
+
+function nowIso(nowMs = Date.now()): string {
+  return new Date(nowMs).toISOString();
+}
+
+function projectionSourceRevisionFromRepository(
+  controllerHome: string,
+  repository: RepositoryRecord | undefined,
+): string | undefined {
+  if (!repository) return undefined;
+  const sampled = readRepositoryGitStatusSample(controllerHome, repository.repoId, repository.activeCheckoutId);
+  const sampledHead = normalizeGitRevision(sampled?.head);
+  if (sampledHead) return sampledHead;
+  try {
+    return normalizeGitRevision(repositoryGitStatus(repository).head);
+  } catch {
+    return undefined;
+  }
+}
+
+function sourceRevisionChanged(
+  generatedFromRevision: string | undefined,
+  sourceRevision: string | undefined,
+  stale: boolean,
+  persisted: boolean,
+): boolean {
+  const source = normalizeGitRevision(sourceRevision);
+  if (!persisted) return true;
+  if (!source) return stale;
+  return !gitRevisionsEquivalent(generatedFromRevision, source);
+}
+
+function refreshOwner(input: RepositoryProjectionRefreshOptions, acquiredAt: string): ProjectionRefreshOwner {
+  return {
+    pid: input.owner?.pid ?? process.pid,
+    acquiredAt,
+    ...(input.owner?.controllerStartedAt ? { controllerStartedAt: input.owner.controllerStartedAt } : {}),
+    ...(input.owner?.ownerEpoch ? { ownerEpoch: input.owner.ownerEpoch } : {}),
+  };
+}
+
+function ownerStillOwnsRefresh(marker: ProjectionDirtyMarker, nowMs: number, currentOwner?: ProjectionRefreshOwner): boolean {
+  if (marker.refreshStatus !== 'running') return false;
+  const startedAt = Date.parse(marker.runningStartedAt ?? marker.refreshOwner?.acquiredAt ?? marker.refreshUpdatedAt ?? marker.markedAt);
+  const ageMs = Number.isFinite(startedAt) ? Math.max(0, nowMs - startedAt) : Number.POSITIVE_INFINITY;
+  if (ageMs >= PROJECTION_REFRESH_STALE_OWNER_MS) return false;
+  const owner = marker.refreshOwner;
+  if (!owner?.pid || !isProcessAlive(owner.pid)) return false;
+  if (
+    currentOwner?.ownerEpoch
+    && owner.ownerEpoch
+    && currentOwner.ownerEpoch !== owner.ownerEpoch
+    && ageMs >= Math.min(PROJECTION_REFRESH_STALE_OWNER_MS, RUNTIME_HEALTH_THRESHOLDS.projectionRefreshGraceMs)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function markRunning(
+  controllerHome: string,
+  repoId: string,
+  marker: ProjectionDirtyMarker,
+  owner: ProjectionRefreshOwner,
+  now: string,
+): ProjectionDirtyMarker {
+  return persistRepositoryProjectionDirty(controllerHome, repoId, {
+    ...marker,
+    refreshStatus: 'running',
+    refreshAttempt: (marker.refreshAttempt ?? 0) + 1,
+    refreshUpdatedAt: now,
+    runningStartedAt: now,
+    refreshOwner: owner,
+    nextAttemptAt: undefined,
+  });
+}
+
+function markFailed(
+  controllerHome: string,
+  repoId: string,
+  marker: ProjectionDirtyMarker,
+  owner: ProjectionRefreshOwner,
+  error: unknown,
+  nowMs: number,
+): ProjectionDirtyMarker {
+  const attempt = Math.max(1, marker.refreshAttempt ?? 1);
+  const nextAttemptAt = nowIso(nowMs + projectionRefreshRetryDelayMs(attempt));
+  const message = error instanceof Error ? error.message : String(error);
+  return persistRepositoryProjectionDirty(controllerHome, repoId, {
+    ...marker,
+    refreshStatus: 'failed',
+    refreshUpdatedAt: nowIso(nowMs),
+    runningStartedAt: undefined,
+    refreshOwner: undefined,
+    nextAttemptAt,
+    lastFailure: {
+      message,
+      failedAt: nowIso(nowMs),
+      attempt,
+      retryable: true,
+      nextAttemptAt,
+      owner,
+    },
+  });
+}
+
+function recoverStaleOwner(
+  controllerHome: string,
+  repoId: string,
+  marker: ProjectionDirtyMarker,
+  now: string,
+  reason: string,
+): ProjectionDirtyMarker {
+  return persistRepositoryProjectionDirty(controllerHome, repoId, {
+    ...marker,
+    refreshStatus: 'pending',
+    refreshUpdatedAt: now,
+    runningStartedAt: undefined,
+    refreshOwner: undefined,
+    nextAttemptAt: undefined,
+    staleOwnerRecoveredAt: now,
+    staleOwnerRecoveryReason: reason,
+  });
+}
+
+function refreshRepositoryProjection(
+  controllerHome: string,
+  repoId: string,
+  options: RepositoryProjectionRefreshOptions = {},
+): RepositoryProjectionRefreshResult {
+  const nowMs = options.nowMs ?? Date.now();
+  const acquiredAt = nowIso(nowMs);
+  const owner = refreshOwner(options, acquiredAt);
+  return withRepositoryProjectionRefreshLock(
+    controllerHome,
+    repoId,
+    `projection-refresh:${owner.pid}`,
+    () => {
+      dirtyProjectionReadCache.delete(dirtyProjectionReadCacheKey(controllerHome, repoId));
+      const previous = readJsonFile<RepositoryRuntimeProjection | undefined>(projectionPath(controllerHome, repoId), undefined);
+      const sourceRevision = normalizeGitRevision(options.sourceRevision)
+        ?? projectionSourceRevisionFromRepository(controllerHome, options.repository)
+        ?? normalizeGitRevision(previous?.metadata?.generatedFromRevision);
+      let marker = readRepositoryProjectionDirty(controllerHome, repoId);
+      const changed = sourceRevisionChanged(
+        previous?.metadata?.generatedFromRevision,
+        sourceRevision,
+        Boolean(marker) || !previous,
+        Boolean(previous),
+      );
+      if (!marker && (changed || options.force === true)) {
+        marker = updateRepositoryProjectionRefreshRequest(controllerHome, repoId, {
+          reason: options.reason ?? (changed ? 'git-source-revision-changed' : 'projection-refresh-requested'),
+          sourceRevision,
+          nowMs,
+        }, { lock: false });
+        if (!marker) return { refreshed: false, skippedReason: 'passive_runtime' };
+      }
+      if (!marker) return { refreshed: false, skippedReason: 'clean', projection: previous };
+
+      const currentOwner = refreshOwner(options, acquiredAt);
+      if (ownerStillOwnsRefresh(marker, nowMs, currentOwner)) {
+        return { refreshed: false, skippedReason: 'running', marker, projection: previous };
+      }
+      if (marker.refreshStatus === 'running' && !ownerStillOwnsRefresh(marker, nowMs, currentOwner)) {
+        marker = recoverStaleOwner(controllerHome, repoId, marker, acquiredAt, 'stale_owner_or_restart');
+      }
+      if (
+        marker.refreshStatus === 'failed'
+        && options.force !== true
+        && marker.nextAttemptAt
+        && Date.parse(marker.nextAttemptAt) > nowMs
+      ) {
+        return { refreshed: false, skippedReason: 'retry_deferred', marker, projection: previous };
+      }
+
+      const running = markRunning(controllerHome, repoId, {
+        ...marker,
+        sourceRevision: marker.sourceRevision ?? sourceRevision,
+      }, owner, acquiredAt);
+      try {
+        const latestPrevious = readJsonFile<RepositoryRuntimeProjection | undefined>(projectionPath(controllerHome, repoId), undefined);
+        const buildRevision = normalizeGitRevision(running.sourceRevision) ?? sourceRevision;
+        const projection = buildRepositoryProjection(controllerHome, repoId, latestPrevious, buildRevision);
+        const current = readRepositoryProjectionDirty(controllerHome, repoId);
+        if (
+          !current
+          || current.nonce !== running.nonce
+          || (
+            running.sourceRevision
+            && current.sourceRevision
+            && !gitRevisionsEquivalent(running.sourceRevision, current.sourceRevision)
+          )
+        ) {
+          return { refreshed: false, skippedReason: 'superseded', marker: current, projection: latestPrevious };
+        }
+        writeJsonAtomic(projectionPath(controllerHome, repoId), projection);
+        clearRepositoryProjectionDirty(controllerHome, repoId, current, projection.metadata?.generatedFromRevision);
+        dirtyProjectionReadCache.delete(dirtyProjectionReadCacheKey(controllerHome, repoId));
+        return { refreshed: true, projection };
+      } catch (error) {
+        const current = readRepositoryProjectionDirty(controllerHome, repoId);
+        if (current?.nonce === running.nonce) {
+          markFailed(controllerHome, repoId, running, owner, error, options.nowMs ?? Date.now());
+        }
+        throw error;
+      }
+    },
+  );
+}
+
+export function refreshRepositoryProjectionForRepository(
+  controllerHome: string,
+  repository: RepositoryRecord,
+  options: Omit<RepositoryProjectionRefreshOptions, 'repository'> = {},
+): RepositoryProjectionRefreshResult {
+  return refreshRepositoryProjection(controllerHome, repository.repoId, { ...options, repository });
 }
 
 export function projectionBlocksReadiness(snapshot: RepositoryRuntimeProjectionSnapshot): boolean {
@@ -278,7 +535,14 @@ export function projectionBlocksReadiness(snapshot: RepositoryRuntimeProjectionS
     || snapshot.projection.activeLeases > 0
     || snapshot.activeInvariantAtRisk === true
     || dirtyReasonImpliesActiveRisk(snapshot.dirtyReason);
-  return snapshot.stale && activeInvariantAtRisk && ageMs >= RUNTIME_HEALTH_THRESHOLDS.projectionRefreshGraceMs;
+  const requiredRefresh = snapshot.stale && (
+    snapshot.sourceRevisionChanged !== false
+    || activeInvariantAtRisk
+    || Boolean(snapshot.buildError)
+    || snapshot.refreshStatus === 'running'
+    || snapshot.refreshStatus === 'failed'
+  );
+  return requiredRefresh && ageMs >= RUNTIME_HEALTH_THRESHOLDS.projectionRefreshGraceMs;
 }
 
 export function projectionObservation(snapshot: RepositoryRuntimeProjectionSnapshot): ProjectionObservation {
@@ -291,17 +555,30 @@ export function projectionObservation(snapshot: RepositoryRuntimeProjectionSnaps
     || snapshot.projection.activeLeases > 0
     || snapshot.activeInvariantAtRisk === true
     || dirtyReasonImpliesActiveRisk(snapshot.dirtyReason);
+  const sourceChanged = snapshot.sourceRevisionChanged ?? sourceRevisionChanged(
+    snapshot.projection.metadata?.generatedFromRevision,
+    snapshot.dirtySourceRevision,
+    snapshot.stale,
+    snapshot.persisted,
+  );
+  const refreshPending = snapshot.stale && (
+    sourceChanged
+    || activeInvariantAtRisk
+    || Boolean(snapshot.buildError)
+    || snapshot.refreshStatus === 'running'
+    || snapshot.refreshStatus === 'failed'
+  );
   return {
     readable: Boolean(snapshot.projection),
     persisted: snapshot.persisted,
     dirty: snapshot.stale,
-    sourceRevisionChanged: snapshot.stale,
-    refreshPending: snapshot.stale,
+    sourceRevisionChanged: sourceChanged,
+    refreshPending,
     refreshGraceElapsed: dirtyAgeMs !== undefined && dirtyAgeMs >= RUNTIME_HEALTH_THRESHOLDS.projectionRefreshGraceMs,
     activeInvariantAtRisk,
     lastBuildError: snapshot.buildError ?? snapshot.projection.metadata?.lastBuildError,
     contentRevision: snapshot.projection.metadata?.contentRevision ?? snapshot.projection.revision,
-    generatedFromRevision: snapshot.projection.metadata?.generatedFromRevision ?? snapshot.dirtyReason,
+    generatedFromRevision: snapshot.projection.metadata?.generatedFromRevision ?? snapshot.dirtySourceRevision ?? snapshot.dirtyReason,
   };
 }
 
@@ -317,6 +594,12 @@ export function readRepositoryProjectionSnapshot(
     // No persisted projection exists yet.
   }
   const stale = Boolean(dirtyMarker) || !persisted;
+  const sourceChanged = sourceRevisionChanged(
+    persisted?.metadata?.generatedFromRevision,
+    dirtyMarker?.sourceRevision,
+    stale,
+    Boolean(persisted),
+  );
 
   if (!stale && persisted) {
     dirtyProjectionReadCache.delete(dirtyProjectionReadCacheKey(controllerHome, repoId));
@@ -333,6 +616,7 @@ export function readRepositoryProjectionSnapshot(
     cached
     && dirtyMarker
     && cached.dirtyNonce === dirtyMarker.nonce
+    && cached.dirtyUpdatedAt === dirtyMarker.refreshUpdatedAt
     && cached.persistedRevision === persistedRevision
   ) {
     return cached.value;
@@ -347,11 +631,18 @@ export function readRepositoryProjectionSnapshot(
     persisted: Boolean(persisted),
     dirtySinceAt: dirtyMarker?.markedAt,
     dirtyReason: dirtyMarker?.reason,
+    dirtySourceRevision: dirtyMarker?.sourceRevision,
+    sourceRevisionChanged: sourceChanged,
+    refreshStatus: dirtyMarker?.refreshStatus,
+    refreshAttempt: dirtyMarker?.refreshAttempt,
+    nextAttemptAt: dirtyMarker?.nextAttemptAt,
     activeInvariantAtRisk: dirtyReasonImpliesActiveRisk(dirtyMarker?.reason),
+    buildError: dirtyMarker?.lastFailure?.message,
   };
   if (dirtyMarker) {
     dirtyProjectionReadCache.set(cacheKey, {
       dirtyNonce: dirtyMarker.nonce,
+      dirtyUpdatedAt: dirtyMarker.refreshUpdatedAt,
       persistedRevision,
       value,
     });

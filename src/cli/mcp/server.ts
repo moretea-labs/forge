@@ -58,7 +58,7 @@ export function createRepoHarnessMcpServerFromContext(ctx: ServerToolContext): S
       if (!isControllerToolExposed(ctx, name)) {
         const value = {
           error: {
-            code: 'UNKNOWN_TOOL',
+            code: 'TOOL_NOT_FOUND',
             message: `${name} is not registered by this repo-harness build. Tool availability is independent of Request vs Full Access.`,
           },
         };

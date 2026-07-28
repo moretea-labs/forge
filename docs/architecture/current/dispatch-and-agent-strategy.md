@@ -349,6 +349,6 @@ The dispatch layer MUST avoid:
 
 The repository implements Direct Edit, Quick Agent and Issue/Task assessment; runtime Agent selection; bounded Task scope; persistent Runs; Workspace/Worktree placement; and risk-adaptive verification.
 
-The Thin Gateway converts Agent dispatch into durable Execution Jobs. The Repo Actor owns placement and resource Claims. Automatic placement uses the current Workspace when it is available and switches a concurrent eligible Agent to an isolated Worktree. Agent provider is selected at execution time and global provider quotas are enforced by the Scheduler.
+The Thin Gateway keeps deterministic local commands on Direct Edit or Process Runtime paths. Agent dispatch is now an explicit external-Controller handoff; the Kernel no longer creates Execution Jobs for ordinary Agent launches. Work ownership, repository placement, and resource claims remain durable Controller state, while provider selection and model execution belong to the claimed external Controller.
 
-Failure outcomes are retained on the Job and Run; retries preserve the failed attempt and create a new execution attempt.
+Failure outcomes are retained on Work, Process, Handoff, or legacy read-only Job evidence as applicable; retries preserve the failed attempt and create a new explicit continuation attempt rather than falling back to implicit Job creation.
