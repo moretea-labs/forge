@@ -86,6 +86,7 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
     display_name: { type: 'string' },
     remote_url: { type: 'string' },
     default_branch: { type: 'string' },
+    detail_level: { type: 'string', enum: ['summary', 'detail'], description: 'Defaults to summary; detail returns full checkout and migration evidence.' },
   }, ['path']),
   definition('repository_latest_source_diagnose', 'Read-only diagnosis that compares sibling project directories and recommends the latest usable source tree.', {
     path: { type: 'string', description: 'Absolute local project path.' },
@@ -108,9 +109,11 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
   }, ['repo_id'], true),
   definition('repository_validate', 'Validate repository identity and migrate legacy ownership.', {
     repo_id: repoId,
+    detail_level: { type: 'string', enum: ['summary', 'detail'], description: 'Defaults to summary; detail returns full migration evidence.' },
   }, ['repo_id']),
   definition('repository_refresh', 'Refresh repository Git and checkout metadata.', {
     repo_id: repoId,
+    detail_level: { type: 'string', enum: ['summary', 'detail'], description: 'Defaults to summary; detail returns full checkout and migration evidence.' },
   }, ['repo_id']),
   definition('repository_update', 'Update mutable repository metadata.', {
     repo_id: repoId,
@@ -274,6 +277,69 @@ function result(value: Record<string, unknown>): RepositoryToolResult {
   };
 }
 
+const DEFAULT_MIGRATION_SAMPLE_LIMIT = 3;
+
+function withResponseMeta(payload: Record<string, unknown>, startedAt: number): Record<string, unknown> {
+  const response = {
+    ...payload,
+    responseMeta: {
+      serverDurationMs: Math.round((performance.now() - startedAt) * 100) / 100,
+      structuredPayloadBytes: 0,
+    },
+  };
+  response.responseMeta.structuredPayloadBytes = Buffer.byteLength(JSON.stringify(response), 'utf8');
+  return response;
+}
+
+export function summarizeEntityMigrationReport(
+  report: ReturnType<typeof bindRepositoryEntities>,
+  detail = false,
+): ReturnType<typeof bindRepositoryEntities> | Record<string, unknown> {
+  if (detail) return report;
+  const files = report.files.slice(0, DEFAULT_MIGRATION_SAMPLE_LIMIT);
+  const errors = report.errors.slice(0, DEFAULT_MIGRATION_SAMPLE_LIMIT);
+  return {
+    repoId: report.repoId,
+    checkoutId: report.checkoutId,
+    scanned: report.scanned,
+    updated: report.updated,
+    unresolved: report.unresolved,
+    fileCount: report.files.length,
+    errorCount: report.errors.length,
+    files,
+    errors,
+    truncated: report.files.length > files.length || report.errors.length > errors.length,
+    omittedFileCount: Math.max(0, report.files.length - files.length),
+    omittedErrorCount: Math.max(0, report.errors.length - errors.length),
+  };
+}
+
+export function summarizeRepositoryRegistration(
+  repository: ReturnType<typeof registerRepository>,
+  migration: ReturnType<typeof bindRepositoryEntities>,
+  detail = false,
+): Record<string, unknown> {
+  if (detail) {
+    return { detailLevel: 'detail', repository, migration };
+  }
+  const checkoutCounts = repository.checkouts.reduce<Record<string, number>>((counts, checkout) => {
+    const lifecycle = checkout.lifecycle ?? 'active';
+    counts[lifecycle] = (counts[lifecycle] ?? 0) + 1;
+    return counts;
+  }, {});
+  return {
+    detailLevel: 'summary',
+    repository: {
+      ...repositorySummary(repository),
+      activeCheckoutId: repository.activeCheckoutId,
+      checkoutCount: repository.checkouts.length,
+      checkoutCounts,
+    },
+    migration: summarizeEntityMigrationReport(migration),
+    next: 'Re-call with detail_level=detail only when full checkout or migration evidence is required.',
+  };
+}
+
 function failure(error: unknown): RepositoryToolResult {
   const message = compactErrorMessage(error);
   const code = message.includes(':') ? message.slice(0, message.indexOf(':')) : 'REPOSITORY_TOOL_FAILED';
@@ -394,6 +460,7 @@ export async function callRepositoryTool(
     const repoIdValue = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
     switch (name) {
       case 'repository_register': {
+        const startedAt = performance.now();
         const repository = registerRepository({
           path: String(args.path ?? ''),
           controllerHome,
@@ -401,7 +468,11 @@ export async function callRepositoryTool(
           remoteUrl: typeof args.remote_url === 'string' ? args.remote_url : undefined,
           defaultBranch: typeof args.default_branch === 'string' ? args.default_branch : undefined,
         });
-        return result({ repository, migration: bindRepositoryEntities(repository) });
+        const migration = bindRepositoryEntities(repository);
+        return result(withResponseMeta(
+          summarizeRepositoryRegistration(repository, migration, args.detail_level === 'detail'),
+          startedAt,
+        ));
       }
       case 'repository_latest_source_diagnose':
         return result({
@@ -428,12 +499,23 @@ export async function callRepositoryTool(
       case 'repository_get':
         return result({ repository: getRepository(repoIdValue, controllerHome, { includeRemoved: args.include_removed === true }) });
       case 'repository_validate': {
+        const startedAt = performance.now();
         const repository = getRepository(repoIdValue, controllerHome, { includeRemoved: true });
-        return result({ validation: validateRepository(repoIdValue, controllerHome), migration: bindRepositoryEntities(repository) });
+        const payload = {
+          detailLevel: args.detail_level === 'detail' ? 'detail' : 'summary',
+          validation: validateRepository(repoIdValue, controllerHome),
+          migration: summarizeEntityMigrationReport(bindRepositoryEntities(repository), args.detail_level === 'detail'),
+        };
+        return result(withResponseMeta(payload, startedAt));
       }
       case 'repository_refresh': {
+        const startedAt = performance.now();
         const repository = refreshRepository(repoIdValue, controllerHome);
-        return result({ repository, migration: bindRepositoryEntities(repository) });
+        const migration = bindRepositoryEntities(repository);
+        return result(withResponseMeta(
+          summarizeRepositoryRegistration(repository, migration, args.detail_level === 'detail'),
+          startedAt,
+        ));
       }
       case 'repository_update':
         return result({ repository: updateRepository(repoIdValue, {

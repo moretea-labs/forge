@@ -427,7 +427,10 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     detail_level: { type: 'string', enum: ['summary', 'full'] },
   }),
   definition('cancel_job', 'Cancel one queued or running durable Execution Job.', { job_id: { type: 'string' }, repo_id: repoId, reason: { type: 'string' } }, ['job_id'], false),
-  definition('controller_ready', 'Return Gateway, Controller Daemon, Worker isolation, queue, and repository projection readiness.', { repo_id: repoId }),
+  definition('controller_ready', 'Return Gateway, Controller Daemon, Worker isolation, queue, and repository projection readiness.', {
+    repo_id: repoId,
+    detail_level: { type: 'string', enum: ['summary', 'detail'], description: 'Defaults to summary; detail returns full runtime, tool-surface, history, and projection evidence.' },
+  }),
   definition('repository_runtime_snapshot', 'Read the materialized runtime projection without scanning historical state.', { repo_id: repoId }),
   definition('schedule_dedupe_report', 'Read-only report that groups duplicate schedules by semantic trigger/action identity.', {
     repo_id: repoId,
@@ -995,6 +998,82 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     repo_id: repoId, finding_id: { type: 'string' }, request_id: { type: 'string' }, kind: { type: 'string', enum: ['bug', 'feature', 'governance', 'investigation'] }, goals: { type: 'array', items: { type: 'string' } }, acceptance_criteria: { type: 'array', items: { type: 'string' } },
   }, ['finding_id'], false),
 ];
+
+export function summarizeControllerReadyPayload(fullPayload: Record<string, unknown>): Record<string, unknown> {
+  const health = (fullPayload.health ?? {}) as Record<string, unknown>;
+  const workerLoop = (fullPayload.workerLoop ?? {}) as Record<string, unknown>;
+  const durableScheduler = (fullPayload.durableScheduler ?? {}) as Record<string, unknown>;
+  const localBridge = (fullPayload.localBridge ?? {}) as Record<string, unknown>;
+  const localBridgeHealth = (localBridge.health ?? {}) as Record<string, unknown>;
+  const stableSupervisor = (fullPayload.stableSupervisor ?? {}) as Record<string, unknown>;
+  const toolSurface = (fullPayload.toolSurface ?? {}) as Record<string, unknown>;
+  const expectedTools = Array.isArray(toolSurface.expectedTools) ? toolSurface.expectedTools : [];
+  const actualTools = Array.isArray(toolSurface.actualTools) ? toolSurface.actualTools : [];
+  const repoIdValue = typeof fullPayload.repoId === 'string' ? fullPayload.repoId : undefined;
+  return {
+    detailLevel: 'summary',
+    repoId: repoIdValue,
+    ready: fullPayload.ready,
+    state: fullPayload.state,
+    reasons: fullPayload.reasons,
+    taskLedgerStatus: fullPayload.taskLedgerStatus,
+    taskLedgerCounts: fullPayload.taskLedgerCounts,
+    gateway: fullPayload.gateway,
+    health: {
+      state: health.state,
+      ready: health.ready,
+      activeBlockers: health.activeBlockers,
+      warnings: health.warnings,
+      components: health.components,
+    },
+    activity: {
+      queueDepth: workerLoop.queueDepth,
+      runningWorkers: workerLoop.runningWorkers,
+      activeLeases: workerLoop.activeLeases,
+      schedulerStatus: durableScheduler.status,
+      schedulerHeartbeatAgeMs: durableScheduler.heartbeatAgeMs,
+      localBridgeReady: localBridgeHealth.ready ?? localBridge.running,
+    },
+    stableSupervisor: fullPayload.stableSupervisor,
+    stableIngress: fullPayload.stableIngress,
+    externalEndpoint: fullPayload.externalEndpoint,
+    coherence: {
+      ok: stableSupervisor.ready,
+      expectedReleaseRevision: stableSupervisor.expectedReleaseRevision,
+      runningReleaseRevision: stableSupervisor.runningReleaseRevision,
+      generatedServiceReleaseRevision: stableSupervisor.generatedServiceReleaseRevision,
+      installedServiceReleaseRevision: stableSupervisor.installedServiceReleaseRevision,
+    },
+    toolSurface: {
+      ready: toolSurface.ready,
+      expectedToolCount: expectedTools.length,
+      actualToolCount: actualTools.length,
+      missingTools: toolSurface.missingTools,
+      unexpectedTools: toolSurface.unexpectedTools,
+      duplicateTools: toolSurface.duplicateTools,
+      fingerprint: toolSurface.fingerprint,
+      schemaStableAcrossAccessModes: toolSurface.schemaStableAcrossAccessModes,
+    },
+    access: fullPayload.access,
+    registeredRepositories: fullPayload.registeredRepositories,
+    detailPointer: {
+      tool: 'controller_ready',
+      arguments: { ...(repoIdValue ? { repo_id: repoIdValue } : {}), detail_level: 'detail' },
+    },
+  };
+}
+
+function withRuntimeResponseMeta(payload: Record<string, unknown>, startedAt: number): Record<string, unknown> {
+  const response = {
+    ...payload,
+    responseMeta: {
+      serverDurationMs: Math.round((performance.now() - startedAt) * 100) / 100,
+      structuredPayloadBytes: 0,
+    },
+  };
+  response.responseMeta.structuredPayloadBytes = Buffer.byteLength(JSON.stringify(response), 'utf8');
+  return response;
+}
 
 function result(value: Record<string, unknown>, isError = false): CallToolResult {
   // Compact text channel by default (no pretty-print bloat).
@@ -3397,6 +3476,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         return result({ job: summarizeExecutionJob(cancelled, repoRoot) });
       }
       case 'controller_ready': {
+        const responseStartedAt = performance.now();
+        const detail = args.detail_level === 'detail';
         const explicitRepoId = typeof args.repo_id === 'string' && args.repo_id.trim() ? args.repo_id.trim() : undefined;
         const registered = listRepositories(ctx.controllerHome).filter((repository) => repository.enabled && !repository.removedAt);
         const repository = explicitRepoId
@@ -3438,8 +3519,9 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const stableIngressReady = ingressLocalReady && (externalEndpointStatus !== 'unhealthy');
         const effectiveReady = readiness.ready && toolSurfaceReady && supervisorServiceCoherence.ok && (stableSupervisorPresent ? stableIngressReady : true);
         const taskLedger = repository ? buildControllerTaskLedgerProjection(repository.canonicalRoot) : undefined;
-        const agentExecutors = readAgentExecutableReadinessSnapshot(ctx.controllerHome);
-        return result({
+        const agentExecutors = detail ? readAgentExecutableReadinessSnapshot(ctx.controllerHome) : undefined;
+        const fullPayload: Record<string, unknown> = {
+          repoId: repository?.repoId,
           ready: effectiveReady,
           state: effectiveReady ? readiness.state : 'degraded',
           taskLedgerStatus: taskLedger?.status,
@@ -3506,8 +3588,14 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           },
           access: exposure.access,
           registeredRepositories: registered.length,
-          ...(repository ? { repository: summarizeRuntimeProjectionForReadiness(readiness.projection ?? readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId).projection) } : {}),
-        });
+          ...(detail && repository
+            ? { repository: summarizeRuntimeProjectionForReadiness(readiness.projection ?? readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId).projection) }
+            : {}),
+        };
+        const payload = detail
+          ? { detailLevel: 'detail', ...fullPayload }
+          : summarizeControllerReadyPayload(fullPayload);
+        return result(withRuntimeResponseMeta(payload, responseStartedAt));
       }
       case 'repository_runtime_snapshot': {
         const repository = selected(ctx, args);
