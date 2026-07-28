@@ -12,6 +12,17 @@ import { atomicWriteFileSync } from '../installer/shared';
 import { listProcessTreeMembers, terminateProcessTree } from '../../runtime/shared/process-tree';
 import { repositoryChildProcessEnvironment } from '../../runtime/shared/process-environment';
 
+export interface ControllerCheckEffects {
+  /** Repository-relative read scopes. Use [\".\"] for the whole checkout. */
+  reads?: string[];
+  /** Repository-relative write scopes. Use [\".\"] for the whole checkout. */
+  writes?: string[];
+  cache?: 'read' | 'write';
+  temp?: 'isolated' | 'shared';
+  git?: 'read' | 'index' | 'refs' | 'write';
+  network?: 'read' | 'write';
+}
+
 export interface ControllerCheck {
   id: string;
   description: string;
@@ -19,6 +30,7 @@ export interface ControllerCheck {
   cwd: string;
   timeoutMs: number;
   source: 'repo-config' | 'package-script';
+  effects?: ControllerCheckEffects;
 }
 
 export interface ControllerCheckSnapshot extends ControllerCheck {
@@ -34,6 +46,7 @@ interface CheckConfig {
     command?: unknown;
     cwd?: string;
     timeoutMs?: number;
+    effects?: unknown;
   }>;
 }
 
@@ -57,6 +70,48 @@ function normalizeCwd(repoRoot: string, value: string | undefined): string {
   return back || '.';
 }
 
+const CHECK_EFFECT_KEYS = new Set(['reads', 'writes', 'cache', 'temp', 'git', 'network']);
+
+function normalizeEffectPaths(repoRoot: string, field: 'reads' | 'writes', value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string' || entry.trim().length === 0)) {
+    throw new Error(`check effects.${field} must be an array of non-empty repository-relative paths`);
+  }
+  return [...new Set(value.map((entry) => normalizeCwd(repoRoot, String(entry))))].sort();
+}
+
+function normalizeEffectMode<T extends string>(field: string, value: unknown, allowed: readonly T[]): T | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !allowed.includes(value as T)) {
+    throw new Error(`check effects.${field} must be one of: ${allowed.join(', ')}`);
+  }
+  return value as T;
+}
+
+function normalizeCheckEffects(repoRoot: string, value: unknown): ControllerCheckEffects | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('check effects must be an object');
+  }
+  const raw = value as Record<string, unknown>;
+  const unsupported = Object.keys(raw).filter((key) => !CHECK_EFFECT_KEYS.has(key));
+  if (unsupported.length > 0) throw new Error(`unsupported check effect field(s): ${unsupported.join(', ')}`);
+  return {
+    ...(raw.reads !== undefined ? { reads: normalizeEffectPaths(repoRoot, 'reads', raw.reads)! } : {}),
+    ...(raw.writes !== undefined ? { writes: normalizeEffectPaths(repoRoot, 'writes', raw.writes)! } : {}),
+    ...(raw.cache !== undefined ? { cache: normalizeEffectMode('cache', raw.cache, ['read', 'write'] as const)! } : {}),
+    ...(raw.temp !== undefined ? { temp: normalizeEffectMode('temp', raw.temp, ['isolated', 'shared'] as const)! } : {}),
+    ...(raw.git !== undefined ? { git: normalizeEffectMode('git', raw.git, ['read', 'index', 'refs', 'write'] as const)! } : {}),
+    ...(raw.network !== undefined ? { network: normalizeEffectMode('network', raw.network, ['read', 'write'] as const)! } : {}),
+  };
+}
+
+function inferredPackageCheckEffects(name: string): ControllerCheckEffects | undefined {
+  const normalized = name.trim().toLowerCase();
+  const staticAnalysis = /(?:^|:)(?:type|typecheck|lint|format:check|runtime-architecture|mcp-compatibility|controller-v8)$/.test(normalized);
+  return staticAnalysis ? { reads: ['.'], cache: 'write' } : undefined;
+}
+
 function configuredChecks(repoRoot: string): ControllerCheck[] {
   const path = join(repoRoot, CHECK_CONFIG);
   if (!existsSync(path)) return [];
@@ -70,6 +125,7 @@ function configuredChecks(repoRoot: string): ControllerCheck[] {
       cwd: normalizeCwd(repoRoot, value.cwd),
       timeoutMs: boundedTimeout(value.timeoutMs),
       source: 'repo-config' as const,
+      effects: normalizeCheckEffects(repoRoot, value.effects),
     }];
   });
 }
@@ -92,6 +148,7 @@ function packageChecks(repoRoot: string): ControllerCheck[] {
       cwd: '.',
       timeoutMs: packageScriptTimeoutMs(name),
       source: 'package-script' as const,
+      effects: inferredPackageCheckEffects(name),
     }];
   });
 }
@@ -223,6 +280,7 @@ function checkDefinitionDigest(check: ControllerCheck): string {
     cwd: check.cwd,
     timeoutMs: check.timeoutMs,
     source: check.source,
+    effects: check.effects,
   })).digest('hex');
 }
 
@@ -249,6 +307,7 @@ function validateControllerCheckSnapshot(repoRoot: string, snapshot: ControllerC
     cwd: normalizeCwd(repoRoot, snapshot.cwd),
     timeoutMs: boundedTimeout(snapshot.timeoutMs),
     source: snapshot.source,
+    effects: normalizeCheckEffects(repoRoot, snapshot.effects),
   };
 }
 

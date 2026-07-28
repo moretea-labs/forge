@@ -4,9 +4,11 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
+  listControllerChecks,
   readLatestControllerCheckEvidence,
   runControllerCheck,
   runControllerCheckAsync,
+  snapshotControllerCheck,
 } from '../../src/cli/controller/check-runner';
 
 const roots: string[] = [];
@@ -15,7 +17,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture(checks: Record<string, { command: string[] }>) {
+function fixture(checks: Record<string, { command: string[]; effects?: unknown }>) {
   const repoRoot = mkdtempSync(join(tmpdir(), 'repo-harness-check-provenance-repo-'));
   roots.push(repoRoot);
   spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });
@@ -31,6 +33,49 @@ function fixture(checks: Record<string, { command: string[] }>) {
 }
 
 describe('controller check provenance and failure classification', () => {
+  test('normalizes declared effects and binds them into check snapshots', () => {
+    const repoRoot = fixture({
+      effects: {
+        command: [process.execPath, '-e', 'process.exit(0)'],
+        effects: {
+          reads: ['./src', 'src'],
+          writes: ['reports'],
+          cache: 'write',
+          temp: 'isolated',
+          git: 'read',
+          network: 'read',
+        },
+      },
+    });
+    const check = listControllerChecks(repoRoot).find((entry) => entry.id === 'effects');
+    expect(check?.effects).toEqual({
+      reads: ['src'],
+      writes: ['reports'],
+      cache: 'write',
+      temp: 'isolated',
+      git: 'read',
+      network: 'read',
+    });
+    const snapshot = snapshotControllerCheck(repoRoot, 'effects');
+    expect(snapshot.effects).toEqual(check?.effects);
+    const tampered = { ...snapshot, effects: { ...snapshot.effects, cache: 'read' as const } };
+    expect(() => runControllerCheck(repoRoot, 'effects', undefined, tampered)).toThrow(/CHECK_SNAPSHOT_INVALID/);
+  });
+
+  test('infers read plus cache effects only for known static package checks', () => {
+    const repoRoot = fixture({});
+    writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({
+      name: 'check-provenance-fixture',
+      scripts: {
+        'check:type': 'bun x tsc --noEmit',
+        'check:custom': 'node generate.js',
+      },
+    }));
+    const checks = listControllerChecks(repoRoot);
+    expect(checks.find((entry) => entry.id === 'package:check:type')?.effects).toEqual({ reads: ['.'], cache: 'write' });
+    expect(checks.find((entry) => entry.id === 'package:check:custom')?.effects).toBeUndefined();
+  });
+
   test('exposes cache provenance, validated revision, and original execution time', async () => {
     const marker = join(mkdtempSync(join(tmpdir(), 'repo-harness-check-marker-')), 'runs');
     roots.push(marker.replace(/\/runs$/, ''));

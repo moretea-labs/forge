@@ -131,7 +131,7 @@ export async function runCheckViaProcessRuntime(
       ? Math.max(1_000, Math.trunc(input.timeoutMs))
       : check.timeoutMs,
   );
-  const claims = claimsForCheck(input.checkId, check.command, input.repoId, input.checkoutId);
+  const claims = claimsForCheck(input.checkId, check.command, input.repoId, input.checkoutId, check.effects);
   const cwd = check.cwd === '.' ? input.repoRoot : `${input.repoRoot}/${check.cwd}`.replace(/\/+/g, '/');
 
   const handle = await spawnManagedProcess({
