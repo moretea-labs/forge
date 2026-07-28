@@ -938,6 +938,48 @@ describe("MCP controller profile", () => {
     });
   });
 
+  test("get_project_board is bounded by default and preserves full detail opt-in", async () => {
+    await withController(async (_repoRoot, ctx) => {
+      const longObjective = "Inspect the complete runtime state without returning unbounded controller history. ".repeat(18);
+      for (let issueIndex = 0; issueIndex < 9; issueIndex += 1) {
+        const created = await jsonTool(ctx, "create_issue", {
+          title: `Board payload fixture ${issueIndex}`,
+          kind: "feature",
+          tasks: Array.from({ length: 4 }, (_unused, taskIndex) => ({
+            title: `Task ${issueIndex}-${taskIndex} ${"x".repeat(500)}`,
+            objective: `${longObjective}${issueIndex}-${taskIndex}`,
+            allowed_paths: ["src/runtime/**", "tests/runtime/**", "docs/**"],
+            checks: ["typecheck"],
+            depends_on: taskIndex === 0 ? [] : [`T${taskIndex}`],
+          })),
+        });
+        expect(created.raw.isError).not.toBe(true);
+      }
+
+      const summary = await jsonTool(ctx, "get_project_board");
+      expect(summary.raw.isError).not.toBe(true);
+      expect(summary.value.detailLevel).toBe("summary");
+      expect(summary.value.issues).toBeUndefined();
+      expect(summary.value.issueCount).toBeGreaterThanOrEqual(9);
+      expect(summary.value.recentIssues.length).toBeLessThanOrEqual(5);
+      expect(summary.value.readyTasks.length).toBeLessThanOrEqual(8);
+      expect(summary.value.queueableTasks.length).toBeLessThanOrEqual(8);
+      expect(summary.value.detailPointer).toEqual({
+        tool: "get_project_board",
+        arguments: { detail_level: "detail" },
+      });
+      expect(JSON.stringify(summary.value)).not.toContain(longObjective.slice(0, 120));
+      expect(Buffer.byteLength(JSON.stringify(summary.value), "utf8")).toBeLessThanOrEqual(16 * 1024);
+      expect(summary.value.responseMeta.structuredPayloadBytes).toBeLessThanOrEqual(16 * 1024);
+
+      const detail = await jsonTool(ctx, "get_project_board", { detail_level: "detail" });
+      expect(detail.raw.isError).not.toBe(true);
+      expect(detail.value.issues.length).toBeGreaterThanOrEqual(9);
+      expect(detail.value.issues[0].tasks[0].objective).toBeString();
+      expect(detail.value.issues[0].tasks[0].allowedPaths).toBeArray();
+    });
+  });
+
   test("verify_task safely backfills a declared done Task missing completion evidence", async () => {
     await withController(async (repoRoot, ctx) => {
       expect(spawnSync("git", ["config", "user.email", "test@example.com"], { cwd: repoRoot }).status).toBe(0);

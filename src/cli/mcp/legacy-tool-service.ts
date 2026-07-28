@@ -557,6 +557,108 @@ function compactIssueView(issue: Record<string, unknown>): Record<string, unknow
   };
 }
 
+const PROJECT_BOARD_RECENT_ISSUE_LIMIT = 5;
+const PROJECT_BOARD_TASK_LIMIT = 8;
+
+function compactProjectBoardText(value: unknown, maxChars = 96): unknown {
+  if (typeof value !== "string" || value.length <= maxChars) return value;
+  return `${value.slice(0, Math.max(0, maxChars - 1))}…`;
+}
+
+function compactProjectBoardTask(
+  task: Record<string, unknown>,
+  options: { includeLifecycle?: boolean } = {},
+): Record<string, unknown> {
+  const compact: Record<string, unknown> = {
+    issueId: task.issueId,
+    taskId: task.taskId,
+    id: task.id,
+    title: compactProjectBoardText(task.title),
+    agent: task.agent,
+    effectiveStatus: task.effectiveStatus,
+    executionClass: task.executionClass,
+    approval: task.approval,
+  };
+  if (options.includeLifecycle) {
+    Object.assign(compact, {
+      status: task.status,
+      declaredStatus: task.declaredStatus,
+      statusReason: task.statusReason,
+      verificationStatus: task.verificationStatus,
+      dispatchable: task.dispatchable,
+      queueable: task.queueable,
+      retryable: task.retryable,
+      requiresExplicitRetry: task.requiresExplicitRetry,
+    });
+  }
+  return compact;
+}
+
+function compactProjectBoardIssue(
+  issue: Record<string, unknown>,
+  options: { includeTasks?: boolean } = {},
+): Record<string, unknown> {
+  const tasks = Array.isArray(issue.tasks) ? issue.tasks as Array<Record<string, unknown>> : [];
+  const taskCounts = tasks.reduce<Record<string, number>>((counts, task) => {
+    const status = typeof task.effectiveStatus === "string" ? task.effectiveStatus : "unknown";
+    counts[status] = (counts[status] ?? 0) + 1;
+    return counts;
+  }, {});
+  const compact: Record<string, unknown> = {
+    id: issue.id,
+    title: compactProjectBoardText(issue.title),
+    kind: issue.kind,
+    status: issue.status,
+    lifecycleStatus: issue.lifecycleStatus,
+    updatedAt: issue.updatedAt,
+    isCurrent: issue.isCurrent === true,
+    taskCount: tasks.length,
+    taskCounts,
+    readyTaskCount: tasks.filter((task) => task.dispatchable === true).length,
+    queueableTaskCount: tasks.filter((task) => task.queueable === true).length,
+  };
+  if (options.includeTasks) {
+    compact.tasks = tasks
+      .slice(0, PROJECT_BOARD_TASK_LIMIT)
+      .map((task) => compactProjectBoardTask(task, { includeLifecycle: true }));
+    compact.taskTruncatedCount = Math.max(0, tasks.length - PROJECT_BOARD_TASK_LIMIT);
+  }
+  return compact;
+}
+
+function summarizeProjectBoard(board: Record<string, unknown>): Record<string, unknown> {
+  const issues = Array.isArray(board.issues) ? board.issues as Array<Record<string, unknown>> : [];
+  const readyTasks = Array.isArray(board.readyTasks) ? board.readyTasks as Array<Record<string, unknown>> : [];
+  const queueableTasks = Array.isArray(board.queueableTasks) ? board.queueableTasks as Array<Record<string, unknown>> : [];
+  const currentIssue = issues.find((issue) => issue.isCurrent === true);
+  const recentIssueCandidates = currentIssue
+    ? issues.filter((issue) => issue !== currentIssue)
+    : issues;
+  const recentIssues = recentIssueCandidates.slice(0, PROJECT_BOARD_RECENT_ISSUE_LIMIT);
+  return {
+    detailLevel: "summary",
+    issueCount: issues.length,
+    archivedIssueCount: board.archivedIssueCount,
+    counts: board.counts,
+    declaredCounts: board.declaredCounts,
+    archivedCounts: board.archivedCounts,
+    currentIssueId: board.currentIssueId,
+    currentIssue: currentIssue ? compactProjectBoardIssue(currentIssue, { includeTasks: true }) : undefined,
+    recentIssues: recentIssues.map((issue) => compactProjectBoardIssue(issue)),
+    recentIssueTruncatedCount: Math.max(0, recentIssueCandidates.length - recentIssues.length),
+    readyTaskCount: readyTasks.length,
+    readyTasks: readyTasks.slice(0, PROJECT_BOARD_TASK_LIMIT).map((task) => compactProjectBoardTask(task)),
+    readyTaskTruncatedCount: Math.max(0, readyTasks.length - PROJECT_BOARD_TASK_LIMIT),
+    queueableTaskCount: queueableTasks.length,
+    queueableTasks: queueableTasks.slice(0, PROJECT_BOARD_TASK_LIMIT).map((task) => compactProjectBoardTask(task)),
+    queueableTaskTruncatedCount: Math.max(0, queueableTasks.length - PROJECT_BOARD_TASK_LIMIT),
+    detailPointer: {
+      tool: "get_project_board",
+      arguments: { detail_level: "detail" },
+    },
+  };
+}
+
 function dispatchExecutorHealthResult(
   health: ExecutorHealth,
   options: { requestId?: string; retryable?: boolean } = {},
@@ -1676,8 +1778,14 @@ export function buildMcpToolDefinitions(
       },
       {
         name: "get_project_board",
-        description: "Return task counts, ready work, and issue/task status.",
-        inputSchema: EMPTY_SCHEMA,
+        description: "Return bounded task counts and ready work by default, with the previous full Issue/Task board available on demand.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            detail_level: { type: "string", enum: ["summary", "detail", "full"] },
+          },
+          additionalProperties: false,
+        },
         annotations: readOnly,
       },
       {
@@ -3529,9 +3637,19 @@ export async function callMcpTool(
             "TOOL_DISABLED",
             "get_project_board requires the controller profile",
           );
+        const startedAt = performance.now();
         const board = projectBoard(ctx.repoRoot);
         audit(ctx, name, "ok", args);
-        return textResult(board);
+        if (args.detail_level === "detail" || args.detail_level === "full") return textResult(board);
+        const payload = {
+          ...summarizeProjectBoard(board as unknown as Record<string, unknown>),
+          responseMeta: {
+            serverDurationMs: Number((performance.now() - startedAt).toFixed(2)),
+            structuredPayloadBytes: 0,
+          },
+        };
+        payload.responseMeta.structuredPayloadBytes = Buffer.byteLength(JSON.stringify(payload), "utf8");
+        return textResult(payload);
       }
       case "get_project_progress": {
         if (ctx.policy.profile !== "controller")
