@@ -109,6 +109,39 @@ describe('runtime cleanup', () => {
     expect(report.skippedPidFiles).toContain('daemon/controller.pid');
   });
 
+  test('protects an immutable release daemon.js process for the exact Controller Home', () => {
+    const home = controllerHome();
+    writeDaemonState(home, 41_004);
+
+    const report = cleanupControllerRuntimeState(home, {
+      inspectProcess: () => ({
+        alive: true,
+        commandLine: `/opt/repo-harness/releases/release-1/daemon.js --controller-home ${home} --owner-epoch 42`,
+      }),
+    });
+
+    expect(existsSync(join(home, 'daemon', 'controller.pid'))).toBe(true);
+    expect(report.removedPidFiles).toEqual([]);
+    expect(report.skippedPidFiles).toContain('daemon/controller.pid');
+    const state = JSON.parse(readFileSync(join(home, 'daemon', 'state.json'), 'utf8')) as { status: string };
+    expect(state.status).toBe('ready');
+  });
+
+  test('does not accept a bundled daemon command for a sibling Controller Home', () => {
+    const home = controllerHome();
+    writeDaemonState(home, 41_005);
+
+    const report = cleanupControllerRuntimeState(home, {
+      inspectProcess: () => ({
+        alive: true,
+        commandLine: `/opt/repo-harness/releases/release-1/daemon.js --controller-home ${home}-other --owner-epoch 42`,
+      }),
+    });
+
+    expect(existsSync(join(home, 'daemon', 'controller.pid'))).toBe(false);
+    expect(report.removedPidFiles).toContain('daemon/controller.pid');
+  });
+
   test('removes a reused PID reference without signaling the unrelated live process', () => {
     const home = controllerHome();
     writeDaemonState(home, 41_002);

@@ -102,7 +102,9 @@ export function readControllerDaemonStatus(controllerHome: string): ControllerDa
   };
   let pid = state.pid;
   try { pid = Number(readFileSync(daemonPidPath(home), 'utf8').trim()) || pid; } catch { /* no pid */ }
-  if ((withGeneration.status === 'ready' || withGeneration.status === 'starting') && !pidAlive(pid)) {
+  const alive = pidAlive(pid);
+  const heartbeatHealthy = alive ? schedulerHeartbeatHealthy(home) : false;
+  if ((withGeneration.status === 'ready' || withGeneration.status === 'starting') && !alive) {
     return {
       ...withGeneration,
       status: 'stopped',
@@ -110,7 +112,22 @@ export function readControllerDaemonStatus(controllerHome: string): ControllerDa
       shutdownReason: withGeneration.shutdownReason ?? 'process_missing',
     };
   }
-  if (withGeneration.status === 'ready' && !schedulerHeartbeatHealthy(home)) {
+  if ((withGeneration.status === 'stopped' || withGeneration.status === 'failed') && alive && heartbeatHealthy) {
+    // Cleanup/projection writers may race a Supervisor replacement. A live
+    // Daemon that continues to publish its Scheduler heartbeat is stronger
+    // evidence than a stale terminal projection. Keep this read-only; the next
+    // lifecycle write or rollout will repair the durable state file.
+    return {
+      ...withGeneration,
+      status: 'ready',
+      pid,
+      stoppedAt: undefined,
+      shutdownReason: undefined,
+      error: undefined,
+      degraded: false,
+    };
+  }
+  if (withGeneration.status === 'ready' && !heartbeatHealthy) {
     const startedAt = withGeneration.startedAt ? Date.parse(withGeneration.startedAt) : Number.NaN;
     if (Number.isFinite(startedAt) && Date.now() - startedAt < DAEMON_STARTUP_GRACE_MS) {
       return { ...withGeneration, status: 'starting', pid };

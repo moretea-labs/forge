@@ -221,11 +221,24 @@ function inspectProcessDefault(pid: number): RuntimeProcessSnapshot {
   }
 }
 
-function expectedDaemonCommand(controllerHome: string, commandLine: string | undefined): boolean {
-  if (!commandLine) return false;
-  const home = canonicalPath(controllerHome);
-  const referencesHome = commandLine.includes(controllerHome) || commandLine.includes(home);
-  return referencesHome && /(?:^|[\\/])daemon-entry\.(?:ts|js)(?:\s|$)/.test(commandLine);
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, (character) => `\\${character}`);
+}
+
+function commandReferencesControllerHome(commandLine: string, controllerHome: string): boolean {
+  const homes = new Set([resolve(controllerHome), canonicalPath(controllerHome)]);
+  return Array.from(homes).some((home) => {
+    const quotedHome = escapeRegExp(home);
+    return new RegExp(`--controller-home(?:=|\\s+)["']?${quotedHome}["']?(?=\\s|$)`).test(commandLine);
+  });
+}
+
+export function expectedDaemonCommand(controllerHome: string, commandLine: string | undefined): boolean {
+  if (!commandLine || !commandReferencesControllerHome(commandLine, controllerHome)) return false;
+  // Source/dev Daemons execute daemon-entry.ts/js. Immutable Supervisor releases
+  // execute the bundled daemon.js artifact. Both identities are valid only when
+  // the command carries the exact slot/root Controller Home above.
+  return /(?:^|[\\/])(?:daemon-entry\.(?:ts|js)|daemon\.js)(?:\s|$)/.test(commandLine);
 }
 
 function updateDaemonStateForStalePid(controllerHome: string, stalePid: number | undefined, nowIso: string): void {

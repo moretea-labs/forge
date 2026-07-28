@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { ensureControllerDaemon, readControllerDaemonStatus, schedulerHeartbeatSnapshotHealthy } from '../../src/runtime/control-plane/daemon-client';
@@ -39,6 +39,60 @@ describe('control-plane hardening', () => {
     const ensured = ensureControllerDaemon(controllerHome);
     expect(ensured.pid).toBe(process.pid);
     expect(ensured.startedAt).toBe(startedAt);
+  });
+
+  test('prefers a live Daemon with a fresh Scheduler heartbeat over a stale terminal projection', () => {
+    const controllerHome = temp('repo-harness-daemon-stale-terminal-');
+    mkdirSync(join(controllerHome, 'daemon'), { recursive: true });
+    mkdirSync(join(controllerHome, 'scheduler'), { recursive: true });
+    const startedAt = new Date(Date.now() - 60_000).toISOString();
+    writeFileSync(join(controllerHome, 'daemon', 'state.json'), `${JSON.stringify({
+      schemaVersion: 1,
+      status: 'stopped',
+      pid: process.pid,
+      startedAt,
+      stoppedAt: new Date().toISOString(),
+      shutdownReason: 'lifecycle_complete',
+    }, null, 2)}\n`);
+    writeFileSync(join(controllerHome, 'scheduler', 'state.json'), `${JSON.stringify({
+      schemaVersion: 1,
+      updatedAt: new Date().toISOString(),
+      loopStartedAt: startedAt,
+      lastHeartbeatAt: new Date().toISOString(),
+      heartbeatTimeoutMs: 60_000,
+      lastRepoDispatch: {},
+    }, null, 2)}\n`);
+
+    const status = readControllerDaemonStatus(controllerHome);
+    expect(status.status).toBe('ready');
+    expect(status.pid).toBe(process.pid);
+    expect(status.degraded).toBe(false);
+    expect(status.stoppedAt).toBeUndefined();
+    expect(status.shutdownReason).toBeUndefined();
+    const durable = JSON.parse(readFileSync(join(controllerHome, 'daemon', 'state.json'), 'utf8')) as { status: string };
+    expect(durable.status).toBe('stopped');
+  });
+
+  test('keeps a stale terminal projection when the Scheduler heartbeat is stale', () => {
+    const controllerHome = temp('repo-harness-daemon-terminal-no-heartbeat-');
+    mkdirSync(join(controllerHome, 'daemon'), { recursive: true });
+    mkdirSync(join(controllerHome, 'scheduler'), { recursive: true });
+    writeFileSync(join(controllerHome, 'daemon', 'state.json'), `${JSON.stringify({
+      schemaVersion: 1,
+      status: 'stopped',
+      pid: process.pid,
+      stoppedAt: new Date().toISOString(),
+    }, null, 2)}\n`);
+    writeFileSync(join(controllerHome, 'scheduler', 'state.json'), `${JSON.stringify({
+      schemaVersion: 1,
+      updatedAt: new Date(Date.now() - 120_000).toISOString(),
+      loopStartedAt: new Date(Date.now() - 180_000).toISOString(),
+      lastHeartbeatAt: new Date(Date.now() - 120_000).toISOString(),
+      heartbeatTimeoutMs: 60_000,
+      lastRepoDispatch: {},
+    }, null, 2)}\n`);
+
+    expect(readControllerDaemonStatus(controllerHome).status).toBe('stopped');
   });
 
   test('uses the Scheduler-published heartbeat timeout and a safe legacy fallback', () => {
