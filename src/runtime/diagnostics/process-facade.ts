@@ -7,6 +7,7 @@ import { isReadOnlyDiagnosticTool, type ReadOnlyDiagnosticTool } from './read-on
 
 const DEFAULT_DIAGNOSTIC_INTERACTIVE_WAIT_MS = 2_000;
 const DEFAULT_DIAGNOSTIC_TIMEOUT_MS = 120_000;
+const DEFAULT_DIAGNOSTIC_INLINE_MAX_BYTES = 16 * 1024;
 const DEFAULT_DIAGNOSTIC_MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 
 const ROUTING_ONLY_ARGUMENTS = new Set([
@@ -80,13 +81,20 @@ function processSummary(handle: ProcessHandle): Record<string, unknown> {
   };
 }
 
-function parseDiagnosticResult(
+function readDiagnosticOutput(
   controllerHome: string,
   repoId: string,
   handle: ProcessHandle,
-): Record<string, unknown> {
+): { output: string; bytes: number } {
   const persisted = readProcessLogs(controllerHome, repoId, handle.processId, DEFAULT_DIAGNOSTIC_MAX_OUTPUT_BYTES);
   const output = handle.stdout ?? handle.stdoutTail ?? persisted?.stdout ?? '';
+  return {
+    output,
+    bytes: persisted?.stdoutBytes ?? Buffer.byteLength(output, 'utf8'),
+  };
+}
+
+function parseDiagnosticResult(handle: ProcessHandle, output: string): Record<string, unknown> {
   if (!output.trim()) {
     throw new Error(`DIAGNOSTIC_PROCESS_EMPTY_OUTPUT: ${handle.processId}`);
   }
@@ -111,15 +119,26 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
   repository: RepositoryRecord;
   tool: ReadOnlyDiagnosticTool;
   args: Record<string, unknown>;
+  /** Internal test/embedding override; MCP callers use the fixed 16KiB budget. */
+  inlineMaxBytes?: number;
 }): Promise<Record<string, unknown>> {
   const { entry, cwd } = runtimeCliEntry();
   const semanticArgs = diagnosticArguments(input.args);
   const encodedArgs = Buffer.from(JSON.stringify(semanticArgs), 'utf8').toString('base64url');
-  const interactiveWaitMs = boundedNumber(
-    input.args.interactive_wait_ms,
-    DEFAULT_DIAGNOSTIC_INTERACTIVE_WAIT_MS,
-    0,
-    120_000,
+  const returnHandleImmediately = input.args.apply_mode === 'async';
+  const interactiveWaitMs = returnHandleImmediately
+    ? 0
+    : boundedNumber(
+      input.args.interactive_wait_ms,
+      DEFAULT_DIAGNOSTIC_INTERACTIVE_WAIT_MS,
+      0,
+      120_000,
+    );
+  const inlineMaxBytes = boundedNumber(
+    input.inlineMaxBytes,
+    DEFAULT_DIAGNOSTIC_INLINE_MAX_BYTES,
+    1,
+    DEFAULT_DIAGNOSTIC_MAX_OUTPUT_BYTES,
   );
   const timeoutMs = boundedNumber(
     input.args.execution_timeout_ms,
@@ -155,6 +174,7 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
     timeoutMs,
     maxOutputBytes: DEFAULT_DIAGNOSTIC_MAX_OUTPUT_BYTES,
     resourceClaims: [],
+    returnHandleImmediately,
     origin: {
       surface: 'mcp',
       toolName: input.tool,
@@ -178,7 +198,27 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
         durableSideEffects: handle.durableSideEffects,
       };
     }
-    const diagnostic = parseDiagnosticResult(input.controllerHome, input.repository.repoId, handle);
+    const { output, bytes } = readDiagnosticOutput(input.controllerHome, input.repository.repoId, handle);
+    if (returnHandleImmediately || bytes > inlineMaxBytes) {
+      return {
+        accepted: true,
+        mode: 'process_managed',
+        path: 'process_managed',
+        processId: handle.processId,
+        deduplicated: handle.deduplicated === true,
+        process: processSummary(handle),
+        processPointers: pointers,
+        result: {
+          available: true,
+          inline: false,
+          bytes,
+          inlineLimitBytes: inlineMaxBytes,
+          reason: returnHandleImmediately ? 'caller_requested_async' : 'result_exceeds_inline_limit',
+        },
+        durableSideEffects: handle.durableSideEffects,
+      };
+    }
+    const diagnostic = parseDiagnosticResult(handle, output);
     return {
       ...diagnostic,
       diagnosticExecution: {
@@ -187,6 +227,8 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
         path: 'process_direct',
         processId: handle.processId,
         deduplicated: handle.deduplicated === true,
+        resultBytes: bytes,
+        inlineLimitBytes: inlineMaxBytes,
         durableSideEffects: handle.durableSideEffects,
         processPointers: pointers,
       },
@@ -198,8 +240,14 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
     mode: 'process_managed',
     path: 'process_managed',
     processId: handle.processId,
+    deduplicated: handle.deduplicated === true,
     process: processSummary(handle),
     processPointers: pointers,
+    result: {
+      available: false,
+      inline: false,
+      reason: returnHandleImmediately ? 'caller_requested_async' : 'interactive_wait_expired',
+    },
     durableSideEffects: handle.durableSideEffects,
   };
 }

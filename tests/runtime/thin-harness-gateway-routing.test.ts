@@ -21,6 +21,7 @@ import { classifyRepositoryCommand } from '../../src/cli/repositories/command-cl
 import { assessWorkMode } from '../../src/cli/controller/work-mode';
 import { routeExecution, isFastEligibleTool } from '../../src/runtime/execution/thin-harness';
 import { listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
+import { runReadOnlyDiagnosticViaProcessRuntime } from '../../src/runtime/diagnostics/process-facade';
 
 function git(root: string, args: string[]): void {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8' });
@@ -193,6 +194,9 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       expect(sideEffects.workerSpawnCount ?? 0).toBe(0);
       expect(sideEffects.projectionUpdateCount ?? 0).toBe(0);
       expect(JSON.stringify(payload)).not.toContain('EXECUTION_JOB_RETIRED');
+      if (tool === 'runtime_cleanup_preview') {
+        expect((payload.diagnosticExecution as { path?: string } | undefined)?.path).toBe('process_direct');
+      }
 
       const retry = await routeDurableMcpCall(fx.ctx, tool, { ...args, request_id: requestId }, {
         allowReadOnly: true,
@@ -207,7 +211,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     const managed = await routeDurableMcpCall(fx.ctx, 'runtime_cleanup_preview', {
       repo_id: fx.repository.repoId,
       include_temp_dirs: false,
-      interactive_wait_ms: 0,
+      apply_mode: 'async',
       request_id: 'diagnostic-managed',
     }, { allowReadOnly: true, forceDurable: true });
     expect(managed?.isError).not.toBe(true);
@@ -223,6 +227,23 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     });
     expect(waited?.isError).not.toBe(true);
 
+    const oversized = await runReadOnlyDiagnosticViaProcessRuntime({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      tool: 'runtime_cleanup_preview',
+      args: {
+        include_temp_dirs: false,
+        request_id: 'diagnostic-oversized',
+      },
+      inlineMaxBytes: 1,
+    });
+    expect(oversized.path).toBe('process_managed');
+    expect((oversized.result as { available?: boolean }).available).toBe(true);
+    expect((oversized.result as { inline?: boolean }).inline).toBe(false);
+    expect((oversized.result as { reason?: string }).reason).toBe('result_exceeds_inline_limit');
+    expect((oversized.result as { bytes?: number }).bytes ?? 0).toBeGreaterThan(1);
+    expect((oversized.result as { inlineLimitBytes?: number }).inlineLimitBytes).toBe(1);
+
     const conflict = await routeDurableMcpCall(fx.ctx, 'runtime_cleanup_preview', {
       repo_id: fx.repository.repoId,
       include_temp_dirs: true,
@@ -232,7 +253,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect((conflict?.structuredContent as { error?: { code?: string } }).error?.code).toBe('PROCESS_REQUEST_ID_CONFLICT');
 
     expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
-    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId).length).toBe(processesBefore + 4);
+    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId).length).toBe(processesBefore + 5);
   });
 
   test('structured local Git mutations use direct local handlers instead of retired ExecutionJob routing', async () => {
