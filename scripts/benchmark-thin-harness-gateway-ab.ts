@@ -73,6 +73,18 @@ function median(values: number[]): number {
     : sorted[mid]!;
 }
 
+function roundMs(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function serializedBytes(value: unknown): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), 'utf8');
+  } catch {
+    return 0;
+  }
+}
+
 function countLeaseFiles(controllerHome: string, repoId: string): number {
   try {
     const active = join(repositoryControllerRoot(controllerHome, repoId), 'leases', 'active');
@@ -100,9 +112,18 @@ function countLocalJobs(repoRoot: string): number {
 }
 
 interface MetricsSample {
+  wallClockMs: number;
   totalMs: number;
+  unattributedMs: number;
+  phaseUnattributedMs: number;
+  routingMs: number;
+  policyMs: number;
+  snapshotMs: number;
+  executionMs: number;
+  receiptMs: number;
   operationMs: number;
   overheadMs: number;
+  responseBytes: number;
   eventLoopLagMs: number;
   executionJobCount: number;
   localJobCount: number;
@@ -142,6 +163,7 @@ async function callRepositoryFacade(
   ok: boolean;
   latency: LatencyBreakdown;
   receipt?: { executionId: string } | null;
+  responseBytes: number;
 }> {
   const response = await callRepositoryTool(fixture.controllerHome, name, {
     repo_id: fixture.repository.repoId,
@@ -153,6 +175,7 @@ async function callRepositoryFacade(
     ok: response?.isError !== true && payload.ok !== false,
     latency: (payload.latency as LatencyBreakdown | undefined) ?? emptyLatency(),
     receipt: (payload.receipt as { executionId: string } | null | undefined) ?? null,
+    responseBytes: serializedBytes(response),
   };
 }
 
@@ -181,6 +204,7 @@ async function sampleOnce(
     ok: boolean;
     latency: LatencyBreakdown;
     receipt?: { executionId: string } | null;
+    responseBytes?: number;
     durableSideEffects?: {
       executionJobCount?: number;
       localJobCount?: number;
@@ -200,9 +224,14 @@ async function sampleOnce(
   const leasesBefore = countLeaseFiles(fixture.controllerHome, fixture.repository.repoId);
 
   let result: Awaited<ReturnType<typeof fn>> | undefined;
-  let lag = 0;
-  lag = await measureEventLoopLag(async () => {
-    result = await fn();
+  let wallClockMs = 0;
+  const lag = await measureEventLoopLag(async () => {
+    const started = performance.now();
+    try {
+      result = await fn();
+    } finally {
+      wallClockMs = roundMs(performance.now() - started);
+    }
   });
 
   const sideAfter = getLeaseSideEffectMetrics();
@@ -210,22 +239,36 @@ async function sampleOnce(
   const latency = result?.latency ?? {
     routingMs: 0, policyMs: 0, snapshotMs: 0, executionMs: 0, receiptMs: 0, totalMs: 0,
   };
-
-  const operationMs = Math.max(
-    latency.operationExecutionMs ?? 0,
-    latency.executionMs ?? 0,
-    latency.repositorySnapshotMs ?? 0,
-    latency.snapshotMs ?? 0,
-  );
+  const routingMs = roundMs(Math.max(latency.routingMs ?? 0, latency.gatewayValidationMs ?? 0));
+  const policyMs = roundMs(Math.max(
+    latency.policyMs ?? 0,
+    latency.authorizationMs ?? 0,
+    latency.resourceClaimMs ?? 0,
+  ));
+  const snapshotMs = roundMs(Math.max(latency.snapshotMs ?? 0, latency.repositorySnapshotMs ?? 0));
+  const executionMs = roundMs(Math.max(latency.executionMs ?? 0, latency.operationExecutionMs ?? 0));
+  const receiptMs = roundMs(Math.max(latency.receiptMs ?? 0, latency.evidencePersistenceMs ?? 0));
+  const reportedTotalMs = roundMs(latency.totalMs ?? 0);
+  const phaseAccountedMs = roundMs(routingMs + policyMs + snapshotMs + executionMs + receiptMs);
+  const operationMs = Math.max(executionMs, snapshotMs);
   const observedReceiptDelta = Math.max(
     0,
     listFastReceipts(fixture.controllerHome, fixture.repository.repoId, 200).length - receiptsBefore,
   );
 
   return {
-    totalMs: latency.totalMs,
+    wallClockMs,
+    totalMs: reportedTotalMs,
+    unattributedMs: roundMs(wallClockMs - reportedTotalMs),
+    phaseUnattributedMs: roundMs(reportedTotalMs - phaseAccountedMs),
+    routingMs,
+    policyMs,
+    snapshotMs,
+    executionMs,
+    receiptMs,
     operationMs,
-    overheadMs: Math.max(0, Math.round((latency.totalMs - operationMs) * 100) / 100),
+    overheadMs: roundMs(Math.max(0, reportedTotalMs - operationMs)),
+    responseBytes: result?.responseBytes ?? serializedBytes(result),
     eventLoopLagMs: lag,
     executionJobCount: Math.max(
       0,
@@ -271,9 +314,18 @@ function medianSample(runs: MetricsSample[]): MetricsSample {
     return median(runs.map((run) => Number(run[key])));
   };
   return {
+    wallClockMs: pick('wallClockMs') as number,
     totalMs: pick('totalMs') as number,
+    unattributedMs: pick('unattributedMs') as number,
+    phaseUnattributedMs: pick('phaseUnattributedMs') as number,
+    routingMs: pick('routingMs') as number,
+    policyMs: pick('policyMs') as number,
+    snapshotMs: pick('snapshotMs') as number,
+    executionMs: pick('executionMs') as number,
+    receiptMs: pick('receiptMs') as number,
     operationMs: pick('operationMs') as number,
     overheadMs: pick('overheadMs') as number,
+    responseBytes: pick('responseBytes') as number,
     eventLoopLagMs: pick('eventLoopLagMs') as number,
     executionJobCount: pick('executionJobCount') as number,
     localJobCount: pick('localJobCount') as number,
@@ -295,6 +347,7 @@ async function runCase(
     ok: boolean;
     latency: LatencyBreakdown;
     receipt?: { executionId: string } | null;
+    responseBytes?: number;
     durableSideEffects?: MetricsSample extends never ? never : {
       executionJobCount?: number;
       localJobCount?: number;
@@ -463,7 +516,7 @@ async function main() {
     }));
 
     const report = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       kind: 'repository_facade_feature_benchmark',
       comparisonMode: 'feature_only',
       label,
@@ -472,7 +525,10 @@ async function main() {
       at: new Date().toISOString(),
       note: [
         'Measures repository MCP facade operations plus bounded execution-kernel primitives.',
-        '1 warmup + 3 runs median. Counters come from lease instrumentation and job stores.',
+        '1 warmup + 3 runs median. Wall time surrounds only the operation; event-loop lag settling is excluded.',
+        'Reported time and phases come from LatencyBreakdown; outer gap is wall minus reported total and phase gap is reported total minus named phases.',
+        'Response bytes measure the in-process result/envelope serialized by this benchmark.',
+        'Counters come from lease instrumentation and job stores.',
         `Baseline ${BASELINE_REV} is a historical reference only; no synthetic A/B claim is made.`,
       ].join(' '),
       cases: cases.map((entry) => ({
@@ -497,12 +553,44 @@ async function main() {
       console.log(`Thin Harness repository facade benchmark [${label}]`);
       console.log(`feature=${head}`);
       console.log(`baseline-reference=${BASELINE_REV} (feature-only evidence; no synthetic A/B)\n`);
+      console.log('Latency phases (median ms; bytes are serialized in-process result/envelope):');
       console.log(
         'case'.padEnd(26),
-        'total'.padStart(8),
-        'op'.padStart(8),
-        'oh'.padStart(8),
+        'wall'.padStart(8),
+        'report'.padStart(8),
+        'outer'.padStart(8),
+        'phase'.padStart(8),
+        'route'.padStart(8),
+        'policy'.padStart(8),
+        'snap'.padStart(8),
+        'exec'.padStart(8),
+        'rcpt'.padStart(8),
+        'bytes'.padStart(8),
         'lag'.padStart(8),
+        'ok'.padStart(4),
+      );
+      for (const entry of cases) {
+        const m = entry.median;
+        console.log(
+          entry.name.padEnd(26),
+          m.wallClockMs.toFixed(1).padStart(8),
+          m.totalMs.toFixed(1).padStart(8),
+          m.unattributedMs.toFixed(1).padStart(8),
+          m.phaseUnattributedMs.toFixed(1).padStart(8),
+          m.routingMs.toFixed(1).padStart(8),
+          m.policyMs.toFixed(1).padStart(8),
+          m.snapshotMs.toFixed(1).padStart(8),
+          m.executionMs.toFixed(1).padStart(8),
+          m.receiptMs.toFixed(1).padStart(8),
+          String(m.responseBytes).padStart(8),
+          m.eventLoopLagMs.toFixed(1).padStart(8),
+          String(m.ok).padStart(4),
+        );
+      }
+
+      console.log('\nSide effects (median counts):');
+      console.log(
+        'case'.padEnd(26),
         'jobs'.padStart(5),
         'loc'.padStart(5),
         'wrk'.padStart(5),
@@ -511,16 +599,11 @@ async function main() {
         'sch'.padStart(5),
         'rcpt'.padStart(5),
         'lease'.padStart(6),
-        'ok'.padStart(4),
       );
       for (const entry of cases) {
         const m = entry.median;
         console.log(
           entry.name.padEnd(26),
-          m.totalMs.toFixed(1).padStart(8),
-          m.operationMs.toFixed(1).padStart(8),
-          m.overheadMs.toFixed(1).padStart(8),
-          m.eventLoopLagMs.toFixed(1).padStart(8),
           String(m.executionJobCount).padStart(5),
           String(m.localJobCount).padStart(5),
           String(m.workerSpawnCount).padStart(5),
@@ -529,7 +612,6 @@ async function main() {
           String(m.schedulerWakeDelta).padStart(5),
           String(m.receiptCount).padStart(5),
           String(m.leaseFilesTouched).padStart(6),
-          String(m.ok).padStart(4),
         );
       }
       console.log('\nAcceptance:', report.acceptance);
