@@ -13,7 +13,7 @@ import { createStableIngressRouter } from '../../src/runtime/supervisor/ingress-
 import { createStableIngressProcess } from '../../src/runtime/supervisor/ingress-process';
 import { controllerDaemonMaxLifetimeMs, controllerDaemonPassiveMode, publishReadyAfterStartupRecovery, resolveControllerDaemonShutdownReason } from '../../src/runtime/control-plane/daemon-entry';
 import { createSupervisorOperation, readSupervisorOperation, updateSupervisorOperation } from '../../src/runtime/supervisor/operation-store';
-import { StableSupervisorRuntime, SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_MONITOR_FAILURE_THRESHOLD, automaticRecoveryRequestId, combinedRolloutRollbackFailure, managedProcessNeedsReleaseRefresh, observeCutoverCandidateWithSingleRecovery, probeAuthenticatedMcpReadiness, probeSupervisorGatewayHealth, reconcileActiveManagedGenerations, reconcilePendingSupervisorActivations, reconcileSupervisorStateWithAuthority, recoverableCutoverObservationFailure, recoverableWriterClaimRefreshFailure, refreshWriterClaimWithSingleRetry, resumableInterruptedRollout, supervisorGatewayHealthDecision, supervisorGatewayOperational, supervisorIngressHealthDecision, supervisorMonitorFailureDecision, supervisorOperationRecoverySuppressed, terminalizeInterruptedSupervisorOperations } from '../../src/runtime/supervisor/supervisor-runtime';
+import { StableSupervisorRuntime, SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_MONITOR_FAILURE_THRESHOLD, automaticRecoveryRequestId, combinedRolloutRollbackFailure, managedProcessNeedsReleaseRefresh, observeCutoverCandidateWithSingleRecovery, observeCutoverReadinessWindow, sampleCutoverReadiness, probeAuthenticatedMcpReadiness, probeSupervisorGatewayHealth, reconcileActiveManagedGenerations, reconcilePendingSupervisorActivations, reconcileSupervisorStateWithAuthority, recoverableCutoverObservationFailure, recoverableWriterClaimRefreshFailure, refreshWriterClaimWithSingleRetry, resumableInterruptedRollout, supervisorGatewayHealthDecision, supervisorGatewayOperational, supervisorIngressHealthDecision, supervisorMonitorFailureDecision, supervisorOperationRecoverySuppressed, terminalizeInterruptedSupervisorOperations } from '../../src/runtime/supervisor/supervisor-runtime';
 import { decideRestart, newRestartBudgetRecord, recordFailure, recordRestart, recordStable } from '../../src/runtime/supervisor/restart-policy';
 import { SupervisorProcessManager, runtimeWriterEnvironment, supervisorProcessStopAuditPath } from '../../src/runtime/supervisor/process-manager';
 import { ensureMcpControllerHomeBearerToken, writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
@@ -1367,6 +1367,126 @@ describe('Stable Supervisor production hardening', () => {
     expect(supervisorOperationRecoverySuppressed('sup-op-active')).toBe(true);
     expect(supervisorOperationRecoverySuppressed(null)).toBe(false);
     expect(supervisorOperationRecoverySuppressed(undefined)).toBe(false);
+  });
+
+  test('cutover sampling defers Gateway probes until processes and Daemon are ready', async () => {
+    let daemonReads = 0;
+    let gatewayProbes = 0;
+    let daemonGenerationReads = 0;
+    let gatewayGenerationReads = 0;
+    const sample = async (daemonAlive: boolean, gatewayAlive: boolean, status: string) => await sampleCutoverReadiness({
+      daemonAlive,
+      gatewayAlive,
+      readDaemon: () => {
+        daemonReads += 1;
+        return { status };
+      },
+      probeGateway: async () => {
+        gatewayProbes += 1;
+        return { healthy: true, ready: true, detail: 'ready' };
+      },
+      readDaemonGeneration: () => {
+        daemonGenerationReads += 1;
+        return 'generation-green';
+      },
+      readGatewayGeneration: () => {
+        gatewayGenerationReads += 1;
+        return 'generation-green';
+      },
+    });
+
+    expect((await sample(false, true, 'ready')).daemon.status).toBe('unavailable');
+    expect(daemonReads).toBe(0);
+    expect(gatewayProbes).toBe(0);
+
+    expect((await sample(true, true, 'starting')).daemon.status).toBe('starting');
+    expect(daemonReads).toBe(1);
+    expect(gatewayProbes).toBe(0);
+
+    const ready = await sample(true, true, 'ready');
+    expect(ready.gateway.ready).toBe(true);
+    expect(ready.daemonGeneration).toBe('generation-green');
+    expect(ready.gatewayGeneration).toBe('generation-green');
+    expect(gatewayProbes).toBe(1);
+    expect(daemonGenerationReads).toBe(1);
+    expect(gatewayGenerationReads).toBe(1);
+  });
+
+  test('cutover readiness retries transient startup states and requires a stable window', async () => {
+    let now = 0;
+    let samples = 0;
+    const sequence = [
+      { daemon: { status: 'starting' }, gateway: { healthy: false, detail: 'connection refused' } },
+      { daemon: { status: 'ready' }, gateway: { healthy: true, ready: false, detail: 'gateway is live but temporarily not ready' } },
+      { daemon: { status: 'ready' }, gateway: { healthy: true, ready: true, detail: 'ready' } },
+      { daemon: { status: 'ready' }, gateway: { healthy: true, ready: true, detail: 'ready' } },
+      { daemon: { status: 'ready' }, gateway: { healthy: true, ready: true, detail: 'ready' } },
+    ];
+    await observeCutoverReadinessWindow({
+      expectedGeneration: 'generation-green',
+      timeoutMs: 2_000,
+      intervalMs: 250,
+      stabilityMs: 500,
+      now: () => now,
+      wait: async (ms) => { now += ms; },
+      sample: () => {
+        const state = sequence[Math.min(samples, sequence.length - 1)];
+        samples += 1;
+        return {
+          daemonAlive: true,
+          gatewayAlive: true,
+          daemon: state.daemon,
+          gateway: state.gateway,
+          daemonGeneration: 'generation-green',
+          gatewayGeneration: 'generation-green',
+        };
+      },
+    });
+    expect(samples).toBe(5);
+  });
+
+  test('cutover readiness fails immediately on process death or generation mismatch', async () => {
+    await expect(observeCutoverReadinessWindow({
+      expectedGeneration: 'generation-green',
+      timeoutMs: 5_000,
+      sample: () => ({
+        daemonAlive: false,
+        gatewayAlive: true,
+        daemon: { status: 'ready' },
+        gateway: { healthy: true, ready: true, detail: 'ready' },
+        daemonGeneration: 'generation-green',
+        gatewayGeneration: 'generation-green',
+      }),
+    })).rejects.toThrow('SUPERVISOR_CUTOVER_DAEMON_LIVENESS_FAILED');
+
+    await expect(observeCutoverReadinessWindow({
+      expectedGeneration: 'generation-green',
+      timeoutMs: 5_000,
+      sample: () => ({
+        daemonAlive: true,
+        gatewayAlive: true,
+        daemon: { status: 'ready' },
+        gateway: { healthy: true, ready: true, detail: 'ready' },
+        daemonGeneration: 'generation-blue',
+        gatewayGeneration: 'generation-green',
+      }),
+    })).rejects.toThrow(/SUPERVISOR_CUTOVER_GENERATION_MISMATCH/);
+  });
+
+  test('cutover readiness timeout preserves the latest transient failure reason', async () => {
+    let now = 0;
+    await expect(observeCutoverReadinessWindow({
+      timeoutMs: 1_000,
+      intervalMs: 250,
+      now: () => now,
+      wait: async (ms) => { now += ms; },
+      sample: () => ({
+        daemonAlive: true,
+        gatewayAlive: true,
+        daemon: { status: 'ready' },
+        gateway: { healthy: true, ready: false, detail: 'gateway is live but temporarily not ready' },
+      }),
+    })).rejects.toThrow(/SUPERVISOR_CUTOVER_GATEWAY_READINESS_FAILED: gateway is live but temporarily not ready/);
   });
 
   test('cutover observation refreshes a recoverable candidate exactly once', async () => {

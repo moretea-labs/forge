@@ -262,6 +262,112 @@ async function callMcpProbe(input: {
   }
 }
 
+export interface CutoverReadinessSample {
+  daemonAlive: boolean;
+  gatewayAlive: boolean;
+  daemon: { status: string; degraded?: boolean; error?: string };
+  gateway: SupervisorGatewayHealthProbeResult;
+  daemonGeneration?: string;
+  gatewayGeneration?: string;
+}
+
+export async function sampleCutoverReadiness(input: {
+  daemonAlive: boolean;
+  gatewayAlive: boolean;
+  readDaemon(): CutoverReadinessSample['daemon'];
+  probeGateway(): Promise<SupervisorGatewayHealthProbeResult>;
+  readDaemonGeneration?(): string | undefined;
+  readGatewayGeneration?(): string | undefined;
+}): Promise<CutoverReadinessSample> {
+  const deferredGateway: SupervisorGatewayHealthProbeResult = {
+    healthy: false,
+    detail: 'gateway probe deferred until the Daemon is ready',
+  };
+  if (!input.daemonAlive || !input.gatewayAlive) {
+    return {
+      daemonAlive: input.daemonAlive,
+      gatewayAlive: input.gatewayAlive,
+      daemon: { status: 'unavailable' },
+      gateway: deferredGateway,
+    };
+  }
+
+  const daemon = input.readDaemon();
+  if (daemon.status !== 'ready' || daemon.degraded) {
+    return {
+      daemonAlive: true,
+      gatewayAlive: true,
+      daemon,
+      gateway: deferredGateway,
+    };
+  }
+
+  const gateway = await input.probeGateway();
+  if (!gateway.healthy || gateway.ready === false) {
+    return {
+      daemonAlive: true,
+      gatewayAlive: true,
+      daemon,
+      gateway,
+    };
+  }
+  return {
+    daemonAlive: true,
+    gatewayAlive: true,
+    daemon,
+    gateway,
+    daemonGeneration: input.readDaemonGeneration?.(),
+    gatewayGeneration: input.readGatewayGeneration?.(),
+  };
+}
+
+export async function observeCutoverReadinessWindow(input: {
+  expectedGeneration?: string;
+  timeoutMs: number;
+  intervalMs?: number;
+  stabilityMs?: number;
+  sample(): Promise<CutoverReadinessSample> | CutoverReadinessSample;
+  now?: () => number;
+  wait?: (ms: number) => Promise<void>;
+}): Promise<void> {
+  const now = input.now ?? Date.now;
+  const wait = input.wait ?? sleep;
+  const timeoutMs = Math.max(1_000, input.timeoutMs);
+  const intervalMs = Math.max(25, input.intervalMs ?? 250);
+  const stabilityMs = Math.min(timeoutMs, Math.max(250, input.stabilityMs ?? 1_000));
+  const deadline = now() + timeoutMs;
+  let stableSince: number | undefined;
+  let lastReadinessFailure = 'SUPERVISOR_CUTOVER_READINESS_TIMEOUT: no healthy sample observed';
+
+  while (true) {
+    const sample = await input.sample();
+    if (!sample.daemonAlive) throw new Error('SUPERVISOR_CUTOVER_DAEMON_LIVENESS_FAILED');
+    if (!sample.gatewayAlive) throw new Error('SUPERVISOR_CUTOVER_GATEWAY_LIVENESS_FAILED');
+
+    if (sample.daemon.status !== 'ready' || sample.daemon.degraded) {
+      stableSince = undefined;
+      lastReadinessFailure = `SUPERVISOR_CUTOVER_DAEMON_READINESS_FAILED: status=${sample.daemon.status}${sample.daemon.error ? ` error=${sample.daemon.error}` : ''}`;
+    } else if (!sample.gateway.healthy || sample.gateway.ready === false) {
+      stableSince = undefined;
+      lastReadinessFailure = `SUPERVISOR_CUTOVER_GATEWAY_READINESS_FAILED: ${sample.gateway.detail}`;
+    } else {
+      if (input.expectedGeneration
+        && (sample.daemonGeneration !== input.expectedGeneration || sample.gatewayGeneration !== input.expectedGeneration)) {
+        throw new Error(
+          `SUPERVISOR_CUTOVER_GENERATION_MISMATCH: expected=${input.expectedGeneration} daemon=${sample.daemonGeneration ?? 'missing'} gateway=${sample.gatewayGeneration ?? 'missing'}`,
+        );
+      }
+      const observedAt = now();
+      stableSince ??= observedAt;
+      if (observedAt - stableSince >= stabilityMs) return;
+    }
+
+    const remainingMs = deadline - now();
+    if (remainingMs <= 0) throw new Error(lastReadinessFailure);
+    await wait(Math.min(intervalMs, remainingMs));
+  }
+}
+
 export async function probeAuthenticatedMcpReadiness(input: {
   baseUrl: string;
   token: string;
@@ -1349,32 +1455,19 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     input: StartedRuntimeSlot,
     timeoutMs = SUPERVISOR_CUTOVER_OBSERVATION_MS,
   ): Promise<void> {
-    const deadline = Date.now() + Math.max(1_000, timeoutMs);
-    while (Date.now() < deadline) {
-      if (input.manager.observe(input.controllerDaemon) !== 'alive') {
-        throw new Error('SUPERVISOR_CUTOVER_DAEMON_LIVENESS_FAILED');
-      }
-      if (input.manager.observe(input.gatewayHost) !== 'alive') {
-        throw new Error('SUPERVISOR_CUTOVER_GATEWAY_LIVENESS_FAILED');
-      }
-      const daemon = readControllerDaemonStatus(input.controllerDaemon.controllerHome);
-      if (daemon.status !== 'ready' || daemon.degraded) {
-        throw new Error(`SUPERVISOR_CUTOVER_DAEMON_READINESS_FAILED: status=${daemon.status}${daemon.error ? ` error=${daemon.error}` : ''}`);
-      }
-      const binding = input.manager.gatewayBinding(input.slot);
-      const gateway = await probeSupervisorGatewayHealth(`http://${binding.host}:${binding.port}/ready`);
-      if (!gateway.healthy || gateway.ready === false) {
-        throw new Error(`SUPERVISOR_CUTOVER_GATEWAY_READINESS_FAILED: ${gateway.detail}`);
-      }
-      const daemonGeneration = readRuntimeGeneration(input.controllerDaemon.controllerHome)?.generation;
-      const gatewayGeneration = loadMcpServiceRuntimeState(input.gatewayHost.controllerHome, this.options.repoRoot)?.server.generation;
-      if (input.generation && (daemonGeneration !== input.generation || gatewayGeneration !== input.generation)) {
-        throw new Error(
-          `SUPERVISOR_CUTOVER_GENERATION_MISMATCH: expected=${input.generation} daemon=${daemonGeneration ?? 'missing'} gateway=${gatewayGeneration ?? 'missing'}`,
-        );
-      }
-      await sleep(500);
-    }
+    const binding = input.manager.gatewayBinding(input.slot);
+    await observeCutoverReadinessWindow({
+      expectedGeneration: input.generation,
+      timeoutMs,
+      sample: async () => await sampleCutoverReadiness({
+        daemonAlive: input.manager.observe(input.controllerDaemon) === 'alive',
+        gatewayAlive: input.manager.observe(input.gatewayHost) === 'alive',
+        readDaemon: () => readControllerDaemonStatus(input.controllerDaemon.controllerHome),
+        probeGateway: async () => await probeSupervisorGatewayHealth(`http://${binding.host}:${binding.port}/ready`),
+        readDaemonGeneration: () => readRuntimeGeneration(input.controllerDaemon.controllerHome)?.generation,
+        readGatewayGeneration: () => loadMcpServiceRuntimeState(input.gatewayHost.controllerHome, this.options.repoRoot)?.server.generation,
+      }),
+    });
   }
 
   private async stopManagedProcess(
