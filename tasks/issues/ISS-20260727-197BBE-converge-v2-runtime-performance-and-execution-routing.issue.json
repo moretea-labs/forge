@@ -279,11 +279,12 @@
       "notes": [
         "2026-07-28 bounded slice integrated on main 6eb7ac4b and live release 6eb7ac4be7d6: controller_ready now defaults to a decision-focused summary with detailPointer, explicit release coherence, compact tool counts/fingerprint, activity, current blockers and responseMeta. Live summary is 2,887 structured bytes and 64.4ms server duration; full history/tool arrays/repository projection are detail-only. repository_register/validate/refresh also gained bounded summary/detail behavior. Remaining T4 scope (rh_context compaction, current-vs-historical attention across all facades, broader revision fields/route behavior fingerprint) remains planned.",
         "2026-07-28 next bounded MCP slice: live get_project_board default response expands all 11 Issues and full Task objectives/paths/checks/readiness. Implement summary-by-default with explicit detail opt-in, bounded recent/current/ready projections and a strict response-size regression; preserve internal projectBoard detail behavior.",
-        "2026-07-28 bounded get_project_board slice integrated at main addd2fe6 and live release addd2fe6a9df. Default MCP response now omits the full issues/task payload, returns counts, current Issue, at most 5 recent Issues, at most 8 ready/queueable Tasks, truncation counts and detailPointer; detail_level=detail/full preserves the previous full board. A multi-Issue long-title regression enforces <=16KB. Live production summary over 11 Issues measured 5,816 structured bytes and 2.84ms server duration. Broader T4 context/coherence work remains running."
+        "2026-07-28 bounded get_project_board slice integrated at main addd2fe6 and live release addd2fe6a9df. Default MCP response now omits the full issues/task payload, returns counts, current Issue, at most 5 recent Issues, at most 8 ready/queueable Tasks, truncation counts and detailPointer; detail_level=detail/full preserves the previous full board. A multi-Issue long-title regression enforces <=16KB. Live production summary over 11 Issues measured 5,816 structured bytes and 2.84ms server duration. Broader T4 context/coherence work remains running.",
+        "2026-07-28 bounded update_task response integrated at main 229750b2 and live release 229750b2833d. Default write response now returns compact Issue fields, at most 12 compact Task statuses, updatedTask, taskTruncatedCount, detailPointer and responseMeta; detail_level=detail/full preserves the prior full effective Issue view. Multi-Task long-title/objective regression enforces <=16KB. Broader T4 remains running."
       ],
       "runIds": [],
       "createdAt": "2026-07-27T09:26:56.885Z",
-      "updatedAt": "2026-07-28T09:00:00.010Z",
+      "updatedAt": "2026-07-28T09:09:16.571Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
@@ -326,6 +327,6 @@
     }
   ],
   "createdAt": "2026-07-27T09:26:56.885Z",
-  "updatedAt": "2026-07-28T09:00:00.010Z",
+  "updatedAt": "2026-07-28T09:09:16.571Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }
