@@ -16,6 +16,7 @@ import { listLocalBridgeJobSnapshots } from '../../src/cli/local-bridge/job-stor
 import { callRepositoryTool } from '../../src/cli/mcp/repository-tools';
 import { callExecutionTool } from '../../src/runtime/gateway/mcp/execution-tools';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { callProcessTool } from '../../src/runtime/gateway/mcp/process-tools';
 import { classifyRepositoryCommand } from '../../src/cli/repositories/command-classifier';
 import { assessWorkMode } from '../../src/cli/controller/work-mode';
 import { routeExecution, isFastEligibleTool } from '../../src/runtime/execution/thin-harness';
@@ -165,29 +166,73 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(listProcessRecords(fx.controllerHome, fx.repository.repoId).length).toBe(processesBefore);
   });
 
-  test('registered read-only isolated tools override forceDurable and reach runtime handlers', async () => {
+  test('registered read-only isolated tools use Process Runtime without durable side effects', async () => {
     const fx = fixture();
     roots.push(fx.root);
     const jobsBefore = listExecutionJobs(fx.controllerHome, fx.repository.repoId).length;
     const processesBefore = listProcessRecords(fx.controllerHome, fx.repository.repoId).length;
 
-    for (const [tool, args] of [
-      ['workflow_watchdog_report', { repo_id: fx.repository.repoId, include_processes: true }],
+    for (const [index, [tool, args]] of ([
+      ['workflow_watchdog_report', { repo_id: fx.repository.repoId, include_processes: false }],
       ['runtime_maintenance_status', { repo_id: fx.repository.repoId }],
       ['runtime_cleanup_preview', { repo_id: fx.repository.repoId, include_temp_dirs: false }],
-    ] as const) {
-      const routed = await routeDurableMcpCall(fx.ctx, tool, args, {
+    ] as const).entries()) {
+      const requestId = `diagnostic-${index}`;
+      const routed = await routeDurableMcpCall(fx.ctx, tool, { ...args, request_id: requestId }, {
         allowReadOnly: true,
         forceDurable: true,
       });
-      expect(routed).toBeUndefined();
-      const direct = await callRuntimeTool(fx.ctx, tool, args);
-      expect(direct?.isError).not.toBe(true);
-      expect(JSON.stringify(direct?.structuredContent)).not.toContain('EXECUTION_JOB_RETIRED');
+      expect(routed).toBeDefined();
+      expect(routed?.isError).not.toBe(true);
+      const payload = routed?.structuredContent as Record<string, unknown>;
+      const execution = (payload.diagnosticExecution ?? payload) as Record<string, unknown>;
+      expect(['process_direct', 'process_managed']).toContain(String(execution.path ?? payload.path));
+      const sideEffects = (execution.durableSideEffects ?? payload.durableSideEffects) as Record<string, number>;
+      expect(sideEffects.executionJobCount ?? 0).toBe(0);
+      expect(sideEffects.localJobCount ?? 0).toBe(0);
+      expect(sideEffects.workerSpawnCount ?? 0).toBe(0);
+      expect(sideEffects.projectionUpdateCount ?? 0).toBe(0);
+      expect(JSON.stringify(payload)).not.toContain('EXECUTION_JOB_RETIRED');
+
+      const retry = await routeDurableMcpCall(fx.ctx, tool, { ...args, request_id: requestId }, {
+        allowReadOnly: true,
+        forceDurable: true,
+      });
+      const retryPayload = retry?.structuredContent as Record<string, unknown>;
+      const processId = String((execution.processId ?? payload.processId) ?? '');
+      const retryExecution = (retryPayload.diagnosticExecution ?? retryPayload) as Record<string, unknown>;
+      expect(String((retryExecution.processId ?? retryPayload.processId) ?? '')).toBe(processId);
     }
 
+    const managed = await routeDurableMcpCall(fx.ctx, 'runtime_cleanup_preview', {
+      repo_id: fx.repository.repoId,
+      include_temp_dirs: false,
+      interactive_wait_ms: 0,
+      request_id: 'diagnostic-managed',
+    }, { allowReadOnly: true, forceDurable: true });
+    expect(managed?.isError).not.toBe(true);
+    const managedPayload = managed?.structuredContent as Record<string, unknown>;
+    expect(managedPayload.path).toBe('process_managed');
+    const managedProcessId = String(managedPayload.processId ?? '');
+    expect(managedProcessId).toBeTruthy();
+    expect((managedPayload.processPointers as { wait?: { tool?: string } }).wait?.tool).toBe('process_wait');
+    const waited = await callProcessTool(fx.ctx, 'process_wait', {
+      repo_id: fx.repository.repoId,
+      process_id: managedProcessId,
+      timeout_ms: 10_000,
+    });
+    expect(waited?.isError).not.toBe(true);
+
+    const conflict = await routeDurableMcpCall(fx.ctx, 'runtime_cleanup_preview', {
+      repo_id: fx.repository.repoId,
+      include_temp_dirs: true,
+      request_id: 'diagnostic-2',
+    }, { allowReadOnly: true, forceDurable: true });
+    expect(conflict?.isError).toBe(true);
+    expect((conflict?.structuredContent as { error?: { code?: string } }).error?.code).toBe('PROCESS_REQUEST_ID_CONFLICT');
+
     expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
-    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId).length).toBe(processesBefore);
+    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId).length).toBe(processesBefore + 4);
   });
 
   test('structured local Git mutations use direct local handlers instead of retired ExecutionJob routing', async () => {

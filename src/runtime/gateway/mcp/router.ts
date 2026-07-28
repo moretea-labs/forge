@@ -25,6 +25,10 @@ import {
   classifyRepositoryCommandRoute,
   runCheckViaProcessRuntime,
 } from '../../execution/process-runtime';
+import {
+  isProcessIsolatedReadDiagnostic,
+  runReadOnlyDiagnosticViaProcessRuntime,
+} from '../../diagnostics/process-facade';
 
 const DIRECT_REPOSITORY_TOOLS = new Set(['repository_list', 'repository_get', 'repository_workbench', 'repository_command_preview']);
 export const RETIRED_AGENT_OPERATIONS = new Set([
@@ -234,10 +238,13 @@ export function classifyGatewayExecutionPath(
   reasons: string[];
   decision?: ExecutionDecision;
 } {
-  // The registered MCP definition is authoritative. Read-only tools always use
-  // their real handler, even when the server isolates blocking implementations
-  // from the public event loop. Isolation is an execution concern, not a durable
-  // ownership boundary.
+  // Heavy read-only diagnostics must leave the Gateway event loop before the
+  // generic read-only shortcut. Process Runtime preserves the same request and
+  // returns either the completed JSON or a queryable process handle.
+  if (isProcessIsolatedReadDiagnostic(name)) {
+    return { path: 'fast', reasons: ['isolated_read_diagnostic_process'] };
+  }
+  // Registered bounded reads execute through their real handler.
   if (opts.definition?.annotations?.readOnlyHint === true) {
     return { path: 'direct', reasons: ['registered_readonly_tool'] };
   }
@@ -633,6 +640,48 @@ export async function routeDurableMcpCall(
       message: 'This operation requires an explicitly claimed external Controller; the Kernel no longer creates ExecutionJobs.',
       suggestedOperation: 'Create or resume a WorkContract, claim it with controller_claim, then use Process Runtime commands or rh_work.launcher_start.',
     });
+  }
+
+  if (isProcessIsolatedReadDiagnostic(name) && classification.path === 'fast') {
+    const repository = resolveRepositorySelection({
+      repoId: typeof args.repo_id === 'string' ? args.repo_id : undefined,
+      checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
+      explicitPath: ctx.explicitRepository?.canonicalRoot,
+      controllerHome: ctx.controllerHome,
+      allowSoleRepository: true,
+    });
+    if (!repository) {
+      return result({
+        accepted: false,
+        mode: 'reject',
+        path: 'reject',
+        message: `${name} requires a resolvable repository`,
+      }, true);
+    }
+    try {
+      const payload = await runReadOnlyDiagnosticViaProcessRuntime({
+        controllerHome: ctx.controllerHome,
+        repository,
+        tool: name,
+        args,
+      });
+      return result(payload, payload.accepted === false);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const code = message.includes(':') ? message.slice(0, message.indexOf(':')) : 'DIAGNOSTIC_PROCESS_FAILED';
+      return result({
+        accepted: false,
+        mode: 'process_direct',
+        path: 'process_direct',
+        error: { code, message },
+        durableSideEffects: {
+          executionJobCount: 0,
+          localJobCount: 0,
+          workerSpawnCount: 0,
+          projectionUpdateCount: 0,
+        },
+      }, true);
+    }
   }
 
   // run_check Process Runtime facade — execute here so legacy LocalBridgeJob path is skipped.

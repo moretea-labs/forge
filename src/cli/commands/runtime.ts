@@ -10,7 +10,8 @@ import { requestControllerServiceRestart } from '../controller/restart-coordinat
 import { ensureControllerDaemon, readControllerDaemonStatus } from '../../runtime/control-plane/daemon-client';
 import { findExecutionJob, listActiveExecutionJobs, listExecutionJobs } from '../../runtime/execution/jobs/store';
 import { readJobEvents } from '../../runtime/evidence/event-ledger';
-import { listRepositories } from '../repositories/registry';
+import { getRepository, listRepositories } from '../repositories/registry';
+import { executeReadOnlyDiagnostic, isReadOnlyDiagnosticTool } from '../../runtime/diagnostics/read-only-tool';
 import { rebuildRepositoryProjection } from '../../runtime/projections/materialized-view';
 import { listOccurrences, listSchedules } from '../../runtime/workflow/schedules/store';
 
@@ -106,6 +107,29 @@ export function buildRuntimeCommand(): Command {
       const home = ensureControllerHome(opts.controllerHome);
       if (opts.repoId) return output({ jobs: listExecutionJobs(home, opts.repoId, Number(opts.limit ?? 100)) });
       output({ jobs: listActiveExecutionJobs(home) });
+    });
+
+  command.command('diagnostic-read', { hidden: true })
+    .description('Internal isolated read-only diagnostic process entry')
+    .requiredOption('--controller-home <path>', 'Controller state root')
+    .requiredOption('--repo-id <id>', 'Repository id')
+    .requiredOption('--tool <name>', 'Read-only diagnostic tool name')
+    .requiredOption('--args-base64 <payload>', 'Base64url JSON arguments')
+    .action((opts: { controllerHome: string; repoId: string; tool: string; argsBase64: string }) => {
+      const home = ensureControllerHome(opts.controllerHome);
+      const repository = getRepository(opts.repoId, home);
+      if (!repository) throw new Error(`REPOSITORY_NOT_FOUND: ${opts.repoId}`);
+      if (!isReadOnlyDiagnosticTool(opts.tool)) throw new Error(`DIAGNOSTIC_TOOL_UNSUPPORTED: ${opts.tool}`);
+      let args: Record<string, unknown>;
+      try {
+        const decoded = JSON.parse(Buffer.from(opts.argsBase64, 'base64url').toString('utf8')) as unknown;
+        if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) throw new Error('arguments must be a JSON object');
+        args = decoded as Record<string, unknown>;
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`DIAGNOSTIC_ARGUMENTS_INVALID: ${detail}`);
+      }
+      process.stdout.write(JSON.stringify(executeReadOnlyDiagnostic(opts.tool, home, repository, args)));
     });
 
   command.command('schedules')
