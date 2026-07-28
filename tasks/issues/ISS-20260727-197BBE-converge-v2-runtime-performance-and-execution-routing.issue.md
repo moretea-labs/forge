@@ -2,7 +2,7 @@
 id: "ISS-20260727-197BBE"
 kind: "feature"
 status: "in_progress"
-updated_at: "2026-07-28T11:12:29.826Z"
+updated_at: "2026-07-28T11:32:40.847Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -51,7 +51,7 @@ source: "repo-harness-controller-v8"
 
 ### T2 — Converge resource claims for checks and local commands
 
-- Status: `ready`
+- Status: `verified`
 - Objective: 基于真实副作用收敛 Process Resource Claims。Typecheck/lint/静态分析默认 workspace read + 声明的 cache/output write，不再同时申请同一 workspace read/write；为命名检查增加显式 reads/writes/cache/temp/git/network effects，未知副作用继续 fail closed；验证长检查期间无冲突读取可并发。
 - Depends on: `T1`
 - Allowed paths: `src/runtime/execution/process-runtime/**`, `src/runtime/resources/claims/**`, `src/runtime/gateway/mcp/resource-policy.ts`, `src/cli/controller/check-runner.ts`, `tests/runtime/**`, `tests/cli/**`, `docs/operations/**`, `tasks/issues/**`

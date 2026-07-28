@@ -188,7 +188,7 @@
       "id": "T2",
       "title": "Converge resource claims for checks and local commands",
       "objective": "基于真实副作用收敛 Process Resource Claims。Typecheck/lint/静态分析默认 workspace read + 声明的 cache/output write，不再同时申请同一 workspace read/write；为命名检查增加显式 reads/writes/cache/temp/git/network effects，未知副作用继续 fail closed；验证长检查期间无冲突读取可并发。",
-      "status": "ready",
+      "status": "verified",
       "dependsOn": [
         "T1"
       ],
@@ -210,11 +210,146 @@
       ],
       "acceptanceCriteria": [],
       "risk": "medium",
-      "notes": [],
+      "notes": [
+        "2026-07-28 T2 consolidated implementation and live evidence: commit cd5fa5ee added validated ControllerCheck.effects metadata for repository-relative reads/writes plus cache/temp/git/network modes; effects are normalized, included in the check definition digest, revalidated from snapshots, and passed into Unified Process Runtime claims. Known static package checks (type/typecheck/lint/format:check/runtime-architecture/mcp-compatibility/controller-v8) receive workspace-read + build-cache-write defaults; automatic inference is restricted to package:* IDs. Custom checks without effects remain fail closed, and unknown build/test commands no longer request both read and write on the same workspace key. Explicit effects map to path, cache, isolated/shared temp, git index/refs, and network claims. Focused claim/provenance tests, typecheck, runtime architecture, MCP compatibility, and controller-v8 passed with legacy side-effect deltas 0. Live release cd5fa5ee0161 is coherent. Live package:check:type Process proc_ms4kq9xx_e2ec0ed5 persisted exactly workspace:<checkout> read + build-cache:<repo> write, no workspace write; same-checkout git status completed successfully in 28.36ms. Public list_checks exposes the normalized effects while unknown checks remain undeclared.",
+        "Required verification evidence passed; a completion receipt remains required before completion."
+      ],
       "runIds": [],
       "createdAt": "2026-07-27T09:26:56.885Z",
-      "updatedAt": "2026-07-27T09:26:56.885Z",
-      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      "updatedAt": "2026-07-28T11:32:40.847Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "verification": {
+        "integratedRevision": "cd5fa5ee01617e2e6ac96f6f8e23b741d153cf68",
+        "reviewer": "ChatGPT",
+        "checkResults": [
+          {
+            "checkId": "package:check:type",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-type.json"
+          },
+          {
+            "checkId": "package:check:runtime-architecture",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-runtime-architecture.json"
+          },
+          {
+            "checkId": "package:check:controller-v8",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-controller-v8.json"
+          }
+        ],
+        "commandEvidence": [
+          {
+            "command": [
+              "bun",
+              "test",
+              "tests/runtime/process-resource-claims.test.ts",
+              "tests/runtime/check-runner-provenance.test.ts"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "Focused resource claim, non-conflicting read, effects normalization, snapshot integrity, package inference, fail-closed custom checks, and Gateway preclassification tests passed.",
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-28T11:32:40.841Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "bun",
+              "run",
+              "check:type"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-28T11:32:40.841Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "bun",
+              "run",
+              "check:runtime-architecture"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-28T11:32:40.841Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "bun",
+              "run",
+              "check:mcp-compatibility"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-28T11:32:40.841Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "bun",
+              "run",
+              "check:controller-v8"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-28T11:32:40.841Z",
+            "source": "reported"
+          }
+        ],
+        "acceptanceResults": [
+          {
+            "criterion": "Typecheck, lint, and known static package checks do not request workspace read and workspace write simultaneously",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Static package checks map to workspace read plus build-cache write; focused tests forbid a non-read workspace claim and live typecheck persisted only those two claims."
+          },
+          {
+            "criterion": "Named checks support explicit reads, writes, cache, temp, git, and network effects",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "ControllerCheck.effects validates and normalizes all six dimensions, binds them into snapshot digests, and maps them to bounded Process resource claims."
+          },
+          {
+            "criterion": "Unknown or undeclared custom check effects fail closed",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Automatic static inference is package-only; custom:generate and custom:lint regressions produce a single workspace write claim."
+          },
+          {
+            "criterion": "Long static checks allow non-conflicting reads to proceed",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "claimsConflict regression permits a same-checkout workspace reader alongside static check claims; live git status completed in 28.36ms while the typecheck Process contract exposed no workspace write."
+          },
+          {
+            "criterion": "Gateway and Process Runtime preserve heavy/static boundaries",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Gateway run_check preclassification tests retain heavy-check exclusivity for release and fine-grained claims for package:check:type."
+          },
+          {
+            "criterion": "No legacy execution wrappers are introduced",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "All validation and live runs reported ExecutionJob/LocalJob/Worker/Projection deltas 0."
+          }
+        ],
+        "verifiedAt": "2026-07-28T11:32:40.841Z",
+        "autoCompleted": false,
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
     },
     {
       "id": "T3",
@@ -467,6 +602,6 @@
     }
   ],
   "createdAt": "2026-07-27T09:26:56.885Z",
-  "updatedAt": "2026-07-28T11:12:29.826Z",
+  "updatedAt": "2026-07-28T11:32:40.847Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }
