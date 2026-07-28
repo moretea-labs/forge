@@ -6,6 +6,7 @@ import { spawnSync } from 'child_process';
 import {
   __resetLiveMonitorsForTests,
   cancelProcess,
+  claimProcessInvocation,
   claimProcessRequest,
   claimsForCheck,
   claimsForRepositoryCommand,
@@ -188,6 +189,21 @@ describe('Unified Process Runtime', () => {
     expect(afterRestartRetry.processId).toBe(first.processId);
     expect(afterRestartRetry.deduplicated).toBe(true);
     expect(readFileSync(counter, 'utf8')).toBe('x');
+  });
+
+  test('logical invocation binding is reusable and rejects a changed batch fingerprint', () => {
+    const fx = fixture();
+    const input = {
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      requestId: 'work-batch-once',
+      invocationFingerprint: 'fingerprint-a',
+    };
+    expect(claimProcessInvocation(input).status).toBe('claimed');
+    expect(claimProcessInvocation(input).status).toBe('existing');
+    expect(() => claimProcessInvocation({ ...input, invocationFingerprint: 'fingerprint-b' }))
+      .toThrow('PROCESS_REQUEST_ID_CONFLICT');
   });
 
   test('same request id with a different command fails closed', async () => {

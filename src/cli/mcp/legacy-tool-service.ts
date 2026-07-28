@@ -3475,8 +3475,10 @@ export async function callMcpTool(
               }
             }
           } catch (error) {
-            // Fall through to legacy LocalBridge path if Process Runtime is unavailable.
-            void error;
+            const message = error instanceof Error ? error.message : String(error);
+            const code = message.includes(":") ? message.slice(0, message.indexOf(":")) : "PROCESS_RUNTIME_FAILED";
+            audit(ctx, name, "failed", args, undefined, message);
+            return errorResult(code, message, { checkId });
           }
         }
         audit(ctx, name, "blocked", args);

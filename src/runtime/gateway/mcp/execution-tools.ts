@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { existsSync, readFileSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { basename, isAbsolute, relative, resolve } from 'path';
@@ -31,6 +31,7 @@ import { commandValue, normalizeRepositoryCommand, type RepositoryCommandValue }
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { executeRepositoryCommandViaProcessRuntime } from '../../execution/process-runtime/command-facade';
 import { runCheckViaProcessRuntime } from '../../execution/process-runtime/check-facade';
+import { claimProcessInvocation } from '../../execution/process-runtime/store';
 
 const MAX_INLINE_RESULT_BYTES = 64 * 1024;
 
@@ -466,6 +467,22 @@ async function executeWork(ctx: MultiRepositoryMcpToolContext, args: Record<stri
   const invocationId = typeof args.request_id === 'string' && args.request_id.trim()
     ? args.request_id.trim()
     : `invoke-${session.sessionId}-${handle.workId}-${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const invocationFingerprint = createHash('sha256')
+    .update(JSON.stringify({
+      tool: 'work_execute',
+      workId: handle.workId,
+      commands: inputs.map((entry) => ({ command: entry.command, cwd: entry.cwd ?? null })),
+      timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : null,
+      maxOutputBytes: typeof args.max_output_bytes === 'number' ? args.max_output_bytes : null,
+    }))
+    .digest('hex');
+  claimProcessInvocation({
+    controllerHome: ctx.controllerHome,
+    repoId: handle.repositoryId,
+    checkoutId: handle.checkoutId,
+    requestId: invocationId,
+    invocationFingerprint,
+  });
   const run = async (entry: typeof inputs[number], index: number) => {
     const commandId = `${invocationId}:command:${index + 1}`;
     const execution = await executeRepositoryCommandViaProcessRuntime({
@@ -475,7 +492,7 @@ async function executeWork(ctx: MultiRepositoryMcpToolContext, args: Record<stri
       cwd: entry.cwd,
       workId: handle.workId,
       commandId,
-      requestId: invocationId,
+      requestId: commandId,
       timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
       maxOutputBytes: typeof args.max_output_bytes === 'number' ? args.max_output_bytes : undefined,
     });
@@ -492,7 +509,7 @@ async function executeWork(ctx: MultiRepositoryMcpToolContext, args: Record<stri
     return {
       processId: process?.processId,
       commandId,
-      requestId: invocationId,
+      requestId: commandId,
       status,
       ok,
       exitCode: process?.exitCode ?? execution.exitCode,

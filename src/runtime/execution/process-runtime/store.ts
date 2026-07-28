@@ -18,7 +18,12 @@ import {
 } from 'fs';
 import { dirname, join } from 'path';
 import { ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
-import type { ManagedProcessRecord, ProcessRequestBinding, ProcessRuntimeStatus } from './types';
+import type {
+  ManagedProcessRecord,
+  ProcessInvocationBinding,
+  ProcessRequestBinding,
+  ProcessRuntimeStatus,
+} from './types';
 
 const ACTIVE_STATUSES = new Set<ProcessRuntimeStatus>(['starting', 'running', 'running_recovered']);
 
@@ -45,6 +50,19 @@ function requestBindingPath(controllerHome: string, repoId: string, checkoutId: 
     .update(JSON.stringify({ repoId, checkoutId: checkoutId?.trim() || null, requestId }))
     .digest('hex');
   return join(requestBindingsRoot(controllerHome, repoId), `${key}.json`);
+}
+
+function invocationBindingsRoot(controllerHome: string, repoId: string): string {
+  const dir = join(processesRoot(controllerHome, repoId), 'invocation-bindings');
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function invocationBindingPath(controllerHome: string, repoId: string, checkoutId: string | undefined, requestId: string): string {
+  const key = createHash('sha256')
+    .update(JSON.stringify({ repoId, checkoutId: checkoutId?.trim() || null, requestId }))
+    .digest('hex');
+  return join(invocationBindingsRoot(controllerHome, repoId), `${key}.json`);
 }
 
 function indexPath(controllerHome: string, repoId: string): string {
@@ -133,6 +151,60 @@ export function getProcessRequestBinding(
   if (!normalized) return undefined;
   const binding = readJson<ProcessRequestBinding>(requestBindingPath(controllerHome, repoId, checkoutId, normalized));
   return binding?.schemaVersion === 1 ? binding : undefined;
+}
+
+/**
+ * Atomically bind one logical facade invocation before any child Process is
+ * created. Matching retries may continue attaching/spawning missing children;
+ * a changed invocation fails closed before partial execution can begin.
+ */
+export function claimProcessInvocation(input: {
+  controllerHome: string;
+  repoId: string;
+  checkoutId?: string;
+  requestId: string;
+  invocationFingerprint: string;
+}): { status: 'claimed' | 'existing'; binding: ProcessInvocationBinding } {
+  const requestId = input.requestId.trim();
+  if (!requestId) throw new Error('PROCESS_REQUEST_ID_REQUIRED: requestId must not be empty');
+  const path = invocationBindingPath(input.controllerHome, input.repoId, input.checkoutId, requestId);
+  const binding: ProcessInvocationBinding = {
+    schemaVersion: 1,
+    repoId: input.repoId,
+    checkoutId: input.checkoutId,
+    requestId,
+    invocationFingerprint: input.invocationFingerprint,
+    createdAt: new Date().toISOString(),
+  };
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, 'wx', 0o600);
+    writeFileSync(fd, `${JSON.stringify(binding, null, 2)}\n`, 'utf8');
+    closeSync(fd);
+    fd = undefined;
+    return { status: 'claimed', binding };
+  } catch (error) {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* ignore */ }
+    }
+    const code = typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code?: unknown }).code ?? '')
+      : '';
+    if (code !== 'EEXIST') throw error;
+  }
+  const existing = readJson<ProcessInvocationBinding>(path);
+  if (!existing || existing.schemaVersion !== 1 || !existing.invocationFingerprint) {
+    throw new Error(`PROCESS_INVOCATION_BINDING_CORRUPT: ${requestId}`);
+  }
+  if (
+    existing.repoId !== input.repoId
+    || (existing.checkoutId?.trim() || undefined) !== (input.checkoutId?.trim() || undefined)
+    || existing.requestId !== requestId
+    || existing.invocationFingerprint !== input.invocationFingerprint
+  ) {
+    throw new Error(`PROCESS_REQUEST_ID_CONFLICT: ${requestId}`);
+  }
+  return { status: 'existing', binding: existing };
 }
 
 function rebuildActiveIndex(controllerHome: string, repoId: string): string[] {

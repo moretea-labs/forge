@@ -70,6 +70,16 @@ export interface ProcessRequestBinding {
   createdAt: string;
 }
 
+/** Persistent logical invocation binding claimed before any child Process is spawned. */
+export interface ProcessInvocationBinding {
+  schemaVersion: 1;
+  repoId: string;
+  checkoutId?: string;
+  requestId: string;
+  invocationFingerprint: string;
+  createdAt: string;
+}
+
 export interface ManagedProcessRecord {
   schemaVersion: 1;
   processId: string;

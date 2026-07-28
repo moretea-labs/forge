@@ -278,6 +278,47 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
   });
 
+  test('run_check preserves Process Runtime request conflicts instead of masking them', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const checksPath = join(fx.repoRoot, '.repo-harness', 'checks.json');
+    const localBefore = listLocalBridgeJobSnapshots(fx.repoRoot).length;
+    writeFileSync(checksPath, JSON.stringify({
+      version: 1,
+      checks: {
+        stable: {
+          description: 'stable request binding check',
+          command: [process.execPath, '-e', 'process.stdout.write("first")'],
+          timeoutMs: 10_000,
+        },
+      },
+    }, null, 2));
+
+    const first = await routeDurableMcpCall(fx.ctx, 'run_check', {
+      repo_id: fx.repository.repoId,
+      check_id: 'stable',
+      request_id: 'run-check-stable-request',
+    });
+    expect(first?.isError).not.toBe(true);
+
+    writeFileSync(checksPath, JSON.stringify({
+      version: 1,
+      checks: {
+        stable: {
+          description: 'changed request binding check',
+          command: [process.execPath, '-e', 'process.stdout.write("changed")'],
+          timeoutMs: 10_000,
+        },
+      },
+    }, null, 2));
+    await expect(routeDurableMcpCall(fx.ctx, 'run_check', {
+      repo_id: fx.repository.repoId,
+      check_id: 'stable',
+      request_id: 'run-check-stable-request',
+    })).rejects.toThrow('PROCESS_REQUEST_ID_CONFLICT');
+    expect(listLocalBridgeJobSnapshots(fx.repoRoot).length).toBe(localBefore);
+  });
+
   test('Work execution ownership remains fenced and unknown tools return TOOL_NOT_FOUND', async () => {
     const fx = fixture();
     roots.push(fx.root);

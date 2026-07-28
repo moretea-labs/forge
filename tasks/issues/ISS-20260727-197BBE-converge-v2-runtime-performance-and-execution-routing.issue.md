@@ -2,7 +2,7 @@
 id: "ISS-20260727-197BBE"
 kind: "feature"
 status: "in_progress"
-updated_at: "2026-07-28T02:18:55Z"
+updated_at: "2026-07-28T05:26:31.269Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -42,7 +42,7 @@ source: "repo-harness-controller-v8"
 
 ### T1 — Unify Process Runtime routing and request idempotency
 
-- Status: `running`
+- Status: `verifying`
 - Objective: 建立唯一公开命令执行判定入口。让 repository_command_execute、run_check、work_execute 等普通本地命令共享 Process Runtime route decision，移除 timeout>15s 回退旧 ExecutionJob/LocalJob/Worker 的行为；为 Process Runtime 增加 repoId+checkoutId+requestId+command fingerprint 的持久原子幂等索引，重试返回同一 Process，指纹冲突 fail closed，completed_unknown 不自动重跑。保持远程写、破坏性操作和 WorkContract/SuperController 授权边界。增加端到端路由、502/重试、重启恢复和无重复执行测试。
 - Depends on: none
 - Allowed paths: `src/runtime/execution/process-runtime/**`, `src/runtime/execution/thin-harness/**`, `src/runtime/gateway/mcp/**`, `src/cli/mcp/**`, `src/cli/repositories/**`, `tests/runtime/**`, `tests/cli/**`, `docs/operations/**`, `docs/architecture/current/**`, `tasks/issues/**`

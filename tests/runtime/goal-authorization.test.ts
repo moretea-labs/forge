@@ -85,6 +85,42 @@ describe('GPT risk delegation and resumable authorization', () => {
     expect(response.commands[0].approvalRequestId).toBeUndefined();
   });
 
+  test('work_execute deduplicates a multi-command invocation and rejects changed retry input', async () => {
+    const { ctx, repository } = fixture();
+    const workId = await prepare(ctx, repository.repoId);
+    const request = {
+      work_id: workId,
+      request_id: 'work-execute-batch-1',
+      commands: [
+        { command: ['git', 'status', '--short'] },
+        { command: ['git', 'rev-parse', 'HEAD'] },
+      ],
+    };
+    const first = structured(await callExecutionTool(ctx, 'work_execute', request));
+    expect(first.commands).toHaveLength(2);
+    expect(first.commands.map((entry: Record<string, unknown>) => entry.requestId)).toEqual([
+      'work-execute-batch-1:command:1',
+      'work-execute-batch-1:command:2',
+    ]);
+    const firstProcessIds = first.commands.map((entry: Record<string, unknown>) => entry.processId);
+    expect(firstProcessIds.every((value: unknown) => typeof value === 'string')).toBe(true);
+
+    const replay = structured(await callExecutionTool(ctx, 'work_execute', request));
+    expect(replay.commands.map((entry: Record<string, unknown>) => entry.processId)).toEqual(firstProcessIds);
+    expect(replay.commands.every((entry: Record<string, any>) => entry.process?.deduplicated === true)).toBe(true);
+
+    const conflict = await callExecutionTool(ctx, 'work_execute', {
+      ...request,
+      commands: [
+        { command: ['git', 'status', '--short'] },
+        { command: ['git', 'branch', '--show-current'] },
+      ],
+    });
+    expect(conflict?.isError).toBe(true);
+    expect((conflict?.structuredContent as { error?: { code?: string } }).error?.code)
+      .toBe('PROCESS_REQUEST_ID_CONFLICT');
+  });
+
   test('legacy Request mode does not create a second approval layer for ordinary repository work', async () => {
     const { ctx, repository } = fixture('request');
     const workId = await prepare(ctx, repository.repoId);
