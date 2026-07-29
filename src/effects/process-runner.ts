@@ -1,3 +1,5 @@
+import { existsSync, statSync } from "fs";
+import { delimiter, extname, isAbsolute, join } from "path";
 import { spawnSync } from "child_process";
 
 export interface ProcessOutputRedaction {
@@ -15,6 +17,14 @@ export interface RunProcessOptions {
   readonly maxOutputBytes?: number;
   readonly redactions?: readonly ProcessOutputRedaction[];
   readonly input?: string | Buffer;
+  /** Test seam for platform-specific command preparation. */
+  readonly platform?: NodeJS.Platform;
+}
+
+export interface PreparedProcessInvocation {
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly resolvedCommand: string;
 }
 
 export interface ProcessRunResult {
@@ -60,15 +70,88 @@ export function capProcessOutput(value: string, maxBytes = DEFAULT_PROCESS_MAX_O
   return `${clipped}\n[output truncated after ${maxBytes} bytes]`;
 }
 
+function envValue(env: NodeJS.ProcessEnv, key: string, platform: NodeJS.Platform): string | undefined {
+  if (platform !== "win32") return env[key];
+  const target = key.toLowerCase();
+  const entry = Object.entries(env).find(([name]) => name.toLowerCase() === target);
+  return entry?.[1];
+}
+
+function isExecutableFile(path: string): boolean {
+  try {
+    return existsSync(path) && statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+export function resolveProcessCommand(
+  command: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform !== "win32" || isAbsolute(command) || command.includes("/") || command.includes("\\")) {
+    return command;
+  }
+
+  const pathValue = envValue(env, "PATH", platform) ?? "";
+  const pathExtValue = envValue(env, "PATHEXT", platform) ?? ".COM;.EXE;.BAT;.CMD";
+  const extensions = extname(command)
+    ? [""]
+    : pathExtValue
+        .split(";")
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .map((value) => (value.startsWith(".") ? value : `.${value}`));
+
+  for (const directory of pathValue.split(delimiter).filter(Boolean)) {
+    for (const extension of extensions) {
+      const candidate = join(directory, `${command}${extension}`);
+      if (isExecutableFile(candidate)) return candidate;
+    }
+  }
+
+  return command;
+}
+
+export function escapeWindowsCommandArgument(value: string): string {
+  const escaped = value
+    .replace(/%/g, "%%")
+    .replace(/"/g, '""');
+  return `"${escaped}"`;
+}
+
+export function prepareProcessInvocation(
+  command: string,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): PreparedProcessInvocation {
+  const resolvedCommand = resolveProcessCommand(command, env, platform);
+  if (platform !== "win32" || !/\.(?:cmd|bat)$/i.test(resolvedCommand)) {
+    return { command: resolvedCommand, args: [...args], resolvedCommand };
+  }
+
+  const comspec = envValue(env, "ComSpec", platform) ?? envValue(env, "COMSPEC", platform) ?? "cmd.exe";
+  const commandLine = [resolvedCommand, ...args].map(escapeWindowsCommandArgument).join(" ");
+  return {
+    command: comspec,
+    args: ["/d", "/s", "/c", commandLine],
+    resolvedCommand,
+  };
+}
+
 export function runProcess(command: string, args: readonly string[], opts: RunProcessOptions = {}): ProcessRunResult {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_PROCESS_TIMEOUT_MS;
   const maxOutputBytes = opts.maxOutputBytes ?? DEFAULT_PROCESS_MAX_OUTPUT_BYTES;
   const redactions = opts.redactions ?? DEFAULT_REDACTIONS;
-  const redactedCommand = [command, ...args].map((part) => redactProcessOutput(part, redactions));
-  const result = spawnSync(command, [...args], {
+  const childEnv = opts.replaceEnv ? { ...(opts.env ?? {}) } : { ...process.env, ...(opts.env ?? {}) };
+  const invocation = prepareProcessInvocation(command, args, childEnv, opts.platform ?? process.platform);
+  const redactedCommand = [invocation.resolvedCommand, ...args].map((part) => redactProcessOutput(part, redactions));
+  const result = spawnSync(invocation.command, [...invocation.args], {
     cwd: opts.cwd,
     encoding: opts.stdio === "inherit" || opts.stdio === "ignore" ? undefined : "utf8",
-    env: opts.replaceEnv ? { ...(opts.env ?? {}) } : { ...process.env, ...(opts.env ?? {}) },
+    env: childEnv,
     stdio: opts.stdio ?? "pipe",
     timeout: timeoutMs,
     maxBuffer: Math.max(maxOutputBytes, DEFAULT_PROCESS_MAX_BUFFER_BYTES),
