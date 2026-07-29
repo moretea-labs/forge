@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { createServer as createSocketServer, type Server as SocketServer } from 'net';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { createRecoveryConfig, decideWatchdog, recoveryReconnectOperation, rollbackPrevious, verifyStableRuntime } from '../../src/runtime/standalone-recovery/core';
+import { attestKnownGood, createRecoveryConfig, decideWatchdog, recoveryReconnectOperation, restartGateway, restartSupervisor, rollbackPrevious, verifyStableRuntime } from '../../src/runtime/standalone-recovery/core';
 import { dispatchRecoveryTool, RECOVERY_CLI_COMMANDS, RECOVERY_TOOLS } from '../../src/runtime/standalone-recovery/entry';
 
 const httpServers: Server[] = [];
@@ -24,7 +24,7 @@ async function http(handler: (request: IncomingMessage, response: ServerResponse
 
 function release(home: string, name: string, revision: string): string {
   const path = join(home, 'supervisor', 'releases', name); mkdirSync(path, { recursive: true });
-  for (const file of ['supervisor.js', 'repo-harness.js', 'daemon.js']) writeFileSync(join(path, file), 'fixture');
+  for (const file of ['supervisor.js', 'repo-harness.js', 'daemon.js', 'worker.js', 'process-runner.js', 'browser-handoff-host.js']) writeFileSync(join(path, file), 'fixture');
   writeFileSync(join(path, 'manifest.json'), JSON.stringify({ schemaVersion: 1, releaseRevision: revision }));
   return path;
 }
@@ -116,7 +116,7 @@ describe('standalone disaster recovery core', () => {
     expect(decideWatchdog({ failures: 6, firstFailureAt: Date.now() - 31_000, evidenceClasses: ['external', 'mcp'], activeKnownGood: true, previousKnownGood: true, operationInFlight: false, rollbackUsed: false }).action).toBe('degraded');
   });
 
-  test('reconnect recovery never selects a full runtime restart', () => {
+  test('Gateway reconnect recovery remains Gateway-only and requires Supervisor control', () => {
     const base = {
       ok: false,
       at: new Date().toISOString(),
@@ -142,5 +142,75 @@ describe('standalone disaster recovery core', () => {
         active_gateway: { ok: false, detail: 'unavailable' },
       },
     })).toBe('none');
+  });
+
+  test('Gateway restart refuses locked-out Supervisors', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'standalone-recovery-gateway-lockout-'));
+    const active = release(home, 'active', 'release-active');
+    const stablePort = await http((_request, response) => {
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ status: 'ok' }));
+    });
+    let operationSubmits = 0;
+    mkdirSync(join(home, 'runtime-slots', 'blue'), { recursive: true });
+    writeFileSync(join(home, 'runtime-slots', 'blue', 'slot.json'), JSON.stringify({ releasePath: active }));
+    const socket = createSocketServer((client) => client.on('data', (chunk) => {
+      const rpc = JSON.parse(String(chunk)) as { command?: string };
+      if (rpc.command === 'operation_submit') operationSubmits += 1;
+      client.end(`${JSON.stringify({
+        ok: true,
+        state: {
+          observedState: 'locked_out',
+          activeSlot: 'blue',
+          ingress: { state: 'running', activeUpstreamPort: 9 },
+          gatewayHost: { releasePath: active, releaseRevision: 'release-active' },
+          controllerDaemon: { releasePath: active, releaseRevision: 'release-active' },
+          restartBudget: {
+            'gatewayHost:test': { component: 'gatewayHost', lockedOut: true, attempts: 5, consecutiveFailures: 5 },
+          },
+        },
+      })}\n`);
+    }));
+    socketServers.push(socket); mkdirSync(join(home, 'supervisor'), { recursive: true });
+    await new Promise<void>((resolveListen, reject) => { socket.once('error', reject); socket.listen(join(home, 'supervisor', 'control.sock'), () => resolveListen()); });
+    const result = await restartGateway(createRecoveryConfig(home, { stableIngressUrl: `http://127.0.0.1:${stablePort}` }), 'lockout-test');
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('locked out');
+    expect(operationSubmits).toBe(0);
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test('Supervisor restart never downgrades to a Gateway-only operation', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'standalone-recovery-supervisor-restart-'));
+    const active = release(home, 'active', 'release-active');
+    const stablePort = await http((_request, response) => {
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ status: 'ok' }));
+    });
+    let operationSubmits = 0;
+    mkdirSync(join(home, 'runtime-slots', 'blue'), { recursive: true });
+    writeFileSync(join(home, 'runtime-slots', 'blue', 'slot.json'), JSON.stringify({ releasePath: active }));
+    const socket = createSocketServer((client) => client.on('data', (chunk) => {
+      const rpc = JSON.parse(String(chunk)) as { command?: string };
+      if (rpc.command === 'operation_submit') operationSubmits += 1;
+      client.end(`${JSON.stringify({
+        ok: true,
+        state: {
+          observedState: 'locked_out',
+          activeSlot: 'blue',
+          ingress: { state: 'running', activeUpstreamPort: 9 },
+          gatewayHost: { releasePath: active, releaseRevision: 'release-active' },
+          controllerDaemon: { releasePath: active, releaseRevision: 'release-active' },
+          supervisor: { pid: 999999, releasePath: active, releaseRevision: 'release-active' },
+        },
+      })}\n`);
+    }));
+    socketServers.push(socket); mkdirSync(join(home, 'supervisor'), { recursive: true });
+    await new Promise<void>((resolveListen, reject) => { socket.once('error', reject); socket.listen(join(home, 'supervisor', 'control.sock'), () => resolveListen()); });
+    const result = await restartSupervisor(createRecoveryConfig(home, { stableIngressUrl: `http://127.0.0.1:${stablePort}` }), 'supervisor-test');
+    expect(result.ok).toBe(false);
+    expect(result.detail).not.toContain('Gateway-only');
+    expect(operationSubmits).toBe(0);
+    rmSync(home, { recursive: true, force: true });
   });
 });

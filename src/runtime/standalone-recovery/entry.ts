@@ -10,6 +10,7 @@ import {
   listSlots,
   loadRecoveryConfig,
   reconnectMain,
+  restartGateway,
   restartSupervisor,
   rollbackPrevious,
   secureEqual,
@@ -40,6 +41,7 @@ export const RECOVERY_CLI_COMMANDS = [
   'list-slots',
   'attest-known-good',
   'rollback-previous',
+  'restart-gateway',
   'restart-supervisor',
   'diagnose',
   'reconnect-main',
@@ -74,6 +76,7 @@ async function cli(): Promise<void> {
     case 'list-slots': output(await listSlots(config)); return;
     case 'attest-known-good': output(await attestKnownGood(config)); return;
     case 'rollback-previous': output(await rollbackPrevious(config)); return;
+    case 'restart-gateway': output(await restartGateway(config)); return;
     case 'restart-supervisor': output(await restartSupervisor(config)); return;
     case 'diagnose': output(await diagnose(config)); return;
     case 'reconnect-main': output(await reconnectMain(config)); return;
@@ -142,7 +145,8 @@ export const RECOVERY_TOOLS = [
   { name: 'verify_external_runtime', description: 'Verify the external primary MCP endpoint.', inputSchema: { type: 'object', additionalProperties: false } },
   { name: 'attest_known_good', description: 'Record the active release as known-good only after full independent verification succeeds.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'rollback_previous', description: 'Idempotently restore only a Supervisor-registered known-good previous release.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
-  { name: 'restart_stable_supervisor', description: 'Request a bounded Stable Supervisor restart.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
+  { name: 'restart_gateway', description: 'Request a bounded Gateway-only restart when the Gateway budget is not locked out.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
+  { name: 'restart_stable_supervisor', description: 'Restart the registered Stable Supervisor service through launchd; does not downgrade to Gateway-only recovery.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'reconnect_primary_connector', description: 'Check stable ingress and primary MCP reconnection readiness without rolling out.', inputSchema: { type: 'object', additionalProperties: false } },
 ] as const;
 
@@ -368,9 +372,13 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       return rollbackPrevious(config, `recovery-gateway:${args.request_id}`);
     }
+    case 'restart_gateway': {
+      if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
+      return restartGateway(config, String(args.request_id));
+    }
     case 'restart_stable_supervisor': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
-      return restartSupervisor(config);
+      return restartSupervisor(config, String(args.request_id));
     }
     case 'reconnect_primary_connector': return reconnectMain(config);
     default: throw new Error('RECOVERY_TOOL_NOT_FOUND');
@@ -533,7 +541,7 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
     if (message.method !== 'tools/call' || typeof message.params?.name !== 'string') { json(response, 200, rpcError(id, -32601, 'Unsupported MCP method.')); return; }
     const name = message.params.name;
     const args = message.params.arguments && typeof message.params.arguments === 'object' && !Array.isArray(message.params.arguments) ? message.params.arguments as Record<string, unknown> : {};
-    if (name === 'attest_known_good' || name === 'rollback_previous' || name === 'restart_stable_supervisor') {
+    if (name === 'attest_known_good' || name === 'rollback_previous' || name === 'restart_gateway' || name === 'restart_stable_supervisor') {
       const address = request.socket.remoteAddress ?? 'unknown'; const now = Date.now();
       const window = (recentMutations.get(address) ?? []).filter((at) => now - at < 60_000);
       if (window.length >= 3) { json(response, 429, rpcError(id, -32029, 'Recovery mutation rate limit exceeded.')); return; }
