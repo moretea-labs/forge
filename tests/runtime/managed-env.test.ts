@@ -8,10 +8,6 @@ const roots: string[] = [];
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-  delete process.env.REPO_HARNESS_GMAIL_ACCESS_TOKEN;
-  delete process.env.REPO_HARNESS_GOOGLE_ACCESS_TOKEN;
-  delete process.env.REPO_HARNESS_ENV_FILE;
-  delete process.env.APP_ONLY_SECRET;
 });
 
 describe('managed runtime env bootstrap', () => {
@@ -21,28 +17,34 @@ describe('managed runtime env bootstrap', () => {
     mkdirSync(join(repoRoot, '_ops', 'env'), { recursive: true });
     writeFileSync(join(repoRoot, '_ops', 'env', '.env.local'), [
       'REPO_HARNESS_GMAIL_ACCESS_TOKEN=token-from-local-env',
-      'APP_ONLY_SECRET=must-not-load',
+      'APP_ONLY_SECRET=ignored',
       '',
     ].join('\n'));
+    const env: NodeJS.ProcessEnv = {};
 
-    const result = bootstrapManagedRuntimeEnv({ repoRoot });
+    const result = bootstrapManagedRuntimeEnv({ repoRoot, env });
     expect(result.loadedFiles).toContain(join(repoRoot, '_ops', 'env', '.env.local'));
     expect(result.appliedKeys).toContain('REPO_HARNESS_GMAIL_ACCESS_TOKEN');
-    expect(process.env.REPO_HARNESS_GMAIL_ACCESS_TOKEN).toBe('token-from-local-env');
-    expect(process.env.APP_ONLY_SECRET).toBeUndefined();
+    expect(env.REPO_HARNESS_GMAIL_ACCESS_TOKEN).toBe('token-from-local-env');
+    expect(env.APP_ONLY_SECRET).toBeUndefined();
   });
 
   test('keeps explicit process env ahead of managed files', () => {
     const repoRoot = mkdtempSync(join(tmpdir(), 'repo-harness-env-'));
     roots.push(repoRoot);
     mkdirSync(join(repoRoot, '_ops', 'secrets'), { recursive: true });
-    writeFileSync(join(repoRoot, '_ops', 'secrets', 'repo-harness.env'), 'REPO_HARNESS_GMAIL_ACCESS_TOKEN=file-token\n');
-    process.env.REPO_HARNESS_GMAIL_ACCESS_TOKEN = 'shell-token';
+    writeFileSync(
+      join(repoRoot, '_ops', 'secrets', 'repo-harness.env'),
+      'REPO_HARNESS_GMAIL_ACCESS_TOKEN=file-token\n',
+    );
+    const env: NodeJS.ProcessEnv = {
+      REPO_HARNESS_GMAIL_ACCESS_TOKEN: 'shell-token',
+    };
 
-    const result = bootstrapManagedRuntimeEnv({ repoRoot });
+    const result = bootstrapManagedRuntimeEnv({ repoRoot, env });
     expect(result.loadedFiles).toContain(join(repoRoot, '_ops', 'secrets', 'repo-harness.env'));
     expect(result.appliedKeys).not.toContain('REPO_HARNESS_GMAIL_ACCESS_TOKEN');
-    expect(process.env.REPO_HARNESS_GMAIL_ACCESS_TOKEN).toBe('shell-token');
+    expect(env.REPO_HARNESS_GMAIL_ACCESS_TOKEN).toBe('shell-token');
   });
 
   test('loads managed variables from the controllerHome parent when cwd is outside the repository', () => {
@@ -55,14 +57,16 @@ describe('managed runtime env bootstrap', () => {
       join(root, '_ops', 'secrets', 'controller.env'),
       'REPO_HARNESS_GOOGLE_ACCESS_TOKEN=controller-home-token\n',
     );
+    const env: NodeJS.ProcessEnv = {};
 
     const result = bootstrapManagedRuntimeEnv({
       controllerHome,
       cwd: tmpdir(),
+      env,
     });
 
     expect(result.loadedFiles).toContain(join(root, '_ops', 'secrets', 'controller.env'));
     expect(result.appliedKeys).toContain('REPO_HARNESS_GOOGLE_ACCESS_TOKEN');
-    expect(process.env.REPO_HARNESS_GOOGLE_ACCESS_TOKEN).toBe('controller-home-token');
+    expect(env.REPO_HARNESS_GOOGLE_ACCESS_TOKEN).toBe('controller-home-token');
   });
 });
