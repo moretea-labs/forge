@@ -86,25 +86,32 @@ describe('init command global runtime bootstrap', () => {
       mkdirSync(fakeBin, { recursive: true });
       setupFakeSource(source);
       writeFakeCodegraph(fakeBin, codegraphLog);
-      writeExecutable(
-        join(fakeBin, 'bun'),
+      writeNodeCommand(
+        fakeBin,
+        'bun',
         [
-          '#!/bin/bash',
-          'set -euo pipefail',
-          'if [[ "${1:-}" == "add" && "${2:-}" == "-g" ]]; then printf \'%s\\n\' "$*" >> ' + JSON.stringify(bunLog) + '; exit 0; fi',
-          `exec ${JSON.stringify(process.execPath)} "$@"`,
-          '',
+          "import { appendFileSync } from 'node:fs';",
+          "import { spawnSync } from 'node:child_process';",
+          `const logFile = ${JSON.stringify(bunLog)};`,
+          "const args = process.argv.slice(2);",
+          "if (args[0] === 'add' && args[1] === '-g') { appendFileSync(logFile, args.join(' ') + '\\n'); process.exit(0); }",
+          "const child = spawnSync(process.execPath, args, { stdio: 'inherit' });",
+          "process.exit(child.status ?? 1);",
+          "",
         ].join('\n'),
       );
-      writeExecutable(
-        join(fakeBin, 'npx'),
+      writeNodeCommand(
+        fakeBin,
+        'npx',
         [
-          '#!/bin/bash',
-          'set -euo pipefail',
-          `printf '%s\\n' "$*" >> "${npxLog}"`,
-          'if [[ "$*" == *"skills ls -g --json"* ]]; then echo "[]"; fi',
-          'exit 0',
-          '',
+          "import { appendFileSync } from 'node:fs';",
+          `const logFile = ${JSON.stringify(npxLog)};`,
+          "const args = process.argv.slice(2);",
+          "const joined = args.join(' ');",
+          "appendFileSync(logFile, joined + '\\n');",
+          "if (joined.includes('skills ls -g --json')) console.log('[]');",
+          "process.exit(0);",
+          "",
         ].join('\n'),
       );
 
@@ -115,7 +122,7 @@ describe('init command global runtime bootstrap', () => {
         env: {
           ...process.env,
           HOME: home,
-          PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+          PATH: prependPath(fakeBin),
           AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: '0',
         },
       });
@@ -154,8 +161,8 @@ describe('init command global runtime bootstrap', () => {
       mkdirSync(home, { recursive: true });
       mkdirSync(fakeBin, { recursive: true });
       setupFakeSource(source);
-      writeExecutable(join(fakeBin, 'bun'), '#!/bin/bash\nexit 0\n');
-      writeExecutable(join(fakeBin, 'npx'), '#!/bin/bash\nexit 0\n');
+      writeNodeCommand(fakeBin, 'bun', 'process.exit(0);\n');
+      writeNodeCommand(fakeBin, 'npx', 'process.exit(0);\n');
 
       const result = runGlobalRuntimeSetup({
         sourceRoot: source,
@@ -166,7 +173,7 @@ describe('init command global runtime bootstrap', () => {
         env: {
           ...process.env,
           HOME: home,
-          PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+          PATH: prependPath(fakeBin),
         },
       });
 
@@ -205,7 +212,17 @@ describe('init command global runtime bootstrap', () => {
       mkdirSync(home, { recursive: true });
       mkdirSync(repo, { recursive: true });
       mkdirSync(fakeBin, { recursive: true });
-      writeExecutable(join(fakeBin, 'bun'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nexit 0\n`);
+      writeNodeCommand(
+        fakeBin,
+        'bun',
+        [
+          "import { appendFileSync } from 'node:fs';",
+          `const logFile = ${JSON.stringify(bunLog)};`,
+          "appendFileSync(logFile, process.argv.slice(2).join(' ') + '\\n');",
+          "process.exit(0);",
+          "",
+        ].join('\n'),
+      );
 
       const res = spawnSync(
         process.execPath,
@@ -221,7 +238,7 @@ describe('init command global runtime bootstrap', () => {
         {
           cwd: repo,
           encoding: 'utf-8',
-          env: { ...process.env, HOME: home, PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
+          env: { ...process.env, HOME: home, PATH: prependPath(fakeBin) },
         },
       );
 
@@ -248,7 +265,17 @@ describe('init command global runtime bootstrap', () => {
       mkdirSync(home, { recursive: true });
       mkdirSync(repo, { recursive: true });
       mkdirSync(fakeBin, { recursive: true });
-      writeExecutable(join(fakeBin, 'bun'), `#!/bin/bash\nprintf '%s\\n' "$*" >> "${bunLog}"\nexit 0\n`);
+      writeNodeCommand(
+        fakeBin,
+        'bun',
+        [
+          "import { appendFileSync } from 'node:fs';",
+          `const logFile = ${JSON.stringify(bunLog)};`,
+          "appendFileSync(logFile, process.argv.slice(2).join(' ') + '\\n');",
+          "process.exit(0);",
+          "",
+        ].join('\n'),
+      );
 
       const res = spawnSync(
         process.execPath,
@@ -266,7 +293,7 @@ describe('init command global runtime bootstrap', () => {
         {
           cwd: repo,
           encoding: 'utf-8',
-          env: { ...process.env, HOME: home, PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
+          env: { ...process.env, HOME: home, PATH: prependPath(fakeBin) },
         },
       );
 
