@@ -239,6 +239,19 @@ async function probe(url: string, timeoutMs = 4_000): Promise<{ ok: boolean; det
   } finally { clearTimeout(timer); }
 }
 
+async function probeExternalMcp(url: string): Promise<{ ok: boolean; detail: string; status?: number }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 4_000);
+  try {
+    const response = await fetch(url, { headers: { accept: 'application/json' }, signal: controller.signal });
+    const challenge = response.headers.get('www-authenticate') ?? '';
+    const ok = response.ok || (response.status === 401 && /\bBearer\b/i.test(challenge));
+    return { ok, detail: ok && response.status === 401 ? 'HTTP 401 OAuth challenge' : `HTTP ${response.status}`, status: response.status };
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message.slice(0, 180) : 'request failed' };
+  } finally { clearTimeout(timer); }
+}
+
 function mainToken(config: RecoveryConfig): string | undefined {
   const candidate = config.mainMcpTokenFile ?? join(config.controllerHome, 'mcp', 'mcp.tokens.json');
   const parsed = json<{ bearerToken?: unknown }>(candidate);
@@ -383,7 +396,7 @@ export async function verifyStableRuntime(config: RecoveryConfig): Promise<Verif
   probes.stable_ingress = await probe(`${config.stableIngressUrl.replace(/\/$/, '')}/health`);
   if (state?.ingress?.activeUpstreamPort) probes.active_gateway = await probe(`http://127.0.0.1:${state.ingress.activeUpstreamPort}/health`);
   else probes.active_gateway = { ok: false, detail: 'active upstream port unavailable' };
-  if (config.publicMcpUrl) probes.external_mcp_http = await probe(config.publicMcpUrl);
+  if (config.publicMcpUrl) probes.external_mcp_http = await probeExternalMcp(config.publicMcpUrl);
   Object.assign(probes, await probeMcp(config));
   const coreChecks = Object.values(probes).every((entry) => entry.ok);
   const supervisorHealthy = state?.observedState === 'healthy' && state?.ingress?.state === 'running';

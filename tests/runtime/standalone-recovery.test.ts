@@ -41,6 +41,12 @@ describe('standalone disaster recovery core', () => {
         response.end(JSON.stringify({ status: 'ok' }));
         return;
       }
+      if (request.method === 'GET' && request.url === '/mcp') {
+        response.statusCode = 401;
+        response.setHeader('www-authenticate', 'Bearer resource_metadata="http://127.0.0.1/.well-known/oauth-protected-resource/mcp"');
+        response.end(JSON.stringify({ error: 'invalid_token' }));
+        return;
+      }
       const accept = String(request.headers.accept ?? '');
       if (!accept.includes('application/json') || !accept.includes('text/event-stream')) {
         response.statusCode = 406;
@@ -94,9 +100,10 @@ describe('standalone disaster recovery core', () => {
     const socket = createSocketServer((client) => client.on('data', () => client.end(`${JSON.stringify({ ok: true, state: { observedState: 'healthy', activeSlot: 'blue', previousSlot: 'green', ingress: { state: 'running', activeUpstreamPort: port }, gatewayHost: { releasePath: active, releaseRevision: 'release-active' }, controllerDaemon: { releasePath: active, releaseRevision: 'release-active' } } })}\n`)));
     socketServers.push(socket); mkdirSync(join(home, 'supervisor'), { recursive: true });
     await new Promise<void>((resolveListen, reject) => { socket.once('error', reject); socket.listen(join(home, 'supervisor', 'control.sock'), () => resolveListen()); });
-    const config = createRecoveryConfig(home, { stableIngressUrl: `http://127.0.0.1:${port}` });
+    const config = createRecoveryConfig(home, { stableIngressUrl: `http://127.0.0.1:${port}`, publicMcpUrl: `http://127.0.0.1:${port}/mcp` });
     const verified = await verifyStableRuntime(config);
     expect(verified.ok).toBe(true);
+    expect(verified.probes.external_mcp_http).toEqual({ ok: true, detail: 'HTTP 401 OAuth challenge', status: 401 });
     expect(RECOVERY_CLI_COMMANDS).toContain('attest-known-good');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('attest_known_good');
     const attested = await dispatchRecoveryTool(config, 'attest_known_good', { request_id: 'attest-release-active' }) as { revision: string };
