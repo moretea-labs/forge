@@ -1,7 +1,9 @@
 #!/usr/bin/env node
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { findWindowsIncompatiblePaths } from "./windows-paths.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const failures = [];
@@ -17,6 +19,17 @@ function text(path) {
 
 function requireText(path, value) {
   if (!text(path).includes(value)) failures.push(`${path} must contain ${JSON.stringify(value)}`);
+}
+
+try {
+  const trackedPaths = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" })
+    .split("\0")
+    .filter(Boolean);
+  for (const entry of findWindowsIncompatiblePaths(trackedPaths)) {
+    failures.push(`Windows-incompatible tracked path ${JSON.stringify(entry.path)}: ${entry.problems.join("; ")}`);
+  }
+} catch (error) {
+  failures.push(`unable to inspect tracked paths: ${error instanceof Error ? error.message : String(error)}`);
 }
 
 const pkg = JSON.parse(text("package.json") || "{}");
