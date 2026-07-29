@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 5,
+  "id": "ISS-20260729-3A88E8",
+  "title": "Complete Matea RC6 release, public documentation, and GitHub Wiki",
+  "slug": "complete-matea-rc6-release-public-documentation-and-github-wiki",
+  "kind": "governance",
+  "status": "cancelled",
+  "summary": "Superseded by ISS-20260729-BF2F89, which is the active RC6 release/documentation/Wiki closeout issue. This duplicate was created during the earlier unstable 502 window.",
+  "goals": [
+    "Make Windows PATH-resolved .cmd/.bat command execution safe and portable.",
+    "Give new users a concise, accurate README and structured public documentation.",
+    "Maintain a complete GitHub Wiki with repository-backed source pages.",
+    "Push an exact validated main revision and require CI/Windows smoke to pass.",
+    "Create the v1.4.0-rc.6 GitHub prerelease with trustworthy release notes."
+  ],
+  "nonGoals": [
+    "Do not publish npm unless authentication and provenance are independently verified.",
+    "Do not change Stable Supervisor runtime away from the currently verified 58cd291d release.",
+    "Do not rewrite existing Git history or delete historical releases."
+  ],
+  "acceptanceCriteria": [
+    "Windows command runner and global runtime fixtures pass targeted and release checks.",
+    "README, contributing/support/security/release docs, docs navigation, and Wiki source are accurate and link-clean.",
+    "Main is clean, pushed, and GitHub CI plus Windows smoke are green for the exact release commit.",
+    "GitHub Wiki is synchronized from reviewed repository source.",
+    "Repository metadata and merge/branch settings are production-appropriate.",
+    "v1.4.0-rc.6 tag and GitHub prerelease exist at the exact green commit."
+  ],
+  "relatedArtifacts": [],
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Restore native Windows command execution",
+      "objective": "Recreate the previously validated fix for PATH/PATHEXT resolution and safe ComSpec invocation of .cmd/.bat tools, retain direct .exe execution, make global runtime test shims cross-platform, and run type/platform/release-surface validation.",
+      "status": "ready",
+      "dependsOn": [],
+      "allowedPaths": [
+        "src/effects/process-runner.ts",
+        "tests/process-runner.test.ts",
+        "tests/cli/global-runtime-init.test.ts"
+      ],
+      "forbiddenPaths": [],
+      "checks": [
+        "package:check:type",
+        "package:check:platform-support",
+        "package:check:release-surface"
+      ],
+      "acceptanceCriteria": [
+        "Windows PATHEXT resolution is case-insensitive and deterministic.",
+        "Batch scripts execute through ComSpec with safe escaping; native executables remain direct.",
+        "Targeted tests and declared checks pass."
+      ],
+      "risk": "medium",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-29T12:17:26.189Z",
+      "updatedAt": "2026-07-29T12:17:26.189Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T2",
+      "title": "Improve public docs and Wiki source",
+      "objective": "Audit and improve README, Chinese README, contributing/support/security/changelog/release documentation, docs navigation, installation and concepts pages, troubleshooting, and repository-backed Wiki source. Remove stale names, internal-only material, broken links, and unclear first-run instructions.",
+      "status": "planned",
+      "dependsOn": [
+        "T1"
+      ],
+      "allowedPaths": [
+        "README.md",
+        "README.zh-CN.md",
+        "CONTRIBUTING.md",
+        "SUPPORT.md",
+        "SECURITY.md",
+        "CHANGELOG.md",
+        "docs/**",
+        ".github/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [
+        "package:check:public-docs",
+        "package:check:open-source-surface",
+        "package:check:release-surface"
+      ],
+      "acceptanceCriteria": [
+        "README explains Matea, install, first run, safety model, and supported platforms clearly.",
+        "Public docs have coherent navigation and no stale branding/private paths.",
+        "Wiki source includes Home, Sidebar, installation, quick start, concepts, architecture, troubleshooting, and release/upgrade pages.",
+        "Public documentation checks pass."
+      ],
+      "risk": "medium",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-29T12:17:26.189Z",
+      "updatedAt": "2026-07-29T12:17:26.189Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T3",
+      "title": "Publish and govern GitHub RC6",
+      "objective": "Review the final diff, run release readiness, merge to main, push using the authenticated SSH path, verify GitHub CI and Windows smoke, synchronize the Wiki repository, configure repository metadata/merge policy/branch cleanup and required checks where permitted, then create the v1.4.0-rc.6 tag and GitHub prerelease at the exact green commit.",
+      "status": "planned",
+      "dependsOn": [
+        "T2"
+      ],
+      "allowedPaths": [
+        ".github/**",
+        "docs/**",
+        "CHANGELOG.md",
+        "package.json"
+      ],
+      "forbiddenPaths": [],
+      "checks": [
+        "package:check:release-readiness"
+      ],
+      "acceptanceCriteria": [
+        "Exact final commit passes local release readiness and remote CI/Windows smoke.",
+        "Main and Wiki are pushed and clean.",
+        "GitHub repository governance is configured without weakening checks.",
+        "v1.4.0-rc.6 prerelease points to the exact green commit."
+      ],
+      "risk": "high",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-29T12:17:26.189Z",
+      "updatedAt": "2026-07-29T12:17:26.189Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    }
+  ],
+  "createdAt": "2026-07-29T12:17:26.189Z",
+  "updatedAt": "2026-07-29T12:39:45.184Z",
+  "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+}
