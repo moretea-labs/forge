@@ -63,6 +63,8 @@ cloudflared tunnel route dns repo-harness-mcp <named-tunnel-host>
 repo-harness mcp keepalive --repo . --profile controller --toolset advanced --enable-dev-runner --dev-runner-agents codex,claude --tunnel named --cloudflare-tunnel-name repo-harness-mcp --public-endpoint https://<named-tunnel-host>/mcp
 ```
 
+Managed quick and named Cloudflare tunnels use HTTP/2 transport explicitly. This avoids recurring connector outages on networks where outbound UDP/QUIC becomes intermittently unreachable. For an externally managed tunnel, set `protocol: http2` in its local `cloudflared` configuration or start it with `cloudflared tunnel --protocol http2 run <tunnel-name>`.
+
 If Cloudflare is managed outside repo-harness, keep repo-harness on the fixed public origin without owning the tunnel process:
 
 ```bash

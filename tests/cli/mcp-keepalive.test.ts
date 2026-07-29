@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  cloudflaredTunnelArgs,
   decideMcpPortOwnership,
   extractCloudflareQuickTunnelUrl,
   inferMcpTunnelMode,
@@ -22,6 +23,16 @@ describe('mcp keepalive helpers', () => {
     const line = 'INF +--------------------------------------------------------------------------------------------+\nINF |  https://industries-renaissance-advertisements-hand.trycloudflare.com                     |\nINF +--------------------------------------------------------------------------------------------+';
     expect(extractCloudflareQuickTunnelUrl(line)).toBe('https://industries-renaissance-advertisements-hand.trycloudflare.com');
     expect(extractCloudflareQuickTunnelUrl('no tunnel here')).toBeUndefined();
+  });
+
+  test('uses HTTP/2 for both quick and named Cloudflare tunnels', () => {
+    expect(cloudflaredTunnelArgs('quick', '127.0.0.1', 8765)).toEqual([
+      'tunnel', '--protocol', 'http2', '--url', 'http://127.0.0.1:8765',
+    ]);
+    expect(cloudflaredTunnelArgs('named', '127.0.0.1', 8765, 'repo-harness-mcp')).toEqual([
+      'tunnel', '--protocol', 'http2', 'run', '--url', 'http://127.0.0.1:8765', 'repo-harness-mcp',
+    ]);
+    expect(() => cloudflaredTunnelArgs('named', '127.0.0.1', 8765)).toThrow('requires a tunnel name');
   });
 
   test('infers tunnel mode from endpoint and named tunnel presence', () => {

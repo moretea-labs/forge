@@ -224,6 +224,20 @@ export function mcpRuntimeRequiresPublicHealth(tunnelMode: McpRuntimeTunnelMode)
   return tunnelMode !== 'none';
 }
 
+export function cloudflaredTunnelArgs(
+  tunnelMode: 'quick' | 'named',
+  host: string,
+  port: number,
+  tunnelName?: string,
+): string[] {
+  const origin = `http://${host}:${port}`;
+  if (tunnelMode === 'quick') {
+    return ['tunnel', '--protocol', 'http2', '--url', origin];
+  }
+  if (!tunnelName) throw new Error('named Cloudflare tunnel requires a tunnel name');
+  return ['tunnel', '--protocol', 'http2', 'run', '--url', origin, tunnelName];
+}
+
 export function inferMcpTunnelMode(
   requested: string | undefined,
   publicEndpoint: string | undefined,
@@ -770,9 +784,7 @@ export async function runMcpKeepalive(rawOpts: McpKeepaliveOptions): Promise<voi
     if (!command) return;
     const args = tunnelMode === 'tailscale'
       ? ['funnel', '--bg', String(port)]
-      : tunnelMode === 'quick'
-        ? ['tunnel', '--protocol', 'http2', '--url', `http://${host}:${port}`]
-        : ['tunnel', 'run', '--url', `http://${host}:${port}`, tunnelName as string];
+      : cloudflaredTunnelArgs(tunnelMode, host, port, tunnelName);
     tunnelChild = spawn(command, args, {
       cwd: repoRoot,
       env: { ...process.env },
