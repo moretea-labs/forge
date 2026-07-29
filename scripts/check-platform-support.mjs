@@ -51,9 +51,10 @@ const publicDocs = [
   "docs/public-usage-guide.md",
   "docs/public-usage-guide.zh-CN.md",
 ];
+const retiredPersonalRepositoryUrl = ["github.com", "greysonOuyang"].join("/") + "/";
 for (const path of publicDocs) {
   const content = text(path);
-  if (content.includes("github.com/greysonOuyang/")) failures.push(`${path} contains the retired personal repository URL`);
+  if (content.includes(retiredPersonalRepositoryUrl)) failures.push(`${path} contains the retired personal repository URL`);
 }
 
 if (failures.length > 0) {

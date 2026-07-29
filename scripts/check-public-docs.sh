@@ -30,7 +30,7 @@ for path in "${required[@]}"; do
   [[ -f "$path" ]] || { echo "[public-docs] missing: $path" >&2; exit 1; }
 done
 
-if git grep -n -E 'controller_capabilities and project_snapshot|Start repository work with controller_capabilities|20260612-legacy-research-notes|github.com/greysonOuyang/' -- README*.md docs ':!docs/architecture/history/**' ':!docs/architecture/snapshots/**' >/dev/null; then
+if git grep -n -E 'controller_capabilities and project_snapshot|Start repository work with controller_capabilities|20260612-legacy-research-notes|github[.]com/greyson[O]uyang/' -- README*.md docs ':!docs/architecture/history/**' ':!docs/architecture/snapshots/**' >/dev/null; then
   echo "[public-docs] stale onboarding, personal repository URL, or removed legacy reference found" >&2
   exit 1
 fi
