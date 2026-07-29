@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { delimiter, join } from 'path';
 import { spawnSync } from 'child_process';
 import { runGlobalRuntimeSetup } from '../../src/cli/commands/global-runtime';
 
@@ -11,6 +11,20 @@ const CLI = join(ROOT, 'src/cli/index.ts');
 function writeExecutable(filePath: string, content: string): void {
   writeFileSync(filePath, content);
   chmodSync(filePath, 0o755);
+}
+
+function prependPath(fakeBin: string): string {
+  return [fakeBin, process.env.PATH ?? ''].filter(Boolean).join(delimiter);
+}
+
+function writeNodeCommand(fakeBin: string, name: string, source: string): void {
+  const scriptPath = join(fakeBin, `${name}.mjs`);
+  writeFileSync(scriptPath, source);
+  if (process.platform === 'win32') {
+    writeFileSync(join(fakeBin, `${name}.cmd`), `@echo off\r\n"${process.execPath}" "${scriptPath}" %*\r\n`);
+    return;
+  }
+  writeExecutable(join(fakeBin, name), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(scriptPath)} "$@"\n`);
 }
 
 function setupFakeSource(root: string): void {
@@ -27,28 +41,30 @@ function setupFakeSource(root: string): void {
 }
 
 function writeFakeCodegraph(fakeBin: string, logFile: string): void {
-  writeExecutable(
-    join(fakeBin, 'codegraph'),
+  writeNodeCommand(
+    fakeBin,
+    'codegraph',
     [
-      '#!/bin/bash',
-      'set -euo pipefail',
-      `echo "codegraph $*" >> "${logFile}"`,
-      'case "${1:-}" in',
-      '  "--version") echo "0.9.6" ;;',
-      '  "status") echo "CodeGraph Status"; echo "Index is up to date" ;;',
-      '  "install")',
-      '    if [[ " $* " == *" --target codex "* ]]; then',
-      '      mkdir -p "$HOME/.codex"',
-      '      cat > "$HOME/.codex/config.toml" <<\'TOML\'',
-      '[mcp_servers.codegraph]',
-      'command = "codegraph"',
-      'args = ["serve", "--mcp"]',
-      'TOML',
-      '    fi',
-      '    echo "installed" ;;',
-      '  *) exit 1 ;;',
-      'esac',
-      '',
+      "import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';",
+      "import { join } from 'node:path';",
+      `const logFile = ${JSON.stringify(logFile)};`,
+      "const args = process.argv.slice(2);",
+      "appendFileSync(logFile, `codegraph ${args.join(' ')}\\n`);",
+      "if (args[0] === '--version') { console.log('0.9.6'); process.exit(0); }",
+      "if (args[0] === 'status') { console.log('CodeGraph Status'); console.log('Index is up to date'); process.exit(0); }",
+      "if (args[0] === 'install') {",
+      "  const targetIndex = args.indexOf('--target');",
+      "  if (targetIndex >= 0 && args[targetIndex + 1] === 'codex') {",
+      "    const home = process.env.HOME ?? process.env.USERPROFILE ?? '';",
+      "    const codexDir = join(home, '.codex');",
+      "    mkdirSync(codexDir, { recursive: true });",
+      "    writeFileSync(join(codexDir, 'config.toml'), '[mcp_servers.codegraph]\\ncommand = \\\"codegraph\\\"\\nargs = [\\\"serve\\\", \\\"--mcp\\\"]\\n');",
+      "  }",
+      "  console.log('installed');",
+      "  process.exit(0);",
+      "}",
+      "process.exit(1);",
+      "",
     ].join('\n'),
   );
 }
