@@ -69,7 +69,7 @@
       "id": "T2",
       "title": "Rework public docs and Wiki source",
       "objective": "Audit and improve the public documentation for Matea. Rewrite the README information architecture and quick start where needed, align Chinese/English docs, improve CONTRIBUTING, SECURITY, SUPPORT, CHANGELOG and docs navigation, add a platform support matrix and operational concepts, and build a coherent docs/wiki source including Home and _Sidebar. Remove stale names, commands, links, internal-only paths, and duplicated material. Run public documentation and release-surface checks.",
-      "status": "ready",
+      "status": "verified",
       "dependsOn": [],
       "allowedPaths": [
         "README.md",
@@ -96,17 +96,19 @@
       ],
       "risk": "medium",
       "recommendedAgent": "claude",
-      "notes": [],
+      "notes": [
+        "Implemented and integrated as 97e703134050b65543312f360c3a84e1ada55051. Reworked English/Chinese README, CONTRIBUTING, SUPPORT, CHANGELOG, docs index, and expanded docs/wiki from 3 pages to 13 pages with _Sidebar. package:check:public-docs, package:check:open-source-surface, and package:check:release-surface passed; release surface exported 747 files and ran 38 focused tests with 0 failures."
+      ],
       "runIds": [],
       "createdAt": "2026-07-29T12:22:51.953Z",
-      "updatedAt": "2026-07-29T12:22:51.953Z",
+      "updatedAt": "2026-07-29T14:39:37.868Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
       "id": "T3",
       "title": "Finalize GitHub governance and publish RC6",
       "objective": "After the code and docs tasks are integrated, push main, verify GitHub CI and Windows smoke on the exact commit, synchronize docs/wiki to the GitHub Wiki repository, tighten safe repository settings such as deleting merged branches and a clear merge strategy, apply an appropriate main ruleset/branch protection using existing CI check names, update repository topics/about links where supported, and create v1.4.0-rc.6 as a GitHub prerelease with accurate notes. Confirm npm publication separately and do not claim it without evidence.",
-      "status": "planned",
+      "status": "running",
       "dependsOn": [
         "T1",
         "T2"
@@ -130,10 +132,12 @@
         "The v1.4.0-rc.6 tag and GitHub prerelease point to the exact green commit, with no false npm publication claim."
       ],
       "risk": "high",
-      "notes": [],
+      "notes": [
+        "All release prerequisites are integrated and independently verified. Starting exact-SHA release metadata, remote push, CI/Windows verification, Wiki synchronization, GitHub governance, and v1.4.0-rc.6 prerelease publication."
+      ],
       "runIds": [],
       "createdAt": "2026-07-29T12:22:51.953Z",
-      "updatedAt": "2026-07-29T12:22:51.953Z",
+      "updatedAt": "2026-07-29T14:40:03.014Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
@@ -178,6 +182,6 @@
     }
   ],
   "createdAt": "2026-07-29T12:22:51.953Z",
-  "updatedAt": "2026-07-29T14:26:07.932Z",
+  "updatedAt": "2026-07-29T14:40:03.014Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }

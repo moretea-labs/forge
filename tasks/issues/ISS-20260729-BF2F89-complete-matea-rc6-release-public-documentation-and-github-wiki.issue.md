@@ -2,7 +2,7 @@
 id: "ISS-20260729-BF2F89"
 kind: "governance"
 status: "in_progress"
-updated_at: "2026-07-29T14:26:07.932Z"
+updated_at: "2026-07-29T14:40:03.014Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -48,7 +48,7 @@ Finish the public release baseline from clean main: restore the Windows-native c
 
 ### T2 — Rework public docs and Wiki source
 
-- Status: `ready`
+- Status: `verified`
 - Objective: Audit and improve the public documentation for Matea. Rewrite the README information architecture and quick start where needed, align Chinese/English docs, improve CONTRIBUTING, SECURITY, SUPPORT, CHANGELOG and docs navigation, add a platform support matrix and operational concepts, and build a coherent docs/wiki source including Home and _Sidebar. Remove stale names, commands, links, internal-only paths, and duplicated material. Run public documentation and release-surface checks.
 - Depends on: none
 - Allowed paths: `README.md`, `README.zh-CN.md`, `CONTRIBUTING.md`, `SECURITY.md`, `SUPPORT.md`, `CHANGELOG.md`, `docs/**`, `.github/ISSUE_TEMPLATE/**`, `.github/PULL_REQUEST_TEMPLATE.md`
@@ -57,7 +57,7 @@ Finish the public release baseline from clean main: restore the Windows-native c
 
 ### T3 — Finalize GitHub governance and publish RC6
 
-- Status: `planned`
+- Status: `running`
 - Objective: After the code and docs tasks are integrated, push main, verify GitHub CI and Windows smoke on the exact commit, synchronize docs/wiki to the GitHub Wiki repository, tighten safe repository settings such as deleting merged branches and a clear merge strategy, apply an appropriate main ruleset/branch protection using existing CI check names, update repository topics/about links where supported, and create v1.4.0-rc.6 as a GitHub prerelease with accurate notes. Confirm npm publication separately and do not claim it without evidence.
 - Depends on: `T1`, `T2`
 - Allowed paths: `.github/**`, `package.json`, `CHANGELOG.md`, `docs/wiki/**`
