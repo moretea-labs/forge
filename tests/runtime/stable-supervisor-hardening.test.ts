@@ -52,7 +52,13 @@ function git(cwd: string, args: string[]): void {
   }
 }
 
-function fakeSupervisorRelease(home: string, name: string, revision: string): string {
+function currentHead(): string {
+  const result = spawnSync('git', ['rev-parse', '--verify', 'HEAD'], { cwd: process.cwd(), encoding: 'utf8' });
+  if (result.status !== 0 || !result.stdout.trim()) throw new Error(`git rev-parse HEAD failed: ${result.stderr || result.stdout}`);
+  return result.stdout.trim();
+}
+
+function fakeSupervisorRelease(home: string, name: string, revision: string, options: { sourceRoot?: string; sourceCommit?: string } = {}): string {
   const releasePath = join(supervisorReleasesRoot(home), name);
   mkdirSync(releasePath, { recursive: true });
   const executables = [
@@ -77,8 +83,8 @@ function fakeSupervisorRelease(home: string, name: string, revision: string): st
   writeFileSync(join(releasePath, 'manifest.json'), `${JSON.stringify({
     schemaVersion: 2,
     releaseRevision: revision,
-    sourceCommit: '0123456789abcdef0123456789abcdef01234567',
-    sourceRoot: process.cwd(),
+    sourceCommit: options.sourceCommit ?? '0123456789abcdef0123456789abcdef01234567',
+    sourceRoot: options.sourceRoot ?? process.cwd(),
     cleanWorkspace: true,
     artifactHash: aggregate.digest('hex'),
     artifacts,
@@ -103,7 +109,7 @@ function managedProcess(slot: 'blue' | 'green', pid: number, generation: string)
 }
 
 describe('Stable Supervisor production hardening', () => {
-  test('release bundles include the durable Worker entrypoint', () => {
+  test('release bundles include durable runtime entrypoints and load the immutable process runner', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-worker-release-'));
     try {
       const release = installSupervisorRelease({
@@ -114,12 +120,28 @@ describe('Stable Supervisor production hardening', () => {
         allowUnreproducibleReleaseForTests: true,
       });
       expect(existsSync(join(release.releasePath, 'worker.js'))).toBe(true);
+      expect(existsSync(join(release.releasePath, 'process-runner.js'))).toBe(true);
       expect(existsSync(join(release.releasePath, 'browser-handoff-host.js'))).toBe(true);
+      const loaded = spawnSync(process.execPath, [
+        join(release.releasePath, 'process-runner.js'),
+        '--descriptor',
+        join(controllerHome, 'missing-descriptor.json'),
+      ], {
+        encoding: 'utf8',
+        env: {
+          PATH: process.env.PATH ?? '',
+          HOME: process.env.HOME ?? '',
+          REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT: join(controllerHome, 'missing-runtime-source'),
+        },
+      });
+      expect(loaded.status).toBe(2);
+      expect(loaded.stderr).toContain('descriptor not found');
       const manifest = JSON.parse(readFileSync(join(release.releasePath, 'manifest.json'), 'utf8')) as {
         releaseRevision?: string;
         sourceCommit?: string;
         cleanWorkspace?: boolean;
         workerEntrypoint?: string;
+        processRunnerEntrypoint?: string;
         browserHandoffHostEntrypoint?: string;
         capabilities?: string[];
       };
@@ -129,8 +151,10 @@ describe('Stable Supervisor production hardening', () => {
       expect(manifest.releaseRevision).toBe(expectedRevision);
       expect(release.releaseRevision).toBe(expectedRevision);
       expect(manifest.workerEntrypoint).toBe('worker.js');
+      expect(manifest.processRunnerEntrypoint).toBe('process-runner.js');
       expect(manifest.browserHandoffHostEntrypoint).toBe('browser-handoff-host.js');
       expect(manifest.capabilities).toContain('staged_rollout_release');
+      expect(manifest.capabilities).toContain('independent_process_runner');
       expect(manifest.capabilities).toContain('browser_handoff_host');
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
@@ -190,6 +214,39 @@ describe('Stable Supervisor production hardening', () => {
     }
   });
 
+  test('release publication refuses stale managed worktree runtime sources', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-stale-managed-source-'));
+    try {
+      const staleManagedSource = join(controllerHome, 'repositories', 'repo_test', 'worktrees', 'campaign-stale');
+      const stale = fakeSupervisorRelease(controllerHome, 'stale', 'revision-stale', {
+        sourceRoot: staleManagedSource,
+        sourceCommit: '1111111111111111111111111111111111111111',
+      });
+      expect(() => publishSupervisorRelease({ controllerHome, repoRoot: process.cwd(), releasePath: stale }))
+        .toThrow(/SUPERVISOR_RELEASE_SOURCE_UNPUBLISHABLE/);
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
+  test('release publication rewrites matching managed worktree sources to the canonical repo root', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-managed-source-main-'));
+    try {
+      const managedSource = join(controllerHome, 'repositories', 'repo_test', 'worktrees', 'campaign-current');
+      mkdirSync(managedSource, { recursive: true });
+      const release = fakeSupervisorRelease(controllerHome, 'current', 'revision-current', {
+        sourceRoot: managedSource,
+        sourceCommit: currentHead(),
+      });
+      const published = publishSupervisorRelease({ controllerHome, repoRoot: process.cwd(), releasePath: release });
+      const plist = readFileSync(published.launchdPlistPath, 'utf8');
+      expect(plist).toContain(process.cwd());
+      expect(plist).not.toContain(managedSource);
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
   test('staged releases remain unpublished until candidate verification succeeds', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-staged-release-'));
     try {
@@ -222,8 +279,8 @@ describe('Stable Supervisor production hardening', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-release-activation-'));
     try {
       const previous = fakeSupervisorRelease(controllerHome, 'previous', 'revision-previous');
-      const candidate = fakeSupervisorRelease(controllerHome, 'candidate', 'revision-candidate');
-      const failedCandidate = fakeSupervisorRelease(controllerHome, 'failed-candidate', 'revision-failed');
+      const candidate = fakeSupervisorRelease(controllerHome, 'candidate', 'revision-candidate', { sourceCommit: currentHead() });
+      const failedCandidate = fakeSupervisorRelease(controllerHome, 'failed-candidate', 'revision-failed', { sourceCommit: currentHead() });
       publishSupervisorRelease({ controllerHome, repoRoot: process.cwd(), releasePath: previous });
 
       const scheduled: Array<{ repo: string; home: string; delay: number }> = [];
@@ -263,6 +320,27 @@ describe('Stable Supervisor production hardening', () => {
     }
   });
 
+  test('stale release activation cannot overwrite the current Supervisor release', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-stale-activation-'));
+    try {
+      const current = fakeSupervisorRelease(controllerHome, 'current', 'revision-current');
+      const stale = fakeSupervisorRelease(controllerHome, 'stale', 'revision-stale', {
+        sourceCommit: '2222222222222222222222222222222222222222',
+      });
+      publishSupervisorRelease({ controllerHome, repoRoot: process.cwd(), releasePath: current });
+
+      expect(() => publishAndScheduleSupervisorRelease({
+        controllerHome,
+        repoRoot: process.cwd(),
+        releasePath: stale,
+      })).toThrow(/SUPERVISOR_ACTIVATION_STALE_RELEASE/);
+      expect(readCurrentRelease(controllerHome)).toBe(current);
+      expect(readCurrentSupervisorRelease(controllerHome)?.releaseRevision).toBe('revision-current');
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
   test('only OS-managed Supervisor services activate newly published releases', () => {
     expect(stableSupervisorActivatesPublishedRelease(undefined)).toBe(true);
     expect(stableSupervisorActivatesPublishedRelease('managed')).toBe(true);
@@ -274,7 +352,7 @@ describe('Stable Supervisor production hardening', () => {
     expect(stableSupervisorExitCode('explicit_signal')).toBe(0);
   });
 
-  test('OS services restart crashes but preserve explicit successful stop', () => {
+  test('OS services keep Stable Supervisor alive under direct process termination', () => {
     const plist = renderLaunchdSupervisorPlist({
       label: 'com.example.supervisor',
       bunPath: '/usr/local/bin/bun',
@@ -287,12 +365,13 @@ describe('Stable Supervisor production hardening', () => {
       homeDir: '/Users/example',
       nvmBin: '/Users/example/.nvm/versions/node/current/bin',
     });
-    expect(plist).toContain('<key>SuccessfulExit</key><false/>');
+    expect(plist).toContain('<key>KeepAlive</key><true/>');
     expect(plist).toContain('--release-revision');
     expect(plist).toContain('revision-a');
     expect(plist).toContain('<key>EnvironmentVariables</key>');
+    expect(plist).toContain('<key>REPO_HARNESS_SUPERVISOR_SERVICE_MODE</key><string>managed</string>');
     expect(plist).toContain('<key>PATH</key><string>/usr/local/bin:/Users/example/.bun/bin:/Users/example/.volta/bin:/Users/example/.nvm/versions/node/current/bin:/Users/example/.local/share/mise/shims:/Users/example/.asdf/shims:/Users/example/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>');
-    expect(plist).not.toContain('<key>KeepAlive</key><true/>');
+    expect(plist).not.toContain('<key>SuccessfulExit</key><false/>');
     const unit = renderSystemdSupervisorUnit({
       bunPath: '/usr/local/bin/bun',
       supervisorPath: '/tmp/supervisor.js',
@@ -303,8 +382,9 @@ describe('Stable Supervisor production hardening', () => {
       nvmBin: '/Users/example/.nvm/versions/node/current/bin',
     });
     expect(unit).toContain('Environment="PATH=/usr/local/bin:/Users/example/.bun/bin:/Users/example/.volta/bin:/Users/example/.nvm/versions/node/current/bin:/Users/example/.local/share/mise/shims:/Users/example/.asdf/shims:/Users/example/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"');
-    expect(unit).toContain('Restart=on-failure');
-    expect(unit).not.toContain('Restart=always');
+    expect(unit).toContain('Environment="REPO_HARNESS_SUPERVISOR_SERVICE_MODE=managed"');
+    expect(unit).toContain('Restart=always');
+    expect(unit).not.toContain('Restart=on-failure');
     const spaced = renderSystemdSupervisorUnit({
       bunPath: '/Users/example/My Tools/bun',
       supervisorPath: '/Users/example/Controller Home/supervisor.js',

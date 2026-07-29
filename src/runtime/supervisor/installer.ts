@@ -1,8 +1,8 @@
 import { createHash } from 'crypto';
-import { chmodSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'fs';
 import { dirname, join, resolve, sep } from 'path';
 import { runProcess } from '../../effects/process-runner';
-import { resolveControllerRuntimeSourceRoot } from '../control-plane/runtime-generation';
+import { looksLikeControllerRuntimePackage, resolveControllerRuntimeSourceRoot } from '../control-plane/runtime-generation';
 import { readCurrentRelease, readSupervisorRelease, ensureStableSupervisorLayout, publishCurrentRelease, supervisorLogsRoot, supervisorReleasesRoot, supervisorRoot } from './paths';
 
 export interface SupervisorInstallResult {
@@ -32,6 +32,59 @@ function runtimeSourceRoot(explicit?: string): string {
   const resolved = resolveControllerRuntimeSourceRoot({ explicitRoot: explicit });
   if (!resolved.root) throw new Error(`SUPERVISOR_RUNTIME_SOURCE_UNAVAILABLE: ${resolved.detail ?? resolved.reason}`);
   return resolved.root;
+}
+
+function gitHead(root: string): string | undefined {
+  const result = runProcess('git', ['-C', root, 'rev-parse', '--verify', 'HEAD'], { timeoutMs: 10_000, maxOutputBytes: 4_096 });
+  return result.ok && result.stdout.trim() ? result.stdout.trim() : undefined;
+}
+
+function containmentPath(path: string): string {
+  try { return realpathSync(path); } catch { return resolve(path); }
+}
+
+function pathIsInside(parent: string, candidate: string): boolean {
+  const normalizedParent = containmentPath(parent);
+  const normalizedCandidate = containmentPath(candidate);
+  return normalizedCandidate === normalizedParent || normalizedCandidate.startsWith(`${normalizedParent}${sep}`);
+}
+
+function controllerManagedRuntimeSource(controllerHome: string, sourceRoot: string): boolean {
+  return pathIsInside(join(resolve(controllerHome), 'repositories'), sourceRoot);
+}
+
+function publishRuntimeSourceRoot(input: {
+  controllerHome: string;
+  repoRoot: string;
+  release: NonNullable<ReturnType<typeof readSupervisorRelease>>;
+}): string {
+  const repoRoot = runtimeSourceRoot(input.repoRoot);
+  const releaseSourceRoot = input.release.sourceRoot ? resolve(input.release.sourceRoot) : undefined;
+  if (!releaseSourceRoot) return repoRoot;
+
+  const releaseSourceExists = existsSync(releaseSourceRoot);
+  const releaseSourceLooksValid = releaseSourceExists && looksLikeControllerRuntimePackage(releaseSourceRoot);
+  const managedSource = controllerManagedRuntimeSource(input.controllerHome, releaseSourceRoot);
+  if (releaseSourceLooksValid && !managedSource) return runtimeSourceRoot(releaseSourceRoot);
+
+  const repoHead = gitHead(repoRoot);
+  if (input.release.sourceCommit && repoHead === input.release.sourceCommit && looksLikeControllerRuntimePackage(repoRoot)) {
+    return repoRoot;
+  }
+
+  const reasons = [
+    releaseSourceExists ? undefined : 'sourceRoot missing',
+    releaseSourceExists && !releaseSourceLooksValid ? 'sourceRoot is not a controller runtime package' : undefined,
+    managedSource ? 'sourceRoot is a controller-managed worktree' : undefined,
+    input.release.sourceCommit ? undefined : 'sourceCommit missing',
+    repoHead && input.release.sourceCommit && repoHead !== input.release.sourceCommit
+      ? `repoRoot HEAD ${repoHead} differs from release sourceCommit ${input.release.sourceCommit}`
+      : undefined,
+  ].filter(Boolean).join('; ');
+  throw new Error(
+    `SUPERVISOR_RELEASE_SOURCE_UNPUBLISHABLE: refusing to publish release ${input.release.releaseRevision ?? input.release.releasePath} `
+    + `with unsafe runtime source ${releaseSourceRoot} (${reasons || 'unknown reason'})`,
+  );
 }
 
 interface RuntimeSourceReleaseIdentity {
@@ -157,7 +210,7 @@ export function renderLaunchdSupervisorPlist(input: {
   const args = [input.bunPath, input.supervisorPath, '--repo', input.repoRoot, '--controller-home', input.controllerHome, '--runtime-source-root', input.runtimeSourceRoot];
   if (input.releaseRevision) args.push('--release-revision', input.releaseRevision);
   const xml = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n  <key>Label</key><string>${xml(input.label)}</string>\n  <key>ProgramArguments</key><array>${args.map((arg) => `<string>${xml(arg)}</string>`).join('')}</array>\n  <key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(supervisorServicePath(input.bunPath, input.homeDir, input.nvmBin))}</string></dict>\n  <key>RunAtLoad</key><true/>\n  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n  <key>ThrottleInterval</key><integer>2</integer>\n  <key>ProcessType</key><string>Interactive</string>\n  <key>StandardOutPath</key><string>${xml(input.logPath)}</string>\n  <key>StandardErrorPath</key><string>${xml(input.logPath)}</string>\n</dict></plist>\n`;
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n  <key>Label</key><string>${xml(input.label)}</string>\n  <key>ProgramArguments</key><array>${args.map((arg) => `<string>${xml(arg)}</string>`).join('')}</array>\n  <key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(supervisorServicePath(input.bunPath, input.homeDir, input.nvmBin))}</string><key>REPO_HARNESS_SUPERVISOR_SERVICE_MODE</key><string>managed</string></dict>\n  <key>RunAtLoad</key><true/>\n  <key>KeepAlive</key><true/>\n  <key>ThrottleInterval</key><integer>2</integer>\n  <key>ProcessType</key><string>Interactive</string>\n  <key>StandardOutPath</key><string>${xml(input.logPath)}</string>\n  <key>StandardErrorPath</key><string>${xml(input.logPath)}</string>\n</dict></plist>\n`;
 }
 
 export function renderSystemdSupervisorUnit(input: {
@@ -170,7 +223,7 @@ export function renderSystemdSupervisorUnit(input: {
   nvmBin?: string;
 }): string {
   const args = [input.bunPath, input.supervisorPath, '--repo', input.repoRoot, '--controller-home', input.controllerHome, '--runtime-source-root', input.runtimeSourceRoot];
-  return `[Unit]\nDescription=repo-harness Stable External Runtime Supervisor\nAfter=default.target\n\n[Service]\nType=simple\nEnvironment=${systemdQuote(`PATH=${supervisorServicePath(input.bunPath, input.homeDir, input.nvmBin)}`)}\nExecStart=${args.map(systemdQuote).join(' ')}\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n`;
+  return `[Unit]\nDescription=repo-harness Stable External Runtime Supervisor\nAfter=default.target\n\n[Service]\nType=simple\nEnvironment=${systemdQuote(`PATH=${supervisorServicePath(input.bunPath, input.homeDir, input.nvmBin)}`)}\nEnvironment=${systemdQuote('REPO_HARNESS_SUPERVISOR_SERVICE_MODE=managed')}\nExecStart=${args.map(systemdQuote).join(' ')}\nRestart=always\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n`;
 }
 
 export interface SupervisorStagedRelease {
@@ -289,7 +342,7 @@ export function publishSupervisorRelease(input: { controllerHome: string; repoRo
   const release = readSupervisorRelease(releasePath);
   if (!release) throw new Error('SUPERVISOR_STAGED_RELEASE_INVALID');
   assertPublishableRelease(release, input.allowUnreproducibleReleaseForTests === true);
-  const sourceRoot = runtimeSourceRoot(release.sourceRoot ?? input.repoRoot);
+  const sourceRoot = publishRuntimeSourceRoot({ controllerHome, repoRoot: input.repoRoot, release });
   const revision = release.releaseRevision ?? `local-${Date.now()}`;
   const previous = readCurrentRelease(controllerHome);
   publishCurrentRelease(controllerHome, releasePath, previous);

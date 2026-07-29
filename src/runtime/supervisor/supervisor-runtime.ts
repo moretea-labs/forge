@@ -1998,6 +1998,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       repoRoot: this.options.repoRoot,
       releasePath: rollbackReleasePath,
       handoffDelayMs: 2_000,
+      allowOutdatedReleaseActivation: true,
     }, this.options.serviceActivationScheduler
       ? { schedule: this.options.serviceActivationScheduler }
       : undefined);

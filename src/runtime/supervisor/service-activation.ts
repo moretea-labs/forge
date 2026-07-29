@@ -1,8 +1,8 @@
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from 'fs';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { dirname, join, resolve } from 'path';
 import { publishSupervisorRelease, type SupervisorInstallResult } from './installer';
-import { readCurrentRelease, readCurrentSupervisorRelease, supervisorRoot } from './paths';
+import { readCurrentRelease, readCurrentSupervisorRelease, readSupervisorRelease, supervisorRoot } from './paths';
 import { writeJsonAtomic } from '../shared/json-files';
 import {
   initActivationState,
@@ -165,12 +165,16 @@ export function publishAndScheduleSupervisorRelease(
     repoRoot: string;
     releasePath: string;
     handoffDelayMs?: number;
+    allowOutdatedReleaseActivation?: boolean;
   },
   dependencies: SupervisorReleaseActivationDependencies = {},
 ): SupervisorReleaseActivationResult {
   const publish = dependencies.publish ?? publishSupervisorRelease;
   const schedule = dependencies.schedule ?? scheduleServiceActivation;
   const previous = readCurrentSupervisorRelease(input.controllerHome);
+  if (input.allowOutdatedReleaseActivation !== true) {
+    assertActivationReleaseMatchesRepoHead(input.repoRoot, input.releasePath);
+  }
   const publication = publish({
     controllerHome: input.controllerHome,
     repoRoot: input.repoRoot,
@@ -198,5 +202,21 @@ export function publishAndScheduleSupervisorRelease(
       throw new Error(`SUPERVISOR_ACTIVATION_SCHEDULE_FAILED: ${message}; release restore failed: ${restoreMessage}`);
     }
     throw new Error(`SUPERVISOR_ACTIVATION_SCHEDULE_FAILED: ${message}`);
+  }
+}
+
+function repoHead(repoRoot: string): string | undefined {
+  const result = spawnSync('git', ['-C', repoRoot, 'rev-parse', '--verify', 'HEAD'], { encoding: 'utf8', timeout: 10_000, maxBuffer: 4_096 });
+  return result.status === 0 && result.stdout.trim() ? result.stdout.trim() : undefined;
+}
+
+function assertActivationReleaseMatchesRepoHead(repoRoot: string, releasePath: string): void {
+  const release = readSupervisorRelease(releasePath);
+  const head = repoHead(repoRoot);
+  if (!release?.sourceCommit || !head || release.sourceCommit !== head) {
+    throw new Error(
+      `SUPERVISOR_ACTIVATION_STALE_RELEASE: refusing to activate release ${release?.releaseRevision ?? releasePath}; `
+      + `release sourceCommit=${release?.sourceCommit ?? 'missing'} repoRoot HEAD=${head ?? 'unavailable'}`,
+    );
   }
 }
