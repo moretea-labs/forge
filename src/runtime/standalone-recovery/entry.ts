@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from 'crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { resolve } from 'path';
+import { pathToFileURL } from 'url';
 import { readMcpServiceOAuthPassphrase } from '../../cli/mcp/auth';
 import {
+  attestKnownGood,
   diagnose,
   gatewayToken,
   listSlots,
@@ -31,8 +33,20 @@ function controllerHome(): string {
 
 function output(value: unknown): void { process.stdout.write(`${JSON.stringify(value, null, 2)}\n`); }
 
+export const RECOVERY_CLI_COMMANDS = [
+  'status',
+  'verify',
+  'verify-external',
+  'list-slots',
+  'attest-known-good',
+  'rollback-previous',
+  'restart-supervisor',
+  'diagnose',
+  'reconnect-main',
+] as const;
+
 function usage(): never {
-  throw new Error('RECOVERY_USAGE: status | verify | verify-external | list-slots | rollback-previous | restart-supervisor | diagnose | reconnect-main');
+  throw new Error(`RECOVERY_USAGE: ${RECOVERY_CLI_COMMANDS.join(' | ')}`);
 }
 
 async function cli(): Promise<void> {
@@ -58,6 +72,7 @@ async function cli(): Promise<void> {
       return;
     }
     case 'list-slots': output(await listSlots(config)); return;
+    case 'attest-known-good': output(await attestKnownGood(config)); return;
     case 'rollback-previous': output(await rollbackPrevious(config)); return;
     case 'restart-supervisor': output(await restartSupervisor(config)); return;
     case 'diagnose': output(await diagnose(config)); return;
@@ -120,11 +135,12 @@ function matchesAnyPath(url: string | undefined, paths: string[]): boolean {
   return paths.some((path) => matchesPath(url, path));
 }
 
-const TOOLS = [
+export const RECOVERY_TOOLS = [
   { name: 'supervisor_status', description: 'Read the Stable Supervisor state.', inputSchema: { type: 'object', additionalProperties: false } },
   { name: 'list_slots', description: 'Read active, previous, and known-good release evidence.', inputSchema: { type: 'object', additionalProperties: false } },
   { name: 'verify_stable_runtime', description: 'Run independent stable runtime verification.', inputSchema: { type: 'object', additionalProperties: false } },
   { name: 'verify_external_runtime', description: 'Verify the external primary MCP endpoint.', inputSchema: { type: 'object', additionalProperties: false } },
+  { name: 'attest_known_good', description: 'Record the active release as known-good only after full independent verification succeeds.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'rollback_previous', description: 'Idempotently restore only a Supervisor-registered known-good previous release.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'restart_stable_supervisor', description: 'Request a bounded Stable Supervisor restart.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'reconnect_primary_connector', description: 'Check stable ingress and primary MCP reconnection readiness without rolling out.', inputSchema: { type: 'object', additionalProperties: false } },
@@ -335,7 +351,7 @@ function requestId(value: unknown): string | undefined {
   return typeof value === 'string' && /^[A-Za-z0-9._:-]{8,120}$/.test(value) ? value : undefined;
 }
 
-async function dispatch(config: RecoveryConfig, name: string, args: Record<string, unknown>): Promise<unknown> {
+export async function dispatchRecoveryTool(config: RecoveryConfig, name: string, args: Record<string, unknown>): Promise<unknown> {
   switch (name) {
     case 'supervisor_status': return supervisorStatus(config);
     case 'list_slots': return listSlots(config);
@@ -343,6 +359,10 @@ async function dispatch(config: RecoveryConfig, name: string, args: Record<strin
     case 'verify_external_runtime': {
       const verified = await verifyStableRuntime(config);
       return { ok: verified.probes.external_mcp_http?.ok === true, external: verified.probes.external_mcp_http, mcp: verified.probes.mcp_initialize };
+    }
+    case 'attest_known_good': {
+      if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
+      return attestKnownGood(config);
     }
     case 'rollback_previous': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
@@ -502,7 +522,7 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
     if (message.method === 'initialize') { json(response, 200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'repo-harness-standalone-recovery', version: '1.0.0' } } }); return; }
     if (message.method === 'notifications/initialized') { response.statusCode = 202; response.end(); return; }
     if (message.method === 'tools/list') {
-      const tools = TOOLS.map((tool) => ({
+      const tools = RECOVERY_TOOLS.map((tool) => ({
         ...tool,
         securitySchemes: TOOL_SECURITY_SCHEMES,
         _meta: { securitySchemes: TOOL_SECURITY_SCHEMES },
@@ -513,14 +533,14 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
     if (message.method !== 'tools/call' || typeof message.params?.name !== 'string') { json(response, 200, rpcError(id, -32601, 'Unsupported MCP method.')); return; }
     const name = message.params.name;
     const args = message.params.arguments && typeof message.params.arguments === 'object' && !Array.isArray(message.params.arguments) ? message.params.arguments as Record<string, unknown> : {};
-    if (name === 'rollback_previous' || name === 'restart_stable_supervisor') {
+    if (name === 'attest_known_good' || name === 'rollback_previous' || name === 'restart_stable_supervisor') {
       const address = request.socket.remoteAddress ?? 'unknown'; const now = Date.now();
       const window = (recentMutations.get(address) ?? []).filter((at) => now - at < 60_000);
       if (window.length >= 3) { json(response, 429, rpcError(id, -32029, 'Recovery mutation rate limit exceeded.')); return; }
       window.push(now); recentMutations.set(address, window);
     }
     try {
-      const payload = await dispatch(config, name, args);
+      const payload = await dispatchRecoveryTool(config, name, args);
       json(response, 200, { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload } });
     } catch (error) { json(response, 200, rpcError(id, -32602, error instanceof Error ? error.message : 'Recovery request rejected')); }
   });
@@ -528,4 +548,9 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
   process.stdout.write(JSON.stringify({ status: 'ready', host: gateway.host, port: gateway.port }) + '\n');
 }
 
-void cli().catch((error) => { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1; });
+const isDirectExecution = import.meta.main === true
+  || Boolean(process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href);
+
+if (isDirectExecution) {
+  void cli().catch((error) => { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1; });
+}

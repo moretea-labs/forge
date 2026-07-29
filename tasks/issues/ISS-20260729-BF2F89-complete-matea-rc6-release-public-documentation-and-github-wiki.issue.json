@@ -135,9 +135,48 @@
       "createdAt": "2026-07-29T12:22:51.953Z",
       "updatedAt": "2026-07-29T12:22:51.953Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T4",
+      "title": "Expose verified known-good release attestation",
+      "objective": "Expose the existing attestKnownGood operation through the standalone Recovery CLI and MCP gateway only after full independent verification succeeds. Add focused tests for tool exposure, dispatch, state persistence, and rollback eligibility. Rebuild and activate the exact main revision, attest it as known-good, cold-restart the Supervisor, and verify the release remains active and rollback-safe.",
+      "status": "planned",
+      "dependsOn": [
+        "T1"
+      ],
+      "allowedPaths": [
+        "src/runtime/standalone-recovery/core.ts",
+        "src/runtime/standalone-recovery/entry.ts",
+        "tests/runtime/**",
+        "tasks/issues/ISS-20260729-BF2F89-*"
+      ],
+      "forbiddenPaths": [
+        "_ops/**",
+        "node_modules/**",
+        "dist/**"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:release-readiness"
+      ],
+      "acceptanceCriteria": [
+        "Recovery CLI and MCP expose an explicit known-good attestation action.",
+        "Attestation succeeds only after full independent stable runtime verification.",
+        "list_slots includes the exact active release in knownGood after attestation.",
+        "rollback_previous can recognize the attested release without weakening manifest/path/revision matching.",
+        "Focused tests and release-readiness pass; active runtime revision equals main HEAD after cold restart."
+      ],
+      "risk": "medium",
+      "notes": [
+        "T1 is already integrated and verified on main via cd9103ee/5c62df81. Proceeding with the release-safety attestation gap discovered during cold-start verification."
+      ],
+      "runIds": [],
+      "createdAt": "2026-07-29T14:13:28.935Z",
+      "updatedAt": "2026-07-29T14:13:55.840Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     }
   ],
   "createdAt": "2026-07-29T12:22:51.953Z",
-  "updatedAt": "2026-07-29T12:50:35.308Z",
+  "updatedAt": "2026-07-29T14:13:55.840Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }

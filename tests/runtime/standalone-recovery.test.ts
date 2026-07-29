@@ -4,7 +4,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { createServer as createSocketServer, type Server as SocketServer } from 'net';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { attestKnownGood, createRecoveryConfig, decideWatchdog, recoveryReconnectOperation, rollbackPrevious, verifyStableRuntime } from '../../src/runtime/standalone-recovery/core';
+import { createRecoveryConfig, decideWatchdog, recoveryReconnectOperation, rollbackPrevious, verifyStableRuntime } from '../../src/runtime/standalone-recovery/core';
+import { dispatchRecoveryTool, RECOVERY_CLI_COMMANDS, RECOVERY_TOOLS } from '../../src/runtime/standalone-recovery/entry';
 
 const httpServers: Server[] = [];
 const socketServers: SocketServer[] = [];
@@ -96,7 +97,12 @@ describe('standalone disaster recovery core', () => {
     const config = createRecoveryConfig(home, { stableIngressUrl: `http://127.0.0.1:${port}` });
     const verified = await verifyStableRuntime(config);
     expect(verified.ok).toBe(true);
-    expect((await attestKnownGood(config)).revision).toBe('release-active');
+    expect(RECOVERY_CLI_COMMANDS).toContain('attest-known-good');
+    expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('attest_known_good');
+    const attested = await dispatchRecoveryTool(config, 'attest_known_good', { request_id: 'attest-release-active' }) as { revision: string };
+    expect(attested.revision).toBe('release-active');
+    const slots = await dispatchRecoveryTool(config, 'list_slots', {}) as { knownGood: Array<{ revision: string }> };
+    expect(slots.knownGood.map((entry) => entry.revision)).toContain('release-active');
     const rollback = await rollbackPrevious(config);
     expect(rollback.ok).toBe(true);
     expect(rollback.noOp).toBe(true);
