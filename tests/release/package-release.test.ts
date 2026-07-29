@@ -50,6 +50,20 @@ describe("public package release contract", () => {
     expect(read("THIRD_PARTY_NOTICES.md")).toContain("@modelcontextprotocol/sdk");
   });
 
+  test("uses a real release-readiness CI gate for main and pull requests", () => {
+    const workflow = read(".github/workflows/ci.yml");
+    expect(workflow).toContain("name: CI");
+    expect(workflow).toContain("pull_request:");
+    expect(workflow).toContain("branches:");
+    expect(workflow).toContain("release-readiness:");
+    expect(workflow).toContain("name: Release readiness");
+    expect(workflow).toContain('node-version: "22"');
+    expect(workflow).toContain('bun-version: "1.3.14"');
+    expect(workflow).toContain("npm run check:release-readiness");
+    expect(workflow).toContain("contents: read");
+    expect(workflow).not.toContain("contents: write");
+  });
+
   test("uses one tag-only OIDC workflow with a protected publish environment", () => {
     const workflow = read(".github/workflows/release.yml");
     expect(workflow).toContain('- "v*"');
