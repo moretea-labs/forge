@@ -8,6 +8,7 @@ import {
   isAddressInUseFailure,
   isExpectedLocalControllerHealth,
   mcpServerRestartDelayMs,
+  mcpRuntimeRequiresPublicHealth,
   normalizeKeepalivePublicEndpoint,
   shouldRestartMcpServer,
   shouldRestartMcpTunnel,
@@ -47,6 +48,8 @@ describe('mcp keepalive helpers', () => {
   test('supports operator-managed fixed public endpoints with no managed tunnel', () => {
     expect(normalizeKeepalivePublicEndpoint('https://mcp.acme.dev/mcp')).toBe('https://mcp.acme.dev/mcp');
     expect(inferMcpTunnelMode('none', 'https://mcp.acme.dev/mcp', undefined)).toBe('none');
+    expect(mcpRuntimeRequiresPublicHealth('none')).toBe(false);
+    expect(mcpRuntimeRequiresPublicHealth('tailscale')).toBe(true);
   });
 
   test('does not restart a live gateway during transient health failures', () => {

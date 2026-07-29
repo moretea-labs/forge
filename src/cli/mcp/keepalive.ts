@@ -220,6 +220,10 @@ export function normalizeKeepalivePublicEndpoint(value: string | undefined): str
   return parsed.toString();
 }
 
+export function mcpRuntimeRequiresPublicHealth(tunnelMode: McpRuntimeTunnelMode): boolean {
+  return tunnelMode !== 'none';
+}
+
 export function inferMcpTunnelMode(
   requested: string | undefined,
   publicEndpoint: string | undefined,
@@ -580,7 +584,9 @@ export async function runMcpKeepalive(rawOpts: McpKeepaliveOptions): Promise<voi
       return;
     }
     const localHealthy = runtime.server.healthy === true;
-    const publicHealthy = !configuredEndpoint || runtime.tunnel?.healthy === true;
+    const publicHealthy = !mcpRuntimeRequiresPublicHealth(tunnelMode)
+      || !configuredEndpoint
+      || runtime.tunnel?.healthy === true;
     if (localHealthy && publicHealthy) {
       runtime.status = 'running';
       return;
