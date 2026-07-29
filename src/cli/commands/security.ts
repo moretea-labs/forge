@@ -1,5 +1,5 @@
 /**
- * `repo-harness security scan` -- read-only checks for high-value local
+ * `matea security scan` -- read-only checks for high-value local
  * config injection surfaces. It reports findings only; it never mutates host
  * or repo config.
  */

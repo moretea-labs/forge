@@ -36,7 +36,7 @@ Bun 是开发和完整测试的推荐执行器，但不再是唯一安装器。
 Windows PowerShell 路径当前发布验证覆盖：
 
 - 前置环境检查和 CLI 安装；
-- `repo-harness --version`、命令加载与 `doctor`；
+- `matea --version`、命令加载与 `matea doctor`；
 - 仓库注册表；
 - 可移植测试覆盖的 Windows 路径、进程、junction 和命令处理；
 - 不依赖 Bash helper 的默认 MCP facade 与有边界仓库操作。

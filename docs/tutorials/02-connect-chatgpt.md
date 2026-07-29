@@ -6,8 +6,8 @@ This tutorial starts the local MCP service, publishes only its MCP endpoint thro
 
 You need:
 
-- a repository already registered with `repo-harness repo register`;
-- a healthy `repo-harness doctor` result;
+- a repository already registered with `matea repo register`;
+- a healthy `matea doctor` result;
 - a stable public HTTPS address ending in `/mcp`;
 - ChatGPT access to Developer Mode and custom MCP connectors.
 
@@ -18,7 +18,7 @@ Windows users should run the Controller and tunnel inside WSL2 for the full supp
 ## 2. Generate the MCP configuration
 
 ```bash
-repo-harness mcp setup chatgpt --repo /path/to/your-project
+matea mcp setup chatgpt --repo /path/to/your-project
 ```
 
 The local endpoint is loopback-only:

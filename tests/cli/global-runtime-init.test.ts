@@ -169,7 +169,7 @@ describe('init command global runtime bootstrap', () => {
       encoding: 'utf-8',
     });
     expect(res.status).toBe(0);
-    expect(res.stdout).toContain('Usage: repo-harness init');
+    expect(res.stdout).toContain('Usage: matea init');
     expect(res.stdout).toContain('--target <target>');
     expect(res.stdout).toContain('--no-cli');
     expect(res.stdout).toContain('--brain-root <path>');
@@ -211,7 +211,7 @@ describe('init command global runtime bootstrap', () => {
 
       expect(res.status).toBe(0);
       const result = JSON.parse(res.stdout);
-      expect(readFileSync(bunLog, 'utf-8')).toContain('add -g @moretea-labs/repo-harness-controller@latest');
+      expect(readFileSync(bunLog, 'utf-8')).toContain('add -g @moretea-labs/matea@latest');
       expect(result.steps.find((step: { step: string }) => step.step === 'configure brain root')?.status).toBe('ok');
       expect(existsSync(join(home, '.repo-harness', 'config.json'))).toBe(true);
       expect(existsSync(join(repo, '.ai'))).toBe(false);
@@ -256,9 +256,9 @@ describe('init command global runtime bootstrap', () => {
 
       expect(res.status).toBe(0);
       expect(JSON.parse(res.stdout).steps.find((step: { step: string }) => step.step === 'install repo-harness CLI')?.detail).toBe(
-        'spec=@moretea-labs/repo-harness-controller@9.9.9',
+        'spec=@moretea-labs/matea@9.9.9',
       );
-      expect(readFileSync(bunLog, 'utf-8')).toContain('add -g @moretea-labs/repo-harness-controller@9.9.9');
+      expect(readFileSync(bunLog, 'utf-8')).toContain('add -g @moretea-labs/matea@9.9.9');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -341,7 +341,7 @@ describe('init command global runtime bootstrap', () => {
       encoding: 'utf-8',
     });
     expect(res.status).toBe(0);
-    expect(res.stdout).toContain('Usage: repo-harness update');
+    expect(res.stdout).toContain('Usage: matea update');
     expect(res.stdout).toContain('--version <version>');
     expect(res.stdout).toContain('--channel <channel>');
     expect(res.stdout).toContain('--check');
@@ -349,6 +349,6 @@ describe('init command global runtime bootstrap', () => {
     expect(res.stdout).toContain('--with-external-skills');
     expect(res.stdout).toContain('--configure-codegraph');
     expect(res.stdout).toContain('--no-cli');
-    expect(res.stdout).toContain('Deprecated: use repo-harness adopt --repo <path>');
+    expect(res.stdout).toContain('Deprecated: use matea adopt --repo <path>');
   });
 });

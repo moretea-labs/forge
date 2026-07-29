@@ -36,8 +36,8 @@ The following dependencies are optional and enable additional capabilities:
 The native PowerShell path is release-tested for:
 
 - prerequisite checks and CLI package installation;
-- `repo-harness --version` and command loading;
-- `repo-harness doctor`;
+- `matea --version` and command loading;
+- `matea doctor`;
 - repository registry operations;
 - Windows path, process, junction, and command handling covered by the portable test suite;
 - the default MCP facade and bounded repository operations that do not depend on Bash helpers.

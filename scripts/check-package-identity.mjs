@@ -10,7 +10,7 @@ const pkg = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
 const lock = JSON.parse(readFileSync(resolve(root, "package-lock.json"), "utf8"));
 const skill = JSON.parse(readFileSync(resolve(root, "assets/skill-version.json"), "utf8"));
 
-const expectedName = "@moretea-labs/repo-harness-controller";
+const expectedName = "@moretea-labs/matea";
 const requiredFiles = [
   "LICENSE",
   "CHANGELOG.md",
@@ -62,13 +62,15 @@ if (pkg.publishConfig?.provenance !== true) fail("publishConfig.provenance must 
 if (pkg.publishConfig?.tag !== undefined) fail("publishConfig.tag must be omitted");
 if (pkg.private !== undefined) fail("package must not declare private");
 if (pkg.author !== "Moretea Labs contributors") fail(`unexpected package author: ${pkg.author}`);
-if (!String(pkg.repository?.url ?? "").includes("moretea-labs/repo-harness-controller-runtime")) {
+if (!String(pkg.repository?.url ?? "").includes("moretea-labs/matea")) {
   fail("repository URL must target the organization repository");
 }
 
 const bin = pkg.bin ?? {};
-if (bin["repo-harness"] !== "bin/repo-harness.mjs") fail("repo-harness bin mapping changed");
-if (bin["repo-harness-hook"] !== "bin/repo-harness-hook.mjs") fail("repo-harness-hook bin mapping changed");
+if (bin["matea"] !== "bin/repo-harness.mjs") fail("matea bin mapping changed");
+if (bin["matea-hook"] !== "bin/repo-harness-hook.mjs") fail("matea-hook bin mapping changed");
+if (bin["repo-harness"] !== "bin/repo-harness.mjs") fail("legacy repo-harness bin mapping changed");
+if (bin["repo-harness-hook"] !== "bin/repo-harness-hook.mjs") fail("legacy repo-harness-hook bin mapping changed");
 if (pkg.scripts?.prepublishOnly !== "bash scripts/check-npm-release.sh") fail("prepublishOnly gate changed");
 if (pkg.scripts?.["check:release-version"] !== "node scripts/check-release-version.mjs") {
   fail("release version check changed");

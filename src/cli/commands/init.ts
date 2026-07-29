@@ -510,7 +510,7 @@ export function runInit(opts: InitCommandOptions = {}): InitCommandResult {
             step: "codegraph mcp",
             status: "skipped",
             detail:
-              "not registered; run: repo-harness tools configure codegraph --target both --location global",
+              "not registered; run: matea tools configure codegraph --target both --location global",
           });
         }
       }

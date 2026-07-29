@@ -39,11 +39,10 @@ describe("public README and documentation contract", () => {
     const compatibility = read("README.en.md");
 
     for (const document of [en, zh]) {
-      expect(document).toContain("# repo-harness Controller Runtime");
-      expect(document).toContain("docs/images/repo-harness-banner.svg");
+      expect(document).toContain("# Matea");
       expect(document).toContain("1.4.0-rc.6");
       expect(document).toContain("npm install -g .");
-      expect(document).toContain("@moretea-labs/repo-harness-controller@next");
+      expect(document).toContain("@moretea-labs/matea@next");
       expect(document).toContain("docs/wiki/Home.md");
       expect(document).toContain("SUPPORT.md");
       expect(document).toContain("SECURITY.md");
@@ -53,6 +52,10 @@ describe("public README and documentation contract", () => {
       expect(document).not.toContain("```mermaid");
       expect(document).not.toMatch(/Repo Actor|Global Scheduler|Evidence Plane|Controller Home|controller-chatgpt-bridge-v8/);
     }
+    expect(en).toContain("docs/images/matea-banner.svg");
+    expect(zh).toContain("docs/images/matea-banner-cn.svg");
+    expect(en).toContain("matea --version");
+    expect(zh).toContain("matea --version");
     expect(en).toContain("## Quick start");
     expect(en).toContain("not public yet");
     expect(zh).toContain("## 快速开始");
@@ -106,7 +109,7 @@ describe("public README and documentation contract", () => {
     }
     expect(pkg.files).not.toContain("ARCHITECTURE_MIGRATION_REPORT.md");
     expect(pkg.files).not.toContain("OPTIMIZATION_REPORT.md");
-    expect(pkg.repository?.url).toContain("moretea-labs/repo-harness-controller-runtime");
+    expect(pkg.repository?.url).toContain("moretea-labs/matea");
   });
 
   test("keeps attribution and release safety guidance visible without bloating the README", () => {
@@ -118,7 +121,7 @@ describe("public README and documentation contract", () => {
     const contributorDocs = `${read("CONTRIBUTING.md")}\n${read("docs/operations/releasing.md")}`;
     expect(contributorDocs).toContain("check:release-surface");
     expect(contributorDocs).toContain("check:type");
-    expect(read("NOTICE")).toContain("derived from AncientTwo/repo-harness");
+    expect(read("NOTICE")).toContain("derivative of AncientTwo/repo-harness");
   });
 
   test("release and verification references retain evidence authority terminology", () => {

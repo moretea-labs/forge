@@ -1,25 +1,27 @@
 {
-  "name": "@moretea-labs/repo-harness-controller",
+  "name": "@moretea-labs/matea",
   "version": "1.4.0-rc.6",
-  "description": "Local-first repository execution bridge for ChatGPT with resumable work, bounded tools, and reviewable evidence",
+  "description": "Local-first action assistant for software work with resumable execution, bounded tools, and reviewable evidence",
   "license": "MIT",
   "author": "Moretea Labs contributors",
   "keywords": [
     "chatgpt",
+    "ai-assistant",
     "mcp",
     "repository",
     "developer-tools",
     "automation",
+    "agentic-workflow",
     "code-review",
     "local-first"
   ],
-  "homepage": "https://github.com/moretea-labs/repo-harness-controller-runtime#readme",
+  "homepage": "https://github.com/moretea-labs/matea#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/moretea-labs/repo-harness-controller-runtime.git"
+    "url": "git+https://github.com/moretea-labs/matea.git"
   },
   "bugs": {
-    "url": "https://github.com/moretea-labs/repo-harness-controller-runtime/issues"
+    "url": "https://github.com/moretea-labs/matea/issues"
   },
   "type": "module",
   "publishConfig": {
@@ -68,6 +70,8 @@
     "README.md"
   ],
   "bin": {
+    "matea": "bin/repo-harness.mjs",
+    "matea-hook": "bin/repo-harness-hook.mjs",
     "repo-harness": "bin/repo-harness.mjs",
     "repo-harness-hook": "bin/repo-harness-hook.mjs"
   },

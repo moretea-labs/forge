@@ -1,6 +1,6 @@
 # 安装与连接故障排查
 
-## 安装后找不到 `repo-harness`
+## 安装后找不到 `matea`
 
 先重新打开终端。npm 用户可执行 `npm config get prefix`，确认其可执行目录已加入 `PATH`；Bun 用户确认 Bun bin 目录已加入 `PATH`。
 
@@ -8,7 +8,7 @@
 node --version
 npm --version
 bun --version   # 可选
-repo-harness --version
+matea --version
 ```
 
 ## Doctor 提示缺少 Git 或 Node
@@ -21,7 +21,7 @@ repo-harness --version
 
 ## 本机 MCP 正常，但 ChatGPT 无法连接
 
-`http://127.0.0.1:8765/mcp` 只能本机访问。ChatGPT 需要稳定的公网 HTTPS `/mcp` 地址。检查隧道、路径和 `repo-harness mcp doctor`。不要把本地 Controller UI 端口暴露到公网。
+`http://127.0.0.1:8765/mcp` 只能本机访问。ChatGPT 需要稳定的公网 HTTPS `/mcp` 地址。检查隧道、路径和 `matea mcp doctor`。不要把本地 Controller UI 端口暴露到公网。
 
 ## MCP 配置看起来写到了错误的位置
 
@@ -33,7 +33,7 @@ repo-harness --version
 - `controllerHome/mcp/mcp.oauth-tokens.json`
 - `controllerHome/mcp/mcp.runtime.json`
 
-仓库内的 `.repo-harness/mcp.local.json`、`.repo-harness/mcp.tokens.json`、`.repo-harness/mcp.oauth.json`、`.repo-harness/mcp.oauth-tokens.json`、`.repo-harness/mcp.runtime.json` 只作为 legacy compatibility fallback；仓库级 `.repo-harness/mcp.policy.json` 仍是访问策略文件。如果你发现两边配置混在一起，先重新执行 `repo-harness mcp setup chatgpt --repo /path/to/your-project`，然后重启 MCP 服务，并优先从 Controller Home 核对当前 endpoint 和 server name。
+仓库内的 `.repo-harness/mcp.local.json`、`.repo-harness/mcp.tokens.json`、`.repo-harness/mcp.oauth.json`、`.repo-harness/mcp.oauth-tokens.json`、`.repo-harness/mcp.runtime.json` 只作为 legacy compatibility fallback；仓库级 `.repo-harness/mcp.policy.json` 仍是访问策略文件。如果你发现两边配置混在一起，先重新执行 `matea mcp setup chatgpt --repo /path/to/your-project`，然后重启 MCP 服务，并优先从 Controller Home 核对当前 endpoint 和 server name。
 
 ## ChatGPT 只显示少量工具
 
@@ -44,8 +44,8 @@ repo-harness --version
 不要把删除 `.ai/harness`、`.repo-harness` 或 Controller Home 状态当成第一反应。先做有界诊断：
 
 ```bash
-repo-harness mcp doctor --repo /path/to/your-project
-repo-harness repo list --json
+matea mcp doctor --repo /path/to/your-project
+matea repo list --json
 ```
 
 如果你正在使用运维/高级工具面，先走 runtime maintenance 路径，再决定是否重启或重放写操作。安全恢复流程见：
@@ -63,7 +63,7 @@ repo-harness repo list --json
 
 ## Windows 与 WSL2 路径行为不一致
 
-不要让一个 checkout 同时由 Windows 和 WSL2 操作。在哪个环境运行 repo-harness，就在该环境内 clone 并注册仓库，避免文件 mode、换行、symlink 和性能问题。
+不要让一个 checkout 同时由 Windows 和 WSL2 操作。在哪个环境运行 Matea，就在该环境内 clone 并注册仓库，避免文件 mode、换行、symlink 和性能问题。
 
 ## 发布检查发现个人路径或日志
 

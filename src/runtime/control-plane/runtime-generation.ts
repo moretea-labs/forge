@@ -138,7 +138,7 @@ function readPackageName(root: string): string | undefined {
 export function looksLikeControllerRuntimePackage(root: string): boolean {
   if (!root || !existsSync(root)) return false;
   const name = readPackageName(root);
-  if (name === '@moretea-labs/repo-harness-controller') return true;
+  if (name === '@moretea-labs/matea' || name === '@moretea-labs/repo-harness-controller') return true;
   // Source checkout / worktree without install: entry + package markers.
   return existsSync(join(root, 'src', 'runtime', 'control-plane', 'daemon-entry.ts'))
     && existsSync(join(root, 'package.json'));

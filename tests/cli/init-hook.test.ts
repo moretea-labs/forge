@@ -162,7 +162,7 @@ describe('init-hook command', () => {
       const adapter = report.checks.find((entry) => entry.id === 'status.adapter.codex');
       const action = report.agent_actions.find((entry) => entry.id === 'adapter.codex.install');
       expect(adapter?.status).toBe('needs_agent');
-      expect(action?.command).toBe('repo-harness install --target codex --location global');
+      expect(action?.command).toBe('matea install --target codex --location global');
     });
   });
 
@@ -180,17 +180,17 @@ describe('init-hook command', () => {
         doctorReport: baseDoctorReport([
           {
             id: 'cli-update',
-            describe: 'repo-harness latest version advisory',
+            describe: 'Matea latest version advisory',
             status: 'warn',
-            detail: 'current=0.4.2; latest=99.0.0; agent_action=bun add -g @moretea-labs/repo-harness-controller@latest && repo-harness init',
+            detail: 'current=0.4.2; latest=99.0.0; agent_action=bun add -g @moretea-labs/matea@latest && matea init',
           },
         ]),
         toolingReport: baseToolingReport(),
       });
 
       const action = report.agent_actions.find((entry) => entry.id === 'cli.update');
-      expect(action?.command).toBe('bun add -g @moretea-labs/repo-harness-controller@latest && repo-harness init');
-      expect(action?.verification).toBe('repo-harness setup check --target codex --check-updates --json');
+      expect(action?.command).toBe('bun add -g @moretea-labs/matea@latest && matea init');
+      expect(action?.verification).toBe('matea setup check --target codex --check-updates --json');
     });
   });
 
@@ -338,7 +338,7 @@ describe('init-hook command', () => {
       encoding: 'utf-8',
     });
     expect(res.status).toBe(0);
-    expect(res.stdout).toContain('Usage: repo-harness init-hook');
+    expect(res.stdout).toContain('Usage: matea init-hook');
     expect(res.stdout).toContain('--target <target>');
     expect(res.stdout).toContain('--check-updates');
   });
@@ -349,7 +349,7 @@ describe('init-hook command', () => {
       encoding: 'utf-8',
     });
     expect(res.status).toBe(0);
-    expect(res.stdout).toContain('Usage: repo-harness setup check');
+    expect(res.stdout).toContain('Usage: matea setup check');
     expect(res.stdout).toContain('--target <target>');
     expect(res.stdout).toContain('--check-updates');
   });

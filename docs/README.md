@@ -1,6 +1,6 @@
-# repo-harness Documentation
+# Matea Documentation
 
-This is the public documentation hub for the current open-source/runtime surface. Product behavior is defined by executable code and [`docs/architecture/current/`](architecture/current/), not by historical design notes.
+This is the public documentation hub for Matea's current open-source and runtime surface. Product behavior is defined by executable code and [`docs/architecture/current/`](architecture/current/), not by historical design notes.
 
 ## Start here
 
@@ -21,9 +21,9 @@ The default `advanced` surface is a stable repair-capable schema capped at 128 t
 | Goal | Read this | Notes |
 | --- | --- | --- |
 | Understand the core ChatGPT facade | [Public usage guide](public-usage-guide.md) | Explains `rh_status`, `rh_inbox`, `rh_context`, `rh_work`, and the safe default path. |
-| Connect ChatGPT to the local controller | [repo-harness ChatGPT MCP setup](repo-harness-chatgpt-mcp-setup.md) | Advanced/manual setup, tunnel choices, Connector auth, and toolset verification. |
+| Connect ChatGPT to the local controller | [Matea ChatGPT MCP setup](repo-harness-chatgpt-mcp-setup.md) | Advanced/manual setup, tunnel choices, Connector auth, and toolset verification. |
 | Learn the stable tool schema | [MCP tool exposure](operations/mcp-tool-exposure.md) | `advanced` is the stable default, `core` is an alias, and `full` is exhaustive legacy compatibility. |
-| Use the local Controller UI safely | [repo-harness ChatGPT MCP setup](repo-harness-chatgpt-mcp-setup.md) | The Local Controller UI stays on `127.0.0.1:8766`; it is not the public MCP endpoint. |
+| Use the local Controller UI safely | [Matea ChatGPT MCP setup](repo-harness-chatgpt-mcp-setup.md) | The Local Controller UI stays on `127.0.0.1:8766`; it is not the public MCP endpoint. |
 | Understand multi-repository routing | [README.md](../README.md), [README.zh-CN.md](../README.zh-CN.md) | The controller is global, but work is still scoped by stable `repoId` and `checkoutId`. |
 | Configure providers and executor routing | [Provider configuration and routing](operations/provider-configuration.md) | Controller-scoped provider settings live under Controller Home, not in the repository. |
 | Run supervised automation or schedules | [ChatGPT-Supervised Automation](repo-harness-chatgpt-supervised-automation.md), [Autonomous Goal Loop](repo-harness-autonomous-goal-loop.md) | Use after the manual/core path is healthy. |

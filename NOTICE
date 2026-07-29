@@ -1,13 +1,9 @@
-repo-harness-controller-runtime
+Matea
 
-Copyright (c) 2026 greysonOuyang
+Copyright (c) 2026 Moretea Labs contributors
 
-This project is derived from AncientTwo/repo-harness, Copyright (c) 2026
-AncientTwo, and is distributed under the MIT License retained in LICENSE.
+Matea began as a derivative of AncientTwo/repo-harness, Copyright (c) 2026 AncientTwo. The initial independent repository snapshot retained substantial portions of that MIT-licensed work.
 
-This distribution contains substantial modifications for the ChatGPT Controller,
-repository registry, runtime-storage isolation, Direct Edit workflows, local
-execution bridge, governance, verification, and public-release tooling.
+Matea has since diverged through substantial modifications to its ChatGPT integration, durable runtime, repository registry, execution and recovery model, plugin system, review workflow, governance, and release tooling. It is independently maintained by Moretea Labs and is not endorsed by the upstream project.
 
-The upstream copyright and permission notice are preserved. Reference to the
-upstream project does not imply endorsement of this derivative work.
+The upstream copyright and MIT permission notice are preserved in LICENSE as required for copies or substantial portions of the original software.

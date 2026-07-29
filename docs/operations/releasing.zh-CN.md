@@ -1,6 +1,6 @@
-# 发布 repo-harness
+# 发布 Matea
 
-公开 npm 包名为 `@moretea-labs/repo-harness-controller`，安装后提供稳定命令 `repo-harness` 与 `repo-harness-hook`。
+公开 npm 包名为 `@moretea-labs/matea`，以 `matea` 与 `matea-hook` 为主命令，并在 1.x 迁移期保留 `repo-harness` 与 `repo-harness-hook` 兼容别名。
 
 ## 当前状态
 
@@ -45,7 +45,7 @@ npm whoami
 npm access ls-packages @moretea-labs
 
 # 先创建并检查本地 tag，发布成功前不要 push。
-git tag -a v1.4.0-rc.6 -m "repo-harness 1.4.0-rc.6"
+git tag -a v1.4.0-rc.6 -m "Matea 1.4.0-rc.6"
 RELEASE_TAG=v1.4.0-rc.6 npm run release:rc
 ```
 
@@ -63,7 +63,7 @@ npm run check:release-published
 
 首个 package 存在后：
 
-1. 在 npm 中为 `moretea-labs/repo-harness-controller-runtime` 与 `.github/workflows/release.yml` 配置 Trusted Publishing。
+1. 在 npm 中为 `moretea-labs/matea` 与 `.github/workflows/release.yml` 配置 Trusted Publishing。
 2. 创建 GitHub environment `npm-publish`，设置 maintainer 审批。
 3. 保护 `main` 与 release tags。
 4. 只有完整门禁通过后，才 push 精确的 `v<package-version>` tag。
@@ -75,7 +75,7 @@ Tag workflow 使用 GitHub OIDC，不需要 `NODE_AUTH_TOKEN` 或仓库内 npm t
 发布 `1.4.0` 前：
 
 - 在 macOS、Linux、WSL2 和已声明的 Windows 路径安装精确 packed artifact；
-- 验证 `repo-harness init`、`doctor`、仓库注册/接入和 ChatGPT MCP 连接；
+- 验证 `matea init`、`matea doctor`、仓库注册/接入和 ChatGPT MCP 连接；
 - 确认稳定文档中没有 RC 专属警告或不稳定安装命令；
 - 把 `package.json` 改为 `1.4.0`，package identity gate 会要求 `latest`；
 - 从受保护环境发布 tag `v1.4.0`；

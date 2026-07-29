@@ -8,7 +8,7 @@
 本文依据以下仓库状态整理：
 
 ```text
-Repository: moretea-labs/repo-harness-controller-runtime
+Repository: moretea-labs/matea
 Branch: main
 Revision: 0eba89d88aeb698e55d42a7a7c96dda707d7f222
 Package version: 1.4.0-rc.6
@@ -777,7 +777,7 @@ current GitHub account permissions: admin / maintain / push
 但 Wiki Git remote：
 
 ```text
-https://github.com/moretea-labs/repo-harness-controller-runtime.wiki.git
+https://github.com/moretea-labs/matea.wiki.git
 ```
 
 当前返回 `Repository not found`。这通常表示 Wiki 功能已启用，但尚未在 GitHub 网页创建第一张 Wiki 页面，因此独立 `.wiki.git` 仓库还没有初始化。
@@ -793,7 +793,7 @@ https://github.com/moretea-labs/repo-harness-controller-runtime.wiki.git
 示例：
 
 ```bash
-git clone https://github.com/moretea-labs/repo-harness-controller-runtime.wiki.git /tmp/repo-harness-wiki
+git clone https://github.com/moretea-labs/matea.wiki.git /tmp/repo-harness-wiki
 cp docs/architecture/current/chatgpt-repo-harness-current-architecture.zh-CN.md \
   /tmp/repo-harness-wiki/Repo-Harness-Current-Architecture.md
 cd /tmp/repo-harness-wiki

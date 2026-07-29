@@ -4,8 +4,8 @@
 
 ## 1. 开始前需要
 
-- 已通过 `repo-harness repo register` 注册仓库；
-- `repo-harness doctor` 状态正常；
+- 已通过 `matea repo register` 注册仓库；
+- `matea doctor` 状态正常；
 - 一个稳定、以 `/mcp` 结尾的公网 HTTPS 地址；
 - ChatGPT Developer Mode 和自定义 MCP Connector 权限。
 
@@ -16,7 +16,7 @@ Windows 用户建议在 WSL2 内运行 Controller 和隧道；Windows 原生 Pow
 ## 2. 生成 MCP 配置
 
 ```bash
-repo-harness mcp setup chatgpt --repo /path/to/your-project
+matea mcp setup chatgpt --repo /path/to/your-project
 ```
 
 本地 endpoint 只监听 loopback：

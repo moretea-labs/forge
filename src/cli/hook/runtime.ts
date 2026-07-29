@@ -179,10 +179,10 @@ export function runHook(opts: RunHookOptions): RunHookResult {
   const hooksDir = resolved.dir;
   const syncHint =
     resolved.source === 'packaged'
-      ? 'upgrade the repo-harness CLI (bun add -g @moretea-labs/repo-harness-controller@latest) to refresh packaged hooks'
+      ? 'upgrade the Matea CLI (bun add -g @moretea-labs/matea@latest) to refresh packaged hooks'
       : resolved.source === 'repo-fallback'
-        ? 'upgrade the repo-harness CLI to restore packaged hooks, or set "hook_source": "repo" before syncing a full vendored hook runtime'
-        : `run 'repo-harness adopt --repo ${repoRoot}' to sync pinned .ai/hooks`;
+        ? 'upgrade the Matea CLI to restore packaged hooks, or set "hook_source": "repo" before syncing a full vendored hook runtime'
+        : `run 'matea adopt --repo ${repoRoot}' to sync pinned .ai/hooks`;
   const sessionStartCollectStdout = opts.event === 'SessionStart' && opts.stdio === undefined;
   const sessionStartContexts: string[] = [];
   const codexStopDecisionStdout =

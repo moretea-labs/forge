@@ -20,11 +20,11 @@ See [Platform Support](../operations/platform-support.md) for the exact matrix.
 
 ## 2. Install the CLI today
 
-The npm package `@moretea-labs/repo-harness-controller` is not public yet. Install from a reviewed source checkout:
+The npm package `@moretea-labs/matea` is not public yet. Install from a reviewed source checkout:
 
 ```bash
-git clone https://github.com/moretea-labs/repo-harness-controller-runtime.git
-cd repo-harness-controller-runtime
+git clone https://github.com/moretea-labs/matea.git
+cd matea
 npm ci --ignore-scripts --no-audit --no-fund
 npm install -g . --omit=optional --no-audit --no-fund
 ```
@@ -39,37 +39,37 @@ bun add -g .
 After the RC is published, the registry commands will be:
 
 ```bash
-npm install -g @moretea-labs/repo-harness-controller@next
+npm install -g @moretea-labs/matea@next
 # or
-bun add -g @moretea-labs/repo-harness-controller@next
+bun add -g @moretea-labs/matea@next
 ```
 
-The package installs `repo-harness` and `repo-harness-hook`. Do not install an unscoped package as a substitute.
+The package installs `matea` and `matea-hook` as the primary commands, with `repo-harness` and `repo-harness-hook` as compatibility aliases. Do not install an unscoped package as a substitute.
 
 ## 3. Initialize the user runtime
 
 ```bash
-repo-harness --version
-repo-harness init --target both
-repo-harness doctor
+matea --version
+matea init --target both
+matea doctor
 ```
 
-Use `--target codex` or `--target claude` when only one host is needed. `repo-harness init --help` lists optional integrations that can be skipped.
+Use `--target codex` or `--target claude` when only one host is needed. `matea init --help` lists optional integrations that can be skipped.
 
 ## 4. Adopt or register a repository
 
 For macOS, Linux, or WSL2, preview adoption first:
 
 ```bash
-repo-harness adopt --repo /path/to/your-project --dry-run
-repo-harness adopt --repo /path/to/your-project
+matea adopt --repo /path/to/your-project --dry-run
+matea adopt --repo /path/to/your-project
 ```
 
 All platforms can register explicitly:
 
 ```bash
-repo-harness repo register /path/to/your-project --name my-project --json
-repo-harness repo list --json
+matea repo register /path/to/your-project --name my-project --json
+matea repo list --json
 ```
 
 Keep the returned `repoId`; it is the stable repository identity used by ChatGPT and the Controller.
@@ -77,9 +77,9 @@ Keep the returned `repoId`; it is the stable repository identity used by ChatGPT
 ## 5. Confirm readiness
 
 ```bash
-repo-harness doctor
-repo-harness status --json
-repo-harness repo list --json
+matea doctor
+matea status --json
+matea repo list --json
 ```
 
 Runtime state belongs in Controller Home and ignored repository links, not in public source control. Never commit tokens, MCP runtime files, local jobs, logs, or generated worktrees.

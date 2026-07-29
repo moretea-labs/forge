@@ -4,9 +4,9 @@ This document records the intended public repository configuration. It is review
 
 ## Recommended repository metadata
 
-- Description: `Local-first, reviewable repository execution bridge for ChatGPT.`
-- Homepage: `https://github.com/moretea-labs/repo-harness-controller-runtime/wiki`
-- Topics: `chatgpt`, `mcp`, `developer-tools`, `automation`, `code-review`, `local-first`, `repository-management`
+- Description: `Local-first action assistant for durable, reviewable software work.`
+- Homepage: `https://github.com/moretea-labs/matea/wiki`
+- Topics: `ai-assistant`, `chatgpt`, `mcp`, `local-first`, `developer-tools`, `automation`, `code-review`, `agentic-workflow`
 - Features: Issues, Wiki, Discussions, and private vulnerability reporting enabled.
 
 ## Main branch protection

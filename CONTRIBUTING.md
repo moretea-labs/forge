@@ -19,8 +19,8 @@ Requirements:
 - Bun 1.0 or newer for the complete test suite.
 
 ```bash
-git clone https://github.com/moretea-labs/repo-harness-controller-runtime.git
-cd repo-harness-controller-runtime
+git clone https://github.com/moretea-labs/matea.git
+cd matea
 npm ci --ignore-scripts --no-audit --no-fund
 node bin/repo-harness.mjs --help
 bun bin/repo-harness.mjs --help

@@ -69,9 +69,11 @@ describe("Bootstrap Script Contracts", () => {
   test("repo package should expose workflow verification scripts", () => {
     const pkg = JSON.parse(read("package.json"));
     const cliEntry = read("src/cli/index.ts");
-    expect(pkg.name).toBe("@moretea-labs/repo-harness-controller");
+    expect(pkg.name).toBe("@moretea-labs/matea");
     expect(pkg.version).toMatch(/^1\.4\.0(?:-rc\.\d+)?$/);
     expect(pkg.private).toBeUndefined();
+    expect(pkg.bin["matea"]).toBe("bin/repo-harness.mjs");
+    expect(pkg.bin["matea-hook"]).toBe("bin/repo-harness-hook.mjs");
     expect(pkg.bin["repo-harness"]).toBe("bin/repo-harness.mjs");
     expect(pkg.bin["repo-harness-hook"]).toBe("bin/repo-harness-hook.mjs");
     expect(pkg.files).toContain("assets/");

@@ -38,10 +38,14 @@ fi
 for path in README.md README.zh-CN.md; do
   lines="$(wc -l < "$path" | tr -d ' ')"
   [[ "$lines" -le 150 ]] || { echo "[public-docs] primary README is too long: $path ($lines lines)" >&2; exit 1; }
-  grep -q 'docs/images/repo-harness-banner.svg' "$path" || { echo "[public-docs] missing project banner: $path" >&2; exit 1; }
+  if [[ "$path" == "README.md" ]]; then
+    grep -q 'docs/images/matea-banner.svg' "$path" || { echo "[public-docs] missing English Matea banner: $path" >&2; exit 1; }
+  else
+    grep -q 'docs/images/matea-banner-cn.svg' "$path" || { echo "[public-docs] missing Chinese Matea banner: $path" >&2; exit 1; }
+  fi
   grep -q 'Node.js 20.10' "$path" || { echo "[public-docs] missing Node baseline: $path" >&2; exit 1; }
   grep -q 'npm install -g \.' "$path" || { echo "[public-docs] missing verified source install: $path" >&2; exit 1; }
-  grep -q '@moretea-labs/repo-harness-controller@next' "$path" || { echo "[public-docs] missing upcoming RC install reference: $path" >&2; exit 1; }
+  grep -q '@moretea-labs/matea@next' "$path" || { echo "[public-docs] missing upcoming RC install reference: $path" >&2; exit 1; }
   for link in SUPPORT.md SECURITY.md CONTRIBUTING.md CHANGELOG.md docs/wiki/Home.md; do
     grep -q "$link" "$path" || { echo "[public-docs] missing $link link: $path" >&2; exit 1; }
   done
@@ -63,12 +67,13 @@ grep -q '保守されていません' README.ja.md || { echo "[public-docs] Japa
 for path in docs/tutorials/01-install-and-start.md docs/tutorials/01-install-and-start.zh-CN.md; do
   grep -q 'Node.js 20.10' "$path" || { echo "[public-docs] missing Node baseline: $path" >&2; exit 1; }
   grep -q 'npm install -g \.' "$path" || { echo "[public-docs] missing source install: $path" >&2; exit 1; }
-  grep -q '@moretea-labs/repo-harness-controller@next' "$path" || { echo "[public-docs] missing upcoming package command: $path" >&2; exit 1; }
+  grep -q '@moretea-labs/matea@next' "$path" || { echo "[public-docs] missing upcoming package command: $path" >&2; exit 1; }
 done
 
 for path in docs/operations/releasing.md docs/operations/releasing.zh-CN.md; do
-  grep -q '@moretea-labs/repo-harness-controller' "$path" || { echo "[public-docs] missing package identity: $path" >&2; exit 1; }
-  grep -q 'repo-harness-hook' "$path" || { echo "[public-docs] missing CLI identity note: $path" >&2; exit 1; }
+  grep -q '@moretea-labs/matea' "$path" || { echo "[public-docs] missing package identity: $path" >&2; exit 1; }
+  grep -q 'matea-hook' "$path" || { echo "[public-docs] missing primary CLI identity note: $path" >&2; exit 1; }
+  grep -q 'repo-harness-hook' "$path" || { echo "[public-docs] missing legacy CLI compatibility note: $path" >&2; exit 1; }
   grep -q 'v1.4.0-rc.6' "$path" || { echo "[public-docs] missing next release baseline: $path" >&2; exit 1; }
   grep -q 'Bun' "$path" || { echo "[public-docs] missing Bun distribution role: $path" >&2; exit 1; }
   grep -q 'Homebrew' "$path" || { echo "[public-docs] missing Homebrew distribution role: $path" >&2; exit 1; }
@@ -82,8 +87,8 @@ grep -q 'WSL2' docs/operations/platform-support.md || { echo "[public-docs] plat
 grep -q 'Windows 原生' docs/operations/platform-support.zh-CN.md || { echo "[public-docs] Chinese platform matrix missing native Windows scope" >&2; exit 1; }
 grep -q 'rh_status' docs/tutorials/02-connect-chatgpt.md || { echo "[public-docs] connector tutorial missing facade verification" >&2; exit 1; }
 
-grep -q '@moretea-labs/repo-harness-controller' install.sh || { echo "[public-docs] shell installer uses the wrong package identity" >&2; exit 1; }
-grep -q '@moretea-labs/repo-harness-controller' install.ps1 || { echo "[public-docs] PowerShell installer uses the wrong package identity" >&2; exit 1; }
+grep -q '@moretea-labs/matea' install.sh || { echo "[public-docs] shell installer uses the wrong package identity" >&2; exit 1; }
+grep -q '@moretea-labs/matea' install.ps1 || { echo "[public-docs] PowerShell installer uses the wrong package identity" >&2; exit 1; }
 if grep -q 'PACKAGE_NAME="repo-harness"' install.sh || grep -q '\$PackageName = "repo-harness"' install.ps1; then
   echo "[public-docs] installer regressed to the unscoped package" >&2
   exit 1
@@ -107,7 +112,7 @@ if (p.publishConfig?.access !== "public" || p.publishConfig?.provenance !== true
   throw new Error("publishConfig must enable public access and provenance");
 }
 if (p.publishConfig?.tag !== undefined) throw new Error("publishConfig.tag must be omitted");
-if (!String(p.repository?.url || "").includes("moretea-labs/repo-harness-controller-runtime")) {
+if (!String(p.repository?.url || "").includes("moretea-labs/matea")) {
   throw new Error("package repository metadata is not canonical");
 }
 NODE

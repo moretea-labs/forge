@@ -19,7 +19,7 @@ function commandExists(command) {
 function run(command, commandArgs) {
   const result = spawnSync(command, commandArgs, { stdio: 'inherit', env: process.env });
   if (result.error) {
-    console.error(`repo-harness-hook launcher failed to run ${command}: ${result.error.message}`);
+    console.error(`Matea hook launcher failed to run ${command}: ${result.error.message}`);
     process.exit(1);
   }
   process.exit(typeof result.status === 'number' ? result.status : 1);

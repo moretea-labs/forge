@@ -8,12 +8,14 @@ const read = (path: string) => readFileSync(join(ROOT, path), "utf8");
 describe("public package release contract", () => {
   test("uses one scoped package identity and explicit release channels", () => {
     const pkg = JSON.parse(read("package.json"));
-    expect(pkg.name).toBe("@moretea-labs/repo-harness-controller");
+    expect(pkg.name).toBe("@moretea-labs/matea");
     expect(pkg.version).toBe("1.4.0-rc.6");
     expect(pkg.author).toBe("Moretea Labs contributors");
     expect(pkg.publishConfig).toEqual({ access: "public", provenance: true });
     expect(pkg.publishConfig.tag).toBeUndefined();
     expect(pkg.bin).toEqual({
+      "matea": "bin/repo-harness.mjs",
+      "matea-hook": "bin/repo-harness-hook.mjs",
       "repo-harness": "bin/repo-harness.mjs",
       "repo-harness-hook": "bin/repo-harness-hook.mjs",
     });
@@ -75,7 +77,7 @@ describe("public package release contract", () => {
     ]) {
       const content = read(path);
       expect(content).toContain("npm install -g .");
-      expect(content).toContain("@moretea-labs/repo-harness-controller@next");
+      expect(content).toContain("@moretea-labs/matea@next");
     }
     expect(read("docs/operations/releasing.md")).toContain("not public yet");
     expect(read("docs/operations/releasing.md")).toContain("Bun");

@@ -429,7 +429,7 @@ describe("init command", () => {
     });
 
     expect(res.status).toBe(0);
-    expect(res.stdout).toContain("Usage: repo-harness adopt");
+    expect(res.stdout).toContain("Usage: matea adopt");
     expect(res.stdout).toContain("--repo <path>");
     expect(res.stdout).toContain("--dry-run");
     expect(res.stdout).toContain("--experimental-ts-apply");
@@ -443,8 +443,8 @@ describe("init command", () => {
     });
 
     expect(res.status).toBe(2);
-    expect(res.stderr).toContain("repo-harness update no longer refreshes repositories");
-    expect(res.stderr).toContain("repo-harness adopt --repo <path>");
+    expect(res.stderr).toContain("matea update no longer refreshes repositories");
+    expect(res.stderr).toContain("matea adopt --repo <path>");
   });
 
   test("CLI adopt rejects user-level brain configuration flags", () => {

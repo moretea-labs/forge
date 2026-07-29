@@ -1,6 +1,6 @@
-# Releasing repo-harness
+# Releasing Matea
 
-The public package is `@moretea-labs/repo-harness-controller`. It installs the stable command names `repo-harness` and `repo-harness-hook`.
+The public package is `@moretea-labs/matea`. It installs `matea` and `matea-hook` as the primary commands, with `repo-harness` and `repo-harness-hook` retained as 1.x compatibility aliases.
 
 ## Current state
 
@@ -45,7 +45,7 @@ npm whoami
 npm access ls-packages @moretea-labs
 
 # Create and inspect the local tag, but do not push it before publication succeeds.
-git tag -a v1.4.0-rc.6 -m "repo-harness 1.4.0-rc.6"
+git tag -a v1.4.0-rc.6 -m "Matea 1.4.0-rc.6"
 RELEASE_TAG=v1.4.0-rc.6 npm run release:rc
 ```
 
@@ -63,7 +63,7 @@ npm run check:release-published
 
 After the package exists:
 
-1. Configure npm Trusted Publishing for `moretea-labs/repo-harness-controller-runtime` and `.github/workflows/release.yml`.
+1. Configure npm Trusted Publishing for `moretea-labs/matea` and `.github/workflows/release.yml`.
 2. Configure the GitHub environment `npm-publish` with required maintainer approval.
 3. Protect release tags and the `main` branch.
 4. Push only an exact `v<package-version>` tag after the release gate passes.
@@ -75,7 +75,7 @@ The tag workflow uses GitHub OIDC and does not require `NODE_AUTH_TOKEN` or a st
 Before `1.4.0`:
 
 - install the exact packed artifact on macOS, Linux, WSL2, and the supported Windows path;
-- verify `repo-harness init`, `doctor`, repository registration/adoption, and the ChatGPT MCP connection;
+- verify `matea init`, `matea doctor`, repository registration/adoption, and the ChatGPT MCP connection;
 - confirm no RC-only warning or unstable install command remains in the stable docs;
 - change `package.json` to `1.4.0`; the package identity gate will require `latest`;
 - publish from tag `v1.4.0` through the protected environment;

@@ -73,7 +73,9 @@ export function checkConsistency(repoRoot: string = REPO_ROOT): ConsistencyResul
 
   const packageCoreVersion = packageJsonVersion?.split("-", 1)[0] ?? null;
   const isRepoHarnessPackage =
-    pkg.name === "repo-harness" || pkg.name === "@moretea-labs/repo-harness-controller";
+    pkg.name === "repo-harness" ||
+    pkg.name === "@moretea-labs/repo-harness-controller" ||
+    pkg.name === "@moretea-labs/matea";
 
   if (
     usingLocalSkillManifest &&

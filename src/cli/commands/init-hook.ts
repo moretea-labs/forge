@@ -1,5 +1,5 @@
 /**
- * `repo-harness init-hook` -- read-only Agent bootstrap checklist.
+ * `matea init-hook` -- read-only Agent bootstrap checklist.
  *
  * This command intentionally does not install hooks, write user-owned markdown,
  * or mutate repo-local runtime files. It gathers the existing readiness probes
@@ -141,7 +141,7 @@ function homeDir(env?: NodeJS.ProcessEnv): string {
 }
 
 function verificationCommand(target: InitHookTarget, checkUpdates: boolean): string {
-  return `repo-harness setup check --target ${target}${checkUpdates ? ' --check-updates' : ''} --json`;
+  return `matea setup check --target ${target}${checkUpdates ? ' --check-updates' : ''} --json`;
 }
 
 function addAction(actions: InitHookAction[], action: InitHookAction): void {
@@ -211,7 +211,7 @@ function statusChecks(
         reason: `${targetLabel(id)} user-level adapter is missing or does not match the route registry.`,
         requires_agent: true,
         risk: 'Writes user-level host hook config; preserve unmanaged user entries and re-check managed count.',
-        command: `repo-harness install --target ${id} --location global`,
+        command: `matea install --target ${id} --location global`,
         targets: entry.configPath ? [entry.configPath] : undefined,
         verification: verificationCommand(target, checkUpdates),
       });
@@ -247,7 +247,7 @@ function doctorChecks(
         addAction(actions, {
           id: 'cli.update',
           status: 'needs_agent',
-          reason: 'The installed repo-harness CLI is older than the latest package version.',
+          reason: 'The installed Matea CLI is older than the latest package version.',
           requires_agent: true,
           risk: 'Updates global CLI/runtime; Agent should verify adapters and current repo status after install.',
           command,
@@ -262,8 +262,8 @@ function doctorChecks(
         reason: 'Security scan found unmanaged or risky local automation surfaces.',
         requires_agent: true,
         risk: 'Do not blindly delete user-owned config; inspect the reported file and preserve intentional entries.',
-        command: 'repo-harness security scan --json',
-        verification: 'repo-harness security scan --json',
+        command: 'matea security scan --json',
+        verification: 'matea security scan --json',
       });
     } else if (
       (entry.id === 'repo-hook-scripts' || entry.id.startsWith('codegraph-')) &&
@@ -424,7 +424,7 @@ function commandForToolGap(toolName: string, tool: ToolingTool, target: InitHook
     return normalizeToolCommand(tool.install_command, target);
   }
   if (toolName === 'codex_automation_profile') {
-    return 'repo-harness init --target codex --no-cli --no-hooks --no-codegraph';
+    return 'matea init --target codex --no-cli --no-hooks --no-codegraph';
   }
   return normalizeToolCommand(
     tool.sync_command ?? tool.ensure_command ?? tool.mcp_install_command ?? tool.install_command ?? tool.upgrade_command,
@@ -555,7 +555,7 @@ function legacyChecks(cwd: string, target: InitHookTarget, checkUpdates: boolean
       reason: 'Repo-local host adapter configs are retired; user-level adapters should own runtime routing.',
       requires_agent: true,
       risk: 'These files may contain user-owned historical config; review or migrate before removal.',
-      command: 'repo-harness migrate --apply',
+      command: 'matea migrate --apply',
       targets: present,
       verification: verificationCommand(target, checkUpdates),
     });
@@ -613,7 +613,7 @@ export function runInitHook(opts: InitHookOptions = {}): InitHookReport {
 export function formatInitHook(report: InitHookReport, asJson = false): string {
   if (asJson) return JSON.stringify(report, null, 2);
   const lines: string[] = [];
-  lines.push(`repo-harness setup check: ${report.status}`);
+  lines.push(`matea setup check: ${report.status}`);
   lines.push(`target=${report.target}; check-updates=${report.checkUpdates ? 'on' : 'off'}`);
   lines.push(
     `summary: ${report.summary.ok} ok, ${report.summary.warn} warn, ${report.summary.fail} fail, ${report.summary.na} n/a, ${report.summary.needs_agent} needs-agent`,
@@ -642,14 +642,14 @@ export function formatInitHook(report: InitHookReport, asJson = false): string {
 export function buildInitHookCommand(): Command {
   const command = new Command('init-hook');
   command
-    .description('Run a read-only Agent bootstrap checklist for user-level repo-harness readiness')
+    .description('Run a read-only Agent bootstrap checklist for user-level Matea readiness')
     .option('--target <target>', `Host target to inspect: ${VALID_TARGETS.join('|')}`, 'both')
     .option('--check-updates', 'Include network-backed version update advisories')
     .option('--json', 'Output JSON instead of human-readable text')
     .action((rawOpts: { target: string; checkUpdates?: boolean; json?: boolean }) => {
       if (!VALID_TARGETS.includes(rawOpts.target as InitHookTarget)) {
         console.error(
-          `repo-harness init-hook: invalid --target "${rawOpts.target}" (expected: ${VALID_TARGETS.join(', ')})`,
+          `matea init-hook: invalid --target "${rawOpts.target}" (expected: ${VALID_TARGETS.join(', ')})`,
         );
         process.exit(2);
       }
@@ -665,18 +665,18 @@ export function buildInitHookCommand(): Command {
 
 export function buildSetupCommand(): Command {
   const command = new Command('setup');
-  command.description('User-level repo-harness setup utilities');
+  command.description('User-level Matea setup utilities');
 
   command
     .command('check')
-    .description('Run a read-only Agent bootstrap checklist for user-level repo-harness readiness')
+    .description('Run a read-only Agent bootstrap checklist for user-level Matea readiness')
     .option('--target <target>', `Host target to inspect: ${VALID_TARGETS.join('|')}`, 'both')
     .option('--check-updates', 'Include network-backed version update advisories')
     .option('--json', 'Output JSON instead of human-readable text')
     .action((rawOpts: { target: string; checkUpdates?: boolean; json?: boolean }) => {
       if (!VALID_TARGETS.includes(rawOpts.target as InitHookTarget)) {
         console.error(
-          `repo-harness setup check: invalid --target "${rawOpts.target}" (expected: ${VALID_TARGETS.join(', ')})`,
+          `matea setup check: invalid --target "${rawOpts.target}" (expected: ${VALID_TARGETS.join(', ')})`,
         );
         process.exit(2);
       }

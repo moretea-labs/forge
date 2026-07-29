@@ -6,10 +6,10 @@ Homebrew is planned as a convenience layer after the first stable release. It is
 
 Do not publish a formula until all of the following are true:
 
-- `@moretea-labs/repo-harness-controller@1.4.0` exists on npm;
+- `@moretea-labs/matea@1.4.0` exists on npm;
 - Git tag and GitHub Release `v1.4.0` exist and point to the tested commit;
 - the npm tarball has an immutable checksum;
-- macOS installation and `repo-harness --version` / `repo-harness doctor` tests pass;
+- macOS installation and `matea --version` / `matea doctor` tests pass;
 - upgrade and uninstall behavior is documented.
 
 ## Recommended first channel

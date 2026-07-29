@@ -37,7 +37,7 @@ function resolveTargets(spec: InstallTargetSpec) {
   const t = getTarget(spec);
   if (!t) {
     throw new Error(
-      `repo-harness install: unknown --target "${spec}" (known: ${listTargetIds().join(', ')}, both)`,
+      `matea install: unknown --target "${spec}" (known: ${listTargetIds().join(', ')}, both)`,
     );
   }
   return [t];

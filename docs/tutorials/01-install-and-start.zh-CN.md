@@ -20,11 +20,11 @@ npm --version
 
 ## 2. 当前安装方式
 
-npm 包 `@moretea-labs/repo-harness-controller` 目前尚未公开，请从经过审查的源码 checkout 安装：
+npm 包 `@moretea-labs/matea` 目前尚未公开，请从经过审查的源码 checkout 安装：
 
 ```bash
-git clone https://github.com/moretea-labs/repo-harness-controller-runtime.git
-cd repo-harness-controller-runtime
+git clone https://github.com/moretea-labs/matea.git
+cd matea
 npm ci --ignore-scripts --no-audit --no-fund
 npm install -g . --omit=optional --no-audit --no-fund
 ```
@@ -39,37 +39,37 @@ bun add -g .
 RC 发布后，registry 安装命令会是：
 
 ```bash
-npm install -g @moretea-labs/repo-harness-controller@next
+npm install -g @moretea-labs/matea@next
 # 或
-bun add -g @moretea-labs/repo-harness-controller@next
+bun add -g @moretea-labs/matea@next
 ```
 
-该 package 安装 `repo-harness` 与 `repo-harness-hook`。不要用未加 scope 的同名包替代。
+该 package 以 `matea` 与 `matea-hook` 为主命令，并保留 `repo-harness` 与 `repo-harness-hook` 兼容别名。不要用未加 scope 的同名包替代。
 
 ## 3. 初始化用户级运行时
 
 ```bash
-repo-harness --version
-repo-harness init --target both
-repo-harness doctor
+matea --version
+matea init --target both
+matea doctor
 ```
 
-只使用一个 host 时可改为 `--target codex` 或 `--target claude`。其他可选集成见 `repo-harness init --help`。
+只使用一个 host 时可改为 `--target codex` 或 `--target claude`。其他可选集成见 `matea init --help`。
 
 ## 4. 接入或注册仓库
 
 macOS、Linux、WSL2 先预览再执行完整接入：
 
 ```bash
-repo-harness adopt --repo /path/to/your-project --dry-run
-repo-harness adopt --repo /path/to/your-project
+matea adopt --repo /path/to/your-project --dry-run
+matea adopt --repo /path/to/your-project
 ```
 
 所有平台均可显式注册：
 
 ```bash
-repo-harness repo register /path/to/your-project --name my-project --json
-repo-harness repo list --json
+matea repo register /path/to/your-project --name my-project --json
+matea repo list --json
 ```
 
 保存返回的 `repoId`，它是 ChatGPT 和 Controller 使用的稳定仓库身份。
@@ -77,9 +77,9 @@ repo-harness repo list --json
 ## 5. 确认环境就绪
 
 ```bash
-repo-harness doctor
-repo-harness status --json
-repo-harness repo list --json
+matea doctor
+matea status --json
+matea repo list --json
 ```
 
 运行态应保存在 Controller Home 和被忽略的仓库链接中，不应进入公开源码。不要提交 token、MCP runtime 文件、Local Job、日志或 worktree。

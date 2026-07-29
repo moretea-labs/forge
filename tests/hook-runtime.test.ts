@@ -1492,7 +1492,7 @@ describe("Hook runtime behavior", () => {
                   status: "needs_agent",
                   reason: "codegraph reports update-available.",
                   command: "bun update @colbymchenry/codegraph && bash scripts/ensure-codegraph.sh --sync",
-                  verification: "repo-harness setup check --target codex --check-updates --json",
+                  verification: "matea setup check --target codex --check-updates --json",
                 },
               ],
             },
@@ -1515,7 +1515,7 @@ describe("Hook runtime behavior", () => {
       expect(first.stdout).toContain("Tooling Update Advisory");
       expect(first.stdout).toContain("tooling.codegraph.update");
       expect(first.stdout).toContain("bun update @colbymchenry/codegraph");
-      expect(first.stdout).toContain("repo-harness setup check --target codex --check-updates --json");
+      expect(first.stdout).toContain("matea setup check --target codex --check-updates --json");
       expect(readFileSync(logFile, "utf-8").trim().split("\n")).toEqual([
         "setup check --target codex --check-updates --json",
       ]);

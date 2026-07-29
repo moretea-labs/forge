@@ -26,10 +26,11 @@ if (!pkg.scripts?.["check:platform-support"]) failures.push("package.json is mis
 
 requireText("bin/repo-harness.mjs", "#!/usr/bin/env node");
 for (const path of ["install.sh", "install.ps1"]) {
+  requireText(path, "MATEA_INSTALL_RUNTIME");
   requireText(path, "REPO_HARNESS_INSTALL_RUNTIME");
   requireText(path, "Node.js 20.10");
   requireText(path, "Git is required");
-  requireText(path, "repo-harness install --no-cli");
+  requireText(path, "matea install --no-cli");
 }
 requireText("install.sh", "npm install -g");
 requireText("install.ps1", "npm install -g");
