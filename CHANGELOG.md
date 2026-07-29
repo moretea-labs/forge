@@ -16,11 +16,11 @@ All notable public changes to Matea are recorded here. Release entries are tied 
 - Forced managed Cloudflare tunnel examples and keepalive paths to HTTP/2 so UDP/QUIC loss does not leave a live-but-unreachable tunnel process.
 - Made Stable Supervisor releases use the full Git commit identity and added an explicit verified known-good attestation path for safe rollback.
 
-## 1.4.0-rc.6 — planned
+## 1.4.0-rc.6 — 2026-07-29
 
-`1.4.0-rc.6` is the next release-candidate baseline. It is not published until the release gate passes on the exact tagged revision. GitHub prerelease publication and npm package publication are verified separately and must not be conflated.
+`1.4.0-rc.6` is the GitHub prerelease baseline for the Matea product identity, Windows-native command execution, HTTP/2 tunnel resilience, full-revision Stable Supervisor releases, verified known-good recovery evidence, and the reworked public documentation and Wiki.
 
-The first stable target is `1.4.0`. Stable publication requires the installation path, CLI smoke tests, MCP connection path, immutable runtime cold start, tarball installation, package contents, and rollback documentation to be verified from one revision.
+The npm package remains separately verified and must not be described as published until `@moretea-labs/matea@1.4.0-rc.6` is visible in the registry. The first stable target is `1.4.0`; stable publication still requires the installation path, CLI smoke tests, MCP connection path, immutable runtime cold start, tarball installation, package contents, and rollback documentation to be verified from one revision.
 
 ## Earlier development history
 

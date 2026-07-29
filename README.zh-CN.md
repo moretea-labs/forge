@@ -20,7 +20,7 @@ Matea 为 ChatGPT 提供持久、本地、可审查的工作空间，用来理�
 
 ## 发布状态
 
-Matea 正在准备 `1.4.0-rc.6`。npm 包 `@moretea-labs/matea` **目前尚未公开发布**，所以当前可验证路径仍是源码安装。下面的 registry 命令描述即将发布的 RC 渠道，不能作为 npm 已发布的证据。
+`1.4.0-rc.6` 是 Matea 当前的 GitHub 候选版本。npm 包 `@moretea-labs/matea` **目前尚未公开发布**，所以源码安装仍是已验证的包安装路径。GitHub prerelease 与 npm 发布是两个需要分别验证的事实。
 
 ## 快速开始
 

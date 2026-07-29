@@ -20,7 +20,7 @@ Matea gives ChatGPT a durable local workspace for understanding projects, carryi
 
 ## Release status
 
-Matea is preparing `1.4.0-rc.6`. The npm package `@moretea-labs/matea` is **not public yet**, so source installation is the currently verified path. Registry commands below describe the upcoming RC channel and must not be treated as evidence that npm publication has happened.
+`1.4.0-rc.6` is the current GitHub release candidate for Matea. The npm package `@moretea-labs/matea` is **not public yet**, so source installation remains the currently verified package path. A GitHub prerelease and an npm publication are separate facts.
 
 ## Quick start
 
