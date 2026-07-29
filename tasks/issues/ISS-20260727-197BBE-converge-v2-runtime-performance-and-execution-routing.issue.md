@@ -1,8 +1,8 @@
 ---
 id: "ISS-20260727-197BBE"
 kind: "feature"
-status: "in_progress"
-updated_at: "2026-07-29T02:59:22.615Z"
+status: "done"
+updated_at: "2026-07-29T06:36:00.504Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -78,7 +78,7 @@ source: "repo-harness-controller-v8"
 
 ### T5 — Complete performance baselines, port boundaries and historical noise reduction
 
-- Status: `changes_requested`
+- Status: `done`
 - Objective: 建立正式 before/after 性能与副作用基线；修复 slot port 超界和测试端口冲突，测试优先使用 OS 分配端口并原子记录候选 slot binding；历史 ExecutionJob/Campaign/Agent/Attention 保留审计但不污染默认摘要；执行完整回归并验证连续 package:test。
 - Depends on: `T2`, `T3`, `T4`
 - Allowed paths: `scripts/**`, `src/cli/controller/**`, `src/runtime/**`, `tests/**`, `docs/operations/**`, `docs/architecture/current/**`, `tasks/issues/**`, `package.json`
