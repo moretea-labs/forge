@@ -24,7 +24,7 @@ if command -v bun >/dev/null 2>&1; then
   run_test_file() {
     local test_file="$1"
     echo "[tests] $test_file" >&2
-    bun test --timeout "$test_timeout_ms" --max-concurrency "$test_max_concurrency" "$test_file"
+    bun scripts/run-bun-test-file.ts --timeout "$test_timeout_ms" --max-concurrency "$test_max_concurrency" "$test_file"
     sleep "$file_cooldown_seconds"
   }
 

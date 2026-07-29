@@ -40,7 +40,7 @@ run_typecheck() {
 run_bun_test_file() {
   local file="$1"
   echo "[ci] test $file"
-  bun test --timeout "$BUN_TEST_TIMEOUT_MS" --max-concurrency "$BUN_TEST_MAX_CONCURRENCY" "$file"
+  bun scripts/run-bun-test-file.ts --timeout "$BUN_TEST_TIMEOUT_MS" --max-concurrency "$BUN_TEST_MAX_CONCURRENCY" "$file"
   sleep "$BUN_TEST_FILE_COOLDOWN_SECONDS"
 }
 
