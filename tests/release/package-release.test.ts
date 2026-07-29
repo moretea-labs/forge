@@ -59,7 +59,9 @@ describe("public package release contract", () => {
     expect(workflow).toContain("name: Release readiness");
     expect(workflow).toContain('node-version: "22"');
     expect(workflow).toContain('bun-version: "1.3.14"');
-    expect(workflow).toContain("npm run check:release-readiness");
+    expect(workflow).toContain("bun install --frozen-lockfile");
+    expect(workflow).toContain("bun run check:release-readiness");
+    expect(workflow).not.toContain("npm ci");
     expect(workflow).toContain("contents: read");
     expect(workflow).not.toContain("contents: write");
   });
