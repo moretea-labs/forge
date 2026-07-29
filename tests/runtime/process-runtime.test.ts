@@ -649,6 +649,64 @@ describe('Process Runtime real lease contention', () => {
 });
 
 describe('Process Runner exactly-once semantics', () => {
+  test('repository command environment strips runtime-private identity after descriptor overrides', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'process-runner-env-boundary-'));
+    roots.push(root);
+    const stdoutPath = join(root, 'out.log');
+    const privateKeys = [
+      'REPO_HARNESS_CONTROLLER_HOME',
+      'REPO_HARNESS_CONTROLLER_INSTANCE_ID',
+      'REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT',
+      'REPO_HARNESS_DAEMON_INSTANCE_ID',
+      'REPO_HARNESS_MCP_INSTANCE_ID',
+      'REPO_HARNESS_MCP_PUBLIC_ORIGIN',
+      'REPO_HARNESS_PROCESS_RUNNER',
+      'REPO_HARNESS_PROCESS_RUNNER_ENTRY',
+      'REPO_HARNESS_RUNTIME_SLOT',
+      'REPO_HARNESS_RUNTIME_PASSIVE',
+      'REPO_HARNESS_STABLE_SUPERVISOR',
+      'REPO_HARNESS_SUPERVISOR_CHILD',
+      'REPO_HARNESS_SUPERVISOR_PUBLIC_HEALTH_ENDPOINT',
+      'REPO_HARNESS_WRITER_FENCING_TOKEN',
+      'REPO_HARNESS_WRITER_GENERATION',
+    ];
+    const descriptor: ProcessCommandDescriptor = {
+      schemaVersion: 1,
+      processId: 'proc_env_boundary',
+      repoId: 'repo',
+      controllerHome: root,
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: [
+          '-e',
+          `const keys = ${JSON.stringify(privateKeys)}; process.stdout.write(JSON.stringify({ private: Object.fromEntries(keys.map((key) => [key, process.env[key] ?? null])), safe: process.env.SAFE_REPOSITORY_ENV ?? null }));`,
+        ],
+        cwd: root,
+        env: {
+          ...Object.fromEntries(privateKeys.map((key) => [key, `secret-${key}`])),
+          SAFE_REPOSITORY_ENV: 'preserved',
+        },
+      },
+      timeoutMs: 5_000,
+      maxStdoutBytes: 16_384,
+      maxStderrBytes: 16_384,
+      stdoutPath,
+      stderrPath: join(root, 'err.log'),
+      exitReceiptPath: join(root, 'exit.json'),
+      startedAt: new Date().toISOString(),
+    };
+
+    const receipt = await runProcessRunnerFromDescriptor(descriptor);
+    expect(receipt.exitCode).toBe(0);
+    const output = JSON.parse(readFileSync(stdoutPath, 'utf8')) as {
+      private: Record<string, string | null>;
+      safe: string | null;
+    };
+    expect(output.safe).toBe('preserved');
+    for (const key of privateKeys) expect(output.private[key]).toBeNull();
+  });
+
   test('corrupt receipt does not re-execute command', async () => {
     const root = mkdtempSync(join(tmpdir(), 'process-runner-corrupt-'));
     roots.push(root);

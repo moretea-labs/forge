@@ -33,6 +33,7 @@ import {
 } from 'fs';
 import { dirname, join } from 'path';
 import { spawn, type ChildProcess } from 'child_process';
+import { repositoryChildProcessEnvironment } from '../../shared/process-environment';
 
 export interface ProcessCommandDescriptor {
   schemaVersion: 1;
@@ -96,6 +97,7 @@ function loadDescriptor(path: string): ProcessCommandDescriptor {
 
 function spawnCommand(command: ProcessCommandDescriptor['command']): ChildProcess {
   const useProcessGroup = process.platform !== 'win32';
+  const env = repositoryChildProcessEnvironment({ ...process.env, ...(command.env ?? {}) });
   if (command.kind === 'shell') {
     const shell = process.platform === 'win32' ? 'cmd.exe' : '/bin/bash';
     const shellArgs = process.platform === 'win32'
@@ -103,14 +105,14 @@ function spawnCommand(command: ProcessCommandDescriptor['command']): ChildProces
       : ['-lc', command.shellCommand ?? ''];
     return spawn(shell, shellArgs, {
       cwd: command.cwd,
-      env: { ...process.env, ...(command.env ?? {}) },
+      env,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: useProcessGroup,
     });
   }
   return spawn(command.executable ?? 'true', command.args ?? [], {
     cwd: command.cwd,
-    env: { ...process.env, ...(command.env ?? {}) },
+    env,
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: useProcessGroup,
   });
@@ -387,7 +389,6 @@ const isDirectRun = typeof process.argv[1] === 'string'
   && (
     process.argv[1].includes('process-runner-entry')
     || process.argv[1].includes('process-runner.js')
-    || process.env.REPO_HARNESS_PROCESS_RUNNER === '1'
   );
 
 if (isDirectRun) {

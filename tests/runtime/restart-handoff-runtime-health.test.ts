@@ -81,12 +81,14 @@ describe('restart handoff and runtime health hardening', () => {
         REPO_HARNESS_WRITER_SLOT: 'green',
         REPO_HARNESS_WRITER_EPOCH: authority.epoch,
         REPO_HARNESS_WRITER_FENCING_TOKEN: authority.fencingToken,
+        REPO_HARNESS_RUNTIME_PASSIVE: '1',
         REPO_HARNESS_WRITER_GENERATION: 'generation-blue',
       });
       expect(runtimeWriterEnvironment(home, 'blue')).toEqual({
         REPO_HARNESS_WRITER_SLOT: 'blue',
         REPO_HARNESS_WRITER_EPOCH: authority.epoch,
         REPO_HARNESS_WRITER_FENCING_TOKEN: authority.fencingToken,
+        REPO_HARNESS_RUNTIME_PASSIVE: '0',
         REPO_HARNESS_WRITER_GENERATION: 'generation-blue',
       });
       const { assertWriterAuthority } = await import('../../src/cli/controller/stable-state/writer-authority');
@@ -152,11 +154,33 @@ describe('Gateway writer claim inheritance and child environment isolation', () 
       REPO_HARNESS_SUPERVISOR_CHILD: '1',
       REPO_HARNESS_SUPERVISOR_EPOCH: '123',
       REPO_HARNESS_CONTROLLER_LIFECYCLE_OWNER: '1',
+      REPO_HARNESS_CONTROLLER_HOME: '/controller/home',
+      REPO_HARNESS_CONTROLLER_INSTANCE_ID: 'controller-secret',
+      REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT: '/runtime/source',
       REPO_HARNESS_DAEMON_INSTANCE_ID: 'daemon-secret',
+      REPO_HARNESS_MCP_INSTANCE_ID: 'mcp-secret',
+      REPO_HARNESS_MCP_PUBLIC_ORIGIN: 'https://mcp.example.test',
+      REPO_HARNESS_PROCESS_RUNNER: '1',
+      REPO_HARNESS_PROCESS_RUNNER_ENTRY: '/runtime/process-runner.js',
+      REPO_HARNESS_RUNTIME_SLOT: 'blue',
+      REPO_HARNESS_RUNTIME_PASSIVE: '1',
+      REPO_HARNESS_STABLE_SUPERVISOR: '1',
+      REPO_HARNESS_SUPERVISOR_PUBLIC_HEALTH_ENDPOINT: 'https://health.example.test',
     });
     expect(result.PATH).toBe('/bin');
     expect(result.REPO_HARNESS_WRITER_EPOCH).toBeUndefined();
     expect(result.REPO_HARNESS_WRITER_FENCING_TOKEN).toBeUndefined();
     expect(result.REPO_HARNESS_SUPERVISOR_CHILD).toBeUndefined();
+    expect(result.REPO_HARNESS_CONTROLLER_HOME).toBeUndefined();
+    expect(result.REPO_HARNESS_CONTROLLER_INSTANCE_ID).toBeUndefined();
+    expect(result.REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT).toBeUndefined();
+    expect(result.REPO_HARNESS_MCP_INSTANCE_ID).toBeUndefined();
+    expect(result.REPO_HARNESS_MCP_PUBLIC_ORIGIN).toBeUndefined();
+    expect(result.REPO_HARNESS_PROCESS_RUNNER).toBeUndefined();
+    expect(result.REPO_HARNESS_PROCESS_RUNNER_ENTRY).toBeUndefined();
+    expect(result.REPO_HARNESS_RUNTIME_SLOT).toBeUndefined();
+    expect(result.REPO_HARNESS_RUNTIME_PASSIVE).toBeUndefined();
+    expect(result.REPO_HARNESS_STABLE_SUPERVISOR).toBeUndefined();
+    expect(result.REPO_HARNESS_SUPERVISOR_PUBLIC_HEALTH_ENDPOINT).toBeUndefined();
   });
 });

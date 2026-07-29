@@ -1,25 +1,37 @@
 /**
  * Environment boundary for repository-owned child processes.
  *
- * Controller/Supervisor authority belongs to the hosting runtime process and
- * must never be inherited by repository commands, checks, or their children.
+ * Controller/Supervisor authority, topology, and process identity belong to
+ * the hosting runtime and must never be inherited by repository commands,
+ * checks, or their children.
  */
 
-const CONTROLLER_AUTHORITY_ENV_KEYS = [
-  'REPO_HARNESS_WRITER_SLOT',
-  'REPO_HARNESS_WRITER_EPOCH',
-  'REPO_HARNESS_WRITER_FENCING_TOKEN',
-  'REPO_HARNESS_WRITER_GENERATION',
-  'REPO_HARNESS_SUPERVISOR_CHILD',
-  'REPO_HARNESS_SUPERVISOR_EPOCH',
-  'REPO_HARNESS_CONTROLLER_LIFECYCLE_OWNER',
-  'REPO_HARNESS_DAEMON_INSTANCE_ID',
+const RUNTIME_PRIVATE_ENV_PREFIXES = [
+  'REPO_HARNESS_CONTROLLER_',
+  'REPO_HARNESS_DAEMON_',
+  'REPO_HARNESS_PROCESS_RUNNER',
+  'REPO_HARNESS_RUNTIME_',
+  'REPO_HARNESS_SUPERVISOR_',
+  'REPO_HARNESS_WRITER_',
 ] as const;
+
+const RUNTIME_PRIVATE_ENV_KEYS = new Set([
+  'REPO_HARNESS_MCP_INSTANCE_ID',
+  'REPO_HARNESS_MCP_PUBLIC_ORIGIN',
+  'REPO_HARNESS_STABLE_SUPERVISOR',
+]);
 
 export function repositoryChildProcessEnvironment(
   env: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
   const sanitized = { ...env };
-  for (const key of CONTROLLER_AUTHORITY_ENV_KEYS) delete sanitized[key];
+  for (const key of Object.keys(sanitized)) {
+    if (
+      RUNTIME_PRIVATE_ENV_KEYS.has(key)
+      || RUNTIME_PRIVATE_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))
+    ) {
+      delete sanitized[key];
+    }
+  }
   return sanitized;
 }
