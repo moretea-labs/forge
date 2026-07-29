@@ -56,7 +56,6 @@ function runtimeSourceIdentity(root: string, allowDirtyRuntimeSourceForTests = f
   if (!commit.ok || !commit.stdout.trim()) {
     throw new Error('SUPERVISOR_RELEASE_SOURCE_COMMIT_UNAVAILABLE: Supervisor releases require a Git HEAD source commit.');
   }
-  const shortRevision = runProcess('git', ['-C', root, 'rev-parse', '--short=12', 'HEAD'], { timeoutMs: 10_000, maxOutputBytes: 4_096 });
   const dirty = runProcess('git', [
     '-C', root,
     'status',
@@ -79,12 +78,9 @@ function runtimeSourceIdentity(root: string, allowDirtyRuntimeSourceForTests = f
   }
   const sourceCommit = commit.stdout.trim();
   const cleanWorkspace = dirtyRuntimePaths.length === 0;
-  const revision = shortRevision.ok && shortRevision.stdout.trim()
-    ? shortRevision.stdout.trim()
-    : sourceCommit.slice(0, 12);
   return {
     sourceCommit,
-    releaseRevision: `${revision}${cleanWorkspace ? '' : '-dirty'}`,
+    releaseRevision: `${sourceCommit}${cleanWorkspace ? '' : '-dirty'}`,
     cleanWorkspace,
     dirtyRuntimePaths,
   };

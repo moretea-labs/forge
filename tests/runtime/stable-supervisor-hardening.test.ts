@@ -116,10 +116,18 @@ describe('Stable Supervisor production hardening', () => {
       expect(existsSync(join(release.releasePath, 'worker.js'))).toBe(true);
       expect(existsSync(join(release.releasePath, 'browser-handoff-host.js'))).toBe(true);
       const manifest = JSON.parse(readFileSync(join(release.releasePath, 'manifest.json'), 'utf8')) as {
+        releaseRevision?: string;
+        sourceCommit?: string;
+        cleanWorkspace?: boolean;
         workerEntrypoint?: string;
         browserHandoffHostEntrypoint?: string;
         capabilities?: string[];
       };
+      if (!release.sourceCommit) throw new Error('release sourceCommit missing');
+      const expectedRevision = `${release.sourceCommit}${release.cleanWorkspace ? '' : '-dirty'}`;
+      expect(manifest.sourceCommit).toBe(release.sourceCommit);
+      expect(manifest.releaseRevision).toBe(expectedRevision);
+      expect(release.releaseRevision).toBe(expectedRevision);
       expect(manifest.workerEntrypoint).toBe('worker.js');
       expect(manifest.browserHandoffHostEntrypoint).toBe('browser-handoff-host.js');
       expect(manifest.capabilities).toContain('staged_rollout_release');
