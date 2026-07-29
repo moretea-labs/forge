@@ -1,30 +1,30 @@
 # Support
 
-repo-harness is currently a release candidate. Support is best-effort and focused on reproducible installation, repository safety, ChatGPT connectivity, and release-blocking defects.
+Matea is currently a release candidate. Support is best-effort and focused on reproducible installation, repository safety, ChatGPT connectivity, runtime recovery, and release-blocking defects.
 
 ## Before asking for help
 
 Run:
 
 ```bash
-repo-harness --version
-repo-harness doctor
-repo-harness status --json
-repo-harness repo list --json
+matea --version
+matea doctor
+matea status --json
+matea repo list --json
 ```
 
-Redact tokens, OAuth material, private repository names, absolute home paths, email addresses, and proprietary source before sharing output.
+The legacy `repo-harness` command is still accepted during the 1.x compatibility period. Redact tokens, OAuth material, private repository names, absolute home paths, email addresses, and proprietary source before sharing output.
 
 ## Where to ask
 
 - Reproducible bugs: use the **Bug report** issue template.
 - Documentation errors: use the **Documentation** template.
-- Setup or usage questions: use the **Support question** template.
+- Setup or usage questions: use the **Support question** template or GitHub Discussions.
 - Feature proposals: use the **Feature request** template.
 - Vulnerabilities: follow [SECURITY.md](SECURITY.md), never a public issue.
 
-GitHub Discussions should become the long-term home for open-ended usage questions after it is enabled. Issues should remain actionable and tied to a reproducible problem or a concrete documentation gap.
+Issues should remain actionable and tied to a reproducible problem or a concrete documentation gap. Discussions are better for open-ended workflow questions and usage patterns.
 
 ## Useful details
 
-Include the operating system, Node and Bun versions, installation method, exact command, expected result, actual result, and the smallest redacted log excerpt that demonstrates the problem.
+Include the operating system, Node and Bun versions, installation method, exact command, expected result, actual result, and the smallest redacted log excerpt that demonstrates the problem. For runtime incidents, also say whether the local health endpoint, public MCP endpoint, and independent recovery path were reachable.

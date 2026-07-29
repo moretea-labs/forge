@@ -1,55 +1,84 @@
 # Matea Documentation
 
-This is the public documentation hub for Matea's current open-source and runtime surface. Product behavior is defined by executable code and [`docs/architecture/current/`](architecture/current/), not by historical design notes.
+This is the public documentation hub for Matea's current open-source and runtime surface. Executable behavior and [`docs/architecture/current/`](architecture/current/) are authoritative; historical notes are context, not current contracts.
 
-## Start here
+## Choose a path
 
-- New user, English: [Public usage guide](public-usage-guide.md), then [Tutorials](tutorials/README.md)
-- 新用户，中文: [公开使用指南](public-usage-guide.zh-CN.md)，再看 [教程目录](tutorials/README.zh-CN.md)
-- Install and host MCP: [Tutorial 1](tutorials/01-install-and-start.md), [Tutorial 2](tutorials/02-connect-chatgpt.md)
-- Run the first repository task: [Tutorial 3](tutorials/03-first-repository-task.md)
-- Platform and setup boundaries: [Platform support](operations/platform-support.md), [Features and setup levels](operations/features.md)
-- Fix install or connector problems: [Troubleshooting](operations/troubleshooting.md)
-- Maintain the repository: [Contributing](../CONTRIBUTING.md), [Support](../SUPPORT.md), [Security](../SECURITY.md)
-- Release and repository baseline: [Release process](operations/releasing.md), [GitHub maintenance](operations/github-repository.md), [Homebrew plan](operations/homebrew.md)
-- Versioned Wiki source: [Wiki Home](wiki/Home.md), [Architecture](wiki/Architecture.md), [Operations](wiki/Operations.md)
-
-The default `advanced` surface is a stable repair-capable schema capped at 128 tools. It includes the five preferred facades plus Direct Edit, commands, local Git, durable Work, agents, Campaigns, plugins, browser, iOS, artifacts, and recovery. `core` is a compatibility alias for the same schema; `full` is exhaustive legacy exposure.
-
-## Capability map
-
-| Goal | Read this | Notes |
+| You want to… | Start here | Continue with |
 | --- | --- | --- |
-| Understand the core ChatGPT facade | [Public usage guide](public-usage-guide.md) | Explains `rh_status`, `rh_inbox`, `rh_context`, `rh_work`, and the safe default path. |
-| Connect ChatGPT to the local controller | [Matea ChatGPT MCP setup](repo-harness-chatgpt-mcp-setup.md) | Advanced/manual setup, tunnel choices, Connector auth, and toolset verification. |
-| Learn the stable tool schema | [MCP tool exposure](operations/mcp-tool-exposure.md) | `advanced` is the stable default, `core` is an alias, and `full` is exhaustive legacy compatibility. |
-| Use the local Controller UI safely | [Matea ChatGPT MCP setup](repo-harness-chatgpt-mcp-setup.md) | The Local Controller UI stays on `127.0.0.1:8766`; it is not the public MCP endpoint. |
-| Understand multi-repository routing | [README.md](../README.md), [README.zh-CN.md](../README.zh-CN.md) | The controller is global, but work is still scoped by stable `repoId` and `checkoutId`. |
-| Configure providers and executor routing | [Provider configuration and routing](operations/provider-configuration.md) | Controller-scoped provider settings live under Controller Home, not in the repository. |
-| Run supervised automation or schedules | [ChatGPT-Supervised Automation](repo-harness-chatgpt-supervised-automation.md), [Autonomous Goal Loop](repo-harness-autonomous-goal-loop.md) | Use after the manual/core path is healthy. |
-| Use browser tasks | [Controller Browser Plugin](operations/controller-browser-plugin.md), [ChatGPT Browser Engine](repo-harness-chatgpt-browser-engine.md) | Covers local browser execution, screenshots, and ChatGPT-web planning/review flows. |
-| Configure Google/Gmail/Calendar/Tasks | [Google Assistant Plugins](personal-assistant-google-plugins.md) | Workspace plugins are optional and remain separately authorized. |
-| Use iOS simulator or App Store Connect tooling | [iOS Simulator Development Assistant](repo-harness-ios-development-assistant.md), [App Store Connect API Plugin](repo-harness-app-store-connect-api.md) | Simulator and Apple API flows are separate from generic repository work. |
-| Diagnose the Mac, open applications, or work with authorized local files | [Local System Assistant](operations/local-system-assistant.md), [本机系统助手](operations/local-system-assistant.zh-CN.md) | Controller-scoped; no repository registration or arbitrary shell access. |
-| Recover runtime-storage or controller-state issues | [Self-healing loop](repo-harness-runtime-self-healing-loop.md), [Controller reliability runbook](operations/controller-reliability-runbook.md) | Use these when runtime metadata or durable jobs are unhealthy. |
-| Diagnose 502s, stale connectors, or UI slowness | [Troubleshooting](operations/troubleshooting.md), [Controller performance and 502 troubleshooting](operations/controller-performance-and-502.md) | Check durable Job/Run state before replaying a write. |
-| Prepare a public release | [Open-source release hygiene](operations/open-source-release-hygiene.md) | Validate package identity, public surface, credentials, paths, and release evidence. |
+| Install Matea | [Install and start](tutorials/01-install-and-start.md) | [Platform support](operations/platform-support.md) |
+| Connect ChatGPT | [Connect ChatGPT](tutorials/02-connect-chatgpt.md) | [MCP setup](repo-harness-chatgpt-mcp-setup.md) |
+| Finish a first task | [First repository task](tutorials/03-first-repository-task.md) | [Public usage guide](public-usage-guide.md) |
+| Understand safety and work state | [Wiki: Core Concepts](wiki/Core-Concepts.md) | [Wiki: Work Lifecycle](wiki/Work-Lifecycle.md) |
+| Operate or recover the runtime | [Wiki: Operations](wiki/Operations.md) | [Troubleshooting](operations/troubleshooting.md) |
+| Contribute or release | [Contributing](../CONTRIBUTING.md) | [Release process](operations/releasing.md) |
+
+Chinese entry points: [公开使用指南](public-usage-guide.zh-CN.md), [教程目录](tutorials/README.zh-CN.md), [平台支持](operations/platform-support.zh-CN.md), and [故障排查](operations/troubleshooting.zh-CN.md).
+
+## Stable product surface
+
+The default `advanced` connector surface exposes 133 stable tools. The five preferred facades—`rh_access`, `rh_status`, `rh_inbox`, `rh_context`, and `rh_work`—cover the normal control loop; Direct Edit, commands, Git, durable Work, agents, Campaigns, plugins, browser, iOS, artifacts, and recovery remain available when needed. `core` is a compatibility alias for the same stable schema, while `full` preserves exhaustive legacy compatibility.
+
+## Documentation map
+
+### Learn and install
+
+- [Tutorials](tutorials/README.md)
+- [Public usage guide](public-usage-guide.md)
+- [Features and setup levels](operations/features.md)
+- [Platform support](operations/platform-support.md)
+
+### Operate and recover
+
+- [Troubleshooting](operations/troubleshooting.md)
+- [Controller reliability runbook](operations/controller-reliability-runbook.md)
+- [Stable External Runtime Supervisor](operations/stable-external-runtime-supervisor.md)
+- [Standalone disaster recovery](operations/standalone-disaster-recovery.md)
+- [Controller performance and 502 troubleshooting](operations/controller-performance-and-502.md)
+
+### Integrate
+
+- [Provider configuration](operations/provider-configuration.md)
+- [Browser plugin](operations/controller-browser-plugin.md)
+- [Google assistant plugins](personal-assistant-google-plugins.md)
+- [Local system assistant](operations/local-system-assistant.md)
+- [iOS development assistant](repo-harness-ios-development-assistant.md)
+
+### Maintain and release
+
+- [Release process](operations/releasing.md)
+- [Open-source release hygiene](operations/open-source-release-hygiene.md)
+- [GitHub repository baseline](operations/github-repository.md)
+- [Versioning](versioning.md)
+- [Security policy](../SECURITY.md)
+
+## Wiki
+
+The versioned Wiki source is under [`docs/wiki/`](wiki/). It provides task-oriented summaries and links back to detailed repository docs:
+
+- [Home](wiki/Home.md)
+- [Quick Start](wiki/Quick-Start.md)
+- [Core Concepts](wiki/Core-Concepts.md)
+- [Work Lifecycle](wiki/Work-Lifecycle.md)
+- [Runtime Architecture](wiki/Runtime-Architecture.md)
+- [Operations](wiki/Operations.md)
+- [Troubleshooting](wiki/Troubleshooting.md)
+- [Security Model](wiki/Security-Model.md)
+- [Releases and Upgrades](wiki/Releases-and-Upgrades.md)
 
 ## Current runtime facts
 
-- Controller Home is primary for MCP service config, authentication, provider settings, and runtime state: `mcp.local.json`, `mcp.tokens.json`, `mcp.oauth.json`, `mcp.oauth-tokens.json`, and `mcp.runtime.json` live under `controllerHome/mcp/`.
-- The matching repo-local `.repo-harness/mcp.local.json`, `.repo-harness/mcp.tokens.json`, `.repo-harness/mcp.oauth.json`, `.repo-harness/mcp.oauth-tokens.json`, and `.repo-harness/mcp.runtime.json` files are legacy fallback only. Repository-scoped `.repo-harness/mcp.policy.json` remains the repository access policy.
-- The controller is a global multi-repository service. Repository work still routes through explicit `repoId` and, when relevant, `checkoutId`.
-- The public MCP endpoint is separate from the localhost-only Local Controller UI at `127.0.0.1:8766`. The UI is an execution-assistant console organized around Command Center, Approvals and Decisions, Current Work, Capabilities / Plugins, Models / Tools, System Status, Repositories, and Advanced Diagnostics.
-- Long-running or verbose work is intentionally bounded in MCP responses. Expect durable Job/Run summaries and bounded artifact previews instead of raw unbounded logs by default.
+- The Controller is a global multi-repository service, while repository work remains explicitly scoped by stable `repoId` and, when needed, `checkoutId`.
+- Controller Home owns service configuration, authentication, provider settings, durable runtime state, and stable runtime release metadata. Repository-local policy remains repository-scoped.
+- The public MCP endpoint is separate from the localhost-only Controller UI.
+- Long-running work returns bounded summaries and durable references instead of unbounded logs.
+- Stable runtime rollout uses immutable releases and exact revision identity; ambiguous ownership or release drift fails closed.
 
-## Reference sets
+## Authority and history
 
-- Tutorials: [`tutorials/`](tutorials/)
-- User/operator guides: [`operations/`](operations/)
-- Versioned Wiki source: [`wiki/`](wiki/)
-- Runtime authority: [`architecture/current/README.md`](architecture/current/README.md)
-- Consolidated architecture history: [`architecture/history.md`](architecture/history.md)
-- Other historical evidence: [`architecture/snapshots/`](architecture/snapshots/), [`researches/`](researches/)
+- Current architecture: [`architecture/current/README.md`](architecture/current/README.md)
+- Architecture index: [`architecture/index.md`](architecture/index.md)
+- Consolidated history: [`architecture/history.md`](architecture/history.md)
+- Historical research: [`researches/`](researches/)
 
-Detailed superseded architecture documents remain recoverable from Git history; only the consolidated summary is published in the current documentation tree.
+Detailed superseded documents remain recoverable from Git history and do not override the current architecture set.

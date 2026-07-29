@@ -1,6 +1,6 @@
-# Contributing to repo-harness
+# Contributing to Matea
 
-Thanks for helping make repo-harness safer and easier to use. The project values small, reviewable changes backed by real checks more than broad rewrites or unverified claims.
+Thanks for helping make Matea safer and easier to use. The project values small, reviewable changes backed by exact checks more than broad rewrites or unverified claims.
 
 ## Before opening a change
 
@@ -22,9 +22,11 @@ Requirements:
 git clone https://github.com/moretea-labs/matea.git
 cd matea
 npm ci --ignore-scripts --no-audit --no-fund
-node bin/repo-harness.mjs --help
-bun bin/repo-harness.mjs --help
+node bin/matea.mjs --help
+bun bin/matea.mjs --help
 ```
+
+The `repo-harness` command remains a compatibility alias, but new documentation and examples should use `matea` unless the compatibility behavior itself is under test.
 
 Run focused tests while working. Before requesting review, run the checks relevant to the change; public and release-facing changes should normally include:
 
