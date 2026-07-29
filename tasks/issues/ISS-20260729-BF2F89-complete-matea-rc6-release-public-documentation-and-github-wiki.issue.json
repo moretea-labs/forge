@@ -140,7 +140,7 @@
       "id": "T4",
       "title": "Expose verified known-good release attestation",
       "objective": "Expose the existing attestKnownGood operation through the standalone Recovery CLI and MCP gateway only after full independent verification succeeds. Add focused tests for tool exposure, dispatch, state persistence, and rollback eligibility. Rebuild and activate the exact main revision, attest it as known-good, cold-restart the Supervisor, and verify the release remains active and rollback-safe.",
-      "status": "planned",
+      "status": "verified",
       "dependsOn": [
         "T1"
       ],
@@ -168,15 +168,16 @@
       ],
       "risk": "medium",
       "notes": [
-        "T1 is already integrated and verified on main via cd9103ee/5c62df81. Proceeding with the release-safety attestation gap discovered during cold-start verification."
+        "T1 is already integrated and verified on main via cd9103ee/5c62df81. Proceeding with the release-safety attestation gap discovered during cold-start verification.",
+        "Implemented and integrated as 2974b429a479655b28e84578a039995cb380af1f. Added attest-known-good CLI and attest_known_good Recovery MCP action with request validation and mutation rate limiting. Focused tests: 3 pass, 0 fail; TypeScript and package:check:release-readiness passed. Installed exact immutable release, attested manifest 9f5cf35e..., cold-restarted launchd Supervisor (PID 47011 -> 50449), and independently verified knownGood persistence plus Supervisor/Ingress/Gateway/MCP health."
       ],
       "runIds": [],
       "createdAt": "2026-07-29T14:13:28.935Z",
-      "updatedAt": "2026-07-29T14:13:55.840Z",
+      "updatedAt": "2026-07-29T14:26:07.932Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     }
   ],
   "createdAt": "2026-07-29T12:22:51.953Z",
-  "updatedAt": "2026-07-29T14:13:55.840Z",
+  "updatedAt": "2026-07-29T14:26:07.932Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }

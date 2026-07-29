@@ -2,7 +2,7 @@
 id: "ISS-20260729-BF2F89"
 kind: "governance"
 status: "in_progress"
-updated_at: "2026-07-29T14:13:55.840Z"
+updated_at: "2026-07-29T14:26:07.932Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -66,7 +66,7 @@ Finish the public release baseline from clean main: restore the Windows-native c
 
 ### T4 — Expose verified known-good release attestation
 
-- Status: `planned`
+- Status: `verified`
 - Objective: Expose the existing attestKnownGood operation through the standalone Recovery CLI and MCP gateway only after full independent verification succeeds. Add focused tests for tool exposure, dispatch, state persistence, and rollback eligibility. Rebuild and activate the exact main revision, attest it as known-good, cold-restart the Supervisor, and verify the release remains active and rollback-safe.
 - Depends on: `T1`
 - Allowed paths: `src/runtime/standalone-recovery/core.ts`, `src/runtime/standalone-recovery/entry.ts`, `tests/runtime/**`, `tasks/issues/ISS-20260729-BF2F89-*`
