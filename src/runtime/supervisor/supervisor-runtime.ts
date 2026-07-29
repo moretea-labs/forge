@@ -1,6 +1,6 @@
 import { realpathSync } from 'fs';
 import { dirname, resolve, sep } from 'path';
-import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState, readMcpServiceBearerToken, syncMcpControllerHomeBearerToken, writeMcpServiceLocalConfig } from '../../cli/mcp/auth';
+import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState, readMcpServiceBearerToken, syncMcpControllerHomeBearerToken, writeMcpServiceLocalConfig, type McpRuntimeState } from '../../cli/mcp/auth';
 import {
   ensureSlotHome,
   isRollbackWindowOpen,
@@ -114,6 +114,11 @@ export function supervisorGatewayOperational(
   return processAlive
     && state === 'running'
     && Math.max(0, consecutiveFailures) < SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD;
+}
+
+export function supervisorGatewayRuntimeReady(runtime: McpRuntimeState | null | undefined): boolean {
+  return runtime?.server.healthy === true
+    && (runtime.status === 'running' || runtime.status === 'degraded');
 }
 
 export function supervisorMonitorFailureDecision(
@@ -1331,7 +1336,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
           if (readControllerDaemonStatus(managed.controllerHome).status === 'ready') return;
         } else {
           const runtime = loadMcpServiceRuntimeState(managed.controllerHome, this.options.repoRoot);
-          if (runtime?.server.healthy === true && runtime.status === 'running') return;
+          if (supervisorGatewayRuntimeReady(runtime)) return;
         }
       }
       await sleep(250);
@@ -2079,7 +2084,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
           if (daemon.status === 'ready') return;
         } else {
           const runtime = loadMcpServiceRuntimeState(managed.controllerHome, this.options.repoRoot);
-          if (runtime?.status === 'running' && runtime.server.healthy === true) return;
+          if (supervisorGatewayRuntimeReady(runtime)) return;
         }
       }
       await sleep(250);
