@@ -7,8 +7,8 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-$PackageName = "repo-harness"
-$PackageVersion = if ($env:REPO_HARNESS_VERSION) { $env:REPO_HARNESS_VERSION } else { "latest" }
+$PackageName = "@moretea-labs/repo-harness-controller"
+$PackageVersion = if ($env:REPO_HARNESS_VERSION) { $env:REPO_HARNESS_VERSION } else { "next" }
 $InstallRuntime = if ($Runtime) { $Runtime.ToLowerInvariant() } elseif ($env:REPO_HARNESS_INSTALL_RUNTIME) { $env:REPO_HARNESS_INSTALL_RUNTIME.ToLowerInvariant() } else { "auto" }
 $MinimumNodeVersion = [version]"20.10.0"
 $BunInstall = if ($env:BUN_INSTALL) { $env:BUN_INSTALL } else { Join-Path $HOME ".bun" }

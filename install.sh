@@ -1,8 +1,8 @@
 #!/usr/bin/env sh
 set -eu
 
-PACKAGE_NAME="repo-harness"
-PACKAGE_VERSION="${REPO_HARNESS_VERSION:-latest}"
+PACKAGE_NAME="@moretea-labs/repo-harness-controller"
+PACKAGE_VERSION="${REPO_HARNESS_VERSION:-next}"
 INSTALL_RUNTIME="${REPO_HARNESS_INSTALL_RUNTIME:-auto}"
 
 log() {

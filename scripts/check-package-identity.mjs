@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = resolve(import.meta.dirname, "..");
+const scriptDir = dirname(fileURLToPath(import.meta.url));
+const root = resolve(scriptDir, "..");
 const pkg = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
 const lock = JSON.parse(readFileSync(resolve(root, "package-lock.json"), "utf8"));
 const skill = JSON.parse(readFileSync(resolve(root, "assets/skill-version.json"), "utf8"));
@@ -11,14 +13,26 @@ const skill = JSON.parse(readFileSync(resolve(root, "assets/skill-version.json")
 const expectedName = "@moretea-labs/repo-harness-controller";
 const requiredFiles = [
   "LICENSE",
+  "CHANGELOG.md",
+  "CONTRIBUTING.md",
+  "SECURITY.md",
+  "SUPPORT.md",
+  "CODE_OF_CONDUCT.md",
   "NOTICE",
   "THIRD_PARTY_NOTICES.md",
   "README.md",
   "README.en.md",
   "README.zh-CN.md",
+  "install.sh",
+  "install.ps1",
   "docs/README.md",
   "docs/tutorials/",
   "docs/operations/",
+  "docs/wiki/",
+];
+const forbiddenPackageEntries = [
+  "ARCHITECTURE_MIGRATION_REPORT.md",
+  "OPTIMIZATION_REPORT.md",
 ];
 
 function fail(message) {
@@ -26,18 +40,26 @@ function fail(message) {
   process.exit(1);
 }
 
+function requireReleaseScript(name, channel) {
+  const script = pkg.scripts?.[name];
+  const gate = `node scripts/check-release-version.mjs --channel ${channel} --require-tag`;
+  if (typeof script !== "string") fail(`${name} script is missing`);
+  if (!script.startsWith(`${gate} && `)) fail(`${name} must run the release-version gate first`);
+  if (!script.includes(`npm publish --tag ${channel} --access public`)) {
+    fail(`${name} must publish explicitly to ${channel}`);
+  }
+}
+
 if (pkg.name !== expectedName) fail(`package.json name is ${pkg.name}`);
 const versionMatch = String(pkg.version ?? "").match(/^(\d+\.\d+\.\d+)(?:-rc\.(\d+))?$/);
 if (!versionMatch) fail(`package.json version is not a stable or rc semantic version: ${pkg.version}`);
 const coreVersion = versionMatch[1];
-const isReleaseCandidate = versionMatch[2] !== undefined;
 if (coreVersion !== skill.version || coreVersion !== skill.templateVersion) {
   fail(`package core version ${coreVersion} must match workflow versions ${skill.version}/${skill.templateVersion}`);
 }
 if (pkg.publishConfig?.access !== "public") fail("publishConfig.access must be public");
 if (pkg.publishConfig?.provenance !== true) fail("publishConfig.provenance must be true");
-const expectedTag = isReleaseCandidate ? "next" : "latest";
-if (pkg.publishConfig?.tag !== expectedTag) fail(`publishConfig.tag must be ${expectedTag}`);
+if (pkg.publishConfig?.tag !== undefined) fail("publishConfig.tag must be omitted");
 if (pkg.private !== undefined) fail("package must not declare private");
 if (pkg.author !== "Moretea Labs contributors") fail(`unexpected package author: ${pkg.author}`);
 if (!String(pkg.repository?.url ?? "").includes("moretea-labs/repo-harness-controller-runtime")) {
@@ -48,14 +70,24 @@ const bin = pkg.bin ?? {};
 if (bin["repo-harness"] !== "bin/repo-harness.mjs") fail("repo-harness bin mapping changed");
 if (bin["repo-harness-hook"] !== "bin/repo-harness-hook.mjs") fail("repo-harness-hook bin mapping changed");
 if (pkg.scripts?.prepublishOnly !== "bash scripts/check-npm-release.sh") fail("prepublishOnly gate changed");
-if (pkg.scripts?.["release:rc"] !== "npm publish --tag next --access public --provenance") fail("release:rc script changed");
+if (pkg.scripts?.["check:release-version"] !== "node scripts/check-release-version.mjs") {
+  fail("release version check changed");
+}
+requireReleaseScript("release:rc", "next");
+requireReleaseScript("release:stable", "latest");
 
 const files = new Set(pkg.files ?? []);
 for (const required of requiredFiles) {
   if (!files.has(required)) fail(`package files missing ${required}`);
+  if (!existsSync(resolve(root, required))) fail(`repository file missing ${required}`);
+}
+for (const forbidden of forbiddenPackageEntries) {
+  if (files.has(forbidden)) fail(`internal report must not be packed: ${forbidden}`);
 }
 
-if (lock.name !== pkg.name || lock.version !== pkg.version) fail("package-lock root identity differs from package.json");
+if (lock.name !== pkg.name || lock.version !== pkg.version) {
+  fail("package-lock root identity differs from package.json");
+}
 if (lock.packages?.[""]?.name !== pkg.name || lock.packages?.[""]?.version !== pkg.version) {
   fail("package-lock root package identity differs from package.json");
 }

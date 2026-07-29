@@ -1,0 +1,36 @@
+name: Support question
+description: Ask a bounded installation or usage question
+title: "[Support]: "
+labels: ["question", "needs-triage"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: repo-harness version or commit
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Platform, Node, and Bun versions
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to do?
+    validations:
+      required: true
+  - type: textarea
+    id: attempted
+    attributes:
+      label: Commands tried and redacted output
+    validations:
+      required: true
+  - type: checkboxes
+    id: redaction
+    attributes:
+      label: Redaction
+      options:
+        - label: I removed secrets, private source, and personal paths.
+          required: true

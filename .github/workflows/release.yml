@@ -1,0 +1,67 @@
+name: Release package
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Upgrade npm for Trusted Publishing
+        run: npm install --global npm@latest
+
+      - name: Validate exact tag and release channel
+        shell: bash
+        run: |
+          RELEASE_TAG="${GITHUB_REF_NAME}" node scripts/check-release-version.mjs --require-tag
+          VERSION="$(node -p "require('./package.json').version")"
+          if [[ "${VERSION}" == *-rc.* ]]; then
+            CHANNEL=next
+          else
+            CHANNEL=latest
+          fi
+          echo "RELEASE_VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "RELEASE_CHANNEL=${CHANNEL}" >> "$GITHUB_ENV"
+
+      - name: Run complete release gate
+        run: npm run check:release-readiness
+
+      - name: Inspect package contents
+        run: npm pack --dry-run --json
+
+      - name: Publish exact tagged package
+        run: npm publish --tag "${RELEASE_CHANNEL}" --access public
+
+      - name: Create matching GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          args=("${GITHUB_REF_NAME}" --verify-tag --generate-notes --title "repo-harness ${RELEASE_VERSION}")
+          if [[ "${RELEASE_CHANNEL}" == "next" ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "${args[@]}"

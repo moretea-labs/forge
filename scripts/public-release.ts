@@ -75,9 +75,15 @@ function selectedFiles(): string[] {
       { cwd: root, encoding: "utf-8" },
     );
     if (result.status !== 0) fail(`git ls-files failed for ${entry}: ${result.stderr.trim()}`);
+    const directoryEntry = entry.endsWith("/");
     for (const line of result.stdout.split("\n")) {
       const file = normalized(line.trim());
-      if (file) files.add(file);
+      if (!file) continue;
+      if (!existsSync(join(root, file))) {
+        if (directoryEntry) continue;
+        fail(`selected file disappeared: ${file}`);
+      }
+      files.add(file);
     }
   }
   const result = [...files].sort();

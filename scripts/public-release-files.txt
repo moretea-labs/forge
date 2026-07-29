@@ -6,6 +6,11 @@
 AGENTS.md
 CLAUDE.md
 LICENSE
+CHANGELOG.md
+CONTRIBUTING.md
+SECURITY.md
+SUPPORT.md
+CODE_OF_CONDUCT.md
 NOTICE
 THIRD_PARTY_NOTICES.md
 README.md
@@ -26,6 +31,9 @@ docs/README.md
 docs/tutorials/
 docs/operations/releasing.md
 docs/operations/releasing.zh-CN.md
+docs/operations/github-repository.md
+docs/operations/homebrew.md
+docs/wiki/
 scripts/
 src/
 tsconfig.json

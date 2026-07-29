@@ -11,7 +11,7 @@
 Repository: moretea-labs/repo-harness-controller-runtime
 Branch: main
 Revision: 0eba89d88aeb698e55d42a7a7c96dda707d7f222
-Package version: 1.4.0-rc.1
+Package version: 1.4.0-rc.6
 Observed date: 2026-07-16
 ```
 

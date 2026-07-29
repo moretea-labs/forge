@@ -1,9 +1,18 @@
 {
   "name": "@moretea-labs/repo-harness-controller",
-  "version": "1.4.0-rc.1",
-  "description": "Installs, migrates, audits, and repairs repo-local agentic development harnesses",
+  "version": "1.4.0-rc.6",
+  "description": "Local-first repository execution bridge for ChatGPT with resumable work, bounded tools, and reviewable evidence",
   "license": "MIT",
   "author": "Moretea Labs contributors",
+  "keywords": [
+    "chatgpt",
+    "mcp",
+    "repository",
+    "developer-tools",
+    "automation",
+    "code-review",
+    "local-first"
+  ],
   "homepage": "https://github.com/moretea-labs/repo-harness-controller-runtime#readme",
   "repository": {
     "type": "git",
@@ -14,12 +23,15 @@
   },
   "type": "module",
   "publishConfig": {
-    "access": "public",
-    "provenance": true,
-    "tag": "next"
+    "access": "public"
   },
   "files": [
     "LICENSE",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "SUPPORT.md",
+    "CODE_OF_CONDUCT.md",
     "NOTICE",
     "THIRD_PARTY_NOTICES.md",
     ".agents/skills/repo-harness-chatgpt-browser/",
@@ -32,6 +44,7 @@
     "docs/images/",
     "docs/architecture/",
     "docs/operations/",
+    "docs/wiki/",
     "docs/public-usage-guide.md",
     "docs/public-usage-guide.zh-CN.md",
     "docs/repo-harness-chatgpt-browser-engine.md",
@@ -51,9 +64,7 @@
     "AGENTS.md",
     "CLAUDE.md",
     "SKILL.md",
-    "README.md",
-    "ARCHITECTURE_MIGRATION_REPORT.md",
-    "OPTIMIZATION_REPORT.md"
+    "README.md"
   ],
   "bin": {
     "repo-harness": "bin/repo-harness.mjs",
@@ -86,7 +97,10 @@
     "package:source-zip": "bash scripts/package-source-archive.sh",
     "check:release-published": "bash scripts/check-release-published.sh",
     "smoke:tarball-install": "bash scripts/check-tarball-install-smoke.sh",
-    "release:rc": "npm publish --tag next --access public --provenance",
+    "check:release-version": "node scripts/check-release-version.mjs",
+    "release:dry-run": "node scripts/check-release-version.mjs && npm run check:release-readiness && npm pack --dry-run --json",
+    "release:rc": "node scripts/check-release-version.mjs --channel next --require-tag && npm publish --tag next --access public",
+    "release:stable": "node scripts/check-release-version.mjs --channel latest --require-tag && npm publish --tag latest --access public",
     "check:brain-manifest": "repo-harness run check-brain-manifest",
     "check:context-files": "repo-harness run check-context-files",
     "check:deploy-sql": "repo-harness run check-deploy-sql-order",

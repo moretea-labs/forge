@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "fs";
-import { spawnSync } from "child_process";
-import { join } from "path";
+import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { join } from "node:path";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -10,7 +10,7 @@ function read(relPath: string): string {
 }
 
 describe("install script contracts", () => {
-  test("macOS/Linux installer validates the launcher prerequisites and supports Bun or npm", () => {
+  test("macOS/Linux installer uses the scoped package and supports Bun or npm", () => {
     const script = read("install.sh");
     const syntax = spawnSync("bash", ["-n", "install.sh"], {
       cwd: ROOT,
@@ -20,6 +20,9 @@ describe("install script contracts", () => {
     if (process.platform !== "win32") expect(syntax.status).toBe(0);
     expect(script).toContain("REPO_HARNESS_VERSION");
     expect(script).toContain("REPO_HARNESS_INSTALL_RUNTIME");
+    expect(script).toContain('PACKAGE_NAME="@moretea-labs/repo-harness-controller"');
+    expect(script).not.toContain('PACKAGE_NAME="repo-harness"');
+    expect(script).toContain('PACKAGE_VERSION="${REPO_HARNESS_VERSION:-next}"');
     expect(script).toContain("Node.js 20.10 or newer");
     expect(script).toContain("Git is required");
     expect(script).toContain("https://bun.sh/install");
@@ -29,11 +32,14 @@ describe("install script contracts", () => {
     expect(script).toContain("repo-harness install --no-cli");
   });
 
-  test("Windows installer validates PowerShell, Git, Node and supports Bun or npm", () => {
+  test("Windows installer uses the scoped package and supports Bun or npm", () => {
     const script = read("install.ps1");
 
     expect(script).toContain("REPO_HARNESS_VERSION");
     expect(script).toContain("REPO_HARNESS_INSTALL_RUNTIME");
+    expect(script).toContain('$PackageName = "@moretea-labs/repo-harness-controller"');
+    expect(script).not.toContain('$PackageName = "repo-harness"');
+    expect(script).toContain('else { "next" }');
     expect(script).toContain("[switch]$DryRun");
     expect(script).toContain('[ValidateSet("auto", "bun", "node")]');
     expect(script).toContain('[version]"20.10.0"');
@@ -45,16 +51,18 @@ describe("install script contracts", () => {
     expect(script).toContain("repo-harness install --no-cli");
   });
 
-  test("public onboarding points at the canonical repository and platform guide", () => {
+  test("public onboarding points at the canonical repository and compatibility README", () => {
     const readme = read("README.md");
-    const englishReadme = read("README.en.md");
+    const chineseReadme = read("README.zh-CN.md");
+    const compatibilityReadme = read("README.en.md");
     const installGuide = read("docs/tutorials/01-install-and-start.md");
     const platformGuide = read("docs/operations/platform-support.md");
     const pkg = JSON.parse(read("package.json"));
 
-    for (const document of [readme, englishReadme, installGuide]) {
+    for (const document of [readme, chineseReadme, installGuide]) {
       expect(document).toContain("moretea-labs/repo-harness-controller-runtime");
     }
+    expect(compatibilityReadme).toContain("maintained English README is [README.md]");
     expect(platformGuide).toContain("Native Windows");
     expect(platformGuide).toContain("WSL2");
     expect(pkg.private).toBeUndefined();

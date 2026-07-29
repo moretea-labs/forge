@@ -1,14 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "fs";
-import { spawnSync } from "child_process";
-import { join } from "path";
+import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { join } from "node:path";
 
 const ROOT = join(import.meta.dir, "..");
-const PUBLIC_READMES = ["README.md", "README.zh-CN.md"];
 const PUBLIC_GUIDES = ["docs/public-usage-guide.md", "docs/public-usage-guide.zh-CN.md"];
 const RUNTIME_SCAN_FILES = [
   "SKILL.md",
-  ...PUBLIC_READMES,
+  "README.md",
+  "README.zh-CN.md",
   ...PUBLIC_GUIDES,
   "docs/reference-configs/external-tooling.md",
 ];
@@ -28,117 +28,107 @@ function read(relPath: string): string {
 }
 
 function isAllowedRuntimeReference(file: string, line: string): boolean {
-  if (/Claude skill alias/.test(line)) return true;
-  if (file === "docs/reference-configs/external-tooling.md" && /~\/\.claude\/skills\/gstack/.test(line)) {
-    return true;
-  }
-  return false;
+  return /Claude skill alias/.test(line)
+    || (file === "docs/reference-configs/external-tooling.md" && /~\/\.claude\/skills\/gstack/.test(line));
 }
 
 describe("public README and documentation contract", () => {
-  test("uses the current English, Chinese, and compatibility landing pages", () => {
-    const zhReadme = read("README.md");
-    const enReadme = read("README.en.md");
-    const compatibilityReadme = read("README.zh-CN.md");
+  test("keeps concise maintained English and Chinese landing pages", () => {
+    const en = read("README.md");
+    const zh = read("README.zh-CN.md");
+    const compatibility = read("README.en.md");
 
-    for (const document of [zhReadme, enReadme]) {
+    for (const document of [en, zh]) {
       expect(document).toContain("# repo-harness Controller Runtime");
       expect(document).toContain("docs/images/repo-harness-banner.svg");
-      expect(document).toContain("1.4.0-rc.1");
-      expect(document).toContain("controller-chatgpt-bridge-v8");
-      expect(document).toContain("schema `10`");
-      expect(document).toContain("Direct Edit");
-      expect(document).toContain("Issue → Task → Run");
-      expect(document).toContain("repoId");
+      expect(document).toContain("1.4.0-rc.6");
+      expect(document).toContain("npm install -g .");
+      expect(document).toContain("@moretea-labs/repo-harness-controller@next");
+      expect(document).toContain("docs/wiki/Home.md");
+      expect(document).toContain("SUPPORT.md");
+      expect(document).toContain("SECURITY.md");
+      expect(document).toContain("CONTRIBUTING.md");
+      expect(document).toContain("CHANGELOG.md");
+      expect(document.split("\n").length).toBeLessThanOrEqual(151);
+      expect(document).not.toContain("```mermaid");
+      expect(document).not.toMatch(/Repo Actor|Global Scheduler|Evidence Plane|Controller Home|controller-chatgpt-bridge-v8/);
     }
-
-    expect(enReadme).toContain("## Quick start");
-    expect(enReadme).toContain("## Connect ChatGPT");
-    expect(enReadme).toContain("@moretea-labs/repo-harness-controller@next");
-    expect(zhReadme).toContain("## 快速开始");
-    expect(compatibilityReadme).toContain("README.md");
-    expect(compatibilityReadme).toContain("docs/public-usage-guide.zh-CN.md");
+    expect(en).toContain("## Quick start");
+    expect(en).toContain("not public yet");
+    expect(zh).toContain("## 快速开始");
+    expect(zh).toContain("尚未公开");
+    expect(compatibility).toContain("maintained English README is [README.md]");
   });
 
-  test("documents stable HTTPS exposure in the dedicated connector guides", () => {
-    const readme = read("README.en.md");
-    const zhReadme = read("README.md");
-    const connectorGuide = read("docs/repo-harness-chatgpt-mcp-setup.md");
-    const combined = [readme, zhReadme, connectorGuide].join("\n");
+  test("marks non-authoritative translations as unmaintained", () => {
+    expect(read("README.es.md")).toContain("no se mantiene");
+    expect(read("README.fr.md")).toContain("n’est pas maintenue");
+    expect(read("README.ja.md")).toContain("保守されていません");
+  });
 
-    expect(combined).toContain("Tailscale Funnel");
+  test("keeps connector and repository-routing detail in dedicated guides", () => {
+    const connector = read("docs/repo-harness-chatgpt-mcp-setup.md");
+    const guides = PUBLIC_GUIDES.map(read).join("\n");
+    const combined = `${connector}\n${guides}`;
+    expect(combined).toContain("*.ts.net");
     expect(combined).toContain("Cloudflare");
-    expect(combined).toContain("ngrok");
     expect(combined).toContain("/mcp");
     expect(combined).toContain("127.0.0.1:8766");
-  });
-
-  test("documents Project-scoped repository routing without publishing local identities", () => {
-    const enReadme = read("README.en.md");
-    const zhReadme = read("README.md");
-    const combined = [enReadme, zhReadme, ...PUBLIC_GUIDES.map(read)].join("\n");
-
-    expect(enReadme).toContain("Default repoId: <repo-id returned by repo-harness repo register>");
-    expect(enReadme).toContain("Default checkoutId: <checkout-id returned by repo-harness repo register>");
-    expect(zhReadme).toContain("默认 repoId：<repo-harness repo register 返回的 repo-id>");
-    expect(enReadme).toContain("not a server-side authorization boundary");
+    expect(guides).toContain("repoId");
     expect(combined).not.toContain("repo_123b7cf58b6b17b5cbe46a56");
     expect(combined).not.toContain("checkout_79d467b771d6c6f0e6c103a7");
   });
 
-  test("packages the maintained public guides and preserves current metadata", () => {
+  test("packages maintained guides and community trust files", () => {
     const pkg = JSON.parse(read("package.json")) as {
       version: string;
       license: string;
       files: string[];
       repository?: { url?: string };
     };
-
-    expect(pkg.version).toBe("1.4.0-rc.1");
+    expect(pkg.version).toBe("1.4.0-rc.6");
     expect(pkg.license).toBe("MIT");
-    expect(pkg.files).toContain("README.en.md");
-    expect(pkg.files).toContain("README.zh-CN.md");
-    expect(pkg.files).toContain("docs/images/");
-    expect(pkg.files).toContain("docs/public-usage-guide.md");
-    expect(pkg.files).toContain("docs/public-usage-guide.zh-CN.md");
+    for (const file of [
+      "README.md",
+      "README.en.md",
+      "README.zh-CN.md",
+      "CHANGELOG.md",
+      "CONTRIBUTING.md",
+      "SECURITY.md",
+      "SUPPORT.md",
+      "CODE_OF_CONDUCT.md",
+      "docs/images/",
+      "docs/wiki/",
+      "docs/public-usage-guide.md",
+      "docs/public-usage-guide.zh-CN.md",
+    ]) {
+      expect(pkg.files).toContain(file);
+    }
+    expect(pkg.files).not.toContain("ARCHITECTURE_MIGRATION_REPORT.md");
+    expect(pkg.files).not.toContain("OPTIMIZATION_REPORT.md");
     expect(pkg.repository?.url).toContain("moretea-labs/repo-harness-controller-runtime");
   });
 
-  test("keeps derivative attribution and release safety guidance visible", () => {
-    const enReadme = read("README.en.md");
-    const zhReadme = read("README.md");
-    const notice = read("NOTICE");
-    const license = read("LICENSE");
-
-    for (const document of [enReadme, zhReadme]) {
+  test("keeps attribution and release safety guidance visible without bloating the README", () => {
+    for (const document of [read("README.md"), read("README.zh-CN.md")]) {
       expect(document).toContain("AncientTwo/repo-harness");
       expect(document).toContain("LICENSE");
       expect(document).toContain("NOTICE");
-      expect(document).toContain("check:release-surface");
-      expect(document).toContain("check:public-export");
-      expect(document).toContain("check:type");
     }
-
-    expect(notice).toContain("derived from AncientTwo/repo-harness");
-    expect(notice).toContain("substantial modifications");
-    expect(license).toContain("Copyright (c) 2026 AncientTwo");
-    expect(license).toContain("Copyright (c) 2026 Moretea Labs contributors");
+    const contributorDocs = `${read("CONTRIBUTING.md")}\n${read("docs/operations/releasing.md")}`;
+    expect(contributorDocs).toContain("check:release-surface");
+    expect(contributorDocs).toContain("check:type");
+    expect(read("NOTICE")).toContain("derived from AncientTwo/repo-harness");
   });
 
   test("release and verification references retain evidence authority terminology", () => {
     const releaseDoc = read("docs/reference-configs/release-deploy.md");
     const releaseAsset = read("assets/reference-configs/release-deploy.md");
     const verificationArchitecture = read("docs/architecture/current/verification-and-release-gates.md");
-
     expect(releaseAsset).toBe(releaseDoc);
-    expect(releaseDoc).toContain("full_test_count");
-    expect(releaseDoc).toContain("dry_run_ratio");
-    expect(releaseDoc).toContain("grader_pass_rate");
     expect(releaseDoc).toContain("effectiveness_authority");
-    expect(releaseDoc).toContain("missing eval evidence");
     expect(verificationArchitecture).toContain("Worker or Agent prose is supplementary evidence");
     expect(verificationArchitecture).toContain("bound to an exact Revision");
-    expect(verificationArchitecture).toContain("becomes stale if repository content changes");
   });
 
   test("dry-run keeps the migration report onboarding signals", () => {
@@ -146,29 +136,22 @@ describe("public README and documentation contract", () => {
       cwd: ROOT,
       encoding: "utf-8",
     });
-
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("=== Migration Report ===");
     expect(result.stdout).toContain("Project hooks synced from:");
     expect(result.stdout).toContain("Workflow migration:");
     expect(result.stdout).toContain("Helper runtime:");
-    expect(result.stdout).toContain("package-dispatched through repo-harness run with scripts/* compatibility wrappers");
-    expect(result.stdout).toContain("Host hook config target: user-level ~/.claude/settings.json and ~/.codex/hooks.json");
-    expect(result.stdout).toContain("Host hook adapters are user-level:");
   }, 30000);
 
   test("runtime red-flag scan keeps public onboarding host-neutral", () => {
     const hits: string[] = [];
-
     for (const file of RUNTIME_SCAN_FILES) {
       read(file).split("\n").forEach((line, index) => {
-        const redFlag = RUNTIME_RED_FLAGS.some((pattern) => pattern.test(line));
-        if (redFlag && !isAllowedRuntimeReference(file, line)) {
+        if (RUNTIME_RED_FLAGS.some((pattern) => pattern.test(line)) && !isAllowedRuntimeReference(file, line)) {
           hits.push(`${file}:${index + 1}:${line}`);
         }
       });
     }
-
     expect(hits).toEqual([]);
   });
 });

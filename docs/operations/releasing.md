@@ -1,60 +1,86 @@
-# Releasing the npm package
+# Releasing repo-harness
 
-The public package identity is `@moretea-labs/repo-harness-controller`. It installs two stable command names: `repo-harness` and `repo-harness-hook`.
+The public package is `@moretea-labs/repo-harness-controller`. It installs the stable command names `repo-harness` and `repo-harness-hook`.
 
-## Release channels
+## Current state
 
-- Release candidates use versions such as `1.4.0-rc.1` and the npm `next` dist-tag.
-- Stable releases use versions such as `1.4.0` and the npm `latest` dist-tag.
-- The package version may carry an RC suffix, while `assets/skill-version.json` keeps the matching core workflow version.
+The npm package is not public yet. The next candidate is `1.4.0-rc.6`; the first stable target is `1.4.0`. Until the first npm publication, public documentation must present source installation as the working path and label registry commands as upcoming.
 
-Users install the current RC with:
+## Distribution model
+
+1. **npm** is the primary package registry and version authority for the CLI artifact.
+2. **Bun** installs or executes the same npm package; no separate Bun publication is required.
+3. **GitHub Releases** publish release notes and immutable release identity for the matching Git tag.
+4. **Homebrew** is added through a Moretea Labs tap only after a stable release exists.
+
+RC versions use npm dist-tag `next`. Stable versions use `latest`. `publishConfig.provenance` remains enabled, while the channel is selected explicitly by the release command or workflow.
+
+## Required local gate
+
+From a clean checkout at the intended release commit:
 
 ```bash
-npm install -g @moretea-labs/repo-harness-controller@next
-repo-harness --version
-```
-
-## Local release gate
-
-From a clean checkout, run:
-
-```bash
-npm ci --ignore-scripts
+npm ci --ignore-scripts --no-audit --no-fund
+npm run check:release-version
 npm run check:release-readiness
-npm pack --dry-run --json
+npm run release:dry-run
 ```
 
-The gate validates package identity, direct dependency notices, public documentation, tracked-file hygiene, MCP compatibility, the public export, and an isolated tarball installation.
+Also verify both supported launch paths:
 
-## First publication and npm ownership
+```bash
+node bin/repo-harness.mjs --help
+bun bin/repo-harness.mjs --help
+```
 
-The first publication requires an npm account that controls the `@moretea-labs` scope. Authenticate locally and confirm the identity before publishing:
+The release gate verifies package identity, documentation, licenses and notices, tracked-file hygiene, MCP compatibility, public export contents, npm pack output, and isolated tarball installation.
+
+## First npm publication
+
+npm Trusted Publishing cannot be configured for a package that does not exist yet. The bootstrap publication therefore requires an npm maintainer for the `@moretea-labs` scope with two-factor authentication.
 
 ```bash
 npm login
 npm whoami
 npm access ls-packages @moretea-labs
-npm run release:rc
+
+# Create and inspect the local tag, but do not push it before publication succeeds.
+git tag -a v1.4.0-rc.6 -m "repo-harness 1.4.0-rc.6"
+RELEASE_TAG=v1.4.0-rc.6 npm run release:rc
 ```
 
-Do not publish from a personal scope as a fallback. If the organization scope does not exist or the account lacks permission, create or grant the npm organization membership first.
+If publication fails, remove the unpushed local tag, correct the problem, rerun the full gate, and create a new release commit when repository content changes. Never reuse a published package version or move a pushed release tag.
 
-## Trusted Publishing
-
-After the first package exists, configure npm Trusted Publishing for the GitHub repository `moretea-labs/repo-harness-controller-runtime` and workflow `release-rc.yml`. The workflow is manual-only, requires the exact confirmation value `PUBLISH_RC`, requests an OIDC token, runs the complete release gate, and publishes only an RC version with the `next` tag.
-
-No npm token is stored in the repository. Repository secrets, Controller Home runtime files, OAuth material, local jobs, and generated worktrees must never enter the package or public source export.
-
-## Post-publication verification
-
-After publication, create the matching Git tag and run:
+After npm confirms the package:
 
 ```bash
-npm view @moretea-labs/repo-harness-controller dist-tags --json
-git tag v1.4.0-rc.1
-git push origin v1.4.0-rc.1
+git push origin v1.4.0-rc.6
+gh release create v1.4.0-rc.6 --verify-tag --generate-notes --prerelease
 npm run check:release-published
 ```
 
-Do not move `latest` while validating an RC. Promote a tested version deliberately with npm dist-tag commands only after the stable release decision.
+## Trusted Publishing after bootstrap
+
+After the package exists:
+
+1. Configure npm Trusted Publishing for `moretea-labs/repo-harness-controller-runtime` and `.github/workflows/release.yml`.
+2. Configure the GitHub environment `npm-publish` with required maintainer approval.
+3. Protect release tags and the `main` branch.
+4. Push only an exact `v<package-version>` tag after the release gate passes.
+
+The tag workflow uses GitHub OIDC and does not require `NODE_AUTH_TOKEN` or a stored npm token. It validates the exact tag, uses npm `next` for RCs and `latest` for stable versions, publishes the package, and creates the matching GitHub Release.
+
+## Stable release
+
+Before `1.4.0`:
+
+- install the exact packed artifact on macOS, Linux, WSL2, and the supported Windows path;
+- verify `repo-harness init`, `doctor`, repository registration/adoption, and the ChatGPT MCP connection;
+- confirm no RC-only warning or unstable install command remains in the stable docs;
+- change `package.json` to `1.4.0`; the package identity gate will require `latest`;
+- publish from tag `v1.4.0` through the protected environment;
+- only then create or update the Homebrew tap formula.
+
+## Rollback and incident rule
+
+npm versions and pushed release tags are immutable. A bad release is not overwritten: deprecate the affected npm version when appropriate, document the incident, restore the previous dist-tag if needed, and publish a new patch or RC version.

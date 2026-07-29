@@ -9,6 +9,9 @@ cd "$ROOT"
 echo "[release-readiness] typecheck"
 bun run check:type
 
+echo "[release-readiness] version and channel contract"
+node scripts/check-release-version.mjs
+
 echo "[release-readiness] package identity"
 node scripts/check-package-identity.mjs
 
@@ -16,7 +19,7 @@ echo "[release-readiness] third-party notices"
 node scripts/check-third-party-notices.mjs
 
 echo "[release-readiness] focused package contract"
-bun test tests/release/package-release.test.ts tests/skill-version.test.ts
+bun test tests/release/release-version.test.ts tests/release/package-release.test.ts tests/skill-version.test.ts
 
 echo "[release-readiness] MCP tool exposure + facade coverage"
 bun test --timeout 60000 \

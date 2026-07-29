@@ -1,0 +1,50 @@
+name: Bug report
+description: Report a reproducible repo-harness defect
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for providing a bounded, redacted reproduction. Do not include secrets or private source.
+  - type: input
+    id: version
+    attributes:
+      label: repo-harness version or commit
+      placeholder: 1.4.0-rc.6 or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options: [macOS, Linux, WSL2, Windows PowerShell, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include exact commands and a minimal repository setup.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and redacted evidence
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety checks
+      options:
+        - label: I removed tokens, credentials, private source, and personal paths.
+          required: true
+        - label: This is not a vulnerability report.
+          required: true

@@ -1,0 +1,27 @@
+name: Feature request
+description: Propose a concrete user workflow or capability
+title: "[Feature]: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Describe the workflow that is difficult today, not only the desired implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Safety and compatibility boundaries
+      description: Note remote writes, destructive actions, secrets, platform constraints, or migration concerns.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
