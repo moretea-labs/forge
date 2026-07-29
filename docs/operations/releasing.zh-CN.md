@@ -13,7 +13,7 @@ npm 包目前尚未公开。下一条候选基线是 `1.4.0-rc.6`，首个稳定
 3. **GitHub Releases** 为对应 Git tag 提供发布说明和不可变发布身份。
 4. **Homebrew** 只在稳定版存在后，通过 Moretea Labs tap 提供。
 
-RC 使用 npm dist-tag `next`，稳定版使用 `latest`。
+RC 使用 npm dist-tag `next`，稳定版使用 `latest`。`publishConfig.provenance` 始终保持启用；发布 channel 由受保护的命令或 workflow 显式选择。
 
 ## 本地发布门禁
 
