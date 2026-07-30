@@ -25,6 +25,7 @@ export interface PreparedProcessInvocation {
   readonly command: string;
   readonly args: readonly string[];
   readonly resolvedCommand: string;
+  readonly env?: NodeJS.ProcessEnv;
   readonly windowsVerbatimArguments?: boolean;
 }
 
@@ -119,10 +120,7 @@ export function resolveProcessCommand(
 }
 
 export function escapeWindowsCommandArgument(value: string): string {
-  const escaped = value
-    .replace(/%/g, "%%")
-    .replace(/"/g, '""');
-  return `"${escaped}"`;
+  return `"${value.replace(/"/g, '""')}"`;
 }
 
 export function prepareProcessInvocation(
@@ -137,11 +135,21 @@ export function prepareProcessInvocation(
   }
 
   const comspec = envValue(env, "ComSpec", platform) ?? envValue(env, "COMSPEC", platform) ?? "cmd.exe";
-  const commandLine = [resolvedCommand, ...args].map(escapeWindowsCommandArgument).join(" ");
+  const variableNames = [
+    "MATEA_PROCESS_RUNNER_COMMAND",
+    ...args.map((_, index) => `MATEA_PROCESS_RUNNER_ARG_${index}`),
+  ];
+  const invocationEnv = { ...env };
+  [resolvedCommand, ...args].forEach((value, index) => {
+    invocationEnv[variableNames[index]!] = escapeWindowsCommandArgument(value);
+  });
+  const clearVariables = variableNames.map((name) => `set "${name}="`).join(" & ");
+  const expandedCommand = variableNames.map((name) => `%${name}%`).join(" ");
   return {
     command: comspec,
-    args: ["/d", "/s", "/c", `"${commandLine}"`],
+    args: ["/d", "/v:off", "/s", "/c", `"${clearVariables} & ${expandedCommand}"`],
     resolvedCommand,
+    env: invocationEnv,
     windowsVerbatimArguments: true,
   };
 }
@@ -156,7 +164,7 @@ export function runProcess(command: string, args: readonly string[], opts: RunPr
   const result = spawnSync(invocation.command, [...invocation.args], {
     cwd: opts.cwd,
     encoding: opts.stdio === "inherit" || opts.stdio === "ignore" ? undefined : "utf8",
-    env: childEnv,
+    env: invocation.env ?? childEnv,
     stdio: opts.stdio ?? "pipe",
     timeout: timeoutMs,
     maxBuffer: Math.max(maxOutputBytes, DEFAULT_PROCESS_MAX_BUFFER_BYTES),

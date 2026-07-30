@@ -239,7 +239,7 @@
       "id": "T6",
       "title": "Fix RC6 Windows global runtime fixture failure",
       "objective": "Reproduce and fix the exact Windows smoke failure in tests/cli/global-runtime-init.test.ts at final RC6 commit 733f7917. Installer dry-run and platform contract already pass; the failure is limited to fake command/runtime fixture execution returning exit code 1 on windows-latest. Inspect the GitHub run 30511067300, identify the first causal error rather than patching downstream assertions, make the smallest cross-platform change, add focused regression coverage, run type/platform/release readiness locally, push a new main commit, and require both Linux CI and Windows smoke to pass before tagging. Do not publish or tag until green.",
-      "status": "verifying",
+      "status": "running",
       "dependsOn": [],
       "allowedPaths": [
         "tests/cli/global-runtime-init.test.ts",
@@ -271,11 +271,12 @@
       "recommendedAgent": "codex",
       "notes": [
         "Follow-up after GitHub Windows run 30512180518. The first ComSpec quoting repair made 8/9 global-runtime tests pass. The remaining bootstrap failure is caused by Windows environment keys being case-insensitive while the merged child environment can contain both Path and PATH; envValue currently returns the first match, allowing the inherited Path to override the caller's later PATH. Fix with deterministic last-write precedence, add regression coverage, and include tests/process-runner.test.ts in Windows smoke before any tag or publication.",
-        "Integrated on main. Windows caller-environment precedence fix commit 7ca726e7 was merged via 2eb13d5f; final release candidate main is 6870c39b214448dde708b6618913d43db88d294f. Focused installer/global-runtime/process-runner tests passed; package:check:type and package:check:platform-support passed; exact-main package:check:release-readiness passed with open-source audit findings=0, public export=750 files, and tarball install smoke OK. The isolated WorkContract was stopped after manual integration and its clean, merged worktree/branch were deleted. Awaiting exact-SHA GitHub CI and Windows smoke; no tag or publication yet."
+        "Integrated on main. Windows caller-environment precedence fix commit 7ca726e7 was merged via 2eb13d5f; final release candidate main is 6870c39b214448dde708b6618913d43db88d294f. Focused installer/global-runtime/process-runner tests passed; package:check:type and package:check:platform-support passed; exact-main package:check:release-readiness passed with open-source audit findings=0, public export=750 files, and tarball install smoke OK. The isolated WorkContract was stopped after manual integration and its clean, merged worktree/branch were deleted. Awaiting exact-SHA GitHub CI and Windows smoke; no tag or publication yet.",
+        "Exact remote Windows smoke run 30521392066 on 69c65e81 failed in tests/process-runner.test.ts: real .CMD shim received literal argument 100%% instead of 100%. Root cause is current ComSpec percent escaping doubling a standalone percent that must remain literal across the generated command line. Reopening T6 for the smallest process-runner escape correction and exact Windows regression verification before T3 push/tag/release."
       ],
       "runIds": [],
       "createdAt": "2026-07-30T03:26:58.503Z",
-      "updatedAt": "2026-07-30T06:12:38.460Z",
+      "updatedAt": "2026-07-30T13:54:54.354Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
@@ -430,9 +431,46 @@
         "autoCompleted": false,
         "repoId": "repo_123b7cf58b6b17b5cbe46a56"
       }
+    },
+    {
+      "id": "T8",
+      "title": "Preserve literal percent arguments through Windows command shims",
+      "objective": "Fix the exact Windows smoke regression where ComSpec execution of a PATH-resolved .cmd/.bat doubles a literal percent argument. Preserve command arguments exactly, including standalone percent and environment-variable-looking percent pairs, while retaining safe quoting for spaces, ampersands and quotes. Add preparation-level tests plus a real Windows command-shim regression, run focused/type/platform/release gates, verify through the Windows smoke workflow on the exact branch commit, then integrate before RC6 publication.",
+      "status": "ready",
+      "dependsOn": [],
+      "allowedPaths": [
+        "src/effects/process-runner.ts",
+        "tests/process-runner.test.ts",
+        ".github/workflows/windows-smoke.yml",
+        "tasks/issues/ISS-20260729-BF2F89-*"
+      ],
+      "forbiddenPaths": [
+        "_ops/**",
+        ".ai/harness/**",
+        "node_modules/**",
+        "dist/**"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:platform-support",
+        "package:check:release-readiness"
+      ],
+      "acceptanceCriteria": [
+        "A real Windows .CMD shim receives 100% exactly rather than 100%%.",
+        "An argument resembling %PATH% remains literal and is not expanded from the child environment.",
+        "Arguments containing spaces, ampersands and embedded quotes retain their exact values.",
+        "Native .exe execution remains direct and non-Windows behavior is unchanged.",
+        "Focused tests and exact-commit Windows smoke pass before merge/tag/release."
+      ],
+      "risk": "medium",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-30T14:05:23.655Z",
+      "updatedAt": "2026-07-30T14:05:23.655Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     }
   ],
   "createdAt": "2026-07-29T12:22:51.953Z",
-  "updatedAt": "2026-07-30T13:31:54.208Z",
+  "updatedAt": "2026-07-30T14:05:23.655Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }

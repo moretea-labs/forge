@@ -63,14 +63,21 @@ describe("process runner", () => {
   test("routes Windows batch commands through ComSpec with escaped arguments", () => {
     const invocation = prepareProcessInvocation(
       "C:\\tools\\npx.cmd",
-      ["hello & goodbye", "100%"],
+      ["hello & goodbye", "100%", "%PATH%", 'a"b'],
       { ComSpec: "C:\\Windows\\System32\\cmd.exe" },
       "win32",
     );
 
     expect(invocation.command).toBe("C:\\Windows\\System32\\cmd.exe");
-    expect(invocation.args.slice(0, 3)).toEqual(["/d", "/s", "/c"]);
-    expect(invocation.args[3]).toBe('""C:\\tools\\npx.cmd" "hello & goodbye" "100%%""');
+    expect(invocation.args.slice(0, 4)).toEqual(["/d", "/v:off", "/s", "/c"]);
+    expect(invocation.args[4]).toBe(
+      '"set "MATEA_PROCESS_RUNNER_COMMAND=" & set "MATEA_PROCESS_RUNNER_ARG_0=" & set "MATEA_PROCESS_RUNNER_ARG_1=" & set "MATEA_PROCESS_RUNNER_ARG_2=" & set "MATEA_PROCESS_RUNNER_ARG_3=" & %MATEA_PROCESS_RUNNER_COMMAND% %MATEA_PROCESS_RUNNER_ARG_0% %MATEA_PROCESS_RUNNER_ARG_1% %MATEA_PROCESS_RUNNER_ARG_2% %MATEA_PROCESS_RUNNER_ARG_3%"',
+    );
+    expect(invocation.env?.MATEA_PROCESS_RUNNER_COMMAND).toBe('"C:\\tools\\npx.cmd"');
+    expect(invocation.env?.MATEA_PROCESS_RUNNER_ARG_0).toBe('"hello & goodbye"');
+    expect(invocation.env?.MATEA_PROCESS_RUNNER_ARG_1).toBe('"100%"');
+    expect(invocation.env?.MATEA_PROCESS_RUNNER_ARG_2).toBe('"%PATH%"');
+    expect(invocation.env?.MATEA_PROCESS_RUNNER_ARG_3).toBe('"a""b"');
     expect(invocation.windowsVerbatimArguments).toBe(true);
     expect(escapeWindowsCommandArgument('a"b')).toBe('"a""b"');
   });
@@ -83,11 +90,12 @@ describe("process runner", () => {
       const commandPath = join(tmp, "fixture.CMD");
       writeFileSync(scriptPath, "console.log(JSON.stringify(process.argv.slice(2)));\n");
       writeFileSync(commandPath, `@echo off\r\n"${process.execPath}" "${scriptPath}" %*\r\n`);
-      const result = runProcess("fixture", ["hello & goodbye", "100%"], {
+      const expected = ["hello & goodbye", "100%", "%PATH%", 'a"b'];
+      const result = runProcess("fixture", expected, {
         env: { ...process.env, PATH: `${tmp};${process.env.PATH ?? ""}`, PATHEXT: ".CMD" },
       });
       expect(result.ok).toBe(true);
-      expect(JSON.parse(result.stdout.trim())).toEqual(["hello & goodbye", "100%"]);
+      expect(JSON.parse(result.stdout.trim())).toEqual(expected);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

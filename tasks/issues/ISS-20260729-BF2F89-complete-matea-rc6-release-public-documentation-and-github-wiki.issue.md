@@ -2,7 +2,7 @@
 id: "ISS-20260729-BF2F89"
 kind: "governance"
 status: "in_progress"
-updated_at: "2026-07-30T13:31:54.208Z"
+updated_at: "2026-07-30T14:05:23.655Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -84,7 +84,7 @@ Finish the public release baseline from clean main: restore the Windows-native c
 
 ### T6 — Fix RC6 Windows global runtime fixture failure
 
-- Status: `verifying`
+- Status: `running`
 - Objective: Reproduce and fix the exact Windows smoke failure in tests/cli/global-runtime-init.test.ts at final RC6 commit 733f7917. Installer dry-run and platform contract already pass; the failure is limited to fake command/runtime fixture execution returning exit code 1 on windows-latest. Inspect the GitHub run 30511067300, identify the first causal error rather than patching downstream assertions, make the smallest cross-platform change, add focused regression coverage, run type/platform/release readiness locally, push a new main commit, and require both Linux CI and Windows smoke to pass before tagging. Do not publish or tag until green.
 - Depends on: none
 - Allowed paths: `tests/cli/global-runtime-init.test.ts`, `src/runtime/effects/**`, `src/runtime/execution/**`, `src/cli/**`, `scripts/check-platform-support.mjs`, `.github/workflows/windows-smoke.yml`, `tasks/issues/**`
@@ -99,6 +99,15 @@ Finish the public release baseline from clean main: restore the Windows-native c
 - Allowed paths: `src/runtime/standalone-recovery/**`, `scripts/install-standalone-recovery.ts`, `tests/runtime/standalone-recovery.test.ts`, `docs/operations/**`, `docs/repo-harness-chatgpt-mcp-setup.md`, `package.json`
 - Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:release-readiness`
 - Execution hint: agent / codex
+
+### T8 — Preserve literal percent arguments through Windows command shims
+
+- Status: `ready`
+- Objective: Fix the exact Windows smoke regression where ComSpec execution of a PATH-resolved .cmd/.bat doubles a literal percent argument. Preserve command arguments exactly, including standalone percent and environment-variable-looking percent pairs, while retaining safe quoting for spaces, ampersands and quotes. Add preparation-level tests plus a real Windows command-shim regression, run focused/type/platform/release gates, verify through the Windows smoke workflow on the exact branch commit, then integrate before RC6 publication.
+- Depends on: none
+- Allowed paths: `src/effects/process-runner.ts`, `tests/process-runner.test.ts`, `.github/workflows/windows-smoke.yml`, `tasks/issues/ISS-20260729-BF2F89-*`
+- Checks: `package:check:type`, `package:check:platform-support`, `package:check:release-readiness`
+- Execution hint: selected at runtime
 
 ## Related Artifacts
 
