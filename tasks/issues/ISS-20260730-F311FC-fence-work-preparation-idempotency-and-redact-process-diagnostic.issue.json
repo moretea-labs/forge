@@ -491,7 +491,7 @@
       "id": "T4",
       "title": "Reconcile duplicate Recovery work and close security acceptance",
       "objective": "Identify only the duplicate cancelled Recovery WorkContracts/worktrees created by the reproduced work_prepare retry defect, verify controller ownership, terminal state, cleanliness and merge disposition, then reconcile them through controller-owned cleanup without touching unrelated active work. Record credential rotation/revocation as a required human action without exposing any credential, verify exact-main checks and clean Git state, and close the Issue with auditable evidence.",
-      "status": "running",
+      "status": "done",
       "dependsOn": [
         "T3"
       ],
@@ -520,15 +520,16 @@
       "risk": "high",
       "recommendedAgent": "codex",
       "notes": [
-        "Starting controller-owned reconciliation of only the duplicate cancelled Recovery WorkContracts/worktrees created by the reproduced work_prepare retry defect. Each candidate must prove issue/request lineage, terminal state, controller ownership, clean workspace, and safe merge disposition before cleanup. Unrelated active work is explicitly excluded."
+        "Starting controller-owned reconciliation of only the duplicate cancelled Recovery WorkContracts/worktrees created by the reproduced work_prepare retry defect. Each candidate must prove issue/request lineage, terminal state, controller ownership, clean workspace, and safe merge disposition before cleanup. Unrelated active work is explicitly excluded.",
+        "T4 implementation and live reconciliation completed on exact main c8203418a6d93049205f62552f40f48a59e36037. The targeted cleanup-only path is covered by 14 focused tests (155 assertions), including safe cancelled cleanup, interrupted half-cleanup recovery, dirty-worktree refusal, and unique-unintegrated-commit refusal; package:check:type, package:check:runtime-architecture (34 invariants), package:check:controller-v8, and diff check passed before integration. Stable Supervisor, Controller Daemon, Gateway, ingress, and full MCP lifecycle are live and coherent on c8203418. Exactly seven reproduced empty cancelled Recovery Works were controller-validated and cleaned with commit=skipped and validation/merge/branchCleanup/worktreeCleanup=done: work_5b032ea6b2df4699b12af008c0c2c74e, work_866abe3e163a4599b978dde8c9e332ea, work_72f0260c82974c2f88e112d2af7b062c, work_440af95724a845238aa54975841c7455, work_9f34d507aea442759a75ac4544d3f221, work_f862f876fb3c4dfe8bad7c6f1a44f836, and work_b5c1c9c1ed644b76baa0720761fd315e. work_25cf8ace1ed642d4bcd6841f6622b41b was deliberately retained because it contains a unique historical implementation commit; its cancelled WorkContract and evidence remain intact. No unrelated worktree was deleted. Two currently dirty main files belong exclusively to concurrently running ISS-20260729-BF2F89/T3 and T6 governance updates; they were identified, excluded, and left untouched. Security follow-up: any credential that may have appeared in pre-redaction historical diagnostics must be rotated or revoked by an authorized human/operator. No credential value is stored in this Issue, note, source, fixture, or tool output, and automated credential rotation was intentionally not attempted."
       ],
       "runIds": [],
       "createdAt": "2026-07-30T05:02:31.462Z",
-      "updatedAt": "2026-07-30T05:22:18.683Z",
+      "updatedAt": "2026-07-30T05:56:58.296Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     }
   ],
   "createdAt": "2026-07-30T02:50:41.809Z",
-  "updatedAt": "2026-07-30T05:22:18.683Z",
+  "updatedAt": "2026-07-30T05:56:58.296Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }
