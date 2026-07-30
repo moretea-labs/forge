@@ -358,8 +358,12 @@ function saveSession(repoRoot: string, session: BrowserSessionState): void {
   writeJson(sessionPath(repoRoot, session.sessionId), session);
 }
 
+function findSession(repoRoot: string, sessionId: string): BrowserSessionState | undefined {
+  return readJson<BrowserSessionState>(sessionPath(repoRoot, sessionId));
+}
+
 function loadSession(repoRoot: string, sessionId: string): BrowserSessionState {
-  const state = readJson<BrowserSessionState>(sessionPath(repoRoot, sessionId));
+  const state = findSession(repoRoot, sessionId);
   if (!state) {
     throw new AssistantPluginError('PLUGIN_SESSION_NOT_FOUND', `Browser session not found: ${sessionId}`, { retryable: false });
   }
@@ -2004,7 +2008,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         const url = normalizedUrl(input.args.url);
         const existingSessionId = stringValue(input.args.session_id);
         const target: BrowserActionTarget = existingSessionId
-          ? { sessionId: existingSessionId, url, existingSession: loadSession(input.repoRoot, existingSessionId) }
+          ? { sessionId: existingSessionId, url, existingSession: findSession(input.repoRoot, existingSessionId) }
           : { sessionId: sessionIdFor(url), url };
         return await withPage(input.repoRoot, current, target, input.args, async (page, diagnostics, connection) => {
           const session = sessionFromPage(target, normalizedUrl(page.url()), await page.title(), connection);

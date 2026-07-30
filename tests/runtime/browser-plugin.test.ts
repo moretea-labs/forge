@@ -642,10 +642,11 @@ describe('browser plugin', () => {
       pluginId: 'browser',
       actionId: 'open_page',
       requestId: 'browser-attach-reuse-open',
-      args: { url: 'https://example.com/' },
+      args: { session_id: 'explicit-session-id', url: 'https://example.com/' },
       origin: { surface: 'local-ui', actor: 'test' },
     });
     const sessionId = String((opened.session as Record<string, unknown>).sessionId);
+    expect(sessionId).toBe('explicit-session-id');
     const saved = JSON.parse(readFileSync(join(repoRoot, '.repo-harness/browser/sessions', `${sessionId}.json`), 'utf8')) as Record<string, any>;
 
     expect(firstRuntime.events.newPages).toBe(0);
