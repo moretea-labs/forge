@@ -1,8 +1,8 @@
 ---
 id: "ISS-20260730-F311FC"
 kind: "bug"
-status: "in_progress"
-updated_at: "2026-07-30T05:56:58.296Z"
+status: "done"
+updated_at: "2026-07-30T06:12:34.040Z"
 source: "repo-harness-controller-v8"
 ---
 
