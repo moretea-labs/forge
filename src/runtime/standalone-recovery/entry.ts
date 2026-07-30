@@ -11,6 +11,7 @@ import {
   loadRecoveryConfig,
   reconnectMain,
   restartGateway,
+  repairPublicTunnel,
   restartSupervisor,
   rollbackPrevious,
   secureEqual,
@@ -43,6 +44,7 @@ export const RECOVERY_CLI_COMMANDS = [
   'rollback-previous',
   'restart-gateway',
   'restart-supervisor',
+  'restart-public-tunnel',
   'diagnose',
   'reconnect-main',
 ] as const;
@@ -78,6 +80,7 @@ async function cli(): Promise<void> {
     case 'rollback-previous': output(await rollbackPrevious(config)); return;
     case 'restart-gateway': output(await restartGateway(config)); return;
     case 'restart-supervisor': output(await restartSupervisor(config)); return;
+    case 'restart-public-tunnel': output(await repairPublicTunnel(config)); return;
     case 'diagnose': output(await diagnose(config)); return;
     case 'reconnect-main': output(await reconnectMain(config)); return;
     default: usage();
@@ -90,7 +93,14 @@ async function startWatchdog(config: RecoveryConfig): Promise<void> {
     try {
       const result = await watchdogTick(config, state);
       state = result.state;
-      process.stdout.write(JSON.stringify({ at: new Date().toISOString(), action: result.decision.action, reason: result.decision.reason, failures: state.failures }) + '\n');
+      process.stdout.write(JSON.stringify({
+        at: new Date().toISOString(),
+        action: result.decision.action,
+        reason: result.decision.reason,
+        failures: state.failures,
+        publicTunnelFailures: state.publicTunnelFailures ?? 0,
+        publicTunnelDetail: result.publicTunnelRepair?.detail,
+      }) + '\n');
     } catch (error) {
       state = { ...state, failures: state.failures + 1, firstFailureAt: state.firstFailureAt ?? Date.now() };
       process.stderr.write(`watchdog probe failed: ${error instanceof Error ? error.message : String(error)}\n`);
@@ -147,6 +157,7 @@ export const RECOVERY_TOOLS = [
   { name: 'rollback_previous', description: 'Idempotently restore only a Supervisor-registered known-good previous release.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'restart_gateway', description: 'Request a bounded Gateway-only restart when the Gateway budget is not locked out.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'restart_stable_supervisor', description: 'Restart the registered Stable Supervisor service through launchd; does not downgrade to Gateway-only recovery.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
+  { name: 'restart_public_tunnel', description: 'Restart the explicitly configured public tunnel only after local runtime verification succeeds and the external endpoint is unavailable.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'reconnect_primary_connector', description: 'Check stable ingress and primary MCP reconnection readiness without rolling out.', inputSchema: { type: 'object', additionalProperties: false } },
 ] as const;
 
@@ -380,6 +391,10 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       return restartSupervisor(config, String(args.request_id));
     }
+    case 'restart_public_tunnel': {
+      if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
+      return repairPublicTunnel(config);
+    }
     case 'reconnect_primary_connector': return reconnectMain(config);
     default: throw new Error('RECOVERY_TOOL_NOT_FOUND');
   }
@@ -541,7 +556,7 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
     if (message.method !== 'tools/call' || typeof message.params?.name !== 'string') { json(response, 200, rpcError(id, -32601, 'Unsupported MCP method.')); return; }
     const name = message.params.name;
     const args = message.params.arguments && typeof message.params.arguments === 'object' && !Array.isArray(message.params.arguments) ? message.params.arguments as Record<string, unknown> : {};
-    if (name === 'attest_known_good' || name === 'rollback_previous' || name === 'restart_gateway' || name === 'restart_stable_supervisor') {
+    if (name === 'attest_known_good' || name === 'rollback_previous' || name === 'restart_gateway' || name === 'restart_stable_supervisor' || name === 'restart_public_tunnel') {
       const address = request.socket.remoteAddress ?? 'unknown'; const now = Date.now();
       const window = (recentMutations.get(address) ?? []).filter((at) => now - at < 60_000);
       if (window.length >= 3) { json(response, 429, rpcError(id, -32029, 'Recovery mutation rate limit exceeded.')); return; }

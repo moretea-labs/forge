@@ -3,18 +3,29 @@ import { spawn } from 'child_process';
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { connect } from 'net';
 import { homedir } from 'os';
-import { dirname, join, resolve } from 'path';
+import { dirname, isAbsolute, join, resolve } from 'path';
 import { createRecoveryHttpTransport, type RecoveryHttpTransport } from './http-transport';
 
 /**
  * This module deliberately imports only Node built-ins.  It is compiled into
  * the recovery binary and never follows current/active release symlinks.
  */
+export interface PublicTunnelServiceConfig {
+  platform: 'launchd';
+  label: string;
+  plistPath?: string;
+  minimumFailures?: number;
+  minimumFailureDurationMs?: number;
+  cooldownMs?: number;
+  postRestartVerifyTimeoutMs?: number;
+}
+
 export interface RecoveryConfig {
   schemaVersion: 1;
   controllerHome: string;
   stableIngressUrl: string;
   publicMcpUrl?: string;
+  publicTunnelService?: PublicTunnelServiceConfig;
   mainMcpTokenFile?: string;
   expectedToolFingerprint?: string;
   readOnlyTool?: { name: string; arguments?: Record<string, unknown> };
@@ -68,11 +79,28 @@ export interface RollbackResult {
 }
 
 export interface WatchdogDecision {
-  action: 'healthy' | 'degraded' | 'rollback';
+  action: 'healthy' | 'degraded' | 'repair_public_tunnel' | 'rollback';
   reason: string;
 }
 
-export interface WatchdogState { failures: number; firstFailureAt?: number; rollbackUsed: boolean; }
+export interface WatchdogState {
+  failures: number;
+  firstFailureAt?: number;
+  rollbackUsed: boolean;
+  publicTunnelFailures?: number;
+  publicTunnelFirstFailureAt?: number;
+}
+
+export interface PublicTunnelRepairResult {
+  ok: boolean;
+  attempted: boolean;
+  noOp?: boolean;
+  detail: string;
+  serviceLabel?: string;
+  serviceTarget?: string;
+  verify: VerifyResult;
+  localVerify?: VerifyResult;
+}
 
 const DEFAULT_CONFIG: Omit<RecoveryConfig, 'controllerHome'> = {
   schemaVersion: 1,
@@ -97,6 +125,7 @@ function statePath(config: RecoveryConfig): string { return join(recoveryRoot(co
 function lockPath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'locks', 'operation.lock'); }
 function auditPath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'audit', 'recovery.jsonl'); }
 function quarantinePath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'quarantine.json'); }
+function publicTunnelRepairStatePath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'public-tunnel-repair.json'); }
 function socketPath(config: RecoveryConfig): string { return join(resolve(config.controllerHome), 'supervisor', 'control.sock'); }
 function supervisorStateFilePath(config: RecoveryConfig): string { return join(resolve(config.controllerHome), 'supervisor', 'state.json'); }
 function supervisorActivationPath(config: RecoveryConfig): string { return join(resolve(config.controllerHome), 'supervisor', 'activation.json'); }
@@ -494,7 +523,39 @@ export async function reconnectMain(config: RecoveryConfig): Promise<{ ok: boole
   return { ok, detail: ok ? 'stable ingress and primary endpoint are reachable; client session may refresh' : 'primary endpoint remains unavailable; recovery channel remains independent', verify: verified };
 }
 
-export function decideWatchdog(input: { failures: number; firstFailureAt?: number; evidenceClasses: string[]; activeKnownGood: boolean; previousKnownGood: boolean; operationInFlight: boolean; rollbackUsed: boolean }): WatchdogDecision {
+async function verifyLocalRuntime(config: RecoveryConfig): Promise<VerifyResult> {
+  // Do not let an external tunnel outage masquerade as a local MCP failure.
+  return verifyStableRuntime({ ...config, publicMcpUrl: undefined });
+}
+
+function isExternalTunnelFailure(config: RecoveryConfig, verified: VerifyResult, localVerify: VerifyResult): boolean {
+  return Boolean(config.publicTunnelService && config.publicMcpUrl && localVerify.ok && verified.probes.external_mcp_http?.ok !== true);
+}
+
+export function decideWatchdog(input: {
+  failures: number;
+  firstFailureAt?: number;
+  evidenceClasses: string[];
+  activeKnownGood: boolean;
+  previousKnownGood: boolean;
+  operationInFlight: boolean;
+  rollbackUsed: boolean;
+  publicTunnelConfigured?: boolean;
+  publicTunnelFailed?: boolean;
+  publicTunnelFailures?: number;
+  publicTunnelFirstFailureAt?: number;
+  publicTunnelMinimumFailures?: number;
+  publicTunnelMinimumFailureDurationMs?: number;
+}): WatchdogDecision {
+  if (input.publicTunnelConfigured && input.publicTunnelFailed) {
+    const failures = input.publicTunnelFailures ?? 0;
+    const minimumFailures = input.publicTunnelMinimumFailures ?? 2;
+    const minimumDuration = input.publicTunnelMinimumFailureDurationMs ?? 5_000;
+    const sustained = input.publicTunnelFirstFailureAt !== undefined && Date.now() - input.publicTunnelFirstFailureAt >= minimumDuration;
+    if (!input.operationInFlight && failures >= minimumFailures && sustained) return { action: 'repair_public_tunnel', reason: 'local runtime is healthy while the explicitly configured public tunnel is unavailable' };
+    if (input.operationInFlight) return { action: 'degraded', reason: 'public tunnel repair deferred while a Supervisor operation owns runtime changes' };
+    return { action: 'degraded', reason: 'public tunnel failure has not yet met the bounded repair threshold' };
+  }
   if (input.failures === 0) return { action: 'healthy', reason: 'all recovery probes healthy' };
   const sustained = input.firstFailureAt !== undefined && Date.now() - input.firstFailureAt >= 30_000;
   const independentEvidence = new Set(input.evidenceClasses).size >= 2;
@@ -572,7 +633,18 @@ export async function restartGateway(config: RecoveryConfig, requestId?: string)
 }
 
 interface CommandResult { ok: boolean; status: number | null; stdout: string; stderr: string; }
+type CommandRunner = (commandName: string, args: string[], timeoutMs?: number) => Promise<CommandResult>;
 interface LaunchdService { uid: number; domain: string; target: string; label: string; plistPath: string; }
+
+export interface PublicTunnelRepairDependencies {
+  platform?: NodeJS.Platform;
+  currentUid?: () => Promise<number | undefined>;
+  runCommand?: CommandRunner;
+  verify?: (config: RecoveryConfig) => Promise<VerifyResult>;
+  verifyLocal?: (config: RecoveryConfig) => Promise<VerifyResult>;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}
 
 function command(commandName: string, args: string[], timeoutMs = 10_000): Promise<CommandResult> {
   return new Promise((resolveCommand) => {
@@ -677,21 +749,100 @@ async function launchdService(config: RecoveryConfig): Promise<LaunchdService | 
   return { uid, domain: `gui/${uid}`, target: `gui/${uid}/${label}`, label, plistPath };
 }
 
-async function ensureLaunchdServiceStarted(service: LaunchdService): Promise<{ ok: boolean; detail: string }> {
-  const printed = await command('launchctl', ['print', service.target], 5_000);
+async function ensureLaunchdServiceStarted(service: LaunchdService, runCommand: CommandRunner = command): Promise<{ ok: boolean; detail: string }> {
+  const printed = await runCommand('launchctl', ['print', service.target], 5_000);
   if (!printed.ok) {
     if (!existsSync(service.plistPath)) return { ok: false, detail: `launchd plist is missing: ${service.plistPath}` };
-    const bootstrapped = await command('launchctl', ['bootstrap', service.domain, service.plistPath], 15_000);
+    const bootstrapped = await runCommand('launchctl', ['bootstrap', service.domain, service.plistPath], 15_000);
     if (!bootstrapped.ok && !/already|in progress|Input\/output error/i.test(`${bootstrapped.stderr}\n${bootstrapped.stdout}`)) {
       return { ok: false, detail: `launchd bootstrap failed: ${bootstrapped.stderr || bootstrapped.stdout || bootstrapped.status}` };
     }
-    await command('launchctl', ['enable', service.target], 5_000);
+    await runCommand('launchctl', ['enable', service.target], 5_000);
   }
-  const started = await command('launchctl', ['kickstart', '-k', service.target], 15_000);
+  const started = await runCommand('launchctl', ['kickstart', '-k', service.target], 15_000);
   if (!started.ok && !/already|in progress/i.test(`${started.stderr}\n${started.stdout}`)) {
     return { ok: false, detail: `launchd kickstart failed: ${started.stderr || started.stdout || started.status}` };
   }
   return { ok: true, detail: service.target };
+}
+
+function publicTunnelService(config: RecoveryConfig, uid: number): LaunchdService | undefined {
+  const configured = config.publicTunnelService;
+  if (!configured || configured.platform !== 'launchd') return undefined;
+  if (!/^com\.[A-Za-z0-9._-]{1,180}$/.test(configured.label)) return undefined;
+  const plistPath = configured.plistPath;
+  if (plistPath !== undefined && (!isAbsolute(plistPath) || !existsSync(plistPath))) return undefined;
+  return {
+    uid,
+    domain: `gui/${uid}`,
+    target: `gui/${uid}/${configured.label}`,
+    label: configured.label,
+    plistPath: plistPath ?? join(homedir(), 'Library', 'LaunchAgents', `${configured.label}.plist`),
+  };
+}
+
+function tunnelRepairAllowed(config: RecoveryConfig, now: number): boolean {
+  const cooldownMs = config.publicTunnelService?.cooldownMs ?? 60_000;
+  const prior = json<{ lastAttemptAt?: unknown }>(publicTunnelRepairStatePath(config));
+  return typeof prior?.lastAttemptAt !== 'number' || now - prior.lastAttemptAt >= cooldownMs;
+}
+
+export async function repairPublicTunnel(config: RecoveryConfig, dependencies: PublicTunnelRepairDependencies = {}): Promise<PublicTunnelRepairResult> {
+  const verify = dependencies.verify ?? verifyStableRuntime;
+  const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
+  const now = dependencies.now ?? Date.now;
+  const wait = dependencies.sleep ?? sleep;
+  const initial = await verify(config);
+  const configured = config.publicTunnelService;
+  if (!configured) return { ok: false, attempted: false, noOp: true, detail: 'public tunnel repair is not configured', verify: initial };
+  const localVerify = await verifyLocal(config);
+  if (!isExternalTunnelFailure(config, initial, localVerify)) {
+    return { ok: initial.probes.external_mcp_http?.ok === true, attempted: false, noOp: true, detail: 'public tunnel repair requires a healthy local runtime and failed external endpoint', verify: initial, localVerify };
+  }
+  if ((dependencies.platform ?? process.platform) !== 'darwin') {
+    return { ok: false, attempted: false, noOp: true, detail: 'public tunnel repair is only supported for explicitly configured launchd services', verify: initial, localVerify };
+  }
+  const supervisor = await bestEffortSupervisorState(config);
+  if (supervisor?.currentOperationId) {
+    return { ok: false, attempted: false, noOp: true, detail: 'public tunnel repair deferred while a Supervisor operation owns runtime changes', verify: initial, localVerify };
+  }
+  const uid = await (dependencies.currentUid ?? currentUid)();
+  const service = uid === undefined ? undefined : publicTunnelService(config, uid);
+  if (!service) return { ok: false, attempted: false, noOp: true, detail: 'public tunnel launchd configuration is invalid or unavailable', verify: initial, localVerify };
+  if (!tunnelRepairAllowed(config, now())) {
+    return { ok: false, attempted: false, noOp: true, detail: 'public tunnel repair is in cooldown', serviceLabel: service.label, serviceTarget: service.target, verify: initial, localVerify };
+  }
+  return withLock(config, async () => {
+    // Recheck after acquiring ownership so a concurrent watchdog never causes a restart storm.
+    const before = await verify(config);
+    const localBefore = await verifyLocal(config);
+    if (!isExternalTunnelFailure(config, before, localBefore)) {
+      return { ok: before.probes.external_mcp_http?.ok === true, attempted: false, noOp: true, detail: 'public tunnel recovered before restart', serviceLabel: service.label, serviceTarget: service.target, verify: before, localVerify: localBefore };
+    }
+    const supervisorBeforeRestart = await bestEffortSupervisorState(config);
+    if (supervisorBeforeRestart?.currentOperationId) {
+      return { ok: false, attempted: false, noOp: true, detail: 'public tunnel repair deferred while a Supervisor operation owns runtime changes', serviceLabel: service.label, serviceTarget: service.target, verify: before, localVerify: localBefore };
+    }
+    writeJson(publicTunnelRepairStatePath(config), { lastAttemptAt: now(), serviceLabel: service.label });
+    const started = await ensureLaunchdServiceStarted(service, dependencies.runCommand ?? command);
+    if (!started.ok) {
+      audit(config, 'public_tunnel_restart_failed', { serviceLabel: service.label, detail: started.detail });
+      return { ok: false, attempted: true, detail: started.detail, serviceLabel: service.label, serviceTarget: service.target, verify: before, localVerify: localBefore };
+    }
+    const timeoutMs = configured.postRestartVerifyTimeoutMs ?? 20_000;
+    const deadline = now() + timeoutMs;
+    let after = before;
+    while (now() < deadline) {
+      await wait(1_000);
+      after = await verify(config);
+      if (after.probes.external_mcp_http?.ok === true) {
+        audit(config, 'public_tunnel_restart_succeeded', { serviceLabel: service.label, serviceTarget: service.target });
+        return { ok: true, attempted: true, detail: 'public tunnel service restarted and external endpoint verified', serviceLabel: service.label, serviceTarget: service.target, verify: after, localVerify: await verifyLocal(config) };
+      }
+    }
+    audit(config, 'public_tunnel_restart_unverified', { serviceLabel: service.label, serviceTarget: service.target });
+    return { ok: false, attempted: true, detail: 'public tunnel service restarted but external endpoint did not recover before timeout', serviceLabel: service.label, serviceTarget: service.target, verify: after, localVerify: await verifyLocal(config) };
+  });
 }
 
 function pidAlive(pid: number | undefined): boolean {
@@ -787,7 +938,7 @@ export function gatewayToken(config: RecoveryConfig): string | undefined {
   return typeof parsed?.token === 'string' && parsed.token.length >= 32 ? parsed.token : undefined;
 }
 
-export function initializeStandaloneRecovery(controllerHome: string, port = 8787): RecoveryConfig {
+export function initializeStandaloneRecovery(controllerHome: string, port = 8787, publicTunnelService?: PublicTunnelServiceConfig): RecoveryConfig {
   const root = resolve(controllerHome);
   const tokenPath = join(root, 'recovery', 'config', 'gateway-token.json');
   if (!existsSync(tokenPath)) {
@@ -795,7 +946,10 @@ export function initializeStandaloneRecovery(controllerHome: string, port = 8787
     writeFileSync(tokenPath, `${JSON.stringify({ token: randomBytes(32).toString('base64url'), createdAt: new Date().toISOString() })}\n`, { mode: 0o600 });
     try { chmodSync(tokenPath, 0o600); } catch { /* best effort */ }
   }
-  return createRecoveryConfig(root, { gateway: { host: '127.0.0.1', port, bearerTokenFile: tokenPath } });
+  return createRecoveryConfig(root, {
+    gateway: { host: '127.0.0.1', port, bearerTokenFile: tokenPath },
+    ...(publicTunnelService ? { publicTunnelService } : {}),
+  });
 }
 
 export function secureEqual(left: string, right: string): boolean {
@@ -803,16 +957,47 @@ export function secureEqual(left: string, right: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState): Promise<{ state: WatchdogState; decision: WatchdogDecision; verify: VerifyResult; rollback?: RollbackResult }> {
+export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState): Promise<{ state: WatchdogState; decision: WatchdogDecision; verify: VerifyResult; rollback?: RollbackResult; publicTunnelRepair?: PublicTunnelRepairResult }> {
   const verified = await verifyStableRuntime(config);
-  if (verified.ok) return { state: { failures: 0, rollbackUsed: prior.rollbackUsed }, decision: { action: 'healthy', reason: 'full verification passed' }, verify: verified };
+  if (verified.ok) return { state: { failures: 0, rollbackUsed: prior.rollbackUsed, publicTunnelFailures: 0 }, decision: { action: 'healthy', reason: 'full verification passed' }, verify: verified };
+  const localVerify = config.publicTunnelService && config.publicMcpUrl ? await verifyLocalRuntime(config) : undefined;
+  const publicTunnelFailed = localVerify ? isExternalTunnelFailure(config, verified, localVerify) : false;
   const evidenceClasses = Object.entries(verified.probes).filter(([, value]) => !value.ok).map(([name]) => name.startsWith('external') ? 'external' : name.startsWith('mcp') ? 'mcp' : name.startsWith('active') ? 'gateway' : name);
   const activeKnownGood = Boolean(matchingKnownGood(config, verified.releases.active));
   const previousKnownGood = Boolean(matchingKnownGood(config, verified.releases.previous));
-  const state: WatchdogState = { failures: prior.failures + 1, firstFailureAt: prior.firstFailureAt ?? Date.now(), rollbackUsed: prior.rollbackUsed };
+  const state: WatchdogState = publicTunnelFailed
+    ? {
+      failures: 0,
+      rollbackUsed: prior.rollbackUsed,
+      publicTunnelFailures: (prior.publicTunnelFailures ?? 0) + 1,
+      publicTunnelFirstFailureAt: prior.publicTunnelFirstFailureAt ?? Date.now(),
+    }
+    : {
+      failures: prior.failures + 1,
+      firstFailureAt: prior.firstFailureAt ?? Date.now(),
+      rollbackUsed: prior.rollbackUsed,
+      publicTunnelFailures: 0,
+    };
   let operationInFlight = false;
   try { operationInFlight = Boolean((await supervisorStatus(config)).currentOperationId); } catch { operationInFlight = false; }
-  const decision = decideWatchdog({ ...state, evidenceClasses, activeKnownGood, previousKnownGood, operationInFlight });
+  const decision = decideWatchdog({
+    ...state,
+    evidenceClasses,
+    activeKnownGood,
+    previousKnownGood,
+    operationInFlight,
+    publicTunnelConfigured: Boolean(config.publicTunnelService),
+    publicTunnelFailed,
+    publicTunnelMinimumFailures: config.publicTunnelService?.minimumFailures,
+    publicTunnelMinimumFailureDurationMs: config.publicTunnelService?.minimumFailureDurationMs,
+  });
+  if (decision.action === 'repair_public_tunnel') {
+    const publicTunnelRepair = await repairPublicTunnel(config);
+    const nextState = publicTunnelRepair.ok
+      ? { failures: 0, rollbackUsed: prior.rollbackUsed, publicTunnelFailures: 0 }
+      : state;
+    return { state: nextState, decision, verify: verified, publicTunnelRepair };
+  }
   if (decision.action !== 'rollback') return { state, decision, verify: verified };
   const rollback = await rollbackPrevious(config, 'watchdog sustained multi-signal failure');
   return { state: { ...state, rollbackUsed: true }, decision, verify: verified, rollback };

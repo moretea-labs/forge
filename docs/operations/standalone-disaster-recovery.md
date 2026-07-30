@@ -14,6 +14,17 @@ Install the immutable local artifact with:
 bun scripts/install-standalone-recovery.ts --controller-home /absolute/controller-home
 ```
 
+For a public endpoint backed by a named `cloudflared` user LaunchAgent, configure that service explicitly at install time:
+
+```sh
+bun scripts/install-standalone-recovery.ts \
+  --controller-home /absolute/controller-home \
+  --public-tunnel-service-label com.cloudflare.cloudflared \
+  --public-tunnel-service-plist "$HOME/Library/LaunchAgents/com.cloudflare.cloudflared.plist"
+```
+
+With that configuration, the watchdog keeps application recovery separate from tunnel recovery. It performs a launchd `kickstart -k` only after the local Supervisor, ingress, Gateway, and MCP lifecycle all verify successfully while the public MCP HTTP endpoint fails. It defers during an active Supervisor operation, requires two failed observations over at least five seconds, rate-limits restarts, and verifies public recovery before clearing the failure state. A tunnel failure therefore cannot trigger a Gateway restart or application revision rollback.
+
 The installer writes launchd plists that start through `/usr/bin/env -i` with a minimal `PATH`, so the recovery gateway and watchdog do not inherit unrelated session credentials. They can be loaded as user LaunchAgents for local operation or installed as system LaunchDaemons after an administrator-authorized system operation.
 
 When Tailscale Funnel is available, expose the recovery gateway under a path that is independent from the primary root mapping:

@@ -1,7 +1,12 @@
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import { dirname, join, resolve } from 'path';
+import { dirname, isAbsolute, join, resolve } from 'path';
 import { spawn } from 'child_process';
 import { initializeStandaloneRecovery } from '../src/runtime/standalone-recovery/core';
+
+function option(name: string): string | undefined {
+  const index = process.argv.indexOf(name);
+  return index >= 0 ? process.argv[index + 1] : undefined;
+}
 
 async function compileRecoveryBinary(bun: string, output: string): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return new Promise((resolveCompile, rejectCompile) => {
@@ -40,6 +45,11 @@ if (!controllerHome || controllerHome === resolve('.')) throw new Error('RECOVER
 const portIndex = process.argv.indexOf('--port');
 const port = portIndex >= 0 ? Number(process.argv[portIndex + 1]) : 8787;
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('RECOVERY_GATEWAY_PORT_INVALID');
+const publicTunnelLabel = option('--public-tunnel-service-label');
+const publicTunnelPlist = option('--public-tunnel-service-plist');
+if (publicTunnelPlist && !publicTunnelLabel) throw new Error('RECOVERY_PUBLIC_TUNNEL_SERVICE_LABEL_REQUIRED');
+if (publicTunnelLabel && !/^com\.[A-Za-z0-9._-]{1,180}$/.test(publicTunnelLabel)) throw new Error('RECOVERY_PUBLIC_TUNNEL_SERVICE_LABEL_INVALID');
+if (publicTunnelPlist && !isAbsolute(publicTunnelPlist)) throw new Error('RECOVERY_PUBLIC_TUNNEL_SERVICE_PLIST_ABSOLUTE_REQUIRED');
 const bin = join(controllerHome, 'recovery', 'bin', 'repo-harness-recovery');
 const gatewayBin = join(controllerHome, 'recovery', 'bin', 'repo-harness-recovery-gateway');
 const watchdogBin = join(controllerHome, 'recovery', 'bin', 'repo-harness-recovery-watchdog');
@@ -50,7 +60,9 @@ for (const output of [bin, gatewayBin, watchdogBin]) {
   if (result.status !== 0) throw new Error(`RECOVERY_BUILD_FAILED: ${(result.stderr || result.stdout).slice(0, 800)}`);
   chmodSync(output, 0o700);
 }
-const config = initializeStandaloneRecovery(controllerHome, port);
+const config = initializeStandaloneRecovery(controllerHome, port, publicTunnelLabel
+  ? { platform: 'launchd', label: publicTunnelLabel, ...(publicTunnelPlist ? { plistPath: publicTunnelPlist } : {}) }
+  : undefined);
 const grokPrompt = join(controllerHome, 'recovery', 'prompts', 'grok-recovery.md');
 mkdirSync(dirname(grokPrompt), { recursive: true, mode: 0o700 });
 writeFileSync(grokPrompt, readFileSync(join(process.cwd(), 'recovery', 'prompts', 'grok-recovery.md')), { mode: 0o600 });
@@ -77,4 +89,4 @@ const plist = (label: string, executable: string, command: string, log: string) 
 writeFileSync(launchd, plist('com.moretea.repo-harness-recovery-gateway', gatewayBin, 'gateway', join(controllerHome, 'recovery', 'audit', 'gateway.log')), { mode: 0o600 });
 const watchdogLaunchd = join(controllerHome, 'recovery', 'launchd', 'com.moretea.repo-harness-recovery-watchdog.plist');
 writeFileSync(watchdogLaunchd, plist('com.moretea.repo-harness-recovery-watchdog', watchdogBin, 'watchdog', join(controllerHome, 'recovery', 'audit', 'watchdog.log')), { mode: 0o600 });
-console.log(JSON.stringify({ status: 'installed', binary: bin, supportingBinaries: [gatewayBin, watchdogBin], launchdPlists: [launchd, watchdogLaunchd], config: { controllerHome: config.controllerHome, gateway: { host: config.gateway?.host, port: config.gateway?.port } } }, null, 2));
+console.log(JSON.stringify({ status: 'installed', binary: bin, supportingBinaries: [gatewayBin, watchdogBin], launchdPlists: [launchd, watchdogLaunchd], config: { controllerHome: config.controllerHome, gateway: { host: config.gateway?.host, port: config.gateway?.port }, publicTunnelService: config.publicTunnelService ? { platform: config.publicTunnelService.platform, label: config.publicTunnelService.label, plistPath: config.publicTunnelService.plistPath } : undefined } }, null, 2));

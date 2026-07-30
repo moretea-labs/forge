@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathS
 import { createServer as createSocketServer, type Server as SocketServer } from 'net';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { attestKnownGood, createRecoveryConfig, decideWatchdog, recoveryReconnectOperation, restartGateway, restartSupervisor, rollbackPrevious, verifyStableRuntime } from '../../src/runtime/standalone-recovery/core';
+import { attestKnownGood, createRecoveryConfig, decideWatchdog, recoveryReconnectOperation, repairPublicTunnel, restartGateway, restartSupervisor, rollbackPrevious, verifyStableRuntime, type VerifyResult } from '../../src/runtime/standalone-recovery/core';
 import { dispatchRecoveryTool, RECOVERY_CLI_COMMANDS, RECOVERY_TOOLS } from '../../src/runtime/standalone-recovery/entry';
 import { createRecoveryHttpTransport, ExternalHttpsRecoveryTransport, resolveTrustedRecoveryCurl, type RecoveryHttpTransportOptions } from '../../src/runtime/standalone-recovery/http-transport';
 
@@ -86,6 +86,24 @@ function fakeEvents(record: string): Array<Record<string, unknown>> {
 function recoveryTmpEntries(home: string): string[] {
   const path = join(home, 'recovery', 'tmp');
   return readdirSync(path);
+}
+
+function publicTunnelVerification(externalOk: boolean): VerifyResult {
+  return {
+    ok: externalOk,
+    at: new Date().toISOString(),
+    supervisor: { ok: true, observedState: 'healthy', activeSlot: 'green', previousSlot: 'blue' },
+    releases: { coherent: true },
+    probes: {
+      supervisor_socket: { ok: true, detail: 'status received' },
+      stable_ingress: { ok: true, detail: 'HTTP 200', status: 200 },
+      active_gateway: { ok: true, detail: 'HTTP 200', status: 200 },
+      mcp_initialize: { ok: true, detail: 'MCP initialized' },
+      external_mcp_http: externalOk
+        ? { ok: true, detail: 'HTTP 401 OAuth challenge', status: 401 }
+        : { ok: false, detail: 'HTTP 530', status: 530 },
+    },
+  };
 }
 
 async function withFakeCurlEnvironment<T>(values: Record<string, string | undefined>, action: () => Promise<T>): Promise<T> {
@@ -207,6 +225,236 @@ describe('standalone disaster recovery core', () => {
     expect(decideWatchdog({ failures: 1, firstFailureAt: Date.now() - 60_000, evidenceClasses: ['external'], activeKnownGood: false, previousKnownGood: true, operationInFlight: false, rollbackUsed: false }).action).toBe('degraded');
     expect(decideWatchdog({ failures: 6, firstFailureAt: Date.now() - 31_000, evidenceClasses: ['external', 'mcp'], activeKnownGood: false, previousKnownGood: true, operationInFlight: false, rollbackUsed: false }).action).toBe('rollback');
     expect(decideWatchdog({ failures: 6, firstFailureAt: Date.now() - 31_000, evidenceClasses: ['external', 'mcp'], activeKnownGood: true, previousKnownGood: true, operationInFlight: false, rollbackUsed: false }).action).toBe('degraded');
+  });
+
+  test('prioritizes configured public tunnel repair over application recovery and defers to Supervisor ownership', () => {
+    const input = {
+      failures: 0,
+      evidenceClasses: ['external'],
+      activeKnownGood: false,
+      previousKnownGood: true,
+      rollbackUsed: false,
+      publicTunnelConfigured: true,
+      publicTunnelFailed: true,
+      publicTunnelFailures: 2,
+      publicTunnelFirstFailureAt: Date.now() - 5_001,
+    };
+    expect(decideWatchdog({ ...input, operationInFlight: false }).action).toBe('repair_public_tunnel');
+    expect(decideWatchdog({ ...input, operationInFlight: true }).action).toBe('degraded');
+  });
+
+  test('restarts only an explicitly configured public tunnel after local verification passes', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'standalone-recovery-public-tunnel-'));
+    const plistPath = join(home, 'com.cloudflare.cloudflared.plist');
+    writeFileSync(plistPath, '<plist/>', { mode: 0o600 });
+    const config = createRecoveryConfig(home, {
+      stableIngressUrl: 'http://127.0.0.1:8765',
+      publicMcpUrl: 'https://mcp.example.test/mcp',
+      publicTunnelService: {
+        platform: 'launchd',
+        label: 'com.cloudflare.cloudflared',
+        plistPath,
+        cooldownMs: 0,
+        postRestartVerifyTimeoutMs: 10_000,
+      },
+    });
+    const commands: string[][] = [];
+    let externalChecks = 0;
+    let clock = 0;
+    const result = await repairPublicTunnel(config, {
+      platform: 'darwin',
+      currentUid: async () => 501,
+      verify: async () => publicTunnelVerification(++externalChecks >= 3),
+      verifyLocal: async () => publicTunnelVerification(true),
+      runCommand: async (_name, args) => {
+        commands.push(args);
+        return { ok: true, status: 0, stdout: '', stderr: '' };
+      },
+      now: () => { clock += 1_000; return clock; },
+      sleep: async () => {},
+    });
+    expect(result).toMatchObject({ ok: true, attempted: true, serviceTarget: 'gui/501/com.cloudflare.cloudflared' });
+    expect(commands).toEqual([
+      ['print', 'gui/501/com.cloudflare.cloudflared'],
+      ['kickstart', '-k', 'gui/501/com.cloudflare.cloudflared'],
+    ]);
+    expect(readFileSync(join(home, 'recovery', 'audit', 'recovery.jsonl'), 'utf8')).toContain('public_tunnel_restart_succeeded');
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test('refuses tunnel restart when the local runtime is also unhealthy', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'standalone-recovery-public-tunnel-local-failure-'));
+    const plistPath = join(home, 'com.cloudflare.cloudflared.plist');
+    writeFileSync(plistPath, '<plist/>', { mode: 0o600 });
+    const config = createRecoveryConfig(home, {
+      publicMcpUrl: 'https://mcp.example.test/mcp',
+      publicTunnelService: { platform: 'launchd', label: 'com.cloudflare.cloudflared', plistPath },
+    });
+    let commands = 0;
+    const result = await repairPublicTunnel(config, {
+      platform: 'darwin',
+      currentUid: async () => 501,
+      verify: async () => publicTunnelVerification(false),
+      verifyLocal: async () => ({ ...publicTunnelVerification(false), probes: { ...publicTunnelVerification(false).probes, stable_ingress: { ok: false, detail: 'connection refused' } } }),
+      runCommand: async () => {
+        commands += 1;
+        return { ok: true, status: 0, stdout: '', stderr: '' };
+      },
+    });
+    expect(result).toMatchObject({ ok: false, attempted: false, noOp: true });
+    expect(commands).toBe(0);
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test('defers tunnel restart while the Supervisor owns an operation', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'standalone-recovery-public-tunnel-operation-'));
+    const plistPath = join(home, 'com.cloudflare.cloudflared.plist');
+    writeFileSync(plistPath, '<plist/>', { mode: 0o600 });
+    mkdirSync(join(home, 'supervisor'), { recursive: true });
+    const socket = createSocketServer((client) => client.on('data', () => client.end(`${JSON.stringify({ ok: true, state: { currentOperationId: 'activate-green' } })}\n`)));
+    socketServers.push(socket);
+    await new Promise<void>((resolveListen, reject) => { socket.once('error', reject); socket.listen(join(home, 'supervisor', 'control.sock'), () => resolveListen()); });
+    const config = createRecoveryConfig(home, {
+      publicMcpUrl: 'https://mcp.example.test/mcp',
+      publicTunnelService: { platform: 'launchd', label: 'com.cloudflare.cloudflared', plistPath },
+    });
+    let commands = 0;
+    const result = await repairPublicTunnel(config, {
+      platform: 'darwin',
+      currentUid: async () => 501,
+      verify: async () => publicTunnelVerification(false),
+      verifyLocal: async () => publicTunnelVerification(true),
+      runCommand: async () => {
+        commands += 1;
+        return { ok: true, status: 0, stdout: '', stderr: '' };
+      },
+    });
+    expect(result).toMatchObject({ ok: false, attempted: false, noOp: true });
+    expect(result.detail).toContain('Supervisor operation');
+    expect(commands).toBe(0);
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test('fails closed for unconfigured or invalid public tunnel services', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'standalone-recovery-public-tunnel-unconfigured-'));
+    const base = {
+      publicMcpUrl: 'https://mcp.example.test/mcp',
+    };
+    let commands = 0;
+    const dependencies = {
+      platform: 'darwin' as const,
+      currentUid: async () => 501,
+      verify: async () => publicTunnelVerification(false),
+      verifyLocal: async () => publicTunnelVerification(true),
+      runCommand: async () => {
+        commands += 1;
+        return { ok: true, status: 0, stdout: '', stderr: '' };
+      },
+    };
+
+    const unconfigured = await repairPublicTunnel(createRecoveryConfig(home, base), dependencies);
+    expect(unconfigured).toMatchObject({ ok: false, attempted: false, noOp: true });
+    expect(unconfigured.detail).toContain('not configured');
+
+    const invalid = await repairPublicTunnel(createRecoveryConfig(home, {
+      ...base,
+      publicTunnelService: { platform: 'launchd', label: 'cloudflared' },
+    }), dependencies);
+    expect(invalid).toMatchObject({ ok: false, attempted: false, noOp: true });
+    expect(invalid.detail).toContain('invalid or unavailable');
+    expect(commands).toBe(0);
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test('enforces public tunnel repair cooldown without invoking launchctl', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'standalone-recovery-public-tunnel-cooldown-'));
+    const plistPath = join(home, 'com.cloudflare.cloudflared.plist');
+    writeFileSync(plistPath, '<plist/>', { mode: 0o600 });
+    const config = createRecoveryConfig(home, {
+      publicMcpUrl: 'https://mcp.example.test/mcp',
+      publicTunnelService: {
+        platform: 'launchd',
+        label: 'com.cloudflare.cloudflared',
+        plistPath,
+        cooldownMs: 60_000,
+      },
+    });
+    const stateDir = join(home, 'recovery', 'state');
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(join(stateDir, 'public-tunnel-repair.json'), `${JSON.stringify({ lastAttemptAt: 10_000 })}\n`, { mode: 0o600 });
+    let commands = 0;
+    const result = await repairPublicTunnel(config, {
+      platform: 'darwin',
+      currentUid: async () => 501,
+      verify: async () => publicTunnelVerification(false),
+      verifyLocal: async () => publicTunnelVerification(true),
+      runCommand: async () => {
+        commands += 1;
+        return { ok: true, status: 0, stdout: '', stderr: '' };
+      },
+      now: () => 20_000,
+    });
+    expect(result).toMatchObject({ ok: false, attempted: false, noOp: true });
+    expect(result.detail).toContain('cooldown');
+    expect(commands).toBe(0);
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test('reports launchctl failure and an unverified post-restart tunnel', async () => {
+    const failedHome = mkdtempSync(join(tmpdir(), 'standalone-recovery-public-tunnel-kickstart-failure-'));
+    const failedPlist = join(failedHome, 'com.cloudflare.cloudflared.plist');
+    writeFileSync(failedPlist, '<plist/>', { mode: 0o600 });
+    const failedConfig = createRecoveryConfig(failedHome, {
+      publicMcpUrl: 'https://mcp.example.test/mcp',
+      publicTunnelService: {
+        platform: 'launchd',
+        label: 'com.cloudflare.cloudflared',
+        plistPath: failedPlist,
+        cooldownMs: 0,
+      },
+    });
+    const failed = await repairPublicTunnel(failedConfig, {
+      platform: 'darwin',
+      currentUid: async () => 501,
+      verify: async () => publicTunnelVerification(false),
+      verifyLocal: async () => publicTunnelVerification(true),
+      runCommand: async (_name, args) => args[0] === 'kickstart'
+        ? { ok: false, status: 1, stdout: '', stderr: 'simulated kickstart failure' }
+        : { ok: true, status: 0, stdout: '', stderr: '' },
+    });
+    expect(failed).toMatchObject({ ok: false, attempted: true });
+    expect(failed.detail).toContain('launchd kickstart failed');
+    expect(readFileSync(join(failedHome, 'recovery', 'audit', 'recovery.jsonl'), 'utf8')).toContain('public_tunnel_restart_failed');
+
+    const timeoutHome = mkdtempSync(join(tmpdir(), 'standalone-recovery-public-tunnel-unverified-'));
+    const timeoutPlist = join(timeoutHome, 'com.cloudflare.cloudflared.plist');
+    writeFileSync(timeoutPlist, '<plist/>', { mode: 0o600 });
+    const timeoutConfig = createRecoveryConfig(timeoutHome, {
+      publicMcpUrl: 'https://mcp.example.test/mcp',
+      publicTunnelService: {
+        platform: 'launchd',
+        label: 'com.cloudflare.cloudflared',
+        plistPath: timeoutPlist,
+        cooldownMs: 0,
+        postRestartVerifyTimeoutMs: 2_000,
+      },
+    });
+    let clock = 0;
+    const unverified = await repairPublicTunnel(timeoutConfig, {
+      platform: 'darwin',
+      currentUid: async () => 501,
+      verify: async () => publicTunnelVerification(false),
+      verifyLocal: async () => publicTunnelVerification(true),
+      runCommand: async () => ({ ok: true, status: 0, stdout: '', stderr: '' }),
+      now: () => { clock += 1_000; return clock; },
+      sleep: async () => {},
+    });
+    expect(unverified).toMatchObject({ ok: false, attempted: true });
+    expect(unverified.detail).toContain('did not recover before timeout');
+    expect(readFileSync(join(timeoutHome, 'recovery', 'audit', 'recovery.jsonl'), 'utf8')).toContain('public_tunnel_restart_unverified');
+
+    rmSync(failedHome, { recursive: true, force: true });
+    rmSync(timeoutHome, { recursive: true, force: true });
   });
 
   test('Gateway reconnect recovery remains Gateway-only and requires Supervisor control', () => {
