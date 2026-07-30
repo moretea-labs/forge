@@ -25,14 +25,20 @@ Interactions that can mutate remote state still require `confirm_authorization=t
 ## Runtime model
 
 - `plugin_id` stays `browser`
-- the provider is a local Playwright persistent context
+- the provider is local Playwright, either attached through a configured CDP endpoint or launched as a persistent context
 - the default profile mode is `repo_local`, with profile data under `.repo-harness/browser/profiles/`
 - `profileMode=custom` is explicit-only and uses the configured Chrome/Chromium profile path directly
 - saved sessions live under `.repo-harness/browser/sessions/`
 - screenshots live under `.repo-harness/browser/screenshots/`
 - downloads live under `.repo-harness/browser/downloads/`
 
-Each action launches a visible browser context, restores the target URL, performs one bounded operation, persists the updated session metadata, then closes the context. Session metadata is reusable across actions via `session_id`. Transient navigation failures can retry with `retries` (1–3).
+The browser mode is explicit:
+
+- `managed_persistent` is the default and preserves the previous behavior: each action launches a visible persistent Playwright context, restores the target URL, performs one bounded operation, persists session metadata, then closes the context.
+- `attach_preferred` first attempts to attach to one of the configured loopback CDP endpoints with `chromium.connectOverCDP`. It inventories existing tabs, reuses the best URL/title match, and disconnects from the browser instead of closing it.
+- `isolated` launches a visible persistent context with a per-session repo-local profile under `.repo-harness/browser/profiles/isolated/<session_id>`. It does not share the default plugin profile or a configured custom profile.
+
+Session metadata is reusable across actions via `session_id`. Transient navigation failures can retry with `retries` (1–3).
 
 ### Reliability and safety notes
 
@@ -40,6 +46,8 @@ Each action launches a visible browser context, restores the target URL, perform
 - Selector failures include repair hints (`repairHint`) when possible.
 - Console errors and failed requests are captured per open cycle.
 - Artifacts stay under `.repo-harness/browser/**` (not arbitrary local paths).
+- CDP attach is bounded to configured loopback endpoints only; the plugin does not scan arbitrary ports or remote hosts.
+- Attached browsers are disconnected from after the action; managed contexts are closed after the action.
 - Health `userFacingStatus` reports `ready`, `domain restricted`, `session active`, or setup states.
 
 ## Configuration
@@ -53,6 +61,7 @@ Example:
   "schemaVersion": 1,
   "enabled": true,
   "provider": "playwright",
+  "browserMode": "managed_persistent",
   "profileMode": "repo_local",
   "browserChannel": "chromium",
   "defaultTimeoutMs": 30000,
@@ -64,6 +73,10 @@ Example:
 
 Additional browser/profile fields:
 
+- `browserMode`
+  - `managed_persistent` keeps the existing persistent-context lifecycle.
+  - `attach_preferred` tries configured CDP endpoints first and then follows `cdpAttachFallback`.
+  - `isolated` uses a per-session repo-local profile under `.repo-harness/browser/profiles/isolated/`.
 - `profileMode`
   - `repo_local` keeps the plugin on the repo-owned Playwright profile under `.repo-harness/browser/profiles/default`.
   - `custom` is the explicit opt-in path for an existing Chrome/Chromium profile.
@@ -79,6 +92,18 @@ Additional browser/profile fields:
 - `executablePath`
   - explicit Chrome/Chromium binary path
   - mutually exclusive with `browserChannel`
+- `cdpEndpoint`
+  - optional primary DevTools endpoint for `attach_preferred`
+  - must be loopback-only and use `http`, `https`, `ws`, or `wss`
+  - HTTP(S) endpoints are probed at `/json/version`; a returned `webSocketDebuggerUrl` is passed to Playwright `connectOverCDP`
+- `cdpEndpointCandidates`
+  - optional ordered fallback endpoints
+  - capped at five total configured endpoints
+- `cdpDiscoveryTimeoutMs`
+  - bounded to 5 seconds; default is 1500 ms
+- `cdpAttachFallback`
+  - `managed_persistent` (default) launches the managed persistent context when attach fails
+  - `fail_closed` returns `PLUGIN_BROWSER_CDP_UNAVAILABLE` with endpoint attempt diagnostics and does not launch a new browser
 
 For an existing signed-in Chrome profile, prefer `profileMode=custom` plus `browserChannel=chrome` or an explicit `executablePath`. The plugin does not attach to a real user profile unless that custom mode is configured on purpose.
 
@@ -89,16 +114,35 @@ Example custom Chrome binding:
   "schemaVersion": 1,
   "enabled": true,
   "provider": "playwright",
+  "browserMode": "attach_preferred",
   "profileMode": "custom",
   "profileDir": "/Users/alice/Library/Application Support/Google/Chrome",
   "profileDirectory": "Profile 1",
   "browserChannel": "chrome",
+  "cdpEndpoint": "http://127.0.0.1:9222",
+  "cdpAttachFallback": "fail_closed",
   "defaultTimeoutMs": 30000,
   "allowedDomains": ["appstoreconnect.apple.com"]
 }
 ```
 
 If `profileMode=custom` points at a live personal Chrome profile, close that same Chrome/Chromium instance first when the browser reports profile-lock or profile-in-use errors.
+
+For `attach_preferred`, start Chrome/Chromium with a non-default automation profile and `--remote-debugging-port=<port>`. Chrome 136+ blocks remote debugging against the default user data directory; use a separate automation profile. The plugin does not launch Chrome with remote debugging flags by itself.
+
+## Tab Resume And Diagnostics
+
+When attaching through CDP, the plugin inventories existing tabs by index, URL, and title. Selection is deterministic:
+
+1. saved session URL and title
+2. saved session URL
+3. requested URL
+4. blank tab
+5. new tab
+
+This avoids opening duplicate tabs when a matching tab already exists. Saved session metadata includes the last browser mode, active mode, CDP endpoint, fallback outcome when applicable, tab key, tab URL/title/index, and a resume diagnostic. If the saved tab is not present during a later attach, responses include `sessionResume.status=stale_tab` and explain whether another target URL tab, a blank tab, or a new tab was used.
+
+Stale or unavailable CDP endpoints return attempt-level diagnostics. With `cdpAttachFallback=managed_persistent`, those diagnostics appear in `browserConnection.fallback`; with `fail_closed`, the action fails before launching a managed context.
 
 ## Policy surface
 
@@ -184,4 +228,4 @@ Example response shape:
 - If both `session_id` and `url` are provided, they must resolve to the same page target.
 - `close_page` only removes saved session metadata. It does not delete the persistent profile.
 - `profile_dir` is rejected unless `profile_mode=custom` is already configured or supplied in the same `configure` call.
-- Visible Chrome/Chromium launches are supported, but each action still closes after it completes. For longer human-driven login, MFA, or consent steps, stop, let the user complete the step in their own browser, then rerun the next bounded action or Task.
+- Visible Chrome/Chromium launches are supported, but managed actions still close after they complete. For longer human-driven login, MFA, or consent steps, use `request_human_handoff` and resume or cancel it explicitly.

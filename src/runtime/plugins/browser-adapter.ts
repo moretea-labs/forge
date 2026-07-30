@@ -27,23 +27,54 @@ const STATE_ROOT = '.repo-harness/browser';
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_TEXT_CHARS = 20_000;
 const DEFAULT_POST_ACTION_WAIT_MS = 750;
+const DEFAULT_CDP_DISCOVERY_TIMEOUT_MS = 1_500;
+const MAX_CDP_DISCOVERY_TIMEOUT_MS = 5_000;
+const MAX_CDP_ENDPOINT_CANDIDATES = 5;
 
 type WaitUntil = 'load' | 'domcontentloaded' | 'networkidle';
 type WaitForSelectorState = 'attached' | 'detached' | 'visible' | 'hidden';
+type BrowserMode = 'attach_preferred' | 'managed_persistent' | 'isolated';
 type BrowserProfileMode = 'repo_local' | 'custom';
 type BrowserChannel = 'chromium' | 'chrome' | 'chrome-beta' | 'chrome-dev' | 'chrome-canary';
+type BrowserCdpAttachFallback = 'managed_persistent' | 'fail_closed';
 
 interface BrowserPluginConfig {
   schemaVersion: 1;
   enabled: boolean;
   provider: 'playwright';
+  browserMode?: BrowserMode;
   profileMode?: BrowserProfileMode;
   profileDir?: string;
   profileDirectory?: string;
   browserChannel?: BrowserChannel;
   executablePath?: string;
+  cdpEndpoint?: string;
+  cdpEndpointCandidates?: string[];
+  cdpDiscoveryTimeoutMs?: number;
+  cdpAttachFallback?: BrowserCdpAttachFallback;
   defaultTimeoutMs?: number;
   allowedDomains?: string[];
+}
+
+interface BrowserTabResumeState {
+  key: string;
+  index: number;
+  url: string;
+  title?: string;
+  matchedBy: BrowserTabMatchReason;
+  inventoryCount: number;
+  capturedAt: string;
+}
+
+interface BrowserSessionConnectionState {
+  mode: BrowserMode;
+  activeMode: BrowserMode;
+  provider: 'playwright-cdp' | 'playwright-persistent-context';
+  endpoint?: string;
+  browserVersion?: string;
+  fallback?: BrowserConnectionFallback;
+  tab?: BrowserTabResumeState;
+  sessionResume?: BrowserSessionResumeDiagnostic;
 }
 
 interface BrowserSessionState {
@@ -53,6 +84,7 @@ interface BrowserSessionState {
   title?: string;
   createdAt: string;
   updatedAt: string;
+  browser?: BrowserSessionConnectionState;
 }
 
 interface BrowserActionTarget {
@@ -80,6 +112,13 @@ type BrowserContextLike = {
   route(pattern: string, handler: (route: RouteLike) => Promise<void> | void): Promise<void>;
 };
 
+type BrowserLike = {
+  contexts(): BrowserContextLike[];
+  newContext?(): Promise<BrowserContextLike>;
+  close?(): Promise<void>;
+  disconnect?(): Promise<void> | void;
+};
+
 type PageLike = {
   goto(url: string, options?: Record<string, unknown>): Promise<unknown>;
   reload?(options?: Record<string, unknown>): Promise<unknown>;
@@ -103,6 +142,7 @@ type PageLike = {
   waitForLoadState?(state?: string, options?: Record<string, unknown>): Promise<void>;
   locator?(selector: string): { screenshot(options?: Record<string, unknown>): Promise<Buffer> };
   on?(event: string, handler: (...args: unknown[]) => void): void;
+  bringToFront?(): Promise<void>;
   keyboard?: { press(key: string): Promise<void> };
 };
 
@@ -116,6 +156,7 @@ type RouteLike = {
 type PlaywrightRuntime = {
   chromium: {
     launchPersistentContext(userDataDir: string, options: Record<string, unknown>): Promise<BrowserContextLike>;
+    connectOverCDP?(endpointURL: string, options?: Record<string, unknown>): Promise<BrowserLike>;
   };
 };
 
@@ -123,6 +164,7 @@ interface BrowserPluginRuntimeHooks {
   now(): string;
   moduleAvailable(name: string): boolean;
   loadPlaywright(): PlaywrightRuntime;
+  fetchJson(url: string, timeoutMs: number): Promise<unknown>;
 }
 
 const defaultRuntimeHooks: BrowserPluginRuntimeHooks = {
@@ -142,6 +184,17 @@ const defaultRuntimeHooks: BrowserPluginRuntimeHooks = {
       throw new AssistantPluginError('PLUGIN_DEPENDENCY_MISSING', 'Browser plugin requires playwright. Run bun install before using browser actions.', {
         retryable: false,
       });
+    }
+  },
+  fetchJson: async (url: string, timeoutMs: number) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      if (!response.ok) throw new Error(`HTTP ${response.status} from ${url}`);
+      return await response.json();
+    } finally {
+      clearTimeout(timer);
     }
   },
 };
@@ -172,6 +225,10 @@ function browserProfileMode(value: unknown): BrowserProfileMode | undefined {
   return value === 'repo_local' || value === 'custom' ? value : undefined;
 }
 
+function browserMode(value: unknown): BrowserMode | undefined {
+  return value === 'attach_preferred' || value === 'managed_persistent' || value === 'isolated' ? value : undefined;
+}
+
 function browserChannel(value: unknown): BrowserChannel | undefined {
   return value === 'chromium'
     || value === 'chrome'
@@ -182,10 +239,22 @@ function browserChannel(value: unknown): BrowserChannel | undefined {
     : undefined;
 }
 
+function browserCdpAttachFallback(value: unknown): BrowserCdpAttachFallback | undefined {
+  return value === 'managed_persistent' || value === 'fail_closed' ? value : undefined;
+}
+
 function stringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const normalized = value
     .map((entry) => String(entry).trim().toLowerCase())
+    .filter(Boolean);
+  return normalized.length > 0 ? Array.from(new Set(normalized)) : undefined;
+}
+
+function stringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const normalized = value
+    .map((entry) => String(entry).trim())
     .filter(Boolean);
   return normalized.length > 0 ? Array.from(new Set(normalized)) : undefined;
 }
@@ -200,6 +269,10 @@ function stateDir(repoRoot: string, name: 'sessions' | 'screenshots' | 'profiles
 
 function defaultProfileDir(repoRoot: string): string {
   return join(stateDir(repoRoot, 'profiles'), 'default');
+}
+
+function isolatedProfileDir(repoRoot: string, sessionId: string): string {
+  return join(stateDir(repoRoot, 'profiles'), 'isolated', sessionId.replace(/[^a-zA-Z0-9_-]/g, '_'));
 }
 
 function resolveConfiguredPath(repoRoot: string, value: string): string {
@@ -237,11 +310,18 @@ function normalizeConfig(raw: Partial<BrowserPluginConfig>): BrowserPluginConfig
     schemaVersion: 1,
     enabled: raw.enabled === true,
     provider: 'playwright',
+    browserMode: browserMode(raw.browserMode) ?? 'managed_persistent',
     profileMode: browserProfileMode(raw.profileMode) ?? (normalizedProfileDir ? 'custom' : 'repo_local'),
     profileDir: normalizedProfileDir,
     profileDirectory: stringValue(raw.profileDirectory),
     browserChannel: browserChannel(raw.browserChannel) ?? 'chromium',
     executablePath: stringValue(raw.executablePath),
+    cdpEndpoint: stringValue(raw.cdpEndpoint),
+    cdpEndpointCandidates: stringList(raw.cdpEndpointCandidates)?.slice(0, MAX_CDP_ENDPOINT_CANDIDATES),
+    cdpDiscoveryTimeoutMs: typeof raw.cdpDiscoveryTimeoutMs === 'number'
+      ? Math.min(positiveNumber(raw.cdpDiscoveryTimeoutMs, DEFAULT_CDP_DISCOVERY_TIMEOUT_MS), MAX_CDP_DISCOVERY_TIMEOUT_MS)
+      : undefined,
+    cdpAttachFallback: browserCdpAttachFallback(raw.cdpAttachFallback) ?? 'managed_persistent',
     defaultTimeoutMs: typeof raw.defaultTimeoutMs === 'number' ? positiveNumber(raw.defaultTimeoutMs, DEFAULT_TIMEOUT_MS) : undefined,
     allowedDomains: stringArray(raw.allowedDomains),
   };
@@ -338,6 +418,13 @@ function parseProfileModeInput(value: unknown): BrowserProfileMode | undefined {
   throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'profile_mode must be repo_local or custom.', { retryable: false });
 }
 
+function parseBrowserModeInput(value: unknown): BrowserMode | undefined {
+  if (value === undefined) return undefined;
+  const parsed = browserMode(value);
+  if (parsed) return parsed;
+  throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'browser_mode must be attach_preferred, managed_persistent, or isolated.', { retryable: false });
+}
+
 function parseBrowserChannelInput(value: unknown): BrowserChannel | undefined {
   if (value === undefined) return undefined;
   const parsed = browserChannel(value);
@@ -345,8 +432,46 @@ function parseBrowserChannelInput(value: unknown): BrowserChannel | undefined {
   throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'browser_channel must be chromium, chrome, chrome-beta, chrome-dev, or chrome-canary.', { retryable: false });
 }
 
+function parseCdpAttachFallbackInput(value: unknown): BrowserCdpAttachFallback | undefined {
+  if (value === undefined) return undefined;
+  const parsed = browserCdpAttachFallback(value);
+  if (parsed) return parsed;
+  throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'cdp_attach_fallback must be managed_persistent or fail_closed.', { retryable: false });
+}
+
+function cdpEndpoints(config: BrowserPluginConfig): string[] {
+  return Array.from(new Set([
+    ...(config.cdpEndpoint ? [config.cdpEndpoint] : []),
+    ...(config.cdpEndpointCandidates ?? []),
+  ].map((entry) => entry.trim()).filter(Boolean))).slice(0, MAX_CDP_ENDPOINT_CANDIDATES);
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]';
+}
+
+function cdpEndpointValidationError(endpoint: string): string | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    return `Invalid CDP endpoint URL: ${endpoint}`;
+  }
+  if (!['http:', 'https:', 'ws:', 'wss:'].includes(parsed.protocol)) {
+    return `CDP endpoint must use http, https, ws, or wss: ${endpoint}`;
+  }
+  if (parsed.username || parsed.password) {
+    return `CDP endpoint must not contain credentials: ${endpoint}`;
+  }
+  if (!isLoopbackHostname(parsed.hostname)) {
+    return `CDP endpoint must be loopback-only: ${endpoint}`;
+  }
+  return undefined;
+}
+
 function validateConfig(config: BrowserPluginConfig): string[] {
   const errors: string[] = [];
+  const endpoints = cdpEndpoints(config);
   if (config.profileMode === 'custom' && !config.profileDir) {
     errors.push('profileDir is required when profileMode is custom.');
   }
@@ -355,6 +480,16 @@ function validateConfig(config: BrowserPluginConfig): string[] {
   }
   if (config.browserChannel && config.browserChannel !== 'chromium' && config.executablePath) {
     errors.push('browserChannel and executablePath cannot both be set.');
+  }
+  if (endpoints.length > MAX_CDP_ENDPOINT_CANDIDATES) {
+    errors.push(`At most ${MAX_CDP_ENDPOINT_CANDIDATES} CDP endpoint candidates are supported.`);
+  }
+  for (const endpoint of endpoints) {
+    const error = cdpEndpointValidationError(endpoint);
+    if (error) errors.push(error);
+  }
+  if (config.browserMode === 'attach_preferred' && endpoints.length === 0 && config.cdpAttachFallback === 'fail_closed') {
+    errors.push('cdpEndpoint or cdpEndpointCandidates is required when browserMode=attach_preferred and cdpAttachFallback=fail_closed.');
   }
   return errors;
 }
@@ -369,6 +504,12 @@ function configWarnings(config: BrowserPluginConfig): string[] {
     if (!config.executablePath && (config.browserChannel ?? 'chromium') === 'chromium') {
       warnings.push('Custom profile mode is more reliable with an explicit Chrome channel or executable path that matches the selected profile format.');
     }
+  }
+  if (config.browserMode === 'attach_preferred' && cdpEndpoints(config).length === 0) {
+    warnings.push('browserMode=attach_preferred has no configured CDP endpoint; actions will use the configured fallback policy.');
+  }
+  if (config.browserMode === 'isolated') {
+    warnings.push('browserMode=isolated uses a per-session repo-local profile and will not share the default browser profile.');
   }
   return warnings;
 }
@@ -426,7 +567,8 @@ function resolveActionTarget(repoRoot: string, args: Record<string, unknown>): B
   return { sessionId: sessionIdFor(url), url };
 }
 
-function sessionFromPage(target: BrowserActionTarget, pageUrl: string, title: string): BrowserSessionState {
+function sessionFromPage(target: BrowserActionTarget, pageUrl: string, title: string, connection?: BrowserConnectionSummary): BrowserSessionState {
+  const refreshedConnection = connection ? refreshConnectionTab(connection, pageUrl, title) : undefined;
   return {
     schemaVersion: 1,
     sessionId: target.sessionId,
@@ -434,6 +576,7 @@ function sessionFromPage(target: BrowserActionTarget, pageUrl: string, title: st
     title,
     createdAt: target.existingSession?.createdAt ?? now(),
     updatedAt: now(),
+    browser: refreshedConnection ? sessionConnectionFromSummary(refreshedConnection) : target.existingSession?.browser,
   };
 }
 
@@ -495,7 +638,15 @@ async function applyDomainGuard(context: BrowserContextLike, config: BrowserPlug
   });
 }
 
-function selectedProfile(config: BrowserPluginConfig, repoRoot: string): BrowserProfileSelection {
+function selectedProfile(config: BrowserPluginConfig, repoRoot: string, activeMode: BrowserMode = 'managed_persistent', sessionId?: string): BrowserProfileSelection {
+  if (activeMode === 'isolated') {
+    const profileDir = isolatedProfileDir(repoRoot, sessionId ?? 'anonymous');
+    return {
+      profileDir,
+      selectedProfilePath: profileDir,
+    };
+  }
+
   if (config.profileMode === 'custom') {
     if (!config.profileDir) {
       throw new AssistantPluginError('PLUGIN_CONFIGURATION_INVALID', 'Custom browser profile mode requires profileDir.', { retryable: false });
@@ -508,6 +659,63 @@ function selectedProfile(config: BrowserPluginConfig, repoRoot: string): Browser
     profileDir: repoLocal,
     selectedProfilePath: repoLocal,
   };
+}
+
+type BrowserTabMatchReason = 'saved_url_title' | 'saved_url' | 'exact_url' | 'blank' | 'new_page';
+
+interface BrowserTabInventoryEntry {
+  index: number;
+  key: string;
+  url: string;
+  title?: string;
+}
+
+interface BrowserSessionResumeDiagnostic {
+  sessionId: string;
+  status: 'matched' | 'stale_tab' | 'no_saved_tab';
+  reason: string;
+  savedTab?: Pick<BrowserTabResumeState, 'key' | 'url' | 'title' | 'index'>;
+}
+
+interface BrowserConnectionFallback {
+  policy: BrowserCdpAttachFallback;
+  from: 'attach_preferred';
+  to: 'managed_persistent';
+  reason: string;
+  attempts: CdpAttachAttempt[];
+}
+
+interface CdpAttachAttempt {
+  endpoint: string;
+  discoveredEndpoint?: string;
+  probeUrl?: string;
+  browserVersion?: string;
+  error?: string;
+}
+
+interface BrowserConnectionSummary {
+  requestedMode: BrowserMode;
+  mode: BrowserMode;
+  provider: 'playwright-cdp' | 'playwright-persistent-context';
+  attached: boolean;
+  endpoint?: string;
+  browserVersion?: string;
+  fallback?: BrowserConnectionFallback;
+  profile: {
+    profileMode?: BrowserProfileMode;
+    profileDirectory?: string;
+    selectedProfilePath: string;
+  };
+  tab?: BrowserTabResumeState;
+  tabInventory?: BrowserTabInventoryEntry[];
+  sessionResume?: BrowserSessionResumeDiagnostic;
+}
+
+interface BrowserOpenHandle {
+  page: PageLike;
+  diagnostics: PageDiagnostics;
+  connection: BrowserConnectionSummary;
+  close(): Promise<void>;
 }
 
 interface PageDiagnostics {
@@ -550,18 +758,211 @@ function attachDiagnostics(page: PageLike): PageDiagnostics {
   return diagnostics;
 }
 
-async function withPage<T>(
-  repoRoot: string,
-  config: BrowserPluginConfig,
-  url: string,
-  args: Record<string, unknown>,
-  run: (page: PageLike, diagnostics: PageDiagnostics) => Promise<T>,
-): Promise<T> {
-  assertUrlAllowed(url, config);
-  const profile = selectedProfile(config, repoRoot);
-  assertBrowserProfileAvailable(repoRoot, profile.selectedProfilePath);
-  mkdirSync(profile.profileDir, { recursive: true });
-  const launchOptions: Record<string, unknown> = {
+function tabKey(url: string, title?: string): string {
+  return createHash('sha256').update(`${url}\n${title ?? ''}`).digest('hex').slice(0, 16);
+}
+
+function comparableUrl(value: string): string {
+  try {
+    return new URL(value).toString();
+  } catch {
+    return value;
+  }
+}
+
+function isBlankPage(url: string): boolean {
+  return !url || url === 'about:blank' || url === 'chrome://newtab/';
+}
+
+async function inventoryTabs(context: BrowserContextLike): Promise<BrowserTabInventoryEntry[]> {
+  const entries: BrowserTabInventoryEntry[] = [];
+  const pages = context.pages();
+  for (let index = 0; index < pages.length; index += 1) {
+    const page = pages[index];
+    if (!page) continue;
+    const url = page.url();
+    let title: string | undefined;
+    try {
+      title = await page.title();
+    } catch {
+      title = undefined;
+    }
+    entries.push({ index, key: tabKey(url, title), url, title });
+  }
+  return entries;
+}
+
+function chooseTab(
+  inventory: BrowserTabInventoryEntry[],
+  target: BrowserActionTarget,
+): { entry?: BrowserTabInventoryEntry; matchedBy: BrowserTabMatchReason; sessionResume?: BrowserSessionResumeDiagnostic } {
+  const desiredUrl = comparableUrl(target.url);
+  const savedTab = target.existingSession?.browser?.tab;
+  const savedUrl = savedTab?.url ? comparableUrl(savedTab.url) : undefined;
+  const savedTitle = savedTab?.title;
+  const savedUrlTitle = savedUrl && savedTitle
+    ? inventory.find((entry) => comparableUrl(entry.url) === savedUrl && entry.title === savedTitle)
+    : undefined;
+  if (savedUrlTitle) {
+    return {
+      entry: savedUrlTitle,
+      matchedBy: 'saved_url_title',
+      sessionResume: {
+        sessionId: target.sessionId,
+        status: 'matched',
+        reason: 'Saved tab URL and title matched an attached browser tab.',
+        savedTab,
+      },
+    };
+  }
+
+  const savedUrlOnly = savedUrl
+    ? inventory.find((entry) => comparableUrl(entry.url) === savedUrl)
+    : undefined;
+  if (savedUrlOnly) {
+    return {
+      entry: savedUrlOnly,
+      matchedBy: 'saved_url',
+      sessionResume: {
+        sessionId: target.sessionId,
+        status: savedTab ? 'matched' : 'no_saved_tab',
+        reason: savedTab ? 'Saved tab URL matched but the previous title was not present.' : 'No saved tab metadata was available.',
+        savedTab,
+      },
+    };
+  }
+
+  const exactUrl = inventory.find((entry) => comparableUrl(entry.url) === desiredUrl);
+  if (exactUrl) {
+    return {
+      entry: exactUrl,
+      matchedBy: 'exact_url',
+      sessionResume: savedTab
+        ? {
+            sessionId: target.sessionId,
+            status: 'stale_tab',
+            reason: 'Saved tab was not found; reused another tab with the target URL.',
+            savedTab,
+          }
+        : {
+            sessionId: target.sessionId,
+            status: 'no_saved_tab',
+            reason: 'No saved tab metadata was available; reused an existing tab with the target URL.',
+          },
+    };
+  }
+
+  const blank = inventory.find((entry) => isBlankPage(entry.url));
+  if (blank) {
+    return {
+      entry: blank,
+      matchedBy: 'blank',
+      sessionResume: savedTab
+        ? {
+            sessionId: target.sessionId,
+            status: 'stale_tab',
+            reason: 'Saved tab was not found; reused a blank tab for navigation.',
+            savedTab,
+          }
+        : {
+            sessionId: target.sessionId,
+            status: 'no_saved_tab',
+            reason: 'No saved tab metadata was available; reused a blank tab for navigation.',
+          },
+    };
+  }
+
+  return {
+    matchedBy: 'new_page',
+    sessionResume: savedTab
+      ? {
+          sessionId: target.sessionId,
+          status: 'stale_tab',
+          reason: 'Saved tab was not found; opened a new tab for navigation.',
+          savedTab,
+        }
+      : {
+          sessionId: target.sessionId,
+          status: 'no_saved_tab',
+          reason: 'No saved tab metadata was available; opened a new tab for navigation.',
+        },
+  };
+}
+
+async function selectPage(
+  context: BrowserContextLike,
+  target: BrowserActionTarget,
+): Promise<{ page: PageLike; matchedBy: BrowserTabMatchReason; inventory: BrowserTabInventoryEntry[]; sessionResume?: BrowserSessionResumeDiagnostic }> {
+  const inventory = await inventoryTabs(context);
+  const selection = chooseTab(inventory, target);
+  if (selection.entry) {
+    const page = context.pages()[selection.entry.index];
+    if (!page) throw new Error(`Browser tab inventory selected missing page index ${selection.entry.index}`);
+    if (page.bringToFront) await page.bringToFront().catch(() => undefined);
+    return { page, matchedBy: selection.matchedBy, inventory, sessionResume: selection.sessionResume };
+  }
+  const page = await context.newPage();
+  return { page, matchedBy: 'new_page', inventory, sessionResume: selection.sessionResume };
+}
+
+function sessionConnectionFromSummary(connection: BrowserConnectionSummary): BrowserSessionConnectionState {
+  return {
+    mode: connection.requestedMode,
+    activeMode: connection.mode,
+    provider: connection.provider,
+    endpoint: connection.endpoint,
+    browserVersion: connection.browserVersion,
+    fallback: connection.fallback,
+    tab: connection.tab,
+    sessionResume: connection.sessionResume,
+  };
+}
+
+function refreshConnectionTab(
+  connection: BrowserConnectionSummary,
+  pageUrl: string,
+  title: string,
+  matchedBy: BrowserTabMatchReason = connection.tab?.matchedBy ?? 'exact_url',
+): BrowserConnectionSummary {
+  const index = connection.tab?.index ?? connection.tabInventory?.find((entry) => comparableUrl(entry.url) === comparableUrl(pageUrl) && entry.title === title)?.index ?? 0;
+  return {
+    ...connection,
+    tab: {
+      key: tabKey(pageUrl, title),
+      index,
+      url: pageUrl,
+      title,
+      matchedBy,
+      inventoryCount: connection.tabInventory?.length ?? 1,
+      capturedAt: now(),
+    },
+  };
+}
+
+function cdpDiscoveryTimeout(config: BrowserPluginConfig): number {
+  return Math.min(config.cdpDiscoveryTimeoutMs ?? DEFAULT_CDP_DISCOVERY_TIMEOUT_MS, MAX_CDP_DISCOVERY_TIMEOUT_MS);
+}
+
+async function discoverCdpEndpoint(endpoint: string, timeoutMs: number): Promise<CdpAttachAttempt> {
+  const parsed = new URL(endpoint);
+  if (parsed.protocol === 'ws:' || parsed.protocol === 'wss:') return { endpoint, discoveredEndpoint: endpoint };
+  const probeUrl = new URL('/json/version', parsed.origin).toString();
+  const body = await runtimeHooks.fetchJson(probeUrl, timeoutMs) as { webSocketDebuggerUrl?: unknown; Browser?: unknown };
+  const discoveredEndpoint = typeof body.webSocketDebuggerUrl === 'string' && body.webSocketDebuggerUrl.trim()
+    ? body.webSocketDebuggerUrl.trim()
+    : endpoint;
+  const discoveredError = cdpEndpointValidationError(discoveredEndpoint);
+  if (discoveredError) throw new Error(discoveredError);
+  return {
+    endpoint,
+    discoveredEndpoint,
+    probeUrl,
+    browserVersion: typeof body.Browser === 'string' ? body.Browser : undefined,
+  };
+}
+
+function launchOptionsForRepo(repoRoot: string, config: BrowserPluginConfig, profile: BrowserProfileSelection): Record<string, unknown> {
+  return {
     headless: false,
     acceptDownloads: true,
     viewport: { width: 1280, height: 900 },
@@ -569,32 +970,191 @@ async function withPage<T>(
     ...(!config.executablePath && config.browserChannel && config.browserChannel !== 'chromium' ? { channel: config.browserChannel } : {}),
     ...(profile.profileDirectory ? { args: [`--profile-directory=${profile.profileDirectory}`] } : {}),
   };
-  const retries = Math.min(Math.max(positiveNumber(args.retries, 1), 1), 3);
+}
+
+async function openManagedContext(
+  runtime: PlaywrightRuntime,
+  repoRoot: string,
+  config: BrowserPluginConfig,
+  target: BrowserActionTarget,
+  args: Record<string, unknown>,
+  activeMode: BrowserMode,
+  requestedMode: BrowserMode,
+  fallback?: BrowserConnectionFallback,
+): Promise<BrowserOpenHandle> {
+  const profile = selectedProfile(config, repoRoot, activeMode, target.sessionId);
+  assertBrowserProfileAvailable(repoRoot, profile.selectedProfilePath);
+  mkdirSync(profile.profileDir, { recursive: true });
+  const context = await runtime.chromium.launchPersistentContext(profile.profileDir, launchOptionsForRepo(repoRoot, config, profile));
+  await applyDomainGuard(context, config);
+  const selected = await selectPage(context, target);
   const timeout = positiveNumber(args.timeout_ms, config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= retries; attempt += 1) {
-    let context: BrowserContextLike | undefined;
+  let response: { status?: () => number } | null | undefined;
+  if (selected.matchedBy === 'new_page' || selected.matchedBy === 'blank' || comparableUrl(selected.page.url()) !== comparableUrl(target.url)) {
+    response = await selected.page.goto(target.url, { waitUntil: waitUntil(args.wait_until), timeout }) as { status?: () => number } | null | undefined;
+  }
+  const diagnostics = attachDiagnostics(selected.page);
+  diagnostics.navigation = {
+    url: target.url,
+    status: response && typeof response.status === 'function' ? response.status() : undefined,
+  };
+  const title = await selected.page.title();
+  const connection = refreshConnectionTab({
+    requestedMode,
+    mode: activeMode,
+    provider: 'playwright-persistent-context',
+    attached: false,
+    fallback,
+    profile: {
+      profileMode: activeMode === 'isolated' ? 'repo_local' : config.profileMode,
+      profileDirectory: profile.profileDirectory,
+      selectedProfilePath: profile.selectedProfilePath,
+    },
+    tabInventory: selected.inventory,
+    sessionResume: selected.sessionResume,
+  }, normalizedUrl(selected.page.url()), title, selected.matchedBy);
+  return {
+    page: selected.page,
+    diagnostics,
+    connection,
+    close: async () => {
+      await context.close().catch(() => undefined);
+    },
+  };
+}
+
+async function openAttachedContext(
+  runtime: PlaywrightRuntime,
+  repoRoot: string,
+  config: BrowserPluginConfig,
+  target: BrowserActionTarget,
+  args: Record<string, unknown>,
+): Promise<{ handle?: BrowserOpenHandle; attempts: CdpAttachAttempt[] }> {
+  const attempts: CdpAttachAttempt[] = [];
+  const profile = selectedProfile(config, repoRoot, 'managed_persistent', target.sessionId);
+  assertBrowserProfileAvailable(repoRoot, profile.selectedProfilePath);
+  const connectOverCDP = runtime.chromium.connectOverCDP;
+  if (typeof connectOverCDP !== 'function') {
+    return {
+      attempts: [{
+        endpoint: cdpEndpoints(config)[0] ?? '(none)',
+        error: 'Playwright chromium.connectOverCDP is unavailable in this runtime.',
+      }],
+    };
+  }
+  for (const endpoint of cdpEndpoints(config)) {
+    const attempt: CdpAttachAttempt = { endpoint };
     try {
-      context = await runtimeHooks.loadPlaywright().chromium.launchPersistentContext(profile.profileDir, launchOptions);
+      const discovered = await discoverCdpEndpoint(endpoint, cdpDiscoveryTimeout(config));
+      Object.assign(attempt, discovered);
+      const browser = await connectOverCDP.call(runtime.chromium, discovered.discoveredEndpoint ?? endpoint);
+      const context = browser.contexts()[0] ?? (browser.newContext ? await browser.newContext() : undefined);
+      if (!context) throw new Error('CDP connection did not expose a browser context.');
       await applyDomainGuard(context, config);
-      const page = context.pages()[0] ?? await context.newPage();
-      const diagnostics = attachDiagnostics(page);
-      const response = await page.goto(url, {
-        waitUntil: waitUntil(args.wait_until),
-        timeout,
-      }) as { status?: () => number } | null | undefined;
+      const selected = await selectPage(context, target);
+      const timeout = positiveNumber(args.timeout_ms, config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
+      let response: { status?: () => number } | null | undefined;
+      if (selected.matchedBy === 'new_page' || selected.matchedBy === 'blank' || comparableUrl(selected.page.url()) !== comparableUrl(target.url)) {
+        response = await selected.page.goto(target.url, { waitUntil: waitUntil(args.wait_until), timeout }) as { status?: () => number } | null | undefined;
+      }
+      const diagnostics = attachDiagnostics(selected.page);
       diagnostics.navigation = {
-        url,
+        url: target.url,
         status: response && typeof response.status === 'function' ? response.status() : undefined,
       };
-      return await run(page, diagnostics);
+      const title = await selected.page.title();
+      const connection = refreshConnectionTab({
+        requestedMode: 'attach_preferred',
+        mode: 'attach_preferred',
+        provider: 'playwright-cdp',
+        attached: true,
+        endpoint: discovered.discoveredEndpoint ?? endpoint,
+        browserVersion: discovered.browserVersion,
+        profile: {
+          profileMode: config.profileMode,
+          profileDirectory: profile.profileDirectory,
+          selectedProfilePath: profile.selectedProfilePath,
+        },
+        tabInventory: selected.inventory,
+        sessionResume: selected.sessionResume,
+      }, normalizedUrl(selected.page.url()), title, selected.matchedBy);
+      return {
+        attempts,
+        handle: {
+          page: selected.page,
+          diagnostics,
+          connection,
+          close: async () => {
+            if (browser.disconnect) await Promise.resolve(browser.disconnect()).catch(() => undefined);
+            else if (browser.close) await browser.close().catch(() => undefined);
+          },
+        },
+      };
+    } catch (error) {
+      attempt.error = error instanceof Error ? error.message : String(error);
+      attempts.push(attempt);
+    }
+  }
+  return { attempts };
+}
+
+async function openBrowser(
+  repoRoot: string,
+  config: BrowserPluginConfig,
+  target: BrowserActionTarget,
+  args: Record<string, unknown>,
+): Promise<BrowserOpenHandle> {
+  const requestedMode = config.browserMode ?? 'managed_persistent';
+  const runtime = runtimeHooks.loadPlaywright();
+  if (requestedMode === 'attach_preferred') {
+    const attached = await openAttachedContext(runtime, repoRoot, config, target, args);
+    if (attached.handle) return attached.handle;
+    const fallbackPolicy = config.cdpAttachFallback ?? 'managed_persistent';
+    const reason = attached.attempts.map((attempt) => `${attempt.endpoint}: ${attempt.error ?? 'unavailable'}`).join('; ') || 'No CDP endpoint candidates were configured.';
+    if (fallbackPolicy === 'fail_closed') {
+      throw new AssistantPluginError('PLUGIN_BROWSER_CDP_UNAVAILABLE', `No configured browser CDP endpoint was attachable. Fallback policy fail_closed prevented managed launch. ${reason}`, {
+        retryable: true,
+        details: {
+          browserMode: requestedMode,
+          fallbackPolicy,
+          attempts: attached.attempts,
+        },
+      });
+    }
+    return openManagedContext(runtime, repoRoot, config, target, args, 'managed_persistent', requestedMode, {
+      policy: fallbackPolicy,
+      from: 'attach_preferred',
+      to: 'managed_persistent',
+      reason,
+      attempts: attached.attempts,
+    });
+  }
+
+  return openManagedContext(runtime, repoRoot, config, target, args, requestedMode, requestedMode);
+}
+
+async function withPage<T>(
+  repoRoot: string,
+  config: BrowserPluginConfig,
+  target: BrowserActionTarget,
+  args: Record<string, unknown>,
+  run: (page: PageLike, diagnostics: PageDiagnostics, connection: BrowserConnectionSummary) => Promise<T>,
+): Promise<T> {
+  assertUrlAllowed(target.url, config);
+  const retries = Math.min(Math.max(positiveNumber(args.retries, 1), 1), 3);
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    let handle: BrowserOpenHandle | undefined;
+    try {
+      handle = await openBrowser(repoRoot, config, target, args);
+      return await run(handle.page, handle.diagnostics, handle.connection);
     } catch (error) {
       lastError = error;
       const message = error instanceof Error ? error.message : String(error);
       const transient = /timeout|net::|ERR_|Navigation failed|Target closed|Protocol error/i.test(message);
       if (!transient || attempt >= retries) throw error;
     } finally {
-      if (context) await context.close().catch(() => undefined);
+      if (handle) await handle.close();
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
@@ -686,6 +1246,7 @@ async function finalizeInteractiveAction(
   config: BrowserPluginConfig,
   page: PageLike,
   target: BrowserActionTarget,
+  connection: BrowserConnectionSummary,
   actionId: string,
   summary: string,
   extra: Record<string, unknown> = {},
@@ -694,7 +1255,7 @@ async function finalizeInteractiveAction(
   const pageUrl = normalizedUrl(page.url());
   assertUrlAllowed(pageUrl, config);
   const title = await page.title();
-  const session = sessionFromPage(target, pageUrl, title);
+  const session = sessionFromPage(target, pageUrl, title, connection);
   saveSession(repoRoot, session);
   let screenshot: BrowserActionScreenshot | undefined;
   try {
@@ -703,7 +1264,14 @@ async function finalizeInteractiveAction(
     const message = error instanceof Error ? error.message : String(error);
     warnings.push(`Screenshot capture failed: ${message}`);
   }
-  return interactionResult(actionId, session, summary, screenshot, warnings, extra);
+  return {
+    ...interactionResult(actionId, session, summary, screenshot, warnings, extra),
+    browserConnection: {
+      ...connection,
+      tab: session.browser?.tab,
+      sessionResume: session.browser?.sessionResume,
+    },
+  };
 }
 
 function permissions(ready: boolean): AssistantPluginPermissionScope[] {
@@ -822,6 +1390,7 @@ function actions(): AssistantPluginActionDescriptor[] {
         type: 'object',
         properties: {
           enabled: { type: 'boolean' },
+          browser_mode: { type: 'string', enum: ['attach_preferred', 'managed_persistent', 'isolated'] },
           profile_mode: { type: 'string', enum: ['repo_local', 'custom'] },
           profile_dir: { type: 'string' },
           profile_directory: { type: 'string' },
@@ -831,6 +1400,12 @@ function actions(): AssistantPluginActionDescriptor[] {
           clear_browser_channel: { type: 'boolean' },
           browser_executable_path: { type: 'string' },
           clear_browser_executable_path: { type: 'boolean' },
+          cdp_endpoint: { type: 'string' },
+          clear_cdp_endpoint: { type: 'boolean' },
+          cdp_endpoint_candidates: { type: 'array', items: { type: 'string' }, maxItems: MAX_CDP_ENDPOINT_CANDIDATES },
+          clear_cdp_endpoint_candidates: { type: 'boolean' },
+          cdp_discovery_timeout_ms: { type: 'number' },
+          cdp_attach_fallback: { type: 'string', enum: ['managed_persistent', 'fail_closed'] },
           default_timeout_ms: { type: 'number' },
           allowed_domains: { type: 'array', items: { type: 'string' } },
           clear_allowed_domains: { type: 'boolean' },
@@ -1186,11 +1761,15 @@ function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPlugin
     : 0;
   const baseDetails = {
     dependencyReady,
+    browserMode: config.browserMode,
     profileMode: config.profileMode,
     profileDir: config.profileDir,
     profileDirectory: config.profileDirectory,
     browserChannel: config.browserChannel,
     executablePath: config.executablePath,
+    cdpEndpointCount: cdpEndpoints(config).length,
+    cdpAttachFallback: config.cdpAttachFallback,
+    cdpDiscoveryTimeoutMs: cdpDiscoveryTimeout(config),
     windowMode: 'visible' as const,
     sessionCount,
     activeHandoffCount,
@@ -1234,7 +1813,9 @@ function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPlugin
       warnings,
       details: {
         ...baseDetails,
-        provider: 'playwright-persistent-context',
+        provider: config.browserMode === 'attach_preferred'
+          ? 'playwright-cdp-attach-or-persistent-context'
+          : 'playwright-persistent-context',
         userFacingStatus: 'not ready',
       },
     };
@@ -1249,7 +1830,9 @@ function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPlugin
     details: {
       ...baseDetails,
       allowedDomains: config.allowedDomains,
-      provider: 'playwright-persistent-context',
+      provider: config.browserMode === 'attach_preferred'
+        ? 'playwright-cdp-attach-or-persistent-context'
+        : 'playwright-persistent-context',
       userFacingStatus: browserUserFacingStatus(config, true, sessionCount),
     },
   };
@@ -1278,7 +1861,7 @@ export function buildBrowserPluginManifest(previousRevision = 0, previousUpdated
       reason: !config.enabled
         ? 'Browser plugin is disabled.'
         : state.ready
-          ? 'Browser plugin is ready via Playwright persistent context.'
+          ? `Browser plugin is ready via ${config.browserMode === 'attach_preferred' ? 'Playwright CDP attach with explicit fallback.' : 'Playwright persistent context.'}`
           : state.errors[0],
     },
     health: state,
@@ -1304,6 +1887,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
     switch (input.actionId) {
       case 'configure': {
         const args = input.args;
+        const nextBrowserMode = parseBrowserModeInput(args.browser_mode) ?? current.browserMode;
         const nextProfileMode = parseProfileModeInput(args.profile_mode) ?? current.profileMode;
         if (stringValue(args.profile_dir) && args.profile_mode === undefined && current.profileMode !== 'custom') {
           throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'profile_mode must be set to custom before profile_dir can be used.', { retryable: false });
@@ -1312,13 +1896,25 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         const nextProfileDirectory = args.clear_profile_directory === true ? undefined : stringValue(args.profile_directory) ?? current.profileDirectory;
         const nextBrowserChannel = args.clear_browser_channel === true ? undefined : parseBrowserChannelInput(args.browser_channel) ?? current.browserChannel;
         const nextExecutablePath = args.clear_browser_executable_path === true ? undefined : stringValue(args.browser_executable_path) ?? current.executablePath;
+        const nextCdpEndpoint = args.clear_cdp_endpoint === true ? undefined : stringValue(args.cdp_endpoint) ?? current.cdpEndpoint;
+        const nextCdpEndpointCandidates = args.clear_cdp_endpoint_candidates === true
+          ? undefined
+          : stringList(args.cdp_endpoint_candidates) ?? current.cdpEndpointCandidates;
+        const nextCdpAttachFallback = parseCdpAttachFallbackInput(args.cdp_attach_fallback) ?? current.cdpAttachFallback;
         const config = saveConfig(input.repoRoot, {
           enabled: typeof args.enabled === 'boolean' ? args.enabled : current.enabled,
+          browserMode: nextBrowserMode,
           profileMode: nextProfileMode,
           profileDir: nextProfileMode === 'repo_local' ? undefined : nextProfileDir,
           profileDirectory: nextProfileMode === 'repo_local' ? undefined : nextProfileDirectory,
           browserChannel: nextBrowserChannel ?? 'chromium',
           executablePath: nextExecutablePath,
+          cdpEndpoint: nextCdpEndpoint,
+          cdpEndpointCandidates: nextCdpEndpointCandidates,
+          cdpDiscoveryTimeoutMs: typeof args.cdp_discovery_timeout_ms === 'number'
+            ? Math.min(positiveNumber(args.cdp_discovery_timeout_ms, DEFAULT_CDP_DISCOVERY_TIMEOUT_MS), MAX_CDP_DISCOVERY_TIMEOUT_MS)
+            : current.cdpDiscoveryTimeoutMs,
+          cdpAttachFallback: nextCdpAttachFallback,
           defaultTimeoutMs: typeof args.default_timeout_ms === 'number'
             ? positiveNumber(args.default_timeout_ms, DEFAULT_TIMEOUT_MS)
             : current.defaultTimeoutMs,
@@ -1339,6 +1935,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             title: session.title,
             createdAt: session.createdAt,
             updatedAt: session.updatedAt,
+            browser: session.browser,
           })),
         };
       case 'close_session':
@@ -1357,7 +1954,8 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
       case 'request_human_handoff': {
         const target = resolveActionTarget(input.repoRoot, input.args);
         assertUrlAllowed(target.url, current);
-        const profile = selectedProfile(current, input.repoRoot);
+        const handoffMode: BrowserMode = current.browserMode === 'isolated' ? 'isolated' : 'managed_persistent';
+        const profile = selectedProfile(current, input.repoRoot, handoffMode, target.sessionId);
         mkdirSync(profile.profileDir, { recursive: true });
         const handoff = await startBrowserHandoff({
           repoRoot: input.repoRoot,
@@ -1408,13 +2006,18 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         const target: BrowserActionTarget = existingSessionId
           ? { sessionId: existingSessionId, url, existingSession: loadSession(input.repoRoot, existingSessionId) }
           : { sessionId: sessionIdFor(url), url };
-        return await withPage(input.repoRoot, current, url, input.args, async (page, diagnostics) => {
-          const session = sessionFromPage(target, normalizedUrl(page.url()), await page.title());
+        return await withPage(input.repoRoot, current, target, input.args, async (page, diagnostics, connection) => {
+          const session = sessionFromPage(target, normalizedUrl(page.url()), await page.title(), connection);
           saveSession(input.repoRoot, session);
           return {
             provider: 'playwright',
             session,
             navigation: diagnostics.navigation,
+            browserConnection: {
+              ...connection,
+              tab: session.browser?.tab,
+              sessionResume: session.browser?.sessionResume,
+            },
             ...(input.args.extract_text === true
               ? { text: await extractText(page, undefined, positiveNumber(input.args.max_chars, DEFAULT_MAX_TEXT_CHARS)) }
               : {}),
@@ -1425,7 +2028,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
       case 'go_back':
       case 'wait_for_load_state': {
         const target = resolveActionTarget(input.repoRoot, input.args);
-        return await withPage(input.repoRoot, current, target.url, input.args, async (page, diagnostics) => {
+        return await withPage(input.repoRoot, current, target, input.args, async (page, diagnostics, connection) => {
           if (input.actionId === 'reload') {
             if (page.reload) await page.reload({ waitUntil: waitUntil(input.args.wait_until), timeout: positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS) });
             else await page.goto(target.url, { waitUntil: waitUntil(input.args.wait_until), timeout: positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS) });
@@ -1436,9 +2039,19 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
               timeout: positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS),
             });
           }
-          const session = sessionFromPage(target, normalizedUrl(page.url()), await page.title());
+          const session = sessionFromPage(target, normalizedUrl(page.url()), await page.title(), connection);
           saveSession(input.repoRoot, session);
-          return { provider: 'playwright', session, navigation: diagnostics.navigation, actionId: input.actionId };
+          return {
+            provider: 'playwright',
+            session,
+            navigation: diagnostics.navigation,
+            actionId: input.actionId,
+            browserConnection: {
+              ...connection,
+              tab: session.browser?.tab,
+              sessionResume: session.browser?.sessionResume,
+            },
+          };
         });
       }
       case 'get_text': {
@@ -1447,18 +2060,21 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           provider: 'playwright',
           sessionId: target.sessionId,
           url: target.url,
-          ...(await withPage(input.repoRoot, current, target.url, input.args, async (page) =>
-            extractText(page, stringValue(input.args.selector), positiveNumber(input.args.max_chars, DEFAULT_MAX_TEXT_CHARS)))),
+          ...(await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => ({
+            ...(await extractText(page, stringValue(input.args.selector), positiveNumber(input.args.max_chars, DEFAULT_MAX_TEXT_CHARS))),
+            browserConnection: connection,
+          }))),
         };
       }
       case 'get_html': {
         const target = resolveActionTarget(input.repoRoot, input.args);
-        return await withPage(input.repoRoot, current, target.url, input.args, async (page) => {
+        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           const raw = await page.evaluate<string>(EXTRACTION_SCRIPTS.html(stringValue(input.args.selector)));
           return {
             provider: 'playwright',
             sessionId: target.sessionId,
             url: target.url,
+            browserConnection: connection,
             ...truncateText(raw, positiveNumber(input.args.max_chars, DEFAULT_MAX_TEXT_CHARS)),
           };
         });
@@ -1468,13 +2084,14 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         const target = resolveActionTarget(input.repoRoot, input.args);
         const selector = requiredString(input.args.selector, 'selector');
         const limit = Math.min(positiveNumber(input.args.limit, 25), 100);
-        return await withPage(input.repoRoot, current, target.url, input.args, async (page) => {
+        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           const matches = await page.evaluate<Array<Record<string, unknown>>>(EXTRACTION_SCRIPTS.query(selector, input.actionId === 'query_selector' ? 1 : limit));
           return {
             provider: 'playwright',
             sessionId: target.sessionId,
             url: target.url,
             selector,
+            browserConnection: connection,
             ...(input.actionId === 'query_selector'
               ? { match: matches[0] ?? null, found: matches.length > 0 }
               : { matches, count: matches.length }),
@@ -1485,12 +2102,13 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         const target = resolveActionTarget(input.repoRoot, input.args);
         const selector = requiredString(input.args.selector, 'selector');
         const attribute = requiredString(input.args.attribute, 'attribute');
-        return await withPage(input.repoRoot, current, target.url, input.args, async (page) => ({
+        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => ({
           provider: 'playwright',
           sessionId: target.sessionId,
           url: target.url,
           selector,
           attribute,
+          browserConnection: connection,
           value: await page.evaluate<string | null>(EXTRACTION_SCRIPTS.attribute(selector, attribute)),
         }));
       }
@@ -1498,7 +2116,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         const target = resolveActionTarget(input.repoRoot, input.args);
         const file = screenshotFilePath(input.repoRoot, 'screenshot', target.sessionId, target.url);
         const selector = stringValue(input.args.selector);
-        const screenshot = await withPage(input.repoRoot, current, target.url, input.args, async (page) => {
+        const screenshot = await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           let bytes: number;
           if (selector && page.locator) {
             bytes = (await page.locator(selector).screenshot({ path: file })).length;
@@ -1513,6 +2131,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             bytes,
             fullPage: input.args.full_page === true,
             selector,
+            browserConnection: connection,
           };
         });
         return { provider: 'playwright', screenshot };
@@ -1523,7 +2142,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
       case 'snapshot_interactive': {
         const target = resolveActionTarget(input.repoRoot, input.args);
         const limit = Math.min(positiveNumber(input.args.limit, 50), 200);
-        return await withPage(input.repoRoot, current, target.url, input.args, async (page) => {
+        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           const script = input.actionId === 'extract_links'
             ? EXTRACTION_SCRIPTS.links(limit)
             : input.actionId === 'extract_tables'
@@ -1538,17 +2157,19 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             url: target.url,
             actionId: input.actionId,
             data,
+            browserConnection: connection,
           };
         });
       }
       case 'get_console_errors':
       case 'get_failed_requests': {
         const target = resolveActionTarget(input.repoRoot, input.args);
-        return await withPage(input.repoRoot, current, target.url, input.args, async (_page, diagnostics) => ({
+        return await withPage(input.repoRoot, current, target, input.args, async (_page, diagnostics, connection) => ({
           provider: 'playwright',
           sessionId: target.sessionId,
           url: target.url,
           navigation: diagnostics.navigation,
+          browserConnection: connection,
           ...(input.actionId === 'get_console_errors'
             ? { consoleErrors: diagnostics.consoleErrors.slice(0, 50) }
             : { failedRequests: diagnostics.failedRequests.slice(0, 50) }),
@@ -1564,7 +2185,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         const selector = requiredString(input.args.selector, 'selector');
         const timeoutMs = positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
         try {
-          return await withPage(input.repoRoot, current, target.url, input.args, async (page) => {
+          return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
             if (input.actionId === 'click') await page.click(selector, { timeout: timeoutMs });
             else if (input.actionId === 'double_click') {
               if (page.dblclick) await page.dblclick(selector, { timeout: timeoutMs });
@@ -1592,7 +2213,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
                     : input.actionId === 'check'
                       ? `Checked ${selector}.`
                       : `Unchecked ${selector}.`;
-            return finalizeInteractiveAction(input.repoRoot, current, page, target, input.actionId, summary, { selector });
+            return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, input.actionId, summary, { selector });
           });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -1608,11 +2229,11 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         const selector = requiredString(input.args.selector, 'selector');
         const text = requiredString(input.args.text, 'text');
         const timeoutMs = positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
-        return await withPage(input.repoRoot, current, target.url, input.args, async (page) => {
+        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           if (input.actionId === 'fill' || !page.type) await page.fill(selector, text, { timeout: timeoutMs });
           else await page.type(selector, text, { timeout: timeoutMs });
           await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
-          return finalizeInteractiveAction(input.repoRoot, current, page, target, input.actionId, `${input.actionId} ${selector} with ${text.length} characters.`, {
+          return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, input.actionId, `${input.actionId} ${selector} with ${text.length} characters.`, {
             selector,
             textLength: text.length,
           });
@@ -1623,20 +2244,20 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         const selector = requiredString(input.args.selector, 'selector');
         const values = Array.isArray(input.args.values) ? input.args.values.map(String) : [];
         if (values.length === 0) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'values is required.', { retryable: false });
-        return await withPage(input.repoRoot, current, target.url, input.args, async (page) => {
+        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           if (page.selectOption) await page.selectOption(selector, values, { timeout: positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS) });
           await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
-          return finalizeInteractiveAction(input.repoRoot, current, page, target, 'select_option', `Selected ${values.length} option(s) on ${selector}.`, { selector, values });
+          return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'select_option', `Selected ${values.length} option(s) on ${selector}.`, { selector, values });
         });
       }
       case 'press': {
         const target = resolveActionTarget(input.repoRoot, input.args);
         const selector = requiredString(input.args.selector, 'selector');
         const key = requiredString(input.args.key, 'key');
-        return await withPage(input.repoRoot, current, target.url, input.args, async (page) => {
+        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           await page.press(selector, key, { timeout: positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS) });
           await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
-          return finalizeInteractiveAction(input.repoRoot, current, page, target, 'press', `Pressed ${key} on ${selector}.`, {
+          return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'press', `Pressed ${key} on ${selector}.`, {
             selector,
             key,
           });
@@ -1645,23 +2266,23 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
       case 'keyboard_shortcut': {
         const target = resolveActionTarget(input.repoRoot, input.args);
         const key = requiredString(input.args.key, 'key');
-        return await withPage(input.repoRoot, current, target.url, input.args, async (page) => {
+        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           if (page.keyboard?.press) await page.keyboard.press(key);
           else await page.press('body', key, { timeout: positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS) });
           await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
-          return finalizeInteractiveAction(input.repoRoot, current, page, target, 'keyboard_shortcut', `Pressed shortcut ${key}.`, { key });
+          return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'keyboard_shortcut', `Pressed shortcut ${key}.`, { key });
         });
       }
       case 'wait_for_selector': {
         const target = resolveActionTarget(input.repoRoot, input.args);
         const selector = requiredString(input.args.selector, 'selector');
         const state = waitForSelectorState(input.args.state);
-        return await withPage(input.repoRoot, current, target.url, input.args, async (page) => {
+        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           await page.waitForSelector(selector, {
             state,
             timeout: positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS),
           });
-          return finalizeInteractiveAction(input.repoRoot, current, page, target, 'wait_for_selector', `Observed ${selector} in state ${state}.`, {
+          return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'wait_for_selector', `Observed ${selector} in state ${state}.`, {
             selector,
             state,
           });
@@ -1678,7 +2299,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         if (/\.(exe|dmg|pkg|sh|bat|cmd|app)$/i.test(resolved)) {
           throw new AssistantPluginError('PLUGIN_POLICY_BLOCKED', 'Executable file attachments are not allowed.', { retryable: false });
         }
-        return await withPage(input.repoRoot, current, target.url, input.args, async (page) => {
+        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           await page.evaluate((payload) => {
             const args = payload as { selector: string; path: string };
             const el = document.querySelector(args.selector) as HTMLInputElement | null;
@@ -1690,7 +2311,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             await anyPage.setInputFiles(selector, resolved);
           }
           await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
-          return finalizeInteractiveAction(input.repoRoot, current, page, target, 'attach_local_file', `Attached local file to ${selector}.`, {
+          return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'attach_local_file', `Attached local file to ${selector}.`, {
             selector,
             fileName: basename(resolved),
           });
@@ -1704,7 +2325,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         const suggested = stringValue(input.args.suggested_name) ?? `download-${Date.now()}`;
         const safeName = suggested.replace(/[^a-zA-Z0-9._-]+/g, '_');
         const dest = join(downloadDir, safeName);
-        return await withPage(input.repoRoot, current, target.url, input.args, async (page) => {
+        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           await page.click(selector, { timeout: positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS) });
           // Best-effort artifact placeholder when Playwright download events are unavailable in mocks.
           if (!existsSync(dest)) writeFileSync(dest, '');
@@ -1713,7 +2334,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             throw new AssistantPluginError('PLUGIN_POLICY_BLOCKED', 'Downloaded executable files are not auto-opened and were discarded.', { retryable: false });
           }
           await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
-          const result = await finalizeInteractiveAction(input.repoRoot, current, page, target, 'await_file_transfer', `Captured download artifact for ${selector}.`, {
+          const result = await finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'await_file_transfer', `Captured download artifact for ${selector}.`, {
             selector,
             download: {
               path: dest,

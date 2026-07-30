@@ -117,6 +117,88 @@ function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?:
   } as never;
 }
 
+function mockAttachPlaywright(
+  initialPages: Array<{ url: string; title: string }> = [],
+  options: { connectError?: string; managedTitle?: string } = {},
+) {
+  const events = {
+    connects: [] as string[],
+    disconnects: 0,
+    launches: [] as Array<{ userDataDir: string; options: Record<string, unknown> }>,
+    newPages: 0,
+    gotos: [] as string[],
+    broughtToFront: [] as string[],
+  };
+
+  const makePage = (state: { url: string; title: string }) => ({
+    async goto(url: string) {
+      state.url = url;
+      events.gotos.push(url);
+    },
+    async title() {
+      return state.title;
+    },
+    url() {
+      return state.url;
+    },
+    async evaluate<T>() {
+      return 'Attached page text' as T;
+    },
+    async screenshot(args: Record<string, unknown>) {
+      const path = typeof args.path === 'string' ? args.path : undefined;
+      if (path) writeFileSync(path, 'png');
+      return Buffer.from('png');
+    },
+    async click() {},
+    async fill() {},
+    async press() {},
+    async waitForSelector() {
+      return {};
+    },
+    async bringToFront() {
+      events.broughtToFront.push(state.title);
+    },
+  });
+
+  const states = initialPages.map((page) => ({ ...page }));
+  const pages = states.map(makePage);
+  const context = {
+    pages() {
+      return pages;
+    },
+    async newPage() {
+      events.newPages += 1;
+      const state = { url: 'about:blank', title: options.managedTitle ?? 'New Page' };
+      states.push(state);
+      const page = makePage(state);
+      pages.push(page);
+      return page;
+    },
+    async close() {},
+    async route() {},
+  };
+
+  return {
+    chromium: {
+      async connectOverCDP(endpoint: string) {
+        events.connects.push(endpoint);
+        if (options.connectError) throw new Error(options.connectError);
+        return {
+          contexts: () => [context],
+          disconnect: () => {
+            events.disconnects += 1;
+          },
+        };
+      },
+      async launchPersistentContext(userDataDir: string, launchOptions: Record<string, unknown>) {
+        events.launches.push({ userDataDir, options: launchOptions });
+        return context;
+      },
+    },
+    events,
+  } as never;
+}
+
 describe('browser plugin', () => {
   test('manifest keeps readonly actions readonly and only exposes the supported interaction surface', async () => {
     const { repoRoot } = repoFixture();
@@ -381,6 +463,230 @@ describe('browser plugin', () => {
       channel: 'chrome',
       args: ['--profile-directory=Profile 1'],
     });
+  });
+
+  test('attach_preferred falls back to managed persistent only when configured', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpEndpoint: 'ws://127.0.0.1:9222/devtools/browser/stale',
+      cdpAttachFallback: 'managed_persistent',
+      allowedDomains: ['example.com'],
+    });
+    const runtime = mockAttachPlaywright([], { connectError: 'ECONNREFUSED 127.0.0.1:9222' }) as unknown as {
+      events: {
+        connects: string[];
+        launches: Array<{ userDataDir: string; options: Record<string, unknown> }>;
+      };
+    };
+
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      loadPlaywright: () => runtime as never,
+    });
+
+    const result = await executeBrowserPluginAction({
+      controllerHome: repoRoot,
+      repoId: 'repo',
+      repoRoot,
+      pluginId: 'browser',
+      actionId: 'open_page',
+      requestId: 'browser-attach-fallback',
+      args: { url: 'https://example.com/' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+
+    expect(runtime.events.connects).toEqual(['ws://127.0.0.1:9222/devtools/browser/stale']);
+    expect(runtime.events.launches).toHaveLength(1);
+    expect(result.browserConnection).toMatchObject({
+      requestedMode: 'attach_preferred',
+      mode: 'managed_persistent',
+      fallback: {
+        policy: 'managed_persistent',
+        from: 'attach_preferred',
+      },
+    });
+  });
+
+  test('attach_preferred discovers configured loopback CDP endpoints before connecting', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpEndpoint: 'http://127.0.0.1:9223',
+      cdpAttachFallback: 'fail_closed',
+      allowedDomains: ['example.com'],
+    });
+    const runtime = mockAttachPlaywright([
+      { url: 'https://example.com/', title: 'Discovered' },
+    ]) as unknown as {
+      events: { connects: string[] };
+    };
+    const probes: Array<{ url: string; timeoutMs: number }> = [];
+
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      loadPlaywright: () => runtime as never,
+      fetchJson: async (url, timeoutMs) => {
+        probes.push({ url, timeoutMs });
+        return {
+          webSocketDebuggerUrl: 'ws://127.0.0.1:9223/devtools/browser/live',
+          Browser: 'Chrome/140.0.0.0',
+        };
+      },
+    });
+
+    const result = await executeBrowserPluginAction({
+      controllerHome: repoRoot,
+      repoId: 'repo',
+      repoRoot,
+      pluginId: 'browser',
+      actionId: 'open_page',
+      requestId: 'browser-attach-discover',
+      args: { url: 'https://example.com/' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+
+    expect(probes).toEqual([{ url: 'http://127.0.0.1:9223/json/version', timeoutMs: 1500 }]);
+    expect(runtime.events.connects).toEqual(['ws://127.0.0.1:9223/devtools/browser/live']);
+    expect(result.browserConnection).toMatchObject({
+      mode: 'attach_preferred',
+      endpoint: 'ws://127.0.0.1:9223/devtools/browser/live',
+      browserVersion: 'Chrome/140.0.0.0',
+    });
+  });
+
+  test('attach_preferred fail_closed reports stale CDP endpoint diagnostics', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpEndpoint: 'ws://127.0.0.1:9222/devtools/browser/stale',
+      cdpAttachFallback: 'fail_closed',
+      allowedDomains: ['example.com'],
+    });
+    const runtime = mockAttachPlaywright([], { connectError: 'ECONNREFUSED 127.0.0.1:9222' }) as unknown as {
+      events: { launches: unknown[] };
+    };
+
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      loadPlaywright: () => runtime as never,
+    });
+
+    let error: unknown;
+    try {
+      await executeBrowserPluginAction({
+        controllerHome: repoRoot,
+        repoId: 'repo',
+        repoRoot,
+        pluginId: 'browser',
+        actionId: 'open_page',
+        requestId: 'browser-attach-fail-closed',
+        args: { url: 'https://example.com/' },
+        origin: { surface: 'local-ui', actor: 'test' },
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(AssistantPluginError);
+    expect((error as AssistantPluginError).code).toBe('PLUGIN_BROWSER_CDP_UNAVAILABLE');
+    expect((error as Error).message).toContain('No configured browser CDP endpoint was attachable');
+    expect((error as AssistantPluginError).details).toMatchObject({
+      browserMode: 'attach_preferred',
+      fallbackPolicy: 'fail_closed',
+      attempts: [
+        {
+          endpoint: 'ws://127.0.0.1:9222/devtools/browser/stale',
+          error: 'ECONNREFUSED 127.0.0.1:9222',
+        },
+      ],
+    });
+    expect(runtime.events.launches).toHaveLength(0);
+  });
+
+  test('attach_preferred reuses matching tabs and persists resume metadata', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpEndpoint: 'ws://127.0.0.1:9222/devtools/browser/live',
+      cdpAttachFallback: 'fail_closed',
+      allowedDomains: ['example.com'],
+    });
+    const firstRuntime = mockAttachPlaywright([
+      { url: 'https://example.com/other', title: 'Other' },
+      { url: 'https://example.com/', title: 'Target' },
+    ]) as unknown as {
+      events: { newPages: number; gotos: string[]; disconnects: number; broughtToFront: string[] };
+    };
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      loadPlaywright: () => firstRuntime as never,
+    });
+
+    const opened = await executeBrowserPluginAction({
+      controllerHome: repoRoot,
+      repoId: 'repo',
+      repoRoot,
+      pluginId: 'browser',
+      actionId: 'open_page',
+      requestId: 'browser-attach-reuse-open',
+      args: { url: 'https://example.com/' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const sessionId = String((opened.session as Record<string, unknown>).sessionId);
+    const saved = JSON.parse(readFileSync(join(repoRoot, '.repo-harness/browser/sessions', `${sessionId}.json`), 'utf8')) as Record<string, any>;
+
+    expect(firstRuntime.events.newPages).toBe(0);
+    expect(firstRuntime.events.gotos).toEqual([]);
+    expect(firstRuntime.events.broughtToFront).toEqual(['Target']);
+    expect(firstRuntime.events.disconnects).toBe(1);
+    expect(saved.browser).toMatchObject({
+      mode: 'attach_preferred',
+      activeMode: 'attach_preferred',
+      tab: {
+        url: 'https://example.com/',
+        title: 'Target',
+        matchedBy: 'exact_url',
+      },
+    });
+
+    const secondRuntime = mockAttachPlaywright([
+      { url: 'https://example.com/', title: 'Wrong Duplicate' },
+      { url: 'https://example.com/', title: 'Target' },
+    ]) as unknown as {
+      events: { newPages: number; gotos: string[]; broughtToFront: string[] };
+    };
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      loadPlaywright: () => secondRuntime as never,
+    });
+
+    await executeBrowserPluginAction({
+      controllerHome: repoRoot,
+      repoId: 'repo',
+      repoRoot,
+      pluginId: 'browser',
+      actionId: 'get_text',
+      requestId: 'browser-attach-reuse-resume',
+      args: { session_id: sessionId },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+
+    expect(secondRuntime.events.newPages).toBe(0);
+    expect(secondRuntime.events.gotos).toEqual([]);
+    expect(secondRuntime.events.broughtToFront).toEqual(['Target']);
   });
 
   test('wait_for_selector keeps authorization despite being read-only', async () => {
