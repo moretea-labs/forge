@@ -71,7 +71,7 @@ function structured(result: Awaited<ReturnType<typeof callExecutionTool>>): Reco
 async function prepare(ctx: MultiRepositoryMcpToolContext, repoId: string, goalId = 'goal-1') {
   structured(await callExecutionTool(ctx, 'session_start', {}));
   structured(await callExecutionTool(ctx, 'session_bind_repository', { repo_id: repoId }));
-  const prepared = structured(await callExecutionTool(ctx, 'work_prepare', { repo_id: repoId, goal_id: goalId, objective: 'Run the bounded Goal checks', isolation: 'reuse' }));
+  const prepared = structured(await callExecutionTool(ctx, 'work_prepare', { repo_id: repoId, goal_id: goalId, objective: 'Run the bounded Goal checks', isolation: 'reuse', request_id: `prepare-${goalId}` }));
   return String(prepared.work.workId);
 }
 
