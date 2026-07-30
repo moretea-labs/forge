@@ -73,6 +73,11 @@ describe('controller result redaction', () => {
     expect(JSON.stringify(read.items)).toContain('SAFE_MARKER');
     expect(JSON.stringify(read.items)).toContain('continue-page-123');
     expect(JSON.stringify(read.items)).toContain('safe local read');
+    expect(sanitizeControllerResultStore(fx.controllerHome, fx.repoId)).toMatchObject({
+      scanned: 1,
+      changed: 0,
+      failed: 0,
+    });
   });
 
   test('replaces historical raw result data without returning its contents', () => {

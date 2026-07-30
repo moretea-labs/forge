@@ -159,6 +159,10 @@ export function redactSensitiveValue<T>(input: T): {
 
   const visit = (value: unknown, key?: string, depth = 0): unknown => {
     if (key && isSensitiveOutputKey(key) && value !== null && value !== undefined && !isSafeAuthorizationDiagnostic(key, value)) {
+      // The canonical placeholder is already safe. Treating it as a fresh
+      // redaction would make historical result maintenance rewrite the same
+      // payload and metadata on every pass.
+      if (value === '[REDACTED]') return value;
       changed = true;
       counts.set('sensitive_key', (counts.get('sensitive_key') ?? 0) + 1);
       return '[REDACTED]';
