@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -15,6 +15,7 @@ import { ensureControllerHome } from '../../src/cli/repositories/controller-home
 import { writeRepositoryAccessPolicy } from '../../src/runtime/control-plane/governance/access-policy';
 import { callExecutionTool } from '../../src/runtime/gateway/mcp/execution-tools';
 import { listExecutionJobs } from '../../src/runtime/execution/jobs/store';
+import { getWorkContract, listWorkContracts, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 
 const roots: string[] = [];
 
@@ -63,6 +64,88 @@ function structured(result: Awaited<ReturnType<typeof callExecutionTool>>): Reco
 }
 
 describe('controller-owned Work recovery and finalize cleanup', () => {
+  test('deduplicates identical work_prepare retries and rejects changed request fingerprints', async () => {
+    const { repoRoot, controllerHome, repository, context } = fixture();
+    const ctx = context('session-idempotent-prepare', 'controller-idempotent-a');
+    structured(await callExecutionTool(ctx, 'session_start', {}));
+    structured(await callExecutionTool(ctx, 'session_bind_repository', { repo_id: repository.repoId }));
+    const input = {
+      repo_id: repository.repoId,
+      objective: 'Prepare exactly one isolated workspace',
+      isolation: 'new_worktree',
+      request_id: 'work-prepare-idempotency-test',
+    };
+
+    const [first, second] = await Promise.all([
+      callExecutionTool(ctx, 'work_prepare', input),
+      callExecutionTool(ctx, 'work_prepare', input),
+    ]).then((results) => results.map(structured));
+    expect(second.reused).toBe(true);
+    expect(second.work.workId).toBe(first.work.workId);
+    expect(second.work.checkoutId).toBe(first.work.checkoutId);
+    expect(second.work.branch).toBe(first.work.branch);
+    expect(second.work.worktreePath).toBe(first.work.worktreePath);
+
+    const restarted = context('session-idempotent-prepare', 'controller-idempotent-b');
+    structured(await callExecutionTool(restarted, 'session_start', {}));
+    const afterRestart = structured(await callExecutionTool(restarted, 'work_prepare', input));
+    expect(afterRestart.reused).toBe(true);
+    expect(afterRestart.work.workId).toBe(first.work.workId);
+
+    const conflict = structured(await callExecutionTool(restarted, 'work_prepare', {
+      ...input,
+      objective: 'Changed objective must not create another Work',
+    }));
+    expect(conflict.error.code).toBe('WORK_PREPARE_REQUEST_CONFLICT');
+
+    const contracts = listWorkContracts({ controllerHome, repoId: repository.repoId, status: 'all', limit: 100 })
+      .filter((contract) => contract.requestId === input.request_id);
+    expect(contracts).toHaveLength(1);
+    const refreshed = listRepositories(controllerHome, { includeRemoved: true }).find((entry) => entry.repoId === repository.repoId)!;
+    const sourceRoot = realpathSync(repoRoot);
+    const managedPaths = refreshed.checkouts
+      .filter((checkout) => realpathSync(checkout.canonicalRoot) !== sourceRoot && repositoryCheckoutLifecycle(checkout) !== 'removed')
+      .map((checkout) => checkout.canonicalRoot);
+    expect(new Set(managedPaths)).toEqual(new Set([String(first.work.worktreePath)]));
+  });
+
+  test('returns a terminal Work without reactivating or reclaiming it', async () => {
+    const { controllerHome, repository, context } = fixture();
+    const ctx = context('session-terminal-prepare', 'controller-terminal-prepare');
+    structured(await callExecutionTool(ctx, 'session_start', {}));
+    structured(await callExecutionTool(ctx, 'session_bind_repository', { repo_id: repository.repoId }));
+    const input = {
+      repo_id: repository.repoId,
+      objective: 'Prepare a Work that will later be cancelled',
+      isolation: 'reuse',
+      request_id: 'work-prepare-terminal-test',
+    };
+    const prepared = structured(await callExecutionTool(ctx, 'work_prepare', input));
+    const workId = String(prepared.work.workId);
+    updateWorkContract({ controllerHome, repoId: repository.repoId }, workId, { status: 'cancelled' });
+
+    const retried = structured(await callExecutionTool(ctx, 'work_prepare', input));
+    expect(retried.reused).toBe(true);
+    expect(retried.terminal).toBe(true);
+    expect(retried.controllerClaimed).toBe(false);
+    expect(retried.workContractStatus).toBe('cancelled');
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.status).toBe('cancelled');
+  });
+
+  test('requires request_id before creating a new Work', async () => {
+    const { controllerHome, repository, context } = fixture();
+    const ctx = context('session-prepare-request-required', 'controller-prepare-request-required');
+    structured(await callExecutionTool(ctx, 'session_start', {}));
+    structured(await callExecutionTool(ctx, 'session_bind_repository', { repo_id: repository.repoId }));
+    const rejected = structured(await callExecutionTool(ctx, 'work_prepare', {
+      repo_id: repository.repoId,
+      objective: 'Missing request identity',
+      isolation: 'reuse',
+    }));
+    expect(rejected.error.code).toBe('WORK_PREPARE_REQUEST_ID_REQUIRED');
+    expect(listWorkContracts({ controllerHome, repoId: repository.repoId, status: 'all', limit: 100 })).toHaveLength(0);
+  });
+
   test('continues an explicit Work handle across controller and MCP session changes', async () => {
     const { repoRoot, repository, context } = fixture();
     const first = context('session-original', 'controller-a');
@@ -72,6 +155,7 @@ describe('controller-owned Work recovery and finalize cleanup', () => {
       repo_id: repository.repoId,
       objective: 'Recover this work after session restart',
       isolation: 'reuse',
+      request_id: 'prepare-cross-session-recovery',
     }));
     const workId = String(prepared.work.workId);
 
@@ -111,6 +195,7 @@ describe('controller-owned Work recovery and finalize cleanup', () => {
       repo_id: repository.repoId,
       objective: 'Execute only through Process Runtime',
       isolation: 'reuse',
+      request_id: 'prepare-process-runtime-work',
     }));
     const workId = String(prepared.work.workId);
     const jobCountBefore = listExecutionJobs(controllerHome, repository.repoId).length;
@@ -156,6 +241,7 @@ describe('controller-owned Work recovery and finalize cleanup', () => {
       repo_id: targetRepository.repoId,
       objective: 'Execute only in the explicitly bound target repository',
       isolation: 'reuse',
+      request_id: 'prepare-cross-repository-work',
     }));
     const workId = String(prepared.work.workId);
     expect(prepared.work.repoId).toBe(targetRepository.repoId);
@@ -183,6 +269,7 @@ describe('controller-owned Work recovery and finalize cleanup', () => {
       repo_id: repository.repoId,
       objective: 'Reconcile externally completed merge before cleanup',
       isolation: 'new_worktree',
+      request_id: 'prepare-cleanup-reconcile-work',
     }));
     const workId = String(prepared.work.workId);
     const branch = String(prepared.work.branch);
@@ -223,6 +310,7 @@ describe('controller-owned Work recovery and finalize cleanup', () => {
       repo_id: repository.repoId,
       objective: 'Finalize a branch committed before Work stages recorded the commit',
       isolation: 'new_worktree',
+      request_id: 'prepare-precommitted-finalize-work',
     }));
     const workId = String(prepared.work.workId);
     const branch = String(prepared.work.branch);
@@ -268,6 +356,7 @@ describe('controller-owned Work recovery and finalize cleanup', () => {
       repo_id: repository.repoId,
       objective: 'Finalize an archived managed checkout retained after rollout recovery',
       isolation: 'new_worktree',
+      request_id: 'prepare-archived-finalize-work',
     }));
     const workId = String(prepared.work.workId);
     const branch = String(prepared.work.branch);
@@ -321,6 +410,7 @@ describe('controller-owned Work recovery and finalize cleanup', () => {
       repo_id: repository.repoId,
       objective: 'Finalize managed worktree',
       isolation: 'new_worktree',
+      request_id: 'prepare-finalize-managed-worktree',
     }));
     const workId = String(prepared.work.workId);
     const branch = String(prepared.work.branch);

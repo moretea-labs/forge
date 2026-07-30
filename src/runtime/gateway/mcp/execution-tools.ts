@@ -19,9 +19,11 @@ import { ensureManagedWorkspace } from '../../workflow/campaigns/workspace';
 import { listControllerChecks } from '../../../cli/controller/check-runner';
 import { readRepositoryAccessPolicy } from '../../control-plane/governance/access-policy';
 import { createWorkContract, getWorkContract, updateWorkContract, appendVerificationRecord } from '../../control-plane/facade/work-contract-store';
+import { isTerminalWorkContractStatus } from '../../control-plane/facade/types';
 import { claimControllerSession, getControllerSession, resumeControllerSession } from '../../control-plane/facade/controller-session-store';
 import { currentControllerInstanceId, requireExecutionSession, startExecutionSession, updateExecutionSession, type ExecutionSessionContext, type SessionIdentity } from '../../control-plane/execution/session-store';
 import { currentPermissionSnapshotVersion, validateWorkHandle } from '../../control-plane/execution/validation';
+import { withWorkPrepareRequest } from '../../control-plane/execution/work-prepare-request-store';
 import { markWorkHandleFailed, newWorkId, readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkFinalizationStages, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
 import { assertResolvedAuthorization, createGoalDelegation, decideAuthorization, resolveAuthorizationRequest, type AuthorizationDecision, type AuthorizationRiskClass } from '../../control-plane/governance/authorization';
 import { readControllerResult, searchControllerResult, writeControllerResult } from '../../evidence/result-store';
@@ -155,6 +157,24 @@ function initialStage(): WorkFinalizationStages {
 function gitHead(root: string): string | undefined {
   const output = spawnSync('git', ['-C', root, 'rev-parse', '--verify', 'HEAD'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000 });
   return output.status === 0 && typeof output.stdout === 'string' ? output.stdout.trim() : undefined;
+}
+
+function boundedStringArray(value: unknown, limit: number): string[] {
+  return Array.isArray(value) ? value.map(String).slice(0, limit) : [];
+}
+
+function workPrepareFingerprint(input: {
+  repoId: string;
+  requestedCheckoutId?: string;
+  isolation: 'reuse' | 'new_worktree' | 'auto';
+  objective: string;
+  goalId?: string;
+  acceptanceCriteria: string[];
+  allowedPaths: string[];
+  checks: string[];
+  baseRef?: string;
+}): string {
+  return createHash('sha256').update(JSON.stringify({ schemaVersion: 1, operation: 'work_prepare', ...input })).digest('hex');
 }
 
 function makeBoundedResult(ctx: MultiRepositoryMcpToolContext, session: ExecutionSessionContext, repoId: string, workIdValue: string | undefined, kind: 'inspection' | 'command' | 'validation' | 'finalization' | 'generic', value: Record<string, unknown>): Record<string, unknown> {
@@ -307,63 +327,140 @@ function prepareWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, un
     return { session: requireSession(ctx, args), work: compactHandle(existing), reused: true, controllerClaimed: true };
   }
 
+  const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
+  if (!requestId) throw new Error('WORK_PREPARE_REQUEST_ID_REQUIRED: new work preparation requires request_id');
   const isolation = args.isolation === 'reuse' || args.isolation === 'new_worktree' || args.isolation === 'auto' ? args.isolation : 'auto';
   const objective = String(args.objective ?? 'Controller-managed repository work').trim().slice(0, 2_000);
+  const goalId = typeof args.goal_id === 'string' && args.goal_id.trim() ? args.goal_id.trim() : undefined;
+  const acceptanceCriteria = boundedStringArray(args.acceptance_criteria, 20);
+  const allowedPaths = boundedStringArray(args.allowed_paths, 50);
+  const checks = boundedStringArray(args.checks, 30);
+  const baseRef = typeof args.base_ref === 'string' && args.base_ref.trim() ? args.base_ref.trim() : undefined;
+  const requestedCheckoutId = typeof args.checkout_id === 'string' && args.checkout_id.trim() ? args.checkout_id.trim() : undefined;
   const baseCheckoutId = repository.activeCheckoutId;
   const baseStatus = repositoryGitStatus(repository);
   if (isolation === 'reuse' && !baseStatus.clean) throw new Error('WORKTREE_DIRTY: reuse was requested but the selected checkout is dirty; choose new_worktree or auto');
   const useWorktree = isolation === 'new_worktree' || (isolation === 'auto' && !baseStatus.clean);
-  const createdWorkId = newWorkId();
   const policy = readRepositoryAccessPolicy(ctx.controllerHome, repository.repoId);
-  const contract = createWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, {
-    workId: createdWorkId,
+  const fingerprint = workPrepareFingerprint({
     repoId: repository.repoId,
-    mode: useWorktree ? 'goal_workloop' : 'direct_control',
+    requestedCheckoutId,
+    isolation,
     objective,
-    acceptanceCriteria: Array.isArray(args.acceptance_criteria) ? args.acceptance_criteria.map(String).slice(0, 20) : [],
-    allowedPaths: Array.isArray(args.allowed_paths) ? args.allowed_paths.map(String).slice(0, 50) : [],
-    forbiddenPaths: [],
-    checks: Array.isArray(args.checks) ? args.checks.map(String).slice(0, 30) : [],
-    constraints: { accessMode: policy.mode, workspaceMode: useWorktree ? 'isolated' : 'current', requireWorktree: useWorktree, allowCommit: true, allowMerge: true, allowCleanup: true },
-    worktreePolicy: { required: useWorktree, reason: useWorktree ? 'work_prepare selected isolated worktree execution' : 'explicitly reused a registered checkout' },
-    requestedBy: 'chatgpt',
-  });
-  const goalId = typeof args.goal_id === 'string' && args.goal_id.trim() ? args.goal_id.trim() : undefined;
-  const delegation = createGoalDelegation({
-    sessionId: session.sessionId,
-    repositoryId: repository.repoId,
-    workId: createdWorkId,
     goalId,
-    allowedRiskClasses: ['readonly', 'local_repo_write', 'workspace_write', 'local_command', 'dependency_change', 'local_git'],
-    deniedRiskClasses: ['remote_write', 'destructive', 'secret_access', 'outside_repository'],
-    permissionSnapshotVersion: policy.revision,
-    source: 'gpt_risk_delegate',
+    acceptanceCriteria,
+    allowedPaths,
+    checks,
+    baseRef,
   });
-  try {
-    const workspace = useWorktree
-      ? ensureManagedWorkspace(ctx.controllerHome, repository, { requestId: createdWorkId, title: objective, baseRef: typeof args.base_ref === 'string' ? args.base_ref : undefined })
-      : { mode: 'current' as const, checkoutId: baseCheckoutId, root: repository.canonicalRoot, branch: baseStatus.branch ?? 'detached', baseRevision: baseStatus.head ?? undefined, managed: false };
-    const refreshed = getRepository(repository.repoId, ctx.controllerHome);
-    const checkout = selectRepositoryCheckout(refreshed, workspace.checkoutId);
-    const branch = workspace.branch || repositoryGitStatus(checkout).branch;
-    if (!branch) throw new Error('WORKTREE_DETACHED: selected worktree has no branch');
-    const head = gitHead(checkout.canonicalRoot);
-    const handle: WorkHandleState = {
-      schemaVersion: 1, workId: createdWorkId, sessionId: session.sessionId, principalId: session.principalId,
-      repositoryId: repository.repoId, checkoutId: checkout.activeCheckoutId, worktreePath: checkout.canonicalRoot, branch,
-      sourceCheckoutId: baseCheckoutId, managedWorktree: workspace.managed, workContractId: contract.workId, goalId, delegationVersion: delegation.version,
-      baseCommit: workspace.baseRevision ?? head, expectedHead: head, permissionSnapshotVersion: policy.revision,
-      state: 'prepared', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), finalization: initialStage(),
-    };
-    writeWorkHandle(ctx.controllerHome, handle);
-    updateWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, contract.workId, { status: 'running', worktreeRef: checkout.canonicalRoot });
-    const nextSession = updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), { activeRepositoryId: repository.repoId, activeCheckoutId: checkout.activeCheckoutId, activeWorkId: createdWorkId, permissionSnapshotVersion: policy.revision, goalDelegation: delegation, lastValidatedAt: new Date().toISOString() });
-    claimPreparedWorkOwnership(ctx, nextSession, handle, args);
-    return { session: nextSession, work: compactHandle(handle), reused: false, isolation: workspace.mode, controllerClaimed: true };
-  } catch (error) {
-    updateWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, contract.workId, { status: 'failed' });
-    throw error;
-  }
+
+  return withWorkPrepareRequest({
+    controllerHome: ctx.controllerHome,
+    repoId: repository.repoId,
+    sessionId: session.sessionId,
+    principalId: session.principalId,
+    requestId,
+    fingerprint,
+    proposedWorkId: newWorkId(),
+  }, (request, requestReused) => {
+    const createdWorkId = request.workId;
+    const existingHandle = readWorkHandle(ctx.controllerHome, repository.repoId, createdWorkId);
+    if (existingHandle) {
+      if (existingHandle.principalId !== session.principalId || existingHandle.sessionId !== session.sessionId) {
+        throw new Error(`WORK_PREPARE_REQUEST_INDEX_CORRUPT: ${requestId}`);
+      }
+      const existingContract = getWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, createdWorkId);
+      if (!existingContract) throw new Error(`WORK_PREPARE_RESULT_LOST: ${requestId} has a Work handle without its WorkContract`);
+      const terminal = isTerminalWorkContractStatus(existingContract.status)
+        && !(existingContract.status === 'failed' && request.status === 'claimed');
+      if (terminal) {
+        return {
+          session: requireSession(ctx, args),
+          work: compactHandle(existingHandle),
+          reused: true,
+          terminal: true,
+          workContractStatus: existingContract.status,
+          controllerClaimed: false,
+        };
+      }
+      if (existingContract.status === 'open' || existingContract.status === 'failed') {
+        updateWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, createdWorkId, { status: 'running', worktreeRef: existingHandle.worktreePath });
+      }
+      const delegation = createGoalDelegation({
+        sessionId: session.sessionId,
+        repositoryId: repository.repoId,
+        workId: createdWorkId,
+        goalId,
+        allowedRiskClasses: ['readonly', 'local_repo_write', 'workspace_write', 'local_command', 'dependency_change', 'local_git'],
+        deniedRiskClasses: ['remote_write', 'destructive', 'secret_access', 'outside_repository'],
+        permissionSnapshotVersion: policy.revision,
+        source: 'gpt_risk_delegate',
+      });
+      const nextSession = updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), { activeRepositoryId: repository.repoId, activeCheckoutId: existingHandle.checkoutId, activeWorkId: createdWorkId, permissionSnapshotVersion: policy.revision, goalDelegation: delegation, lastValidatedAt: new Date().toISOString() });
+      claimPreparedWorkOwnership(ctx, nextSession, existingHandle, args);
+      return { session: nextSession, work: compactHandle(existingHandle), reused: true, isolation: existingHandle.managedWorktree ? 'isolated' : 'current', controllerClaimed: true };
+    }
+
+    let contract = getWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, createdWorkId);
+    if (contract?.requestId && contract.requestId !== requestId) throw new Error(`WORK_PREPARE_REQUEST_INDEX_CORRUPT: ${requestId}`);
+    if (request.status === 'prepared') {
+      throw new Error(`WORK_PREPARE_RESULT_LOST: ${requestId} completed without a readable Work handle`);
+    }
+    if (contract && (contract.status === 'completed' || contract.status === 'cancelled')) {
+      throw new Error(`WORK_PREPARE_REQUEST_TERMINAL: ${requestId} belongs to ${contract.status} Work ${createdWorkId}`);
+    }
+    if (!contract) {
+      contract = createWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, {
+        workId: createdWorkId,
+        repoId: repository.repoId,
+        mode: useWorktree ? 'goal_workloop' : 'direct_control',
+        objective,
+        acceptanceCriteria,
+        allowedPaths,
+        forbiddenPaths: [],
+        checks,
+        constraints: { accessMode: policy.mode, workspaceMode: useWorktree ? 'isolated' : 'current', requireWorktree: useWorktree, allowCommit: true, allowMerge: true, allowCleanup: true },
+        worktreePolicy: { required: useWorktree, reason: useWorktree ? 'work_prepare selected isolated worktree execution' : 'explicitly reused a registered checkout' },
+        requestedBy: 'chatgpt',
+        requestId,
+      });
+    }
+    const delegation = createGoalDelegation({
+      sessionId: session.sessionId,
+      repositoryId: repository.repoId,
+      workId: createdWorkId,
+      goalId,
+      allowedRiskClasses: ['readonly', 'local_repo_write', 'workspace_write', 'local_command', 'dependency_change', 'local_git'],
+      deniedRiskClasses: ['remote_write', 'destructive', 'secret_access', 'outside_repository'],
+      permissionSnapshotVersion: policy.revision,
+      source: 'gpt_risk_delegate',
+    });
+    try {
+      const workspace = useWorktree
+        ? ensureManagedWorkspace(ctx.controllerHome, repository, { requestId: createdWorkId, title: objective, baseRef })
+        : { mode: 'current' as const, checkoutId: baseCheckoutId, root: repository.canonicalRoot, branch: baseStatus.branch ?? 'detached', baseRevision: baseStatus.head ?? undefined, managed: false };
+      const refreshed = getRepository(repository.repoId, ctx.controllerHome);
+      const checkout = selectRepositoryCheckout(refreshed, workspace.checkoutId);
+      const branch = workspace.branch || repositoryGitStatus(checkout).branch;
+      if (!branch) throw new Error('WORKTREE_DETACHED: selected worktree has no branch');
+      const head = gitHead(checkout.canonicalRoot);
+      const handle: WorkHandleState = {
+        schemaVersion: 1, workId: createdWorkId, sessionId: session.sessionId, principalId: session.principalId,
+        repositoryId: repository.repoId, checkoutId: checkout.activeCheckoutId, worktreePath: checkout.canonicalRoot, branch,
+        sourceCheckoutId: baseCheckoutId, managedWorktree: workspace.managed, workContractId: contract.workId, goalId, delegationVersion: delegation.version,
+        baseCommit: workspace.baseRevision ?? head, expectedHead: head, permissionSnapshotVersion: policy.revision,
+        state: 'prepared', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), finalization: initialStage(),
+      };
+      writeWorkHandle(ctx.controllerHome, handle);
+      updateWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, contract.workId, { status: 'running', worktreeRef: checkout.canonicalRoot });
+      const nextSession = updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), { activeRepositoryId: repository.repoId, activeCheckoutId: checkout.activeCheckoutId, activeWorkId: createdWorkId, permissionSnapshotVersion: policy.revision, goalDelegation: delegation, lastValidatedAt: new Date().toISOString() });
+      claimPreparedWorkOwnership(ctx, nextSession, handle, args);
+      return { session: nextSession, work: compactHandle(handle), reused: requestReused, isolation: workspace.mode, controllerClaimed: true };
+    } catch (error) {
+      updateWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, contract.workId, { status: 'failed' });
+      throw error;
+    }
+  });
 }
 
 function inspectWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Record<string, unknown> {

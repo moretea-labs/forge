@@ -27,6 +27,16 @@ is active. Request mode uses a GoalDelegation captured by `work_prepare` for the
 same session, repository, work, Goal, and permission revision. This removes
 per-command interruptions without creating a parallel policy engine.
 
+## Work preparation idempotency
+
+Creating new Work requires a stable `request_id`. Before a WorkContract or
+managed worktree is created, the Controller atomically persists a request record
+scoped to repository, authenticated session, and principal. The record binds a
+canonical preparation fingerprint to one Work id. Identical sequential,
+concurrent, or post-restart retries reuse that Work id and workspace. Reusing the
+same request id with different preparation parameters fails closed before any
+additional WorkContract, branch, checkout, or worktree is created.
+
 ## Authorization boundary
 
 The unified decision is one of:
