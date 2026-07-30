@@ -7,6 +7,7 @@ import { registerRepository } from '../src/cli/repositories/registry';
 import { readControllerDaemonStatus } from '../src/runtime/control-plane/daemon-client';
 import { CONTROLLER_TOOL_SURFACE, controllerToolSurfaceFingerprint } from '../src/cli/controller/runtime-config';
 import { DEFAULT_CONTROLLER_TOOL_NAMES } from '../src/cli/mcp/toolset';
+import { writeMcpServiceLocalConfig } from '../src/cli/mcp/auth';
 import { buildMcpToolDefinitions } from '../src/cli/mcp/tools';
 import { runtimePolicy } from '../src/cli/mcp/multi-repository';
 
@@ -55,6 +56,18 @@ try {
   git('add', 'README.md');
   git('commit', '-m', 'initial');
   const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'mcp-http-smoke' });
+  // This smoke validates the HTTP MCP Gateway and daemon readiness only. Keep
+  // the optional Local Controller out of its readiness contract so the fixture
+  // never depends on or collides with a host-level bridge at the default port.
+  writeMcpServiceLocalConfig(controllerHome, {
+    profile: 'controller',
+    localController: {
+      enabled: false,
+      mode: 'disabled',
+      host: '127.0.0.1',
+      port: 8766,
+    },
+  });
   const port = await freePort();
   const child = spawn(process.execPath, [
     '--loader', join(process.cwd(), 'src/runtime/shared/node-ts-loader.mjs'),
