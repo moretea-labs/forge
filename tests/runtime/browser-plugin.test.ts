@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
@@ -11,6 +11,7 @@ import {
   resetBrowserPluginRuntimeHooksForTest,
   setBrowserPluginRuntimeHooksForTest,
 } from '../../src/runtime/plugins/browser-adapter';
+import { resolveBrowserBridgeNodeExecutable, shouldUseBrowserNodeBridge } from '../../src/runtime/plugins/browser-node-bridge';
 import { listBrowserHandoffs, resetBrowserHandoffRuntimeHooksForTest, setBrowserHandoffRuntimeHooksForTest } from '../../src/runtime/plugins/browser-handoff';
 import { interactionCommandPath, patchInteractionSession } from '../../src/runtime/plugins/interaction-session';
 import {
@@ -27,6 +28,8 @@ afterEach(() => {
   clearAssistantPluginManifestCacheForTest();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   delete process.env.REPO_HARNESS_CONTROLLER_HOME;
+  delete process.env.REPO_HARNESS_BROWSER_NODE_BRIDGE_HOST;
+  delete process.env.REPO_HARNESS_NODE_EXECUTABLE;
 });
 
 function repoFixture() {
@@ -1104,6 +1107,27 @@ describe('browser plugin', () => {
       }
     });
   }
+
+  test('selects the Node bridge only for Bun-hosted attached page actions', () => {
+    delete process.env.REPO_HARNESS_BROWSER_NODE_BRIDGE_HOST;
+    expect(shouldUseBrowserNodeBridge('open_page', 'attach_preferred', false)).toBe(true);
+    expect(shouldUseBrowserNodeBridge('list_sessions', 'attach_preferred', false)).toBe(false);
+    expect(shouldUseBrowserNodeBridge('open_page', 'managed_persistent', false)).toBe(false);
+    expect(shouldUseBrowserNodeBridge('open_page', 'attach_preferred', true)).toBe(false);
+    process.env.REPO_HARNESS_BROWSER_NODE_BRIDGE_HOST = '1';
+    expect(shouldUseBrowserNodeBridge('open_page', 'attach_preferred', false)).toBe(false);
+  });
+
+  test('uses an explicitly configured executable for the Browser Node bridge and fails closed when invalid', () => {
+    const root = mkdtempSync(join(tmpdir(), 'repo-harness-browser-node-'));
+    roots.push(root);
+    const executable = join(root, 'node');
+    writeFileSync(executable, '#!/bin/sh\nexit 0\n', 'utf8');
+    chmodSync(executable, 0o700);
+    expect(resolveBrowserBridgeNodeExecutable({ REPO_HARNESS_NODE_EXECUTABLE: executable })).toBe(executable);
+    expect(() => resolveBrowserBridgeNodeExecutable({ REPO_HARNESS_NODE_EXECUTABLE: join(root, 'missing') }))
+      .toThrow('PLUGIN_BROWSER_NODE_UNAVAILABLE');
+  });
 
   test('denies open_page outside allowed domains before launch', async () => {
     const { repoRoot } = repoFixture();

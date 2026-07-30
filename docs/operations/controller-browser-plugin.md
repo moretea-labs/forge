@@ -229,3 +229,19 @@ Example response shape:
 - `close_page` only removes saved session metadata. It does not delete the persistent profile.
 - `profile_dir` is rejected unless `profile_mode=custom` is already configured or supplied in the same `configure` call.
 - Visible Chrome/Chromium launches are supported, but managed actions still close after they complete. For longer human-driven login, MFA, or consent steps, use `request_human_handoff` and resume or cancel it explicitly.
+
+## Bun runtime and the Node CDP bridge
+
+The Controller Gateway remains Bun-hosted. For `browserMode=attach_preferred`, page actions are executed by a short-lived, bounded Node child because Playwright CDP WebSocket attachment is not reliable in the supported Bun runtime. The bridge does not create a second Browser implementation: it serializes the already-authorized plugin action over stdin and invokes the same Browser adapter under Node.
+
+The child is started directly without a shell. The CDP endpoint remains loopback-only, request and response payloads are bounded, execution has a bounded timeout, and credentials are never placed in argv. Cookies, storage state, authorization headers, and page secrets are not returned by the bridge protocol. The child disconnects from an attached browser rather than closing the user's Chrome instance.
+
+`managed_persistent` and `isolated` continue to run directly in the Controller runtime. Configuration, session listing and cleanup, and human-handoff lifecycle actions also remain local. Set `REPO_HARNESS_NODE_EXECUTABLE` only to an explicitly trusted executable; an invalid configured path fails closed.
+
+A safe live proof against an already running loopback Chrome instance is available with:
+
+```bash
+bun scripts/smoke-browser-cdp-bridge.ts http://127.0.0.1:9222
+```
+
+The smoke reuses an existing HTTP(S) tab, repeats the same session action, verifies that the target count does not increase, and confirms that Chrome remains reachable after the Node child disconnects. It does not read cookies or storage state and does not print the page title or full URL.

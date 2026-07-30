@@ -11,6 +11,7 @@ import type {
   AssistantPluginPermissionScope,
 } from './types';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
+import { executeBrowserActionThroughNode, shouldUseBrowserNodeBridge } from './browser-node-bridge';
 import {
   assertBrowserProfileAvailable,
   assertBrowserSessionAvailable,
@@ -200,13 +201,16 @@ const defaultRuntimeHooks: BrowserPluginRuntimeHooks = {
 };
 
 let runtimeHooks: BrowserPluginRuntimeHooks = { ...defaultRuntimeHooks };
+let runtimeHooksCustomized = false;
 
 export function setBrowserPluginRuntimeHooksForTest(hooks: Partial<BrowserPluginRuntimeHooks>): void {
   runtimeHooks = { ...defaultRuntimeHooks, ...hooks };
+  runtimeHooksCustomized = true;
 }
 
 export function resetBrowserPluginRuntimeHooksForTest(): void {
   runtimeHooks = { ...defaultRuntimeHooks };
+  runtimeHooksCustomized = false;
 }
 
 function now(): string {
@@ -1886,6 +1890,9 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
     if (configErrors.length > 0) {
       throw new AssistantPluginError('PLUGIN_CONFIGURATION_INVALID', configErrors[0], { retryable: false });
     }
+  }
+  if (shouldUseBrowserNodeBridge(input.actionId, current.browserMode, runtimeHooksCustomized)) {
+    return await executeBrowserActionThroughNode(input);
   }
   try {
     switch (input.actionId) {
