@@ -177,6 +177,21 @@ describe('mcp redaction and audit', () => {
     expect(result.text).not.toContain('another-secret');
   });
 
+  test('redacts launchctl arrows, CLI options, and URL userinfo while preserving safe diagnostics', () => {
+    const syntheticKey = 'sk-SYNTHETICMCP0123456789ABCDEF';
+    const syntheticPassword = 'synthetic-mcp-password-0123456789';
+    const result = redactMcpText([
+      `SYNTHETIC_API_KEY => ${syntheticKey}`,
+      `tool --access-token ${syntheticKey}`,
+      `SERVICE_URL=https://user:${syntheticPassword}@example.test/path`,
+      'SAFE_MODE => enabled',
+    ].join('\n'));
+    expect(result.text).not.toContain(syntheticKey);
+    expect(result.text).not.toContain(syntheticPassword);
+    expect(result.text).toContain('SAFE_MODE => enabled');
+    expect(result.redactions.reduce((total, entry) => total + entry.count, 0)).toBeGreaterThanOrEqual(3);
+  });
+
   test('audit log stores input hash and redacted errors', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'repo-harness-mcp-audit-'));
     try {

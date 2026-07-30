@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
@@ -14,6 +14,7 @@ import {
   getProcessHandle,
   getProcessRecord,
   recoverManagedProcesses,
+  readProcessLogs,
   runCheckViaProcessRuntime,
   spawnManagedProcess,
   tryCompleteProcessRecord,
@@ -121,6 +122,119 @@ describe('Unified Process Runtime', () => {
     expect(handle.durableSideEffects.executionJobCount).toBe(0);
     expect(handle.durableSideEffects.localJobCount).toBe(0);
     expect(handle.durableSideEffects.workerSpawnCount).toBe(0);
+  });
+
+  test('redacts synthetic launchctl-style secrets before direct output, records, and disk persistence', async () => {
+    const fx = fixture();
+    const syntheticKey = 'sk-SYNTHETIC0123456789ABCDEF';
+    const syntheticBearer = 'synthetic-bearer-value-0123456789';
+    const syntheticPassword = 'synthetic-url-password-0123456789';
+    const syntheticCliSecret = 'synthetic-cli-secret-0123456789';
+    const script = [
+      `process.stdout.write(${JSON.stringify(`SAFE_MODE => enabled\nSYNTHETIC_API_KEY => ${syntheticKey}\nAuthorization: Bearer ${syntheticBearer}\nSERVICE_URL=https://user:${syntheticPassword}@example.test/path\n`)});`,
+      `process.stderr.write(${JSON.stringify(`SYNTHETIC_ACCESS_TOKEN => ${syntheticCliSecret}\nSAFE_STDERR => retained\n`)});`,
+      'process.exit(0);',
+    ].join('');
+    const handle = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', script, '--', '--token', syntheticCliSecret],
+        cwd: fx.repoRoot,
+        env: { SYNTHETIC_API_KEY: syntheticKey, SAFE_MODE: 'enabled' },
+      },
+      interactiveWaitMs: 5_000,
+      timeoutMs: 15_000,
+    });
+    expect(handle.completed).toBe(true);
+    const handleJson = JSON.stringify(handle);
+    for (const secret of [syntheticKey, syntheticBearer, syntheticPassword, syntheticCliSecret]) {
+      expect(handleJson).not.toContain(secret);
+    }
+    expect(handle.stdout).toContain('SAFE_MODE => enabled');
+    expect(handle.stderr).toContain('SAFE_STDERR => retained');
+    expect(handleJson).toContain('[REDACTED]');
+
+    const rawRecordPath = join(repositoryControllerRoot(fx.controllerHome, fx.repository.repoId), 'processes', `${handle.processId}.json`);
+    const rawRecordJson = readFileSync(rawRecordPath, 'utf8');
+    for (const secret of [syntheticKey, syntheticBearer, syntheticPassword, syntheticCliSecret]) {
+      expect(rawRecordJson).not.toContain(secret);
+    }
+    const record = getProcessRecord(fx.controllerHome, fx.repository.repoId, handle.processId)!;
+    const recordJson = JSON.stringify(record);
+    for (const secret of [syntheticKey, syntheticBearer, syntheticPassword, syntheticCliSecret]) {
+      expect(recordJson).not.toContain(secret);
+    }
+    expect(typeof record.terminalFenceToken).toBe('number');
+    expect(record.stdoutPath && readFileSync(record.stdoutPath, 'utf8')).not.toContain(syntheticKey);
+    expect(record.stderrPath && readFileSync(record.stderrPath, 'utf8')).not.toContain(syntheticCliSecret);
+    expect(record.commandDescriptorPath && existsSync(record.commandDescriptorPath)).toBe(false);
+    if (process.platform !== 'win32' && record.stdoutPath && record.stderrPath) {
+      expect(statSync(record.stdoutPath).mode & 0o777).toBe(0o600);
+      expect(statSync(record.stderrPath).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  test('redacts secrets split across managed stdout chunks and MCP process surfaces', async () => {
+    const fx = fixture();
+    const syntheticSecret = 'synthetic-managed-secret-0123456789';
+    const script = [
+      `process.stdout.write('SYNTHETIC_ACCESS_TOKEN => ');`,
+      `setTimeout(() => process.stdout.write(${JSON.stringify(`${syntheticSecret}\nSAFE_STATE => running\n`)}), 30);`,
+      'setTimeout(() => process.exit(0), 250);',
+    ].join('');
+    const started = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      command: { kind: 'argv', executable: 'node', args: ['-e', script], cwd: fx.repoRoot },
+      interactiveWaitMs: 5,
+      timeoutMs: 10_000,
+    });
+    expect(started.completed).toBe(false);
+    const completed = await waitForProcess(fx.controllerHome, fx.repository.repoId, started.processId, { timeoutMs: 5_000 });
+    expect(completed.completed).toBe(true);
+    expect(JSON.stringify(completed)).not.toContain(syntheticSecret);
+    expect(completed.stdout).toContain('SAFE_STATE => running');
+
+    const ctx = { controllerHome: fx.controllerHome, repo: fx.repoRoot } as unknown as MultiRepositoryMcpToolContext;
+    const got = await callProcessTool(ctx, 'process_get', { repo_id: fx.repository.repoId, process_id: started.processId });
+    const logs = await callProcessTool(ctx, 'process_logs', { repo_id: fx.repository.repoId, process_id: started.processId });
+    expect(JSON.stringify(got?.structuredContent)).not.toContain(syntheticSecret);
+    expect(JSON.stringify(logs?.structuredContent)).not.toContain(syntheticSecret);
+    expect(JSON.stringify(logs?.structuredContent)).toContain('SAFE_STATE => running');
+    const record = getProcessRecord(fx.controllerHome, fx.repository.repoId, started.processId)!;
+    expect(record.stdoutPath && readFileSync(record.stdoutPath, 'utf8')).not.toContain(syntheticSecret);
+  });
+
+  test('sanitizes historical terminal logs and removes stale command descriptors on read', async () => {
+    const fx = fixture();
+    const handle = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'process.stdout.write("initial-safe");'], cwd: fx.repoRoot },
+      interactiveWaitMs: 5_000,
+      timeoutMs: 10_000,
+    });
+    const record = getProcessRecord(fx.controllerHome, fx.repository.repoId, handle.processId)!;
+    const historicalSecret = 'synthetic-historical-secret-0123456789';
+    writeFileSync(record.stdoutPath!, `LEGACY_ACCESS_TOKEN => ${historicalSecret}\nSAFE_MARKER => retained\n`);
+    writeFileSync(record.commandDescriptorPath!, JSON.stringify({ env: { API_KEY: historicalSecret } }));
+
+    const logs = readProcessLogs(fx.controllerHome, fx.repository.repoId, handle.processId, 32 * 1024)!;
+    expect(logs.stdout).not.toContain(historicalSecret);
+    expect(logs.stdout).toContain('SAFE_MARKER => retained');
+    expect(readFileSync(record.stdoutPath!, 'utf8')).not.toContain(historicalSecret);
+    expect(existsSync(record.commandDescriptorPath!)).toBe(false);
+    const refreshed = getProcessRecord(fx.controllerHome, fx.repository.repoId, handle.processId)!;
+    expect(refreshed.outputRedaction?.filesChanged).toBeGreaterThanOrEqual(1);
+    expect(refreshed.outputRedaction?.descriptorRemoved).toBe(true);
+    const sanitizedAt = refreshed.outputRedaction?.sanitizedAt;
+    readProcessLogs(fx.controllerHome, fx.repository.repoId, handle.processId, 32 * 1024);
+    expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, handle.processId)?.outputRedaction?.sanitizedAt).toBe(sanitizedAt);
   });
 
   test('long command returns managed handle for the same process', async () => {
@@ -705,6 +819,43 @@ describe('Process Runner exactly-once semantics', () => {
     };
     expect(output.safe).toBe('preserved');
     for (const key of privateKeys) expect(output.private[key]).toBeNull();
+  });
+
+  test('redacts split secrets in runner files before controller reconciliation', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'process-runner-redaction-boundary-'));
+    roots.push(root);
+    const syntheticSecret = 'synthetic-runner-boundary-secret-0123456789';
+    const stdoutPath = join(root, 'out.log');
+    const descriptor: ProcessCommandDescriptor = {
+      schemaVersion: 1,
+      processId: 'proc_runner_redaction_boundary',
+      repoId: 'repo',
+      controllerHome: root,
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', [
+          `process.stdout.write('SYNTHETIC_ACCESS_TOKEN => ');`,
+          `setTimeout(() => process.stdout.write(${JSON.stringify(`${syntheticSecret}\nSAFE_RUNNER_MARKER => retained\n`)}), 20);`,
+          'setTimeout(() => process.exit(0), 60);',
+        ].join('')],
+        cwd: root,
+      },
+      timeoutMs: 5_000,
+      maxStdoutBytes: 16_384,
+      maxStderrBytes: 16_384,
+      stdoutPath,
+      stderrPath: join(root, 'err.log'),
+      exitReceiptPath: join(root, 'exit.json'),
+      startedAt: new Date().toISOString(),
+    };
+
+    const receipt = await runProcessRunnerFromDescriptor(descriptor);
+    expect(receipt.exitCode).toBe(0);
+    const rawRunnerLog = readFileSync(stdoutPath, 'utf8');
+    expect(rawRunnerLog).not.toContain(syntheticSecret);
+    expect(rawRunnerLog).toContain('[REDACTED]');
+    expect(rawRunnerLog).toContain('SAFE_RUNNER_MARKER => retained');
   });
 
   test('corrupt receipt does not re-execute command', async () => {

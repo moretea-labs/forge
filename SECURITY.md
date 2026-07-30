@@ -38,3 +38,13 @@ A normal validation failure, unsupported platform, stale documentation, or unava
 ## Disclosure
 
 Please allow maintainers time to reproduce, fix, and prepare an advisory before public disclosure. The project will credit reporters who request attribution and will avoid publishing sensitive reproduction details that create unnecessary risk.
+
+## Credential exposure response
+
+Repo Harness redacts credential-shaped Process Runtime output before persistence
+and sanitizes bounded historical logs and result artifacts when they are read or
+reconciled. These controls reduce retained exposure but do not revoke a credential.
+If a real token, password, private key, or authenticated URL may have appeared in
+process output, treat it as compromised: rotate or revoke it through the owning
+provider, review recent use, and avoid copying the original value into issues,
+logs, test fixtures, or remediation evidence.

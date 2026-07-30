@@ -23,17 +23,20 @@
 
 import {
   appendFileSync,
+  chmodSync,
   closeSync,
   existsSync,
   mkdirSync,
   openSync,
   readFileSync,
   renameSync,
+  rmSync,
   writeFileSync,
 } from 'fs';
 import { dirname, join } from 'path';
 import { spawn, type ChildProcess } from 'child_process';
 import { repositoryChildProcessEnvironment } from '../../shared/process-environment';
+import { StreamingSensitiveTextRedactor } from '../../evidence/sensitive-output';
 
 export interface ProcessCommandDescriptor {
   schemaVersion: 1;
@@ -123,13 +126,15 @@ class BoundedLogWriter {
   private storedBytes = 0;
   private totalBytes = 0;
   private truncated = false;
+  private readonly redactor = new StreamingSensitiveTextRedactor();
 
   constructor(
     private readonly path: string,
     private readonly maxBytes: number,
   ) {
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, '');
+    writeFileSync(path, '', { mode: 0o600 });
+    try { chmodSync(path, 0o600); } catch { /* Windows or restricted filesystem. */ }
     try {
       this.fd = openSync(path, 'a');
     } catch {
@@ -137,8 +142,9 @@ class BoundedLogWriter {
     }
   }
 
-  write(chunk: Buffer): void {
-    this.totalBytes += chunk.length;
+  private persist(value: string): void {
+    if (!value) return;
+    const chunk = Buffer.from(value, 'utf8');
     if (this.storedBytes >= this.maxBytes) {
       this.truncated = true;
       return;
@@ -155,7 +161,13 @@ class BoundedLogWriter {
     }
   }
 
+  write(chunk: Buffer): void {
+    this.totalBytes += chunk.length;
+    this.persist(this.redactor.write(chunk));
+  }
+
   close(): void {
+    this.persist(this.redactor.end());
     try {
       if (this.fd !== undefined) closeSync(this.fd);
     } catch {
@@ -280,41 +292,53 @@ export async function runProcessRunnerFromDescriptor(
 
   const stdout = new BoundedLogWriter(descriptor.stdoutPath, descriptor.maxStdoutBytes);
   const stderr = new BoundedLogWriter(descriptor.stderrPath, descriptor.maxStderrBytes);
-  const child = spawnCommand(descriptor.command);
+  let child: ChildProcess | undefined;
+  let pendingSignal: NodeJS.Signals | undefined;
   let timedOut = false;
   let cancelled = false;
   let settled = false;
 
+  const onSignal = (signal: NodeJS.Signals) => {
+    cancelled = true;
+    pendingSignal = signal;
+    if (child) void killTree(child);
+  };
+  const onSigterm = () => onSignal('SIGTERM');
+  const onSigint = () => onSignal('SIGINT');
+  process.on('SIGTERM', onSigterm);
+  process.on('SIGINT', onSigint);
+
+  let spawnedChild: ChildProcess;
+  try {
+    spawnedChild = spawnCommand(descriptor.command);
+    child = spawnedChild;
+    if (pendingSignal) void killTree(spawnedChild);
+  } catch (error) {
+    process.removeListener('SIGTERM', onSigterm);
+    process.removeListener('SIGINT', onSigint);
+    stdout.close();
+    stderr.close();
+    throw error;
+  }
+
   const timeoutHandle = setTimeout(() => {
     timedOut = true;
-    void killTree(child);
+    void killTree(spawnedChild);
   }, Math.max(1, descriptor.timeoutMs));
   timeoutHandle.unref?.();
 
-  const onSignal = (signal: NodeJS.Signals) => {
-    cancelled = true;
-    void killTree(child).finally(() => {
-      // After forwarding, allow natural close path to write receipt.
-      if (signal === 'SIGTERM' || signal === 'SIGINT') {
-        /* child close handler writes receipt */
-      }
-    });
-  };
-  process.on('SIGTERM', () => onSignal('SIGTERM'));
-  process.on('SIGINT', () => onSignal('SIGINT'));
-
-  child.stdout?.on('data', (chunk: Buffer) => stdout.write(chunk));
-  child.stderr?.on('data', (chunk: Buffer) => stderr.write(chunk));
+  spawnedChild.stdout?.on('data', (chunk: Buffer) => stdout.write(chunk));
+  spawnedChild.stderr?.on('data', (chunk: Buffer) => stderr.write(chunk));
 
   const closeResult = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-    child.on('error', (error) => {
+    spawnedChild.on('error', (error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeoutHandle);
       stderr.write(Buffer.from(`\n[process-runner] spawn error: ${error.message}\n`));
       resolve({ code: 1, signal: null });
     });
-    child.on('close', (code, signal) => {
+    spawnedChild.on('close', (code, signal) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeoutHandle);
@@ -322,6 +346,8 @@ export async function runProcessRunnerFromDescriptor(
     });
   });
 
+  process.removeListener('SIGTERM', onSigterm);
+  process.removeListener('SIGINT', onSigint);
   stdout.close();
   stderr.close();
   const outStats = stdout.stats();
@@ -366,8 +392,12 @@ async function main(): Promise<void> {
   } catch {
     /* keep runner cwd */
   }
+  // Async functions execute synchronously through the started claim, signal
+  // handler registration, and child spawn before their first await.
+  const running = runProcessRunnerFromDescriptor(descriptor);
+  try { rmSync(descriptorPath, { force: true }); } catch { /* best-effort secure cleanup */ }
   try {
-    const receipt = await runProcessRunnerFromDescriptor(descriptor);
+    const receipt = await running;
     process.exit(receipt.exitCode === 0 && !receipt.timedOut && !receipt.cancelled ? 0 : 1);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

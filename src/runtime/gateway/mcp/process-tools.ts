@@ -17,6 +17,7 @@ import {
   waitForProcess,
 } from '../../execution/process-runtime';
 import { getProcessRecord } from '../../execution/process-runtime/store';
+import { redactSensitiveText, redactSensitiveValue } from '../../evidence/sensitive-output';
 
 function definition(
   name: string,
@@ -97,15 +98,16 @@ export const processToolDefinitions: McpToolDefinition[] = [
 const processToolNames = new Set(processToolDefinitions.map((tool) => tool.name));
 
 function result(value: Record<string, unknown>, isError = false): CallToolResult {
+  const safe = redactSensitiveValue(value).value;
   return {
-    content: [{ type: 'text', text: JSON.stringify(value, null, 2) }],
-    structuredContent: value,
+    content: [{ type: 'text', text: JSON.stringify(safe, null, 2) }],
+    structuredContent: safe,
     ...(isError ? { isError: true } : {}),
   };
 }
 
 function failure(error: unknown): CallToolResult {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = redactSensitiveText(error instanceof Error ? error.message : String(error)).text;
   const code = message.includes(':') ? message.slice(0, message.indexOf(':')) : 'PROCESS_TOOL_FAILED';
   return result({ error: { code, message } }, true);
 }

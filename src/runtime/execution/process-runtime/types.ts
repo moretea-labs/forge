@@ -142,6 +142,15 @@ export interface ManagedProcessRecord {
   identityUntrusted?: boolean;
   /** Log truncated due to quota. */
   logTruncated?: boolean;
+  /** Metadata only; never contains the removed sensitive values. */
+  outputRedaction?: {
+    schemaVersion: 1;
+    sanitizedAt: string;
+    filesExamined: number;
+    filesChanged: number;
+    redactionCount: number;
+    descriptorRemoved?: boolean;
+  };
 }
 
 export interface SpawnManagedProcessInput {

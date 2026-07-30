@@ -6,6 +6,7 @@
 
 import { createHash } from 'crypto';
 import {
+  chmodSync,
   closeSync,
   existsSync,
   mkdirSync,
@@ -16,8 +17,9 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'fs';
-import { dirname, join } from 'path';
+import { basename, dirname, join } from 'path';
 import { ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
+import { isSensitiveOutputKey, redactSensitiveText } from '../../evidence/sensitive-output';
 import type {
   ManagedProcessRecord,
   ProcessInvocationBinding,
@@ -72,8 +74,9 @@ function indexPath(controllerHome: string, repoId: string): string {
 function atomicWrite(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   renameSync(temporary, path);
+  try { chmodSync(path, 0o600); } catch { /* Windows or restricted filesystem. */ }
 }
 
 function readJson<T>(path: string): T | undefined {
@@ -83,6 +86,87 @@ function readJson<T>(path: string): T | undefined {
   } catch {
     return undefined;
   }
+}
+
+const SECRET_OPTION = /^--?(?:api[_-]?key|access[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|password|passwd|secret|credentials?|authorization|auth[_-]?token|token|cookie)(?:=|$)/i;
+const INLINE_SCRIPT_FLAGS = new Set(['-e', '--eval', '-c', '--command']);
+const INLINE_SCRIPT_EXECUTABLES = new Set(['node', 'node.exe', 'bun', 'bun.exe', 'python', 'python3', 'python.exe', 'python3.exe', 'sh', 'bash', 'zsh', 'pwsh', 'pwsh.exe', 'powershell', 'powershell.exe']);
+
+function safeText(value: string | undefined): string | undefined {
+  return value === undefined ? undefined : redactSensitiveText(value).text;
+}
+
+function sanitizeCommandArgs(args: string[] | undefined, executable: string | undefined): string[] | undefined {
+  if (!args) return undefined;
+  const interpreter = executable ? INLINE_SCRIPT_EXECUTABLES.has(basename(executable).toLowerCase()) : false;
+  let redactNextSecret = false;
+  let redactNextScript = false;
+  return args.map((argument) => {
+    if (redactNextScript) {
+      redactNextScript = false;
+      return '[INLINE SCRIPT REDACTED]';
+    }
+    if (redactNextSecret) {
+      redactNextSecret = false;
+      return '[REDACTED]';
+    }
+    if (interpreter && INLINE_SCRIPT_FLAGS.has(argument.toLowerCase())) {
+      redactNextScript = true;
+      return argument;
+    }
+    if (SECRET_OPTION.test(argument)) {
+      const equals = argument.indexOf('=');
+      if (equals >= 0) return `${argument.slice(0, equals + 1)}[REDACTED]`;
+      redactNextSecret = true;
+    }
+    return redactSensitiveText(argument).text;
+  });
+}
+
+function sanitizeProcessCommand(command: ManagedProcessRecord['command']): ManagedProcessRecord['command'] {
+  const env = command.env
+    ? Object.fromEntries(Object.entries(command.env).map(([key, value]) => [
+      key,
+      value === undefined
+        ? undefined
+        : isSensitiveOutputKey(key)
+          ? '[REDACTED]'
+          : redactSensitiveText(value).text,
+    ]))
+    : undefined;
+  return {
+    ...command,
+    executable: safeText(command.executable),
+    args: sanitizeCommandArgs(command.args, command.executable),
+    shellCommand: safeText(command.shellCommand),
+    env,
+  };
+}
+
+function sanitizeProcessRecord(record: ManagedProcessRecord): { record: ManagedProcessRecord; changed: boolean } {
+  const next: ManagedProcessRecord = {
+    ...record,
+    command: sanitizeProcessCommand(record.command),
+    stdoutTail: safeText(record.stdoutTail),
+    stderrTail: safeText(record.stderrTail),
+    error: record.error ? { code: safeText(record.error.code) ?? record.error.code, message: safeText(record.error.message) ?? '' } : undefined,
+    origin: record.origin ? {
+      ...record.origin,
+      toolName: safeText(record.origin.toolName),
+      requestId: safeText(record.origin.requestId),
+      checkId: safeText(record.origin.checkId),
+      correlationId: safeText(record.origin.correlationId),
+    } : undefined,
+  };
+  return { record: next, changed: JSON.stringify(next) !== JSON.stringify(record) };
+}
+
+function readProcessRecord(path: string): ManagedProcessRecord | undefined {
+  const record = readJson<ManagedProcessRecord>(path);
+  if (!record || record.schemaVersion !== 1) return undefined;
+  const sanitized = sanitizeProcessRecord(record);
+  if (sanitized.changed) atomicWrite(path, sanitized.record);
+  return sanitized.record;
 }
 
 /**
@@ -212,7 +296,7 @@ function rebuildActiveIndex(controllerHome: string, repoId: string): string[] {
   const active: string[] = [];
   for (const entry of readdirSync(root)) {
     if (!entry.endsWith('.json') || entry === 'active-index.json') continue;
-    const record = readJson<ManagedProcessRecord>(join(root, entry));
+    const record = readProcessRecord(join(root, entry));
     if (record && ACTIVE_STATUSES.has(record.status)) active.push(record.processId);
   }
   active.sort();
@@ -233,9 +317,10 @@ export function createProcessRecord(record: ManagedProcessRecord): ManagedProces
   if (existsSync(path)) {
     throw new Error(`PROCESS_ALREADY_EXISTS: ${record.processId}`);
   }
-  atomicWrite(path, record);
+  const sanitized = sanitizeProcessRecord(record).record;
+  atomicWrite(path, sanitized);
   rebuildActiveIndex(record.controllerHome, record.repoId);
-  return record;
+  return sanitized;
 }
 
 export function getProcessRecord(
@@ -243,9 +328,7 @@ export function getProcessRecord(
   repoId: string,
   processId: string,
 ): ManagedProcessRecord | undefined {
-  const record = readJson<ManagedProcessRecord>(processPath(controllerHome, repoId, processId));
-  if (!record || record.schemaVersion !== 1) return undefined;
-  return record;
+  return readProcessRecord(processPath(controllerHome, repoId, processId));
 }
 
 /**
@@ -262,7 +345,7 @@ export function tryCompleteProcessRecord(
   },
 ): { ok: boolean; record?: ManagedProcessRecord; reason?: string } {
   const path = processPath(controllerHome, repoId, processId);
-  const current = readJson<ManagedProcessRecord>(path);
+  const current = readProcessRecord(path);
   if (!current) return { ok: false, reason: 'missing' };
   if (current.terminalWritten) return { ok: false, reason: 'already_terminal', record: current };
   if (current.terminalFenceToken !== fenceToken) {
@@ -275,9 +358,10 @@ export function tryCompleteProcessRecord(
     finishedAt: patch.finishedAt ?? new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
-  atomicWrite(path, next);
+  const sanitized = sanitizeProcessRecord(next).record;
+  atomicWrite(path, sanitized);
   rebuildActiveIndex(controllerHome, repoId);
-  return { ok: true, record: next };
+  return { ok: true, record: sanitized };
 }
 
 export function updateProcessRecord(
@@ -288,7 +372,7 @@ export function updateProcessRecord(
   options: { requireFence?: number; allowTerminal?: boolean } = {},
 ): ManagedProcessRecord | undefined {
   const path = processPath(controllerHome, repoId, processId);
-  const current = readJson<ManagedProcessRecord>(path);
+  const current = readProcessRecord(path);
   if (!current) return undefined;
   if (current.terminalWritten && !options.allowTerminal) return current;
   if (options.requireFence !== undefined && current.terminalFenceToken !== options.requireFence) {
@@ -302,11 +386,12 @@ export function updateProcessRecord(
     terminalWritten: current.terminalWritten || patch.terminalWritten === true,
     updatedAt: new Date().toISOString(),
   };
-  atomicWrite(path, next);
-  if (ACTIVE_STATUSES.has(current.status) !== ACTIVE_STATUSES.has(next.status)) {
+  const sanitized = sanitizeProcessRecord(next).record;
+  atomicWrite(path, sanitized);
+  if (ACTIVE_STATUSES.has(current.status) !== ACTIVE_STATUSES.has(sanitized.status)) {
     rebuildActiveIndex(controllerHome, repoId);
   }
-  return next;
+  return sanitized;
 }
 
 export function listActiveProcessIds(controllerHome: string, repoId: string): string[] {
@@ -325,8 +410,8 @@ export function listProcessRecords(
   const records: ManagedProcessRecord[] = [];
   for (const entry of readdirSync(root)) {
     if (!entry.endsWith('.json') || entry === 'active-index.json') continue;
-    const record = readJson<ManagedProcessRecord>(join(root, entry));
-    if (record?.schemaVersion === 1) records.push(record);
+    const record = readProcessRecord(join(root, entry));
+    if (record) records.push(record);
   }
   records.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   return records.slice(0, Math.max(1, limit));

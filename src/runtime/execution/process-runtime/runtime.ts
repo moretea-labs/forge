@@ -22,12 +22,14 @@ import {
   readFileSync,
   readSync,
   renameSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import { capProcessOutput, redactProcessOutput } from '../../../effects/process-runner';
+import { capProcessOutput } from '../../../effects/process-runner';
+import { redactSensitiveText, sanitizeSensitiveTextFileInPlace } from '../../evidence/sensitive-output';
 import { isProcessAlive, terminateProcessTree } from '../../shared/process-tree';
 import { repositoryChildProcessEnvironment } from '../../shared/process-environment';
 import { acquireExecutionLeases, releaseExecutionLeases, renewExecutionLeases } from '../../resources/leases/store';
@@ -40,6 +42,7 @@ import {
   createProcessRecord,
   getProcessRecord,
   listActiveProcessIds,
+  listProcessRecords,
   processLogDir,
   tryCompleteProcessRecord,
   updateProcessRecord,
@@ -100,6 +103,54 @@ function newProcessId(): string {
   return `proc_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`;
 }
 
+const TERMINAL_PROCESS_STATUSES = new Set<ManagedProcessRecord['status']>([
+  'succeeded', 'failed', 'timed_out', 'cancelled', 'orphaned', 'completed_unknown', 'unknown',
+]);
+
+function safeProcessText(value: string): string {
+  return redactSensitiveText(value).text;
+}
+
+function sanitizeTerminalProcessArtifacts(record: ManagedProcessRecord): ManagedProcessRecord {
+  if (!record.terminalWritten && !TERMINAL_PROCESS_STATUSES.has(record.status)) return record;
+  let filesExamined = 0;
+  let filesChanged = 0;
+  let redactionCount = 0;
+  for (const path of [record.stdoutPath, record.stderrPath]) {
+    if (!path || !existsSync(path)) continue;
+    filesExamined += 1;
+    try {
+      const sanitized = sanitizeSensitiveTextFileInPlace(path);
+      if (sanitized.changed) filesChanged += 1;
+      redactionCount += sanitized.redactions.reduce((total, entry) => total + entry.count, 0);
+    } catch {
+      /* Keep the original artifact untouched; a later read/recovery may retry. */
+    }
+  }
+  const descriptorPath = record.commandDescriptorPath
+    ?? descriptorPathFor(record.controllerHome, record.repoId, record.processId);
+  let descriptorRemoved = false;
+  if (descriptorPath && existsSync(descriptorPath)) {
+    try {
+      rmSync(descriptorPath, { force: true });
+      descriptorRemoved = true;
+    } catch {
+      /* best-effort; never expose descriptor content in an error */
+    }
+  }
+  if (filesChanged === 0 && !descriptorRemoved && record.outputRedaction) return record;
+  return updateProcessRecord(record.controllerHome, record.repoId, record.processId, {
+    outputRedaction: {
+      schemaVersion: 1,
+      sanitizedAt: nowIso(),
+      filesExamined,
+      filesChanged,
+      redactionCount,
+      descriptorRemoved: descriptorRemoved || record.outputRedaction?.descriptorRemoved === true,
+    },
+  }, { allowTerminal: true }) ?? record;
+}
+
 function canonicalProcessCommand(command: SpawnManagedProcessInput['command']): Record<string, unknown> {
   return {
     kind: command.kind,
@@ -119,11 +170,11 @@ export function fingerprintProcessCommand(command: SpawnManagedProcessInput['com
 }
 
 function tailText(buffer: Buffer, maxBytes: number): string {
-  if (buffer.length <= maxBytes) return redactProcessOutput(buffer.toString('utf8'));
+  if (buffer.length <= maxBytes) return safeProcessText(buffer.toString('utf8'));
   // Drop incomplete leading UTF-8 sequence after offset cut.
   let start = buffer.length - maxBytes;
   while (start < buffer.length && (buffer[start]! & 0xc0) === 0x80) start += 1;
-  return redactProcessOutput(buffer.subarray(start).toString('utf8'));
+  return safeProcessText(buffer.subarray(start).toString('utf8'));
 }
 
 function appendTail(current: Buffer, chunk: Buffer, maxBytes: number): Buffer {
@@ -153,7 +204,7 @@ export function readFileTailBytes(path: string, maxBytes: number): { text: strin
     if (offset > 0) {
       while (start < bytesRead && (buf[start]! & 0xc0) === 0x80) start += 1;
     }
-    const text = redactProcessOutput(buf.subarray(start, bytesRead).toString('utf8'));
+    const text = safeProcessText(buf.subarray(start, bytesRead).toString('utf8'));
     return { text, fileBytes: size };
   } finally {
     closeSync(fd);
@@ -490,12 +541,12 @@ function finalizeMonitor(
 
   const stdoutBuf = monitor.stdoutTail;
   const stderrBuf = monitor.stderrTail;
-  const stdout = capProcessOutput(redactProcessOutput(stdoutBuf.toString('utf8')), DEFAULT_MAX_OUTPUT_BYTES);
+  const stdout = capProcessOutput(safeProcessText(stdoutBuf.toString('utf8')), DEFAULT_MAX_OUTPUT_BYTES);
   const stderrParts = [
-    redactProcessOutput(stderrBuf.toString('utf8')),
+    safeProcessText(stderrBuf.toString('utf8')),
     finalTimedOut ? 'process timed out' : '',
     finalCancelled ? 'process cancelled' : '',
-    errorMessage ? redactProcessOutput(errorMessage) : '',
+    errorMessage ? safeProcessText(errorMessage) : '',
   ].filter(Boolean);
   const stderr = capProcessOutput(stderrParts.join('\n'), DEFAULT_MAX_OUTPUT_BYTES);
 
@@ -657,28 +708,29 @@ function recordToHandle(
 ): ProcessHandle {
   const completed = extras?.completed
     ?? ['succeeded', 'failed', 'timed_out', 'cancelled', 'orphaned', 'completed_unknown'].includes(record.status);
+  const safeRecord = completed ? sanitizeTerminalProcessArtifacts(record) : record;
   return {
-    processId: record.processId,
-    workId: record.workId,
-    commandId: record.commandId ?? record.processId,
-    status: record.status,
-    contractStatus: processContractStatus(record.status),
-    route: record.route,
-    pid: record.identity?.pid,
-    startedAt: record.startedAt,
-    interactiveWaitMs: record.interactiveWaitMs,
-    timeoutMs: record.timeoutMs,
+    processId: safeRecord.processId,
+    workId: safeRecord.workId,
+    commandId: safeRecord.commandId ?? safeRecord.processId,
+    status: safeRecord.status,
+    contractStatus: processContractStatus(safeRecord.status),
+    route: safeRecord.route,
+    pid: safeRecord.identity?.pid,
+    startedAt: safeRecord.startedAt,
+    interactiveWaitMs: safeRecord.interactiveWaitMs,
+    timeoutMs: safeRecord.timeoutMs,
     completed,
     deduplicated: extras?.deduplicated,
-    requestId: record.origin?.requestId,
-    ok: completed ? record.status === 'succeeded' : undefined,
-    exitCode: record.exitCode,
-    timedOut: record.timedOut,
-    cancelled: record.cancelled,
-    stdout: extras?.stdout ?? (completed ? record.stdoutTail : undefined),
-    stderr: extras?.stderr ?? (completed ? record.stderrTail : undefined),
-    stdoutTail: record.stdoutTail,
-    stderrTail: record.stderrTail,
+    requestId: safeRecord.origin?.requestId,
+    ok: completed ? safeRecord.status === 'succeeded' : undefined,
+    exitCode: safeRecord.exitCode,
+    timedOut: safeRecord.timedOut,
+    cancelled: safeRecord.cancelled,
+    stdout: extras?.stdout !== undefined ? safeProcessText(extras.stdout) : completed ? safeProcessText(safeRecord.stdoutTail ?? '') : undefined,
+    stderr: extras?.stderr !== undefined ? safeProcessText(extras.stderr) : completed ? safeProcessText(safeRecord.stderrTail ?? '') : undefined,
+    stdoutTail: safeRecord.stdoutTail ? safeProcessText(safeRecord.stdoutTail) : undefined,
+    stderrTail: safeRecord.stderrTail ? safeProcessText(safeRecord.stderrTail) : undefined,
     durableSideEffects: {
       executionJobCount: 0,
       localJobCount: 0,
@@ -694,7 +746,7 @@ export function processRunnerEnvironment(env: NodeJS.ProcessEnv = process.env): 
 
 function spawnProcessRunner(descriptor: ProcessCommandDescriptor, descriptorPath: string): ChildProcess {
   mkdirSync(dirname(descriptorPath), { recursive: true });
-  writeFileSync(descriptorPath, `${JSON.stringify(descriptor, null, 2)}\n`, 'utf8');
+  writeFileSync(descriptorPath, `${JSON.stringify(descriptor, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
 
   const entry = runnerEntryPath();
   const bun = Boolean(process.versions.bun);
@@ -791,6 +843,7 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     exitReceiptPath,
     stdoutPath,
     stderrPath,
+    commandDescriptorPath: descriptorPath,
     logPath: stdoutPath,
   };
   createProcessRecord(record);
@@ -984,10 +1037,10 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
   }
 
   const stdout = monitor.stdoutTail.length
-    ? capProcessOutput(redactProcessOutput(monitor.stdoutTail.toString('utf8')), maxOutputBytes)
+    ? capProcessOutput(safeProcessText(monitor.stdoutTail.toString('utf8')), maxOutputBytes)
     : completed.stdoutTail ?? '';
   const stderr = monitor.stderrTail.length
-    ? capProcessOutput(redactProcessOutput(monitor.stderrTail.toString('utf8')), maxOutputBytes)
+    ? capProcessOutput(safeProcessText(monitor.stderrTail.toString('utf8')), maxOutputBytes)
     : completed.stderrTail ?? '';
   return recordToHandle(completed, { completed: true, stdout, stderr });
 }
@@ -1195,18 +1248,51 @@ export function readProcessLogs(
   processId: string,
   maxBytes = PROCESS_LOG_TAIL_BYTES,
 ): ProcessLogSlice | undefined {
-  const record = getProcessRecord(controllerHome, repoId, processId);
+  let record = getProcessRecord(controllerHome, repoId, processId);
   if (!record) return undefined;
+  record = sanitizeTerminalProcessArtifacts(record);
   const stdout = readFileTailBytes(record.stdoutPath ?? '', maxBytes);
   const stderr = readFileTailBytes(record.stderrPath ?? '', maxBytes);
   return {
     processId,
-    stdout: stdout.text || record.stdoutTail || '',
-    stderr: stderr.text || record.stderrTail || '',
+    stdout: stdout.text || safeProcessText(record.stdoutTail ?? ''),
+    stderr: stderr.text || safeProcessText(record.stderrTail ?? ''),
     stdoutBytes: stdout.fileBytes || record.stdoutBytes || 0,
     stderrBytes: stderr.fileBytes || record.stderrBytes || 0,
     truncated: stdout.fileBytes > maxBytes || stderr.fileBytes > maxBytes || record.logTruncated === true,
   };
+}
+
+/**
+ * Sanitize bounded historical Process Runtime artifacts without returning any
+ * command output. Active processes are left alone because their runner may
+ * still be appending; new runners redact before persistence.
+ */
+export function sanitizeHistoricalProcessArtifacts(
+  controllerHome: string,
+  repoId: string,
+  limit = 10_000,
+): { scanned: number; eligible: number; changed: number; failed: number; processIds: string[] } {
+  const records = listProcessRecords(controllerHome, repoId, Math.max(1, limit));
+  let eligible = 0;
+  let changed = 0;
+  let failed = 0;
+  const processIds: string[] = [];
+  for (const record of records) {
+    if (!record.terminalWritten && !TERMINAL_PROCESS_STATUSES.has(record.status)) continue;
+    eligible += 1;
+    try {
+      const before = record.outputRedaction?.sanitizedAt;
+      const sanitized = sanitizeTerminalProcessArtifacts(record);
+      if (sanitized.outputRedaction?.sanitizedAt && sanitized.outputRedaction.sanitizedAt !== before) {
+        changed += 1;
+        processIds.push(record.processId);
+      }
+    } catch {
+      failed += 1;
+    }
+  }
+  return { scanned: records.length, eligible, changed, failed, processIds };
 }
 
 /**
@@ -1231,6 +1317,7 @@ export function recoverManagedProcesses(
     const record = getProcessRecord(controllerHome, repoId, processId);
     if (!record) continue;
     if (record.terminalWritten) {
+      sanitizeTerminalProcessArtifacts(record);
       // Cleanup leftover leases after crash between terminal write and release.
       if (record.leasesReleased !== true && (record.leaseRefs?.length ?? 0) > 0) {
         const after = releaseProcessLeasesOnce(controllerHome, repoId, processId);
@@ -1241,6 +1328,7 @@ export function recoverManagedProcesses(
 
     const fromReceipt = applyReceiptIfPresent(controllerHome, repoId, processId, record);
     if (fromReceipt) {
+      sanitizeTerminalProcessArtifacts(fromReceipt);
       completedFromReceipt.push(processId);
       if (fromReceipt.leasesReleased) leasesReleased.push(processId);
       continue;
@@ -1270,19 +1358,21 @@ export function recoverManagedProcesses(
     }
 
     if (record.identityUntrusted || record.identity?.processStartTime?.startsWith('untrusted:') || record.identity?.processStartTime?.startsWith('fallback:')) {
-      completeProcessFromEvidence(controllerHome, repoId, processId, record.terminalFenceToken, {
+      const completed = completeProcessFromEvidence(controllerHome, repoId, processId, record.terminalFenceToken, {
         status: 'completed_unknown',
         errorMessage: 'process identity was untrusted; exit code cannot be recovered after restart',
       });
+      if (completed) sanitizeTerminalProcessArtifacts(completed);
       completedUnknown.push(processId);
       continue;
     }
 
     // PID gone, no receipt → completed_unknown (releases leases).
-    completeProcessFromEvidence(controllerHome, repoId, processId, record.terminalFenceToken, {
+    const completed = completeProcessFromEvidence(controllerHome, repoId, processId, record.terminalFenceToken, {
       status: 'completed_unknown',
       errorMessage: 'process no longer running and no exit receipt after controller restart',
     });
+    if (completed) sanitizeTerminalProcessArtifacts(completed);
     completedUnknown.push(processId);
   }
   return { recovered, orphaned, completedUnknown, completedFromReceipt, leasesReleased };

@@ -123,6 +123,20 @@ bounded child process (process group) / yielded search
 - Timeout/cancel: SIGTERM process group → grace → SIGKILL via `terminateProcessTree`.
 - stdout/stderr collectors cap while streaming.
 
+## Process output confidentiality
+
+Process Runtime applies one shared bounded redaction policy before stdout/stderr
+is written to durable log files. The same policy is applied defensively to
+Process records, MCP responses, large `resultRef` payloads, searches, and error
+messages. Command descriptors are mode `0600` and are removed by the independent
+Runner immediately after parsing and child spawn.
+
+Terminal historical logs and result payloads are sanitized in place on bounded
+read/recovery/maintenance paths. Maintenance reports contain counts and entity
+ids only, never the removed contents. Redaction or artifact replacement is not
+credential revocation: when a real credential may have appeared in any output,
+the credential owner must rotate it at the provider and review downstream use.
+
 ## Checkout Mutation Ownership (round-3)
 
 Fast and Durable share the **same** Execution Lease arbiter:
