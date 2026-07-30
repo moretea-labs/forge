@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 5,
+  "id": "ISS-20260730-F311FC",
+  "title": "Fence Work preparation idempotency and redact process diagnostics",
+  "slug": "fence-work-preparation-idempotency-and-redact-process-diagnostic",
+  "kind": "bug",
+  "status": "planned",
+  "summary": "Two production stability/security defects were reproduced during independent Recovery verification: repeated work_prepare calls with the same request_id created multiple WorkContracts and isolated worktrees instead of returning the original durable result; and repository command diagnostics returned launchctl-style inherited environment output without reliably redacting credential-shaped values. These defects create duplicate execution state, cleanup accumulation, and potential secret exposure through tool responses or stored process evidence.",
+  "goals": [
+    "Make work_prepare atomically idempotent for repository/session/request identity and fail closed on request fingerprint conflicts.",
+    "Apply centralized redaction to process stdout/stderr, result references, summaries, logs and evidence before any user-visible or persisted diagnostic surface.",
+    "Add regression and race tests reproducing the exact duplicate WorkContract/worktree and launchctl-style secret-output failures.",
+    "Safely reconcile the duplicate cancelled Recovery WorkContracts/worktrees created by the reproduction without deleting unrelated work."
+  ],
+  "nonGoals": [
+    "Do not expose, recover or repeat any credential value observed during reproduction.",
+    "Do not weaken command authorization, repository scoping, secret access or destructive cleanup gates.",
+    "Do not redesign all WorkContract or Process Runtime schemas.",
+    "Do not push, publish or rotate credentials automatically."
+  ],
+  "acceptanceCriteria": [
+    "Concurrent and sequential identical work_prepare requests with the same request_id return exactly one WorkContract, checkout, branch and worktree.",
+    "Reusing a request_id with a different canonical fingerprint fails closed with a stable conflict code and creates no additional state.",
+    "Crash/restart recovery preserves the idempotency index and never repeats worktree creation.",
+    "Credential-shaped values in launchctl-style output, environment assignments, authorization headers, URLs and generic secret key/value forms are redacted before stdout/stderr, resultRef, process logs, summaries or evidence leave the execution boundary.",
+    "Redaction preserves useful non-sensitive diagnostics and is applied consistently to direct and managed Process Runtime results.",
+    "Existing persisted unsafe process artifacts are identified and quarantined or replaced with redacted evidence without printing their contents.",
+    "Duplicate cancelled Recovery WorkContracts/worktrees are safely reconciled through controller-owned cleanup, with unrelated worktrees untouched.",
+    "Focused tests, package:check:type, package:check:runtime-architecture and package:check:controller-v8 pass.",
+    "Credential rotation is recorded as a required human security action; no credential is included in Issue or test fixtures."
+  ],
+  "relatedArtifacts": [
+    "work_prepare",
+    "work_25cf8ace1ed642d4bcd6841f6622b41b",
+    "ISS-20260730-6444C7",
+    "src/runtime/execution/**",
+    "src/runtime/control-plane/**",
+    "src/runtime/gateway/mcp/**",
+    "src/cli/mcp/**"
+  ],
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Make work_prepare atomically idempotent",
+      "objective": "Trace work_prepare from MCP facade through WorkContract and isolated worktree creation. Add a durable atomic request index keyed by repository, session/principal and request_id with a canonical operation fingerprint. Identical retries must return the original Work and workspace; fingerprint mismatch must fail closed before side effects. Add sequential, concurrent and restart-recovery tests using the exact reproduced pattern. Reconcile only the duplicate cancelled Recovery WorkContracts/worktrees after ownership and cleanliness checks.",
+      "status": "ready",
+      "dependsOn": [],
+      "allowedPaths": [
+        "src/runtime/control-plane/**",
+        "src/runtime/gateway/mcp/**",
+        "src/cli/mcp/**",
+        "src/cli/controller/**",
+        "tests/runtime/**",
+        "tests/cli/**",
+        "docs/architecture/current/**",
+        "docs/operations/**",
+        "tasks/issues/**"
+      ],
+      "forbiddenPaths": [
+        "_ops/**",
+        ".ai/harness/**",
+        "node_modules/**",
+        "dist/**"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:controller-v8"
+      ],
+      "acceptanceCriteria": [
+        "Same request creates one Work/worktree across sequential, concurrent and restart retries.",
+        "Different fingerprint with same request_id fails closed without new state.",
+        "Duplicate Recovery worktrees are reconciled only after verified safe ownership."
+      ],
+      "risk": "high",
+      "recommendedAgent": "codex",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-30T02:50:41.809Z",
+      "updatedAt": "2026-07-30T02:50:41.809Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T2",
+      "title": "Redact secrets at the Process Runtime output boundary",
+      "objective": "Trace all direct and managed Process Runtime stdout/stderr, logs, resultRef, summary and Evidence Plane serialization. Add centralized bounded redaction for authorization material and credential-shaped environment/key-value output before persistence and before returning any tool result. Add launchctl-style fixtures with synthetic values, direct/managed path parity tests, artifact quarantine/migration for unsafe historical results, and documentation. Never include a real credential in source, tests, Issue notes or output.",
+      "status": "planned",
+      "dependsOn": [
+        "T1"
+      ],
+      "allowedPaths": [
+        "src/runtime/execution/**",
+        "src/runtime/evidence/**",
+        "src/runtime/gateway/mcp/**",
+        "src/cli/mcp/**",
+        "src/cli/controller/**",
+        "tests/runtime/**",
+        "tests/cli/**",
+        "docs/architecture/current/**",
+        "docs/operations/**",
+        "SECURITY.md",
+        "tasks/issues/**"
+      ],
+      "forbiddenPaths": [
+        "_ops/**",
+        ".ai/harness/**",
+        "node_modules/**",
+        "dist/**"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:controller-v8"
+      ],
+      "acceptanceCriteria": [
+        "Synthetic launchctl/environment credentials are redacted on all user-visible and persisted paths.",
+        "Non-sensitive diagnostic context remains useful.",
+        "Unsafe historical artifacts are quarantined or redacted without being printed."
+      ],
+      "risk": "high",
+      "recommendedAgent": "codex",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-30T02:50:41.809Z",
+      "updatedAt": "2026-07-30T02:50:41.809Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    }
+  ],
+  "createdAt": "2026-07-30T02:50:41.809Z",
+  "updatedAt": "2026-07-30T02:50:41.809Z",
+  "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+}

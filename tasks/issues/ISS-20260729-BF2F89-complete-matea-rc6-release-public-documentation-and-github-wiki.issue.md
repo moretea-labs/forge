@@ -2,7 +2,7 @@
 id: "ISS-20260729-BF2F89"
 kind: "governance"
 status: "in_progress"
-updated_at: "2026-07-30T00:37:32.129Z"
+updated_at: "2026-07-30T03:04:58.233Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -57,7 +57,7 @@ Finish the public release baseline from clean main: restore the Windows-native c
 
 ### T3 — Finalize GitHub governance and publish RC6
 
-- Status: `blocked`
+- Status: `running`
 - Objective: After the code and docs tasks are integrated, push main, verify GitHub CI and Windows smoke on the exact commit, synchronize docs/wiki to the GitHub Wiki repository, tighten safe repository settings such as deleting merged branches and a clear merge strategy, apply an appropriate main ruleset/branch protection using existing CI check names, update repository topics/about links where supported, and create v1.4.0-rc.6 as a GitHub prerelease with accurate notes. Confirm npm publication separately and do not claim it without evidence.
 - Depends on: `T1`, `T2`
 - Allowed paths: `.github/**`, `package.json`, `CHANGELOG.md`, `docs/wiki/**`

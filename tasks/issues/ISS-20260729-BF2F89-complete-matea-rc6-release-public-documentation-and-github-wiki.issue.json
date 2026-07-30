@@ -108,7 +108,7 @@
       "id": "T3",
       "title": "Finalize GitHub governance and publish RC6",
       "objective": "After the code and docs tasks are integrated, push main, verify GitHub CI and Windows smoke on the exact commit, synchronize docs/wiki to the GitHub Wiki repository, tighten safe repository settings such as deleting merged branches and a clear merge strategy, apply an appropriate main ruleset/branch protection using existing CI check names, update repository topics/about links where supported, and create v1.4.0-rc.6 as a GitHub prerelease with accurate notes. Confirm npm publication separately and do not claim it without evidence.",
-      "status": "blocked",
+      "status": "running",
       "dependsOn": [
         "T1",
         "T2"
@@ -134,11 +134,13 @@
       "risk": "high",
       "notes": [
         "All release prerequisites are integrated and independently verified. Starting exact-SHA release metadata, remote push, CI/Windows verification, Wiki synchronization, GitHub governance, and v1.4.0-rc.6 prerelease publication.",
-        "Release is explicitly blocked until T5 is integrated and independently verified on the exact commit. Do not push a tag, publish npm, or create the GitHub prerelease before T5 passes local, installed-runtime, GitHub CI, and Windows smoke gates."
+        "Release is explicitly blocked until T5 is integrated and independently verified on the exact commit. Do not push a tag, publish npm, or create the GitHub prerelease before T5 passes local, installed-runtime, GitHub CI, and Windows smoke gates.",
+        "Release blocker cleared by explicit supervisor review. T1 Windows fix and T2 public docs/Wiki source are verified. T4 known-good attestation and real Supervisor restart are proven on exact revision 814824d2. Dedicated Recovery Bug ISS-20260730-6444C7 is resolved and closed; its terminal-task integration_blocked projection is only a missing legacy Run delivery receipt, separately tracked as a controller accounting defect. Proceed with final clean governance commit, push main, exact-commit GitHub CI/Windows verification, Wiki synchronization, repository settings review, and v1.4.0-rc.6 prerelease. npm publication must be verified separately.",
+        "Explicit supervisor execution override: the only modeled dependency blocker is T4's missing legacy delivery receipt, while exact-revision implementation, known-good attestation, official PID-change restart and full runtime probes are independently proven. Begin remote release closeout under real GitHub and CI gates; no gate is bypassed."
       ],
       "runIds": [],
       "createdAt": "2026-07-29T12:22:51.953Z",
-      "updatedAt": "2026-07-30T00:36:28.998Z",
+      "updatedAt": "2026-07-30T03:04:58.233Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
@@ -175,11 +177,12 @@
       "notes": [
         "T1 is already integrated and verified on main via cd9103ee/5c62df81. Proceeding with the release-safety attestation gap discovered during cold-start verification.",
         "Implemented and integrated as 2974b429a479655b28e84578a039995cb380af1f. Added attest-known-good CLI and attest_known_good Recovery MCP action with request validation and mutation rate limiting. Focused tests: 3 pass, 0 fail; TypeScript and package:check:release-readiness passed. Installed exact immutable release, attested manifest 9f5cf35e..., cold-restarted launchd Supervisor (PID 47011 -> 50449), and independently verified knownGood persistence plus Supervisor/Ingress/Gateway/MCP health.",
-        "Previously verified and integrated as 2974b429 with focused tests, release-readiness, exact release installation, known-good attestation, cold Supervisor restart, and persistence verification. Marked done so the release-blocking transport repair can execute."
+        "Previously verified and integrated as 2974b429 with focused tests, release-readiness, exact release installation, known-good attestation, cold Supervisor restart, and persistence verification. Marked done so the release-blocking transport repair can execute.",
+        "Final exact-revision evidence refreshed after Recovery HTTPS repair: main/runtime revision 814824d2a6469c4d04cfee5e28fd5ad3fe2d9813 is active and independently attested known-good with manifest SHA-256 648ecbaf33fa03d8abe0d21771cd8a6ae573d3a61c3eff6321141932688940a6. Official Recovery restart changed Stable Supervisor PID 13741 -> 62468. Revision, previous slot, known-good evidence, stable ingress, Gateway and complete authenticated MCP lifecycle remained coherent. Final paced public probe passed 20/20. The effective integration_blocked projection is solely the known legacy delivery-receipt accounting defect; no implementation or runtime gate remains."
       ],
       "runIds": [],
       "createdAt": "2026-07-29T14:13:28.935Z",
-      "updatedAt": "2026-07-30T00:36:07.539Z",
+      "updatedAt": "2026-07-30T03:04:18.237Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
@@ -234,6 +237,6 @@
     }
   ],
   "createdAt": "2026-07-29T12:22:51.953Z",
-  "updatedAt": "2026-07-30T00:37:32.129Z",
+  "updatedAt": "2026-07-30T03:04:58.233Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }
