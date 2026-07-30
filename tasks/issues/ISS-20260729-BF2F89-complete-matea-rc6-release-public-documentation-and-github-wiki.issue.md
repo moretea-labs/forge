@@ -2,7 +2,7 @@
 id: "ISS-20260729-BF2F89"
 kind: "governance"
 status: "in_progress"
-updated_at: "2026-07-29T14:40:03.014Z"
+updated_at: "2026-07-30T00:37:32.129Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -57,7 +57,7 @@ Finish the public release baseline from clean main: restore the Windows-native c
 
 ### T3 — Finalize GitHub governance and publish RC6
 
-- Status: `running`
+- Status: `blocked`
 - Objective: After the code and docs tasks are integrated, push main, verify GitHub CI and Windows smoke on the exact commit, synchronize docs/wiki to the GitHub Wiki repository, tighten safe repository settings such as deleting merged branches and a clear merge strategy, apply an appropriate main ruleset/branch protection using existing CI check names, update repository topics/about links where supported, and create v1.4.0-rc.6 as a GitHub prerelease with accurate notes. Confirm npm publication separately and do not claim it without evidence.
 - Depends on: `T1`, `T2`
 - Allowed paths: `.github/**`, `package.json`, `CHANGELOG.md`, `docs/wiki/**`
@@ -66,12 +66,21 @@ Finish the public release baseline from clean main: restore the Windows-native c
 
 ### T4 — Expose verified known-good release attestation
 
-- Status: `verified`
+- Status: `done`
 - Objective: Expose the existing attestKnownGood operation through the standalone Recovery CLI and MCP gateway only after full independent verification succeeds. Add focused tests for tool exposure, dispatch, state persistence, and rollback eligibility. Rebuild and activate the exact main revision, attest it as known-good, cold-restart the Supervisor, and verify the release remains active and rollback-safe.
 - Depends on: `T1`
 - Allowed paths: `src/runtime/standalone-recovery/core.ts`, `src/runtime/standalone-recovery/entry.ts`, `tests/runtime/**`, `tasks/issues/ISS-20260729-BF2F89-*`
 - Checks: `package:check:type`, `package:check:release-readiness`
 - Execution hint: selected at runtime
+
+### T5 — Repair standalone Recovery HTTPS transport before RC6
+
+- Status: `superseded`
+- Objective: Release-blocking repair. Start from clean main a8faa5369ad6571e32d8f90a060b8ab55e20b8e2 and independently verify the regression history: commit 9d13ec6cf28319a650b05afeb44e15e18f7a157a introduced Bun fetch for standalone Recovery HTTPS traffic; commit 329028b64ddcf40b23ea09ab4aea9e9bdc1281b3 extended the same transport to the full MCP lifecycle; commit e4cf015a037eb602dcdb6f37e53008fa31e660ce only accepted a valid 401 Bearer challenge and did not fix Bun TLS verification. Reproduce that curl, Node fetch, and OpenSSL verify https://mcp.moretea-lab.tech/mcp successfully while Bun fetch/Bun https and the compiled recovery binary fail with unknown certificate verification error. Implement a production-safe HTTPS transport for standalone Recovery that does not depend on Bun TLS certificate verification. Prefer a small explicit transport abstraction; a fixed system curl implementation is acceptable only if asynchronous/non-blocking, bounded by timeouts and output limits, does not invoke a shell, does not expose bearer tokens or JSON bodies in argv/process listings/logs/errors, uses mode-0600 temporary request material below controller-home/recovery, always cleans it on success/error/timeout/cancellation, parses HTTP status/headers/body and MCP event-stream responses correctly, preserves MCP session IDs, and keeps local HTTP health probes compatible. Do not disable TLS verification, use --insecure, NODE_TLS_REJECT_UNAUTHORIZED=0, inherit the full user environment, weaken known-good attestation, or special-case the production hostname. Add focused tests for GET 401 OAuth challenge, authenticated initialize, notifications/initialized, tools/list, read-only tools/call, DELETE session close, timeout/error cleanup, no secret leakage, and no event-loop blocking/deadlock. Ensure Windows behavior either uses a verified system curl path or fails closed with a precise error; do not regress native Windows release checks. Rebuild and reinstall standalone Recovery in an isolated validation step, restart its launchd gateway/watchdog, verify the real external endpoint and authenticated MCP lifecycle, attest the exact active release, and prove a real Stable Supervisor restart keeps the same exact revision and full MCP health. Commit the scoped fix in the isolated worktree, but do not push, tag, publish npm, or create a GitHub Release. Return the exact commit, changed files, commands, live verification evidence, and remaining risks for independent ChatGPT review.
+- Depends on: `T4`
+- Allowed paths: `src/runtime/standalone-recovery/**`, `tests/runtime/standalone-recovery.test.ts`, `scripts/install-standalone-recovery.ts`, `docs/operations/standalone-disaster-recovery.md`
+- Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:release-readiness`
+- Execution hint: agent / codex
 
 ## Related Artifacts
 

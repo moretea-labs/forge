@@ -108,7 +108,7 @@
       "id": "T3",
       "title": "Finalize GitHub governance and publish RC6",
       "objective": "After the code and docs tasks are integrated, push main, verify GitHub CI and Windows smoke on the exact commit, synchronize docs/wiki to the GitHub Wiki repository, tighten safe repository settings such as deleting merged branches and a clear merge strategy, apply an appropriate main ruleset/branch protection using existing CI check names, update repository topics/about links where supported, and create v1.4.0-rc.6 as a GitHub prerelease with accurate notes. Confirm npm publication separately and do not claim it without evidence.",
-      "status": "running",
+      "status": "blocked",
       "dependsOn": [
         "T1",
         "T2"
@@ -133,18 +133,19 @@
       ],
       "risk": "high",
       "notes": [
-        "All release prerequisites are integrated and independently verified. Starting exact-SHA release metadata, remote push, CI/Windows verification, Wiki synchronization, GitHub governance, and v1.4.0-rc.6 prerelease publication."
+        "All release prerequisites are integrated and independently verified. Starting exact-SHA release metadata, remote push, CI/Windows verification, Wiki synchronization, GitHub governance, and v1.4.0-rc.6 prerelease publication.",
+        "Release is explicitly blocked until T5 is integrated and independently verified on the exact commit. Do not push a tag, publish npm, or create the GitHub prerelease before T5 passes local, installed-runtime, GitHub CI, and Windows smoke gates."
       ],
       "runIds": [],
       "createdAt": "2026-07-29T12:22:51.953Z",
-      "updatedAt": "2026-07-29T14:40:03.014Z",
+      "updatedAt": "2026-07-30T00:36:28.998Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
       "id": "T4",
       "title": "Expose verified known-good release attestation",
       "objective": "Expose the existing attestKnownGood operation through the standalone Recovery CLI and MCP gateway only after full independent verification succeeds. Add focused tests for tool exposure, dispatch, state persistence, and rollback eligibility. Rebuild and activate the exact main revision, attest it as known-good, cold-restart the Supervisor, and verify the release remains active and rollback-safe.",
-      "status": "verified",
+      "status": "done",
       "dependsOn": [
         "T1"
       ],
@@ -173,15 +174,66 @@
       "risk": "medium",
       "notes": [
         "T1 is already integrated and verified on main via cd9103ee/5c62df81. Proceeding with the release-safety attestation gap discovered during cold-start verification.",
-        "Implemented and integrated as 2974b429a479655b28e84578a039995cb380af1f. Added attest-known-good CLI and attest_known_good Recovery MCP action with request validation and mutation rate limiting. Focused tests: 3 pass, 0 fail; TypeScript and package:check:release-readiness passed. Installed exact immutable release, attested manifest 9f5cf35e..., cold-restarted launchd Supervisor (PID 47011 -> 50449), and independently verified knownGood persistence plus Supervisor/Ingress/Gateway/MCP health."
+        "Implemented and integrated as 2974b429a479655b28e84578a039995cb380af1f. Added attest-known-good CLI and attest_known_good Recovery MCP action with request validation and mutation rate limiting. Focused tests: 3 pass, 0 fail; TypeScript and package:check:release-readiness passed. Installed exact immutable release, attested manifest 9f5cf35e..., cold-restarted launchd Supervisor (PID 47011 -> 50449), and independently verified knownGood persistence plus Supervisor/Ingress/Gateway/MCP health.",
+        "Previously verified and integrated as 2974b429 with focused tests, release-readiness, exact release installation, known-good attestation, cold Supervisor restart, and persistence verification. Marked done so the release-blocking transport repair can execute."
       ],
       "runIds": [],
       "createdAt": "2026-07-29T14:13:28.935Z",
-      "updatedAt": "2026-07-29T14:26:07.932Z",
+      "updatedAt": "2026-07-30T00:36:07.539Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T5",
+      "title": "Repair standalone Recovery HTTPS transport before RC6",
+      "objective": "Release-blocking repair. Start from clean main a8faa5369ad6571e32d8f90a060b8ab55e20b8e2 and independently verify the regression history: commit 9d13ec6cf28319a650b05afeb44e15e18f7a157a introduced Bun fetch for standalone Recovery HTTPS traffic; commit 329028b64ddcf40b23ea09ab4aea9e9bdc1281b3 extended the same transport to the full MCP lifecycle; commit e4cf015a037eb602dcdb6f37e53008fa31e660ce only accepted a valid 401 Bearer challenge and did not fix Bun TLS verification. Reproduce that curl, Node fetch, and OpenSSL verify https://mcp.moretea-lab.tech/mcp successfully while Bun fetch/Bun https and the compiled recovery binary fail with unknown certificate verification error. Implement a production-safe HTTPS transport for standalone Recovery that does not depend on Bun TLS certificate verification. Prefer a small explicit transport abstraction; a fixed system curl implementation is acceptable only if asynchronous/non-blocking, bounded by timeouts and output limits, does not invoke a shell, does not expose bearer tokens or JSON bodies in argv/process listings/logs/errors, uses mode-0600 temporary request material below controller-home/recovery, always cleans it on success/error/timeout/cancellation, parses HTTP status/headers/body and MCP event-stream responses correctly, preserves MCP session IDs, and keeps local HTTP health probes compatible. Do not disable TLS verification, use --insecure, NODE_TLS_REJECT_UNAUTHORIZED=0, inherit the full user environment, weaken known-good attestation, or special-case the production hostname. Add focused tests for GET 401 OAuth challenge, authenticated initialize, notifications/initialized, tools/list, read-only tools/call, DELETE session close, timeout/error cleanup, no secret leakage, and no event-loop blocking/deadlock. Ensure Windows behavior either uses a verified system curl path or fails closed with a precise error; do not regress native Windows release checks. Rebuild and reinstall standalone Recovery in an isolated validation step, restart its launchd gateway/watchdog, verify the real external endpoint and authenticated MCP lifecycle, attest the exact active release, and prove a real Stable Supervisor restart keeps the same exact revision and full MCP health. Commit the scoped fix in the isolated worktree, but do not push, tag, publish npm, or create a GitHub Release. Return the exact commit, changed files, commands, live verification evidence, and remaining risks for independent ChatGPT review.",
+      "status": "superseded",
+      "dependsOn": [
+        "T4"
+      ],
+      "allowedPaths": [
+        "src/runtime/standalone-recovery/**",
+        "tests/runtime/standalone-recovery.test.ts",
+        "scripts/install-standalone-recovery.ts",
+        "docs/operations/standalone-disaster-recovery.md"
+      ],
+      "forbiddenPaths": [
+        "_ops/**",
+        ".ai/harness/**",
+        "node_modules/**",
+        "dist/**",
+        ".github/workflows/release.yml",
+        "package.json"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:release-readiness"
+      ],
+      "acceptanceCriteria": [
+        "The exact regression history is confirmed and documented in the handoff.",
+        "The fix reproduces and eliminates the real Bun TLS failure without disabling certificate verification.",
+        "External OAuth 401 challenge and authenticated MCP initialize/notification/tools-list/read-only-call/session-close all pass through the fixed transport.",
+        "No bearer token or request body appears in argv, process listings, logs, returned errors, or committed fixtures.",
+        "All temporary request files are mode 0600 and removed after success, error, timeout, and cancellation.",
+        "The transport is asynchronous and cannot deadlock an in-process HTTP test server or block the Recovery gateway event loop.",
+        "Focused Recovery tests, TypeScript, runtime architecture, and full release-readiness pass.",
+        "A rebuilt installed standalone Recovery verifies https://mcp.moretea-lab.tech/mcp and attests the exact active release.",
+        "A real Stable Supervisor restart changes the Supervisor PID while retaining the exact active revision, known-good evidence, and complete MCP health.",
+        "No remote push, tag, npm publication, or GitHub Release occurs."
+      ],
+      "risk": "high",
+      "recommendedAgent": "codex",
+      "notes": [
+        "The previous direct-edit WorkContract was cancelled and retained only as evidence. Main is clean at a8faa536. This task is now the sole release-blocking implementation and must run isolated with Codex.",
+        "Superseded only as an execution record because the legacy RC6 Issue dependency model treats verified/done-without-completion-evidence tasks as incomplete and makes this task non-dispatchable. The same exact scoped objective and acceptance contract is being moved to a dedicated release-blocking Bug Issue for Codex execution. T3 remains blocked until that Bug Issue is independently verified."
+      ],
+      "runIds": [],
+      "createdAt": "2026-07-30T00:35:42.887Z",
+      "updatedAt": "2026-07-30T00:37:32.129Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     }
   ],
   "createdAt": "2026-07-29T12:22:51.953Z",
-  "updatedAt": "2026-07-29T14:40:03.014Z",
+  "updatedAt": "2026-07-30T00:37:32.129Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }

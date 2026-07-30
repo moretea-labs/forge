@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 5,
+  "id": "ISS-20260730-6444C7",
+  "title": "Fix standalone Recovery HTTPS transport regression",
+  "slug": "fix-standalone-recovery-https-transport-regression",
+  "kind": "bug",
+  "status": "in_progress",
+  "summary": "Release-blocking bug: standalone Recovery uses Bun TLS for external HTTPS/MCP verification. The production certificate chain is valid for curl, Node and OpenSSL, but Bun and the compiled Recovery binary fail with unknown certificate verification error. The earlier Codex repair corrected 401 OAuth challenge classification and Supervisor restart behavior but did not replace or validate the failing transport.",
+  "goals": [
+    "Replace the failing Recovery external HTTPS transport with a production-safe, certificate-validating, asynchronous implementation.",
+    "Prove the complete external OAuth and authenticated MCP lifecycle against the real endpoint.",
+    "Preserve secret isolation, known-good attestation safeguards, cross-platform behavior and non-blocking Recovery operation.",
+    "Return a clean isolated commit for independent review before RC6 publication resumes."
+  ],
+  "nonGoals": [
+    "Do not disable certificate verification or use insecure TLS options.",
+    "Do not weaken OAuth, known-good matching, rollback restrictions or Supervisor fencing.",
+    "Do not modify package version, release workflows, GitHub Wiki or repository governance.",
+    "Do not push, tag, publish npm or create a GitHub Release."
+  ],
+  "acceptanceCriteria": [
+    "Regression history is confirmed: 9d13ec6c introduced Bun fetch, 329028b6 extended it to MCP sessions, and e4cf015a only corrected 401 challenge classification.",
+    "curl, Node and OpenSSL success plus Bun/compiled Recovery failure are reproduced before the fix.",
+    "External OAuth 401 challenge and authenticated initialize, initialized notification, tools/list, read-only tools/call and DELETE session close pass after the fix.",
+    "Bearer tokens and request bodies never appear in argv, process listings, logs, returned errors or committed fixtures.",
+    "Temporary request material is mode 0600 and removed on success, error, timeout and cancellation.",
+    "The implementation is asynchronous and cannot deadlock an in-process HTTP server or block the Recovery gateway event loop.",
+    "Windows either uses a validated system transport or fails closed clearly; Windows release checks remain green.",
+    "Focused tests, package:check:type, package:check:runtime-architecture and package:check:release-readiness pass.",
+    "Rebuilt installed Recovery verifies the real endpoint, attests the exact active release, and a real Stable Supervisor restart changes PID while retaining exact revision, known-good evidence and full MCP health.",
+    "No remote or publication side effects occur."
+  ],
+  "relatedArtifacts": [
+    "src/runtime/standalone-recovery/core.ts",
+    "src/runtime/standalone-recovery/entry.ts",
+    "tests/runtime/standalone-recovery.test.ts",
+    "scripts/install-standalone-recovery.ts",
+    "docs/operations/standalone-disaster-recovery.md",
+    "ISS-20260729-BF2F89/T3"
+  ],
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Implement and prove safe Recovery HTTPS transport",
+      "objective": "Start from exact clean main a8faa5369ad6571e32d8f90a060b8ab55e20b8e2. Independently confirm the regression history and reproduce the real endpoint behavior. Implement a small explicit external HTTPS transport abstraction for standalone Recovery that does not depend on Bun TLS certificate verification. A fixed system curl approach is acceptable only if invoked directly without a shell, asynchronously/non-blocking, with bounded timeout/output, minimal environment, secure mode-0600 request material, guaranteed cleanup, correct status/header/body parsing including multiple header blocks, MCP JSON/event-stream parsing and session ID preservation. Never put Authorization or JSON bodies in argv or returned diagnostics. Preserve existing local HTTP health behavior. Add focused tests for GET 401 OAuth challenge, authenticated initialize, notifications/initialized, tools/list, read-only tools/call, DELETE session close, timeout/error/cancellation cleanup, no secret leakage, no event-loop deadlock and Windows fail-closed/system transport behavior. Rebuild and reinstall standalone Recovery, restart its launchd gateway/watchdog, verify the real public endpoint and authenticated MCP lifecycle, attest the exact active release, and use the official Recovery restart action to prove the Supervisor PID changes while exact revision, known-good evidence, ingress, gateway and MCP health remain coherent. Commit only scoped source/tests/docs in the isolated worktree. Do not push or publish. Return exact commit, changed files, commands, live evidence and remaining risks for independent ChatGPT review.",
+      "status": "verifying",
+      "dependsOn": [],
+      "allowedPaths": [
+        "src/runtime/standalone-recovery/**",
+        "tests/runtime/standalone-recovery.test.ts",
+        "scripts/install-standalone-recovery.ts",
+        "docs/operations/standalone-disaster-recovery.md"
+      ],
+      "forbiddenPaths": [
+        "_ops/**",
+        ".ai/harness/**",
+        "node_modules/**",
+        "dist/**",
+        "package.json",
+        ".github/**",
+        "tasks/**"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:release-readiness"
+      ],
+      "acceptanceCriteria": [
+        "Implementation is asynchronous, bounded, shell-free and certificate-validating.",
+        "Secrets and request bodies are absent from process arguments and diagnostics.",
+        "Secure temporary material is always cleaned.",
+        "Focused and full release checks pass.",
+        "Live installed Recovery verification, attestation and Stable Supervisor restart pass on the exact commit.",
+        "A clean scoped commit exists with no remote side effects."
+      ],
+      "risk": "high",
+      "recommendedAgent": "codex",
+      "notes": [
+        "Integrated as a1e6b73b + 97e47bbd on main. Independent focused Recovery tests: 9 pass, 0 fail; TypeScript, runtime architecture (34 checks), and full release-readiness passed on exact main 97e47bbd3eb276f8fff97a83d8f6f21118a45e55. Pending installed Recovery rebuild, real external MCP lifecycle, known-good attestation, and Supervisor restart proof."
+      ],
+      "runIds": [],
+      "createdAt": "2026-07-30T00:38:49.360Z",
+      "updatedAt": "2026-07-30T02:31:58.814Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    }
+  ],
+  "createdAt": "2026-07-30T00:38:49.360Z",
+  "updatedAt": "2026-07-30T02:31:58.814Z",
+  "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+}
