@@ -2,7 +2,7 @@
 id: "ISS-20260729-BF2F89"
 kind: "governance"
 status: "in_progress"
-updated_at: "2026-07-30T11:10:04.542Z"
+updated_at: "2026-07-30T13:22:06.168Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -93,7 +93,7 @@ Finish the public release baseline from clean main: restore the Windows-native c
 
 ### T7 — Self-heal a stalled Cloudflare tunnel connector
 
-- Status: `ready`
+- Status: `verified`
 - Objective: Prevent the production MCP endpoint from remaining unavailable when the registered cloudflared launchd process is alive but has no active tunnel connector. Add an explicit, opt-in public tunnel launchd service binding to standalone Recovery; detect the isolated failure shape where local ingress, active Gateway, and authenticated MCP lifecycle are healthy but the external endpoint fails; perform a bounded, rate-limited launchctl kickstart of only the configured service; verify the external endpoint and full MCP lifecycle after restart; expose a manually invokable Recovery action; add failure-injection tests, installer/configuration support, and an operations runbook. Never restart an unconfigured service, never weaken TLS/OAuth, never roll back a known-good application revision for a tunnel-only failure, and never expose credentials.
 - Depends on: none
 - Allowed paths: `src/runtime/standalone-recovery/**`, `scripts/install-standalone-recovery.ts`, `tests/runtime/standalone-recovery.test.ts`, `docs/operations/**`, `docs/repo-harness-chatgpt-mcp-setup.md`, `package.json`
