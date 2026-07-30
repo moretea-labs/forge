@@ -2,7 +2,7 @@
 id: "ISS-20260729-BF2F89"
 kind: "governance"
 status: "in_progress"
-updated_at: "2026-07-30T03:04:58.233Z"
+updated_at: "2026-07-30T03:26:58.503Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -80,6 +80,15 @@ Finish the public release baseline from clean main: restore the Windows-native c
 - Depends on: `T4`
 - Allowed paths: `src/runtime/standalone-recovery/**`, `tests/runtime/standalone-recovery.test.ts`, `scripts/install-standalone-recovery.ts`, `docs/operations/standalone-disaster-recovery.md`
 - Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:release-readiness`
+- Execution hint: agent / codex
+
+### T6 — Fix RC6 Windows global runtime fixture failure
+
+- Status: `ready`
+- Objective: Reproduce and fix the exact Windows smoke failure in tests/cli/global-runtime-init.test.ts at final RC6 commit 733f7917. Installer dry-run and platform contract already pass; the failure is limited to fake command/runtime fixture execution returning exit code 1 on windows-latest. Inspect the GitHub run 30511067300, identify the first causal error rather than patching downstream assertions, make the smallest cross-platform change, add focused regression coverage, run type/platform/release readiness locally, push a new main commit, and require both Linux CI and Windows smoke to pass before tagging. Do not publish or tag until green.
+- Depends on: none
+- Allowed paths: `tests/cli/global-runtime-init.test.ts`, `src/runtime/effects/**`, `src/runtime/execution/**`, `src/cli/**`, `scripts/check-platform-support.mjs`, `.github/workflows/windows-smoke.yml`, `tasks/issues/**`
+- Checks: `package:check:type`, `package:check:platform-support`, `package:check:release-readiness`
 - Execution hint: agent / codex
 
 ## Related Artifacts
