@@ -25,6 +25,7 @@ export interface PreparedProcessInvocation {
   readonly command: string;
   readonly args: readonly string[];
   readonly resolvedCommand: string;
+  readonly windowsVerbatimArguments?: boolean;
 }
 
 export interface ProcessRunResult {
@@ -136,8 +137,9 @@ export function prepareProcessInvocation(
   const commandLine = [resolvedCommand, ...args].map(escapeWindowsCommandArgument).join(" ");
   return {
     command: comspec,
-    args: ["/d", "/s", "/c", commandLine],
+    args: ["/d", "/s", "/c", `"${commandLine}"`],
     resolvedCommand,
+    windowsVerbatimArguments: true,
   };
 }
 
@@ -156,6 +158,7 @@ export function runProcess(command: string, args: readonly string[], opts: RunPr
     timeout: timeoutMs,
     maxBuffer: Math.max(maxOutputBytes, DEFAULT_PROCESS_MAX_BUFFER_BYTES),
     input: opts.input,
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
   });
   const error = result.error as NodeJS.ErrnoException | undefined;
   const timedOut = error?.code === "ETIMEDOUT";

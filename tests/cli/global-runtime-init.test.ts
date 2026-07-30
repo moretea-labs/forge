@@ -129,9 +129,13 @@ describe('init command global runtime bootstrap', () => {
 
       expect(result.exitCode).toBe(0);
       expect(readFileSync(bunLog, 'utf-8')).toContain(`add -g ${source}`);
-      expect(result.steps.find((step) => step.step === 'sync repo-harness skill runtime')?.stdout).toContain(
-        'sync runtime',
-      );
+      const syncStep = result.steps.find((step) => step.step === 'sync repo-harness skill runtime');
+      if (process.platform === 'win32') {
+        expect(syncStep?.status).toBe('skipped');
+        expect(syncStep?.detail).toContain('native Windows skips');
+      } else {
+        expect(syncStep?.stdout).toContain('sync runtime');
+      }
       expect(existsSync(join(home, '.codex', 'hooks.json'))).toBe(true);
       expect(readFileSync(npxLog, 'utf-8')).toContain(
         '-y skills add tw93/Waza -g -a codex -s think hunt check health -y',
@@ -145,7 +149,12 @@ describe('init command global runtime bootstrap', () => {
       expect(JSON.parse(readFileSync(join(home, '.repo-harness', 'config.json'), 'utf-8')).brainRoot).toBe(
         join(home, 'Documents', 'brain'),
       );
-      expect(readFileSync(codegraphLog, 'utf-8')).toContain('codegraph install --target codex --location global --yes');
+      if (process.platform === 'win32') {
+        expect(result.steps.find((step) => step.step === 'ensure CodeGraph CLI')?.status).toBe('skipped');
+        expect(existsSync(codegraphLog)).toBe(false);
+      } else {
+        expect(readFileSync(codegraphLog, 'utf-8')).toContain('codegraph install --target codex --location global --yes');
+      }
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -178,9 +187,13 @@ describe('init command global runtime bootstrap', () => {
       });
 
       expect(result.exitCode).toBe(0);
-      expect(result.steps.find((step) => step.step === 'sync repo-harness skill runtime')?.stdout).toContain(
-        'link=0',
-      );
+      const syncStep = result.steps.find((step) => step.step === 'sync repo-harness skill runtime');
+      if (process.platform === 'win32') {
+        expect(syncStep?.status).toBe('skipped');
+        expect(syncStep?.detail).toContain('native Windows skips');
+      } else {
+        expect(syncStep?.stdout).toContain('link=0');
+      }
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
