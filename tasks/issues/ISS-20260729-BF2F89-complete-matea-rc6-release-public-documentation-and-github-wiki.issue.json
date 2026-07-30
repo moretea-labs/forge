@@ -277,9 +277,48 @@
       "createdAt": "2026-07-30T03:26:58.503Z",
       "updatedAt": "2026-07-30T06:12:38.460Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T7",
+      "title": "Self-heal a stalled Cloudflare tunnel connector",
+      "objective": "Prevent the production MCP endpoint from remaining unavailable when the registered cloudflared launchd process is alive but has no active tunnel connector. Add an explicit, opt-in public tunnel launchd service binding to standalone Recovery; detect the isolated failure shape where local ingress, active Gateway, and authenticated MCP lifecycle are healthy but the external endpoint fails; perform a bounded, rate-limited launchctl kickstart of only the configured service; verify the external endpoint and full MCP lifecycle after restart; expose a manually invokable Recovery action; add failure-injection tests, installer/configuration support, and an operations runbook. Never restart an unconfigured service, never weaken TLS/OAuth, never roll back a known-good application revision for a tunnel-only failure, and never expose credentials.",
+      "status": "ready",
+      "dependsOn": [],
+      "allowedPaths": [
+        "src/runtime/standalone-recovery/**",
+        "scripts/install-standalone-recovery.ts",
+        "tests/runtime/standalone-recovery.test.ts",
+        "docs/operations/**",
+        "docs/repo-harness-chatgpt-mcp-setup.md",
+        "package.json"
+      ],
+      "forbiddenPaths": [
+        "_ops/**",
+        ".ai/harness/**",
+        "tasks/issues/ISS-20260730-*.issue.*"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:release-readiness"
+      ],
+      "acceptanceCriteria": [
+        "A configured launchd cloudflared service is restarted only after sustained tunnel-only failure while local runtime probes remain healthy.",
+        "A live cloudflared PID without a working connector is treated as unhealthy and is recoverable by kickstart -k.",
+        "Unconfigured or ambiguous services fail closed and are never restarted.",
+        "Recovery reports and audits the tunnel repair without secrets or command-line credential leakage.",
+        "Focused tests cover success, refusal, cooldown, failed restart, and post-restart verification."
+      ],
+      "risk": "high",
+      "recommendedAgent": "codex",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-30T11:10:04.542Z",
+      "updatedAt": "2026-07-30T11:10:04.542Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     }
   ],
   "createdAt": "2026-07-29T12:22:51.953Z",
-  "updatedAt": "2026-07-30T06:12:38.460Z",
+  "updatedAt": "2026-07-30T11:10:04.542Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }
