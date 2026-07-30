@@ -2,7 +2,7 @@
 id: "ISS-20260730-F311FC"
 kind: "bug"
 status: "in_progress"
-updated_at: "2026-07-30T05:07:43.702Z"
+updated_at: "2026-07-30T05:22:18.683Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -62,7 +62,7 @@ Two production stability/security defects were reproduced during independent Rec
 
 ### T3 — Sanitize historical Process and result artifacts
 
-- Status: `running`
+- Status: `done`
 - Objective: Run the bounded in-place Process Runtime and Controller result-store sanitizers against the stable controller repository state without returning historical contents. Record counts only, verify second-pass idempotency, preserve active process artifacts, and confirm no repository source changes are produced.
 - Depends on: `T2`
 - Allowed paths: `src/runtime/execution/**`, `src/runtime/evidence/**`, `docs/operations/**`, `tasks/issues/**`
@@ -71,7 +71,7 @@ Two production stability/security defects were reproduced during independent Rec
 
 ### T4 — Reconcile duplicate Recovery work and close security acceptance
 
-- Status: `planned`
+- Status: `running`
 - Objective: Identify only the duplicate cancelled Recovery WorkContracts/worktrees created by the reproduced work_prepare retry defect, verify controller ownership, terminal state, cleanliness and merge disposition, then reconcile them through controller-owned cleanup without touching unrelated active work. Record credential rotation/revocation as a required human action without exposing any credential, verify exact-main checks and clean Git state, and close the Issue with auditable evidence.
 - Depends on: `T3`
 - Allowed paths: `src/runtime/control-plane/**`, `src/cli/controller/**`, `docs/operations/**`, `SECURITY.md`, `tasks/issues/**`

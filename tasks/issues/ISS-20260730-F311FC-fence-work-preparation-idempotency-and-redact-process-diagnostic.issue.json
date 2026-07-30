@@ -340,7 +340,7 @@
       "id": "T3",
       "title": "Sanitize historical Process and result artifacts",
       "objective": "Run the bounded in-place Process Runtime and Controller result-store sanitizers against the stable controller repository state without returning historical contents. Record counts only, verify second-pass idempotency, preserve active process artifacts, and confirm no repository source changes are produced.",
-      "status": "running",
+      "status": "done",
       "dependsOn": [
         "T2"
       ],
@@ -368,18 +368,130 @@
       "risk": "high",
       "recommendedAgent": "codex",
       "notes": [
-        "Starting bounded in-place historical Process/result sanitization on stable controller storage. No historical contents will be returned; reports are limited to counts and bounded entity IDs. A second pass will verify idempotency."
+        "Starting bounded in-place historical Process/result sanitization on stable controller storage. No historical contents will be returned; reports are limited to counts and bounded entity IDs. A second pass will verify idempotency.",
+        "Historical maintenance completed on stable controller storage without returning historical contents. Initial migration sanitized/marked 2,393 terminal Process records and replaced 34 of 55 result payloads with zero failures. A production-repro idempotency defect was fixed and integrated at exact main 5cdfdca7f824053d1626cb8cc69defff667afc9a. Final same-process reconciliation scanned 2,404 Process records/55 results and its second pass reported Process changed=0, result changed=0, failed=0. Active maintenance process was skipped by design; main is clean.",
+        "Reconciled missing completion evidence with receipt REC-reconciled-703291e133ebc49e; declared Task status remains done."
       ],
       "runIds": [],
       "createdAt": "2026-07-30T05:02:09.869Z",
-      "updatedAt": "2026-07-30T05:07:43.702Z",
-      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      "updatedAt": "2026-07-30T05:22:04.990Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "verification": {
+        "integratedRevision": "5cdfdca7f824053d1626cb8cc69defff667afc9a",
+        "reviewer": "ChatGPT",
+        "checkResults": [
+          {
+            "checkId": "package:check:type",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-type.json"
+          },
+          {
+            "checkId": "package:check:runtime-architecture",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-runtime-architecture.json"
+          },
+          {
+            "checkId": "package:check:controller-v8",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-controller-v8.json"
+          }
+        ],
+        "commandEvidence": [
+          {
+            "command": [
+              "bun",
+              "test",
+              "tests/runtime/result-store-redaction.test.ts",
+              "tests/runtime/process-runtime.test.ts",
+              "tests/cli/mcp-policy.test.ts"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "51 pass, 0 fail, 237 assertions on exact main 5cdfdca7f824053d1626cb8cc69defff667afc9a.",
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-30T05:17:58Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "bun",
+              "-e",
+              "bounded historical Process/result sanitization and same-process idempotency verification"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "Final reconciliation: processes scanned=2404 eligible=2403 changed=9 failed=0; results scanned=55 changed=0 failed=0. Immediate second pass: processes changed=0 failed=0; results changed=0 failed=0.",
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-30T05:18:31Z",
+            "source": "reported"
+          }
+        ],
+        "acceptanceResults": [
+          {
+            "criterion": "Historical terminal Process logs and result payloads are sanitized without printing their contents.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Maintenance used bounded in-place sanitizers and returned counts/entity IDs only. Initial pass processed 2,393 terminal Process records and replaced 34 result payloads with zero failures; no historical content was emitted."
+          },
+          {
+            "criterion": "Maintenance reports expose counts and entity IDs only.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "First report was bounded to counts and at most 100 process/result IDs; final verification report contained counts only."
+          },
+          {
+            "criterion": "A second bounded maintenance pass reports zero additional changes.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "After fixing canonical placeholder idempotency, the immediate same-process second pass reported Process changed=0 and result changed=0 with failed=0."
+          },
+          {
+            "criterion": "Active process artifacts and unrelated repository state remain untouched.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Sanitizer skipped the currently active maintenance Process by design; exact-main Git status was clean after maintenance and all required checks passed."
+          }
+        ],
+        "verifiedAt": "2026-07-30T05:22:04.939Z",
+        "autoCompleted": true,
+        "completionReceipt": {
+          "schemaVersion": 1,
+          "receiptId": "REC-reconciled-703291e133ebc49e",
+          "source": "remote_no_change_execution",
+          "issueId": "ISS-20260730-F311FC",
+          "taskId": "T3",
+          "targetBranch": "main",
+          "targetRevision": "5cdfdca7f824053d1626cb8cc69defff667afc9a",
+          "sourceRevision": "5cdfdca7f824053d1626cb8cc69defff667afc9a",
+          "changedPaths": [],
+          "delivery": {
+            "kind": "commit",
+            "status": "integrated",
+            "strategy": "remote",
+            "reachable": true,
+            "recordedAt": "2026-07-30T05:22:04.988Z"
+          },
+          "cleanup": {
+            "status": "complete",
+            "warnings": [],
+            "blockers": [],
+            "recordedAt": "2026-07-30T05:22:04.988Z"
+          },
+          "verifiedAt": "2026-07-30T05:22:04.939Z",
+          "recordedAt": "2026-07-30T05:22:04.988Z"
+        },
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
     },
     {
       "id": "T4",
       "title": "Reconcile duplicate Recovery work and close security acceptance",
       "objective": "Identify only the duplicate cancelled Recovery WorkContracts/worktrees created by the reproduced work_prepare retry defect, verify controller ownership, terminal state, cleanliness and merge disposition, then reconcile them through controller-owned cleanup without touching unrelated active work. Record credential rotation/revocation as a required human action without exposing any credential, verify exact-main checks and clean Git state, and close the Issue with auditable evidence.",
-      "status": "planned",
+      "status": "running",
       "dependsOn": [
         "T3"
       ],
@@ -407,14 +519,16 @@
       ],
       "risk": "high",
       "recommendedAgent": "codex",
-      "notes": [],
+      "notes": [
+        "Starting controller-owned reconciliation of only the duplicate cancelled Recovery WorkContracts/worktrees created by the reproduced work_prepare retry defect. Each candidate must prove issue/request lineage, terminal state, controller ownership, clean workspace, and safe merge disposition before cleanup. Unrelated active work is explicitly excluded."
+      ],
       "runIds": [],
       "createdAt": "2026-07-30T05:02:31.462Z",
-      "updatedAt": "2026-07-30T05:02:31.462Z",
+      "updatedAt": "2026-07-30T05:22:18.683Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     }
   ],
   "createdAt": "2026-07-30T02:50:41.809Z",
-  "updatedAt": "2026-07-30T05:07:43.702Z",
+  "updatedAt": "2026-07-30T05:22:18.683Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }
