@@ -56,7 +56,7 @@ The small surface limits additional plugin schema growth and avoids alias action
 
 The existing `ios` plugin includes an optional `agent-device` provider with these boundaries:
 
-- The local CLI must report exactly version `0.19.3`; Repo Harness never downloads it at runtime or adds it as a required package dependency.
+- The local CLI must report exactly version `0.20.2`; Repo Harness never downloads it at runtime or adds it as a required package dependency.
 - CLI absence or version mismatch degrades only the optional provider. Existing Xcode, `simctl`, build, launch, screenshot, and smoke-review readiness remains unchanged.
 - Device inventory comes from typed `agent-device devices --platform ios --json` output. Simulator selection resolves to exactly one already-booted simulator. A physical iPhone is accepted only through an explicit exact name or UDID and must be connected; unavailable targets and ambiguous names are rejected before app actions.
 - Physical sessions use the existing `ios-device` ownership fence while simulator sessions continue to use `ios-simulator`. Signing inputs are limited to non-secret team and reverse-DNS bundle identifiers, are stored beside the Controller-owned interaction state, and are mapped to agent-device environment variables without persisting certificates, profiles, pairing records, or credentials.

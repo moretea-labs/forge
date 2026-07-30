@@ -95,7 +95,7 @@ describe('optional agent-device iOS Simulator provider', () => {
     expect(manifest.health.warnings).not.toContain('agent-device is not installed.');
   });
 
-  it('requires exactly agent-device 0.19.3 before any provider action', async () => {
+  it('requires exactly agent-device 0.20.2 before any provider action', async () => {
     const value = fixture();
     readyIosTooling();
     const commands: string[][] = [];
@@ -109,7 +109,7 @@ describe('optional agent-device iOS Simulator provider', () => {
 
     const status = await executeIosPluginAction(pluginInput(value, 'agent_device_status', {}));
     expect(status.available).toBe(false);
-    expect(status.expectedVersion).toBe('0.19.3');
+    expect(status.expectedVersion).toBe('0.20.2');
     await expect(executeIosPluginAction(pluginInput(value, 'agent_device_open', { app: 'App' })))
       .rejects.toThrow('PLUGIN_DEPENDENCY_MISSING');
     expect(commands).toEqual([['agent-device', '--version']]);
@@ -124,7 +124,7 @@ describe('optional agent-device iOS Simulator provider', () => {
       platform: () => 'darwin',
       runCommand: (command, args) => {
         commands.push([command, ...args]);
-        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.19.3\n', stderr: '', command: [command, ...args] };
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
         if (args[0] === 'devices') return { ok: true, status: 0, stdout: success({ devices: inventory }), stderr: '', command: [command, ...args] };
         return { ok: true, status: 0, stdout: success(), stderr: '', command: [command, ...args] };
       },
@@ -159,7 +159,7 @@ describe('optional agent-device iOS Simulator provider', () => {
       now: () => new Date('2026-07-20T09:00:00.000Z'),
       runCommand: (command, args, options) => {
         commands.push({ argv: [command, ...args], env: options?.env });
-        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.19.3\n', stderr: '', command: [command, ...args] };
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
         if (args[0] === 'devices') {
           return { ok: true, status: 0, stdout: success({ devices: [device('PHONE-1', 'greyson', 'device', true)] }), stderr: '', command: [command, ...args] };
         }
@@ -270,7 +270,7 @@ describe('optional agent-device iOS Simulator provider', () => {
       now: () => new Date('2026-07-20T09:00:00.000Z'),
       runCommand: (command, args) => {
         commands.push([command, ...args]);
-        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.19.3\n', stderr: '', command: [command, ...args] };
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
         if (args[0] === 'devices') {
           return { ok: true, status: 0, stdout: success({ devices: [device('PHONE-1', 'greyson', 'device', true)] }), stderr: '', command: [command, ...args] };
         }
@@ -325,7 +325,7 @@ describe('optional agent-device iOS Simulator provider', () => {
       setIosAgentDeviceRuntimeHooksForTest({
         platform: () => 'darwin',
         runCommand: (command, args) => {
-          if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.19.3\n', stderr: '', command: [command, ...args] };
+          if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
           if (args[0] === 'devices') {
             return { ok: true, status: 0, stdout: success({ devices: [device('PHONE-1', 'greyson', 'device', true)] }), stderr: '', command: [command, ...args] };
           }
@@ -389,7 +389,7 @@ describe('optional agent-device iOS Simulator provider', () => {
     setIosAgentDeviceRuntimeHooksForTest({
       platform: () => 'darwin',
       runCommand: (command, args) => {
-        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.19.3\n', stderr: '', command: [command, ...args] };
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
         if (args[0] === 'devices') {
           return { ok: true, status: 0, stdout: success({ devices: [device('PHONE-1', 'greyson', 'device', true)] }), stderr: '', command: [command, ...args] };
         }
@@ -426,7 +426,7 @@ describe('optional agent-device iOS Simulator provider', () => {
       platform: () => 'darwin',
       runCommand: (command, args) => {
         commands.push([command, ...args]);
-        return { ok: true, status: 0, stdout: args[0] === '--version' ? '0.19.3\n' : success(), stderr: '', command: [command, ...args] };
+        return { ok: true, status: 0, stdout: args[0] === '--version' ? '0.20.2\n' : success(), stderr: '', command: [command, ...args] };
       },
     });
     await expect(executeIosPluginAction(pluginInput(value, 'agent_device_jd_search', {
@@ -444,7 +444,7 @@ describe('optional agent-device iOS Simulator provider', () => {
       now: () => new Date('2026-07-19T11:00:00.000Z'),
       runCommand: (command, args, options) => {
         commands.push({ argv: [command, ...args], env: options?.env });
-        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.19.3\n', stderr: '', command: [command, ...args] };
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
         if (args[0] === 'devices') {
           return { ok: true, status: 0, stdout: success({ devices: [device('SIM-1', 'iPhone 17 Pro', 'simulator', true)] }), stderr: '', command: [command, ...args] };
         }
@@ -503,7 +503,7 @@ describe('optional agent-device iOS Simulator provider', () => {
       platform: () => 'darwin',
       runCommand: (command, args) => {
         commands.push([command, ...args]);
-        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.19.3\n', stderr: '', command: [command, ...args] };
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
         if (args[0] === 'devices') {
           return { ok: true, status: 0, stdout: success({ devices: [device('SIM-1', 'iPhone 17 Pro', 'simulator', true)] }), stderr: '', command: [command, ...args] };
         }
@@ -564,7 +564,7 @@ describe('optional agent-device iOS Simulator provider', () => {
       platform: () => 'darwin',
       runCommand: (command, args) => {
         commands.push([command, ...args]);
-        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.19.3\n', stderr: '', command: [command, ...args] };
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
         if (args[0] === 'devices') return { ok: true, status: 0, stdout: success({ devices: [device('SIM-1', 'iPhone 17 Pro', 'simulator', true)] }), stderr: '', command: [command, ...args] };
         if (args[0] === 'fill') {
           return {
@@ -606,7 +606,7 @@ describe('optional agent-device iOS Simulator provider', () => {
     setIosAgentDeviceRuntimeHooksForTest({
       platform: () => 'darwin',
       runCommand: (command, args) => {
-        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.19.3\n', stderr: '', command: [command, ...args] };
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
         if (args[0] === 'devices') return { ok: true, status: 0, stdout: success({ devices: [device('SIM-1', 'iPhone 17 Pro', 'simulator', true)] }), stderr: '', command: [command, ...args] };
         if (args[0] === 'press') return { ok: false, status: 1, stdout: '', stderr: 'runner disconnected', command: [command, ...args] };
         if (args[0] === 'close' && !closeSucceeds) return { ok: false, status: 1, stdout: '', stderr: 'daemon unavailable', command: [command, ...args] };
@@ -637,7 +637,7 @@ describe('optional agent-device iOS Simulator provider', () => {
       now: () => now,
       runCommand: (command, args) => {
         commands.push([command, ...args]);
-        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.19.3\n', stderr: '', command: [command, ...args] };
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
         if (args[0] === 'devices') return { ok: true, status: 0, stdout: success({ devices: [device('SIM-1', 'iPhone 17 Pro', 'simulator', true)] }), stderr: '', command: [command, ...args] };
         return { ok: true, status: 0, stdout: success(), stderr: '', command: [command, ...args] };
       },
@@ -660,7 +660,7 @@ describe('optional agent-device iOS Simulator provider', () => {
       platform: () => 'darwin',
       runCommand: (command, args) => {
         commands.push([command, ...args]);
-        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.19.3\n', stderr: '', command: [command, ...args] };
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
         return { ok: true, status: 0, stdout: success({ devices: [device('SIM-1', 'iPhone 17 Pro', 'simulator', true)] }), stderr: '', command: [command, ...args] };
       },
     });

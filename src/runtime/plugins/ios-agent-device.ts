@@ -22,7 +22,7 @@ import type {
   AssistantPluginCapability,
 } from './types';
 
-export const IOS_AGENT_DEVICE_VERSION = '0.19.3';
+export const IOS_AGENT_DEVICE_VERSION = '0.20.2';
 const SIMULATOR_PROVIDER = 'ios-simulator' as const;
 const DEVICE_PROVIDER = 'ios-device' as const;
 const PROVIDERS: InteractionProvider[] = [SIMULATOR_PROVIDER, DEVICE_PROVIDER];
@@ -1088,7 +1088,7 @@ async function executeJdSearch(input: AssistantPluginActionExecutionInput): Prom
     } else {
       nativeBatchRequests += cachedSearchRef ? 1 : 2;
       nativeBatchSteps += (cachedSearchRef ? 0 : 1) + evidenceSteps.length;
-      // agent-device 0.19.3 exposes keyboard return only through the CLI
+      // agent-device 0.20.2 exposes keyboard return only through the CLI
       // command, not the Node batch keyboard schema (status/dismiss only).
       if (!cachedSearchRef) runSessionBatch(input, record, prepareAgentDeviceBatch([fillStep], record), 20_000);
       runSessionCommand(input, record, ['keyboard', 'return'], 'JD_SEARCH_SUBMIT_FAILED');
