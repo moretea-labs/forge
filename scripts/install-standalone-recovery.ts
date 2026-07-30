@@ -1,7 +1,38 @@
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
-import { spawnSync } from 'child_process';
+import { spawn } from 'child_process';
 import { initializeStandaloneRecovery } from '../src/runtime/standalone-recovery/core';
+
+async function compileRecoveryBinary(bun: string, output: string): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolveCompile, rejectCompile) => {
+    const child = spawn(bun, ['build', join(process.cwd(), 'src/runtime/standalone-recovery/entry.ts'), '--compile', '--outfile', output], {
+      cwd: process.cwd(), shell: false, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let settled = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (value: { status: number | null; stdout: string; stderr: string }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
+      resolveCompile(value);
+    };
+    const stop = () => {
+      if (!child.pid || child.exitCode != null) return;
+      try { process.kill(child.pid, 'SIGTERM'); } catch { /* already exited */ }
+      killTimer = setTimeout(() => { try { if (child.pid && child.exitCode == null) process.kill(child.pid, 'SIGKILL'); } catch { /* already exited */ } }, 1_000);
+    };
+    const timeout = setTimeout(stop, 180_000);
+    child.stdout.on('data', (chunk: Buffer) => { stdoutBytes += chunk.length; if (stdoutBytes <= 512 * 1024) stdout.push(Buffer.from(chunk)); else stop(); });
+    child.stderr.on('data', (chunk: Buffer) => { stderrBytes += chunk.length; if (stderrBytes <= 512 * 1024) stderr.push(Buffer.from(chunk)); else stop(); });
+    child.once('error', () => rejectCompile(new Error('RECOVERY_BUILD_SPAWN_FAILED')));
+    child.once('close', (status) => finish({ status, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8') }));
+  });
+}
 
 const homeIndex = process.argv.indexOf('--controller-home');
 const controllerHome = resolve(homeIndex >= 0 ? process.argv[homeIndex + 1] : process.env.REPO_HARNESS_CONTROLLER_HOME ?? '');
@@ -15,7 +46,7 @@ const watchdogBin = join(controllerHome, 'recovery', 'bin', 'repo-harness-recove
 mkdirSync(dirname(bin), { recursive: true, mode: 0o700 });
 const bun = process.execPath;
 for (const output of [bin, gatewayBin, watchdogBin]) {
-  const result = spawnSync(bun, ['build', join(process.cwd(), 'src/runtime/standalone-recovery/entry.ts'), '--compile', '--outfile', output], { cwd: process.cwd(), encoding: 'utf8', timeout: 180_000 });
+  const result = await compileRecoveryBinary(bun, output);
   if (result.status !== 0) throw new Error(`RECOVERY_BUILD_FAILED: ${(result.stderr || result.stdout).slice(0, 800)}`);
   chmodSync(output, 0o700);
 }

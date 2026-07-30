@@ -6,6 +6,8 @@ It never accepts a release path or arbitrary command. `rollback-previous` procee
 
 The independent gateway listens only on `127.0.0.1`, exposes a seven-tool MCP surface, requires a separate scoped bearer credential, has bounded mutation rate limiting, and does not use the primary gateway or its ingress proxy. The credential file is mode `0600` and must never be copied into logs or source control. The gateway accepts both `/mcp` and `/recovery/mcp` so a path-scoped Tailscale Funnel can expose recovery without replacing the primary ingress path.
 
+External HTTPS verification uses the platform's trusted system `curl` transport rather than the Recovery binary's Bun TLS stack. On macOS this is fixed to `/usr/bin/curl`; Windows accepts only the verified System32 `curl.exe` path. A missing trusted binary fails closed. TLS and hostname verification remain enabled. Authorization headers, JSON-RPC payloads, and MCP session IDs are written only to short-lived `controller-home/recovery/tmp` files (directory mode `0700`, file mode `0600`) and are removed after every request path, including timeout and cancellation. They are never supplied in process arguments or recovery audit output. Loopback HTTP probes retain the in-process fetch transport.
+
 Install the immutable local artifact with:
 
 ```sh

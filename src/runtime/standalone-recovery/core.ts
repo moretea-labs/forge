@@ -1,9 +1,10 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
-import { spawnSync } from 'child_process';
+import { spawn } from 'child_process';
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { connect } from 'net';
 import { homedir } from 'os';
 import { dirname, join, resolve } from 'path';
+import { createRecoveryHttpTransport, type RecoveryHttpTransport } from './http-transport';
 
 /**
  * This module deliberately imports only Node built-ins.  It is compiled into
@@ -228,23 +229,23 @@ export async function supervisorStatus(config: RecoveryConfig): Promise<Supervis
   return response.state as SupervisorState;
 }
 
-async function probe(url: string, timeoutMs = 4_000): Promise<{ ok: boolean; detail: string; status?: number }> {
+async function probe(transport: RecoveryHttpTransport, url: string, timeoutMs = 4_000): Promise<{ ok: boolean; detail: string; status?: number }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, { headers: { accept: 'application/json' }, signal: controller.signal });
+    const response = await transport.request({ url, headers: { accept: 'application/json' }, timeoutMs, signal: controller.signal });
     return { ok: response.ok, detail: `HTTP ${response.status}`, status: response.status };
   } catch (error) {
     return { ok: false, detail: error instanceof Error ? error.message.slice(0, 180) : 'request failed' };
   } finally { clearTimeout(timer); }
 }
 
-async function probeExternalMcp(url: string): Promise<{ ok: boolean; detail: string; status?: number }> {
+async function probeExternalMcp(transport: RecoveryHttpTransport, url: string): Promise<{ ok: boolean; detail: string; status?: number }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 4_000);
   try {
-    const response = await fetch(url, { headers: { accept: 'application/json' }, signal: controller.signal });
-    const challenge = response.headers.get('www-authenticate') ?? '';
+    const response = await transport.request({ url, headers: { accept: 'application/json' }, timeoutMs: 4_000, signal: controller.signal });
+    const challenge = response.headers['www-authenticate'] ?? '';
     const ok = response.ok || (response.status === 401 && /\bBearer\b/i.test(challenge));
     return { ok, detail: ok && response.status === 401 ? 'HTTP 401 OAuth challenge' : `HTTP ${response.status}`, status: response.status };
   } catch (error) {
@@ -281,6 +282,7 @@ function parseRecoveryMcpPayload(text: string, contentType: string): Record<stri
 }
 
 async function mcpCall(
+  transport: RecoveryHttpTransport,
   url: string,
   token: string,
   id: number | undefined,
@@ -291,8 +293,8 @@ async function mcpCall(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 8_000);
   try {
-    const response = await fetch(url, {
-      method: 'POST', signal: controller.signal,
+    const response = await transport.request({
+      url, method: 'POST', timeoutMs: 8_000, signal: controller.signal,
       headers: {
         authorization: `Bearer ${token}`,
         'content-type': 'application/json',
@@ -301,9 +303,8 @@ async function mcpCall(
       },
       body: JSON.stringify({ jsonrpc: '2.0', ...(id === undefined ? {} : { id }), method, ...(params ? { params } : {}) }),
     });
-    const text = await response.text();
-    const payload = parseRecoveryMcpPayload(text, response.headers.get('content-type') ?? '');
-    const returnedSessionId = response.headers.get('mcp-session-id')?.trim() || sessionId;
+    const payload = parseRecoveryMcpPayload(response.body, response.headers['content-type'] ?? '');
+    const returnedSessionId = response.headers['mcp-session-id']?.trim() || sessionId;
     return {
       ok: response.ok && !payload?.error,
       payload,
@@ -313,12 +314,14 @@ async function mcpCall(
   } catch (error) { return { ok: false, detail: error instanceof Error ? error.message.slice(0, 180) : 'MCP request failed' }; } finally { clearTimeout(timer); }
 }
 
-async function closeRecoveryMcpSession(url: string, token: string, sessionId: string): Promise<{ ok: boolean; detail: string }> {
+async function closeRecoveryMcpSession(transport: RecoveryHttpTransport, url: string, token: string, sessionId: string): Promise<{ ok: boolean; detail: string }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5_000);
   try {
-    const response = await fetch(url, {
+    const response = await transport.request({
+      url,
       method: 'DELETE',
+      timeoutMs: 5_000,
       signal: controller.signal,
       headers: {
         authorization: `Bearer ${token}`,
@@ -334,11 +337,11 @@ async function closeRecoveryMcpSession(url: string, token: string, sessionId: st
   }
 }
 
-async function probeMcp(config: RecoveryConfig): Promise<Record<string, { ok: boolean; detail: string; value?: unknown }>> {
+async function probeMcp(config: RecoveryConfig, transport: RecoveryHttpTransport): Promise<Record<string, { ok: boolean; detail: string; value?: unknown }>> {
   const url = config.publicMcpUrl ?? `${config.stableIngressUrl.replace(/\/$/, '')}/mcp`;
   const token = mainToken(config);
   if (!token) return { mcp_initialize: { ok: false, detail: 'main MCP probe credential is unavailable' } };
-  const initialized = await mcpCall(url, token, 1, 'initialize', {
+  const initialized = await mcpCall(transport, url, token, 1, 'initialize', {
     protocolVersion: '2025-06-18',
     capabilities: {},
     clientInfo: { name: 'standalone-recovery', version: '1' },
@@ -352,16 +355,16 @@ async function probeMcp(config: RecoveryConfig): Promise<Record<string, { ok: bo
     };
   }
   const sessionId = initialized.sessionId;
-  const acknowledged = await mcpCall(url, token, undefined, 'notifications/initialized', undefined, sessionId);
+  const acknowledged = await mcpCall(transport, url, token, undefined, 'notifications/initialized', undefined, sessionId);
   if (!acknowledged.ok) {
-    const closed = await closeRecoveryMcpSession(url, token, sessionId);
+    const closed = await closeRecoveryMcpSession(transport, url, token, sessionId);
     return {
       mcp_initialize: { ok: true, detail: initialized.detail },
       mcp_initialized_notification: { ok: false, detail: acknowledged.detail },
       mcp_session_close: { ok: closed.ok, detail: closed.detail },
     };
   }
-  const listed = await mcpCall(url, token, 2, 'tools/list', undefined, sessionId);
+  const listed = await mcpCall(transport, url, token, 2, 'tools/list', undefined, sessionId);
   const tools = Array.isArray((listed.payload?.result as { tools?: unknown } | undefined)?.tools)
     ? ((listed.payload!.result as { tools: Array<{ name?: unknown }> }).tools)
     : [];
@@ -372,9 +375,9 @@ async function probeMcp(config: RecoveryConfig): Promise<Record<string, { ok: bo
   const toolListOk = listed.ok && names.length > 0 && expectedMatches;
   const readOnly = config.readOnlyTool ?? { name: 'controller_context' };
   const called = toolListOk
-    ? await mcpCall(url, token, 3, 'tools/call', { name: readOnly.name, arguments: readOnly.arguments ?? {} }, sessionId)
+    ? await mcpCall(transport, url, token, 3, 'tools/call', { name: readOnly.name, arguments: readOnly.arguments ?? {} }, sessionId)
     : undefined;
-  const closed = await closeRecoveryMcpSession(url, token, sessionId);
+  const closed = await closeRecoveryMcpSession(transport, url, token, sessionId);
   return {
     mcp_initialize: { ok: initialized.ok, detail: initialized.detail },
     mcp_initialized_notification: { ok: acknowledged.ok, detail: acknowledged.detail },
@@ -384,7 +387,7 @@ async function probeMcp(config: RecoveryConfig): Promise<Record<string, { ok: bo
   };
 }
 
-export async function verifyStableRuntime(config: RecoveryConfig): Promise<VerifyResult> {
+export async function verifyStableRuntime(config: RecoveryConfig, transport = createRecoveryHttpTransport(config.controllerHome)): Promise<VerifyResult> {
   let state: SupervisorState | undefined;
   const probes: VerifyResult['probes'] = {};
   try { state = await supervisorStatus(config); probes.supervisor_socket = { ok: true, detail: 'status received' }; }
@@ -393,11 +396,11 @@ export async function verifyStableRuntime(config: RecoveryConfig): Promise<Verif
   const previous = slotRelease(config, state?.previousSlot);
   const known = matchingKnownGood(config, active);
   const coherent = Boolean(active && state?.gatewayHost?.releaseRevision === active.revision && state?.controllerDaemon?.releaseRevision === active.revision);
-  probes.stable_ingress = await probe(`${config.stableIngressUrl.replace(/\/$/, '')}/health`);
-  if (state?.ingress?.activeUpstreamPort) probes.active_gateway = await probe(`http://127.0.0.1:${state.ingress.activeUpstreamPort}/health`);
+  probes.stable_ingress = await probe(transport, `${config.stableIngressUrl.replace(/\/$/, '')}/health`);
+  if (state?.ingress?.activeUpstreamPort) probes.active_gateway = await probe(transport, `http://127.0.0.1:${state.ingress.activeUpstreamPort}/health`);
   else probes.active_gateway = { ok: false, detail: 'active upstream port unavailable' };
-  if (config.publicMcpUrl) probes.external_mcp_http = await probeExternalMcp(config.publicMcpUrl);
-  Object.assign(probes, await probeMcp(config));
+  if (config.publicMcpUrl) probes.external_mcp_http = await probeExternalMcp(transport, config.publicMcpUrl);
+  Object.assign(probes, await probeMcp(config, transport));
   const coreChecks = Object.values(probes).every((entry) => entry.ok);
   const supervisorHealthy = state?.observedState === 'healthy' && state?.ingress?.state === 'running';
   const ok = Boolean(coreChecks && supervisorHealthy && coherent);
@@ -571,14 +574,47 @@ export async function restartGateway(config: RecoveryConfig, requestId?: string)
 interface CommandResult { ok: boolean; status: number | null; stdout: string; stderr: string; }
 interface LaunchdService { uid: number; domain: string; target: string; label: string; plistPath: string; }
 
-function command(commandName: string, args: string[], timeoutMs = 10_000): CommandResult {
-  const result = spawnSync(commandName, args, { encoding: 'utf8', timeout: timeoutMs, maxBuffer: 256 * 1024 });
-  return { ok: result.status === 0, status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+function command(commandName: string, args: string[], timeoutMs = 10_000): Promise<CommandResult> {
+  return new Promise((resolveCommand) => {
+    const child = spawn(commandName, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (result: CommandResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
+      resolveCommand(result);
+    };
+    const signalChild = (signalName: NodeJS.Signals) => {
+      if (!child.pid || child.exitCode != null) return;
+      try { process.kill(child.pid, signalName); } catch { /* Process already exited. */ }
+    };
+    const stop = () => {
+      if (child.exitCode != null) return;
+      signalChild('SIGTERM');
+      killTimer = setTimeout(() => signalChild('SIGKILL'), 1_000);
+    };
+    const timeout = setTimeout(stop, timeoutMs);
+    child.stdout.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size <= 256 * 1024) stdout.push(Buffer.from(chunk)); else stop();
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size <= 256 * 1024) stderr.push(Buffer.from(chunk)); else stop();
+    });
+    child.once('error', () => finish({ ok: false, status: null, stdout: '', stderr: 'command spawn failed' }));
+    child.once('close', (status) => finish({ ok: status === 0, status, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8') }));
+  });
 }
 
-function currentUid(): number | undefined {
+async function currentUid(): Promise<number | undefined> {
   if (typeof process.getuid === 'function') return process.getuid();
-  const result = command('id', ['-u'], 2_000);
+  const result = await command('id', ['-u'], 2_000);
   const value = Number(result.stdout.trim());
   return result.ok && Number.isInteger(value) ? value : undefined;
 }
@@ -611,9 +647,9 @@ function generatedLaunchdPlist(config: RecoveryConfig): string | undefined {
   }
 }
 
-function launchdService(config: RecoveryConfig): LaunchdService | undefined {
+async function launchdService(config: RecoveryConfig): Promise<LaunchdService | undefined> {
   if (process.platform !== 'darwin') return undefined;
-  const uid = currentUid();
+  const uid = await currentUid();
   if (uid === undefined) return undefined;
   const activation = json<{
     serviceLabel?: unknown;
@@ -641,17 +677,17 @@ function launchdService(config: RecoveryConfig): LaunchdService | undefined {
   return { uid, domain: `gui/${uid}`, target: `gui/${uid}/${label}`, label, plistPath };
 }
 
-function ensureLaunchdServiceStarted(service: LaunchdService): { ok: boolean; detail: string } {
-  const printed = command('launchctl', ['print', service.target], 5_000);
+async function ensureLaunchdServiceStarted(service: LaunchdService): Promise<{ ok: boolean; detail: string }> {
+  const printed = await command('launchctl', ['print', service.target], 5_000);
   if (!printed.ok) {
     if (!existsSync(service.plistPath)) return { ok: false, detail: `launchd plist is missing: ${service.plistPath}` };
-    const bootstrapped = command('launchctl', ['bootstrap', service.domain, service.plistPath], 15_000);
+    const bootstrapped = await command('launchctl', ['bootstrap', service.domain, service.plistPath], 15_000);
     if (!bootstrapped.ok && !/already|in progress|Input\/output error/i.test(`${bootstrapped.stderr}\n${bootstrapped.stdout}`)) {
       return { ok: false, detail: `launchd bootstrap failed: ${bootstrapped.stderr || bootstrapped.stdout || bootstrapped.status}` };
     }
-    command('launchctl', ['enable', service.target], 5_000);
+    await command('launchctl', ['enable', service.target], 5_000);
   }
-  const started = command('launchctl', ['kickstart', '-k', service.target], 15_000);
+  const started = await command('launchctl', ['kickstart', '-k', service.target], 15_000);
   if (!started.ok && !/already|in progress/i.test(`${started.stderr}\n${started.stdout}`)) {
     return { ok: false, detail: `launchd kickstart failed: ${started.stderr || started.stdout || started.status}` };
   }
@@ -709,7 +745,7 @@ export async function restartSupervisor(config: RecoveryConfig, requestId?: stri
       audit(config, 'restart_supervisor_refused', { reason: 'live_pid_without_control_socket', beforePid, requestId });
       return { ok: false, detail: `Supervisor restart refused: PID ${beforePid} is alive but control socket is unavailable.`, verify: verified };
     }
-    const service = launchdService(config);
+    const service = await launchdService(config);
     if (!service) {
       audit(config, 'restart_supervisor_refused', { reason: 'launchd_service_unavailable', requestId });
       return { ok: false, detail: 'Supervisor restart refused: registered launchd service metadata is unavailable.', verify: verified };
@@ -723,7 +759,7 @@ export async function restartSupervisor(config: RecoveryConfig, requestId?: stri
       }
       await sleep(500);
     }
-    const started = ensureLaunchdServiceStarted(service);
+    const started = await ensureLaunchdServiceStarted(service);
     if (!started.ok) {
       audit(config, 'restart_supervisor_launchd_failed', { beforePid, requestId, detail: started.detail });
       return { ok: false, beforePid, detail: started.detail, verify: verified };
