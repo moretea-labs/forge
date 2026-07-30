@@ -45,6 +45,6 @@ jobs:
       - name: Platform contract
         run: bun run check:platform-support
       - name: Installer and Windows policy tests
-        run: bun test tests/install-scripts.test.ts tests/cli/global-runtime-init.test.ts
+        run: bun test tests/install-scripts.test.ts tests/cli/global-runtime-init.test.ts tests/process-runner.test.ts
       - name: Node portable smoke
         run: bun run test:node-smoke

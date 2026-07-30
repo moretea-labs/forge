@@ -45,7 +45,16 @@ describe("process runner", () => {
     try {
       const commandPath = join(tmp, "npx.CMD");
       writeFileSync(commandPath, "@echo off\r\n");
-      expect(resolveProcessCommand("npx", { Path: tmp, PathExt: ".EXE;.CMD" }, "win32")).toBe(commandPath);
+      expect(resolveProcessCommand(
+        "npx",
+        {
+          Path: join(tmp, "inherited-path-must-not-win"),
+          PATH: tmp,
+          PathExt: ".EXE",
+          PATHEXT: ".CMD",
+        },
+        "win32",
+      )).toBe(commandPath);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

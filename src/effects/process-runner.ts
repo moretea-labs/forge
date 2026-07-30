@@ -74,8 +74,11 @@ export function capProcessOutput(value: string, maxBytes = DEFAULT_PROCESS_MAX_O
 function envValue(env: NodeJS.ProcessEnv, key: string, platform: NodeJS.Platform): string | undefined {
   if (platform !== "win32") return env[key];
   const target = key.toLowerCase();
-  const entry = Object.entries(env).find(([name]) => name.toLowerCase() === target);
-  return entry?.[1];
+  let value: string | undefined;
+  for (const [name, candidate] of Object.entries(env)) {
+    if (name.toLowerCase() === target) value = candidate;
+  }
+  return value;
 }
 
 function isExecutableFile(path: string): boolean {
