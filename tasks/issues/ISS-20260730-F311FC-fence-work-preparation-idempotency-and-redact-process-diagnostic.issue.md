@@ -1,8 +1,8 @@
 ---
 id: "ISS-20260730-F311FC"
 kind: "bug"
-status: "in_progress"
-updated_at: "2026-07-30T05:22:18.683Z"
+status: "done"
+updated_at: "2026-07-30T06:12:34.040Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -71,7 +71,7 @@ Two production stability/security defects were reproduced during independent Rec
 
 ### T4 — Reconcile duplicate Recovery work and close security acceptance
 
-- Status: `running`
+- Status: `done`
 - Objective: Identify only the duplicate cancelled Recovery WorkContracts/worktrees created by the reproduced work_prepare retry defect, verify controller ownership, terminal state, cleanliness and merge disposition, then reconcile them through controller-owned cleanup without touching unrelated active work. Record credential rotation/revocation as a required human action without exposing any credential, verify exact-main checks and clean Git state, and close the Issue with auditable evidence.
 - Depends on: `T3`
 - Allowed paths: `src/runtime/control-plane/**`, `src/cli/controller/**`, `docs/operations/**`, `SECURITY.md`, `tasks/issues/**`
