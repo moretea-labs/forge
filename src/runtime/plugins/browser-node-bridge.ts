@@ -131,15 +131,22 @@ function parseResponse(raw: string): BridgeResponse {
 
 export async function executeBrowserActionThroughNode(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
   const nodeExecutable = resolveBrowserBridgeNodeExecutable();
-  const hostPath = fileURLToPath(new URL('./browser-node-bridge-host.ts', import.meta.url));
-  const loaderPath = fileURLToPath(new URL('../shared/node-ts-loader.mjs', import.meta.url));
+  const releaseHostPath = process.argv[1]
+    ? join(dirname(process.argv[1]), 'browser-node-bridge-host.js')
+    : undefined;
+  const sourceHostPath = fileURLToPath(new URL('./browser-node-bridge-host.ts', import.meta.url));
+  const hostPath = releaseHostPath && existsSync(releaseHostPath) ? releaseHostPath : sourceHostPath;
+  const sourceLoaderPath = fileURLToPath(new URL('../shared/node-ts-loader.mjs', import.meta.url));
+  const childArgs = hostPath.endsWith('.js')
+    ? [hostPath]
+    : ['--loader', sourceLoaderPath, hostPath];
   const request = JSON.stringify({ schemaVersion: BRIDGE_SCHEMA_VERSION, input });
   if (Buffer.byteLength(request) > MAX_REQUEST_BYTES) {
     throw new AssistantPluginError('PLUGIN_BROWSER_NODE_REQUEST_TOO_LARGE', 'Browser Node bridge request exceeded the bounded input limit.', { retryable: false });
   }
 
   return await new Promise<Record<string, unknown>>((resolveResult, reject) => {
-    const child = spawn(nodeExecutable, ['--loader', loaderPath, hostPath], {
+    const child = spawn(nodeExecutable, childArgs, {
       cwd: dirname(hostPath),
       env: minimalEnvironment(nodeExecutable),
       stdio: ['pipe', 'pipe', 'pipe'],

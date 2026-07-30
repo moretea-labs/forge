@@ -137,6 +137,7 @@ const REQUIRED_RELEASE_FILES = [
   'worker.js',
   'process-runner.js',
   'browser-handoff-host.js',
+  'browser-node-bridge-host.js',
 ] as const;
 
 export function recoveryConfigPath(controllerHome: string): string {

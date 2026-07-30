@@ -68,6 +68,7 @@ function fakeSupervisorRelease(home: string, name: string, revision: string, opt
     'worker.js',
     'process-runner.js',
     'browser-handoff-host.js',
+    'browser-node-bridge-host.js',
   ];
   const aggregate = createHash('sha256');
   const artifacts: Record<string, { sha256: string }> = {};
@@ -122,6 +123,7 @@ describe('Stable Supervisor production hardening', () => {
       expect(existsSync(join(release.releasePath, 'worker.js'))).toBe(true);
       expect(existsSync(join(release.releasePath, 'process-runner.js'))).toBe(true);
       expect(existsSync(join(release.releasePath, 'browser-handoff-host.js'))).toBe(true);
+      expect(existsSync(join(release.releasePath, 'browser-node-bridge-host.js'))).toBe(true);
       const loaded = spawnSync(process.execPath, [
         join(release.releasePath, 'process-runner.js'),
         '--descriptor',
@@ -143,6 +145,7 @@ describe('Stable Supervisor production hardening', () => {
         workerEntrypoint?: string;
         processRunnerEntrypoint?: string;
         browserHandoffHostEntrypoint?: string;
+        browserNodeBridgeHostEntrypoint?: string;
         capabilities?: string[];
       };
       if (!release.sourceCommit) throw new Error('release sourceCommit missing');
@@ -153,9 +156,11 @@ describe('Stable Supervisor production hardening', () => {
       expect(manifest.workerEntrypoint).toBe('worker.js');
       expect(manifest.processRunnerEntrypoint).toBe('process-runner.js');
       expect(manifest.browserHandoffHostEntrypoint).toBe('browser-handoff-host.js');
+      expect(manifest.browserNodeBridgeHostEntrypoint).toBe('browser-node-bridge-host.js');
       expect(manifest.capabilities).toContain('staged_rollout_release');
       expect(manifest.capabilities).toContain('independent_process_runner');
       expect(manifest.capabilities).toContain('browser_handoff_host');
+      expect(manifest.capabilities).toContain('browser_node_cdp_bridge');
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }
@@ -260,6 +265,7 @@ describe('Stable Supervisor production hardening', () => {
       expect(readCurrentSupervisorRelease(controllerHome)).toBeUndefined();
       expect(existsSync(join(staged.releasePath, 'worker.js'))).toBe(true);
       expect(existsSync(join(staged.releasePath, 'browser-handoff-host.js'))).toBe(true);
+      expect(existsSync(join(staged.releasePath, 'browser-node-bridge-host.js'))).toBe(true);
 
       const published = publishSupervisorRelease({
         controllerHome,

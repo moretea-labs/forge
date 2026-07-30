@@ -245,3 +245,5 @@ bun scripts/smoke-browser-cdp-bridge.ts http://127.0.0.1:9222
 ```
 
 The smoke reuses an existing HTTP(S) tab, repeats the same session action, verifies that the target count does not increase, and confirms that Chrome remains reachable after the Node child disconnects. It does not read cookies or storage state and does not print the page title or full URL.
+
+Immutable Supervisor releases include a dedicated `browser-node-bridge-host.js` bundle built for Node. The Browser adapter resolves that sibling entrypoint when running from a release and falls back to the source TypeScript host only in a source checkout. Release verification treats the bridge host as a required, hashed executable.

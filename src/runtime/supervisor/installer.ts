@@ -26,6 +26,7 @@ const RELEASE_EXECUTABLES = [
   'worker.js',
   'process-runner.js',
   'browser-handoff-host.js',
+  'browser-node-bridge-host.js',
 ] as const;
 
 function runtimeSourceRoot(explicit?: string): string {
@@ -139,9 +140,9 @@ function runtimeSourceIdentity(root: string, allowDirtyRuntimeSourceForTests = f
   };
 }
 
-function buildEntry(sourceRoot: string, entry: string, output: string): void {
+function buildEntry(sourceRoot: string, entry: string, output: string, target: 'bun' | 'node' = 'bun'): void {
   const bun = process.versions.bun ? process.execPath : 'bun';
-  const result = runProcess(bun, ['build', join(sourceRoot, entry), '--outfile', output, '--target', 'bun'], {
+  const result = runProcess(bun, ['build', join(sourceRoot, entry), '--outfile', output, '--target', target], {
     cwd: sourceRoot,
     timeoutMs: 180_000,
     maxOutputBytes: 128 * 1024,
@@ -283,6 +284,7 @@ export function stageSupervisorRelease(input: { controllerHome: string; repoRoot
   buildEntry(sourceRoot, 'src/runtime/execution/workers/worker-entry.ts', join(releasePath, 'worker.js'));
   buildEntry(sourceRoot, 'src/runtime/execution/process-runtime/process-runner-entry.ts', join(releasePath, 'process-runner.js'));
   buildEntry(sourceRoot, 'src/runtime/plugins/browser-handoff-host.ts', join(releasePath, 'browser-handoff-host.js'));
+  buildEntry(sourceRoot, 'src/runtime/plugins/browser-node-bridge-host.ts', join(releasePath, 'browser-node-bridge-host.js'), 'node');
   const artifactIdentity = releaseArtifactHash(releasePath);
   writeFileSync(join(releasePath, 'manifest.json'), `${JSON.stringify({
     schemaVersion: 2,
@@ -300,7 +302,8 @@ export function stageSupervisorRelease(input: { controllerHome: string; repoRoot
     workerEntrypoint: 'worker.js',
     processRunnerEntrypoint: 'process-runner.js',
     browserHandoffHostEntrypoint: 'browser-handoff-host.js',
-    capabilities: ['staged_rollout_release', 'browser_handoff_host', 'independent_process_runner', 'reproducible_release_manifest'],
+    browserNodeBridgeHostEntrypoint: 'browser-node-bridge-host.js',
+    capabilities: ['staged_rollout_release', 'browser_handoff_host', 'browser_node_cdp_bridge', 'independent_process_runner', 'reproducible_release_manifest'],
   }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   for (const executable of RELEASE_EXECUTABLES) {
     try { chmodSync(join(releasePath, executable), 0o700); } catch { /* best effort */ }
