@@ -2,7 +2,7 @@
 id: "ISS-20260729-BF2F89"
 kind: "governance"
 status: "in_progress"
-updated_at: "2026-07-30T13:22:06.168Z"
+updated_at: "2026-07-30T13:31:54.208Z"
 source: "repo-harness-controller-v8"
 ---
 
