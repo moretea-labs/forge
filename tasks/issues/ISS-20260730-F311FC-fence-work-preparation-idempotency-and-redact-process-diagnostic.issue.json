@@ -4,7 +4,7 @@
   "title": "Fence Work preparation idempotency and redact process diagnostics",
   "slug": "fence-work-preparation-idempotency-and-redact-process-diagnostic",
   "kind": "bug",
-  "status": "planned",
+  "status": "in_progress",
   "summary": "Two production stability/security defects were reproduced during independent Recovery verification: repeated work_prepare calls with the same request_id created multiple WorkContracts and isolated worktrees instead of returning the original durable result; and repository command diagnostics returned launchctl-style inherited environment output without reliably redacting credential-shaped values. These defects create duplicate execution state, cleanup accumulation, and potential secret exposure through tool responses or stored process evidence.",
   "goals": [
     "Make work_prepare atomically idempotent for repository/session/request identity and fail closed on request fingerprint conflicts.",
@@ -190,7 +190,7 @@
       "id": "T2",
       "title": "Redact secrets at the Process Runtime output boundary",
       "objective": "Trace all direct and managed Process Runtime stdout/stderr, logs, resultRef, summary and Evidence Plane serialization. Add centralized bounded redaction for authorization material and credential-shaped environment/key-value output before persistence and before returning any tool result. Add launchctl-style fixtures with synthetic values, direct/managed path parity tests, artifact quarantine/migration for unsafe historical results, and documentation. Never include a real credential in source, tests, Issue notes or output.",
-      "status": "ready",
+      "status": "done",
       "dependsOn": [
         "T1"
       ],
@@ -225,14 +225,196 @@
       ],
       "risk": "high",
       "recommendedAgent": "codex",
-      "notes": [],
+      "notes": [
+        "Required verification evidence passed; a completion receipt remains required before completion.",
+        "Implementation was delivered by controller-owned Work work_48e8dc69954540c089406011ee33e891 and integrated on main at 4be6b183296e346e3396f3c39084f36eef196d34; validation, commit, merge, branch cleanup, and worktree cleanup all completed. Marking declared done so the controller can reconcile the missing Task-bound completion receipt from reachable exact-main evidence.",
+        "Reconciled missing completion evidence with receipt REC-reconciled-2e7ed9de70a502f6; declared Task status remains done."
+      ],
       "runIds": [],
       "createdAt": "2026-07-30T02:50:41.809Z",
-      "updatedAt": "2026-07-30T02:50:41.809Z",
+      "updatedAt": "2026-07-30T05:07:14.964Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "verification": {
+        "integratedRevision": "4be6b183296e346e3396f3c39084f36eef196d34",
+        "reviewer": "ChatGPT",
+        "checkResults": [
+          {
+            "checkId": "package:check:type",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-type.json"
+          },
+          {
+            "checkId": "package:check:runtime-architecture",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-runtime-architecture.json"
+          },
+          {
+            "checkId": "package:check:controller-v8",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-controller-v8.json"
+          }
+        ],
+        "commandEvidence": [
+          {
+            "command": [
+              "bun",
+              "test",
+              "tests/runtime/result-store-redaction.test.ts",
+              "tests/runtime/process-runtime.test.ts",
+              "tests/cli/mcp-policy.test.ts"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-30T04:59:00Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "git",
+              "diff",
+              "--check"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-30T04:51:19Z",
+            "source": "reported"
+          }
+        ],
+        "acceptanceResults": [
+          {
+            "criterion": "Synthetic launchctl/environment credentials are redacted on all user-visible and persisted paths.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Focused exact-main tests cover direct/managed results, raw disk logs and records, MCP surfaces, and resultRef persistence."
+          },
+          {
+            "criterion": "Non-sensitive diagnostic context remains useful.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Safe diagnostics, structured authorization decisions, pagination tokens, and non-sensitive markers remain available."
+          },
+          {
+            "criterion": "Unsafe historical artifacts are quarantined or redacted without being printed.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Bounded in-place sanitizers and synthetic historical migration tests passed; live maintenance is T3."
+          }
+        ],
+        "verifiedAt": "2026-07-30T05:07:14.907Z",
+        "autoCompleted": true,
+        "completionReceipt": {
+          "schemaVersion": 1,
+          "receiptId": "REC-reconciled-2e7ed9de70a502f6",
+          "source": "remote_no_change_execution",
+          "issueId": "ISS-20260730-F311FC",
+          "taskId": "T2",
+          "targetBranch": "main",
+          "targetRevision": "4be6b183296e346e3396f3c39084f36eef196d34",
+          "sourceRevision": "4be6b183296e346e3396f3c39084f36eef196d34",
+          "changedPaths": [],
+          "delivery": {
+            "kind": "commit",
+            "status": "integrated",
+            "strategy": "remote",
+            "reachable": true,
+            "recordedAt": "2026-07-30T05:07:14.963Z"
+          },
+          "cleanup": {
+            "status": "complete",
+            "warnings": [],
+            "blockers": [],
+            "recordedAt": "2026-07-30T05:07:14.963Z"
+          },
+          "verifiedAt": "2026-07-30T05:07:14.907Z",
+          "recordedAt": "2026-07-30T05:07:14.963Z"
+        },
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
+    },
+    {
+      "id": "T3",
+      "title": "Sanitize historical Process and result artifacts",
+      "objective": "Run the bounded in-place Process Runtime and Controller result-store sanitizers against the stable controller repository state without returning historical contents. Record counts only, verify second-pass idempotency, preserve active process artifacts, and confirm no repository source changes are produced.",
+      "status": "running",
+      "dependsOn": [
+        "T2"
+      ],
+      "allowedPaths": [
+        "src/runtime/execution/**",
+        "src/runtime/evidence/**",
+        "docs/operations/**",
+        "tasks/issues/**"
+      ],
+      "forbiddenPaths": [
+        "node_modules/**",
+        "dist/**"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:controller-v8"
+      ],
+      "acceptanceCriteria": [
+        "Historical terminal Process logs and result payloads are sanitized without printing their contents.",
+        "Maintenance reports expose counts and entity IDs only.",
+        "A second bounded maintenance pass reports zero additional changes.",
+        "Active process artifacts and unrelated repository state remain untouched."
+      ],
+      "risk": "high",
+      "recommendedAgent": "codex",
+      "notes": [
+        "Starting bounded in-place historical Process/result sanitization on stable controller storage. No historical contents will be returned; reports are limited to counts and bounded entity IDs. A second pass will verify idempotency."
+      ],
+      "runIds": [],
+      "createdAt": "2026-07-30T05:02:09.869Z",
+      "updatedAt": "2026-07-30T05:07:43.702Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T4",
+      "title": "Reconcile duplicate Recovery work and close security acceptance",
+      "objective": "Identify only the duplicate cancelled Recovery WorkContracts/worktrees created by the reproduced work_prepare retry defect, verify controller ownership, terminal state, cleanliness and merge disposition, then reconcile them through controller-owned cleanup without touching unrelated active work. Record credential rotation/revocation as a required human action without exposing any credential, verify exact-main checks and clean Git state, and close the Issue with auditable evidence.",
+      "status": "planned",
+      "dependsOn": [
+        "T3"
+      ],
+      "allowedPaths": [
+        "src/runtime/control-plane/**",
+        "src/cli/controller/**",
+        "docs/operations/**",
+        "SECURITY.md",
+        "tasks/issues/**"
+      ],
+      "forbiddenPaths": [
+        "node_modules/**",
+        "dist/**"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:controller-v8"
+      ],
+      "acceptanceCriteria": [
+        "Only reproduced duplicate cancelled Recovery Work/worktrees are reconciled; unrelated active work remains untouched.",
+        "Every cleaned workspace passes ownership, terminal-state and cleanliness checks before deletion.",
+        "Credential rotation/revocation is explicitly recorded as a required human action with no credential value stored.",
+        "Exact-main focused tests and all required checks pass; main remains clean; T1-T4 and the Issue are formally closed."
+      ],
+      "risk": "high",
+      "recommendedAgent": "codex",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-30T05:02:31.462Z",
+      "updatedAt": "2026-07-30T05:02:31.462Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     }
   ],
   "createdAt": "2026-07-30T02:50:41.809Z",
-  "updatedAt": "2026-07-30T04:04:11.002Z",
+  "updatedAt": "2026-07-30T05:07:43.702Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }

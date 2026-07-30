@@ -1,8 +1,8 @@
 ---
 id: "ISS-20260730-F311FC"
 kind: "bug"
-status: "planned"
-updated_at: "2026-07-30T04:04:11.002Z"
+status: "in_progress"
+updated_at: "2026-07-30T05:07:43.702Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -53,10 +53,28 @@ Two production stability/security defects were reproduced during independent Rec
 
 ### T2 — Redact secrets at the Process Runtime output boundary
 
-- Status: `ready`
+- Status: `done`
 - Objective: Trace all direct and managed Process Runtime stdout/stderr, logs, resultRef, summary and Evidence Plane serialization. Add centralized bounded redaction for authorization material and credential-shaped environment/key-value output before persistence and before returning any tool result. Add launchctl-style fixtures with synthetic values, direct/managed path parity tests, artifact quarantine/migration for unsafe historical results, and documentation. Never include a real credential in source, tests, Issue notes or output.
 - Depends on: `T1`
 - Allowed paths: `src/runtime/execution/**`, `src/runtime/evidence/**`, `src/runtime/gateway/mcp/**`, `src/cli/mcp/**`, `src/cli/controller/**`, `tests/runtime/**`, `tests/cli/**`, `docs/architecture/current/**`, `docs/operations/**`, `SECURITY.md`, `tasks/issues/**`
+- Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:controller-v8`
+- Execution hint: agent / codex
+
+### T3 — Sanitize historical Process and result artifacts
+
+- Status: `running`
+- Objective: Run the bounded in-place Process Runtime and Controller result-store sanitizers against the stable controller repository state without returning historical contents. Record counts only, verify second-pass idempotency, preserve active process artifacts, and confirm no repository source changes are produced.
+- Depends on: `T2`
+- Allowed paths: `src/runtime/execution/**`, `src/runtime/evidence/**`, `docs/operations/**`, `tasks/issues/**`
+- Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:controller-v8`
+- Execution hint: agent / codex
+
+### T4 — Reconcile duplicate Recovery work and close security acceptance
+
+- Status: `planned`
+- Objective: Identify only the duplicate cancelled Recovery WorkContracts/worktrees created by the reproduced work_prepare retry defect, verify controller ownership, terminal state, cleanliness and merge disposition, then reconcile them through controller-owned cleanup without touching unrelated active work. Record credential rotation/revocation as a required human action without exposing any credential, verify exact-main checks and clean Git state, and close the Issue with auditable evidence.
+- Depends on: `T3`
+- Allowed paths: `src/runtime/control-plane/**`, `src/cli/controller/**`, `docs/operations/**`, `SECURITY.md`, `tasks/issues/**`
 - Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:controller-v8`
 - Execution hint: agent / codex
 
