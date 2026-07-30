@@ -2,7 +2,7 @@
 id: "ISS-20260730-F311FC"
 kind: "bug"
 status: "planned"
-updated_at: "2026-07-30T02:50:41.809Z"
+updated_at: "2026-07-30T04:04:11.002Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -44,7 +44,7 @@ Two production stability/security defects were reproduced during independent Rec
 
 ### T1 — Make work_prepare atomically idempotent
 
-- Status: `ready`
+- Status: `done`
 - Objective: Trace work_prepare from MCP facade through WorkContract and isolated worktree creation. Add a durable atomic request index keyed by repository, session/principal and request_id with a canonical operation fingerprint. Identical retries must return the original Work and workspace; fingerprint mismatch must fail closed before side effects. Add sequential, concurrent and restart-recovery tests using the exact reproduced pattern. Reconcile only the duplicate cancelled Recovery WorkContracts/worktrees after ownership and cleanliness checks.
 - Depends on: none
 - Allowed paths: `src/runtime/control-plane/**`, `src/runtime/gateway/mcp/**`, `src/cli/mcp/**`, `src/cli/controller/**`, `tests/runtime/**`, `tests/cli/**`, `docs/architecture/current/**`, `docs/operations/**`, `tasks/issues/**`
@@ -53,7 +53,7 @@ Two production stability/security defects were reproduced during independent Rec
 
 ### T2 — Redact secrets at the Process Runtime output boundary
 
-- Status: `planned`
+- Status: `ready`
 - Objective: Trace all direct and managed Process Runtime stdout/stderr, logs, resultRef, summary and Evidence Plane serialization. Add centralized bounded redaction for authorization material and credential-shaped environment/key-value output before persistence and before returning any tool result. Add launchctl-style fixtures with synthetic values, direct/managed path parity tests, artifact quarantine/migration for unsafe historical results, and documentation. Never include a real credential in source, tests, Issue notes or output.
 - Depends on: `T1`
 - Allowed paths: `src/runtime/execution/**`, `src/runtime/evidence/**`, `src/runtime/gateway/mcp/**`, `src/cli/mcp/**`, `src/cli/controller/**`, `tests/runtime/**`, `tests/cli/**`, `docs/architecture/current/**`, `docs/operations/**`, `SECURITY.md`, `tasks/issues/**`

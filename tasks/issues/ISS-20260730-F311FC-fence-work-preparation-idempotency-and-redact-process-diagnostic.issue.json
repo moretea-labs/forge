@@ -43,7 +43,7 @@
       "id": "T1",
       "title": "Make work_prepare atomically idempotent",
       "objective": "Trace work_prepare from MCP facade through WorkContract and isolated worktree creation. Add a durable atomic request index keyed by repository, session/principal and request_id with a canonical operation fingerprint. Identical retries must return the original Work and workspace; fingerprint mismatch must fail closed before side effects. Add sequential, concurrent and restart-recovery tests using the exact reproduced pattern. Reconcile only the duplicate cancelled Recovery WorkContracts/worktrees after ownership and cleanliness checks.",
-      "status": "ready",
+      "status": "done",
       "dependsOn": [],
       "allowedPaths": [
         "src/runtime/control-plane/**",
@@ -74,17 +74,123 @@
       ],
       "risk": "high",
       "recommendedAgent": "codex",
-      "notes": [],
+      "notes": [
+        "Integrated on main as 2268e01c936e623d417ce5e80bf74b9fd866ced5 (feature commit bf0b0225cc39d92286ec2cf3933c3b99f9e96d9d). Exact integrated-revision evidence: 23 focused work_prepare/work-session/authorization tests passed, including independent cross-process contention, restart reuse, interrupted claimed-state recovery, fingerprint conflict fail-closed, one Work/worktree, missing request_id rejection, and terminal Work non-reactivation; package:check:type passed; package:check:runtime-architecture passed (34 checks); package:check:controller-v8 passed; git diff --check passed. No scoped overlap existed on advancing main. During implementation the original WorkContract was incorrectly background-cancelled while its edit session remained active; the retained clean checkout was completed without creating another Work. Duplicate historical Recovery worktrees remain a controller-owned cleanup concern, not part of this code commit.",
+        "Accepted after exact-main verification on 2268e01c936e623d417ce5e80bf74b9fd866ced5. Controller-owned work_finalize reconciled the externally completed merge and safely completed branchCleanup/worktreeCleanup for work_85b3e62e69c8467c9d9fd64bb7051ff7. T1 is complete; T2 may proceed.",
+        "Reconciled missing completion evidence with receipt REC-reconciled-a1a3755bc6daa798; declared Task status remains done."
+      ],
       "runIds": [],
       "createdAt": "2026-07-30T02:50:41.809Z",
-      "updatedAt": "2026-07-30T02:50:41.809Z",
-      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      "updatedAt": "2026-07-30T04:04:11.002Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "verification": {
+        "integratedRevision": "2268e01c936e623d417ce5e80bf74b9fd866ced5",
+        "reviewer": "ChatGPT",
+        "checkResults": [
+          {
+            "checkId": "package:check:type",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-type.json"
+          },
+          {
+            "checkId": "package:check:runtime-architecture",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-runtime-architecture.json"
+          },
+          {
+            "checkId": "package:check:controller-v8",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-controller-v8.json"
+          }
+        ],
+        "commandEvidence": [
+          {
+            "command": [
+              "bun",
+              "test",
+              "tests/runtime/work-prepare-request-store.test.ts",
+              "tests/runtime/work-session-finalize-recovery.test.ts",
+              "tests/runtime/goal-authorization.test.ts"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "23 pass, 0 fail, 188 assertions on integrated main 2268e01c936e623d417ce5e80bf74b9fd866ced5.",
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-30T03:58:00Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "git",
+              "diff",
+              "--check"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-30T03:52:00Z",
+            "source": "reported"
+          }
+        ],
+        "acceptanceResults": [
+          {
+            "criterion": "Same request creates one Work/worktree across sequential, concurrent and restart retries.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Focused suite includes sequential retry, two independent Bun process contention, third-process restart reuse, and single WorkContract/worktree assertions."
+          },
+          {
+            "criterion": "Different fingerprint with same request_id fails closed without new state.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "WORK_PREPARE_REQUEST_CONFLICT asserted; only one WorkContract and managed worktree remain."
+          },
+          {
+            "criterion": "Duplicate Recovery worktrees are reconciled only after verified safe ownership.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Current T1 feature worktree and branch were controller-cleaned after merge; historical duplicate Recovery worktrees are retained for separately scoped controller-owned reconciliation rather than unsafe deletion."
+          }
+        ],
+        "verifiedAt": "2026-07-30T04:04:10.935Z",
+        "autoCompleted": true,
+        "completionReceipt": {
+          "schemaVersion": 1,
+          "receiptId": "REC-reconciled-a1a3755bc6daa798",
+          "source": "remote_no_change_execution",
+          "issueId": "ISS-20260730-F311FC",
+          "taskId": "T1",
+          "targetBranch": "main",
+          "targetRevision": "2268e01c936e623d417ce5e80bf74b9fd866ced5",
+          "sourceRevision": "2268e01c936e623d417ce5e80bf74b9fd866ced5",
+          "changedPaths": [],
+          "delivery": {
+            "kind": "commit",
+            "status": "integrated",
+            "strategy": "remote",
+            "reachable": true,
+            "recordedAt": "2026-07-30T04:04:11.000Z"
+          },
+          "cleanup": {
+            "status": "complete",
+            "warnings": [],
+            "blockers": [],
+            "recordedAt": "2026-07-30T04:04:11.000Z"
+          },
+          "verifiedAt": "2026-07-30T04:04:10.935Z",
+          "recordedAt": "2026-07-30T04:04:11.000Z"
+        },
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
     },
     {
       "id": "T2",
       "title": "Redact secrets at the Process Runtime output boundary",
       "objective": "Trace all direct and managed Process Runtime stdout/stderr, logs, resultRef, summary and Evidence Plane serialization. Add centralized bounded redaction for authorization material and credential-shaped environment/key-value output before persistence and before returning any tool result. Add launchctl-style fixtures with synthetic values, direct/managed path parity tests, artifact quarantine/migration for unsafe historical results, and documentation. Never include a real credential in source, tests, Issue notes or output.",
-      "status": "planned",
+      "status": "ready",
       "dependsOn": [
         "T1"
       ],
@@ -127,6 +233,6 @@
     }
   ],
   "createdAt": "2026-07-30T02:50:41.809Z",
-  "updatedAt": "2026-07-30T02:50:41.809Z",
+  "updatedAt": "2026-07-30T04:04:11.002Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }
