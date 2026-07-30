@@ -26,6 +26,8 @@ export interface RecoveryHttpTransport {
 export interface RecoveryHttpTransportOptions {
   /** Test-only injection point. Production resolution never consults PATH. */
   resolveCurlExecutable?: () => Promise<string>;
+  /** Test-only additions to the fixed minimal child environment. */
+  childEnvironment?: () => NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   systemRoot?: string;
   maxHeaderBytes?: number;
@@ -131,9 +133,19 @@ function parseCurlResponse(output: Buffer, maxHeaderBytes: number, maxBodyBytes:
   return { status: last.status, ok: last.status >= 200 && last.status < 300, headers: last.headers, body };
 }
 
+function minimalCurlEnvironment(platform: NodeJS.Platform, systemRoot?: string): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = { LANG: 'C', LC_ALL: 'C' };
+  if (platform === 'win32' && systemRoot) {
+    environment.SystemRoot = systemRoot;
+    environment.WINDIR = systemRoot;
+  }
+  return environment;
+}
+
 async function runCurl(
   executable: string,
   configPath: string,
+  environment: NodeJS.ProcessEnv,
   timeoutMs: number,
   signal: AbortSignal | undefined,
   maxOutputBytes: number,
@@ -147,7 +159,12 @@ async function runCurl(
     const stdout: Buffer[] = [];
     const stdoutSize = { value: 0 };
     const stderrSize = { value: 0 };
-    const child = spawn(executable, ['--config', configPath], { shell: false, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const child = spawn(executable, ['--disable', '--config', configPath], {
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      env: environment,
+    });
 
     const finish = (failure?: Error, output?: Buffer) => {
       if (settled) return;
@@ -208,12 +225,18 @@ export class ExternalHttpsRecoveryTransport implements RecoveryHttpTransport {
   async request(request: RecoveryHttpRequest): Promise<RecoveryHttpResponse> {
     const initial = new URL(request.url);
     if (initial.protocol !== 'https:') throw error('RECOVERY_HTTP_HTTPS_REQUIRED');
+    const platform = this.options.platform ?? process.platform;
+    const systemRoot = this.options.systemRoot ?? process.env.SystemRoot ?? process.env.WINDIR;
     const executable = this.options.resolveCurlExecutable
       ? await this.options.resolveCurlExecutable()
-      : await resolveTrustedRecoveryCurl(this.options.platform ?? process.platform, this.options.systemRoot);
+      : await resolveTrustedRecoveryCurl(platform, systemRoot);
+    const environment = {
+      ...minimalCurlEnvironment(platform, systemRoot),
+      ...(this.options.childEnvironment?.() ?? {}),
+    };
     let url = initial;
     for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
-      const response = await this.requestOnce(executable, { ...request, url: url.toString() });
+      const response = await this.requestOnce(executable, environment, { ...request, url: url.toString() });
       const location = response.headers.location;
       if (response.status < 300 || response.status >= 400 || !location) return response;
       if (redirects === MAX_REDIRECTS) throw error('RECOVERY_HTTP_REDIRECT_LIMIT');
@@ -225,7 +248,7 @@ export class ExternalHttpsRecoveryTransport implements RecoveryHttpTransport {
     throw error('RECOVERY_HTTP_REDIRECT_LIMIT');
   }
 
-  private async requestOnce(executable: string, request: RecoveryHttpRequest): Promise<RecoveryHttpResponse> {
+  private async requestOnce(executable: string, environment: NodeJS.ProcessEnv, request: RecoveryHttpRequest): Promise<RecoveryHttpResponse> {
     const root = join(resolve(this.controllerHome), 'recovery', 'tmp');
     await mkdir(root, { recursive: true, mode: 0o700 });
     await chmod(root, 0o700);
@@ -237,7 +260,6 @@ export class ExternalHttpsRecoveryTransport implements RecoveryHttpTransport {
       const bodyPath = join(directory, `${nonce}.body`);
       const timeoutMs = Math.max(1, Math.min(request.timeoutMs ?? 8_000, 60_000));
       const lines = [
-        'disable',
         'silent',
         'show-error',
         'proto = "=https"',
@@ -258,6 +280,7 @@ export class ExternalHttpsRecoveryTransport implements RecoveryHttpTransport {
       const output = await runCurl(
         executable,
         configPath,
+        environment,
         timeoutMs,
         request.signal,
         this.maxHeaderBytes + this.maxBodyBytes,

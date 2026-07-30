@@ -6,7 +6,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { attestKnownGood, createRecoveryConfig, decideWatchdog, recoveryReconnectOperation, restartGateway, restartSupervisor, rollbackPrevious, verifyStableRuntime } from '../../src/runtime/standalone-recovery/core';
 import { dispatchRecoveryTool, RECOVERY_CLI_COMMANDS, RECOVERY_TOOLS } from '../../src/runtime/standalone-recovery/entry';
-import { createRecoveryHttpTransport, ExternalHttpsRecoveryTransport, resolveTrustedRecoveryCurl } from '../../src/runtime/standalone-recovery/http-transport';
+import { createRecoveryHttpTransport, ExternalHttpsRecoveryTransport, resolveTrustedRecoveryCurl, type RecoveryHttpTransportOptions } from '../../src/runtime/standalone-recovery/http-transport';
 
 const httpServers: Server[] = [];
 const socketServers: SocketServer[] = [];
@@ -51,6 +51,10 @@ const headers = config.split(/\\n/).filter((entry) => entry.startsWith('header =
 const event = {
   pid: process.pid,
   argv: process.argv.slice(2), method, rpcMethod: rpc?.method, session: headers.some((header) => header.toLowerCase().startsWith('mcp-session-id: ')),
+  inheritedHttpsProxy: Boolean(process.env.HTTPS_PROXY || process.env.https_proxy),
+  inheritedCurlCaBundle: Boolean(process.env.CURL_CA_BUNDLE),
+  inheritedSslCertFile: Boolean(process.env.SSL_CERT_FILE),
+  inheritedHome: Boolean(process.env.HOME),
   hasAuthorization: headers.some((header) => header.toLowerCase().startsWith('authorization: bearer ')),
   hasBody: Boolean(body), directoryMode: statSync(dirname(configPath)).mode & 0o777, configMode: statSync(configPath).mode & 0o777,
   bodyMode: bodyPath ? statSync(bodyPath).mode & 0o777 : undefined,
@@ -95,6 +99,20 @@ async function withFakeCurlEnvironment<T>(values: Record<string, string | undefi
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
   }
+}
+
+function fakeCurlOptions(executable: string, overrides: RecoveryHttpTransportOptions = {}): RecoveryHttpTransportOptions {
+  return {
+    resolveCurlExecutable: async () => executable,
+    childEnvironment: () => {
+      const environment: NodeJS.ProcessEnv = {};
+      for (const [name, value] of Object.entries(process.env)) {
+        if (name.startsWith('FAKE_CURL_') && value !== undefined) environment[name] = value;
+      }
+      return environment;
+    },
+    ...overrides,
+  };
 }
 
 describe('standalone disaster recovery core', () => {
@@ -303,8 +321,14 @@ describe('standalone disaster recovery core', () => {
     await new Promise<void>((resolveListen, reject) => { socket.once('error', reject); socket.listen(join(home, 'supervisor', 'control.sock'), () => resolveListen()); });
     const fake = fakeCurl(home);
     const config = createRecoveryConfig(home, { stableIngressUrl: `http://127.0.0.1:${port}`, publicMcpUrl: 'https://recovery.example.test/mcp' });
-    const transport = createRecoveryHttpTransport(home, { resolveCurlExecutable: async () => fake.executable });
-    const verified = await withFakeCurlEnvironment({ FAKE_CURL_RECORD: fake.record }, () => verifyStableRuntime(config, transport));
+    const transport = createRecoveryHttpTransport(home, fakeCurlOptions(fake.executable));
+    const verified = await withFakeCurlEnvironment({
+      FAKE_CURL_RECORD: fake.record,
+      HTTPS_PROXY: 'http://127.0.0.1:9',
+      CURL_CA_BUNDLE: '/tmp/untrusted-ca.pem',
+      SSL_CERT_FILE: '/tmp/untrusted-ca.pem',
+      HOME: join(home, 'hostile-home'),
+    }, () => verifyStableRuntime(config, transport));
 
     expect(verified.ok).toBe(true);
     expect(verified.probes.external_mcp_http).toEqual({ ok: true, detail: 'HTTP 401 OAuth challenge', status: 401 });
@@ -318,9 +342,13 @@ describe('standalone disaster recovery core', () => {
     expect(events.filter((entry) => entry.method === 'POST').every((entry) => entry.session === true || entry.rpcMethod === 'initialize')).toBe(true);
     expect(events.find((entry) => entry.method === 'DELETE')?.session).toBe(true);
     for (const event of events) {
-      expect(event.argv).toEqual(['--config', expect.any(String)]);
+      expect(event.argv).toEqual(['--disable', '--config', expect.any(String)]);
       expect(JSON.stringify(event.argv)).not.toContain(token);
       expect(JSON.stringify(event.argv)).not.toContain('jsonrpc');
+      expect(event.inheritedHttpsProxy).toBe(false);
+      expect(event.inheritedCurlCaBundle).toBe(false);
+      expect(event.inheritedSslCertFile).toBe(false);
+      expect(event.inheritedHome).toBe(false);
       expect(event.directoryMode).toBe(0o700);
       expect(event.configMode).toBe(0o600);
       if (event.hasBody) expect(event.bodyMode).toBe(0o600);
@@ -333,7 +361,7 @@ describe('standalone disaster recovery core', () => {
   test('cleans protected curl material after HTTP, spawn, timeout, cancellation, and parsing failures', async () => {
     const home = mkdtempSync(join(tmpdir(), 'standalone-recovery-curl-cleanup-'));
     const fake = fakeCurl(home);
-    const transport = new ExternalHttpsRecoveryTransport(home, { resolveCurlExecutable: async () => fake.executable, termGraceMs: 30 });
+    const transport = new ExternalHttpsRecoveryTransport(home, fakeCurlOptions(fake.executable, { termGraceMs: 30 }));
     await withFakeCurlEnvironment({ FAKE_CURL_RECORD: fake.record, FAKE_CURL_RESPONSE: 'HTTP/2 500 Server Error\r\nContent-Type: application/json\r\n\r\n{}' }, async () => {
       await expect(transport.request({ url: 'https://recovery.example.test/mcp' })).resolves.toMatchObject({ status: 500 });
     });
@@ -368,20 +396,20 @@ describe('standalone disaster recovery core', () => {
   test('bounds curl headers, body, stderr, does not block local HTTP, and leaves loopback on fetch', async () => {
     const home = mkdtempSync(join(tmpdir(), 'standalone-recovery-curl-bounds-'));
     const fake = fakeCurl(home);
-    const limitedHeaders = new ExternalHttpsRecoveryTransport(home, { resolveCurlExecutable: async () => fake.executable, maxHeaderBytes: 64 });
+    const limitedHeaders = new ExternalHttpsRecoveryTransport(home, fakeCurlOptions(fake.executable, { maxHeaderBytes: 64 }));
     await withFakeCurlEnvironment({ FAKE_CURL_RESPONSE: `HTTP/2 200 OK\r\nX-Long: ${'x'.repeat(80)}\r\n\r\n` }, async () => {
       await expect(limitedHeaders.request({ url: 'https://recovery.example.test/mcp' })).rejects.toThrow('RECOVERY_HTTP_HEADER_TOO_LARGE');
     });
-    const limitedBody = new ExternalHttpsRecoveryTransport(home, { resolveCurlExecutable: async () => fake.executable, maxHeaderBytes: 128, maxBodyBytes: 32 });
+    const limitedBody = new ExternalHttpsRecoveryTransport(home, fakeCurlOptions(fake.executable, { maxHeaderBytes: 128, maxBodyBytes: 32 }));
     await withFakeCurlEnvironment({ FAKE_CURL_RESPONSE: `HTTP/2 200 OK\r\n\r\n${'x'.repeat(40)}` }, async () => {
       await expect(limitedBody.request({ url: 'https://recovery.example.test/mcp' })).rejects.toThrow('RECOVERY_HTTP_BODY_TOO_LARGE');
     });
-    const limitedStderr = new ExternalHttpsRecoveryTransport(home, { resolveCurlExecutable: async () => fake.executable, maxStderrBytes: 32, termGraceMs: 30 });
+    const limitedStderr = new ExternalHttpsRecoveryTransport(home, fakeCurlOptions(fake.executable, { maxStderrBytes: 32, termGraceMs: 30 }));
     await withFakeCurlEnvironment({ FAKE_CURL_MODE: 'stderr', FAKE_CURL_STDERR_BYTES: '64' }, async () => {
       await expect(limitedStderr.request({ url: 'https://recovery.example.test/mcp' })).rejects.toThrow('RECOVERY_HTTP_STDERR_TOO_LARGE');
     });
     const port = await http((_request, response) => response.end('ok'));
-    const delayed = new ExternalHttpsRecoveryTransport(home, { resolveCurlExecutable: async () => fake.executable });
+    const delayed = new ExternalHttpsRecoveryTransport(home, fakeCurlOptions(fake.executable));
     await withFakeCurlEnvironment({ FAKE_CURL_DELAY_MS: '150' }, async () => {
       const pending = delayed.request({ url: 'https://recovery.example.test/mcp' });
       const started = Date.now();
