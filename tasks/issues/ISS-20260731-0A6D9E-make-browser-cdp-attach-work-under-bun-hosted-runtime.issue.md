@@ -1,8 +1,8 @@
 ---
 id: "ISS-20260731-0A6D9E"
 kind: "bug"
-status: "planned"
-updated_at: "2026-07-30T19:34:56.651Z"
+status: "in_progress"
+updated_at: "2026-07-30T21:14:20.568Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -39,7 +39,7 @@ Live Browser Attach verification proved Chrome 150 CDP is reachable and Node + P
 
 ### T1 — Implement Node CDP bridge and complete live Browser Attach proof
 
-- Status: `ready`
+- Status: `verified`
 - Objective: Starting from clean main 0bcf2f984415a90af09345dd274f95efc7cb0872, inspect the current Browser adapter and existing process/runtime boundaries. Implement the smallest explicit Node-hosted bridge required only for CDP-attached Browser operations because Bun Playwright WebSocket attach times out while Node succeeds. Keep managed persistent/isolated execution in-process. The bridge must use a resolved trusted Node executable, no shell, bounded startup/action/idle timeouts, bounded JSON messages, no cookies/storage/secrets in logs or durable state, exact loopback endpoint validation, domain route enforcement, clean child termination, and disconnect rather than browser close. Preserve generic action coverage and session/tab metadata. Add focused unit/integration tests and a live smoke path. Run browser tests, package:check:type, package:check:runtime-architecture and package:check:controller-v8. Commit in an isolated worktree; do not push or publish.
 - Depends on: none
 - Allowed paths: `src/runtime/plugins/**`, `tests/runtime/browser-plugin.test.ts`, `tests/runtime/**`, `scripts/**`, `docs/operations/controller-browser-plugin.md`, `docs/architecture/current/human-interaction-plane.md`, `package.json`, `tasks/issues/**`

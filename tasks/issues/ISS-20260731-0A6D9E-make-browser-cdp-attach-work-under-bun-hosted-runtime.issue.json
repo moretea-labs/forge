@@ -4,7 +4,7 @@
   "title": "Make Browser CDP attach work under Bun-hosted runtime",
   "slug": "make-browser-cdp-attach-work-under-bun-hosted-runtime",
   "kind": "bug",
-  "status": "planned",
+  "status": "in_progress",
   "summary": "Live Browser Attach verification proved Chrome 150 CDP is reachable and Node + Playwright connectOverCDP succeeds immediately, while the same installed Playwright call under Bun 1.3.14 times out during the DevTools WebSocket connection. The production Gateway is Bun-hosted, so attach_preferred cannot yet attach despite correct schema, endpoint discovery and Chrome configuration.",
   "goals": [
     "Implement a bounded production-safe Node execution boundary for CDP attach while keeping existing managed_persistent behavior unchanged.",
@@ -34,7 +34,7 @@
       "id": "T1",
       "title": "Implement Node CDP bridge and complete live Browser Attach proof",
       "objective": "Starting from clean main 0bcf2f984415a90af09345dd274f95efc7cb0872, inspect the current Browser adapter and existing process/runtime boundaries. Implement the smallest explicit Node-hosted bridge required only for CDP-attached Browser operations because Bun Playwright WebSocket attach times out while Node succeeds. Keep managed persistent/isolated execution in-process. The bridge must use a resolved trusted Node executable, no shell, bounded startup/action/idle timeouts, bounded JSON messages, no cookies/storage/secrets in logs or durable state, exact loopback endpoint validation, domain route enforcement, clean child termination, and disconnect rather than browser close. Preserve generic action coverage and session/tab metadata. Add focused unit/integration tests and a live smoke path. Run browser tests, package:check:type, package:check:runtime-architecture and package:check:controller-v8. Commit in an isolated worktree; do not push or publish.",
-      "status": "ready",
+      "status": "verified",
       "dependsOn": [],
       "allowedPaths": [
         "src/runtime/plugins/**",
@@ -65,14 +65,73 @@
       ],
       "risk": "high",
       "recommendedAgent": "codex",
-      "notes": [],
+      "notes": [
+        "Verification evidence is incomplete: One or more acceptance criteria are missing or not evaluated.",
+        "Required verification evidence passed; a completion receipt remains required before completion.",
+        "Implementation and production proof are complete at 546770877d7e046ccb3d89be7413ca867307b389. Task verification passed. accept_task is blocked only because this direct-edit/Work path did not emit the Run-bound delivery receipt required by the newer completion policy; no code, runtime, test, release, or cleanup work remains."
+      ],
       "runIds": [],
       "createdAt": "2026-07-30T19:34:56.651Z",
-      "updatedAt": "2026-07-30T19:34:56.651Z",
-      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      "updatedAt": "2026-07-30T21:14:20.568Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "verification": {
+        "integratedRevision": "546770877d7e046ccb3d89be7413ca867307b389",
+        "reviewer": "ChatGPT",
+        "checkResults": [
+          {
+            "checkId": "package:check:type",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-type.json"
+          },
+          {
+            "checkId": "package:check:runtime-architecture",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-runtime-architecture.json"
+          },
+          {
+            "checkId": "package:check:controller-v8",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-controller-v8.json"
+          }
+        ],
+        "commandEvidence": [],
+        "acceptanceResults": [
+          {
+            "criterion": "Real Chrome CDP attach succeeds through the Browser plugin under the Bun-hosted Gateway.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Production plugin action attached to Chrome/150 through the packaged Node bridge on active immutable release 54677087."
+          },
+          {
+            "criterion": "Existing tab reuse and explicit session persistence are proven.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Existing GitHub tab matched exact_url; session browser_runtime_attach_final persisted, then matched saved_url_title after Supervisor restart without creating a duplicate tab."
+          },
+          {
+            "criterion": "Gateway restart recovery, stale endpoint and fallback behavior are proven.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Cold Supervisor restart preserved exact release and session rebind; dead endpoint with fail_closed returned PLUGIN_BROWSER_CDP_UNAVAILABLE; managed_persistent fallback navigated successfully with explicit fallback diagnostics."
+          },
+          {
+            "criterion": "No attached Chrome process is closed by plugin cleanup.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Chrome CDP remained reachable after each short-lived bridge disconnect and after Supervisor restart; attached browser teardown used disconnect semantics."
+          }
+        ],
+        "verifiedAt": "2026-07-30T21:13:51.664Z",
+        "autoCompleted": false,
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
     }
   ],
   "createdAt": "2026-07-30T19:34:56.651Z",
-  "updatedAt": "2026-07-30T19:34:56.651Z",
+  "updatedAt": "2026-07-30T21:14:20.568Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }
