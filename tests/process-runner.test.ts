@@ -61,8 +61,27 @@ describe("process runner", () => {
 
     expect(invocation.command).toBe("C:\\Windows\\System32\\cmd.exe");
     expect(invocation.args.slice(0, 3)).toEqual(["/d", "/s", "/c"]);
-    expect(invocation.args[3]).toBe('"C:\\tools\\npx.cmd" "hello & goodbye" "100%%"');
+    expect(invocation.args[3]).toBe('""C:\\tools\\npx.cmd" "hello & goodbye" "100%%""');
+    expect(invocation.windowsVerbatimArguments).toBe(true);
     expect(escapeWindowsCommandArgument('a"b')).toBe('"a""b"');
+  });
+
+  test("executes a real Windows command shim through ComSpec", () => {
+    if (process.platform !== "win32") return;
+    const tmp = mkdtempSync(join(tmpdir(), "matea-process-runner-cmd-"));
+    try {
+      const scriptPath = join(tmp, "fixture.mjs");
+      const commandPath = join(tmp, "fixture.CMD");
+      writeFileSync(scriptPath, "console.log(JSON.stringify(process.argv.slice(2)));\n");
+      writeFileSync(commandPath, `@echo off\r\n"${process.execPath}" "${scriptPath}" %*\r\n`);
+      const result = runProcess("fixture", ["hello & goodbye", "100%"], {
+        env: { ...process.env, PATH: `${tmp};${process.env.PATH ?? ""}`, PATHEXT: ".CMD" },
+      });
+      expect(result.ok).toBe(true);
+      expect(JSON.parse(result.stdout.trim())).toEqual(["hello & goodbye", "100%"]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   test("keeps native Windows executables as direct invocations", () => {
