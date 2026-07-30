@@ -239,7 +239,7 @@
       "id": "T6",
       "title": "Fix RC6 Windows global runtime fixture failure",
       "objective": "Reproduce and fix the exact Windows smoke failure in tests/cli/global-runtime-init.test.ts at final RC6 commit 733f7917. Installer dry-run and platform contract already pass; the failure is limited to fake command/runtime fixture execution returning exit code 1 on windows-latest. Inspect the GitHub run 30511067300, identify the first causal error rather than patching downstream assertions, make the smallest cross-platform change, add focused regression coverage, run type/platform/release readiness locally, push a new main commit, and require both Linux CI and Windows smoke to pass before tagging. Do not publish or tag until green.",
-      "status": "running",
+      "status": "verifying",
       "dependsOn": [],
       "allowedPaths": [
         "tests/cli/global-runtime-init.test.ts",
@@ -270,15 +270,16 @@
       "risk": "high",
       "recommendedAgent": "codex",
       "notes": [
-        "Follow-up after GitHub Windows run 30512180518. The first ComSpec quoting repair made 8/9 global-runtime tests pass. The remaining bootstrap failure is caused by Windows environment keys being case-insensitive while the merged child environment can contain both Path and PATH; envValue currently returns the first match, allowing the inherited Path to override the caller's later PATH. Fix with deterministic last-write precedence, add regression coverage, and include tests/process-runner.test.ts in Windows smoke before any tag or publication."
+        "Follow-up after GitHub Windows run 30512180518. The first ComSpec quoting repair made 8/9 global-runtime tests pass. The remaining bootstrap failure is caused by Windows environment keys being case-insensitive while the merged child environment can contain both Path and PATH; envValue currently returns the first match, allowing the inherited Path to override the caller's later PATH. Fix with deterministic last-write precedence, add regression coverage, and include tests/process-runner.test.ts in Windows smoke before any tag or publication.",
+        "Integrated on main. Windows caller-environment precedence fix commit 7ca726e7 was merged via 2eb13d5f; final release candidate main is 6870c39b214448dde708b6618913d43db88d294f. Focused installer/global-runtime/process-runner tests passed; package:check:type and package:check:platform-support passed; exact-main package:check:release-readiness passed with open-source audit findings=0, public export=750 files, and tarball install smoke OK. The isolated WorkContract was stopped after manual integration and its clean, merged worktree/branch were deleted. Awaiting exact-SHA GitHub CI and Windows smoke; no tag or publication yet."
       ],
       "runIds": [],
       "createdAt": "2026-07-30T03:26:58.503Z",
-      "updatedAt": "2026-07-30T05:54:47.163Z",
+      "updatedAt": "2026-07-30T06:12:38.460Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     }
   ],
   "createdAt": "2026-07-29T12:22:51.953Z",
-  "updatedAt": "2026-07-30T05:54:47.163Z",
+  "updatedAt": "2026-07-30T06:12:38.460Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }
