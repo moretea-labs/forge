@@ -16,6 +16,7 @@ import { writeRepositoryAccessPolicy } from '../../src/runtime/control-plane/gov
 import { callExecutionTool } from '../../src/runtime/gateway/mcp/execution-tools';
 import { listExecutionJobs } from '../../src/runtime/execution/jobs/store';
 import { getWorkContract, listWorkContracts, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 
 const roots: string[] = [];
 
@@ -299,6 +300,151 @@ describe('controller-owned Work recovery and finalize cleanup', () => {
     const refreshed = listRepositories(controllerHome, { includeRemoved: true }).find((entry) => entry.repoId === repository.repoId)!;
     const managedCheckout = refreshed.checkouts.find((checkout) => checkout.checkoutId === checkoutId)!;
     expect(repositoryCheckoutLifecycle(managedCheckout)).toBe('removed');
+  });
+
+  test('cleanup-only finalize removes a clean unchanged cancelled duplicate while preserving cancelled evidence', async () => {
+    const { repoRoot, controllerHome, repository, context } = fixture();
+    const ctx = context('session-cancelled-duplicate-cleanup', 'controller-cancelled-duplicate-cleanup');
+    structured(await callExecutionTool(ctx, 'session_start', {}));
+    structured(await callExecutionTool(ctx, 'session_bind_repository', { repo_id: repository.repoId }));
+    const prepared = structured(await callExecutionTool(ctx, 'work_prepare', {
+      repo_id: repository.repoId,
+      objective: 'Create one unchanged duplicate workspace for cleanup reconciliation',
+      isolation: 'new_worktree',
+      request_id: 'prepare-cancelled-duplicate-cleanup-work',
+    }));
+    const workId = String(prepared.work.workId);
+    const branch = String(prepared.work.branch);
+    const worktreePath = String(prepared.work.worktreePath);
+    updateWorkContract({ controllerHome, repoId: repository.repoId }, workId, { status: 'cancelled' });
+
+    const finalized = structured(await callExecutionTool(ctx, 'work_finalize', {
+      repo_id: repository.repoId,
+      work_id: workId,
+      commit: false,
+      merge: false,
+      cleanup: true,
+      target_branch: 'main',
+    }));
+    expect(finalized.completed).toBe(true);
+    expect(finalized.work.state).toBe('cleaned');
+    expect(finalized.stages).toMatchObject({ validation: 'done', commit: 'skipped', merge: 'done', branchCleanup: 'done', worktreeCleanup: 'done' });
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(git(repoRoot, 'branch', '--list', branch)).toBe('');
+    const contract = getWorkContract({ controllerHome, repoId: repository.repoId }, workId)!;
+    expect(contract.status).toBe('cancelled');
+    expect(contract.evidenceRefs.some((entry) => entry.title === 'cancelled work cleanup completed')).toBe(true);
+  });
+
+  test('cleanup-only finalize resumes branch cleanup after a previous attempt already removed the worktree', async () => {
+    const { repoRoot, controllerHome, repository, context } = fixture();
+    const ctx = context('session-cancelled-partial-cleanup', 'controller-cancelled-partial-cleanup');
+    structured(await callExecutionTool(ctx, 'session_start', {}));
+    structured(await callExecutionTool(ctx, 'session_bind_repository', { repo_id: repository.repoId }));
+    const prepared = structured(await callExecutionTool(ctx, 'work_prepare', {
+      repo_id: repository.repoId,
+      objective: 'Resume a partial cancelled cleanup after worktree removal',
+      isolation: 'new_worktree',
+      request_id: 'prepare-cancelled-partial-cleanup-work',
+    }));
+    const workId = String(prepared.work.workId);
+    const branch = String(prepared.work.branch);
+    const checkoutId = String(prepared.work.checkoutId);
+    const worktreePath = String(prepared.work.worktreePath);
+    updateWorkContract({ controllerHome, repoId: repository.repoId }, workId, { status: 'cancelled' });
+    git(repoRoot, 'worktree', 'remove', worktreePath);
+    setRepositoryCheckoutLifecycle({ controllerHome, repoId: repository.repoId, checkoutId, lifecycle: 'removed', reason: 'simulate cleanup crash after worktree removal' });
+    const handle = readWorkHandle(controllerHome, repository.repoId, workId)!;
+    writeWorkHandle(controllerHome, {
+      ...handle,
+      state: 'editing',
+      finalization: {
+        validation: 'done',
+        commit: 'skipped',
+        merge: 'skipped',
+        branchCleanup: 'skipped',
+        worktreeCleanup: 'done',
+      },
+    });
+
+    const finalized = structured(await callExecutionTool(ctx, 'work_finalize', {
+      repo_id: repository.repoId,
+      work_id: workId,
+      commit: false,
+      merge: false,
+      cleanup: true,
+      target_branch: 'main',
+    }));
+    expect(finalized.completed).toBe(true);
+    expect(finalized.work.state).toBe('cleaned');
+    expect(finalized.stages.branchCleanup).toBe('done');
+    expect(finalized.stages.worktreeCleanup).toBe('done');
+    expect(git(repoRoot, 'branch', '--list', branch)).toBe('');
+  });
+
+  test('cleanup-only finalize rejects a dirty cancelled worktree before deletion', async () => {
+    const { repoRoot, controllerHome, repository, context } = fixture();
+    const ctx = context('session-cancelled-dirty-cleanup', 'controller-cancelled-dirty-cleanup');
+    structured(await callExecutionTool(ctx, 'session_start', {}));
+    structured(await callExecutionTool(ctx, 'session_bind_repository', { repo_id: repository.repoId }));
+    const prepared = structured(await callExecutionTool(ctx, 'work_prepare', {
+      repo_id: repository.repoId,
+      objective: 'Retain a dirty cancelled workspace',
+      isolation: 'new_worktree',
+      request_id: 'prepare-cancelled-dirty-cleanup-work',
+    }));
+    const workId = String(prepared.work.workId);
+    const branch = String(prepared.work.branch);
+    const worktreePath = String(prepared.work.worktreePath);
+    writeFileSync(join(worktreePath, 'uncommitted-output.txt'), 'must remain for review');
+    updateWorkContract({ controllerHome, repoId: repository.repoId }, workId, { status: 'cancelled' });
+
+    const rejected = structured(await callExecutionTool(ctx, 'work_finalize', {
+      repo_id: repository.repoId,
+      work_id: workId,
+      commit: false,
+      merge: false,
+      cleanup: true,
+      target_branch: 'main',
+    }));
+    expect(rejected.error?.code).toBe('WORK_CANCELLED_CLEANUP_UNSAFE');
+    expect(existsSync(worktreePath)).toBe(true);
+    expect(existsSync(join(worktreePath, 'uncommitted-output.txt'))).toBe(true);
+    expect(git(repoRoot, 'branch', '--list', branch)).toContain(branch);
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.status).toBe('cancelled');
+  });
+
+  test('cleanup-only finalize rejects a cancelled branch with an unintegrated commit', async () => {
+    const { repoRoot, controllerHome, repository, context } = fixture();
+    const ctx = context('session-cancelled-unintegrated-cleanup', 'controller-cancelled-unintegrated-cleanup');
+    structured(await callExecutionTool(ctx, 'session_start', {}));
+    structured(await callExecutionTool(ctx, 'session_bind_repository', { repo_id: repository.repoId }));
+    const prepared = structured(await callExecutionTool(ctx, 'work_prepare', {
+      repo_id: repository.repoId,
+      objective: 'Retain cancelled work with reviewable unintegrated output',
+      isolation: 'new_worktree',
+      request_id: 'prepare-cancelled-unintegrated-cleanup-work',
+    }));
+    const workId = String(prepared.work.workId);
+    const branch = String(prepared.work.branch);
+    const worktreePath = String(prepared.work.worktreePath);
+    writeFileSync(join(worktreePath, 'reviewable-output.txt'), 'must not be deleted');
+    git(worktreePath, 'add', 'reviewable-output.txt');
+    git(worktreePath, 'commit', '-m', 'retain reviewable cancelled output');
+    updateWorkContract({ controllerHome, repoId: repository.repoId }, workId, { status: 'cancelled' });
+
+    const rejected = structured(await callExecutionTool(ctx, 'work_finalize', {
+      repo_id: repository.repoId,
+      work_id: workId,
+      commit: false,
+      merge: false,
+      cleanup: true,
+      target_branch: 'main',
+    }));
+    expect(rejected.error?.code).toBe('WORK_CANCELLED_CLEANUP_UNSAFE');
+    expect(existsSync(worktreePath)).toBe(true);
+    expect(git(repoRoot, 'branch', '--list', branch)).toContain(branch);
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.status).toBe('cancelled');
   });
 
   test('finalize merges and cleans a precommitted managed branch without creating another commit', async () => {

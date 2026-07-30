@@ -18,7 +18,7 @@ import { classifyRepositoryCommand } from '../../../cli/repositories/command-cla
 import { ensureManagedWorkspace } from '../../workflow/campaigns/workspace';
 import { listControllerChecks } from '../../../cli/controller/check-runner';
 import { readRepositoryAccessPolicy } from '../../control-plane/governance/access-policy';
-import { createWorkContract, getWorkContract, updateWorkContract, appendVerificationRecord } from '../../control-plane/facade/work-contract-store';
+import { appendWorkEvidence, createWorkContract, getWorkContract, updateWorkContract, appendVerificationRecord } from '../../control-plane/facade/work-contract-store';
 import { isTerminalWorkContractStatus } from '../../control-plane/facade/types';
 import { claimControllerSession, getControllerSession, resumeControllerSession } from '../../control-plane/facade/controller-session-store';
 import { currentControllerInstanceId, requireExecutionSession, startExecutionSession, updateExecutionSession, type ExecutionSessionContext, type SessionIdentity } from '../../control-plane/execution/session-store';
@@ -729,35 +729,60 @@ function runCleanup(targetRoot: string, worktreePath: string): { ok: boolean; me
 }
 
 /**
- * Reconcile a stale Work Handle only for the narrow cleanup-only case where the
- * managed worktree is clean and its exact current HEAD is already reachable
- * from the requested target branch. This recovers after an operator or an older
- * controller committed/merged successfully but failed before recording stages.
+ * Reconcile a stale Work Handle only for a cleanup-only request whose exact
+ * branch HEAD is already reachable from the requested target branch.
+ *
+ * Two bounded recovery cases are supported:
+ * 1. an older controller committed/merged successfully but failed before
+ *    recording the finalization stages; and
+ * 2. a terminal cancelled WorkContract owns an unchanged, clean duplicate
+ *    worktree created by an idempotency defect.
+ *
+ * Missing worktrees are accepted only when this handle already recorded a
+ * successful worktree cleanup. This lets a retry finish branch cleanup after a
+ * crash without turning a missing checkout into proof of safety.
  */
 function cleanupOnlyMergedHead(
   ctx: MultiRepositoryMcpToolContext,
   current: WorkHandleState,
   args: Record<string, unknown>,
-): { currentHead: string } | undefined {
+): { currentHead: string; cancelledContract: boolean; worktreeMissing: boolean } | undefined {
   if (args.cleanup !== true || args.commit === true || args.merge === true || !current.managedWorktree) return undefined;
-  if (!existsSync(current.worktreePath)) return undefined;
+  const contract = contractFor(ctx, current);
+  const cancelledContract = contract?.status === 'cancelled';
+
   const repository = getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true });
-  const worktree = selectRepositoryCheckout(repository, current.checkoutId, { allowArchived: true });
-  if (!repositoryGitStatus(worktree).clean) return undefined;
-  const currentHead = gitHead(worktree.canonicalRoot);
-  if (!currentHead || currentHead === current.expectedHead) return undefined;
-  const currentBranch = spawnSync('git', ['-C', worktree.canonicalRoot, 'branch', '--show-current'], {
-    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
-  });
-  if (currentBranch.status !== 0 || String(currentBranch.stdout ?? '').trim() !== current.branch) return undefined;
   const target = selectRepositoryCheckout(repository, current.sourceCheckoutId ?? repository.activeCheckoutId);
   const targetBranch = typeof args.target_branch === 'string' && args.target_branch.trim()
     ? args.target_branch.trim()
     : repository.defaultBranch || 'main';
+  const branchHeadResult = spawnSync('git', ['-C', target.canonicalRoot, 'rev-parse', '--verify', `refs/heads/${current.branch}`], {
+    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
+  });
+  const currentHead = branchHeadResult.status === 0 ? String(branchHeadResult.stdout ?? '').trim() : '';
+  if (!currentHead) return undefined;
   const merged = spawnSync('git', ['-C', target.canonicalRoot, 'merge-base', '--is-ancestor', currentHead, targetBranch], {
     encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
   });
-  return merged.status === 0 ? { currentHead } : undefined;
+  if (merged.status !== 0) return undefined;
+
+  const worktreeMissing = !existsSync(current.worktreePath);
+  if (worktreeMissing) {
+    if (!cancelledContract || current.finalization.worktreeCleanup !== 'done') return undefined;
+    return { currentHead, cancelledContract, worktreeMissing: true };
+  }
+
+  const worktree = selectRepositoryCheckout(repository, current.checkoutId, { allowArchived: true });
+  if (!repositoryGitStatus(worktree).clean) return undefined;
+  const worktreeHead = gitHead(worktree.canonicalRoot);
+  if (!worktreeHead || worktreeHead !== currentHead) return undefined;
+  const currentBranch = spawnSync('git', ['-C', worktree.canonicalRoot, 'branch', '--show-current'], {
+    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
+  });
+  if (currentBranch.status !== 0 || String(currentBranch.stdout ?? '').trim() !== current.branch) return undefined;
+  if (current.expectedHead && currentHead === current.expectedHead && !cancelledContract) return undefined;
+  if (current.expectedHead && currentHead !== current.expectedHead && cancelledContract) return undefined;
+  return { currentHead, cancelledContract, worktreeMissing: false };
 }
 
 function resetFailedFinalizationStages(stages: WorkFinalizationStages, wants: { commit: boolean; merge: boolean; cleanup: boolean }): WorkFinalizationStages {
@@ -865,7 +890,15 @@ function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, u
     });
   if (gitAuthorization.decision !== 'allow') return { authorization: gitAuthorization, work: compactHandle(current), stages: current.finalization };
 
+  const contractAtStart = contractFor(ctx, current);
+  const cancelledCleanupRequested = contractAtStart?.status === 'cancelled'
+    && wants.cleanup
+    && !wants.commit
+    && !wants.merge;
   const cleanupReconciliation = cleanupOnlyMergedHead(ctx, current, args);
+  if (cancelledCleanupRequested && !cleanupReconciliation) {
+    throw new Error('WORK_CANCELLED_CLEANUP_UNSAFE: cancelled Work cleanup requires an unchanged clean managed worktree (or a previously recorded cleanup) and a branch HEAD already contained in the target branch');
+  }
   if (cleanupReconciliation) {
     current = transact('cleanup-reconcile-merged-head', (fresh) => writeWorkHandle(ctx.controllerHome, {
       ...fresh,
@@ -874,6 +907,8 @@ function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, u
       failureReason: undefined,
       finalization: {
         ...fresh.finalization,
+        validation: cleanupReconciliation.worktreeMissing ? 'done' : fresh.finalization.validation,
+        commit: fresh.finalization.commit === 'pending' ? 'skipped' : fresh.finalization.commit,
         merge: 'done',
         branchCleanup: args.delete_branch === false ? 'skipped' : 'pending',
         lastError: undefined,
@@ -955,25 +990,39 @@ function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, u
         return writeWorkHandle(ctx.controllerHome, { ...fresh, finalization: { ...fresh.finalization, worktreeCleanup: 'done', lastError: undefined } });
       });
     }
-    if (current.finalization.branchCleanup === 'pending' && current.finalization.merge === 'done') {
-      const target = selectRepositoryCheckout(getRepository(current.repositoryId, ctx.controllerHome), current.sourceCheckoutId ?? current.checkoutId);
-      const deleted = repositoryGitDeleteBranch(ctx.controllerHome, target, { branch: current.branch, force: false, authorizationDecision: gitAuthorization, sessionId: session.sessionId, principalId: session.principalId, workId: current.workId, goalId: current.goalId });
-      if (deleted.execution.authorizationDecision?.decision === 'user_confirmation_required') return { authorization: deleted.execution.authorizationDecision, work: compactHandle(current), stages: current.finalization };
-      if (deleted.execution.status !== 'executed' || deleted.execution.ok !== true) return failStage('branchCleanup', deleted.execution.stderr || 'feature branch cleanup failed');
-      current = transact('branch-cleanup-done', (fresh) => {
-        markRepositoryProjectionDirty(ctx.controllerHome, fresh.repositoryId, `cleanup:${fresh.workId}:branch`);
-        return writeWorkHandle(ctx.controllerHome, { ...fresh, finalization: { ...fresh.finalization, branchCleanup: 'done', lastError: undefined } });
-      });
-    }
   } else if (!wants.cleanup && current.finalization.worktreeCleanup === 'pending') {
     current = transact('worktree-cleanup-skipped', (fresh) => writeWorkHandle(ctx.controllerHome, { ...fresh, finalization: { ...fresh.finalization, worktreeCleanup: 'skipped' } }));
+  }
+
+  if (wants.cleanup && current.finalization.branchCleanup === 'pending' && current.finalization.merge === 'done') {
+    const target = selectRepositoryCheckout(getRepository(current.repositoryId, ctx.controllerHome), current.sourceCheckoutId ?? current.checkoutId);
+    const deleted = repositoryGitDeleteBranch(ctx.controllerHome, target, { branch: current.branch, force: false, authorizationDecision: gitAuthorization, sessionId: session.sessionId, principalId: session.principalId, workId: current.workId, goalId: current.goalId });
+    if (deleted.execution.authorizationDecision?.decision === 'user_confirmation_required') return { authorization: deleted.execution.authorizationDecision, work: compactHandle(current), stages: current.finalization };
+    if (deleted.execution.status !== 'executed' || deleted.execution.ok !== true) return failStage('branchCleanup', deleted.execution.stderr || 'feature branch cleanup failed');
+    current = transact('branch-cleanup-done', (fresh) => {
+      markRepositoryProjectionDirty(ctx.controllerHome, fresh.repositoryId, `cleanup:${fresh.workId}:branch`);
+      return writeWorkHandle(ctx.controllerHome, { ...fresh, finalization: { ...fresh.finalization, branchCleanup: 'done', lastError: undefined } });
+    });
   }
 
   const complete = finalizationComplete(current.finalization);
   if (complete) {
     const finalState = finalStateForStages(current.finalization, current.state);
     current = transact('complete', (fresh) => transitionWorkHandle(ctx.controllerHome, fresh, finalState, { finalization: current.finalization, failureReason: undefined }));
-    updateWorkContract({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId ?? current.workId, { status: 'completed' });
+    const completedContract = contractFor(ctx, current);
+    if (completedContract?.status === 'cancelled') {
+      appendWorkEvidence(
+        { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
+        completedContract.workId,
+        {
+          title: 'cancelled work cleanup completed',
+          summary: 'Controller verified terminal ownership, a clean or previously removed managed worktree, and a branch HEAD already contained in the target branch before deleting retained workspace references.',
+          detailLevel: 'summary',
+        },
+      );
+    } else {
+      updateWorkContract({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId ?? current.workId, { status: 'completed' });
+    }
     if (finalState === 'cleaned') {
       updateExecutionSession(ctx.controllerHome, identity, { activeWorkId: undefined, activeCheckoutId: current.sourceCheckoutId ?? session.activeCheckoutId });
     }
