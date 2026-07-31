@@ -1,0 +1,209 @@
+{
+  "schemaVersion": 5,
+  "id": "ISS-20260730-AE1BCC",
+  "title": "Establish the Repo Harness reliability and context convergence program",
+  "slug": "establish-the-repo-harness-reliability-and-context-convergence-p",
+  "kind": "governance",
+  "status": "in_progress",
+  "summary": "Canonical durable program anchor for the next Repo Harness reliability release line. The RC6 prerequisite was satisfied and released at exact green revision 2a48486b7b8c3395d05e4f30201e968ee88f9779; current origin/main has advanced to 809349d43b6583b4cfa22e55986f760f16380cb3. Result Issues: execution evidence ISS-20260730-A1EA53; Apple context/capability/release ISS-20260730-84CE88; non-permission tool-surface convergence ISS-20260730-B55445; bounded bug-reduction Shadow ISS-20260730-CCF211. Future sessions recover from these Issues, Tasks, WorkContracts, Completion Receipts, and repository documentation rather than chat history.",
+  "goals": [
+    "Persist one canonical program charter, dependency graph, invariants, acceptance gates, and cross-session continuation protocol.",
+    "Link four result Issues without duplicating the active RC6 release work or relying on the stale paused App Store Connect Campaign record.",
+    "Ensure every future implementation Task is resumable from stable IDs and follows one Task → one WorkContract → one isolated worktree → verification → commit → merge → cleanup.",
+    "Preserve the complete final scope, including Apple release orchestration and full Advanced/Full tool callability."
+  ],
+  "nonGoals": [
+    "Do not modify runtime implementation while RC6 is still being closed.",
+    "Do not introduce a second control plane or revive deprecated Campaign automation as the source of truth.",
+    "Do not reinterpret Core tool-surface reduction as a permission restriction or removal of underlying capabilities.",
+    "Do not launch broad parallel implementation from this governance Task."
+  ],
+  "acceptanceCriteria": [
+    "A repository-tracked Program Charter records the total goal, four result goals, mandatory RC6 gate, dependencies, non-goals, invariants, parallelism policy, and final acceptance criteria.",
+    "A repository-tracked Session Protocol gives copyable startup, coordinator, worker, interruption, handoff, merge, and cleanup procedures using stable IDs.",
+    "Four durable result Issues exist and are linked from this governance Issue and the charter.",
+    "The charter explicitly states Core is an architecture/exposure optimization only; Advanced and Full retain all stable callable tools and category-level E2E coverage.",
+    "The charter retains the complete Apple target: credential/profile/context resolution, Xcode capabilities, signing, archive/export/upload, processing, assets, TestFlight, metadata, and release orchestration.",
+    "The documentation change is committed, merged to main, and its temporary branch/worktree is removed without touching the dirty RC6 checkout."
+  ],
+  "relatedArtifacts": [
+    "ISS-20260729-BF2F89 (mandatory prerequisite)",
+    "ISS-20260730-A1EA53 (Result Goal 1: execution evidence)",
+    "ISS-20260730-84CE88 (Result Goal 2: Apple context/capability/release)",
+    "ISS-20260730-B55445 (Result Goal 3: Core/Advanced/Full without capability loss)",
+    "ISS-20260730-CCF211 (Result Goal 4: bug-reduction Shadow)",
+    "CMP-20260723-0FFA4F (stale paused projection; inspect/migrate only, never sole source)",
+    "docs/architecture/RELIABILITY-PROGRAM.md @ 25f40004c9f229b935fc649daaf68498eb4d4f06",
+    "docs/runbooks/RELIABILITY-SESSION-PROTOCOL.md @ 25f40004c9f229b935fc649daaf68498eb4d4f06",
+    "work_2705c12349124ed2b9b94950a427c31a (actual integration/cleanup complete; stale finalize projection retained as ISS-20260730-A1EA53 audit fixture)"
+  ],
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Publish the reliability program charter and cross-session protocol",
+      "objective": "Create canonical repository documentation that preserves the full program scope, issue dependency map, invariants, acceptance gates, and executable cross-session continuation procedure. This task is documentation/governance only.",
+      "status": "verified",
+      "dependsOn": [],
+      "allowedPaths": [
+        "docs/architecture/RELIABILITY-PROGRAM.md",
+        "docs/runbooks/RELIABILITY-SESSION-PROTOCOL.md"
+      ],
+      "forbiddenPaths": [
+        "src/**",
+        "tests/**",
+        "scripts/**",
+        "tasks/lessons.md",
+        ".repo-harness/**"
+      ],
+      "checks": [
+        "docs"
+      ],
+      "acceptanceCriteria": [
+        "Both documents exist and cross-reference this governance Issue, the active RC6 gate, and all four result Issues.",
+        "The documents contain no credentials or secrets.",
+        "The documents clearly distinguish tool exposure architecture from permissions.",
+        "The temporary worktree and branch are cleaned after merge."
+      ],
+      "risk": "low",
+      "notes": [
+        "Required verification evidence passed; a completion receipt remains required before completion. Ignored unregistered check id(s): docs. Invalid check ids are verification infrastructure metadata, not actual check failures."
+      ],
+      "runIds": [],
+      "createdAt": "2026-07-30T09:27:15.715Z",
+      "updatedAt": "2026-07-30T09:44:47.014Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "verification": {
+        "integratedRevision": "25f40004c9f229b935fc649daaf68498eb4d4f06",
+        "reviewer": "ChatGPT",
+        "checkResults": [],
+        "commandEvidence": [
+          {
+            "command": [
+              "git",
+              "diff",
+              "--check",
+              "--",
+              "docs/architecture/RELIABILITY-PROGRAM.md",
+              "docs/runbooks/RELIABILITY-SESSION-PROTOCOL.md"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "No whitespace errors.",
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-30T09:44:47.010Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "npm",
+              "run",
+              "check:public-docs"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "Public documentation check passed.",
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-30T09:44:47.010Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "python3",
+              "-c",
+              "assert program and protocol contain all stable Issue IDs, permission/exposure invariants, complete Apple scope, and secret-redaction rules"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "reliability docs contract OK",
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-30T09:44:47.010Z",
+            "source": "reported"
+          }
+        ],
+        "acceptanceResults": [
+          {
+            "criterion": "Both documents exist and cross-reference this governance Issue, the active RC6 gate, and all four result Issues.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Integrated revision 25f40004 adds docs/architecture/RELIABILITY-PROGRAM.md and docs/runbooks/RELIABILITY-SESSION-PROTOCOL.md; structural assertion checked ISS-20260730-AE1BCC, ISS-20260729-BF2F89, ISS-20260730-A1EA53, ISS-20260730-84CE88, ISS-20260730-B55445, and ISS-20260730-CCF211 in both documents."
+          },
+          {
+            "criterion": "The documents contain no credentials or secrets.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "The new files contain policy and identifiers only; they explicitly prohibit private keys, passwords, cookies, session tokens, and raw secrets. Diff was limited to the two declared Markdown paths."
+          },
+          {
+            "criterion": "The documents clearly distinguish tool exposure architecture from permissions.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "The charter and protocol explicitly state that Core/Advanced/Full are exposure profiles, not permission tiers, and require Advanced/Full capability retention plus invocation E2E."
+          },
+          {
+            "criterion": "The temporary worktree and branch are cleaned after merge.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Feature commit 25f40004 was fast-forwarded to local main using clean checkout checkout_60a6da28cb11fcd617d282b0; feature branch was deleted and checkout lifecycle is removed after worktree cleanup."
+          }
+        ],
+        "verifiedAt": "2026-07-30T09:44:47.010Z",
+        "autoCompleted": false,
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
+    },
+    {
+      "id": "T2",
+      "title": "Reconcile repository Issue snapshots and delivery receipt after RC6",
+      "objective": "After ISS-20260729-BF2F89 reaches a clean integrated terminal revision, regenerate or copy the five controller Issue snapshots into the repository from durable controller state, commit only those exact snapshot paths, and reconcile the verified governance delivery with a complete receipt. Do not depend on the currently untracked copies in the dirty RC6 checkout and do not mix unrelated RC6 changes.",
+      "status": "running",
+      "dependsOn": [
+        "T1"
+      ],
+      "allowedPaths": [
+        "tasks/issues/ISS-20260730-AE1BCC-*.issue.json",
+        "tasks/issues/ISS-20260730-AE1BCC-*.issue.md",
+        "tasks/issues/ISS-20260730-A1EA53-*.issue.json",
+        "tasks/issues/ISS-20260730-A1EA53-*.issue.md",
+        "tasks/issues/ISS-20260730-84CE88-*.issue.json",
+        "tasks/issues/ISS-20260730-84CE88-*.issue.md",
+        "tasks/issues/ISS-20260730-B55445-*.issue.json",
+        "tasks/issues/ISS-20260730-B55445-*.issue.md",
+        "tasks/issues/ISS-20260730-CCF211-*.issue.json",
+        "tasks/issues/ISS-20260730-CCF211-*.issue.md"
+      ],
+      "forbiddenPaths": [
+        "src/**",
+        "tests/**",
+        "scripts/**",
+        "README*",
+        "docs/**",
+        "tasks/lessons.md"
+      ],
+      "checks": [],
+      "acceptanceCriteria": [
+        "RC6 is terminal, merged, and its exact integration revision is recorded before this Task edits the repository.",
+        "All five snapshot pairs are regenerated from current durable Issue state or byte-compared against it; stale untracked files are not trusted blindly.",
+        "Only the ten declared Issue snapshot files are committed and integrated.",
+        "The governance delivery has a complete receipt that references revision 25f40004c9f229b935fc649daaf68498eb4d4f06 plus the snapshot integration revision.",
+        "No unrelated dirty RC6 changes are staged, committed, reverted, or cleaned.",
+        "The temporary branch/worktree is removed after integration."
+      ],
+      "risk": "low",
+      "notes": [
+        "Blocked until RC6 issue ISS-20260729-BF2F89 is terminal, merged, cleaned, and its exact revision is recorded. Current Git facts: local main=25f40004c9f229b935fc649daaf68498eb4d4f06, origin/main=69c65e8156615f1cde8f4db8e715f2b86e6e348e. The source RC6 checkout contains untracked generated Issue snapshot files mixed with unrelated active RC6 work; do not stage, delete, or trust them blindly. Regenerate from durable controller Issues in a new isolated worktree after the gate.",
+        "RC6 prerequisite is satisfied. Exact released gate revision: 2a48486b7b8c3395d05e4f30201e968ee88f9779, tagged v1.4.0-rc.6 after local release-readiness/full CI and exact-SHA Linux CI + Windows smoke passed; Wiki and repository governance were synchronized. Current origin/main has advanced to 809349d43b6583b4cfa22e55986f760f16380cb3. This Task is now restoring/regenerating only the ten declared Program Issue snapshot files from Controller-readable durable state; unrelated WIP copies are not trusted or committed."
+      ],
+      "runIds": [],
+      "createdAt": "2026-07-30T09:45:53.509Z",
+      "updatedAt": "2026-07-31T00:03:42.573Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    }
+  ],
+  "createdAt": "2026-07-30T09:27:15.715Z",
+  "updatedAt": "2026-07-31T00:05:37.341Z",
+  "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+}

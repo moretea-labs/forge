@@ -1,0 +1,277 @@
+{
+  "schemaVersion": 5,
+  "id": "ISS-20260730-B55445",
+  "title": "Converge Core, Advanced, and Full tool surfaces without capability loss",
+  "slug": "converge-core-advanced-and-full-tool-surfaces-without-capability",
+  "kind": "feature",
+  "status": "planned",
+  "summary": "Result Goal 3 of ISS-20260730-AE1BCC for the next reliability release line. The RC6 gate was satisfied at exact released revision 2a48486b7b8c3395d05e4f30201e968ee88f9779. T1 is ready to establish one authoritative stable/compatibility/experimental/retired tool inventory and freeze Core/Advanced/Full exposure invariants without changing permissions or removing callable capabilities. Final rh_work and E2E stages depend on the evidence and context foundations.",
+  "goals": [
+    "Create one authoritative tool inventory and exposure classification for Core, Advanced, and Full.",
+    "Shrink Core to a small model-friendly facade without deleting or permission-gating underlying capabilities.",
+    "Guarantee all stable typed tools remain callable through Advanced/Full and that Core omissions return explicit capability/routing guidance.",
+    "Run a dual-connector Shadow period and switch defaults only after measured correctness, latency, payload, and fallback gates pass."
+  ],
+  "nonGoals": [
+    "Do not use tool exposure profiles as a replacement for authorization or repository access policy.",
+    "Do not remove stable typed tools merely to reduce Core schema size.",
+    "Do not force specialist iOS, Browser, ASC, Git, Campaign, Agent, Recovery, or runtime workflows through an impoverished generic facade.",
+    "Do not switch the default Connector before Shadow criteria are met.",
+    "Do not duplicate tool registries in CLI, Gateway, tests, and documentation."
+  ],
+  "acceptanceCriteria": [
+    "A single authoritative inventory generates or validates profile membership, schemas, documentation, snapshots, and fingerprints.",
+    "Core remains intentionally small; Advanced contains every stable typed capability; Full is a superset for compatibility and maintenance.",
+    "Core hidden tools are distinguishable from permission denied and return unsupported_in_core with required capability, reason, and Advanced route where applicable.",
+    "Category-level invocation E2E proves Advanced/Full tools are actually callable, not merely present in tools/list.",
+    "Core facade E2E proves ordinary repository work remains correct and specialist tasks route without capability loss.",
+    "Core, Advanced, and Full expose distinct stable fingerprints and satisfy Full >= Advanced > Core.",
+    "Dual Connector Shadow collects correctness, tool-selection, fallback, payload, latency, and unsupported-route metrics before any default switch.",
+    "Existing authorization, strong confirmation, resource claims, secret handling, and remote-write gates behave identically across profiles."
+  ],
+  "relatedArtifacts": [
+    "ISS-20260730-AE1BCC",
+    "ISS-20260729-BF2F89 (mandatory runtime gate)",
+    "ISS-20260730-A1EA53 (required before final Core work/finalize schema)",
+    "ISS-20260730-84CE88 (ContextRequirements inform specialist routing)",
+    "docs/architecture/RELIABILITY-PROGRAM.md"
+  ],
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Establish the authoritative tool inventory and exposure invariants",
+      "objective": "After RC6 is clean, inventory all registered stable, compatibility, experimental, and retired tools; identify every duplicated membership source; define generation/validation rules, profile fingerprints, and capability categories without changing runtime exposure yet.",
+      "status": "ready",
+      "dependsOn": [],
+      "allowedPaths": [
+        "src/cli/mcp/**",
+        "src/runtime/gateway/mcp/**",
+        "src/mcp/**",
+        "tests/**",
+        "docs/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [
+        "typecheck",
+        "test"
+      ],
+      "acceptanceCriteria": [
+        "RC6 terminal merged revision is recorded.",
+        "Every currently callable stable tool has one canonical identity and capability category.",
+        "Core/Advanced/Full invariants and permission-independence are represented as machine tests.",
+        "Retired tools are explicitly classified rather than silently disappearing."
+      ],
+      "risk": "readonly",
+      "notes": [
+        "Controller-enforced external gate. Unblock to ready only after ISS-20260729-BF2F89 is terminal, integrated, cleaned, and its exact revision has been recorded. Tool-surface work remains an exposure/schema optimization and must not alter permissions or stable capability availability.",
+        "RC6 external gate is satisfied at exact released revision 2a48486b7b8c3395d05e4f30201e968ee88f9779; current origin/main is 809349d43b6583b4cfa22e55986f760f16380cb3. Start with read-only authoritative inventory and invariant freezing only. Tool exposure profiles remain architecture/schema choices, never permission tiers; all stable Advanced/Full capability categories must remain callable and later receive category-level invocation E2E."
+      ],
+      "runIds": [],
+      "createdAt": "2026-07-30T09:30:38.098Z",
+      "updatedAt": "2026-07-31T00:04:33.853Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T2",
+      "title": "Implement the bounded Core exposure profile",
+      "objective": "Create the minimal Core profile around rh_access, rh_status, rh_inbox, rh_context, rh_work, session binding, bounded search/read, and safe patching while preserving Advanced and Full registries.",
+      "status": "planned",
+      "dependsOn": [
+        "T1"
+      ],
+      "allowedPaths": [
+        "src/cli/mcp/**",
+        "src/runtime/gateway/mcp/**",
+        "src/mcp/**",
+        "tests/**",
+        "docs/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [
+        "typecheck",
+        "test"
+      ],
+      "acceptanceCriteria": [
+        "Core target is 5–7 facade tools and does not exceed 10 without a documented gate exception.",
+        "Advanced still exposes all stable typed tools and Full preserves compatibility/maintenance tools.",
+        "Profile selection does not alter authorization decisions or underlying action policy.",
+        "Profile fingerprints and tools/list snapshots are deterministic."
+      ],
+      "risk": "medium",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-30T09:30:38.098Z",
+      "updatedAt": "2026-07-30T09:30:38.098Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T3",
+      "title": "Add explicit Core-to-Advanced capability routing",
+      "objective": "For capabilities intentionally absent from Core, return structured unsupported_in_core guidance with required capability, why specialist routing is needed, and the Advanced entry point; ensure specialist prompts can select Advanced directly.",
+      "status": "planned",
+      "dependsOn": [
+        "T2"
+      ],
+      "allowedPaths": [
+        "src/runtime/control-plane/facade/**",
+        "src/runtime/gateway/mcp/**",
+        "src/cli/mcp/**",
+        "tests/**",
+        "docs/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [
+        "typecheck",
+        "test"
+      ],
+      "acceptanceCriteria": [
+        "Unsupported Core actions never masquerade as permission denial or missing installation.",
+        "Every stable Advanced capability category has a tested discovery/routing path from Core context.",
+        "No generic facade bypasses strong typed schemas for high-risk specialist actions.",
+        "Fallback is bounded and observable."
+      ],
+      "risk": "medium",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-30T09:30:38.098Z",
+      "updatedAt": "2026-07-30T09:30:38.098Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T4",
+      "title": "Converge the Core rh_work schema on evidence and context contracts",
+      "objective": "After the execution-evidence baseline and action ContextRequirements are stable, simplify rh_work inputs/outputs while preserving objective, acceptance, path, check, evidence, approval, recovery, and context-resolution references needed for safe continuation.",
+      "status": "planned",
+      "dependsOn": [
+        "T3"
+      ],
+      "allowedPaths": [
+        "src/runtime/control-plane/facade/**",
+        "src/runtime/gateway/mcp/**",
+        "src/cli/mcp/**",
+        "tests/**",
+        "docs/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [
+        "typecheck",
+        "test"
+      ],
+      "acceptanceCriteria": [
+        "Core schema size drops materially without hiding state required for trustworthy completion.",
+        "A new session can continue from Core output using stable Work and context references.",
+        "Specialist fields remain in typed Advanced actions instead of being flattened into rh_work.",
+        "Compatibility callers receive deterministic migration behavior."
+      ],
+      "risk": "medium",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-30T09:30:38.098Z",
+      "updatedAt": "2026-07-30T09:30:38.098Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T5",
+      "title": "Prove Core ordinary flows and Advanced category callability",
+      "objective": "Build E2E suites for Core session/context/search/read/patch/work/verify/finalize flows and category-level Advanced/Full invocation for repository, Git, Agent, Campaign/legacy migration, Recovery, runtime, iOS, Browser, ASC, and plugin actions.",
+      "status": "planned",
+      "dependsOn": [
+        "T4"
+      ],
+      "allowedPaths": [
+        "tests/**",
+        "scripts/**",
+        "docs/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [
+        "typecheck",
+        "test",
+        "ci"
+      ],
+      "acceptanceCriteria": [
+        "Tests invoke representative tools in every stable capability category.",
+        "All tools required for final Apple and reliability work remain callable.",
+        "Core facade flows complete with evidence and cleanup rather than tools/list-only assertions.",
+        "Permission and authorization results match across exposure profiles."
+      ],
+      "risk": "medium",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-30T09:30:38.098Z",
+      "updatedAt": "2026-07-30T09:30:38.098Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T6",
+      "title": "Run dual-connector Shadow with measurable fallback",
+      "objective": "Operate Core and Advanced connectors side by side, keep Advanced as the default, collect schema payload, latency, tool-selection correctness, unsupported routes, fallback frequency, task success, and capability-loss signals, and document rollback.",
+      "status": "planned",
+      "dependsOn": [
+        "T5"
+      ],
+      "allowedPaths": [
+        "src/cli/**",
+        "src/runtime/**",
+        "scripts/**",
+        "tests/**",
+        "docs/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [
+        "typecheck",
+        "test",
+        "ci"
+      ],
+      "acceptanceCriteria": [
+        "Shadow cannot delete or disable Advanced/Full.",
+        "Metrics distinguish Core design gaps from permissions, plugin readiness, and task failures.",
+        "Fallback to Advanced is explicit, bounded, and succeeds for representative specialist tasks.",
+        "Rollback to Advanced-only requires no state migration."
+      ],
+      "risk": "medium",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-30T09:30:38.098Z",
+      "updatedAt": "2026-07-30T09:30:38.098Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T7",
+      "title": "Decide and verify the default Core cutover",
+      "objective": "Use predeclared Shadow thresholds to accept, defer, or reject Core as the default model-facing connector; verify no capability loss and retain Advanced/Full escape paths.",
+      "status": "planned",
+      "dependsOn": [
+        "T6"
+      ],
+      "allowedPaths": [
+        "src/cli/**",
+        "src/runtime/**",
+        "scripts/**",
+        "tests/**",
+        "docs/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [
+        "typecheck",
+        "test",
+        "ci"
+      ],
+      "acceptanceCriteria": [
+        "Default changes only when success, fallback, latency, payload, and capability-callability gates pass.",
+        "A failed gate leaves Advanced as default without partial cutover.",
+        "Release notes and runbooks explain Core versus Advanced versus Full without describing them as permission tiers.",
+        "All implementation worktrees are merged and cleaned."
+      ],
+      "risk": "medium",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-30T09:30:38.098Z",
+      "updatedAt": "2026-07-30T09:30:38.098Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    }
+  ],
+  "createdAt": "2026-07-30T09:30:38.098Z",
+  "updatedAt": "2026-07-31T00:06:19.010Z",
+  "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+}

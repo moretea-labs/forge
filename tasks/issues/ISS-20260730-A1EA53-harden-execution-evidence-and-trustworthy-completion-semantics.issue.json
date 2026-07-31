@@ -1,0 +1,228 @@
+{
+  "schemaVersion": 5,
+  "id": "ISS-20260730-A1EA53",
+  "title": "Harden execution evidence and trustworthy completion semantics",
+  "slug": "harden-execution-evidence-and-trustworthy-completion-semantics",
+  "kind": "feature",
+  "status": "planned",
+  "summary": "Result Goal 1 of ISS-20260730-AE1BCC for the next reliability release line. The RC6 gate was satisfied at exact released revision 2a48486b7b8c3395d05e4f30201e968ee88f9779; T1 is ready to audit current WorkContract, Evidence Plane, finalize, merge, cleanup, and recovery behavior. The audit must preserve work_2705c12349124ed2b9b94950a427c31a as a real stale-finalization and receipt-recovery fixture before implementation begins.",
+  "goals": [
+    "Introduce explicit WorkKind, DispatchState, and EvidenceState semantics with backward-compatible migration.",
+    "Bind validation and completion to the exact source revision and current repository state.",
+    "Produce a machine-readable Completion Receipt covering mutation, checks, commit, merge, cleanup, no-change outcomes, and remaining risks.",
+    "Make interrupted-session recovery idempotent and evidence-driven."
+  ],
+  "nonGoals": [
+    "Do not create an autonomous planning brain or a parallel execution state model.",
+    "Do not treat agent prose as sufficient completion evidence.",
+    "Do not block legitimate completed_no_change outcomes when they are proven.",
+    "Do not begin runtime modification before ISS-20260729-BF2F89 reaches a clean terminal and merged baseline."
+  ],
+  "acceptanceCriteria": [
+    "Legacy WorkContract records remain readable and migrate deterministically.",
+    "A changed result cannot finalize without current-revision mutation, check, commit/integration, and cleanup evidence required by its contract.",
+    "A no-change result has a distinct, auditable completion path that proves the objective was already satisfied.",
+    "Stale or contradictory evidence prevents final completion and produces actionable recovery state.",
+    "A new session can resume a Work by stable ID without depending on chat history.",
+    "Focused and regression tests cover success, no-change, interruption, retry, stale evidence, failed check, failed merge, and cleanup recovery."
+  ],
+  "relatedArtifacts": [
+    "ISS-20260730-AE1BCC",
+    "ISS-20260729-BF2F89 (mandatory gate)",
+    "docs/architecture/RELIABILITY-PROGRAM.md"
+  ],
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Audit current Work completion state and freeze the evidence contract",
+      "objective": "After RC6 is merged, map current WorkContract, ExecutionJob, Evidence Plane, finalize, merge, cleanup, and recovery behavior; record the minimal compatible data-model and migration contract before implementation.",
+      "status": "ready",
+      "dependsOn": [],
+      "allowedPaths": [
+        "docs/**",
+        "src/runtime/control-plane/facade/**",
+        "src/runtime/workflow/**",
+        "tests/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [
+        "typecheck"
+      ],
+      "acceptanceCriteria": [
+        "RC6 gate is verified complete and the source revision is recorded.",
+        "The design reuses existing WorkContract and Evidence Plane rather than adding a parallel control plane.",
+        "Required migration, no-change, stale-evidence, and recovery semantics are explicit."
+      ],
+      "risk": "readonly",
+      "notes": [
+        "Concrete audit fixture observed while solidifying the program on 2026-07-30: Work work_2705c12349124ed2b9b94950a427c31a validated and committed revision 25f40004c9f229b935fc649daaf68498eb4d4f06. Its first work_finalize merge attempt correctly refused the dirty RC6 source checkout. The same feature commit was then fast-forwarded to local main through clean checkout checkout_60a6da28cb11fcd617d282b0, the feature branch was deleted, and the managed worktree was removed. However the WorkContract retained merge=failed / branchCleanup=pending and could not produce the complete Delivery Receipt required by accept_task. Use this as a regression/audit case for exact Git fact reconciliation, idempotent staged finalization, manually completed integration detection, and receipt recovery. The invalid blank rh_work verification check is infrastructure metadata, not a product check failure.",
+        "External gate: do not launch until RC6 issue ISS-20260729-BF2F89 is terminal, merged, cleaned, and its exact integration revision is recorded. Once satisfied, a coordinator may set this Task back to ready. Preserve the work_2705c12349124ed2b9b94950a427c31a stale-finalization audit fixture when the audit begins.",
+        "Controller-enforced external gate. Unblock to ready only after ISS-20260729-BF2F89 is terminal, integrated, cleaned, and its exact revision has been recorded in the program artifacts.",
+        "RC6 external gate is satisfied at exact released revision 2a48486b7b8c3395d05e4f30201e968ee88f9779; current origin/main is 809349d43b6583b4cfa22e55986f760f16380cb3. Begin with a read-only audit and preserve work_2705c12349124ed2b9b94950a427c31a as the required stale-finalization / receipt-recovery fixture. Do not implement broad runtime changes before the evidence contract is frozen."
+      ],
+      "runIds": [],
+      "createdAt": "2026-07-30T09:28:07.844Z",
+      "updatedAt": "2026-07-31T00:03:56.890Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T2",
+      "title": "Add explicit work, dispatch, and evidence state semantics with migration",
+      "objective": "Implement WorkKind, DispatchState, EvidenceState, versioned persistence, and deterministic backward-compatible reads for existing Work records.",
+      "status": "planned",
+      "dependsOn": [
+        "T1"
+      ],
+      "allowedPaths": [
+        "src/runtime/control-plane/**",
+        "src/runtime/workflow/**",
+        "src/runtime/persistence/**",
+        "tests/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [
+        "typecheck",
+        "test"
+      ],
+      "acceptanceCriteria": [
+        "Old records load without destructive rewrite.",
+        "State transitions are validated and impossible combinations fail closed.",
+        "Failed migration does not overwrite known-good durable state."
+      ],
+      "risk": "medium",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-30T09:28:07.844Z",
+      "updatedAt": "2026-07-30T09:28:07.844Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T3",
+      "title": "Bind verification and Completion Receipts to the exact revision",
+      "objective": "Record exact-revision check evidence and emit a Completion Receipt that traces objective, acceptance criteria, mutation/no-change proof, checks, commit, integration, cleanup, and residual risk.",
+      "status": "planned",
+      "dependsOn": [
+        "T2"
+      ],
+      "allowedPaths": [
+        "src/runtime/control-plane/**",
+        "src/runtime/evidence/**",
+        "src/runtime/workflow/**",
+        "tests/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [
+        "typecheck",
+        "test"
+      ],
+      "acceptanceCriteria": [
+        "Check evidence identifies source revision and verification inputs.",
+        "A later repository mutation makes earlier completion evidence stale.",
+        "Receipt fields are bounded, redacted, and machine-readable."
+      ],
+      "risk": "medium",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-30T09:28:07.844Z",
+      "updatedAt": "2026-07-30T09:28:07.844Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T4",
+      "title": "Gate finalize for changed and no-change outcomes",
+      "objective": "Update finalize so changed work and completed_no_change use distinct evidence gates; record failed commit, merge, or cleanup as resumable non-terminal stages.",
+      "status": "planned",
+      "dependsOn": [
+        "T3"
+      ],
+      "allowedPaths": [
+        "src/runtime/control-plane/**",
+        "src/runtime/workflow/**",
+        "src/runtime/git/**",
+        "tests/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [
+        "typecheck",
+        "test"
+      ],
+      "acceptanceCriteria": [
+        "Changed work cannot report complete before required integration and cleanup stages.",
+        "No-change completion requires objective-specific proof.",
+        "Retrying finalize is idempotent and resumes from the last durable stage."
+      ],
+      "risk": "medium",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-30T09:28:07.844Z",
+      "updatedAt": "2026-07-30T09:28:07.844Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T5",
+      "title": "Harden cross-session recovery and continuation handoff",
+      "objective": "Ensure work_get, work_inspect, status digests, continuation prompts, and repair paths expose enough bounded evidence for a new session to continue safely.",
+      "status": "planned",
+      "dependsOn": [
+        "T4"
+      ],
+      "allowedPaths": [
+        "src/runtime/control-plane/**",
+        "src/runtime/gateway/**",
+        "src/cli/**",
+        "tests/**",
+        "docs/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [
+        "typecheck",
+        "test"
+      ],
+      "acceptanceCriteria": [
+        "A fresh session can distinguish running, blocked, stale, integration-pending, cleanup-pending, completed, and completed_no_change.",
+        "Continuation output contains stable IDs and next safe action, not hidden chat assumptions.",
+        "No secrets or unbounded logs enter handoff payloads."
+      ],
+      "risk": "medium",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-30T09:28:07.844Z",
+      "updatedAt": "2026-07-30T09:28:07.844Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T6",
+      "title": "Run execution-evidence regression and failure-injection coverage",
+      "objective": "Validate success, no-change, interruption, retry, stale evidence, contradictory evidence, failed checks, failed merge, cleanup recovery, and legacy migration across focused and full checks.",
+      "status": "planned",
+      "dependsOn": [
+        "T5"
+      ],
+      "allowedPaths": [
+        "tests/**",
+        "scripts/**",
+        "docs/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [
+        "typecheck",
+        "test",
+        "ci"
+      ],
+      "acceptanceCriteria": [
+        "All focused tests pass at the final revision.",
+        "Full CI passes or any unrelated infrastructure failure is isolated with evidence.",
+        "The Issue has a final Completion Receipt and all temporary worktrees are removed."
+      ],
+      "risk": "medium",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-30T09:28:07.844Z",
+      "updatedAt": "2026-07-30T09:28:07.844Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    }
+  ],
+  "createdAt": "2026-07-30T09:28:07.844Z",
+  "updatedAt": "2026-07-31T00:05:52.183Z",
+  "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+}
