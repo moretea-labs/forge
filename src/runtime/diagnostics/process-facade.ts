@@ -123,7 +123,7 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
   /** Internal test/embedding override; MCP callers use the fixed 16KiB budget. */
   inlineMaxBytes?: number;
 }): Promise<Record<string, unknown>> {
-  const { entry, cwd } = runtimeCliEntry();
+  const { entry } = runtimeCliEntry();
   const semanticArgs = diagnosticArguments(input.args);
   const encodedArgs = Buffer.from(JSON.stringify(semanticArgs), 'utf8').toString('base64url');
   const returnHandleImmediately = input.args.apply_mode === 'async';
@@ -170,7 +170,10 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
         '--args-base64',
         encodedArgs,
       ],
-      cwd,
+      // The executable entry may live in the repo-harness runtime source tree,
+      // but execution ownership belongs to the selected repository checkout.
+      // Keeping cwd inside that checkout preserves fail-closed route identity.
+      cwd: input.repository.canonicalRoot,
     },
     interactiveWaitMs,
     timeoutMs,
