@@ -21,6 +21,7 @@ import {
   openSync,
   readFileSync,
   readSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -152,13 +153,24 @@ function sanitizeTerminalProcessArtifacts(record: ManagedProcessRecord): Managed
   }, { allowTerminal: true }) ?? record;
 }
 
+function canonicalizeCommandCwd(cwd: string | undefined): string | null {
+  if (!cwd) return null;
+  try {
+    // Align request-id fingerprints with pre-spawn execution-identity realpath
+    // so callers that claim before spawn do not conflict after cwd normalization.
+    return realpathSync(cwd);
+  } catch {
+    return cwd;
+  }
+}
+
 function canonicalProcessCommand(command: SpawnManagedProcessInput['command']): Record<string, unknown> {
   return {
     kind: command.kind,
     executable: command.executable ?? null,
     args: command.args ?? [],
     shellCommand: command.shellCommand ?? null,
-    cwd: command.cwd,
+    cwd: canonicalizeCommandCwd(command.cwd),
     env: command.env
       ? Object.fromEntries(Object.entries(command.env).sort(([left], [right]) => left.localeCompare(right)))
       : null,
