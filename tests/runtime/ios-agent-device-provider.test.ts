@@ -847,6 +847,71 @@ describe('optional agent-device iOS Simulator provider', () => {
     expect((retried.interaction as Record<string, unknown>).status).toBe('closed');
   });
 
+  it('treats exact provider SESSION_NOT_FOUND as an idempotent close and releases ownership', async () => {
+    const value = fixture();
+    readyIosTooling();
+    let providerSessionExists = true;
+    setIosAgentDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
+        if (args[0] === 'devices') return { ok: true, status: 0, stdout: success({ devices: [device('SIM-1', 'iPhone 17 Pro', 'simulator', true)] }), stderr: '', command: [command, ...args] };
+        if (args[0] === 'close' && !providerSessionExists) {
+          return {
+            ok: false,
+            status: 1,
+            stdout: JSON.stringify({ success: false, error: { code: 'SESSION_NOT_FOUND', message: 'No active session' } }),
+            stderr: '',
+            command: [command, ...args],
+          };
+        }
+        return { ok: true, status: 0, stdout: success(), stderr: '', command: [command, ...args] };
+      },
+    });
+
+    const opened = await executeIosPluginAction(pluginInput(value, 'agent_device_open', { app: 'App', device: 'SIM-1' }));
+    const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
+    providerSessionExists = false;
+    const closed = await executeIosPluginAction(pluginInput(value, 'agent_device_close', { interaction_id: interactionId }));
+
+    expect(closed.providerAlreadyAbsent).toBe(true);
+    expect((closed.interaction as Record<string, unknown>).status).toBe('closed');
+    expect(readInteractionSession(value.repoRoot, 'ios-simulator', interactionId)?.status).toBe('closed');
+    const reopened = await executeIosPluginAction(pluginInput(value, 'agent_device_open', { app: 'App', device: 'SIM-1' }));
+    expect((reopened.interaction as Record<string, unknown>).status).toBe('waiting_for_user');
+  });
+
+  it('terminalizes an expired interaction when the exact provider session is already absent', async () => {
+    const value = fixture();
+    readyIosTooling();
+    let now = new Date('2026-07-19T11:00:00.000Z');
+    setIosAgentDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      now: () => now,
+      runCommand: (command, args) => {
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
+        if (args[0] === 'devices') return { ok: true, status: 0, stdout: success({ devices: [device('SIM-1', 'iPhone 17 Pro', 'simulator', true)] }), stderr: '', command: [command, ...args] };
+        if (args[0] === 'close') {
+          return {
+            ok: false,
+            status: 1,
+            stdout: JSON.stringify({ success: false, error: { code: 'SESSION_NOT_FOUND', message: 'No active session' } }),
+            stderr: '',
+            command: [command, ...args],
+          };
+        }
+        return { ok: true, status: 0, stdout: success(), stderr: '', command: [command, ...args] };
+      },
+    });
+
+    const opened = await executeIosPluginAction(pluginInput(value, 'agent_device_open', { app: 'App', device: 'SIM-1' }));
+    const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
+    now = new Date('2026-07-19T14:00:00.000Z');
+    await expect(executeIosPluginAction(pluginInput(value, 'agent_device_snapshot', { interaction_id: interactionId })))
+      .rejects.toThrow('AGENT_DEVICE_SESSION_EXPIRED');
+    expect(readInteractionSession(value.repoRoot, 'ios-simulator', interactionId)?.status).toBe('failed');
+  });
+
   it('closes and terminalizes an expired session before allowing further use', async () => {
     const value = fixture();
     readyIosTooling();

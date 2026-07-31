@@ -553,12 +553,26 @@ function requireRecord(input: AssistantPluginActionExecutionInput, allowTerminal
   return record;
 }
 
+function providerErrorCode(result: CommandResult): string | undefined {
+  try {
+    const parsed = JSON.parse(result.stdout.trim()) as { error?: { code?: unknown } };
+    return typeof parsed.error?.code === 'string' ? parsed.error.code : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function providerSessionAlreadyAbsent(result: CommandResult): boolean {
+  return providerErrorCode(result) === 'SESSION_NOT_FOUND';
+}
+
 function bestEffortClose(input: AssistantPluginActionExecutionInput, record: InteractionSessionRecord): boolean {
   const result = hooks.runCommand(executable(), ['close', '--session', record.sessionId, '--platform', 'ios', '--json'], {
     cwd: input.repoRoot,
     timeoutMs: 30_000,
     env: sessionEnv(input, record),
   });
+  if (providerSessionAlreadyAbsent(result)) return true;
   if (!result.ok) return false;
   try {
     const parsed = JSON.parse(result.stdout.trim()) as { success?: unknown };
@@ -566,6 +580,34 @@ function bestEffortClose(input: AssistantPluginActionExecutionInput, record: Int
   } catch {
     return true;
   }
+}
+
+async function closeProviderSession(
+  input: AssistantPluginActionExecutionInput,
+  record: InteractionSessionRecord,
+  args: string[],
+): Promise<{ result: Record<string, unknown>; providerAlreadyAbsent: boolean }> {
+  const commandResult = await hooks.runCommandAsync(executable(), [
+    ...args,
+    '--session', record.sessionId,
+    '--platform', 'ios',
+    '--json',
+  ], {
+    cwd: input.repoRoot,
+    timeoutMs: effectiveCommandTimeout(input, 60_000),
+    env: sessionEnv(input, record),
+    signal: input.signal,
+  });
+  if (providerSessionAlreadyAbsent(commandResult)) {
+    return {
+      providerAlreadyAbsent: true,
+      result: { success: true, data: { alreadyClosed: true, providerCode: 'SESSION_NOT_FOUND' } },
+    };
+  }
+  return {
+    providerAlreadyAbsent: false,
+    result: parseJsonResult(commandResult, 'AGENT_DEVICE_CLOSE_FAILED'),
+  };
 }
 
 function reconcileExpiredSessions(input: AssistantPluginActionExecutionInput): void {
@@ -1731,13 +1773,14 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
         if (current.provider === SIMULATOR_PROVIDER && input.args.shutdown_simulator === true) args.push('--shutdown');
         patchInteractionSession(input.repoRoot, current.provider, current.interactionId, { status: 'closing' });
         try {
-          const result = await runJsonAsync(input, [...args, '--session', current.sessionId, '--platform', 'ios', '--json'], {
-            record: current,
-            timeoutMs: 60_000,
-            failureCode: 'AGENT_DEVICE_CLOSE_FAILED',
-          });
+          const closedProvider = await closeProviderSession(input, current, args);
           const closed = patchInteractionSession(input.repoRoot, current.provider, current.interactionId, { status: 'closed' }) ?? current;
-          return { provider: 'agent-device', interaction: closed, result: bounded(result) };
+          return {
+            provider: 'agent-device',
+            interaction: closed,
+            result: bounded(closedProvider.result),
+            providerAlreadyAbsent: closedProvider.providerAlreadyAbsent,
+          };
         } catch (error) {
           return failSession(input, current, error);
         }
