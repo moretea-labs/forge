@@ -4,7 +4,7 @@
   "title": "Complete live Browser Attach reliability and validation recovery",
   "slug": "complete-live-browser-attach-reliability-and-validation-recovery",
   "kind": "bug",
-  "status": "in_progress",
+  "status": "done",
   "summary": "Finish the incomplete Browser Attach work by repairing the Node CDP bridge early-exit failure and the Work validation lifecycle inconsistency, then prove live Chrome attach, existing-tab reuse, login-state reuse, restart recovery, stale endpoint handling, and safe disconnect semantics on the exact integrated runtime.",
   "goals": [
     "Repair PLUGIN_BROWSER_NODE_EXITED with bounded redacted diagnostics",
@@ -34,7 +34,7 @@
       "id": "T1",
       "title": "Repair Browser Node CDP bridge and live attach proof",
       "objective": "Inspect the exact merged browser Node bridge implementation and release layout, reproduce PLUGIN_BROWSER_NODE_EXITED, fix the first causal bootstrap/import/protocol/packaging defect, add bounded redacted phase diagnostics and focused regressions, then prove live loopback Chrome attach, existing-tab reuse, login-state reuse, disconnect safety, restart rebind, and stale endpoint fallback/fail-closed behavior.",
-      "status": "verified",
+      "status": "done",
       "dependsOn": [],
       "allowedPaths": [
         "src/runtime/plugins/**",
@@ -65,11 +65,13 @@
         "Verification evidence failed: One or more executed checks or reported commands failed.",
         "The implementation and live Browser attach proof are already present. The prior verification was rejected because package:check:type became stale across a repository revision and the runtime subsequently entered an incomplete-release incident. The active runtime is now healthy at 4808fc3cd2a4d75d65b427c0d54458366d31c3aa. Re-running all declared checks on the current exact revision before recording acceptance.",
         "Required verification evidence passed; a completion receipt remains required before completion.",
-        "Required verification evidence passed; a completion receipt remains required before completion."
+        "Required verification evidence passed; a completion receipt remains required before completion.",
+        "Explicit human acceptance after verificationStatus=passed. This post-hoc Task has no original Run; reconcile a safe historical remote_no_change_execution completion receipt against reachable integrated revision 4808fc3.",
+        "Targeted safe reconciliation recorded completion receipt REC-reconciled-1fb819aed10df4db."
       ],
       "runIds": [],
       "createdAt": "2026-07-31T00:12:34.718Z",
-      "updatedAt": "2026-07-31T01:48:57.709Z",
+      "updatedAt": "2026-07-31T02:03:28.411Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56",
       "verification": {
         "integratedRevision": "4808fc3cd2a4d75d65b427c0d54458366d31c3aa",
@@ -147,14 +149,40 @@
         ],
         "verifiedAt": "2026-07-31T01:48:57.704Z",
         "autoCompleted": false,
-        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+        "completionReceipt": {
+          "schemaVersion": 1,
+          "receiptId": "REC-reconciled-1fb819aed10df4db",
+          "source": "remote_no_change_execution",
+          "issueId": "ISS-20260731-B28C97",
+          "taskId": "T1",
+          "targetBranch": "main",
+          "targetRevision": "4808fc3cd2a4d75d65b427c0d54458366d31c3aa",
+          "sourceRevision": "4808fc3cd2a4d75d65b427c0d54458366d31c3aa",
+          "changedPaths": [],
+          "delivery": {
+            "kind": "commit",
+            "status": "integrated",
+            "strategy": "remote",
+            "reachable": true,
+            "recordedAt": "2026-07-31T02:03:28.405Z"
+          },
+          "cleanup": {
+            "status": "complete",
+            "warnings": [],
+            "blockers": [],
+            "recordedAt": "2026-07-31T02:03:28.405Z"
+          },
+          "verifiedAt": "2026-07-31T01:48:57.704Z",
+          "recordedAt": "2026-07-31T02:03:28.405Z"
+        }
       }
     },
     {
       "id": "T2",
       "title": "Repair Work validation lifecycle convergence",
       "objective": "Reproduce and fix the Controller defect where work_validate marks finalization failed while a check process is still running, leaves Work stuck validating, and may make the Work unavailable through work_wait/work_get. Preserve durable idempotency and do not fabricate successful validation. Add focused lifecycle/recovery tests.",
-      "status": "verified",
+      "status": "done",
       "dependsOn": [],
       "allowedPaths": [
         "src/runtime/control-plane/**",
@@ -185,11 +213,13 @@
         "Verification evidence failed: One or more executed checks or reported commands failed.",
         "A concurrent automatic verification reused evidence bound to pre-ledger revision 4808fc3c and correctly marked it stale after main advanced to c54c54d0. The implementation and live validation lifecycle proof remain present. Re-running all declared checks on current exact main c54c54d0436068b10031a31756b56421d2e9375d, then recording acceptance without fabricating success.",
         "Verification evidence failed: One or more executed checks or reported commands failed.",
-        "Required verification evidence passed; a completion receipt remains required before completion."
+        "Required verification evidence passed; a completion receipt remains required before completion.",
+        "Explicit human acceptance after verificationStatus=passed. This post-hoc Task has no original Run; reconcile a safe historical remote_no_change_execution completion receipt against reachable integrated revision c54c54d0.",
+        "Targeted safe reconciliation recorded completion receipt REC-reconciled-549b5f434c739fc4."
       ],
       "runIds": [],
       "createdAt": "2026-07-31T00:12:34.718Z",
-      "updatedAt": "2026-07-31T01:55:27.444Z",
+      "updatedAt": "2026-07-31T02:03:28.448Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56",
       "verification": {
         "integratedRevision": "c54c54d0436068b10031a31756b56421d2e9375d",
@@ -260,11 +290,37 @@
         ],
         "verifiedAt": "2026-07-31T01:55:27.437Z",
         "autoCompleted": false,
-        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+        "completionReceipt": {
+          "schemaVersion": 1,
+          "receiptId": "REC-reconciled-549b5f434c739fc4",
+          "source": "remote_no_change_execution",
+          "issueId": "ISS-20260731-B28C97",
+          "taskId": "T2",
+          "targetBranch": "main",
+          "targetRevision": "c54c54d0436068b10031a31756b56421d2e9375d",
+          "sourceRevision": "c54c54d0436068b10031a31756b56421d2e9375d",
+          "changedPaths": [],
+          "delivery": {
+            "kind": "commit",
+            "status": "integrated",
+            "strategy": "remote",
+            "reachable": true,
+            "recordedAt": "2026-07-31T02:03:28.444Z"
+          },
+          "cleanup": {
+            "status": "complete",
+            "warnings": [],
+            "blockers": [],
+            "recordedAt": "2026-07-31T02:03:28.444Z"
+          },
+          "verifiedAt": "2026-07-31T01:55:27.437Z",
+          "recordedAt": "2026-07-31T02:03:28.444Z"
+        }
       }
     }
   ],
   "createdAt": "2026-07-31T00:12:34.718Z",
-  "updatedAt": "2026-07-31T01:55:27.444Z",
+  "updatedAt": "2026-07-31T02:03:28.448Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }
