@@ -14,7 +14,7 @@ import {
   type ActiveSlotAuthority,
   type RuntimeSlotId,
 } from '../../cli/controller/runtime-slots';
-import { readControllerDaemonStatus } from '../control-plane/daemon-client';
+import { readControllerDaemonStatus, type ControllerDaemonStatus } from '../control-plane/daemon-client';
 import { readRuntimeGeneration } from '../control-plane/runtime-generation';
 import { createSupervisorControlServer, type SupervisorControlServerHandle, type SupervisorControlHandlers } from './control-server';
 import { createStableIngressProcess, type StableIngressProcessHandle } from './ingress-process';
@@ -119,6 +119,50 @@ export function supervisorGatewayOperational(
 export function supervisorGatewayRuntimeReady(runtime: McpRuntimeState | null | undefined): boolean {
   return runtime?.server.healthy === true
     && (runtime.status === 'running' || runtime.status === 'degraded');
+}
+
+function readinessBoundaryMs(managed: SupervisorManagedProcess, notBeforeMs?: number): number | undefined {
+  if (Number.isFinite(notBeforeMs)) return Math.max(0, Math.trunc(notBeforeMs!));
+  const parsed = Date.parse(managed.processStartTime);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function timestampMatchesManagedLaunch(value: string | undefined, boundaryMs: number | undefined): boolean {
+  if (boundaryMs === undefined) return true;
+  if (!value) return false;
+  const parsed = Date.parse(value);
+  // OS process start timestamps may have one-second precision. Keep a bounded
+  // tolerance while still rejecting state left by a prior slot occupant.
+  return Number.isFinite(parsed) && parsed >= boundaryMs - 1_000;
+}
+
+export function supervisorManagedDaemonReady(
+  status: ControllerDaemonStatus,
+  managed: SupervisorManagedProcess,
+  notBeforeMs?: number,
+): boolean {
+  if (status.status !== 'ready' || status.degraded === true) return false;
+  if (status.pid !== managed.pid) return false;
+  if (status.instanceId !== managed.instanceId) return false;
+  if (status.ownerEpoch !== managed.ownerEpoch) return false;
+  if (managed.slot && status.slot !== managed.slot) return false;
+  if (managed.generation && status.generation !== managed.generation) return false;
+  if (managed.releaseRevision && status.source?.commit !== managed.releaseRevision) return false;
+  return timestampMatchesManagedLaunch(status.startedAt, readinessBoundaryMs(managed, notBeforeMs));
+}
+
+export function supervisorManagedGatewayReady(
+  runtime: McpRuntimeState | null | undefined,
+  managed: SupervisorManagedProcess,
+  notBeforeMs?: number,
+): boolean {
+  if (!supervisorGatewayRuntimeReady(runtime)) return false;
+  if (managed.generation
+    && (runtime?.generation !== managed.generation || runtime.server.generation !== managed.generation)) return false;
+  if (managed.releaseRevision && runtime?.source?.commit !== managed.releaseRevision) return false;
+  const boundaryMs = readinessBoundaryMs(managed, notBeforeMs);
+  return timestampMatchesManagedLaunch(runtime?.startedAt, boundaryMs)
+    && timestampMatchesManagedLaunch(runtime?.updatedAt, boundaryMs);
 }
 
 export function supervisorMonitorFailureDecision(
@@ -1327,16 +1371,17 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     manager: SupervisorProcessManager,
     component: SupervisorComponentName,
     managed: SupervisorManagedProcess,
-    timeoutMs = 60_000,
+    options: { timeoutMs?: number; notBeforeMs?: number } = {},
   ): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
+    const deadline = Date.now() + (options.timeoutMs ?? 60_000);
     while (Date.now() < deadline) {
       if (manager.observe(managed) === 'alive') {
         if (component === 'controllerDaemon') {
-          if (readControllerDaemonStatus(managed.controllerHome).status === 'ready') return;
+          const status = readControllerDaemonStatus(managed.controllerHome);
+          if (supervisorManagedDaemonReady(status, managed, options.notBeforeMs)) return;
         } else {
           const runtime = loadMcpServiceRuntimeState(managed.controllerHome, this.options.repoRoot);
-          if (supervisorGatewayRuntimeReady(runtime)) return;
+          if (supervisorManagedGatewayReady(runtime, managed, options.notBeforeMs)) return;
         }
       }
       await sleep(250);
@@ -1357,12 +1402,14 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     let daemon: SupervisorManagedProcess | undefined;
     let gateway: SupervisorManagedProcess | undefined;
     try {
+      const daemonNotBeforeMs = Date.now();
       const daemonSpawned = await prepared.manager.startDaemon();
       daemon = processState(daemonSpawned);
-      await this.waitForManagedReady(prepared.manager, 'controllerDaemon', daemon);
+      await this.waitForManagedReady(prepared.manager, 'controllerDaemon', daemon, { notBeforeMs: daemonNotBeforeMs });
+      const gatewayNotBeforeMs = Date.now();
       const gatewaySpawned = await prepared.manager.startGateway();
       gateway = processState(gatewaySpawned);
-      await this.waitForManagedReady(prepared.manager, 'gatewayHost', gateway);
+      await this.waitForManagedReady(prepared.manager, 'gatewayHost', gateway, { notBeforeMs: gatewayNotBeforeMs });
       const generation = readRuntimeGeneration(daemon.controllerHome)?.generation ?? daemon.generation;
       const sourceCommit = readRuntimeGeneration(daemon.controllerHome)?.source.commit;
       const gatewayRuntime = loadMcpServiceRuntimeState(gateway.controllerHome, this.options.repoRoot);
@@ -1558,10 +1605,12 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     let daemon: SupervisorManagedProcess | undefined;
     let gateway: SupervisorManagedProcess | undefined;
     try {
+      const daemonNotBeforeMs = Date.now();
       daemon = processState(await input.manager.startDaemon(), input.controllerDaemon);
-      await this.waitForManagedReady(input.manager, 'controllerDaemon', daemon);
+      await this.waitForManagedReady(input.manager, 'controllerDaemon', daemon, { notBeforeMs: daemonNotBeforeMs });
+      const gatewayNotBeforeMs = Date.now();
       gateway = processState(await input.manager.startGateway(), input.gatewayHost);
-      await this.waitForManagedReady(input.manager, 'gatewayHost', gateway);
+      await this.waitForManagedReady(input.manager, 'gatewayHost', gateway, { notBeforeMs: gatewayNotBeforeMs });
       const generation = readRuntimeGeneration(daemon.controllerHome)?.generation ?? daemon.generation;
       const gatewayRuntime = loadMcpServiceRuntimeState(gateway.controllerHome, this.options.repoRoot);
       if (!generation || generation !== input.generation) {
@@ -2082,10 +2131,10 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       if (managed && this.managerForManaged(managed).observe(managed) === 'alive') {
         if (component === 'controllerDaemon') {
           const daemon = readControllerDaemonStatus(managed.controllerHome);
-          if (daemon.status === 'ready') return;
+          if (supervisorManagedDaemonReady(daemon, managed)) return;
         } else {
           const runtime = loadMcpServiceRuntimeState(managed.controllerHome, this.options.repoRoot);
-          if (supervisorGatewayRuntimeReady(runtime)) return;
+          if (supervisorManagedGatewayReady(runtime, managed)) return;
         }
       }
       await sleep(250);

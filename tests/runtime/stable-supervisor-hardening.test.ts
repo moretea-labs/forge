@@ -13,7 +13,7 @@ import { createStableIngressRouter } from '../../src/runtime/supervisor/ingress-
 import { createStableIngressProcess } from '../../src/runtime/supervisor/ingress-process';
 import { controllerDaemonMaxLifetimeMs, controllerDaemonPassiveMode, publishReadyAfterStartupRecovery, resolveControllerDaemonShutdownReason } from '../../src/runtime/control-plane/daemon-entry';
 import { createSupervisorOperation, readSupervisorOperation, updateSupervisorOperation } from '../../src/runtime/supervisor/operation-store';
-import { StableSupervisorRuntime, SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_MONITOR_FAILURE_THRESHOLD, automaticRecoveryRequestId, combinedRolloutRollbackFailure, managedProcessNeedsReleaseRefresh, observeCutoverCandidateWithSingleRecovery, observeCutoverReadinessWindow, sampleCutoverReadiness, probeAuthenticatedMcpReadiness, probeSupervisorGatewayHealth, reconcileActiveManagedGenerations, reconcilePendingSupervisorActivations, reconcileSupervisorStateWithAuthority, recoverableCutoverObservationFailure, recoverableWriterClaimRefreshFailure, refreshWriterClaimWithSingleRetry, resumableInterruptedRollout, supervisorGatewayHealthDecision, supervisorGatewayOperational, supervisorGatewayRuntimeReady, supervisorIngressHealthDecision, supervisorMonitorFailureDecision, supervisorOperationRecoverySuppressed, terminalizeInterruptedSupervisorOperations } from '../../src/runtime/supervisor/supervisor-runtime';
+import { StableSupervisorRuntime, SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_MONITOR_FAILURE_THRESHOLD, automaticRecoveryRequestId, combinedRolloutRollbackFailure, managedProcessNeedsReleaseRefresh, observeCutoverCandidateWithSingleRecovery, observeCutoverReadinessWindow, sampleCutoverReadiness, probeAuthenticatedMcpReadiness, probeSupervisorGatewayHealth, reconcileActiveManagedGenerations, reconcilePendingSupervisorActivations, reconcileSupervisorStateWithAuthority, recoverableCutoverObservationFailure, recoverableWriterClaimRefreshFailure, refreshWriterClaimWithSingleRetry, resumableInterruptedRollout, supervisorGatewayHealthDecision, supervisorGatewayOperational, supervisorGatewayRuntimeReady, supervisorIngressHealthDecision, supervisorManagedDaemonReady, supervisorManagedGatewayReady, supervisorMonitorFailureDecision, supervisorOperationRecoverySuppressed, terminalizeInterruptedSupervisorOperations } from '../../src/runtime/supervisor/supervisor-runtime';
 import { decideRestart, newRestartBudgetRecord, recordFailure, recordRestart, recordStable } from '../../src/runtime/supervisor/restart-policy';
 import { SupervisorProcessManager, runtimeWriterEnvironment, supervisorProcessStopAuditPath } from '../../src/runtime/supervisor/process-manager';
 import { ensureMcpControllerHomeBearerToken, writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
@@ -583,6 +583,59 @@ describe('Stable Supervisor production hardening', () => {
     expect(supervisorGatewayRuntimeReady({ status: 'running', server: { healthy: true } } as any)).toBe(true);
     expect(supervisorGatewayRuntimeReady({ status: 'degraded', server: { healthy: false } } as any)).toBe(false);
     expect(supervisorGatewayRuntimeReady({ status: 'starting', server: { healthy: true } } as any)).toBe(false);
+
+    const managed = {
+      pid: 42001,
+      instanceId: 'gateway-current',
+      processStartTime: '2026-07-31T10:00:00.000Z',
+      executableFingerprint: 'gateway-fingerprint',
+      controllerHome: '/tmp/controller/green',
+      slot: 'green',
+      generation: 'generation-current',
+      releaseRevision: 'release-current',
+      ownerEpoch: 77,
+      state: 'running',
+      restartCount: 0,
+      consecutiveFailures: 0,
+    } satisfies SupervisorManagedProcess;
+    const currentRuntime = {
+      status: 'running',
+      startedAt: '2026-07-31T10:00:01.000Z',
+      updatedAt: '2026-07-31T10:00:02.000Z',
+      generation: 'generation-current',
+      source: { commit: 'release-current' },
+      server: { healthy: true, generation: 'generation-current' },
+    } as any;
+    expect(supervisorManagedGatewayReady(currentRuntime, managed, Date.parse('2026-07-31T10:00:00.000Z'))).toBe(true);
+    expect(supervisorManagedGatewayReady({
+      ...currentRuntime,
+      startedAt: '2026-07-31T09:00:00.000Z',
+      updatedAt: '2026-07-31T09:00:01.000Z',
+    }, managed, Date.parse('2026-07-31T10:00:00.000Z'))).toBe(false);
+    expect(supervisorManagedGatewayReady({
+      ...currentRuntime,
+      source: { commit: 'release-stale' },
+    }, managed, Date.parse('2026-07-31T10:00:00.000Z'))).toBe(false);
+    expect(supervisorManagedGatewayReady({
+      ...currentRuntime,
+      generation: 'generation-stale',
+    }, managed, Date.parse('2026-07-31T10:00:00.000Z'))).toBe(false);
+
+    const daemonReady = {
+      schemaVersion: 1,
+      status: 'ready',
+      pid: managed.pid,
+      startedAt: '2026-07-31T10:00:01.000Z',
+      instanceId: managed.instanceId,
+      ownerEpoch: managed.ownerEpoch,
+      slot: managed.slot,
+      generation: managed.generation,
+      source: { commit: managed.releaseRevision },
+    } as any;
+    expect(supervisorManagedDaemonReady(daemonReady, managed, Date.parse('2026-07-31T10:00:00.000Z'))).toBe(true);
+    expect(supervisorManagedDaemonReady({ ...daemonReady, pid: 41999 }, managed)).toBe(false);
+    expect(supervisorManagedDaemonReady({ ...daemonReady, instanceId: 'daemon-stale' }, managed)).toBe(false);
+    expect(supervisorManagedDaemonReady({ ...daemonReady, ownerEpoch: 76 }, managed)).toBe(false);
 
     const invalidBody = await listen((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/plain' });
