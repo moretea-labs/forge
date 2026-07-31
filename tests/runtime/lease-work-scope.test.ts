@@ -48,6 +48,24 @@ describe('checkout and Work-scoped execution leases', () => {
     expect(listActiveLeases(controllerHome, 'repo-a')).toHaveLength(0);
   });
 
+  test('rejects checkout or repository scope spoofing even with the correct owner and fencing token', () => {
+    const controllerHome = home();
+    const acquired = acquireExecutionLeases(controllerHome, 'repo-a', 'process:scoped', [claim('co-a', 'work-a')], 30_000);
+    expect(acquired.acquired).toBe(true);
+
+    for (const forged of [
+      acquired.leases.map((lease) => ({ ...lease, checkoutId: 'co-b' })),
+      acquired.leases.map((lease) => ({ ...lease, repoId: 'repo-b' })),
+    ]) {
+      expect(() => renewExecutionLeases(controllerHome, 'repo-a', 'process:scoped', 30_000, forged)).toThrow(/FENCING_TOKEN_STALE/);
+      releaseExecutionLeases(controllerHome, 'repo-a', 'process:scoped', forged);
+      expect(listActiveLeases(controllerHome, 'repo-a')).toHaveLength(1);
+    }
+
+    releaseExecutionLeases(controllerHome, 'repo-a', 'process:scoped', acquired.leases);
+    expect(listActiveLeases(controllerHome, 'repo-a')).toHaveLength(0);
+  });
+
   test('checkout-distinct workspaces do not block each other but the same checkout does', () => {
     const controllerHome = home();
     const first = acquireExecutionLeases(controllerHome, 'repo-a', 'process:a', [claim('co-a', 'work-a')], 30_000);
