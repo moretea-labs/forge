@@ -77,6 +77,7 @@ const WAZA_RAW_BASE_URL = "https://raw.githubusercontent.com/tw93/Waza/main";
 const WAZA_MANAGED_SKILLS = ["think", "hunt", "check", "health"];
 const WAZA_SHARED_RULES = ["anti-patterns.md", "chinese.md", "durable-context.md", "english.md"];
 const CODEX_AUTOMATION_SKILLS = ["health", "check", "mermaid"];
+const SKILLS_CLI_TIMEOUT_MS = 5000;
 const CODEGRAPH_PACKAGE = "@colbymchenry/codegraph";
 const CODEGRAPH_GLOBAL_INSTALL_COMMAND = `bun add -g ${CODEGRAPH_PACKAGE} && repo-harness tools configure codegraph --target codex --location global`;
 const GBRAIN_INSTALL_COMMAND = "bun install -g github:garrytan/gbrain";
@@ -704,7 +705,7 @@ function detectWaza() {
   const skillLock = readJson(skillLockPath);
   const skillsBin = resolvePathCommand("skills");
   const skillsResult = skillsBin
-    ? run(skillsBin, ["ls", "-g", "--json"], { timeoutMs: 1500 })
+    ? run(skillsBin, ["ls", "-g", "--json"], { timeoutMs: SKILLS_CLI_TIMEOUT_MS })
     : { ok: false, status: null, stdout: "", stderr: "", error: "skills CLI is not installed", timed_out: false };
   const skillItems = skillsResult.ok ? parseJson(skillsResult.stdout) || [] : [];
   const wazaEntries = Object.entries(skillLock?.skills || {}).filter(([, meta]) => meta?.source === WAZA_SOURCE_REPO);

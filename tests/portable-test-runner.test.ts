@@ -3,6 +3,11 @@ import { spawnSync } from "child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import {
+  classifyClosedChildProcessGroup,
+  cleanupClosedChildProcessGroup,
+  type ClosedChildProcessGroupOperations,
+} from "../scripts/run-bun-test-file";
 
 const ROOT = join(import.meta.dir, "..");
 const TEST_FILE_RUNNER = join(ROOT, "scripts", "run-bun-test-file.ts");
@@ -50,6 +55,59 @@ describe("portable test runner", () => {
 
     expect(script).toContain('exec bun test --timeout "$test_timeout_ms" --max-concurrency "$test_max_concurrency" "$@"');
     expect(script).not.toContain('exec bun test --isolate "$@"');
+  });
+
+  test("classifies a closed child process group without crossing a reused PID fence", () => {
+    expect(classifyClosedChildProcessGroup(undefined, true, false)).toBe("gone");
+    expect(classifyClosedChildProcessGroup(42, false, false)).toBe("gone");
+    expect(classifyClosedChildProcessGroup(42, true, false)).toBe("owned_residual");
+    expect(classifyClosedChildProcessGroup(42, true, true)).toBe("pid_reused");
+  });
+
+  test("does not inspect or signal a process group after the closed child PID is reused", async () => {
+    let listCalls = 0;
+    let terminateCalls = 0;
+    const operations: ClosedChildProcessGroupOperations = {
+      processGroupExists: () => true,
+      isProcessAlive: () => true,
+      listProcessTreeMembers: () => {
+        listCalls += 1;
+        return [42, 43];
+      },
+      terminateProcessTree: async () => {
+        terminateCalls += 1;
+        return { pid: 42, signaled: true, escalated: false, exited: true, remainingPids: [] };
+      },
+    };
+
+    const result = await cleanupClosedChildProcessGroup(42, "reused-pid.test.ts", 0, operations);
+
+    expect(result).toEqual({ exitCode: 0, lingeringPids: [], remainingPids: [] });
+    expect(listCalls).toBe(0);
+    expect(terminateCalls).toBe(0);
+  });
+
+  test("keeps cleanup fail-closed when an owned residual process group survives termination", async () => {
+    let groupProbeCount = 0;
+    let terminateCalls = 0;
+    const operations: ClosedChildProcessGroupOperations = {
+      processGroupExists: () => {
+        groupProbeCount += 1;
+        return true;
+      },
+      isProcessAlive: () => false,
+      listProcessTreeMembers: () => [42, 43, 44],
+      terminateProcessTree: async () => {
+        terminateCalls += 1;
+        return { pid: 42, signaled: true, escalated: true, exited: false, remainingPids: [44] };
+      },
+    };
+
+    const result = await cleanupClosedChildProcessGroup(42, "leaky.test.ts", 0, operations);
+
+    expect(groupProbeCount).toBe(2);
+    expect(terminateCalls).toBe(1);
+    expect(result).toEqual({ exitCode: 1, lingeringPids: [43, 44], remainingPids: [44] });
   });
 
   test("reaps descendants left behind by one test file before returning", () => {

@@ -363,6 +363,47 @@ describe("check-agent-tooling", () => {
     }
   }, 15000);
 
+  test("allows one bounded slow read-only skills inventory probe under host load", () => {
+    const envRoot = setupFakeEnvironment("check-agent-tooling-slow-skills");
+    try {
+      mkdirSync(join(envRoot.home, ".codex"), { recursive: true });
+      writeFileSync(join(envRoot.home, ".codex", "config.toml"), "[mcp_servers.codegraph]\ncommand = \"codegraph\"\n");
+      writeExecutable(
+        join(envRoot.fakeBin, "skills"),
+        [
+          "#!/bin/bash",
+          "set -euo pipefail",
+          "sleep 2",
+          "if [[ \"$*\" == \"ls -g --json\" ]]; then",
+          "  echo '[]'",
+          "  exit 0",
+          "fi",
+          "exit 1",
+          "",
+        ].join("\n")
+      );
+      writeFakeGbrain(envRoot.fakeBin);
+      writeFakeCodeGraph(envRoot.fakeBin);
+
+      const res = spawnSync("bash", [SCRIPT, "--json", "--host", "codex"], {
+        cwd: ROOT,
+        encoding: "utf-8",
+        env: {
+          ...process.env,
+          HOME: envRoot.home,
+          PATH: `${envRoot.fakeBin}:${process.env.PATH ?? ""}`,
+          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
+        },
+      });
+
+      expect(res.status).toBe(0);
+      const report = JSON.parse(res.stdout);
+      expect(report.runtime_capabilities.skills_cli.status).toBe("available");
+    } finally {
+      rmSync(envRoot.root, { recursive: true, force: true });
+    }
+  }, 20000);
+
   test("keeps gbrain warning when fast doctor reports a real warning", () => {
     const envRoot = setupFakeEnvironment("check-agent-tooling-gbrain-warning");
     try {

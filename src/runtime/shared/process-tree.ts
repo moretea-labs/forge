@@ -61,20 +61,28 @@ export function isProcessAlive(pid: number | undefined): boolean {
   return isProcessStatAlive(stat);
 }
 
+export function parseProcessGroupMembersPosix(output: string, processGroupId: number): number[] {
+  return output
+    .split('\n')
+    .map((line) => /^\s*(\d+)\s+(\d+)\s+(\S+)/.exec(line))
+    .filter((match): match is RegExpExecArray => Boolean(match))
+    .filter((match) => Number.parseInt(match[2], 10) === processGroupId)
+    .filter((match) => isProcessStatAlive(match[3]))
+    .map((match) => Number.parseInt(match[1], 10))
+    .filter((pid) => Number.isInteger(pid) && pid > 0);
+}
+
 function listProcessGroupMembersPosix(processGroupId: number): number[] {
   try {
-    const output = execFileSync('ps', ['-o', 'pid=', '-o', 'stat=', '-g', String(processGroupId)], {
+    // BSD/macOS `ps -g` selects a real group ID rather than a process-group ID
+    // and can therefore return most processes owned by the current user. Read
+    // the bounded process table and filter the explicit PGID column instead.
+    const output = execFileSync('ps', ['-axo', 'pid=,pgid=,stat='], {
       encoding: 'utf8',
       timeout: 2_000,
       maxBuffer: 256 * 1024,
     });
-    return output
-      .split('\n')
-      .map((line) => /^\s*(\d+)\s+(\S+)/.exec(line))
-      .filter((match): match is RegExpExecArray => Boolean(match))
-      .filter((match) => isProcessStatAlive(match[2]))
-      .map((match) => Number.parseInt(match[1], 10))
-      .filter((pid) => Number.isInteger(pid) && pid > 0);
+    return parseProcessGroupMembersPosix(output, processGroupId);
   } catch {
     return [];
   }
