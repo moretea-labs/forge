@@ -2,7 +2,7 @@
 
 Status: active program charter  
 Program anchor: `ISS-20260730-AE1BCC`  
-Repository: `repo_123b7cf58b6b17b5cbe46a56` (`repo-harness-controller-runtime`)  
+Public repository: `moretea-labs/matea` (select its registered Controller repository at runtime)  
 Mandatory implementation gate: `ISS-20260729-BF2F89` (RC6 release closeout)  
 Last structural update: 2026-07-30
 
@@ -238,7 +238,7 @@ The following should not be developed concurrently against the same base without
 
 At the start of every coordination session:
 
-1. Start and bind a repo-harness session explicitly to `repo_123b7cf58b6b17b5cbe46a56`.
+1. Start and bind a repo-harness session explicitly to the registered Controller repository for `moretea-labs/matea`.
 2. Read this charter and `docs/runbooks/RELIABILITY-SESSION-PROTOCOL.md`.
 3. Read `ISS-20260730-AE1BCC`, all four result Issues, the RC6 gate Issue, the project board, recent Work, active Runs, edit sessions, and repository status.
 4. Treat controller state and repository state as authoritative even when the prompt contains older IDs or statuses.

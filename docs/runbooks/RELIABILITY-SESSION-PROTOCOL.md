@@ -1,8 +1,8 @@
 # Reliability Program Cross-Session Protocol
 
 Program anchor: `ISS-20260730-AE1BCC`  
-Repository ID: `repo_123b7cf58b6b17b5cbe46a56`  
-Default source repository: `repo-harness-controller-runtime`  
+Public repository: `moretea-labs/matea`  
+Controller repository: select the registered repository identity at runtime  
 Canonical charter: `docs/architecture/RELIABILITY-PROGRAM.md`
 
 ## 1. Why this protocol exists
@@ -29,7 +29,7 @@ Every new session performing repository work must execute the equivalent of:
 
 ```text
 1. session_start
-2. session_bind_repository(repo_123b7cf58b6b17b5cbe46a56, explicit checkout when known)
+2. session_bind_repository(<REGISTERED_REPOSITORY_ID>, explicit checkout when known)
 3. controller_context for the requested scope
 4. read docs/architecture/RELIABILITY-PROGRAM.md
 5. read this protocol
@@ -206,7 +206,7 @@ Use this contract in a new ChatGPT session. It intentionally tells the session t
 ```text
 Use repo-harness6 to continue the Repo Harness Reliability and Context Convergence Program.
 
-Repository ID: repo_123b7cf58b6b17b5cbe46a56
+Repository ID: <REGISTERED_REPOSITORY_ID>
 Program Issue: ISS-20260730-AE1BCC
 Mandatory RC6 gate: ISS-20260729-BF2F89
 Result Issues:
@@ -235,7 +235,7 @@ Replace only the bracketed fields.
 ```text
 Use repo-harness6 to execute exactly one Task in the Repo Harness Reliability and Context Convergence Program.
 
-Repository ID: repo_123b7cf58b6b17b5cbe46a56
+Repository ID: <REGISTERED_REPOSITORY_ID>
 Program Issue: ISS-20260730-AE1BCC
 Result Issue: [ISSUE_ID]
 Task: [TASK_ID]
