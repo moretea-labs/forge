@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { createHash } from 'crypto';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { getAgentJob, getAgentJobEvents, getAgentJobLog, listAgentJobs } from '../agent-jobs/job-manager';
@@ -11,6 +12,7 @@ import { inspectProjectGovernance, reconcileProjectGovernance } from '../control
 import { prepareCodexContinuation } from '../controller/codex-continuation';
 import { applyStuckStateMigration, inspectStuckControllerStates } from '../controller/stuck-state-migration';
 import { assessWorkMode } from '../controller/work-mode';
+import { runControllerCheck, snapshotControllerCheck } from '../controller/check-runner';
 import { finalizeEditSession, getEditSession, getEditSessionDiff, listEditSessions, rollbackEditSession, verifyEditSession } from '../editing/edit-session';
 import { loadControllerProjectState, saveControllerProjectState } from '../controller/project-state';
 import { closeIssueWithGitHubPlugin, getGitHubPluginStatus, publishIssueWithGitHubPlugin, refreshIssueWithGitHubPlugin, saveGitHubPluginConfig } from '../github/plugin';
@@ -793,6 +795,31 @@ export function buildControllerCommand(): Command {
       });
       output(result, opts.json === true);
       if (result.status === 'failed') process.exitCode = 1;
+    });
+
+  command.command('run-check-process', { hidden: true })
+    .description('Internal persisted check process entry')
+    .requiredOption('--repo <path>', 'Repository root')
+    .requiredOption('--check-id <id>', 'Registered check id')
+    .option('--timeout-ms <ms>', 'Bounded check timeout')
+    .requiredOption('--expected-check-fingerprint <sha256>', 'Expected non-secret check snapshot fingerprint')
+    .action((opts: { repo: string; checkId: string; timeoutMs?: string; expectedCheckFingerprint: string }) => {
+      const requestedTimeout = opts.timeoutMs === undefined ? undefined : Number(opts.timeoutMs);
+      if (requestedTimeout !== undefined && (!Number.isFinite(requestedTimeout) || requestedTimeout <= 0)) {
+        throw new Error('invalid --timeout-ms');
+      }
+      const root = repoRoot(opts.repo);
+      const snapshot = snapshotControllerCheck(root, opts.checkId);
+      const actualFingerprint = createHash('sha256')
+        .update(JSON.stringify(snapshot))
+        .digest('hex');
+      if (actualFingerprint !== opts.expectedCheckFingerprint) {
+        throw new Error('CHECK_SNAPSHOT_CHANGED: registered check changed before Process Runtime execution');
+      }
+      const result = runControllerCheck(root, opts.checkId, requestedTimeout, snapshot);
+      if (result.stdout) process.stdout.write(result.stdout);
+      if (result.stderr) process.stderr.write(result.stderr.endsWith('\n') ? result.stderr : `${result.stderr}\n`);
+      process.exitCode = result.ok ? 0 : Math.max(1, result.status || 1);
     });
 
   command.command('feature-verify')

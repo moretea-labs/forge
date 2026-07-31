@@ -23,8 +23,8 @@ import {
 import {
   checkRequiresDurableWorkflow,
   classifyRepositoryCommandRoute,
-  runCheckViaProcessRuntime,
 } from '../../execution/process-runtime';
+import { runPersistedCheckViaProcessRuntime } from './persisted-check-process';
 import {
   isProcessIsolatedReadDiagnostic,
   runReadOnlyDiagnosticViaProcessRuntime,
@@ -780,7 +780,7 @@ export async function routeDurableMcpCall(
         message: 'run_check requires check_id',
       });
     }
-    const facade = await runCheckViaProcessRuntime({
+    const facade = await runPersistedCheckViaProcessRuntime({
       controllerHome: ctx.controllerHome,
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,

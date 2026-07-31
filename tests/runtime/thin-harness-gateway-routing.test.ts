@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
@@ -22,6 +22,7 @@ import { classifyRepositoryCommand } from '../../src/cli/repositories/command-cl
 import { assessWorkMode } from '../../src/cli/controller/work-mode';
 import { routeExecution, isFastEligibleTool } from '../../src/runtime/execution/thin-harness';
 import { listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
+import { waitForProcess } from '../../src/runtime/execution/process-runtime/runtime';
 import { runReadOnlyDiagnosticViaProcessRuntime } from '../../src/runtime/diagnostics/process-facade';
 
 function git(root: string, args: string[]): void {
@@ -362,7 +363,65 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     const payload = started?.structuredContent as Record<string, unknown>;
     expect(payload.path).toBe('process_managed');
     expect(typeof payload.processId).toBe('string');
+    const completed = await waitForProcess(
+      fx.controllerHome,
+      fx.repository.repoId,
+      String(payload.processId),
+      { timeoutMs: 10_000 },
+    );
+    expect(completed.ok).toBe(true);
+    expect(completed.exitCode).toBe(0);
+    const artifactPath = join(fx.repoRoot, '.ai', 'harness', 'checks', 'controller', 'latest-slow.json');
+    expect(existsSync(artifactPath)).toBe(true);
+    const artifact = JSON.parse(readFileSync(artifactPath, 'utf8')) as {
+      ok: boolean;
+      status: number;
+      revision?: string;
+      completedRevision?: string;
+      validatedRevision?: string;
+    };
+    expect(artifact.ok).toBe(true);
+    expect(artifact.status).toBe(0);
+    expect(artifact.revision).toBe(artifact.completedRevision);
+    expect(artifact.validatedRevision).toBe(artifact.revision);
     expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
+  });
+
+  test('run_check Process status and persisted failure Artifact agree', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    writeFileSync(join(fx.repoRoot, '.repo-harness', 'checks.json'), JSON.stringify({
+      version: 1,
+      checks: {
+        failing: {
+          description: 'persisted failing check',
+          command: [process.execPath, '-e', 'process.stderr.write("expected-failure\\n"); process.exit(7)'],
+          timeoutMs: 10_000,
+        },
+      },
+    }, null, 2));
+
+    const started = await routeDurableMcpCall(fx.ctx, 'run_check', {
+      repo_id: fx.repository.repoId,
+      check_id: 'failing',
+      interactive_wait_ms: 100,
+    });
+    const payload = started?.structuredContent as Record<string, unknown>;
+    const completed = await waitForProcess(
+      fx.controllerHome,
+      fx.repository.repoId,
+      String(payload.processId),
+      { timeoutMs: 10_000 },
+    );
+    expect(completed.ok).toBe(false);
+    expect(completed.exitCode).toBe(7);
+    const artifact = JSON.parse(readFileSync(
+      join(fx.repoRoot, '.ai', 'harness', 'checks', 'controller', 'latest-failing.json'),
+      'utf8',
+    )) as { ok: boolean; status: number; stderr: string };
+    expect(artifact.ok).toBe(false);
+    expect(artifact.status).toBe(7);
+    expect(artifact.stderr).toContain('expected-failure');
   });
 
   test('run_check preserves Process Runtime request conflicts instead of masking them', async () => {
