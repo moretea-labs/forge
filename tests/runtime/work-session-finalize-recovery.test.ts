@@ -17,6 +17,7 @@ import { callExecutionTool } from '../../src/runtime/gateway/mcp/execution-tools
 import { listExecutionJobs } from '../../src/runtime/execution/jobs/store';
 import { getWorkContract, listWorkContracts, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
+import { waitForCheckProcess } from '../../src/runtime/execution/process-runtime/check-facade';
 
 const roots: string[] = [];
 
@@ -65,6 +66,52 @@ function structured(result: Awaited<ReturnType<typeof callExecutionTool>>): Reco
 }
 
 describe('controller-owned Work recovery and finalize cleanup', () => {
+  test('keeps a running validation pending and reuses its process to converge', async () => {
+    const { repoRoot, controllerHome, repository, context } = fixture();
+    writeFileSync(join(repoRoot, 'slow-check.cjs'), 'setTimeout(() => process.exit(0), 1500);\n');
+    writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({
+      name: 'work-recovery-fixture',
+      scripts: { 'check:slow': 'node slow-check.cjs' },
+    }, null, 2));
+    git(repoRoot, 'add', 'package.json', 'slow-check.cjs');
+    git(repoRoot, 'commit', '-m', 'add slow validation fixture');
+
+    const ctx = context('session-validation-recovery', 'controller-validation-recovery');
+    structured(await callExecutionTool(ctx, 'session_start', {}));
+    structured(await callExecutionTool(ctx, 'session_bind_repository', { repo_id: repository.repoId }));
+    const prepared = structured(await callExecutionTool(ctx, 'work_prepare', {
+      repo_id: repository.repoId,
+      objective: 'Prove validation process recovery',
+      isolation: 'reuse',
+      checks: ['package:check:slow'],
+      request_id: 'prepare-validation-recovery',
+    }));
+    const workId = String(prepared.work.workId);
+    const first = structured(await callExecutionTool(ctx, 'work_validate', {
+      work_id: workId,
+      check_ids: ['package:check:slow'],
+      request_id: 'validate-recovery-first',
+    }));
+    expect(first.validation.completed).toBe(false);
+    expect(first.validation.checks[0].status).toBe('running');
+    expect(first.work.state).toBe('validating');
+    expect(first.work.finalization.validation).toBe('pending');
+    const processId = String(first.validation.checks[0].process.processId);
+
+    await waitForCheckProcess(controllerHome, repository.repoId, processId, 5_000);
+    const second = structured(await callExecutionTool(ctx, 'work_validate', {
+      work_id: workId,
+      check_ids: ['package:check:slow'],
+      request_id: 'validate-recovery-second',
+    }));
+    expect(second.validation.completed).toBe(true);
+    expect(second.validation.passed).toBe(true);
+    expect(second.validation.checks[0].process.processId).toBe(processId);
+    expect(second.work.state).toBe('editing');
+    expect(second.work.finalization.validation).toBe('done');
+    expect(readWorkHandle(controllerHome, repository.repoId, workId)?.validationRun).toBeUndefined();
+  });
+
   test('deduplicates identical work_prepare retries and rejects changed request fingerprints', async () => {
     const { repoRoot, controllerHome, repository, context } = fixture();
     const ctx = context('session-idempotent-prepare', 'controller-idempotent-a');

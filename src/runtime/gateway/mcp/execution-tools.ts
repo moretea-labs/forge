@@ -32,7 +32,7 @@ import { recordMcpTiming, type McpTimingTrace } from '../../diagnostics/mcp-timi
 import { commandValue, normalizeRepositoryCommand, type RepositoryCommandValue } from '../../../cli/repositories/command-normalization';
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { executeRepositoryCommandViaProcessRuntime } from '../../execution/process-runtime/command-facade';
-import { runCheckViaProcessRuntime } from '../../execution/process-runtime/check-facade';
+import { getCheckProcessHandle, runCheckViaProcessRuntime } from '../../execution/process-runtime/check-facade';
 import { claimProcessInvocation } from '../../execution/process-runtime/store';
 
 const MAX_INLINE_RESULT_BYTES = 64 * 1024;
@@ -665,12 +665,32 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
   const session = requireSession(ctx, args);
   const handle = workForSession(ctx, session, args);
   const validated = validateWorkHandle(ctx.controllerHome, handle, identityFor(ctx, args), 'full', 'validate');
-  const current = transitionWorkHandle(ctx.controllerHome, handle, 'validating', { finalization: { ...handle.finalization, validation: 'pending' } });
-  const contract = contractFor(ctx, current);
+  const contract = contractFor(ctx, handle);
   const requestedChecks = Array.isArray(args.check_ids) ? args.check_ids.map(String).filter(Boolean) : contract?.checks ?? [];
   const validationInvocationId = typeof args.request_id === 'string' && args.request_id.trim()
     ? args.request_id.trim()
     : `validate-${session.sessionId}-${handle.workId}-${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const validationHead = gitHead(validated.worktreeRepository.canonicalRoot)
+    ?? handle.expectedHead
+    ?? handle.baseCommit
+    ?? 'unknown';
+  const validationFingerprint = createHash('sha256')
+    .update(JSON.stringify({ head: validationHead, requestedChecks }))
+    .digest('hex');
+  const previousRun = handle.validationRun?.fingerprint === validationFingerprint
+    ? handle.validationRun
+    : undefined;
+  let validationRun: NonNullable<WorkHandleState['validationRun']> = previousRun ?? {
+    fingerprint: validationFingerprint,
+    head: validationHead,
+    requestedChecks,
+    resumeState: handle.state === 'committed' || handle.state === 'merged' ? handle.state : 'editing',
+    processes: {},
+  };
+  let current = transitionWorkHandle(ctx.controllerHome, handle, 'validating', {
+    finalization: { ...handle.finalization, validation: 'pending', lastError: undefined },
+    validationRun,
+  });
   const available = new Set(listControllerChecks(validated.worktreeRepository.canonicalRoot).map((check) => check.id));
   const checks: Array<Record<string, unknown>> = [];
   for (const [index, checkId] of requestedChecks.entries()) {
@@ -678,21 +698,45 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       checks.push({ checkId, ok: false, status: 'missing', summary: `Check not found: ${checkId}` });
       break;
     }
-    const executed = await runCheckViaProcessRuntime({
-      controllerHome: ctx.controllerHome,
-      repoId: handle.repositoryId,
-      checkoutId: handle.checkoutId,
-      repoRoot: validated.worktreeRepository.canonicalRoot,
-      checkId,
-      requestId: `${validationInvocationId}:check:${index + 1}`,
-      workId: handle.workId,
-      commandId: `${validationInvocationId}:check:${index + 1}`,
-    });
-    if (executed.mode === 'durable') {
-      checks.push({ checkId, ok: undefined, status: 'deferred', summary: executed.durable?.reason, durable: executed.durable });
+    const existingBinding = validationRun.processes[checkId];
+    let process = existingBinding
+      ? getCheckProcessHandle(ctx.controllerHome, handle.repositoryId, existingBinding.processId)
+      : undefined;
+    if (existingBinding && !process) {
+      checks.push({
+        checkId,
+        ok: false,
+        status: 'infrastructure_failure',
+        summary: `Validation process record is unavailable: ${existingBinding.processId}`,
+      });
       break;
     }
-    const process = executed.process!;
+    if (!process) {
+      const processRequestId = `${validationInvocationId}:check:${index + 1}`;
+      const executed = await runCheckViaProcessRuntime({
+        controllerHome: ctx.controllerHome,
+        repoId: handle.repositoryId,
+        checkoutId: handle.checkoutId,
+        repoRoot: validated.worktreeRepository.canonicalRoot,
+        checkId,
+        requestId: processRequestId,
+        workId: handle.workId,
+        commandId: processRequestId,
+      });
+      if (executed.mode === 'durable') {
+        checks.push({ checkId, ok: undefined, status: 'deferred', summary: executed.durable?.reason, durable: executed.durable });
+        break;
+      }
+      process = executed.process!;
+      validationRun = {
+        ...validationRun,
+        processes: {
+          ...validationRun.processes,
+          [checkId]: { processId: process.processId, requestId: processRequestId },
+        },
+      };
+      current = transitionWorkHandle(ctx.controllerHome, current, 'validating', { validationRun });
+    }
     if (!process.completed) {
       checks.push({ checkId, ok: undefined, status: 'running', process });
       break;
@@ -710,10 +754,16 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
   }
   const completed = checks.length === requestedChecks.length && checks.every((check) => check.ok !== undefined);
   const passed = completed && checks.every((check) => check.ok === true);
-  const nextState = !completed
-    ? 'validating'
-    : passed ? (handle.state === 'committed' ? 'committed' : handle.state === 'merged' ? 'merged' : 'editing') : 'failed';
-  const next = transitionWorkHandle(ctx.controllerHome, current, nextState, { finalization: { ...current.finalization, validation: passed ? 'done' : 'failed', ...(passed ? {} : { lastError: 'targeted validation failed' }) } });
+  const nextState = !completed ? 'validating' : passed ? validationRun.resumeState : 'failed';
+  const validation = !completed ? 'pending' : passed ? 'done' : 'failed';
+  const next = transitionWorkHandle(ctx.controllerHome, current, nextState, {
+    finalization: {
+      ...current.finalization,
+      validation,
+      lastError: completed && !passed ? 'targeted validation failed' : undefined,
+    },
+    validationRun: completed ? undefined : validationRun,
+  });
   if (contract) updateWorkContract({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, handle.workId, { status: completed && !passed ? 'failed' : 'running' });
   const value = { work: compactHandle(next), validation: { passed, completed, checks, targeted: true } };
   return makeBoundedResult(ctx, session, handle.repositoryId, handle.workId, 'validation', value);

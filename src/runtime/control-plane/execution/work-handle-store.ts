@@ -16,6 +16,14 @@ export interface WorkFinalizationStages {
   lastError?: string;
 }
 
+export interface WorkValidationRunState {
+  fingerprint: string;
+  head: string;
+  requestedChecks: string[];
+  resumeState: WorkHandleStateName;
+  processes: Record<string, { processId: string; requestId: string }>;
+}
+
 export interface WorkHandleState {
   schemaVersion: 1;
   workId: string;
@@ -38,6 +46,7 @@ export interface WorkHandleState {
   updatedAt: string;
   failureReason?: string;
   finalization: WorkFinalizationStages;
+  validationRun?: WorkValidationRunState;
 }
 
 function workHandleRoot(controllerHome: string, repoId: string): string {
@@ -86,7 +95,7 @@ export function transitionWorkHandle(
   controllerHome: string,
   handle: WorkHandleState,
   nextState: WorkHandleStateName,
-  patch: Partial<Pick<WorkHandleState, 'failureReason' | 'expectedHead' | 'finalization'>> = {},
+  patch: Partial<Pick<WorkHandleState, 'failureReason' | 'expectedHead' | 'finalization' | 'validationRun'>> = {},
 ): WorkHandleState {
   if (handle.state !== nextState && !TRANSITIONS[handle.state].includes(nextState)) {
     throw new Error(`WORK_HANDLE_LIFECYCLE_INVALID: cannot transition ${handle.state} -> ${nextState}`);
