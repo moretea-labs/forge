@@ -159,7 +159,7 @@
       "id": "T2",
       "title": "Reconcile repository Issue snapshots and delivery receipt after RC6",
       "objective": "After ISS-20260729-BF2F89 reaches a clean integrated terminal revision, regenerate or copy the five controller Issue snapshots into the repository from durable controller state, commit only those exact snapshot paths, and reconcile the verified governance delivery with a complete receipt. Do not depend on the currently untracked copies in the dirty RC6 checkout and do not mix unrelated RC6 changes.",
-      "status": "running",
+      "status": "review",
       "dependsOn": [
         "T1"
       ],
@@ -195,15 +195,16 @@
       "risk": "low",
       "notes": [
         "Blocked until RC6 issue ISS-20260729-BF2F89 is terminal, merged, cleaned, and its exact revision is recorded. Current Git facts: local main=25f40004c9f229b935fc649daaf68498eb4d4f06, origin/main=69c65e8156615f1cde8f4db8e715f2b86e6e348e. The source RC6 checkout contains untracked generated Issue snapshot files mixed with unrelated active RC6 work; do not stage, delete, or trust them blindly. Regenerate from durable controller Issues in a new isolated worktree after the gate.",
-        "RC6 prerequisite is satisfied. Exact released gate revision: 2a48486b7b8c3395d05e4f30201e968ee88f9779, tagged v1.4.0-rc.6 after local release-readiness/full CI and exact-SHA Linux CI + Windows smoke passed; Wiki and repository governance were synchronized. Current origin/main has advanced to 809349d43b6583b4cfa22e55986f760f16380cb3. This Task is now restoring/regenerating only the ten declared Program Issue snapshot files from Controller-readable durable state; unrelated WIP copies are not trusted or committed."
+        "RC6 prerequisite is satisfied. Exact released gate revision: 2a48486b7b8c3395d05e4f30201e968ee88f9779, tagged v1.4.0-rc.6 after local release-readiness/full CI and exact-SHA Linux CI + Windows smoke passed; Wiki and repository governance were synchronized. Current origin/main has advanced to 809349d43b6583b4cfa22e55986f760f16380cb3. This Task is now restoring/regenerating only the ten declared Program Issue snapshot files from Controller-readable durable state; unrelated WIP copies are not trusted or committed.",
+        "Repository reconciliation is integrated on local main d42fe4b7d839e1b8a4aad29c115f70c008659951. Program docs were restored as b20ed381b3fa7ef47bf7d4cba497bef92446c7d8; all ten declared Issue snapshot files were regenerated through Controller writes and committed alone as 3a6bd0ac20f3df2b1043cf6f287bc185401eaf6b; public identity sanitization was committed as d42fe4b7d839e1b8a4aad29c115f70c008659951. Public docs, task-sync, and open-source tracked-surface checks passed; the temporary branch was deleted and main is clean. The remaining acceptance gap is the complete Delivery Receipt for historical work_2705c12349124ed2b9b94950a427c31a: its durable projection is still failed/stale despite equivalent integration and cleanup. Do not fabricate the receipt. Preserve this exact state as the mandatory regression fixture for ISS-20260730-A1EA53:T1, then return here after the evidence foundation can reconcile manually integrated equivalent commits and cleanup."
       ],
       "runIds": [],
       "createdAt": "2026-07-30T09:45:53.509Z",
-      "updatedAt": "2026-07-31T00:03:42.573Z",
+      "updatedAt": "2026-07-31T00:12:50.404Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     }
   ],
   "createdAt": "2026-07-30T09:27:15.715Z",
-  "updatedAt": "2026-07-31T00:05:37.341Z",
+  "updatedAt": "2026-07-31T00:12:50.404Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }

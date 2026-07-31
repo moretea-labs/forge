@@ -2,7 +2,7 @@
 id: "ISS-20260730-AE1BCC"
 kind: "governance"
 status: "in_progress"
-updated_at: "2026-07-31T00:05:37.341Z"
+updated_at: "2026-07-31T00:12:50.404Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -50,7 +50,7 @@ Canonical durable program anchor for the next Repo Harness reliability release l
 
 ### T2 — Reconcile repository Issue snapshots and delivery receipt after RC6
 
-- Status: `running`
+- Status: `review`
 - Objective: After ISS-20260729-BF2F89 reaches a clean integrated terminal revision, regenerate or copy the five controller Issue snapshots into the repository from durable controller state, commit only those exact snapshot paths, and reconcile the verified governance delivery with a complete receipt. Do not depend on the currently untracked copies in the dirty RC6 checkout and do not mix unrelated RC6 changes.
 - Depends on: `T1`
 - Allowed paths: `tasks/issues/ISS-20260730-AE1BCC-*.issue.json`, `tasks/issues/ISS-20260730-AE1BCC-*.issue.md`, `tasks/issues/ISS-20260730-A1EA53-*.issue.json`, `tasks/issues/ISS-20260730-A1EA53-*.issue.md`, `tasks/issues/ISS-20260730-84CE88-*.issue.json`, `tasks/issues/ISS-20260730-84CE88-*.issue.md`, `tasks/issues/ISS-20260730-B55445-*.issue.json`, `tasks/issues/ISS-20260730-B55445-*.issue.md`, `tasks/issues/ISS-20260730-CCF211-*.issue.json`, `tasks/issues/ISS-20260730-CCF211-*.issue.md`
