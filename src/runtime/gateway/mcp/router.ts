@@ -9,6 +9,7 @@ import { runtimeToolDefinitions } from './runtime-tools';
 import { executionToolDefinitions } from './execution-tools';
 import { processToolDefinitions } from './process-tools';
 import { resolveRepositorySelection } from '../../../cli/repositories/registry';
+import { executionIdentityForRepository } from '../../control-plane/execution/execution-identity';
 import type {
   ExecutionOperationMetadata,
   ExecutionTimeoutPolicy,
@@ -785,6 +786,7 @@ export async function routeDurableMcpCall(
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
       repoRoot: repository.canonicalRoot,
+      executionIdentity: executionIdentityForRepository(repository),
       checkId,
       timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
       interactiveWaitMs: typeof args.interactive_wait_ms === 'number' ? args.interactive_wait_ms : undefined,

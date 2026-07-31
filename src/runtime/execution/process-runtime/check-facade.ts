@@ -16,6 +16,7 @@ import { claimsForCheck, toProcessClaims } from './resource-claims';
 import { spawnManagedProcess, waitForProcess, getProcessHandle } from './runtime';
 import type { ProcessHandle } from './types';
 import { DEFAULT_INTERACTIVE_WAIT_MS } from './types';
+import type { ResolvedExecutionIdentity } from '../../control-plane/execution/execution-identity';
 
 export type CheckExecutionMode = 'direct' | 'managed' | 'durable';
 
@@ -33,6 +34,8 @@ export interface RunCheckFacadeInput {
   /** Force durable workflow (release / multi-phase). */
   forceDurable?: boolean;
   signal?: AbortSignal;
+  /** Immutable resolved identity — required; never inferred from main/active/cwd. */
+  executionIdentity: ResolvedExecutionIdentity;
 }
 
 export interface RunCheckFacadeResult {
@@ -131,13 +134,36 @@ export async function runCheckViaProcessRuntime(
       ? Math.max(1_000, Math.trunc(input.timeoutMs))
       : check.timeoutMs,
   );
-  const claims = claimsForCheck(input.checkId, check.command, input.repoId, input.checkoutId, check.effects);
-  const cwd = check.cwd === '.' ? input.repoRoot : `${input.repoRoot}/${check.cwd}`.replace(/\/+/g, '/');
+  if (!input.executionIdentity) {
+    throw new Error('EXECUTION_IDENTITY_REQUIRED: run_check requires an immutable executionIdentity');
+  }
+  const executionIdentity = input.executionIdentity;
+  if (executionIdentity.repositoryId !== input.repoId) {
+    throw new Error(
+      `EXECUTION_IDENTITY_MISMATCH: check repo ${input.repoId} differs from identity ${executionIdentity.repositoryId}`,
+    );
+  }
+  if (input.checkoutId?.trim() && executionIdentity.checkoutId !== input.checkoutId.trim()) {
+    throw new Error(
+      `CHECKOUT_ROUTE_MISMATCH: check checkout ${input.checkoutId} differs from identity ${executionIdentity.checkoutId}`,
+    );
+  }
+  const claims = claimsForCheck(
+    input.checkId,
+    check.command,
+    executionIdentity.repositoryId,
+    executionIdentity.checkoutId,
+    check.effects,
+  );
+  const cwd = check.cwd === '.'
+    ? executionIdentity.canonicalRoot
+    : `${executionIdentity.canonicalRoot}/${check.cwd}`.replace(/\/+/g, '/');
 
   const handle = await spawnManagedProcess({
     controllerHome: input.controllerHome,
-    repoId: input.repoId,
-    checkoutId: input.checkoutId,
+    repoId: executionIdentity.repositoryId,
+    checkoutId: executionIdentity.checkoutId,
+    executionIdentity,
     workId: input.workId,
     commandId: input.commandId,
     command: {

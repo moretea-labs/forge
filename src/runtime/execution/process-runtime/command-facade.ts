@@ -20,6 +20,7 @@ import {
 import type { ProcessHandle, ProcessCommandSpec } from './types';
 import { DEFAULT_INTERACTIVE_WAIT_MS } from './types';
 import { isFocusedCheckCommand } from '../thin-harness/execution-router';
+import type { ResolvedExecutionIdentity } from '../../control-plane/execution/execution-identity';
 
 export type RepositoryCommandRoute =
   | 'process_direct'
@@ -41,6 +42,8 @@ export interface RepositoryCommandProcessInput {
   workId?: string;
   commandId?: string;
   signal?: AbortSignal;
+  /** Immutable resolved identity — required; never inferred from main/active/cwd. */
+  executionIdentity: ResolvedExecutionIdentity;
 }
 
 export interface RepositoryCommandProcessResult {
@@ -151,9 +154,21 @@ export async function executeRepositoryCommandViaProcessRuntime(
     };
   }
 
-  const cwd = input.cwd?.trim()
-    || input.repository.localRoot
-    || input.repository.canonicalRoot;
+  if (!input.executionIdentity) {
+    throw new Error('EXECUTION_IDENTITY_REQUIRED: repository command process path requires an immutable executionIdentity');
+  }
+  const executionIdentity = input.executionIdentity;
+  if (executionIdentity.repositoryId !== input.repository.repoId) {
+    throw new Error(
+      `EXECUTION_IDENTITY_MISMATCH: repository ${input.repository.repoId} differs from identity ${executionIdentity.repositoryId}`,
+    );
+  }
+  if (executionIdentity.checkoutId !== input.repository.activeCheckoutId) {
+    throw new Error(
+      `CHECKOUT_ROUTE_MISMATCH: repository checkout ${input.repository.activeCheckoutId} differs from identity ${executionIdentity.checkoutId}`,
+    );
+  }
+  const cwd = input.cwd?.trim() || executionIdentity.canonicalRoot;
   if (!cwd) {
     return {
       route: 'reject',
@@ -172,15 +187,16 @@ export async function executeRepositoryCommandViaProcessRuntime(
 
   const claims = claimsForRepositoryCommand(
     input.command,
-    input.repository.repoId,
-    input.repository.activeCheckoutId,
+    executionIdentity.repositoryId,
+    executionIdentity.checkoutId,
     input.repository.defaultBranch,
   );
 
   const handle = await spawnManagedProcess({
     controllerHome: input.controllerHome,
-    repoId: input.repository.repoId,
-    checkoutId: input.repository.activeCheckoutId,
+    repoId: executionIdentity.repositoryId,
+    checkoutId: executionIdentity.checkoutId,
+    executionIdentity,
     workId: input.workId,
     commandId: input.commandId,
     command: toProcessCommand(input.command, cwd),

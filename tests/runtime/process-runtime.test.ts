@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, st
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
+import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import {
   __resetLiveMonitorsForTests,
   cancelProcess,
@@ -107,6 +108,7 @@ describe('Unified Process Runtime', () => {
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
         kind: 'argv',
         executable: 'node',
@@ -139,6 +141,7 @@ describe('Unified Process Runtime', () => {
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
         kind: 'argv',
         executable: 'node',
@@ -190,6 +193,7 @@ describe('Unified Process Runtime', () => {
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: { kind: 'argv', executable: 'node', args: ['-e', script], cwd: fx.repoRoot },
       interactiveWaitMs: 5,
       timeoutMs: 10_000,
@@ -215,6 +219,7 @@ describe('Unified Process Runtime', () => {
     const handle = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: { kind: 'argv', executable: 'node', args: ['-e', 'process.stdout.write("initial-safe");'], cwd: fx.repoRoot },
       interactiveWaitMs: 5_000,
       timeoutMs: 10_000,
@@ -242,6 +247,7 @@ describe('Unified Process Runtime', () => {
     const handle = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
         kind: 'argv',
         executable: 'node',
@@ -283,6 +289,7 @@ describe('Unified Process Runtime', () => {
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command,
       interactiveWaitMs: 25,
       timeoutMs: 10_000,
@@ -328,6 +335,7 @@ describe('Unified Process Runtime', () => {
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
         kind: 'argv', executable: 'node',
         args: ['-e', 'require("fs").appendFileSync(process.argv[1], "a")', output],
@@ -342,6 +350,7 @@ describe('Unified Process Runtime', () => {
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
         kind: 'argv', executable: 'node',
         args: ['-e', 'require("fs").appendFileSync(process.argv[1], "b")', output],
@@ -375,6 +384,7 @@ describe('Unified Process Runtime', () => {
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command,
       origin: { surface: 'command', requestId },
     })).rejects.toThrow('PROCESS_REQUEST_INCOMPLETE');
@@ -385,6 +395,7 @@ describe('Unified Process Runtime', () => {
     const handle = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
         kind: 'argv',
         executable: 'node',
@@ -411,6 +422,7 @@ describe('Unified Process Runtime', () => {
     const handle = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
         kind: 'argv',
         executable: 'node',
@@ -430,6 +442,7 @@ describe('Unified Process Runtime', () => {
     const handle = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
         kind: 'argv',
         executable: 'node',
@@ -460,6 +473,7 @@ describe('run_check Process Runtime facade', () => {
       repoRoot: fx.repoRoot,
       checkId: 'quick-ok',
       interactiveWaitMs: 5_000,
+      executionIdentity: executionIdentityForRepository(fx.repository),
     });
     expect(result.mode).toBe('direct');
     expect(result.ok).toBe(true);
@@ -477,6 +491,7 @@ describe('run_check Process Runtime facade', () => {
       repoRoot: fx.repoRoot,
       checkId: 'quick-sleep',
       interactiveWaitMs: 200,
+      executionIdentity: executionIdentityForRepository(fx.repository),
     });
     expect(result.mode).toBe('managed');
     expect(result.process?.completed).toBe(false);
@@ -573,6 +588,7 @@ describe('getProcessHandle after completion', () => {
     const handle = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
         kind: 'argv',
         executable: 'node',
@@ -601,6 +617,7 @@ describe('Process Runtime real lease contention', () => {
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
         kind: 'argv',
         executable: 'node',
@@ -623,6 +640,7 @@ describe('Process Runtime real lease contention', () => {
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
         kind: 'argv',
         executable: 'node',
@@ -647,6 +665,7 @@ describe('Process Runtime real lease contention', () => {
     const readA = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
         kind: 'argv',
         executable: 'node',
@@ -661,6 +680,7 @@ describe('Process Runtime real lease contention', () => {
     const readB = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
         kind: 'argv',
         executable: 'node',
@@ -684,6 +704,7 @@ describe('Process Runtime real lease contention', () => {
     const handle = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
         kind: 'argv',
         executable: 'node',
@@ -730,6 +751,7 @@ describe('Process Runtime real lease contention', () => {
     const handle = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
         kind: 'argv',
         executable: 'node',
@@ -957,6 +979,7 @@ describe('installed release Process Runner smoke', () => {
       const handle = await spawnManagedProcess({
         controllerHome: fx.controllerHome,
         repoId: fx.repository.repoId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
         command: {
           kind: 'argv',
           executable: 'node',
@@ -995,6 +1018,7 @@ describe('stable-root live storage for processes', () => {
     const handle = await spawnManagedProcess({
       controllerHome: slotHome,
       repoId: fx.repository.repoId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
         kind: 'argv',
         executable: 'node',
@@ -1026,6 +1050,7 @@ describe('process MCP live surface', () => {
     const handle = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
         kind: 'argv',
         executable: 'node',

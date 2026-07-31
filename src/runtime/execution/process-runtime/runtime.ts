@@ -47,6 +47,7 @@ import {
   tryCompleteProcessRecord,
   updateProcessRecord,
 } from './store';
+import { assertExecutionIdentity } from '../../control-plane/execution/execution-identity';
 import {
   DEFAULT_INTERACTIVE_WAIT_MS,
   DEFAULT_MAX_OUTPUT_BYTES,
@@ -778,6 +779,27 @@ function spawnProcessRunner(descriptor: ProcessCommandDescriptor, descriptorPath
  *   receipt / cancel / timeout / failure → release leases exactly once
  */
 export async function spawnManagedProcess(input: SpawnManagedProcessInput): Promise<ProcessHandle> {
+  if (!input.executionIdentity) {
+    throw new Error('EXECUTION_IDENTITY_REQUIRED: spawnManagedProcess requires an immutable executionIdentity');
+  }
+  if (input.executionIdentity.repositoryId !== input.repoId) {
+    throw new Error(
+      `EXECUTION_IDENTITY_MISMATCH: process repo ${input.repoId} differs from identity ${input.executionIdentity.repositoryId}`,
+    );
+  }
+  if (input.checkoutId && input.executionIdentity.checkoutId !== input.checkoutId) {
+    throw new Error(
+      `CHECKOUT_ROUTE_MISMATCH: process checkout ${input.checkoutId} differs from identity ${input.executionIdentity.checkoutId}`,
+    );
+  }
+  const guardedIdentity = assertExecutionIdentity({
+    controllerHome: input.controllerHome,
+    identity: input.executionIdentity,
+    cwd: input.command.cwd,
+    requestedRepoId: input.repoId,
+    requestedCheckoutId: input.checkoutId,
+  });
+  const command = { ...input.command, cwd: guardedIdentity.resolvedCwd };
   const interactiveWaitMs = Math.max(
     0,
     Math.min(input.interactiveWaitMs ?? DEFAULT_INTERACTIVE_WAIT_MS, 120_000),
@@ -789,7 +811,7 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
   const maxOutputBytes = Math.max(4_096, Math.min(input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES, 8 * 1024 * 1024));
   const candidateProcessId = newProcessId();
   const requestId = input.origin?.requestId?.trim() || undefined;
-  const commandFingerprint = fingerprintProcessCommand(input.command);
+  const commandFingerprint = fingerprintProcessCommand(command);
   let processId = candidateProcessId;
   if (requestId) {
     const claim = claimProcessRequest({
@@ -830,7 +852,7 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     controllerHome: input.controllerHome,
     status: 'starting',
     route: input.returnHandleImmediately || interactiveWaitMs === 0 ? 'managed' : 'direct',
-    command: input.command,
+    command,
     resourceClaims,
     interactiveWaitMs,
     timeoutMs,
@@ -934,7 +956,7 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     processId,
     repoId: input.repoId,
     controllerHome: input.controllerHome,
-    command: input.command,
+    command,
     timeoutMs,
     maxStdoutBytes: maxOutputBytes,
     maxStderrBytes: maxOutputBytes,

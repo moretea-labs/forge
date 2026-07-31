@@ -4,6 +4,8 @@
  * share one spawn path — never re-executes a command that already started.
  */
 
+import type { ResolvedExecutionIdentity } from '../../control-plane/execution/execution-identity';
+
 export type ProcessRuntimeStatus =
   | 'starting'
   | 'running'
@@ -157,6 +159,8 @@ export interface SpawnManagedProcessInput {
   controllerHome: string;
   repoId: string;
   checkoutId?: string;
+  /** Immutable resolved execution identity — required; validated immediately before spawn. */
+  executionIdentity: ResolvedExecutionIdentity;
   workId?: string;
   commandId?: string;
   command: ProcessCommandSpec;

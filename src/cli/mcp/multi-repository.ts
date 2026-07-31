@@ -272,9 +272,13 @@ export function repositoryScopedToolArgs(
   input: Record<string, unknown>,
   repository: RepositoryRecord,
 ): Record<string, unknown> {
-  const args = { ...input };
-  delete args.repo_id;
-  delete args.checkout_id;
+  // Preserve resolved repository/checkout identity for every downstream call.
+  // Deleting these fields forced re-resolution and allowed silent route drift.
+  const args: Record<string, unknown> = {
+    ...input,
+    repo_id: repository.repoId,
+    checkout_id: repository.activeCheckoutId,
+  };
 
   const github = repository.github;
   const githubRepo = github ? `${github.owner}/${github.repo}` : undefined;

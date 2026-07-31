@@ -815,6 +815,12 @@ export async function callRepositoryTool(
                 timeoutMs,
                 maxOutputBytes,
                 requestId: typeof args.request_id === 'string' ? args.request_id : undefined,
+                executionIdentity: {
+                  schemaVersion: 1,
+                  repositoryId: repository.repoId,
+                  checkoutId: repository.activeCheckoutId,
+                  canonicalRoot: repository.canonicalRoot,
+                },
               });
               if (processResult.route === 'process_direct' || processResult.route === 'process_managed') {
                 const handle = processResult.process;
@@ -967,6 +973,12 @@ export async function callRepositoryTool(
                 timeoutMs,
                 maxOutputBytes,
                 requestId: typeof args.request_id === 'string' ? args.request_id : undefined,
+                executionIdentity: {
+                  schemaVersion: 1,
+                  repositoryId: repository.repoId,
+                  checkoutId: repository.activeCheckoutId,
+                  canonicalRoot: repository.canonicalRoot,
+                },
               });
               if (processResult.route === 'process_direct') {
                 const execRecord = processResult.process as unknown as Record<string, unknown> | undefined;

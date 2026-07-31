@@ -23,6 +23,7 @@ import { isTerminalWorkContractStatus } from '../../control-plane/facade/types';
 import { claimControllerSession, getControllerSession, resumeControllerSession } from '../../control-plane/facade/controller-session-store';
 import { currentControllerInstanceId, requireExecutionSession, startExecutionSession, updateExecutionSession, type ExecutionSessionContext, type SessionIdentity } from '../../control-plane/execution/session-store';
 import { currentPermissionSnapshotVersion, validateWorkHandle } from '../../control-plane/execution/validation';
+import { executionIdentityForWork, resolveLegacyWorkContractIdentity } from '../../control-plane/execution/execution-identity';
 import { withWorkPrepareRequest } from '../../control-plane/execution/work-prepare-request-store';
 import { markWorkHandleFailed, newWorkId, readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkFinalizationStages, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
 import { assertResolvedAuthorization, createGoalDelegation, decideAuthorization, resolveAuthorizationRequest, type AuthorizationDecision, type AuthorizationRiskClass } from '../../control-plane/governance/authorization';
@@ -204,20 +205,34 @@ function findWorkHandle(
   const requested = typeof args.work_id === 'string' ? args.work_id.trim() : '';
   const workIdValue = requested || session.activeWorkId || '';
   if (!workIdValue) throw new Error('WORK_ID_REQUIRED: provide work_id or call work_prepare first');
+  const requestedRepoId = typeof args.repo_id === 'string' && args.repo_id.trim() ? args.repo_id.trim() : undefined;
+  const requestedCheckoutId = typeof args.checkout_id === 'string' && args.checkout_id.trim()
+    ? args.checkout_id.trim()
+    : undefined;
   const repoCandidates = [
-    typeof args.repo_id === 'string' && args.repo_id.trim() ? args.repo_id.trim() : undefined,
+    requestedRepoId,
     session.activeRepositoryId,
   ].filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index);
   for (const repositoryId of repoCandidates) {
     const handle = readWorkHandle(ctx.controllerHome, repositoryId, workIdValue);
-    if (handle) return handle;
+    if (!handle) continue;
+    if (requestedCheckoutId && handle.checkoutId !== requestedCheckoutId) {
+      throw new Error(
+        `WORK_HANDLE_CHECKOUT_DRIFT: work ${workIdValue} is bound to checkout ${handle.checkoutId}, not ${requestedCheckoutId}`,
+      );
+    }
+    return handle;
   }
   const matches = listRepositories(ctx.controllerHome, { includeRemoved: true })
     .map((repository) => readWorkHandle(ctx.controllerHome, repository.repoId, workIdValue))
     .filter((handle): handle is WorkHandleState => Boolean(handle));
-  if (matches.length === 1) return matches[0];
-  if (matches.length > 1) throw new Error('WORK_HANDLE_AMBIGUOUS: provide repo_id with work_id');
-  throw new Error(`WORK_HANDLE_NOT_FOUND: ${workIdValue}`);
+  // Legacy incomplete identity: only a unique exact WorkHandle match may execute.
+  return resolveLegacyWorkContractIdentity({
+    workId: workIdValue,
+    repoId: requestedRepoId,
+    checkoutId: requestedCheckoutId,
+    candidates: matches,
+  });
 }
 
 function workForSession(ctx: MultiRepositoryMcpToolContext, session: ExecutionSessionContext, args: Record<string, unknown>): WorkHandleState {
@@ -585,6 +600,7 @@ async function executeWork(ctx: MultiRepositoryMcpToolContext, args: Record<stri
     const execution = await executeRepositoryCommandViaProcessRuntime({
       controllerHome: ctx.controllerHome,
       repository: cheap.worktreeRepository,
+      executionIdentity: executionIdentityForWork(cheap.worktreeRepository, handle),
       command: entry.command,
       cwd: entry.cwd,
       workId: handle.workId,
@@ -718,6 +734,7 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
         repoId: handle.repositoryId,
         checkoutId: handle.checkoutId,
         repoRoot: validated.worktreeRepository.canonicalRoot,
+        executionIdentity: executionIdentityForWork(validated.worktreeRepository, handle),
         checkId,
         requestId: processRequestId,
         workId: handle.workId,

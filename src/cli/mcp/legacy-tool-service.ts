@@ -3595,6 +3595,12 @@ export async function callMcpTool(
                   checkId,
                   timeoutMs: typeof args.timeout_ms === "number" ? args.timeout_ms : undefined,
                   requestId: typeof args.request_id === "string" ? args.request_id.trim() || undefined : undefined,
+                  executionIdentity: {
+                    schemaVersion: 1,
+                    repositoryId: repository.repoId,
+                    checkoutId: repository.activeCheckoutId,
+                    canonicalRoot: repository.canonicalRoot,
+                  },
                 });
                 if (facade.mode !== "durable" && facade.process) {
                   audit(ctx, name, "ok", args);

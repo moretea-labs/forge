@@ -22,6 +22,7 @@ import {
 } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { createHandoffItem, listHandoffItems } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { listExecutionJobs, createExecutionJob } from '../../src/runtime/execution/jobs/store';
+import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import {
   __resetLiveMonitorsForTests,
   cancelProcess,
@@ -132,6 +133,7 @@ describe('WorkContract lifecycle E2E', () => {
     const handle = await spawnManagedProcess({
       controllerHome,
       repoId: repository.repoId,
+      executionIdentity: executionIdentityForRepository(repository),
       command: {
         kind: 'argv',
         executable: process.execPath,
@@ -187,6 +189,7 @@ describe('WorkContract lifecycle E2E', () => {
     const handle = await spawnManagedProcess({
       controllerHome,
       repoId: repository.repoId,
+      executionIdentity: executionIdentityForRepository(repository),
       command: {
         kind: 'argv',
         executable: process.execPath,
@@ -238,6 +241,7 @@ describe('WorkContract lifecycle E2E', () => {
     const handle = await spawnManagedProcess({
       controllerHome,
       repoId: repository.repoId,
+      executionIdentity: executionIdentityForRepository(repository),
       command: {
         kind: 'argv',
         executable: process.execPath,

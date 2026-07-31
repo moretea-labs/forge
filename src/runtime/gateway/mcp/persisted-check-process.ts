@@ -12,7 +12,6 @@ import {
   type RunCheckFacadeInput,
   type RunCheckFacadeResult,
 } from '../../execution/process-runtime';
-
 const INTERNAL_CHECK_SUBCOMMAND = ['controller', 'run-check-process'] as const;
 
 export function resolveRuntimeCliEntry(): string {
@@ -86,7 +85,27 @@ export async function runPersistedCheckViaProcessRuntime(
       ? Math.max(1_000, Math.trunc(input.timeoutMs))
       : check.timeoutMs,
   );
-  const claims = claimsForCheck(input.checkId, check.command, input.repoId, input.checkoutId, check.effects);
+  if (!input.executionIdentity) {
+    throw new Error('EXECUTION_IDENTITY_REQUIRED: persisted run_check requires an immutable executionIdentity');
+  }
+  const executionIdentity = input.executionIdentity;
+  if (executionIdentity.repositoryId !== input.repoId) {
+    throw new Error(
+      `EXECUTION_IDENTITY_MISMATCH: check repo ${input.repoId} differs from identity ${executionIdentity.repositoryId}`,
+    );
+  }
+  if (input.checkoutId?.trim() && executionIdentity.checkoutId !== input.checkoutId.trim()) {
+    throw new Error(
+      `CHECKOUT_ROUTE_MISMATCH: check checkout ${input.checkoutId} differs from identity ${executionIdentity.checkoutId}`,
+    );
+  }
+  const claims = claimsForCheck(
+    input.checkId,
+    check.command,
+    executionIdentity.repositoryId,
+    executionIdentity.checkoutId,
+    check.effects,
+  );
   const checkSnapshot = snapshotControllerCheck(input.repoRoot, input.checkId);
   const checkFingerprint = createHash('sha256')
     .update(JSON.stringify(checkSnapshot))
@@ -94,8 +113,9 @@ export async function runPersistedCheckViaProcessRuntime(
   const cliEntry = resolveRuntimeCliEntry();
   const handle = await spawnManagedProcess({
     controllerHome: input.controllerHome,
-    repoId: input.repoId,
-    checkoutId: input.checkoutId,
+    repoId: executionIdentity.repositoryId,
+    checkoutId: executionIdentity.checkoutId,
+    executionIdentity,
     workId: input.workId,
     commandId: input.commandId,
     command: {
@@ -105,7 +125,7 @@ export async function runPersistedCheckViaProcessRuntime(
         cliEntry,
         ...INTERNAL_CHECK_SUBCOMMAND,
         '--repo',
-        input.repoRoot,
+        executionIdentity.canonicalRoot,
         '--check-id',
         input.checkId,
         '--timeout-ms',
@@ -113,7 +133,7 @@ export async function runPersistedCheckViaProcessRuntime(
         '--expected-check-fingerprint',
         checkFingerprint,
       ],
-      cwd: input.repoRoot,
+      cwd: executionIdentity.canonicalRoot,
     },
     interactiveWaitMs,
     timeoutMs: timeoutMs + 5_000,

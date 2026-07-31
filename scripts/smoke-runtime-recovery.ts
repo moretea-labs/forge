@@ -22,6 +22,7 @@ import {
   spawnManagedProcess,
   waitForProcess,
 } from '../src/runtime/execution/process-runtime';
+import { executionIdentityForRepository } from '../src/runtime/control-plane/execution/execution-identity';
 import { createSchedule } from '../src/runtime/workflow/schedules/store';
 import { createPortfolioWorkflow } from '../src/runtime/workflow/portfolio/store';
 import { recordCandidateFinding } from '../src/runtime/workflow/findings/store';
@@ -90,6 +91,8 @@ try {
   const handle = await spawnManagedProcess({
     controllerHome,
     repoId: repository.repoId,
+    checkoutId: repository.activeCheckoutId,
+    executionIdentity: executionIdentityForRepository(repository),
     command: {
       kind: 'argv',
       executable: process.execPath,

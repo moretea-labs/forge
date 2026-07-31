@@ -1,3 +1,4 @@
+import { executionIdentityForRepository } from '../control-plane/execution/execution-identity';
 import { existsSync } from 'fs';
 import { basename, join, resolve } from 'path';
 import type { RepositoryRecord } from '../../cli/repositories/types';
@@ -151,6 +152,7 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
     controllerHome: input.controllerHome,
     repoId: input.repository.repoId,
     checkoutId: input.repository.activeCheckoutId,
+    executionIdentity: executionIdentityForRepository(input.repository),
     commandId: `diagnostic:${input.tool}`,
     command: {
       kind: 'argv',

@@ -60,6 +60,7 @@ import {
   migrateRepositoryStateOutOfSlots,
   resolveRepositoryStatePath,
   ensureStableLayout} from '../../src/cli/controller/stable-state';
+import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import {
   __resetLiveMonitorsForTests,
   spawnManagedProcess,
@@ -523,6 +524,7 @@ describe('process runtime restart receipt', () => {
     const handle = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
         kind: 'argv',
         executable: 'node',
@@ -547,6 +549,7 @@ describe('process runtime restart receipt', () => {
     const handle = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
         kind: 'argv',
         executable: 'node',
@@ -595,6 +598,7 @@ describe('process runtime restart receipt', () => {
     const handle = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
         kind: 'argv',
         executable: 'node',
@@ -670,7 +674,9 @@ describe('repository command process routing', () => {
       repository: fx.repository,
       command: ['git', 'rev-parse', 'HEAD'],
       interactiveWaitMs: 5_000,
-      timeoutMs: 15_000});
+      timeoutMs: 15_000,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+    });
     expect(['process_direct', 'process_managed']).toContain(result.route);
     expect(result.durableSideEffects.executionJobCount).toBe(0);
     expect(result.durableSideEffects.workerSpawnCount).toBe(0);
@@ -686,6 +692,7 @@ describe('process log GC', () => {
     const handle = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
         kind: 'argv',
         executable: 'node',
@@ -820,6 +827,7 @@ describe('writer claim inheritance and remaining fencing', () => {
     const handle = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
         kind: 'argv',
         executable: 'node',
@@ -860,6 +868,7 @@ describe('writer claim inheritance and remaining fencing', () => {
     const handle = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
         kind: 'argv',
         executable: 'node',
