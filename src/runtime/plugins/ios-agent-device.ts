@@ -929,30 +929,76 @@ async function executeJdSearch(input: AssistantPluginActionExecutionInput): Prom
   const targetSelectionStartedAt = performance.now();
   const query = validateJdQuery(input.args.query);
   const deviceSelector = requireString(input.args.device, 'device');
-  const selected = selectTarget(input, deviceSelector);
-  timingsMs.targetSelection = performance.now() - targetSelectionStartedAt;
-  if (selected.kind !== 'device') {
-    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'agent_device_jd_search requires one exact connected physical iPhone.', {
-      retryable: false,
-      details: { device: { id: selected.id, name: selected.name, kind: selected.kind } },
-    });
+  const requestedInteractionId = optionalString(input.args.interaction_id);
+  const keepSession = typeof input.args.keep_session === 'boolean'
+    ? input.args.keep_session
+    : Boolean(requestedInteractionId);
+  const captureScreenshot = typeof input.args.capture_screenshot === 'boolean'
+    ? input.args.capture_screenshot
+    : !requestedInteractionId;
+  let selected: AgentDeviceEntry;
+  let interaction: InteractionSessionRecord | undefined;
+  let sessionReused = false;
+  let deviceInventoryRequests = 0;
+
+  if (requestedInteractionId) {
+    interaction = requireRecord(subActionInput(input, 'agent_device_jd_search', {
+      interaction_id: requestedInteractionId,
+    }));
+    if (interaction.provider !== DEVICE_PROVIDER || interaction.instructions !== JD_BUNDLE_ID) {
+      throw new AssistantPluginError(
+        'PLUGIN_ACTION_ARGUMENT_INVALID',
+        'interaction_id must reference an active physical-iPhone JD session opened for com.360buy.jdmobile.',
+        {
+          retryable: false,
+          details: {
+            interactionId: interaction.interactionId,
+            provider: interaction.provider,
+            app: interaction.instructions,
+          },
+        },
+      );
+    }
+    selected = {
+      platform: 'ios',
+      appleOs: 'ios',
+      id: interaction.targetId,
+      name: deviceSelector,
+      kind: 'device',
+      target: 'mobile',
+      booted: true,
+    };
+    sessionReused = true;
+  } else {
+    deviceInventoryRequests += 1;
+    selected = selectTarget(input, deviceSelector);
+    if (selected.kind !== 'device') {
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'agent_device_jd_search requires one exact connected physical iPhone.', {
+        retryable: false,
+        details: { device: { id: selected.id, name: selected.name, kind: selected.kind } },
+      });
+    }
   }
-  const sharedArgs = {
-    device: selected.name,
-    team_id: optionalString(input.args.team_id),
-    runner_bundle_id: optionalString(input.args.runner_bundle_id),
-    developer_dir: optionalString(input.args.developer_dir),
-  };
-  const openStartedAt = performance.now();
-  const opened = await executeIosAgentDeviceAction(subActionInput(input, 'agent_device_open', {
-    ...sharedArgs,
-    app: JD_BUNDLE_ID,
-    // Foreground an already-running app by default. Relaunch is opt-in because
-    // it restarts app state and pays another cold-start/navigation cost.
-    relaunch: input.args.relaunch === true,
-  }));
-  const interaction = opened.interaction as InteractionSessionRecord | undefined;
-  timingsMs.open = performance.now() - openStartedAt;
+  timingsMs.targetSelection = performance.now() - targetSelectionStartedAt;
+
+  if (!interaction) {
+    const sharedArgs = {
+      device: selected.name,
+      team_id: optionalString(input.args.team_id),
+      runner_bundle_id: optionalString(input.args.runner_bundle_id),
+      developer_dir: optionalString(input.args.developer_dir),
+    };
+    const openStartedAt = performance.now();
+    const opened = await executeIosAgentDeviceAction(subActionInput(input, 'agent_device_open', {
+      ...sharedArgs,
+      app: JD_BUNDLE_ID,
+      // Foreground an already-running app by default. Relaunch is opt-in because
+      // it restarts app state and pays another cold-start/navigation cost.
+      relaunch: input.args.relaunch === true,
+    }));
+    interaction = opened.interaction as InteractionSessionRecord | undefined;
+    timingsMs.open = performance.now() - openStartedAt;
+  }
   if (!interaction) {
     throw new AssistantPluginError('AGENT_DEVICE_OPEN_FAILED', 'agent-device did not return an interaction for JD.', { retryable: false });
   }
@@ -1110,17 +1156,21 @@ async function executeJdSearch(input: AssistantPluginActionExecutionInput): Prom
       }
     }
     timingsMs.interactionAndEvidence = performance.now() - interactionStartedAt;
-    const screenshotStartedAt = performance.now();
-    screenshot = await executeIosAgentDeviceAction(subActionInput(input, 'agent_device_screenshot', {
-      interaction_id: interactionId,
-      label: 'jd-search-results',
-      max_size: 1600,
-    }));
-    timingsMs.screenshot = performance.now() - screenshotStartedAt;
+    if (captureScreenshot) {
+      const screenshotStartedAt = performance.now();
+      screenshot = await executeIosAgentDeviceAction(subActionInput(input, 'agent_device_screenshot', {
+        interaction_id: interactionId,
+        label: 'jd-search-results',
+        max_size: 1600,
+      }));
+      timingsMs.screenshot = performance.now() - screenshotStartedAt;
+    }
   } finally {
-    const closeStartedAt = performance.now();
-    await executeIosAgentDeviceAction(subActionInput(input, 'agent_device_close', { interaction_id: interactionId }));
-    timingsMs.close = performance.now() - closeStartedAt;
+    if (!keepSession) {
+      const closeStartedAt = performance.now();
+      await executeIosAgentDeviceAction(subActionInput(input, 'agent_device_close', { interaction_id: interactionId }));
+      timingsMs.close = performance.now() - closeStartedAt;
+    }
     timingsMs.total = performance.now() - workflowStartedAt;
   }
   return {
@@ -1129,9 +1179,13 @@ async function executeJdSearch(input: AssistantPluginActionExecutionInput): Prom
     app: JD_BUNDLE_ID,
     device: selected,
     query: '<redacted>',
-    runnerReadiness: 'verified_by_open',
+    runnerReadiness: sessionReused ? 'verified_by_active_session' : 'verified_by_open',
     executionPlan: {
       relaunch: input.args.relaunch === true,
+      sessionReused,
+      sessionKept: keepSession,
+      screenshotCaptured: captureScreenshot,
+      deviceInventoryRequests,
       nativeBatchRequests,
       nativeBatchSteps,
       exactResultWait,
@@ -1252,12 +1306,14 @@ export function iosAgentDeviceActions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'agent_device_jd_search', title: 'Search JD on a physical iPhone',
-      description: 'Launch JD, enter one bounded non-sensitive product query, submit it, return visible result text and capture a PNG. Login, verification, checkout, purchase, payment and biometrics remain human-only.',
+      description: 'Search JD with one bounded non-sensitive product query. A fresh one-shot call captures a PNG and closes; an explicitly reused active JD interaction defaults to no screenshot and remains warm. Login, verification, checkout, purchase, payment and biometrics remain human-only.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 10 * 60_000, cancellable: true, idempotent: false,
       scopes: ['ios.device'], resourceClaims: write,
       argumentsSchema: {
         type: 'object', properties: {
-          device: { type: 'string' }, query: { type: 'string' }, team_id: { type: 'string' }, runner_bundle_id: { type: 'string' }, developer_dir: { type: 'string' },
+          device: { type: 'string' }, query: { type: 'string' }, interaction_id: { type: 'string' },
+          keep_session: { type: 'boolean' }, capture_screenshot: { type: 'boolean' },
+          team_id: { type: 'string' }, runner_bundle_id: { type: 'string' }, developer_dir: { type: 'string' },
           search_target: { type: 'string' }, search_selector: { type: 'string' },
           submit_target: { type: 'string' }, submit_selector: { type: 'string' }, relaunch: { type: 'boolean' },
           result_text: { type: 'string' }, result_selector: { type: 'string' },

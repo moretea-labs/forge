@@ -259,6 +259,113 @@ describe('optional agent-device iOS Simulator provider', () => {
     expect(commands.some(({ argv }) => argv[1] === 'close')).toBe(true);
   });
 
+  it('reuses an active JD interaction without inventory, open, screenshot or close overhead', async () => {
+    const value = fixture();
+    readyIosTooling();
+    const commands: string[][] = [];
+    setIosAgentDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      now: () => new Date('2026-07-20T09:00:00.000Z'),
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
+        if (args[0] === 'devices') {
+          return { ok: true, status: 0, stdout: success({ devices: [device('PHONE-1', 'greyson', 'device', true)] }), stderr: '', command: [command, ...args] };
+        }
+        if (args[0] === 'batch') {
+          const steps = JSON.parse(args[args.indexOf('--steps') + 1]!) as Array<{ command: string; input: Record<string, unknown> }>;
+          return {
+            ok: true,
+            status: 0,
+            stdout: success({
+              total: steps.length,
+              executed: steps.length,
+              results: steps.map((step, index) => ({
+                step: index + 1,
+                command: step.command,
+                ok: true,
+                data: step.command === 'wait'
+                  ? { matched: true, text: step.input.text ?? step.input.selector }
+                  : { input: step.input },
+              })),
+              cost: { wallClockMs: 420, runnerRoundTrips: 3 },
+            }),
+            stderr: '',
+            command: [command, ...args],
+          };
+        }
+        if (args[0] === 'screenshot') writeFileSync(args[1]!, 'png');
+        return { ok: true, status: 0, stdout: success({ command: args[0] }), stderr: '', command: [command, ...args] };
+      },
+    });
+
+    const opened = await executeIosPluginAction(pluginInput(value, 'agent_device_open', {
+      app: 'com.360buy.jdmobile',
+      device: 'greyson',
+    }));
+    const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
+    commands.length = 0;
+
+    const result = await executeIosPluginAction(pluginInput(value, 'agent_device_jd_search', {
+      device: 'greyson',
+      interaction_id: interactionId,
+      query: '40.5码 宽楦 透气男鞋',
+      search_selector: 'type="SearchField"',
+      submit_selector: 'label="搜索"',
+      result_text: '搜索结果',
+    }));
+
+    expect(commands.filter((argv) => argv[1] === 'devices')).toHaveLength(0);
+    expect(commands.filter((argv) => argv[1] === 'open')).toHaveLength(0);
+    expect(commands.filter((argv) => argv[1] === 'batch')).toHaveLength(1);
+    expect(commands.filter((argv) => argv[1] === 'screenshot')).toHaveLength(0);
+    expect(commands.filter((argv) => argv[1] === 'close')).toHaveLength(0);
+    expect(result.artifactCandidates).toBeUndefined();
+    expect((result.interaction as Record<string, unknown>).status).toBe('waiting_for_user');
+    expect(readInteractionSession(value.repoRoot, 'ios-device', interactionId)?.status).toBe('waiting_for_user');
+    const plan = result.executionPlan as Record<string, unknown>;
+    expect(plan.sessionReused).toBe(true);
+    expect(plan.sessionKept).toBe(true);
+    expect(plan.screenshotCaptured).toBe(false);
+    expect(plan.deviceInventoryRequests).toBe(0);
+    expect(plan.nativeBatchRequests).toBe(1);
+  });
+
+  it('rejects reuse of a non-JD interaction before executing a search batch', async () => {
+    const value = fixture();
+    readyIosTooling();
+    const commands: string[][] = [];
+    setIosAgentDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
+        if (args[0] === 'devices') {
+          return { ok: true, status: 0, stdout: success({ devices: [device('PHONE-1', 'greyson', 'device', true)] }), stderr: '', command: [command, ...args] };
+        }
+        return { ok: true, status: 0, stdout: success({ command: args[0] }), stderr: '', command: [command, ...args] };
+      },
+    });
+
+    const opened = await executeIosPluginAction(pluginInput(value, 'agent_device_open', {
+      app: 'com.example.other',
+      device: 'greyson',
+    }));
+    const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
+    commands.length = 0;
+
+    await expect(executeIosPluginAction(pluginInput(value, 'agent_device_jd_search', {
+      device: 'greyson',
+      interaction_id: interactionId,
+      query: '宽楦男鞋',
+      search_selector: 'type="SearchField"',
+      result_text: '搜索结果',
+    }))).rejects.toThrow('active physical-iPhone JD session');
+
+    expect(commands.filter((argv) => argv[1] === 'batch')).toHaveLength(0);
+    expect(readInteractionSession(value.repoRoot, 'ios-device', interactionId)?.status).toBe('waiting_for_user');
+  });
+
   it('refreshes one stale cached JD search ref without terminalizing the session', async () => {
     const value = fixture();
     readyIosTooling();
