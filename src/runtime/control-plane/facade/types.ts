@@ -1,3 +1,4 @@
+import type { ProcessCheckReceiptEvidence } from '../../evidence/process-check-receipt';
 import type { AccessMode } from '../governance/access-policy';
 
 export const EXECUTION_MODES = ['direct_control', 'goal_workloop', 'handoff_only'] as const;
@@ -246,6 +247,7 @@ export interface VerificationRecord {
   recordedAt: string;
   supersedes?: string;
   evidenceRef?: EvidenceRef;
+  receipt?: ProcessCheckReceiptEvidence;
 }
 
 export interface WorkContract {

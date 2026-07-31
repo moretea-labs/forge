@@ -36,6 +36,14 @@ export interface RunCheckFacadeInput {
   signal?: AbortSignal;
   /** Immutable resolved identity — required; never inferred from main/active/cwd. */
   executionIdentity: ResolvedExecutionIdentity;
+  /** Exact consumers of the resulting persisted Process check receipt. */
+  verificationBinding?: {
+    executionSessionId?: string;
+    editSessionId?: string;
+    editRevision?: number;
+    issueId?: string;
+    taskId?: string;
+  };
 }
 
 export interface RunCheckFacadeResult {
@@ -181,6 +189,11 @@ export async function runCheckViaProcessRuntime(
       checkId: input.checkId,
       requestId: input.requestId,
       correlationId: input.workId,
+      executionSessionId: input.verificationBinding?.executionSessionId,
+      editSessionId: input.verificationBinding?.editSessionId,
+      editRevision: input.verificationBinding?.editRevision,
+      issueId: input.verificationBinding?.issueId,
+      taskId: input.verificationBinding?.taskId,
     },
     signal: input.signal,
   });

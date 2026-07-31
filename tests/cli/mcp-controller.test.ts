@@ -917,12 +917,31 @@ describe("MCP controller profile", () => {
         issue_id: created.value.id,
         task_id: "T1",
         status: "review"});
-      await jsonTool(ctx, "verify_task", {
+      const verified = await jsonTool(ctx, "verify_task", {
         issue_id: created.value.id,
         task_id: "T1",
         reviewer: "test-controller",
+        request_id: "verify-task-process-receipt",
         check_results: [{ check_id: "manual-review", ok: true }],
         acceptance_results: []});
+      expect(verified.value.task.status).toBe("verified");
+      const verifiedIssue = await jsonTool(ctx, "get_issue", {
+        issue_id: created.value.id,
+        detail_level: "full"});
+      const receiptResult = verifiedIssue.value.tasks.find((entry: { id: string }) => entry.id === "T1")?.verification?.checkResults?.[0];
+      expect(receiptResult).toMatchObject({
+        checkId: "manual-review",
+        ok: true,
+        receipt: {
+          issueId: created.value.id,
+          taskId: "T1",
+          checkId: "manual-review",
+          status: "passed",
+          ok: true,
+          receiptId: expect.stringMatching(/^check_receipt_/),
+          artifactPath: ".ai/harness/checks/controller/latest-manual-review.json",
+        },
+      });
       const accepted = await jsonTool(ctx, "accept_task", {
         issue_id: created.value.id,
         task_id: "T1"});

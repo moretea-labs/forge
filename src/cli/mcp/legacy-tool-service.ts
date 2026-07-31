@@ -65,7 +65,6 @@ import {
 } from "../controller/issue-store";
 import {
   listControllerChecks,
-  runControllerCheckAsync,
 } from "../controller/check-runner";
 import { normalizeCheckIds } from '../../runtime/control-plane/facade/check-normalization';
 import { acceptVerifiedTaskFromControllerWork } from '../../runtime/control-plane/execution/work-task-receipt';
@@ -2530,7 +2529,7 @@ export function buildMcpToolDefinitions(
       {
         name: "verify_task",
         description:
-          "Record task-local completion evidence. Declared checks are executed when present; missing checks are a warning, and reported command evidence can satisfy risk-adaptive verification.",
+          "Record task-local completion evidence. Declared checks execute through persisted Process Runtime receipts; retries reuse the same processes and reported command evidence can satisfy risk-adaptive verification.",
         inputSchema: {
           type: "object",
           properties: {
@@ -2540,6 +2539,7 @@ export function buildMcpToolDefinitions(
             integrated_revision: { type: "string" },
             reviewed_diff_hash: { type: "string" },
             reviewer: { type: "string" },
+            request_id: { type: "string", description: "Stable idempotency key for Process Runtime checks; retries reuse the original processes." },
             check_results: {
               type: "array",
               items: {
@@ -2742,7 +2742,7 @@ export function buildMcpToolDefinitions(
       },
       {
         name: "verify_edit_session",
-        description: "Start verification for the current edit revision as a Local Job and return immediately. Checks are optional unless configured on the session.",
+        description: "Verify the current edit revision through persisted Process Runtime checks. Retries with the same request_id reuse the original process and terminal receipts are attached to the exact revision.",
         inputSchema: {
           type: "object",
           properties: {
@@ -4405,20 +4405,70 @@ export async function callMcpTool(
         const requestedCheckIds = task.checks.length > 0 ? task.checks : requestedCheckInputs.map((entry) => entry.checkId);
         const normalizedChecks = normalizeCheckIds(requestedCheckIds, registryChecks);
         const checkIds = normalizedChecks.validCheckIds;
-        const checkResults = await Promise.all(checkIds.map(async (checkId) => {
-          try {
-            const result = await runControllerCheckAsync(ctx.repoRoot, checkId);
-            return {
+        const checkResults: TaskVerification['checkResults'] = [];
+        if (checkIds.length > 0) {
+          const { resolveRepositorySelection } = await import('../repositories/registry');
+          const { executionIdentityForRepository } = await import('../../runtime/control-plane/execution/execution-identity');
+          const { runPersistedCheckViaProcessRuntime } = await import('../../runtime/gateway/mcp/persisted-check-process');
+          const { getProcessRecord } = await import('../../runtime/execution/process-runtime/store');
+          const { processCheckCompletionReceipt } = await import('../../runtime/execution/process-runtime/check-receipt');
+          const controllerHome = resolveRepoPreferredControllerHome(ctx.repoRoot);
+          const repository = resolveRepositorySelection({
+            explicitPath: ctx.repoRoot,
+            controllerHome,
+            allowSoleRepository: true,
+          });
+          if (!repository) return errorResult('TASK_CHECK_REPOSITORY_UNRESOLVED', 'verify_task could not resolve the repository checkout');
+          const taskCheckRequestBase = typeof args.request_id === 'string' && args.request_id.trim()
+            ? args.request_id.trim()
+            : `verify-task:${issueId}:${taskId}:${createHash('sha256').update(JSON.stringify({ checkIds, revision: args.integrated_revision ?? evidenceRun?.integratedSessionId ?? 'current' })).digest('hex').slice(0, 16)}`;
+          for (const [index, checkId] of checkIds.entries()) {
+            const processRequestId = `${taskCheckRequestBase}:check:${index + 1}:${createHash('sha256').update(checkId).digest('hex').slice(0, 12)}`;
+            const facade = await runPersistedCheckViaProcessRuntime({
+              controllerHome,
+              repoId: repository.repoId,
+              checkoutId: repository.activeCheckoutId,
+              repoRoot: repository.canonicalRoot,
+              executionIdentity: executionIdentityForRepository(repository),
               checkId,
-              ok: result.ok,
-              summary: result.ok
-                ? `Passed with persisted evidence: ${result.artifactPath}`
-                : `Failed with persisted evidence: ${result.artifactPath}; ${(result.stderr || result.stdout).slice(0, 500)}`,
-            };
-          } catch (error) {
-            return { checkId, ok: false, summary: error instanceof Error ? error.message : String(error) };
+              requestId: processRequestId,
+              commandId: processRequestId,
+              verificationBinding: { issueId, taskId },
+            });
+            if (facade.mode === 'durable' || !facade.process) {
+              return errorResult('TASK_CHECK_DURABLE_REQUIRED', facade.durable?.reason ?? `check requires durable workflow: ${checkId}`);
+            }
+            if (!facade.process.completed) {
+              return textResult({
+                accepted: true,
+                status: 'verification_running',
+                issueId,
+                taskId,
+                checkId,
+                requestId: taskCheckRequestBase,
+                processId: facade.process.processId,
+                next: `Retry verify_task with request_id=${taskCheckRequestBase}; the original Process will be reused.`,
+                durableSideEffects: { executionJobCount: 0, localJobCount: 0, workerSpawnCount: 0, projectionUpdateCount: 0 },
+              });
+            }
+            const record = getProcessRecord(controllerHome, repository.repoId, facade.process.processId);
+            if (!record) return errorResult('TASK_CHECK_PROCESS_MISSING', `process record not found: ${facade.process.processId}`);
+            const receipt = processCheckCompletionReceipt(record, {
+              repoId: repository.repoId,
+              checkoutId: repository.activeCheckoutId,
+              issueId,
+              taskId,
+              checkId,
+              processId: facade.process.processId,
+            });
+            checkResults.push({
+              checkId,
+              ok: receipt.ok,
+              summary: receipt.summary,
+              receipt,
+            });
           }
-        }));
+        }
 
         const commandEvidence: TaskCommandEvidence[] = [];
         for (const entry of taskObjects(args.reported_commands)) {

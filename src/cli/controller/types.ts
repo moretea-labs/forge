@@ -1,3 +1,5 @@
+import type { ProcessCheckReceiptEvidence } from '../../runtime/evidence/process-check-receipt';
+
 export type IssueKind = 'bug' | 'feature' | 'governance' | 'investigation';
 export type IssueStatus = 'backlog' | 'analysis' | 'planned' | 'launch_blocked' | 'in_progress' | 'review' | 'done' | 'cancelled';
 export type TaskStatus = 'backlog' | 'analysis' | 'planned' | 'ready' | 'launch_blocked' | 'running' | 'blocked' | 'review' | 'verifying' | 'ready_to_integrate' | 'integrating' | 'integration_blocked' | 'integrated' | 'cleanup_pending' | 'cleanup_blocked' | 'changes_requested' | 'verified' | 'done' | 'cancelled' | 'superseded';
@@ -144,7 +146,12 @@ export interface TaskVerification {
   runId?: string;
   integratedRevision?: string;
   reviewedDiffHash?: string;
-  checkResults: Array<{ checkId: string; ok: boolean; summary?: string }>;
+  checkResults: Array<{
+    checkId: string;
+    ok: boolean;
+    summary?: string;
+    receipt?: ProcessCheckReceiptEvidence;
+  }>;
   commandEvidence?: TaskCommandEvidence[];
   acceptanceResults: TaskAcceptanceResult[];
   reviewer: string;

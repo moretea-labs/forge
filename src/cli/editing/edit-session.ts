@@ -11,6 +11,7 @@ import {
 import { tryAppendControllerWorklogEvent } from '../controller/worklog';
 import { globMatches, resolveMcpPath } from '../mcp/paths';
 import type { McpPolicy } from '../mcp/types';
+import type { ProcessCheckCompletionReceipt, ProcessCheckReceiptStatus } from '../../runtime/execution/process-runtime/check-receipt';
 
 export type EditSessionStatus =
   | 'open'
@@ -54,6 +55,13 @@ export interface EditSessionCheckRecord {
   summary: string;
   artifactPath?: string;
   executedAt: string;
+  /** Authoritative Process Runtime receipt metadata for the exact edit revision. */
+  status?: ProcessCheckReceiptStatus;
+  receiptId?: string;
+  processId?: string;
+  resultDigest?: string;
+  revision?: number;
+  receipt?: ProcessCheckCompletionReceipt;
 }
 
 export interface EditSession {
@@ -759,6 +767,76 @@ function persistVerificationResult(
     details: { revision: session.currentRevision, checkResults: input.results, note: session.reviewNote },
   });
   return session;
+}
+
+export function recordEditSessionProcessCheckReceipts(
+  repoRoot: string,
+  sessionId: string,
+  input: {
+    repoId: string;
+    checkoutId: string;
+    receipts: ProcessCheckCompletionReceipt[];
+    reviewer?: string;
+    note?: string;
+  },
+): EditSession {
+  const checkIds = input.receipts.map((receipt) => receipt.checkId);
+  if (new Set(checkIds).size !== checkIds.length) {
+    throw new Error('EDIT_CHECK_RECEIPT_DUPLICATE_CHECK: each check may appear only once per receipt batch');
+  }
+  const resolved = resolveVerificationRequest(repoRoot, sessionId, {
+    checkIds,
+    reviewer: input.reviewer,
+    note: input.note,
+  });
+  const session = resolved.session;
+  const missingRequiredChecks = session.requestedChecks.filter((checkId) => !checkIds.includes(checkId));
+  if (missingRequiredChecks.length > 0) {
+    throw new Error(`EDIT_CHECK_RECEIPT_REQUIRED_CHECK_MISSING: missing configured checks: ${missingRequiredChecks.join(', ')}`);
+  }
+  const records = input.receipts.map((receipt): EditSessionCheckRecord => {
+    if (receipt.repoId !== input.repoId || receipt.checkoutId !== input.checkoutId) {
+      throw new Error('EDIT_CHECK_RECEIPT_ROUTE_MISMATCH: receipt repository or checkout does not match the selected checkout');
+    }
+    if (receipt.editSessionId !== session.sessionId || receipt.editRevision !== session.currentRevision) {
+      throw new Error(`EDIT_CHECK_RECEIPT_STALE_REVISION: receipt targets ${receipt.editSessionId}@${String(receipt.editRevision)} but current session is ${session.sessionId}@${session.currentRevision}`);
+    }
+    if (session.issueId !== undefined && receipt.issueId !== session.issueId) {
+      throw new Error('EDIT_CHECK_RECEIPT_ISSUE_MISMATCH: receipt issue does not match the edit session');
+    }
+    if (session.taskId !== undefined && receipt.taskId !== session.taskId) {
+      throw new Error('EDIT_CHECK_RECEIPT_TASK_MISMATCH: receipt task does not match the edit session');
+    }
+    const existing = session.checkResults.find((entry) => entry.checkId === receipt.checkId);
+    if (existing?.receiptId) {
+      if (existing.receiptId === receipt.receiptId && existing.resultDigest === receipt.resultDigest) return existing;
+      throw new Error(`EDIT_CHECK_RECEIPT_CONTRADICTION: check ${receipt.checkId} already has different evidence for revision ${session.currentRevision}`);
+    }
+    return {
+      checkId: receipt.checkId,
+      ok: receipt.ok,
+      summary: receipt.summary,
+      artifactPath: receipt.artifactPath,
+      executedAt: receipt.finishedAt,
+      status: receipt.status,
+      receiptId: receipt.receiptId,
+      processId: receipt.processId,
+      resultDigest: receipt.resultDigest,
+      revision: receipt.editRevision,
+      receipt,
+    };
+  });
+  const unchanged = records.length === session.checkResults.length && records.every((record, index) => {
+    const existing = session.checkResults[index];
+    return existing?.receiptId === record.receiptId && existing?.resultDigest === record.resultDigest;
+  });
+  if (unchanged) return session;
+  return persistVerificationResult(repoRoot, session, {
+    checkIds: resolved.checkIds,
+    reviewer: resolved.reviewer,
+    note: resolved.note,
+    results: records,
+  });
 }
 
 function sessionSummary(session: EditSession): EditSessionSummary {

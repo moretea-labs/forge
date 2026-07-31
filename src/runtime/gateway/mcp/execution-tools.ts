@@ -33,8 +33,10 @@ import { recordMcpTiming, type McpTimingTrace } from '../../diagnostics/mcp-timi
 import { commandValue, normalizeRepositoryCommand, type RepositoryCommandValue } from '../../../cli/repositories/command-normalization';
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { executeRepositoryCommandViaProcessRuntime } from '../../execution/process-runtime/command-facade';
-import { getCheckProcessHandle, runCheckViaProcessRuntime } from '../../execution/process-runtime/check-facade';
-import { claimProcessInvocation } from '../../execution/process-runtime/store';
+import { getCheckProcessHandle } from '../../execution/process-runtime/check-facade';
+import { processCheckCompletionReceipt } from '../../execution/process-runtime/check-receipt';
+import { claimProcessInvocation, getProcessRecord } from '../../execution/process-runtime/store';
+import { runPersistedCheckViaProcessRuntime } from './persisted-check-process';
 
 const MAX_INLINE_RESULT_BYTES = 64 * 1024;
 
@@ -729,7 +731,7 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     }
     if (!process) {
       const processRequestId = `${validationInvocationId}:check:${index + 1}`;
-      const executed = await runCheckViaProcessRuntime({
+      const executed = await runPersistedCheckViaProcessRuntime({
         controllerHome: ctx.controllerHome,
         repoId: handle.repositoryId,
         checkoutId: handle.checkoutId,
@@ -739,6 +741,7 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
         requestId: processRequestId,
         workId: handle.workId,
         commandId: processRequestId,
+        verificationBinding: { executionSessionId: session.sessionId },
       });
       if (executed.mode === 'durable') {
         checks.push({ checkId, ok: undefined, status: 'deferred', summary: executed.durable?.reason, durable: executed.durable });
@@ -758,16 +761,35 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       checks.push({ checkId, ok: undefined, status: 'running', process });
       break;
     }
-    const ok = process.ok === true;
+    const record = getProcessRecord(ctx.controllerHome, handle.repositoryId, process.processId);
+    if (!record) {
+      checks.push({ checkId, ok: false, status: 'infrastructure_failure', summary: `Validation process record is unavailable: ${process.processId}` });
+      break;
+    }
+    const receipt = processCheckCompletionReceipt(record, {
+      repoId: handle.repositoryId,
+      checkoutId: handle.checkoutId,
+      workId: handle.workId,
+      executionSessionId: session.sessionId,
+      checkId,
+      processId: process.processId,
+    });
     appendVerificationRecord({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, handle.workId, {
       checkId,
-      outcome: ok ? 'valid_pass' : process.timedOut ? 'infrastructure_failure' : 'valid_fail',
-      summary: ok ? 'passed' : process.timedOut ? 'timed out' : 'failed',
-      recordedAt: new Date().toISOString(),
-      evidenceRef: { title: checkId, summary: process.processId, detailLevel: 'summary' },
+      outcome: receipt.ok ? 'valid_pass' : receipt.status === 'timed_out' || receipt.status === 'cancelled' ? 'infrastructure_failure' : 'valid_fail',
+      summary: receipt.summary,
+      recordedAt: receipt.finishedAt,
+      evidenceRef: { title: checkId, summary: `${receipt.receiptId}; artifact=${receipt.artifactPath}`, detailLevel: 'summary' },
+      receipt,
     });
-    checks.push({ checkId, ok, status: ok ? 'passed' : process.timedOut ? 'infrastructure_failure' : 'failed', process });
-    if (!ok) break;
+    checks.push({
+      checkId,
+      ok: receipt.ok,
+      status: receipt.ok ? 'passed' : receipt.status === 'timed_out' || receipt.status === 'cancelled' ? 'infrastructure_failure' : 'failed',
+      process,
+      receipt,
+    });
+    if (!receipt.ok) break;
   }
   const completed = checks.length === requestedChecks.length && checks.every((check) => check.ok !== undefined);
   const passed = completed && checks.every((check) => check.ok === true);

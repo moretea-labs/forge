@@ -136,6 +136,14 @@ export interface ManagedProcessRecord {
     requestId?: string;
     checkId?: string;
     correlationId?: string;
+    /** Controller MCP session that initiated this check, when applicable. */
+    executionSessionId?: string;
+    /** Exact direct-edit session binding for verification receipts. */
+    editSessionId?: string;
+    editRevision?: number;
+    /** Optional durable task identity consuming the same receipt. */
+    issueId?: string;
+    taskId?: string;
   };
   error?: { code: string; message: string };
   /** Sidecar exit receipt path written by wrapper (survives controller restart). */

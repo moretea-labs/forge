@@ -107,8 +107,25 @@ describe('controller-owned Work recovery and finalize cleanup', () => {
     expect(second.validation.completed).toBe(true);
     expect(second.validation.passed).toBe(true);
     expect(second.validation.checks[0].process.processId).toBe(processId);
+    expect(second.validation.checks[0].receipt).toEqual(expect.objectContaining({
+      processId,
+      workId,
+      executionSessionId: 'session-validation-recovery',
+      checkId: 'package:check:slow',
+      status: 'passed',
+      ok: true,
+      receiptId: expect.stringMatching(/^check_receipt_/),
+    }));
     expect(second.work.state).toBe('editing');
     expect(second.work.finalization.validation).toBe('done');
+    const storedWork = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
+    expect(storedWork?.checkRefs.at(0)?.receipt).toEqual(expect.objectContaining({
+      processId,
+      workId,
+      executionSessionId: 'session-validation-recovery',
+      checkId: 'package:check:slow',
+      receiptId: expect.stringMatching(/^check_receipt_/),
+    }));
     expect(readWorkHandle(controllerHome, repository.repoId, workId)?.validationRun).toBeUndefined();
   });
 

@@ -144,6 +144,11 @@ export async function runPersistedCheckViaProcessRuntime(
       checkId: input.checkId,
       requestId: input.requestId,
       correlationId: input.workId,
+      executionSessionId: input.verificationBinding?.executionSessionId,
+      editSessionId: input.verificationBinding?.editSessionId,
+      editRevision: input.verificationBinding?.editRevision,
+      issueId: input.verificationBinding?.issueId,
+      taskId: input.verificationBinding?.taskId,
     },
     signal: input.signal,
   });

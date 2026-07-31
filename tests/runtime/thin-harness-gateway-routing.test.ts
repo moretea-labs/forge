@@ -1,4 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
+import { createHash } from 'crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -24,6 +25,12 @@ import { routeExecution, isFastEligibleTool } from '../../src/runtime/execution/
 import { listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
 import { waitForProcess } from '../../src/runtime/execution/process-runtime/runtime';
 import { runReadOnlyDiagnosticViaProcessRuntime } from '../../src/runtime/diagnostics/process-facade';
+import {
+  applyEditOperations,
+  beginEditSession,
+  getEditSession,
+} from '../../src/cli/editing/edit-session';
+import { getMcpPolicy } from '../../src/cli/mcp/policy';
 
 function git(root: string, args: string[]): void {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8' });
@@ -422,6 +429,101 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(artifact.ok).toBe(false);
     expect(artifact.status).toBe(7);
     expect(artifact.stderr).toContain('expected-failure');
+  });
+
+  test('verify_edit_session consumes persisted Process receipts without Local Jobs', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    writeFileSync(join(fx.repoRoot, '.repo-harness', 'checks.json'), JSON.stringify({
+      version: 1,
+      checks: {
+        verify: {
+          description: 'fast edit verification',
+          command: [process.execPath, '-e', 'process.stdout.write("verified")'],
+          timeoutMs: 10_000,
+        },
+      },
+    }, null, 2));
+    const session = beginEditSession(fx.repoRoot, {
+      purpose: 'Process receipt MCP smoke',
+      allowedPaths: ['src/**'],
+      checks: ['verify'],
+    });
+    const sourcePath = join(fx.repoRoot, 'src', 'lib.ts');
+    const before = readFileSync(sourcePath, 'utf8');
+    applyEditOperations(fx.repoRoot, getMcpPolicy('controller', { repoRoot: fx.repoRoot }), session.sessionId, [{
+      type: 'replace',
+      path: 'src/lib.ts',
+      expectedSha256: createHash('sha256').update(before).digest('hex'),
+      replacements: [{ oldText: 'n = 1', newText: 'n = 2' }],
+    }]);
+
+    const localBefore = listLocalBridgeJobSnapshots(fx.repoRoot).length;
+    const jobsBefore = listExecutionJobs(fx.controllerHome, fx.repository.repoId).length;
+    await expect(routeDurableMcpCall(fx.ctx, 'verify_edit_session', {
+      repo_id: fx.repository.repoId,
+      checkout_id: fx.repository.activeCheckoutId,
+      session_id: session.sessionId,
+      check_ids: [],
+      request_id: 'verify-edit-empty-bypass',
+    })).rejects.toThrow(/EDIT_CHECK_RECEIPT_REQUIRED_CHECK_MISSING/);
+    const requestId = 'verify-edit-receipt-smoke';
+    let response = await routeDurableMcpCall(fx.ctx, 'verify_edit_session', {
+      repo_id: fx.repository.repoId,
+      checkout_id: fx.repository.activeCheckoutId,
+      session_id: session.sessionId,
+      request_id: requestId,
+      interactive_wait_ms: 100,
+    });
+    let payload = response?.structuredContent as Record<string, unknown>;
+    if (payload.completed !== true) {
+      const processes = payload.processes as Array<{ processId: string }>;
+      expect(processes.length).toBeGreaterThan(0);
+      await waitForProcess(fx.controllerHome, fx.repository.repoId, processes[0]!.processId, { timeoutMs: 10_000 });
+      response = await routeDurableMcpCall(fx.ctx, 'verify_edit_session', {
+        repo_id: fx.repository.repoId,
+        checkout_id: fx.repository.activeCheckoutId,
+        session_id: session.sessionId,
+        request_id: requestId,
+        interactive_wait_ms: 100,
+      });
+      payload = response?.structuredContent as Record<string, unknown>;
+    }
+
+    expect(response?.isError).not.toBe(true);
+    expect(JSON.stringify(payload)).not.toContain('VERIFY_EDIT_SESSION_LOCAL_JOB_RETIRED');
+    expect(payload.path).toBe('process_direct');
+    expect(payload.completed).toBe(true);
+    expect(payload.ok).toBe(true);
+    expect(payload.durableSideEffects).toEqual({
+      executionJobCount: 0,
+      localJobCount: 0,
+      workerSpawnCount: 0,
+      projectionUpdateCount: 0,
+    });
+    const checked = getEditSession(fx.repoRoot, session.sessionId);
+    expect(checked.status).toBe('checked');
+    expect(checked.checkResults[0]).toEqual(expect.objectContaining({
+      checkId: 'verify',
+      ok: true,
+      processId: expect.any(String),
+      receiptId: expect.stringMatching(/^check_receipt_/),
+      revision: 1,
+    }));
+    const processesAfterFirst = listProcessRecords(fx.controllerHome, fx.repository.repoId).length;
+
+    const retried = await routeDurableMcpCall(fx.ctx, 'verify_edit_session', {
+      repo_id: fx.repository.repoId,
+      checkout_id: fx.repository.activeCheckoutId,
+      session_id: session.sessionId,
+      request_id: requestId,
+      interactive_wait_ms: 100,
+    });
+    expect(retried?.isError).not.toBe(true);
+    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId).length).toBe(processesAfterFirst);
+    expect(getEditSession(fx.repoRoot, session.sessionId).checkResults).toEqual(checked.checkResults);
+    expect(listLocalBridgeJobSnapshots(fx.repoRoot).length).toBe(localBefore);
+    expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
   });
 
   test('run_check preserves Process Runtime request conflicts instead of masking them', async () => {

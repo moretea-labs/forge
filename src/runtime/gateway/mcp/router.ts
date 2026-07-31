@@ -10,6 +10,7 @@ import { executionToolDefinitions } from './execution-tools';
 import { processToolDefinitions } from './process-tools';
 import { resolveRepositorySelection } from '../../../cli/repositories/registry';
 import { executionIdentityForRepository } from '../../control-plane/execution/execution-identity';
+import { getEditSession, recordEditSessionProcessCheckReceipts } from '../../../cli/editing/edit-session';
 import type {
   ExecutionOperationMetadata,
   ExecutionTimeoutPolicy,
@@ -24,6 +25,8 @@ import {
 import {
   checkRequiresDurableWorkflow,
   classifyRepositoryCommandRoute,
+  getProcessRecord,
+  processCheckCompletionReceipt,
 } from '../../execution/process-runtime';
 import { runPersistedCheckViaProcessRuntime } from './persisted-check-process';
 import {
@@ -66,8 +69,9 @@ const THIN_ROUTED_TOOLS = new Set([
   'search_repository',
   'read_file_range',
   'read_repository_file',
-  // run_check uses Process Runtime unless multi-phase/release requires Durable.
+  // Checks and edit verification use Process Runtime unless multi-phase/release requires Durable.
   'run_check',
+  'verify_edit_session',
 ]);
 
 /** Blocking native host tools must never execute on the public MCP event loop. */
@@ -361,6 +365,39 @@ export function classifyGatewayExecutionPath(
       decision: {
         mode: 'fast',
         reasons: ['run_check_process_runtime'],
+        risk: 'workspace_write',
+        estimatedClass: 'short',
+        requiresIsolation: false,
+        requiresRecovery: false,
+        effects: {
+          readsWorkspace: true,
+          mutatesWorkspace: true,
+          mutatesGitRefs: false,
+          remoteWrite: false,
+        },
+      },
+    };
+  }
+
+  // verify_edit_session is a Process Runtime orchestration surface. It may
+  // return a managed handle, but it must never be promoted to a retired
+  // ExecutionJob/LocalJob merely because the edit session has checks.
+  if (name === 'verify_edit_session') {
+    if (args.apply_mode === 'async' || args.mode === 'durable' || args.force_durable === true) {
+      return { path: 'durable', reasons: ['caller_requested_durable_edit_verification'] };
+    }
+    const checkIds = Array.isArray(args.check_ids)
+      ? args.check_ids.map(String).map((entry) => entry.trim()).filter(Boolean)
+      : [];
+    if (checkIds.some((checkId) => checkRequiresDurableWorkflow(checkId))) {
+      return { path: 'durable', reasons: ['multi_phase_or_release_edit_check'] };
+    }
+    return {
+      path: 'fast',
+      reasons: ['verify_edit_session_process_runtime'],
+      decision: {
+        mode: 'fast',
+        reasons: ['verify_edit_session_process_runtime'],
         risk: 'workspace_write',
         estimatedClass: 'short',
         requiresIsolation: false,
@@ -751,6 +788,125 @@ export async function routeDurableMcpCall(
         },
       }, true);
     }
+  }
+
+  // Edit-session verification uses the same persisted Process Runtime checks as run_check.
+  // The deterministic per-revision request IDs make retries collect the original process
+  // instead of launching a duplicate command.
+  if (name === 'verify_edit_session' && classification.path === 'fast') {
+    const repository = resolveRepositorySelection({
+      repoId: typeof args.repo_id === 'string' ? args.repo_id : undefined,
+      checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
+      explicitPath: ctx.explicitRepository?.canonicalRoot,
+      controllerHome: ctx.controllerHome,
+      allowSoleRepository: true,
+    });
+    if (!repository) {
+      return result({ accepted: false, mode: 'reject', path: 'reject', message: 'verify_edit_session requires a resolvable repository' });
+    }
+    const editSessionId = String(args.session_id ?? '').trim();
+    if (!editSessionId) {
+      return result({ accepted: false, mode: 'reject', path: 'reject', message: 'verify_edit_session requires session_id' });
+    }
+    const editSession = getEditSession(repository.canonicalRoot, editSessionId);
+    const checkIds = Array.from(new Set(
+      (Array.isArray(args.check_ids) ? args.check_ids.map(String) : editSession.requestedChecks)
+        .map((entry) => entry.trim())
+        .filter(Boolean),
+    ));
+    const requestBase = typeof args.request_id === 'string' && args.request_id.trim()
+      ? args.request_id.trim()
+      : `verify-edit:${editSession.sessionId}:r${editSession.currentRevision}:${createHash('sha256').update(JSON.stringify(checkIds)).digest('hex').slice(0, 16)}`;
+    if (checkIds.length === 0) {
+      const checked = recordEditSessionProcessCheckReceipts(repository.canonicalRoot, editSession.sessionId, {
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        receipts: [],
+        reviewer: typeof args.reviewer === 'string' ? args.reviewer : undefined,
+        note: typeof args.note === 'string' ? args.note : undefined,
+      });
+      return result({ accepted: true, mode: 'direct', path: 'process_direct', completed: true, ok: true, session: checked, receipts: [] });
+    }
+    const processes = [] as NonNullable<Awaited<ReturnType<typeof runPersistedCheckViaProcessRuntime>>['process']>[];
+    for (const [index, checkId] of checkIds.entries()) {
+      const checkRequestId = `${requestBase}:check:${index + 1}:${createHash('sha256').update(checkId).digest('hex').slice(0, 12)}`;
+      const facade = await runPersistedCheckViaProcessRuntime({
+        controllerHome: ctx.controllerHome,
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        repoRoot: repository.canonicalRoot,
+        executionIdentity: executionIdentityForRepository(repository),
+        checkId,
+        timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
+        interactiveWaitMs: typeof args.interactive_wait_ms === 'number' ? args.interactive_wait_ms : undefined,
+        requestId: checkRequestId,
+        commandId: checkRequestId,
+        verificationBinding: {
+          editSessionId: editSession.sessionId,
+          editRevision: editSession.currentRevision,
+          issueId: editSession.issueId,
+          taskId: editSession.taskId,
+        },
+      });
+      if (facade.mode === 'durable' || !facade.process) {
+        return result({
+          accepted: false,
+          mode: 'durable',
+          path: 'durable',
+          checkId,
+          message: facade.durable?.reason ?? 'check requires durable workflow',
+          suggestedOperation: facade.durable?.suggestedOperation,
+        });
+      }
+      processes.push(facade.process);
+      if (!facade.process.completed) break;
+    }
+    const pending = processes.find((process) => !process.completed);
+    if (pending || processes.length !== checkIds.length) {
+      return result({
+        accepted: true,
+        mode: 'managed',
+        path: 'process_managed',
+        completed: false,
+        sessionId: editSession.sessionId,
+        editRevision: editSession.currentRevision,
+        requestId: requestBase,
+        processes,
+        next: `Re-run verify_edit_session with request_id=${requestBase}; Process Runtime will reuse the same process records.`,
+        durableSideEffects: { executionJobCount: 0, localJobCount: 0, workerSpawnCount: 0, projectionUpdateCount: 0 },
+      });
+    }
+    const receipts = processes.map((handle, index) => {
+      const record = getProcessRecord(ctx.controllerHome, repository.repoId, handle.processId);
+      if (!record) throw new Error(`PROCESS_CHECK_RECEIPT_MISSING: process record not found: ${handle.processId}`);
+      return processCheckCompletionReceipt(record, {
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        editSessionId: editSession.sessionId,
+        editRevision: editSession.currentRevision,
+        issueId: editSession.issueId,
+        taskId: editSession.taskId,
+        checkId: checkIds[index],
+        processId: handle.processId,
+      });
+    });
+    const checked = recordEditSessionProcessCheckReceipts(repository.canonicalRoot, editSession.sessionId, {
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      receipts,
+      reviewer: typeof args.reviewer === 'string' ? args.reviewer : undefined,
+      note: typeof args.note === 'string' ? args.note : undefined,
+    });
+    return result({
+      accepted: true,
+      mode: 'direct',
+      path: 'process_direct',
+      completed: true,
+      ok: receipts.every((receipt) => receipt.ok),
+      session: checked,
+      receipts,
+      durableSideEffects: { executionJobCount: 0, localJobCount: 0, workerSpawnCount: 0, projectionUpdateCount: 0 },
+    });
   }
 
   // run_check Process Runtime facade — execute here so legacy LocalBridgeJob path is skipped.
