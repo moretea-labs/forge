@@ -41,19 +41,20 @@ export function createMcpToolContext(opts: McpServerOptions): ServerToolContext 
   return createMultiRepositoryToolContext({ ...opts, repo });
 }
 
-export function createRepoHarnessMcpServerFromContext(ctx: ServerToolContext): Server {
+export function createRepoHarnessMcpServerFromContext(baseContext: ServerToolContext): Server {
   const server = new Server(
     { name: 'repo-harness-mcp', version: '1.4.0' },
-    { capabilities: { tools: {} }, instructions: mcpServerInstructions(ctx.policy.profile) },
+    { capabilities: { tools: {} }, instructions: mcpServerInstructions(baseContext.policy.profile) },
   );
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: isMultiRepositoryContext(ctx)
-      ? controllerExposureSnapshot(ctx).definitions.map(injectDurableCommandFields)
-      : buildMcpToolDefinitions(ctx.policy, { enableChatgptBrowser: ctx.enableChatgptBrowser === true }),
+    tools: isMultiRepositoryContext(baseContext)
+      ? controllerExposureSnapshot(baseContext).definitions.map(injectDurableCommandFields)
+      : buildMcpToolDefinitions(baseContext.policy, { enableChatgptBrowser: baseContext.enableChatgptBrowser === true }),
   }));
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const name = request.params.name;
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+    const ctx: ServerToolContext = { ...baseContext, signal: extra.signal };
     if (isMultiRepositoryContext(ctx)) {
       if (!isControllerToolExposed(ctx, name)) {
         const value = {

@@ -102,6 +102,7 @@ export interface AssistantPluginActionRequest {
   requestId: string;
   args: Record<string, unknown>;
   timeoutMs?: number;
+  signal?: AbortSignal;
   confirmAuthorization?: boolean;
   confirmationText?: string;
   origin: ExecutionJobOrigin;
@@ -117,6 +118,10 @@ export interface AssistantPluginActionExecutionInput {
   args: Record<string, unknown>;
   origin: ExecutionJobOrigin;
   jobId?: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  /** Internal absolute request deadline; propagated only across nested adapter actions. */
+  deadlineAtMs?: number;
 }
 
 export type AssistantPluginScope = 'repository' | 'controller';

@@ -664,6 +664,11 @@ export async function submitAssistantPluginAction(
       args: normalizedArgs,
       origin: request.origin,
       jobId: receiptId,
+      timeoutMs: request.timeoutMs,
+      signal: request.signal,
+      deadlineAtMs: typeof request.timeoutMs === 'number'
+        ? Date.now() + Math.max(1, Math.trunc(request.timeoutMs))
+        : undefined,
     });
     const receipt: PluginActionReceipt = {
       schemaVersion: 1,

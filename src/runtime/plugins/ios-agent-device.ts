@@ -4,6 +4,7 @@ import { isAbsolute, join } from 'path';
 import { spawnSync } from 'child_process';
 import { performance } from 'perf_hooks';
 import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
+import { runBoundedProcess } from '../execution/thin-harness/async-process';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
 import {
@@ -60,18 +61,22 @@ interface CommandResult {
   stdout: string;
   stderr: string;
   command: string[];
+  timedOut?: boolean;
+  cancelled?: boolean;
 }
 
 interface CommandOptions {
   cwd?: string;
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
 }
 
 export interface IosAgentDeviceRuntimeHooks {
   platform(): NodeJS.Platform;
   now(): Date;
   runCommand(command: string, args: string[], options?: CommandOptions): CommandResult;
+  runCommandAsync(command: string, args: string[], options?: CommandOptions): Promise<CommandResult>;
 }
 
 const defaultHooks: IosAgentDeviceRuntimeHooks = {
@@ -85,27 +90,54 @@ const defaultHooks: IosAgentDeviceRuntimeHooks = {
       timeout: options.timeoutMs ?? 30_000,
       maxBuffer: 4 * 1024 * 1024,
     });
+    const timedOut = (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT';
     return {
-      ok: result.status === 0,
+      ok: result.status === 0 && !timedOut,
       status: result.status,
       stdout: String(result.stdout ?? ''),
       stderr: String(result.stderr ?? result.error?.message ?? ''),
       command: [command, ...args],
+      timedOut,
+      cancelled: options.signal?.aborted === true,
+    };
+  },
+  runCommandAsync: async (command, args, options = {}) => {
+    const result = await runBoundedProcess(command, args, {
+      cwd: options.cwd ?? process.cwd(),
+      env: options.env,
+      timeoutMs: options.timeoutMs ?? 30_000,
+      maxOutputBytes: 4 * 1024 * 1024,
+      signal: options.signal,
+    });
+    return {
+      ok: result.ok,
+      status: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      command: [command, ...args],
+      timedOut: result.timedOut,
+      cancelled: result.cancelled,
     };
   },
 };
 
 let hooks: IosAgentDeviceRuntimeHooks = { ...defaultHooks };
 let statusCache: { expiresAt: number; value: ReturnType<typeof probeStatus> } | undefined;
+const interactionCommandTails = new Map<string, Promise<void>>();
 
 export function setIosAgentDeviceRuntimeHooksForTest(overrides: Partial<IosAgentDeviceRuntimeHooks>): void {
   hooks = { ...defaultHooks, ...overrides };
+  if (overrides.runCommand && !overrides.runCommandAsync) {
+    hooks.runCommandAsync = async (command, args, options) => overrides.runCommand!(command, args, options);
+  }
   statusCache = undefined;
+  interactionCommandTails.clear();
 }
 
 export function resetIosAgentDeviceRuntimeHooksForTest(): void {
   hooks = { ...defaultHooks };
   statusCache = undefined;
+  interactionCommandTails.clear();
 }
 
 function executable(): string {
@@ -296,6 +328,11 @@ function parseJsonResult(result: CommandResult, failureCode: string): Record<str
   const success = result.ok && parsed?.success !== false;
   if (!success) {
     const sensitive = result.command[1] === 'fill';
+    const terminalCode = result.cancelled
+      ? 'AGENT_DEVICE_COMMAND_CANCELLED'
+      : result.timedOut
+        ? 'AGENT_DEVICE_COMMAND_TIMEOUT'
+        : failureCode;
     const message = sensitive
       ? 'agent-device fill failed.'
       : String(
@@ -306,17 +343,39 @@ function parseJsonResult(result: CommandResult, failureCode: string): Record<str
         || result.stdout
         || 'agent-device command failed.',
       );
-    throw new AssistantPluginError(failureCode, message, {
-      retryable: false,
+    throw new AssistantPluginError(terminalCode, message, {
+      retryable: result.cancelled === true || result.timedOut === true,
       details: {
         status: result.status,
         command: redactedCommand(result.command),
         stdout: sensitive ? '<redacted for fill>' : result.stdout.slice(0, 8_000),
         stderr: sensitive ? '<redacted for fill>' : result.stderr.slice(0, 8_000),
+        timedOut: result.timedOut === true,
+        cancelled: result.cancelled === true,
       },
     });
   }
   return parsed ?? { success: true, data: { stdout: result.stdout.trim() } };
+}
+
+function actionTimeoutError(message = 'The agent-device action exceeded its request deadline.'): AssistantPluginError {
+  return new AssistantPluginError('AGENT_DEVICE_COMMAND_TIMEOUT', message, { retryable: true });
+}
+
+function remainingActionTimeout(input: AssistantPluginActionExecutionInput): number | undefined {
+  if (typeof input.deadlineAtMs !== 'number' || !Number.isFinite(input.deadlineAtMs)) return undefined;
+  return Math.trunc(input.deadlineAtMs - Date.now());
+}
+
+function effectiveCommandTimeout(input: AssistantPluginActionExecutionInput, timeoutMs = 30_000): number {
+  const remaining = remainingActionTimeout(input);
+  if (remaining !== undefined && remaining <= 0) throw actionTimeoutError();
+  const requestLimit = remaining !== undefined
+    ? remaining
+    : typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs)
+      ? Math.max(1, Math.trunc(input.timeoutMs))
+      : undefined;
+  return requestLimit ? Math.max(1, Math.min(timeoutMs, requestLimit)) : timeoutMs;
 }
 
 function runJson(
@@ -331,8 +390,28 @@ function runJson(
 ): Record<string, unknown> {
   const result = hooks.runCommand(executable(), args, {
     cwd: input.repoRoot,
-    timeoutMs: options.timeoutMs,
+    timeoutMs: effectiveCommandTimeout(input, options.timeoutMs),
     env: options.record ? sessionEnv(input, options.record) : probeEnv(input, options.signing),
+    signal: input.signal,
+  });
+  return parseJsonResult(result, options.failureCode);
+}
+
+async function runJsonAsync(
+  input: AssistantPluginActionExecutionInput,
+  args: string[],
+  options: {
+    record?: InteractionSessionRecord;
+    signing?: AgentDeviceSigningConfig;
+    timeoutMs?: number;
+    failureCode: string;
+  },
+): Promise<Record<string, unknown>> {
+  const result = await hooks.runCommandAsync(executable(), args, {
+    cwd: input.repoRoot,
+    timeoutMs: effectiveCommandTimeout(input, options.timeoutMs),
+    env: options.record ? sessionEnv(input, options.record) : probeEnv(input, options.signing),
+    signal: input.signal,
   });
   return parseJsonResult(result, options.failureCode);
 }
@@ -531,36 +610,122 @@ function failSession(input: AssistantPluginActionExecutionInput, record: Interac
   throw normalized;
 }
 
-function runSessionCommand(
+function interactionCommandKey(record: InteractionSessionRecord): string {
+  return `${record.provider}:${record.interactionId}`;
+}
+
+function interactionCancelledError(): AssistantPluginError {
+  return new AssistantPluginError('AGENT_DEVICE_COMMAND_CANCELLED', 'The agent-device action was cancelled before it acquired the interaction session.', {
+    retryable: true,
+  });
+}
+
+async function waitForInteractionTurn(
+  previous: Promise<void>,
+  signal?: AbortSignal,
+  timeoutMs?: number,
+): Promise<void> {
+  if (signal?.aborted) throw interactionCancelledError();
+  if (timeoutMs !== undefined && timeoutMs <= 0) {
+    throw actionTimeoutError('The agent-device action timed out while waiting for the interaction session.');
+  }
+  if (!signal && timeoutMs === undefined) {
+    await previous.catch(() => undefined);
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      signal?.removeEventListener('abort', onAbort);
+      callback();
+    };
+    const onAbort = () => finish(() => reject(interactionCancelledError()));
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (timeoutMs !== undefined) {
+      timeoutHandle = setTimeout(() => finish(() => reject(actionTimeoutError(
+        'The agent-device action timed out while waiting for the interaction session.',
+      ))), Math.max(1, timeoutMs));
+      timeoutHandle.unref?.();
+    }
+    void previous.catch(() => undefined).then(() => finish(resolve));
+  });
+}
+
+async function serializeInteractionCommand<T>(
   input: AssistantPluginActionExecutionInput,
   record: InteractionSessionRecord,
-  args: string[],
-  failureCode: string,
-  timeoutMs = 60_000,
-): Record<string, unknown> {
+  command: (current: InteractionSessionRecord) => Promise<T>,
+  options: { allowTerminal?: boolean } = {},
+): Promise<T> {
+  const key = interactionCommandKey(record);
+  const previous = interactionCommandTails.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  const tail = previous.catch(() => undefined).then(() => current);
+  interactionCommandTails.set(key, tail);
   try {
-    return runJson(input, [...args, '--session', record.sessionId, '--platform', 'ios', '--json'], {
-      record,
-      timeoutMs,
-      failureCode,
-    });
-  } catch (error) {
-    return failSession(input, record, error);
+    await waitForInteractionTurn(previous, input.signal, remainingActionTimeout(input));
+    if (input.signal?.aborted) throw interactionCancelledError();
+    const current = readAgentDeviceInteraction(input.repoRoot, record.interactionId);
+    if (!current || current.sessionId !== record.sessionId) {
+      throw new AssistantPluginError('AGENT_DEVICE_SESSION_NOT_ACTIVE', 'The interaction session changed or disappeared while this command was queued.', {
+        retryable: false,
+        details: { interactionId: record.interactionId, status: current?.status ?? 'missing' },
+      });
+    }
+    if (!isInteractionSessionActive(current.status) && options.allowTerminal !== true) {
+      throw new AssistantPluginError('AGENT_DEVICE_SESSION_NOT_ACTIVE', 'The interaction session became terminal while this command was queued.', {
+        retryable: false,
+        details: { interactionId: record.interactionId, status: current.status },
+      });
+    }
+    return await command(current);
+  } finally {
+    release();
+    if (interactionCommandTails.get(key) === tail) {
+      void tail.finally(() => {
+        if (interactionCommandTails.get(key) === tail) interactionCommandTails.delete(key);
+      });
+    }
   }
 }
 
-function runSessionCommandAttempt(
+async function runSessionCommand(
   input: AssistantPluginActionExecutionInput,
   record: InteractionSessionRecord,
   args: string[],
   failureCode: string,
   timeoutMs = 60_000,
-): Record<string, unknown> {
-  return runJson(input, [...args, '--session', record.sessionId, '--platform', 'ios', '--json'], {
-    record,
-    timeoutMs,
-    failureCode,
+): Promise<Record<string, unknown>> {
+  return serializeInteractionCommand(input, record, async () => {
+    try {
+      return await runJsonAsync(input, [...args, '--session', record.sessionId, '--platform', 'ios', '--json'], {
+        record,
+        timeoutMs,
+        failureCode,
+      });
+    } catch (error) {
+      return failSession(input, record, error);
+    }
   });
+}
+
+async function runSessionCommandAttempt(
+  input: AssistantPluginActionExecutionInput,
+  record: InteractionSessionRecord,
+  args: string[],
+  failureCode: string,
+  timeoutMs = 60_000,
+): Promise<Record<string, unknown>> {
+  return serializeInteractionCommand(input, record, async () => runJsonAsync(
+    input,
+    [...args, '--session', record.sessionId, '--platform', 'ios', '--json'],
+    { record, timeoutMs, failureCode },
+  ));
 }
 
 function isStaleAccessibilityRefError(error: unknown): boolean {
@@ -829,13 +994,13 @@ function prepareAgentDeviceBatch(
   return { nativeSteps, redactions };
 }
 
-function runSessionBatch(
+async function runSessionBatch(
   input: AssistantPluginActionExecutionInput,
   record: InteractionSessionRecord,
   prepared: PreparedAgentDeviceBatch,
   timeoutMs = 120_000,
-): Record<string, unknown> {
-  let result: unknown = runSessionCommand(input, record, [
+): Promise<Record<string, unknown>> {
+  let result: unknown = await runSessionCommand(input, record, [
     'batch',
     '--steps', JSON.stringify(prepared.nativeSteps),
     '--on-error', 'stop',
@@ -846,13 +1011,13 @@ function runSessionBatch(
   return result as Record<string, unknown>;
 }
 
-function runSessionBatchAttempt(
+async function runSessionBatchAttempt(
   input: AssistantPluginActionExecutionInput,
   record: InteractionSessionRecord,
   prepared: PreparedAgentDeviceBatch,
   timeoutMs = 120_000,
-): Record<string, unknown> {
-  let result: unknown = runSessionCommandAttempt(input, record, [
+): Promise<Record<string, unknown>> {
+  let result: unknown = await runSessionCommandAttempt(input, record, [
     'batch',
     '--steps', JSON.stringify(prepared.nativeSteps),
     '--on-error', 'stop',
@@ -863,21 +1028,21 @@ function runSessionBatchAttempt(
   return result as Record<string, unknown>;
 }
 
-function recoverExactWaitEvidence(
+async function recoverExactWaitEvidence(
   input: AssistantPluginActionExecutionInput,
   record: InteractionSessionRecord,
   scope: string | undefined,
   depth: number,
-): {
+): Promise<{
   snapshot: Record<string, unknown>;
   tier: 'scoped_snapshot' | 'full_snapshot';
   snapshotRequests: number;
-} {
+}> {
   let snapshotRequests = 0;
   if (scope) {
     snapshotRequests += 1;
     try {
-      const scoped = runSessionCommandAttempt(
+      const scoped = await runSessionCommandAttempt(
         input,
         record,
         ['snapshot', '--interactive', '--depth', String(depth), '--scope', scope],
@@ -894,7 +1059,7 @@ function recoverExactWaitEvidence(
 
   snapshotRequests += 1;
   try {
-    const full = runSessionCommandAttempt(
+    const full = await runSessionCommandAttempt(
       input,
       record,
       ['snapshot', '--interactive', '--depth', String(depth), '--force-full'],
@@ -1075,7 +1240,7 @@ async function executeJdSearch(input: AssistantPluginActionExecutionInput): Prom
       nativeBatchRequests += 1;
       nativeBatchSteps += 1;
       try {
-        runSessionBatchAttempt(input, record, prepareAgentDeviceBatch([fillStep], record), 20_000);
+        await runSessionBatchAttempt(input, record, prepareAgentDeviceBatch([fillStep], record), 20_000);
       } catch (error) {
         if (!isStaleAccessibilityRefError(error)) return failSession(input, record, error);
         staleRefRecovery = true;
@@ -1083,7 +1248,7 @@ async function executeJdSearch(input: AssistantPluginActionExecutionInput): Prom
         accessibilitySnapshotRequests += 1;
         let refreshedSnapshot: Record<string, unknown>;
         try {
-          refreshedSnapshot = runSessionCommandAttempt(
+          refreshedSnapshot = await runSessionCommandAttempt(
             input,
             record,
             ['snapshot', '--interactive'],
@@ -1104,7 +1269,7 @@ async function executeJdSearch(input: AssistantPluginActionExecutionInput): Prom
         fillStep = { kind: 'fill', input: { target: refreshedTarget, text: query, delay_ms: 20 } };
         nativeBatchRequests += 1;
         nativeBatchSteps += 1;
-        runSessionBatch(input, record, prepareAgentDeviceBatch([fillStep], record), 20_000);
+        await runSessionBatch(input, record, prepareAgentDeviceBatch([fillStep], record), 20_000);
       }
     }
     const fallbackScope = resultScope ?? resultText ?? resultSelector;
@@ -1118,17 +1283,17 @@ async function executeJdSearch(input: AssistantPluginActionExecutionInput): Prom
       ], record);
       if (exactResultWait) {
         try {
-          finalSnapshot = runSessionBatchAttempt(input, record, prepared, 30_000);
+          finalSnapshot = await runSessionBatchAttempt(input, record, prepared, 30_000);
         } catch (error) {
           if (!isExactEvidenceWaitMiss(error)) return failSession(input, record, error);
           exactWaitFallback = true;
-          const recovered = recoverExactWaitEvidence(input, record, fallbackScope, snapshotDepth);
+          const recovered = await recoverExactWaitEvidence(input, record, fallbackScope, snapshotDepth);
           finalSnapshot = recovered.snapshot;
           accessibilityEvidenceTier = recovered.tier;
           accessibilitySnapshotRequests += recovered.snapshotRequests;
         }
       } else {
-        finalSnapshot = runSessionBatch(input, record, prepared, 30_000);
+        finalSnapshot = await runSessionBatch(input, record, prepared, 30_000);
         accessibilitySnapshotRequests += 1;
       }
     } else {
@@ -1136,22 +1301,22 @@ async function executeJdSearch(input: AssistantPluginActionExecutionInput): Prom
       nativeBatchSteps += (cachedSearchRef ? 0 : 1) + evidenceSteps.length;
       // agent-device 0.20.2 exposes keyboard return only through the CLI
       // command, not the Node batch keyboard schema (status/dismiss only).
-      if (!cachedSearchRef) runSessionBatch(input, record, prepareAgentDeviceBatch([fillStep], record), 20_000);
-      runSessionCommand(input, record, ['keyboard', 'return'], 'JD_SEARCH_SUBMIT_FAILED');
+      if (!cachedSearchRef) await runSessionBatch(input, record, prepareAgentDeviceBatch([fillStep], record), 20_000);
+      await runSessionCommand(input, record, ['keyboard', 'return'], 'JD_SEARCH_SUBMIT_FAILED');
       const prepared = prepareAgentDeviceBatch(evidenceSteps, record);
       if (exactResultWait) {
         try {
-          finalSnapshot = runSessionBatchAttempt(input, record, prepared, 30_000);
+          finalSnapshot = await runSessionBatchAttempt(input, record, prepared, 30_000);
         } catch (error) {
           if (!isExactEvidenceWaitMiss(error)) return failSession(input, record, error);
           exactWaitFallback = true;
-          const recovered = recoverExactWaitEvidence(input, record, fallbackScope, snapshotDepth);
+          const recovered = await recoverExactWaitEvidence(input, record, fallbackScope, snapshotDepth);
           finalSnapshot = recovered.snapshot;
           accessibilityEvidenceTier = recovered.tier;
           accessibilitySnapshotRequests += recovered.snapshotRequests;
         }
       } else {
-        finalSnapshot = runSessionBatch(input, record, prepared, 30_000);
+        finalSnapshot = await runSessionBatch(input, record, prepared, 30_000);
         accessibilitySnapshotRequests += 1;
       }
     }
@@ -1375,6 +1540,9 @@ export function iosAgentDeviceActions(): AssistantPluginActionDescriptor[] {
 }
 
 export async function executeIosAgentDeviceAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
+  if (input.deadlineAtMs === undefined && typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs)) {
+    input = { ...input, deadlineAtMs: Date.now() + Math.max(1, Math.trunc(input.timeoutMs)) };
+  }
   if (input.actionId === 'agent_device_status') return { provider: 'agent-device', ...iosAgentDeviceStatus() };
   if (input.actionId === 'agent_device_close') {
     const interactionId = requireString(input.args.interaction_id, 'interaction_id');
@@ -1396,7 +1564,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
     return {
       provider: 'agent-device', version: IOS_AGENT_DEVICE_VERSION, device: selected,
       physicalDeviceSupported: selected.kind === 'device',
-      result: bounded(runJson(input, args, {
+      result: bounded(await runJsonAsync(input, args, {
         signing: signingFromArgs(input.args),
         failureCode: 'AGENT_DEVICE_DOCTOR_FAILED',
         timeoutMs: 4 * 60_000,
@@ -1410,7 +1578,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
     return {
       provider: 'agent-device', version: IOS_AGENT_DEVICE_VERSION, device: selected,
       physicalDeviceSupported: selected.kind === 'device',
-      result: bounded(runJson(input, [
+      result: bounded(await runJsonAsync(input, [
         'prepare', 'ios-runner', '--platform', 'ios', '--device', selected.name, '--timeout', '600000', '--json',
       ], {
         signing,
@@ -1458,7 +1626,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
     const args = ['open', app, '--device', selected.name];
     if (input.args.relaunch === true) args.push('--relaunch');
     try {
-      const result = runJson(input, [...args, '--session', record.sessionId, '--platform', 'ios', '--json'], {
+      const result = await runJsonAsync(input, [...args, '--session', record.sessionId, '--platform', 'ios', '--json'], {
         record,
         timeoutMs: 4 * 60_000,
         failureCode: 'AGENT_DEVICE_OPEN_FAILED',
@@ -1487,7 +1655,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
         interaction: record,
         batched: true,
         stepCount: prepared.nativeSteps.length,
-        result: bounded(runSessionBatch(input, record, prepared, timeoutMs)),
+        result: bounded(await runSessionBatch(input, record, prepared, timeoutMs)),
       };
     }
     case 'agent_device_snapshot': {
@@ -1495,7 +1663,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       if (input.args.interactive === true) args.push('-i');
       if (input.args.raw === true) args.push('--raw');
       if (typeof input.args.depth === 'number') args.push('--depth', String(Math.max(1, Math.min(20, Math.trunc(input.args.depth)))));
-      return { provider: 'agent-device', interaction: record, result: bounded(runSessionCommand(input, record, args, 'AGENT_DEVICE_SNAPSHOT_FAILED')) };
+      return { provider: 'agent-device', interaction: record, result: bounded(await runSessionCommand(input, record, args, 'AGENT_DEVICE_SNAPSHOT_FAILED')) };
     }
     case 'agent_device_press': {
       const target = optionalString(input.args.target);
@@ -1505,7 +1673,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
         throw new AssistantPluginError('IOS_DEVICE_SENSITIVE_ACTION_BLOCKED', 'Press targets involving credentials, verification, biometrics, checkout, purchase or payment require human interaction.', { retryable: false });
       }
       const args = ['press', ...(target ? [target] : [String(input.args.x), String(input.args.y)]), '--settle'];
-      return { provider: 'agent-device', interaction: record, result: bounded(runSessionCommand(input, record, args, 'AGENT_DEVICE_PRESS_FAILED')) };
+      return { provider: 'agent-device', interaction: record, result: bounded(await runSessionCommand(input, record, args, 'AGENT_DEVICE_PRESS_FAILED')) };
     }
     case 'agent_device_fill': {
       const target = requireString(input.args.target, 'target');
@@ -1516,7 +1684,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       }
       const args = ['fill', target, text, '--settle'];
       if (typeof input.args.delay_ms === 'number') args.push('--delay-ms', String(Math.max(0, Math.min(5_000, Math.trunc(input.args.delay_ms)))));
-      const result = runSessionCommand(input, record, args, 'AGENT_DEVICE_FILL_FAILED');
+      const result = await runSessionCommand(input, record, args, 'AGENT_DEVICE_FILL_FAILED');
       return { provider: 'agent-device', interaction: record, result: bounded(redactExactText(result, text)) };
     }
     case 'agent_device_scroll': {
@@ -1526,7 +1694,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       }
       const args = ['scroll', direction];
       if (typeof input.args.amount === 'number') args.push(String(Math.max(1, Math.min(100, Math.trunc(input.args.amount)))));
-      return { provider: 'agent-device', interaction: record, result: bounded(runSessionCommand(input, record, args, 'AGENT_DEVICE_SCROLL_FAILED')) };
+      return { provider: 'agent-device', interaction: record, result: bounded(await runSessionCommand(input, record, args, 'AGENT_DEVICE_SCROLL_FAILED')) };
     }
     case 'agent_device_screenshot': {
       const label = sanitize(optionalString(input.args.label) ?? 'screenshot');
@@ -1534,7 +1702,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       const args = ['screenshot', path];
       if (input.args.overlay_refs === true) args.push('--overlay-refs');
       if (typeof input.args.max_size === 'number') args.push('--max-size', String(Math.max(320, Math.min(4_096, Math.trunc(input.args.max_size)))));
-      const result = runSessionCommand(input, record, args, 'AGENT_DEVICE_SCREENSHOT_FAILED');
+      const result = await runSessionCommand(input, record, args, 'AGENT_DEVICE_SCREENSHOT_FAILED');
       if (!existsSync(path)) {
         return failSession(input, record, new AssistantPluginError('AGENT_DEVICE_SCREENSHOT_MISSING', 'agent-device succeeded without creating the requested screenshot.', { retryable: false }));
       }
@@ -1548,27 +1716,32 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       if (typeof input.args.limit === 'number') args.push(String(Math.max(1, Math.min(200, Math.trunc(input.args.limit)))));
       const cursor = optionalString(input.args.cursor);
       if (cursor) args.push(cursor);
-      const result = runSessionCommand(input, record, args, 'AGENT_DEVICE_EVENTS_FAILED', 30_000);
+      const result = await runSessionCommand(input, record, args, 'AGENT_DEVICE_EVENTS_FAILED', 30_000);
       return { provider: 'agent-device', interaction: record, result: bounded(redactEventEvidence(result)) };
     }
     case 'agent_device_close': {
       if (!isInteractionSessionActive(record.status)) {
         return { provider: 'agent-device', interaction: record, alreadyClosed: true };
       }
-      const args = ['close'];
-      if (record.provider === SIMULATOR_PROVIDER && input.args.shutdown_simulator === true) args.push('--shutdown');
-      patchInteractionSession(input.repoRoot, record.provider, record.interactionId, { status: 'closing' });
-      try {
-        const result = runJson(input, [...args, '--session', record.sessionId, '--platform', 'ios', '--json'], {
-          record,
-          timeoutMs: 60_000,
-          failureCode: 'AGENT_DEVICE_CLOSE_FAILED',
-        });
-        const closed = patchInteractionSession(input.repoRoot, record.provider, record.interactionId, { status: 'closed' }) ?? record;
-        return { provider: 'agent-device', interaction: closed, result: bounded(result) };
-      } catch (error) {
-        return failSession(input, record, error);
-      }
+      return serializeInteractionCommand(input, record, async (current) => {
+        if (!isInteractionSessionActive(current.status)) {
+          return { provider: 'agent-device', interaction: current, alreadyClosed: true };
+        }
+        const args = ['close'];
+        if (current.provider === SIMULATOR_PROVIDER && input.args.shutdown_simulator === true) args.push('--shutdown');
+        patchInteractionSession(input.repoRoot, current.provider, current.interactionId, { status: 'closing' });
+        try {
+          const result = await runJsonAsync(input, [...args, '--session', current.sessionId, '--platform', 'ios', '--json'], {
+            record: current,
+            timeoutMs: 60_000,
+            failureCode: 'AGENT_DEVICE_CLOSE_FAILED',
+          });
+          const closed = patchInteractionSession(input.repoRoot, current.provider, current.interactionId, { status: 'closed' }) ?? current;
+          return { provider: 'agent-device', interaction: closed, result: bounded(result) };
+        } catch (error) {
+          return failSession(input, current, error);
+        }
+      }, { allowTerminal: true });
     }
     default:
       throw new AssistantPluginError('PLUGIN_ACTION_NOT_SUPPORTED', `ios/${input.actionId} is not supported.`, { retryable: false });

@@ -4586,6 +4586,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           requestId,
           args: actionArguments,
           timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
+          signal: ctx.signal,
           confirmAuthorization: args.confirm_authorization === true,
           confirmationText: typeof args.confirmation_text === 'string' ? args.confirmation_text : undefined,
           origin: { surface: 'mcp' as const, actor: 'plugin_action_execute', correlationId: requestId },

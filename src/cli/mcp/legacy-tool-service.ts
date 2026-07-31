@@ -163,6 +163,8 @@ export interface McpToolContext {
   /** Bound repository identity for session cache keys. */
   repoId?: string;
   checkoutId?: string;
+  /** Request-scoped MCP cancellation; never persisted or reused across calls. */
+  signal?: AbortSignal;
 }
 
 export interface McpToolDefinition {

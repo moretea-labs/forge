@@ -366,6 +366,119 @@ describe('optional agent-device iOS Simulator provider', () => {
     expect(readInteractionSession(value.repoRoot, 'ios-device', interactionId)?.status).toBe('waiting_for_user');
   });
 
+  it('serializes concurrent commands per interaction and caps the provider timeout', async () => {
+    const value = fixture();
+    readyIosTooling();
+    let activeCommands = 0;
+    let maxActiveCommands = 0;
+    const observedTimeouts: number[] = [];
+    setIosAgentDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
+        if (args[0] === 'devices') {
+          return { ok: true, status: 0, stdout: success({ devices: [device('PHONE-1', 'greyson', 'device', true)] }), stderr: '', command: [command, ...args] };
+        }
+        return { ok: true, status: 0, stdout: success({ command: args[0] }), stderr: '', command: [command, ...args] };
+      },
+      runCommandAsync: async (command, args, options) => {
+        if (args[0] !== 'press') {
+          return { ok: true, status: 0, stdout: success({ command: args[0] }), stderr: '', command: [command, ...args] };
+        }
+        observedTimeouts.push(options?.timeoutMs ?? -1);
+        activeCommands += 1;
+        maxActiveCommands = Math.max(maxActiveCommands, activeCommands);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        activeCommands -= 1;
+        return { ok: true, status: 0, stdout: success({ command: args[0] }), stderr: '', command: [command, ...args] };
+      },
+    });
+
+    const opened = await executeIosPluginAction(pluginInput(value, 'agent_device_open', {
+      app: 'com.360buy.jdmobile',
+      device: 'greyson',
+    }));
+    const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
+
+    await Promise.all([
+      executeIosPluginAction({
+        ...pluginInput(value, 'agent_device_press', { interaction_id: interactionId, target: '@e1' }, 'press-1'),
+        timeoutMs: 250,
+      }),
+      executeIosPluginAction({
+        ...pluginInput(value, 'agent_device_press', { interaction_id: interactionId, target: '@e2' }, 'press-2'),
+        timeoutMs: 250,
+      }),
+    ]);
+
+    expect(maxActiveCommands).toBe(1);
+    expect(observedTimeouts).toHaveLength(2);
+    expect(observedTimeouts.every((timeout) => timeout > 0 && timeout <= 250)).toBe(true);
+    expect(observedTimeouts[1]!).toBeLessThanOrEqual(observedTimeouts[0]!);
+    expect(readInteractionSession(value.repoRoot, 'ios-device', interactionId)?.status).toBe('waiting_for_user');
+  });
+
+  it('cancels a queued command without touching or terminalizing the active interaction', async () => {
+    const value = fixture();
+    readyIosTooling();
+    let releaseFirst!: () => void;
+    let markFirstStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+    const firstRelease = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let asyncCommandCount = 0;
+    setIosAgentDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
+        if (args[0] === 'devices') {
+          return { ok: true, status: 0, stdout: success({ devices: [device('PHONE-1', 'greyson', 'device', true)] }), stderr: '', command: [command, ...args] };
+        }
+        return { ok: true, status: 0, stdout: success({ command: args[0] }), stderr: '', command: [command, ...args] };
+      },
+      runCommandAsync: async (command, args) => {
+        if (args[0] !== 'press') {
+          return { ok: true, status: 0, stdout: success({ command: args[0] }), stderr: '', command: [command, ...args] };
+        }
+        asyncCommandCount += 1;
+        if (asyncCommandCount === 1) {
+          markFirstStarted();
+          await firstRelease;
+        }
+        return { ok: true, status: 0, stdout: success({ command: args[0] }), stderr: '', command: [command, ...args] };
+      },
+    });
+
+    const opened = await executeIosPluginAction(pluginInput(value, 'agent_device_open', {
+      app: 'com.360buy.jdmobile',
+      device: 'greyson',
+    }));
+    const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
+    const first = executeIosPluginAction(pluginInput(value, 'agent_device_press', {
+      interaction_id: interactionId,
+      target: '@e1',
+    }, 'press-holds-session'));
+    await firstStarted;
+
+    const abort = new AbortController();
+    abort.abort();
+    const queued = executeIosPluginAction({
+      ...pluginInput(value, 'agent_device_press', { interaction_id: interactionId, target: '@e2' }, 'press-cancelled'),
+      signal: abort.signal,
+    });
+    await expect(queued).rejects.toThrow('cancelled before it acquired the interaction session');
+
+    const timedOut = executeIosPluginAction({
+      ...pluginInput(value, 'agent_device_press', { interaction_id: interactionId, target: '@e3' }, 'press-timeout'),
+      timeoutMs: 10,
+    });
+    await expect(timedOut).rejects.toThrow('timed out while waiting for the interaction session');
+    expect(asyncCommandCount).toBe(1);
+    expect(readInteractionSession(value.repoRoot, 'ios-device', interactionId)?.status).toBe('waiting_for_user');
+
+    releaseFirst();
+    await first;
+  });
+
   it('refreshes one stale cached JD search ref without terminalizing the session', async () => {
     const value = fixture();
     readyIosTooling();
