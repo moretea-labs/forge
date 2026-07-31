@@ -1,8 +1,8 @@
 ---
 id: "ISS-20260730-A1EA53"
 kind: "feature"
-status: "planned"
-updated_at: "2026-07-31T00:05:52.183Z"
+status: "in_progress"
+updated_at: "2026-07-31T00:40:14.794Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -41,7 +41,7 @@ Result Goal 1 of ISS-20260730-AE1BCC for the next reliability release line. The 
 
 ### T1 — Audit current Work completion state and freeze the evidence contract
 
-- Status: `ready`
+- Status: `verified`
 - Objective: After RC6 is merged, map current WorkContract, ExecutionJob, Evidence Plane, finalize, merge, cleanup, and recovery behavior; record the minimal compatible data-model and migration contract before implementation.
 - Depends on: none
 - Allowed paths: `docs/**`, `src/runtime/control-plane/facade/**`, `src/runtime/workflow/**`, `tests/**`
