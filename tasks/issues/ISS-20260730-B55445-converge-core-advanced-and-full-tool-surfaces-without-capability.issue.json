@@ -41,7 +41,7 @@
       "id": "T1",
       "title": "Establish the authoritative tool inventory and exposure invariants",
       "objective": "After RC6 is clean, inventory all registered stable, compatibility, experimental, and retired tools; identify every duplicated membership source; define generation/validation rules, profile fingerprints, and capability categories without changing runtime exposure yet.",
-      "status": "running",
+      "status": "verifying",
       "dependsOn": [],
       "allowedPaths": [
         "src/cli/mcp/**",
@@ -65,12 +65,134 @@
       "notes": [
         "Controller-enforced external gate. Unblock to ready only after ISS-20260729-BF2F89 is terminal, integrated, cleaned, and its exact revision has been recorded. Tool-surface work remains an exposure/schema optimization and must not alter permissions or stable capability availability.",
         "RC6 external gate is satisfied at exact released revision 2a48486b7b8c3395d05e4f30201e968ee88f9779; current origin/main is 809349d43b6583b4cfa22e55986f760f16380cb3. Start with read-only authoritative inventory and invariant freezing only. Tool exposure profiles remain architecture/schema choices, never permission tiers; all stable Advanced/Full capability categories must remain callable and later receive category-level invocation E2E.",
-        "Started authoritative tool inventory as Work work_0c41797e873f49d7b0774c44a61eecfd on exact clean main 0af2ab1b0765f876f89c01beeb4a83f3392bbdb6. T1 is inventory/contract only: no tool exposure, registration, routing or compatibility behavior will change."
+        "Started authoritative tool inventory as Work work_0c41797e873f49d7b0774c44a61eecfd on exact clean main 0af2ab1b0765f876f89c01beeb4a83f3392bbdb6. T1 is inventory/contract only: no tool exposure, registration, routing or compatibility behavior will change.",
+        "The authoritative inventory contract is committed at facaa2bae387b32ef070de4528eeb8593561e53d. Work work_616708eb6c134fba8e283e2488058119 completed validation and commit stages. Re-running exact post-commit type, Controller v8, and profile contract evidence before acceptance. T1 changes no runtime exposure; T2 remains responsible for the future bounded 5–7 tool Core profile.",
+        "Independent review completed on exact commit facaa2bae387b32ef070de4528eeb8593561e53d. The commit adds only docs/researches/20260731-authoritative-tool-surface-inventory.md. Work work_616708eb6c134fba8e283e2488058119 is completed and records valid passes for package:check:type, package:check:controller-v8, package:check:public-docs, and package:check:open-source-surface. The contract accounts for Core/Advanced 133-tool fingerprint 1a0c2549..., Full 262-tool fingerprint 91dc1c6a..., source hierarchy, drift risks, capability categories, no-capability-loss invariants, and secret-safe scope. No runtime exposure changed.",
+        "Verification evidence failed: One or more executed checks or reported commands failed.",
+        "Verification evidence failed: One or more executed checks or reported commands failed.",
+        "Verification evidence failed: One or more executed checks or reported commands failed.",
+        "Verification evidence failed: One or more executed checks or reported commands failed.",
+        "Verification evidence failed: One or more executed checks or reported commands failed.",
+        "Verification evidence failed: One or more executed checks or reported commands failed.",
+        "Verification evidence failed: One or more executed checks or reported commands failed.",
+        "Verification evidence failed: One or more executed checks or reported commands failed.",
+        "Verification discrepancy resolved to a missing declared heavy check, not a code or documentation defect. Exact commit facaa2bae387b32ef070de4528eeb8593561e53d already passed package:check:type, package:check:controller-v8, package:check:public-docs, and package:check:open-source-surface. Formal Task verification additionally requires package:test. Started managed Process proc_ms8c2o49_def959b0 once; it remains running and must be polled rather than re-run. After terminal success, record verification, accept T1, and commit the resulting Issue snapshot status updates.",
+        "The first verification correctly rejected package:test because it subscribed to a shared heavy check queued on an earlier repository state. Current HEAD remains facaa2bae387b32ef070de4528eeb8593561e53d and no code/content failure occurred. Committing this Controller ledger first, then running fresh package:check:type and package:test on the resulting clean exact revision before final acceptance."
       ],
       "runIds": [],
       "createdAt": "2026-07-30T09:30:38.098Z",
-      "updatedAt": "2026-07-31T01:56:53.033Z",
-      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      "updatedAt": "2026-07-31T02:39:37.263Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "verification": {
+        "integratedRevision": "facaa2bae387b32ef070de4528eeb8593561e53d",
+        "reviewer": "ChatGPT",
+        "checkResults": [
+          {
+            "checkId": "package:check:type",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-type.json"
+          },
+          {
+            "checkId": "package:test",
+            "ok": false,
+            "summary": "repository revision changed while heavy check package:test was queued; resubmit the check"
+          }
+        ],
+        "commandEvidence": [
+          {
+            "command": [
+              "bun",
+              "run",
+              "check:type"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "passed",
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-31T02:19:46Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "bun",
+              "run",
+              "check:controller-v8"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "passed",
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-31T02:19:46Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "bun",
+              "run",
+              "check:public-docs"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "passed",
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-31T02:19:46Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "bun",
+              "run",
+              "check:open-source-surface"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "passed",
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-31T02:19:47Z",
+            "source": "reported"
+          }
+        ],
+        "acceptanceResults": [
+          {
+            "criterion": "Authoritative inventory and aliases accounted for",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Committed inventory contract at facaa2ba."
+          },
+          {
+            "criterion": "Duplicate sources and drift risks identified",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Exact source hierarchy and drift rules documented."
+          },
+          {
+            "criterion": "Profile categories and fingerprints frozen without exposure changes",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Core/Advanced 133, Full 262; commit is documentation-only."
+          },
+          {
+            "criterion": "No capability loss invariant defined",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Set equations and callability requirements documented."
+          },
+          {
+            "criterion": "Secret-safe and exact-revision verified",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "No secrets recorded; four checks passed."
+          }
+        ],
+        "verifiedAt": "2026-07-31T02:38:25.168Z",
+        "autoCompleted": false,
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
     },
     {
       "id": "T2",
@@ -273,6 +395,6 @@
     }
   ],
   "createdAt": "2026-07-30T09:30:38.098Z",
-  "updatedAt": "2026-07-31T01:56:53.033Z",
+  "updatedAt": "2026-07-31T02:39:37.263Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }

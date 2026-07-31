@@ -2,7 +2,7 @@
 id: "ISS-20260730-B55445"
 kind: "feature"
 status: "in_progress"
-updated_at: "2026-07-31T01:56:53.033Z"
+updated_at: "2026-07-31T02:39:37.263Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -44,7 +44,7 @@ Result Goal 3 of ISS-20260730-AE1BCC for the next reliability release line. The 
 
 ### T1 — Establish the authoritative tool inventory and exposure invariants
 
-- Status: `running`
+- Status: `verifying`
 - Objective: After RC6 is clean, inventory all registered stable, compatibility, experimental, and retired tools; identify every duplicated membership source; define generation/validation rules, profile fingerprints, and capability categories without changing runtime exposure yet.
 - Depends on: none
 - Allowed paths: `src/cli/mcp/**`, `src/runtime/gateway/mcp/**`, `src/mcp/**`, `tests/**`, `docs/**`
