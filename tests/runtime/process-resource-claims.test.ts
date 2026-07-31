@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   claimsForCheck,
   claimsForRepositoryCommand,
+  scopeResourceClaims,
 } from '../../src/runtime/execution/process-runtime/resource-claims';
 import { claimsForMcpOperation } from '../../src/runtime/gateway/mcp/resource-policy';
 import { claimsConflict } from '../../src/runtime/resources/claims/conflicts';
@@ -15,6 +16,23 @@ describe('Process Runtime fine-grained resource claims', () => {
   test('readonly commands claim workspace read only', () => {
     const claims = claimsForRepositoryCommand(['git', 'status'], 'repo1', 'co1');
     expect(claims).toEqual([{ resourceKey: 'workspace:co1', mode: 'read' }]);
+  });
+
+  test('Work-bound claims retain conflict keys and carry exact repository, checkout and Work scope', () => {
+    const claims = scopeResourceClaims(
+      claimsForRepositoryCommand(['git', 'status'], 'repo1', 'co1'),
+      'repo1',
+      'co1',
+      'work1',
+    );
+    expect(claims).toEqual([{
+      resourceKey: 'workspace:co1',
+      mode: 'read',
+      repoId: 'repo1',
+      checkoutId: 'co1',
+      workId: 'work1',
+    }]);
+    expect(() => scopeResourceClaims(claims, 'repo1', 'co1', 'work2')).toThrow(/RESOURCE_CLAIM_WORK_MISMATCH/);
   });
 
   test('typecheck uses workspace read plus cache without a same-workspace write', () => {

@@ -618,6 +618,7 @@ describe('Process Runtime real lease contention', () => {
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
+      workId: 'work-lease-a',
       command: {
         kind: 'argv',
         executable: 'node',
@@ -632,8 +633,22 @@ describe('Process Runtime real lease contention', () => {
     expect(first.completed).toBe(false);
     const record = getProcessRecord(fx.controllerHome, fx.repository.repoId, first.processId);
     expect((record?.leaseRefs?.length ?? 0) > 0).toBe(true);
+    expect(record?.resourceClaims).toContainEqual({
+      resourceKey: `workspace:${fx.repository.activeCheckoutId}`,
+      mode: 'write',
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      workId: 'work-lease-a',
+    });
+    expect(record?.leaseRefs?.[0]).toMatchObject({
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      workId: 'work-lease-a',
+    });
     const active = listActiveLeases(fx.controllerHome, fx.repository.repoId);
-    expect(active.some((lease) => lease.ownerJobId === `process:${first.processId}`)).toBe(true);
+    expect(active.some((lease) => lease.ownerJobId === `process:${first.processId}`
+      && lease.checkoutId === fx.repository.activeCheckoutId
+      && lease.workId === 'work-lease-a')).toBe(true);
 
     // Concurrent write must not spawn (lease conflict before runner).
     const blocked = await spawnManagedProcess({
@@ -704,20 +719,27 @@ describe('Process Runtime real lease contention', () => {
     const handle = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
+      workId: 'work-release-once',
       command: {
         kind: 'argv',
         executable: 'node',
         args: ['-e', 'process.exit(0)'],
         cwd: fx.repoRoot,
       },
-      resourceClaims: [{ resourceKey: `workspace:active`, mode: 'write' }],
+      resourceClaims: [{ resourceKey: `workspace:${fx.repository.activeCheckoutId}`, mode: 'write' }],
       interactiveWaitMs: 5_000,
       timeoutMs: 10_000,
     });
     expect(handle.completed).toBe(true);
     const record = getProcessRecord(fx.controllerHome, fx.repository.repoId, handle.processId);
     expect(record?.leasesReleased).toBe(true);
+    expect(record?.leaseRefs?.[0]).toMatchObject({
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      workId: 'work-release-once',
+    });
     // Re-release via recovery must not throw / leave leases.
     const recovery = recoverManagedProcesses(fx.controllerHome, fx.repository.repoId);
     expect(Array.isArray(recovery.leasesReleased)).toBe(true);

@@ -36,6 +36,8 @@ import {
 } from "../controller/runtime-config";
 import { normalizeRemoteUrl, stableCheckoutId, stableRemoteRepoId } from "../repositories/identity";
 import { resolveRepoPreferredControllerHome } from "../repositories/controller-home";
+import { listRepositories } from "../repositories/registry";
+import { managedWorktreePath } from "../repositories/worktree-storage";
 import {
   ensureControllerEpoch,
   hasControllerOwnershipMetadata,
@@ -924,10 +926,14 @@ function plannedWorktreeLocation(
   runId: string,
 ): { path: string; branch: string } {
   const suffix = runId.slice(-8);
+  const controllerHome = resolveRepoPreferredControllerHome(repoRoot);
+  const repoId = tryReadRepositoryIdentity(repoRoot).repoId;
   return {
-    path: join(
-      repoRoot,
-      `.ai/harness/worktrees/${sanitize(issueId)}-${sanitize(taskId)}-${suffix}`,
+    path: managedWorktreePath(
+      controllerHome,
+      repoId,
+      `${sanitize(issueId)}-${sanitize(taskId)}-${suffix}`,
+      listRepositories(controllerHome, { includeRemoved: true }),
     ),
     branch: `controller/${sanitize(issueId)}-${sanitize(taskId)}-${suffix}`,
   };

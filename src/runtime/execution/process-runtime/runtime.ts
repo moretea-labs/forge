@@ -68,6 +68,7 @@ import type {
   ProcessRunnerExitReceipt,
 } from './process-runner-entry';
 import type { ResourceClaimSpec } from '../jobs/types';
+import { scopeResourceClaims, toProcessClaims } from './resource-claims';
 
 interface LiveMonitor {
   processId: string;
@@ -332,6 +333,9 @@ function toResourceClaimSpecs(claims: ProcessResourceClaim[]): ResourceClaimSpec
   return claims.map((claim) => ({
     resourceKey: claim.resourceKey,
     mode: claim.mode,
+    ...(claim.repoId ? { repoId: claim.repoId } : {}),
+    ...(claim.checkoutId ? { checkoutId: claim.checkoutId } : {}),
+    ...(claim.workId ? { workId: claim.workId } : {}),
   }));
 }
 
@@ -356,7 +360,13 @@ export function releaseProcessLeasesOnce(
       controllerHome,
       repoId,
       processOwnerJobId(processId),
-      refs.map((ref) => ({ leaseId: ref.leaseId, fencingToken: ref.fencingToken })),
+      refs.map((ref) => ({
+        leaseId: ref.leaseId,
+        fencingToken: ref.fencingToken,
+        repoId: ref.repoId ?? repoId,
+        checkoutId: ref.checkoutId,
+        workId: ref.workId,
+      })),
       { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
     );
   } catch (error) {
@@ -851,7 +861,12 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
   const stderrPath = join(logDir, `${processId}.stderr.log`);
   const exitReceiptPath = receiptPathFor(input.controllerHome, input.repoId, processId);
   const descriptorPath = descriptorPathFor(input.controllerHome, input.repoId, processId);
-  const resourceClaims = input.resourceClaims ?? [];
+  const resourceClaims = toProcessClaims(scopeResourceClaims(
+    toResourceClaimSpecs(input.resourceClaims ?? []),
+    input.repoId,
+    input.checkoutId,
+    input.workId,
+  ));
 
   const record: ManagedProcessRecord = {
     schemaVersion: 1,
@@ -959,6 +974,9 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
       resourceKey: lease.resourceKey,
       fencingToken: lease.fencingToken,
       expiresAt: lease.expiresAt,
+      repoId: lease.repoId,
+      checkoutId: lease.checkoutId,
+      workId: lease.workId,
     }));
     updateProcessRecord(input.controllerHome, input.repoId, processId, { leaseRefs });
   }

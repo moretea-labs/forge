@@ -12,7 +12,7 @@ import {
   type ControllerCheck,
   type ControllerCheckSnapshot,
 } from '../../../cli/controller/check-runner';
-import { claimsForCheck, toProcessClaims } from './resource-claims';
+import { claimsForCheck, scopeResourceClaims, toProcessClaims } from './resource-claims';
 import { spawnManagedProcess, waitForProcess, getProcessHandle } from './runtime';
 import type { ProcessHandle } from './types';
 import { DEFAULT_INTERACTIVE_WAIT_MS } from './types';
@@ -156,12 +156,17 @@ export async function runCheckViaProcessRuntime(
       `CHECKOUT_ROUTE_MISMATCH: check checkout ${input.checkoutId} differs from identity ${executionIdentity.checkoutId}`,
     );
   }
-  const claims = claimsForCheck(
-    input.checkId,
-    check.command,
+  const claims = scopeResourceClaims(
+    claimsForCheck(
+      input.checkId,
+      check.command,
+      executionIdentity.repositoryId,
+      executionIdentity.checkoutId,
+      check.effects,
+    ),
     executionIdentity.repositoryId,
     executionIdentity.checkoutId,
-    check.effects,
+    input.workId,
   );
   const cwd = check.cwd === '.'
     ? executionIdentity.canonicalRoot

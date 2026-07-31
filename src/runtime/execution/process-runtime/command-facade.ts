@@ -9,7 +9,7 @@
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { classifyRepositoryCommand } from '../../../cli/repositories/command-classifier';
 import { normalizeRepositoryCommand } from '../../../cli/repositories/command-normalization';
-import { claimsForRepositoryCommand, toProcessClaims } from './resource-claims';
+import { claimsForRepositoryCommand, scopeResourceClaims, toProcessClaims } from './resource-claims';
 import {
   spawnManagedProcess,
   getProcessHandle,
@@ -185,11 +185,16 @@ export async function executeRepositoryCommandViaProcessRuntime(
     Math.min(input.timeoutMs ?? 15 * 60_000, 24 * 60 * 60_000),
   );
 
-  const claims = claimsForRepositoryCommand(
-    input.command,
+  const claims = scopeResourceClaims(
+    claimsForRepositoryCommand(
+      input.command,
+      executionIdentity.repositoryId,
+      executionIdentity.checkoutId,
+      input.repository.defaultBranch,
+    ),
     executionIdentity.repositoryId,
     executionIdentity.checkoutId,
-    input.repository.defaultBranch,
+    input.workId,
   );
 
   const handle = await spawnManagedProcess({

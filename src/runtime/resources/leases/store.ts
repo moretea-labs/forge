@@ -28,6 +28,26 @@ function counterPath(controllerHome: string, repoId: string, resourceKey: string
 }
 function expired(lease: ExecutionLease): boolean { return Date.parse(lease.expiresAt) <= Date.now(); }
 
+function validateClaimScopes(repoId: string, claims: ResourceClaimSpec[]): void {
+  const checkoutIds = new Set<string>();
+  const workIds = new Set<string>();
+  for (const claim of claims) {
+    const claimRepoId = claim.repoId?.trim();
+    const checkoutId = claim.checkoutId?.trim();
+    const workId = claim.workId?.trim();
+    if (claimRepoId && claimRepoId !== repoId) {
+      throw new Error(`LEASE_REPOSITORY_SCOPE_MISMATCH: expected ${repoId}, received ${claimRepoId}`);
+    }
+    if (checkoutId) checkoutIds.add(checkoutId);
+    if (workId) workIds.add(workId);
+    if (workId && (!claimRepoId || !checkoutId)) {
+      throw new Error(`LEASE_WORK_SCOPE_INCOMPLETE: ${workId}`);
+    }
+  }
+  if (checkoutIds.size > 1) throw new Error('LEASE_CHECKOUT_SCOPE_AMBIGUOUS');
+  if (workIds.size > 1) throw new Error('LEASE_WORK_SCOPE_AMBIGUOUS');
+}
+
 function nextFencingToken(controllerHome: string, repoId: string, resourceKey: string): number {
   const path = counterPath(controllerHome, repoId, resourceKey);
   const current = readJsonFile<{ value: number }>(path, { value: 0 });
@@ -116,6 +136,7 @@ export function acquireExecutionLeases(
     /* unbound claim + missing authority → legacy single-runtime allow */
   }
 
+  validateClaimScopes(repoId, claims);
   const options: LeaseAcquisitionOptions = typeof ttlMsOrOptions === 'number'
     ? { ttlMs: ttlMsOrOptions }
     : ttlMsOrOptions;
@@ -134,6 +155,8 @@ export function acquireExecutionLeases(
       schemaVersion: 1,
       leaseId: `LEASE-${Date.now()}-${randomUUID().slice(0, 8)}`,
       repoId,
+      ...(claim.checkoutId?.trim() ? { checkoutId: claim.checkoutId.trim() } : {}),
+      ...(claim.workId?.trim() ? { workId: claim.workId.trim() } : {}),
       resourceKey: claim.resourceKey,
       mode: claim.mode,
       ownerJobId,
@@ -180,10 +203,24 @@ export function acquireExecutionLeases(
   }, 10_000);
 }
 
-type ExpectedLeaseRef = Pick<ExecutionLease, 'leaseId' | 'fencingToken'>;
+interface ExpectedLeaseRef {
+  leaseId: string;
+  fencingToken: number;
+  repoId?: string;
+  checkoutId?: string;
+  workId?: string;
+}
 
-function expectedLeaseMap(expected?: ExpectedLeaseRef[]): Map<string, number> | undefined {
-  return expected ? new Map(expected.map((ref) => [ref.leaseId, ref.fencingToken])) : undefined;
+function expectedLeaseMap(expected?: ExpectedLeaseRef[]): Map<string, ExpectedLeaseRef> | undefined {
+  return expected ? new Map(expected.map((ref) => [ref.leaseId, ref])) : undefined;
+}
+
+function leaseMatchesExpected(lease: ExecutionLease, expected: ExpectedLeaseRef | undefined): boolean {
+  if (!expected || expected.fencingToken !== lease.fencingToken) return false;
+  if (expected.repoId && expected.repoId !== lease.repoId) return false;
+  if (expected.checkoutId && expected.checkoutId !== lease.checkoutId) return false;
+  if (expected.workId && expected.workId !== lease.workId) return false;
+  return true;
 }
 
 export function renewExecutionLeases(
@@ -200,13 +237,13 @@ export function renewExecutionLeases(
     /* unbound legacy */
   }
   return withControllerLock(controllerHome, { scope: 'repository', repoId }, `lease-renew:${ownerJobId}`, () => {
-    const expectedTokens = expectedLeaseMap(expected);
+    const expectedRefs = expectedLeaseMap(expected);
     const timestamp = new Date().toISOString();
     const owned = listActiveLeases(controllerHome, repoId)
       .filter((lease) => lease.ownerJobId === ownerJobId)
-      .filter((lease) => !expectedTokens || expectedTokens.get(lease.leaseId) === lease.fencingToken);
-    if (expectedTokens && owned.length !== expectedTokens.size) {
-      throw new Error(`FENCING_TOKEN_STALE: ${ownerJobId} no longer owns the expected lease set`);
+      .filter((lease) => !expectedRefs || leaseMatchesExpected(lease, expectedRefs.get(lease.leaseId)));
+    if (expectedRefs && owned.length !== expectedRefs.size) {
+      throw new Error(`FENCING_TOKEN_STALE: ${ownerJobId} no longer owns the expected scoped lease set`);
     }
     return owned.map((lease) => {
       const next = { ...lease, heartbeatAt: timestamp, expiresAt: new Date(Date.now() + ttlMs).toISOString() };
@@ -232,12 +269,12 @@ export function releaseExecutionLeases(
     /* unbound legacy */
   }
   withControllerLock(controllerHome, { scope: 'repository', repoId }, `lease-release:${ownerJobId}`, () => {
-    const expectedTokens = expectedLeaseMap(expected);
+    const expectedRefs = expectedLeaseMap(expected);
     let released = false;
     let visibility: LeaseVisibility = options?.visibility ?? 'durable';
     for (const lease of listActiveLeases(controllerHome, repoId)) {
       if (lease.ownerJobId !== ownerJobId) continue;
-      if (expectedTokens && expectedTokens.get(lease.leaseId) !== lease.fencingToken) continue;
+      if (expectedRefs && !leaseMatchesExpected(lease, expectedRefs.get(lease.leaseId))) continue;
       visibility = lease.visibility ?? visibility;
       removeFile(leasePath(controllerHome, repoId, lease.leaseId));
       const effects = resolveSideEffects(options, lease.visibility);

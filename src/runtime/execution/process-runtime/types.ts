@@ -42,6 +42,9 @@ export interface ProcessIdentityRecord {
 export interface ProcessResourceClaim {
   resourceKey: string;
   mode: 'read' | 'write' | 'exclusive';
+  repoId?: string;
+  checkoutId?: string;
+  workId?: string;
 }
 
 /** Durable lease ownership held by a managed process (not only recorded claims). */
@@ -50,6 +53,9 @@ export interface ProcessLeaseRef {
   resourceKey: string;
   fencingToken: number;
   expiresAt?: string;
+  repoId?: string;
+  checkoutId?: string;
+  workId?: string;
 }
 
 export interface ProcessCommandSpec {

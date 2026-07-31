@@ -6,6 +6,9 @@ export interface ExecutionLease {
   schemaVersion: 1;
   leaseId: string;
   repoId: string;
+  /** Exact checkout/work ownership when acquired by a Work-bound Process. */
+  checkoutId?: string;
+  workId?: string;
   resourceKey: string;
   mode: ResourceClaimMode;
   ownerJobId: string;

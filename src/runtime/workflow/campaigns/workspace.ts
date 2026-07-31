@@ -3,7 +3,13 @@ import { existsSync, mkdirSync, realpathSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
-import { addRepositoryCheckout, selectRepositoryCheckout } from '../../../cli/repositories/registry';
+import {
+  addRepositoryCheckout,
+  listRepositories,
+  repositoryCheckoutRootMatches,
+  selectRepositoryCheckout,
+} from '../../../cli/repositories/registry';
+import { managedWorktreePath } from '../../../cli/repositories/worktree-storage';
 import { withControllerLock } from '../../../cli/repositories/locks';
 import { runProcess } from '../../../effects/process-runner';
 import { readJsonFile, writeJsonAtomic } from '../../shared/json-files';
@@ -113,7 +119,12 @@ export function ensureManagedWorkspace(
   const requestedBranch = input.branchName?.trim() || `campaign/${slug(input.title)}-${identity}`;
   const requestedBaseRef = input.baseRef?.trim() || 'HEAD';
   assertBranch(sourceRoot, requestedBranch);
-  const requestedPath = resolve(join(sourceRoot, '.ai', 'harness', 'worktrees', `campaign-${identity}`));
+  const requestedPath = managedWorktreePath(
+    controllerHome,
+    repository.repoId,
+    `campaign-${identity}`,
+    listRepositories(controllerHome, { includeRemoved: true }),
+  );
   const statePath = manifestPath(controllerHome, repository.repoId, identity);
 
   return withControllerLock(
@@ -126,12 +137,13 @@ export function ensureManagedWorkspace(
         manifest.repoId !== repository.repoId
         || manifest.requestId !== requestId
         || manifest.branch !== requestedBranch
-        || resolve(manifest.path) !== requestedPath
       )) {
         throw new Error(`CAMPAIGN_WORKSPACE_REQUEST_CONFLICT: ${requestId}`);
       }
       const branch = manifest?.branch ?? requestedBranch;
-      const path = manifest?.path ?? requestedPath;
+      // Existing manifests are authoritative compatibility evidence. They may
+      // point at legacy nested worktrees; never move an active worktree in place.
+      const path = manifest?.path ? resolve(manifest.path) : requestedPath;
       const baseRevision = manifest?.baseRevision ?? git(sourceRoot, ['rev-parse', '--verify', `${requestedBaseRef}^{commit}`]);
 
       if (!existingWorkspace(path, branch)) {
@@ -144,6 +156,9 @@ export function ensureManagedWorkspace(
         } else {
           git(sourceRoot, ['worktree', 'add', '-b', branch, path, baseRevision], 120_000);
         }
+      }
+      if (!repositoryCheckoutRootMatches(repository, path)) {
+        throw new Error(`CAMPAIGN_WORKSPACE_REPOSITORY_MISMATCH: ${path}`);
       }
 
       const record = addRepositoryCheckout({

@@ -38,6 +38,10 @@ export interface ResourceClaimSpec {
   resourceKey: string;
   mode: ResourceClaimMode;
   quantity?: number;
+  /** Structured execution scope. Present on Work-bound Process Runtime claims. */
+  repoId?: string;
+  checkoutId?: string;
+  workId?: string;
 }
 
 export interface ExecutionJobOrigin {

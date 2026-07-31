@@ -252,9 +252,37 @@ export function claimsForCheck(
   return [claimWorkspaceWrite(checkoutId)];
 }
 
+export function scopeResourceClaims(
+  claims: ResourceClaimSpec[],
+  repoId: string,
+  checkoutId?: string,
+  workId?: string,
+): ResourceClaimSpec[] {
+  const normalizedWorkId = workId?.trim();
+  if (!normalizedWorkId) return claims;
+  const normalizedRepoId = repoId.trim();
+  const normalizedCheckoutId = checkoutId?.trim();
+  if (!normalizedRepoId) throw new Error('RESOURCE_CLAIM_REPOSITORY_REQUIRED');
+  if (!normalizedCheckoutId) throw new Error(`RESOURCE_CLAIM_CHECKOUT_REQUIRED: ${normalizedWorkId}`);
+  return claims.map((claim) => {
+    if (claim.repoId && claim.repoId !== normalizedRepoId) throw new Error('RESOURCE_CLAIM_REPOSITORY_MISMATCH');
+    if (claim.checkoutId && claim.checkoutId !== normalizedCheckoutId) throw new Error('RESOURCE_CLAIM_CHECKOUT_MISMATCH');
+    if (claim.workId && claim.workId !== normalizedWorkId) throw new Error('RESOURCE_CLAIM_WORK_MISMATCH');
+    return {
+      ...claim,
+      repoId: normalizedRepoId,
+      checkoutId: normalizedCheckoutId,
+      workId: normalizedWorkId,
+    };
+  });
+}
+
 export function toProcessClaims(claims: ResourceClaimSpec[]): ProcessResourceClaim[] {
   return claims.map((claim) => ({
     resourceKey: claim.resourceKey,
     mode: claim.mode,
+    ...(claim.repoId ? { repoId: claim.repoId } : {}),
+    ...(claim.checkoutId ? { checkoutId: claim.checkoutId } : {}),
+    ...(claim.workId ? { workId: claim.workId } : {}),
   }));
 }
