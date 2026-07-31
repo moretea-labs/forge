@@ -1,8 +1,8 @@
 ---
 id: "ISS-20260731-B28C97"
 kind: "bug"
-status: "planned"
-updated_at: "2026-07-31T00:12:34.718Z"
+status: "in_progress"
+updated_at: "2026-07-31T01:48:57.709Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -43,7 +43,7 @@ Finish the incomplete Browser Attach work by repairing the Node CDP bridge early
 
 ### T1 — Repair Browser Node CDP bridge and live attach proof
 
-- Status: `ready`
+- Status: `verified`
 - Objective: Inspect the exact merged browser Node bridge implementation and release layout, reproduce PLUGIN_BROWSER_NODE_EXITED, fix the first causal bootstrap/import/protocol/packaging defect, add bounded redacted phase diagnostics and focused regressions, then prove live loopback Chrome attach, existing-tab reuse, login-state reuse, disconnect safety, restart rebind, and stale endpoint fallback/fail-closed behavior.
 - Depends on: none
 - Allowed paths: `src/runtime/plugins/**`, `tests/runtime/browser-plugin.test.ts`, `scripts/**`, `docs/operations/controller-browser-plugin.md`, `docs/architecture/current/human-interaction-plane.md`, `package.json`, `tasks/issues/**`
@@ -52,7 +52,7 @@ Finish the incomplete Browser Attach work by repairing the Node CDP bridge early
 
 ### T2 — Repair Work validation lifecycle convergence
 
-- Status: `ready`
+- Status: `verified`
 - Objective: Reproduce and fix the Controller defect where work_validate marks finalization failed while a check process is still running, leaves Work stuck validating, and may make the Work unavailable through work_wait/work_get. Preserve durable idempotency and do not fabricate successful validation. Add focused lifecycle/recovery tests.
 - Depends on: none
 - Allowed paths: `src/runtime/control-plane/**`, `src/runtime/execution/**`, `src/runtime/gateway/mcp/**`, `src/cli/mcp/**`, `tests/runtime/**`, `tests/cli/**`, `docs/architecture/current/**`, `tasks/issues/**`

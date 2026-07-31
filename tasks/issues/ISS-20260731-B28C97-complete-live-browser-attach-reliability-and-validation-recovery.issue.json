@@ -4,7 +4,7 @@
   "title": "Complete live Browser Attach reliability and validation recovery",
   "slug": "complete-live-browser-attach-reliability-and-validation-recovery",
   "kind": "bug",
-  "status": "planned",
+  "status": "in_progress",
   "summary": "Finish the incomplete Browser Attach work by repairing the Node CDP bridge early-exit failure and the Work validation lifecycle inconsistency, then prove live Chrome attach, existing-tab reuse, login-state reuse, restart recovery, stale endpoint handling, and safe disconnect semantics on the exact integrated runtime.",
   "goals": [
     "Repair PLUGIN_BROWSER_NODE_EXITED with bounded redacted diagnostics",
@@ -34,7 +34,7 @@
       "id": "T1",
       "title": "Repair Browser Node CDP bridge and live attach proof",
       "objective": "Inspect the exact merged browser Node bridge implementation and release layout, reproduce PLUGIN_BROWSER_NODE_EXITED, fix the first causal bootstrap/import/protocol/packaging defect, add bounded redacted phase diagnostics and focused regressions, then prove live loopback Chrome attach, existing-tab reuse, login-state reuse, disconnect safety, restart rebind, and stale endpoint fallback/fail-closed behavior.",
-      "status": "ready",
+      "status": "verified",
       "dependsOn": [],
       "allowedPaths": [
         "src/runtime/plugins/**",
@@ -60,17 +60,101 @@
       ],
       "risk": "high",
       "recommendedAgent": "codex",
-      "notes": [],
+      "notes": [
+        "Verified on exact active runtime 117766591a8d5de2378667e6973832eaddafdb88. Browser plugin revision 23/24 used Node-backed Playwright CDP attach to Chrome/150.0.7871.187 at loopback 127.0.0.1:9222. Existing GitHub tab was reused by exact_url, then after full Supervisor/Daemon/Gateway rollout the saved session browser_live_reuse_20260731 rebound by saved_url_title with attached=true and inventoryCount=2, proving no duplicate tab. Attached bridge disconnects without closing Chrome. Live stale-endpoint test at 127.0.0.1:65534 proved managed_persistent fallback; fail_closed returned PLUGIN_BROWSER_CDP_UNAVAILABLE; production config was restored to 9222 + managed_persistent. Same attached browser context is reused, so existing browser state is preserved; the test profile itself was signed out and no user credentials were used or inspected.",
+        "Verification evidence failed: One or more executed checks or reported commands failed.",
+        "The implementation and live Browser attach proof are already present. The prior verification was rejected because package:check:type became stale across a repository revision and the runtime subsequently entered an incomplete-release incident. The active runtime is now healthy at 4808fc3cd2a4d75d65b427c0d54458366d31c3aa. Re-running all declared checks on the current exact revision before recording acceptance.",
+        "Required verification evidence passed; a completion receipt remains required before completion.",
+        "Required verification evidence passed; a completion receipt remains required before completion."
+      ],
       "runIds": [],
       "createdAt": "2026-07-31T00:12:34.718Z",
-      "updatedAt": "2026-07-31T00:12:34.718Z",
-      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      "updatedAt": "2026-07-31T01:48:57.709Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "verification": {
+        "integratedRevision": "4808fc3cd2a4d75d65b427c0d54458366d31c3aa",
+        "reviewedDiffHash": "b1917c8f21f213befe0a7c975a6e57299b35a43784f7c1a201f8f051d3de6b38",
+        "reviewer": "ChatGPT",
+        "checkResults": [
+          {
+            "checkId": "package:check:type",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-type.json"
+          },
+          {
+            "checkId": "package:check:runtime-architecture",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-runtime-architecture.json"
+          },
+          {
+            "checkId": "package:check:controller-v8",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-controller-v8.json"
+          }
+        ],
+        "commandEvidence": [
+          {
+            "command": [
+              "bun",
+              "test",
+              "tests/runtime/browser-plugin.test.ts"
+            ],
+            "cwd": ".",
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "22 pass, 0 fail, 121 expect() calls on exact main 4808fc3.",
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-31T01:44:00Z",
+            "source": "reported"
+          }
+        ],
+        "acceptanceResults": [
+          {
+            "criterion": "Browser Node bridge completes a real CDP command under the Bun-hosted plugin",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Browser plugin revision 24 attached through Node-backed Playwright CDP to Chrome/150.0.7871.187 at loopback 127.0.0.1:9222 on active runtime 4808fc3."
+          },
+          {
+            "criterion": "Failure output contains bounded redacted phase/exit diagnostics",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Browser focused regression suite passed 22/22 and covers invalid executable/bootstrap/exit diagnostics; no cookies, storage, credentials, or page bodies were emitted."
+          },
+          {
+            "criterion": "Live Chrome existing tab is reused and no duplicate tab is created",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Persistent session browser_live_reuse_20260731 rebound by saved_url_title after cold activation; attached=true and inventoryCount remained 2."
+          },
+          {
+            "criterion": "Disconnect leaves Chrome running",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Chrome 150 endpoint and both tabs remained available across multiple bridge calls and full Supervisor/Daemon/Gateway replacement."
+          },
+          {
+            "criterion": "Restart rebind and stale endpoint policies are verified",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Session rebound after cold activation to 4808fc3; prior live test proved managed_persistent fallback and fail_closed PLUGIN_BROWSER_CDP_UNAVAILABLE, then restored production endpoint 9222."
+          }
+        ],
+        "verifiedAt": "2026-07-31T01:48:57.704Z",
+        "autoCompleted": false,
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
     },
     {
       "id": "T2",
       "title": "Repair Work validation lifecycle convergence",
       "objective": "Reproduce and fix the Controller defect where work_validate marks finalization failed while a check process is still running, leaves Work stuck validating, and may make the Work unavailable through work_wait/work_get. Preserve durable idempotency and do not fabricate successful validation. Add focused lifecycle/recovery tests.",
-      "status": "ready",
+      "status": "verified",
       "dependsOn": [],
       "allowedPaths": [
         "src/runtime/control-plane/**",
@@ -96,14 +180,16 @@
       ],
       "risk": "high",
       "recommendedAgent": "codex",
-      "notes": [],
+      "notes": [
+        "Implemented in d69aaac9fafe8f21e7b65b0d7a6b34ccca4667a2 and included in exact active main/runtime 117766591a8d5de2378667e6973832eaddafdb88. Added durable optional validationRun state with HEAD/check fingerprint and check-to-Process bindings. Focused work-session recovery suite passed 15/15, including a real 1.5-second slow check that remained pending and later reused the same Process. package:check:type, package:check:runtime-architecture, and package:check:controller-v8 all passed. Live deployed proof: first package:check:type returned state=validating, finalization.validation=pending and Process proc_ms887vut_7168f5d3; work_get resolved the Work while running; subsequent validation reused the same Process; terminal call returned exitCode=0, state=editing and finalization.validation=done."
+      ],
       "runIds": [],
       "createdAt": "2026-07-31T00:12:34.718Z",
-      "updatedAt": "2026-07-31T00:12:34.718Z",
+      "updatedAt": "2026-07-31T00:55:55.738Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     }
   ],
   "createdAt": "2026-07-31T00:12:34.718Z",
-  "updatedAt": "2026-07-31T00:12:34.718Z",
+  "updatedAt": "2026-07-31T01:48:57.709Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }
