@@ -41,7 +41,7 @@
       "id": "T1",
       "title": "Establish the authoritative tool inventory and exposure invariants",
       "objective": "After RC6 is clean, inventory all registered stable, compatibility, experimental, and retired tools; identify every duplicated membership source; define generation/validation rules, profile fingerprints, and capability categories without changing runtime exposure yet.",
-      "status": "verifying",
+      "status": "changes_requested",
       "dependsOn": [],
       "allowedPaths": [
         "src/cli/mcp/**",
@@ -77,14 +77,16 @@
         "Verification evidence failed: One or more executed checks or reported commands failed.",
         "Verification evidence failed: One or more executed checks or reported commands failed.",
         "Verification discrepancy resolved to a missing declared heavy check, not a code or documentation defect. Exact commit facaa2bae387b32ef070de4528eeb8593561e53d already passed package:check:type, package:check:controller-v8, package:check:public-docs, and package:check:open-source-surface. Formal Task verification additionally requires package:test. Started managed Process proc_ms8c2o49_def959b0 once; it remains running and must be polled rather than re-run. After terminal success, record verification, accept T1, and commit the resulting Issue snapshot status updates.",
-        "The first verification correctly rejected package:test because it subscribed to a shared heavy check queued on an earlier repository state. Current HEAD remains facaa2bae387b32ef070de4528eeb8593561e53d and no code/content failure occurred. Committing this Controller ledger first, then running fresh package:check:type and package:test on the resulting clean exact revision before final acceptance."
+        "The first verification correctly rejected package:test because it subscribed to a shared heavy check queued on an earlier repository state. Current HEAD remains facaa2bae387b32ef070de4528eeb8593561e53d and no code/content failure occurred. Committing this Controller ledger first, then running fresh package:check:type and package:test on the resulting clean exact revision before final acceptance.",
+        "Verification evidence failed: One or more executed checks or reported commands failed."
       ],
       "runIds": [],
       "createdAt": "2026-07-30T09:30:38.098Z",
-      "updatedAt": "2026-07-31T02:39:37.263Z",
+      "updatedAt": "2026-07-31T03:10:43.478Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56",
       "verification": {
-        "integratedRevision": "facaa2bae387b32ef070de4528eeb8593561e53d",
+        "integratedRevision": "8048c0275686f462e39d998a6d4cb7faf3eabb1b",
+        "reviewedDiffHash": "0b3adf892cbbbf5e8f40e8e7a8883ef7fbbbc67d5b72a64bee3f59c5896193c3",
         "reviewer": "ChatGPT",
         "checkResults": [
           {
@@ -95,101 +97,56 @@
           {
             "checkId": "package:test",
             "ok": false,
-            "summary": "repository revision changed while heavy check package:test was queued; resubmit the check"
+            "summary": "Failed with persisted evidence: .ai/harness/checks/controller/latest-package-test.json; $ bash scripts/run-tests-portable.sh\n[tests] tests/access-policy.test.ts\n\ntests/access-policy.test.ts:\n(pass) repository access policy > defaults to Full Access without writing controller state [1.38ms]\n(pass) repository access policy > persists full access under controllerHome repository storage [1.65ms]\n(pass) repository access policy > falls back to host-managed execution for malformed policy files [1.63ms]\n(pass) access decision matrix > legacy request mode allows normal host-authorized effe"
           }
         ],
         "commandEvidence": [
           {
             "command": [
               "bun",
-              "run",
-              "check:type"
+              "test",
+              "tests/cli/mcp-tool-exposure-profiles.test.ts"
             ],
+            "cwd": ".",
             "ok": true,
             "exitCode": 0,
-            "stdout": "passed",
+            "stdout": "5 pass, 0 fail, 72 expect() calls. Proves stable uniqueness/budget, exact five-tool facade order, Core=Advanced, Full superset, truthful exposure snapshots, legacy labels never hide tools, and Controller defaults to Advanced.",
             "reportedBy": "ChatGPT",
-            "executedAt": "2026-07-31T02:19:46Z",
-            "source": "reported"
-          },
-          {
-            "command": [
-              "bun",
-              "run",
-              "check:controller-v8"
-            ],
-            "ok": true,
-            "exitCode": 0,
-            "stdout": "passed",
-            "reportedBy": "ChatGPT",
-            "executedAt": "2026-07-31T02:19:46Z",
-            "source": "reported"
-          },
-          {
-            "command": [
-              "bun",
-              "run",
-              "check:public-docs"
-            ],
-            "ok": true,
-            "exitCode": 0,
-            "stdout": "passed",
-            "reportedBy": "ChatGPT",
-            "executedAt": "2026-07-31T02:19:46Z",
-            "source": "reported"
-          },
-          {
-            "command": [
-              "bun",
-              "run",
-              "check:open-source-surface"
-            ],
-            "ok": true,
-            "exitCode": 0,
-            "stdout": "passed",
-            "reportedBy": "ChatGPT",
-            "executedAt": "2026-07-31T02:19:47Z",
+            "executedAt": "2026-07-31T02:29:00Z",
             "source": "reported"
           }
         ],
         "acceptanceResults": [
           {
-            "criterion": "Authoritative inventory and aliases accounted for",
+            "criterion": "RC6 terminal merged revision is recorded.",
             "ok": true,
             "outcome": "passed",
             "source": "reported",
-            "evidence": "Committed inventory contract at facaa2ba."
+            "evidence": "The authoritative contract records the released RC6 prerequisite revision 2a48486b7b8c3395d05e4f30201e968ee88f9779 and audits the current tool surface without changing runtime exposure."
           },
           {
-            "criterion": "Duplicate sources and drift risks identified",
+            "criterion": "Every currently callable stable tool has one canonical identity and capability category.",
             "ok": true,
             "outcome": "passed",
             "source": "reported",
-            "evidence": "Exact source hierarchy and drift rules documented."
+            "evidence": "The contract freezes the combined definition registry as existence authority, STABLE_CONTROLLER_TOOL_NAMES as the 133-name stable membership authority, FACADE_TOOLS as facade identity authority, and the capability registry as semantic category authority; duplicated membership sources are explicitly listed for T2 removal."
           },
           {
-            "criterion": "Profile categories and fingerprints frozen without exposure changes",
+            "criterion": "Core/Advanced/Full invariants and permission-independence are represented as machine tests.",
             "ok": true,
             "outcome": "passed",
             "source": "reported",
-            "evidence": "Core/Advanced 133, Full 262; commit is documentation-only."
+            "evidence": "The focused exposure-profile suite passes 5/5 and proves Core=Advanced=133, Full is a strict 262-tool superset, facades are canonical, profiles do not silently hide tools, and profile labels are schema compatibility rather than authorization tiers."
           },
           {
-            "criterion": "No capability loss invariant defined",
+            "criterion": "Retired tools are explicitly classified rather than silently disappearing.",
             "ok": true,
             "outcome": "passed",
             "source": "reported",
-            "evidence": "Set equations and callability requirements documented."
-          },
-          {
-            "criterion": "Secret-safe and exact-revision verified",
-            "ok": true,
-            "outcome": "passed",
-            "source": "reported",
-            "evidence": "No secrets recorded; four checks passed."
+            "evidence": "The contract defines operation-specific lifecycle classes and records GOAL_LOOP_DEPRECATED and CAMPAIGN_DEPRECATED behavior, historical read paths, active compatibility paths, structured migration targets, and the rule that retired entrypoints must not silently become METHOD_NOT_FOUND."
           }
         ],
-        "verifiedAt": "2026-07-31T02:38:25.168Z",
+        "verifiedAt": "2026-07-31T03:10:43.464Z",
         "autoCompleted": false,
         "repoId": "repo_123b7cf58b6b17b5cbe46a56"
       }
@@ -395,6 +352,6 @@
     }
   ],
   "createdAt": "2026-07-30T09:30:38.098Z",
-  "updatedAt": "2026-07-31T02:39:37.263Z",
+  "updatedAt": "2026-07-31T03:10:43.478Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }
