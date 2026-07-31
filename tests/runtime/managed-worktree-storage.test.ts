@@ -74,6 +74,42 @@ describe('external managed worktree storage', () => {
     })).toThrow(/MANAGED_WORKTREE_HOME_OVERLAPS_REPOSITORY/);
   });
 
+  test('ignores removed managed checkouts without weakening active checkout overlap protection', () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'managed-worktree-lifecycle-'));
+    roots.push(fixture);
+    const source = join(fixture, 'source');
+    const external = join(fixture, 'external');
+    const removedManagedCheckout = join(external, 'namespace', 'repo-test', 'removed-work');
+    mkdirSync(source, { recursive: true });
+    mkdirSync(removedManagedCheckout, { recursive: true });
+    const repository = record(source);
+    repository.checkouts.push({
+      ...repository.checkouts[0],
+      checkoutId: 'checkout-removed',
+      localRoot: removedManagedCheckout,
+      canonicalRoot: removedManagedCheckout,
+      lifecycle: 'removed',
+    });
+
+    const storage = managedWorktreeStorageRoot(join(source, '_ops', 'controller-home'), [repository], {
+      REPO_HARNESS_WORKTREE_HOME: external,
+    });
+    expect(managedPathInside(external, storage)).toBe(true);
+    expect(managedPathInside(removedManagedCheckout, storage)).toBe(false);
+    expect(managedPathInside(storage, removedManagedCheckout)).toBe(true);
+
+    repository.checkouts.push({
+      ...repository.checkouts[0],
+      checkoutId: 'checkout-active-external',
+      localRoot: external,
+      canonicalRoot: external,
+      lifecycle: 'active',
+    });
+    expect(() => managedWorktreeStorageRoot(join(source, '_ops', 'controller-home'), [repository], {
+      REPO_HARNESS_WORKTREE_HOME: external,
+    })).toThrow(/MANAGED_WORKTREE_HOME_OVERLAPS_REPOSITORY/);
+  });
+
   test('rejects a legacy manifest path owned by another Git repository', () => {
     const fixture = mkdtempSync(join(tmpdir(), 'managed-worktree-foreign-'));
     roots.push(fixture);

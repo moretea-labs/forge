@@ -38,7 +38,10 @@ export function managedPathInside(parent: string, candidate: string): boolean {
 export function registeredRepositoryRoots(records: RepositoryRecord[]): string[] {
   const roots = new Set<string>();
   for (const record of records) {
-    for (const candidate of [record.localRoot, record.canonicalRoot, ...record.checkouts.flatMap((checkout) => [checkout.localRoot, checkout.canonicalRoot])]) {
+    const activeCheckoutRoots = record.checkouts
+      .filter((checkout) => checkout.lifecycle !== 'removed' && checkout.lifecycle !== 'archived')
+      .flatMap((checkout) => [checkout.localRoot, checkout.canonicalRoot]);
+    for (const candidate of [record.localRoot, record.canonicalRoot, ...activeCheckoutRoots]) {
       if (!candidate?.trim()) continue;
       roots.add(canonicalManagedPath(candidate));
     }
