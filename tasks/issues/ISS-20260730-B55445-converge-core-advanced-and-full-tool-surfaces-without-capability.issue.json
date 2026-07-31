@@ -4,7 +4,7 @@
   "title": "Converge Core, Advanced, and Full tool surfaces without capability loss",
   "slug": "converge-core-advanced-and-full-tool-surfaces-without-capability",
   "kind": "feature",
-  "status": "planned",
+  "status": "in_progress",
   "summary": "Result Goal 3 of ISS-20260730-AE1BCC for the next reliability release line. The RC6 gate was satisfied at exact released revision 2a48486b7b8c3395d05e4f30201e968ee88f9779. T1 is ready to establish one authoritative stable/compatibility/experimental/retired tool inventory and freeze Core/Advanced/Full exposure invariants without changing permissions or removing callable capabilities. Final rh_work and E2E stages depend on the evidence and context foundations.",
   "goals": [
     "Create one authoritative tool inventory and exposure classification for Core, Advanced, and Full.",
@@ -41,7 +41,7 @@
       "id": "T1",
       "title": "Establish the authoritative tool inventory and exposure invariants",
       "objective": "After RC6 is clean, inventory all registered stable, compatibility, experimental, and retired tools; identify every duplicated membership source; define generation/validation rules, profile fingerprints, and capability categories without changing runtime exposure yet.",
-      "status": "ready",
+      "status": "running",
       "dependsOn": [],
       "allowedPaths": [
         "src/cli/mcp/**",
@@ -64,11 +64,12 @@
       "risk": "readonly",
       "notes": [
         "Controller-enforced external gate. Unblock to ready only after ISS-20260729-BF2F89 is terminal, integrated, cleaned, and its exact revision has been recorded. Tool-surface work remains an exposure/schema optimization and must not alter permissions or stable capability availability.",
-        "RC6 external gate is satisfied at exact released revision 2a48486b7b8c3395d05e4f30201e968ee88f9779; current origin/main is 809349d43b6583b4cfa22e55986f760f16380cb3. Start with read-only authoritative inventory and invariant freezing only. Tool exposure profiles remain architecture/schema choices, never permission tiers; all stable Advanced/Full capability categories must remain callable and later receive category-level invocation E2E."
+        "RC6 external gate is satisfied at exact released revision 2a48486b7b8c3395d05e4f30201e968ee88f9779; current origin/main is 809349d43b6583b4cfa22e55986f760f16380cb3. Start with read-only authoritative inventory and invariant freezing only. Tool exposure profiles remain architecture/schema choices, never permission tiers; all stable Advanced/Full capability categories must remain callable and later receive category-level invocation E2E.",
+        "Started authoritative tool inventory as Work work_0c41797e873f49d7b0774c44a61eecfd on exact clean main 0af2ab1b0765f876f89c01beeb4a83f3392bbdb6. T1 is inventory/contract only: no tool exposure, registration, routing or compatibility behavior will change."
       ],
       "runIds": [],
       "createdAt": "2026-07-30T09:30:38.098Z",
-      "updatedAt": "2026-07-31T00:04:33.853Z",
+      "updatedAt": "2026-07-31T01:56:53.033Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
@@ -272,6 +273,6 @@
     }
   ],
   "createdAt": "2026-07-30T09:30:38.098Z",
-  "updatedAt": "2026-07-31T00:06:19.010Z",
+  "updatedAt": "2026-07-31T01:56:53.033Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }
