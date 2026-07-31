@@ -285,7 +285,7 @@ export function assertExecutionIdentity(input: {
     }
   }
   if (!repositoryCheckoutRootMatches(registered, registeredRoot)) {
-    fail('CHECKOUT_ROUTE_MISMATCH', 'checkout Git common directory does not belong to the registered repository', {
+    fail('GIT_COMMON_DIR_MISMATCH', 'checkout Git common directory does not belong to the registered repository', {
       repoId: identity.repositoryId,
       checkoutId: identity.checkoutId,
       root: registeredRoot,

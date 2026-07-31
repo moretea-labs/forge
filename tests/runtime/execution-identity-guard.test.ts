@@ -4,7 +4,12 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
-import { registerRepository, selectRepositoryCheckout } from '../../src/cli/repositories/registry';
+import {
+  addRepositoryCheckout,
+  registerRepository,
+  selectRepositoryCheckout,
+  setRepositoryCheckoutLifecycle,
+} from '../../src/cli/repositories/registry';
 import {
   assertExecutionIdentity,
   executionIdentityForRepository,
@@ -125,6 +130,33 @@ describe('execution identity pre-spawn guard', () => {
     })).toThrow(/EXECUTION_IDENTITY_MISMATCH/);
   });
 
+  test('rejects an execution identity for an unregistered checkout', () => {
+    const fx = dualRepoFixture();
+    const identity = executionIdentityFromCoordinates({
+      repositoryId: fx.repoA.repoId,
+      checkoutId: 'checkout_missing',
+      canonicalRoot: fx.repoARoot,
+    });
+    expect(() => assertExecutionIdentity({
+      controllerHome: fx.controllerHome,
+      identity,
+      cwd: fx.repoARoot,
+    })).toThrow(/CHECKOUT_NOT_REGISTERED/);
+  });
+
+  test('rejects WorkHandle worktree path drift', () => {
+    const fx = dualRepoFixture();
+    const identity = executionIdentityForRepository(fx.repoA, {
+      workId: 'work_wrong_path',
+      worktreePath: fx.repoBRoot,
+    });
+    expect(() => assertExecutionIdentity({
+      controllerHome: fx.controllerHome,
+      identity,
+      cwd: fx.repoARoot,
+    })).toThrow(/WORKTREE_PATH_MISMATCH/);
+  });
+
   test('rejects Git top-level mismatch when cwd is outside registered checkout', () => {
     const fx = dualRepoFixture();
     const outsider = join(fx.root, 'outsider');
@@ -137,6 +169,18 @@ describe('execution identity pre-spawn guard', () => {
       requestedRepoId: fx.repoA.repoId,
       requestedCheckoutId: fx.repoA.activeCheckoutId,
     })).toThrow(/CHECKOUT_ROUTE_MISMATCH|GIT_TOPLEVEL_MISMATCH/);
+  });
+
+  test('rejects a nested independent repository instead of inferring parent ownership', () => {
+    const fx = dualRepoFixture();
+    const nested = join(fx.repoARoot, 'nested-repository');
+    initGitRepo(nested);
+    const identity = executionIdentityForRepository(fx.repoA);
+    expect(() => assertExecutionIdentity({
+      controllerHome: fx.controllerHome,
+      identity,
+      cwd: nested,
+    })).toThrow(/GIT_TOPLEVEL_MISMATCH/);
   });
 
   test('rejects branch drift', () => {
@@ -191,6 +235,51 @@ describe('execution identity pre-spawn guard', () => {
     });
     expect(guarded.resolvedCwd).toBeTruthy();
     expect(guarded.gitTopLevel).toBeTruthy();
+  });
+
+  test('rejects archived checkout lifecycle unless explicitly allowed', () => {
+    const fx = dualRepoFixture();
+    const withCheckout = addRepositoryCheckout({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repoA.repoId,
+      path: fx.repoB.canonicalRoot,
+      activate: false,
+    });
+    const addedCheckout = withCheckout.checkouts.find((checkout) => checkout.canonicalRoot === fx.repoB.canonicalRoot);
+    expect(addedCheckout).toBeTruthy();
+    setRepositoryCheckoutLifecycle({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repoA.repoId,
+      checkoutId: addedCheckout!.checkoutId,
+      lifecycle: 'archived',
+      reason: 'test fixture',
+    });
+    const selected = selectRepositoryCheckout(withCheckout, addedCheckout!.checkoutId, { allowArchived: true });
+    const identity = executionIdentityForRepository(selected);
+    expect(() => assertExecutionIdentity({
+      controllerHome: fx.controllerHome,
+      identity,
+      cwd: fx.repoBRoot,
+    })).toThrow(/CHECKOUT_NOT_ACTIVE/);
+  });
+
+  test('rejects an independently rooted checkout with exact Git common-directory evidence', () => {
+    const fx = dualRepoFixture();
+    const withCheckout = addRepositoryCheckout({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repoA.repoId,
+      path: fx.repoB.canonicalRoot,
+      activate: false,
+    });
+    const addedCheckout = withCheckout.checkouts.find((checkout) => checkout.canonicalRoot === fx.repoB.canonicalRoot);
+    expect(addedCheckout).toBeTruthy();
+    const selected = selectRepositoryCheckout(withCheckout, addedCheckout!.checkoutId);
+    const identity = executionIdentityForRepository(selected);
+    expect(() => assertExecutionIdentity({
+      controllerHome: fx.controllerHome,
+      identity,
+      cwd: fx.repoBRoot,
+    })).toThrow(/GIT_COMMON_DIR_MISMATCH/);
   });
 
   test('legacy ambiguous WorkContract identity is rejected', () => {
