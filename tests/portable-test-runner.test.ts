@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { spawnSync } from "child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { spawn, spawnSync } from "child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -18,6 +18,14 @@ function processExists(pid: number): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function waitForFile(path: string, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`);
+    await Bun.sleep(25);
   }
 }
 
@@ -109,6 +117,53 @@ describe("portable test runner", () => {
     expect(terminateCalls).toBe(1);
     expect(result).toEqual({ exitCode: 1, lingeringPids: [43, 44], remainingPids: [44] });
   });
+
+  test("bounds SIGTERM shutdown and reaps a Bun test process that ignores the polite signal", async () => {
+    if (process.platform === "win32") return;
+    const dir = mkdtempSync(join(tmpdir(), "repo-harness-test-signal-"));
+    const pidFile = join(dir, "bun-test.pid");
+    const testFile = join(dir, "ignores-sigterm.test.ts");
+    let testPid: number | undefined;
+    writeFileSync(
+      testFile,
+      `import { test } from "bun:test";\n` +
+        `import { writeFileSync } from "fs";\n` +
+        `process.on("SIGTERM", () => {});\n` +
+        `writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\n` +
+        `test("waits for forced shutdown", async () => { await new Promise(() => {}); });\n`,
+    );
+    const runner = spawn(
+      process.execPath,
+      [TEST_FILE_RUNNER, "--timeout", "60000", "--max-concurrency", "1", testFile],
+      { cwd: ROOT, stdio: ["ignore", "ignore", "pipe"] },
+    );
+    let stderr = "";
+    runner.stderr?.on("data", (chunk) => { stderr += String(chunk); });
+    try {
+      await waitForFile(pidFile);
+      testPid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
+      expect(Number.isInteger(testPid)).toBe(true);
+      expect(processExists(testPid)).toBe(true);
+
+      runner.kill("SIGTERM");
+      const closed = await Promise.race([
+        new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+          runner.once("close", (code, signal) => resolve({ code, signal }));
+        }),
+        Bun.sleep(10_000).then(() => {
+          throw new Error("portable test runner did not converge after SIGTERM");
+        }),
+      ]);
+
+      expect(closed).toEqual({ code: 143, signal: null });
+      expect(stderr).toContain("[tests] received SIGTERM; terminating Bun test process group");
+      expect(processExists(testPid)).toBe(false);
+    } finally {
+      if (runner.pid && processExists(runner.pid)) runner.kill("SIGKILL");
+      if (testPid && processExists(testPid)) process.kill(testPid, "SIGKILL");
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
 
   test("reaps descendants left behind by one test file before returning", () => {
     const dir = mkdtempSync(join(tmpdir(), "repo-harness-test-file-runner-"));

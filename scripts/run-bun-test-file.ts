@@ -3,7 +3,6 @@ import { spawn } from 'child_process';
 import {
   isProcessAlive,
   listProcessTreeMembers,
-  signalProcessTree,
   terminateProcessTree,
   type ProcessTreeTerminationResult,
 } from '../src/runtime/shared/process-tree';
@@ -139,24 +138,74 @@ export async function runBunTestFile(args: string[]): Promise<BunTestFileRunResu
     windowsHide: true,
   });
 
-  const forwardSignal = (signal: NodeJS.Signals) => {
-    signalProcessTree(child.pid, signal);
+  const interruptedExitCode = (signal: NodeJS.Signals): number => signal === 'SIGINT' ? 130 : 143;
+  let shutdownSignal: NodeJS.Signals | undefined;
+  let shutdownPromise: Promise<ProcessTreeTerminationResult> | undefined;
+  let resolveShutdownExit!: (exitCode: number) => void;
+  const shutdownExit = new Promise<number>((resolve) => {
+    resolveShutdownExit = resolve;
+  });
+
+  const requestShutdown = (signal: NodeJS.Signals): void => {
+    if (shutdownPromise) return;
+    shutdownSignal = signal;
+    console.error(`[tests] received ${signal}; terminating Bun test process group ${child.pid ?? 'unknown'}`);
+    shutdownPromise = terminateProcessTree(child.pid, {
+      gracePeriodMs: 100,
+      killAfterMs: 2_000,
+      pollIntervalMs: 25,
+    }).then((result) => {
+      if (!result.exited) {
+        console.error(
+          `[tests] failed to terminate Bun test process group after ${signal}: ${result.remainingPids.join(', ')}`,
+        );
+      }
+      child.unref();
+      resolveShutdownExit(result.exited ? interruptedExitCode(signal) : 1);
+      return result;
+    }).catch((error) => {
+      const remainingPids = listProcessTreeMembers(child.pid);
+      console.error(
+        `[tests] Bun test process-group termination failed after ${signal}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      child.unref();
+      resolveShutdownExit(1);
+      return {
+        pid: child.pid,
+        signaled: false,
+        escalated: false,
+        exited: remainingPids.length === 0,
+        remainingPids,
+      };
+    });
   };
-  const onSigInt = () => forwardSignal('SIGINT');
-  const onSigTerm = () => forwardSignal('SIGTERM');
+
+  const onSigInt = () => requestShutdown('SIGINT');
+  const onSigTerm = () => requestShutdown('SIGTERM');
   process.once('SIGINT', onSigInt);
   process.once('SIGTERM', onSigTerm);
 
-  const exitCode = await new Promise<number>((resolve, reject) => {
+  const childExit = new Promise<number>((resolve, reject) => {
     child.once('error', reject);
     child.once('close', (code) => resolve(code ?? 1));
-  }).finally(() => {
+  });
+  const observedExitCode = await Promise.race([childExit, shutdownExit]).finally(() => {
     process.off('SIGINT', onSigInt);
     process.off('SIGTERM', onSigTerm);
   });
+  const shutdownResult = shutdownPromise ? await shutdownPromise : undefined;
+  const exitCode = shutdownSignal ? interruptedExitCode(shutdownSignal) : observedExitCode;
 
   const label = args.at(-1) ?? 'Bun test file';
-  return cleanupClosedChildProcessGroup(child.pid, label, exitCode);
+  const cleanup = await cleanupClosedChildProcessGroup(child.pid, label, exitCode);
+  if (shutdownResult && !shutdownResult.exited) {
+    return {
+      exitCode: 1,
+      lingeringPids: Array.from(new Set([...cleanup.lingeringPids, ...shutdownResult.remainingPids])),
+      remainingPids: Array.from(new Set([...cleanup.remainingPids, ...shutdownResult.remainingPids])),
+    };
+  }
+  return cleanup;
 }
 
 if (import.meta.main) {
