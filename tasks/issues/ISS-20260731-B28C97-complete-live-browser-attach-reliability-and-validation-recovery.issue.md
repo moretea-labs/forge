@@ -2,7 +2,7 @@
 id: "ISS-20260731-B28C97"
 kind: "bug"
 status: "in_progress"
-updated_at: "2026-07-31T01:48:57.709Z"
+updated_at: "2026-07-31T01:55:27.444Z"
 source: "repo-harness-controller-v8"
 ---
 

@@ -4,7 +4,7 @@
   "title": "Build durable Apple context, capability, and release reliability",
   "slug": "build-durable-apple-context-capability-and-release-reliability",
   "kind": "feature",
-  "status": "planned",
+  "status": "in_progress",
   "summary": "Result Goal 2 of ISS-20260730-AE1BCC for the next reliability release line. The RC6 gate was satisfied at exact released revision 2a48486b7b8c3395d05e4f30201e968ee88f9779. T1 is ready for reversible inventory of current App Store Connect, Browser, Xcode, simulator, physical-device, repository project bindings, and the stale ASC Campaign projection. Later resolver/evidence stages depend on the execution-evidence baseline in ISS-20260730-A1EA53.",
   "goals": [
     "Restore and verify current App Store Connect, Browser, Xcode, simulator, physical-device, and repository project bindings without storing secrets in repository state.",
@@ -40,7 +40,7 @@
       "id": "T1",
       "title": "Inventory and safely recover existing Apple execution assets",
       "objective": "After RC6 is clean, inspect current App Store Connect plugin credentials/readiness, Browser availability and Apple domain access, named browser profiles, Xcode selection, iOS project discovery, simulator/device support, and the stale ASC Campaign projection. Perform only reversible configuration recovery and document what must be migrated rather than duplicated.",
-      "status": "ready",
+      "status": "verified",
       "dependsOn": [],
       "allowedPaths": [
         "docs/**",
@@ -66,12 +66,89 @@
       "risk": "low",
       "notes": [
         "Controller-enforced external gate. Unblock to ready only after ISS-20260729-BF2F89 is terminal, integrated, cleaned, and its exact revision has been recorded. The task may then perform only the declared reversible inventory/recovery work.",
-        "RC6 external gate is satisfied at exact released revision 2a48486b7b8c3395d05e4f30201e968ee88f9779; current origin/main is 809349d43b6583b4cfa22e55986f760f16380cb3. Start with reversible inventory/recovery only: current App Store Connect typed plugin readiness, Browser Apple access/profile binding, Xcode/toolchain/project/device facts, and classification of stale Campaign CMP-20260723-0FFA4F. Never persist credentials, cookies, keys, or login data."
+        "RC6 external gate is satisfied at exact released revision 2a48486b7b8c3395d05e4f30201e968ee88f9779; current origin/main is 809349d43b6583b4cfa22e55986f760f16380cb3. Start with reversible inventory/recovery only: current App Store Connect typed plugin readiness, Browser Apple access/profile binding, Xcode/toolchain/project/device facts, and classification of stale Campaign CMP-20260723-0FFA4F. Never persist credentials, cookies, keys, or login data.",
+        "The secret-safe inventory document is committed at 4808fc3cd2a4d75d65b427c0d54458366d31c3aa. The earlier verification was interrupted by an incomplete immutable runtime release and later reverted to ready during runtime recovery. The active Supervisor, Controller and Gateway are now healthy. Re-running exact checks on current clean main c54c54d0436068b10031a31756b56421d2e9375d before recording acceptance.",
+        "Required verification evidence passed; a completion receipt remains required before completion."
       ],
       "runIds": [],
       "createdAt": "2026-07-30T09:29:27.595Z",
-      "updatedAt": "2026-07-31T00:04:11.485Z",
-      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      "updatedAt": "2026-07-31T01:51:22.205Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "verification": {
+        "integratedRevision": "c54c54d0436068b10031a31756b56421d2e9375d",
+        "reviewedDiffHash": "48176bf070f000d281c093aca9505a9443c8e912123c708eb17794c41278eaa0",
+        "reviewer": "ChatGPT",
+        "checkResults": [
+          {
+            "checkId": "package:check:type",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-type.json"
+          }
+        ],
+        "commandEvidence": [
+          {
+            "command": [
+              "bun",
+              "run",
+              "check:public-docs"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "[public-docs] OK",
+            "artifactPath": ".ai/harness/checks/controller/latest-package-check-public-docs.json",
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-31T01:50:10Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "bun",
+              "run",
+              "check:open-source-surface"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "Open-source tracked-surface audit passed.",
+            "artifactPath": ".ai/harness/checks/controller/latest-package-check-open-source-surface.json",
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-31T01:51:00Z",
+            "source": "reported"
+          }
+        ],
+        "acceptanceResults": [
+          {
+            "criterion": "RC6 terminal merged revision is recorded before runtime changes.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "The inventory records released RC6 revision 2a48486b7b8c3395d05e4f30201e968ee88f9779 and audited source revision 117766591a8d5de2378667e6973832eaddafdb88. The audit made no Apple runtime or remote configuration changes."
+          },
+          {
+            "criterion": "Existing usable ASC typed actions are preserved and not reimplemented under new names without need.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "The committed inventory enumerates the existing authentication, app/version/build, localization, metadata, TestFlight and review actions and freezes them as reusable capabilities."
+          },
+          {
+            "criterion": "Credentials and browser sessions remain outside repository-tracked files.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "The document contains only bounded provider/readiness metadata and explicitly excludes private keys, tokens, cookies, login databases, passwords, verification codes and raw session state."
+          },
+          {
+            "criterion": "The stale CMP-20260723-0FFA4F record is classified as migratable, obsolete, or reconstructable with evidence.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "The Campaign list retains only a historical projection; full Campaign and review-packet reads returned ENOENT. It is classified as unavailable for execution and reconstructable from current typed plugins and Program contracts, and must not be revived."
+          }
+        ],
+        "verifiedAt": "2026-07-31T01:51:22.198Z",
+        "autoCompleted": false,
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
     },
     {
       "id": "T2",
@@ -343,6 +420,6 @@
     }
   ],
   "createdAt": "2026-07-30T09:29:27.595Z",
-  "updatedAt": "2026-07-31T00:06:07.187Z",
+  "updatedAt": "2026-07-31T01:51:22.205Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }

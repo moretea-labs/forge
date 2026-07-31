@@ -181,15 +181,90 @@
       "risk": "high",
       "recommendedAgent": "codex",
       "notes": [
-        "Implemented in d69aaac9fafe8f21e7b65b0d7a6b34ccca4667a2 and included in exact active main/runtime 117766591a8d5de2378667e6973832eaddafdb88. Added durable optional validationRun state with HEAD/check fingerprint and check-to-Process bindings. Focused work-session recovery suite passed 15/15, including a real 1.5-second slow check that remained pending and later reused the same Process. package:check:type, package:check:runtime-architecture, and package:check:controller-v8 all passed. Live deployed proof: first package:check:type returned state=validating, finalization.validation=pending and Process proc_ms887vut_7168f5d3; work_get resolved the Work while running; subsequent validation reused the same Process; terminal call returned exitCode=0, state=editing and finalization.validation=done."
+        "Implemented in d69aaac9fafe8f21e7b65b0d7a6b34ccca4667a2 and included in exact active main/runtime 117766591a8d5de2378667e6973832eaddafdb88. Added durable optional validationRun state with HEAD/check fingerprint and check-to-Process bindings. Focused work-session recovery suite passed 15/15, including a real 1.5-second slow check that remained pending and later reused the same Process. package:check:type, package:check:runtime-architecture, and package:check:controller-v8 all passed. Live deployed proof: first package:check:type returned state=validating, finalization.validation=pending and Process proc_ms887vut_7168f5d3; work_get resolved the Work while running; subsequent validation reused the same Process; terminal call returned exitCode=0, state=editing and finalization.validation=done.",
+        "Verification evidence failed: One or more executed checks or reported commands failed.",
+        "A concurrent automatic verification reused evidence bound to pre-ledger revision 4808fc3c and correctly marked it stale after main advanced to c54c54d0. The implementation and live validation lifecycle proof remain present. Re-running all declared checks on current exact main c54c54d0436068b10031a31756b56421d2e9375d, then recording acceptance without fabricating success.",
+        "Verification evidence failed: One or more executed checks or reported commands failed.",
+        "Required verification evidence passed; a completion receipt remains required before completion."
       ],
       "runIds": [],
       "createdAt": "2026-07-31T00:12:34.718Z",
-      "updatedAt": "2026-07-31T00:55:55.738Z",
-      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      "updatedAt": "2026-07-31T01:55:27.444Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "verification": {
+        "integratedRevision": "c54c54d0436068b10031a31756b56421d2e9375d",
+        "reviewedDiffHash": "d400105e48f4e4603e05c8ba7b61ff109c6905e89812421fc2bd97516e7ad795",
+        "reviewer": "ChatGPT",
+        "checkResults": [
+          {
+            "checkId": "package:check:type",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-type.json"
+          },
+          {
+            "checkId": "package:check:runtime-architecture",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-runtime-architecture.json"
+          },
+          {
+            "checkId": "package:check:controller-v8",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-controller-v8.json"
+          }
+        ],
+        "commandEvidence": [
+          {
+            "command": [
+              "bun",
+              "test",
+              "tests/runtime/work-session-finalize-recovery.test.ts"
+            ],
+            "cwd": ".",
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "15 pass, 0 fail, 170 expect() calls. Includes a real slow check remaining pending, reuse of the same Process, terminal convergence, restart recovery and work_get resolution.",
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-31T01:46:03Z",
+            "source": "reported"
+          }
+        ],
+        "acceptanceResults": [
+          {
+            "criterion": "Running checks remain running/pending rather than failed",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Focused regression and live proof both kept validation pending while the bound Process was running; no success or failure was fabricated."
+          },
+          {
+            "criterion": "Terminal check state deterministically converges Work validation",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "The same persisted Process binding was reused and terminal exit 0 converged validation to done."
+          },
+          {
+            "criterion": "work_get/work_wait can resolve the Work throughout validation and after restart",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "The Work remained addressable during the running check and durable validationRun bindings survived Controller/Gateway replacement."
+          },
+          {
+            "criterion": "Focused regressions and declared gates pass",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "15/15 focused lifecycle tests passed; package:check:type, package:check:runtime-architecture and package:check:controller-v8 all passed on exact main c54c54d0."
+          }
+        ],
+        "verifiedAt": "2026-07-31T01:55:27.437Z",
+        "autoCompleted": false,
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
     }
   ],
   "createdAt": "2026-07-31T00:12:34.718Z",
-  "updatedAt": "2026-07-31T01:48:57.709Z",
+  "updatedAt": "2026-07-31T01:55:27.444Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }

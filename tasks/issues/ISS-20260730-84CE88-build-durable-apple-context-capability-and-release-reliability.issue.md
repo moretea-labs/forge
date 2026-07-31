@@ -1,8 +1,8 @@
 ---
 id: "ISS-20260730-84CE88"
 kind: "feature"
-status: "planned"
-updated_at: "2026-07-31T00:06:07.187Z"
+status: "in_progress"
+updated_at: "2026-07-31T01:51:22.205Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -43,7 +43,7 @@ Result Goal 2 of ISS-20260730-AE1BCC for the next reliability release line. The 
 
 ### T1 — Inventory and safely recover existing Apple execution assets
 
-- Status: `ready`
+- Status: `verified`
 - Objective: After RC6 is clean, inspect current App Store Connect plugin credentials/readiness, Browser availability and Apple domain access, named browser profiles, Xcode selection, iOS project discovery, simulator/device support, and the stale ASC Campaign projection. Perform only reversible configuration recovery and document what must be migrated rather than duplicated.
 - Depends on: none
 - Allowed paths: `docs/**`, `.repo-harness/plugins/**`, `src/plugins/**`, `tests/**`
