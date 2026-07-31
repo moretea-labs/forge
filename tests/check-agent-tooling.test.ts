@@ -40,6 +40,19 @@ function setupFakeEnvironment(prefix: string) {
       "",
     ].join("\n")
   );
+  // Every test environment owns its CLI inventory probe. Never fall through
+  // to a host-global `skills` binary, which can make fixtures load-dependent
+  // and can leave large process trees behind during the per-file suite.
+  writeExecutable(
+    join(fakeBin, "skills"),
+    [
+      "#!/bin/bash",
+      "set -euo pipefail",
+      "if [[ \"$*\" == \"ls -g --json\" ]]; then echo '[]'; exit 0; fi",
+      "exit 1",
+      "",
+    ].join("\n")
+  );
 
   return { root, home, fakeBin };
 }
