@@ -1,28 +1,30 @@
 #!/usr/bin/env bun
 /**
- * Real iOS agent-device evidence-tier benchmark.
+ * Real iOS agent-device latency benchmark.
  *
- * This script performs actual provider actions against one explicitly selected
- * iOS target. It never invents baseline data and never runs without --device.
- * A warmup is followed by at least three measured runs. The provider remains
- * responsible for device/session serialization, timeouts, cleanup and redaction.
+ * Compares the compatibility fresh-session JD workflow with the trusted warm
+ * path that reuses one exact active JD interaction. It never invents baseline
+ * data and never runs without an explicitly selected --device. Every selected
+ * profile performs one warmup followed by at least three measured runs.
  *
- * Examples:
+ * Fresh-session profile:
+ *   inventory -> open -> search/evidence -> screenshot -> close, for every run
+ *
+ * Reused-session profile:
+ *   open once -> repeated search/evidence batches without screenshot -> close once
+ *
+ * Example:
  *   bun scripts/benchmark-ios-agent-device.ts \
- *     --repo-id repo_... --device "iPhone 17 Pro" --query "AirPods" \
+ *     --repo-id repo_... --device "iPhone" --query "宽楦男鞋" \
  *     --search-selector 'type="SearchField"' --submit-selector 'label="搜索"' \
- *     --result-text "AirPods" --runs 5 --json
- *
- *   # Exercise scoped/full fallback with an intentionally absent exact result:
- *   bun scripts/benchmark-ios-agent-device.ts ... \
- *     --result-text "__repo_harness_missing_result__" \
- *     --result-scope "商品列表" --snapshot-depth 8
+ *     --result-text "宽楦男鞋" --profile both --runs 5 --json
  */
 import { performance } from 'perf_hooks';
 import { resolve } from 'path';
 import { executeIosAgentDeviceAction } from '../src/runtime/plugins/ios-agent-device';
 
 type EvidenceTier = 'exact_wait' | 'scoped_snapshot' | 'full_snapshot' | 'unknown';
+export type BenchmarkProfile = 'fresh_session' | 'reused_session';
 
 export interface NumericSummary {
   count: number;
@@ -33,11 +35,27 @@ export interface NumericSummary {
   mean: number;
 }
 
+interface PhaseTimings {
+  targetSelection?: number;
+  open?: number;
+  targetDiscovery?: number;
+  interactionAndEvidence?: number;
+  screenshot?: number;
+  close?: number;
+  total?: number;
+}
+
 export interface IosBenchmarkSample {
   index: number;
   warmup: boolean;
+  profile: BenchmarkProfile;
   totalMs: number;
+  harnessOverheadMs?: number;
   tier: EvidenceTier;
+  sessionReused: boolean;
+  sessionKept: boolean;
+  screenshotCaptured: boolean;
+  deviceInventoryRequests: number;
   accessibilitySnapshotRequests: number;
   nativeBatchRequests: number;
   nativeBatchSteps: number;
@@ -45,15 +63,23 @@ export interface IosBenchmarkSample {
   exactWaitFallback: boolean;
   runnerRoundTrips?: number;
   providerWallClockMs?: number;
-  phaseTimingsMs?: {
-    targetSelection?: number;
-    open?: number;
-    targetDiscovery?: number;
-    interactionAndEvidence?: number;
-    screenshot?: number;
-    close?: number;
-    total?: number;
-  };
+  phaseTimingsMs?: PhaseTimings;
+}
+
+export interface IosBenchmarkProfileReport {
+  profile: BenchmarkProfile;
+  warmupCount: number;
+  measuredRunCount: number;
+  setup?: { openMs: number };
+  cleanup?: { closeMs: number; completed: boolean };
+  measured: Record<string, unknown>;
+  samples: IosBenchmarkSample[];
+}
+
+const JD_BUNDLE_ID = 'com.360buy.jdmobile';
+
+function rounded(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 export function percentile(values: number[], percentileValue: number): number {
@@ -69,7 +95,6 @@ export function percentile(values: number[], percentileValue: number): number {
 
 export function summarize(values: number[]): NumericSummary {
   if (values.length === 0) return { count: 0, min: 0, p50: 0, p95: 0, max: 0, mean: 0 };
-  const rounded = (value: number) => Math.round(value * 100) / 100;
   return {
     count: values.length,
     min: rounded(Math.min(...values)),
@@ -97,6 +122,20 @@ function integerOption(name: string, fallback: number, minimum: number, maximum:
     throw new Error(`--${name} must be an integer between ${minimum} and ${maximum}`);
   }
   return value;
+}
+
+function requiredOption(name: string): string {
+  const value = option(name)?.trim();
+  if (!value) throw new Error(`--${name} is required`);
+  return value;
+}
+
+function selectedProfiles(): BenchmarkProfile[] {
+  const value = (option('profile') ?? 'both').trim().toLowerCase();
+  if (value === 'both') return ['fresh_session', 'reused_session'];
+  if (value === 'fresh' || value === 'fresh_session') return ['fresh_session'];
+  if (value === 'warm' || value === 'reused' || value === 'reused_session') return ['reused_session'];
+  throw new Error('--profile must be fresh, warm, or both');
 }
 
 function stringRecord(value: unknown): Record<string, unknown> | undefined {
@@ -129,122 +168,56 @@ function findCost(value: unknown): { wallClockMs?: number; runnerRoundTrips?: nu
   return {};
 }
 
-function requiredOption(name: string): string {
-  const value = option(name)?.trim();
-  if (!value) throw new Error(`--${name} is required`);
-  return value;
-}
-
-function usage(): string {
-  return [
-    'Usage: bun scripts/benchmark-ios-agent-device.ts --repo-id <id> --device <name> --query <text> [options]',
-    '',
-    'Required:',
-    '  --repo-id <id>             Registered repository id used for Controller-owned evidence',
-    '  --device <name>            Exact connected physical iPhone or booted Simulator name',
-    '  --query <text>              Non-sensitive product-information query',
-    '',
-    'Evidence targeting:',
-    '  --search-selector <value>   Stable selector; preferred over snapshot-scoped refs',
-    '  --search-target <ref>       Cached accessibility ref fallback',
-    '  --submit-selector <value>   Stable submit selector',
-    '  --submit-target <ref>       Cached submit ref fallback',
-    '  --result-text <text>        Exact text wait',
-    '  --result-selector <value>   Exact selector wait',
-    '  --result-scope <value>      Scoped snapshot fallback',
-    '  --snapshot-depth <1..20>    Snapshot depth, default 8',
-    '',
-    'Execution:',
-    '  --runs <3..20>              Measured runs after one warmup, default 3',
-    '  --controller-home <path>    Defaults to REPO_HARNESS_CONTROLLER_HOME or _ops/controller-home',
-    '  --repo-root <path>          Defaults to current working directory',
-    '  --relaunch                  Relaunch the app for every run (cold-app measurement)',
-    '  --json                      Emit machine-readable JSON',
-  ].join('\n');
-}
-
-export async function runBenchmark(): Promise<Record<string, unknown>> {
-  if (hasFlag('help')) {
-    console.log(usage());
-    return { help: true };
-  }
-  const repoId = requiredOption('repo-id');
-  const device = requiredOption('device');
-  const query = requiredOption('query');
-  const runs = integerOption('runs', 3, 3, 20);
-  const snapshotDepth = integerOption('snapshot-depth', 8, 1, 20);
-  const repoRoot = resolve(option('repo-root') ?? process.cwd());
-  const controllerHome = resolve(
-    option('controller-home')
-      ?? process.env.REPO_HARNESS_CONTROLLER_HOME
-      ?? resolve(repoRoot, '_ops/controller-home'),
-  );
-  const args: Record<string, unknown> = {
-    device,
-    query,
-    relaunch: hasFlag('relaunch'),
-    snapshot_depth: snapshotDepth,
+function sampleFromResult(
+  profile: BenchmarkProfile,
+  index: number,
+  warmup: boolean,
+  totalMs: number,
+  result: Record<string, unknown>,
+): IosBenchmarkSample {
+  const executionPlan = stringRecord(result.executionPlan) ?? {};
+  const phaseTimingsMs = stringRecord(executionPlan.timingsMs) as PhaseTimings | undefined;
+  const providerTotal = phaseTimingsMs?.total;
+  const cost = findCost(result);
+  return {
+    index,
+    warmup,
+    profile,
+    totalMs: rounded(totalMs),
+    harnessOverheadMs: typeof providerTotal === 'number'
+      ? rounded(Math.max(0, totalMs - providerTotal))
+      : undefined,
+    tier: typeof executionPlan.accessibilityEvidenceTier === 'string'
+      ? executionPlan.accessibilityEvidenceTier as EvidenceTier
+      : 'unknown',
+    sessionReused: executionPlan.sessionReused === true,
+    sessionKept: executionPlan.sessionKept === true,
+    screenshotCaptured: executionPlan.screenshotCaptured === true,
+    deviceInventoryRequests: Number(executionPlan.deviceInventoryRequests ?? 0),
+    accessibilitySnapshotRequests: Number(executionPlan.accessibilitySnapshotRequests ?? 0),
+    nativeBatchRequests: Number(executionPlan.nativeBatchRequests ?? 0),
+    nativeBatchSteps: Number(executionPlan.nativeBatchSteps ?? 0),
+    staleRefRecovery: executionPlan.staleRefRecovery === true,
+    exactWaitFallback: executionPlan.exactWaitFallback === true,
+    runnerRoundTrips: cost.runnerRoundTrips,
+    providerWallClockMs: cost.wallClockMs,
+    phaseTimingsMs,
   };
-  for (const [flag, key] of [
-    ['search-selector', 'search_selector'],
-    ['search-target', 'search_target'],
-    ['submit-selector', 'submit_selector'],
-    ['submit-target', 'submit_target'],
-    ['result-text', 'result_text'],
-    ['result-selector', 'result_selector'],
-    ['result-scope', 'result_scope'],
-  ] as const) {
-    const value = option(flag)?.trim();
-    if (value) args[key] = value;
-  }
+}
 
-  const samples: IosBenchmarkSample[] = [];
-  for (let index = 0; index <= runs; index += 1) {
-    const warmup = index === 0;
-    const startedAt = performance.now();
-    const result = await executeIosAgentDeviceAction({
-      controllerHome,
-      repoId,
-      repoRoot,
-      pluginId: 'ios',
-      actionId: 'agent_device_jd_search',
-      requestId: `ios-evidence-benchmark-${Date.now()}-${index}`,
-      args,
-      origin: { surface: 'local-ui', actor: 'ios-evidence-benchmark' },
-    });
-    const totalMs = performance.now() - startedAt;
-    const executionPlan = stringRecord(result.executionPlan) ?? {};
-    const phaseTimingsMs = stringRecord(executionPlan.timingsMs) as IosBenchmarkSample['phaseTimingsMs'];
-    const cost = findCost(result);
-    samples.push({
-      index,
-      warmup,
-      totalMs: Math.round(totalMs * 100) / 100,
-      tier: typeof executionPlan.accessibilityEvidenceTier === 'string'
-        ? executionPlan.accessibilityEvidenceTier as EvidenceTier
-        : 'unknown',
-      accessibilitySnapshotRequests: Number(executionPlan.accessibilitySnapshotRequests ?? 0),
-      nativeBatchRequests: Number(executionPlan.nativeBatchRequests ?? 0),
-      nativeBatchSteps: Number(executionPlan.nativeBatchSteps ?? 0),
-      staleRefRecovery: executionPlan.staleRefRecovery === true,
-      exactWaitFallback: executionPlan.exactWaitFallback === true,
-      runnerRoundTrips: cost.runnerRoundTrips,
-      providerWallClockMs: cost.wallClockMs,
-      phaseTimingsMs,
-    });
-  }
+const PHASE_NAMES: Array<keyof PhaseTimings> = [
+  'targetSelection',
+  'open',
+  'targetDiscovery',
+  'interactionAndEvidence',
+  'screenshot',
+  'close',
+  'total',
+];
 
+export function summarizeProfileSamples(samples: IosBenchmarkSample[]): Record<string, unknown> {
   const measured = samples.filter((sample) => !sample.warmup);
-  const phaseNames = [
-    'targetSelection',
-    'open',
-    'targetDiscovery',
-    'interactionAndEvidence',
-    'screenshot',
-    'close',
-    'total',
-  ] as const;
-  const phaseTimingsMs = Object.fromEntries(phaseNames.map((phase) => [
+  const phaseTimingsMs = Object.fromEntries(PHASE_NAMES.map((phase) => [
     phase,
     summarize(measured.flatMap((sample) => {
       const value = sample.phaseTimingsMs?.[phase];
@@ -266,37 +239,260 @@ export async function runBenchmark(): Promise<Record<string, unknown>> {
     ]),
   );
   return {
-    schemaVersion: 1,
-    kind: 'ios_agent_device_evidence_tier_benchmark',
+    totalMs: summarize(measured.map((sample) => sample.totalMs)),
+    harnessOverheadMs: summarize(measured
+      .filter((sample) => sample.harnessOverheadMs !== undefined)
+      .map((sample) => sample.harnessOverheadMs!)),
+    deviceInventoryRequests: summarize(measured.map((sample) => sample.deviceInventoryRequests)),
+    accessibilitySnapshotRequests: summarize(measured.map((sample) => sample.accessibilitySnapshotRequests)),
+    nativeBatchRequests: summarize(measured.map((sample) => sample.nativeBatchRequests)),
+    nativeBatchSteps: summarize(measured.map((sample) => sample.nativeBatchSteps)),
+    runnerRoundTrips: summarize(measured
+      .filter((sample) => sample.runnerRoundTrips !== undefined)
+      .map((sample) => sample.runnerRoundTrips!)),
+    phaseTimingsMs,
+    byTier,
+    invariants: {
+      allSessionsReused: measured.length > 0 && measured.every((sample) => sample.sessionReused),
+      allScreenshotsSkipped: measured.length > 0 && measured.every((sample) => !sample.screenshotCaptured),
+      allInventorySkipped: measured.length > 0 && measured.every((sample) => sample.deviceInventoryRequests === 0),
+      maxNativeBatchRequests: measured.length > 0 ? Math.max(...measured.map((sample) => sample.nativeBatchRequests)) : 0,
+    },
+  };
+}
+
+export function compareProfileReports(
+  fresh: IosBenchmarkProfileReport | undefined,
+  reused: IosBenchmarkProfileReport | undefined,
+): Record<string, unknown> | undefined {
+  if (!fresh || !reused) return undefined;
+  const freshTotal = (fresh.measured.totalMs as NumericSummary).p50;
+  const reusedTotal = (reused.measured.totalMs as NumericSummary).p50;
+  const freshP95 = (fresh.measured.totalMs as NumericSummary).p95;
+  const reusedP95 = (reused.measured.totalMs as NumericSummary).p95;
+  return {
+    p50SavedMs: rounded(freshTotal - reusedTotal),
+    p95SavedMs: rounded(freshP95 - reusedP95),
+    p50Speedup: reusedTotal > 0 ? rounded(freshTotal / reusedTotal) : null,
+    p95Speedup: reusedP95 > 0 ? rounded(freshP95 / reusedP95) : null,
+    note: 'Fresh-session includes per-run inventory/open/screenshot/close; reused-session excludes one-time setup and cleanup from measured search latency.',
+  };
+}
+
+function usage(): string {
+  return [
+    'Usage: bun scripts/benchmark-ios-agent-device.ts --repo-id <id> --device <name> --query <text> [options]',
+    '',
+    'Required:',
+    '  --repo-id <id>             Repository id used for Controller-owned interaction state',
+    '  --device <name>            Exact connected physical iPhone or booted Simulator name',
+    '  --query <text>              Non-sensitive product-information query',
+    '',
+    'Evidence targeting:',
+    '  --search-selector <value>   Stable selector; preferred over snapshot-scoped refs',
+    '  --search-target <ref>       Cached accessibility ref fallback',
+    '  --submit-selector <value>   Stable submit selector',
+    '  --submit-target <ref>       Cached submit ref fallback',
+    '  --result-text <text>        Exact text wait',
+    '  --result-selector <value>   Exact selector wait',
+    '  --result-scope <value>      Scoped snapshot fallback',
+    '  --snapshot-depth <1..20>    Snapshot depth, default 8',
+    '',
+    'Execution:',
+    '  --profile <fresh|warm|both> Profiles to measure, default both',
+    '  --runs <3..20>              Measured runs per profile after one warmup, default 3',
+    '  --timeout-ms <ms>           Absolute timeout per action, default 60000',
+    '  --controller-home <path>    Defaults to REPO_HARNESS_CONTROLLER_HOME or _ops/controller-home',
+    '  --repo-root <path>          Defaults to current working directory',
+    '  --relaunch                  Relaunch JD for each fresh run and the warm-profile setup open',
+    '  --json                      Emit machine-readable JSON',
+  ].join('\n');
+}
+
+interface BenchmarkContext {
+  controllerHome: string;
+  repoId: string;
+  repoRoot: string;
+  device: string;
+  query: string;
+  timeoutMs: number;
+  relaunch: boolean;
+  runs: number;
+  baseArgs: Record<string, unknown>;
+  runNonce: string;
+}
+
+async function executeAction(
+  context: BenchmarkContext,
+  actionId: string,
+  suffix: string,
+  args: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  return executeIosAgentDeviceAction({
+    controllerHome: context.controllerHome,
+    repoId: context.repoId,
+    repoRoot: context.repoRoot,
+    pluginId: 'ios',
+    actionId,
+    requestId: `ios-latency-benchmark-${context.runNonce}-${suffix}`,
+    args,
+    timeoutMs: context.timeoutMs,
+    origin: { surface: 'local-ui', actor: 'ios-latency-benchmark' },
+  });
+}
+
+async function executeSearchSample(
+  context: BenchmarkContext,
+  profile: BenchmarkProfile,
+  index: number,
+  args: Record<string, unknown>,
+): Promise<IosBenchmarkSample> {
+  const startedAt = performance.now();
+  const result = await executeAction(context, 'agent_device_jd_search', `${profile}-${index}`, args);
+  return sampleFromResult(profile, index, index === 0, performance.now() - startedAt, result);
+}
+
+async function runFreshSessionProfile(context: BenchmarkContext): Promise<IosBenchmarkProfileReport> {
+  const samples: IosBenchmarkSample[] = [];
+  for (let index = 0; index <= context.runs; index += 1) {
+    samples.push(await executeSearchSample(context, 'fresh_session', index, {
+      ...context.baseArgs,
+      relaunch: context.relaunch,
+      keep_session: false,
+      capture_screenshot: true,
+    }));
+  }
+  return {
+    profile: 'fresh_session',
+    warmupCount: 1,
+    measuredRunCount: context.runs,
+    measured: summarizeProfileSamples(samples),
+    samples,
+  };
+}
+
+async function runReusedSessionProfile(context: BenchmarkContext): Promise<IosBenchmarkProfileReport> {
+  const openStartedAt = performance.now();
+  const opened = await executeAction(context, 'agent_device_open', 'warm-open', {
+    app: JD_BUNDLE_ID,
+    device: context.device,
+    relaunch: context.relaunch,
+  });
+  const openMs = rounded(performance.now() - openStartedAt);
+  const interaction = stringRecord(opened.interaction);
+  const interactionId = typeof interaction?.interactionId === 'string' ? interaction.interactionId : undefined;
+  if (!interactionId) throw new Error('agent_device_open did not return an interaction_id');
+
+  const samples: IosBenchmarkSample[] = [];
+  let closeMs = 0;
+  let cleanupCompleted = false;
+  try {
+    for (let index = 0; index <= context.runs; index += 1) {
+      samples.push(await executeSearchSample(context, 'reused_session', index, {
+        ...context.baseArgs,
+        interaction_id: interactionId,
+        keep_session: true,
+        capture_screenshot: false,
+        relaunch: false,
+      }));
+    }
+  } finally {
+    const closeStartedAt = performance.now();
+    try {
+      await executeAction(context, 'agent_device_close', 'warm-close', { interaction_id: interactionId });
+      cleanupCompleted = true;
+    } finally {
+      closeMs = rounded(performance.now() - closeStartedAt);
+    }
+  }
+  return {
+    profile: 'reused_session',
+    warmupCount: 1,
+    measuredRunCount: context.runs,
+    setup: { openMs },
+    cleanup: { closeMs, completed: cleanupCompleted },
+    measured: summarizeProfileSamples(samples),
+    samples,
+  };
+}
+
+export async function runBenchmark(): Promise<Record<string, unknown>> {
+  if (hasFlag('help')) {
+    console.log(usage());
+    return { help: true };
+  }
+  const repoId = requiredOption('repo-id');
+  const device = requiredOption('device');
+  const query = requiredOption('query');
+  const runs = integerOption('runs', 3, 3, 20);
+  const timeoutMs = integerOption('timeout-ms', 60_000, 1_000, 600_000);
+  const snapshotDepth = integerOption('snapshot-depth', 8, 1, 20);
+  const repoRoot = resolve(option('repo-root') ?? process.cwd());
+  const controllerHome = resolve(
+    option('controller-home')
+      ?? process.env.REPO_HARNESS_CONTROLLER_HOME
+      ?? resolve(repoRoot, '_ops/controller-home'),
+  );
+  const baseArgs: Record<string, unknown> = { device, query, snapshot_depth: snapshotDepth };
+  for (const [flag, key] of [
+    ['search-selector', 'search_selector'],
+    ['search-target', 'search_target'],
+    ['submit-selector', 'submit_selector'],
+    ['submit-target', 'submit_target'],
+    ['result-text', 'result_text'],
+    ['result-selector', 'result_selector'],
+    ['result-scope', 'result_scope'],
+  ] as const) {
+    const value = option(flag)?.trim();
+    if (value) baseArgs[key] = value;
+  }
+  const profiles = selectedProfiles();
+  const context: BenchmarkContext = {
+    controllerHome,
+    repoId,
+    repoRoot,
+    device,
+    query,
+    timeoutMs,
+    relaunch: hasFlag('relaunch'),
+    runs,
+    baseArgs,
+    runNonce: `${Date.now()}-${process.pid}`,
+  };
+
+  const reports: Partial<Record<BenchmarkProfile, IosBenchmarkProfileReport>> = {};
+  for (const profile of profiles) {
+    reports[profile] = profile === 'fresh_session'
+      ? await runFreshSessionProfile(context)
+      : await runReusedSessionProfile(context);
+  }
+  const comparison = compareProfileReports(reports.fresh_session, reports.reused_session);
+  return {
+    schemaVersion: 2,
+    kind: 'ios_agent_device_latency_benchmark',
     generatedAt: new Date().toISOString(),
     environment: {
       repoId,
       device,
-      repoRoot,
-      relaunch: hasFlag('relaunch'),
-      runCount: runs,
-      warmupCount: 1,
+      relaunch: context.relaunch,
+      profiles,
+      measuredRunsPerProfile: runs,
+      warmupsPerProfile: 1,
+      timeoutMs,
       evidenceInputs: {
-        hasSearchSelector: typeof args.search_selector === 'string',
-        hasSearchTarget: typeof args.search_target === 'string',
-        hasSubmitSelector: typeof args.submit_selector === 'string',
-        hasSubmitTarget: typeof args.submit_target === 'string',
-        hasResultText: typeof args.result_text === 'string',
-        hasResultSelector: typeof args.result_selector === 'string',
-        resultScope: args.result_scope ?? null,
+        hasSearchSelector: typeof baseArgs.search_selector === 'string',
+        hasSearchTarget: typeof baseArgs.search_target === 'string',
+        hasSubmitSelector: typeof baseArgs.submit_selector === 'string',
+        hasSubmitTarget: typeof baseArgs.submit_target === 'string',
+        hasResultText: typeof baseArgs.result_text === 'string',
+        hasResultSelector: typeof baseArgs.result_selector === 'string',
+        resultScope: baseArgs.result_scope ?? null,
         snapshotDepth,
       },
     },
-    measured: {
-      totalMs: summarize(measured.map((sample) => sample.totalMs)),
-      accessibilitySnapshotRequests: summarize(measured.map((sample) => sample.accessibilitySnapshotRequests)),
-      nativeBatchRequests: summarize(measured.map((sample) => sample.nativeBatchRequests)),
-      nativeBatchSteps: summarize(measured.map((sample) => sample.nativeBatchSteps)),
-      phaseTimingsMs,
-      byTier,
-    },
-    samples,
-    note: 'Results are from actual provider executions. No historical or unavailable device data is synthesized.',
+    profiles: reports,
+    ...(comparison ? { comparison } : {}),
+    note: 'Results are actual provider executions. No historical or unavailable device data is synthesized. Fresh-session and reused-session have intentionally different setup, screenshot, and cleanup costs.',
   };
 }
 
@@ -306,9 +502,8 @@ if (import.meta.main) {
     if (!('help' in report)) {
       if (hasFlag('json')) console.log(JSON.stringify(report, null, 2));
       else {
-        const measured = report.measured as Record<string, unknown>;
-        console.log('iOS agent-device evidence-tier benchmark');
-        console.log(JSON.stringify(measured, null, 2));
+        console.log('iOS agent-device latency benchmark');
+        console.log(JSON.stringify({ profiles: report.profiles, comparison: report.comparison }, null, 2));
       }
     }
   } catch (error) {
