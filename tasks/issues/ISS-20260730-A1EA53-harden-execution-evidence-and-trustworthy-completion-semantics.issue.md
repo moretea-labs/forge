@@ -90,12 +90,13 @@ Result Goal 1 of ISS-20260730-AE1BCC for the next reliability release line. The 
 
 ### T6 — Run execution-evidence regression and failure-injection coverage
 
-- Status: `planned`
+- Status: `verified`
 - Objective: Validate success, no-change, interruption, retry, stale evidence, contradictory evidence, failed checks, failed merge, cleanup recovery, and legacy migration across focused and full checks.
 - Depends on: `T5`
 - Allowed paths: `tests/**`, `scripts/**`, `docs/**`
 - Checks: `typecheck`, `test`, `ci`
 - Execution hint: selected at runtime
+- Evidence: Current-revision focused suites cover changed/no-change receipts, stale revision/input rejection, interrupted/retried finalize stages, explicit reviewed equivalence, cross-session resume, request dedupe, and reconciliation handoffs (40 tests). The full `bun test --reporter=dot` suite passed. `check:type`, deploy SQL ordering, architecture sync, task sync, strict workflow source/doc checks, project-state inspection, and migration dry-run passed. Strict workflow reported only pre-existing ignored local generated-runtime/bootstrap items and unavailable local optional tooling; no source-contract failure occurred.
 
 ## Related Artifacts
 

@@ -298,7 +298,7 @@
       "id": "T6",
       "title": "Run execution-evidence regression and failure-injection coverage",
       "objective": "Validate success, no-change, interruption, retry, stale evidence, contradictory evidence, failed checks, failed merge, cleanup recovery, and legacy migration across focused and full checks.",
-      "status": "planned",
+      "status": "verified",
       "dependsOn": [
         "T5"
       ],
@@ -319,10 +319,12 @@
         "The Issue has a final Completion Receipt and all temporary worktrees are removed."
       ],
       "risk": "medium",
-      "notes": [],
+      "notes": [
+        "2026-08-01: T6 verified. Current-revision focused suites cover changed/no-change receipts, stale revision/input rejection, interrupted/retried finalize stages, explicit reviewed equivalence, cross-session resume, request dedupe, and reconciliation handoffs (40 tests). Full bun test --reporter=dot passed. check:type, deploy SQL ordering, architecture sync, task sync, strict workflow source/doc checks, project-state inspection, and migration dry-run passed. Strict workflow reported only ignored local generated-runtime/bootstrap items and unavailable local optional tooling; no source-contract failure occurred."
+      ],
       "runIds": [],
       "createdAt": "2026-07-30T09:28:07.844Z",
-      "updatedAt": "2026-07-30T09:28:07.844Z",
+      "updatedAt": "2026-08-01T10:00:00.000Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     }
   ],
