@@ -16,9 +16,20 @@ import jdHomeDepth20 from '../fixtures/ios/jd-home-depth20.json';
 import {
   resetAgentDeviceTypedProviderHooksForTest,
   setAgentDeviceTypedProviderHooksForTest,
+  typedAgentDeviceIdentity,
 } from '../../src/runtime/plugins/ios/agent-device-typed-provider';
 
 const roots: string[] = [];
+
+function typedModuleFixture(version = '0.20.2', name = 'agent-device'): string {
+  const moduleRoot = mkdtempSync(join(tmpdir(), 'agent-device-typed-provider-'));
+  roots.push(moduleRoot);
+  mkdirSync(join(moduleRoot, 'dist', 'src'), { recursive: true });
+  writeFileSync(join(moduleRoot, 'package.json'), JSON.stringify({ name, version }));
+  const entry = join(moduleRoot, 'dist', 'src', 'index.js');
+  writeFileSync(entry, 'export {};');
+  return entry;
+}
 
 beforeEach(() => {
   process.env.REPO_HARNESS_AGENT_DEVICE_BACKEND = 'cli';
@@ -1143,13 +1154,25 @@ describe('optional agent-device iOS Simulator provider', () => {
     expect(commands.some((command) => command[1] === 'devices')).toBe(false);
   });
 
+  it('does not mistake the enclosing application package for agent-device', () => {
+    const unrelatedEntry = typedModuleFixture('1.4.0-rc.6', 'matea');
+    setAgentDeviceTypedProviderHooksForTest({ resolveModule: () => unrelatedEntry });
+
+    expect(typedAgentDeviceIdentity()).toMatchObject({
+      available: false,
+      resolvedModule: unrelatedEntry,
+      reason: expect.stringContaining('versioned agent-device package'),
+    });
+  });
+
   it('does not dispatch a typed snapshot after the action deadline has expired', async () => {
     const value = fixture();
     readyIosTooling();
     process.env.REPO_HARNESS_AGENT_DEVICE_BACKEND = 'typed';
     let typedSnapshots = 0;
+    const typedEntry = typedModuleFixture();
     setAgentDeviceTypedProviderHooksForTest({
-      resolveModule: () => join(process.cwd(), 'node_modules', 'agent-device', 'dist', 'src', 'index.js'),
+      resolveModule: () => typedEntry,
       loadModule: async () => ({
         createAgentDeviceClient: () => ({
           capture: {
@@ -1264,8 +1287,9 @@ describe('optional agent-device iOS Simulator provider', () => {
     process.env.REPO_HARNESS_AGENT_DEVICE_BACKEND = 'typed';
     const commands: string[][] = [];
     const typedCalls: Array<{ config: Record<string, unknown>; options: Record<string, unknown> }> = [];
+    const typedEntry = typedModuleFixture();
     setAgentDeviceTypedProviderHooksForTest({
-      resolveModule: () => join(process.cwd(), 'node_modules', 'agent-device', 'dist', 'src', 'index.js'),
+      resolveModule: () => typedEntry,
       loadModule: async () => ({
         createAgentDeviceClient: (config = {}) => ({
           capture: {
@@ -1325,8 +1349,9 @@ describe('optional agent-device iOS Simulator provider', () => {
     readyIosTooling();
     process.env.REPO_HARNESS_AGENT_DEVICE_BACKEND = 'auto';
     const commands: string[][] = [];
+    const typedEntry = typedModuleFixture();
     setAgentDeviceTypedProviderHooksForTest({
-      resolveModule: () => join(process.cwd(), 'node_modules', 'agent-device', 'dist', 'src', 'index.js'),
+      resolveModule: () => typedEntry,
       loadModule: async () => { throw new Error('optional module unavailable after probe'); },
     });
     setIosAgentDeviceRuntimeHooksForTest({
@@ -1370,8 +1395,9 @@ describe('optional agent-device iOS Simulator provider', () => {
     readyIosTooling();
     process.env.REPO_HARNESS_AGENT_DEVICE_BACKEND = 'auto';
     const commands: string[][] = [];
+    const typedEntry = typedModuleFixture();
     setAgentDeviceTypedProviderHooksForTest({
-      resolveModule: () => join(process.cwd(), 'node_modules', 'agent-device', 'dist', 'src', 'index.js'),
+      resolveModule: () => typedEntry,
       loadModule: async () => ({
         createAgentDeviceClient: () => ({
           capture: {

@@ -51,11 +51,23 @@ function versionAtLeast(value: string, minimum: string): boolean {
   return true;
 }
 
-function nearestPackageJson(start: string): string | undefined {
+function agentDevicePackageVersion(start: string): string | undefined {
   let current = dirname(start);
   for (let index = 0; index < 8; index += 1) {
     const candidate = join(current, 'package.json');
-    if (existsSync(candidate)) return candidate;
+    if (existsSync(candidate)) {
+      try {
+        const parsed = JSON.parse(readFileSync(candidate, 'utf8')) as {
+          name?: unknown;
+          version?: unknown;
+        };
+        if (parsed.name === 'agent-device') {
+          return typeof parsed.version === 'string' ? parsed.version : undefined;
+        }
+      } catch {
+        // Keep walking: the resolved entry must belong to a valid agent-device package.
+      }
+    }
     const parent = dirname(current);
     if (parent === current) break;
     current = parent;
@@ -112,15 +124,26 @@ export function typedAgentDeviceIdentity(): AgentDeviceProviderIdentity {
       reason: 'The optional agent-device typed client is not installed.',
     };
   }
-  let version: string | undefined;
-  const packageJson = nearestPackageJson(resolvedModule);
-  if (packageJson) {
-    try {
-      const parsed = JSON.parse(readFileSync(packageJson, 'utf8')) as { version?: unknown };
-      if (typeof parsed.version === 'string') version = parsed.version;
-    } catch {
-      // Availability is still valid; version remains unknown and is reported.
-    }
+  if (!existsSync(resolvedModule)) {
+    return {
+      kind: 'typed',
+      available: false,
+      resolvedModule,
+      runtimeVersion,
+      minimumRuntimeVersion: MIN_TYPED_CLIENT_NODE_VERSION,
+      reason: 'The resolved agent-device typed client entry does not exist.',
+    };
+  }
+  const version = agentDevicePackageVersion(resolvedModule);
+  if (!version) {
+    return {
+      kind: 'typed',
+      available: false,
+      resolvedModule,
+      runtimeVersion,
+      minimumRuntimeVersion: MIN_TYPED_CLIENT_NODE_VERSION,
+      reason: 'The resolved module is not inside a versioned agent-device package.',
+    };
   }
   return {
     kind: 'typed',
