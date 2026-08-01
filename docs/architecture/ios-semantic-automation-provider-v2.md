@@ -84,7 +84,8 @@ Provider readiness is based on:
 - resolved executable/configured path;
 - parsed semantic version within a reviewed compatibility range;
 - command help or typed contract for snapshot, fill, batch and keyboard;
-- a stable contract fingerprint cached with a short TTL.
+- runtime compatibility before resolving the optional typed module (`agent-device@0.20.2` requires Node 22.12 or newer while Repo Harness still supports Node 20);
+- a stable contract fingerprint cached with a short TTL and bound to executable, backend mode, Node runtime and PATH identity.
 
 A preferred version is useful for support, but it is not authority. Commands are emitted only when their capability is present. Unknown future minor versions fail closed until reviewed.
 
@@ -127,7 +128,9 @@ CoreDevice is the source of truth for device inventory, pairing, connection, app
 
 ## Upstream integration policy
 
-Prefer the official typed `createAgentDeviceClient` surface where package deployment and versioning can be made deterministic. Keep a CLI adapter for compatibility. A fork, if required, is a separate version-pinned provider package with:
+Prefer the official typed `createAgentDeviceClient` surface where package deployment and versioning can be made deterministic. The current integration uses it for read-only snapshots on compatible Node runtimes. Mutations remain on the cancellable CLI process path because the typed client does not currently expose an `AbortSignal`; this preserves the unknown-outcome fence instead of trading reliability for fewer argv calls. `auto` falls back to CLI only when the optional typed module is absent, unloadable, runtime-incompatible, or its package version does not exactly match the active CLI version. Every fallback returns a bounded `backendFallbackReason` plus typed/CLI versions; a real typed provider command failure is surfaced and never hidden by backend switching.
+
+Keep a CLI adapter for compatibility. A fork, if required, is a separate version-pinned provider package with:
 
 - upstream commit reference;
 - minimal patch set;

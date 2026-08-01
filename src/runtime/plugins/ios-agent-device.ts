@@ -33,6 +33,16 @@ import {
 } from './ios/agent-device-capabilities';
 import { classifyAgentDeviceFailure, preserveSessionFailure } from './ios/agent-device-failures';
 import { findSemanticRef, JD_IOS_APP_ADAPTER } from './ios/app-adapters';
+import {
+  agentDeviceProviderVersionsMatch,
+  configuredAgentDeviceBackendMode,
+  type AgentDeviceSnapshotRequest,
+} from './ios/agent-device-provider';
+import {
+  isTypedProviderUnavailable,
+  TypedAgentDeviceReadProvider,
+  typedAgentDeviceIdentity,
+} from './ios/agent-device-typed-provider';
 
 export const IOS_AGENT_DEVICE_VERSION = PREFERRED_AGENT_DEVICE_VERSION;
 const SIMULATOR_PROVIDER = 'ios-simulator' as const;
@@ -133,7 +143,7 @@ const defaultHooks: IosAgentDeviceRuntimeHooks = {
 };
 
 let hooks: IosAgentDeviceRuntimeHooks = { ...defaultHooks };
-let statusCache: { expiresAt: number; value: ReturnType<typeof probeStatus> } | undefined;
+let statusCache: { cacheKey: string; expiresAt: number; value: ReturnType<typeof probeStatus> } | undefined;
 const interactionCommandTails = new Map<string, Promise<void>>();
 
 export function setIosAgentDeviceRuntimeHooksForTest(overrides: Partial<IosAgentDeviceRuntimeHooks>): void {
@@ -176,7 +186,20 @@ function sanitize(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'ios-agent-device';
 }
 
+function statusProbeCacheKey(): string {
+  return [
+    hooks.platform(),
+    executable(),
+    resolvedExecutable(),
+    configuredAgentDeviceBackendMode(),
+    process.versions.node,
+    process.env.PATH ?? '',
+  ].join('|');
+}
+
 function probeStatus() {
+  const backendMode = configuredAgentDeviceBackendMode();
+  const typedClient = typedAgentDeviceIdentity();
   if (hooks.platform() !== 'darwin') {
     return {
       available: false,
@@ -187,6 +210,8 @@ function probeStatus() {
       resolvedExecutable: resolvedExecutable(),
       platform: hooks.platform(),
       capabilityProfile: detectAgentDeviceCapabilities('', {}),
+      backendMode,
+      typedClient,
       reason: 'agent-device iOS support requires macOS.',
     };
   }
@@ -202,6 +227,11 @@ function probeStatus() {
     }
   }
   const capabilityProfile = detectAgentDeviceCapabilities(detectedVersion ?? '', help);
+  const typedClientWithCompatibility = {
+    ...typedClient,
+    cliVersion: detectedVersion,
+    cliVersionCompatible: agentDeviceProviderVersionsMatch(typedClient.version, detectedVersion),
+  };
   const available = result.ok
     && capabilityProfile.versionSupported
     && Boolean(capabilityProfile.snapshot.interactiveFlag)
@@ -217,6 +247,8 @@ function probeStatus() {
     resolvedExecutable: resolvedExecutable(),
     platform: hooks.platform(),
     capabilityProfile,
+    backendMode,
+    typedClient: typedClientWithCompatibility,
     reason: !result.ok
       ? (result.stderr || result.stdout || 'agent-device is not installed.')
       : !capabilityProfile.versionSupported
@@ -229,9 +261,13 @@ function probeStatus() {
 
 export function iosAgentDeviceStatus(options: { forceRefresh?: boolean } = {}) {
   const nowMs = hooks.now().getTime();
-  if (!options.forceRefresh && statusCache && statusCache.expiresAt > nowMs) return statusCache.value;
+  const cacheKey = statusProbeCacheKey();
+  if (!options.forceRefresh
+    && statusCache
+    && statusCache.cacheKey === cacheKey
+    && statusCache.expiresAt > nowMs) return statusCache.value;
   const value = probeStatus();
-  statusCache = { expiresAt: nowMs + STATUS_TTL_MS, value };
+  statusCache = { cacheKey, expiresAt: nowMs + STATUS_TTL_MS, value };
   return value;
 }
 
@@ -905,6 +941,145 @@ async function runSessionCommandAttempt(
   ));
 }
 
+function boundedProviderTimeout(
+  input: AssistantPluginActionExecutionInput,
+  requested: number,
+): number {
+  const remaining = remainingActionTimeout(input);
+  if (remaining !== undefined && remaining <= 0) throw actionTimeoutError();
+  return Math.max(1, Math.min(requested, remaining ?? requested));
+}
+
+async function executeSessionSnapshotBackend(
+  input: AssistantPluginActionExecutionInput,
+  record: InteractionSessionRecord,
+  request: AgentDeviceSnapshotRequest,
+  failureCode: string,
+  timeoutMs: number,
+): Promise<Record<string, unknown>> {
+  const mode = configuredAgentDeviceBackendMode();
+  let backendFallbackReason: 'typed_unavailable' | 'typed_cli_version_mismatch' | undefined;
+  let fallbackTypedVersion: string | undefined;
+  let fallbackCliVersion: string | undefined;
+  if (mode !== 'cli') {
+    const dependency = requireDependency();
+    const typed = new TypedAgentDeviceReadProvider();
+    const versionsMatch = agentDeviceProviderVersionsMatch(
+      typed.identity.version,
+      dependency.detectedVersion,
+    );
+    if (typed.identity.available && !versionsMatch) {
+      fallbackTypedVersion = typed.identity.version;
+      fallbackCliVersion = dependency.detectedVersion;
+      if (mode === 'typed') {
+        throw new AssistantPluginError(
+          'AGENT_DEVICE_TYPED_PROVIDER_VERSION_MISMATCH',
+          `The typed agent-device module (${typed.identity.version ?? 'unknown'}) does not match the active CLI (${dependency.detectedVersion ?? 'unknown'}).`,
+          {
+            retryable: false,
+            details: {
+              providerBackend: 'typed',
+              providerCode: 'UNSUPPORTED_OPERATION',
+              typedVersion: typed.identity.version,
+              cliVersion: dependency.detectedVersion,
+            },
+          },
+        );
+      }
+      backendFallbackReason = 'typed_cli_version_mismatch';
+    } else if (typed.identity.available || mode === 'typed') {
+      try {
+        return await typed.snapshot({
+          stateDir: stateDir(input, record.interactionId),
+          session: record.sessionId,
+          device: record.targetId,
+          platform: 'ios',
+          requestId: input.requestId,
+          cwd: input.repoRoot,
+          timeoutMs: boundedProviderTimeout(input, timeoutMs),
+        }, request) as unknown as Record<string, unknown>;
+      } catch (error) {
+        if (mode === 'auto' && isTypedProviderUnavailable(error)) {
+          // The optional package was removed or became unloadable after the
+          // synchronous status probe. CLI remains the compatibility fallback.
+          backendFallbackReason = 'typed_unavailable';
+          fallbackTypedVersion = typed.identity.version;
+          fallbackCliVersion = dependency.detectedVersion;
+        } else if (isTypedProviderUnavailable(error)) {
+          throw new AssistantPluginError(
+            'AGENT_DEVICE_TYPED_PROVIDER_UNAVAILABLE',
+            error instanceof Error ? error.message : 'The typed agent-device provider is unavailable.',
+            {
+              retryable: false,
+              details: {
+                providerBackend: 'typed',
+                sessionPreserved: true,
+                identity: typed.identity,
+              },
+            },
+          );
+        } else {
+          throw error;
+        }
+      }
+    } else if (mode === 'auto') {
+      backendFallbackReason = 'typed_unavailable';
+      fallbackTypedVersion = typed.identity.version;
+      fallbackCliVersion = dependency.detectedVersion;
+    }
+  }
+
+  const args = compileSnapshotCommand(capabilityProfile(), request);
+  const result = await runJsonAsync(
+    input,
+    [...args, '--session', record.sessionId, '--platform', 'ios', '--json'],
+    { record, timeoutMs, failureCode },
+  );
+  return {
+    ...result,
+    provider: 'cli',
+    ...(backendFallbackReason ? {
+      backendFallbackReason,
+      typedVersion: fallbackTypedVersion,
+      cliVersion: fallbackCliVersion,
+    } : {}),
+  };
+}
+
+async function runSessionSnapshotAttempt(
+  input: AssistantPluginActionExecutionInput,
+  record: InteractionSessionRecord,
+  request: AgentDeviceSnapshotRequest,
+  failureCode = 'AGENT_DEVICE_SNAPSHOT_FAILED',
+  timeoutMs = 60_000,
+): Promise<Record<string, unknown>> {
+  return serializeInteractionCommand(
+    input,
+    record,
+    async () => executeSessionSnapshotBackend(input, record, request, failureCode, timeoutMs),
+  );
+}
+
+async function runSessionSnapshot(
+  input: AssistantPluginActionExecutionInput,
+  record: InteractionSessionRecord,
+  request: AgentDeviceSnapshotRequest,
+  failureCode = 'AGENT_DEVICE_SNAPSHOT_FAILED',
+  timeoutMs = 60_000,
+): Promise<Record<string, unknown>> {
+  try {
+    return await runSessionSnapshotAttempt(input, record, request, failureCode, timeoutMs);
+  } catch (error) {
+    if (isTypedProviderUnavailable(error)) throw error;
+    const classification = classifyAgentDeviceFailure(error);
+    // Snapshot is observation-only. A timeout/cancel cannot create an unknown
+    // device-side mutation, so retain the session unless the provider supplied
+    // concrete Runner/transport-death evidence.
+    if (classification.disposition !== 'terminate_session') return preserveSessionFailure(error);
+    return failSession(input, record, error);
+  }
+}
+
 function isStaleAccessibilityRefError(error: unknown): boolean {
   const normalized = toAssistantPluginError(error, {
     code: 'AGENT_DEVICE_COMMAND_FAILED',
@@ -1220,14 +1395,14 @@ async function recoverExactWaitEvidence(
   if (scope) {
     snapshotRequests += 1;
     try {
-      const scoped = await runSessionCommandAttempt(
+      const scoped = await runSessionSnapshotAttempt(
         input,
         record,
-        compileSnapshotCommand(capabilityProfile(), {
+        {
           interactiveOnly: true,
           depth,
           scope,
-        }),
+        },
         'AGENT_DEVICE_SNAPSHOT_FAILED',
         30_000,
       );
@@ -1243,14 +1418,14 @@ async function recoverExactWaitEvidence(
 
   snapshotRequests += 1;
   try {
-    const full = await runSessionCommandAttempt(
+    const full = await runSessionSnapshotAttempt(
       input,
       record,
-      compileSnapshotCommand(capabilityProfile(), {
+      {
         interactiveOnly: true,
         depth,
         forceFull: true,
-      }),
+      },
       'AGENT_DEVICE_SNAPSHOT_FAILED',
       45_000,
     );
@@ -1451,15 +1626,15 @@ async function executeJdSearch(input: AssistantPluginActionExecutionInput): Prom
         let refreshedSnapshot: Record<string, unknown>;
         try {
           const discovery = JD_IOS_APP_ADAPTER.search!.discovery;
-          refreshedSnapshot = await runSessionCommandAttempt(
+          refreshedSnapshot = await runSessionSnapshotAttempt(
             input,
             record,
-            compileSnapshotCommand(capabilityProfile(), {
+            {
               interactiveOnly: discovery.interactiveOnly,
               raw: discovery.raw,
               depth: discovery.depth,
               scope: discovery.scope,
-            }),
+            },
             'AGENT_DEVICE_SNAPSHOT_FAILED',
             30_000,
           );
@@ -1888,14 +2063,21 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       };
     }
     case 'agent_device_snapshot': {
-      const args = compileSnapshotCommand(capabilityProfile(), {
+      const request: AgentDeviceSnapshotRequest = {
         interactiveOnly: input.args.interactive === true,
         raw: input.args.raw === true,
         depth: typeof input.args.depth === 'number' ? input.args.depth : undefined,
         scope: optionalString(input.args.scope),
         forceFull: input.args.force_full === true,
-      });
-      return { provider: 'agent-device', interaction: record, result: bounded(await runSessionCommand(input, record, args, 'AGENT_DEVICE_SNAPSHOT_FAILED')) };
+      };
+      const result = await runSessionSnapshot(input, record, request);
+      return {
+        provider: 'agent-device',
+        backend: result.provider === 'typed' ? 'typed' : 'cli',
+        configuredBackend: configuredAgentDeviceBackendMode(),
+        interaction: record,
+        result: bounded(result),
+      };
     }
     case 'agent_device_press': {
       const target = optionalString(input.args.target);

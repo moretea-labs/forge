@@ -144,5 +144,8 @@
     "express": "^5.2.1",
     "playwright": "^1.54.1"
   },
-  "packageManager": "npm@10.0.0"
+  "packageManager": "npm@10.0.0",
+  "optionalDependencies": {
+    "agent-device": "0.20.2"
+  }
 }

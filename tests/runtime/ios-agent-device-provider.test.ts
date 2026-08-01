@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -13,13 +13,23 @@ import {
 import { readInteractionSession } from '../../src/runtime/plugins/interaction-session';
 import { resetIosDevelopmentHooksForTest, setIosDevelopmentHooksForTest } from '../../src/runtime/safe-tooling';
 import jdHomeDepth20 from '../fixtures/ios/jd-home-depth20.json';
+import {
+  resetAgentDeviceTypedProviderHooksForTest,
+  setAgentDeviceTypedProviderHooksForTest,
+} from '../../src/runtime/plugins/ios/agent-device-typed-provider';
 
 const roots: string[] = [];
+
+beforeEach(() => {
+  process.env.REPO_HARNESS_AGENT_DEVICE_BACKEND = 'cli';
+});
 
 afterEach(() => {
   resetIosAgentDeviceRuntimeHooksForTest();
   resetIosDevelopmentHooksForTest();
+  resetAgentDeviceTypedProviderHooksForTest();
   delete process.env.REPO_HARNESS_AGENT_DEVICE_EXECUTABLE;
+  delete process.env.REPO_HARNESS_AGENT_DEVICE_BACKEND;
   delete process.env.REPO_HARNESS_CONTROLLER_HOME;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -1018,6 +1028,268 @@ describe('optional agent-device iOS Simulator provider', () => {
       app: 'myapp://login?token=secret', device: 'SIM-1',
     }))).rejects.toThrow('not a URL or tokenized deep link');
     expect(commands.some((command) => command[1] === 'devices')).toBe(false);
+  });
+
+  it('does not dispatch a typed snapshot after the action deadline has expired', async () => {
+    const value = fixture();
+    readyIosTooling();
+    process.env.REPO_HARNESS_AGENT_DEVICE_BACKEND = 'typed';
+    let typedSnapshots = 0;
+    setAgentDeviceTypedProviderHooksForTest({
+      resolveModule: () => join(process.cwd(), 'node_modules', 'agent-device', 'dist', 'src', 'index.js'),
+      loadModule: async () => ({
+        createAgentDeviceClient: () => ({
+          capture: {
+            snapshot: async () => {
+              typedSnapshots += 1;
+              return { nodes: [], truncated: false, identifiers: {} };
+            },
+          },
+        }),
+      }),
+    });
+    setIosAgentDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
+        if (args[0] === 'devices') {
+          return { ok: true, status: 0, stdout: success({ devices: [device('PHONE-1', 'greyson', 'device', true)] }), stderr: '', command: [command, ...args] };
+        }
+        return { ok: true, status: 0, stdout: success(), stderr: '', command: [command, ...args] };
+      },
+    });
+
+    const opened = await executeIosPluginAction(pluginInput(value, 'agent_device_open', {
+      app: 'com.360buy.jdmobile',
+      device: 'greyson',
+    }));
+    const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
+    const expired = {
+      ...pluginInput(value, 'agent_device_snapshot', { interaction_id: interactionId }),
+      deadlineAtMs: Date.now() - 1,
+    };
+    await expect(executeIosPluginAction(expired)).rejects.toMatchObject({
+      code: 'AGENT_DEVICE_COMMAND_TIMEOUT',
+      details: { sessionPreserved: true },
+    });
+    expect(typedSnapshots).toBe(0);
+    expect(readInteractionSession(value.repoRoot, 'ios-device', interactionId)?.status).toBe('waiting_for_user');
+
+    const followUp = await executeIosPluginAction(pluginInput(value, 'agent_device_snapshot', {
+      interaction_id: interactionId,
+    }, 'snapshot-after-expired-deadline'));
+    expect(followUp.backend).toBe('typed');
+    expect(typedSnapshots).toBe(1);
+    await executeIosPluginAction(pluginInput(value, 'agent_device_close', { interaction_id: interactionId }));
+  });
+
+  it('never mixes a typed module version with a different active CLI session version', async () => {
+    const value = fixture();
+    readyIosTooling();
+    process.env.REPO_HARNESS_AGENT_DEVICE_BACKEND = 'auto';
+    const commands: string[][] = [];
+    let typedLoads = 0;
+    const mismatchedModule = mkdtempSync(join(tmpdir(), 'agent-device-mismatched-provider-'));
+    roots.push(mismatchedModule);
+    mkdirSync(join(mismatchedModule, 'dist', 'src'), { recursive: true });
+    writeFileSync(join(mismatchedModule, 'package.json'), JSON.stringify({ name: 'agent-device', version: '0.20.1' }));
+    const mismatchedEntry = join(mismatchedModule, 'dist', 'src', 'index.js');
+    writeFileSync(mismatchedEntry, 'export {};');
+    setAgentDeviceTypedProviderHooksForTest({
+      resolveModule: () => mismatchedEntry,
+      loadModule: async () => {
+        typedLoads += 1;
+        throw new Error('mismatched typed module must not load');
+      },
+    });
+    setIosAgentDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
+        if (args[0] === 'devices') {
+          return { ok: true, status: 0, stdout: success({ devices: [device('PHONE-1', 'greyson', 'device', true)] }), stderr: '', command: [command, ...args] };
+        }
+        if (args[0] === 'snapshot') {
+          return { ok: true, status: 0, stdout: success({ nodes: [], truncated: false }), stderr: '', command: [command, ...args] };
+        }
+        return { ok: true, status: 0, stdout: success(), stderr: '', command: [command, ...args] };
+      },
+    });
+
+    const opened = await executeIosPluginAction(pluginInput(value, 'agent_device_open', {
+      app: 'com.360buy.jdmobile',
+      device: 'greyson',
+    }));
+    const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
+    const autoSnapshot = await executeIosPluginAction(pluginInput(value, 'agent_device_snapshot', {
+      interaction_id: interactionId,
+    }));
+    expect(autoSnapshot.backend).toBe('cli');
+    expect(autoSnapshot.result).toMatchObject({
+      backendFallbackReason: 'typed_cli_version_mismatch',
+      typedVersion: '0.20.1',
+      cliVersion: '0.20.2',
+    });
+    expect(typedLoads).toBe(0);
+
+    process.env.REPO_HARNESS_AGENT_DEVICE_BACKEND = 'typed';
+    await expect(executeIosPluginAction(pluginInput(value, 'agent_device_snapshot', {
+      interaction_id: interactionId,
+    }, 'typed-version-mismatch'))).rejects.toMatchObject({
+      code: 'AGENT_DEVICE_TYPED_PROVIDER_VERSION_MISMATCH',
+      details: { sessionPreserved: true, typedVersion: '0.20.1', cliVersion: '0.20.2' },
+    });
+    expect(typedLoads).toBe(0);
+    expect(readInteractionSession(value.repoRoot, 'ios-device', interactionId)?.status).toBe('waiting_for_user');
+    await executeIosPluginAction(pluginInput(value, 'agent_device_close', { interaction_id: interactionId }));
+  });
+
+  it('uses the typed read provider for snapshots without spawning a CLI snapshot process', async () => {
+    const value = fixture();
+    readyIosTooling();
+    process.env.REPO_HARNESS_AGENT_DEVICE_BACKEND = 'typed';
+    const commands: string[][] = [];
+    const typedCalls: Array<{ config: Record<string, unknown>; options: Record<string, unknown> }> = [];
+    setAgentDeviceTypedProviderHooksForTest({
+      resolveModule: () => join(process.cwd(), 'node_modules', 'agent-device', 'dist', 'src', 'index.js'),
+      loadModule: async () => ({
+        createAgentDeviceClient: (config = {}) => ({
+          capture: {
+            snapshot: async (options) => {
+              typedCalls.push({ config, options });
+              return { nodes: [{ ref: 'e39', type: 'SearchField', depth: 14 }], truncated: false, identifiers: {} };
+            },
+          },
+        }),
+      }),
+    });
+    setIosAgentDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
+        if (args[0] === 'devices') {
+          return { ok: true, status: 0, stdout: success({ devices: [device('PHONE-1', 'greyson', 'device', true)] }), stderr: '', command: [command, ...args] };
+        }
+        if (args[0] === 'snapshot') throw new Error('CLI snapshot must not run in typed mode');
+        return { ok: true, status: 0, stdout: success(), stderr: '', command: [command, ...args] };
+      },
+    });
+
+    const opened = await executeIosPluginAction(pluginInput(value, 'agent_device_open', {
+      app: 'com.360buy.jdmobile',
+      device: 'greyson',
+    }));
+    const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
+    const snapshot = await executeIosPluginAction(pluginInput(value, 'agent_device_snapshot', {
+      interaction_id: interactionId,
+      raw: true,
+      depth: 20,
+    }));
+
+    expect(snapshot.backend).toBe('typed');
+    expect(snapshot.configuredBackend).toBe('typed');
+    expect(typedCalls).toHaveLength(1);
+    expect(typedCalls[0]?.config).toMatchObject({
+      session: String((opened.interaction as Record<string, unknown>).sessionId),
+      requestId: 'request-agent_device_snapshot',
+      cost: true,
+    });
+    expect(typedCalls[0]?.options).toMatchObject({
+      platform: 'ios',
+      device: 'PHONE-1',
+      raw: true,
+      depth: 20,
+    });
+    expect(commands.some((command) => command[1] === 'snapshot')).toBe(false);
+
+    await executeIosPluginAction(pluginInput(value, 'agent_device_close', { interaction_id: interactionId }));
+  });
+
+  it('falls back from auto to CLI only when the optional typed module cannot load', async () => {
+    const value = fixture();
+    readyIosTooling();
+    process.env.REPO_HARNESS_AGENT_DEVICE_BACKEND = 'auto';
+    const commands: string[][] = [];
+    setAgentDeviceTypedProviderHooksForTest({
+      resolveModule: () => join(process.cwd(), 'node_modules', 'agent-device', 'dist', 'src', 'index.js'),
+      loadModule: async () => { throw new Error('optional module unavailable after probe'); },
+    });
+    setIosAgentDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
+        if (args[0] === 'devices') {
+          return { ok: true, status: 0, stdout: success({ devices: [device('PHONE-1', 'greyson', 'device', true)] }), stderr: '', command: [command, ...args] };
+        }
+        if (args[0] === 'snapshot') {
+          return { ok: true, status: 0, stdout: success({ nodes: [], truncated: false }), stderr: '', command: [command, ...args] };
+        }
+        return { ok: true, status: 0, stdout: success(), stderr: '', command: [command, ...args] };
+      },
+    });
+
+    const opened = await executeIosPluginAction(pluginInput(value, 'agent_device_open', {
+      app: 'com.360buy.jdmobile',
+      device: 'greyson',
+    }));
+    const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
+    const snapshot = await executeIosPluginAction(pluginInput(value, 'agent_device_snapshot', {
+      interaction_id: interactionId,
+      interactive: true,
+    }));
+
+    expect(snapshot.backend).toBe('cli');
+    expect(snapshot.configuredBackend).toBe('auto');
+    expect(snapshot.result).toMatchObject({
+      backendFallbackReason: 'typed_unavailable',
+      typedVersion: '0.20.2',
+      cliVersion: '0.20.2',
+    });
+    expect(commands.filter((command) => command[1] === 'snapshot')).toHaveLength(1);
+    await executeIosPluginAction(pluginInput(value, 'agent_device_close', { interaction_id: interactionId }));
+  });
+
+  it('does not hide a typed Runner failure by silently retrying the snapshot through CLI', async () => {
+    const value = fixture();
+    readyIosTooling();
+    process.env.REPO_HARNESS_AGENT_DEVICE_BACKEND = 'auto';
+    const commands: string[][] = [];
+    setAgentDeviceTypedProviderHooksForTest({
+      resolveModule: () => join(process.cwd(), 'node_modules', 'agent-device', 'dist', 'src', 'index.js'),
+      loadModule: async () => ({
+        createAgentDeviceClient: () => ({
+          capture: {
+            snapshot: async () => { throw { code: 'RUNNER_DISCONNECTED', message: 'typed runner lost' }; },
+          },
+        }),
+      }),
+    });
+    setIosAgentDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
+        if (args[0] === 'devices') {
+          return { ok: true, status: 0, stdout: success({ devices: [device('PHONE-1', 'greyson', 'device', true)] }), stderr: '', command: [command, ...args] };
+        }
+        return { ok: true, status: 0, stdout: success(), stderr: '', command: [command, ...args] };
+      },
+    });
+
+    const opened = await executeIosPluginAction(pluginInput(value, 'agent_device_open', {
+      app: 'com.360buy.jdmobile',
+      device: 'greyson',
+    }));
+    const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
+    await expect(executeIosPluginAction(pluginInput(value, 'agent_device_snapshot', {
+      interaction_id: interactionId,
+    }))).rejects.toThrow('typed runner lost');
+    expect(commands.some((command) => command[1] === 'snapshot')).toBe(false);
+    expect(commands.filter((command) => command[1] === 'close')).toHaveLength(1);
+    expect(readInteractionSession(value.repoRoot, 'ios-device', interactionId)?.status).toBe('failed');
   });
 
   it('discovers deep JD search controls from structured App-adapter evidence without unsupported flags', async () => {

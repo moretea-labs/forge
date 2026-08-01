@@ -10,6 +10,7 @@ License values come from `package-lock.json` where available. For lock entries w
 | `commander` | `14.0.3` | runtime | `MIT` | package metadata |
 | `express` | `5.2.1` | runtime | `MIT` | package metadata |
 | `playwright` | `1.61.1` | runtime | `Apache-2.0` | package metadata |
+| `agent-device` | `0.20.2` | optional runtime (iOS/Android device automation provider) | `MIT` | package-lock.json |
 | `@colbymchenry/codegraph` | `1.0.1` | development | `MIT` | package-lock.json |
 | `@types/bun` | `1.3.14` | development | `MIT` | package-lock.json |
 | `@types/cors` | `2.8.19` | development | `MIT` | package-lock.json |
