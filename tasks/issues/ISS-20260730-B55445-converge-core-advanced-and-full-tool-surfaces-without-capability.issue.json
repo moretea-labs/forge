@@ -78,11 +78,12 @@
         "Verification evidence failed: One or more executed checks or reported commands failed.",
         "Verification discrepancy resolved to a missing declared heavy check, not a code or documentation defect. Exact commit facaa2bae387b32ef070de4528eeb8593561e53d already passed package:check:type, package:check:controller-v8, package:check:public-docs, and package:check:open-source-surface. Formal Task verification additionally requires package:test. Started managed Process proc_ms8c2o49_def959b0 once; it remains running and must be polled rather than re-run. After terminal success, record verification, accept T1, and commit the resulting Issue snapshot status updates.",
         "The first verification correctly rejected package:test because it subscribed to a shared heavy check queued on an earlier repository state. Current HEAD remains facaa2bae387b32ef070de4528eeb8593561e53d and no code/content failure occurred. Committing this Controller ledger first, then running fresh package:check:type and package:test on the resulting clean exact revision before final acceptance.",
-        "Verification evidence failed: One or more executed checks or reported commands failed."
+        "Verification evidence failed: One or more executed checks or reported commands failed.",
+        "Reliability closeout advanced on current main. Committed ff778eb2bce5586c8309757371dddeef94217c40 (portable test cleanup PID-reuse fencing, exact POSIX PGID parsing, bounded slow skills probe) and 31fb86eb1e0cc9aa327d4d49b26a21faf05d0c25 (test isolation from host-global skills CLI). Focused process-tree/portable regressions passed 10/10; wrapped check-agent-tooling passed 11/11 with no residual cleanup output; package:check:type passed. Exact committed package:test now gets beyond the tooling fixture and fails only in tests/cli/repository-lock-routing-v81.test.ts: repositoryScopedToolArgs('dispatch_task', ...) returned repo_id='repo_a' while the stale test expects undefined. This is an independent routing-contract drift on current main, not a tool-inventory or portable-runner defect. Do not rerun package:test until the routing contract/test is reconciled; preserve the two scoped commits and avoid mixing concurrent Issue snapshot changes."
       ],
       "runIds": [],
       "createdAt": "2026-07-30T09:30:38.098Z",
-      "updatedAt": "2026-07-31T03:10:43.478Z",
+      "updatedAt": "2026-07-31T11:35:33.287Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56",
       "verification": {
         "integratedRevision": "8048c0275686f462e39d998a6d4cb7faf3eabb1b",
@@ -352,6 +353,6 @@
     }
   ],
   "createdAt": "2026-07-30T09:30:38.098Z",
-  "updatedAt": "2026-07-31T03:10:43.478Z",
+  "updatedAt": "2026-07-31T11:35:33.287Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }

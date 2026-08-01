@@ -1,8 +1,8 @@
 ---
 id: "ISS-20260731-B66A97"
 kind: "bug"
-status: "in_progress"
-updated_at: "2026-07-31T06:28:10.888Z"
+status: "planned"
+updated_at: "2026-07-31T12:18:15.015Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -45,7 +45,7 @@ Fix the core trusted-execution defect where an explicitly selected checkout can 
 
 ### T1 — Implement immutable execution identity and pre-spawn guard
 
-- Status: `verifying`
+- Status: `done`
 - Objective: Introduce an immutable resolved execution identity, stop deleting/re-resolving checkout identity, make WorkHandle authoritative for Work operations, add exact realpath/Git top-level/common-dir/branch/HEAD/lifecycle validation before every relevant process spawn, and migrate legacy WorkContract identity only through unique exact WorkHandle matches.
 - Depends on: none
 - Allowed paths: `src/runtime/gateway/mcp/**`, `src/runtime/control-plane/execution/**`, `src/runtime/control-plane/facade/**`, `src/runtime/execution/process-runtime/**`, `src/cli/mcp/**`, `src/cli/repositories/**`, `src/cli/local-bridge/**`, `tests/runtime/**`, `tests/cli/**`, `docs/architecture/current/**`, `docs/operations/**`, `tasks/issues/**`
@@ -54,7 +54,7 @@ Fix the core trusted-execution defect where an explicitly selected checkout can 
 
 ### T2 — Externalize new managed worktrees and checkout-scope leases
 
-- Status: `planned`
+- Status: `done`
 - Objective: Allocate all new managed worktrees in stable controller-owned storage outside registered repository roots, preserve exact compatibility for active legacy nested worktrees, and make Process Runtime resource claims and lease reconciliation include repositoryId, checkoutId, and workId with correct readonly/mutation semantics.
 - Depends on: `T1`
 - Allowed paths: `src/runtime/control-plane/**`, `src/runtime/execution/**`, `src/runtime/resources/**`, `src/cli/repositories/**`, `src/cli/controller/**`, `tests/runtime/**`, `tests/cli/**`, `docs/architecture/current/**`, `docs/operations/**`, `tasks/issues/**`
@@ -63,7 +63,7 @@ Fix the core trusted-execution defect where an explicitly selected checkout can 
 
 ### T3 — Prove route integrity under drift, restart, and adversarial faults
 
-- Status: `planned`
+- Status: `ready`
 - Objective: Add nested repository/worktree, Session drift, Registry drift, reconnect/restart/resume, missing checkout, branch/HEAD drift, symlink/path alias, duplicate branch, property-based, stale lease, and destructive no-wrong-spawn tests; then merge, activate, and verify the exact runtime release and connector identity.
 - Depends on: `T2`
 - Allowed paths: `tests/**`, `scripts/**`, `docs/researches/**`, `docs/operations/**`, `tasks/issues/**`, `src/runtime/**`, `src/cli/**`
@@ -72,10 +72,19 @@ Fix the core trusted-execution defect where an explicitly selected checkout can 
 
 ### T4 — Propagate Process check completion into Edit Session and Task receipts
 
-- Status: `ready`
+- Status: `done`
 - Objective: Replace the broken verification handoff where verify_edit_session retires Local Jobs but Process Runtime results cannot update Edit Session checkResults or Task completion evidence. Introduce one authoritative check completion receipt/event consumed idempotently by Edit Session verification, Work validation and Task completion, preserving exact checkout/work/revision identity and success/failure semantics.
 - Depends on: none
 - Allowed paths: `src/runtime/execution/process-runtime/**`, `src/runtime/evidence/**`, `src/runtime/control-plane/**`, `src/runtime/gateway/mcp/**`, `src/cli/editing/**`, `src/cli/controller/**`, `src/cli/local-bridge/**`, `tests/runtime/**`, `tests/cli/**`, `docs/architecture/current/**`, `docs/operations/**`, `tasks/issues/**`
+- Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:controller-v8`
+- Execution hint: selected at runtime
+
+### T5 — Bind rollout readiness to the current managed process
+
+- Status: `done`
+- Objective: Fix Stable Supervisor candidate startup readiness so stale daemon or MCP runtime files from a prior slot occupant cannot satisfy readiness for a newly spawned candidate. Require current managed-process identity and generation evidence before authenticated MCP probing, add exact stale-state regressions, then activate and prove the exact merged release.
+- Depends on: none
+- Allowed paths: `src/runtime/supervisor/**`, `tests/runtime/stable-supervisor-hardening.test.ts`, `tests/runtime/**`, `docs/operations/**`, `tasks/issues/**`
 - Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:controller-v8`
 - Execution hint: selected at runtime
 

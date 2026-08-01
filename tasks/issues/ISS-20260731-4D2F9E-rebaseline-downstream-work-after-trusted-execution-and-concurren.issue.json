@@ -1,0 +1,274 @@
+{
+  "schemaVersion": 5,
+  "id": "ISS-20260731-4D2F9E",
+  "title": "Rebaseline downstream work after trusted execution and concurrency gates",
+  "slug": "rebaseline-downstream-work-after-trusted-execution-and-concurren",
+  "kind": "governance",
+  "status": "planned",
+  "summary": "Freeze non-P0 development while trusted execution is restored, then rebaseline all active downstream work before reopening execution. Highest priority is stability and fail-closed execution; second priority is safe bounded concurrency; all other optimization and product work must wait behind those gates.",
+  "goals": [
+    "Keep a single P0 write lane until trusted execution and receipt propagation are proven.",
+    "Make stability the top priority: no wrong-checkout spawn, no silent fallback, no stale evidence reuse, no unexplained active leases.",
+    "Make safe execution concurrency the second priority: resource claims, path ownership, base-revision invalidation, and bounded pilot before reopening parallel development.",
+    "Defer other optimizations such as SQLite authority migration, broad worktree relocation, Browser/Apple/iOS product work, V2 cutover, and release tasks until stability and concurrency gates pass.",
+    "After P0 completes, re-read Controller and Git facts and reclassify all active Issues and Tasks before dispatching anything.",
+    "Avoid wasted work by revising, merging, superseding, or cancelling stale Contracts that became outdated due to P0 execution architecture changes."
+  ],
+  "nonGoals": [
+    "Do not resume Browser, Apple, iOS, V2, release, or tool-surface development before the P0 exit gate passes.",
+    "Do not make SQLite the authoritative Control Plane store in this Issue.",
+    "Do not perform broad runtime cleanup or delete unknown ownership artifacts.",
+    "Do not use full test, CI, release-readiness, push, tag, release, or npm publish as part of this coordination Issue.",
+    "Do not restore broad parallel development immediately after P0; use staged concurrency gates instead.",
+    "Do not rely on prompt-only discipline as the safety boundary; require Controller evidence."
+  ],
+  "acceptanceCriteria": [
+    "A program-wide freeze policy exists and names the only allowed P0 write lane.",
+    "P0 exit gate is explicit and must be evidence-checked before any downstream work resumes.",
+    "All active Issues and ready Tasks are reclassified after P0 using current Controller and Git facts.",
+    "Remaining work is reorganized into waves: stability, safe concurrency, runtime placement/storage cleanup, then product/integration optimization.",
+    "Safe parallelism admission rules are defined using resource claims, not just repository names.",
+    "A bounded concurrency pilot is required before more than one write task is allowed.",
+    "Downstream tasks are reopened only in controlled waves and only after Contract revalidation.",
+    "No stale ready task is dispatched solely because it was ready before P0."
+  ],
+  "relatedArtifacts": [
+    "ISS-20260731-B66A97",
+    "ISS-20260729-BF2F89",
+    "ISS-20260730-AE1BCC",
+    "ISS-20260731-CCF3E3",
+    "ISS-20260731-6A7BB5",
+    "ISS-20260730-B55445",
+    "ISS-20260730-A1EA53",
+    "ISS-20260730-84CE88",
+    "ISS-20260726-69DA83",
+    "ISS-20260720-66E25D",
+    "ISS-20260716-34A906"
+  ],
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Record recovery freeze and priority gates",
+      "objective": "Document and enforce the temporary execution freeze: stability first, safe concurrency second, all other optimization later. Name ISS-20260731-B66A97 as the only active P0 write lane until its exit gate is proven.",
+      "status": "ready",
+      "dependsOn": [],
+      "allowedPaths": [
+        "tasks/issues/**",
+        "docs/operations/**",
+        "docs/architecture/current/**"
+      ],
+      "forbiddenPaths": [
+        "src/**",
+        "tests/**",
+        "package.json",
+        "bun.lockb"
+      ],
+      "checks": [],
+      "acceptanceCriteria": [
+        "Freeze policy is recorded in the Issue and, if needed, lightweight docs.",
+        "Only P0 trusted execution and receipt/lease recovery work is allowed to write.",
+        "Browser, Apple, iOS, V2, release, SQLite, storage migration, and tool-surface work are explicitly frozen.",
+        "Existing dirty sessions are not rolled back without proof; they are classified as park/continue/supersede after P0."
+      ],
+      "risk": "low",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-31T07:51:08.017Z",
+      "updatedAt": "2026-07-31T07:51:08.017Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T2",
+      "title": "Verify trusted execution exit gate",
+      "objective": "After ISS-20260731-B66A97 reports completion, independently verify the P0 exit gate from Controller, Git, edit sessions, process receipts, leases, and focused check evidence before reopening any downstream work.",
+      "status": "planned",
+      "dependsOn": [
+        "T1"
+      ],
+      "allowedPaths": [
+        "tasks/issues/**",
+        "docs/operations/**"
+      ],
+      "forbiddenPaths": [
+        "src/**",
+        "tests/**"
+      ],
+      "checks": [],
+      "acceptanceCriteria": [
+        "executionIdentity is required at bottom-level spawn, with no optional bypass.",
+        "Wrong repo, wrong checkout, cwd escape, Git top-level mismatch, branch drift, and HEAD drift fail closed.",
+        "Process terminal results propagate into Edit Session checkResults and Task/Work receipts.",
+        "PROCESS_LEASE_CONFLICT returns owner/holder diagnostics rather than opaque failure only.",
+        "All active leases are explainable or proven orphan-reconciled.",
+        "P0 verification evidence is tied to current revision, not stale base revisions."
+      ],
+      "risk": "readonly",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-31T07:51:08.017Z",
+      "updatedAt": "2026-07-31T07:51:08.017Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T3",
+      "title": "Rebaseline active Issue portfolio",
+      "objective": "Re-read every active Issue, ready Task, dirty edit session, active Work/Run, Git status, Process, and Lease after P0 and classify downstream work as continue, revise, merge, partially implemented, superseded, cancelled, blocked, read-only, isolated write, or exclusive core mutation.",
+      "status": "planned",
+      "dependsOn": [
+        "T2"
+      ],
+      "allowedPaths": [
+        "tasks/issues/**",
+        "docs/operations/**",
+        "docs/architecture/current/**"
+      ],
+      "forbiddenPaths": [
+        "src/**",
+        "tests/**"
+      ],
+      "checks": [],
+      "acceptanceCriteria": [
+        "Every active Issue has a current classification and rationale.",
+        "Old Contracts affected by P0 architecture are revised before execution.",
+        "Partially implemented work is identified to avoid duplicate implementation.",
+        "Stale or redundant Issues are marked for supersede/cancel/merge rather than left ready.",
+        "Non-P0 dirty sessions are classified without broad rollback."
+      ],
+      "risk": "readonly",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-31T07:51:08.017Z",
+      "updatedAt": "2026-07-31T07:51:08.017Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T4",
+      "title": "Rebuild execution waves and dependencies",
+      "objective": "Convert the rebaselined portfolio into ordered waves: Wave 0 stability, Wave 1 safe concurrency admission, Wave 2 runtime placement/storage cleanup, Wave 3 Control Plane store shadowing, Wave 4 product/integration work.",
+      "status": "planned",
+      "dependsOn": [
+        "T3"
+      ],
+      "allowedPaths": [
+        "tasks/issues/**",
+        "docs/operations/**",
+        "docs/architecture/current/**"
+      ],
+      "forbiddenPaths": [
+        "src/**",
+        "tests/**"
+      ],
+      "checks": [],
+      "acceptanceCriteria": [
+        "Each wave has explicit entry and exit gates.",
+        "Stability work remains ahead of concurrency work.",
+        "Concurrency work remains ahead of product and optimization work.",
+        "SQLite authority migration and broad worktree relocation are deferred until prior gates pass.",
+        "Ready tasks from old plans are not dispatched without updated dependencies."
+      ],
+      "risk": "low",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-31T07:51:08.017Z",
+      "updatedAt": "2026-07-31T07:51:08.017Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T5",
+      "title": "Define bounded parallelism admission",
+      "objective": "Define deterministic concurrency admission using path claims and global resource claims, including repository, checkout, paths, subsystem, build cache, browser session, device, simulator, port, Supervisor/release, and remote mutation resources.",
+      "status": "planned",
+      "dependsOn": [
+        "T4"
+      ],
+      "allowedPaths": [
+        "tasks/issues/**",
+        "docs/architecture/current/**",
+        "docs/operations/**"
+      ],
+      "forbiddenPaths": [
+        "src/**",
+        "tests/**"
+      ],
+      "checks": [],
+      "acceptanceCriteria": [
+        "Parallelism levels are defined from exclusive recovery through read-only, one-writer, two-writer pilot, and broader bounded parallelism.",
+        "Same-repo writers require non-overlapping actual path claims and no shared global resources.",
+        "Core runtime paths remain exclusive until explicitly proven safe.",
+        "Main checkout policy is integration-first and single-writer controlled, not unconstrained mutation.",
+        "Base revision changes invalidate stale evidence."
+      ],
+      "risk": "low",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-31T07:51:08.017Z",
+      "updatedAt": "2026-07-31T07:51:08.017Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T6",
+      "title": "Run bounded concurrency pilot",
+      "objective": "After the admission rules exist, run a staged pilot: read-only parallelism, one writer plus readers, two different-repository writers without shared resources, then two same-repository isolated writers only if claims prove independence.",
+      "status": "planned",
+      "dependsOn": [
+        "T5"
+      ],
+      "allowedPaths": [
+        "tasks/issues/**",
+        "docs/operations/**"
+      ],
+      "forbiddenPaths": [
+        "src/runtime/execution/**",
+        "src/runtime/control-plane/**",
+        "src/runtime/gateway/mcp/**",
+        "src/cli/repositories/**",
+        "src/cli/local-bridge/**"
+      ],
+      "checks": [],
+      "acceptanceCriteria": [
+        "Each pilot level has evidence for no checkout drift, no dirty overlap, no stale evidence, no ghost lease, and no unrelated commit content.",
+        "Failure at any level rolls back to the previous concurrency level.",
+        "No product/integration work is used as the first concurrency pilot.",
+        "Pilot results decide whether broader parallel work is allowed."
+      ],
+      "risk": "medium",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-31T07:51:08.017Z",
+      "updatedAt": "2026-07-31T07:51:08.017Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T7",
+      "title": "Reopen downstream work in controlled waves",
+      "objective": "Resume downstream Issues only after the stability and concurrency gates pass, one wave at a time, with each Contract updated from current facts.",
+      "status": "planned",
+      "dependsOn": [
+        "T6"
+      ],
+      "allowedPaths": [
+        "tasks/issues/**",
+        "docs/operations/**",
+        "docs/architecture/current/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [],
+      "acceptanceCriteria": [
+        "Browser, Apple, iOS, V2, tool-surface, storage, and release work are reopened only after rebaseline.",
+        "Each reopened task declares resource claims and minimum checks.",
+        "No full test or release gate is used by default unless the wave requires it.",
+        "Branches/worktrees/edit sessions are cleaned promptly after each task.",
+        "Concurrency level is expanded only based on pilot evidence."
+      ],
+      "risk": "medium",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-31T07:51:08.017Z",
+      "updatedAt": "2026-07-31T07:51:08.017Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    }
+  ],
+  "createdAt": "2026-07-31T07:51:08.017Z",
+  "updatedAt": "2026-07-31T07:51:08.017Z",
+  "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+}

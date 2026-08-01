@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 5,
+  "id": "ISS-20260731-CCF3E3",
+  "title": "Converge Control Plane storage architecture and detach runtime state from repositories",
+  "slug": "converge-control-plane-storage-architecture-and-detach-runtime-s",
+  "kind": "governance",
+  "status": "planned",
+  "summary": "Define and gradually implement the long-term Repo Harness Control Plane storage boundary. Move runtime/task/work state ownership away from product repositories while preserving human-readable projections and avoiding disruption to active reliability work.",
+  "goals": [
+    "Define authoritative state versus generated projections.",
+    "Establish repository versus controller-home ownership boundaries.",
+    "Design phased migration from repository-local issue snapshots to controller-owned persistence.",
+    "Preserve Git cleanliness and multi-machine consistency.",
+    "Avoid introducing conflicts with active work by starting with architecture and bounded migration preparation only."
+  ],
+  "nonGoals": [
+    "Do not immediately migrate all existing issue JSON/Markdown files.",
+    "Do not introduce SQLite as a replacement without schema and migration validation.",
+    "Do not modify active reliability, browser, Apple, or release implementation paths."
+  ],
+  "acceptanceCriteria": [
+    "Architecture decision document defines repository, control plane, and artifact boundaries.",
+    "Persistence strategy defines authoritative storage, projections, migration, rollback, and compatibility behavior.",
+    "Plan covers SQLite or equivalent local transactional storage evaluation without premature commitment.",
+    "Migration phases can coexist with active tasks and do not require broad worktree-based parallel changes.",
+    "Old repository-local snapshots remain readable during transition."
+  ],
+  "relatedArtifacts": [],
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Write Control Plane storage architecture decision",
+      "objective": "Document authoritative state boundaries, repository ownership, artifact ownership, projection rules, lifecycle differences, and migration principles. This task is analysis/documentation only.",
+      "status": "ready",
+      "dependsOn": [],
+      "allowedPaths": [
+        "docs/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [
+        "package:check:public-docs"
+      ],
+      "acceptanceCriteria": [],
+      "risk": "low",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-31T04:18:55.044Z",
+      "updatedAt": "2026-07-31T04:18:55.044Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T2",
+      "title": "Inventory current state stores and migration dependencies",
+      "objective": "Map issue/task/work/run/session/lease/evidence storage locations and identify which stores must move first, including compatibility constraints and active feature dependencies.",
+      "status": "ready",
+      "dependsOn": [],
+      "allowedPaths": [
+        "docs/**",
+        "src/runtime/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [
+        "package:check:type"
+      ],
+      "acceptanceCriteria": [],
+      "risk": "readonly",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-31T04:18:55.044Z",
+      "updatedAt": "2026-07-31T04:18:55.044Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T3",
+      "title": "Design shadow persistence migration strategy",
+      "objective": "Define a future controller-owned persistence layer with shadow reads, projection generation, validation, rollback, and incremental cutover. Do not implement the database migration in this task.",
+      "status": "ready",
+      "dependsOn": [],
+      "allowedPaths": [
+        "docs/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [],
+      "acceptanceCriteria": [],
+      "risk": "low",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-31T04:18:55.044Z",
+      "updatedAt": "2026-07-31T04:18:55.044Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    }
+  ],
+  "createdAt": "2026-07-31T04:18:55.044Z",
+  "updatedAt": "2026-07-31T04:18:55.044Z",
+  "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+}
