@@ -30,6 +30,7 @@ import { completionEvidenceComplete, executionScopesConflict, taskExecutionPolic
 import { resolveCompletionTargetBranch } from './completion-target';
 import { listControllerChecks } from './check-runner';
 import { normalizeCheckIds } from '../../runtime/control-plane/facade/check-normalization';
+import { markControllerContextProjectionDirty } from '../../runtime/projections/controller-context';
 
 const ISSUE_ROOT = 'tasks/issues';
 const EPHEMERAL_ISSUE_ROOT = '.ai/harness/ephemeral-issues';
@@ -189,6 +190,7 @@ function writeIssue(repoRoot: string, issue: ControllerIssue): ControllerIssue {
   }
   writeFileSync(expectedJson, `${JSON.stringify(issue, null, 2)}\n`, 'utf-8');
   writeFileSync(expectedMarkdown, renderIssueMarkdown(issue), 'utf-8');
+  markControllerContextProjectionDirty(repoRoot, `issue:${issue.id}:updated`);
   const projectState = loadControllerProjectState(repoRoot);
   if (projectState.currentIssueId === issue.id && (issue.archivedAt || ['done', 'cancelled'].includes(issue.status))) {
     clearCurrentIssue(repoRoot, 'issue-terminal-convergence');

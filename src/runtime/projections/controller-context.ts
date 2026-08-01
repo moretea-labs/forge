@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
-import { join } from 'path';
+import { readdirSync, rmSync } from 'fs';
+import { join, resolve } from 'path';
 import { isProcessAlive } from '../shared/process-tree';
 import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
@@ -50,6 +51,8 @@ export interface ControllerContextProjection {
   /** Source identity is additive and is not a heartbeat. */
   sourceRevision?: string;
   contentFingerprint?: string;
+  /** Invalidation marker nonce observed when this record was built. A mismatch forces a refresh. */
+  invalidationNonce?: string;
   lastSuccessfulBuildAt?: string;
   payload: Record<string, unknown>;
 }
@@ -62,6 +65,7 @@ export interface ControllerContextProjectionReadOptions {
 export interface ControllerContextProjectionWriteOptions {
   sourceRevision?: string;
   contentFingerprint?: string;
+  invalidationNonce?: string;
   variant?: ControllerContextProjectionVariant;
   sourceIdentity?: ControllerContextProjectionSourceIdentity;
   projectionGeneration?: string;
@@ -78,6 +82,8 @@ export interface ControllerContextProjectionRefreshRequest {
   projectionGeneration?: string;
   ownerEpoch?: string;
   force?: boolean;
+  /** Invalidation marker nonce observed at queue time; persisted with the rebuilt record. */
+  invalidationNonce?: string;
   build: () => Promise<Record<string, unknown>> | Record<string, unknown>;
 }
 
@@ -93,6 +99,126 @@ const CONTROLLER_CONTEXT_REFRESH_STALE_OWNER_MS = Math.max(
   5_000,
   Number(process.env.REPO_HARNESS_CONTEXT_PROJECTION_STALE_OWNER_MS ?? 60_000),
 );
+
+/** Hard ceiling for the in-memory refresh generation ledger. */
+const REFRESH_GENERATION_LEDGER_MAX = 1_024;
+
+export interface ControllerContextProjectionInvalidation {
+  schemaVersion: 1;
+  markedAt: string;
+  nonce: string;
+  reason: string;
+}
+
+export interface ControllerContextPerformanceSnapshot {
+  reads: number;
+  cacheHits: number;
+  staleReads: number;
+  refreshRequests: number;
+  totalDurationMs: number;
+  maxDurationMs: number;
+  maxResponseBytes: number;
+  lastResponseBytes?: number;
+  phaseDurationsMs: Record<string, number>;
+  lastDurationMs?: number;
+  lastCacheHit?: boolean;
+  lastReadAt?: string;
+}
+
+const performanceSnapshot: ControllerContextPerformanceSnapshot = {
+  reads: 0,
+  cacheHits: 0,
+  staleReads: 0,
+  refreshRequests: 0,
+  totalDurationMs: 0,
+  maxDurationMs: 0,
+  maxResponseBytes: 0,
+  phaseDurationsMs: {},
+};
+
+function contextInvalidationPath(repoRoot: string): string {
+  return join(repoRoot, '.ai', 'harness', 'controller-context-invalidation.json');
+}
+
+/**
+ * Mutation paths use this tiny repository-local marker to invalidate the
+ * materialized context without making a hot read rescan Issues or plugins.
+ */
+export function markControllerContextProjectionDirty(
+  repoRoot: string,
+  reason: string,
+  now = new Date(),
+): ControllerContextProjectionInvalidation {
+  const marker: ControllerContextProjectionInvalidation = {
+    schemaVersion: 1,
+    markedAt: now.toISOString(),
+    nonce: `${now.getTime()}-${process.pid}-${Math.random().toString(36).slice(2, 10)}`,
+    reason: reason.slice(0, 240),
+  };
+  try { writeJsonAtomic(contextInvalidationPath(repoRoot), marker); } catch { /* best-effort invalidation */ }
+  return marker;
+}
+
+export function readControllerContextProjectionInvalidation(
+  repoRoot: string,
+): ControllerContextProjectionInvalidation | undefined {
+  try {
+    const marker = readJsonFile<ControllerContextProjectionInvalidation>(contextInvalidationPath(repoRoot));
+    if (marker.schemaVersion !== 1 || !marker.markedAt || !marker.nonce) return undefined;
+    return marker;
+  } catch {
+    return undefined;
+  }
+}
+
+export function recordControllerContextRead(input: {
+  durationMs: number;
+  cacheHit: boolean;
+  stale: boolean;
+  responseBytes?: number;
+  phaseDurationsMs?: Record<string, number>;
+}): void {
+  const durationMs = Number.isFinite(input.durationMs) ? Math.max(0, input.durationMs) : 0;
+  performanceSnapshot.reads += 1;
+  if (input.cacheHit) performanceSnapshot.cacheHits += 1;
+  if (input.stale) performanceSnapshot.staleReads += 1;
+  performanceSnapshot.totalDurationMs += durationMs;
+  performanceSnapshot.maxDurationMs = Math.max(performanceSnapshot.maxDurationMs, durationMs);
+  if (typeof input.responseBytes === 'number' && Number.isFinite(input.responseBytes)) {
+    const responseBytes = Math.max(0, Math.trunc(input.responseBytes));
+    performanceSnapshot.lastResponseBytes = responseBytes;
+    performanceSnapshot.maxResponseBytes = Math.max(performanceSnapshot.maxResponseBytes, responseBytes);
+  }
+  for (const [phase, phaseDuration] of Object.entries(input.phaseDurationsMs ?? {})) {
+    if (Number.isFinite(phaseDuration)) {
+      performanceSnapshot.phaseDurationsMs[phase] = Math.max(performanceSnapshot.phaseDurationsMs[phase] ?? 0, Math.max(0, phaseDuration));
+    }
+  }
+  performanceSnapshot.lastDurationMs = durationMs;
+  performanceSnapshot.lastCacheHit = input.cacheHit;
+  performanceSnapshot.lastReadAt = new Date().toISOString();
+}
+
+export function controllerContextPerformanceSnapshot(): ControllerContextPerformanceSnapshot {
+  return { ...performanceSnapshot };
+}
+
+export function clearControllerContextPerformanceSnapshotForTest(): void {
+  performanceSnapshot.reads = 0;
+  performanceSnapshot.cacheHits = 0;
+  performanceSnapshot.staleReads = 0;
+  performanceSnapshot.refreshRequests = 0;
+  performanceSnapshot.totalDurationMs = 0;
+  performanceSnapshot.maxDurationMs = 0;
+  performanceSnapshot.maxResponseBytes = 0;
+  performanceSnapshot.phaseDurationsMs = {};
+  delete performanceSnapshot.lastResponseBytes;
+  delete performanceSnapshot.lastDurationMs;
+  delete performanceSnapshot.lastCacheHit;
+  delete performanceSnapshot.lastReadAt;
+  refreshFlights.clear();
+  refreshGenerations.clear();
+}
 
 function legacyContextProjectionPath(controllerHome: string, repoId: string): string {
   return join(repositoryControllerRoot(controllerHome, repoId), 'projections', 'controller-context.json');
@@ -114,6 +240,42 @@ function sourceIdentityValue(identity: ControllerContextProjectionSourceIdentity
 
 export function controllerContextProjectionKey(identity: ControllerContextProjectionSourceIdentity): string {
   return createHash('sha256').update(JSON.stringify(sourceIdentityValue(identity))).digest('hex').slice(0, 32);
+}
+
+/**
+ * Remove superseded keyed projection files for the same repo/checkout/variant.
+ * Source identity is content-based, so every commit would otherwise leave a
+ * new file behind; only the newest generation is needed for SWR reads.
+ */
+function pruneContextProjectionFiles(
+  controllerHome: string,
+  repoId: string,
+  sourceIdentity: ControllerContextProjectionSourceIdentity,
+  keepPath: string,
+): void {
+  try {
+    const projectionsRoot = join(repositoryControllerRoot(controllerHome, repoId), 'projections');
+    const entries = readdirSync(projectionsRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.startsWith('controller-context-') || !entry.name.endsWith('.json')) continue;
+      const candidatePath = join(projectionsRoot, entry.name);
+      if (resolve(candidatePath) === resolve(keepPath)) continue;
+      try {
+        const candidate = readJsonFile<ControllerContextProjection>(candidatePath);
+        const identity = candidate?.sourceIdentity;
+        if (!identity) continue;
+        if (identity.repoId === repoId
+          && (identity.checkoutId ?? null) === (sourceIdentity.checkoutId ?? null)
+          && identity.variant === sourceIdentity.variant) {
+          rmSync(candidatePath, { force: true });
+        }
+      } catch {
+        /* keep unreadable files; never delete on parse noise */
+      }
+    }
+  } catch {
+    /* projections dir may not exist yet */
+  }
 }
 
 function contextProjectionPath(
@@ -234,6 +396,7 @@ function writeProjectionState(
     ...(state.nextAttemptAt ? { nextAttemptAt: state.nextAttemptAt } : {}),
     ...(existing?.sourceRevision ? { sourceRevision: existing.sourceRevision } : sourceIdentity.sourceRevision ? { sourceRevision: sourceIdentity.sourceRevision } : {}),
     ...(existing?.contentFingerprint ? { contentFingerprint: existing.contentFingerprint } : {}),
+    ...(existing?.invalidationNonce ? { invalidationNonce: existing.invalidationNonce } : {}),
     ...(existing?.lastSuccessfulBuildAt ? { lastSuccessfulBuildAt: existing.lastSuccessfulBuildAt } : {}),
     payload: payload ?? existing?.payload ?? {},
   };
@@ -269,10 +432,13 @@ export function writeControllerContextProjection(
     ...(options.nextAttemptAt ? { nextAttemptAt: options.nextAttemptAt } : {}),
     ...(options.sourceRevision || sourceIdentity?.sourceRevision ? { sourceRevision: options.sourceRevision ?? sourceIdentity?.sourceRevision } : {}),
     ...(options.contentFingerprint ? { contentFingerprint: options.contentFingerprint } : {}),
+    ...(options.invalidationNonce ? { invalidationNonce: options.invalidationNonce } : {}),
     lastSuccessfulBuildAt: generatedAt,
     payload,
   };
-  writeJsonAtomic(contextProjectionPath(controllerHome, repoId, sourceIdentity), projection);
+  const path = contextProjectionPath(controllerHome, repoId, sourceIdentity);
+  writeJsonAtomic(path, projection);
+  if (sourceIdentity) pruneContextProjectionFiles(controllerHome, repoId, sourceIdentity, path);
   return projection;
 }
 
@@ -345,6 +511,13 @@ export function queueControllerContextProjectionRefresh(
   const baseKey = refreshBaseKey(request);
   const generation = (refreshGenerations.get(baseKey) ?? 0) + 1;
   refreshGenerations.set(baseKey, generation);
+  if (refreshGenerations.size > REFRESH_GENERATION_LEDGER_MAX) {
+    // Bounded ledger: drop the oldest base keys. Only in-flight builds are
+    // protected by the generation check; a completed build no longer needs it.
+    const overflow = refreshGenerations.size - REFRESH_GENERATION_LEDGER_MAX;
+    const keysToDrop = [...refreshGenerations.keys()].slice(0, overflow);
+    for (const staleKey of keysToDrop) refreshGenerations.delete(staleKey);
+  }
   const projectionGeneration = request.projectionGeneration ?? `${key}-${generation}`;
   const attempt = (existing?.refreshAttempt ?? 0) + 1;
   const owner: ControllerContextProjectionRefreshOwner = {
@@ -364,7 +537,7 @@ export function queueControllerContextProjectionRefresh(
   const flight = Promise.resolve().then(async () => {
     try {
       const payload = await request.build();
-      if (refreshGenerations.get(baseKey) !== generation) {
+      if ((refreshGenerations.get(baseKey) ?? generation) !== generation) {
         writeProjectionState(controllerHome, repoId, request.sourceIdentity, {
           refreshState: 'pending',
           refreshAttempt: attempt,
@@ -377,11 +550,12 @@ export function queueControllerContextProjectionRefresh(
         variant: request.variant,
         projectionGeneration,
         sourceRevision: request.sourceIdentity.sourceRevision,
+        ...(request.invalidationNonce ? { invalidationNonce: request.invalidationNonce } : {}),
         refreshState: 'idle',
         refreshAttempt: attempt,
       });
     } catch (error) {
-      if (refreshGenerations.get(baseKey) !== generation) {
+      if ((refreshGenerations.get(baseKey) ?? generation) !== generation) {
         writeProjectionState(controllerHome, repoId, request.sourceIdentity, {
           refreshState: 'pending',
           refreshAttempt: attempt,
@@ -407,6 +581,8 @@ export function queueControllerContextProjectionRefresh(
     }
   }).finally(() => {
     if (refreshFlights.get(key) === flight) refreshFlights.delete(key);
+    // The generation ledger is only needed while a build can still publish.
+    refreshGenerations.delete(baseKey);
   });
   refreshFlights.set(key, flight);
   return { key, refreshJobId, projectionGeneration, queued: true };
