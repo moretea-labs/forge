@@ -9,7 +9,7 @@ import { repositoryControllerRoot } from '../../../cli/repositories/controller-h
 import { cancelExecutionJob, findExecutionJob, getExecutionJob, getExecutionJobByRequestId, listExecutionJobs } from '../../execution/jobs/store';
 import { waitForExecutionJob } from '../../execution/jobs/wait';
 import type { ExecutionJob } from '../../execution/jobs/types';
-import { getProcessHandle, waitForProcess } from '../../execution/process-runtime';
+import { getProcessHandle, processRuntimeResourceDiagnostics, waitForProcess } from '../../execution/process-runtime';
 import { buildJobOperationDigest } from '../../control-plane/facade/operation-digest';
 import { readJobEvents } from '../../evidence/event-ledger';
 import { readExecutionArtifact } from '../../evidence/artifact-store';
@@ -88,7 +88,9 @@ import {
 import type { TaskRisk } from '../../../cli/controller/types';
 import {
   controllerContextProjectionAgeMs,
+  controllerContextProjectionGeneration,
   controllerContextProjectionNeedsRefresh,
+  queueControllerContextProjectionRefresh,
   readControllerContextProjection,
   writeControllerContextProjection,
 } from '../../projections/controller-context';
@@ -135,6 +137,8 @@ import { approveAssistantActionProposal, getAssistantActionProposal, listAssista
 import { assistantModelReadiness } from '../../assistant/model-provider';
 import { createAssistantStandingGrant, listAssistantStandingGrants, revokeAssistantStandingGrant } from '../../assistant/standing-grants';
 import { buildGmailTriagePlan, readGmailTriageRules, upsertGmailTriageRule } from '../../personal-assistant/gmail-triage-manager';
+import { computeWorkingTreeFingerprint } from '../../../cli/repository/session-cache';
+import { sessionCacheGlobalDiagnostics } from '../../../cli/repository/session-cache';
 import { gitSnapshot } from '../../../cli/repository/inspector';
 import { buildWorkflowWatchdogReport } from '../../watchdog/workflow-watchdog';
 import { applyRuntimeCleanup, previewRuntimeCleanup } from '../../maintenance/cleanup';
@@ -1161,11 +1165,24 @@ export function summarizeControllerReadyPayload(fullPayload: Record<string, unkn
   };
 }
 
-function withRuntimeResponseMeta(payload: Record<string, unknown>, startedAt: number): Record<string, unknown> {
+function withRuntimeResponseMeta(
+  payload: Record<string, unknown>,
+  startedAt: number,
+  options: {
+    phaseTimingsMs?: Record<string, number>;
+    transport?: string;
+    sessionId?: string;
+    routing?: { repoId?: string; checkoutId?: string };
+  } = {},
+): Record<string, unknown> {
   const response = {
     ...payload,
     responseMeta: {
       serverDurationMs: Math.round((performance.now() - startedAt) * 100) / 100,
+      phaseTimingsMs: options.phaseTimingsMs ?? {},
+      transport: options.transport ?? 'runtime-local',
+      ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+      ...(options.routing ? { routing: options.routing } : {}),
       structuredPayloadBytes: 0,
     },
   };
@@ -1309,6 +1326,214 @@ function controllerContextAssessment(args: Record<string, unknown>) {
     requiresWorkerIsolation: args.requires_worker_isolation === true,
     risk: typeof args.risk === 'string' ? args.risk as TaskRisk : undefined,
   });
+}
+
+function contextRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function contextText(value: unknown, maxChars: number): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  return value.length <= maxChars ? value : `${value.slice(0, Math.max(0, maxChars - 3))}...`;
+}
+
+function compactContextTask(value: unknown): Record<string, unknown> {
+  const task = contextRecord(value);
+  return {
+    issueId: task.issueId ?? task.id,
+    taskId: task.taskId ?? task.id,
+    title: task.title,
+    effectiveStatus: task.effectiveStatus,
+    verificationStatus: task.verificationStatus,
+    latestRunStatus: task.latestRunStatus,
+    retryable: task.retryable,
+    dispatchable: task.dispatchable,
+    queueable: task.queueable,
+  };
+}
+
+function compactContextEvent(value: unknown): Record<string, unknown> | string {
+  if (typeof value === 'string') return contextText(value, 300) ?? '';
+  const event = contextRecord(value);
+  return {
+    eventId: event.eventId ?? event.id,
+    type: event.type ?? event.eventType,
+    status: event.status,
+    issueId: event.issueId,
+    taskId: event.taskId,
+    summary: contextText(event.summary ?? event.message, 300),
+    occurredAt: event.occurredAt ?? event.createdAt ?? event.at,
+  };
+}
+
+function compactContextAction(value: unknown): Record<string, unknown> | string {
+  if (typeof value === 'string') return contextText(value, 300) ?? '';
+  const action = contextRecord(value);
+  return {
+    actionId: action.actionId ?? action.id,
+    title: action.title,
+    reason: contextText(action.reason ?? action.summary, 300),
+  };
+}
+
+function compactControllerContextSummaryPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const git = contextRecord(payload.git);
+  const ledger = contextRecord(payload.taskLedger);
+  const operationalPlan = contextRecord(payload.operationalPlan);
+  const operationalView = contextRecord(payload.operationalView);
+  const plugins = Array.isArray(payload.plugins) ? payload.plugins : [];
+  const checks = Array.isArray(payload.checks) ? payload.checks : [];
+  const runtimeProjection = contextRecord(payload.runtimeProjection);
+  const compact: Record<string, unknown> = {
+    ...payload,
+    git: {
+      branch: git.branch,
+      head: git.head,
+      dirty: git.dirty,
+      status: contextText(git.status, 800),
+      diffStat: contextText(git.diffStat, 800),
+    },
+    taskLedger: {
+      schemaVersion: ledger.schemaVersion,
+      source: ledger.source,
+      generatedAt: ledger.generatedAt,
+      currentIssueId: ledger.currentIssueId,
+      counts: ledger.counts,
+      declaredCounts: ledger.declaredCounts,
+      archivedCounts: ledger.archivedCounts,
+      issueCount: ledger.issueCount,
+      archivedIssueCount: ledger.archivedIssueCount,
+      status: ledger.status,
+      attention: (Array.isArray(ledger.attention) ? ledger.attention : []).slice(0, 4).map(compactContextTask),
+      readyTasks: (Array.isArray(ledger.readyTasks) ? ledger.readyTasks : []).slice(0, 8).map(compactContextTask),
+      queueableTasks: (Array.isArray(ledger.queueableTasks) ? ledger.queueableTasks : []).slice(0, 8).map(compactContextTask),
+      recentEvents: (Array.isArray(ledger.recentEvents) ? ledger.recentEvents : []).slice(0, 8).map(compactContextEvent),
+      suggestedNextActions: (Array.isArray(ledger.suggestedNextActions) ? ledger.suggestedNextActions : []).slice(0, 6).map(compactContextAction),
+      contextContract: {
+        strategy: contextRecord(ledger.contextContract).strategy,
+        rawCodeRequiredForImplementation: true,
+      },
+    },
+    operationalPlan: {
+      schemaVersion: operationalPlan.schemaVersion,
+      source: operationalPlan.source,
+      generatedAt: operationalPlan.generatedAt,
+      status: operationalPlan.status,
+      completedCapabilities: (Array.isArray(operationalPlan.completedCapabilities) ? operationalPlan.completedCapabilities : []).slice(0, 8),
+      remainingDecisionPoints: (Array.isArray(operationalPlan.remainingDecisionPoints) ? operationalPlan.remainingDecisionPoints : []).slice(0, 8),
+      diffProjection: (() => {
+        const diff = contextRecord(operationalPlan.diffProjection);
+        return {
+          dirty: diff.dirty,
+          changedFiles: (Array.isArray(diff.changedFiles) ? diff.changedFiles : []).slice(0, 20),
+          diffStat: contextText(diff.diffStat, 800),
+          reviewRequired: diff.reviewRequired,
+        };
+      })(),
+      validationStrategy: operationalPlan.validationStrategy,
+      taskRecovery: operationalPlan.taskRecovery,
+    },
+    operationalView: {
+      health: (() => {
+        const health = contextRecord(operationalView.health);
+        return {
+          state: health.state,
+          activeBlockers: (Array.isArray(health.activeBlockers) ? health.activeBlockers : []).slice(0, 8).map((blocker) => {
+            const value = contextRecord(blocker);
+            return { code: value.code, component: value.component, message: contextText(value.message, 300) };
+          }),
+        };
+      })(),
+      attention: (() => {
+        const attention = contextRecord(operationalView.attention);
+        const pending = Array.isArray(attention.pending) ? attention.pending : [];
+        return {
+          pending: pending.slice(0, 8).map((item: unknown) => {
+            const value = contextRecord(item);
+            return { attentionId: value.attentionId, title: value.title, severity: value.severity, summary: contextText(value.summary, 300) };
+          }),
+        };
+      })(),
+      history: (() => {
+        const history = contextRecord(operationalView.history);
+        const recentIncidents = Array.isArray(history.recentIncidents) ? history.recentIncidents : [];
+        return {
+          recentIncidents: recentIncidents.slice(0, 8).map((item: unknown) => {
+            const value = contextRecord(item);
+            return { incidentId: value.incidentId, kind: value.kind, status: value.status, summary: contextText(value.summary, 300), occurredAt: value.occurredAt };
+          }),
+          truncated: history.truncated === true,
+        };
+      })(),
+    },
+    plugins: plugins.slice(0, 32).map((plugin) => {
+      const value = contextRecord(plugin);
+      const health = contextRecord(value.health);
+      const lifecycle = contextRecord(value.lifecycle);
+      const actions = Array.isArray(value.actions) ? value.actions : [];
+      return {
+        pluginId: value.pluginId,
+        provider: value.provider,
+        enabled: value.enabled,
+        revision: value.revision,
+        lifecycle: { state: lifecycle.state },
+        health: { state: health.state, ready: health.ready, checkedAt: health.checkedAt },
+        actionCount: value.actionCount ?? actions.length,
+        actions: actions.slice(0, 5),
+      };
+    }),
+    checks: checks.slice(0, 32).map((check) => {
+      const value = contextRecord(check);
+      return { id: value.id, timeoutMs: value.timeoutMs, source: value.source };
+    }),
+    localBridge: (() => {
+      const localBridge = contextRecord(payload.localBridge);
+      const recentJobs = Array.isArray(localBridge.recentJobs) ? localBridge.recentJobs : [];
+      return {
+        reconciliation: localBridge.reconciliation,
+        recentJobs: recentJobs.slice(0, 8).map((job: unknown) => {
+          const value = contextRecord(job);
+          return {
+            jobId: value.jobId,
+            action: value.action,
+            status: value.status,
+            runId: value.runId,
+            issueId: value.issueId,
+            taskId: value.taskId,
+            createdAt: value.createdAt,
+            updatedAt: value.updatedAt,
+            finishedAt: value.finishedAt,
+            error: contextText(value.error, 200),
+          };
+        }),
+      };
+    })(),
+    readyTasks: (Array.isArray(payload.readyTasks) ? payload.readyTasks : []).slice(0, 8).map(compactContextTask),
+    activeRuns: (Array.isArray(payload.activeRuns) ? payload.activeRuns : []).slice(0, 12).map((run) => {
+      const value = contextRecord(run);
+      return { runId: value.runId, issueId: value.issueId, taskId: value.taskId, status: value.status, agent: value.agent, provider: value.provider, progress: value.progress, lastHeartbeatAt: value.lastHeartbeatAt, error: contextText(value.error, 300) };
+    }),
+    runtimeProjection: runtimeProjection.repoId || runtimeProjection.revision !== undefined
+      ? {
+        schemaVersion: runtimeProjection.schemaVersion,
+        repoId: runtimeProjection.repoId,
+        generatedAt: runtimeProjection.generatedAt,
+        revision: runtimeProjection.revision,
+        metadata: runtimeProjection.metadata,
+        releaseFrozen: runtimeProjection.releaseFrozen,
+        activeJobs: (Array.isArray(runtimeProjection.activeJobs) ? runtimeProjection.activeJobs : []).slice(0, 12),
+        queueDepth: runtimeProjection.queueDepth,
+        runningWorkers: runtimeProjection.runningWorkers,
+        activeLeases: runtimeProjection.activeLeases,
+        currentAttention: (Array.isArray(runtimeProjection.currentAttention) ? runtimeProjection.currentAttention : []).slice(0, 12),
+      }
+      : runtimeProjection,
+  };
+  const controllerReady = contextRecord(compact.controllerReady);
+  if (controllerReady.health || controllerReady.ready !== undefined) {
+    compact.controllerReady = summarizeControllerReadyPayload(controllerReady);
+  }
+  return compact;
 }
 
 function authenticatedFacadeControllerIdentity(
@@ -3366,7 +3591,14 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         });
       }
       case 'controller_context': {
+        const responseStartedAt = performance.now();
+        const phaseStartedAt = responseStartedAt;
+        const phaseTimingsMs: Record<string, number> = {};
+        const markPhase = (name: string, startedAt: number): void => {
+          phaseTimingsMs[name] = Math.round((performance.now() - startedAt) * 100) / 100;
+        };
         const repository = selected(ctx, args);
+        const variant = args.detail_level === 'detail' ? 'detail' as const : 'summary' as const;
         const runtimeRoot = repositoryControllerRoot(ctx.controllerHome, repository.repoId);
         const runtimeStorage = {
           repoId: repository.repoId,
@@ -3377,116 +3609,26 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const runtimeSnapshot = readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId);
         const runtimeProjection = runtimeSnapshot.projection;
         const contextSourceRevision = String(runtimeProjection.metadata?.contentRevision ?? runtimeProjection.revision);
-        const cached = readControllerContextProjection(ctx.controllerHome, repository.repoId);
-        const projectionAgeMs = controllerContextProjectionAgeMs(cached);
-        const readiness = await controllerReadiness(ctx, repository);
-        const activeCheckout = repository.checkouts.find((checkout) => checkout.checkoutId === repository.activeCheckoutId);
         const liveGit = gitSnapshot(repository.canonicalRoot);
-        const board = projectBoard(repository.canonicalRoot);
-        const taskLedger = buildControllerTaskLedgerProjection(repository.canonicalRoot);
-        const operationalPlan = buildControllerOperationalPlan(repository.canonicalRoot, taskLedger);
-        const currentIssueRecord = board.currentIssueId
-          ? board.issues.find((issue) => issue.id === board.currentIssueId)
-          : undefined;
-        const currentIssue = currentIssueRecord ? {
-          id: currentIssueRecord.id,
-          title: currentIssueRecord.title,
-          status: currentIssueRecord.status,
-          lifecycleStatus: currentIssueRecord.lifecycleStatus,
-          updatedAt: currentIssueRecord.updatedAt,
-          tasks: Array.isArray(currentIssueRecord.tasks)
-            ? currentIssueRecord.tasks.slice(0, 20).map((task) => {
-              const item = task as Record<string, unknown>;
-              return {
-                id: item.id,
-                title: item.title,
-                effectiveStatus: item.effectiveStatus,
-                latestRunStatus: item.latestRunStatus,
-              };
-            })
-            : [],
-        } : undefined;
-        const activeRuns = listActiveAgentJobSnapshots(repository.canonicalRoot, 20).map((run) => ({
-          runId: run.runId,
-          issueId: run.issueId,
-          taskId: run.taskId,
-          status: run.status,
-          agent: run.agent,
-          provider: run.provider,
-          executionMode: run.executionMode,
-          progress: run.progress,
-          lastHeartbeatAt: run.lastHeartbeatAt,
-          error: run.error,
-        }));
-        const localJobs = listLocalBridgeJobSnapshots(repository.canonicalRoot, 12);
-        const activeLocalJobs = localJobs.filter((job) => ['approved', 'running', 'dispatched'].includes(job.status)).length;
-        const recentLocalJobs = localJobs.map((job) => ({
-          jobId: job.jobId,
-          action: job.action,
-          status: job.status,
-          runId: job.runId,
-          issueId: job.issueId,
-          taskId: job.taskId,
-          createdAt: job.createdAt,
-          updatedAt: job.updatedAt,
-          finishedAt: job.finishedAt,
-          error: job.error?.slice(0, 300),
-        }));
-        const checks = listControllerChecks(repository.canonicalRoot).map((check) => ({
-          id: check.id,
-          description: check.description,
-          timeoutMs: check.timeoutMs,
-          source: check.source,
-        }));
-        const plugins = listAssistantPluginManifests(ctx.controllerHome, repository, {
-          preferStored: true,
-        }).map((plugin) => ({
-          pluginId: plugin.pluginId,
-          provider: plugin.provider,
-          enabled: plugin.enabled,
-          revision: plugin.revision,
-          lifecycle: plugin.lifecycle,
-          health: plugin.health,
-          actions: plugin.actions.map((action) => ({
-            actionId: action.actionId,
-            readOnly: action.readOnly,
-            risk: action.risk,
-            confirmation: action.confirmation,
-          })),
-        }));
-        const payload = {
-          ...(cached?.payload ?? {}),
-          git: liveGit.branch || liveGit.status || liveGit.diffStat ? liveGit : {
-            branch: activeCheckout?.branch ?? null,
-            status: 'No live repository scan is available; showing bounded runtime state only.',
-            diffStat: '',
-            dirty: false,
-          },
-          currentIssueId: board.currentIssueId,
-          currentIssue,
-          taskLedger,
-          taskLedgerStatus: taskLedger.status,
-          operationalPlan,
-          readyTasks: board.readyTasks.slice(0, 20),
-          activeRuns,
-          localBridge: {
-            reconciliation: { scanned: localJobs.length, active: activeLocalJobs, terminalized: 0 },
-            recentJobs: recentLocalJobs,
-          },
-          plugins,
-          checks,
+        const sourceIdentity = {
           repoId: repository.repoId,
-          repository: repositorySummary(repository),
-          runtimeStorage,
-          recommendedExecution: controllerContextAssessment(args),
-          runtimeProjection,
-          runtimeProjectionState: {
-            stale: runtimeSnapshot.stale,
-            persisted: runtimeSnapshot.persisted,
-          },
-          operationalView: readiness.operationalView,
-          controllerReady: readiness,
+          checkoutId: repository.activeCheckoutId,
+          head: liveGit.head,
+          workingTreeFingerprint: computeWorkingTreeFingerprint(repository.canonicalRoot),
+          runtimeGeneration: runtimeProjection.metadata?.producerGeneration,
+          sourceRevision: contextSourceRevision,
+          variant,
+          toolset: ctx.toolset,
+          profile: ctx.policy.profile,
         };
+        markPhase('identity', phaseStartedAt);
+        const cacheStartedAt = performance.now();
+        const cached = readControllerContextProjection(ctx.controllerHome, repository.repoId, {
+          sourceIdentity,
+          allowLegacySummary: variant === 'summary',
+        });
+        const projectionAgeMs = controllerContextProjectionAgeMs(cached);
+        markPhase('cacheRead', cacheStartedAt);
         const cachedPayload = cached?.payload;
         const cachedProjectionIncomplete = !cachedPayload
           || typeof cachedPayload !== 'object'
@@ -3494,37 +3636,272 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           || !('runtimeProjectionState' in cachedPayload)
           || !('operationalView' in cachedPayload)
           || !('controllerReady' in cachedPayload);
-        let projectionRecord = cached;
-        if (
-          !cached
-          || cachedProjectionIncomplete
+        const cacheStale = runtimeSnapshot.stale
+          || controllerContextProjectionNeedsRefresh(cached, contextSourceRevision, sourceIdentity)
           || !Number.isFinite(projectionAgeMs)
-          || projectionAgeMs >= CONTROLLER_CONTEXT_PROJECTION_REFRESH_MS
-        ) {
-          try {
-            projectionRecord = writeControllerContextProjection(ctx.controllerHome, repository.repoId, payload, {
-              sourceRevision: contextSourceRevision,
-              contentFingerprint: runtimeProjection.metadata?.contentFingerprint,
-            });
-          } catch {
-            projectionRecord = cached;
-          }
+          || projectionAgeMs >= CONTROLLER_CONTEXT_PROJECTION_REFRESH_MS;
+        const projectionPayload = (
+          projectionRecord: typeof cached,
+          stale: boolean,
+          refreshJobId?: string,
+        ): Record<string, unknown> => {
+          const ageMs = controllerContextProjectionAgeMs(projectionRecord);
+          return {
+            contextProjection: {
+              variant,
+              generatedAt: projectionRecord?.generatedAt,
+              ageMs: Number.isFinite(ageMs) ? ageMs : undefined,
+              stale,
+              healthImpact: false,
+              sourceIdentity: projectionRecord?.sourceIdentity ?? sourceIdentity,
+              projectionGeneration: projectionRecord?.projectionGeneration ?? controllerContextProjectionGeneration(sourceIdentity),
+              refreshState: projectionRecord?.refreshState ?? 'idle',
+              lastRefreshError: projectionRecord?.lastRefreshError,
+              nextAttemptAt: projectionRecord?.nextAttemptAt,
+              sourceRevision: projectionRecord?.sourceRevision ?? contextSourceRevision,
+              strategy: 'event-driven-swr',
+              refreshJobId,
+              readOnly: true,
+              nonBlocking: true,
+            },
+          };
+        };
+
+        const responseOptions = {
+          phaseTimingsMs,
+          transport: 'runtime-local',
+          sessionId: ctx.sessionId,
+          routing: { repoId: repository.repoId, checkoutId: repository.activeCheckoutId },
+        };
+        if (variant === 'summary' && cached && !cachedProjectionIncomplete && !cacheStale) {
+          return result(withRuntimeResponseMeta({
+            ...compactControllerContextSummaryPayload(cached.payload),
+            ...projectionPayload(cached, false),
+          }, responseStartedAt, responseOptions));
         }
-        const refreshedProjectionAgeMs = controllerContextProjectionAgeMs(projectionRecord);
-        return result({
-          ...payload,
-          contextProjection: {
-            generatedAt: projectionRecord?.generatedAt,
-            ageMs: Number.isFinite(refreshedProjectionAgeMs) ? refreshedProjectionAgeMs : undefined,
-            stale: runtimeSnapshot.stale || controllerContextProjectionNeedsRefresh(projectionRecord, contextSourceRevision),
-            healthImpact: false,
-            sourceRevision: projectionRecord?.sourceRevision,
-            strategy: 'event-driven',
-            refreshJobId: undefined,
-            readOnly: true,
-            nonBlocking: true,
-          },
-        });
+
+        const buildStartedAt = performance.now();
+        const buildPayload = async (): Promise<Record<string, unknown>> => {
+          const readiness = await controllerReadiness(ctx, repository);
+          const activeCheckout = repository.checkouts.find((checkout) => checkout.checkoutId === repository.activeCheckoutId);
+          const board = projectBoard(repository.canonicalRoot);
+          const taskLedger = buildControllerTaskLedgerProjection(repository.canonicalRoot);
+          const operationalPlan = buildControllerOperationalPlan(repository.canonicalRoot, taskLedger);
+          const currentIssueRecord = board.currentIssueId
+            ? board.issues.find((issue) => issue.id === board.currentIssueId)
+            : undefined;
+          const currentIssue = currentIssueRecord ? {
+            id: currentIssueRecord.id,
+            title: currentIssueRecord.title,
+            status: currentIssueRecord.status,
+            lifecycleStatus: currentIssueRecord.lifecycleStatus,
+            updatedAt: currentIssueRecord.updatedAt,
+            tasks: Array.isArray(currentIssueRecord.tasks)
+              ? currentIssueRecord.tasks.slice(0, 20).map((task) => {
+                const item = task as Record<string, unknown>;
+                return {
+                  id: item.id,
+                  title: item.title,
+                  effectiveStatus: item.effectiveStatus,
+                  latestRunStatus: item.latestRunStatus,
+                };
+              })
+              : [],
+          } : undefined;
+          const activeRuns = listActiveAgentJobSnapshots(repository.canonicalRoot, 20).map((run) => ({
+            runId: run.runId,
+            issueId: run.issueId,
+            taskId: run.taskId,
+            status: run.status,
+            agent: run.agent,
+            provider: run.provider,
+            executionMode: run.executionMode,
+            progress: run.progress,
+            lastHeartbeatAt: run.lastHeartbeatAt,
+            error: run.error,
+          }));
+          const localJobs = listLocalBridgeJobSnapshots(repository.canonicalRoot, 12);
+          const activeLocalJobs = localJobs.filter((job) => ['approved', 'running', 'dispatched'].includes(job.status)).length;
+          const recentLocalJobs = localJobs.map((job) => ({
+            jobId: job.jobId,
+            action: job.action,
+            status: job.status,
+            runId: job.runId,
+            issueId: job.issueId,
+            taskId: job.taskId,
+            createdAt: job.createdAt,
+            updatedAt: job.updatedAt,
+            finishedAt: job.finishedAt,
+            error: job.error?.slice(0, 300),
+          }));
+          const checks = listControllerChecks(repository.canonicalRoot).map((check) => ({
+            id: check.id,
+            description: check.description,
+            timeoutMs: check.timeoutMs,
+            source: check.source,
+          }));
+          const plugins = listAssistantPluginManifests(ctx.controllerHome, repository, {
+            preferStored: true,
+          }).map((plugin) => ({
+            pluginId: plugin.pluginId,
+            provider: plugin.provider,
+            enabled: plugin.enabled,
+            revision: plugin.revision,
+            lifecycle: plugin.lifecycle,
+            health: plugin.health,
+            actions: plugin.actions.map((action) => ({
+              actionId: action.actionId,
+              readOnly: action.readOnly,
+              risk: action.risk,
+              confirmation: action.confirmation,
+            })),
+          }));
+          const fullPayload = {
+            git: liveGit.branch || liveGit.status || liveGit.diffStat ? liveGit : {
+              branch: activeCheckout?.branch ?? null,
+              status: 'No live repository scan is available; showing bounded runtime state only.',
+              diffStat: '',
+              dirty: false,
+            },
+            currentIssueId: board.currentIssueId,
+            currentIssue,
+            taskLedger,
+            taskLedgerStatus: taskLedger.status,
+            operationalPlan,
+            readyTasks: board.readyTasks.slice(0, 20),
+            activeRuns,
+            localBridge: {
+              reconciliation: { scanned: localJobs.length, active: activeLocalJobs, terminalized: 0 },
+              recentJobs: recentLocalJobs,
+            },
+            plugins,
+            checks,
+            repoId: repository.repoId,
+            repository: repositorySummary(repository),
+            runtimeStorage,
+            recommendedExecution: controllerContextAssessment(args),
+            runtimeProjection,
+            runtimeProjectionState: {
+              stale: runtimeSnapshot.stale,
+              persisted: runtimeSnapshot.persisted,
+            },
+            operationalView: readiness.operationalView,
+            controllerReady: readiness,
+          };
+          if (variant === 'detail') return fullPayload;
+
+          const compactTaskLedger = {
+            schemaVersion: taskLedger.schemaVersion,
+            source: taskLedger.source,
+            generatedAt: taskLedger.generatedAt,
+            currentIssueId: taskLedger.currentIssueId,
+            counts: taskLedger.counts,
+            declaredCounts: taskLedger.declaredCounts,
+            archivedCounts: taskLedger.archivedCounts,
+            issueCount: taskLedger.issueCount,
+            archivedIssueCount: taskLedger.archivedIssueCount,
+            status: taskLedger.status,
+            attention: taskLedger.attention.slice(0, 4).map((task) => ({
+              issueId: task.issueId,
+              taskId: task.taskId,
+              title: task.title,
+              effectiveStatus: task.effectiveStatus,
+              verificationStatus: task.verificationStatus,
+              latestRunStatus: task.latestRunStatus,
+              retryable: task.retryable,
+              dispatchable: task.dispatchable,
+              queueable: task.queueable,
+            })),
+            readyTasks: taskLedger.readyTasks.slice(0, 8),
+            queueableTasks: taskLedger.queueableTasks.slice(0, 8),
+            recentEvents: taskLedger.recentEvents.slice(0, 8),
+            suggestedNextActions: taskLedger.suggestedNextActions.slice(0, 6),
+            contextContract: {
+              strategy: taskLedger.contextContract.strategy,
+              rawCodeRequiredForImplementation: true,
+            },
+          };
+          const compactOperationalPlan = {
+            schemaVersion: operationalPlan.schemaVersion,
+            source: operationalPlan.source,
+            generatedAt: operationalPlan.generatedAt,
+            status: operationalPlan.status,
+            completedCapabilities: operationalPlan.completedCapabilities.slice(0, 8),
+            remainingDecisionPoints: operationalPlan.remainingDecisionPoints.slice(0, 8),
+            diffProjection: {
+              dirty: operationalPlan.diffProjection.dirty,
+              changedFiles: operationalPlan.diffProjection.changedFiles.slice(0, 20),
+              diffStat: operationalPlan.diffProjection.diffStat,
+              reviewRequired: operationalPlan.diffProjection.reviewRequired,
+            },
+            validationStrategy: operationalPlan.validationStrategy,
+            taskRecovery: operationalPlan.taskRecovery,
+          };
+          return compactControllerContextSummaryPayload({
+            ...fullPayload,
+            taskLedger: compactTaskLedger,
+            operationalPlan: compactOperationalPlan,
+            plugins: plugins.map((plugin) => ({
+              pluginId: plugin.pluginId,
+              provider: plugin.provider,
+              enabled: plugin.enabled,
+              revision: plugin.revision,
+              lifecycle: plugin.lifecycle,
+              health: plugin.health,
+              actionCount: plugin.actions.length,
+              actions: plugin.actions.slice(0, 5),
+            })),
+            checks: checks.map((check) => ({
+              id: check.id,
+              timeoutMs: check.timeoutMs,
+              source: check.source,
+            })),
+            runtimeProjection: summarizeRuntimeProjectionForReadiness(runtimeProjection),
+            controllerReady: summarizeControllerReadyPayload(readiness as unknown as Record<string, unknown>),
+          });
+        };
+
+        if (variant === 'summary' && cached && !cachedProjectionIncomplete) {
+          const refresh = queueControllerContextProjectionRefresh(ctx.controllerHome, repository.repoId, {
+            variant,
+            sourceIdentity,
+            projectionGeneration: controllerContextProjectionGeneration(sourceIdentity),
+            build: buildPayload,
+          });
+          markPhase('refreshQueue', buildStartedAt);
+          const refreshing = readControllerContextProjection(ctx.controllerHome, repository.repoId, {
+            sourceIdentity,
+            allowLegacySummary: false,
+          });
+          return result(withRuntimeResponseMeta({
+            ...compactControllerContextSummaryPayload(cached.payload),
+            ...projectionPayload(refreshing ?? cached, true, refresh.refreshJobId),
+          }, responseStartedAt, responseOptions));
+        }
+
+        const payload = await buildPayload();
+        const persistedPayload = variant === 'summary'
+          ? compactControllerContextSummaryPayload(payload)
+          : payload;
+        markPhase('build', buildStartedAt);
+        let projectionRecord: typeof cached;
+        try {
+          projectionRecord = writeControllerContextProjection(ctx.controllerHome, repository.repoId, persistedPayload, {
+            sourceRevision: contextSourceRevision,
+            contentFingerprint: runtimeProjection.metadata?.contentFingerprint,
+            sourceIdentity,
+            variant,
+            projectionGeneration: controllerContextProjectionGeneration(sourceIdentity),
+            refreshState: 'idle',
+          });
+        } catch {
+          projectionRecord = cached;
+        }
+        markPhase('serialize', performance.now());
+        return result(withRuntimeResponseMeta({
+          ...persistedPayload,
+          ...projectionPayload(projectionRecord, runtimeSnapshot.stale || controllerContextProjectionNeedsRefresh(projectionRecord, contextSourceRevision, sourceIdentity)),
+        }, responseStartedAt, responseOptions));
       }
       case 'get_job': {
         const jobId = String(args.job_id ?? '').trim();
@@ -3886,7 +4263,14 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           localControllerPid: runtime?.localController?.pid ?? inferredLocalBridge?.pid,
           localControllerEndpoint: runtime?.localController?.endpoint ?? inferredLocalBridge?.endpoint,
         });
-        return result({ ...diagnostics });
+        return result({
+          ...diagnostics,
+          resourceCost: {
+            processRuntime: processRuntimeResourceDiagnostics(),
+            scheduler: readSchedulerHealthSnapshot(ctx.controllerHome),
+            sessionCache: sessionCacheGlobalDiagnostics(),
+          },
+        });
       }
       case 'capability_recovery_probe': {
         const repository = selected(ctx, args);

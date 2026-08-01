@@ -11,6 +11,14 @@ export interface SessionCacheMetrics {
   invalidations: number;
 }
 
+export interface SessionCacheGlobalDiagnostics {
+  activeEntries: number;
+  maxEntries: number;
+  ttlMs: number;
+  evictions: number;
+  sessionIds: string[];
+}
+
 export interface SessionIdentity {
   repoId: string;
   checkoutId: string;
@@ -100,6 +108,7 @@ export class RepositorySessionCache {
   private readonly checks = new Map<string, unknown>();
   private runtimeGeneration?: string;
   private activeSlot?: string;
+  private lastAccessAt = Date.now();
   private metrics: SessionCacheMetrics = {
     cacheHit: 0,
     cacheMiss: 0,
@@ -114,7 +123,16 @@ export class RepositorySessionCache {
   }
 
   getMetrics(): SessionCacheMetrics {
+    this.lastAccessAt = Date.now();
     return { ...this.metrics };
+  }
+
+  lastAccessTimestamp(): number {
+    return this.lastAccessAt;
+  }
+
+  touch(): void {
+    this.lastAccessAt = Date.now();
   }
 
   snapshot(): SessionCacheSnapshot {
@@ -325,6 +343,9 @@ function sliceNumberedContent(
 
 /** Process-wide session caches keyed by session + repo identity. */
 const globalSessions = new Map<string, RepositorySessionCache>();
+const SESSION_CACHE_MAX_ENTRIES = Math.max(8, Number(process.env.REPO_HARNESS_SESSION_CACHE_MAX_ENTRIES ?? 64));
+const SESSION_CACHE_TTL_MS = Math.max(60_000, Number(process.env.REPO_HARNESS_SESSION_CACHE_TTL_MS ?? 15 * 60_000));
+let sessionCacheEvictions = 0;
 
 export function sessionCacheKey(sessionId: string, identity: SessionIdentity): string {
   return [
@@ -341,10 +362,15 @@ export function getOrCreateSessionCache(
   repoRoot: string,
   identity: SessionIdentity,
 ): RepositorySessionCache {
+  pruneSessionCaches();
   const key = sessionCacheKey(sessionId, identity);
   const existing = globalSessions.get(key);
   if (existing) {
     existing.refreshIdentity(identity);
+    existing.touch();
+    // Map insertion order is the LRU order.
+    globalSessions.delete(key);
+    globalSessions.set(key, existing);
     return existing;
   }
   // Drop stale entries for same session+repo when checkout/head changed.
@@ -356,11 +382,55 @@ export function getOrCreateSessionCache(
   }
   const created = new RepositorySessionCache(repoRoot, identity);
   globalSessions.set(key, created);
+  while (globalSessions.size > SESSION_CACHE_MAX_ENTRIES) {
+    const oldest = globalSessions.keys().next().value as string | undefined;
+    if (!oldest) break;
+    const evicted = globalSessions.get(oldest);
+    globalSessions.delete(oldest);
+    evicted?.invalidateRuntime();
+    sessionCacheEvictions += 1;
+  }
   return created;
+}
+
+export function pruneSessionCaches(nowMs = Date.now()): number {
+  let removed = 0;
+  for (const [key, cache] of globalSessions) {
+    if (nowMs - cache.lastAccessTimestamp() < SESSION_CACHE_TTL_MS) continue;
+    globalSessions.delete(key);
+    cache.invalidateRuntime();
+    sessionCacheEvictions += 1;
+    removed += 1;
+  }
+  return removed;
+}
+
+/** Called by MCP transport close/eviction so read caches do not outlive a session. */
+export function clearSessionCachesForSession(sessionId: string): number {
+  let removed = 0;
+  for (const [key, cache] of globalSessions) {
+    if (!key.startsWith(`${sessionId}|`)) continue;
+    globalSessions.delete(key);
+    cache.invalidateCheckout();
+    removed += 1;
+  }
+  return removed;
+}
+
+export function sessionCacheGlobalDiagnostics(): SessionCacheGlobalDiagnostics {
+  pruneSessionCaches();
+  return {
+    activeEntries: globalSessions.size,
+    maxEntries: SESSION_CACHE_MAX_ENTRIES,
+    ttlMs: SESSION_CACHE_TTL_MS,
+    evictions: sessionCacheEvictions,
+    sessionIds: [...new Set([...globalSessions.keys()].map((key) => key.split('|', 1)[0]))],
+  };
 }
 
 export function clearAllSessionCachesForTest(): void {
   globalSessions.clear();
+  sessionCacheEvictions = 0;
 }
 
 export function sessionCacheMetricsTotal(): SessionCacheMetrics {

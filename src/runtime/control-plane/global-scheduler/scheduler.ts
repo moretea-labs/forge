@@ -52,6 +52,10 @@ const WORKER_ENVIRONMENT_KEYS = [
 ] as const;
 const RUNTIME_CLEANUP_INTERVAL_MS = Math.max(30_000, Number(process.env.REPO_HARNESS_RUNTIME_CLEANUP_INTERVAL_MS ?? 60_000));
 const GIT_STATUS_SAMPLE_INTERVAL_MS = Math.max(1_000, Number(process.env.REPO_HARNESS_GIT_STATUS_SAMPLE_INTERVAL_MS ?? 5_000));
+const IDLE_REPOSITORY_SCAN_INTERVAL_MS = Math.max(
+  GIT_STATUS_SAMPLE_INTERVAL_MS,
+  Number(process.env.REPO_HARNESS_IDLE_REPOSITORY_SCAN_INTERVAL_MS ?? 60_000),
+);
 const DARWIN_RECLAIMABLE_PAGE_LABELS = new Set([
   'Pages free',
   'Pages inactive',
@@ -121,6 +125,9 @@ interface SchedulerState {
   lastTickAt?: string;
   lastDispatchAt?: string;
   lastReconcileAt?: string;
+  lastSourceScanAt?: string;
+  lastSourceScanRepoCount?: number;
+  sourceScansAvoided?: number;
   lastRepoDispatch: Record<string, number>;
 }
 
@@ -137,6 +144,9 @@ export interface SchedulerHealthSnapshot {
   lastTickAt?: string;
   lastDispatchAt?: string;
   lastReconcileAt?: string;
+  lastSourceScanAt?: string;
+  lastSourceScanRepoCount?: number;
+  sourceScansAvoided?: number;
   lastRepoDispatch: Record<string, number>;
 }
 
@@ -196,6 +206,9 @@ export class GlobalScheduler {
   private lastReconcileAt: string | undefined;
   private lastCleanupAt = 0;
   private lastGitStatusSampleAt = 0;
+  private lastSourceScanAt = 0;
+  private lastSourceScanRepoCount = 0;
+  private sourceScansAvoided = 0;
   private runtimeCleanup = cleanupControllerRuntimeState;
   private lastDarwinMemorySampleAt = 0;
   private cachedDarwinAvailableMemoryMb: number | undefined;
@@ -237,6 +250,9 @@ export class GlobalScheduler {
     this.workerEntrypoint = runtime.workerEntrypoint ? resolve(runtime.workerEntrypoint) : undefined;
     this.ownerEpoch = runtime.ownerEpoch;
     const state = readJsonFile<SchedulerState>(schedulerStatePath(controllerHome), { schemaVersion: 1, updatedAt: new Date().toISOString(), lastRepoDispatch: {} });
+    this.lastSourceScanAt = state.lastSourceScanAt ? Date.parse(state.lastSourceScanAt) || 0 : 0;
+    this.lastSourceScanRepoCount = state.lastSourceScanRepoCount ?? 0;
+    this.sourceScansAvoided = state.sourceScansAvoided ?? 0;
     for (const [repoId, timestamp] of Object.entries(state.lastRepoDispatch)) {
       if (Number.isFinite(timestamp)) this.lastRepoDispatch.set(repoId, timestamp);
     }
@@ -255,6 +271,9 @@ export class GlobalScheduler {
       lastTickAt: this.lastTickAt,
       lastDispatchAt: this.lastDispatchAt,
       lastReconcileAt: this.lastReconcileAt,
+      lastSourceScanAt: this.lastSourceScanAt ? new Date(this.lastSourceScanAt).toISOString() : undefined,
+      lastSourceScanRepoCount: this.lastSourceScanRepoCount,
+      sourceScansAvoided: this.sourceScansAvoided,
       lastRepoDispatch: Object.fromEntries(this.lastRepoDispatch),
     } satisfies SchedulerState);
   }
@@ -614,9 +633,18 @@ export class GlobalScheduler {
       this.lastReconcileAt = new Date(now).toISOString();
     }
     const repositories = listRepositories(this.controllerHome).filter((repo) => repo.enabled && !repo.removedAt);
-    if (now - this.lastGitStatusSampleAt >= GIT_STATUS_SAMPLE_INTERVAL_MS) {
+    const activeJobSnapshot = listActiveExecutionJobs(this.controllerHome);
+    const hasActiveWork = activeJobSnapshot.length > 0;
+    const sourceScanDue = hasActiveWork || now - this.lastSourceScanAt >= IDLE_REPOSITORY_SCAN_INTERVAL_MS;
+    if (sourceScanDue && now - this.lastGitStatusSampleAt >= GIT_STATUS_SAMPLE_INTERVAL_MS) {
       this.lastGitStatusSampleAt = now;
+      this.lastSourceScanAt = now;
+      this.lastSourceScanRepoCount = repositories.length;
       sampleRepositoryGitStatusForRepositories(this.controllerHome, repositories);
+    } else if (!sourceScanDue) {
+      // fs.watch wakeups cover active mutations; a bounded safety rescan keeps
+      // idle repositories fresh without re-running a full source scan per tick.
+      this.sourceScansAvoided += repositories.length;
     }
     // Scheduler observation ends admission and starts the independent queue
     // budget. This runs outside the global dispatch lock because each Job owns
@@ -761,15 +789,19 @@ export class GlobalScheduler {
     // Repo Actor mutations leave projection dirty markers. Source-revision changes
     // are independent of legacy Job dispatch, so scan every enabled repository
     // after the global dispatch reservation lock is free.
-    const projectionRefreshCandidates = new Map(repositories.map((repository) => [repository.repoId, repository]));
+    const projectionRefreshCandidates = sourceScanDue
+      ? new Map(repositories.map((repository) => [repository.repoId, repository]))
+      : new Map<string, (typeof repositories)[number]>();
     for (const repoId of projectionRefreshRepos) {
-      const repository = projectionRefreshCandidates.get(repoId);
-      if (!repository) {
-        try {
-          rebuildRepositoryProjection(this.controllerHome, repoId);
-        } catch (error) {
-          console.error('[repo-harness scheduler] projection refresh failed:', error);
-        }
+      const repository = repositories.find((entry) => entry.repoId === repoId);
+      if (repository) projectionRefreshCandidates.set(repoId, repository);
+    }
+    for (const repoId of projectionRefreshRepos) {
+      if (projectionRefreshCandidates.has(repoId)) continue;
+      try {
+        rebuildRepositoryProjection(this.controllerHome, repoId);
+      } catch (error) {
+        console.error('[repo-harness scheduler] projection refresh failed:', error);
       }
     }
     for (const repository of projectionRefreshCandidates.values()) {

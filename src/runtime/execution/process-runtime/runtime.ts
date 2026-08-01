@@ -94,6 +94,7 @@ interface LiveMonitor {
   exitReceiptPath: string;
   descriptorPath: string;
   commandFingerprint: string;
+  pollTimer?: NodeJS.Timeout;
 }
 
 const liveMonitors = new Map<string, LiveMonitor>();
@@ -535,6 +536,9 @@ function finalizeMonitor(
   }
   monitor.settled = true;
   if (monitor.timeoutHandle) clearTimeout(monitor.timeoutHandle);
+  if (monitor.pollTimer) clearInterval(monitor.pollTimer);
+  monitor.timeoutHandle = undefined;
+  monitor.pollTimer = undefined;
 
   // Prefer runner-written receipt; fall back to controller-written receipt only
   // when runner died without writing one (legacy / crash of both).
@@ -676,12 +680,11 @@ function attachRunnerMonitor(
       /* best-effort */
     }
   };
-  const pollTimer = setInterval(pollLogs, 100);
-  pollTimer.unref?.();
+  monitor.pollTimer = setInterval(pollLogs, 100);
+  monitor.pollTimer.unref?.();
 
   const onAbort = () => {
     void killTree(runner).finally(() => {
-      clearInterval(pollTimer);
       finalizeMonitor(monitor, 'cancelled', 1, false, true, 'cancelled by signal');
     });
   };
@@ -690,20 +693,17 @@ function attachRunnerMonitor(
   // Controller-side timeout is a safety net; runner also enforces timeout.
   monitor.timeoutHandle = setTimeout(() => {
     void killTree(runner).finally(() => {
-      clearInterval(pollTimer);
       finalizeMonitor(monitor, 'timed_out', 1, true, false, `process timed out after ${options.timeoutMs}ms`);
     });
   }, Math.max(1, options.timeoutMs + 2_000));
   monitor.timeoutHandle.unref?.();
 
   runner.on('error', (error) => {
-    clearInterval(pollTimer);
     finalizeMonitor(monitor, 'failed', 1, false, false, error.message);
     options.signal?.removeEventListener('abort', onAbort);
   });
   runner.on('close', () => {
     options.signal?.removeEventListener('abort', onAbort);
-    clearInterval(pollTimer);
     pollLogs();
     const receipt = readExitReceipt(options.exitReceiptPath);
     if (receipt) {
@@ -1434,10 +1434,30 @@ export function listLiveMonitorIds(): string[] {
   return [...liveMonitors.keys()];
 }
 
+export function processRuntimeResourceDiagnostics(): {
+  monitorCount: number;
+  logPollerCount: number;
+  timeoutCount: number;
+  waiterCount: number;
+  activeProcessIds: string[];
+} {
+  const monitors = [...liveMonitors.values()];
+  return {
+    monitorCount: monitors.length,
+    logPollerCount: monitors.filter((monitor) => Boolean(monitor.pollTimer)).length,
+    timeoutCount: monitors.filter((monitor) => Boolean(monitor.timeoutHandle)).length,
+    waiterCount: monitors.reduce((total, monitor) => total + monitor.waiters.length, 0),
+    activeProcessIds: monitors.map((monitor) => monitor.processId),
+  };
+}
+
 /** Test helper: drop in-memory monitors without killing OS processes / runners. */
 export function __resetLiveMonitorsForTests(): void {
   for (const monitor of liveMonitors.values()) {
     if (monitor.timeoutHandle) clearTimeout(monitor.timeoutHandle);
+    if (monitor.pollTimer) clearInterval(monitor.pollTimer);
+    monitor.timeoutHandle = undefined;
+    monitor.pollTimer = undefined;
   }
   liveMonitors.clear();
 }
@@ -1447,6 +1467,9 @@ export function __detachMonitorsKeepRunnersForTests(): string[] {
   const ids = [...liveMonitors.keys()];
   for (const monitor of liveMonitors.values()) {
     if (monitor.timeoutHandle) clearTimeout(monitor.timeoutHandle);
+    if (monitor.pollTimer) clearInterval(monitor.pollTimer);
+    monitor.timeoutHandle = undefined;
+    monitor.pollTimer = undefined;
     // Detach close listeners so this controller process no longer finalizes.
     try {
       monitor.child.removeAllListeners('close');
