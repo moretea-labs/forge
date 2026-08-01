@@ -7,10 +7,8 @@
 import { createHash } from 'crypto';
 import {
   chmodSync,
-  closeSync,
   existsSync,
   mkdirSync,
-  openSync,
   readdirSync,
   readFileSync,
   renameSync,
@@ -19,6 +17,7 @@ import {
 } from 'fs';
 import { basename, dirname, join } from 'path';
 import { ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
+import { mutateControlPlaneRecord, readOrImportControlPlaneRecord } from '../../control-plane/persistence/sqlite-store';
 import { isSensitiveOutputKey, redactSensitiveText } from '../../evidence/sensitive-output';
 import type {
   ManagedProcessRecord,
@@ -52,6 +51,12 @@ function requestBindingPath(controllerHome: string, repoId: string, checkoutId: 
     .update(JSON.stringify({ repoId, checkoutId: checkoutId?.trim() || null, requestId }))
     .digest('hex');
   return join(requestBindingsRoot(controllerHome, repoId), `${key}.json`);
+}
+
+function bindingKey(repoId: string, checkoutId: string | undefined, requestId: string): string {
+  return createHash('sha256')
+    .update(JSON.stringify({ repoId, checkoutId: checkoutId?.trim() || null, requestId }))
+    .digest('hex');
 }
 
 function invocationBindingsRoot(controllerHome: string, repoId: string): string {
@@ -194,23 +199,12 @@ export function claimProcessRequest(input: {
     processId: input.processId,
     createdAt: new Date().toISOString(),
   };
-  let fd: number | undefined;
-  try {
-    fd = openSync(path, 'wx', 0o600);
-    writeFileSync(fd, `${JSON.stringify(binding, null, 2)}\n`, 'utf8');
-    closeSync(fd);
-    fd = undefined;
-    return { status: 'claimed', binding };
-  } catch (error) {
-    if (fd !== undefined) {
-      try { closeSync(fd); } catch { /* ignore */ }
-    }
-    const code = typeof error === 'object' && error !== null && 'code' in error
-      ? String((error as { code?: unknown }).code ?? '')
-      : '';
-    if (code !== 'EEXIST') throw error;
-  }
-  const existing = readJson<ProcessRequestBinding>(path);
+  let existed = false;
+  const existing = mutateControlPlaneRecord<ProcessRequestBinding>(input.controllerHome, {
+    namespace: 'process_request_binding', scope: input.repoId, key: bindingKey(input.repoId, input.checkoutId, requestId), schemaVersion: 1,
+    action: 'process_request_binding_claim', readLegacy: () => readJson<ProcessRequestBinding>(path),
+    mutate: (current) => { if (current) { existed = true; return current.value; } return binding; },
+  }).value;
   if (!existing || existing.schemaVersion !== 1 || !existing.processId || !existing.commandFingerprint) {
     throw new Error(`PROCESS_REQUEST_BINDING_CORRUPT: ${requestId}`);
   }
@@ -222,7 +216,7 @@ export function claimProcessRequest(input: {
   ) {
     throw new Error(`PROCESS_REQUEST_ID_CONFLICT: ${requestId}`);
   }
-  return { status: 'existing', binding: existing };
+  return { status: existed ? 'existing' : 'claimed', binding: existing };
 }
 
 export function getProcessRequestBinding(
@@ -233,8 +227,10 @@ export function getProcessRequestBinding(
 ): ProcessRequestBinding | undefined {
   const normalized = requestId.trim();
   if (!normalized) return undefined;
-  const binding = readJson<ProcessRequestBinding>(requestBindingPath(controllerHome, repoId, checkoutId, normalized));
-  return binding?.schemaVersion === 1 ? binding : undefined;
+  return readOrImportControlPlaneRecord<ProcessRequestBinding>(controllerHome, {
+    namespace: 'process_request_binding', scope: repoId, key: bindingKey(repoId, checkoutId, normalized), schemaVersion: 1,
+    readLegacy: () => readJson<ProcessRequestBinding>(requestBindingPath(controllerHome, repoId, checkoutId, normalized)),
+  })?.value;
 }
 
 /**
@@ -260,23 +256,12 @@ export function claimProcessInvocation(input: {
     invocationFingerprint: input.invocationFingerprint,
     createdAt: new Date().toISOString(),
   };
-  let fd: number | undefined;
-  try {
-    fd = openSync(path, 'wx', 0o600);
-    writeFileSync(fd, `${JSON.stringify(binding, null, 2)}\n`, 'utf8');
-    closeSync(fd);
-    fd = undefined;
-    return { status: 'claimed', binding };
-  } catch (error) {
-    if (fd !== undefined) {
-      try { closeSync(fd); } catch { /* ignore */ }
-    }
-    const code = typeof error === 'object' && error !== null && 'code' in error
-      ? String((error as { code?: unknown }).code ?? '')
-      : '';
-    if (code !== 'EEXIST') throw error;
-  }
-  const existing = readJson<ProcessInvocationBinding>(path);
+  let existed = false;
+  const existing = mutateControlPlaneRecord<ProcessInvocationBinding>(input.controllerHome, {
+    namespace: 'process_invocation_binding', scope: input.repoId, key: bindingKey(input.repoId, input.checkoutId, requestId), schemaVersion: 1,
+    action: 'process_invocation_binding_claim', readLegacy: () => readJson<ProcessInvocationBinding>(path),
+    mutate: (current) => { if (current) { existed = true; return current.value; } return binding; },
+  }).value;
   if (!existing || existing.schemaVersion !== 1 || !existing.invocationFingerprint) {
     throw new Error(`PROCESS_INVOCATION_BINDING_CORRUPT: ${requestId}`);
   }
@@ -288,7 +273,7 @@ export function claimProcessInvocation(input: {
   ) {
     throw new Error(`PROCESS_REQUEST_ID_CONFLICT: ${requestId}`);
   }
-  return { status: 'existing', binding: existing };
+  return { status: existed ? 'existing' : 'claimed', binding: existing };
 }
 
 function rebuildActiveIndex(controllerHome: string, repoId: string): string[] {

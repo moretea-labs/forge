@@ -47,10 +47,10 @@ migrations roll back and stale JSON cannot overwrite an existing row.
 
 ## Immediate next slice
 
-Map every atomic write path in `src/runtime/execution/process-runtime/store.ts`,
-then migrate Process Runtime bindings and active indexes as the next state
-family. This is the smallest remaining family with cross-file idempotency and
-lease invariants.
+Process request and invocation bindings now use SQLite-first, one-time JSON
+import. The remaining implementation is Process records plus the derived
+active-index projection; migrate those together so record transitions cannot
+leave an independently authoritative JSON index behind.
 
 ## Process Runtime shadow-cutover design
 
