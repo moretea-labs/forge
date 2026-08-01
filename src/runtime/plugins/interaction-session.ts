@@ -3,6 +3,7 @@ import { join } from 'path';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
 
 export type InteractionProvider = 'browser' | 'ios-simulator' | 'ios-device';
+export type InteractionEngine = 'agent-device' | 'coredevice';
 export type InteractionSessionStatus =
   | 'starting'
   | 'waiting_for_user'
@@ -17,8 +18,12 @@ export interface InteractionSessionRecord {
   schemaVersion: 1;
   interactionId: string;
   provider: InteractionProvider;
+  /** Execution engine inside the provider-owned resource domain. Optional for schema-v1 compatibility. */
+  engine?: InteractionEngine;
   sessionId: string;
   targetId: string;
+  /** Stable identifiers known to refer to the same provider resource. Immutable after creation. */
+  targetAliases?: string[];
   status: InteractionSessionStatus;
   reason: string;
   instructions?: string;
@@ -86,6 +91,63 @@ export function readInteractionSession(
   return value?.schemaVersion === 1 && value.interactionId === interactionId ? value : undefined;
 }
 
+export function interactionAutomationEngine(record: InteractionSessionRecord): InteractionEngine | undefined {
+  if (record.engine !== undefined) {
+    return record.engine === 'agent-device' || record.engine === 'coredevice'
+      ? record.engine
+      : undefined;
+  }
+  if ((record.provider === 'ios-device' || record.provider === 'ios-simulator')
+    && record.interactionId.startsWith('ios_agent_device_')
+    && (record.reason === 'ios_simulator_automation' || record.reason === 'ios_physical_device_automation')) {
+    return 'agent-device';
+  }
+  if (record.provider === 'ios-device'
+    && record.interactionId.startsWith('ios_device_')
+    && record.reason === 'ios_physical_device_automation') {
+    return 'coredevice';
+  }
+  return undefined;
+}
+
+export function interactionTargetIdentifiers(record: InteractionSessionRecord): string[] {
+  return Array.from(new Set([
+    record.targetId,
+    ...(Array.isArray(record.targetAliases) ? record.targetAliases : []),
+  ].filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+    .map((value) => value.trim())));
+}
+
+export function interactionTargetsOverlap(
+  record: InteractionSessionRecord,
+  candidates: Array<string | undefined>,
+): boolean {
+  const canonical = (value: string) => value.trim().toLocaleLowerCase('en-US');
+  const expected = new Set(candidates
+    .filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+    .map(canonical));
+  return interactionTargetIdentifiers(record).some((value) => expected.has(canonical(value)));
+}
+
+/**
+ * Decide whether an active interaction may own one selected target.
+ *
+ * Pre-alias physical-device records cannot prove that their provider-internal
+ * identifier names a different phone from a hardware UDID. During migration,
+ * fail closed inside the shared ios-device domain rather than permitting a
+ * second automation engine to acquire a potentially identical phone.
+ */
+export function interactionMayOwnTarget(
+  record: InteractionSessionRecord,
+  candidates: Array<string | undefined>,
+): boolean {
+  if (interactionTargetsOverlap(record, candidates)) return true;
+  if (record.provider !== 'ios-device') return false;
+  const hasTrustedAliases = Array.isArray(record.targetAliases)
+    && record.targetAliases.some((value) => typeof value === 'string' && Boolean(value.trim()));
+  return !hasTrustedAliases;
+}
+
 export function writeInteractionSession(repoRoot: string, record: InteractionSessionRecord): InteractionSessionRecord {
   writeJsonAtomic(interactionSessionPath(repoRoot, record.provider, record.interactionId), record);
   return record;
@@ -95,7 +157,17 @@ export function patchInteractionSession(
   repoRoot: string,
   provider: InteractionProvider,
   interactionId: string,
-  patch: Partial<Omit<InteractionSessionRecord, 'schemaVersion' | 'interactionId' | 'provider' | 'createdAt'>>,
+  patch: Partial<Omit<InteractionSessionRecord,
+    | 'schemaVersion'
+    | 'interactionId'
+    | 'provider'
+    | 'engine'
+    | 'sessionId'
+    | 'targetId'
+    | 'targetAliases'
+    | 'owner'
+    | 'createdAt'
+  >>,
 ): InteractionSessionRecord | undefined {
   const current = readInteractionSession(repoRoot, provider, interactionId);
   if (!current) return undefined;

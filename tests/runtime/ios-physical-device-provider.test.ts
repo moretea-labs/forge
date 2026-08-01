@@ -11,7 +11,16 @@ import {
   setIosPhysicalDeviceRuntimeHooksForTest,
   type RunnerHttpResult,
 } from '../../src/runtime/plugins/ios-physical-device';
-import { patchInteractionSession, readInteractionSession } from '../../src/runtime/plugins/interaction-session';
+import {
+  interactionAutomationEngine,
+  interactionMayOwnTarget,
+  interactionTargetIdentifiers,
+  interactionTargetsOverlap,
+  patchInteractionSession,
+  readInteractionSession,
+  writeInteractionSession,
+  type InteractionSessionRecord,
+} from '../../src/runtime/plugins/interaction-session';
 import { resetIosDevelopmentHooksForTest, setIosDevelopmentHooksForTest } from '../../src/runtime/safe-tooling';
 
 const roots: string[] = [];
@@ -211,6 +220,8 @@ describe('bounded physical iOS device provider', () => {
     }));
     const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
     expect((opened.interaction as Record<string, unknown>).status).toBe('waiting_for_user');
+    expect((opened.interaction as Record<string, unknown>).engine).toBe('coredevice');
+    expect((opened.interaction as Record<string, unknown>).targetAliases).toEqual(['CORE-1', 'UDID-CORE-1']);
     expect((opened.uiAutomation as Record<string, unknown>).ready).toBe(false);
 
     const screenshot = await executeIosPluginAction(pluginInput(value, 'physical_device_screenshot', {
@@ -238,6 +249,97 @@ describe('bounded physical iOS device provider', () => {
     expect(argv).toContain('xcrun devicectl device process launch --device CORE-1 --terminate-existing com.360buy.jdmobile');
     expect(argv).toContain('xcrun devicectl device capture screenshot --device CORE-1 --destination');
     expect(argv).not.toContain('://');
+  });
+
+  it('infers only bounded legacy iOS engine identities and prefers explicit engine metadata', () => {
+    const base: InteractionSessionRecord = {
+      schemaVersion: 1,
+      interactionId: 'ios_agent_device_legacy',
+      provider: 'ios-device',
+      sessionId: 'legacy',
+      targetId: 'PHONE-1',
+      status: 'waiting_for_user',
+      reason: 'ios_physical_device_automation',
+      owner: { repoId: 'repo', requestId: 'request' },
+      createdAt: '2026-08-01T00:00:00.000Z',
+      updatedAt: '2026-08-01T00:00:00.000Z',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    };
+    expect(interactionAutomationEngine(base)).toBe('agent-device');
+    expect(interactionAutomationEngine({
+      ...base,
+      interactionId: 'ios_device_legacy',
+    })).toBe('coredevice');
+    expect(interactionAutomationEngine({
+      ...base,
+      interactionId: 'ios_device_explicit',
+      engine: 'agent-device',
+    })).toBe('agent-device');
+    expect(interactionAutomationEngine({
+      ...base,
+      interactionId: 'unrecognized',
+    })).toBeUndefined();
+    expect(interactionAutomationEngine({
+      ...base,
+      engine: 'future-engine' as never,
+    })).toBeUndefined();
+    expect(interactionTargetIdentifiers({
+      ...base,
+      targetAliases: ['PHONE-1', 'PHONE-1', '  SECONDARY  '],
+    })).toEqual(['PHONE-1', 'SECONDARY']);
+    expect(interactionTargetsOverlap({
+      ...base,
+      targetId: 'CORE-INTERNAL',
+      targetAliases: ['UDID-CORE-1'],
+    }, ['core-1', 'udid-core-1'])).toBe(true);
+    expect(interactionMayOwnTarget({
+      ...base,
+      interactionId: 'ios_device_legacy_unknown_alias',
+      targetId: 'CORE-INTERNAL-UNKNOWN',
+      targetAliases: undefined,
+    }, ['DIFFERENT-PROVIDER-ID', 'DIFFERENT-HARDWARE-UDID'])).toBe(true);
+    expect(interactionMayOwnTarget({
+      ...base,
+      targetId: 'CORE-INTERNAL-KNOWN',
+      targetAliases: ['KNOWN-HARDWARE-UDID'],
+    }, ['DIFFERENT-HARDWARE-UDID'])).toBe(false);
+    expect(interactionMayOwnTarget({
+      ...base,
+      provider: 'ios-simulator',
+      targetAliases: undefined,
+    }, ['DIFFERENT-SIMULATOR-ID'])).toBe(false);
+  });
+
+  it('blocks CoreDevice open and actions while agent-device owns the same physical target', async () => {
+    const value = fixture();
+    readyIosTooling();
+    const commands: string[][] = [];
+    setIosPhysicalDeviceRuntimeHooksForTest(coreDeviceHooks({ commands }));
+    const createdAt = '2026-08-01T00:00:00.000Z';
+    writeInteractionSession(value.repoRoot, {
+      schemaVersion: 1,
+      interactionId: 'ios_agent_device_owned',
+      provider: 'ios-device',
+      engine: 'agent-device',
+      sessionId: 'agent-device-session',
+      targetId: 'UDID-CORE-1',
+      targetAliases: ['UDID-CORE-1'],
+      status: 'waiting_for_user',
+      reason: 'ios_physical_device_automation',
+      owner: { repoId: value.repository.repoId, requestId: 'agent-owner' },
+      createdAt,
+      updatedAt: createdAt,
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+
+    await expect(executeIosPluginAction(pluginInput(value, 'physical_device_open', {
+      device: 'CORE-1', bundle_id: 'com.360buy.jdmobile',
+    }))).rejects.toThrow('already has an active repo-harness interaction');
+    expect(commands.some((argv) => argv.includes('launch'))).toBe(false);
+
+    await expect(executeIosPluginAction(pluginInput(value, 'physical_device_snapshot', {
+      interaction_id: 'ios_agent_device_owned',
+    }))).rejects.toThrow('belongs to agent-device');
   });
 
   it('attaches an explicitly configured localhost runner and performs bounded UI actions', async () => {

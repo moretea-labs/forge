@@ -6,6 +6,8 @@ import { repositoryControllerRoot } from '../../cli/repositories/controller-home
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
 import {
+  interactionAutomationEngine,
+  interactionMayOwnTarget,
   isInteractionSessionActive,
   listInteractionSessions,
   patchInteractionSession,
@@ -501,9 +503,23 @@ async function closeRunner(state: PhysicalSessionState): Promise<boolean> {
 function requireRecord(input: AssistantPluginActionExecutionInput, allowTerminal = false): { record: InteractionSessionRecord; state: PhysicalSessionState } {
   const interactionId = requireString(input.args.interaction_id, 'interaction_id');
   const record = readInteractionSession(input.repoRoot, PROVIDER, interactionId);
-  const state = readState(input, interactionId);
-  if (!record || !state) {
+  if (!record) {
     throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `Unknown physical iOS interaction: ${interactionId}`, { retryable: false });
+  }
+  const engine = interactionAutomationEngine(record);
+  if (engine !== 'coredevice') {
+    throw new AssistantPluginError(
+      'PLUGIN_ACTION_ARGUMENT_INVALID',
+      `Physical iOS interaction ${interactionId} belongs to ${engine ?? 'an unknown engine'}, not the CoreDevice engine.`,
+      {
+        retryable: false,
+        details: { interactionId, expectedEngine: 'coredevice', actualEngine: engine },
+      },
+    );
+  }
+  const state = readState(input, interactionId);
+  if (!state) {
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `Unknown physical iOS interaction state: ${interactionId}`, { retryable: false });
   }
   if (!isInteractionSessionActive(record.status) && !allowTerminal) {
     throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `Physical iOS interaction is ${record.status}.`, {
@@ -727,12 +743,18 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
     if (apps.length !== 1) {
       throw new AssistantPluginError('IOS_DEVICE_APP_NOT_INSTALLED', `The app ${bundleId} is not installed on the selected iPhone.`, { retryable: false });
     }
+    const selectedAliases = [selected.identifier, selected.udid];
     const conflict = listInteractionSessions(input.repoRoot, PROVIDER).find((entry) =>
-      isInteractionSessionActive(entry.status) && entry.targetId === selected.identifier);
+      isInteractionSessionActive(entry.status) && interactionMayOwnTarget(entry, selectedAliases));
     if (conflict) {
       throw new AssistantPluginError('PLUGIN_RESOURCE_BUSY', 'The selected iPhone already has an active repo-harness interaction.', {
         retryable: true,
-        details: { interactionId: conflict.interactionId, targetId: conflict.targetId },
+        details: {
+          interactionId: conflict.interactionId,
+          targetId: conflict.targetId,
+          resourceProvider: conflict.provider,
+          automationEngine: interactionAutomationEngine(conflict),
+        },
       });
     }
     pruneInteractionSessions(input.repoRoot, PROVIDER, 100);
@@ -742,8 +764,10 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       schemaVersion: 1,
       interactionId,
       provider: PROVIDER,
+      engine: 'coredevice',
       sessionId: `repo-harness-${sanitize(interactionId).slice(-40)}`,
       targetId: selected.identifier,
+      targetAliases: selectedAliases.filter((value): value is string => Boolean(value)),
       status: 'starting',
       reason: 'ios_physical_device_automation',
       instructions: bundleId,

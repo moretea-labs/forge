@@ -10,7 +10,7 @@ import {
   resetIosAgentDeviceRuntimeHooksForTest,
   setIosAgentDeviceRuntimeHooksForTest,
 } from '../../src/runtime/plugins/ios-agent-device';
-import { readInteractionSession } from '../../src/runtime/plugins/interaction-session';
+import { readInteractionSession, writeInteractionSession } from '../../src/runtime/plugins/interaction-session';
 import { resetIosDevelopmentHooksForTest, setIosDevelopmentHooksForTest } from '../../src/runtime/safe-tooling';
 import jdHomeDepth20 from '../fixtures/ios/jd-home-depth20.json';
 import {
@@ -80,8 +80,18 @@ function success(data: Record<string, unknown> = {}): string {
   return JSON.stringify({ success: true, data });
 }
 
-function device(id: string, name: string, kind: 'simulator' | 'device', booted: boolean) {
-  return { platform: 'ios', appleOs: 'ios', id, name, kind, target: 'mobile', booted };
+function device(
+  id: string,
+  name: string,
+  kind: 'simulator' | 'device',
+  booted: boolean,
+  hardwareUdid = id,
+) {
+  return {
+    platform: 'ios', appleOs: 'ios', id, name, kind, target: 'mobile', booted,
+    identifiers: { deviceId: id, ...(kind === 'device' ? { udid: hardwareUdid } : {}) },
+    ...(kind === 'device' ? { ios: { udid: hardwareUdid } } : {}),
+  };
 }
 
 describe('optional agent-device iOS Simulator provider', () => {
@@ -151,6 +161,8 @@ describe('optional agent-device iOS Simulator provider', () => {
 
     const physical = await executeIosPluginAction(pluginInput(value, 'agent_device_open', { app: 'App', device: 'PHONE-1' }));
     expect((physical.interaction as Record<string, unknown>).provider).toBe('ios-device');
+    expect((physical.interaction as Record<string, unknown>).engine).toBe('agent-device');
+    expect((physical.interaction as Record<string, unknown>).targetAliases).toEqual(['PHONE-1']);
     expect(physical.physicalDeviceSupported).toBe(true);
 
     inventory = [device('SIM-OFF', 'iPhone 17 Pro', 'simulator', false)];
@@ -180,7 +192,7 @@ describe('optional agent-device iOS Simulator provider', () => {
         commands.push({ argv: [command, ...args], env: options?.env });
         if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
         if (args[0] === 'devices') {
-          return { ok: true, status: 0, stdout: success({ devices: [device('PHONE-1', 'greyson', 'device', true)] }), stderr: '', command: [command, ...args] };
+          return { ok: true, status: 0, stdout: success({ devices: [device('PROVIDER-ID-1', 'greyson', 'device', true, 'HARDWARE-UDID-1')] }), stderr: '', command: [command, ...args] };
         }
         if (args[0] === 'snapshot') {
           snapshotCount += 1;
@@ -289,7 +301,7 @@ describe('optional agent-device iOS Simulator provider', () => {
         commands.push([command, ...args]);
         if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
         if (args[0] === 'devices') {
-          return { ok: true, status: 0, stdout: success({ devices: [device('PHONE-1', 'greyson', 'device', true)] }), stderr: '', command: [command, ...args] };
+          return { ok: true, status: 0, stdout: success({ devices: [device('PROVIDER-ID-WARM', 'greyson', 'device', true, 'HARDWARE-UDID-WARM')] }), stderr: '', command: [command, ...args] };
         }
         if (args[0] === 'batch') {
           const steps = JSON.parse(args[args.indexOf('--steps') + 1]!) as Array<{ command: string; input: Record<string, unknown> }>;
@@ -323,6 +335,10 @@ describe('optional agent-device iOS Simulator provider', () => {
       device: 'greyson',
     }));
     const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
+    expect((opened.interaction as Record<string, unknown>).targetAliases).toEqual([
+      'PROVIDER-ID-WARM',
+      'HARDWARE-UDID-WARM',
+    ]);
     commands.length = 0;
 
     const result = await executeIosPluginAction(pluginInput(value, 'agent_device_jd_search', {
@@ -341,13 +357,100 @@ describe('optional agent-device iOS Simulator provider', () => {
     expect(commands.filter((argv) => argv[1] === 'close')).toHaveLength(0);
     expect(result.artifactCandidates).toBeUndefined();
     expect((result.interaction as Record<string, unknown>).status).toBe('waiting_for_user');
-    expect(readInteractionSession(value.repoRoot, 'ios-device', interactionId)?.status).toBe('waiting_for_user');
+    expect((result.interaction as Record<string, unknown>).targetAliases).toEqual([
+      'PROVIDER-ID-WARM',
+      'HARDWARE-UDID-WARM',
+    ]);
+    const persisted = readInteractionSession(value.repoRoot, 'ios-device', interactionId);
+    expect(persisted?.status).toBe('waiting_for_user');
+    expect(persisted?.targetAliases).toEqual(['PROVIDER-ID-WARM', 'HARDWARE-UDID-WARM']);
     const plan = result.executionPlan as Record<string, unknown>;
     expect(plan.sessionReused).toBe(true);
     expect(plan.sessionKept).toBe(true);
     expect(plan.screenshotCaptured).toBe(false);
     expect(plan.deviceInventoryRequests).toBe(0);
     expect(plan.nativeBatchRequests).toBe(1);
+  });
+
+  it('fails closed for an active legacy physical session whose hardware aliases are unknowable', async () => {
+    const value = fixture();
+    readyIosTooling();
+    const commands: string[][] = [];
+    setIosAgentDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
+        if (args[0] === 'devices') {
+          return { ok: true, status: 0, stdout: success({ devices: [device('PROVIDER-NEW', 'greyson', 'device', true, 'HARDWARE-NEW')] }), stderr: '', command: [command, ...args] };
+        }
+        return { ok: true, status: 0, stdout: success({ command: args[0] }), stderr: '', command: [command, ...args] };
+      },
+    });
+    const createdAt = '2026-08-01T00:00:00.000Z';
+    writeInteractionSession(value.repoRoot, {
+      schemaVersion: 1,
+      interactionId: 'ios_device_legacy_without_aliases',
+      provider: 'ios-device',
+      sessionId: 'legacy-coredevice-session',
+      targetId: 'CORE-LEGACY-INTERNAL-ID',
+      status: 'waiting_for_user',
+      reason: 'ios_physical_device_automation',
+      owner: { repoId: value.repository.repoId, requestId: 'legacy-core-owner' },
+      createdAt,
+      updatedAt: createdAt,
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+
+    await expect(executeIosPluginAction(pluginInput(value, 'agent_device_open', {
+      app: 'com.360buy.jdmobile', device: 'PROVIDER-NEW',
+    }))).rejects.toThrow('already has an active interaction');
+    expect(commands.some((argv) => argv[1] === 'devices')).toBe(true);
+    expect(commands.some((argv) => argv[1] === 'open')).toBe(false);
+  });
+
+  it('keeps the shared physical-device fence while rejecting CoreDevice sessions as agent-device sessions', async () => {
+    const value = fixture();
+    readyIosTooling();
+    const commands: string[][] = [];
+    setIosAgentDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
+        if (args[0] === 'devices') {
+          return { ok: true, status: 0, stdout: success({ devices: [device('PROVIDER-ID-1', 'greyson', 'device', true, 'HARDWARE-UDID-1')] }), stderr: '', command: [command, ...args] };
+        }
+        return { ok: true, status: 0, stdout: success({ command: args[0] }), stderr: '', command: [command, ...args] };
+      },
+    });
+    const createdAt = '2026-08-01T00:00:00.000Z';
+    writeInteractionSession(value.repoRoot, {
+      schemaVersion: 1,
+      interactionId: 'ios_device_core_owned',
+      provider: 'ios-device',
+      engine: 'coredevice',
+      sessionId: 'coredevice-session',
+      targetId: 'CORE-INTERNAL-ID',
+      targetAliases: ['CORE-INTERNAL-ID', 'hardware-udid-1'],
+      status: 'waiting_for_user',
+      reason: 'ios_physical_device_automation',
+      owner: { repoId: value.repository.repoId, requestId: 'core-owner' },
+      createdAt,
+      updatedAt: createdAt,
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+
+    await expect(executeIosPluginAction(pluginInput(value, 'agent_device_open', {
+      app: 'com.360buy.jdmobile', device: 'PROVIDER-ID-1',
+    }))).rejects.toThrow('already has an active interaction');
+    expect(commands.some((argv) => argv[1] === 'devices')).toBe(true);
+    expect(commands.some((argv) => argv[1] === 'open')).toBe(false);
+
+    await expect(executeIosPluginAction(pluginInput(value, 'agent_device_snapshot', {
+      interaction_id: 'ios_device_core_owned',
+    }))).rejects.toThrow('Unknown iOS agent-device interaction');
+    expect(commands.some((argv) => argv[1] === 'snapshot')).toBe(false);
   });
 
   it('rejects reuse of a non-JD interaction before executing a search batch', async () => {

@@ -8,6 +8,9 @@ import { runBoundedProcess } from '../execution/thin-harness/async-process';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
 import {
+  interactionAutomationEngine,
+  interactionMayOwnTarget,
+  interactionTargetIdentifiers,
   isInteractionSessionActive,
   listInteractionSessions,
   patchInteractionSession,
@@ -520,6 +523,8 @@ interface AgentDeviceEntry {
   kind: string;
   target?: string;
   booted: boolean;
+  /** Stable provider and hardware identifiers that may name the same target. */
+  aliases: string[];
 }
 
 function devices(input: AssistantPluginActionExecutionInput): AgentDeviceEntry[] {
@@ -530,15 +535,31 @@ function devices(input: AssistantPluginActionExecutionInput): AgentDeviceEntry[]
   const data = response.data && typeof response.data === 'object' ? response.data as Record<string, unknown> : {};
   return (Array.isArray(data.devices) ? data.devices : [])
     .filter((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === 'object' && !Array.isArray(entry)))
-    .map((entry) => ({
-      platform: String(entry.platform ?? ''),
-      appleOs: typeof entry.appleOs === 'string' ? entry.appleOs : undefined,
-      id: String(entry.id ?? ''),
-      name: String(entry.name ?? ''),
-      kind: String(entry.kind ?? ''),
-      target: typeof entry.target === 'string' ? entry.target : undefined,
-      booted: entry.booted === true,
-    }))
+    .map((entry) => {
+      const identifiers = entry.identifiers && typeof entry.identifiers === 'object' && !Array.isArray(entry.identifiers)
+        ? entry.identifiers as Record<string, unknown>
+        : {};
+      const ios = entry.ios && typeof entry.ios === 'object' && !Array.isArray(entry.ios)
+        ? entry.ios as Record<string, unknown>
+        : {};
+      const id = String(entry.id ?? '');
+      const aliases = Array.from(new Set([
+        id,
+        typeof ios.udid === 'string' ? ios.udid : undefined,
+        typeof identifiers.udid === 'string' ? identifiers.udid : undefined,
+        typeof identifiers.deviceId === 'string' ? identifiers.deviceId : undefined,
+      ].filter((value): value is string => Boolean(value?.trim())).map((value) => value.trim())));
+      return {
+        platform: String(entry.platform ?? ''),
+        appleOs: typeof entry.appleOs === 'string' ? entry.appleOs : undefined,
+        id,
+        name: String(entry.name ?? ''),
+        kind: String(entry.kind ?? ''),
+        target: typeof entry.target === 'string' ? entry.target : undefined,
+        booted: entry.booted === true,
+        aliases,
+      };
+    })
     .filter((entry) => entry.platform === 'ios' && entry.id && entry.name);
 }
 
@@ -548,8 +569,10 @@ function providerForDevice(device: AgentDeviceEntry): InteractionProvider {
 
 function selectTarget(input: AssistantPluginActionExecutionInput, selector?: string): AgentDeviceEntry {
   const inventory = devices(input);
+  const normalizedSelector = selector?.trim().toLocaleLowerCase('en-US');
   const exact = selector
-    ? inventory.filter((entry) => entry.id === selector || entry.name === selector)
+    ? inventory.filter((entry) => entry.name === selector
+      || entry.aliases.some((alias) => alias.toLocaleLowerCase('en-US') === normalizedSelector))
     : inventory.filter((entry) => entry.booted && entry.kind === 'simulator');
   const ready = exact.filter((entry) => entry.booted && (entry.kind === 'simulator' || entry.kind === 'device'));
   if (ready.length === 0) {
@@ -595,8 +618,7 @@ function signingFromArgs(args: Record<string, unknown>): AgentDeviceSigningConfi
 }
 
 function isAgentDeviceInteraction(record: InteractionSessionRecord): boolean {
-  return record.interactionId.startsWith('ios_agent_device_')
-    && (record.reason === 'ios_simulator_automation' || record.reason === 'ios_physical_device_automation');
+  return interactionAutomationEngine(record) === 'agent-device';
 }
 
 function readAgentDeviceInteraction(repoRoot: string, interactionId: string): InteractionSessionRecord | undefined {
@@ -610,10 +632,6 @@ function readAgentDeviceInteraction(repoRoot: string, interactionId: string): In
 function listAgentDeviceInteractions(repoRoot: string): InteractionSessionRecord[] {
   return PROVIDERS.flatMap((provider) => listInteractionSessions(repoRoot, provider))
     .filter(isAgentDeviceInteraction);
-}
-
-function listAllIosInteractions(repoRoot: string): InteractionSessionRecord[] {
-  return PROVIDERS.flatMap((provider) => listInteractionSessions(repoRoot, provider));
 }
 
 function requireRecord(input: AssistantPluginActionExecutionInput, allowTerminal = false): InteractionSessionRecord {
@@ -1495,6 +1513,7 @@ async function executeJdSearch(input: AssistantPluginActionExecutionInput): Prom
       kind: 'device',
       target: 'mobile',
       booted: true,
+      aliases: interactionTargetIdentifiers(interaction),
     };
     sessionReused = true;
   } else {
@@ -1999,12 +2018,17 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
     }
     const selected = selectTarget(input, optionalString(input.args.device));
     const provider = providerForDevice(selected);
-    const conflict = listAllIosInteractions(input.repoRoot).find((entry) =>
-      isInteractionSessionActive(entry.status) && entry.targetId === selected.id);
+    const conflict = listInteractionSessions(input.repoRoot, provider).find((entry) =>
+      isInteractionSessionActive(entry.status) && interactionMayOwnTarget(entry, selected.aliases));
     if (conflict) {
       throw new AssistantPluginError('PLUGIN_RESOURCE_BUSY', 'The selected iOS target already has an active interaction.', {
         retryable: true,
-        details: { interactionId: conflict.interactionId, targetId: conflict.targetId },
+        details: {
+          interactionId: conflict.interactionId,
+          targetId: conflict.targetId,
+          resourceProvider: conflict.provider,
+          automationEngine: interactionAutomationEngine(conflict),
+        },
       });
     }
     pruneInteractionSessions(input.repoRoot, provider, 100);
@@ -2014,8 +2038,10 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       schemaVersion: 1,
       interactionId,
       provider,
+      engine: 'agent-device',
       sessionId: `repo-harness-${sanitize(interactionId).slice(-40)}`,
       targetId: selected.id,
+      targetAliases: selected.aliases,
       status: 'starting',
       reason: selected.kind === 'simulator' ? 'ios_simulator_automation' : 'ios_physical_device_automation',
       instructions: app,

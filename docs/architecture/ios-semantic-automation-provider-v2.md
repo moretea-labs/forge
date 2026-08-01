@@ -102,6 +102,17 @@ App adapters own semantic knowledge, not provider mechanics. A search adapter de
 
 JD currently requires a depth-20 structured discovery because the real SearchField is nested around depth 14. Callers that supply a trusted selector skip discovery entirely.
 
+## Resource ownership and engine identity
+
+`ios-device` remains the single physical-iPhone ownership domain. CoreDevice/WDA and agent-device/XCTest must never create independent locks for the same target because that would permit concurrent input or cleanup against one phone.
+
+The interaction record therefore separates:
+
+- `provider`: the mutually exclusive resource domain (`ios-device` or `ios-simulator`);
+- `engine`: the execution implementation (`coredevice` or `agent-device`).
+
+New iOS interactions always write an explicit engine. Schema-v1 records created before this field existed remain readable only through bounded provider + interaction-prefix + reason inference. An explicit unknown or mismatched engine fails closed. Resource matching uses immutable, case-normalized target aliases rather than assuming CoreDevice `identifier`, agent-device provider ID and hardware UDID are the same string; CoreDevice records both its internal identifier and hardware UDID, while agent-device records its provider ID plus `ios.udid`/identifier aliases from inventory. An active legacy `ios-device` record without trustworthy aliases conservatively blocks another physical-device acquisition because the engines cannot prove that two differing internal IDs name different phones. Cross-engine conflicts are rejected before app launch or UI mutation, and conflict evidence reports both the resource provider and automation engine.
+
 ## Session failure disposition
 
 Command failure and session failure are different facts.
@@ -139,11 +150,17 @@ Keep a CLI adapter for compatibility. A fork, if required, is a separate version
 
 Global installations are never edited in place.
 
+## Verification serialization
+
+Edit Session validation for this subsystem must be the sole owner of the checkout workspace and repository build-cache claims while its named checks run. Because the build cache is repository-scoped, the quiet window covers every checkout and managed worktree of the same repository, not only the checkout being verified. Focused tests or manually started package checks must finish and release their Process Runtime leases before `verify_edit_session` starts.
+
+A lease conflict is infrastructure and coordination failure evidence, not a source acceptance failure. Validation admission should queue or defer while a repository-wide cache writer is active instead of fabricating failed acceptance. Existing receipts for one edit revision must remain immutable; after a conflict, validation may resume only on a newly reviewed revision or through a future explicit infrastructure-retry receipt protocol.
+
 ## Migration phases
 
 1. Capability profile, command compiler, structured App adapters and failure disposition.
 2. Split the monolith into provider/session/semantic/workflow modules while retaining public action IDs.
 3. Introduce optional typed-client backend and differential tests against CLI.
-4. Separate interaction resource identity from backend identity and converge CoreDevice fallback routing.
+4. Separate interaction resource identity from backend identity and converge CoreDevice fallback routing. **Implemented:** shared `ios-device` ownership is retained while records declare `coredevice` or `agent-device` engine identity.
 5. Add upstream fork only for proven lower-layer defects.
 6. Re-run physical-device cold/warm benchmarks and publish p50/p95 phase evidence locally.
