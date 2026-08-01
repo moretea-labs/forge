@@ -70,13 +70,13 @@ Result Goal 1 of ISS-20260730-AE1BCC for the next reliability release line. The 
 
 ### T4 — Gate finalize for changed and no-change outcomes
 
-- Status: `in_progress`
+- Status: `verified`
 - Objective: Update finalize so changed work and completed_no_change use distinct evidence gates; record failed commit, merge, or cleanup as resumable non-terminal stages.
 - Depends on: `T3`
 - Allowed paths: `src/runtime/control-plane/**`, `src/runtime/workflow/**`, `src/runtime/git/**`, `tests/**`
 - Checks: `typecheck`, `test`
 - Execution hint: selected at runtime
-- Progress: `completed_no_change` requires objective-specific proof, forbids commit/merge, rejects a dirty owned workspace, and persists a distinct outcome. The Receipt bridge now requires exact clean proof and emits idempotent no-change delivery; reviewed manual/equivalent integration reconciliation remains.
+- Evidence: `completed_no_change` requires objective-specific proof, forbids commit/merge, rejects a dirty owned workspace, and persists a distinct outcome. The Receipt bridge requires exact clean proof and emits idempotent no-change delivery. Manual/equivalent integration now creates a bounded, reviewer-attributed SQLite-backed reconciliation record (original/observed revisions, reachability, compared paths, unavailable stages, and cleanup proof); only an explicit accepted equivalence can issue a receipt, without rewriting failed historical Work stages. Verified with `bun run check:type` and `bun test tests/runtime/work-task-receipt.test.ts tests/runtime/work-session-finalize-recovery.test.ts` (23 pass).
 
 ### T5 — Harden cross-session recovery and continuation handoff
 

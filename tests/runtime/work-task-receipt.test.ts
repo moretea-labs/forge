@@ -4,9 +4,13 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { createIssue, getIssue, updateTask } from '../../src/cli/controller/issue-store';
-import { createWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
-import { acceptVerifiedTaskFromControllerWork } from '../../src/runtime/control-plane/execution/work-task-receipt';
+import {
+  acceptVerifiedTaskFromControllerWork,
+  acceptVerifiedTaskFromReviewedWorkReconciliation,
+  recordControllerWorkReconciliation,
+} from '../../src/runtime/control-plane/execution/work-task-receipt';
 import { verificationInputFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
 
 const roots: string[] = [];
@@ -21,7 +25,7 @@ function git(repoRoot: string, args: string[]): string {
   return result.stdout.trim();
 }
 
-function fixture(options: { changed?: boolean } = {}) {
+function fixture(options: { changed?: boolean; equivalentHistoricalWork?: boolean } = {}) {
   const repoRoot = mkdtempSync(join(tmpdir(), 'repo-harness-work-receipt-'));
   roots.push(repoRoot);
   git(repoRoot, ['init', '-b', 'main']);
@@ -34,7 +38,16 @@ function fixture(options: { changed?: boolean } = {}) {
     git(repoRoot, ['add', 'feature.txt']);
     git(repoRoot, ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'implementation']);
   }
-  const expectedHead = git(repoRoot, ['rev-parse', 'HEAD']);
+  const observedTargetRevision = git(repoRoot, ['rev-parse', 'HEAD']);
+  let expectedHead = observedTargetRevision;
+  if (options.equivalentHistoricalWork) {
+    git(repoRoot, ['checkout', '-b', 'historical-work', baseCommit]);
+    writeFileSync(join(repoRoot, 'feature.txt'), 'implemented\n');
+    git(repoRoot, ['add', 'feature.txt']);
+    git(repoRoot, ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'historical implementation']);
+    expectedHead = git(repoRoot, ['rev-parse', 'HEAD']);
+    git(repoRoot, ['checkout', 'main']);
+  }
   const controllerHome = join(repoRoot, '.controller-home');
   const repoId = 'repo-work-receipt';
   const workId = 'work_completed_fixture';
@@ -47,7 +60,7 @@ function fixture(options: { changed?: boolean } = {}) {
   updateTask(repoRoot, issue.id, 'T1', {
     status: 'verified',
     verification: {
-      integratedRevision: expectedHead,
+      integratedRevision: observedTargetRevision,
       checkResults: [],
       commandEvidence: [{ command: ['test', '-f', 'feature.txt'], ok: true, exitCode: 0, executedAt: verifiedAt, source: 'reported' }],
       acceptanceResults: [],
@@ -66,7 +79,7 @@ function fixture(options: { changed?: boolean } = {}) {
     forbiddenPaths: [],
     checks: [],
     requestedBy: 'chatgpt',
-    status: 'completed',
+    status: options.equivalentHistoricalWork ? 'failed' : 'completed',
   });
   const handle: WorkHandleState = {
     schemaVersion: 1,
@@ -95,7 +108,7 @@ function fixture(options: { changed?: boolean } = {}) {
     },
   };
   writeWorkHandle(controllerHome, handle);
-  return { repoRoot, controllerHome, repoId, workId, issueId: issue.id, baseCommit, expectedHead, handle };
+  return { repoRoot, controllerHome, repoId, workId, issueId: issue.id, baseCommit, expectedHead, observedTargetRevision, handle };
 }
 
 describe('controller Work Task completion receipt', () => {
@@ -223,5 +236,68 @@ describe('controller Work Task completion receipt', () => {
     expect(acceptVerifiedTaskFromControllerWork({
       controllerHome: fx.controllerHome, repoId: fx.repoId, repoRoot: fx.repoRoot, issueId: fx.issueId, taskId: 'T1', workId: fx.workId,
     }).receipt.receiptId).toBe(result.receipt.receiptId);
+  });
+
+  test('accepts a reviewed equivalent integration without inventing failed Work stages', () => {
+    const fx = fixture({ equivalentHistoricalWork: true });
+    writeWorkHandle(fx.controllerHome, {
+      ...fx.handle,
+      state: 'failed',
+      finalization: { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending', lastError: 'historical runtime was interrupted' },
+    });
+    const result = acceptVerifiedTaskFromReviewedWorkReconciliation({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repoId,
+      repoRoot: fx.repoRoot,
+      issueId: fx.issueId,
+      taskId: 'T1',
+      workId: fx.workId,
+      method: 'reviewed_patch_identity',
+      outcome: 'accepted_equivalence',
+      comparedPaths: ['feature.txt'],
+      reviewer: 'test reviewer',
+      reviewedAt: '2026-08-01T00:00:00.000Z',
+      unrecoverableStages: ['validation', 'commit', 'merge', 'branch_cleanup', 'worktree_cleanup'],
+      cleanupOwnershipProof: 'The historical branch and worktree are not controller-owned live resources.',
+      rationale: 'Reviewed the two independent patches; both produce the accepted feature content.',
+    });
+    expect(result.receipt).toMatchObject({
+      sourceRevision: fx.expectedHead,
+      targetRevision: fx.observedTargetRevision,
+      changedPaths: ['feature.txt'],
+      delivery: { strategy: 'already_integrated', reachable: true },
+    });
+    expect(result.issue.tasks[0]!.status).toBe('done');
+    const contract = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
+    expect(contract.status).toBe('failed');
+    expect(contract.reconciliations).toHaveLength(1);
+    expect(contract.reconciliations[0]).toMatchObject({
+      outcome: 'accepted_equivalence',
+      originalExpectedRevision: fx.expectedHead,
+      observedTargetRevision: fx.observedTargetRevision,
+      reachable: true,
+    });
+  });
+
+  test('records rejected reconciliation without accepting the Task', () => {
+    const fx = fixture({ equivalentHistoricalWork: true });
+    const recorded = recordControllerWorkReconciliation({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repoId,
+      repoRoot: fx.repoRoot,
+      issueId: fx.issueId,
+      taskId: 'T1',
+      workId: fx.workId,
+      method: 'owned_path_tree',
+      outcome: 'rejected_equivalence',
+      comparedPaths: ['feature.txt'],
+      reviewer: 'test reviewer',
+      unrecoverableStages: ['merge'],
+      cleanupOwnershipProof: 'No controller-owned worktree remains.',
+      rationale: 'The reviewer rejected the historical equivalence claim.',
+    });
+    expect(recorded.record.outcome).toBe('rejected_equivalence');
+    expect(getIssue(fx.repoRoot, fx.issueId).tasks[0]!.status).toBe('verified');
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!.reconciliations).toHaveLength(1);
   });
 });

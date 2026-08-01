@@ -14,6 +14,7 @@ import {
   type SubmittedWorkOperation,
   type SuggestedNextAction,
   type VerificationRecord,
+  type WorkReconciliationRecord,
   type WorkContract,
   type WorkContractStatus,
   type WorkKind,
@@ -33,7 +34,7 @@ export interface WorkContractStoreOptions extends WorkContractStoreLocation {
 
 export type CreateWorkContractInput = Omit<
   WorkContract,
-  'schemaVersion' | 'status' | 'createdAt' | 'updatedAt' | 'workKind' | 'dispatchState' | 'evidenceState' | 'completionOutcome' | 'evidenceRefs' | 'handoffRefs' | 'suggestedNextActions' | 'policyDecisions' | 'checkRefs' | 'driver' | 'worktreePolicy' | 'evidencePolicy' | 'approvalPolicy' | 'recoveryPolicy'
+  'schemaVersion' | 'status' | 'createdAt' | 'updatedAt' | 'workKind' | 'dispatchState' | 'evidenceState' | 'completionOutcome' | 'evidenceRefs' | 'handoffRefs' | 'suggestedNextActions' | 'policyDecisions' | 'checkRefs' | 'reconciliations' | 'driver' | 'worktreePolicy' | 'evidencePolicy' | 'approvalPolicy' | 'recoveryPolicy'
 > & {
   status?: WorkContractStatus;
   createdAt?: string;
@@ -47,6 +48,7 @@ export type CreateWorkContractInput = Omit<
   suggestedNextActions?: SuggestedNextAction[];
   policyDecisions?: PolicyDecision[];
   checkRefs?: VerificationRecord[];
+  reconciliations?: WorkReconciliationRecord[];
   driver?: WorkContract['driver'];
   worktreePolicy?: WorkContract['worktreePolicy'];
   evidencePolicy?: WorkContract['evidencePolicy'];
@@ -215,6 +217,7 @@ function normalizeWorkContractStore(store: WorkContractStore): WorkContractStore
         workKind: legacy.workKind ?? 'repository_change',
         dispatchState: legacy.dispatchState ?? inferredDispatchState(status),
         evidenceState: legacy.evidenceState ?? inferredEvidenceState(status),
+        reconciliations: legacy.reconciliations ?? [],
         driver: (legacy.driver as unknown as { preferred?: string } | undefined)?.preferred === 'codex_worker'
           ? { ...legacy.driver, preferred: 'external_controller', allowWorker: false }
           : legacy.driver,
@@ -326,6 +329,7 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
       suggestedNextActions: (input.suggestedNextActions ?? []).slice(0, 8),
       policyDecisions: (input.policyDecisions ?? []).slice(0, 20),
       checkRefs: (input.checkRefs ?? []).slice(0, 50),
+      reconciliations: (input.reconciliations ?? []).slice(0, 20),
       continuationPrompt: input.continuationPrompt?.slice(0, 2_000),
       worktreeRef: input.worktreeRef,
       workerRef: input.workerRef,
@@ -684,6 +688,7 @@ export function updateWorkContract(
     suggestedNextActions: (patch.suggestedNextActions ?? current.suggestedNextActions).slice(0, 8),
     policyDecisions: (patch.policyDecisions ?? current.policyDecisions).slice(0, 20),
     checkRefs: (patch.checkRefs ?? current.checkRefs).slice(0, 50),
+    reconciliations: (patch.reconciliations ?? current.reconciliations ?? []).slice(0, 20),
     objective: (patch.objective ?? current.objective).slice(0, 2_000),
     continuationPrompt: (patch.continuationPrompt ?? current.continuationPrompt)?.slice(0, 2_000),
     }));

@@ -108,6 +108,13 @@ export type EvidenceState = (typeof EVIDENCE_STATES)[number];
 export const COMPLETION_OUTCOMES = ['completed_changed', 'completed_no_change', 'completed_remote', 'superseded'] as const;
 export type CompletionOutcome = (typeof COMPLETION_OUTCOMES)[number];
 
+/** A reviewed exception for historical/manual integration; never inferred automatically. */
+export const WORK_RECONCILIATION_METHODS = ['exact_commit', 'owned_path_tree', 'reviewed_patch_identity'] as const;
+export type WorkReconciliationMethod = (typeof WORK_RECONCILIATION_METHODS)[number];
+
+export const WORK_RECONCILIATION_OUTCOMES = ['accepted_equivalence', 'rejected_equivalence', 'superseded'] as const;
+export type WorkReconciliationOutcome = (typeof WORK_RECONCILIATION_OUTCOMES)[number];
+
 export const VERIFICATION_OUTCOMES = [
   'valid_pass',
   'valid_fail',
@@ -280,6 +287,29 @@ export interface VerificationRecord {
   receipt?: ProcessCheckReceiptEvidence;
 }
 
+/**
+ * Durable human-reviewed reconciliation for a Work whose original finalization
+ * facts cannot be recovered. It records an exception; it is not completion
+ * evidence by itself.
+ */
+export interface WorkReconciliationRecord {
+  schemaVersion: 1;
+  reconciliationId: string;
+  originalExpectedRevision: string;
+  observedTargetRevision: string;
+  baseRevision: string;
+  targetBranch: string;
+  reachable: boolean;
+  method: WorkReconciliationMethod;
+  comparedPaths: string[];
+  reviewer: string;
+  reviewedAt: string;
+  unrecoverableStages: string[];
+  cleanupOwnershipProof: string;
+  rationale: string;
+  outcome: WorkReconciliationOutcome;
+}
+
 export interface WorkContract {
   schemaVersion: 1 | 2;
   workId: string;
@@ -318,6 +348,8 @@ export interface WorkContract {
   suggestedNextActions: SuggestedNextAction[];
   policyDecisions: PolicyDecision[];
   checkRefs: VerificationRecord[];
+  /** Reviewed historical/manual integration exceptions, retained for audit. */
+  reconciliations: WorkReconciliationRecord[];
   continuationPrompt?: string;
   worktreeRef?: string;
   workerRef?: string;

@@ -3,7 +3,13 @@ import { spawnSync } from 'child_process';
 import { getIssue, listIssues, recordTaskVerification, acceptVerifiedTask } from '../../../cli/controller/issue-store';
 import { resolveCompletionTargetBranch } from '../../../cli/controller/completion-target';
 import type { CompletionReceipt, ControllerIssue } from '../../../cli/controller/types';
-import { getWorkContract } from '../facade/work-contract-store';
+import { getWorkContract, updateWorkContract } from '../facade/work-contract-store';
+import { WORK_RECONCILIATION_METHODS, WORK_RECONCILIATION_OUTCOMES } from '../facade/types';
+import type {
+  WorkReconciliationMethod,
+  WorkReconciliationOutcome,
+  WorkReconciliationRecord,
+} from '../facade/types';
 import { readWorkHandle } from './work-handle-store';
 import { effectiveVerificationEvidence } from './verification-evidence';
 
@@ -67,6 +73,209 @@ export interface ControllerWorkTaskReceiptInput {
 export interface ControllerWorkTaskReceiptResult {
   issue: ControllerIssue;
   receipt: CompletionReceipt;
+}
+
+const RECONCILABLE_FINALIZATION_STAGES = new Set([
+  'validation', 'commit', 'merge', 'branch_cleanup', 'worktree_cleanup', 'receipt',
+]);
+
+export interface ControllerWorkReconciliationInput extends ControllerWorkTaskReceiptInput {
+  method: WorkReconciliationMethod;
+  outcome: WorkReconciliationOutcome;
+  /** Exact bounded paths compared by the reviewer, rather than a claim of semantic equality. */
+  comparedPaths: string[];
+  reviewer: string;
+  reviewedAt?: string;
+  /** Stage facts that cannot be reconstructed from the historical Work. */
+  unrecoverableStages: string[];
+  /** Concrete proof that any cleanup is owned and complete, or no cleanup was owned. */
+  cleanupOwnershipProof: string;
+  rationale: string;
+}
+
+export interface ControllerWorkReconciliationResult {
+  contractId: string;
+  record: WorkReconciliationRecord;
+}
+
+function normalizedReviewedPaths(paths: string[]): string[] {
+  const normalized = [...new Set(paths.map((path) => path.trim()))].sort();
+  if (normalized.length === 0 || normalized.length > 50) {
+    throw new Error('CONTROLLER_WORK_RECONCILIATION_PATHS_INVALID');
+  }
+  if (normalized.some((path) => !path || path.startsWith('/') || path.includes('\0') || path.split('/').some((part) => part === '' || part === '.' || part === '..'))) {
+    throw new Error('CONTROLLER_WORK_RECONCILIATION_PATHS_INVALID');
+  }
+  return normalized;
+}
+
+function samePaths(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((path, index) => path === right[index]);
+}
+
+function globMatchesPath(pattern: string, path: string): boolean {
+  let expression = '^';
+  for (let index = 0; index < pattern.length; index += 1) {
+    const character = pattern[index]!;
+    if (character === '*') {
+      if (pattern[index + 1] === '*') {
+        expression += '.*';
+        index += 1;
+      } else {
+        expression += '[^/]*';
+      }
+    } else if (character === '?') {
+      expression += '[^/]';
+    } else {
+      expression += character.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
+    }
+  }
+  return new RegExp(`${expression}$`).test(path);
+}
+
+function assertReviewedPathScope(contract: NonNullable<ReturnType<typeof getWorkContract>>, task: NonNullable<ControllerIssue['tasks'][number]>, paths: string[]): void {
+  const forbidden = [...new Set([...contract.forbiddenPaths, ...task.forbiddenPaths])];
+  for (const path of paths) {
+    if (forbidden.some((pattern) => globMatchesPath(pattern, path))) {
+      throw new Error(`CONTROLLER_WORK_RECONCILIATION_FORBIDDEN_PATH: ${path}`);
+    }
+    if (contract.allowedPaths.length > 0 && !contract.allowedPaths.some((pattern) => globMatchesPath(pattern, path))) {
+      throw new Error(`CONTROLLER_WORK_RECONCILIATION_PATH_OUT_OF_SCOPE: ${path}`);
+    }
+    if (task.allowedPaths.length > 0 && !task.allowedPaths.some((pattern) => globMatchesPath(pattern, path))) {
+      throw new Error(`CONTROLLER_WORK_RECONCILIATION_PATH_OUT_OF_SCOPE: ${path}`);
+    }
+  }
+}
+
+/**
+ * Record a bounded reviewer-approved exception for manual/equivalent delivery.
+ * This deliberately does not alter legacy Work status or accept the Task.
+ */
+export function recordControllerWorkReconciliation(input: ControllerWorkReconciliationInput): ControllerWorkReconciliationResult {
+  if (!WORK_RECONCILIATION_METHODS.includes(input.method) || !WORK_RECONCILIATION_OUTCOMES.includes(input.outcome)) {
+    throw new Error('CONTROLLER_WORK_RECONCILIATION_KIND_INVALID');
+  }
+  const issue = getIssue(input.repoRoot, input.issueId);
+  const task = issue.tasks.find((entry) => entry.id === input.taskId);
+  if (!task?.verification || task.status !== 'verified') {
+    throw new Error(`CONTROLLER_WORK_RECONCILIATION_TASK_NOT_VERIFIED: ${input.issueId}/${input.taskId}`);
+  }
+  const handle = readWorkHandle(input.controllerHome, input.repoId, input.workId);
+  if (!handle) throw new Error(`CONTROLLER_WORK_RECONCILIATION_WORK_NOT_FOUND: ${input.workId}`);
+  if (handle.repositoryId !== input.repoId) throw new Error(`CONTROLLER_WORK_RECONCILIATION_REPOSITORY_MISMATCH: ${input.workId}`);
+  const contract = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repoId }, handle.workContractId ?? input.workId);
+  if (!contract || contract.repoId !== input.repoId) {
+    throw new Error(`CONTROLLER_WORK_RECONCILIATION_CONTRACT_NOT_FOUND: ${input.workId}`);
+  }
+
+  const originalExpectedRevision = commitRevision(input.repoRoot, handle.expectedHead, 'ORIGINAL_EXPECTED_REVISION');
+  const observedTargetRevision = commitRevision(input.repoRoot, task.verification.integratedRevision, 'OBSERVED_TARGET_REVISION');
+  const baseRevision = commitRevision(input.repoRoot, handle.baseCommit, 'BASE_REVISION');
+  if (originalExpectedRevision === observedTargetRevision) {
+    throw new Error('CONTROLLER_WORK_RECONCILIATION_EXACT_REVISION_REQUIRED');
+  }
+  const comparedPaths = normalizedReviewedPaths(input.comparedPaths);
+  const originalPaths = changedPaths(input.repoRoot, baseRevision, originalExpectedRevision);
+  const observedPaths = changedPaths(input.repoRoot, baseRevision, observedTargetRevision);
+  if (!samePaths(comparedPaths, originalPaths) || !samePaths(comparedPaths, observedPaths)) {
+    throw new Error('CONTROLLER_WORK_RECONCILIATION_PATH_COMPARISON_MISMATCH');
+  }
+  assertReviewedPathScope(contract, task, comparedPaths);
+
+  const reviewer = input.reviewer.trim();
+  const rationale = input.rationale.trim();
+  const cleanupOwnershipProof = input.cleanupOwnershipProof.trim();
+  const reviewedAt = input.reviewedAt ?? new Date().toISOString();
+  if (!reviewer || !rationale || !cleanupOwnershipProof || Number.isNaN(Date.parse(reviewedAt))) {
+    throw new Error('CONTROLLER_WORK_RECONCILIATION_REVIEW_METADATA_INVALID');
+  }
+  const unrecoverableStages = [...new Set(input.unrecoverableStages.map((stage) => stage.trim()))].sort();
+  if (unrecoverableStages.length === 0 || unrecoverableStages.some((stage) => !RECONCILABLE_FINALIZATION_STAGES.has(stage))) {
+    throw new Error('CONTROLLER_WORK_RECONCILIATION_STAGES_INVALID');
+  }
+  const targetBranch = resolveCompletionTargetBranch(input.repoRoot);
+  const reachableResult = spawnSync('git', ['merge-base', '--is-ancestor', observedTargetRevision, targetBranch], {
+    cwd: input.repoRoot,
+    encoding: 'utf-8',
+  });
+  const reachable = reachableResult.status === 0 && !reachableResult.error;
+  const reconciliationId = `RECNC-${createHash('sha256').update([
+    input.repoId, input.workId, originalExpectedRevision, observedTargetRevision, input.method,
+    comparedPaths.join('\0'), reviewer, reviewedAt,
+  ].join('\0')).digest('hex').slice(0, 16)}`;
+  const record: WorkReconciliationRecord = {
+    schemaVersion: 1,
+    reconciliationId,
+    originalExpectedRevision,
+    observedTargetRevision,
+    baseRevision,
+    targetBranch,
+    reachable,
+    method: input.method,
+    comparedPaths,
+    reviewer: reviewer.slice(0, 200),
+    reviewedAt,
+    unrecoverableStages,
+    cleanupOwnershipProof: cleanupOwnershipProof.slice(0, 2_000),
+    rationale: rationale.slice(0, 2_000),
+    outcome: input.outcome,
+  };
+  updateWorkContract({ controllerHome: input.controllerHome, repoId: input.repoId }, contract.workId, {
+    reconciliations: [record, ...contract.reconciliations.filter((entry) => entry.reconciliationId !== reconciliationId)],
+  });
+  return { contractId: contract.workId, record };
+}
+
+/**
+ * Produce a Task receipt only from an explicit accepted reconciliation record.
+ * Unlike the normal path this records historical gaps instead of inventing
+ * finalization stages; it never marks the Work completed.
+ */
+export function acceptVerifiedTaskFromReviewedWorkReconciliation(input: ControllerWorkReconciliationInput): ControllerWorkTaskReceiptResult {
+  const issue = getIssue(input.repoRoot, input.issueId);
+  const task = issue.tasks.find((entry) => entry.id === input.taskId);
+  if (!task) throw new Error(`task not found: ${input.issueId}/${input.taskId}`);
+  if (task.status === 'done' && task.verification?.completionReceipt?.workId === input.workId) {
+    return { issue, receipt: task.verification.completionReceipt };
+  }
+  const reconciliation = recordControllerWorkReconciliation(input);
+  if (reconciliation.record.outcome !== 'accepted_equivalence') {
+    throw new Error(`CONTROLLER_WORK_RECONCILIATION_NOT_ACCEPTED: ${reconciliation.record.outcome}`);
+  }
+  if (!reconciliation.record.reachable) {
+    throw new Error(`CONTROLLER_WORK_RECONCILIATION_TARGET_UNREACHABLE: ${reconciliation.record.observedTargetRevision}`);
+  }
+  const contract = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repoId }, reconciliation.contractId)!;
+  assertCurrentRequiredChecks(contract, reconciliation.record.observedTargetRevision);
+  assertWorkNotBoundElsewhere(input.repoRoot, input.workId, input.issueId, input.taskId);
+
+  const recordedAt = new Date().toISOString();
+  const receipt: CompletionReceipt = {
+    schemaVersion: 1,
+    receiptId: `REC-work-reconciled-${createHash('sha256').update(`${input.repoId}\0${input.issueId}\0${input.taskId}\0${input.workId}\0${reconciliation.record.reconciliationId}`).digest('hex').slice(0, 16)}`,
+    source: 'controller_work',
+    issueId: input.issueId,
+    taskId: input.taskId,
+    workId: input.workId,
+    targetBranch: reconciliation.record.targetBranch,
+    targetRevision: reconciliation.record.observedTargetRevision,
+    sourceRevision: reconciliation.record.originalExpectedRevision,
+    baseRevision: reconciliation.record.baseRevision,
+    changedPaths: reconciliation.record.comparedPaths,
+    delivery: { kind: 'commit', status: 'integrated', strategy: 'already_integrated', reachable: true, recordedAt },
+    cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt },
+    verifiedAt: task.verification!.verifiedAt,
+    recordedAt,
+  };
+  recordTaskVerification(input.repoRoot, input.issueId, input.taskId, { ...task.verification!, completionReceipt: receipt });
+  const accepted = acceptVerifiedTask(
+    input.repoRoot,
+    input.issueId,
+    input.taskId,
+    input.note ?? `Accepted reviewed Work reconciliation ${reconciliation.record.reconciliationId} for ${input.workId}.`,
+  );
+  return { issue: accepted, receipt };
 }
 
 /**
