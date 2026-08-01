@@ -43,6 +43,7 @@ export interface ControllerDaemonStatus {
   instanceId?: string;
   ownerEpoch?: number;
   slot?: 'blue' | 'green';
+  passive?: boolean;
 }
 
 function daemonPidPath(controllerHome: string): string { return join(ensureControllerHome(controllerHome), 'daemon', 'controller.pid'); }
@@ -127,7 +128,7 @@ export function readControllerDaemonStatus(controllerHome: string): ControllerDa
       degraded: false,
     };
   }
-  if (withGeneration.status === 'ready' && !heartbeatHealthy) {
+  if (withGeneration.status === 'ready' && !heartbeatHealthy && withGeneration.passive !== true) {
     const startedAt = withGeneration.startedAt ? Date.parse(withGeneration.startedAt) : Number.NaN;
     if (Number.isFinite(startedAt) && Date.now() - startedAt < DAEMON_STARTUP_GRACE_MS) {
       return { ...withGeneration, status: 'starting', pid };

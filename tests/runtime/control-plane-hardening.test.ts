@@ -41,6 +41,27 @@ describe('control-plane hardening', () => {
     expect(ensured.startedAt).toBe(startedAt);
   });
 
+  test('keeps a live passive candidate ready without requiring a Scheduler heartbeat', () => {
+    const controllerHome = temp('repo-harness-passive-daemon-ready-');
+    mkdirSync(join(controllerHome, 'daemon'), { recursive: true });
+    const startedAt = new Date(Date.now() - 60_000).toISOString();
+    writeFileSync(join(controllerHome, 'daemon', 'controller.pid'), `${process.pid}\n`);
+    writeFileSync(join(controllerHome, 'daemon', 'state.json'), `${JSON.stringify({
+      schemaVersion: 1,
+      status: 'ready',
+      pid: process.pid,
+      startedAt,
+      passive: true,
+      degraded: false,
+    }, null, 2)}\n`);
+
+    const status = readControllerDaemonStatus(controllerHome);
+    expect(status.status).toBe('ready');
+    expect(status.passive).toBe(true);
+    expect(status.degraded).toBe(false);
+    expect(status.pid).toBe(process.pid);
+  });
+
   test('prefers a live Daemon with a fresh Scheduler heartbeat over a stale terminal projection', () => {
     const controllerHome = temp('repo-harness-daemon-stale-terminal-');
     mkdirSync(join(controllerHome, 'daemon'), { recursive: true });
