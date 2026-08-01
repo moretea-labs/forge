@@ -51,3 +51,24 @@ Map every atomic write path in `src/runtime/execution/process-runtime/store.ts`,
 then migrate Process Runtime bindings and active indexes as the next state
 family. This is the smallest remaining family with cross-file idempotency and
 lease invariants.
+
+## Process Runtime shadow-cutover design
+
+The migration is **not** a dual writer. A compatibility read first checks the
+SQLite row; only an absent row imports its matching legacy JSON file inside the
+SQLite transaction. Once the row exists, JSON changes are ignored. The cutover
+unit is one repository-scoped family containing Process records, request
+bindings, invocation bindings, and the active-index projection:
+
+1. introduce independent SQLite namespaces and one-time import readers;
+2. write every member under one SQLite transaction, retaining process logs and
+   exit receipts as filesystem artifacts;
+3. derive the active-index projection from SQLite rather than treating it as a
+   second authority; and
+4. prove duplicate requests, interrupted process completion, corrupted legacy
+   binding, restart recovery, stale lease release, and rollback against the
+   exact same repository/check-out identity.
+
+Rollback is read-only: stop writes at the affected migration version, retain
+the last valid SQLite rows and artifacts, and use legacy JSON only where no
+authoritative row was ever imported. It never replays JSON over SQLite.

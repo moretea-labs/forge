@@ -60,12 +60,13 @@ Define and gradually implement the long-term Repo Harness Control Plane storage 
 
 ### T3 — Design shadow persistence migration strategy
 
-- Status: `ready`
+- Status: `verified`
 - Objective: Define a future controller-owned persistence layer with shadow reads, projection generation, validation, rollback, and incremental cutover. Do not implement the database migration in this task.
 - Depends on: none
 - Allowed paths: `docs/**`
 - Checks: not defined
 - Execution hint: selected at runtime
+- Evidence: The Process Runtime shadow-cutover design in `docs/researches/20260801-control-plane-state-store-inventory.md` defines one-way import, atomic namespace-family cutover, derived active-index projection, fault coverage, and rollback that cannot replay stale JSON over SQLite.
 
 ## Related Artifacts
 

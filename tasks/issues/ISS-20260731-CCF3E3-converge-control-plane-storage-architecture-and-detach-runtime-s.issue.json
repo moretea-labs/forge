@@ -78,7 +78,7 @@
       "id": "T3",
       "title": "Design shadow persistence migration strategy",
       "objective": "Define a future controller-owned persistence layer with shadow reads, projection generation, validation, rollback, and incremental cutover. Do not implement the database migration in this task.",
-      "status": "ready",
+      "status": "verified",
       "dependsOn": [],
       "allowedPaths": [
         "docs/**"
@@ -87,10 +87,12 @@
       "checks": [],
       "acceptanceCriteria": [],
       "risk": "low",
-      "notes": [],
+      "notes": [
+        "2026-08-01: T3 verified. The Process Runtime shadow-cutover design defines one-way legacy import, atomic Process/request/invocation/active-index migration, derived projections, required fault coverage, and rollback that cannot replay stale JSON over SQLite."
+      ],
       "runIds": [],
       "createdAt": "2026-07-31T04:18:55.044Z",
-      "updatedAt": "2026-07-31T04:18:55.044Z",
+      "updatedAt": "2026-08-01T11:15:00.000Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     }
   ],
