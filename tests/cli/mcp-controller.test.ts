@@ -47,6 +47,19 @@ async function jsonTool(
   return { raw: result, value: JSON.parse(result.content[0].text) };
 }
 
+async function verifyTaskUntilSettled(
+  ctx: McpToolContext,
+  args: Record<string, unknown>,
+  attempts = 120,
+) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const result = await jsonTool(ctx, "verify_task", args);
+    if (result.value.status !== "verification_running") return result;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`verify_task did not settle after ${attempts} attempts`);
+}
+
 function responseSize(result: { raw: { content: Array<{ text: string }> } }): number {
   return result.raw.content[0]?.text.length ?? 0;
 }
@@ -917,7 +930,7 @@ describe("MCP controller profile", () => {
         issue_id: created.value.id,
         task_id: "T1",
         status: "review"});
-      const verified = await jsonTool(ctx, "verify_task", {
+      const verified = await verifyTaskUntilSettled(ctx, {
         issue_id: created.value.id,
         task_id: "T1",
         reviewer: "test-controller",
