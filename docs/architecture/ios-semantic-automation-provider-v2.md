@@ -154,7 +154,7 @@ Global installations are never edited in place.
 
 Edit Session validation for this subsystem must be the sole owner of the checkout workspace and repository build-cache claims while its named checks run. Because the build cache is repository-scoped, the quiet window covers every checkout and managed worktree of the same repository, not only the checkout being verified. Focused tests or manually started package checks must finish and release their Process Runtime leases before `verify_edit_session` starts.
 
-A lease conflict is infrastructure and coordination failure evidence, not a source acceptance failure. Validation admission should queue or defer while a repository-wide cache writer is active instead of fabricating failed acceptance. Existing receipts for one edit revision must remain immutable; after a conflict, validation may resume only on a newly reviewed revision or through a future explicit infrastructure-retry receipt protocol.
+A lease conflict is infrastructure and coordination failure evidence, not a source acceptance failure. `verify_task` returns `verification_deferred` before writing Task verification, exposes the bounded conflicting Process and a deterministic fresh retry request ID, and preserves real failed checks as authoritative. Existing Process receipts remain immutable; the fresh request ID prevents a retry from reusing the terminal conflicted Process.
 
 ## Migration phases
 

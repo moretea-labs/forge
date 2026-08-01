@@ -967,6 +967,38 @@ function taskObjects(value: unknown): Array<Record<string, unknown>> {
   );
 }
 
+interface TaskVerificationLeaseConflict {
+  message: string;
+  resourceKey?: string;
+  blockingProcessId?: string;
+}
+
+function taskVerificationLeaseConflict(record: {
+  error?: { message?: unknown };
+}): TaskVerificationLeaseConflict | undefined {
+  const message = typeof record.error?.message === "string" ? record.error.message.trim() : "";
+  if (!message.startsWith("PROCESS_LEASE_CONFLICT:")) return undefined;
+  const match = /^PROCESS_LEASE_CONFLICT:\s*(.+?)@process:([A-Za-z0-9._-]+)$/.exec(message);
+  return {
+    message,
+    resourceKey: match?.[1],
+    blockingProcessId: match?.[2],
+  };
+}
+
+function taskVerificationRetryRequestId(
+  requestBase: string,
+  checkId: string,
+  conflictedProcessId: string,
+): string {
+  const stableBase = requestBase.replace(/:retry:[a-f0-9]{16}$/i, "");
+  const retryToken = createHash("sha256")
+    .update(`${stableBase}\0${checkId}\0${conflictedProcessId}`)
+    .digest("hex")
+    .slice(0, 16);
+  return `${stableBase}:retry:${retryToken}`;
+}
+
 function controllerTaskDrafts(value: unknown): TaskDraft[] {
   return taskObjects(value).map((task) => ({
     title: String(task.title ?? "").trim(),
@@ -4455,6 +4487,32 @@ export async function callMcpTool(
             }
             const record = getProcessRecord(controllerHome, repository.repoId, facade.process.processId);
             if (!record) return errorResult('TASK_CHECK_PROCESS_MISSING', `process record not found: ${facade.process.processId}`);
+            const leaseConflict = taskVerificationLeaseConflict(record);
+            if (leaseConflict) {
+              const retryRequestId = taskVerificationRetryRequestId(
+                taskCheckRequestBase,
+                checkId,
+                facade.process.processId,
+              );
+              return textResult({
+                accepted: true,
+                status: 'verification_deferred',
+                reason: 'repository_resource_busy',
+                issueId,
+                taskId,
+                checkId,
+                requestId: taskCheckRequestBase,
+                processId: facade.process.processId,
+                conflict: {
+                  code: 'PROCESS_LEASE_CONFLICT',
+                  resourceKey: leaseConflict.resourceKey,
+                  blockingProcessId: leaseConflict.blockingProcessId,
+                },
+                retryRequestId,
+                next: `Retry verify_task with request_id=${retryRequestId} after the conflicting repository process settles.`,
+                durableSideEffects: { executionJobCount: 0, localJobCount: 0, workerSpawnCount: 0, projectionUpdateCount: 0 },
+              });
+            }
             const receipt = processCheckCompletionReceipt(record, {
               repoId: repository.repoId,
               checkoutId: repository.activeCheckoutId,

@@ -1104,6 +1104,138 @@ describe("MCP controller profile", () => {
     });
   });
 
+  test("verify_task defers repository lease conflicts without recording failed verification and retries with a fresh request", async () => {
+    await withController(async (repoRoot, ctx) => {
+      writeFileSync(
+        join(repoRoot, ".repo-harness/checks.json"),
+        JSON.stringify({
+          version: 1,
+          checks: {
+            blocker: {
+              description: "Hold the repository build cache",
+              command: [process.execPath, "-e", 'setTimeout(() => console.log("blocker-done"), 2500)'],
+              timeoutMs: 10_000,
+            },
+            focused: {
+              description: "Fast passing verification check",
+              command: [process.execPath, "-e", 'console.log("focused-ok")'],
+              timeoutMs: 10_000,
+            },
+            failing: {
+              description: "Real failing verification check",
+              command: [process.execPath, "-e", "process.exit(7)"],
+              timeoutMs: 10_000,
+            },
+          },
+        }),
+      );
+      const created = await jsonTool(ctx, "create_issue", {
+        title: "Deferred verification lease conflict",
+        kind: "feature",
+        tasks: [{
+          title: "Verify after contention",
+          objective: "Do not confuse repository contention with source failure.",
+          allowed_paths: ["src/**"],
+          checks: ["focused"],
+          acceptance_criteria: ["Verification remains truthful."],
+        }],
+      });
+      await jsonTool(ctx, "update_task", {
+        issue_id: created.value.id,
+        task_id: "T1",
+        status: "review",
+      });
+      const blocker = await jsonTool(ctx, "run_check", {
+        check_id: "blocker",
+        request_id: "verification-blocker",
+      });
+      expect(typeof blocker.value.processId === "string" || blocker.value.completed === true).toBe(true);
+
+      const verificationArgs = {
+        issue_id: created.value.id,
+        task_id: "T1",
+        reviewer: "test-controller",
+        request_id: "verify-during-contention",
+        check_results: [{ check_id: "focused" }],
+        acceptance_results: [{ criterion: "Verification remains truthful.", ok: true }],
+      };
+      const deferred = await verifyTaskUntilSettled(ctx, verificationArgs);
+      expect(deferred.raw.isError).not.toBe(true);
+      expect(deferred.value).toMatchObject({
+        status: "verification_deferred",
+        reason: "repository_resource_busy",
+        issueId: created.value.id,
+        taskId: "T1",
+        checkId: "focused",
+        conflict: {
+          code: "PROCESS_LEASE_CONFLICT",
+          blockingProcessId: expect.any(String),
+        },
+        retryRequestId: expect.stringMatching(/^verify-during-contention:retry:[a-f0-9]{16}$/),
+      });
+      expect(deferred.value.retryRequestId).not.toBe(verificationArgs.request_id);
+
+      const unchanged = await jsonTool(ctx, "get_issue", {
+        issue_id: created.value.id,
+        detail_level: "full",
+      });
+      const unchangedTask = unchanged.value.tasks.find((task: { id: string }) => task.id === "T1");
+      expect(unchangedTask.status).toBe("review");
+      expect(unchangedTask.verification).toBeUndefined();
+
+      await Bun.sleep(2_800);
+      const verified = await verifyTaskUntilSettled(ctx, {
+        ...verificationArgs,
+        request_id: deferred.value.retryRequestId,
+      });
+      expect(verified.value.task.status).toBe("verified");
+      const stored = await jsonTool(ctx, "get_issue", {
+        issue_id: created.value.id,
+        detail_level: "full",
+      });
+      const successfulProcessId = stored.value.tasks.find((task: { id: string }) => task.id === "T1")
+        ?.verification?.checkResults?.[0]?.receipt?.processId;
+      expect(successfulProcessId).toBeString();
+      expect(successfulProcessId).not.toBe(deferred.value.processId);
+
+      const failedIssue = await jsonTool(ctx, "create_issue", {
+        title: "Real verification failure",
+        kind: "feature",
+        allow_while_focused: true,
+        tasks: [{
+          title: "Fail honestly",
+          objective: "Keep real check failures authoritative.",
+          allowed_paths: ["src/**"],
+          checks: ["failing"],
+        }],
+      });
+      await jsonTool(ctx, "update_task", {
+        issue_id: failedIssue.value.id,
+        task_id: "T1",
+        status: "review",
+      });
+      const failed = await verifyTaskUntilSettled(ctx, {
+        issue_id: failedIssue.value.id,
+        task_id: "T1",
+        reviewer: "test-controller",
+        request_id: "verify-real-failure",
+        check_results: [{ check_id: "failing" }],
+        acceptance_results: [],
+      });
+      expect(failed.value.status).not.toBe("verification_deferred");
+      expect(failed.value.task.status).toBe("changes_requested");
+      const failedStored = await jsonTool(ctx, "get_issue", {
+        issue_id: failedIssue.value.id,
+        detail_level: "full",
+      });
+      expect(failedStored.value.tasks[0].verification.checkResults[0]).toMatchObject({
+        checkId: "failing",
+        ok: false,
+        receipt: { exitCode: 7, status: "failed" },
+      });
+    });
+  });
+
   test("rejects invalid and cyclic Task dependency graphs", async () => {
     await withController(async (_repoRoot, ctx) => {
       const missing = await jsonTool(ctx, "create_issue", {
