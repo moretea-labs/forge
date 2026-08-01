@@ -113,7 +113,8 @@ describe('v8.1 repository lock and remote routing', () => {
         issue_id: 'ISS-1',
         task_id: 'TASK-1',
       }, repository);
-      expect(dispatch.repo_id).toBeUndefined();
+      expect(dispatch.repo_id).toBe(repository.repoId);
+      expect(dispatch.checkout_id).toBe(repository.activeCheckoutId);
       expect(dispatch.github_repo).toBe('example-owner/repo-a-remote');
       expect(dispatch.base_ref).toBe('release/v8.1');
 

@@ -79,10 +79,13 @@ describe('external managed worktree storage', () => {
     roots.push(fixture);
     const source = join(fixture, 'source');
     const external = join(fixture, 'external');
-    const removedManagedCheckout = join(external, 'namespace', 'repo-test', 'removed-work');
     mkdirSync(source, { recursive: true });
-    mkdirSync(removedManagedCheckout, { recursive: true });
     const repository = record(source);
+    const storageBeforeRemoval = managedWorktreeStorageRoot(join(source, '_ops', 'controller-home'), [repository], {
+      REPO_HARNESS_WORKTREE_HOME: external,
+    });
+    const removedManagedCheckout = join(storageBeforeRemoval, 'repo-test', 'removed-work');
+    mkdirSync(removedManagedCheckout, { recursive: true });
     repository.checkouts.push({
       ...repository.checkouts[0],
       checkoutId: 'checkout-removed',
@@ -94,8 +97,7 @@ describe('external managed worktree storage', () => {
     const storage = managedWorktreeStorageRoot(join(source, '_ops', 'controller-home'), [repository], {
       REPO_HARNESS_WORKTREE_HOME: external,
     });
-    expect(managedPathInside(external, storage)).toBe(true);
-    expect(managedPathInside(removedManagedCheckout, storage)).toBe(false);
+    expect(storage).toBe(storageBeforeRemoval);
     expect(managedPathInside(storage, removedManagedCheckout)).toBe(true);
 
     repository.checkouts.push({
