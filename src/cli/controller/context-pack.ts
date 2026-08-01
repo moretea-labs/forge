@@ -22,7 +22,7 @@ const DEFAULT_SEARCH_EXCLUDE_GLOBS = [
   "coverage/**",
   "**/*.bak",
 ] as const;
-const MAX_TOTAL_SEARCHED_FILES = 2_000;
+const MAX_TOTAL_SEARCHED_FILES = 800;
 
 const STOPWORDS = new Set([
   "about", "after", "again", "also", "and", "around", "because", "before", "between", "change", "code", "config",
@@ -181,8 +181,7 @@ function contextPackIssueFocus(value: unknown): ContextPackIssueFocus {
   };
 }
 
-function issueTaskFocus(repoRoot: string, issueId?: string, taskId?: string): { issue?: ContextPackIssueFocus; task?: ContextPackTaskFocus } {
-  const board = projectBoard(repoRoot);
+function issueTaskFocus(board: ReturnType<typeof projectBoard>, issueId?: string, taskId?: string): { issue?: ContextPackIssueFocus; task?: ContextPackTaskFocus } {
   const issues = board.issues.map(contextPackIssueFocus);
   const resolvedIssue = issueId
     ? issues.find((issue) => issue.id === issueId)
@@ -193,8 +192,7 @@ function issueTaskFocus(repoRoot: string, issueId?: string, taskId?: string): { 
   return { issue: resolvedIssue, task: resolvedTask };
 }
 
-function ledgerTask(repoRoot: string, issueId?: string, taskId?: string): TaskLedgerTaskProjection | undefined {
-  const ledger = buildControllerTaskLedgerProjection(repoRoot);
+function ledgerTask(ledger: ReturnType<typeof buildControllerTaskLedgerProjection>, issueId?: string, taskId?: string): TaskLedgerTaskProjection | undefined {
   const tasks = ledger.issues.flatMap((issue) => issue.tasks);
   const findTask = (candidateIssueId?: string, candidateTaskId?: string) => tasks
     .find((task) => (!candidateIssueId || task.issueId === candidateIssueId) && (!candidateTaskId || task.taskId === candidateTaskId));
@@ -339,9 +337,11 @@ export function buildControllerContextPack(
   // Independent investigations must not inherit an unrelated repository focus.
   // Only bind Issue/Task context when the caller explicitly requests it.
   const hasExplicitFocus = Boolean(options.issueId || options.taskId);
-  const focus = hasExplicitFocus ? issueTaskFocus(repoRoot, options.issueId, options.taskId) : {};
   const git = gitSnapshot(repoRoot);
-  const compactTask = hasExplicitFocus ? ledgerTask(repoRoot, focus.issue?.id, focus.task?.id) : undefined;
+  const board = hasExplicitFocus ? projectBoard(repoRoot) : undefined;
+  const focus = board ? issueTaskFocus(board, options.issueId, options.taskId) : {};
+  const ledger = board ? buildControllerTaskLedgerProjection(repoRoot, board) : undefined;
+  const compactTask = ledger ? ledgerTask(ledger, focus.issue?.id, focus.task?.id) : undefined;
   const allowedPathGlobs = cleanList(compactTask?.allowedPaths);
   const taskChecks = cleanList(compactTask?.checks);
   const goalParts = [
@@ -393,6 +393,7 @@ export function buildControllerContextPack(
       maxResults: Math.max(maxFiles * 4, 12),
       maxFiles: remainingSearchFileBudget,
       caseSensitive: false,
+      cacheKey: JSON.stringify({ head: git.head, status: git.status, diffStat: git.diffStat }),
     });
     scannedFiles += search.scannedFiles;
     remainingSearchFileBudget = Math.max(0, remainingSearchFileBudget - search.scannedFiles);

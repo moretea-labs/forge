@@ -874,10 +874,11 @@ export class GlobalScheduler {
     }, this.config.heartbeatIntervalMs);
     heartbeatTimer.unref?.();
     let idleStreak = 0;
+    let activeJobs = 0;
     try {
       while (!signal?.aborted) {
         try {
-          const { activeJobs } = await this.tick();
+          activeJobs = (await this.tick()).activeJobs;
           idleStreak = activeJobs === 0 ? idleStreak + 1 : 0;
         } catch (error) {
           idleStreak = 0;
@@ -893,7 +894,9 @@ export class GlobalScheduler {
           )
           : this.config.pollIntervalMs;
         const wakeRevision = readSchedulerWakeSignal(this.controllerHome).revision;
-        const waitResult = await waitForSchedulerWakeSignal(this.controllerHome, wakeRevision, delayMs, signal);
+        const waitResult = await waitForSchedulerWakeSignal(this.controllerHome, wakeRevision, delayMs, signal, {
+          fallbackPollMs: activeJobs > 0 ? 250 : Math.min(1_000, Math.max(500, delayMs)),
+        });
         if (waitResult === 'aborted') break;
       }
     } finally {

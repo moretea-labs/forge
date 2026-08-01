@@ -56,7 +56,9 @@ describe('process runtime round two resource lifecycle', () => {
     });
     const active = processRuntimeResourceDiagnostics();
     expect(active.monitorCount).toBe(1);
-    expect(active.logPollerCount).toBe(1);
+    // Attached runners stream redacted chunks over pipes; the disk-log poller
+    // is only a legacy fallback and is never active for new runners.
+    expect(active.logPollerCount).toBe(0);
     expect(active.timeoutCount).toBe(1);
     await waitForProcess(fx.controllerHome, fx.repository.repoId, started.processId, { timeoutMs: 5_000 });
     await Bun.sleep(30);

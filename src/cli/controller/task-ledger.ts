@@ -30,6 +30,8 @@ export interface TaskLedgerTaskProjection {
   runIds: string[];
 }
 
+type ControllerBoardProjection = ReturnType<typeof projectBoard>;
+
 export type TaskLedgerStatusKind =
   | "empty"
   | "needs_issue_selection"
@@ -418,8 +420,14 @@ function buildSuggestedNextActions(input: {
   return actions.slice(0, 8);
 }
 
-export function buildControllerTaskLedgerProjection(repoRoot: string): TaskLedgerProjection {
-  const board = projectBoard(repoRoot);
+export function buildControllerTaskLedgerProjection(
+  repoRoot: string,
+  boardInput?: ControllerBoardProjection,
+): TaskLedgerProjection {
+  // Callers that already materialized the Board can thread it through here.
+  // This keeps the public helper backwards compatible while removing the
+  // controller_context Board -> Ledger double scan.
+  const board = boardInput ?? projectBoard(repoRoot);
   const issues = asRecordArray(board.issues).map(compactIssue);
   const attention = buildAttentionTasks(issues);
   const readyTasks = compactBoardTasks(board.readyTasks);

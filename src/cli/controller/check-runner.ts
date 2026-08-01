@@ -1,5 +1,4 @@
 import { createHash } from 'crypto';
-import { spawn } from 'child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join, normalize, relative, resolve } from 'path';
 import {
@@ -9,7 +8,8 @@ import {
   type ProcessRunResult,
 } from '../../effects/process-runner';
 import { atomicWriteFileSync } from '../installer/shared';
-import { listProcessTreeMembers, terminateProcessTree } from '../../runtime/shared/process-tree';
+import { runBoundedChild } from '../../runtime/shared/bounded-child-supervisor';
+import { signalProcessTree } from '../../runtime/shared/process-tree';
 import { repositoryChildProcessEnvironment } from '../../runtime/shared/process-environment';
 
 export interface ControllerCheckEffects {
@@ -56,6 +56,34 @@ const HEAVY_CHECK_LOCK = '.ai/harness/controller/heavy-check.lock';
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_TIMEOUT_MS = 30 * 60 * 1000;
 const SAFE_PACKAGE_SCRIPT = /^(test(?::|$)|check(?::|$)|lint(?::|$)|typecheck(?::|$)|format:check$)/;
+
+/**
+ * The supervised-check bridge script lives in the runtime source checkout.
+ * In a bundled release, import.meta.dir points at the release directory whose
+ * manifest records sourceRoot (the managed runtime worktree containing
+ * scripts/), so resolve through the manifest before falling back to dev paths.
+ */
+function syncSupervisorBridgePath(repoRoot: string): string {
+  const candidates: string[] = [
+    resolve(import.meta.dir, '../../../scripts/run-supervised-command.ts'),
+  ];
+  try {
+    const manifestPath = join(import.meta.dir, 'manifest.json');
+    if (existsSync(manifestPath)) {
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as { sourceRoot?: unknown };
+      if (typeof manifest.sourceRoot === 'string' && manifest.sourceRoot.trim()) {
+        candidates.push(resolve(manifest.sourceRoot, 'scripts/run-supervised-command.ts'));
+      }
+    }
+  } catch {
+    /* best-effort manifest probe */
+  }
+  candidates.push(resolve(repoRoot, 'scripts/run-supervised-command.ts'));
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return candidates[0];
+}
 
 function boundedTimeout(value: unknown): number {
   const parsed = typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : DEFAULT_TIMEOUT_MS;
@@ -180,7 +208,7 @@ export interface ControllerCheckResult {
 }
 
 export interface ControllerCheckEvidence {
-  schemaVersion: 1;
+  schemaVersion: 2;
   checkId: string;
   description: string;
   source: ControllerCheck['source'];
@@ -210,6 +238,10 @@ function evidencePath(repoRoot: string, id: string): string {
   return join(repoRoot, CHECK_EVIDENCE_ROOT, `latest-${artifactSlug(id)}.json`);
 }
 
+function historicalEvidencePath(repoRoot: string, id: string, cacheKey: string): string {
+  return join(repoRoot, CHECK_EVIDENCE_ROOT, artifactSlug(id), `${cacheKey}.json`);
+}
+
 const CHECK_REVISION_EXCLUDES = [
   '.ai/harness/jobs/**',
   '.ai/harness/local-jobs/**',
@@ -227,47 +259,21 @@ function checkRevisionPathspecs(): string[] {
 }
 
 export function currentControllerCheckRevision(repoRoot: string): string {
-  const head = runProcess('git', ['rev-parse', 'HEAD'], {
-    cwd: repoRoot,
-    timeoutMs: 5_000,
-    maxOutputBytes: 16 * 1024,
-  });
-  if (!head.ok) {
-    const fallback = createHash('sha256').update('non-git\n');
-    for (const relativePath of ['package.json', CHECK_CONFIG]) {
-      const path = join(repoRoot, relativePath);
-      fallback.update(`${relativePath}\n`);
-      if (existsSync(path)) fallback.update(readFileSync(path));
-    }
-    return fallback.digest('hex').slice(0, 24);
-  }
-
-  const diff = runProcess('git', ['diff', '--no-ext-diff', '--binary', 'HEAD', '--', ...checkRevisionPathspecs()], {
-    cwd: repoRoot,
-    timeoutMs: 15_000,
-    maxOutputBytes: 8 * 1024 * 1024,
-  });
-  const untracked = runProcess('git', ['ls-files', '--others', '--exclude-standard', '-z', '--', ...checkRevisionPathspecs()], {
+  const files = runProcess('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', ...checkRevisionPathspecs()], {
     cwd: repoRoot,
     timeoutMs: 10_000,
-    maxOutputBytes: 2 * 1024 * 1024,
+    maxOutputBytes: 8 * 1024 * 1024,
   });
-  const revision = createHash('sha256')
-    .update(`${head.stdout.trim()}\n`)
-    .update(diff.ok ? diff.stdout : `diff-error:${diff.error || diff.stderr}`);
-  if (untracked.ok) {
-    const paths = untracked.stdout.split('\0').filter(Boolean).sort();
-    for (const relativePath of paths) {
-      revision.update(`\n${relativePath}\n`);
-      const path = resolve(repoRoot, relativePath);
-      try {
-        revision.update(readFileSync(path));
-      } catch (_error) {
-        revision.update('unreadable');
-      }
+  const revision = createHash('sha256').update('controller-check-content-v2\n');
+  if (!files.ok) return revision.update(`git-error:${files.error || files.stderr}`).digest('hex').slice(0, 24);
+  for (const relativePath of files.stdout.split('\0').filter(Boolean).sort()) {
+    if (relativePath.startsWith('tasks/') || relativePath.startsWith('plans/')) continue;
+    revision.update(`${relativePath}\0`);
+    try {
+      revision.update(readFileSync(resolve(repoRoot, relativePath)));
+    } catch (_error) {
+      revision.update('missing');
     }
-  } else {
-    revision.update(`\nuntracked-error:${untracked.error || untracked.stderr}`);
   }
   return revision.digest('hex').slice(0, 24);
 }
@@ -352,7 +358,7 @@ function persistCheckEvidence(
   const path = evidencePath(repoRoot, result.check.id);
   mkdirSync(dirname(path), { recursive: true });
   const evidence: ControllerCheckEvidence = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     checkId: result.check.id,
     description: result.check.description,
     source: result.check.source,
@@ -373,7 +379,13 @@ function persistCheckEvidence(
     originalExecutedAt: result.originalExecutedAt ?? result.executedAt,
     failureClass: result.failureClass,
   };
-  atomicWriteFileSync(path, `${JSON.stringify(evidence, null, 2)}\n`);
+  const serialized = `${JSON.stringify(evidence, null, 2)}\n`;
+  atomicWriteFileSync(path, serialized);
+  if (meta.cacheKey) {
+    const historicalPath = historicalEvidencePath(repoRoot, result.check.id, meta.cacheKey);
+    mkdirSync(dirname(historicalPath), { recursive: true });
+    atomicWriteFileSync(historicalPath, serialized);
+  }
   return relative(repoRoot, path).replace(/\\/g, '/');
 }
 
@@ -382,7 +394,18 @@ export function readLatestControllerCheckEvidence(repoRoot: string, id: string):
   if (!existsSync(path)) return undefined;
   try {
     const value = JSON.parse(readFileSync(path, 'utf-8')) as ControllerCheckEvidence;
-    return value.schemaVersion === 1 && value.checkId === id ? value : undefined;
+    return value.schemaVersion === 2 && value.checkId === id ? value : undefined;
+  } catch (_error) {
+    return undefined;
+  }
+}
+
+function readControllerCheckEvidenceByKey(repoRoot: string, id: string, cacheKey: string): ControllerCheckEvidence | undefined {
+  const path = historicalEvidencePath(repoRoot, id, cacheKey);
+  if (!existsSync(path)) return undefined;
+  try {
+    const value = JSON.parse(readFileSync(path, 'utf-8')) as ControllerCheckEvidence;
+    return value.schemaVersion === 2 && value.checkId === id && value.cacheKey === cacheKey ? value : undefined;
   } catch (_error) {
     return undefined;
   }
@@ -394,8 +417,9 @@ export function runControllerCheck(repoRoot: string, id: string, requestedTimeou
   const timeoutMs = requestedTimeoutMs === undefined ? check.timeoutMs : Math.min(check.timeoutMs, boundedTimeout(requestedTimeoutMs));
   const revision = currentControllerCheckRevision(repoRoot);
   const cacheKey = buildCheckCacheKey(check, timeoutMs, revision);
-  const cached = readLatestControllerCheckEvidence(repoRoot, id);
-  if (cached?.cacheKey === cacheKey) {
+  const cached = readControllerCheckEvidenceByKey(repoRoot, id, cacheKey)
+    ?? readLatestControllerCheckEvidence(repoRoot, id);
+  if (cached?.cacheKey === cacheKey && cached.ok) {
     return {
       check,
       ok: cached.ok,
@@ -417,13 +441,39 @@ export function runControllerCheck(repoRoot: string, id: string, requestedTimeou
   if (heavy && !lease) throw new Error(`heavy check already running for repository: ${id}`);
   let result: ProcessRunResult;
   try {
-    result = runProcess(check.command[0], check.command.slice(1), {
+    const childEnvironment = repositoryChildProcessEnvironment();
+    childEnvironment.REPO_HARNESS_SUPERVISED_REQUEST = Buffer.from(JSON.stringify({
+      command: check.command[0],
+      args: check.command.slice(1),
       cwd: resolve(repoRoot, check.cwd),
-      env: repositoryChildProcessEnvironment(),
-      replaceEnv: true,
       timeoutMs,
       maxOutputBytes: 256 * 1024,
+    })).toString('base64url');
+    const bridge = runProcess(process.execPath, [syncSupervisorBridgePath(repoRoot)], {
+      cwd: repoRoot,
+      env: childEnvironment,
+      replaceEnv: true,
+      timeoutMs: timeoutMs + 5_000,
+      maxOutputBytes: 1024 * 1024,
     });
+    if (!bridge.ok) {
+      result = bridge;
+    } else {
+      const supervised = JSON.parse(bridge.stdout) as Awaited<ReturnType<typeof runBoundedChild>>;
+      const error = supervised.failureCode
+        ? `${supervised.failureCode}${supervised.error ? `: ${supervised.error}` : ''}`
+        : supervised.error ?? '';
+      result = {
+        ok: supervised.status === 0 && !supervised.failureCode,
+        status: supervised.status,
+        signal: supervised.signal,
+        timedOut: supervised.timedOut,
+        command: check.command,
+        stdout: capProcessOutput(redactProcessOutput(supervised.stdout), 256 * 1024),
+        stderr: capProcessOutput(redactProcessOutput([supervised.stderr, error].filter(Boolean).join('\n')), 256 * 1024),
+        error: redactProcessOutput(error),
+      };
+    }
   } finally {
     lease?.release();
   }
@@ -577,40 +627,6 @@ async function acquireHeavyCheckLock(repoRoot: string, checkId: string): Promise
   }
 }
 
-function signalProcessTree(pid: number | undefined, signal: NodeJS.Signals): void {
-  if (!pid) return;
-  if (process.platform !== 'win32') {
-    try {
-      process.kill(-pid, signal);
-      return;
-    } catch (_error) {
-      // Fall back to the direct child when the process group is already gone.
-    }
-  }
-  try {
-    process.kill(pid, signal);
-  } catch (_error) {
-    // The child may have exited between the timeout and the signal.
-  }
-}
-
-async function reapResidualCheckProcessTree(
-  pid: number | undefined,
-): Promise<string | undefined> {
-  if (!pid) return undefined;
-  const lingering = listProcessTreeMembers(pid);
-  if (lingering.length === 0) return undefined;
-  const terminated = await terminateProcessTree(pid, {
-    gracePeriodMs: 100,
-    killAfterMs: 2_000,
-    pollIntervalMs: 25,
-  });
-  if (!terminated.exited) {
-    return `check process tree did not exit cleanly; remaining processes: ${terminated.remainingPids.join(', ')}`;
-  }
-  return `check process tree remained alive after the main command exited; terminated lingering processes: ${lingering.join(', ')}`;
-}
-
 export interface ControllerCheckSubscriptionRelease {
   released: boolean;
   remainingSubscribers: number;
@@ -645,69 +661,35 @@ async function executeControllerCheckAsync(
 ): Promise<ControllerCheckResult> {
   const maxOutputBytes = 256 * 1024;
   const command = [check.command[0], ...check.command.slice(1)];
-  const result = await new Promise<{
-    ok: boolean;
-    status: number;
-    timedOut: boolean;
-    stdout: string;
-    stderr: string;
-    failureClass?: 'acceptance_failure' | 'infrastructure_failure';
-  }>((resolvePromise) => {
-    const child = spawn(check.command[0], check.command.slice(1), {
-      cwd: resolve(repoRoot, check.cwd),
-      env: repositoryChildProcessEnvironment(),
-      detached: process.platform !== 'win32',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    if (child.pid) onSpawn?.(child.pid);
-
-    let stdout = '';
-    let stderr = '';
-    let timedOut = false;
-    let settled = false;
-    let hardKillTimer: NodeJS.Timeout | undefined;
-
-    const append = (current: string, chunk: Buffer | string): string => {
-      const next = current + chunk.toString();
-      if (Buffer.byteLength(next, 'utf8') <= maxOutputBytes * 2) return next;
-      return Buffer.from(next, 'utf8').subarray(-maxOutputBytes * 2).toString('utf8');
-    };
-    child.stdout?.on('data', (chunk) => { stdout = append(stdout, chunk); });
-    child.stderr?.on('data', (chunk) => { stderr = append(stderr, chunk); });
-
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      signalProcessTree(child.pid, 'SIGTERM');
-      hardKillTimer = setTimeout(() => signalProcessTree(child.pid, 'SIGKILL'), 2_000);
-      hardKillTimer.unref?.();
-    }, timeoutMs);
-    timeout.unref?.();
-
-    const finish = async (status: number, error?: string): Promise<void> => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      if (hardKillTimer) clearTimeout(hardKillTimer);
-      const processTreeError = await reapResidualCheckProcessTree(child.pid);
-      const timeoutMessage = timedOut
-        ? `process timed out after ${timeoutMs}ms: ${command.join(' ')}`
-        : '';
-      const stderrText = [stderr, timeoutMessage || error || '', processTreeError || ''].filter(Boolean).join('\n');
-      resolvePromise({
-        ok: status === 0 && !timedOut && !error && !processTreeError,
-        status: processTreeError && status === 0 ? 1 : status,
-        timedOut,
-        stdout: capProcessOutput(redactProcessOutput(stdout), maxOutputBytes),
-        stderr: capProcessOutput(redactProcessOutput(stderrText), maxOutputBytes),
-        failureClass: timedOut || Boolean(error) || Boolean(processTreeError)
-          ? 'infrastructure_failure'
-          : status === 0 ? undefined : 'acceptance_failure',
-      });
-    };
-
-    child.once('error', (error) => { void finish(1, error.message); });
-    child.once('close', (code) => { void finish(code ?? 1); });
+  const supervised = await runBoundedChild(check.command[0], check.command.slice(1), {
+    cwd: resolve(repoRoot, check.cwd),
+    env: repositoryChildProcessEnvironment(),
+    timeoutMs,
+    maxOutputBytes,
+    stdio: 'capture',
+    onSpawn,
+    termination: { gracePeriodMs: 100, killAfterMs: 2_000, pollIntervalMs: 25 },
   });
+  const processTreeError = supervised.failureCode
+    ? `${supervised.failureCode}${supervised.remainingPids.length > 0 ? `; remaining processes: ${supervised.remainingPids.join(', ')}` : ''}`
+    : '';
+  const timeoutMessage = supervised.timedOut
+    ? `process timed out after ${timeoutMs}ms: ${command.join(' ')}`
+    : '';
+  const result = {
+    ok: supervised.status === 0 && !supervised.failureCode,
+    status: supervised.status,
+    timedOut: supervised.timedOut,
+    stdout: capProcessOutput(redactProcessOutput(supervised.stdout), maxOutputBytes),
+    stderr: capProcessOutput(redactProcessOutput([
+      supervised.stderr,
+      timeoutMessage || supervised.error || '',
+      processTreeError,
+    ].filter(Boolean).join('\n')), maxOutputBytes),
+    failureClass: supervised.failureCode
+      ? 'infrastructure_failure' as const
+      : supervised.status === 0 ? undefined : 'acceptance_failure' as const,
+  };
 
   const executedAt = new Date().toISOString();
   const withoutPath = {
@@ -744,8 +726,9 @@ export function runControllerCheckAsync(
     : Math.min(check.timeoutMs, boundedTimeout(options.requestedTimeoutMs));
   const revision = currentControllerCheckRevision(repoRoot);
   const cacheKey = buildCheckCacheKey(check, timeoutMs, revision);
-  const cached = readLatestControllerCheckEvidence(repoRoot, id);
-  if (cached?.cacheKey === cacheKey) {
+  const cached = readControllerCheckEvidenceByKey(repoRoot, id, cacheKey)
+    ?? readLatestControllerCheckEvidence(repoRoot, id);
+  if (cached?.cacheKey === cacheKey && cached.ok) {
     return Promise.resolve({
       check,
       ok: cached.ok,
@@ -846,8 +829,9 @@ export function runControllerCheckAsync(
       if (currentRevision !== revision) {
         throw new Error(`repository revision changed while heavy check ${id} was queued; resubmit the check`);
       }
-      const refreshed = readLatestControllerCheckEvidence(repoRoot, id);
-      if (refreshed?.cacheKey === cacheKey) {
+      const refreshed = readControllerCheckEvidenceByKey(repoRoot, id, cacheKey)
+        ?? readLatestControllerCheckEvidence(repoRoot, id);
+      if (refreshed?.cacheKey === cacheKey && refreshed.ok) {
         return {
           check,
           ok: refreshed.ok,

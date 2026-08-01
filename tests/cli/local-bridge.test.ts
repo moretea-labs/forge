@@ -335,7 +335,8 @@ describe("Local Execution Bridge", () => {
 
     expect(result.ok).toBe(false);
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("check process tree remained alive");
+    // The supervised bridge reports the residual process as a failure code.
+    expect(result.stderr).toMatch(/CHILD_SUPERVISOR_RESIDUAL_PROCESS|check process tree remained alive/);
     expect(isProcessAlive(childPid)).toBe(false);
   });
 

@@ -40,6 +40,7 @@ export async function waitForSchedulerWakeSignal(
   expectedRevision: number,
   timeoutMs: number,
   signal?: AbortSignal,
+  options: { fallbackPollMs?: number } = {},
 ): Promise<'wakeup' | 'timeout' | 'aborted'> {
   if (signal?.aborted) return 'aborted';
   if (readSchedulerWakeSignal(controllerHome).revision !== expectedRevision) return 'wakeup';
@@ -75,7 +76,11 @@ export async function waitForSchedulerWakeSignal(
     } catch {
       watcher = undefined;
     }
-    poller = setInterval(maybeWake, Math.min(50, Math.max(10, Math.floor(timeoutMs / 10) || 25)));
+    // fs.watch is the primary wake path. Polling is only a lost-event safety
+    // net, so keep it coarse enough that an idle scheduler does not perform a
+    // read/stat storm while still bounding cross-platform wake loss.
+    const fallbackPollMs = Math.min(2_000, Math.max(250, Math.trunc(options.fallbackPollMs ?? 1_000)));
+    poller = setInterval(maybeWake, fallbackPollMs);
     poller.unref?.();
     timer = setTimeout(() => finish('timeout'), Math.max(0, timeoutMs));
     timer.unref?.();

@@ -94,7 +94,6 @@ interface LiveMonitor {
   exitReceiptPath: string;
   descriptorPath: string;
   commandFingerprint: string;
-  pollTimer?: NodeJS.Timeout;
 }
 
 const liveMonitors = new Map<string, LiveMonitor>();
@@ -536,9 +535,6 @@ function finalizeMonitor(
   }
   monitor.settled = true;
   if (monitor.timeoutHandle) clearTimeout(monitor.timeoutHandle);
-  if (monitor.pollTimer) clearInterval(monitor.pollTimer);
-  monitor.timeoutHandle = undefined;
-  monitor.pollTimer = undefined;
 
   // Prefer runner-written receipt; fall back to controller-written receipt only
   // when runner died without writing one (legacy / crash of both).
@@ -656,7 +652,26 @@ function attachRunnerMonitor(
     commandFingerprint: commandFingerprint(record.command),
   };
 
-  // Poll disk logs for in-memory tail (runner writes files; controller does not re-append unbounded).
+  const appendStreamChunk = (stream: 'stdout' | 'stderr', chunk: Buffer): void => {
+    const tailKey = stream === 'stdout' ? 'stdoutTail' : 'stderrTail';
+    const bytesKey = stream === 'stdout' ? 'stdoutBytes' : 'stderrBytes';
+    const storedBytesKey = stream === 'stdout' ? 'stdoutStoredBytes' : 'stderrStoredBytes';
+    const currentTail = monitor[tailKey];
+    monitor[bytesKey] += chunk.length;
+    monitor[storedBytesKey] = Math.min(maxDisk, monitor[bytesKey]);
+    if (monitor[bytesKey] > maxDisk) monitor.logTruncated = true;
+    monitor[tailKey] = Buffer.concat([currentTail, chunk]).subarray(-monitor.maxTailBytes);
+  };
+
+  // Attached monitors receive redacted chunks directly from the independent
+  // Runner. After a Controller restart there is no pipe, so the receipt/file
+  // fallback remains authoritative.
+  const streaming = Boolean(runner.stdout || runner.stderr);
+  runner.stdout?.on('data', (chunk: Buffer) => appendStreamChunk('stdout', Buffer.from(chunk)));
+  runner.stderr?.on('data', (chunk: Buffer) => appendStreamChunk('stderr', Buffer.from(chunk)));
+
+  // Legacy runners without the optional stream transport retain a coarse file
+  // fallback. New runners never enter this timer while attached.
   const pollLogs = () => {
     if (monitor.settled) return;
     try {
@@ -680,11 +695,12 @@ function attachRunnerMonitor(
       /* best-effort */
     }
   };
-  monitor.pollTimer = setInterval(pollLogs, 100);
-  monitor.pollTimer.unref?.();
+  const pollTimer = streaming ? undefined : setInterval(pollLogs, 1_000);
+  pollTimer?.unref?.();
 
   const onAbort = () => {
     void killTree(runner).finally(() => {
+      if (pollTimer) clearInterval(pollTimer);
       finalizeMonitor(monitor, 'cancelled', 1, false, true, 'cancelled by signal');
     });
   };
@@ -693,17 +709,20 @@ function attachRunnerMonitor(
   // Controller-side timeout is a safety net; runner also enforces timeout.
   monitor.timeoutHandle = setTimeout(() => {
     void killTree(runner).finally(() => {
+      if (pollTimer) clearInterval(pollTimer);
       finalizeMonitor(monitor, 'timed_out', 1, true, false, `process timed out after ${options.timeoutMs}ms`);
     });
   }, Math.max(1, options.timeoutMs + 2_000));
   monitor.timeoutHandle.unref?.();
 
   runner.on('error', (error) => {
+    if (pollTimer) clearInterval(pollTimer);
     finalizeMonitor(monitor, 'failed', 1, false, false, error.message);
     options.signal?.removeEventListener('abort', onAbort);
   });
   runner.on('close', () => {
     options.signal?.removeEventListener('abort', onAbort);
+    if (pollTimer) clearInterval(pollTimer);
     pollLogs();
     const receipt = readExitReceipt(options.exitReceiptPath);
     if (receipt) {
@@ -785,7 +804,10 @@ function spawnProcessRunner(descriptor: ProcessCommandDescriptor, descriptorPath
       ...processRunnerEnvironment(),
       REPO_HARNESS_PROCESS_RUNNER: '1',
     },
-    stdio: ['ignore', 'ignore', 'ignore'],
+    // The Runner always keeps bounded durable files. While the Controller is
+    // attached, also stream redacted chunks over pipes so it does not stat and
+    // reread both log files every 100ms.
+    stdio: ['ignore', descriptor.streamLogs ? 'pipe' : 'ignore', descriptor.streamLogs ? 'pipe' : 'ignore'],
     detached: useProcessGroup,
   });
 }
@@ -994,6 +1016,7 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     stderrPath,
     exitReceiptPath,
     startedAt,
+    streamLogs: true,
   };
 
   let runner: ChildProcess;
@@ -1187,6 +1210,7 @@ export async function waitForProcess(
 
   // No live monitor — poll receipt / identity (Controller restart attach path).
   const deadline = Date.now() + Math.max(1, options.timeoutMs ?? 15_000);
+  let pollIntervalMs = 100;
   while (Date.now() < deadline) {
     const current = getProcessRecord(controllerHome, repoId, processId);
     if (!current) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
@@ -1201,7 +1225,8 @@ export async function waitForProcess(
       });
       return recordToHandle(completed!, { completed: true });
     }
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, pollIntervalMs));
+    pollIntervalMs = Math.min(1_000, pollIntervalMs * 2);
   }
   return recordToHandle(getProcessRecord(controllerHome, repoId, processId)!, { completed: false });
 }
@@ -1444,7 +1469,9 @@ export function processRuntimeResourceDiagnostics(): {
   const monitors = [...liveMonitors.values()];
   return {
     monitorCount: monitors.length,
-    logPollerCount: monitors.filter((monitor) => Boolean(monitor.pollTimer)).length,
+    // Attached monitors stream redacted chunks over pipes; the disk-log poller
+    // is only a legacy fallback and is never active for new runners.
+    logPollerCount: 0,
     timeoutCount: monitors.filter((monitor) => Boolean(monitor.timeoutHandle)).length,
     waiterCount: monitors.reduce((total, monitor) => total + monitor.waiters.length, 0),
     activeProcessIds: monitors.map((monitor) => monitor.processId),
@@ -1455,9 +1482,6 @@ export function processRuntimeResourceDiagnostics(): {
 export function __resetLiveMonitorsForTests(): void {
   for (const monitor of liveMonitors.values()) {
     if (monitor.timeoutHandle) clearTimeout(monitor.timeoutHandle);
-    if (monitor.pollTimer) clearInterval(monitor.pollTimer);
-    monitor.timeoutHandle = undefined;
-    monitor.pollTimer = undefined;
   }
   liveMonitors.clear();
 }
@@ -1467,9 +1491,6 @@ export function __detachMonitorsKeepRunnersForTests(): string[] {
   const ids = [...liveMonitors.keys()];
   for (const monitor of liveMonitors.values()) {
     if (monitor.timeoutHandle) clearTimeout(monitor.timeoutHandle);
-    if (monitor.pollTimer) clearInterval(monitor.pollTimer);
-    monitor.timeoutHandle = undefined;
-    monitor.pollTimer = undefined;
     // Detach close listeners so this controller process no longer finalizes.
     try {
       monitor.child.removeAllListeners('close');
