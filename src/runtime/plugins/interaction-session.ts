@@ -6,6 +6,7 @@ export type InteractionProvider = 'browser' | 'ios-simulator' | 'ios-device';
 export type InteractionSessionStatus =
   | 'starting'
   | 'waiting_for_user'
+  | 'unknown'
   | 'closing'
   | 'completed'
   | 'closed'
@@ -175,5 +176,5 @@ export function pruneInteractionSessions(
 }
 
 export function isInteractionSessionActive(status: InteractionSessionStatus): boolean {
-  return status === 'starting' || status === 'waiting_for_user' || status === 'closing';
+  return status === 'starting' || status === 'waiting_for_user' || status === 'unknown' || status === 'closing';
 }

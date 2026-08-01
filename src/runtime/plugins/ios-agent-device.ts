@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, realpathSync } from 'fs';
 import { isAbsolute, join } from 'path';
 import { spawnSync } from 'child_process';
 import { performance } from 'perf_hooks';
@@ -22,8 +22,19 @@ import type {
   AssistantPluginActionExecutionInput,
   AssistantPluginCapability,
 } from './types';
+import {
+  appendSettleFlag,
+  compileBatchCommand,
+  compileSnapshotCommand,
+  detectAgentDeviceCapabilities,
+  PREFERRED_AGENT_DEVICE_VERSION,
+  type AgentDeviceCapabilityProfile,
+  type AgentDeviceHelpContract,
+} from './ios/agent-device-capabilities';
+import { classifyAgentDeviceFailure, preserveSessionFailure } from './ios/agent-device-failures';
+import { findSemanticRef, JD_IOS_APP_ADAPTER } from './ios/app-adapters';
 
-export const IOS_AGENT_DEVICE_VERSION = '0.20.2';
+export const IOS_AGENT_DEVICE_VERSION = PREFERRED_AGENT_DEVICE_VERSION;
 const SIMULATOR_PROVIDER = 'ios-simulator' as const;
 const DEVICE_PROVIDER = 'ios-device' as const;
 const PROVIDERS: InteractionProvider[] = [SIMULATOR_PROVIDER, DEVICE_PROVIDER];
@@ -144,6 +155,19 @@ function executable(): string {
   return process.env.REPO_HARNESS_AGENT_DEVICE_EXECUTABLE?.trim() || 'agent-device';
 }
 
+function resolvedExecutable(): string {
+  const configured = executable();
+  if (isAbsolute(configured)) {
+    try { return realpathSync(configured); } catch { return configured; }
+  }
+  for (const directory of (process.env.PATH ?? '').split(':').filter(Boolean)) {
+    const candidate = join(directory, configured);
+    if (!existsSync(candidate)) continue;
+    try { return realpathSync(candidate); } catch { return candidate; }
+  }
+  return configured;
+}
+
 function timestamp(): string {
   return hooks.now().toISOString();
 }
@@ -157,23 +181,49 @@ function probeStatus() {
     return {
       available: false,
       expectedVersion: IOS_AGENT_DEVICE_VERSION,
+      supportedVersionPolicy: '>=0.19.3 <0.21.0 with reviewed command contract',
+      detectedVersion: undefined,
+      executable: executable(),
+      resolvedExecutable: resolvedExecutable(),
       platform: hooks.platform(),
+      capabilityProfile: detectAgentDeviceCapabilities('', {}),
       reason: 'agent-device iOS support requires macOS.',
     };
   }
   const result = hooks.runCommand(executable(), ['--version'], { timeoutMs: 3_000 });
   const detectedVersion = result.ok ? result.stdout.trim() : undefined;
+  const help: AgentDeviceHelpContract = {};
+  if (result.ok && detectedVersion) {
+    const rootHelp = hooks.runCommand(executable(), ['help'], { timeoutMs: 3_000 });
+    if (rootHelp.ok) help.root = rootHelp.stdout || rootHelp.stderr;
+    for (const topic of ['snapshot', 'press', 'fill', 'batch', 'keyboard'] as const) {
+      const topicResult = hooks.runCommand(executable(), ['help', topic], { timeoutMs: 3_000 });
+      if (topicResult.ok) help[topic] = topicResult.stdout || topicResult.stderr;
+    }
+  }
+  const capabilityProfile = detectAgentDeviceCapabilities(detectedVersion ?? '', help);
+  const available = result.ok
+    && capabilityProfile.versionSupported
+    && Boolean(capabilityProfile.snapshot.interactiveFlag)
+    && capabilityProfile.press.supported
+    && capabilityProfile.fill.supported
+    && capabilityProfile.batch.supported;
   return {
-    available: result.ok && detectedVersion === IOS_AGENT_DEVICE_VERSION,
+    available,
     expectedVersion: IOS_AGENT_DEVICE_VERSION,
+    supportedVersionPolicy: '>=0.19.3 <0.21.0 with reviewed command contract',
     detectedVersion,
     executable: executable(),
+    resolvedExecutable: resolvedExecutable(),
     platform: hooks.platform(),
+    capabilityProfile,
     reason: !result.ok
       ? (result.stderr || result.stdout || 'agent-device is not installed.')
-      : detectedVersion !== IOS_AGENT_DEVICE_VERSION
-        ? `Expected agent-device ${IOS_AGENT_DEVICE_VERSION}, found ${detectedVersion || 'unknown'}.`
-        : undefined,
+      : !capabilityProfile.versionSupported
+        ? `Unsupported agent-device version ${detectedVersion || 'unknown'}; expected the reviewed >=0.19.3 <0.21.0 contract.`
+        : !available
+          ? 'The installed agent-device command contract is missing required snapshot, press, fill, or batch capabilities.'
+          : undefined,
   };
 }
 
@@ -188,12 +238,16 @@ export function iosAgentDeviceStatus(options: { forceRefresh?: boolean } = {}) {
 function requireDependency(): ReturnType<typeof probeStatus> {
   const status = iosAgentDeviceStatus();
   if (!status.available) {
-    throw new AssistantPluginError('PLUGIN_DEPENDENCY_MISSING', status.reason ?? 'agent-device is unavailable.', {
+    throw new AssistantPluginError('PLUGIN_DEPENDENCY_MISSING', status.reason ?? 'A compatible agent-device provider is unavailable.', {
       retryable: false,
       details: status,
     });
   }
   return status;
+}
+
+function capabilityProfile(): AgentDeviceCapabilityProfile {
+  return requireDependency().capabilityProfile;
 }
 
 function controllerRoot(input: AssistantPluginActionExecutionInput): string {
@@ -328,28 +382,34 @@ function parseJsonResult(result: CommandResult, failureCode: string): Record<str
   const success = result.ok && parsed?.success !== false;
   if (!success) {
     const sensitive = result.command[1] === 'fill';
+    const secret = sensitive && result.command.length > 3 ? result.command[3]! : '';
+    const providerError = parsed?.error && typeof parsed.error === 'object' && !Array.isArray(parsed.error)
+      ? parsed.error as Record<string, unknown>
+      : undefined;
+    const providerCode = typeof providerError?.code === 'string' ? providerError.code : undefined;
+    const providerHint = typeof providerError?.hint === 'string' ? providerError.hint : undefined;
+    const rawMessage = String(
+      (typeof providerError?.message === 'string' ? providerError.message : undefined)
+      || result.stderr
+      || result.stdout
+      || 'agent-device command failed.',
+    );
+    const message = String(redactExactText(rawMessage, secret));
     const terminalCode = result.cancelled
       ? 'AGENT_DEVICE_COMMAND_CANCELLED'
       : result.timedOut
         ? 'AGENT_DEVICE_COMMAND_TIMEOUT'
         : failureCode;
-    const message = sensitive
-      ? 'agent-device fill failed.'
-      : String(
-        (parsed?.error && typeof parsed.error === 'object' && 'message' in parsed.error
-          ? (parsed.error as { message?: unknown }).message
-          : undefined)
-        || result.stderr
-        || result.stdout
-        || 'agent-device command failed.',
-      );
     throw new AssistantPluginError(terminalCode, message, {
       retryable: result.cancelled === true || result.timedOut === true,
       details: {
         status: result.status,
         command: redactedCommand(result.command),
-        stdout: sensitive ? '<redacted for fill>' : result.stdout.slice(0, 8_000),
-        stderr: sensitive ? '<redacted for fill>' : result.stderr.slice(0, 8_000),
+        providerCode,
+        providerHint: providerHint ? redactExactText(providerHint, secret) : undefined,
+        stdout: String(redactExactText(result.stdout, secret)).slice(0, 8_000),
+        stderr: String(redactExactText(result.stderr, secret)).slice(0, 8_000),
+        sensitiveInputRedacted: sensitive,
         timedOut: result.timedOut === true,
         cancelled: result.cancelled === true,
       },
@@ -526,6 +586,16 @@ function requireRecord(input: AssistantPluginActionExecutionInput, allowTerminal
   if (!record) {
     throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `Unknown iOS agent-device interaction: ${interactionId}`, { retryable: false });
   }
+  if (record.status === 'unknown' && !allowTerminal) {
+    throw new AssistantPluginError(
+      'AGENT_DEVICE_OUTCOME_UNKNOWN',
+      'The previous device mutation has an unknown outcome. Do not retry it; explicitly close or reconcile this interaction first.',
+      {
+        retryable: false,
+        details: { interactionId, status: record.status, sessionRetained: true },
+      },
+    );
+  }
   if (!isInteractionSessionActive(record.status)) {
     if (allowTerminal) return record;
     throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `iOS agent-device interaction is ${record.status}.`, {
@@ -652,6 +722,54 @@ function failSession(input: AssistantPluginActionExecutionInput, record: Interac
   throw normalized;
 }
 
+function fenceUnknownSession(
+  input: AssistantPluginActionExecutionInput,
+  record: InteractionSessionRecord,
+  error: unknown,
+): never {
+  const normalized = toAssistantPluginError(error, {
+    code: 'AGENT_DEVICE_COMMAND_FAILED',
+    message: 'The agent-device mutation ended without a trustworthy outcome.',
+    retryable: false,
+  });
+  patchInteractionSession(input.repoRoot, record.provider, record.interactionId, {
+    status: 'unknown',
+    error: {
+      code: 'AGENT_DEVICE_OUTCOME_UNKNOWN',
+      message: 'A device mutation may have completed, but the provider did not return trustworthy completion evidence.',
+    },
+  });
+  throw new AssistantPluginError(
+    'AGENT_DEVICE_OUTCOME_UNKNOWN',
+    'The device mutation may have completed, but its outcome is unknown. Do not retry it; explicitly close or reconcile this interaction first.',
+    {
+      retryable: false,
+      details: {
+        originalCode: normalized.code,
+        interactionId: record.interactionId,
+        outcome: 'unknown',
+        sessionRetained: true,
+      },
+    },
+  );
+}
+
+function isPotentiallyMutatingAgentDeviceCommand(args: string[]): boolean {
+  return ['press', 'fill', 'scroll', 'keyboard', 'back', 'batch'].includes(args[0] ?? '');
+}
+
+function failWorkflowSession(
+  input: AssistantPluginActionExecutionInput,
+  record: InteractionSessionRecord,
+  error: unknown,
+  keepSession: boolean,
+): never {
+  const classification = classifyAgentDeviceFailure(error);
+  if (keepSession && classification.disposition === 'preserve_session') return preserveSessionFailure(error);
+  if (classification.disposition === 'fence_unknown') return fenceUnknownSession(input, record, error);
+  return failSession(input, record, error);
+}
+
 function interactionCommandKey(record: InteractionSessionRecord): string {
   return `${record.provider}:${record.interactionId}`;
 }
@@ -719,6 +837,16 @@ async function serializeInteractionCommand<T>(
         details: { interactionId: record.interactionId, status: current?.status ?? 'missing' },
       });
     }
+    if (current.status === 'unknown' && options.allowTerminal !== true) {
+      throw new AssistantPluginError(
+        'AGENT_DEVICE_OUTCOME_UNKNOWN',
+        'The previous device mutation has an unknown outcome. Do not retry it; explicitly close or reconcile this interaction first.',
+        {
+          retryable: false,
+          details: { interactionId: record.interactionId, status: current.status, sessionRetained: true },
+        },
+      );
+    }
     if (!isInteractionSessionActive(current.status) && options.allowTerminal !== true) {
       throw new AssistantPluginError('AGENT_DEVICE_SESSION_NOT_ACTIVE', 'The interaction session became terminal while this command was queued.', {
         retryable: false,
@@ -751,6 +879,13 @@ async function runSessionCommand(
         failureCode,
       });
     } catch (error) {
+      const classification = classifyAgentDeviceFailure(error);
+      if (classification.disposition === 'preserve_session') {
+        return preserveSessionFailure(error);
+      }
+      if (classification.disposition === 'fence_unknown' && isPotentiallyMutatingAgentDeviceCommand(args)) {
+        return fenceUnknownSession(input, record, error);
+      }
       return failSession(input, record, error);
     }
   });
@@ -1042,13 +1177,13 @@ async function runSessionBatch(
   prepared: PreparedAgentDeviceBatch,
   timeoutMs = 120_000,
 ): Promise<Record<string, unknown>> {
-  let result: unknown = await runSessionCommand(input, record, [
-    'batch',
-    '--steps', JSON.stringify(prepared.nativeSteps),
-    '--on-error', 'stop',
-    '--max-steps', String(MAX_BATCH_STEPS),
-    '--cost',
-  ], 'AGENT_DEVICE_BATCH_FAILED', timeoutMs);
+  let result: unknown = await runSessionCommand(
+    input,
+    record,
+    compileBatchCommand(capabilityProfile(), prepared.nativeSteps, MAX_BATCH_STEPS, { includeCost: true }),
+    'AGENT_DEVICE_BATCH_FAILED',
+    timeoutMs,
+  );
   for (const text of prepared.redactions) result = redactExactText(result, text);
   return result as Record<string, unknown>;
 }
@@ -1059,13 +1194,13 @@ async function runSessionBatchAttempt(
   prepared: PreparedAgentDeviceBatch,
   timeoutMs = 120_000,
 ): Promise<Record<string, unknown>> {
-  let result: unknown = await runSessionCommandAttempt(input, record, [
-    'batch',
-    '--steps', JSON.stringify(prepared.nativeSteps),
-    '--on-error', 'stop',
-    '--max-steps', String(MAX_BATCH_STEPS),
-    '--cost',
-  ], 'AGENT_DEVICE_BATCH_FAILED', timeoutMs);
+  let result: unknown = await runSessionCommandAttempt(
+    input,
+    record,
+    compileBatchCommand(capabilityProfile(), prepared.nativeSteps, MAX_BATCH_STEPS, { includeCost: true }),
+    'AGENT_DEVICE_BATCH_FAILED',
+    timeoutMs,
+  );
   for (const text of prepared.redactions) result = redactExactText(result, text);
   return result as Record<string, unknown>;
 }
@@ -1075,6 +1210,7 @@ async function recoverExactWaitEvidence(
   record: InteractionSessionRecord,
   scope: string | undefined,
   depth: number,
+  keepSession: boolean,
 ): Promise<{
   snapshot: Record<string, unknown>;
   tier: 'scoped_snapshot' | 'full_snapshot';
@@ -1087,7 +1223,11 @@ async function recoverExactWaitEvidence(
       const scoped = await runSessionCommandAttempt(
         input,
         record,
-        ['snapshot', '--interactive', '--depth', String(depth), '--scope', scope],
+        compileSnapshotCommand(capabilityProfile(), {
+          interactiveOnly: true,
+          depth,
+          scope,
+        }),
         'AGENT_DEVICE_SNAPSHOT_FAILED',
         30_000,
       );
@@ -1095,7 +1235,9 @@ async function recoverExactWaitEvidence(
         return { snapshot: scoped, tier: 'scoped_snapshot', snapshotRequests };
       }
     } catch (error) {
-      if (!isExactEvidenceWaitMiss(error)) return failSession(input, record, error);
+      if (!isExactEvidenceWaitMiss(error)) {
+        return failWorkflowSession(input, record, error, keepSession);
+      }
     }
   }
 
@@ -1104,13 +1246,17 @@ async function recoverExactWaitEvidence(
     const full = await runSessionCommandAttempt(
       input,
       record,
-      ['snapshot', '--interactive', '--depth', String(depth), '--force-full'],
+      compileSnapshotCommand(capabilityProfile(), {
+        interactiveOnly: true,
+        depth,
+        forceFull: true,
+      }),
       'AGENT_DEVICE_SNAPSHOT_FAILED',
       45_000,
     );
     return { snapshot: full, tier: 'full_snapshot', snapshotRequests };
   } catch (error) {
-    return failSession(input, record, error);
+    return failWorkflowSession(input, record, error, keepSession);
   }
 }
 
@@ -1235,25 +1381,39 @@ async function executeJdSearch(input: AssistantPluginActionExecutionInput): Prom
     // Prefer the selector because refs are snapshot-scoped and may be stale after
     // app foregrounding or navigation; fall back to the ref for compatibility.
     let searchTarget = optionalString(input.args.search_selector) ?? optionalString(input.args.search_target);
+    let discoveredSubmitTarget: string | undefined;
     targetDiscoveryStartedAt = performance.now();
     if (!searchTarget) {
       initialAccessibilitySnapshot = true;
       accessibilitySnapshotRequests += 1;
+      const discovery = JD_IOS_APP_ADAPTER.search!.discovery;
       const initialSnapshot = await executeIosAgentDeviceAction(subActionInput(input, 'agent_device_snapshot', {
         interaction_id: interactionId,
-        interactive: true,
+        interactive: discovery.interactiveOnly,
+        raw: discovery.raw,
+        depth: discovery.depth,
+        ...(discovery.scope ? { scope: discovery.scope } : {}),
       }));
-      searchTarget = interactiveRef(initialSnapshot, /搜索|搜一搜|search|searchfield|请输入/i);
+      searchTarget = findSemanticRef(initialSnapshot, JD_IOS_APP_ADAPTER.search!.isSearchField)
+        ?? interactiveRef(initialSnapshot, /搜索|搜一搜|search|searchfield|请输入/i);
+      discoveredSubmitTarget = findSemanticRef(initialSnapshot, JD_IOS_APP_ADAPTER.search!.isSubmit);
     }
     if (!searchTarget) {
-      throw new AssistantPluginError('JD_SEARCH_FIELD_NOT_FOUND', 'JD opened, but no bounded accessibility search field was found. Provide search_target from agent_device_snapshot evidence.', {
+      throw new AssistantPluginError('JD_SEARCH_FIELD_NOT_FOUND', 'JD opened, but the App adapter could not find a bounded semantic search field.', {
         retryable: false,
+        details: {
+          adapter: JD_IOS_APP_ADAPTER.id,
+          snapshotPolicy: JD_IOS_APP_ADAPTER.search!.discovery,
+          sessionRetained: keepSession,
+        },
       });
     }
 
     timingsMs.targetDiscovery = performance.now() - targetDiscoveryStartedAt;
     interactionStartedAt = performance.now();
-    const submitTarget = optionalString(input.args.submit_selector) ?? optionalString(input.args.submit_target);
+    const submitTarget = optionalString(input.args.submit_selector)
+      ?? optionalString(input.args.submit_target)
+      ?? discoveredSubmitTarget;
     const waitStep: AgentDeviceBatchStep = resultText
       ? { kind: 'wait', input: { wait_type: 'text', text: resultText, timeout_ms: 15_000 } }
       : resultSelector
@@ -1284,29 +1444,37 @@ async function executeJdSearch(input: AssistantPluginActionExecutionInput): Prom
       try {
         await runSessionBatchAttempt(input, record, prepareAgentDeviceBatch([fillStep], record), 20_000);
       } catch (error) {
-        if (!isStaleAccessibilityRefError(error)) return failSession(input, record, error);
+        if (!isStaleAccessibilityRefError(error)) return failWorkflowSession(input, record, error, keepSession);
         staleRefRecovery = true;
         initialAccessibilitySnapshot = true;
         accessibilitySnapshotRequests += 1;
         let refreshedSnapshot: Record<string, unknown>;
         try {
+          const discovery = JD_IOS_APP_ADAPTER.search!.discovery;
           refreshedSnapshot = await runSessionCommandAttempt(
             input,
             record,
-            ['snapshot', '--interactive'],
+            compileSnapshotCommand(capabilityProfile(), {
+              interactiveOnly: discovery.interactiveOnly,
+              raw: discovery.raw,
+              depth: discovery.depth,
+              scope: discovery.scope,
+            }),
             'AGENT_DEVICE_SNAPSHOT_FAILED',
             30_000,
           );
         } catch (snapshotError) {
-          return failSession(input, record, snapshotError);
+          const classification = classifyAgentDeviceFailure(snapshotError);
+          return failWorkflowSession(input, record, snapshotError, keepSession);
         }
-        const refreshedTarget = interactiveRef(refreshedSnapshot, /搜索|搜一搜|search|searchfield|请输入/i);
+        const refreshedTarget = findSemanticRef(refreshedSnapshot, JD_IOS_APP_ADAPTER.search!.isSearchField)
+          ?? interactiveRef(refreshedSnapshot, /搜索|搜一搜|search|searchfield|请输入/i);
         if (!refreshedTarget) {
-          return failSession(input, record, new AssistantPluginError(
+          return failWorkflowSession(input, record, new AssistantPluginError(
             'JD_SEARCH_FIELD_NOT_FOUND',
             'The cached JD search ref was stale and no replacement search field was found.',
-            { retryable: false },
-          ));
+            { retryable: false, details: { providerCode: 'ELEMENT_NOT_FOUND' } },
+          ), keepSession);
         }
         fillStep = { kind: 'fill', input: { target: refreshedTarget, text: query, delay_ms: 20 } };
         nativeBatchRequests += 1;
@@ -1327,9 +1495,11 @@ async function executeJdSearch(input: AssistantPluginActionExecutionInput): Prom
         try {
           finalSnapshot = await runSessionBatchAttempt(input, record, prepared, 30_000);
         } catch (error) {
-          if (!isExactEvidenceWaitMiss(error)) return failSession(input, record, error);
+          if (!isExactEvidenceWaitMiss(error)) {
+            return failWorkflowSession(input, record, error, keepSession);
+          }
           exactWaitFallback = true;
-          const recovered = await recoverExactWaitEvidence(input, record, fallbackScope, snapshotDepth);
+          const recovered = await recoverExactWaitEvidence(input, record, fallbackScope, snapshotDepth, keepSession);
           finalSnapshot = recovered.snapshot;
           accessibilityEvidenceTier = recovered.tier;
           accessibilitySnapshotRequests += recovered.snapshotRequests;
@@ -1341,8 +1511,16 @@ async function executeJdSearch(input: AssistantPluginActionExecutionInput): Prom
     } else {
       nativeBatchRequests += cachedSearchRef ? 1 : 2;
       nativeBatchSteps += (cachedSearchRef ? 0 : 1) + evidenceSteps.length;
-      // agent-device 0.20.2 exposes keyboard return only through the CLI
-      // command, not the Node batch keyboard schema (status/dismiss only).
+      // The current batch schema supports only status/dismiss, so Return stays
+      // a separate provider command, but only when the negotiated contract
+      // explicitly advertises it.
+      if (!capabilityProfile().keyboard.returnSupported) {
+        return failWorkflowSession(input, record, new AssistantPluginError(
+          'PLUGIN_ACTION_NOT_SUPPORTED',
+          'The detected agent-device contract does not support keyboard Return.',
+          { retryable: false, details: { providerCode: 'UNSUPPORTED_OPERATION' } },
+        ), keepSession);
+      }
       if (!cachedSearchRef) await runSessionBatch(input, record, prepareAgentDeviceBatch([fillStep], record), 20_000);
       await runSessionCommand(input, record, ['keyboard', 'return'], 'JD_SEARCH_SUBMIT_FAILED');
       const prepared = prepareAgentDeviceBatch(evidenceSteps, record);
@@ -1350,9 +1528,11 @@ async function executeJdSearch(input: AssistantPluginActionExecutionInput): Prom
         try {
           finalSnapshot = await runSessionBatchAttempt(input, record, prepared, 30_000);
         } catch (error) {
-          if (!isExactEvidenceWaitMiss(error)) return failSession(input, record, error);
+          if (!isExactEvidenceWaitMiss(error)) {
+            return failWorkflowSession(input, record, error, keepSession);
+          }
           exactWaitFallback = true;
-          const recovered = await recoverExactWaitEvidence(input, record, fallbackScope, snapshotDepth);
+          const recovered = await recoverExactWaitEvidence(input, record, fallbackScope, snapshotDepth, keepSession);
           finalSnapshot = recovered.snapshot;
           accessibilityEvidenceTier = recovered.tier;
           accessibilitySnapshotRequests += recovered.snapshotRequests;
@@ -1429,14 +1609,14 @@ export function iosAgentDeviceCapabilities(): AssistantPluginCapability[] {
     {
       capabilityId: 'ios-agent-device-simulator',
       title: 'agent-device iOS Simulator',
-      description: `Optional agent-device ${IOS_AGENT_DEVICE_VERSION} sessions for bounded iOS Simulator inspection and interaction.`,
+      description: 'Optional capability-negotiated agent-device sessions for bounded iOS Simulator inspection and interaction.',
       scopes: ['ios.discover', 'ios.simulator'],
       actions,
     },
     {
       capabilityId: 'ios-agent-device-physical',
       title: 'agent-device physical iPhone',
-      description: `Optional signed agent-device ${IOS_AGENT_DEVICE_VERSION} XCTest sessions for one exact connected physical iPhone.`,
+      description: 'Optional signed, capability-negotiated agent-device XCTest sessions for one exact connected physical iPhone.',
       scopes: ['ios.discover', 'ios.device'],
       actions,
     },
@@ -1453,7 +1633,7 @@ export function iosAgentDeviceActions(): AssistantPluginActionDescriptor[] {
   return [
     {
       actionId: 'agent_device_status', title: 'agent-device status',
-      description: `Check for the exact optional agent-device ${IOS_AGENT_DEVICE_VERSION} CLI.`,
+      description: 'Resolve the exact executable and verify a reviewed agent-device command contract.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 5_000, cancellable: true, idempotent: true,
       scopes: ['ios.discover'], resourceClaims: [], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
     },
@@ -1534,7 +1714,7 @@ export function iosAgentDeviceActions(): AssistantPluginActionDescriptor[] {
       description: 'Capture bounded accessibility state from an active agent-device iOS session.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
       scopes: ['ios.simulator', 'ios.device'], resourceClaims: read,
-      argumentsSchema: { type: 'object', properties: { ...interactionProperty, interactive: { type: 'boolean' }, raw: { type: 'boolean' }, depth: { type: 'number' } }, required: ['interaction_id'], additionalProperties: false },
+      argumentsSchema: { type: 'object', properties: { ...interactionProperty, interactive: { type: 'boolean' }, raw: { type: 'boolean' }, depth: { type: 'number' }, scope: { type: 'string' }, force_full: { type: 'boolean' } }, required: ['interaction_id'], additionalProperties: false },
     },
     {
       actionId: 'agent_device_press', title: 'Press agent-device target',
@@ -1593,7 +1773,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       return { provider: 'agent-device', interaction: existing, alreadyClosed: true };
     }
   }
-  requireDependency();
+  const dependency = requireDependency();
 
   if (input.actionId === 'agent_device_jd_search') return executeJdSearch(input);
 
@@ -1604,7 +1784,10 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
     if (app) args.push('--app', app);
     args.push('--json');
     return {
-      provider: 'agent-device', version: IOS_AGENT_DEVICE_VERSION, device: selected,
+      provider: 'agent-device',
+      version: dependency.detectedVersion ?? IOS_AGENT_DEVICE_VERSION,
+      contractFingerprint: dependency.capabilityProfile.contractFingerprint,
+      device: selected,
       physicalDeviceSupported: selected.kind === 'device',
       result: bounded(await runJsonAsync(input, args, {
         signing: signingFromArgs(input.args),
@@ -1618,7 +1801,10 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
     const selected = selectTarget(input, requireString(input.args.device, 'device'));
     const signing = signingFromArgs(input.args);
     return {
-      provider: 'agent-device', version: IOS_AGENT_DEVICE_VERSION, device: selected,
+      provider: 'agent-device',
+      version: dependency.detectedVersion ?? IOS_AGENT_DEVICE_VERSION,
+      contractFingerprint: dependency.capabilityProfile.contractFingerprint,
+      device: selected,
       physicalDeviceSupported: selected.kind === 'device',
       result: bounded(await runJsonAsync(input, [
         'prepare', 'ios-runner', '--platform', 'ios', '--device', selected.name, '--timeout', '600000', '--json',
@@ -1676,7 +1862,8 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       const active = patchInteractionSession(input.repoRoot, provider, interactionId, { status: 'waiting_for_user' }) ?? record;
       return {
         provider: 'agent-device',
-        version: IOS_AGENT_DEVICE_VERSION,
+        version: dependency.detectedVersion ?? IOS_AGENT_DEVICE_VERSION,
+        contractFingerprint: dependency.capabilityProfile.contractFingerprint,
         interaction: active,
         device: selected,
         physicalDeviceSupported: selected.kind === 'device',
@@ -1701,10 +1888,13 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       };
     }
     case 'agent_device_snapshot': {
-      const args = ['snapshot'];
-      if (input.args.interactive === true) args.push('-i');
-      if (input.args.raw === true) args.push('--raw');
-      if (typeof input.args.depth === 'number') args.push('--depth', String(Math.max(1, Math.min(20, Math.trunc(input.args.depth)))));
+      const args = compileSnapshotCommand(capabilityProfile(), {
+        interactiveOnly: input.args.interactive === true,
+        raw: input.args.raw === true,
+        depth: typeof input.args.depth === 'number' ? input.args.depth : undefined,
+        scope: optionalString(input.args.scope),
+        forceFull: input.args.force_full === true,
+      });
       return { provider: 'agent-device', interaction: record, result: bounded(await runSessionCommand(input, record, args, 'AGENT_DEVICE_SNAPSHOT_FAILED')) };
     }
     case 'agent_device_press': {
@@ -1714,7 +1904,11 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       if (record.provider === DEVICE_PROVIDER && target && SENSITIVE_SEMANTICS.test(target)) {
         throw new AssistantPluginError('IOS_DEVICE_SENSITIVE_ACTION_BLOCKED', 'Press targets involving credentials, verification, biometrics, checkout, purchase or payment require human interaction.', { retryable: false });
       }
-      const args = ['press', ...(target ? [target] : [String(input.args.x), String(input.args.y)]), '--settle'];
+      const args = appendSettleFlag(
+        capabilityProfile(),
+        ['press', ...(target ? [target] : [String(input.args.x), String(input.args.y)])],
+        'press',
+      );
       return { provider: 'agent-device', interaction: record, result: bounded(await runSessionCommand(input, record, args, 'AGENT_DEVICE_PRESS_FAILED')) };
     }
     case 'agent_device_fill': {
@@ -1724,8 +1918,14 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       if (record.provider === DEVICE_PROVIDER && (SENSITIVE_SEMANTICS.test(target) || SENSITIVE_SEMANTICS.test(text))) {
         throw new AssistantPluginError('IOS_DEVICE_SENSITIVE_ACTION_BLOCKED', 'Sensitive text and credential, verification, checkout, purchase or payment targets require human interaction.', { retryable: false });
       }
-      const args = ['fill', target, text, '--settle'];
-      if (typeof input.args.delay_ms === 'number') args.push('--delay-ms', String(Math.max(0, Math.min(5_000, Math.trunc(input.args.delay_ms)))));
+      const profile = capabilityProfile();
+      const args = appendSettleFlag(profile, ['fill', target, text]);
+      if (typeof input.args.delay_ms === 'number') {
+        if (!profile.fill.delayFlag) {
+          throw new AssistantPluginError('PLUGIN_ACTION_NOT_SUPPORTED', 'The detected agent-device contract does not support delayed fill.', { retryable: false });
+        }
+        args.push(profile.fill.delayFlag, String(Math.max(0, Math.min(5_000, Math.trunc(input.args.delay_ms)))));
+      }
       const result = await runSessionCommand(input, record, args, 'AGENT_DEVICE_FILL_FAILED');
       return { provider: 'agent-device', interaction: record, result: bounded(redactExactText(result, text)) };
     }

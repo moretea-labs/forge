@@ -12,6 +12,7 @@ import {
 } from '../../src/runtime/plugins/ios-agent-device';
 import { readInteractionSession } from '../../src/runtime/plugins/interaction-session';
 import { resetIosDevelopmentHooksForTest, setIosDevelopmentHooksForTest } from '../../src/runtime/safe-tooling';
+import jdHomeDepth20 from '../fixtures/ios/jd-home-depth20.json';
 
 const roots: string[] = [];
 
@@ -95,7 +96,7 @@ describe('optional agent-device iOS Simulator provider', () => {
     expect(manifest.health.warnings).not.toContain('agent-device is not installed.');
   });
 
-  it('requires exactly agent-device 0.20.2 before any provider action', async () => {
+  it('rejects an unreviewed provider version when no parseable command contract is available', async () => {
     const value = fixture();
     readyIosTooling();
     const commands: string[][] = [];
@@ -112,7 +113,15 @@ describe('optional agent-device iOS Simulator provider', () => {
     expect(status.expectedVersion).toBe('0.20.2');
     await expect(executeIosPluginAction(pluginInput(value, 'agent_device_open', { app: 'App' })))
       .rejects.toThrow('PLUGIN_DEPENDENCY_MISSING');
-    expect(commands).toEqual([['agent-device', '--version']]);
+    expect(commands[0]).toEqual(['agent-device', '--version']);
+    expect(commands.slice(1).map((command) => command.slice(1))).toEqual([
+      ['help'],
+      ['help', 'snapshot'],
+      ['help', 'press'],
+      ['help', 'fill'],
+      ['help', 'batch'],
+      ['help', 'keyboard'],
+    ]);
   });
 
   it('accepts one exact connected physical iPhone and rejects unavailable or ambiguous targets', async () => {
@@ -479,6 +488,62 @@ describe('optional agent-device iOS Simulator provider', () => {
     await first;
   });
 
+  it('fences an in-flight mutation with unknown outcome and requires explicit close before reuse', async () => {
+    const value = fixture();
+    readyIosTooling();
+    const commands: string[][] = [];
+    setIosAgentDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
+        if (args[0] === 'devices') {
+          return { ok: true, status: 0, stdout: success({ devices: [device('PHONE-1', 'greyson', 'device', true)] }), stderr: '', command: [command, ...args] };
+        }
+        return { ok: true, status: 0, stdout: success({ command: args[0] }), stderr: '', command: [command, ...args] };
+      },
+      runCommandAsync: async (command, args) => {
+        commands.push([command, ...args]);
+        if (args[0] === 'press') {
+          return {
+            ok: false,
+            status: null,
+            stdout: '',
+            stderr: 'provider response deadline elapsed after dispatch',
+            command: [command, ...args],
+            timedOut: true,
+          };
+        }
+        return { ok: true, status: 0, stdout: success({ command: args[0] }), stderr: '', command: [command, ...args] };
+      },
+    });
+
+    const opened = await executeIosPluginAction(pluginInput(value, 'agent_device_open', {
+      app: 'com.360buy.jdmobile',
+      device: 'greyson',
+    }));
+    const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
+
+    await expect(executeIosPluginAction(pluginInput(value, 'agent_device_press', {
+      interaction_id: interactionId,
+      target: '@e1',
+    }))).rejects.toThrow('outcome is unknown');
+    expect(readInteractionSession(value.repoRoot, 'ios-device', interactionId)?.status).toBe('unknown');
+    expect(commands.filter((command) => command[1] === 'close')).toHaveLength(0);
+
+    await expect(executeIosPluginAction(pluginInput(value, 'agent_device_press', {
+      interaction_id: interactionId,
+      target: '@e2',
+    }, 'must-not-retry-unknown'))).rejects.toThrow('Do not retry it');
+    expect(commands.filter((command) => command[1] === 'press')).toHaveLength(1);
+
+    const closed = await executeIosPluginAction(pluginInput(value, 'agent_device_close', {
+      interaction_id: interactionId,
+    }));
+    expect((closed.interaction as Record<string, unknown>).status).toBe('closed');
+    expect(commands.filter((command) => command[1] === 'close')).toHaveLength(1);
+  });
+
   it('refreshes one stale cached JD search ref without terminalizing the session', async () => {
     const value = fixture();
     readyIosTooling();
@@ -810,7 +875,7 @@ describe('optional agent-device iOS Simulator provider', () => {
     }
     expect(captured).toBeInstanceOf(Error);
     expect(JSON.stringify(captured)).not.toContain('top-secret-value');
-    expect(String((captured as Error).message)).toContain('agent-device fill failed');
+    expect(String((captured as Error).message)).toContain('rejected <redacted>');
     expect(commands.some((command) => command[1] === 'close')).toBe(true);
     const fillCommand = commands.find((command) => command[1] === 'fill')!;
     expect(fillCommand).toContain('top-secret-value');
@@ -953,6 +1018,114 @@ describe('optional agent-device iOS Simulator provider', () => {
       app: 'myapp://login?token=secret', device: 'SIM-1',
     }))).rejects.toThrow('not a URL or tokenized deep link');
     expect(commands.some((command) => command[1] === 'devices')).toBe(false);
+  });
+
+  it('discovers deep JD search controls from structured App-adapter evidence without unsupported flags', async () => {
+    const value = fixture();
+    readyIosTooling();
+    const commands: string[][] = [];
+    setIosAgentDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
+        if (args[0] === 'devices') {
+          return { ok: true, status: 0, stdout: success({ devices: [device('PHONE-1', 'greyson', 'device', true)] }), stderr: '', command: [command, ...args] };
+        }
+        if (args[0] === 'snapshot') {
+          return { ok: true, status: 0, stdout: JSON.stringify(jdHomeDepth20), stderr: '', command: [command, ...args] };
+        }
+        if (args[0] === 'batch') {
+          const steps = JSON.parse(args[args.indexOf('--steps') + 1]!) as Array<{ command: string; input: Record<string, unknown> }>;
+          return {
+            ok: true,
+            status: 0,
+            stdout: success({
+              results: steps.map((step) => ({
+                command: step.command,
+                ok: true,
+                data: step.command === 'wait' ? { matched: true } : { input: step.input },
+              })),
+              cost: { wallClockMs: 420, runnerRoundTrips: steps.length },
+            }),
+            stderr: '',
+            command: [command, ...args],
+          };
+        }
+        return { ok: true, status: 0, stdout: success(), stderr: '', command: [command, ...args] };
+      },
+    });
+
+    const result = await executeIosPluginAction(pluginInput(value, 'agent_device_jd_search', {
+      device: 'greyson',
+      query: '40.5码 宽楦 透气男鞋',
+      capture_screenshot: false,
+      result_text: '搜索结果',
+    }));
+
+    const snapshot = commands.find((argv) => argv[1] === 'snapshot')!;
+    expect(snapshot).toEqual(expect.arrayContaining(['--raw', '--depth', '20']));
+    expect(snapshot).not.toContain('-i');
+    expect(snapshot).not.toContain('--interactive');
+    const batches = commands.filter((argv) => argv[1] === 'batch');
+    expect(batches).toHaveLength(2);
+    const fillSteps = JSON.parse(batches[0]![batches[0]!.indexOf('--steps') + 1]!) as Array<{ command: string; input: Record<string, unknown> }>;
+    const submitSteps = JSON.parse(batches[1]![batches[1]!.indexOf('--steps') + 1]!) as Array<{ command: string; input: Record<string, unknown> }>;
+    expect(fillSteps[0]?.input.target).toEqual({ kind: 'ref', ref: 'e39' });
+    expect(submitSteps[0]?.input.target).toEqual({ kind: 'ref', ref: 'e41' });
+    expect((result.executionPlan as Record<string, unknown>).initialAccessibilitySnapshot).toBe(true);
+    expect((result.executionPlan as Record<string, unknown>).accessibilitySnapshotRequests).toBe(1);
+    expect((result.interaction as Record<string, unknown>).status).toBe('closed');
+  });
+
+  it('preserves a healthy session for structured semantic element failures and retains redacted diagnostics', async () => {
+    const value = fixture();
+    readyIosTooling();
+    const commands: string[][] = [];
+    setIosAgentDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
+        if (args[0] === 'devices') {
+          return { ok: true, status: 0, stdout: success({ devices: [device('PHONE-1', 'greyson', 'device', true)] }), stderr: '', command: [command, ...args] };
+        }
+        if (args[0] === 'fill') {
+          return {
+            ok: false,
+            status: 1,
+            stdout: JSON.stringify({ success: false, error: { code: 'ELEMENT_NOT_FOUND', message: `No element accepted ${args[2]}` } }),
+            stderr: '',
+            command: [command, ...args],
+          };
+        }
+        return { ok: true, status: 0, stdout: success(), stderr: '', command: [command, ...args] };
+      },
+    });
+
+    const opened = await executeIosPluginAction(pluginInput(value, 'agent_device_open', {
+      app: 'com.360buy.jdmobile',
+      device: 'greyson',
+    }));
+    const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
+    let captured: unknown;
+    try {
+      await executeIosPluginAction(pluginInput(value, 'agent_device_fill', {
+        interaction_id: interactionId,
+        target: 'id="search"',
+        text: 'private-query-value',
+      }));
+    } catch (error) {
+      captured = error;
+    }
+
+    expect(captured).toBeInstanceOf(Error);
+    expect(String((captured as Error).message)).toContain('No element accepted <redacted>');
+    expect(JSON.stringify(captured)).not.toContain('private-query-value');
+    expect((captured as { details?: Record<string, unknown> }).details?.sessionPreserved).toBe(true);
+    expect((captured as { details?: Record<string, unknown> }).details?.providerCode).toBe('ELEMENT_NOT_FOUND');
+    expect(readInteractionSession(value.repoRoot, 'ios-device', interactionId)?.status).toBe('waiting_for_user');
+    expect(commands.some((command) => command[1] === 'close')).toBe(false);
   });
 
   it('serializes all session actions and never exposes arbitrary or nested MCP execution', () => {

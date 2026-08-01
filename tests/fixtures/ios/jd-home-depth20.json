@@ -1,0 +1,74 @@
+{
+  "success": true,
+  "data": {
+    "appName": "com.360buy.jdmobile",
+    "appBundleId": "com.360buy.jdmobile",
+    "nodes": [
+      {
+        "ref": "e1",
+        "index": 0,
+        "type": "Application",
+        "label": "JD",
+        "depth": 0,
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "e8",
+        "index": 7,
+        "type": "Other",
+        "label": "Toolbar",
+        "depth": 7,
+        "enabled": true,
+        "hittable": false
+      },
+      {
+        "ref": "e36",
+        "index": 35,
+        "type": "Other",
+        "label": "扫啊扫",
+        "depth": 13,
+        "enabled": true,
+        "hittable": false
+      },
+      {
+        "ref": "e39",
+        "index": 38,
+        "type": "SearchField",
+        "label": "示例历史搜索词",
+        "depth": 14,
+        "enabled": true,
+        "hittable": false,
+        "rect": { "x": 52, "y": 103, "width": 242, "height": 40 }
+      },
+      {
+        "ref": "e41",
+        "index": 40,
+        "type": "Button",
+        "label": "搜索",
+        "depth": 14,
+        "enabled": true,
+        "hittable": false,
+        "rect": { "x": 339, "y": 103, "width": 51, "height": 40 }
+      },
+      {
+        "ref": "e180",
+        "index": 179,
+        "type": "Button",
+        "label": "首页",
+        "depth": 7,
+        "enabled": true,
+        "hittable": false
+      }
+    ],
+    "truncated": false,
+    "visibility": {
+      "partial": false,
+      "visibleNodeCount": 6,
+      "totalNodeCount": 6,
+      "reasons": []
+    },
+    "snapshotQuality": { "state": "healthy", "backend": "tree" },
+    "refsGeneration": 701912
+  }
+}
