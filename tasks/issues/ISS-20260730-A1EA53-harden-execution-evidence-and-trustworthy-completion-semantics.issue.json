@@ -264,7 +264,7 @@
       "id": "T5",
       "title": "Harden cross-session recovery and continuation handoff",
       "objective": "Ensure work_get, work_inspect, status digests, continuation prompts, and repair paths expose enough bounded evidence for a new session to continue safely.",
-      "status": "planned",
+      "status": "verified",
       "dependsOn": [
         "T4"
       ],
@@ -286,10 +286,12 @@
         "No secrets or unbounded logs enter handoff payloads."
       ],
       "risk": "medium",
-      "notes": [],
+      "notes": [
+        "2026-08-01: T5 verified. Shared bounded continuation projection exposes stable Work/repository/request bindings, semantic axes, exact-check summaries, reconciliation outcomes, continuation prompt, and a next safe action through work_get, work_inspect, work_status_digest, rh_context, and review handoffs. Prompts are bounded then MCP-redacted before projection. Focused Work submit, session recovery, and goal-workloop tests passed."
+      ],
       "runIds": [],
       "createdAt": "2026-07-30T09:28:07.844Z",
-      "updatedAt": "2026-07-30T09:28:07.844Z",
+      "updatedAt": "2026-08-01T09:00:00.000Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {

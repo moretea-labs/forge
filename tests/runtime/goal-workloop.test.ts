@@ -255,7 +255,13 @@ describe('goal workloop engine', () => {
     const cont = continueGoalWorkloop(ctx, { workId });
     expect(cont.status).toBe('blocked');
     expect((cont.data as { backgroundCompleted: boolean }).backgroundCompleted).toBe(false);
-    expect(listHandoffItems(ctx.handoffStore).length).toBe(1);
+    const handoffs = listHandoffItems(ctx.handoffStore);
+    expect(handoffs.length).toBe(1);
+    expect(handoffs[0]?.currentState).toMatchObject({
+      workSemantics: { status: 'running', dispatchState: 'running', evidenceState: 'none' },
+      reconciliationRequired: false,
+      nextSafeAction: expect.any(String),
+    });
     expect(getWorkContract(ctx.workStore, workId)?.status).toBe('ready');
   });
 

@@ -179,6 +179,7 @@ import {
   listWorkContracts,
   getWorkContract,
   getWorkContractByRequestId,
+  buildWorkContinuationSnapshot,
   acceptSubmittedWorkContract,
   approvePlanContract,
   createPlanContract,
@@ -1672,11 +1673,7 @@ function summarizeWorkListItem(job: ExecutionJob): Record<string, unknown> {
 
 function summarizeSubmittedWorkContract(contract: NonNullable<ReturnType<typeof getWorkContract>>): Record<string, unknown> {
   const operation = contract.submittedOperation;
-  const nextAction = contract.status === 'open' || contract.status === 'ready'
-    ? 'Claim ownership with rh_work.controller_claim, then execute through Process Runtime or rh_work.launcher_start.'
-    : contract.status === 'running'
-      ? 'Inspect process/work status; do not resubmit the same request_id.'
-      : 'Inspect retained evidence and decide whether to continue, finalize, or stop.';
+  const continuation = buildWorkContinuationSnapshot(contract);
   return {
     kind: 'work_contract',
     workId: contract.workId,
@@ -1685,7 +1682,7 @@ function summarizeSubmittedWorkContract(contract: NonNullable<ReturnType<typeof 
     operation: operation?.name,
     requestId: contract.requestId,
     deduplicated: undefined,
-    nextAction,
+    nextAction: continuation.nextSafeAction,
     mode: contract.mode,
     objective: contract.objective,
     updatedAt: contract.updatedAt,
@@ -1707,6 +1704,8 @@ function summarizeSubmittedWorkContract(contract: NonNullable<ReturnType<typeof 
           ? 'completed'
           : 'queued',
     statusLabel: contract.status,
+    semantics: continuation.semantics,
+    reconciliationRequired: continuation.reconciliationRequired,
   };
 }
 
@@ -1729,6 +1728,8 @@ function summarizeWorkContractListItem(contract: NonNullable<ReturnType<typeof g
     createdAt: contract.createdAt,
     updatedAt: contract.updatedAt,
     suggestedNextAction: contract.suggestedNextActions[0],
+    semantics: buildWorkContinuationSnapshot(contract).semantics,
+    reconciliationRequired: buildWorkContinuationSnapshot(contract).reconciliationRequired,
     detailPointer: { tool: 'work_get', work_id: contract.workId },
   };
 }
@@ -2518,7 +2519,13 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             domainSchemaLoading: 'static_stable_surface',
           },
           work: work
-            ? { workId: work.workId, status: work.status, mode: work.mode, objective: work.objective.slice(0, 160) }
+            ? {
+                workId: work.workId,
+                status: work.status,
+                mode: work.mode,
+                objective: work.objective.slice(0, 160),
+                continuation: buildWorkContinuationSnapshot(work),
+              }
             : undefined,
           executionJob: executionJob ? summarizeWorkListItem(executionJob) : undefined,
           activeWork: activeContracts.map((entry) => ({
@@ -2526,6 +2533,9 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             status: entry.status,
             mode: entry.mode,
             objective: entry.objective.slice(0, 160),
+            semantics: buildWorkContinuationSnapshot(entry).semantics,
+            reconciliationRequired: buildWorkContinuationSnapshot(entry).reconciliationRequired,
+            nextSafeAction: buildWorkContinuationSnapshot(entry).nextSafeAction,
           })),
           activeAttention: attention,
           counts: {
@@ -2571,10 +2581,14 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             domainSchemaLoading: 'static_stable_surface',
             dynamicDomainSchemaLoadingSupported: false,
           },
-          work,
+          work: work ? { ...work, continuation: buildWorkContinuationSnapshot(work) } : undefined,
           executionJob: executionJob ? summarizeWorkListItem(executionJob) : undefined,
           activeWork: activeContracts.map((entry) => ({
-            workId: entry.workId, status: entry.status, mode: entry.mode, objective: entry.objective.slice(0, 240),
+            workId: entry.workId,
+            status: entry.status,
+            mode: entry.mode,
+            objective: entry.objective.slice(0, 240),
+            continuation: buildWorkContinuationSnapshot(entry),
           })),
           recentExecutionJobs: recentJobs.map(summarizeWorkListItem),
           activeAttention: attention,
@@ -2931,6 +2945,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             return result({
               work,
               workContract: contract,
+              continuation: buildWorkContinuationSnapshot(contract),
               summary: work.summary,
               phase: work.phase,
               statusLabel: work.statusLabel,
@@ -4760,6 +4775,16 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             taskLedgerStatus: taskLedger.status,
             next: taskLedger.status.nextAction,
           });
+        }
+        const contract = getWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, workRef);
+        if (contract) {
+          const continuation = buildWorkContinuationSnapshot(contract);
+          return result({
+            digest: continuation,
+            workRef,
+            taskLedgerStatus: taskLedger.status,
+            next: continuation.nextSafeAction,
+          }, contract.status === 'failed' || continuation.reconciliationRequired);
         }
         const process = getProcessHandle(ctx.controllerHome, repository.repoId, workRef);
         if (!process) return result({ error: { code: 'WORK_NOT_FOUND', message: 'No Work or managed process matched work_ref.', errorClass: 'not_found', summary: '未找到对应任务。' } }, true);

@@ -20,6 +20,7 @@ import { listControllerChecks } from '../../../cli/controller/check-runner';
 import { readRepositoryAccessPolicy } from '../../control-plane/governance/access-policy';
 import { appendWorkEvidence, createWorkContract, getWorkContract, updateWorkContract, appendVerificationRecord } from '../../control-plane/facade/work-contract-store';
 import { isTerminalWorkContractStatus } from '../../control-plane/facade/types';
+import { buildWorkContinuationSnapshot } from '../../control-plane/facade/work-continuation';
 import { claimControllerSession, getControllerSession, resumeControllerSession } from '../../control-plane/facade/controller-session-store';
 import { currentControllerInstanceId, requireExecutionSession, startExecutionSession, updateExecutionSession, type ExecutionSessionContext, type SessionIdentity } from '../../control-plane/execution/session-store';
 import { currentPermissionSnapshotVersion, validateWorkHandle } from '../../control-plane/execution/validation';
@@ -502,7 +503,16 @@ function inspectWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, un
     work: compactHandle(handle),
     readiness: { valid: true, warnings: validated.warnings, permissionSnapshotVersion: handle.permissionSnapshotVersion },
     git: { status, diff: { nameOnly: diff.nameOnly, stat: diff.stat, patch: diff.patch, truncated: diff.truncated } },
-    workContract: contract ? { workId: contract.workId, status: contract.status, objective: contract.objective, checks: contract.checks, acceptanceCriteria: contract.acceptanceCriteria, allowedPaths: contract.allowedPaths } : undefined,
+    workContract: contract ? {
+      workId: contract.workId,
+      status: contract.status,
+      objective: contract.objective,
+      checks: contract.checks,
+      acceptanceCriteria: contract.acceptanceCriteria,
+      allowedPaths: contract.allowedPaths,
+      semantics: buildWorkContinuationSnapshot(contract).semantics,
+    } : undefined,
+    continuation: contract ? buildWorkContinuationSnapshot(contract) : undefined,
     paths: { allowed: handle.workContractId ? contract?.allowedPaths ?? [] : [], relevant: diff.nameOnly },
     checks: checks.map((checkId) => ({ checkId, registered: listControllerChecks(validated.worktreeRepository.canonicalRoot).some((check) => check.id === checkId) })),
     package: packageManifest ? { name: packageManifest.name, scripts: packageManifest.scripts } : undefined,

@@ -27,6 +27,7 @@ import {
 import { evaluatePolicyGate } from './policy-gate';
 import { buildFacadeResult } from './facade-result';
 import { validateSuggestedNextActions } from './suggested-actions';
+import { buildWorkContinuationSnapshot } from './work-continuation';
 import type {
   CapabilityRisk,
   EvidenceRef,
@@ -553,6 +554,7 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
 
   // Ambiguous: acceptance failure present → handoff for ChatGPT review rather than pretend progress.
   if (history.acceptanceFailures.length > 0 && work.recoveryPolicy.handoffOnAmbiguity) {
+    const continuation = buildWorkContinuationSnapshot(work);
     const handoff = createHandoffItem(ctx.handoffStore, {
       id: handoffIdFor('continue'),
       repoId: ctx.repoId,
@@ -568,13 +570,16 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
         mode: work.mode,
         statusSummary: 'waiting_for_review after acceptance failure',
         checks: history.acceptanceFailures.map((checkId) => ({ checkId, ok: false, outcome: 'valid_fail' as const })),
+        workSemantics: continuation.semantics,
+        reconciliationRequired: continuation.reconciliationRequired,
+        nextSafeAction: continuation.nextSafeAction,
       },
       attemptedActions: ['continue'],
       evidenceRefs: work.evidenceRefs.slice(0, 5),
       blockingDecision: 'Decide whether to repair code, adjust acceptance criteria, or stop.',
       recommendedDecision: 'Inspect evidence and either repair or stop the workloop.',
       recommendedPrompt: work.continuationPrompt ?? `Continue from work ${work.workId}.`,
-      recommendedContinuationPrompt: work.continuationPrompt,
+      recommendedContinuationPrompt: continuation.continuationPrompt,
       suggestedNextActions: [
         {
           label: 'Read work context',

@@ -1,6 +1,7 @@
 export * from './types';
 export * from './handoff-inbox-store';
 export * from './work-contract-store';
+export * from './work-continuation';
 export * from './controller-session-store';
 export * from './plan-contract-store';
 export * from './facade-result';

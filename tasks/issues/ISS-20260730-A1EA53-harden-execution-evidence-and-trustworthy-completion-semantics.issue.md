@@ -80,12 +80,13 @@ Result Goal 1 of ISS-20260730-AE1BCC for the next reliability release line. The 
 
 ### T5 — Harden cross-session recovery and continuation handoff
 
-- Status: `planned`
+- Status: `verified`
 - Objective: Ensure work_get, work_inspect, status digests, continuation prompts, and repair paths expose enough bounded evidence for a new session to continue safely.
 - Depends on: `T4`
 - Allowed paths: `src/runtime/control-plane/**`, `src/runtime/gateway/**`, `src/cli/**`, `tests/**`, `docs/**`
 - Checks: `typecheck`, `test`
 - Execution hint: selected at runtime
+- Evidence: A shared bounded continuation projection now exposes stable Work/repository/request bindings, semantic axes, exact-check summaries, reconciliation outcomes, continuation prompt, and next safe action through `work_get`, `work_inspect`, `work_status_digest`, and `rh_context`. Fresh review handoffs preserve the same semantic state and action. Prompts are truncated and passed through the MCP redactor before projection, so raw logs and secrets do not become recovery payloads. Verified with the Work submit, Work session recovery, and goal-workloop suites.
 
 ### T6 — Run execution-evidence regression and failure-injection coverage
 

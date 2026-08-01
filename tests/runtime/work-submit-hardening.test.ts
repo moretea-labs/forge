@@ -88,6 +88,24 @@ describe('work_submit hardening', () => {
       checks: [],
       requestedBy: 'chatgpt',
       status: 'ready',
+      continuationPrompt: 'Review the retained evidence before continuing. API_TOKEN=must-not-leak',
+      reconciliations: [{
+        schemaVersion: 1,
+        reconciliationId: 'RECNC-test',
+        originalExpectedRevision: 'a'.repeat(40),
+        observedTargetRevision: 'b'.repeat(40),
+        baseRevision: 'c'.repeat(40),
+        targetBranch: 'main',
+        reachable: true,
+        method: 'reviewed_patch_identity',
+        comparedPaths: ['feature.txt'],
+        reviewer: 'test reviewer',
+        reviewedAt: '2026-08-01T00:00:00.000Z',
+        unrecoverableStages: ['merge'],
+        cleanupOwnershipProof: 'No controller-owned resource remains.',
+        rationale: 'Needs an explicit reviewer decision.',
+        outcome: 'rejected_equivalence',
+      }],
     });
 
     const fetched = structured(await callRuntimeTool(ctx, 'work_get', {
@@ -97,6 +115,34 @@ describe('work_submit hardening', () => {
     expect((fetched.work as { kind?: string; workId?: string })).toMatchObject({
       kind: 'work_contract',
       workId: contract.workId,
+    });
+    expect(fetched.continuation).toMatchObject({
+      workId: contract.workId,
+      repoId: repository.repoId,
+      semantics: { status: 'ready', dispatchState: 'not_dispatched' },
+      reconciliationRequired: true,
+      reconciliations: [{ reconciliationId: 'RECNC-test', outcome: 'rejected_equivalence' }],
+      continuationPrompt: 'Review the retained evidence before continuing. API_TOKEN=[REDACTED]',
+    });
+
+    const digest = structured(await callRuntimeTool(ctx, 'work_status_digest', {
+      repo_id: repository.repoId,
+      work_ref: contract.workId,
+    }));
+    expect(digest.digest).toMatchObject({
+      workId: contract.workId,
+      reconciliationRequired: true,
+      nextSafeAction: expect.any(String),
+    });
+
+    const context = structured(await callRuntimeTool(ctx, 'rh_context', {
+      repo_id: repository.repoId,
+      operation: 'get',
+      work_id: contract.workId,
+    }));
+    expect((context.data as { work?: { continuation?: unknown } }).work?.continuation).toMatchObject({
+      workId: contract.workId,
+      reconciliationRequired: true,
     });
 
     const listed = structured(await callRuntimeTool(ctx, 'work_list', {

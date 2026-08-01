@@ -239,6 +239,11 @@ describe('controller-owned Work recovery and finalize cleanup', () => {
     }));
     expect(inspectedAfterControllerRestart.work.workId).toBe(workId);
     expect(inspectedAfterControllerRestart.readiness.valid).toBe(true);
+    expect(inspectedAfterControllerRestart.continuation).toMatchObject({
+      workId,
+      semantics: { status: 'running', dispatchState: 'running' },
+      nextSafeAction: expect.any(String),
+    });
 
     const newSession = context('session-new', 'controller-c');
     structured(await callExecutionTool(newSession, 'session_start', {}));

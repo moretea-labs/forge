@@ -177,6 +177,10 @@ export interface HandoffCurrentState {
   blockedBy?: string[];
   changedFiles?: string[];
   checks?: Array<{ checkId: string; ok: boolean; summary?: string; outcome?: VerificationOutcome }>;
+  /** Bounded durable Work semantics for a fresh controller session. */
+  workSemantics?: Pick<WorkContract, 'status' | 'workKind' | 'dispatchState' | 'evidenceState' | 'completionOutcome'>;
+  reconciliationRequired?: boolean;
+  nextSafeAction?: string;
 }
 
 export interface HandoffApprovalAction {
