@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   ADVANCED_CONTROLLER_TOOL_NAMES,
+  CORE_CONTROLLER_TOOL_NAMES,
   DEFAULT_CONTROLLER_TOOL_NAMES,
   PREFERRED_FACADE_TOOL_NAMES,
   STABLE_CONTROLLER_TOOL_NAMES,
@@ -39,7 +40,7 @@ describe('MCP tool exposure profiles', () => {
     expect(STABLE_CONTROLLER_TOOL_NAMES.length).toBeGreaterThanOrEqual(100);
   });
 
-  test('preferred facade remains compact while every profile exposes the stable full schema', () => {
+  test('preferred facade remains compact while profiles are ordered by capability', () => {
     expect([...PREFERRED_FACADE_TOOL_NAMES]).toEqual([
       'rh_access',
       'rh_status',
@@ -55,20 +56,25 @@ describe('MCP tool exposure profiles', () => {
     const profiles = (['core', 'advanced', 'full'] as const).map((toolset) =>
       exposedControllerToolDefinitions(stubCtx(toolset)).map((tool) => tool.name),
     );
-    expect(profiles[0]).toEqual(profiles[1]);
-    expect(profiles[2].length).toBeGreaterThan(profiles[1].length);
-    for (const names of profiles) {
-      for (const required of [
-        'rh_access',
-        'repository_access_get',
-        'repository_safe_patch_apply',
-        'repository_command_execute',
-        'repository_git_status',
-        'create_campaign',
-        'dispatch_task',
-        'ios_simulator_screenshot',
-      ]) expect(names).toContain(required);
-    }
+    // Core is the compact model-facing surface; advanced keeps every stable
+    // typed capability; full is the exhaustive compatibility surface.
+    expect(profiles[0].length).toBeLessThan(profiles[1].length);
+    expect(profiles[1].length).toBeLessThan(profiles[2].length);
+    for (const name of profiles[0]) expect(profiles[1]).toContain(name);
+    for (const name of profiles[1]) expect(profiles[2]).toContain(name);
+    for (const required of [
+      'rh_access',
+      'repository_access_get',
+      'repository_safe_patch_apply',
+    ]) expect(profiles[0]).toContain(required);
+    for (const required of [
+      'repository_command_execute',
+      'repository_git_status',
+      'create_campaign',
+      'dispatch_task',
+      'ios_simulator_screenshot',
+      'repository_access_set',
+    ]) expect(profiles[1]).toContain(required);
   });
 
   test('exposure snapshot is the single truthful source for expected and actual tools', () => {
@@ -84,16 +90,20 @@ describe('MCP tool exposure profiles', () => {
     expect(snapshot.fingerprint).toMatch(/^[a-f0-9]{64}$/);
   });
 
-  test('legacy profile labels never hide tools', () => {
+  test('legacy profile labels resolve to the stable advanced surface', () => {
     expect(ADVANCED_CONTROLLER_TOOL_NAMES).toEqual(DEFAULT_CONTROLLER_TOOL_NAMES);
-    expect(controllerToolNamesForToolset('core')).toEqual(ADVANCED_CONTROLLER_TOOL_NAMES);
+    // Core is deliberately small; advanced and full never hide stable tools.
+    expect([...CORE_CONTROLLER_TOOL_NAMES].every((name) => ADVANCED_CONTROLLER_TOOL_NAMES.includes(name))).toBe(true);
     expect(controllerToolNamesForToolset('advanced')).toEqual(ADVANCED_CONTROLLER_TOOL_NAMES);
     expect(controllerToolNamesForToolset('full')).toBeNull();
     for (const toolset of ['core', 'advanced', 'full'] as const) {
       expect(isControllerToolExposed(stubCtx(toolset), 'repository_safe_patch_apply')).toBe(true);
-      expect(isControllerToolExposed(stubCtx(toolset), 'dispatch_task')).toBe(true);
-      expect(isControllerToolExposed(stubCtx(toolset), 'quick_agent_session')).toBe(true);
     }
+    // Specialist tools are advanced/full only; a core facade must reject them.
+    expect(isControllerToolExposed(stubCtx('core'), 'dispatch_task')).toBe(false);
+    expect(isControllerToolExposed(stubCtx('advanced'), 'dispatch_task')).toBe(true);
+    expect(isControllerToolExposed(stubCtx('core'), 'quick_agent_session')).toBe(false);
+    expect(isControllerToolExposed(stubCtx('advanced'), 'quick_agent_session')).toBe(true);
     expect(classifyControllerToolExposure('create_campaign')).toBe('advanced');
   });
 

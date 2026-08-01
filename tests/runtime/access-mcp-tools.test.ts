@@ -53,11 +53,13 @@ afterEach(() => {
 });
 
 describe('repository access MCP tools', () => {
-  test('core toolset exposes get and set tools', () => {
+  test('core toolset exposes the read surface while set stays advanced', () => {
     const { ctx } = fixture();
     const names = exposedControllerToolDefinitions(ctx).map((tool) => tool.name);
     expect(names).toContain('repository_access_get');
-    expect(names).toContain('repository_access_set');
+    expect(names).not.toContain('repository_access_set');
+    const advanced = exposedControllerToolDefinitions({ ...ctx, toolset: 'advanced' }).map((tool) => tool.name);
+    expect(advanced).toContain('repository_access_set');
   });
 
   test('get returns host-managed execution by default without mutating storage', () => {
