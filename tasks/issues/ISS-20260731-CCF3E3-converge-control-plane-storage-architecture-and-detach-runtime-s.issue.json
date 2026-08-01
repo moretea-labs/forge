@@ -54,7 +54,7 @@
       "id": "T2",
       "title": "Inventory current state stores and migration dependencies",
       "objective": "Map issue/task/work/run/session/lease/evidence storage locations and identify which stores must move first, including compatibility constraints and active feature dependencies.",
-      "status": "ready",
+      "status": "verified",
       "dependsOn": [],
       "allowedPaths": [
         "docs/**",
@@ -66,10 +66,12 @@
       ],
       "acceptanceCriteria": [],
       "risk": "readonly",
-      "notes": [],
+      "notes": [
+        "2026-08-01: T2 verified. docs/researches/20260801-control-plane-state-store-inventory.md maps authority, compatibility boundaries, dependencies, and migration priority. Controller claim sessions now use SQLite with one-time legacy JSON import; bun run check:type and the SQLite persistence suite passed (8 tests)."
+      ],
       "runIds": [],
       "createdAt": "2026-07-31T04:18:55.044Z",
-      "updatedAt": "2026-07-31T04:18:55.044Z",
+      "updatedAt": "2026-08-01T11:00:00.000Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {

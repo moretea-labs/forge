@@ -2,7 +2,8 @@ import { join } from 'path';
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import { withControllerLock } from '../../../cli/repositories/locks';
 import { peekExecutionSession } from '../execution/session-store';
-import { readJsonFile, writeJsonAtomic } from '../../shared/json-files';
+import { readJsonFile } from '../../shared/json-files';
+import { readOrImportControlPlaneRecord, writeControlPlaneRecord } from '../persistence/sqlite-store';
 import type { ControllerSession, ControllerSessionStore, ControllerType } from './types';
 
 export interface ControllerSessionStoreOptions { controllerHome: string; repoId: string; now?: () => string; }
@@ -24,7 +25,25 @@ function path(options: ControllerSessionStoreOptions): string {
 function now(options: ControllerSessionStoreOptions): string { return options.now?.() ?? new Date().toISOString(); }
 
 function read(options: ControllerSessionStoreOptions): ControllerSessionStore {
-  return readJsonFile(path(options), { schemaVersion: 1, updatedAt: now(options), sessions: [] });
+  const legacyPath = path(options);
+  return readOrImportControlPlaneRecord<ControllerSessionStore>(options.controllerHome, {
+    namespace: 'controller_session_claim_store',
+    scope: options.repoId,
+    key: 'index',
+    schemaVersion: 1,
+    readLegacy: () => readJsonFile<ControllerSessionStore>(legacyPath, { schemaVersion: 1, updatedAt: now(options), sessions: [] }),
+  })?.value ?? { schemaVersion: 1, updatedAt: now(options), sessions: [] };
+}
+
+function write(options: ControllerSessionStoreOptions, store: ControllerSessionStore): void {
+  writeControlPlaneRecord(options.controllerHome, {
+    namespace: 'controller_session_claim_store',
+    scope: options.repoId,
+    key: 'index',
+    schemaVersion: 1,
+    value: store,
+    action: 'controller_session_claim_write',
+  });
 }
 
 function activeSession(store: ControllerSessionStore, workId: string): ControllerSession | undefined {
@@ -66,7 +85,7 @@ function persistClaim(
     ...store.sessions.filter((entry) => entry.workId !== input.workId && Date.parse(entry.leaseExpiresAt) > Date.now()),
     session,
   ];
-  writeJsonAtomic(path(options), { schemaVersion: 1, updatedAt: claimedAt, sessions });
+  write(options, { schemaVersion: 1, updatedAt: claimedAt, sessions });
   return session;
 }
 
@@ -149,7 +168,7 @@ export function releaseControllerSession(options: ControllerSessionStoreOptions,
     () => {
       const store = read(options);
       const sessions = store.sessions.filter((entry) => entry.workId !== workId || entry.controllerId !== controllerId);
-      writeJsonAtomic(path(options), { schemaVersion: 1, updatedAt: now(options), sessions });
+      write(options, { schemaVersion: 1, updatedAt: now(options), sessions });
     },
   );
 }

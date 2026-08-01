@@ -11,6 +11,7 @@ import {
 } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { readWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { claimControllerSession, getControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 
 const roots: string[] = [];
 
@@ -114,6 +115,23 @@ describe('control-plane SQLite persistence', () => {
     mkdirSync(join(home, 'repositories', repoId, 'work-contracts'), { recursive: true });
     writeFileSync(legacyIndex, `${JSON.stringify({ schemaVersion: 1, updatedAt: '2020-01-01T00:00:00.000Z', contracts: [] })}\n`);
     expect(getWorkContract({ controllerHome: home, repoId }, work.workId)?.objective).toBe(work.objective);
+  });
+
+  test('imports controller session claims once and keeps SQLite authoritative', () => {
+    const home = controllerHome();
+    const repoId = 'repo-controller-session-sqlite';
+    const legacyPath = join(home, 'repositories', repoId, 'controller-sessions.json');
+    mkdirSync(join(home, 'repositories', repoId), { recursive: true });
+    writeFileSync(legacyPath, `${JSON.stringify({
+      schemaVersion: 1,
+      updatedAt: '2026-08-01T00:00:00.000Z',
+      sessions: [{ schemaVersion: 1, workId: 'work-legacy', controllerId: 'controller', controllerType: 'chatgpt', sessionId: 'session-legacy', claimedAt: '2026-08-01T00:00:00.000Z', leaseExpiresAt: '2099-01-01T00:00:00.000Z' }],
+    })}\n`);
+    expect(getControllerSession({ controllerHome: home, repoId }, 'work-legacy')?.sessionId).toBe('session-legacy');
+    writeFileSync(legacyPath, `${JSON.stringify({ schemaVersion: 1, updatedAt: '2026-08-01T01:00:00.000Z', sessions: [] })}\n`);
+    expect(getControllerSession({ controllerHome: home, repoId }, 'work-legacy')?.sessionId).toBe('session-legacy');
+    claimControllerSession({ controllerHome: home, repoId }, { workId: 'work-new', controllerId: 'controller', controllerType: 'chatgpt', sessionId: 'session-new' });
+    expect(readControlPlaneRecord<{ sessions: Array<{ workId: string }> }>(home, 'controller_session_claim_store', repoId, 'index')?.value.sessions.some((entry) => entry.workId === 'work-new')).toBe(true);
   });
 
   test('normalizes schema-v1 Work semantics in memory and persists v2 only on mutation', () => {

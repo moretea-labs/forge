@@ -50,12 +50,13 @@ Define and gradually implement the long-term Repo Harness Control Plane storage 
 
 ### T2 — Inventory current state stores and migration dependencies
 
-- Status: `ready`
+- Status: `verified`
 - Objective: Map issue/task/work/run/session/lease/evidence storage locations and identify which stores must move first, including compatibility constraints and active feature dependencies.
 - Depends on: none
 - Allowed paths: `docs/**`, `src/runtime/**`
 - Checks: `package:check:type`
 - Execution hint: selected at runtime
+- Evidence: `docs/researches/20260801-control-plane-state-store-inventory.md` maps authority, compatibility, dependencies, and migration priority. Controller claim sessions are SQLite-authoritative with one-time legacy JSON import; `bun run check:type` and `bun test tests/runtime/control-plane-sqlite-store.test.ts` passed (8 tests).
 
 ### T3 — Design shadow persistence migration strategy
 
