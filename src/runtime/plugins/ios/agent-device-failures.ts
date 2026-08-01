@@ -17,6 +17,10 @@ const PRESERVE_CODES = new Set([
   'UNSUPPORTED_OPERATION',
   'WAIT_TIMEOUT',
   'ASSERTION_FAILED',
+  'ELEMENT_NOT_EDITABLE',
+  'ELEMENT_NOT_HITTABLE',
+  'TARGET_NOT_INTERACTABLE',
+  'TYPE_FAILED',
 ]);
 
 const TERMINATE_CODES = new Set([
@@ -59,8 +63,8 @@ export function classifyAgentDeviceFailure(error: unknown): AgentDeviceFailureCl
   }
 
   const evidence = `${normalized.code}\n${normalized.message}\n${detailString(normalized.details)}`;
-  if (/(?:stale\s+ref|element\s+not\s+found|no\s+such\s+element|invalid\s+selector|unsupported\s+operation)/i.test(evidence)
-    && !/(?:runner|transport|connection|socket|daemon|xctest|device\s+disconnect)/i.test(evidence)) {
+  if (/(?:stale\s+ref|element\s+not\s+found|no\s+such\s+element|invalid\s+selector|unsupported\s+operation|not\s+editable|not\s+hittable|not\s+interactable|cannot\s+type|failed\s+to\s+type|failed\s+to\s+fill|target\s+(?:is\s+)?covered|target\s+(?:is\s+)?disabled)/i.test(evidence)
+    && !/(?:runner|transport|connection|socket|daemon|xctest|dtx|device\s+disconnect)/i.test(evidence)) {
     return { disposition: 'preserve_session', providerCode, reason: 'recoverable_semantic_failure' };
   }
   if (/(?:runner|transport|connection\s+(?:refused|lost|closed)|socket|daemon\s+unavailable|xctest|dtx|device\s+disconnect|broken\s+pipe|session\s+not\s+found)/i.test(evidence)) {

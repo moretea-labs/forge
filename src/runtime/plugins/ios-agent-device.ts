@@ -35,7 +35,12 @@ import {
   type AgentDeviceHelpContract,
 } from './ios/agent-device-capabilities';
 import { classifyAgentDeviceFailure, preserveSessionFailure } from './ios/agent-device-failures';
-import { findSemanticRef, JD_IOS_APP_ADAPTER } from './ios/app-adapters';
+import {
+  findSemanticNode,
+  findSemanticRef,
+  JD_IOS_APP_ADAPTER,
+  normalizedSemanticRef,
+} from './ios/app-adapters';
 import {
   agentDeviceProviderVersionsMatch,
   configuredAgentDeviceBackendMode,
@@ -1461,12 +1466,38 @@ function subActionInput(
   return { ...input, actionId, args, requestId: `${input.requestId}:${actionId}` };
 }
 
+interface JdSearchTargets {
+  editableTarget?: string;
+  entryTarget?: string;
+  submitTarget?: string;
+}
+
+function discoverJdSearchTargets(snapshot: unknown, preferredTarget?: string): JdSearchTargets {
+  const adapter = JD_IOS_APP_ADAPTER.search!;
+  const preferredRef = normalizedSemanticRef(preferredTarget);
+  const preferredNode = preferredRef
+    ? findSemanticNode(snapshot, (node) => normalizedSemanticRef(node.ref) === preferredRef)
+    : undefined;
+  const editableTarget = preferredNode && adapter.isEditableSearchField(preferredNode)
+    ? preferredRef
+    : findSemanticRef(snapshot, adapter.isEditableSearchField);
+  const entryTarget = preferredNode && adapter.isSearchEntry(preferredNode)
+    ? preferredRef
+    : findSemanticRef(snapshot, adapter.isSearchEntry);
+  return {
+    editableTarget,
+    entryTarget,
+    submitTarget: findSemanticRef(snapshot, adapter.isSubmit),
+  };
+}
+
 async function executeJdSearch(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
   const workflowStartedAt = performance.now();
   const timingsMs = {
     targetSelection: 0,
     open: 0,
     targetDiscovery: 0,
+    navigation: 0,
     interactionAndEvidence: 0,
     screenshot: 0,
     close: 0,
@@ -1550,6 +1581,7 @@ async function executeJdSearch(input: AssistantPluginActionExecutionInput): Prom
     throw new AssistantPluginError('AGENT_DEVICE_OPEN_FAILED', 'agent-device did not return an interaction for JD.', { retryable: false });
   }
   const interactionId = interaction.interactionId;
+  const record = requireRecord(subActionInput(input, 'agent_device_batch', { interaction_id: interactionId }));
   let finalSnapshot: Record<string, unknown> | undefined;
   let screenshot: Record<string, unknown> | undefined;
   const resultText = optionalString(input.args.result_text);
@@ -1566,44 +1598,121 @@ async function executeJdSearch(input: AssistantPluginActionExecutionInput): Prom
   let staleRefRecovery = false;
   let exactWaitFallback = false;
   let accessibilitySnapshotRequests = 0;
+  let navigationSnapshotRequests = 0;
+  let searchFlow: 'explicit_selector' | 'explicit_target' | 'direct_editable' | 'navigated_from_entry' = 'direct_editable';
   let nativeBatchRequests = 0;
   let nativeBatchSteps = 0;
   let targetDiscoveryStartedAt = 0;
   let interactionStartedAt = 0;
   try {
-    // A caller may retain both a fast accessibility ref and a stable selector.
-    // Prefer the selector because refs are snapshot-scoped and may be stale after
-    // app foregrounding or navigation; fall back to the ref for compatibility.
-    let searchTarget = optionalString(input.args.search_selector) ?? optionalString(input.args.search_target);
+    // Stable selectors can address an already-focused editable control without
+    // a discovery round trip. Snapshot-scoped refs are always revalidated before
+    // mutation because app foregrounding or a page transition may invalidate them.
+    const explicitSelector = optionalString(input.args.search_selector);
+    const explicitTarget = optionalString(input.args.search_target);
+    let searchTarget = explicitSelector;
     let discoveredSubmitTarget: string | undefined;
+    if (explicitSelector) searchFlow = 'explicit_selector';
+    if (!searchTarget && explicitTarget && !normalizedSemanticRef(explicitTarget)) {
+      searchTarget = explicitTarget;
+      searchFlow = 'explicit_target';
+    }
+
     targetDiscoveryStartedAt = performance.now();
     if (!searchTarget) {
       initialAccessibilitySnapshot = true;
       accessibilitySnapshotRequests += 1;
       const discovery = JD_IOS_APP_ADAPTER.search!.discovery;
-      const initialSnapshot = await executeIosAgentDeviceAction(subActionInput(input, 'agent_device_snapshot', {
-        interaction_id: interactionId,
-        interactive: discovery.interactiveOnly,
-        raw: discovery.raw,
-        depth: discovery.depth,
-        ...(discovery.scope ? { scope: discovery.scope } : {}),
-      }));
-      searchTarget = findSemanticRef(initialSnapshot, JD_IOS_APP_ADAPTER.search!.isSearchField)
+      let initialSnapshot: Record<string, unknown>;
+      try {
+        initialSnapshot = await runSessionSnapshotAttempt(
+          input,
+          record,
+          {
+            interactiveOnly: discovery.interactiveOnly,
+            raw: discovery.raw,
+            depth: discovery.depth,
+            scope: discovery.scope,
+          },
+          'AGENT_DEVICE_SNAPSHOT_FAILED',
+          30_000,
+        );
+      } catch (error) {
+        return failWorkflowSession(input, record, error, keepSession);
+      }
+      const initialTargets = discoverJdSearchTargets(initialSnapshot, explicitTarget);
+      const initialEntryTarget = initialTargets.entryTarget
         ?? interactiveRef(initialSnapshot, /搜索|搜一搜|search|searchfield|请输入/i);
-      discoveredSubmitTarget = findSemanticRef(initialSnapshot, JD_IOS_APP_ADAPTER.search!.isSubmit);
+      searchTarget = initialTargets.editableTarget;
+      discoveredSubmitTarget = initialTargets.submitTarget;
+
+      if (!searchTarget && initialEntryTarget) {
+        searchFlow = 'navigated_from_entry';
+        timingsMs.targetDiscovery = performance.now() - targetDiscoveryStartedAt;
+        const navigationStartedAt = performance.now();
+        nativeBatchRequests += 1;
+        nativeBatchSteps += 2;
+        try {
+          await runSessionBatchAttempt(input, record, prepareAgentDeviceBatch([
+            { kind: 'press', input: { target: initialEntryTarget } },
+            { kind: 'wait', input: { wait_type: 'stable', quiet_ms: 500, timeout_ms: 10_000 } },
+          ], record), 20_000);
+        } catch (error) {
+          return failWorkflowSession(input, record, error, keepSession);
+        }
+
+        // Never trust the provider's incremental diff as authorization for the
+        // next mutation. A JD page transition has returned contradictory zero
+        // diffs in production, so force one fresh tree and issue new refs.
+        accessibilitySnapshotRequests += 1;
+        navigationSnapshotRequests += 1;
+        let searchPageSnapshot: Record<string, unknown>;
+        try {
+          searchPageSnapshot = await runSessionSnapshotAttempt(
+            input,
+            record,
+            {
+              interactiveOnly: discovery.interactiveOnly,
+              raw: discovery.raw,
+              depth: discovery.depth,
+              scope: discovery.scope,
+              forceFull: true,
+            },
+            'AGENT_DEVICE_SNAPSHOT_FAILED',
+            45_000,
+          );
+        } catch (error) {
+          return failWorkflowSession(input, record, error, keepSession);
+        }
+        const searchPageTargets = discoverJdSearchTargets(searchPageSnapshot);
+        // Newer JD builds expose TextView/TextField; some versions expose a real
+        // SearchField on the dedicated page. The latter is safe only after the
+        // forced post-navigation snapshot.
+        searchTarget = searchPageTargets.editableTarget
+          ?? searchPageTargets.entryTarget
+          ?? interactiveRef(searchPageSnapshot, /搜索|搜一搜|search|searchfield|请输入/i);
+        discoveredSubmitTarget = searchPageTargets.submitTarget
+          ?? interactiveRef(searchPageSnapshot, /^(搜索|搜一搜|search)$/i);
+        timingsMs.navigation = performance.now() - navigationStartedAt;
+      } else {
+        searchFlow = 'direct_editable';
+      }
     }
     if (!searchTarget) {
-      throw new AssistantPluginError('JD_SEARCH_FIELD_NOT_FOUND', 'JD opened, but the App adapter could not find a bounded semantic search field.', {
+      throw new AssistantPluginError('JD_SEARCH_FIELD_NOT_FOUND', 'JD opened, but the App adapter could not find a bounded editable search field.', {
         retryable: false,
         details: {
           adapter: JD_IOS_APP_ADAPTER.id,
           snapshotPolicy: JD_IOS_APP_ADAPTER.search!.discovery,
+          searchFlow,
           sessionRetained: keepSession,
         },
       });
     }
 
-    timingsMs.targetDiscovery = performance.now() - targetDiscoveryStartedAt;
+    if (timingsMs.targetDiscovery === 0) {
+      timingsMs.targetDiscovery = performance.now() - targetDiscoveryStartedAt;
+    }
     interactionStartedAt = performance.now();
     const submitTarget = optionalString(input.args.submit_selector)
       ?? optionalString(input.args.submit_target)
@@ -1626,7 +1735,6 @@ async function executeJdSearch(input: AssistantPluginActionExecutionInput): Prom
           },
         },
       ];
-    const record = requireRecord(subActionInput(input, 'agent_device_batch', { interaction_id: interactionId }));
     let fillStep: AgentDeviceBatchStep = {
       kind: 'fill',
       input: { target: searchTarget, text: query, delay_ms: 20 },
@@ -1658,10 +1766,11 @@ async function executeJdSearch(input: AssistantPluginActionExecutionInput): Prom
             30_000,
           );
         } catch (snapshotError) {
-          const classification = classifyAgentDeviceFailure(snapshotError);
           return failWorkflowSession(input, record, snapshotError, keepSession);
         }
-        const refreshedTarget = findSemanticRef(refreshedSnapshot, JD_IOS_APP_ADAPTER.search!.isSearchField)
+        const refreshedTargets = discoverJdSearchTargets(refreshedSnapshot);
+        const refreshedTarget = refreshedTargets.editableTarget
+          ?? refreshedTargets.entryTarget
           ?? interactiveRef(refreshedSnapshot, /搜索|搜一搜|search|searchfield|请输入/i);
         if (!refreshedTarget) {
           return failWorkflowSession(input, record, new AssistantPluginError(
@@ -1775,6 +1884,8 @@ async function executeJdSearch(input: AssistantPluginActionExecutionInput): Prom
       staleRefRecovery,
       exactWaitFallback,
       accessibilitySnapshotRequests,
+      navigationSnapshotRequests,
+      searchFlow,
       fullAccessibilitySnapshot: accessibilityEvidenceTier === 'full_snapshot',
       resultScope: resultScope ?? null,
       snapshotDepth: accessibilityEvidenceTier === 'exact_wait' ? null : snapshotDepth,

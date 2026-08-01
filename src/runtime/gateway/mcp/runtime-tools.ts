@@ -1265,6 +1265,26 @@ function summarizePlugin(manifest: ReturnType<typeof getAssistantPluginManifest>
   };
 }
 
+function summarizePluginActionReceipt(manifest: ReturnType<typeof getAssistantPluginManifest>): Record<string, unknown> {
+  return {
+    pluginId: manifest.pluginId,
+    provider: manifest.provider,
+    displayName: manifest.displayName,
+    pluginVersion: manifest.pluginVersion,
+    revision: manifest.revision,
+    enabled: manifest.enabled,
+    lifecycleState: manifest.lifecycle.state,
+    health: {
+      state: manifest.health.state,
+      ready: manifest.health.ready,
+      checkedAt: manifest.health.checkedAt,
+      errorCount: manifest.health.errors.length,
+      warningCount: manifest.health.warnings.length,
+    },
+    updatedAt: manifest.updatedAt,
+  };
+}
+
 
 function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String).map((entry) => entry.trim()).filter(Boolean) : [];
@@ -4614,7 +4634,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             accepted: true,
             direct: true,
             durable: false,
-            plugin: summarizePlugin(direct.manifest),
+            plugin: summarizePluginActionReceipt(direct.manifest),
             action: {
               actionId: direct.action.actionId,
               risk: direct.action.risk,
@@ -4622,7 +4642,14 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             },
             scope: repository.repoId === '__controller__' ? 'controller' : 'repository',
             result: direct.result,
-            next: 'Continue with the returned bounded result; no Job polling is required.',
+            detail: {
+              tool: 'get_plugin',
+              arguments: {
+                ...(repository.repoId === '__controller__' ? {} : { repo_id: repository.repoId }),
+                plugin_id: pluginId,
+              },
+            },
+            next: 'Continue with the returned bounded result; use detail only when the full plugin manifest is needed.',
           });
         }
         const submitted = await submitAssistantPluginAction(ctx.controllerHome, repository, request);
@@ -4631,7 +4658,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           deduplicated: submitted.deduplicated,
           direct: true,
           durable: false,
-          plugin: summarizePlugin(submitted.manifest),
+          plugin: summarizePluginActionReceipt(submitted.manifest),
           action: {
             actionId: submitted.action.actionId,
             risk: submitted.action.risk,
@@ -4642,7 +4669,14 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           receiptId: submitted.receipt.receiptId,
           requestId: submitted.receipt.requestId,
           result: submitted.result,
-          next: 'Continue with the returned bounded plugin result; no ExecutionJob polling is required.',
+          detail: {
+            tool: 'get_plugin',
+            arguments: {
+              ...(repository.repoId === '__controller__' ? {} : { repo_id: repository.repoId }),
+              plugin_id: pluginId,
+            },
+          },
+          next: 'Continue with the returned bounded plugin result; use detail only when the full plugin manifest is needed.',
         });
       }
       case 'toolchain_plugin_summary': {

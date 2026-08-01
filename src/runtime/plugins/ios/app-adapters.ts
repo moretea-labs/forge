@@ -21,7 +21,12 @@ export interface IosSearchAdapter {
   discovery: IosSnapshotPolicy;
   searchFieldSelectors: string[];
   submitSelectors: string[];
+  /** Backward-compatible broad search-control predicate. */
   isSearchField(node: IosSemanticNode): boolean;
+  /** A control that opens or focuses the dedicated search surface. */
+  isSearchEntry(node: IosSemanticNode): boolean;
+  /** The control that can safely receive replacement text. */
+  isEditableSearchField(node: IosSemanticNode): boolean;
   isSubmit(node: IosSemanticNode): boolean;
 }
 
@@ -70,13 +75,13 @@ export function normalizedSemanticRef(value: string | undefined): string | undef
   return match ? `@${match[1]}` : undefined;
 }
 
+export function findSemanticNode(value: unknown, predicate: (node: IosSemanticNode) => boolean): IosSemanticNode | undefined {
+  return semanticNodes(value).find(predicate);
+}
+
 export function findSemanticRef(value: unknown, predicate: (node: IosSemanticNode) => boolean): string | undefined {
-  for (const node of semanticNodes(value)) {
-    if (!predicate(node)) continue;
-    const ref = normalizedSemanticRef(node.ref);
-    if (ref) return ref;
-  }
-  return undefined;
+  const node = findSemanticNode(value, predicate);
+  return normalizedSemanticRef(node?.ref);
 }
 
 function searchableText(node: IosSemanticNode): string {
@@ -95,7 +100,14 @@ export const JD_IOS_APP_ADAPTER: IosAppAdapter = {
     discovery: { interactiveOnly: false, raw: true, depth: 20 },
     searchFieldSelectors: ['type="SearchField"'],
     submitSelectors: ['type="Button" label="搜索"', 'label="搜索"'],
+    // JD's home SearchField is a navigation proxy rather than an editable
+    // control. Treat it as an entry point and resolve a fresh editable node
+    // after the page transition.
     isSearchField: (node) => node.type === 'SearchField'
+      || (/TextField/i.test(node.type ?? '') && /搜索|搜一搜|请输入|search/i.test(searchableText(node))),
+    isSearchEntry: (node) => node.type === 'SearchField'
+      || (node.type === 'Button' && /^(搜索|搜一搜|search)$/i.test(node.label?.trim() ?? '')),
+    isEditableSearchField: (node) => /^(TextView|TextField)$/i.test(node.type ?? '')
       || (/TextField/i.test(node.type ?? '') && /搜索|搜一搜|请输入|search/i.test(searchableText(node))),
     isSubmit: (node) => node.type === 'Button' && /^(搜索|搜一搜|search)$/i.test(node.label?.trim() ?? ''),
   },

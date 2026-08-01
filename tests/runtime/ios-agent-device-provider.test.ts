@@ -267,6 +267,9 @@ describe('optional agent-device iOS Simulator provider', () => {
     const batches = commands.filter(({ argv }) => argv[1] === 'batch');
     expect(snapshotCount).toBe(0);
     expect(batches).toHaveLength(1);
+    expect(batches[0]?.env?.AGENT_DEVICE_IOS_TEAM_ID).toBe('TEAM123456');
+    expect(batches[0]?.env?.AGENT_DEVICE_IOS_BUNDLE_ID).toBe('com.example.agentdevice.runner');
+    expect(batches[0]?.env?.DEVELOPER_DIR).toBe(developerDir);
     const steps = JSON.parse(batches[0]!.argv[batches[0]!.argv.indexOf('--steps') + 1]!) as Array<{ command: string; input: Record<string, unknown> }>;
     expect(steps.map((step) => step.command)).toEqual(['fill', 'press', 'wait']);
     expect(steps[0]?.input.settle).toBe(true);
@@ -283,7 +286,7 @@ describe('optional agent-device iOS Simulator provider', () => {
     expect((result.executionPlan as Record<string, unknown>).fullAccessibilitySnapshot).toBe(false);
     const phaseTimings = (result.executionPlan as Record<string, unknown>).timingsMs as Record<string, number>;
     expect(Object.keys(phaseTimings).sort()).toEqual([
-      'close', 'interactionAndEvidence', 'open', 'screenshot', 'targetDiscovery', 'targetSelection', 'total',
+      'close', 'interactionAndEvidence', 'navigation', 'open', 'screenshot', 'targetDiscovery', 'targetSelection', 'total',
     ].sort());
     expect(Object.values(phaseTimings).every((value) => value >= 0)).toBe(true);
     expect(phaseTimings.total).toBeGreaterThanOrEqual(phaseTimings.open + phaseTimings.close);
@@ -657,7 +660,7 @@ describe('optional agent-device iOS Simulator provider', () => {
     expect(commands.filter((command) => command[1] === 'close')).toHaveLength(1);
   });
 
-  it('refreshes one stale cached JD search ref without terminalizing the session', async () => {
+  it('revalidates a cached home proxy and refreshes one stale editable JD ref without terminalizing the session', async () => {
     const value = fixture();
     readyIosTooling();
     let batchCount = 0;
@@ -674,15 +677,20 @@ describe('optional agent-device iOS Simulator provider', () => {
         }
         if (args[0] === 'snapshot') {
           snapshotCount += 1;
-          return { ok: true, status: 0, stdout: success({ tree: '@e7 SearchField label="搜索商品" value=""' }), stderr: '', command: [command, ...args] };
+          const tree = snapshotCount === 1
+            ? '@e7 SearchField label="搜索商品" value=""'
+            : snapshotCount === 2
+              ? '@e8 TextView label="搜索商品" value=""'
+              : '@e9 TextView label="搜索商品" value=""';
+          return { ok: true, status: 0, stdout: success({ tree }), stderr: '', command: [command, ...args] };
         }
         if (args[0] === 'batch') {
           batchCount += 1;
-          if (batchCount === 1) {
+          if (batchCount === 2) {
             return {
               ok: false,
               status: 1,
-              stdout: JSON.stringify({ success: false, error: { message: 'Accessibility ref @e1 is stale and not found.' } }),
+              stdout: JSON.stringify({ success: false, error: { message: 'Accessibility ref @e8 is stale and not found.' } }),
               stderr: '',
               command: [command, ...args],
             };
@@ -698,20 +706,22 @@ describe('optional agent-device iOS Simulator provider', () => {
     const result = await executeIosPluginAction(pluginInput(value, 'agent_device_jd_search', {
       device: 'greyson',
       query: '奶粉',
-      search_target: '@e1',
+      search_target: '@e7',
       submit_selector: 'label="搜索"',
       result_text: '搜索结果',
     }));
 
-    expect(snapshotCount).toBe(1);
-    expect(batchCount).toBe(3);
+    expect(snapshotCount).toBe(3);
+    expect(batchCount).toBe(4);
+    expect((result.executionPlan as Record<string, unknown>).searchFlow).toBe('navigated_from_entry');
+    expect((result.executionPlan as Record<string, unknown>).navigationSnapshotRequests).toBe(1);
     expect((result.executionPlan as Record<string, unknown>).staleRefRecovery).toBe(true);
-    expect((result.executionPlan as Record<string, unknown>).accessibilitySnapshotRequests).toBe(1);
+    expect((result.executionPlan as Record<string, unknown>).accessibilitySnapshotRequests).toBe(3);
     expect((result.interaction as Record<string, unknown>).status).toBe('closed');
     expect(commands.filter((argv) => argv[1] === 'close')).toHaveLength(1);
-    const recoveredFill = commands.filter((argv) => argv[1] === 'batch')[1]!;
+    const recoveredFill = commands.filter((argv) => argv[1] === 'batch')[2]!;
     const recoveredSteps = JSON.parse(recoveredFill[recoveredFill.indexOf('--steps') + 1]!) as Array<{ input: Record<string, unknown> }>;
-    expect(recoveredSteps[0]?.input.target).toEqual({ kind: 'ref', ref: 'e7' });
+    expect(recoveredSteps[0]?.input.target).toEqual({ kind: 'ref', ref: 'e9' });
   });
 
   it('escalates an exact wait miss through scoped and full accessibility evidence tiers', async () => {
@@ -1395,10 +1405,11 @@ describe('optional agent-device iOS Simulator provider', () => {
     expect(readInteractionSession(value.repoRoot, 'ios-device', interactionId)?.status).toBe('failed');
   });
 
-  it('discovers deep JD search controls from structured App-adapter evidence without unsupported flags', async () => {
+  it('navigates from the deep JD home proxy to a fresh editable search control in one bounded workflow', async () => {
     const value = fixture();
     readyIosTooling();
     const commands: string[][] = [];
+    let snapshotCount = 0;
     setIosAgentDeviceRuntimeHooksForTest({
       platform: () => 'darwin',
       runCommand: (command, args) => {
@@ -1408,7 +1419,20 @@ describe('optional agent-device iOS Simulator provider', () => {
           return { ok: true, status: 0, stdout: success({ devices: [device('PHONE-1', 'greyson', 'device', true)] }), stderr: '', command: [command, ...args] };
         }
         if (args[0] === 'snapshot') {
-          return { ok: true, status: 0, stdout: JSON.stringify(jdHomeDepth20), stderr: '', command: [command, ...args] };
+          snapshotCount += 1;
+          if (snapshotCount === 1) {
+            return { ok: true, status: 0, stdout: JSON.stringify(jdHomeDepth20), stderr: '', command: [command, ...args] };
+          }
+          return {
+            ok: true,
+            status: 0,
+            stdout: success({ nodes: [
+              { ref: 'e15', type: 'TextView', enabled: true, label: '搜索商品' },
+              { ref: 'e22', type: 'Button', enabled: true, label: '搜索' },
+            ] }),
+            stderr: '',
+            command: [command, ...args],
+          };
         }
         if (args[0] === 'batch') {
           const steps = JSON.parse(args[args.indexOf('--steps') + 1]!) as Array<{ command: string; input: Record<string, unknown> }>;
@@ -1438,18 +1462,27 @@ describe('optional agent-device iOS Simulator provider', () => {
       result_text: '搜索结果',
     }));
 
-    const snapshot = commands.find((argv) => argv[1] === 'snapshot')!;
-    expect(snapshot).toEqual(expect.arrayContaining(['--raw', '--depth', '20']));
-    expect(snapshot).not.toContain('-i');
-    expect(snapshot).not.toContain('--interactive');
+    const snapshots = commands.filter((argv) => argv[1] === 'snapshot');
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots[0]).toEqual(expect.arrayContaining(['--raw', '--depth', '20']));
+    expect(snapshots[0]).not.toContain('-i');
+    expect(snapshots[1]).toContain('--force-full');
     const batches = commands.filter((argv) => argv[1] === 'batch');
-    expect(batches).toHaveLength(2);
-    const fillSteps = JSON.parse(batches[0]![batches[0]!.indexOf('--steps') + 1]!) as Array<{ command: string; input: Record<string, unknown> }>;
-    const submitSteps = JSON.parse(batches[1]![batches[1]!.indexOf('--steps') + 1]!) as Array<{ command: string; input: Record<string, unknown> }>;
-    expect(fillSteps[0]?.input.target).toEqual({ kind: 'ref', ref: 'e39' });
-    expect(submitSteps[0]?.input.target).toEqual({ kind: 'ref', ref: 'e41' });
-    expect((result.executionPlan as Record<string, unknown>).initialAccessibilitySnapshot).toBe(true);
-    expect((result.executionPlan as Record<string, unknown>).accessibilitySnapshotRequests).toBe(1);
+    expect(batches).toHaveLength(3);
+    const navigationSteps = JSON.parse(batches[0]![batches[0]!.indexOf('--steps') + 1]!) as Array<{ command: string; input: Record<string, unknown> }>;
+    const fillSteps = JSON.parse(batches[1]![batches[1]!.indexOf('--steps') + 1]!) as Array<{ command: string; input: Record<string, unknown> }>;
+    const submitSteps = JSON.parse(batches[2]![batches[2]!.indexOf('--steps') + 1]!) as Array<{ command: string; input: Record<string, unknown> }>;
+    expect(navigationSteps.map((step) => step.command)).toEqual(['press', 'wait']);
+    expect(navigationSteps[0]?.input.target).toEqual({ kind: 'ref', ref: 'e39' });
+    expect(fillSteps[0]?.input.target).toEqual({ kind: 'ref', ref: 'e15' });
+    expect(submitSteps[0]?.input.target).toEqual({ kind: 'ref', ref: 'e22' });
+    const plan = result.executionPlan as Record<string, unknown>;
+    expect(plan.searchFlow).toBe('navigated_from_entry');
+    expect(plan.initialAccessibilitySnapshot).toBe(true);
+    expect(plan.navigationSnapshotRequests).toBe(1);
+    expect(plan.accessibilitySnapshotRequests).toBe(2);
+    expect(plan.nativeBatchRequests).toBe(3);
+    expect(plan.nativeBatchSteps).toBe(5);
     expect((result.interaction as Record<string, unknown>).status).toBe('closed');
   });
 
@@ -1499,6 +1532,47 @@ describe('optional agent-device iOS Simulator provider', () => {
     expect(JSON.stringify(captured)).not.toContain('private-query-value');
     expect((captured as { details?: Record<string, unknown> }).details?.sessionPreserved).toBe(true);
     expect((captured as { details?: Record<string, unknown> }).details?.providerCode).toBe('ELEMENT_NOT_FOUND');
+    expect(readInteractionSession(value.repoRoot, 'ios-device', interactionId)?.status).toBe('waiting_for_user');
+    expect(commands.some((command) => command[1] === 'close')).toBe(false);
+  });
+
+  it('preserves the active session when XCTest reports a concrete non-editable type failure', async () => {
+    const value = fixture();
+    readyIosTooling();
+    const commands: string[][] = [];
+    setIosAgentDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
+        if (args[0] === 'devices') {
+          return { ok: true, status: 0, stdout: success({ devices: [device('PHONE-1', 'greyson', 'device', true)] }), stderr: '', command: [command, ...args] };
+        }
+        if (args[0] === 'fill') {
+          return {
+            ok: false,
+            status: 1,
+            stdout: JSON.stringify({ success: false, error: { message: 'Failed to type because target is not editable.' } }),
+            stderr: '',
+            command: [command, ...args],
+          };
+        }
+        return { ok: true, status: 0, stdout: success(), stderr: '', command: [command, ...args] };
+      },
+    });
+
+    const opened = await executeIosPluginAction(pluginInput(value, 'agent_device_open', {
+      app: 'com.360buy.jdmobile',
+      device: 'greyson',
+    }));
+    const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
+
+    await expect(executeIosPluginAction(pluginInput(value, 'agent_device_fill', {
+      interaction_id: interactionId,
+      target: '@e32',
+      text: 'wide shoes',
+    }))).rejects.toThrow('not editable');
+
     expect(readInteractionSession(value.repoRoot, 'ios-device', interactionId)?.status).toBe('waiting_for_user');
     expect(commands.some((command) => command[1] === 'close')).toBe(false);
   });
