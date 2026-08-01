@@ -27,6 +27,12 @@ With that configuration, the watchdog keeps application recovery separate from t
 
 The installer writes launchd plists that start through `/usr/bin/env -i` with a minimal `PATH`, so the recovery gateway and watchdog do not inherit unrelated session credentials. They can be loaded as user LaunchAgents for local operation or installed as system LaunchDaemons after an administrator-authorized system operation.
 
+After installation or a Supervisor cutover, load the user LaunchAgents with the idempotent helper below. It only bootstraps a service when it is not already loaded and verifies the resulting launchd target:
+
+```sh
+bash scripts/load-standalone-recovery.sh /absolute/controller-home
+```
+
 When Tailscale Funnel is available, expose the recovery gateway under a path that is independent from the primary root mapping:
 
 ```sh
