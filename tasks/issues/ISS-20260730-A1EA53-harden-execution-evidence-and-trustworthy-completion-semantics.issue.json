@@ -253,7 +253,7 @@
       ],
       "risk": "medium",
       "notes": [
-        "2026-08-01: Implemented the first explicit completed_no_change finalization path. It requires objective-specific proof, forbids commit/merge, rejects a dirty owned workspace, and persists completed_no_change semantic state. Receipt issuance for no-change and reconciliation evidence remain."
+        "2026-08-01: completed_no_change Receipt support is complete: the bridge requires explicit clean proof, exact revision, zero changed paths, skipped commit/merge stages, and idempotently emits delivery.kind/strategy=no_change. Reviewed manual/equivalent integration reconciliation remains."
       ],
       "runIds": [],
       "createdAt": "2026-07-30T09:28:07.844Z",

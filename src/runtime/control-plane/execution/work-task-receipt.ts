@@ -92,8 +92,19 @@ export function acceptVerifiedTaskFromControllerWork(input: ControllerWorkTaskRe
   if (!contract || contract.repoId !== input.repoId || contract.status !== 'completed') {
     throw new Error(`CONTROLLER_WORK_RECEIPT_CONTRACT_INCOMPLETE: ${input.workId}`);
   }
+  const noChange = contract.completionOutcome === 'completed_no_change'
+    && contract.workKind === 'completed_no_change'
+    && contract.evidenceState === 'valid';
   const stages = handle.finalization;
-  const complete = handle.state === 'cleaned'
+  const complete = noChange
+    ? handle.state !== 'failed'
+      && stages.validation === 'done'
+      && stages.commit === 'skipped'
+      && stages.merge === 'skipped'
+      && stages.branchCleanup === 'skipped'
+      && ['skipped', 'done'].includes(stages.worktreeCleanup)
+      && !stages.lastError
+    : handle.state === 'cleaned'
     && stages.validation === 'done'
     && stages.commit === 'done'
     && stages.merge === 'done'
@@ -107,8 +118,15 @@ export function acceptVerifiedTaskFromControllerWork(input: ControllerWorkTaskRe
   if (targetRevision !== verifiedRevision) {
     throw new Error(`CONTROLLER_WORK_RECEIPT_REVISION_MISMATCH: work=${targetRevision} task=${verifiedRevision}`);
   }
+  if (noChange && !contract.evidenceRefs.some((entry) => entry.title === 'objective-specific no-change proof' && entry.summary?.trim())) {
+    throw new Error(`CONTROLLER_WORK_RECEIPT_NO_CHANGE_PROOF_MISSING: ${input.workId}`);
+  }
   assertCurrentRequiredChecks(contract, targetRevision);
   const baseRevision = commitRevision(input.repoRoot, handle.baseCommit, 'BASE_REVISION');
+  const receiptChangedPaths = changedPaths(input.repoRoot, baseRevision, targetRevision);
+  if (noChange && receiptChangedPaths.length > 0) {
+    throw new Error(`CONTROLLER_WORK_RECEIPT_NO_CHANGE_DIRTY: ${input.workId}`);
+  }
   const targetBranch = resolveCompletionTargetBranch(input.repoRoot);
   const reachable = spawnSync('git', ['merge-base', '--is-ancestor', targetRevision, targetBranch], {
     cwd: input.repoRoot,
@@ -131,11 +149,11 @@ export function acceptVerifiedTaskFromControllerWork(input: ControllerWorkTaskRe
     targetRevision,
     sourceRevision: targetRevision,
     baseRevision,
-    changedPaths: changedPaths(input.repoRoot, baseRevision, targetRevision),
+    changedPaths: receiptChangedPaths,
     delivery: {
-      kind: 'commit',
+      kind: noChange ? 'no_change' : 'commit',
       status: 'integrated',
-      strategy: 'already_integrated',
+      strategy: noChange ? 'no_change' : 'already_integrated',
       reachable: true,
       recordedAt,
     },

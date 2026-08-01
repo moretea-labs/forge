@@ -21,7 +21,7 @@ function git(repoRoot: string, args: string[]): string {
   return result.stdout.trim();
 }
 
-function fixture() {
+function fixture(options: { changed?: boolean } = {}) {
   const repoRoot = mkdtempSync(join(tmpdir(), 'repo-harness-work-receipt-'));
   roots.push(repoRoot);
   git(repoRoot, ['init', '-b', 'main']);
@@ -29,9 +29,11 @@ function fixture() {
   git(repoRoot, ['add', 'package.json']);
   git(repoRoot, ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'base']);
   const baseCommit = git(repoRoot, ['rev-parse', 'HEAD']);
-  writeFileSync(join(repoRoot, 'feature.txt'), 'implemented\n');
-  git(repoRoot, ['add', 'feature.txt']);
-  git(repoRoot, ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'implementation']);
+  if (options.changed !== false) {
+    writeFileSync(join(repoRoot, 'feature.txt'), 'implemented\n');
+    git(repoRoot, ['add', 'feature.txt']);
+    git(repoRoot, ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'implementation']);
+  }
   const expectedHead = git(repoRoot, ['rev-parse', 'HEAD']);
   const controllerHome = join(repoRoot, '.controller-home');
   const repoId = 'repo-work-receipt';
@@ -192,5 +194,34 @@ describe('controller Work Task completion receipt', () => {
       workId: fx.workId,
     })).toThrow(/CHECK_EVIDENCE_STALE/);
     expect(getIssue(fx.repoRoot, fx.issueId).tasks[0]!.status).toBe('verified');
+  });
+
+  test('emits an idempotent no-change receipt only with explicit clean proof', () => {
+    const fx = fixture({ changed: false });
+    updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
+      workKind: 'completed_no_change',
+      dispatchState: 'terminal',
+      evidenceState: 'valid',
+      completionOutcome: 'completed_no_change',
+      evidenceRefs: [{ title: 'objective-specific no-change proof', summary: 'The required repository state was observed at the exact target revision.', detailLevel: 'summary' }],
+    });
+    writeWorkHandle(fx.controllerHome, {
+      ...fx.handle,
+      state: 'prepared',
+      baseCommit: fx.expectedHead,
+      finalization: {
+        validation: 'done', commit: 'skipped', merge: 'skipped', branchCleanup: 'skipped', worktreeCleanup: 'skipped',
+      },
+    });
+    const result = acceptVerifiedTaskFromControllerWork({
+      controllerHome: fx.controllerHome, repoId: fx.repoId, repoRoot: fx.repoRoot, issueId: fx.issueId, taskId: 'T1', workId: fx.workId,
+    });
+    expect(result.receipt).toMatchObject({
+      changedPaths: [],
+      delivery: { kind: 'no_change', strategy: 'no_change', status: 'integrated' },
+    });
+    expect(acceptVerifiedTaskFromControllerWork({
+      controllerHome: fx.controllerHome, repoId: fx.repoId, repoRoot: fx.repoRoot, issueId: fx.issueId, taskId: 'T1', workId: fx.workId,
+    }).receipt.receiptId).toBe(result.receipt.receiptId);
   });
 });

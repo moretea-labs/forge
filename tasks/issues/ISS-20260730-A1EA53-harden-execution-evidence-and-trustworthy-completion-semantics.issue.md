@@ -76,7 +76,7 @@ Result Goal 1 of ISS-20260730-AE1BCC for the next reliability release line. The 
 - Allowed paths: `src/runtime/control-plane/**`, `src/runtime/workflow/**`, `src/runtime/git/**`, `tests/**`
 - Checks: `typecheck`, `test`
 - Execution hint: selected at runtime
-- Progress: `completed_no_change` now requires objective-specific proof, forbids commit/merge, rejects a dirty owned workspace, and persists a distinct outcome. No-change receipt issuance and reconciliation evidence remain.
+- Progress: `completed_no_change` requires objective-specific proof, forbids commit/merge, rejects a dirty owned workspace, and persists a distinct outcome. The Receipt bridge now requires exact clean proof and emits idempotent no-change delivery; reviewed manual/equivalent integration reconciliation remains.
 
 ### T5 — Harden cross-session recovery and continuation handoff
 
