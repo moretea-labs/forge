@@ -50,12 +50,13 @@ Result Goal 1 of ISS-20260730-AE1BCC for the next reliability release line. The 
 
 ### T2 — Add explicit work, dispatch, and evidence state semantics with migration
 
-- Status: `planned`
+- Status: `verified`
 - Objective: Implement WorkKind, DispatchState, EvidenceState, versioned persistence, and deterministic backward-compatible reads for existing Work records.
 - Depends on: `T1`
 - Allowed paths: `src/runtime/control-plane/**`, `src/runtime/workflow/**`, `src/runtime/persistence/**`, `tests/**`
 - Checks: `typecheck`, `test`
 - Execution hint: selected at runtime
+- Evidence: schema-v2 WorkKind, DispatchState, EvidenceState, and CompletionOutcome axes are implemented with in-memory schema-v1 normalization, guarded v2 writes, and fail-closed outcome/transition validation. Focused state/lifecycle suites and typecheck passed on 2026-08-01.
 
 ### T3 — Bind verification and Completion Receipts to the exact revision
 

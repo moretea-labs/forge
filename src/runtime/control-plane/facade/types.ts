@@ -88,6 +88,26 @@ export const TERMINAL_WORK_CONTRACT_STATUSES: readonly WorkContractStatus[] = [
   'cancelled',
 ] as const;
 
+/** Independent semantic axes; `status` remains a compatibility projection. */
+export const WORK_KINDS = [
+  'repository_change',
+  'completed_no_change',
+  'investigation',
+  'remote_effect',
+  'reconciliation',
+  'superseded',
+] as const;
+export type WorkKind = (typeof WORK_KINDS)[number];
+
+export const DISPATCH_STATES = ['not_dispatched', 'claimed', 'launching', 'running', 'blocked', 'terminal'] as const;
+export type DispatchState = (typeof DISPATCH_STATES)[number];
+
+export const EVIDENCE_STATES = ['none', 'partial', 'valid', 'stale', 'contradictory', 'failed'] as const;
+export type EvidenceState = (typeof EVIDENCE_STATES)[number];
+
+export const COMPLETION_OUTCOMES = ['completed_changed', 'completed_no_change', 'completed_remote', 'superseded'] as const;
+export type CompletionOutcome = (typeof COMPLETION_OUTCOMES)[number];
+
 export const VERIFICATION_OUTCOMES = [
   'valid_pass',
   'valid_fail',
@@ -251,13 +271,18 @@ export interface VerificationRecord {
 }
 
 export interface WorkContract {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   workId: string;
   repoId: string;
   mode: ExecutionMode;
   objective: string;
   acceptanceCriteria: string[];
   constraints: WorkContractConstraints;
+  /** Explicit v2 execution semantics. `status` is retained for compatibility. */
+  workKind: WorkKind;
+  dispatchState: DispatchState;
+  evidenceState: EvidenceState;
+  completionOutcome?: CompletionOutcome;
   status: WorkContractStatus;
   createdAt: string;
   updatedAt: string;
@@ -308,7 +333,7 @@ export interface SubmittedWorkOperation {
 }
 
 export interface WorkContractStore {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   updatedAt: string;
   contracts: WorkContract[];
 }

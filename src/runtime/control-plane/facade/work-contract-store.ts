@@ -7,12 +7,16 @@ import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../shar
 import { readOrImportControlPlaneRecord, writeControlPlaneRecord } from '../persistence/sqlite-store';
 import {
   type EvidenceRef,
+  type CompletionOutcome,
+  type DispatchState,
+  type EvidenceState,
   type PolicyDecision,
   type SubmittedWorkOperation,
   type SuggestedNextAction,
   type VerificationRecord,
   type WorkContract,
   type WorkContractStatus,
+  type WorkKind,
   type WorkContractStore,
   isTerminalWorkContractStatus,
 } from './types';
@@ -29,11 +33,15 @@ export interface WorkContractStoreOptions extends WorkContractStoreLocation {
 
 export type CreateWorkContractInput = Omit<
   WorkContract,
-  'schemaVersion' | 'status' | 'createdAt' | 'updatedAt' | 'evidenceRefs' | 'handoffRefs' | 'suggestedNextActions' | 'policyDecisions' | 'checkRefs' | 'driver' | 'worktreePolicy' | 'evidencePolicy' | 'approvalPolicy' | 'recoveryPolicy'
+  'schemaVersion' | 'status' | 'createdAt' | 'updatedAt' | 'workKind' | 'dispatchState' | 'evidenceState' | 'completionOutcome' | 'evidenceRefs' | 'handoffRefs' | 'suggestedNextActions' | 'policyDecisions' | 'checkRefs' | 'driver' | 'worktreePolicy' | 'evidencePolicy' | 'approvalPolicy' | 'recoveryPolicy'
 > & {
   status?: WorkContractStatus;
   createdAt?: string;
   updatedAt?: string;
+  workKind?: WorkKind;
+  dispatchState?: DispatchState;
+  evidenceState?: EvidenceState;
+  completionOutcome?: CompletionOutcome;
   evidenceRefs?: EvidenceRef[];
   handoffRefs?: string[];
   suggestedNextActions?: SuggestedNextAction[];
@@ -106,7 +114,86 @@ export function workContractStorePath(location: WorkContractStoreLocation): stri
 }
 
 export function emptyWorkContractStore(updatedAt: string): WorkContractStore {
-  return { schemaVersion: 1, updatedAt, contracts: [] };
+  return { schemaVersion: 2, updatedAt, contracts: [] };
+}
+
+function inferredDispatchState(status: WorkContractStatus): DispatchState {
+  if (status === 'open' || status === 'ready') return 'not_dispatched';
+  if (status === 'running') return 'running';
+  if (status === 'blocked') return 'blocked';
+  return 'terminal';
+}
+
+function dispatchStateForStatusUpdate(current: DispatchState, status: WorkContractStatus | undefined): DispatchState {
+  // `ready` means evidence/approval readiness in the legacy projection; it
+  // does not mean a running dispatch was never launched.
+  if (!status || status === 'ready') return current;
+  return inferredDispatchState(status);
+}
+
+function inferredEvidenceState(status: WorkContractStatus): EvidenceState {
+  if (status === 'failed') return 'failed';
+  // A legacy completed status never proves that its evidence remains current.
+  if (status === 'completed') return 'partial';
+  return 'none';
+}
+
+function validateWorkSemantics(contract: WorkContract): WorkContract {
+  const outcome = contract.completionOutcome;
+  if (!outcome) return contract;
+  if (contract.dispatchState !== 'terminal') {
+    throw new Error(`WORK_SEMANTICS_INVALID: ${outcome} requires terminal dispatch`);
+  }
+  if (contract.evidenceState !== 'valid') {
+    throw new Error(`WORK_SEMANTICS_INVALID: ${outcome} requires valid evidence`);
+  }
+  if (outcome === 'completed_changed' && contract.workKind !== 'repository_change') {
+    throw new Error('WORK_SEMANTICS_INVALID: completed_changed requires repository_change WorkKind');
+  }
+  if (outcome === 'completed_no_change' && contract.workKind !== 'completed_no_change') {
+    throw new Error('WORK_SEMANTICS_INVALID: completed_no_change requires completed_no_change WorkKind');
+  }
+  if (outcome === 'completed_remote' && contract.workKind !== 'remote_effect') {
+    throw new Error('WORK_SEMANTICS_INVALID: completed_remote requires remote_effect WorkKind');
+  }
+  if (outcome === 'superseded' && contract.workKind !== 'superseded') {
+    throw new Error('WORK_SEMANTICS_INVALID: superseded requires superseded WorkKind');
+  }
+  return contract;
+}
+
+const DISPATCH_TRANSITIONS: Readonly<Record<DispatchState, readonly DispatchState[]>> = {
+  not_dispatched: ['not_dispatched', 'claimed', 'launching', 'running', 'blocked', 'terminal'],
+  claimed: ['claimed', 'launching', 'running', 'blocked', 'terminal'],
+  launching: ['launching', 'running', 'blocked', 'terminal'],
+  running: ['running', 'blocked', 'terminal'],
+  blocked: ['blocked', 'claimed', 'launching', 'running', 'terminal'],
+  terminal: ['terminal'],
+};
+
+const EVIDENCE_TRANSITIONS: Readonly<Record<EvidenceState, readonly EvidenceState[]>> = {
+  none: ['none', 'partial', 'valid', 'failed'],
+  partial: ['partial', 'valid', 'stale', 'contradictory', 'failed'],
+  valid: ['valid', 'stale', 'contradictory', 'failed'],
+  stale: ['stale', 'partial', 'valid', 'contradictory', 'failed'],
+  contradictory: ['contradictory', 'partial', 'valid', 'failed'],
+  failed: ['failed', 'partial', 'valid', 'contradictory'],
+};
+
+function validateWorkSemanticTransition(current: WorkContract, next: WorkContract): WorkContract {
+  const retryingFailedWork = current.status === 'failed'
+    && !current.completionOutcome
+    && ['claimed', 'launching', 'running', 'blocked'].includes(next.dispatchState);
+  if (!retryingFailedWork && !DISPATCH_TRANSITIONS[current.dispatchState].includes(next.dispatchState)) {
+    throw new Error(`WORK_SEMANTICS_TRANSITION_INVALID: dispatch ${current.dispatchState} -> ${next.dispatchState}`);
+  }
+  if (!EVIDENCE_TRANSITIONS[current.evidenceState].includes(next.evidenceState)) {
+    throw new Error(`WORK_SEMANTICS_TRANSITION_INVALID: evidence ${current.evidenceState} -> ${next.evidenceState}`);
+  }
+  if (current.completionOutcome && current.completionOutcome !== next.completionOutcome) {
+    throw new Error(`WORK_SEMANTICS_TRANSITION_INVALID: completion outcome ${current.completionOutcome} is immutable`);
+  }
+  return next;
 }
 
 function sqliteBacked(options: WorkContractStoreOptions): options is WorkContractStoreOptions & { controllerHome: string; repoId: string } {
@@ -119,13 +206,20 @@ function normalizeWorkContractStore(store: WorkContractStore): WorkContractStore
   // Read legacy facade records without retaining the old state machine.
   return {
     ...store,
-    contracts: store.contracts.map((contract) => ({
-      ...contract,
-      status: ({ pending: 'open', waiting_for_review: 'ready', succeeded: 'completed' } as Record<string, WorkContractStatus>)[String(contract.status)] ?? contract.status,
-      driver: (contract.driver as unknown as { preferred?: string } | undefined)?.preferred === 'codex_worker'
-        ? { ...contract.driver, preferred: 'external_controller', allowWorker: false }
-        : contract.driver,
-    })),
+    contracts: store.contracts.map((legacy) => {
+      const status = ({ pending: 'open', waiting_for_review: 'ready', succeeded: 'completed' } as Record<string, WorkContractStatus>)[String(legacy.status)] ?? legacy.status;
+      return validateWorkSemantics({
+        ...legacy,
+        schemaVersion: legacy.schemaVersion ?? 1,
+        status,
+        workKind: legacy.workKind ?? 'repository_change',
+        dispatchState: legacy.dispatchState ?? inferredDispatchState(status),
+        evidenceState: legacy.evidenceState ?? inferredEvidenceState(status),
+        driver: (legacy.driver as unknown as { preferred?: string } | undefined)?.preferred === 'codex_worker'
+          ? { ...legacy.driver, preferred: 'external_controller', allowWorker: false }
+          : legacy.driver,
+      });
+    }),
   };
 }
 
@@ -136,7 +230,7 @@ export function readWorkContractStore(options: WorkContractStoreOptions): WorkCo
       namespace: 'work_contract_store',
       scope: options.repoId,
       key: 'index',
-      schemaVersion: 1,
+      schemaVersion: 2,
       readLegacy: () => readJsonFile<WorkContractStore>(legacyPath, emptyWorkContractStore(nowIso(options))),
     });
     return normalizeWorkContractStore(record?.value ?? emptyWorkContractStore(nowIso(options)));
@@ -186,61 +280,65 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
   return withWorkContractStoreWrite(options, () => {
     const at = input.createdAt ?? input.updatedAt ?? nowIso(options);
     const workId = sanitizeFileComponent(input.workId);
-    const contract: WorkContract = {
-    schemaVersion: 1,
-    workId,
-    repoId: input.repoId,
-    mode: input.mode,
-    objective: input.objective.slice(0, 2_000),
-    acceptanceCriteria: (input.acceptanceCriteria ?? []).slice(0, 20).map((item) => item.slice(0, 500)),
-    constraints: input.constraints ?? { requireHandoffOnAmbiguity: true },
-    status: input.status ?? 'open',
-    createdAt: at,
-    updatedAt: input.updatedAt ?? at,
-    issueId: input.issueId,
-    taskId: input.taskId,
-    planId: input.planId,
-    planStepId: input.planStepId,
-    planSourceRevision: input.planSourceRevision,
-    scopeSummary: input.scopeSummary?.slice(0, 1_000),
-    allowedPaths: (input.allowedPaths ?? []).slice(0, 50),
-    forbiddenPaths: (input.forbiddenPaths ?? []).slice(0, 50),
-    checks: (input.checks ?? []).slice(0, 30),
-    driver: input.driver ?? defaultDriver(input.mode),
-    worktreePolicy: input.worktreePolicy ?? {
-      required: input.mode === 'goal_workloop',
-      reason: input.mode === 'goal_workloop' ? 'Goal workloop defaults to isolated worktree execution.' : undefined,
-    },
-    evidencePolicy: input.evidencePolicy ?? {
-      defaultDetailLevel: 'summary',
-      allowRawOptIn: true,
-      maxEvidenceRefs: 20,
-    },
-    approvalPolicy: input.approvalPolicy ?? { required: false, reasons: [], confirmed: false },
-    recoveryPolicy: input.recoveryPolicy ?? {
-      allowSelfHealing: false,
-      maxInfrastructureRetries: 0,
-      handoffOnAmbiguity: true,
-    },
-    requestedBy: input.requestedBy ?? 'chatgpt',
-    evidenceRefs: (input.evidenceRefs ?? []).slice(0, 20),
-    handoffRefs: (input.handoffRefs ?? []).slice(0, 20),
-    suggestedNextActions: (input.suggestedNextActions ?? []).slice(0, 8),
-    policyDecisions: (input.policyDecisions ?? []).slice(0, 20),
-    checkRefs: (input.checkRefs ?? []).slice(0, 50),
-    continuationPrompt: input.continuationPrompt?.slice(0, 2_000),
-    worktreeRef: input.worktreeRef,
-    workerRef: input.workerRef,
-    requestId: input.requestId?.trim() || undefined,
-    submittedOperation: input.submittedOperation,
-  };
+    const contract: WorkContract = validateWorkSemantics({
+      schemaVersion: 2,
+      workId,
+      repoId: input.repoId,
+      mode: input.mode,
+      objective: input.objective.slice(0, 2_000),
+      acceptanceCriteria: (input.acceptanceCriteria ?? []).slice(0, 20).map((item) => item.slice(0, 500)),
+      constraints: input.constraints ?? { requireHandoffOnAmbiguity: true },
+      workKind: input.workKind ?? 'repository_change',
+      dispatchState: input.dispatchState ?? inferredDispatchState(input.status ?? 'open'),
+      evidenceState: input.evidenceState ?? inferredEvidenceState(input.status ?? 'open'),
+      completionOutcome: input.completionOutcome,
+      status: input.status ?? 'open',
+      createdAt: at,
+      updatedAt: input.updatedAt ?? at,
+      issueId: input.issueId,
+      taskId: input.taskId,
+      planId: input.planId,
+      planStepId: input.planStepId,
+      planSourceRevision: input.planSourceRevision,
+      scopeSummary: input.scopeSummary?.slice(0, 1_000),
+      allowedPaths: (input.allowedPaths ?? []).slice(0, 50),
+      forbiddenPaths: (input.forbiddenPaths ?? []).slice(0, 50),
+      checks: (input.checks ?? []).slice(0, 30),
+      driver: input.driver ?? defaultDriver(input.mode),
+      worktreePolicy: input.worktreePolicy ?? {
+        required: input.mode === 'goal_workloop',
+        reason: input.mode === 'goal_workloop' ? 'Goal workloop defaults to isolated worktree execution.' : undefined,
+      },
+      evidencePolicy: input.evidencePolicy ?? {
+        defaultDetailLevel: 'summary',
+        allowRawOptIn: true,
+        maxEvidenceRefs: 20,
+      },
+      approvalPolicy: input.approvalPolicy ?? { required: false, reasons: [], confirmed: false },
+      recoveryPolicy: input.recoveryPolicy ?? {
+        allowSelfHealing: false,
+        maxInfrastructureRetries: 0,
+        handoffOnAmbiguity: true,
+      },
+      requestedBy: input.requestedBy ?? 'chatgpt',
+      evidenceRefs: (input.evidenceRefs ?? []).slice(0, 20),
+      handoffRefs: (input.handoffRefs ?? []).slice(0, 20),
+      suggestedNextActions: (input.suggestedNextActions ?? []).slice(0, 8),
+      policyDecisions: (input.policyDecisions ?? []).slice(0, 20),
+      checkRefs: (input.checkRefs ?? []).slice(0, 50),
+      continuationPrompt: input.continuationPrompt?.slice(0, 2_000),
+      worktreeRef: input.worktreeRef,
+      workerRef: input.workerRef,
+      requestId: input.requestId?.trim() || undefined,
+      submittedOperation: input.submittedOperation,
+    });
 
     const store = readWorkContractStore(options);
     if (store.contracts.some((existing) => existing.workId === contract.workId)) {
       throw new Error(`work contract already exists: ${contract.workId}`);
     }
     const nextStore: WorkContractStore = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       updatedAt: contract.updatedAt,
       contracts: [contract, ...store.contracts],
     };
@@ -526,7 +624,7 @@ function reconcileStaleWorkContractsLocked(
   });
 
   if (workIds.length > 0) {
-    writeWorkContractStore(options, { schemaVersion: 1, updatedAt: now, contracts });
+    writeWorkContractStore(options, { schemaVersion: 2, updatedAt: now, contracts });
   }
   return {
     scanned: candidates.length,
@@ -569,13 +667,18 @@ export function updateWorkContract(
     if (index < 0) throw new Error(`work contract not found: ${sanitizedId}`);
     const at = nowIso(options);
     const current = store.contracts[index];
-    const next: WorkContract = {
+    const next: WorkContract = validateWorkSemanticTransition(current, validateWorkSemantics({
     ...current,
     ...patch,
+    schemaVersion: 2,
     workId: current.workId,
     repoId: current.repoId,
     createdAt: current.createdAt,
     updatedAt: at,
+    workKind: patch.workKind ?? current.workKind,
+    dispatchState: patch.dispatchState ?? dispatchStateForStatusUpdate(current.dispatchState, patch.status),
+    evidenceState: patch.evidenceState ?? current.evidenceState,
+    completionOutcome: patch.completionOutcome ?? current.completionOutcome,
     evidenceRefs: (patch.evidenceRefs ?? current.evidenceRefs).slice(0, current.evidencePolicy.maxEvidenceRefs),
     handoffRefs: (patch.handoffRefs ?? current.handoffRefs).slice(0, 20),
     suggestedNextActions: (patch.suggestedNextActions ?? current.suggestedNextActions).slice(0, 8),
@@ -583,10 +686,10 @@ export function updateWorkContract(
     checkRefs: (patch.checkRefs ?? current.checkRefs).slice(0, 50),
     objective: (patch.objective ?? current.objective).slice(0, 2_000),
     continuationPrompt: (patch.continuationPrompt ?? current.continuationPrompt)?.slice(0, 2_000),
-  };
+    }));
     const contracts = [...store.contracts];
     contracts[index] = next;
-    writeWorkContractStore(options, { schemaVersion: 1, updatedAt: at, contracts });
+    writeWorkContractStore(options, { schemaVersion: 2, updatedAt: at, contracts });
     return next;
   });
 }
