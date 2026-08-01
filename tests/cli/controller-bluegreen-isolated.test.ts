@@ -40,8 +40,8 @@ function git(cwd: string, args: string[]): string {
   return result.stdout.trim();
 }
 
-function createCleanRuntimeSourceRoot(name: string): string {
-  const path = join(ROOT, '_ops', `test-runtime-source-${name}-${Date.now()}`);
+function createCleanRuntimeSourceRoot(name: string, target?: string): string {
+  const path = target ?? join(ROOT, '_ops', `test-runtime-source-${name}-${Date.now()}`);
   rmSync(path, { recursive: true, force: true });
   mkdirSync(path, { recursive: true });
   const excluded = new Set(['.git', '.codegraph', '.repo-harness', '_ops', 'node_modules']);
@@ -326,7 +326,13 @@ describe('blue/green isolated lifecycle (level 2)', () => {
     const previousSource = process.env.REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT;
     const previousControlPort = process.env.REPO_HARNESS_SUPERVISOR_CONTROL_PORT;
     const controlPort = await allocateFreePort();
+    // The release source must resolve to the authoritative repoRoot (the
+    // Supervisor refuses to persist an arbitrary sibling checkout), so the
+    // clean runtime source IS the fixture repo. It stays under the worktree
+    // so bun build can resolve node_modules upward.
     const cleanSourceRoot = createCleanRuntimeSourceRoot('stable-rollout');
+    rmSync(fixture.repoRoot, { recursive: true, force: true });
+    fixture.repoRoot = cleanSourceRoot;
     Object.assign(process.env, isolatedControllerEnv(fixture, {
       REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT: cleanSourceRoot,
       REPO_HARNESS_SUPERVISOR_CONTROL_PORT: String(controlPort),
