@@ -68,6 +68,7 @@ export const executionToolDefinitions: McpToolDefinition[] = [
   }, ['work_id'], false),
   definition('work_finalize', 'Idempotently validate, commit, merge, clean a managed worktree, and complete the existing WorkContract in independently recorded stages.', {
     session_id: sessionId, controller_id: { type: 'string', description: 'Controller identity that holds the Work lease. Defaults to the authenticated principal.' }, repo_id: repoId, work_id: workId, commit: { type: 'boolean' }, message: { type: 'string' }, merge: { type: 'boolean' }, target_branch: { type: 'string' }, delete_branch: { type: 'boolean' }, cleanup: { type: 'boolean' }, no_ff: { type: 'boolean' }, approval_request_id: { type: 'string' },
+    completion_outcome: { type: 'string', enum: ['completed_changed', 'completed_no_change'] }, no_change_evidence: { type: 'string', description: 'Objective-specific proof that the requested state already holds; required for completed_no_change.' },
   }, ['work_id'], false, true),
   definition('approval_resolve', 'Resolve a controller approval request from the current conversation; GUI approval is optional and not required for continuation.', { session_id: sessionId, repo_id: repoId, work_id: workId, approval_request_id: { type: 'string' }, confirm_authorization: { type: 'boolean' } }, ['approval_request_id', 'confirm_authorization'], false),
   definition('result_read', 'Read a session-scoped result reference with bounded pagination.', { session_id: sessionId, result_ref: { type: 'string' }, work_id: workId, cursor: { type: 'number' }, limit: { type: 'number' } }, ['result_ref'], true),
@@ -947,6 +948,13 @@ function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, u
     return { idempotent: true, work: compactHandle(current) };
   }
   const identity = identityFor(ctx, args);
+  const requestedOutcome = args.completion_outcome === 'completed_no_change' || args.completion_outcome === 'completed_changed'
+    ? args.completion_outcome
+    : undefined;
+  const noChangeProof = typeof args.no_change_evidence === 'string' ? args.no_change_evidence.trim().slice(0, 1_000) : '';
+  if (requestedOutcome === 'completed_no_change' && (!noChangeProof || args.commit === true || args.merge === true)) {
+    throw new Error('WORK_NO_CHANGE_PROOF_REQUIRED: completed_no_change requires objective-specific evidence and forbids commit/merge');
+  }
   const wants = { commit: args.commit === true, merge: args.merge === true, cleanup: args.cleanup === true };
 
   const transact = (label: string, update: (fresh: WorkHandleState) => WorkHandleState): WorkHandleState =>
@@ -1044,6 +1052,13 @@ function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, u
     }));
   }
 
+  if (requestedOutcome === 'completed_no_change') {
+    const inspected = validateWorkHandle(ctx.controllerHome, current, identity, 'full', 'finalize');
+    if (!repositoryGitStatus(inspected.worktreeRepository).clean) {
+      throw new Error('WORK_NO_CHANGE_DIRTY: completed_no_change cannot retain an owned dirty worktree');
+    }
+  }
+
   if (wants.commit && current.finalization.commit === 'pending') {
     const validated = validateWorkHandle(ctx.controllerHome, current, identity, 'full', 'finalize');
     const contract = contractFor(ctx, current);
@@ -1127,7 +1142,23 @@ function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, u
         },
       );
     } else {
-      updateWorkContract({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId ?? current.workId, { status: 'completed' });
+      const workId = current.workContractId ?? current.workId;
+      if (requestedOutcome === 'completed_no_change') {
+        appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, workId, {
+          title: 'objective-specific no-change proof',
+          summary: noChangeProof,
+          detailLevel: 'summary',
+        });
+        updateWorkContract({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, workId, {
+          status: 'completed',
+          workKind: 'completed_no_change',
+          dispatchState: 'terminal',
+          evidenceState: 'valid',
+          completionOutcome: 'completed_no_change',
+        });
+      } else {
+        updateWorkContract({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, workId, { status: 'completed' });
+      }
     }
     if (finalState === 'cleaned') {
       updateExecutionSession(ctx.controllerHome, identity, { activeWorkId: undefined, activeCheckoutId: current.sourceCheckoutId ?? session.activeCheckoutId });

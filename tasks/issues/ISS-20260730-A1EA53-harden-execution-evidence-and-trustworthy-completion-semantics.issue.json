@@ -231,7 +231,7 @@
       "id": "T4",
       "title": "Gate finalize for changed and no-change outcomes",
       "objective": "Update finalize so changed work and completed_no_change use distinct evidence gates; record failed commit, merge, or cleanup as resumable non-terminal stages.",
-      "status": "planned",
+      "status": "in_progress",
       "dependsOn": [
         "T3"
       ],
@@ -252,10 +252,12 @@
         "Retrying finalize is idempotent and resumes from the last durable stage."
       ],
       "risk": "medium",
-      "notes": [],
+      "notes": [
+        "2026-08-01: Implemented the first explicit completed_no_change finalization path. It requires objective-specific proof, forbids commit/merge, rejects a dirty owned workspace, and persists completed_no_change semantic state. Receipt issuance for no-change and reconciliation evidence remain."
+      ],
       "runIds": [],
       "createdAt": "2026-07-30T09:28:07.844Z",
-      "updatedAt": "2026-07-30T09:28:07.844Z",
+      "updatedAt": "2026-08-01T00:00:00.000Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {

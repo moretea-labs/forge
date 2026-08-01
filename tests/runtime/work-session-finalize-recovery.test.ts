@@ -333,6 +333,41 @@ describe('controller-owned Work recovery and finalize cleanup', () => {
     expect(existsSync(join(ambientRoot, 'cross-repository.txt'))).toBe(false);
   });
 
+  test('requires objective-specific proof for a completed_no_change outcome', async () => {
+    const { controllerHome, repository, context } = fixture();
+    const ctx = context('session-no-change-finalize', 'controller-no-change-finalize');
+    structured(await callExecutionTool(ctx, 'session_start', {}));
+    structured(await callExecutionTool(ctx, 'session_bind_repository', { repo_id: repository.repoId }));
+    const prepared = structured(await callExecutionTool(ctx, 'work_prepare', {
+      repo_id: repository.repoId,
+      objective: 'Confirm the clean fixture already satisfies this objective',
+      isolation: 'reuse',
+      request_id: 'prepare-no-change-finalize',
+    }));
+    const workId = String(prepared.work.workId);
+    const missingProof = structured(await callExecutionTool(ctx, 'work_finalize', {
+      repo_id: repository.repoId,
+      work_id: workId,
+      completion_outcome: 'completed_no_change',
+    }));
+    expect(missingProof.error.code).toBe('WORK_NO_CHANGE_PROOF_REQUIRED');
+
+    const finalized = structured(await callExecutionTool(ctx, 'work_finalize', {
+      repo_id: repository.repoId,
+      work_id: workId,
+      completion_outcome: 'completed_no_change',
+      no_change_evidence: 'The requested fixture file and its required content already exist at the exact checked revision.',
+    }));
+    expect(finalized.completed).toBe(true);
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)).toMatchObject({
+      status: 'completed',
+      workKind: 'completed_no_change',
+      dispatchState: 'terminal',
+      evidenceState: 'valid',
+      completionOutcome: 'completed_no_change',
+    });
+  });
+
   test('cleanup-only finalize reconciles a clean branch already merged outside the Work stages', async () => {
     const { repoRoot, controllerHome, repository, context } = fixture();
     const ctx = context('session-cleanup-reconcile', 'controller-cleanup-reconcile');

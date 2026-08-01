@@ -70,12 +70,13 @@ Result Goal 1 of ISS-20260730-AE1BCC for the next reliability release line. The 
 
 ### T4 — Gate finalize for changed and no-change outcomes
 
-- Status: `planned`
+- Status: `in_progress`
 - Objective: Update finalize so changed work and completed_no_change use distinct evidence gates; record failed commit, merge, or cleanup as resumable non-terminal stages.
 - Depends on: `T3`
 - Allowed paths: `src/runtime/control-plane/**`, `src/runtime/workflow/**`, `src/runtime/git/**`, `tests/**`
 - Checks: `typecheck`, `test`
 - Execution hint: selected at runtime
+- Progress: `completed_no_change` now requires objective-specific proof, forbids commit/merge, rejects a dirty owned workspace, and persists a distinct outcome. No-change receipt issuance and reconciliation evidence remain.
 
 ### T5 — Harden cross-session recovery and continuation handoff
 
