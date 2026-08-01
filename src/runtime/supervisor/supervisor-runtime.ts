@@ -1264,7 +1264,6 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       ...(release ? {
         runtimeExecutable: release.runtimeExecutable,
         daemonExecutable: release.daemonExecutable,
-        runtimeSourceRoot: release.sourceRoot ?? this.options.runtimeSourceRoot,
         releasePath: release.releasePath,
         releaseRevision: release.releaseRevision,
       } : {}),
@@ -2081,6 +2080,17 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     const currentReleaseManager = expectedRelease
       ? this.managerForSlot(activeSlot, expectedRelease)
       : undefined;
+    const staleCleanup = await (currentReleaseManager ?? this.managerForSlot(activeSlot))
+      .cleanupStaleSlotDaemons(activeSlot, {
+        reason: 'active_slot_preflight_cleanup',
+        ...(this.state.currentOperationId ? { operationId: this.state.currentOperationId } : {}),
+      }, {
+        includeCurrentOwnerEpoch: true,
+        preservePids: new Set(this.state.controllerDaemon?.pid ? [this.state.controllerDaemon.pid] : []),
+      });
+    if (staleCleanup.failed > 0) {
+      throw new Error(`SUPERVISOR_ACTIVE_SLOT_DAEMON_CLEANUP_FAILED: ${staleCleanup.errors.join('; ')}`);
+    }
     if (!this.state.controllerDaemon || this.manager.observe(this.state.controllerDaemon) !== 'alive') {
       const previous = this.state.controllerDaemon;
       const started = await (currentReleaseManager ?? this.managerForManaged(previous, activeSlot)).startDaemon();

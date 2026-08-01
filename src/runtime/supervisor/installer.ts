@@ -66,9 +66,15 @@ function publishRuntimeSourceRoot(input: {
   const releaseSourceExists = existsSync(releaseSourceRoot);
   const releaseSourceLooksValid = releaseSourceExists && looksLikeControllerRuntimePackage(releaseSourceRoot);
   const managedSource = controllerManagedRuntimeSource(input.controllerHome, releaseSourceRoot);
-  if (releaseSourceLooksValid && !managedSource) return runtimeSourceRoot(releaseSourceRoot);
-
   const repoHead = gitHead(repoRoot);
+  const canonicalRepoRoot = containmentPath(repoRoot);
+  const canonicalReleaseSourceRoot = containmentPath(releaseSourceRoot);
+  if (canonicalReleaseSourceRoot === canonicalRepoRoot) return repoRoot;
+
+  // A release may have been built in an isolated checkout, but its launched
+  // runtime must always resolve source-relative behavior from the authoritative
+  // checkout bound to this Controller Home. Never persist an arbitrary sibling
+  // worktree path merely because it contains a valid runtime package.
   if (input.release.sourceCommit && repoHead === input.release.sourceCommit && looksLikeControllerRuntimePackage(repoRoot)) {
     return repoRoot;
   }
@@ -77,6 +83,7 @@ function publishRuntimeSourceRoot(input: {
     releaseSourceExists ? undefined : 'sourceRoot missing',
     releaseSourceExists && !releaseSourceLooksValid ? 'sourceRoot is not a controller runtime package' : undefined,
     managedSource ? 'sourceRoot is a controller-managed worktree' : undefined,
+    !managedSource ? `sourceRoot is not the authoritative repoRoot ${repoRoot}` : undefined,
     input.release.sourceCommit ? undefined : 'sourceCommit missing',
     repoHead && input.release.sourceCommit && repoHead !== input.release.sourceCommit
       ? `repoRoot HEAD ${repoHead} differs from release sourceCommit ${input.release.sourceCommit}`
