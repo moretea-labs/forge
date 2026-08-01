@@ -5,6 +5,7 @@ import { resolveCompletionTargetBranch } from '../../../cli/controller/completio
 import type { CompletionReceipt, ControllerIssue } from '../../../cli/controller/types';
 import { getWorkContract } from '../facade/work-contract-store';
 import { readWorkHandle } from './work-handle-store';
+import { effectiveVerificationEvidence } from './verification-evidence';
 
 function gitText(repoRoot: string, args: string[]): string {
   const result = spawnSync('git', args, { cwd: repoRoot, encoding: 'utf-8' });
@@ -39,6 +40,17 @@ function assertWorkNotBoundElsewhere(repoRoot: string, workId: string, issueId: 
       if (issue.id === issueId && task.id === taskId) continue;
       throw new Error(`CONTROLLER_WORK_RECEIPT_ALREADY_BOUND: ${workId} -> ${issue.id}/${task.id}`);
     }
+  }
+}
+
+function assertCurrentRequiredChecks(contract: NonNullable<ReturnType<typeof getWorkContract>>, targetRevision: string): void {
+  for (const checkId of contract.checks) {
+    const current = effectiveVerificationEvidence(contract.checkRefs, {
+      sourceRevision: targetRevision,
+      checkId,
+      requestedChecks: contract.checks,
+    }).some((entry) => entry.current && entry.record.outcome === 'valid_pass');
+    if (!current) throw new Error(`CONTROLLER_WORK_RECEIPT_CHECK_EVIDENCE_STALE: ${checkId}`);
   }
 }
 
@@ -95,6 +107,7 @@ export function acceptVerifiedTaskFromControllerWork(input: ControllerWorkTaskRe
   if (targetRevision !== verifiedRevision) {
     throw new Error(`CONTROLLER_WORK_RECEIPT_REVISION_MISMATCH: work=${targetRevision} task=${verifiedRevision}`);
   }
+  assertCurrentRequiredChecks(contract, targetRevision);
   const baseRevision = commitRevision(input.repoRoot, handle.baseCommit, 'BASE_REVISION');
   const targetBranch = resolveCompletionTargetBranch(input.repoRoot);
   const reachable = spawnSync('git', ['merge-base', '--is-ancestor', targetRevision, targetBranch], {

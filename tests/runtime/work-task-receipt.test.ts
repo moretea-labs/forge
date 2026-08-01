@@ -4,9 +4,10 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { createIssue, getIssue, updateTask } from '../../src/cli/controller/issue-store';
-import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { acceptVerifiedTaskFromControllerWork } from '../../src/runtime/control-plane/execution/work-task-receipt';
+import { verificationInputFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
 
 const roots: string[] = [];
 
@@ -165,6 +166,31 @@ describe('controller Work Task completion receipt', () => {
       taskId: 'T1',
       workId: fx.workId,
     })).toThrow(/FINALIZATION_INCOMPLETE/);
+    expect(getIssue(fx.repoRoot, fx.issueId).tasks[0]!.status).toBe('verified');
+  });
+
+  test('rejects a required check whose exact revision is stale', () => {
+    const fx = fixture();
+    const checkId = 'package:test';
+    updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
+      checks: [checkId],
+      checkRefs: [{
+        checkId,
+        outcome: 'valid_pass',
+        summary: 'passed on the base revision',
+        recordedAt: new Date().toISOString(),
+        sourceRevision: fx.baseCommit,
+        verificationInputFingerprint: verificationInputFingerprint({ sourceRevision: fx.baseCommit, checkId, requestedChecks: [checkId] }),
+      }],
+    });
+    expect(() => acceptVerifiedTaskFromControllerWork({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repoId,
+      repoRoot: fx.repoRoot,
+      issueId: fx.issueId,
+      taskId: 'T1',
+      workId: fx.workId,
+    })).toThrow(/CHECK_EVIDENCE_STALE/);
     expect(getIssue(fx.repoRoot, fx.issueId).tasks[0]!.status).toBe('verified');
   });
 });
