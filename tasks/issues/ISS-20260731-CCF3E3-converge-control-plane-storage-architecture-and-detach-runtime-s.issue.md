@@ -1,8 +1,8 @@
 ---
 id: "ISS-20260731-CCF3E3"
 kind: "governance"
-status: "planned"
-updated_at: "2026-07-31T04:18:55.044Z"
+status: "in_progress"
+updated_at: "2026-08-01T00:00:00.000Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -40,12 +40,13 @@ Define and gradually implement the long-term Repo Harness Control Plane storage 
 
 ### T1 — Write Control Plane storage architecture decision
 
-- Status: `ready`
+- Status: `verified`
 - Objective: Document authoritative state boundaries, repository ownership, artifact ownership, projection rules, lifecycle differences, and migration principles. This task is analysis/documentation only.
 - Depends on: none
 - Allowed paths: `docs/**`
 - Checks: `package:check:public-docs`
 - Execution hint: selected at runtime
+- Evidence: `docs/architecture/decisions/20260801-controller-home-sqlite-state.md` defines the controller-home SQLite authority, one-way JSON import, audit, rollback, and phased migration. `package:check:public-docs` passed on 2026-08-01.
 
 ### T2 — Inventory current state stores and migration dependencies
 

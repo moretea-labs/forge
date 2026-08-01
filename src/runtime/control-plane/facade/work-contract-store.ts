@@ -4,6 +4,7 @@ import { join } from 'path';
 import { ensureControllerHome, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import { withControllerLock } from '../../../cli/repositories/locks';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
+import { readOrImportControlPlaneRecord, writeControlPlaneRecord } from '../persistence/sqlite-store';
 import {
   type EvidenceRef,
   type PolicyDecision,
@@ -108,8 +109,13 @@ export function emptyWorkContractStore(updatedAt: string): WorkContractStore {
   return { schemaVersion: 1, updatedAt, contracts: [] };
 }
 
-export function readWorkContractStore(options: WorkContractStoreOptions): WorkContractStore {
-  const store = readJsonFile<WorkContractStore>(workContractStorePath(options), emptyWorkContractStore(nowIso(options)));
+function sqliteBacked(options: WorkContractStoreOptions): options is WorkContractStoreOptions & { controllerHome: string; repoId: string } {
+  // A caller-provided root is a test/portable compatibility store.  Runtime
+  // controller state always carries controllerHome + repoId and is SQLite.
+  return Boolean(!options.root && options.controllerHome?.trim() && options.repoId?.trim());
+}
+
+function normalizeWorkContractStore(store: WorkContractStore): WorkContractStore {
   // Read legacy facade records without retaining the old state machine.
   return {
     ...store,
@@ -123,9 +129,47 @@ export function readWorkContractStore(options: WorkContractStoreOptions): WorkCo
   };
 }
 
+export function readWorkContractStore(options: WorkContractStoreOptions): WorkContractStore {
+  if (sqliteBacked(options)) {
+    const legacyPath = workContractStorePath(options);
+    const record = readOrImportControlPlaneRecord<WorkContractStore>(options.controllerHome, {
+      namespace: 'work_contract_store',
+      scope: options.repoId,
+      key: 'index',
+      schemaVersion: 1,
+      readLegacy: () => readJsonFile<WorkContractStore>(legacyPath, emptyWorkContractStore(nowIso(options))),
+    });
+    return normalizeWorkContractStore(record?.value ?? emptyWorkContractStore(nowIso(options)));
+  }
+  return normalizeWorkContractStore(readJsonFile<WorkContractStore>(workContractStorePath(options), emptyWorkContractStore(nowIso(options))));
+}
+
 export function writeWorkContractStore(options: WorkContractStoreOptions, store: WorkContractStore): WorkContractStore {
+  if (sqliteBacked(options)) {
+    writeControlPlaneRecord(options.controllerHome, {
+      namespace: 'work_contract_store',
+      scope: options.repoId,
+      key: 'index',
+      schemaVersion: store.schemaVersion,
+      value: store,
+      action: 'work_contract_store_write',
+    });
+    return store;
+  }
   writeJsonAtomic(workContractStorePath(options), store);
   return store;
+}
+
+function withWorkContractStoreWrite<T>(options: WorkContractStoreOptions, operation: () => T): T {
+  if (!sqliteBacked(options)) return operation();
+  return withControllerLock(
+    options.controllerHome,
+    { scope: 'global', resource: `work-contract-store-${sanitizeFileComponent(options.repoId)}` },
+    `work-contract-store:${options.repoId}`,
+    operation,
+    undefined,
+    5_000,
+  );
 }
 
 function defaultDriver(mode: WorkContract['mode']): WorkContract['driver'] {
@@ -139,9 +183,10 @@ function defaultDriver(mode: WorkContract['mode']): WorkContract['driver'] {
 }
 
 export function createWorkContract(options: WorkContractStoreOptions, input: CreateWorkContractInput): WorkContract {
-  const at = input.createdAt ?? input.updatedAt ?? nowIso(options);
-  const workId = sanitizeFileComponent(input.workId);
-  const contract: WorkContract = {
+  return withWorkContractStoreWrite(options, () => {
+    const at = input.createdAt ?? input.updatedAt ?? nowIso(options);
+    const workId = sanitizeFileComponent(input.workId);
+    const contract: WorkContract = {
     schemaVersion: 1,
     workId,
     repoId: input.repoId,
@@ -190,17 +235,18 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
     submittedOperation: input.submittedOperation,
   };
 
-  const store = readWorkContractStore(options);
-  if (store.contracts.some((existing) => existing.workId === contract.workId)) {
-    throw new Error(`work contract already exists: ${contract.workId}`);
-  }
-  const nextStore: WorkContractStore = {
-    schemaVersion: 1,
-    updatedAt: contract.updatedAt,
-    contracts: [contract, ...store.contracts],
-  };
-  writeWorkContractStore(options, nextStore);
-  return contract;
+    const store = readWorkContractStore(options);
+    if (store.contracts.some((existing) => existing.workId === contract.workId)) {
+      throw new Error(`work contract already exists: ${contract.workId}`);
+    }
+    const nextStore: WorkContractStore = {
+      schemaVersion: 1,
+      updatedAt: contract.updatedAt,
+      contracts: [contract, ...store.contracts],
+    };
+    writeWorkContractStore(options, nextStore);
+    return contract;
+  });
 }
 
 interface WorkRequestIndexRecord {
@@ -380,6 +426,13 @@ export function reconcileStaleWorkContracts(
   options: WorkContractStoreOptions,
   input: WorkContractReconciliationInput,
 ): WorkContractReconciliationResult {
+  return withWorkContractStoreWrite(options, () => reconcileStaleWorkContractsLocked(options, input));
+}
+
+function reconcileStaleWorkContractsLocked(
+  options: WorkContractStoreOptions,
+  input: WorkContractReconciliationInput,
+): WorkContractReconciliationResult {
   const store = readWorkContractStore(options);
   const running = store.contracts.filter((contract) => contract.status === 'running');
   const reconciledReviews = store.contracts.filter((contract) =>
@@ -509,13 +562,14 @@ export function updateWorkContract(
   workId: string,
   patch: Partial<Omit<WorkContract, 'schemaVersion' | 'workId' | 'repoId' | 'createdAt'>>,
 ): WorkContract {
-  const sanitizedId = sanitizeFileComponent(workId);
-  const store = readWorkContractStore(options);
-  const index = store.contracts.findIndex((contract) => contract.workId === sanitizedId);
-  if (index < 0) throw new Error(`work contract not found: ${sanitizedId}`);
-  const at = nowIso(options);
-  const current = store.contracts[index];
-  const next: WorkContract = {
+  return withWorkContractStoreWrite(options, () => {
+    const sanitizedId = sanitizeFileComponent(workId);
+    const store = readWorkContractStore(options);
+    const index = store.contracts.findIndex((contract) => contract.workId === sanitizedId);
+    if (index < 0) throw new Error(`work contract not found: ${sanitizedId}`);
+    const at = nowIso(options);
+    const current = store.contracts[index];
+    const next: WorkContract = {
     ...current,
     ...patch,
     workId: current.workId,
@@ -530,10 +584,11 @@ export function updateWorkContract(
     objective: (patch.objective ?? current.objective).slice(0, 2_000),
     continuationPrompt: (patch.continuationPrompt ?? current.continuationPrompt)?.slice(0, 2_000),
   };
-  const contracts = [...store.contracts];
-  contracts[index] = next;
-  writeWorkContractStore(options, { schemaVersion: 1, updatedAt: at, contracts });
-  return next;
+    const contracts = [...store.contracts];
+    contracts[index] = next;
+    writeWorkContractStore(options, { schemaVersion: 1, updatedAt: at, contracts });
+    return next;
+  });
 }
 
 export function appendWorkEvidence(

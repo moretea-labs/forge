@@ -4,7 +4,7 @@
   "title": "Converge Control Plane storage architecture and detach runtime state from repositories",
   "slug": "converge-control-plane-storage-architecture-and-detach-runtime-s",
   "kind": "governance",
-  "status": "planned",
+  "status": "in_progress",
   "summary": "Define and gradually implement the long-term Repo Harness Control Plane storage boundary. Move runtime/task/work state ownership away from product repositories while preserving human-readable projections and avoiding disruption to active reliability work.",
   "goals": [
     "Define authoritative state versus generated projections.",
@@ -31,7 +31,7 @@
       "id": "T1",
       "title": "Write Control Plane storage architecture decision",
       "objective": "Document authoritative state boundaries, repository ownership, artifact ownership, projection rules, lifecycle differences, and migration principles. This task is analysis/documentation only.",
-      "status": "ready",
+      "status": "verified",
       "dependsOn": [],
       "allowedPaths": [
         "docs/**"
@@ -42,10 +42,12 @@
       ],
       "acceptanceCriteria": [],
       "risk": "low",
-      "notes": [],
+      "notes": [
+        "2026-08-01: Accepted docs/architecture/decisions/20260801-controller-home-sqlite-state.md defines controller-home SQLite authority, one-way JSON import, audit records, rollback behavior, and phased migration. package:check:public-docs passed."
+      ],
       "runIds": [],
       "createdAt": "2026-07-31T04:18:55.044Z",
-      "updatedAt": "2026-07-31T04:18:55.044Z",
+      "updatedAt": "2026-08-01T00:00:00.000Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {

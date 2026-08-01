@@ -103,6 +103,7 @@ The following domain pages describe the earlier repo-local workflow-harness arch
 
 ## Accepted Architecture Decisions
 
+- [Controller-home SQLite state authority](decisions/20260801-controller-home-sqlite-state.md) — versioned controller-owned runtime facts, one-way JSON import, audit records, and phased migration.
 - [MCP Session Lifecycle and Stable Ingress Isolation](decisions/20260718-mcp-session-lifecycle-and-ingress-isolation.md) — one global transport-capacity authority, bounded stream leases, capacity-aware readiness, and a supervised ingress child process.
 
 ## Review Backlog

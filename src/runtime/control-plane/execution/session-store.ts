@@ -1,9 +1,10 @@
 import { randomUUID } from 'crypto';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync } from 'fs';
 import { join } from 'path';
 import { ensureControllerHome } from '../../../cli/repositories/controller-home';
-import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
+import { readJsonFile, sanitizeFileComponent } from '../../shared/json-files';
 import type { GoalDelegation } from '../governance/authorization';
+import { readOrImportControlPlaneRecord, writeControlPlaneRecord } from '../persistence/sqlite-store';
 
 export interface ExecutionSessionContext {
   schemaVersion: 1;
@@ -37,14 +38,8 @@ export function currentControllerInstanceId(): string {
     || PROCESS_INSTANCE_ID;
 }
 
-function sessionsRoot(controllerHome: string): string {
-  const root = join(ensureControllerHome(controllerHome), 'sessions');
-  mkdirSync(root, { recursive: true, mode: 0o700 });
-  return root;
-}
-
 function sessionPath(controllerHome: string, sessionId: string): string {
-  return join(sessionsRoot(controllerHome), `${sanitizeFileComponent(sessionId)}.json`);
+  return join(ensureControllerHome(controllerHome), 'sessions', `${sanitizeFileComponent(sessionId)}.json`);
 }
 
 function now(): string {
@@ -65,8 +60,14 @@ export function peekExecutionSession(controllerHome: string, sessionId: string):
   const normalizedSessionId = sessionId.trim();
   if (!normalizedSessionId) return undefined;
   const path = sessionPath(controllerHome, normalizedSessionId);
-  if (!existsSync(path)) return undefined;
-  const session = readJsonFile<ExecutionSessionContext>(path);
+  const session = readOrImportControlPlaneRecord<ExecutionSessionContext>(controllerHome, {
+    namespace: 'execution_session',
+    scope: 'controller',
+    key: sanitizeFileComponent(normalizedSessionId),
+    schemaVersion: 1,
+    readLegacy: () => existsSync(path) ? readJsonFile<ExecutionSessionContext>(path) : undefined,
+  })?.value;
+  if (!session) return undefined;
   return session.sessionId === normalizedSessionId ? session : undefined;
 }
 
@@ -74,8 +75,14 @@ export function readExecutionSession(controllerHome: string, identity: SessionId
   const sessionId = identity.sessionId?.trim();
   if (!sessionId) return undefined;
   const path = sessionPath(controllerHome, sessionId);
-  if (!existsSync(path)) return undefined;
-  const session = readJsonFile<ExecutionSessionContext>(path);
+  const session = readOrImportControlPlaneRecord<ExecutionSessionContext>(controllerHome, {
+    namespace: 'execution_session',
+    scope: 'controller',
+    key: sanitizeFileComponent(sessionId),
+    schemaVersion: 1,
+    readLegacy: () => existsSync(path) ? readJsonFile<ExecutionSessionContext>(path) : undefined,
+  })?.value;
+  if (!session) return undefined;
   if (session.sessionId !== sessionId) throw new Error('SESSION_IDENTITY_MISMATCH');
   if (session.principalId !== normalizedPrincipal(identity.principalId)) throw new Error('SESSION_PRINCIPAL_MISMATCH');
   if (session.invalidatedAt) throw new Error(`SESSION_INVALIDATED: ${session.invalidationReason ?? 'session is no longer valid'}`);
@@ -87,7 +94,7 @@ export function readExecutionSession(controllerHome: string, identity: SessionId
       updatedAt: now(),
       lastValidatedAt: now(),
     };
-    writeJsonAtomic(sessionPath(controllerHome, session.sessionId), recovered);
+    writeExecutionSession(controllerHome, recovered, 'controller_instance_recovery');
     return recovered;
   }
   return session;
@@ -112,7 +119,7 @@ export function startExecutionSession(
       ...(input.permissionSnapshotVersion !== undefined ? { permissionSnapshotVersion: input.permissionSnapshotVersion } : {}),
       ...(input.capabilitySnapshotVersion !== undefined ? { capabilitySnapshotVersion: input.capabilitySnapshotVersion } : {}),
     };
-    writeJsonAtomic(sessionPath(controllerHome, existing.sessionId), updated);
+    writeExecutionSession(controllerHome, updated, 'session_refresh');
     return updated;
   }
 
@@ -128,7 +135,7 @@ export function startExecutionSession(
     updatedAt: at,
     lastValidatedAt: at,
   };
-  writeJsonAtomic(sessionPath(controllerHome, session.sessionId), session);
+  writeExecutionSession(controllerHome, session, 'session_start');
   return session;
 }
 
@@ -152,6 +159,17 @@ export function updateExecutionSession(
     createdAt: current.createdAt,
     updatedAt: now(),
   };
-  writeJsonAtomic(sessionPath(controllerHome, current.sessionId), updated);
+  writeExecutionSession(controllerHome, updated, 'session_update');
   return updated;
+}
+
+function writeExecutionSession(controllerHome: string, session: ExecutionSessionContext, action: string): void {
+  writeControlPlaneRecord(controllerHome, {
+    namespace: 'execution_session',
+    scope: 'controller',
+    key: sanitizeFileComponent(session.sessionId),
+    schemaVersion: session.schemaVersion,
+    value: session,
+    action,
+  });
 }

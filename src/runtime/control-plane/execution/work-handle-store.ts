@@ -1,8 +1,9 @@
 import { randomUUID } from 'crypto';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync } from 'fs';
 import { join } from 'path';
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
-import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
+import { readJsonFile, sanitizeFileComponent } from '../../shared/json-files';
+import { readOrImportControlPlaneRecord, writeControlPlaneRecord } from '../persistence/sqlite-store';
 
 export const WORK_HANDLE_STATES = ['prepared', 'editing', 'validating', 'committed', 'merged', 'cleaned', 'failed'] as const;
 export type WorkHandleStateName = (typeof WORK_HANDLE_STATES)[number];
@@ -49,14 +50,8 @@ export interface WorkHandleState {
   validationRun?: WorkValidationRunState;
 }
 
-function workHandleRoot(controllerHome: string, repoId: string): string {
-  const root = join(repositoryControllerRoot(controllerHome, repoId), 'work-handles');
-  mkdirSync(root, { recursive: true, mode: 0o700 });
-  return root;
-}
-
 function workHandlePath(controllerHome: string, handle: Pick<WorkHandleState, 'repositoryId' | 'workId'>): string {
-  return join(workHandleRoot(controllerHome, handle.repositoryId), `${sanitizeFileComponent(handle.workId)}.json`);
+  return join(repositoryControllerRoot(controllerHome, handle.repositoryId), 'work-handles', `${sanitizeFileComponent(handle.workId)}.json`);
 }
 
 function now(): string {
@@ -69,15 +64,29 @@ export function newWorkId(): string {
 
 export function readWorkHandle(controllerHome: string, repositoryId: string, workId: string): WorkHandleState | undefined {
   const path = workHandlePath(controllerHome, { repositoryId, workId });
-  if (!existsSync(path)) return undefined;
-  const handle = readJsonFile<WorkHandleState>(path);
+  const record = readOrImportControlPlaneRecord<WorkHandleState>(controllerHome, {
+    namespace: 'execution_work_handle',
+    scope: repositoryId,
+    key: sanitizeFileComponent(workId),
+    schemaVersion: 1,
+    readLegacy: () => existsSync(path) ? readJsonFile<WorkHandleState>(path) : undefined,
+  });
+  const handle = record?.value;
+  if (!handle) return undefined;
   if (handle.workId !== workId || handle.repositoryId !== repositoryId) throw new Error('WORK_HANDLE_IDENTITY_MISMATCH');
   return handle;
 }
 
 export function writeWorkHandle(controllerHome: string, handle: WorkHandleState): WorkHandleState {
   const updated = { ...handle, updatedAt: now() };
-  writeJsonAtomic(workHandlePath(controllerHome, updated), updated);
+  writeControlPlaneRecord(controllerHome, {
+    namespace: 'execution_work_handle',
+    scope: updated.repositoryId,
+    key: sanitizeFileComponent(updated.workId),
+    schemaVersion: updated.schemaVersion,
+    value: updated,
+    action: 'work_handle_write',
+  });
   return updated;
 }
 

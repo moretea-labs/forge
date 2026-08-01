@@ -3,7 +3,8 @@ import { existsSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { ensureControllerHome, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import { withControllerLock } from '../../../cli/repositories/locks';
-import { readJsonFile, writeJsonAtomic } from '../../shared/json-files';
+import { readJsonFile } from '../../shared/json-files';
+import { mutateControlPlaneRecord } from '../persistence/sqlite-store';
 
 export interface WorkPrepareRequestRecord {
   schemaVersion: 1;
@@ -95,35 +96,61 @@ export function withWorkPrepareRequest<T>(
     `work-prepare:${input.repoId}:${input.requestId}`,
     () => {
       const path = requestRecordPath(input.controllerHome, input.repoId, identity);
-      if (existsSync(path)) {
-        let existing: WorkPrepareRequestRecord;
-        try {
-          existing = readJsonFile<WorkPrepareRequestRecord>(path);
-        } catch {
-          throw new Error(`WORK_PREPARE_REQUEST_INDEX_CORRUPT: ${input.requestId}`);
-        }
-        validateExistingRecord(existing, input);
-        const result = operation(existing, true);
-        if (existing.status !== 'prepared') {
-          writeJsonAtomic(path, { ...existing, status: 'prepared', updatedAt: new Date().toISOString() });
-        }
-        return result;
-      }
-      const record: WorkPrepareRequestRecord = {
+      let claimed: WorkPrepareRequestRecord | undefined;
+      let reused = false;
+      mutateControlPlaneRecord<WorkPrepareRequestRecord>(input.controllerHome, {
+        namespace: 'work_prepare_request',
+        scope: input.repoId,
+        key: identity,
         schemaVersion: 1,
-        repoId: input.repoId,
-        sessionId: input.sessionId,
-        principalId: input.principalId,
-        requestId: input.requestId,
-        fingerprint: input.fingerprint,
-        workId: input.proposedWorkId,
-        status: 'claimed',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      writeJsonAtomic(path, record);
-      const result = operation(record, false);
-      writeJsonAtomic(path, { ...record, status: 'prepared', updatedAt: new Date().toISOString() });
+        action: 'work_prepare_claim',
+        readLegacy: () => {
+          if (!existsSync(path)) return undefined;
+          try {
+            return readJsonFile<WorkPrepareRequestRecord>(path);
+          } catch {
+            throw new Error(`WORK_PREPARE_REQUEST_INDEX_CORRUPT: ${input.requestId}`);
+          }
+        },
+        mutate: (current) => {
+          if (current) {
+            validateExistingRecord(current.value, input);
+            claimed = current.value;
+            reused = true;
+            return current.value;
+          }
+          const record: WorkPrepareRequestRecord = {
+            schemaVersion: 1,
+            repoId: input.repoId,
+            sessionId: input.sessionId,
+            principalId: input.principalId,
+            requestId: input.requestId,
+            fingerprint: input.fingerprint,
+            workId: input.proposedWorkId,
+            status: 'claimed',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+          claimed = record;
+          return record;
+        },
+      });
+      if (!claimed) throw new Error(`WORK_PREPARE_REQUEST_INDEX_CORRUPT: ${input.requestId}`);
+      const result = operation(claimed, reused);
+      if (claimed.status !== 'prepared') {
+        mutateControlPlaneRecord<WorkPrepareRequestRecord>(input.controllerHome, {
+          namespace: 'work_prepare_request',
+          scope: input.repoId,
+          key: identity,
+          schemaVersion: 1,
+          action: 'work_prepare_complete',
+          mutate: (current) => {
+            if (!current) throw new Error(`WORK_PREPARE_REQUEST_INDEX_CORRUPT: ${input.requestId}`);
+            validateExistingRecord(current.value, input);
+            return { ...current.value, status: 'prepared', updatedAt: new Date().toISOString() };
+          },
+        });
+      }
       return result;
     },
     undefined,
