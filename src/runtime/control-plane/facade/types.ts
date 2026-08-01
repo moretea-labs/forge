@@ -265,7 +265,17 @@ export interface VerificationRecord {
   outcome: VerificationOutcome;
   summary: string;
   recordedAt: string;
+  /** Exact checked revision. Absence denotes legacy/non-authoritative evidence. */
+  sourceRevision?: string;
+  /** Hash of the check inputs that must match before this result can be reused. */
+  verificationInputFingerprint?: string;
+  /** Bounded identity of the command/configuration that produced the result. */
+  commandFingerprint?: string;
+  resultArtifactId?: string;
+  startedAt?: string;
+  completedAt?: string;
   supersedes?: string;
+  staleReason?: string;
   evidenceRef?: EvidenceRef;
   receipt?: ProcessCheckReceiptEvidence;
 }

@@ -198,7 +198,7 @@
       "id": "T3",
       "title": "Bind verification and Completion Receipts to the exact revision",
       "objective": "Record exact-revision check evidence and emit a Completion Receipt that traces objective, acceptance criteria, mutation/no-change proof, checks, commit, integration, cleanup, and residual risk.",
-      "status": "planned",
+      "status": "in_progress",
       "dependsOn": [
         "T2"
       ],
@@ -219,10 +219,12 @@
         "Receipt fields are bounded, redacted, and machine-readable."
       ],
       "risk": "medium",
-      "notes": [],
+      "notes": [
+        "2026-08-01: Exact-revision verification evidence is in progress. Controller Work validation now records source revision, input/command fingerprints, receipt artifact identity, and timestamps; stale source/input evidence is selected out by the bounded resolver. Completion-candidate and receipt integration remain."
+      ],
       "runIds": [],
       "createdAt": "2026-07-30T09:28:07.844Z",
-      "updatedAt": "2026-07-30T09:28:07.844Z",
+      "updatedAt": "2026-08-01T00:00:00.000Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {

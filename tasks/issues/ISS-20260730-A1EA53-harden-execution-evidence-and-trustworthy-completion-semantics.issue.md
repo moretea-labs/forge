@@ -60,12 +60,13 @@ Result Goal 1 of ISS-20260730-AE1BCC for the next reliability release line. The 
 
 ### T3 — Bind verification and Completion Receipts to the exact revision
 
-- Status: `planned`
+- Status: `in_progress`
 - Objective: Record exact-revision check evidence and emit a Completion Receipt that traces objective, acceptance criteria, mutation/no-change proof, checks, commit, integration, cleanup, and residual risk.
 - Depends on: `T2`
 - Allowed paths: `src/runtime/control-plane/**`, `src/runtime/evidence/**`, `src/runtime/workflow/**`, `tests/**`
 - Checks: `typecheck`, `test`
 - Execution hint: selected at runtime
+- Progress: Controller Work validation now writes exact source-revision, input/command fingerprint, receipt-artifact, and timing evidence. The bounded resolver rejects stale source/input evidence; receipt-candidate integration remains.
 
 ### T4 — Gate finalize for changed and no-change outcomes
 

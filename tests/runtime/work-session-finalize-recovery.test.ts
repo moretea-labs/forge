@@ -126,6 +126,14 @@ describe('controller-owned Work recovery and finalize cleanup', () => {
       checkId: 'package:check:slow',
       receiptId: expect.stringMatching(/^check_receipt_/),
     }));
+    expect(storedWork?.checkRefs.at(0)).toEqual(expect.objectContaining({
+      sourceRevision: expect.stringMatching(/^[0-9a-f]{40}$/),
+      verificationInputFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+      commandFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+      resultArtifactId: expect.stringMatching(/^check_receipt_/),
+      startedAt: expect.any(String),
+      completedAt: expect.any(String),
+    }));
     expect(readWorkHandle(controllerHome, repository.repoId, workId)?.validationRun).toBeUndefined();
   });
 

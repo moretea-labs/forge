@@ -23,6 +23,7 @@ import { isTerminalWorkContractStatus } from '../../control-plane/facade/types';
 import { claimControllerSession, getControllerSession, resumeControllerSession } from '../../control-plane/facade/controller-session-store';
 import { currentControllerInstanceId, requireExecutionSession, startExecutionSession, updateExecutionSession, type ExecutionSessionContext, type SessionIdentity } from '../../control-plane/execution/session-store';
 import { currentPermissionSnapshotVersion, validateWorkHandle } from '../../control-plane/execution/validation';
+import { commandFingerprint, verificationInputFingerprint } from '../../control-plane/execution/verification-evidence';
 import { executionIdentityForWork, resolveLegacyWorkContractIdentity } from '../../control-plane/execution/execution-identity';
 import { withWorkPrepareRequest } from '../../control-plane/execution/work-prepare-request-store';
 import { markWorkHandleFailed, newWorkId, readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkFinalizationStages, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
@@ -779,6 +780,17 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       outcome: receipt.ok ? 'valid_pass' : receipt.status === 'timed_out' || receipt.status === 'cancelled' ? 'infrastructure_failure' : 'valid_fail',
       summary: receipt.summary,
       recordedAt: receipt.finishedAt,
+      sourceRevision: validationHead,
+      verificationInputFingerprint: verificationInputFingerprint({
+        sourceRevision: validationHead,
+        checkId,
+        requestedChecks,
+        commandId: receipt.commandId,
+      }),
+      commandFingerprint: commandFingerprint(checkId, receipt.commandId),
+      resultArtifactId: receipt.receiptId,
+      startedAt: receipt.startedAt,
+      completedAt: receipt.finishedAt,
       evidenceRef: { title: checkId, summary: `${receipt.receiptId}; artifact=${receipt.artifactPath}`, detailLevel: 'summary' },
       receipt,
     });
@@ -803,7 +815,12 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     },
     validationRun: completed ? undefined : validationRun,
   });
-  if (contract) updateWorkContract({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, handle.workId, { status: completed && !passed ? 'failed' : 'running' });
+  if (contract) {
+    updateWorkContract({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, handle.workId, {
+      status: completed && !passed ? 'failed' : 'running',
+      evidenceState: completed ? (passed ? 'valid' : 'failed') : 'partial',
+    });
+  }
   const value = { work: compactHandle(next), validation: { passed, completed, checks, targeted: true } };
   return makeBoundedResult(ctx, session, handle.repositoryId, handle.workId, 'validation', value);
 }
