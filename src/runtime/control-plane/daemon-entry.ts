@@ -414,7 +414,7 @@ export function publishReadyAfterStartupRecovery(
   return { ...recovery, generationRecord: generation };
 }
 
-if (import.meta.main || /[\\/]daemon-entry\.ts$/.test(process.argv[1] ?? '')) {
+if (import.meta.main || /[\\/]daemon(?:-entry)?(?:\\.bundle)?\\.[cm]?[jt]s$/.test(process.argv[1] ?? '')) {
   const controllerHome = ensureControllerHome(option('--controller-home'));
   bootstrapManagedRuntimeEnv({ controllerHome });
   startControllerDaemon(controllerHome);

@@ -41,6 +41,8 @@ The processes communicate through atomic file-backed state. Gateway restart does
 
 The Stable Supervisor lifecycle parent owns control and recovery decisions, while a supervised ingress child owns long-lived public proxy sockets. This data-plane/control-plane split prevents SSE connection count from sharing the lifecycle owner's event loop. The child reads `active-slot.json` for each request and exits when its parent identity disappears.
 
+The process topology above describes the implemented execution control plane, not the final lifecycle service graph. The approved lifecycle target is [`runtime-architecture-simplification.md`](runtime-architecture-simplification.md): one Supervisor-owned primary instance, exactly five OS services, no nested Gateway KeepAlive, and independent Recovery services/tunnel. Until that migration completes, the existing slot and compatibility paths are explicitly transitional.
+
 ## 3. Thin Gateway
 
 Implemented under:

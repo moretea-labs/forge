@@ -1,9 +1,22 @@
 import { createHash, randomUUID } from 'crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { dirname, join, resolve, sep } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { looksLikeControllerRuntimePackage, resolveControllerRuntimeSourceRoot } from '../control-plane/runtime-generation';
-import { readCurrentRelease, readSupervisorRelease, ensureStableSupervisorLayout, publishCurrentRelease, supervisorLogsRoot, supervisorReleasesRoot, supervisorRoot, SUPERVISOR_RELEASE_ENTRYPOINTS, supervisorReleaseClosureMissing } from './paths';
+import {
+  readCurrentRelease,
+  readSupervisorRelease,
+  ensureStableSupervisorLayout,
+  publishCurrentRelease,
+  supervisorBootstrapConfigPath,
+  supervisorBootstrapManifestPath,
+  supervisorBootstrapPath,
+  supervisorLogsRoot,
+  supervisorReleasesRoot,
+  supervisorRoot,
+  SUPERVISOR_RELEASE_ENTRYPOINTS,
+  supervisorReleaseClosureMissing,
+} from './paths';
 import type { SupervisorSourceIdentity } from './types';
 
 export interface SupervisorInstallResult {
@@ -15,6 +28,7 @@ export interface SupervisorInstallResult {
   releasePath: string;
   currentPath: string;
   previousPath?: string;
+  bootstrapPath: string;
   launchdPlistPath: string;
   systemdUnitPath: string;
 }
@@ -169,9 +183,16 @@ export function verifySupervisorSourceIdentity(
   }
 }
 
-function buildEntry(sourceRoot: string, entry: string, output: string, target: 'bun' | 'node' = 'bun'): void {
+function buildEntry(
+  sourceRoot: string,
+  entry: string,
+  output: string,
+  target: 'bun' | 'node' = 'bun',
+  standalone = true,
+): void {
   const bun = process.versions.bun ? process.execPath : 'bun';
-  const result = runProcess(bun, ['build', join(sourceRoot, entry), '--outfile', output, '--target', target], {
+  const args = ['build', ...(standalone ? ['--compile'] : []), join(sourceRoot, entry), '--outfile', output, '--target', target];
+  const result = runProcess(bun, args, {
     cwd: sourceRoot,
     timeoutMs: 180_000,
     maxOutputBytes: 128 * 1024,
@@ -227,33 +248,55 @@ function supervisorServicePath(
 
 export function renderLaunchdSupervisorPlist(input: {
   label: string;
-  bunPath: string;
-  supervisorPath: string;
-  repoRoot: string;
+  bootstrapPath?: string;
+  bunPath?: string;
+  supervisorPath?: string;
+  repoRoot?: string;
   controllerHome: string;
-  runtimeSourceRoot: string;
+  runtimeSourceRoot?: string;
   releaseRevision?: string;
   logPath: string;
   homeDir?: string;
   nvmBin?: string;
 }): string {
-  const args = [input.bunPath, input.supervisorPath, '--repo', input.repoRoot, '--controller-home', input.controllerHome, '--runtime-source-root', input.runtimeSourceRoot];
-  if (input.releaseRevision) args.push('--release-revision', input.releaseRevision);
+  const bootstrap = input.bootstrapPath ?? input.supervisorPath;
+  if (!bootstrap) throw new Error('SUPERVISOR_BOOTSTRAP_PATH_REQUIRED');
+  const args = input.bootstrapPath
+    ? [input.bootstrapPath, '--controller-home', input.controllerHome]
+    : [
+      input.bunPath ?? 'bun',
+      bootstrap,
+      '--repo', input.repoRoot ?? input.controllerHome,
+      '--controller-home', input.controllerHome,
+      ...(input.runtimeSourceRoot ? ['--runtime-source-root', input.runtimeSourceRoot] : []),
+      ...(input.releaseRevision ? ['--release-revision', input.releaseRevision] : []),
+    ];
   const xml = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n  <key>Label</key><string>${xml(input.label)}</string>\n  <key>ProgramArguments</key><array>${args.map((arg) => `<string>${xml(arg)}</string>`).join('')}</array>\n  <key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(supervisorServicePath(input.bunPath, input.homeDir, input.nvmBin))}</string><key>REPO_HARNESS_SUPERVISOR_SERVICE_MODE</key><string>managed</string></dict>\n  <key>RunAtLoad</key><true/>\n  <key>KeepAlive</key><true/>\n  <key>ThrottleInterval</key><integer>2</integer>\n  <key>ProcessType</key><string>Interactive</string>\n  <key>StandardOutPath</key><string>${xml(input.logPath)}</string>\n  <key>StandardErrorPath</key><string>${xml(input.logPath)}</string>\n</dict></plist>\n`;
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n  <key>Label</key><string>${xml(input.label)}</string>\n  <key>ProgramArguments</key><array>${args.map((arg) => `<string>${xml(arg)}</string>`).join('')}</array>\n  <key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(supervisorServicePath(input.bootstrapPath ?? input.bunPath ?? bootstrap, input.homeDir, input.nvmBin))}</string><key>REPO_HARNESS_SUPERVISOR_SERVICE_MODE</key><string>managed</string></dict>\n  <key>RunAtLoad</key><true/>\n  <key>KeepAlive</key><true/>\n  <key>ThrottleInterval</key><integer>2</integer>\n  <key>ProcessType</key><string>Interactive</string>\n  <key>StandardOutPath</key><string>${xml(input.logPath)}</string>\n  <key>StandardErrorPath</key><string>${xml(input.logPath)}</string>\n</dict></plist>\n`;
 }
 
 export function renderSystemdSupervisorUnit(input: {
-  bunPath: string;
-  supervisorPath: string;
-  repoRoot: string;
+  bootstrapPath?: string;
+  bunPath?: string;
+  supervisorPath?: string;
+  repoRoot?: string;
   controllerHome: string;
-  runtimeSourceRoot: string;
+  runtimeSourceRoot?: string;
   homeDir?: string;
   nvmBin?: string;
 }): string {
-  const args = [input.bunPath, input.supervisorPath, '--repo', input.repoRoot, '--controller-home', input.controllerHome, '--runtime-source-root', input.runtimeSourceRoot];
-  return `[Unit]\nDescription=repo-harness Stable External Runtime Supervisor\nAfter=default.target\n\n[Service]\nType=simple\nEnvironment=${systemdQuote(`PATH=${supervisorServicePath(input.bunPath, input.homeDir, input.nvmBin)}`)}\nEnvironment=${systemdQuote('REPO_HARNESS_SUPERVISOR_SERVICE_MODE=managed')}\nExecStart=${args.map(systemdQuote).join(' ')}\nRestart=always\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n`;
+  const bootstrap = input.bootstrapPath ?? input.supervisorPath;
+  if (!bootstrap) throw new Error('SUPERVISOR_BOOTSTRAP_PATH_REQUIRED');
+  const args = input.bootstrapPath
+    ? [input.bootstrapPath, '--controller-home', input.controllerHome]
+    : [
+      input.bunPath ?? 'bun',
+      bootstrap,
+      '--repo', input.repoRoot ?? input.controllerHome,
+      '--controller-home', input.controllerHome,
+      ...(input.runtimeSourceRoot ? ['--runtime-source-root', input.runtimeSourceRoot] : []),
+    ];
+  return `[Unit]\nDescription=repo-harness Stable External Runtime Supervisor\nAfter=default.target\n\n[Service]\nType=simple\nEnvironment=${systemdQuote(`PATH=${supervisorServicePath(input.bootstrapPath ?? input.bunPath ?? bootstrap, input.homeDir, input.nvmBin)}`)}\nEnvironment=${systemdQuote('REPO_HARNESS_SUPERVISOR_SERVICE_MODE=managed')}\nExecStart=${args.map(systemdQuote).join(' ')}\nRestart=always\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n`;
 }
 
 export interface SupervisorStagedRelease {
@@ -263,6 +306,7 @@ export interface SupervisorStagedRelease {
   sourceCommit?: string;
   cleanWorkspace?: boolean;
   artifactHash?: string;
+  executionMode: 'standalone-binary';
   releasePath: string;
 }
 
@@ -300,6 +344,7 @@ export interface SupervisorReleaseExecutionCanaryResult {
 export function verifySupervisorReleaseExecutionCanary(input: {
   releasePath: string;
   cwd: string;
+  executionMode?: 'standalone-binary' | 'script';
 }): SupervisorReleaseExecutionCanaryResult {
   const releasePath = resolve(input.releasePath);
   const runnerPath = join(releasePath, 'process-runner.js');
@@ -334,8 +379,10 @@ export function verifySupervisorReleaseExecutionCanary(input: {
       startedAt: new Date().toISOString(),
       streamLogs: false,
     }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-    const runtime = process.versions.bun ? process.execPath : 'bun';
-    const result = runProcess(runtime, [runnerPath, '--descriptor', descriptorPath], {
+    const standalone = input.executionMode === 'standalone-binary';
+    const runtime = standalone ? runnerPath : process.versions.bun ? process.execPath : 'bun';
+    const args = standalone ? ['--descriptor', descriptorPath] : [runnerPath, '--descriptor', descriptorPath];
+    const result = runProcess(runtime, args, {
       cwd: resolve(input.cwd),
       timeoutMs: 20_000,
       maxOutputBytes: 32 * 1024,
@@ -370,6 +417,44 @@ export function verifySupervisorReleaseExecutionCanary(input: {
   } finally {
     rmSync(canaryRoot, { recursive: true, force: true });
   }
+}
+function installFixedSupervisorBootstrap(controllerHome: string, sourceRoot: string, repoRoot: string): string {
+  const home = resolve(controllerHome);
+  ensureStableSupervisorLayout(home);
+  const bootstrapPath = supervisorBootstrapPath(home);
+  if (!existsSync(bootstrapPath) || statSync(bootstrapPath).size === 0) {
+    const temporary = `${bootstrapPath}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
+    try {
+      buildEntry(sourceRoot, 'src/runtime/bootstrap/entry.ts', temporary, 'bun', true);
+      chmodSync(temporary, 0o700);
+      if (existsSync(bootstrapPath)) {
+        rmSync(temporary, { force: true });
+      } else {
+        renameSync(temporary, bootstrapPath);
+      }
+    } finally {
+      rmSync(temporary, { force: true });
+    }
+    writeFileSync(supervisorBootstrapManifestPath(home), `${JSON.stringify({
+      schemaVersion: 1,
+      executionMode: 'standalone-binary',
+      sourceCommit: gitHead(sourceRoot),
+      bootstrapPath,
+      installedAt: new Date().toISOString(),
+    }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  }
+  const now = new Date().toISOString();
+  const configPath = supervisorBootstrapConfigPath(home);
+  const temporaryConfig = `${configPath}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
+  writeFileSync(temporaryConfig, `${JSON.stringify({
+    schemaVersion: 1,
+    controllerHome: home,
+    repoRoot: resolve(repoRoot),
+    createdAt: now,
+    updatedAt: now,
+  }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  renameSync(temporaryConfig, configPath);
+  return bootstrapPath;
 }
 
 function assertOwnedReleasePath(controllerHome: string, releasePath: string): string {
@@ -407,15 +492,16 @@ export function stageSupervisorRelease(input: { controllerHome: string; repoRoot
     buildEntry(sourceRoot, 'src/runtime/execution/workers/worker-entry.ts', join(stagingPath, 'worker.js'));
     buildEntry(sourceRoot, 'src/runtime/execution/process-runtime/process-runner-entry.ts', join(stagingPath, 'process-runner.js'));
     buildEntry(sourceRoot, 'src/runtime/plugins/browser-handoff-host.ts', join(stagingPath, 'browser-handoff-host.js'));
-    buildEntry(sourceRoot, 'src/runtime/plugins/browser-node-bridge-host.ts', join(stagingPath, 'browser-node-bridge-host.js'), 'node');
+    buildEntry(sourceRoot, 'src/runtime/plugins/browser-node-bridge-host.ts', join(stagingPath, 'browser-node-bridge-host.js'));
     const missing = supervisorReleaseClosureMissing(stagingPath);
     if (missing.length > 0) {
       throw new Error(`SUPERVISOR_RELEASE_CLOSURE_INCOMPLETE: staged release is missing required executables: ${missing.join(', ')}`);
     }
-    verifySupervisorReleaseExecutionCanary({ releasePath: stagingPath, cwd: sourceRoot });
+    verifySupervisorReleaseExecutionCanary({ releasePath: stagingPath, cwd: sourceRoot, executionMode: 'standalone-binary' });
     const artifactIdentity = releaseArtifactHash(stagingPath);
     writeFileSync(join(stagingPath, 'manifest.json'), `${JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
+      executionMode: 'standalone-binary',
       releaseRevision: revision,
       sourceCommit: identity.sourceCommit,
       sourceRoot,
@@ -446,6 +532,7 @@ export function stageSupervisorRelease(input: { controllerHome: string; repoRoot
       sourceCommit: identity.sourceCommit,
       cleanWorkspace: identity.cleanWorkspace,
       artifactHash: artifactIdentity.artifactHash,
+      executionMode: 'standalone-binary',
       releasePath,
     };
   } catch (error) {
@@ -484,7 +571,7 @@ function assertPublishableRelease(
   if (failures.length > 0) {
     throw new Error(`SUPERVISOR_RELEASE_NOT_REPRODUCIBLE: refusing to publish Supervisor Release (${failures.join('; ')})`);
   }
-  verifySupervisorReleaseExecutionCanary({ releasePath: release.releasePath, cwd: canaryCwd });
+  verifySupervisorReleaseExecutionCanary({ releasePath: release.releasePath, cwd: canaryCwd, executionMode: release.executionMode });
 }
 
 export function publishSupervisorRelease(input: { controllerHome: string; repoRoot: string; releasePath: string; allowUnreproducibleReleaseForTests?: boolean }): SupervisorInstallResult {
@@ -496,9 +583,7 @@ export function publishSupervisorRelease(input: { controllerHome: string; repoRo
   const sourceRoot = publishRuntimeSourceRoot({ controllerHome, repoRoot: input.repoRoot, release });
   const revision = release.releaseRevision ?? `local-${Date.now()}`;
   const previous = readCurrentRelease(controllerHome);
-  publishCurrentRelease(controllerHome, releasePath, previous);
-  const bunPath = process.versions.bun ? process.execPath : 'bun';
-  const supervisorPath = release.supervisorExecutable;
+  const bootstrapPath = installFixedSupervisorBootstrap(controllerHome, sourceRoot, input.repoRoot);
   const label = serviceLabel(controllerHome);
   const launchdDir = join(supervisorRoot(controllerHome), 'launchd');
   const systemdDir = join(supervisorRoot(controllerHome), 'systemd');
@@ -506,8 +591,19 @@ export function publishSupervisorRelease(input: { controllerHome: string; repoRo
   mkdirSync(systemdDir, { recursive: true, mode: 0o700 });
   const launchdPlistPath = join(launchdDir, `${label}.plist`);
   const systemdUnitPath = join(systemdDir, supervisorSystemdUnitName(controllerHome));
-  writeFileSync(launchdPlistPath, renderLaunchdSupervisorPlist({ label, bunPath, supervisorPath, repoRoot: resolve(input.repoRoot), controllerHome, runtimeSourceRoot: sourceRoot, releaseRevision: revision, logPath: join(supervisorLogsRoot(controllerHome), 'launchd.log') }), { encoding: 'utf8', mode: 0o600 });
-  writeFileSync(systemdUnitPath, renderSystemdSupervisorUnit({ bunPath, supervisorPath, repoRoot: resolve(input.repoRoot), controllerHome, runtimeSourceRoot: sourceRoot }), { encoding: 'utf8', mode: 0o600 });
+  writeFileSync(launchdPlistPath, renderLaunchdSupervisorPlist({
+    label,
+    bootstrapPath,
+    controllerHome,
+    logPath: join(supervisorLogsRoot(controllerHome), 'launchd.log'),
+  }), { encoding: 'utf8', mode: 0o600 });
+  writeFileSync(systemdUnitPath, renderSystemdSupervisorUnit({
+    bootstrapPath,
+    controllerHome,
+  }), { encoding: 'utf8', mode: 0o600 });
+  // The active pointer is the final publication step. Every immutable
+  // executable, manifest, canary and service definition must exist first.
+  publishCurrentRelease(controllerHome, releasePath, previous);
   return {
     controllerHome,
     releaseRevision: revision,
@@ -517,6 +613,7 @@ export function publishSupervisorRelease(input: { controllerHome: string; repoRo
     releasePath,
     currentPath: join(supervisorRoot(controllerHome), 'current'),
     ...(previous ? { previousPath: previous } : {}),
+    bootstrapPath,
     launchdPlistPath,
     systemdUnitPath,
   };

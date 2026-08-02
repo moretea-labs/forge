@@ -79,6 +79,18 @@ export function supervisorLogPath(controllerHome: string): string {
 export function supervisorRescueAuthPath(controllerHome: string): string {
   return join(supervisorRoot(controllerHome), 'rescue-auth.json');
 }
+export function supervisorBootstrapPath(controllerHome: string): string {
+  return join(supervisorRoot(controllerHome), 'bootstrap');
+}
+
+export function supervisorBootstrapConfigPath(controllerHome: string): string {
+  return join(supervisorRoot(controllerHome), 'bootstrap-config.json');
+}
+
+export function supervisorBootstrapManifestPath(controllerHome: string): string {
+  return join(supervisorRoot(controllerHome), 'bootstrap-manifest.json');
+}
+
 
 export function supervisorCurrentReleasePath(controllerHome: string): string {
   return join(supervisorRoot(controllerHome), 'current');
@@ -114,6 +126,7 @@ export interface SupervisorReleaseDescriptor {
   sourceCommit?: string;
   cleanWorkspace?: boolean;
   artifactHash?: string;
+  executionMode?: 'standalone-binary' | 'script';
   supervisorExecutable: string;
   runtimeExecutable: string;
   daemonExecutable: string;
@@ -128,6 +141,9 @@ export function readSupervisorRelease(releasePath: string | undefined): Supervis
   if (![supervisorExecutable, runtimeExecutable, daemonExecutable].every((path) => existsSync(path))) return undefined;
   let manifest: Record<string, unknown> = {};
   try { manifest = JSON.parse(readFileSync(join(resolved, 'manifest.json'), 'utf8')) as Record<string, unknown>; } catch { /* optional compatibility manifest */ }
+  const executionMode = manifest.executionMode === 'standalone-binary' || manifest.executionMode === 'script'
+    ? manifest.executionMode
+    : undefined;
   return {
     releasePath: resolved,
     supervisorExecutable,
@@ -138,6 +154,7 @@ export function readSupervisorRelease(releasePath: string | undefined): Supervis
     ...(typeof manifest.sourceCommit === 'string' ? { sourceCommit: manifest.sourceCommit } : {}),
     ...(typeof manifest.cleanWorkspace === 'boolean' ? { cleanWorkspace: manifest.cleanWorkspace } : {}),
     ...(typeof manifest.artifactHash === 'string' ? { artifactHash: manifest.artifactHash } : {}),
+    ...(executionMode ? { executionMode } : {}),
   };
 }
 

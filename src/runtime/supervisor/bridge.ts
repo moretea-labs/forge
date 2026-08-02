@@ -50,16 +50,17 @@ export function launchStableSupervisor(options: StableSupervisorLaunchOptions): 
     ];
     const child = spawn(process.execPath, args, {
       cwd: resolve(options.repoRoot),
-      detached: true,
+      // Compatibility callers may request a start, but never create a
+      // detached lifecycle owner outside the fixed bootstrap.
+      detached: false,
       stdio: ['ignore', fd, fd],
       env: {
         ...process.env,
         REPO_HARNESS_CONTROLLER_HOME: resolve(options.controllerHome),
         REPO_HARNESS_STABLE_SUPERVISOR: '1',
-        REPO_HARNESS_SUPERVISOR_SERVICE_MODE: 'detached',
+        REPO_HARNESS_SUPERVISOR_SERVICE_MODE: 'managed',
       },
     });
-    child.unref();
     if (!child.pid) throw new Error('SUPERVISOR_START_FAILED');
     return { pid: child.pid, releasePath };
   } finally {

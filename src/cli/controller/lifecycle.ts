@@ -42,7 +42,7 @@ import { buildControllerTaskLedgerProjection } from "./task-ledger";
 import { readSchedulerHealthSnapshot } from "../../runtime/control-plane/global-scheduler/scheduler";
 import { evaluateRuntimeHealth, type RuntimeHealthEvaluation } from "../../runtime/health";
 import { isProcessAlive, terminateProcessTree } from "../../runtime/shared/process-tree";
-import { launchStableSupervisor, readStableSupervisorState, stableSupervisorIsAlive, stopStableSupervisor } from "../../runtime/supervisor/bridge";
+import { readStableSupervisorState, stableSupervisorIsAlive, stopStableSupervisor } from "../../runtime/supervisor/bridge";
 import { isStableSupervisorInstalled, supervisorLogPath } from "../../runtime/supervisor/paths";
 import { startRegisteredSupervisorService } from "../../runtime/supervisor/installer";
 
@@ -1050,12 +1050,9 @@ export async function startControllerService(opts: ControllerServiceOptions = {}
     const launchAgents = findRepoLaunchAgents(repoRoot);
     if (launchAgents.length > 0) bootoutRepoLaunchAgents(launchAgents);
     const service = startRegisteredSupervisorService(config.controllerHome);
-    const launched = service.managed ? undefined : launchStableSupervisor({
-      repoRoot,
-      controllerHome: config.controllerHome,
-      logPath: supervisorLogPath(config.controllerHome),
-      controlPort: Number(process.env.REPO_HARNESS_SUPERVISOR_CONTROL_PORT) || undefined,
-    });
+    if (!service.managed) {
+      throw new Error(`SUPERVISOR_SERVICE_NOT_MANAGED: ${service.reason ?? 'fixed bootstrap is not loaded'}`);
+    }
     writeControllerServiceState(repoRoot, {
       schemaVersion: 1,
       repoRoot,
@@ -1064,7 +1061,7 @@ export async function startControllerService(opts: ControllerServiceOptions = {}
       createdAt: nowIso(),
       updatedAt: nowIso(),
       status: "running",
-      supervisor: { ...(launched?.pid ? { pid: launched.pid } : {}), logPath: supervisorLogPath(config.controllerHome), startedAt: nowIso() },
+      supervisor: { logPath: supervisorLogPath(config.controllerHome), startedAt: nowIso() },
       config: {
         mcpHost: config.mcpHost,
         mcpPort: config.mcpPort,

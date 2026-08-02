@@ -68,8 +68,9 @@ The maintained current architecture set contains:
 - `failure-recovery.md` — process boundaries, orphan handling, reconciliation, and fencing;
 - `verification-and-release-gates.md` — exact-revision evidence, integration gates, release freeze, and human authorization;
 - `implementation-status.md` — verified implementation coverage and explicit migration gaps;
-- `migration-roadmap.md` — evidence-driven implementation convergence order.
-- `stable-external-runtime-supervisor.md` — immutable lifecycle ownership, recovery control surfaces, fencing, and blue/green migration rules.
+- `migration-roadmap.md` — evidence-driven implementation convergence order;
+- `runtime-architecture-simplification.md` — single-owner services, canonical authority/config, immutable activation, Recovery boundary, invariants, and deletion map;
+- `stable-external-runtime-supervisor.md` — current immutable lifecycle implementation and transition notes.
 
 A missing or proposed rule must be recorded in an accepted architecture request or ADR and must not be inferred from historical material.
 
@@ -104,7 +105,8 @@ The following domain pages describe the earlier repo-local workflow-harness arch
 ## Accepted Architecture Decisions
 
 - [Controller-home SQLite state authority](decisions/20260801-controller-home-sqlite-state.md) — versioned controller-owned runtime facts, one-way JSON import, audit records, and phased migration.
-- [MCP Session Lifecycle and Stable Ingress Isolation](decisions/20260718-mcp-session-lifecycle-and-ingress-isolation.md) — one global transport-capacity authority, bounded stream leases, capacity-aware readiness, and a supervised ingress child process.
+- [Single-owner runtime lifecycle](decisions/20260802-single-owner-runtime-lifecycle.md) — one Supervisor-owned primary instance, five OS services, and independent Recovery.
+- [MCP Session Lifecycle and Stable Ingress Isolation](decisions/20260718-mcp-session-lifecycle-and-ingress-isolation.md) — one global transport-capacity authority, bounded stream leases, capacity-aware `/ready`, and a supervised ingress child process.
 
 ## Review Backlog
 
