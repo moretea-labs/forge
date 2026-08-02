@@ -422,23 +422,33 @@ function installFixedSupervisorBootstrap(controllerHome: string, sourceRoot: str
   const home = resolve(controllerHome);
   ensureStableSupervisorLayout(home);
   const bootstrapPath = supervisorBootstrapPath(home);
-  if (!existsSync(bootstrapPath) || statSync(bootstrapPath).size === 0) {
+  const sourceCommit = gitHead(sourceRoot);
+  let installedManifest: { executionMode?: string; sourceCommit?: string } | undefined;
+  try {
+    installedManifest = JSON.parse(readFileSync(supervisorBootstrapManifestPath(home), 'utf8')) as {
+      executionMode?: string;
+      sourceCommit?: string;
+    };
+  } catch {
+    installedManifest = undefined;
+  }
+  const needsRefresh = !existsSync(bootstrapPath)
+    || statSync(bootstrapPath).size === 0
+    || installedManifest?.executionMode !== 'standalone-binary'
+    || installedManifest.sourceCommit !== sourceCommit;
+  if (needsRefresh) {
     const temporary = `${bootstrapPath}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
     try {
       buildEntry(sourceRoot, 'src/runtime/bootstrap/entry.ts', temporary, 'bun', true);
       chmodSync(temporary, 0o700);
-      if (existsSync(bootstrapPath)) {
-        rmSync(temporary, { force: true });
-      } else {
-        renameSync(temporary, bootstrapPath);
-      }
+      renameSync(temporary, bootstrapPath);
     } finally {
       rmSync(temporary, { force: true });
     }
     writeFileSync(supervisorBootstrapManifestPath(home), `${JSON.stringify({
       schemaVersion: 1,
       executionMode: 'standalone-binary',
-      sourceCommit: gitHead(sourceRoot),
+      sourceCommit,
       bootstrapPath,
       installedAt: new Date().toISOString(),
     }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });

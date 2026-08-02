@@ -86,12 +86,31 @@ if [[ -f "$REPO_HARNESS_CONTROLLER_HOME/supervisor/current/repo-harness.js" ]]; 
   CLI_ENTRY="$REPO_HARNESS_CONTROLLER_HOME/supervisor/current/repo-harness.js"
 fi
 
+is_native_executable() {
+  local magic
+  magic="$(od -An -tx1 -N4 "$1" 2>/dev/null | tr -d '[:space:]')"
+  case "$magic" in
+    cafebabe|bebafeca|feedface|cefaedfe|feedfacf|cffaedfe)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+if is_native_executable "$CLI_ENTRY"; then
+  SUPERVISOR_COMMAND=("$CLI_ENTRY")
+else
+  SUPERVISOR_COMMAND=("$BUN_BIN" "$CLI_ENTRY")
+fi
+
 if [[ -z "$REQUEST_ID" ]]; then
   REQUEST_ID="manual-full-restart-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 fi
 
 SUBMIT_JSON="$(
-  "$BUN_BIN" "$CLI_ENTRY" supervisor restart full \
+  "${SUPERVISOR_COMMAND[@]}" supervisor restart full \
     --repo "$ROOT" \
     --controller-home "$REPO_HARNESS_CONTROLLER_HOME" \
     --request-id "$REQUEST_ID" \

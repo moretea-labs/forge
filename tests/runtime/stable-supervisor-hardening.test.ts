@@ -19,7 +19,7 @@ import { SupervisorProcessManager, runtimeWriterEnvironment, supervisorProcessSt
 import { ensureMcpControllerHomeBearerToken, writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
 import { writeActiveSlotAuthority } from '../../src/cli/controller/runtime-slots';
 import { publishWriterAuthority } from '../../src/cli/controller/stable-state/writer-authority';
-import { readCurrentRelease, readCurrentSupervisorRelease, readSupervisorRelease, supervisorBootstrapConfigPath, supervisorReleasesRoot } from '../../src/runtime/supervisor/paths';
+import { readCurrentRelease, readCurrentSupervisorRelease, readSupervisorRelease, supervisorBootstrapConfigPath, supervisorBootstrapManifestPath, supervisorReleasesRoot } from '../../src/runtime/supervisor/paths';
 import { createSupervisorControlServer, sendSupervisorCommand } from '../../src/runtime/supervisor/control-server';
 import type { ProcessIdentityProbe } from '../../src/runtime/supervisor/identity';
 import type { SupervisorManagedProcess, SupervisorOperation, SupervisorState } from '../../src/runtime/supervisor/types';
@@ -273,6 +273,45 @@ describe('Stable Supervisor production hardening', () => {
       const bootstrapConfig = JSON.parse(readFileSync(supervisorBootstrapConfigPath(controllerHome), 'utf8')) as { repoRoot?: string };
       expect(bootstrapConfig.repoRoot).toBe(process.cwd());
       expect(bootstrapConfig.repoRoot).not.toBe(managedSource);
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
+  test('refreshes the fixed Supervisor bootstrap when its source revision changes', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-bootstrap-refresh-'));
+    try {
+      const sourceCommit = currentHead();
+      const first = fakeSupervisorRelease(controllerHome, 'first', 'revision-first', {
+        sourceRoot: process.cwd(),
+        sourceCommit,
+      });
+      publishSupervisorRelease({
+        controllerHome,
+        repoRoot: process.cwd(),
+        releasePath: first,
+      });
+
+      writeFileSync(join(controllerHome, 'supervisor', 'bootstrap'), 'stale-bootstrap\n');
+      writeFileSync(supervisorBootstrapManifestPath(controllerHome), `${JSON.stringify({
+        schemaVersion: 1,
+        executionMode: 'standalone-binary',
+        sourceCommit: 'stale-source-commit',
+      })}\n`);
+
+      const second = fakeSupervisorRelease(controllerHome, 'second', 'revision-second', {
+        sourceRoot: process.cwd(),
+        sourceCommit,
+      });
+      publishSupervisorRelease({
+        controllerHome,
+        repoRoot: process.cwd(),
+        releasePath: second,
+      });
+
+      const manifest = JSON.parse(readFileSync(supervisorBootstrapManifestPath(controllerHome), 'utf8')) as { sourceCommit?: string };
+      expect(manifest.sourceCommit).toBe(sourceCommit);
+      expect(readFileSync(join(controllerHome, 'supervisor', 'bootstrap'), 'utf8')).not.toBe('stale-bootstrap\n');
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }
