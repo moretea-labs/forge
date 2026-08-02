@@ -48,7 +48,7 @@
       "id": "T1",
       "title": "Freeze target architecture and deletion map",
       "objective": "Write the executable target architecture, process ownership table, authoritative state/config schemas, service graph, availability invariants, one-way migration contract, and an explicit list of legacy components and fallback paths to delete. Reconcile overlapping runtime/recovery Issues so this Issue is the implementation authority and ISS-20260802-27931A remains the Recovery delivery line rather than a competing architecture.",
-      "status": "ready",
+      "status": "blocked",
       "dependsOn": [],
       "allowedPaths": [
         "docs/architecture/**",
@@ -71,10 +71,12 @@
         "No indefinite dual-read, dual-write, or silent fallback is permitted."
       ],
       "risk": "low",
-      "notes": [],
+      "notes": [
+        "为避免两份架构文档并行定义 authority、config、Git projection 和迁移边界，先完成 ISS-20260802-7E1D69:T1 的需求中心模型与全局存储边界。完成后本任务只补充运行时进程拓扑、服务所有权、可用性不变量和删除地图，并引用同一份架构决策。"
+      ],
       "runIds": [],
       "createdAt": "2026-08-02T05:43:48.698Z",
-      "updatedAt": "2026-08-02T05:43:48.698Z",
+      "updatedAt": "2026-08-02T06:34:53.895Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
@@ -423,6 +425,6 @@
     }
   ],
   "createdAt": "2026-08-02T05:43:48.698Z",
-  "updatedAt": "2026-08-02T06:30:18.733Z",
+  "updatedAt": "2026-08-02T06:34:53.895Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }

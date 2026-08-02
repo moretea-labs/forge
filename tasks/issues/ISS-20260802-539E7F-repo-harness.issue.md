@@ -2,7 +2,7 @@
 id: "ISS-20260802-539E7F"
 kind: "governance"
 status: "planned"
-updated_at: "2026-08-02T06:30:18.733Z"
+updated_at: "2026-08-02T06:34:53.895Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -52,7 +52,7 @@ source: "repo-harness-controller-v8"
 
 ### T1 — Freeze target architecture and deletion map
 
-- Status: `ready`
+- Status: `blocked`
 - Objective: Write the executable target architecture, process ownership table, authoritative state/config schemas, service graph, availability invariants, one-way migration contract, and an explicit list of legacy components and fallback paths to delete. Reconcile overlapping runtime/recovery Issues so this Issue is the implementation authority and ISS-20260802-27931A remains the Recovery delivery line rather than a competing architecture.
 - Depends on: none
 - Allowed paths: `docs/architecture/**`, `docs/operations/**`, `docs/runbooks/**`, `tasks/issues/**`
