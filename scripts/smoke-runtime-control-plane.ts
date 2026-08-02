@@ -42,7 +42,10 @@ try {
   const second = ensureControllerDaemon(controllerHome);
   daemonPid = first.pid;
   assert(Boolean(first.pid) && first.pid === second.pid, `DAEMON_DEDUPE_FAILED: ${first.pid} vs ${second.pid}`);
-  const daemonDeadline = Date.now() + 10_000;
+  // Cold start under the node --loader runtime loads the full daemon module
+  // graph through the TS loader; measured 14-20s locally (bun: 2-4s). Keep the
+  // budget above that so the smoke gates readiness, not loader warm-up.
+  const daemonDeadline = Date.now() + 30_000;
   let daemon = readControllerDaemonStatus(controllerHome);
   while (daemon.status !== 'ready' && Date.now() < daemonDeadline) {
     await sleep(50);
@@ -83,7 +86,7 @@ try {
   const contextProjection = firstContext?.contextProjection as Record<string, unknown> | undefined;
   assert(contextProjection?.refreshJobId === undefined, 'CONTROLLER_CONTEXT_CREATED_REFRESH_JOB');
   assert(
-    contextProjection?.strategy === 'event-driven'
+    contextProjection?.strategy === 'event-driven-swr'
       && contextProjection.readOnly === true
       && contextProjection.nonBlocking === true,
     `CONTROLLER_CONTEXT_NOT_READ_ONLY: ${JSON.stringify(contextProjection)}`,
@@ -93,7 +96,7 @@ try {
   const secondContext = secondContextResult?.structuredContent as Record<string, unknown> | undefined;
   const secondProjection = secondContext?.contextProjection as Record<string, unknown> | undefined;
   assert(
-    secondProjection?.strategy === 'event-driven' && secondProjection.readOnly === true,
+    secondProjection?.strategy === 'event-driven-swr' && secondProjection.readOnly === true,
     'CONTROLLER_CONTEXT_READ_CONTRACT_CHANGED',
   );
 

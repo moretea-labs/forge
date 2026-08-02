@@ -24,9 +24,10 @@ import {
 import { readRepositoryGitStatusSample } from './git-status-sampler';
 import { listCampaigns } from '../workflow/campaigns/store';
 import { listAssistantPluginManifests } from '../plugins/store';
-import type { ProjectionObservation } from '../health';
+import type { ProjectionObservation, ProjectionSourceReconciliation } from '../health';
 import { RUNTIME_HEALTH_THRESHOLDS } from '../health';
 import { isProcessAlive } from '../shared/process-tree';
+import type { TaskLedgerProjection } from '../../cli/controller/task-ledger';
 
 export interface ProjectionMetadata {
   contentRevision: number;
@@ -298,6 +299,34 @@ export interface RepositoryProjectionRefreshResult {
   marker?: ProjectionDirtyMarker;
 }
 
+/**
+ * Compare the projection's active worker count with the controller Task Ledger.
+ * A mismatch is diagnostic evidence; the specific active-work gap where the
+ * ledger has running tasks but the projection reports zero workers blocks readiness.
+ */
+export function reconcileProjectionWithTaskLedger(
+  snapshot: RepositoryRuntimeProjectionSnapshot,
+  ledger: TaskLedgerProjection,
+): ProjectionSourceReconciliation {
+  const runningTasks = ledger.issues
+    .flatMap((issue) => issue.tasks)
+    .filter((task) => task.effectiveStatus === 'running' || task.activeRunStatus === 'running');
+  const projectionRunningWorkers = Math.max(0, snapshot.projection.runningWorkers);
+  const ledgerRunningTasks = runningTasks.length;
+  const status = projectionRunningWorkers === ledgerRunningTasks ? 'consistent' : 'mismatch';
+  const blocking = ledgerRunningTasks > 0 && projectionRunningWorkers === 0;
+  return {
+    status,
+    ...(status === 'mismatch' ? { blocking } : {}),
+    projectionRunningWorkers,
+    ledgerRunningTasks,
+    ...(runningTasks.length > 0 ? { ledgerRunningTaskIds: runningTasks.map((task) => `${task.issueId}/${task.taskId}`) } : {}),
+    ...(status === 'mismatch'
+      ? { detail: `projection runningWorkers=${projectionRunningWorkers}, ledger runningTasks=${ledgerRunningTasks}` }
+      : {}),
+  };
+}
+
 export interface RepositoryProjectionRefreshOptions {
   repository?: RepositoryRecord;
   sourceRevision?: string;
@@ -525,7 +554,10 @@ export function refreshRepositoryProjectionForRepository(
   return refreshRepositoryProjection(controllerHome, repository.repoId, { ...options, repository });
 }
 
-export function projectionBlocksReadiness(snapshot: RepositoryRuntimeProjectionSnapshot): boolean {
+export function projectionBlocksReadiness(
+  snapshot: RepositoryRuntimeProjectionSnapshot,
+  sourceReconciliation?: ProjectionSourceReconciliation,
+): boolean {
   const ageMs = snapshot.dirtySinceAt
     ? Math.max(0, Date.now() - Date.parse(snapshot.dirtySinceAt))
     : 0;
@@ -542,10 +574,14 @@ export function projectionBlocksReadiness(snapshot: RepositoryRuntimeProjectionS
     || snapshot.refreshStatus === 'running'
     || snapshot.refreshStatus === 'failed'
   );
-  return requiredRefresh && ageMs >= RUNTIME_HEALTH_THRESHOLDS.projectionRefreshGraceMs;
+  return (requiredRefresh && ageMs >= RUNTIME_HEALTH_THRESHOLDS.projectionRefreshGraceMs)
+    || sourceReconciliation?.blocking === true;
 }
 
-export function projectionObservation(snapshot: RepositoryRuntimeProjectionSnapshot): ProjectionObservation {
+export function projectionObservation(
+  snapshot: RepositoryRuntimeProjectionSnapshot,
+  sourceReconciliation?: ProjectionSourceReconciliation,
+): ProjectionObservation {
   const dirtyAgeMs = snapshot.dirtySinceAt
     ? Math.max(0, Date.now() - Date.parse(snapshot.dirtySinceAt))
     : undefined;
@@ -579,6 +615,7 @@ export function projectionObservation(snapshot: RepositoryRuntimeProjectionSnaps
     lastBuildError: snapshot.buildError ?? snapshot.projection.metadata?.lastBuildError,
     contentRevision: snapshot.projection.metadata?.contentRevision ?? snapshot.projection.revision,
     generatedFromRevision: snapshot.projection.metadata?.generatedFromRevision ?? snapshot.dirtySourceRevision ?? snapshot.dirtyReason,
+    ...(sourceReconciliation ? { sourceReconciliation } : {}),
   };
 }
 

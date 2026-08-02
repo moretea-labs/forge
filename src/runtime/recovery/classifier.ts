@@ -102,6 +102,13 @@ const AGENT_RUNTIME_PATTERNS = [
   /not enough data to satisfy content length header/i,
 ];
 
+const SUPERVISOR_PROBE_TIMEOUT_PATTERNS = [
+  /probe_timeout/i,
+  /supervisor.*(?:health|gateway).*timeout/i,
+  /operation was aborted/i,
+  /AbortError/i,
+];
+
 const SOURCE_DEFECT_PATTERNS = [
   /typeerror/i,
   /referenceerror/i,
@@ -123,6 +130,7 @@ export function classifyFailure(message: string | undefined): RecoveryClass {
   if (DIRTY_WORKTREE_CONFLICT_PATTERNS.some((pattern) => pattern.test(text))) return 'dirty_worktree_conflict';
   if (USER_ACTION_PATTERNS.some((pattern) => pattern.test(text))) return 'user_action_required';
   if (POLICY_PATTERNS.some((pattern) => pattern.test(text))) return 'policy_denied';
+  if (SUPERVISOR_PROBE_TIMEOUT_PATTERNS.some((pattern) => pattern.test(text))) return 'transient_probe_timeout';
   if (AGENT_RUNTIME_PATTERNS.some((pattern) => pattern.test(text))) return 'agent_runtime_failure';
   if (SOURCE_DEFECT_PATTERNS.some((pattern) => pattern.test(text))) return 'source_defect_suspected';
   return 'unknown';
@@ -143,6 +151,7 @@ export function dominantRecoveryClass(classes: readonly RecoveryClass[]): Recove
     'policy_denied',
     'source_defect_suspected',
     'stale_runtime_state',
+    'transient_probe_timeout',
     'local_recoverable',
     'agent_runtime_failure',
     'plugin_configuration_error',

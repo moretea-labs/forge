@@ -29,9 +29,10 @@ import {
 } from '../toolset';
 import { ensureControllerDaemon, readControllerDaemonStatus } from '../../../runtime/control-plane/daemon-client';
 import { runtimeIdentitySnapshot } from '../../../runtime/gateway/mcp/runtime-tools';
-import { projectionBlocksReadiness, readRepositoryProjectionSnapshot } from '../../../runtime/projections/materialized-view';
+import { projectionBlocksReadiness, readRepositoryProjectionSnapshot, reconcileProjectionWithTaskLedger } from '../../../runtime/projections/materialized-view';
 import { readRuntimeGeneration } from '../../../runtime/control-plane/runtime-generation';
 import { getRepository, listRepositories } from '../../repositories/registry';
+import { buildControllerTaskLedgerProjection } from '../../controller/task-ledger';
 import {
   CONTROLLER_SCHEMA_VERSION,
   CONTROLLER_TOOL_SURFACE,
@@ -884,16 +885,23 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     const daemon = readControllerDaemonStatus(runtimeControllerHome);
     const runtimeState = loadMcpServiceRuntimeState(runtimeControllerHome, repoRoot);
     const repositories = listRepositories(runtimeControllerHome).filter((repository) => repository.enabled && !repository.removedAt);
-    const projectionSnapshots = repositories.map((repository) => ({
-      repoId: repository.repoId,
-      snapshot: readRepositoryProjectionSnapshot(runtimeControllerHome, repository.repoId),
-    }));
+    const projectionSnapshots = repositories.map((repository) => {
+      const snapshot = readRepositoryProjectionSnapshot(runtimeControllerHome, repository.repoId);
+      const reconciliation = reconcileProjectionWithTaskLedger(
+        snapshot,
+        buildControllerTaskLedgerProjection(repository.canonicalRoot),
+      );
+      return { repoId: repository.repoId, snapshot, reconciliation };
+    });
     const staleRepositories = projectionSnapshots
       .filter(({ snapshot }) => snapshot.stale)
       .map(({ repoId }) => repoId);
     const blockingStaleRepositories = projectionSnapshots
-      .filter(({ snapshot }) => projectionBlocksReadiness(snapshot))
+      .filter(({ snapshot, reconciliation }) => projectionBlocksReadiness(snapshot, reconciliation))
       .map(({ repoId }) => repoId);
+    const sourceMismatches = projectionSnapshots
+      .filter(({ reconciliation }) => reconciliation.status === 'mismatch')
+      .map(({ repoId, reconciliation }) => ({ repoId, ...reconciliation }));
     const localBridgeHealth = localControllerConfig.enabled
       ? await jsonHealth(localControllerHealthUrl(localControllerConfig.host, localControllerConfig.port))
       : null;
@@ -928,6 +936,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
         repositoryCount: repositories.length,
         staleRepositories,
         blockingStaleRepositories,
+        sourceMismatches,
       },
       publicReadiness: {
         configured: publicConfigured,

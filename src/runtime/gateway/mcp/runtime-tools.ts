@@ -23,13 +23,14 @@ import {
   readRuntimeGeneration,
   type RuntimeSourceIdentity,
 } from '../../control-plane/runtime-generation';
-import { rebuildRepositoryProjection, projectionObservation, readRepositoryProjectionSnapshot } from '../../projections/materialized-view';
+import { rebuildRepositoryProjection, projectionObservation, readRepositoryProjectionSnapshot, reconcileProjectionWithTaskLedger } from '../../projections/materialized-view';
 import {
   buildRuntimeOperationalView,
   evaluateRuntimeHealth,
   RUNTIME_HEALTH_THRESHOLDS,
   type RuntimeHealthEvaluation,
   type RuntimeOperationalView,
+  type GradedObservation,
 } from '../../health';
 import { applyScheduleDedupe, buildScheduleDedupeReport, createSchedule, getSchedule, getScheduleDecision, listOccurrences, listSchedules, saveSchedule } from '../../workflow/schedules/store';
 import { evaluateSchedule } from '../../workflow/schedules/engine';
@@ -62,7 +63,7 @@ import { assessWorkMode } from '../../../cli/controller/work-mode';
 import { scheduleControllerServiceRestart } from '../../../cli/controller/restart-coordinator';
 import { stableSupervisorFacadeMutation, stableSupervisorFacadeOperation, stableSupervisorFacadeStatus } from '../../supervisor/facade';
 import { readSupervisorState } from '../../supervisor/state-store';
-import { isStableSupervisorInstalled, readCurrentSupervisorRelease, readPreviousSupervisorRelease } from '../../supervisor/paths';
+import { isStableSupervisorInstalled, readCurrentSupervisorRelease, readPreviousSupervisorRelease, supervisorReleaseClosureMissing } from '../../supervisor/paths';
 import { evaluateRuntimeReleaseCoherence, readSupervisorServiceReleaseCoherence } from '../../supervisor/release-coherence';
 import type { SupervisorOperationKind } from '../../supervisor/types';
 import { projectBoard } from '../../../cli/controller/issue-store';
@@ -1121,6 +1122,7 @@ export function summarizeControllerReadyPayload(fullPayload: Record<string, unkn
     taskLedgerStatus: fullPayload.taskLedgerStatus,
     taskLedgerCounts: fullPayload.taskLedgerCounts,
     gateway: fullPayload.gateway,
+    projectionReconciliation: fullPayload.projectionReconciliation,
     health: {
       state: health.state,
       ready: health.ready,
@@ -1138,6 +1140,7 @@ export function summarizeControllerReadyPayload(fullPayload: Record<string, unkn
     },
     stableSupervisor: fullPayload.stableSupervisor,
     stableIngress: fullPayload.stableIngress,
+    releaseClosure: fullPayload.releaseClosure,
     externalEndpoint: fullPayload.externalEndpoint,
     stableSupervisorRevision: fullPayload.stableSupervisorRevision,
     activeRuntimeRevision: fullPayload.activeRuntimeRevision,
@@ -1788,11 +1791,25 @@ async function probeLocalControllerHealth(endpoint: string | undefined): Promise
   }
 }
 
-export async function controllerReadiness(ctx: MultiRepositoryMcpToolContext, repository = ctx.explicitRepository) {
+export interface ControllerReadinessSignals {
+  externalEndpoint?: GradedObservation;
+  mcpHandshake?: GradedObservation;
+  sessionContinuity?: GradedObservation;
+}
+
+export async function controllerReadiness(
+  ctx: MultiRepositoryMcpToolContext,
+  repository = ctx.explicitRepository,
+  signals: ControllerReadinessSignals = {},
+) {
   const daemon = readControllerDaemonStatus(ctx.controllerHome);
   const scheduler = readSchedulerHealthSnapshot(ctx.controllerHome);
   const projectionSnapshot = repository ? readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId) : undefined;
   const projection = projectionSnapshot?.projection;
+  const taskLedger = repository ? buildControllerTaskLedgerProjection(repository.canonicalRoot) : undefined;
+  const projectionReconciliation = projectionSnapshot && taskLedger
+    ? reconcileProjectionWithTaskLedger(projectionSnapshot, taskLedger)
+    : undefined;
   const localBridgeSurface = repository
     ? resolveLocalBridgeSurface({
       controllerHome: ctx.controllerHome,
@@ -1859,12 +1876,13 @@ export async function controllerReadiness(ctx: MultiRepositoryMcpToolContext, re
       activeLeases: projection?.activeLeases,
       activeAttentionCount: projection?.currentAttention.length,
     },
-    projection: projectionSnapshot ? projectionObservation(projectionSnapshot) : {
+    projection: projectionSnapshot ? projectionObservation(projectionSnapshot, projectionReconciliation) : {
       readable: true,
       persisted: true,
     },
     localBridge: localBridgeObservation,
     runtimeStorage: { readable: true, ready: true },
+    ...signals,
   });
   const operationalView: RuntimeOperationalView = buildRuntimeOperationalView({
     health: runtimeHealth,
@@ -1929,6 +1947,8 @@ export async function controllerReadiness(ctx: MultiRepositoryMcpToolContext, re
     } : undefined,
     projection,
     projectionSnapshot,
+    taskLedger,
+    projectionReconciliation,
   };
 }
 
@@ -4192,7 +4212,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const repository = explicitRepoId
           ? selected(ctx, args)
           : (ctx.explicitRepository ?? (registered.length === 1 ? registered[0] : undefined));
-        const readiness = await controllerReadiness(ctx, repository);
         const toolset = await import('../../../cli/mcp/toolset');
         const exposure = toolset.controllerExposureSnapshot(ctx);
         const localRegisteredToolNames = toolset.allControllerToolDefinitions(ctx).map((tool) => tool.name).sort();
@@ -4226,6 +4245,15 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           runtimeCoherence: runtimeReleaseCoherence,
         });
         const routeBehavior = gatewayRouteBehaviorSnapshot();
+        // Execution-surface closure: the active immutable release must contain
+        // every executable the Unified Process Runtime needs (process-runner.js
+        // and the other entrypoints). Control plane liveness says nothing about
+        // whether a repository command can actually run, so a release with a
+        // missing runner entrypoint blocks readiness instead of failing the
+        // first real command with PROCESS_RUNNER_ENTRY_NOT_FOUND.
+        const releaseClosureMissing = stableSupervisorPresent && currentRelease
+          ? supervisorReleaseClosureMissing(currentRelease.releasePath)
+          : [];
         // Stable ingress health: separate from the daemon-based readiness.
         // A Supervisor that looks healthy internally can still have an
         // unreachable ingress that makes the public Connector 502.
@@ -4244,13 +4272,43 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         // means the Stable Connector is unreachable even when localhost passes.
         const publicHealthEndpoint = process.env.REPO_HARNESS_SUPERVISOR_PUBLIC_HEALTH_ENDPOINT?.trim();
         const externalEndpointStatus: 'healthy' | 'unhealthy' | 'unknown' = publicHealthEndpoint
-          ? (supervisorState?.externalEndpointHealthy === true ? 'healthy' : 'unhealthy')
+          ? supervisorState?.externalEndpointHealthy === true
+            ? 'healthy'
+            : supervisorState?.externalEndpointHealthy === false
+              ? 'unhealthy'
+              : 'unknown'
           : 'unknown';
         const externalEndpointLastChecked = supervisorState?.externalEndpointLastCheckedAt;
         const externalEndpointDetail = supervisorState?.externalEndpointLastDetail;
         const stableIngressReady = ingressLocalReady && (externalEndpointStatus !== 'unhealthy');
-        const effectiveReady = readiness.ready && toolSurfaceReady && revisionView.coherence.ok && (stableSupervisorPresent ? stableIngressReady : true);
-        const taskLedger = repository ? buildControllerTaskLedgerProjection(repository.canonicalRoot) : undefined;
+        const readiness = await controllerReadiness(ctx, repository, {
+          externalEndpoint: {
+            status: externalEndpointStatus,
+            ...(externalEndpointDetail ? { detail: externalEndpointDetail } : {}),
+            details: {
+              configured: Boolean(publicHealthEndpoint),
+              lastCheckedAt: externalEndpointLastChecked,
+            },
+          },
+          mcpHandshake: stableSupervisorPresent
+            ? {
+              status: supervisorState?.observedState === 'healthy' ? 'healthy' : 'unknown',
+              detail: supervisorState?.observedState === 'healthy'
+                ? 'Stable Supervisor reports a healthy MCP-serving runtime.'
+                : 'No successful MCP handshake is persisted in the readiness snapshot.',
+            }
+            : undefined,
+          sessionContinuity: stableSupervisorPresent
+            ? {
+              status: ingressLocalReady ? 'healthy' : 'unknown',
+              detail: ingressLocalReady
+                ? `Ingress is bound to upstream slot ${ingressState?.activeUpstreamSlot}.`
+                : 'Ingress session continuity cannot be evaluated without an active upstream slot.',
+            }
+            : undefined,
+        });
+        const effectiveReady = readiness.ready && toolSurfaceReady && revisionView.coherence.ok && releaseClosureMissing.length === 0 && (stableSupervisorPresent ? stableIngressReady : true);
+        const taskLedger = readiness.taskLedger;
         const agentExecutors = detail ? readAgentExecutableReadinessSnapshot(ctx.controllerHome) : undefined;
         const fullPayload: Record<string, unknown> = {
           repoId: repository?.repoId,
@@ -4267,6 +4325,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           } : undefined,
           gateway: { ready: true, thin: true, longOperationsAreDurable: true },
           health: readiness.health,
+          projectionReconciliation: readiness.projectionReconciliation,
           operationalView: readiness.operationalView,
           daemon: readiness.daemon,
           durableScheduler: readiness.durableScheduler,
@@ -4297,12 +4356,17 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             lastCheckedAt: externalEndpointLastChecked,
             detail: externalEndpointDetail,
           },
+          releaseClosure: {
+            complete: releaseClosureMissing.length === 0,
+            missing: releaseClosureMissing,
+          },
           reasons: [
             ...readiness.reasons,
             ...(!toolSurfaceReady ? [{ code: 'MCP_TOOL_SURFACE_INCOMPLETE', message: 'Registered and exposed MCP tool schemas do not match.' }] : []),
             ...(!supervisorServiceCoherence.ok ? [{ code: 'SUPERVISOR_SERVICE_RELEASE_DRIFT', message: supervisorServiceCoherence.failures.join('; ') }] : []),
             ...(!runtimeReleaseCoherence.ok ? [{ code: 'ACTIVE_RUNTIME_RELEASE_DRIFT', message: runtimeReleaseCoherence.failures.join('; ') }] : []),
             ...(stableSupervisorPresent && !ingressLocalReady ? [{ code: 'STABLE_INGRESS_NOT_READY', message: 'Stable ingress is not serving traffic or has accumulated health failures.' }] : []),
+            ...(releaseClosureMissing.length > 0 ? [{ code: 'RELEASE_CLOSURE_INCOMPLETE', message: `Immutable release is missing required executable entrypoints: ${releaseClosureMissing.join(', ')}` }] : []),
             ...(externalEndpointStatus === 'unhealthy' ? [{ code: 'PUBLIC_STABLE_ENDPOINT_UNHEALTHY', message: externalEndpointDetail ?? 'Public stable endpoint is unreachable even though localhost checks pass.' }] : []),
           ],
           ...revisionView,

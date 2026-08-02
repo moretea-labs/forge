@@ -130,7 +130,10 @@ function socketPath(config: RecoveryConfig): string { return join(resolve(config
 function supervisorStateFilePath(config: RecoveryConfig): string { return join(resolve(config.controllerHome), 'supervisor', 'state.json'); }
 function supervisorActivationPath(config: RecoveryConfig): string { return join(resolve(config.controllerHome), 'supervisor', 'activation.json'); }
 
-const REQUIRED_RELEASE_FILES = [
+// Keep the standalone recovery bundle dependent only on Node built-ins and its
+// local transport. A regression test compares this compatibility list with the
+// Supervisor release contract so the two surfaces cannot drift silently.
+export const STANDALONE_RECOVERY_REQUIRED_RELEASE_FILES = [
   'supervisor.js',
   'repo-harness.js',
   'daemon.js',
@@ -139,6 +142,7 @@ const REQUIRED_RELEASE_FILES = [
   'browser-handoff-host.js',
   'browser-node-bridge-host.js',
 ] as const;
+const REQUIRED_RELEASE_FILES = STANDALONE_RECOVERY_REQUIRED_RELEASE_FILES;
 
 export function recoveryConfigPath(controllerHome: string): string {
   return join(resolve(controllerHome), 'recovery', 'config', 'recovery.json');

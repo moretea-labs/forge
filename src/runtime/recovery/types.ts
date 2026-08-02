@@ -17,6 +17,7 @@ export type RecoveryClass =
   | 'agent_runtime_failure'
   | 'plugin_configuration_error'
   | 'source_defect_suspected'
+  | 'transient_probe_timeout'
   | 'user_action_required'
   | 'unknown';
 

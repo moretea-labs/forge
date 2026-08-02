@@ -1,7 +1,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { mcpServerInstructions } from './instructions';
-import { buildMcpToolDefinitions, callMcpTool, type McpToolContext } from './tools';
+import { buildMcpToolDefinitions, callMcpTool, type CallToolResult, type McpToolContext } from './tools';
 import { createLegacyMcpToolContext } from './legacy-context';
 import {
   buildMultiRepositoryToolDefinitions,
@@ -21,6 +21,8 @@ import {
   controllerExposureSnapshot,
   isControllerToolExposed,
 } from './toolset';
+import { randomUUID } from 'crypto';
+import { recordMcpIncident, recordMcpTiming } from '../../runtime/diagnostics/mcp-timing';
 
 export type { McpServerOptions } from './multi-repository';
 export { buildMultiRepositoryToolDefinitions, callMultiRepositoryTool } from './multi-repository';
@@ -29,6 +31,103 @@ type ServerToolContext = McpToolContext | MultiRepositoryMcpToolContext;
 
 function isMultiRepositoryContext(ctx: ServerToolContext): ctx is MultiRepositoryMcpToolContext {
   return 'controllerHome' in ctx;
+}
+
+function recordRequestId(args: Record<string, unknown>, rpcId: string | number | undefined): string {
+  const explicit = typeof args.request_id === 'string' ? args.request_id.trim() : '';
+  return explicit || `mcp-rpc:${rpcId === undefined ? randomUUID() : String(rpcId)}`;
+}
+
+function tracedResult(
+  value: CallToolResult | undefined,
+  traceId: string,
+  requestId: string,
+): CallToolResult | undefined {
+  if (!value || !value.structuredContent || typeof value.structuredContent !== 'object' || Array.isArray(value.structuredContent)) return value;
+  const originalStructuredContent = value.structuredContent as Record<string, unknown>;
+  const structuredContent = {
+    ...originalStructuredContent,
+    responseMeta: {
+      ...(originalStructuredContent.responseMeta && typeof originalStructuredContent.responseMeta === 'object'
+        ? originalStructuredContent.responseMeta as Record<string, unknown>
+        : {}),
+      traceId,
+      requestId,
+    },
+  };
+  return {
+    ...value,
+    structuredContent,
+    content: value.content.map((block, index) => index === 0 && block.type === 'text'
+      ? { ...block, text: JSON.stringify(structuredContent) }
+      : block),
+  };
+}
+
+async function traceControllerMcpRequest(
+  ctx: MultiRepositoryMcpToolContext,
+  name: string,
+  args: Record<string, unknown>,
+  rpcId: string | number | undefined,
+  handler: () => Promise<CallToolResult>,
+): Promise<CallToolResult> {
+  const startedAt = performance.now();
+  const traceId = randomUUID();
+  const requestId = recordRequestId(args, rpcId);
+  let outcome: 'ok' | 'error' | 'exception' = 'ok';
+  let errorCode: string | undefined;
+  try {
+    const value = await handler();
+    if (value?.isError) {
+      outcome = 'error';
+      const error = value.structuredContent && typeof value.structuredContent === 'object'
+        ? (value.structuredContent as Record<string, unknown>).error
+        : undefined;
+      if (error && typeof error === 'object' && !Array.isArray(error)) {
+        errorCode = typeof (error as Record<string, unknown>).code === 'string'
+          ? (error as Record<string, unknown>).code as string
+          : 'MCP_TOOL_ERROR';
+        recordMcpIncident(ctx.controllerHome, {
+          traceId,
+          requestId,
+          ...(rpcId === undefined ? {} : { rpcId }),
+          tool: name,
+          kind: 'tool_error',
+          code: errorCode,
+          message: typeof (error as Record<string, unknown>).message === 'string'
+            ? (error as Record<string, unknown>).message as string
+            : 'MCP tool returned an error.',
+          ...(typeof (value.structuredContent as Record<string, unknown>).repoId === 'string'
+            ? { repoId: (value.structuredContent as Record<string, unknown>).repoId as string }
+            : {}),
+        });
+      }
+    }
+    return tracedResult(value, traceId, requestId) as CallToolResult;
+  } catch (error) {
+    outcome = 'exception';
+    errorCode = 'MCP_REQUEST_EXCEPTION';
+    recordMcpIncident(ctx.controllerHome, {
+      traceId,
+      requestId,
+      ...(rpcId === undefined ? {} : { rpcId }),
+      tool: name,
+      kind: 'exception',
+      code: errorCode,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  } finally {
+    recordMcpTiming(ctx.controllerHome, {
+      tool: name,
+      traceId,
+      requestId,
+      ...(rpcId === undefined ? {} : { rpcId }),
+      outcome,
+      ...(errorCode ? { errorCode } : {}),
+      totalToolDurationMs: Math.round((performance.now() - startedAt) * 100) / 100,
+    });
+  }
 }
 
 export function createMcpToolContext(
@@ -57,57 +156,60 @@ export function createRepoHarnessMcpServerFromContext(baseContext: ServerToolCon
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
     const ctx: ServerToolContext = { ...baseContext, signal: extra.signal };
     if (isMultiRepositoryContext(ctx)) {
-      if (!isControllerToolExposed(ctx, name)) {
-        if (ctx.toolset === 'core') {
-          const advanced = controllerExposureSnapshot({ ...ctx, toolset: 'advanced' });
-          const route = controllerToolInventory(advanced.actualToolNames, 'advanced').find((entry) => entry.name === name);
-          if (route) {
-            const facadeCompletes = Boolean(route.capability === 'facade' || name.startsWith('rh_'));
-            const value = {
-              error: {
-                code: 'unsupported_in_core',
-                message: `${name} requires the ${route.capability} capability, which is outside the Core toolset. Use the Advanced or Full profile, or route ordinary work through the bounded rh_ facade.`,
-                missingCapability: route.capability,
-                currentToolset: 'core',
-                suggestedProfile: 'advanced',
-                facadeCanComplete: facadeCompletes,
-                route: {
-                  profile: 'advanced',
-                  tool: route.name,
-                  capability: route.capability,
-                  exposedVia: route.exposedVia,
+      const rpcId = (request as unknown as { id?: unknown }).id;
+      return traceControllerMcpRequest(ctx, name, args, typeof rpcId === 'string' || typeof rpcId === 'number' ? rpcId : undefined, async () => {
+        if (!isControllerToolExposed(ctx, name)) {
+          if (ctx.toolset === 'core') {
+            const advanced = controllerExposureSnapshot({ ...ctx, toolset: 'advanced' });
+            const route = controllerToolInventory(advanced.actualToolNames, 'advanced').find((entry) => entry.name === name);
+            if (route) {
+              const facadeCompletes = Boolean(route.capability === 'facade' || name.startsWith('rh_'));
+              const value = {
+                error: {
+                  code: 'unsupported_in_core',
+                  message: `${name} requires the ${route.capability} capability, which is outside the Core toolset. Use the Advanced or Full profile, or route ordinary work through the bounded rh_ facade.`,
+                  missingCapability: route.capability,
+                  currentToolset: 'core',
+                  suggestedProfile: 'advanced',
+                  facadeCanComplete: facadeCompletes,
+                  route: {
+                    profile: 'advanced',
+                    tool: route.name,
+                    capability: route.capability,
+                    exposedVia: route.exposedVia,
+                  },
+                  requiredCapability: route.capability,
                 },
-                requiredCapability: route.capability,
-              },
-            };
-            return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value, isError: true };
+              };
+              return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value, isError: true };
+            }
           }
+          const value = {
+            error: {
+              code: 'TOOL_NOT_FOUND',
+              message: `${name} is not registered by this repo-harness build. Tool availability is independent of Request vs Full Access.`,
+            },
+          };
+          return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }], structuredContent: value, isError: true };
         }
-        const value = {
-          error: {
-            code: 'TOOL_NOT_FOUND',
-            message: `${name} is not registered by this repo-harness build. Tool availability is independent of Request vs Full Access.`,
-          },
-        };
-        return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }], structuredContent: value, isError: true };
-      }
-      const accessResult = callAccessTool(ctx, name, args);
-      if (accessResult) return accessResult;
-      const executionResult = await callExecutionTool(ctx, name, args);
-      if (executionResult) return executionResult;
-      const processResult = await callProcessTool(ctx, name, args);
-      if (processResult) return processResult;
-      if (isGatewayIsolatedTool(name)) {
-        const isolatedResult = await routeDurableMcpCall(ctx, name, args, { allowReadOnly: true, forceDurable: true });
-        if (isolatedResult) return isolatedResult;
-      }
-      const runtimeResult = await callRuntimeTool(ctx, name, args);
-      if (runtimeResult) return runtimeResult;
-      const durableResult = await routeDurableMcpCall(ctx, name, args);
-      if (durableResult) return durableResult;
-      const repositoryResult = await callRepositoryTool(ctx.controllerHome, name, args);
-      if (repositoryResult) return repositoryResult;
-      return callMultiRepositoryTool(ctx, name, args);
+        const accessResult = callAccessTool(ctx, name, args);
+        if (accessResult) return accessResult;
+        const executionResult = await callExecutionTool(ctx, name, args);
+        if (executionResult) return executionResult;
+        const processResult = await callProcessTool(ctx, name, args);
+        if (processResult) return processResult;
+        if (isGatewayIsolatedTool(name)) {
+          const isolatedResult = await routeDurableMcpCall(ctx, name, args, { allowReadOnly: true, forceDurable: true });
+          if (isolatedResult) return isolatedResult;
+        }
+        const runtimeResult = await callRuntimeTool(ctx, name, args);
+        if (runtimeResult) return runtimeResult;
+        const durableResult = await routeDurableMcpCall(ctx, name, args);
+        if (durableResult) return durableResult;
+        const repositoryResult = await callRepositoryTool(ctx.controllerHome, name, args);
+        if (repositoryResult) return repositoryResult;
+        return callMultiRepositoryTool(ctx, name, args);
+      });
     }
     return callMcpTool(ctx, name, args);
   });

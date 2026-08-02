@@ -1,9 +1,9 @@
-import { createHash } from 'crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'fs';
+import { createHash, randomUUID } from 'crypto';
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join, resolve, sep } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { looksLikeControllerRuntimePackage, resolveControllerRuntimeSourceRoot } from '../control-plane/runtime-generation';
-import { readCurrentRelease, readSupervisorRelease, ensureStableSupervisorLayout, publishCurrentRelease, supervisorLogsRoot, supervisorReleasesRoot, supervisorRoot } from './paths';
+import { readCurrentRelease, readSupervisorRelease, ensureStableSupervisorLayout, publishCurrentRelease, supervisorLogsRoot, supervisorReleasesRoot, supervisorRoot, SUPERVISOR_RELEASE_ENTRYPOINTS, supervisorReleaseClosureMissing } from './paths';
 import type { SupervisorSourceIdentity } from './types';
 
 export interface SupervisorInstallResult {
@@ -20,15 +20,7 @@ export interface SupervisorInstallResult {
 }
 
 const RUNTIME_RELEASE_PATHS = ['src', 'scripts', 'package.json', 'bun.lock'] as const;
-const RELEASE_EXECUTABLES = [
-  'supervisor.js',
-  'repo-harness.js',
-  'daemon.js',
-  'worker.js',
-  'process-runner.js',
-  'browser-handoff-host.js',
-  'browser-node-bridge-host.js',
-] as const;
+const RELEASE_EXECUTABLES = SUPERVISOR_RELEASE_ENTRYPOINTS;
 
 function runtimeSourceRoot(explicit?: string): string {
   const resolved = resolveControllerRuntimeSourceRoot({ explicitRoot: explicit });
@@ -292,6 +284,94 @@ function releaseArtifactHash(releasePath: string): { artifactHash: string; artif
   return { artifactHash: aggregate.digest('hex'), artifacts };
 }
 
+export interface SupervisorReleaseExecutionCanaryResult {
+  releasePath: string;
+  processId: string;
+  exitCode: number;
+  commandExecutedOnce: boolean;
+}
+
+/**
+ * Prove that the immutable release can launch its own Process Runner and that
+ * the runner can spawn one harmless child command and persist an exit receipt.
+ * This uses the same bundled process-runner.js entrypoint as
+ * repository_command_execute, rather than merely checking that the file exists.
+ */
+export function verifySupervisorReleaseExecutionCanary(input: {
+  releasePath: string;
+  cwd: string;
+}): SupervisorReleaseExecutionCanaryResult {
+  const releasePath = resolve(input.releasePath);
+  const runnerPath = join(releasePath, 'process-runner.js');
+  if (!existsSync(runnerPath)) {
+    throw new Error('SUPERVISOR_RELEASE_PROCESS_CANARY_FAILED: process-runner.js is missing');
+  }
+  const processId = `release-canary-${process.pid}-${randomUUID().slice(0, 8)}`;
+  const canaryRoot = join(dirname(releasePath), `.${processId}`);
+  const descriptorPath = join(canaryRoot, 'command.json');
+  const stdoutPath = join(canaryRoot, 'stdout.log');
+  const stderrPath = join(canaryRoot, 'stderr.log');
+  const exitReceiptPath = join(canaryRoot, 'exit.json');
+  mkdirSync(canaryRoot, { recursive: true, mode: 0o700 });
+  try {
+    writeFileSync(descriptorPath, `${JSON.stringify({
+      schemaVersion: 1,
+      processId,
+      repoId: 'supervisor-release-canary',
+      controllerHome: canaryRoot,
+      command: {
+        kind: 'argv',
+        executable: process.execPath,
+        args: ['--version'],
+        cwd: resolve(input.cwd),
+      },
+      timeoutMs: 10_000,
+      maxStdoutBytes: 16 * 1024,
+      maxStderrBytes: 16 * 1024,
+      stdoutPath,
+      stderrPath,
+      exitReceiptPath,
+      startedAt: new Date().toISOString(),
+      streamLogs: false,
+    }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+    const runtime = process.versions.bun ? process.execPath : 'bun';
+    const result = runProcess(runtime, [runnerPath, '--descriptor', descriptorPath], {
+      cwd: resolve(input.cwd),
+      timeoutMs: 20_000,
+      maxOutputBytes: 32 * 1024,
+    });
+    let receipt: {
+      schemaVersion?: number;
+      processId?: string;
+      exitCode?: number | null;
+      commandExecutedOnce?: boolean;
+    } | undefined;
+    try {
+      receipt = JSON.parse(readFileSync(exitReceiptPath, 'utf8')) as typeof receipt;
+    } catch {
+      receipt = undefined;
+    }
+    if (
+      !result.ok
+      || receipt?.schemaVersion !== 1
+      || receipt.processId !== processId
+      || receipt.exitCode !== 0
+      || receipt.commandExecutedOnce !== true
+    ) {
+      const detail = result.stderr || result.stdout || 'runner did not produce a successful receipt';
+      throw new Error(`SUPERVISOR_RELEASE_PROCESS_CANARY_FAILED: ${detail}`.slice(0, 2_000));
+    }
+    return {
+      releasePath,
+      processId,
+      exitCode: receipt.exitCode,
+      commandExecutedOnce: true,
+    };
+  } finally {
+    rmSync(canaryRoot, { recursive: true, force: true });
+  }
+}
+
 function assertOwnedReleasePath(controllerHome: string, releasePath: string): string {
   const candidate = resolve(releasePath);
   try {
@@ -313,51 +393,81 @@ export function stageSupervisorRelease(input: { controllerHome: string; repoRoot
   ensureStableSupervisorLayout(controllerHome);
   const identity = runtimeSourceIdentity(sourceRoot, input.allowDirtyRuntimeSourceForTests === true);
   const revision = identity.releaseRevision;
-  const releasePath = join(supervisorReleasesRoot(controllerHome), `${Date.now()}-${revision.replace(/[^a-zA-Z0-9._-]/g, '-')}`);
-  mkdirSync(releasePath, { recursive: true, mode: 0o700 });
-  buildEntry(sourceRoot, 'src/runtime/supervisor/entry.ts', join(releasePath, 'supervisor.js'));
-  buildEntry(sourceRoot, 'src/cli/index.ts', join(releasePath, 'repo-harness.js'));
-  buildEntry(sourceRoot, 'src/runtime/control-plane/daemon-entry.ts', join(releasePath, 'daemon.js'));
-  buildEntry(sourceRoot, 'src/runtime/execution/workers/worker-entry.ts', join(releasePath, 'worker.js'));
-  buildEntry(sourceRoot, 'src/runtime/execution/process-runtime/process-runner-entry.ts', join(releasePath, 'process-runner.js'));
-  buildEntry(sourceRoot, 'src/runtime/plugins/browser-handoff-host.ts', join(releasePath, 'browser-handoff-host.js'));
-  buildEntry(sourceRoot, 'src/runtime/plugins/browser-node-bridge-host.ts', join(releasePath, 'browser-node-bridge-host.js'), 'node');
-  const artifactIdentity = releaseArtifactHash(releasePath);
-  writeFileSync(join(releasePath, 'manifest.json'), `${JSON.stringify({
-    schemaVersion: 2,
-    releaseRevision: revision,
-    sourceCommit: identity.sourceCommit,
-    sourceRoot,
-    cleanWorkspace: identity.cleanWorkspace,
-    dirtyRuntimePaths: identity.dirtyRuntimePaths,
-    artifactHash: artifactIdentity.artifactHash,
-    artifacts: artifactIdentity.artifacts,
-    builtAt: new Date().toISOString(),
-    entrypoint: 'supervisor.js',
-    runtimeEntrypoint: 'repo-harness.js',
-    daemonEntrypoint: 'daemon.js',
-    workerEntrypoint: 'worker.js',
-    processRunnerEntrypoint: 'process-runner.js',
-    browserHandoffHostEntrypoint: 'browser-handoff-host.js',
-    browserNodeBridgeHostEntrypoint: 'browser-node-bridge-host.js',
-    capabilities: ['staged_rollout_release', 'browser_handoff_host', 'browser_node_cdp_bridge', 'independent_process_runner', 'reproducible_release_manifest'],
-  }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-  for (const executable of RELEASE_EXECUTABLES) {
-    try { chmodSync(join(releasePath, executable), 0o700); } catch { /* best effort */ }
+  const releaseName = `${Date.now()}-${revision.replace(/[^a-zA-Z0-9._-]/g, '-')}`;
+  const releasePath = join(supervisorReleasesRoot(controllerHome), releaseName);
+  const stagingPath = join(
+    supervisorReleasesRoot(controllerHome),
+    `.${releaseName}.staging-${process.pid}-${randomUUID().slice(0, 8)}`,
+  );
+  mkdirSync(stagingPath, { recursive: true, mode: 0o700 });
+  try {
+    buildEntry(sourceRoot, 'src/runtime/supervisor/entry.ts', join(stagingPath, 'supervisor.js'));
+    buildEntry(sourceRoot, 'src/cli/index.ts', join(stagingPath, 'repo-harness.js'));
+    buildEntry(sourceRoot, 'src/runtime/control-plane/daemon-entry.ts', join(stagingPath, 'daemon.js'));
+    buildEntry(sourceRoot, 'src/runtime/execution/workers/worker-entry.ts', join(stagingPath, 'worker.js'));
+    buildEntry(sourceRoot, 'src/runtime/execution/process-runtime/process-runner-entry.ts', join(stagingPath, 'process-runner.js'));
+    buildEntry(sourceRoot, 'src/runtime/plugins/browser-handoff-host.ts', join(stagingPath, 'browser-handoff-host.js'));
+    buildEntry(sourceRoot, 'src/runtime/plugins/browser-node-bridge-host.ts', join(stagingPath, 'browser-node-bridge-host.js'), 'node');
+    const missing = supervisorReleaseClosureMissing(stagingPath);
+    if (missing.length > 0) {
+      throw new Error(`SUPERVISOR_RELEASE_CLOSURE_INCOMPLETE: staged release is missing required executables: ${missing.join(', ')}`);
+    }
+    verifySupervisorReleaseExecutionCanary({ releasePath: stagingPath, cwd: sourceRoot });
+    const artifactIdentity = releaseArtifactHash(stagingPath);
+    writeFileSync(join(stagingPath, 'manifest.json'), `${JSON.stringify({
+      schemaVersion: 2,
+      releaseRevision: revision,
+      sourceCommit: identity.sourceCommit,
+      sourceRoot,
+      cleanWorkspace: identity.cleanWorkspace,
+      dirtyRuntimePaths: identity.dirtyRuntimePaths,
+      artifactHash: artifactIdentity.artifactHash,
+      artifacts: artifactIdentity.artifacts,
+      builtAt: new Date().toISOString(),
+      entrypoint: 'supervisor.js',
+      runtimeEntrypoint: 'repo-harness.js',
+      daemonEntrypoint: 'daemon.js',
+      workerEntrypoint: 'worker.js',
+      processRunnerEntrypoint: 'process-runner.js',
+      browserHandoffHostEntrypoint: 'browser-handoff-host.js',
+      browserNodeBridgeHostEntrypoint: 'browser-node-bridge-host.js',
+      capabilities: ['staged_rollout_release', 'browser_handoff_host', 'browser_node_cdp_bridge', 'independent_process_runner', 'reproducible_release_manifest', 'process_runner_canary'],
+    }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+    for (const executable of RELEASE_EXECUTABLES) {
+      try { chmodSync(join(stagingPath, executable), 0o700); } catch { /* best effort */ }
+    }
+    // The final release path becomes visible only after every executable,
+    // manifest digest and process-runner canary has succeeded.
+    renameSync(stagingPath, releasePath);
+    return {
+      controllerHome,
+      sourceRoot,
+      releaseRevision: revision,
+      sourceCommit: identity.sourceCommit,
+      cleanWorkspace: identity.cleanWorkspace,
+      artifactHash: artifactIdentity.artifactHash,
+      releasePath,
+    };
+  } catch (error) {
+    rmSync(stagingPath, { recursive: true, force: true });
+    throw error;
   }
-  return {
-    controllerHome,
-    sourceRoot,
-    releaseRevision: revision,
-    sourceCommit: identity.sourceCommit,
-    cleanWorkspace: identity.cleanWorkspace,
-    artifactHash: artifactIdentity.artifactHash,
-    releasePath,
-  };
 }
 
-function assertPublishableRelease(release: NonNullable<ReturnType<typeof readSupervisorRelease>>, allowUnreproducibleReleaseForTests = false): void {
+function assertPublishableRelease(
+  release: NonNullable<ReturnType<typeof readSupervisorRelease>>,
+  canaryCwd: string,
+  allowUnreproducibleReleaseForTests = false,
+): void {
   if (allowUnreproducibleReleaseForTests) return;
+  // Explicit execution-surface closure: every entrypoint must exist and be
+  // non-empty. The artifact hash below would also fail on a missing file, but
+  // this check reports exactly which executables are missing instead of a
+  // generic hash mismatch, and it guards releases written by older tooling.
+  const missing = supervisorReleaseClosureMissing(release.releasePath);
+  if (missing.length > 0) {
+    throw new Error(`SUPERVISOR_RELEASE_CLOSURE_INCOMPLETE: immutable release is missing required executables: ${missing.join(', ')}`);
+  }
   const failures: string[] = [];
   if (!release.sourceCommit) failures.push('sourceCommit missing');
   if (release.cleanWorkspace !== true) failures.push(`cleanWorkspace=${String(release.cleanWorkspace)}`);
@@ -374,6 +484,7 @@ function assertPublishableRelease(release: NonNullable<ReturnType<typeof readSup
   if (failures.length > 0) {
     throw new Error(`SUPERVISOR_RELEASE_NOT_REPRODUCIBLE: refusing to publish Supervisor Release (${failures.join('; ')})`);
   }
+  verifySupervisorReleaseExecutionCanary({ releasePath: release.releasePath, cwd: canaryCwd });
 }
 
 export function publishSupervisorRelease(input: { controllerHome: string; repoRoot: string; releasePath: string; allowUnreproducibleReleaseForTests?: boolean }): SupervisorInstallResult {
@@ -381,7 +492,7 @@ export function publishSupervisorRelease(input: { controllerHome: string; repoRo
   const releasePath = assertOwnedReleasePath(controllerHome, input.releasePath);
   const release = readSupervisorRelease(releasePath);
   if (!release) throw new Error('SUPERVISOR_STAGED_RELEASE_INVALID');
-  assertPublishableRelease(release, input.allowUnreproducibleReleaseForTests === true);
+  assertPublishableRelease(release, input.repoRoot, input.allowUnreproducibleReleaseForTests === true);
   const sourceRoot = publishRuntimeSourceRoot({ controllerHome, repoRoot: input.repoRoot, release });
   const revision = release.releaseRevision ?? `local-${Date.now()}`;
   const previous = readCurrentRelease(controllerHome);

@@ -20,6 +20,7 @@ function commandsFor(gate: Gate): GateCommand[] {
   ];
   if (gate === 'main') return [
     { label: 'focused task receipt', command: 'bun', args: ['run', 'check:task'], timeoutMs: 45 * 60_000 },
+    { label: 'runtime smoke', command: 'bun', args: ['run', 'check:smoke'], timeoutMs: 10 * 60_000 },
   ];
   return [
     { label: 'main candidate receipt', command: 'bun', args: ['run', 'check:main'], timeoutMs: 70 * 60_000 },

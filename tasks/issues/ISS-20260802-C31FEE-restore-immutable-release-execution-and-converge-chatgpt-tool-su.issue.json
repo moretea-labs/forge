@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 5,
+  "id": "ISS-20260802-C31FEE",
+  "title": "Restore immutable release execution and converge ChatGPT tool surface",
+  "slug": "restore-immutable-release-execution-and-converge-chatgpt-tool-su",
+  "kind": "bug",
+  "status": "in_progress",
+  "summary": "Take over the existing codex/runtime-observability work. Restore self-hosted repository command execution by fixing the immutable release closure and the actual build/activation path for process-runner.js, add end-to-end canary and rollback gates, merge and activate a verified clean release, then physically reduce the default ChatGPT tool surface while preserving facade workflows and compatibility.",
+  "goals": [
+    "Identify and fix the causal path that produced or activated a release without process-runner.js.",
+    "Make release creation, publish, readiness, activation, rollback and command execution fail closed with end-to-end evidence.",
+    "Integrate the existing runtime-observability changes without losing or overwriting user work.",
+    "Restore repository_command_execute and validate checks, Git workflow, rollout and rollback on the exact release.",
+    "Reduce the default ChatGPT-facing surface to the five rh_* facades plus a bounded discovery/escape hatch instead of exposing all atomic tools."
+  ],
+  "nonGoals": [
+    "Do not push or publish remotely.",
+    "Do not modify unrelated iOS, browser or product work.",
+    "Do not hide execution failures behind cmux configuration or Connector reconnects.",
+    "Do not delete existing dirty work before it is preserved and reviewed."
+  ],
+  "acceptanceCriteria": [
+    "A clean immutable candidate contains every declared release entrypoint including non-empty process-runner.js with manifest digest.",
+    "The exact candidate passes an end-to-end process canary through the same runtime lookup and spawn path used by repository_command_execute.",
+    "Publish, readiness, activation and rollback reject incomplete releases before traffic switches.",
+    "The branch is rebased or replayed onto current main without losing existing changes, all focused and declared checks pass, and the exact revision is merged and activated.",
+    "Post-activation repository_command_execute runs git rev-parse and at least one governed check successfully.",
+    "Default ChatGPT orchestration uses a materially smaller tool surface; atomic handlers remain available through bounded discovery or an advanced compatibility mode.",
+    "Temporary branches/worktrees/releases created for this work are cleaned after verification."
+  ],
+  "relatedArtifacts": [],
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Close immutable release execution gap",
+      "objective": "Preserve and review the existing runtime-observability diff, identify the actual release-build/activation path that omitted process-runner.js, implement causal fixes and release-closure/readiness/rollback/canary coverage, validate on a clean exact revision, merge, activate and prove repository command execution.",
+      "status": "running",
+      "dependsOn": [],
+      "allowedPaths": [
+        "src/runtime/supervisor/**",
+        "src/runtime/execution/process-runtime/**",
+        "src/runtime/gateway/**",
+        "src/runtime/health/**",
+        "src/runtime/recovery/**",
+        "src/runtime/standalone-recovery/**",
+        "src/cli/**",
+        "scripts/**",
+        "tests/runtime/**",
+        "tests/cli/**",
+        "tests/test-manifest.v1.json",
+        "package.json",
+        "tasks/notes/**"
+      ],
+      "forbiddenPaths": [
+        "src/runtime/plugins/ios-**",
+        "src/runtime/plugins/browser-**",
+        "tasks/issues/ISS-20260729-BF2F89-*"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:mcp-compatibility",
+        "package:check:controller-v8",
+        "package:check:ci"
+      ],
+      "acceptanceCriteria": [
+        "Existing dirty changes are preserved and reviewed before modification.",
+        "All release construction paths produce the same complete executable closure.",
+        "A candidate command-execution canary succeeds before cutover.",
+        "The exact activated runtime passes external MCP verification and repository_command_execute."
+      ],
+      "risk": "high",
+      "notes": [
+        "ChatGPT took over the existing codex/runtime-observability dirty checkout without discarding or overwriting changes. Baseline evidence: active release c7fb6008 is control-plane healthy but repository_command_execute fails with PROCESS_RUNNER_ENTRY_NOT_FOUND; previous slot rollback is refused because it lacks known-good manifest evidence. Current dirty diff already adds closure/readiness/rollback guards, but causal build/activation and end-to-end canary still require verification and completion."
+      ],
+      "runIds": [],
+      "createdAt": "2026-08-02T03:21:52.747Z",
+      "updatedAt": "2026-08-02T03:24:23.962Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T2",
+      "title": "Physically converge the ChatGPT tool surface",
+      "objective": "After execution recovery, change the default Connector profile from the current 133-tool static surface to a bounded facade-first surface with discovery/advanced compatibility, retain internal typed handlers, add schema/freshness tests, and reconnect only if the exposed schema actually changes.",
+      "status": "planned",
+      "dependsOn": [
+        "T1"
+      ],
+      "allowedPaths": [
+        "src/cli/mcp/**",
+        "src/runtime/gateway/mcp/**",
+        "src/runtime/tooling/**",
+        "tests/cli/**",
+        "tests/runtime/**",
+        "docs/**",
+        "package.json"
+      ],
+      "forbiddenPaths": [
+        "src/runtime/plugins/ios-**",
+        "tasks/issues/ISS-20260729-BF2F89-*"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:mcp-compatibility",
+        "package:check:controller-v8",
+        "package:check:ci"
+      ],
+      "acceptanceCriteria": [
+        "Default tools/list is materially smaller than 133 and contains all five rh_* facades.",
+        "Atomic implementations remain callable through a bounded explicit advanced/discovery path.",
+        "Access mode changes do not unexpectedly mutate the default schema.",
+        "Connector freshness and reconnect behavior are deterministic."
+      ],
+      "risk": "high",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-08-02T03:21:52.747Z",
+      "updatedAt": "2026-08-02T03:21:52.747Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    }
+  ],
+  "createdAt": "2026-08-02T03:21:52.747Z",
+  "updatedAt": "2026-08-02T03:24:23.962Z",
+  "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+}

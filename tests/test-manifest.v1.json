@@ -384,6 +384,10 @@
       "module": "process-runtime",
       "resource": "process-tree"
     },
+    "tests/runtime/runtime-observability.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/runtime-source-isolation.test.ts": {
       "module": "process-runtime",
       "resource": "process-tree"

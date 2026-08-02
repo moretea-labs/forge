@@ -1,7 +1,36 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, readlinkSync, renameSync, symlinkSync, unlinkSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readlinkSync, renameSync, statSync, symlinkSync, unlinkSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { ensureControllerHome } from '../../cli/repositories/controller-home';
 import { sanitizeFileComponent } from '../shared/json-files';
+
+/**
+ * Every executable an immutable runtime release must contain for the execution
+ * surface to work. The supervisor, gateway and daemon alone are not enough:
+ * Unified Process Runtime commands launch `process-runner.js` from the release.
+ */
+export const SUPERVISOR_RELEASE_ENTRYPOINTS = [
+  'supervisor.js',
+  'repo-harness.js',
+  'daemon.js',
+  'worker.js',
+  'process-runner.js',
+  'browser-handoff-host.js',
+  'browser-node-bridge-host.js',
+] as const;
+
+/** Executables missing or empty in a release directory; empty array means complete. */
+export function supervisorReleaseClosureMissing(releasePath: string): string[] {
+  const missing: string[] = [];
+  for (const entrypoint of SUPERVISOR_RELEASE_ENTRYPOINTS) {
+    const path = join(releasePath, entrypoint);
+    try {
+      if (!existsSync(path) || statSync(path).size === 0) missing.push(entrypoint);
+    } catch {
+      missing.push(entrypoint);
+    }
+  }
+  return missing;
+}
 
 export function supervisorRoot(controllerHome: string): string {
   return join(resolve(controllerHome), 'supervisor');

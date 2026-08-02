@@ -56,6 +56,16 @@ export interface ProjectionObservation {
   lastBuildError?: string;
   contentRevision?: number;
   generatedFromRevision?: string;
+  sourceReconciliation?: ProjectionSourceReconciliation;
+}
+
+export interface ProjectionSourceReconciliation {
+  status: 'consistent' | 'mismatch' | 'unknown';
+  blocking?: boolean;
+  projectionRunningWorkers?: number;
+  ledgerRunningTasks?: number;
+  ledgerRunningTaskIds?: string[];
+  detail?: string;
 }
 
 export type LocalBridgeMode = 'standalone' | 'embedded' | 'remote' | 'disabled' | 'unknown';
@@ -80,6 +90,20 @@ export interface RuntimeStorageObservation {
   warnings?: string[];
 }
 
+/**
+ * End-to-end reachability signals for the ChatGPT -> ingress -> MCP -> Controller
+ * path. These are observability-only: `unknown` never blocks readiness, it only
+ * downgrades the displayed state. Local development (no public endpoint
+ * configured) reports `unknown` and must remain ready.
+ */
+export type GradedObservationStatus = 'healthy' | 'unhealthy' | 'unknown';
+
+export interface GradedObservation {
+  status: GradedObservationStatus;
+  detail?: string;
+  details?: Record<string, unknown>;
+}
+
 export interface RuntimeHealthObservations {
   daemon: DaemonObservation;
   scheduler: SchedulerObservation;
@@ -87,6 +111,14 @@ export interface RuntimeHealthObservations {
   projection: ProjectionObservation;
   localBridge: LocalBridgeObservation;
   runtimeStorage: RuntimeStorageObservation;
+  /** Optional: public Stable Connector reachability. Absent => not evaluated. */
+  externalReachability?: GradedObservation;
+  /** Preferred name for public Stable Connector reachability. */
+  externalEndpoint?: GradedObservation;
+  /** Optional: most recent MCP initialize/tools-list handshake outcome. */
+  mcpHandshake?: GradedObservation;
+  /** Optional: ingress session migration continuity. */
+  sessionContinuity?: GradedObservation;
 }
 
 export interface RuntimeHealthEvaluation {
@@ -101,6 +133,9 @@ export interface RuntimeHealthEvaluation {
     projection: ComponentHealth;
     localBridge: ComponentHealth;
     runtimeStorage: ComponentHealth;
+    externalReachability: ComponentHealth;
+    mcpHandshake: ComponentHealth;
+    sessionContinuity: ComponentHealth;
   };
 }
 
@@ -264,6 +299,13 @@ function evaluateProjection(observation: ProjectionObservation): ComponentHealth
       }));
     }
   }
+  if (observation.sourceReconciliation?.status === 'mismatch') {
+    const mismatch = reason('projection', 'PROJECTION_SOURCE_MISMATCH', 'Task Ledger and runtime projection disagree about active work.', {
+      ...observation.sourceReconciliation,
+    });
+    if (observation.sourceReconciliation.blocking === true) blockers.push(mismatch);
+    else warnings.push(mismatch);
+  }
   return classifyComponent(blockers, warnings);
 }
 
@@ -327,6 +369,37 @@ function evaluateRuntimeStorage(observation: RuntimeStorageObservation): Compone
   return classifyComponent(blockers, warnings);
 }
 
+function evaluateGradedObservation(
+  componentName: 'externalReachability' | 'mcpHandshake' | 'sessionContinuity',
+  observation: GradedObservation | undefined,
+  label: string,
+): ComponentHealth {
+  if (!observation) return component('healthy');
+  const details = {
+    status: observation.status,
+    ...(observation.detail ? { detail: observation.detail } : {}),
+    ...(observation.details ?? {}),
+  };
+  const prefix = componentName === 'externalReachability'
+    ? 'EXTERNAL_ENDPOINT'
+    : componentName.replace(/[A-Z]/g, (value) => `_${value}`).toUpperCase();
+  if (observation.status === 'healthy') return component('healthy');
+  if (observation.status === 'unknown') {
+    return component('warning', [], [reason(
+      componentName,
+      `${prefix}_UNKNOWN`,
+      `${label} status is unknown; readiness is not blocked.`,
+      details,
+    )]);
+  }
+  return component('degraded', [reason(
+    componentName,
+    `${prefix}_UNHEALTHY`,
+    `${label} is unhealthy.`,
+    details,
+  )]);
+}
+
 export function evaluateRuntimeHealth(observations: RuntimeHealthObservations): RuntimeHealthEvaluation {
   const components = {
     daemon: evaluateDaemon(observations.daemon),
@@ -335,6 +408,13 @@ export function evaluateRuntimeHealth(observations: RuntimeHealthObservations): 
     projection: evaluateProjection(observations.projection),
     localBridge: evaluateLocalBridge(observations.localBridge),
     runtimeStorage: evaluateRuntimeStorage(observations.runtimeStorage),
+    externalReachability: evaluateGradedObservation(
+      'externalReachability',
+      observations.externalEndpoint ?? observations.externalReachability,
+      'External endpoint',
+    ),
+    mcpHandshake: evaluateGradedObservation('mcpHandshake', observations.mcpHandshake, 'MCP handshake'),
+    sessionContinuity: evaluateGradedObservation('sessionContinuity', observations.sessionContinuity, 'MCP session continuity'),
   };
   const allComponents = Object.values(components);
   const activeBlockers = allComponents.flatMap((item) => item.activeBlockers);

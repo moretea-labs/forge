@@ -37,8 +37,8 @@ import {
   resolveControllerRuntimeSourceRoot,
   type RuntimeSourceIdentity,
 } from "../../runtime/control-plane/runtime-generation";
-import { projectionBlocksReadiness, readRepositoryProjectionSnapshot } from "../../runtime/projections/materialized-view";
-import { projectionObservation } from "../../runtime/projections/materialized-view";
+import { projectionBlocksReadiness, projectionObservation, readRepositoryProjectionSnapshot, reconcileProjectionWithTaskLedger } from "../../runtime/projections/materialized-view";
+import { buildControllerTaskLedgerProjection } from "./task-ledger";
 import { readSchedulerHealthSnapshot } from "../../runtime/control-plane/global-scheduler/scheduler";
 import { evaluateRuntimeHealth, type RuntimeHealthEvaluation } from "../../runtime/health";
 import { isProcessAlive, terminateProcessTree } from "../../runtime/shared/process-tree";
@@ -754,15 +754,19 @@ export async function controllerServiceStatus(opts: ControllerServiceOptions = {
   );
   const repositories = listRepositories(runtimeHome)
     .filter((repository) => repository.enabled && !repository.removedAt);
-  const projectionSnapshots = repositories.map((repository) => ({
-    repoId: repository.repoId,
-    snapshot: readRepositoryProjectionSnapshot(runtimeHome, repository.repoId),
-  }));
+  const projectionSnapshots = repositories.map((repository) => {
+    const snapshot = readRepositoryProjectionSnapshot(runtimeHome, repository.repoId);
+    const reconciliation = reconcileProjectionWithTaskLedger(
+      snapshot,
+      buildControllerTaskLedgerProjection(repository.canonicalRoot),
+    );
+    return { repoId: repository.repoId, snapshot, reconciliation };
+  });
   const staleProjectionRepos = projectionSnapshots
     .filter(({ snapshot }) => snapshot.stale)
     .map(({ repoId }) => repoId);
   const blockingStaleProjectionRepos = projectionSnapshots
-    .filter(({ snapshot }) => projectionBlocksReadiness(snapshot))
+    .filter(({ snapshot, reconciliation }) => projectionBlocksReadiness(snapshot, reconciliation))
     .map(({ repoId }) => repoId);
   const scheduler = readSchedulerHealthSnapshot(runtimeHome);
   const schedulerHeartbeatAgeMs = scheduler.lastTickAt
@@ -771,7 +775,7 @@ export async function controllerServiceStatus(opts: ControllerServiceOptions = {
   const schedulerDispatchHeartbeatAgeMs = scheduler.lastDispatchAt
     ? Math.max(0, Date.now() - Date.parse(scheduler.lastDispatchAt))
     : undefined;
-  const projectionObservations = projectionSnapshots.map(({ snapshot }) => projectionObservation(snapshot));
+  const projectionObservations = projectionSnapshots.map(({ snapshot, reconciliation }) => projectionObservation(snapshot, reconciliation));
   const projectionHealth = projectionObservations.length === 0
     ? {
       readable: true,

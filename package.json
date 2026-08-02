@@ -95,6 +95,8 @@
     "smoke:runtime-control-plane": "node --loader ./src/runtime/shared/node-ts-loader.mjs scripts/smoke-runtime-control-plane.ts",
     "smoke:runtime-recovery": "node --loader ./src/runtime/shared/node-ts-loader.mjs scripts/smoke-runtime-recovery.ts",
     "smoke:mcp-http-runtime": "node --loader ./src/runtime/shared/node-ts-loader.mjs scripts/smoke-mcp-http-runtime.ts",
+    "smoke:tool-surface": "bun scripts/smoke-mcp-tool-surface.ts",
+    "check:smoke": "bun run smoke:runtime-control-plane && bun run smoke:mcp-http-runtime && bun run smoke:runtime-recovery && bun run smoke:schedule-engine && bun run smoke:tool-surface",
     "check:task": "bun scripts/run-governed-gate.ts task",
     "check:main": "bun scripts/run-governed-gate.ts main",
     "check:ci": "bun run check:main",

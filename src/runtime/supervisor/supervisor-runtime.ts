@@ -22,8 +22,8 @@ import { createSupervisorOperation, listSupervisorOperations, readSupervisorOper
 import { DEFAULT_RESTART_POLICY, decideRestart, lockout, newRestartBudgetRecord, recordFailure, recordRestart, recordStable } from './restart-policy';
 import { SupervisorProcessManager, type SpawnedSupervisorProcess, type SupervisorProcessManagerOptions } from './process-manager';
 import { createSupervisorState, readSupervisorState, writeSupervisorState } from './state-store';
-import { readCurrentSupervisorRelease, readPreviousSupervisorRelease, readSupervisorRelease, supervisorControlSocketPath, supervisorReleasesRoot, type SupervisorReleaseDescriptor } from './paths';
-import { publishSupervisorRelease, verifySupervisorSourceIdentity } from './installer';
+import { readCurrentSupervisorRelease, readPreviousSupervisorRelease, readSupervisorRelease, supervisorControlSocketPath, supervisorReleasesRoot, supervisorReleaseClosureMissing, type SupervisorReleaseDescriptor } from './paths';
+import { publishSupervisorRelease, verifySupervisorReleaseExecutionCanary, verifySupervisorSourceIdentity } from './installer';
 import {
   publishAndScheduleSupervisorRelease,
   readServiceActivationState,
@@ -70,12 +70,18 @@ export interface SupervisorGatewayHealthProbeResult {
   statusCode?: number;
   ready?: boolean;
   recoveryRecommended?: boolean;
+  failureClass?: 'probe_timeout' | 'probe_cancelled' | 'connection_refused' | 'network_error' | 'invalid_body' | 'http_status' | 'unhealthy';
+  timedOut?: boolean;
 }
 
 export function supervisorGatewayHealthDecision(
   previousFailures: number,
   healthy: boolean,
+  cancelled = false,
 ): { consecutiveFailures: number; shouldRecover: boolean } {
+  // A preempted probe (caller abort) is not evidence about gateway health and
+  // must not consume the recovery budget: consecutiveFailures stays unchanged.
+  if (cancelled) return { consecutiveFailures: Math.max(0, previousFailures), shouldRecover: false };
   const consecutiveFailures = healthy ? 0 : Math.max(0, previousFailures) + 1;
   return {
     consecutiveFailures,
@@ -181,7 +187,11 @@ export async function probeSupervisorGatewayHealth(
   timeoutMs = 2_000,
 ): Promise<SupervisorGatewayHealthProbeResult> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
   try {
     const response = await fetch(endpoint, {
       signal: controller.signal,
@@ -204,6 +214,7 @@ export async function probeSupervisorGatewayHealth(
         healthy: false,
         statusCode: response.status,
         detail: 'invalid_health_body',
+        failureClass: 'invalid_body',
       };
     }
     if (readiness === false) {
@@ -222,18 +233,36 @@ export async function probeSupervisorGatewayHealth(
         healthy: false,
         statusCode: response.status,
         detail: `status=${response.status}${healthStatus === undefined ? '' : ` health=${String(healthStatus)}`}`,
+        failureClass: 'http_status',
       };
     }
     if (readiness === true) {
       return { healthy: true, ready: true, recoveryRecommended: false, statusCode: response.status, detail: 'ready' };
     }
     if (healthStatus !== 'ok') {
-      return { healthy: false, statusCode: response.status, detail: `health=${String(healthStatus)}` };
+      return { healthy: false, statusCode: response.status, detail: `health=${String(healthStatus)}`, failureClass: 'unhealthy' };
     }
     return { healthy: true, statusCode: response.status, detail: 'ok' };
   } catch (error) {
     const detail = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').slice(0, 200);
-    return { healthy: false, detail: detail || 'health probe failed' };
+    const errorCode = error && typeof error === 'object' && 'code' in error ? String((error as { code?: unknown }).code ?? '') : '';
+    // Only the internal deadline timer sets `timedOut`. Any other AbortError is
+    // a caller preemption and is not evidence about the gateway's health, so it
+    // is classified separately and must not consume the recovery budget.
+    const preempted = !timedOut && ((error instanceof Error && error.name === 'AbortError') || /operation was aborted/i.test(detail));
+    const failureClass = timedOut
+      ? 'probe_timeout'
+      : preempted
+        ? 'probe_cancelled'
+        : errorCode === 'ECONNREFUSED' || /ECONNREFUSED/i.test(detail)
+          ? 'connection_refused'
+          : 'network_error';
+    return {
+      healthy: false,
+      detail: `${failureClass}: ${detail || 'health probe failed'}`,
+      failureClass,
+      ...(timedOut ? { timedOut: true } : {}),
+    };
   } finally {
     clearTimeout(timeout);
   }
@@ -1690,6 +1719,16 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     if (operation.sourceIdentity && !candidateRelease) {
       throw new Error('SUPERVISOR_SOURCE_IDENTITY_REQUIRES_CANDIDATE_RELEASE');
     }
+    if (candidateRelease) {
+      const missing = supervisorReleaseClosureMissing(candidateRelease.releasePath);
+      if (missing.length > 0) {
+        throw new Error(`SUPERVISOR_CANDIDATE_RELEASE_CLOSURE_INCOMPLETE: candidate is missing required executables: ${missing.join(', ')}`);
+      }
+      verifySupervisorReleaseExecutionCanary({
+        releasePath: candidateRelease.releasePath,
+        cwd: operation.repoRoot ?? this.options.repoRoot,
+      });
+    }
     const candidate = await this.startSlot(candidateSlot, candidateRelease);
     updateSupervisorOperation(this.options.controllerHome, operationId, {
       phase: 'verifying',
@@ -1970,6 +2009,22 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       const targetRelease = readSupervisorRelease(targetIdentity?.releasePath) ?? readPreviousSupervisorRelease(this.options.controllerHome);
       target = await this.startSlot(targetSlot, targetRelease);
     }
+    // A live standby is not automatically a safe rollback target: it may have
+    // been started from an older incomplete release. Validate the exact release
+    // behind either the retained standby or the newly started target before
+    // committing rollback authority or switching ingress.
+    const rollbackRelease = readSupervisorRelease(target.controllerDaemon.releasePath);
+    if (!rollbackRelease) {
+      throw new Error('SUPERVISOR_ROLLBACK_RELEASE_UNAVAILABLE');
+    }
+    const rollbackMissing = supervisorReleaseClosureMissing(rollbackRelease.releasePath);
+    if (rollbackMissing.length > 0) {
+      throw new Error(`SUPERVISOR_ROLLBACK_RELEASE_CLOSURE_INCOMPLETE: previous release is missing required executables: ${rollbackMissing.join(', ')}`);
+    }
+    verifySupervisorReleaseExecutionCanary({
+      releasePath: rollbackRelease.releasePath,
+      cwd: this.options.repoRoot,
+    });
     this.persist({
       activeSlot: targetSlot,
       activeGeneration: target.generation,
@@ -2416,7 +2471,8 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
               this.persist({ lastIncident: { at: new Date().toISOString(), component, reason: health.detail } });
               continue;
             }
-            const decision = supervisorGatewayHealthDecision(managed.consecutiveFailures, false);
+            // A preempted probe carries no health evidence; keep the budget unchanged.
+            const decision = supervisorGatewayHealthDecision(managed.consecutiveFailures, false, health.failureClass === 'probe_cancelled');
             const consecutiveFailures = decision.consecutiveFailures;
             degraded = degraded || decision.shouldRecover;
             const failureReason = `gatewayHost readiness probe requires recovery ${consecutiveFailures}/${SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD}: ${health.detail}`;

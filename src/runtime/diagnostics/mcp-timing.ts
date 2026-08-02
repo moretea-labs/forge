@@ -4,6 +4,11 @@ import { ensureControllerHome } from '../../cli/repositories/controller-home';
 
 export interface McpTimingTrace {
   tool: string;
+  traceId?: string;
+  requestId?: string;
+  rpcId?: string | number;
+  outcome?: 'ok' | 'error' | 'exception';
+  errorCode?: string;
   sessionResolutionMs?: number;
   authenticationAuthorizationMs?: number;
   repositoryResolutionMs?: number;
@@ -18,12 +23,42 @@ export interface McpTimingTrace {
   workId?: string;
 }
 
+export interface McpIncident {
+  traceId: string;
+  requestId: string;
+  rpcId?: string | number;
+  tool: string;
+  kind: 'tool_error' | 'exception' | 'supervisor_probe';
+  code: string;
+  message: string;
+  repoId?: string;
+  sessionId?: string;
+  workId?: string;
+  details?: Record<string, unknown>;
+}
+
+function appendDiagnostic(controllerHome: string, fileName: string, value: Record<string, unknown>): void {
+  const root = join(ensureControllerHome(controllerHome), 'audit');
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  appendFileSync(join(root, fileName), `${JSON.stringify(value)}\n`, 'utf-8');
+}
+
 export function recordMcpTiming(controllerHome: string, trace: McpTimingTrace): void {
   try {
-    const root = join(ensureControllerHome(controllerHome), 'audit');
-    mkdirSync(root, { recursive: true, mode: 0o700 });
-    appendFileSync(join(root, 'mcp-timings.jsonl'), `${JSON.stringify({ schemaVersion: 1, at: new Date().toISOString(), ...trace })}\n`, 'utf-8');
+    appendDiagnostic(controllerHome, 'mcp-timings.jsonl', { schemaVersion: 1, at: new Date().toISOString(), ...trace });
   } catch {
     // Timing is diagnostic evidence; it must never change the tool result.
+  }
+}
+
+export function recordMcpIncident(controllerHome: string, incident: McpIncident): void {
+  try {
+    appendDiagnostic(controllerHome, 'mcp-incidents.jsonl', {
+      schemaVersion: 1,
+      at: new Date().toISOString(),
+      ...incident,
+    });
+  } catch {
+    // Incident recording is diagnostic evidence; it must never change the tool result.
   }
 }
