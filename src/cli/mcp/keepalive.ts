@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { randomUUID } from 'crypto';
 import { accessSync, constants } from 'fs';
-import { dirname, resolve } from 'path';
+import { basename, dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import {
   loadMcpServiceLocalConfig,
@@ -326,6 +326,11 @@ async function stopChild(child: ChildProcess | undefined, label: string): Promis
 export function resolveSelfCliInvocation(): { command: string; args: string[] } {
   const scriptPath = process.argv[1];
   const normalized = scriptPath?.replace(/\\/g, '/') ?? '';
+  // A compiled Bun release reports its embedded argv path under /$bunfs,
+  // which cannot be spawned. Re-invoke the compiled CLI binary itself.
+  if (normalized.includes('/$bunfs/') && basename(process.execPath) === 'repo-harness.js') {
+    return { command: process.execPath, args: [] };
+  }
   // Lifecycle APIs may be invoked from bun test, smoke scripts, or other hosts.
   // Keepalive must spawn the real CLI entrypoint, not the caller's script path.
   const looksLikeCliEntrypoint = /(?:^|\/)src\/cli\/index\.[cm]?[jt]sx?$/.test(normalized)
@@ -340,7 +345,6 @@ export function resolveSelfCliInvocation(): { command: string; args: string[] } 
   accessSync(resolvedPath, constants.R_OK);
   return { command: process.execPath, args: [resolvedPath] };
 }
-
 function packageRuntimeSourceRootFromKeepalive(): string {
   // keepalive.ts lives at src/cli/mcp/keepalive.ts → package root is ../../..
   return resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
