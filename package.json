@@ -110,6 +110,7 @@
     "check:context-files": "repo-harness run check-context-files",
     "check:deploy-sql": "repo-harness run check-deploy-sql-order",
     "check:architecture-sync": "repo-harness run check-architecture-sync",
+    "check:task": "bash scripts/check-task-workflow.sh --strict",
     "check:task-sync": "repo-harness run check-task-sync",
     "check:task-workflow": "bash scripts/check-task-workflow.sh --strict",
     "controller:start": "bash scripts/controller-runtime.sh start",

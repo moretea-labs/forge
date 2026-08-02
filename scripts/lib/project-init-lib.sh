@@ -2663,6 +2663,7 @@ pi_ensure_task_sync() {
     "check:context-files": "repo-harness run check-context-files",
     "check:deploy-sql": "repo-harness run check-deploy-sql-order",
     "check:architecture-sync": "repo-harness run check-architecture-sync",
+    "check:task": "bash scripts/check-task-workflow.sh --strict",
     "check:task-sync": "repo-harness run check-task-sync",
     "check:task-workflow": "repo-harness run check-task-workflow --strict",
     "sync:brain-docs": "repo-harness run sync-brain-docs --all"
@@ -2688,6 +2689,7 @@ pkg.scripts["check:brain-manifest"] = "repo-harness run check-brain-manifest";
 pkg.scripts["check:context-files"] = "repo-harness run check-context-files";
 pkg.scripts["check:deploy-sql"] = "repo-harness run check-deploy-sql-order";
 pkg.scripts["check:architecture-sync"] = "repo-harness run check-architecture-sync";
+pkg.scripts["check:task"] = "bash scripts/check-task-workflow.sh --strict";
 pkg.scripts["check:task-sync"] = "repo-harness run check-task-sync";
 pkg.scripts["check:task-workflow"] = "repo-harness run check-task-workflow --strict";
 pkg.scripts["sync:brain-docs"] = "repo-harness run sync-brain-docs --all";

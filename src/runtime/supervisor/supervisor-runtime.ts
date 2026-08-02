@@ -23,14 +23,14 @@ import { DEFAULT_RESTART_POLICY, decideRestart, lockout, newRestartBudgetRecord,
 import { SupervisorProcessManager, type SpawnedSupervisorProcess, type SupervisorProcessManagerOptions } from './process-manager';
 import { createSupervisorState, readSupervisorState, writeSupervisorState } from './state-store';
 import { readCurrentSupervisorRelease, readPreviousSupervisorRelease, readSupervisorRelease, supervisorControlSocketPath, supervisorReleasesRoot, type SupervisorReleaseDescriptor } from './paths';
-import { publishSupervisorRelease } from './installer';
+import { publishSupervisorRelease, verifySupervisorSourceIdentity } from './installer';
 import {
   publishAndScheduleSupervisorRelease,
   readServiceActivationState,
   scheduleServiceActivation,
   type SupervisorReleaseActivationResult,
 } from './service-activation';
-import type { RestartBudgetRecord, SupervisorComponentName, SupervisorManagedProcess, SupervisorOperation, SupervisorOperationKind, SupervisorState } from './types';
+import type { RestartBudgetRecord, SupervisorComponentName, SupervisorManagedProcess, SupervisorOperation, SupervisorOperationKind, SupervisorSourceIdentity, SupervisorState } from './types';
 
 export interface StableSupervisorRuntimeOptions extends SupervisorProcessManagerOptions {
   controlHost?: string;
@@ -956,20 +956,21 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     return readSupervisorOperation(this.options.controllerHome, operationId);
   }
 
-  submitOperation(input: { requestId: string; kind: SupervisorOperationKind; actor: string; reason?: string; candidateReleasePath?: string }): { operation: SupervisorOperation; deduplicated: boolean } {
+  submitOperation(input: { requestId: string; kind: SupervisorOperationKind; actor: string; reason?: string; candidateReleasePath?: string; repoRoot?: string; sourceIdentity?: SupervisorSourceIdentity }): { operation: SupervisorOperation; deduplicated: boolean } {
     return this.submitCommand(input);
   }
 
-  submitCommand(input: { requestId: string; kind: SupervisorOperationKind; actor: string; reason?: string; candidateReleasePath?: string }): { operation: SupervisorOperation; deduplicated: boolean } {
+  submitCommand(input: { requestId: string; kind: SupervisorOperationKind; actor: string; reason?: string; candidateReleasePath?: string; repoRoot?: string; sourceIdentity?: SupervisorSourceIdentity }): { operation: SupervisorOperation; deduplicated: boolean } {
     const accepted = createSupervisorOperation({
       controllerHome: this.options.controllerHome,
-      repoRoot: this.options.repoRoot,
+      repoRoot: input.repoRoot ?? this.options.repoRoot,
       requestId: input.requestId,
       kind: input.kind,
       requestedBy: input.actor,
       actor: input.actor,
       reason: input.reason,
       candidateReleasePath: input.candidateReleasePath,
+      sourceIdentity: input.sourceIdentity,
     });
     void this.runPendingOperations();
     return accepted;
@@ -1264,7 +1265,6 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       ...(release ? {
         runtimeExecutable: release.runtimeExecutable,
         daemonExecutable: release.daemonExecutable,
-        runtimeSourceRoot: release.sourceRoot ?? this.options.runtimeSourceRoot,
         releasePath: release.releasePath,
         releaseRevision: release.releaseRevision,
       } : {}),
@@ -1684,6 +1684,12 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       candidateRelease = readSupervisorRelease(candidatePath);
       if (!candidateRelease) throw new Error('SUPERVISOR_STAGED_RELEASE_INVALID');
     }
+    if (operation.sourceIdentity && candidateRelease) {
+      verifySupervisorSourceIdentity(operation.sourceIdentity, candidateRelease);
+    }
+    if (operation.sourceIdentity && !candidateRelease) {
+      throw new Error('SUPERVISOR_SOURCE_IDENTITY_REQUIRES_CANDIDATE_RELEASE');
+    }
     const candidate = await this.startSlot(candidateSlot, candidateRelease);
     updateSupervisorOperation(this.options.controllerHome, operationId, {
       phase: 'verifying',
@@ -1755,6 +1761,9 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
         },
       );
       activatedCandidate = writerRefresh.candidate;
+      if (operation.sourceIdentity && candidateRelease) {
+        verifySupervisorSourceIdentity(operation.sourceIdentity, candidateRelease);
+      }
       this.persist({
         activeSlot: candidateSlot,
         activeGeneration: activatedCandidate.generation,
@@ -1769,6 +1778,9 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
         },
       });
       await this.verifyStableIngress(activatedCandidate.generation, activatedCandidate.controllerDaemon.controllerHome);
+      if (operation.sourceIdentity && candidateRelease) {
+        verifySupervisorSourceIdentity(operation.sourceIdentity, candidateRelease);
+      }
       const observed = await observeCutoverCandidateWithSingleRecovery(
         activatedCandidate,
         (current) => this.observeActivatedSlot(current),
@@ -1843,14 +1855,14 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       if (this.options.activatePublishedRelease === false) {
         publishSupervisorRelease({
           controllerHome: this.options.controllerHome,
-          repoRoot: this.options.repoRoot,
+          repoRoot: operation.repoRoot ?? this.options.repoRoot,
           releasePath: candidateRelease.releasePath,
         });
         return undefined;
       }
       return publishAndScheduleSupervisorRelease({
         controllerHome: this.options.controllerHome,
-        repoRoot: this.options.repoRoot,
+        repoRoot: operation.repoRoot ?? this.options.repoRoot,
         releasePath: candidateRelease.releasePath,
         handoffDelayMs: 2_000,
       }, this.options.serviceActivationScheduler
@@ -2081,6 +2093,17 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     const currentReleaseManager = expectedRelease
       ? this.managerForSlot(activeSlot, expectedRelease)
       : undefined;
+    const staleCleanup = await (currentReleaseManager ?? this.managerForSlot(activeSlot))
+      .cleanupStaleSlotDaemons(activeSlot, {
+        reason: 'active_slot_preflight_cleanup',
+        ...(this.state.currentOperationId ? { operationId: this.state.currentOperationId } : {}),
+      }, {
+        includeCurrentOwnerEpoch: true,
+        preservePids: new Set(this.state.controllerDaemon?.pid ? [this.state.controllerDaemon.pid] : []),
+      });
+    if (staleCleanup.failed > 0) {
+      throw new Error(`SUPERVISOR_ACTIVE_SLOT_DAEMON_CLEANUP_FAILED: ${staleCleanup.errors.join('; ')}`);
+    }
     if (!this.state.controllerDaemon || this.manager.observe(this.state.controllerDaemon) !== 'alive') {
       const previous = this.state.controllerDaemon;
       const started = await (currentReleaseManager ?? this.managerForManaged(previous, activeSlot)).startDaemon();

@@ -17,6 +17,7 @@ import { callExecutionTool } from '../../runtime/gateway/mcp/execution-tools';
 import { callProcessTool } from '../../runtime/gateway/mcp/process-tools';
 import { injectDurableCommandFields, isGatewayIsolatedTool, routeDurableMcpCall } from '../../runtime/gateway/mcp/router';
 import {
+  controllerToolInventory,
   controllerExposureSnapshot,
   isControllerToolExposed,
 } from './toolset';
@@ -57,6 +58,31 @@ export function createRepoHarnessMcpServerFromContext(baseContext: ServerToolCon
     const ctx: ServerToolContext = { ...baseContext, signal: extra.signal };
     if (isMultiRepositoryContext(ctx)) {
       if (!isControllerToolExposed(ctx, name)) {
+        if (ctx.toolset === 'core') {
+          const advanced = controllerExposureSnapshot({ ...ctx, toolset: 'advanced' });
+          const route = controllerToolInventory(advanced.actualToolNames, 'advanced').find((entry) => entry.name === name);
+          if (route) {
+            const facadeCompletes = Boolean(route.capability === 'facade' || name.startsWith('rh_'));
+            const value = {
+              error: {
+                code: 'unsupported_in_core',
+                message: `${name} requires the ${route.capability} capability, which is outside the Core toolset. Use the Advanced or Full profile, or route ordinary work through the bounded rh_ facade.`,
+                missingCapability: route.capability,
+                currentToolset: 'core',
+                suggestedProfile: 'advanced',
+                facadeCanComplete: facadeCompletes,
+                route: {
+                  profile: 'advanced',
+                  tool: route.name,
+                  capability: route.capability,
+                  exposedVia: route.exposedVia,
+                },
+                requiredCapability: route.capability,
+              },
+            };
+            return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value, isError: true };
+          }
+        }
         const value = {
           error: {
             code: 'TOOL_NOT_FOUND',

@@ -33,8 +33,8 @@ import { capProcessOutput } from '../../../effects/process-runner';
 import { redactSensitiveText, sanitizeSensitiveTextFileInPlace } from '../../evidence/sensitive-output';
 import { isProcessAlive, terminateProcessTree } from '../../shared/process-tree';
 import { repositoryChildProcessEnvironment } from '../../shared/process-environment';
-import { acquireExecutionLeases, releaseExecutionLeases, renewExecutionLeases } from '../../resources/leases/store';
-import { assertThisRuntimeMayWrite, assertThisRuntimeMayWriteOrThrow } from '../../../cli/controller/stable-state/runtime-writer-context';
+import { acquireExecutionLeases, listActiveLeases, releaseExecutionLeases, renewExecutionLeases } from '../../resources/leases/store';
+import { assertThisRuntimeMayWrite, assertThisRuntimeMayWriteOrThrow, getRuntimeWriterClaim } from '../../../cli/controller/stable-state/runtime-writer-context';
 import { readWriterAuthority } from '../../../cli/controller/stable-state/writer-authority';
 import { resolveStableControllerHome } from '../../../cli/controller/stable-state/stable-home';
 import { defaultProcessIdentityProbe, executableFingerprint } from '../../supervisor/identity';
@@ -42,7 +42,6 @@ import {
   claimProcessRequest,
   createProcessRecord,
   getProcessRecord,
-  listActiveProcessIds,
   listProcessRecords,
   processLogDir,
   tryCompleteProcessRecord,
@@ -339,6 +338,45 @@ function toResourceClaimSpecs(claims: ProcessResourceClaim[]): ResourceClaimSpec
   }));
 }
 
+function processWriterIdentityMatches(record: ManagedProcessRecord): boolean {
+  const expected = {
+    epoch: record.writerAuthorityEpoch,
+    generation: record.writerAuthorityGeneration,
+    instanceId: record.writerAuthorityInstanceId,
+  };
+  if (!expected.epoch && !expected.generation && !expected.instanceId) return true;
+  const claim = getRuntimeWriterClaim();
+  if (!claim) return false;
+  if (expected.epoch && expected.epoch !== claim.epoch) return false;
+  if (expected.generation && expected.generation !== claim.generation) return false;
+  if (expected.instanceId && expected.instanceId !== claim.instanceId) return false;
+  return true;
+}
+
+function expectedLeaseRefsForProcess(record: ManagedProcessRecord, repoId: string): Array<{
+  leaseId: string;
+  fencingToken: number;
+  repoId: string;
+  checkoutId?: string;
+  workId?: string;
+  resourceKey: string;
+}> {
+  return (record.leaseRefs ?? []).flatMap((ref) => {
+    // A malformed or cross-repository reference is never eligible for cleanup.
+    if (!ref.leaseId || !ref.resourceKey || (ref.repoId && ref.repoId !== repoId)) return [];
+    if (ref.checkoutId && record.checkoutId && ref.checkoutId !== record.checkoutId) return [];
+    if (ref.workId && record.workId && ref.workId !== record.workId) return [];
+    return [{
+      leaseId: ref.leaseId,
+      fencingToken: ref.fencingToken,
+      repoId,
+      ...(ref.checkoutId ? { checkoutId: ref.checkoutId } : {}),
+      ...(ref.workId ? { workId: ref.workId } : {}),
+      resourceKey: ref.resourceKey,
+    }];
+  });
+}
+
 /**
  * Release process leases exactly once. Safe under recovery/cancel/terminal races.
  * Passive / fenced runtimes must not release (lease store fences).
@@ -355,26 +393,29 @@ export function releaseProcessLeasesOnce(
   if (refs.length === 0) {
     return updateProcessRecord(controllerHome, repoId, processId, { leasesReleased: true }, { allowTerminal: true });
   }
+  const expectedRefs = expectedLeaseRefsForProcess(record, repoId);
+  if (expectedRefs.length !== refs.length) return record;
   try {
     releaseExecutionLeases(
       controllerHome,
       repoId,
       processOwnerJobId(processId),
-      refs.map((ref) => ({
-        leaseId: ref.leaseId,
-        fencingToken: ref.fencingToken,
-        repoId: ref.repoId ?? repoId,
-        checkoutId: ref.checkoutId,
-        workId: ref.workId,
-      })),
+      expectedRefs,
       { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     // Fenced passive runtime: leave leases for the active writer / recovery.
     if (message.startsWith('WRITER_FENCED:')) return record;
-    // Unexpected: still mark attempted only if we own nothing left.
+    // Unexpected: leave the record retryable. Failed cleanup must never become
+    // a durable "released" claim.
+    return record;
   }
+  const remaining = listActiveLeases(controllerHome, repoId).some((lease) => (
+    lease.ownerJobId === processOwnerJobId(processId)
+    && expectedRefs.some((ref) => ref.leaseId === lease.leaseId)
+  ));
+  if (remaining) return getProcessRecord(controllerHome, repoId, processId) ?? record;
   return updateProcessRecord(controllerHome, repoId, processId, { leasesReleased: true }, { allowTerminal: true })
     ?? getProcessRecord(controllerHome, repoId, processId);
 }
@@ -652,7 +693,26 @@ function attachRunnerMonitor(
     commandFingerprint: commandFingerprint(record.command),
   };
 
-  // Poll disk logs for in-memory tail (runner writes files; controller does not re-append unbounded).
+  const appendStreamChunk = (stream: 'stdout' | 'stderr', chunk: Buffer): void => {
+    const tailKey = stream === 'stdout' ? 'stdoutTail' : 'stderrTail';
+    const bytesKey = stream === 'stdout' ? 'stdoutBytes' : 'stderrBytes';
+    const storedBytesKey = stream === 'stdout' ? 'stdoutStoredBytes' : 'stderrStoredBytes';
+    const currentTail = monitor[tailKey];
+    monitor[bytesKey] += chunk.length;
+    monitor[storedBytesKey] = Math.min(maxDisk, monitor[bytesKey]);
+    if (monitor[bytesKey] > maxDisk) monitor.logTruncated = true;
+    monitor[tailKey] = Buffer.concat([currentTail, chunk]).subarray(-monitor.maxTailBytes);
+  };
+
+  // Attached monitors receive redacted chunks directly from the independent
+  // Runner. After a Controller restart there is no pipe, so the receipt/file
+  // fallback remains authoritative.
+  const streaming = Boolean(runner.stdout || runner.stderr);
+  runner.stdout?.on('data', (chunk: Buffer) => appendStreamChunk('stdout', Buffer.from(chunk)));
+  runner.stderr?.on('data', (chunk: Buffer) => appendStreamChunk('stderr', Buffer.from(chunk)));
+
+  // Legacy runners without the optional stream transport retain a coarse file
+  // fallback. New runners never enter this timer while attached.
   const pollLogs = () => {
     if (monitor.settled) return;
     try {
@@ -676,12 +736,12 @@ function attachRunnerMonitor(
       /* best-effort */
     }
   };
-  const pollTimer = setInterval(pollLogs, 100);
-  pollTimer.unref?.();
+  const pollTimer = streaming ? undefined : setInterval(pollLogs, 1_000);
+  pollTimer?.unref?.();
 
   const onAbort = () => {
     void killTree(runner).finally(() => {
-      clearInterval(pollTimer);
+      if (pollTimer) clearInterval(pollTimer);
       finalizeMonitor(monitor, 'cancelled', 1, false, true, 'cancelled by signal');
     });
   };
@@ -690,20 +750,20 @@ function attachRunnerMonitor(
   // Controller-side timeout is a safety net; runner also enforces timeout.
   monitor.timeoutHandle = setTimeout(() => {
     void killTree(runner).finally(() => {
-      clearInterval(pollTimer);
+      if (pollTimer) clearInterval(pollTimer);
       finalizeMonitor(monitor, 'timed_out', 1, true, false, `process timed out after ${options.timeoutMs}ms`);
     });
   }, Math.max(1, options.timeoutMs + 2_000));
   monitor.timeoutHandle.unref?.();
 
   runner.on('error', (error) => {
-    clearInterval(pollTimer);
+    if (pollTimer) clearInterval(pollTimer);
     finalizeMonitor(monitor, 'failed', 1, false, false, error.message);
     options.signal?.removeEventListener('abort', onAbort);
   });
   runner.on('close', () => {
     options.signal?.removeEventListener('abort', onAbort);
-    clearInterval(pollTimer);
+    if (pollTimer) clearInterval(pollTimer);
     pollLogs();
     const receipt = readExitReceipt(options.exitReceiptPath);
     if (receipt) {
@@ -785,7 +845,10 @@ function spawnProcessRunner(descriptor: ProcessCommandDescriptor, descriptorPath
       ...processRunnerEnvironment(),
       REPO_HARNESS_PROCESS_RUNNER: '1',
     },
-    stdio: ['ignore', 'ignore', 'ignore'],
+    // The Runner always keeps bounded durable files. While the Controller is
+    // attached, also stream redacted chunks over pipes so it does not stat and
+    // reread both log files every 100ms.
+    stdio: ['ignore', descriptor.streamLogs ? 'pipe' : 'ignore', descriptor.streamLogs ? 'pipe' : 'ignore'],
     detached: useProcessGroup,
   });
 }
@@ -887,7 +950,9 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     startedAt,
     updatedAt: startedAt,
     terminalFenceToken: fenceToken,
-    writerAuthorityEpoch: input.writerAuthorityEpoch,
+    writerAuthorityEpoch: input.writerAuthorityEpoch ?? getRuntimeWriterClaim()?.epoch,
+    writerAuthorityGeneration: input.writerAuthorityGeneration ?? getRuntimeWriterClaim()?.generation,
+    writerAuthorityInstanceId: input.writerAuthorityInstanceId ?? getRuntimeWriterClaim()?.instanceId,
     origin: input.origin,
     exitReceiptPath,
     stdoutPath,
@@ -994,6 +1059,7 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     stderrPath,
     exitReceiptPath,
     startedAt,
+    streamLogs: true,
   };
 
   let runner: ChildProcess;
@@ -1187,6 +1253,7 @@ export async function waitForProcess(
 
   // No live monitor — poll receipt / identity (Controller restart attach path).
   const deadline = Date.now() + Math.max(1, options.timeoutMs ?? 15_000);
+  let pollIntervalMs = 100;
   while (Date.now() < deadline) {
     const current = getProcessRecord(controllerHome, repoId, processId);
     if (!current) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
@@ -1201,7 +1268,8 @@ export async function waitForProcess(
       });
       return recordToHandle(completed!, { completed: true });
     }
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, pollIntervalMs));
+    pollIntervalMs = Math.min(1_000, pollIntervalMs * 2);
   }
   return recordToHandle(getProcessRecord(controllerHome, repoId, processId)!, { completed: false });
 }
@@ -1361,13 +1429,15 @@ export function recoverManagedProcesses(
   const completedUnknown: string[] = [];
   const completedFromReceipt: string[] = [];
   const leasesReleased: string[] = [];
-  for (const processId of listActiveProcessIds(controllerHome, repoId)) {
+  // Terminal records are deliberately removed from active-index.json. Scan
+  // the bounded durable record set as well, otherwise a controller crash
+  // between terminal CAS and lease release leaks the process lease forever.
+  for (const record of listProcessRecords(controllerHome, repoId, 5_000)) {
+    const processId = record.processId;
     if (liveMonitors.has(processId)) {
       recovered.push(processId);
       continue;
     }
-    const record = getProcessRecord(controllerHome, repoId, processId);
-    if (!record) continue;
     if (record.terminalWritten) {
       sanitizeTerminalProcessArtifacts(record);
       // Cleanup leftover leases after crash between terminal write and release.
@@ -1386,6 +1456,12 @@ export function recoverManagedProcesses(
       continue;
     }
 
+    if (identityStillMatches(record.identity, record.identityUntrusted) && !processWriterIdentityMatches(record)) {
+      // The PID may still be alive, but it belongs to a different runtime
+      // generation/instance. Do not renew or release its leases from here.
+      continue;
+    }
+
     if (identityStillMatches(record.identity, record.identityUntrusted)) {
       updateProcessRecord(controllerHome, repoId, processId, {
         status: 'running_recovered',
@@ -1399,7 +1475,11 @@ export function recoverManagedProcesses(
             repoId,
             processOwnerJobId(processId),
             Math.max(30_000, record.timeoutMs),
-            record.leaseRefs!.map((ref) => ({ leaseId: ref.leaseId, fencingToken: ref.fencingToken })),
+            record.leaseRefs!.map((ref) => ({
+              leaseId: ref.leaseId,
+              fencingToken: ref.fencingToken,
+              resourceKey: ref.resourceKey,
+            })),
           );
         } catch {
           /* fenced or missing — leave for active writer */
@@ -1432,6 +1512,25 @@ export function recoverManagedProcesses(
 
 export function listLiveMonitorIds(): string[] {
   return [...liveMonitors.keys()];
+}
+
+export function processRuntimeResourceDiagnostics(): {
+  monitorCount: number;
+  logPollerCount: number;
+  timeoutCount: number;
+  waiterCount: number;
+  activeProcessIds: string[];
+} {
+  const monitors = [...liveMonitors.values()];
+  return {
+    monitorCount: monitors.length,
+    // Attached monitors stream redacted chunks over pipes; the disk-log poller
+    // is only a legacy fallback and is never active for new runners.
+    logPollerCount: 0,
+    timeoutCount: monitors.filter((monitor) => Boolean(monitor.timeoutHandle)).length,
+    waiterCount: monitors.reduce((total, monitor) => total + monitor.waiters.length, 0),
+    activeProcessIds: monitors.map((monitor) => monitor.processId),
+  };
 }
 
 /** Test helper: drop in-memory monitors without killing OS processes / runners. */

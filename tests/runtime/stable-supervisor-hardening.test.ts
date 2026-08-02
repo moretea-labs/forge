@@ -7,7 +7,7 @@ import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import { bootstrapLaunchAgentWithRetry } from '../../src/cli/controller/launch-agents';
 import { selectSupervisorRollbackRelease, serviceActivationStatePath, supervisorActivationMatchesRelease, waitForServiceActivation } from '../../src/cli/commands/supervisor';
-import { installSupervisorRelease, publishSupervisorRelease, renderLaunchdSupervisorPlist, renderSystemdSupervisorUnit, stageSupervisorRelease, supervisorServiceLabel, supervisorSystemdUnitName } from '../../src/runtime/supervisor/installer';
+import { installSupervisorRelease, publishSupervisorRelease, renderLaunchdSupervisorPlist, renderSystemdSupervisorUnit, stageSupervisorRelease, supervisorServiceLabel, supervisorSystemdUnitName, verifySupervisorSourceIdentity } from '../../src/runtime/supervisor/installer';
 import { stableSupervisorActivatesPublishedRelease, stableSupervisorExitCode } from '../../src/runtime/supervisor/entry';
 import { createStableIngressRouter } from '../../src/runtime/supervisor/ingress-router';
 import { createStableIngressProcess } from '../../src/runtime/supervisor/ingress-process';
@@ -19,7 +19,7 @@ import { SupervisorProcessManager, runtimeWriterEnvironment, supervisorProcessSt
 import { ensureMcpControllerHomeBearerToken, writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
 import { writeActiveSlotAuthority } from '../../src/cli/controller/runtime-slots';
 import { publishWriterAuthority } from '../../src/cli/controller/stable-state/writer-authority';
-import { readCurrentRelease, readCurrentSupervisorRelease, supervisorReleasesRoot } from '../../src/runtime/supervisor/paths';
+import { readCurrentRelease, readCurrentSupervisorRelease, readSupervisorRelease, supervisorReleasesRoot } from '../../src/runtime/supervisor/paths';
 import { createSupervisorControlServer, sendSupervisorCommand } from '../../src/runtime/supervisor/control-server';
 import type { ProcessIdentityProbe } from '../../src/runtime/supervisor/identity';
 import type { SupervisorManagedProcess, SupervisorOperation, SupervisorState } from '../../src/runtime/supervisor/types';
@@ -1894,6 +1894,66 @@ describe('Stable Supervisor production hardening', () => {
       })).toThrow('SUPERVISOR_RELEASE_PATH_ONLY_VALID_FOR_ROLLOUT');
     } finally {
       rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('rollout operation persists the exact checkout source identity', () => {
+    const home = mkdtempSync(join(tmpdir(), 'repo-harness-supervisor-source-identity-'));
+    try {
+      const sourcePath = join(home, 'explicit-checkout');
+      const identity = {
+        repoId: 'repo-explicit',
+        checkoutId: 'checkout-explicit',
+        sourcePath,
+        expectedHead: 'head-explicit',
+        expectedRevision: 'revision-explicit',
+      };
+      const candidate = join(supervisorReleasesRoot(home), 'source-candidate');
+      mkdirSync(candidate, { recursive: true });
+      const created = createSupervisorOperation({
+        controllerHome: home,
+        repoRoot: sourcePath,
+        sourceIdentity: identity,
+        candidateReleasePath: candidate,
+        requestId: 'source-identity-1',
+        kind: 'rollout',
+        requestedBy: 'test',
+        actor: 'test',
+      });
+      const persisted = readSupervisorOperation(home, created.operation.operationId);
+      expect(persisted?.repoRoot).toBe(sourcePath);
+      expect(persisted?.sourceIdentity).toEqual(identity);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('source identity verification fails closed when HEAD or runtime paths drift', () => {
+    const root = mkdtempSync(join(tmpdir(), 'repo-harness-supervisor-source-drift-'));
+    const home = join(root, 'controller');
+    const sourcePath = join(root, 'source');
+    try {
+      mkdirSync(join(sourcePath, 'src'), { recursive: true });
+      git(sourcePath, ['init', '-b', 'main']);
+      git(sourcePath, ['config', 'user.name', 'Test']);
+      git(sourcePath, ['config', 'user.email', 'test@example.com']);
+      writeFileSync(join(sourcePath, 'src', 'entry.ts'), 'export const ok = true;\n');
+      git(sourcePath, ['add', '.']);
+      git(sourcePath, ['commit', '-m', 'source']);
+      const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: sourcePath, encoding: 'utf8' }).stdout.trim();
+      const releasePath = fakeSupervisorRelease(home, 'source-candidate', head, { sourceRoot: sourcePath, sourceCommit: head });
+      const release = readSupervisorRelease(releasePath);
+      if (!release) throw new Error('release fixture missing');
+      const identity = { sourcePath, expectedHead: head, expectedRevision: head };
+      expect(() => verifySupervisorSourceIdentity(identity, release)).not.toThrow();
+
+      writeFileSync(join(sourcePath, 'src', 'entry.ts'), 'export const ok = false;\n');
+      expect(() => verifySupervisorSourceIdentity(identity, release)).toThrow('SUPERVISOR_RELEASE_DIRTY_RUNTIME_SOURCE');
+      git(sourcePath, ['add', '.']);
+      git(sourcePath, ['commit', '-m', 'drift']);
+      expect(() => verifySupervisorSourceIdentity(identity, release)).toThrow('SUPERVISOR_SOURCE_HEAD_CHANGED');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 

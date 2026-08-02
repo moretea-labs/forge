@@ -14,6 +14,26 @@ export const BOOTSTRAP_CONTROLLER_TOOL_NAMES = [
   'repository_bootstrap_local_project',
 ] as const;
 
+/**
+ * Model-facing Core surface. Typed specialist tools remain available through
+ * Advanced/Full; Core routes ordinary work through the bounded facade.
+ */
+export const CORE_CONTROLLER_TOOL_NAMES = [
+  ...PREFERRED_FACADE_TOOL_NAMES,
+  'session_start',
+  'session_bind_repository',
+  'repository_access_get',
+  'repository_list',
+  'repository_get',
+  'controller_context_pack',
+  'search_repository',
+  'read_repository_file',
+  'repository_safe_patch_plan',
+  'repository_safe_patch_apply',
+  'result_read',
+  'result_search',
+] as const;
+
 export const STABLE_CONTROLLER_TOOL_NAMES = [
   ...PREFERRED_FACADE_TOOL_NAMES,
 

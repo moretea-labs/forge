@@ -15,6 +15,12 @@ import {
 // processes per second per repo. 3s is short enough for interactive UX.
 const GIT_SNAPSHOT_CACHE_TTL_MS = 3_000;
 
+export interface GitSnapshotPerformanceSnapshot {
+  cacheHits: number;
+  refreshes: number;
+  subprocesses: number;
+}
+
 interface GitSnapshotResult {
   branch: string | null;
   head: string | null;
@@ -23,7 +29,126 @@ interface GitSnapshotResult {
   dirty: boolean;
 }
 
+const GIT_SNAPSHOT_CACHE_MAX_ENTRIES = 128;
 const gitSnapshotCache = new Map<string, { createdAt: number; value: GitSnapshotResult }>();
+
+export interface CachedGitIdentity {
+  sampledAt: number;
+  head: string | null;
+  branch: string | null;
+  workingTreeFingerprint?: string;
+}
+
+export interface GitIdentityPerformanceSnapshot {
+  cacheHits: number;
+  samples: number;
+  subprocesses: number;
+}
+
+/** Git identity sampling TTL: one bounded subprocess, then cheap reads. */
+const GIT_IDENTITY_SAMPLE_TTL_MS = Math.max(1_000, Number(process.env.REPO_HARNESS_GIT_IDENTITY_SAMPLE_TTL_MS ?? 3_000));
+const GIT_IDENTITY_CACHE_MAX_ENTRIES = 128;
+const gitIdentityCache = new Map<string, CachedGitIdentity>();
+const gitIdentityPerformance: GitIdentityPerformanceSnapshot = {
+  cacheHits: 0,
+  samples: 0,
+  subprocesses: 0,
+};
+
+function pruneGitIdentityCache(): void {
+  while (gitIdentityCache.size > GIT_IDENTITY_CACHE_MAX_ENTRIES) {
+    const oldest = gitIdentityCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    gitIdentityCache.delete(oldest);
+  }
+}
+
+function sampleGitIdentity(repoRoot: string): Omit<CachedGitIdentity, 'sampledAt'> {
+  // Porcelain v2 branch headers carry HEAD and branch identity together with
+  // the worktree status. One Git process therefore replaces the previous
+  // rev-parse + branch + status subprocess burst while preserving a coherent
+  // point-in-time fingerprint.
+  gitIdentityPerformance.samples += 1;
+  gitIdentityPerformance.subprocesses += 1;
+  try {
+    const result = runProcess('git', ['status', '--porcelain=v2', '--branch', '--untracked-files=all'], {
+      cwd: repoRoot,
+      timeoutMs: 10_000,
+      maxOutputBytes: 4 * 1024 * 1024,
+    });
+    if (!result.ok) return { head: null, branch: null };
+
+    let head: string | null = null;
+    let branch: string | null = null;
+    const statusLines: string[] = [];
+    for (const line of result.stdout.split(/\r?\n/)) {
+      if (line.startsWith('# branch.oid ')) {
+        const value = line.slice('# branch.oid '.length).trim();
+        head = value && value !== '(initial)' ? value : null;
+      } else if (line.startsWith('# branch.head ')) {
+        const value = line.slice('# branch.head '.length).trim();
+        branch = value && value !== '(detached)' && value !== '(unknown)' ? value : null;
+      } else if (line && !line.startsWith('# ')) {
+        statusLines.push(line);
+      }
+    }
+    const status = statusLines.join('\n');
+    const workingTreeFingerprint = createHash('sha256')
+      .update(`${head ?? ''}\n${branch ?? ''}\n${status}`)
+      .digest('hex')
+      .slice(0, 24);
+    return { head, branch, workingTreeFingerprint: head || status ? workingTreeFingerprint : undefined };
+  } catch {
+    return { head: null, branch: null };
+  }
+}
+
+/**
+ * Cheap, short-lived Git identity cache. Sampling runs at most once per TTL
+ * per repository; repeat hot reads reuse the sampled HEAD/fingerprint so the
+ * identity phase does not spawn git subprocesses on every MCP call. The
+ * fingerprint is content-based (stable across reads) and the short TTL window
+ * keeps checkout routing safe while real mutations invalidate through markers.
+ */
+export function cachedGitIdentity(repoRoot: string): CachedGitIdentity {
+  const now = Date.now();
+  const existing = gitIdentityCache.get(repoRoot);
+  if (existing && now - existing.sampledAt < GIT_IDENTITY_SAMPLE_TTL_MS) {
+    gitIdentityPerformance.cacheHits += 1;
+    return existing;
+  }
+  const sampled = sampleGitIdentity(repoRoot);
+  const entry: CachedGitIdentity = { ...sampled, sampledAt: now };
+  gitIdentityCache.set(repoRoot, entry);
+  pruneGitIdentityCache();
+  return entry;
+}
+
+export function clearGitIdentityCacheForTest(): void {
+  gitIdentityCache.clear();
+  gitIdentityPerformance.cacheHits = 0;
+  gitIdentityPerformance.samples = 0;
+  gitIdentityPerformance.subprocesses = 0;
+}
+
+export function gitIdentityPerformanceSnapshot(): GitIdentityPerformanceSnapshot {
+  return { ...gitIdentityPerformance };
+}
+
+function pruneGitSnapshotCache(): void {
+  while (gitSnapshotCache.size > GIT_SNAPSHOT_CACHE_MAX_ENTRIES) {
+    const oldest = gitSnapshotCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    gitSnapshotCache.delete(oldest);
+  }
+}
+const gitSnapshotPerformance: GitSnapshotPerformanceSnapshot = {
+  cacheHits: 0,
+  refreshes: 0,
+  subprocesses: 0,
+};
+const SEARCH_FILE_INVENTORY_CACHE_TTL_MS = 5_000;
+const searchFileInventoryCache = new Map<string, { createdAt: number; files: string[] }>();
 
 /** Optional per-call session cache binding for MCP sessions. */
 export interface RepositoryReadSession {
@@ -63,6 +188,7 @@ const DEFAULT_EXCLUDES = [
   '.ai/harness/jobs/**',
   '.ai/harness/local-jobs/**',
   '.ai/harness/controller/**',
+  '.ai/harness/controller-context-invalidation.json',
 ];
 
 function isExcluded(path: string, excludes: string[]): boolean {
@@ -104,6 +230,8 @@ export interface SearchRepositoryOptions {
   maxResults?: number;
   maxFiles?: number;
   caseSensitive?: boolean;
+  /** Source fingerprint supplied by a caller that already sampled Git state. */
+  cacheKey?: string;
 }
 
 export function searchRepository(repoRoot: string, policy: McpPolicy, opts: SearchRepositoryOptions & {
@@ -132,6 +260,7 @@ export function searchRepository(repoRoot: string, policy: McpPolicy, opts: Sear
     maxResults,
     maxFiles,
     caseSensitive: opts.caseSensitive === true,
+    cacheKey: opts.cacheKey,
   });
   const sessionCache = bindSessionCache(repoRoot, opts.session);
   if (sessionCache) {
@@ -140,8 +269,20 @@ export function searchRepository(repoRoot: string, policy: McpPolicy, opts: Sear
       return { ...(cached.result as ReturnType<typeof searchRepository>), cacheHit: true };
     }
   }
-  const files: string[] = [];
-  walk(repoRoot, '', maxFiles, excludes, files);
+  const inventoryKey = JSON.stringify({ repoRoot, includes, excludes, cacheKey: opts.cacheKey });
+  const now = Date.now();
+  const cachedInventory = searchFileInventoryCache.get(inventoryKey);
+  const inventory = cachedInventory && now - cachedInventory.createdAt < SEARCH_FILE_INVENTORY_CACHE_TTL_MS
+    ? cachedInventory.files
+    : (() => {
+      const files: string[] = [];
+      // Build one bounded ignore-aware inventory and reuse it for each search
+      // term in a Context Pack. File contents are still read fresh below.
+      walk(repoRoot, '', 20_000, excludes, files);
+      searchFileInventoryCache.set(inventoryKey, { createdAt: now, files });
+      return files;
+    })();
+  const files = inventory.slice(0, maxFiles);
   const needle = opts.caseSensitive ? query : query.toLowerCase();
   const results: Array<{ path: string; line: number; text: string }> = [];
   let scannedFiles = 0;
@@ -186,9 +327,9 @@ export function searchRepository(repoRoot: string, policy: McpPolicy, opts: Sear
     policyDeniedFiles,
     skippedLargeFiles,
     skippedBinaryFiles,
-    truncated: Boolean(truncationReason),
+    truncated: Boolean(truncationReason) || inventory.length > files.length,
     truncationReason,
-    cacheHit: false as boolean | undefined,
+    cacheHit: cachedInventory !== undefined && now - cachedInventory.createdAt < SEARCH_FILE_INVENTORY_CACHE_TTL_MS,
   };
   if (sessionCache) {
     sessionCache.putSearch({
@@ -199,6 +340,10 @@ export function searchRepository(repoRoot: string, policy: McpPolicy, opts: Sear
     });
   }
   return payload;
+}
+
+export function clearSearchFileInventoryCacheForTest(): void {
+  searchFileInventoryCache.clear();
 }
 
 export function readRepositoryRange(
@@ -273,41 +418,48 @@ export function readRepositoryRange(
 
 export function clearGitSnapshotCacheForTest(): void {
   gitSnapshotCache.clear();
+  gitSnapshotPerformance.cacheHits = 0;
+  gitSnapshotPerformance.refreshes = 0;
+  gitSnapshotPerformance.subprocesses = 0;
+}
+
+export function gitSnapshotPerformanceSnapshot(): GitSnapshotPerformanceSnapshot {
+  return { ...gitSnapshotPerformance };
 }
 
 export function gitSnapshot(repoRoot: string, session?: RepositoryReadSession): GitSnapshotResult {
   const sessionCache = bindSessionCache(repoRoot, session);
   if (sessionCache) {
     const hit = sessionCache.getGitSnapshot();
-    if (hit && typeof hit === 'object') return hit as GitSnapshotResult;
+    if (hit && typeof hit === 'object') {
+      gitSnapshotPerformance.cacheHits += 1;
+      return hit as GitSnapshotResult;
+    }
   }
   const cached = gitSnapshotCache.get(repoRoot);
   const now = Date.now();
   if (cached && now - cached.createdAt <= GIT_SNAPSHOT_CACHE_TTL_MS) {
+    gitSnapshotPerformance.cacheHits += 1;
     if (sessionCache) sessionCache.putGitSnapshot(cached.value);
     return cached.value;
   }
-  const branchResult = runProcess('git', ['branch', '--show-current'], {
-    cwd: repoRoot,
-    timeoutMs: 10_000,
-    maxOutputBytes: 32 * 1024,
-  });
-  const headResult = runProcess('git', ['rev-parse', 'HEAD'], {
-    cwd: repoRoot,
-    timeoutMs: 10_000,
-    maxOutputBytes: 32 * 1024,
-  });
+  gitSnapshotPerformance.refreshes += 1;
+  // Reuse the identity sampled by controller_context (or sample it once here)
+  // and keep only the two outputs unique to the full snapshot.
+  const identity = cachedGitIdentity(repoRoot);
+  gitSnapshotPerformance.subprocesses += 2;
   const statusResult = runProcess('git', ['status', '--short', '--branch'], { cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 64 * 1024 });
   const diffResult = runProcess('git', ['diff', '--stat'], { cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 64 * 1024 });
   const status = statusResult.ok ? statusResult.stdout.trim() : statusResult.error || statusResult.stderr.trim();
   const value: GitSnapshotResult = {
-    branch: branchResult.ok ? branchResult.stdout.trim() || null : null,
-    head: headResult.ok ? headResult.stdout.trim() || null : null,
+    branch: identity.branch,
+    head: identity.head,
     status,
     diffStat: diffResult.ok ? diffResult.stdout.trim() : diffResult.error || diffResult.stderr.trim(),
     dirty: status.split(/\r?\n/).some((line) => line.trim() && !line.startsWith("##")),
   };
   gitSnapshotCache.set(repoRoot, { createdAt: now, value });
+  pruneGitSnapshotCache();
   if (sessionCache) sessionCache.putGitSnapshot(value);
   return value;
 }

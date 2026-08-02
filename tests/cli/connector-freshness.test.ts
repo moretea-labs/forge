@@ -103,10 +103,14 @@ describe('connector freshness diagnostics', () => {
       expect(coreExposed).toContain(name);
     }
     expect(coreExposed).toContain('repository_list');
-    expect(coreExposed).toContain('repository_bootstrap_local_project');
-    expect(coreExposed).toEqual(advancedExposed);
+    // Core is the compact model-facing surface; bootstrap and interactive
+    // development tools live behind the Advanced profile.
+    expect(coreExposed).not.toContain('repository_bootstrap_local_project');
+    expect(advancedExposed).toContain('repository_bootstrap_local_project');
+    for (const name of coreExposed) {
+      expect(advancedExposed).toContain(name);
+    }
     for (const name of OPTIONAL_INTERACTIVE_DEVELOPMENT_TOOLS) {
-      expect(coreExposed).toContain(name);
       expect(advancedExposed).toContain(name);
     }
   });

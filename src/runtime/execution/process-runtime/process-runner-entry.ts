@@ -58,6 +58,8 @@ export interface ProcessCommandDescriptor {
   stderrPath: string;
   exitReceiptPath: string;
   startedAt: string;
+  /** Forward redacted output to an attached Controller while retaining files. */
+  streamLogs?: boolean;
 }
 
 export interface ProcessRunnerExitReceipt {
@@ -161,9 +163,11 @@ class BoundedLogWriter {
     }
   }
 
-  write(chunk: Buffer): void {
+  write(chunk: Buffer): string {
     this.totalBytes += chunk.length;
-    this.persist(this.redactor.write(chunk));
+    const redacted = this.redactor.write(chunk);
+    this.persist(redacted);
+    return redacted;
   }
 
   close(): void {
@@ -327,8 +331,34 @@ export async function runProcessRunnerFromDescriptor(
   }, Math.max(1, descriptor.timeoutMs));
   timeoutHandle.unref?.();
 
-  spawnedChild.stdout?.on('data', (chunk: Buffer) => stdout.write(chunk));
-  spawnedChild.stderr?.on('data', (chunk: Buffer) => stderr.write(chunk));
+  let outputStreamBroken = false;
+  const maxLiveStreamBytes = Math.min(
+    Math.max(descriptor.maxStdoutBytes, descriptor.maxStderrBytes),
+    256 * 1024,
+  );
+  let liveStdoutBytes = 0;
+  let liveStderrBytes = 0;
+  const forward = (target: NodeJS.WriteStream, value: string, stream: 'stdout' | 'stderr'): void => {
+    if (!descriptor.streamLogs || outputStreamBroken || !value) return;
+    const used = stream === 'stdout' ? liveStdoutBytes : liveStderrBytes;
+    if (used >= maxLiveStreamBytes) return;
+    const remaining = maxLiveStreamBytes - used;
+    const output = Buffer.from(value, 'utf8').subarray(0, remaining).toString('utf8');
+    if (!output) return;
+    try {
+      target.write(output);
+      if (stream === 'stdout') liveStdoutBytes += Buffer.byteLength(output, 'utf8');
+      else liveStderrBytes += Buffer.byteLength(output, 'utf8');
+    } catch {
+      // The Controller may restart while this detached Runner continues. The
+      // durable log files remain authoritative after the pipe disappears.
+      outputStreamBroken = true;
+    }
+  };
+  process.stdout.on('error', () => { outputStreamBroken = true; });
+  process.stderr.on('error', () => { outputStreamBroken = true; });
+  spawnedChild.stdout?.on('data', (chunk: Buffer) => forward(process.stdout, stdout.write(chunk), 'stdout'));
+  spawnedChild.stderr?.on('data', (chunk: Buffer) => forward(process.stderr, stderr.write(chunk), 'stderr'));
 
   const closeResult = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
     spawnedChild.on('error', (error) => {

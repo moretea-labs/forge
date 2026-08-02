@@ -1,3 +1,5 @@
+import { clearSessionCachesForSession } from '../../repository/session-cache';
+
 export type McpSessionRoute = '/mcp' | '/mcp-grok' | '/mcp-bearer';
 
 export type McpSessionCloseReason =
@@ -240,6 +242,7 @@ export class McpSessionRegistry<
     const session = this.sessions.get(sessionId);
     if (!session) return false;
     this.sessions.delete(sessionId);
+    clearSessionCachesForSession(sessionId);
     this.incrementCloseCounter(session.pendingCloseReason ?? reason);
     return true;
   }
@@ -248,6 +251,7 @@ export class McpSessionRegistry<
     const session = this.sessions.get(sessionId);
     if (!session) return false;
     this.sessions.delete(sessionId);
+    clearSessionCachesForSession(sessionId);
     session.pendingCloseReason = reason;
     this.incrementCloseCounter(reason);
     try {

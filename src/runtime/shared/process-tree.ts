@@ -74,13 +74,23 @@ export function parseProcessGroupMembersPosix(output: string, processGroupId: nu
 
 function listProcessGroupMembersPosix(processGroupId: number): number[] {
   try {
-    // BSD/macOS `ps -g` selects a real group ID rather than a process-group ID
-    // and can therefore return most processes owned by the current user. Read
-    // the bounded process table and filter the explicit PGID column instead.
-    const output = execFileSync('ps', ['-axo', 'pid=,pgid=,stat='], {
+    // Query the exact process group. A full `ps -axo` scan here used to run
+    // after every test file and once misclassified thousands of unrelated
+    // processes as descendants on macOS.
+    const pidOutput = execFileSync('pgrep', ['-g', String(processGroupId)], {
       encoding: 'utf8',
       timeout: 2_000,
-      maxBuffer: 256 * 1024,
+      maxBuffer: 64 * 1024,
+    });
+    const pids = pidOutput
+      .split(/\s+/)
+      .map((value) => Number.parseInt(value, 10))
+      .filter((pid) => Number.isInteger(pid) && pid > 0);
+    if (pids.length === 0) return [];
+    const output = execFileSync('ps', ['-o', 'pid=,pgid=,stat=', '-p', pids.join(',')], {
+      encoding: 'utf8',
+      timeout: 2_000,
+      maxBuffer: 64 * 1024,
     });
     return parseProcessGroupMembersPosix(output, processGroupId);
   } catch {

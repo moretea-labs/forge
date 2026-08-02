@@ -53,6 +53,17 @@ export interface StaleSlotDaemonCleanupResult {
   errors: string[];
 }
 
+export interface StaleSlotDaemonCleanupOptions {
+  /**
+   * Candidate-slot preflight may reclaim daemons from the current Supervisor
+   * epoch as well as older epochs. The default stays conservative for direct
+   * callers that only want historical orphan cleanup.
+   */
+  includeCurrentOwnerEpoch?: boolean;
+  /** PIDs already adopted by the current Supervisor must never be reclaimed. */
+  preservePids?: ReadonlySet<number>;
+}
+
 export function supervisorProcessStopAuditPath(logPath: string): string {
   return join(dirname(resolve(logPath)), 'process-stops.jsonl');
 }
@@ -167,7 +178,7 @@ function commandTargetsDaemon(tokens: string[]): boolean {
   ));
 }
 
-export function runtimeWriterEnvironment(controllerHome: string, slot: RuntimeSlotId): NodeJS.ProcessEnv {
+export function runtimeWriterEnvironment(controllerHome: string, slot: RuntimeSlotId, instanceId?: string): NodeJS.ProcessEnv {
   const authority = readWriterAuthority(controllerHome);
   if (!authority) return {};
   const passive = authority.activeSlot !== slot;
@@ -179,6 +190,7 @@ export function runtimeWriterEnvironment(controllerHome: string, slot: RuntimeSl
     REPO_HARNESS_WRITER_SLOT: slot,
     REPO_HARNESS_WRITER_EPOCH: authority.epoch,
     REPO_HARNESS_WRITER_FENCING_TOKEN: authority.fencingToken,
+    ...(instanceId ? { REPO_HARNESS_WRITER_INSTANCE_ID: instanceId } : {}),
     REPO_HARNESS_RUNTIME_PASSIVE: passive ? '1' : '0',
     ...(authority.generation ? { REPO_HARNESS_WRITER_GENERATION: authority.generation } : {}),
   };
@@ -241,7 +253,7 @@ export class SupervisorProcessManager {
           REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT: this.options.runtimeSourceRoot,
           REPO_HARNESS_DAEMON_INSTANCE_ID: instanceId,
           REPO_HARNESS_RUNTIME_SLOT: slot,
-          ...runtimeWriterEnvironment(this.options.controllerHome, slot),
+          ...runtimeWriterEnvironment(this.options.controllerHome, slot, instanceId),
         },
       });
       child.unref();
@@ -377,6 +389,7 @@ export class SupervisorProcessManager {
   async cleanupStaleSlotDaemons(
     slot = this.options.slot ?? readActiveSlotAuthority(this.options.controllerHome).activeSlot,
     context: Omit<SupervisorProcessStopContext, 'component'> = { reason: 'stale_slot_daemon_cleanup' },
+    options: StaleSlotDaemonCleanupOptions = {},
   ): Promise<StaleSlotDaemonCleanupResult> {
     const result: StaleSlotDaemonCleanupResult = {
       inspected: 0,
@@ -390,6 +403,7 @@ export class SupervisorProcessManager {
     const targetHome = componentHome(this.options.controllerHome, slot, true);
     for (const entry of entries) {
       if (entry.pid === process.pid) continue;
+      if (options.preservePids?.has(entry.pid)) continue;
       result.inspected += 1;
       const tokens = tokenizeProcessCommand(entry.command);
       const commandHome = commandOptionValue(tokens, '--controller-home');
@@ -429,7 +443,8 @@ export class SupervisorProcessManager {
         });
         continue;
       }
-      if (ownerEpoch >= this.options.ownerEpoch) continue;
+      if (ownerEpoch > this.options.ownerEpoch) continue;
+      if (ownerEpoch === this.options.ownerEpoch && options.includeCurrentOwnerEpoch !== true) continue;
 
       try {
         const stopped = await this.stop(identity, {

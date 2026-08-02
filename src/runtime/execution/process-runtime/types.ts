@@ -135,6 +135,10 @@ export interface ManagedProcessRecord {
   terminalWritten?: boolean;
   /** Owner controller generation / authority epoch when known. */
   writerAuthorityEpoch?: string;
+  /** Immutable runtime generation captured when this process was spawned. */
+  writerAuthorityGeneration?: string;
+  /** Immutable daemon/controller instance captured when this process was spawned. */
+  writerAuthorityInstanceId?: string;
   /** Optional correlation for MCP / check / command tools. */
   origin?: {
     surface: 'mcp' | 'check' | 'command' | 'system';
@@ -184,6 +188,8 @@ export interface SpawnManagedProcessInput {
   resourceClaims?: ProcessResourceClaim[];
   origin?: ManagedProcessRecord['origin'];
   writerAuthorityEpoch?: string;
+  writerAuthorityGeneration?: string;
+  writerAuthorityInstanceId?: string;
   signal?: AbortSignal;
   /** When true, never block the caller waiting for completion. */
   returnHandleImmediately?: boolean;

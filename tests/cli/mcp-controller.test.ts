@@ -706,20 +706,20 @@ describe("MCP controller profile", () => {
       const full = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", toolset: "full", controllerHome });
       const coreNames = exposedControllerToolDefinitions(core).map((tool) => tool.name);
       expect(coreNames).toEqual(expect.arrayContaining(["rh_status", "rh_inbox", "rh_context", "rh_work", "repository_list"]));
-      expect(coreNames).toContain("create_campaign");
-      expect(coreNames.length).toBeGreaterThanOrEqual(100);
+      // Core is the compact model-facing surface; specialist tools live in advanced.
+      expect(coreNames).not.toContain("create_campaign");
+      expect(coreNames).not.toContain("process_get");
+      const advancedNames = exposedControllerToolDefinitions(advanced).map((tool) => tool.name);
+      const fullNames = exposedControllerToolDefinitions(full).map((tool) => tool.name);
       // Keep the public Controller surface within the declared 133-tool schema budget
       // (128 baseline + process_get/wait/logs/cancel + finish_edit_session).
-      expect(coreNames.length).toBe(133);
-      expect(coreNames).toEqual(expect.arrayContaining([
+      expect(advancedNames.length).toBe(133);
+      expect(advancedNames).toEqual(expect.arrayContaining([
         'process_get',
         'process_wait',
         'process_logs',
         'process_cancel',
       ]));
-      const advancedNames = exposedControllerToolDefinitions(advanced).map((tool) => tool.name);
-      const fullNames = exposedControllerToolDefinitions(full).map((tool) => tool.name);
-      expect(advancedNames).toEqual(coreNames);
       expect(advancedNames).toContain("create_campaign");
       expect(advancedNames).toContain("submit_campaign_review");
       expect(advancedNames).toContain("finish_task_run");
@@ -895,9 +895,12 @@ describe("MCP controller profile", () => {
         revision: 77,
         provider: "stored-provider"});
 
-      const context = await callRuntimeTool(multi, "controller_context", { repo_id: repository.repoId });
-      const value = JSON.parse(context!.content[0].text);
-      const plugin = value.plugins.find((entry: { pluginId: string }) => entry.pluginId === "github");
+      const summary = JSON.parse((await callRuntimeTool(multi, "controller_context", { repo_id: repository.repoId }))!.content[0].text);
+      // Default summary carries compact plugin counts only; manifests are detail.
+      expect(summary.plugins).toHaveProperty("enabledCount");
+      expect(summary.plugins).not.toHaveProperty("provider");
+      const detail = JSON.parse((await callRuntimeTool(multi, "controller_context", { repo_id: repository.repoId, detail_level: "detail" }))!.content[0].text);
+      const plugin = detail.plugins.find((entry: { pluginId: string }) => entry.pluginId === "github");
 
       expect(plugin).toBeTruthy();
       expect(plugin.provider).toBe("stored-provider");

@@ -24,6 +24,8 @@ export interface RuntimeWriterClaim {
   rootControllerHome: string;
   slot: RuntimeSlotId;
   generation?: string;
+  /** Runtime process instance identity, when supplied by the Supervisor. */
+  instanceId?: string;
   epoch: string;
   fencingToken: string;
   /** When this process captured the claim. */
@@ -61,6 +63,7 @@ export function bindInheritedRuntimeWriterClaimFromEnvironment(
     controllerHome,
     slot,
     generation: env.REPO_HARNESS_WRITER_GENERATION?.trim(),
+    instanceId: env.REPO_HARNESS_WRITER_INSTANCE_ID?.trim(),
     epoch: env.REPO_HARNESS_WRITER_EPOCH?.trim(),
     fencingToken: env.REPO_HARNESS_WRITER_FENCING_TOKEN?.trim(),
     allowLegacyMissing: true,
@@ -83,6 +86,7 @@ export function bindRuntimeWriterClaim(input: {
   controllerHome: string;
   slot?: RuntimeSlotId;
   generation?: string;
+  instanceId?: string;
   epoch?: string;
   fencingToken?: string;
   /** When true and authority is missing, bind a synthetic legacy claim. */
@@ -120,6 +124,7 @@ export function bindRuntimeWriterClaim(input: {
       rootControllerHome: root,
       slot,
       generation: input.generation ?? authority?.generation,
+      instanceId: input.instanceId,
       epoch: input.epoch,
       fencingToken: input.fencingToken,
       capturedAt: new Date().toISOString(),
@@ -141,6 +146,7 @@ export function bindRuntimeWriterClaim(input: {
       rootControllerHome: root,
       slot,
       generation: input.generation ?? authority.generation,
+      instanceId: input.instanceId,
       epoch: authority.epoch,
       fencingToken: authority.fencingToken,
       capturedAt: new Date().toISOString(),
@@ -154,6 +160,7 @@ export function bindRuntimeWriterClaim(input: {
       rootControllerHome: root,
       slot,
       generation: input.generation,
+      instanceId: input.instanceId,
       epoch: `legacy-${process.pid}`,
       fencingToken: `legacy-${process.pid}`,
       capturedAt: new Date().toISOString(),

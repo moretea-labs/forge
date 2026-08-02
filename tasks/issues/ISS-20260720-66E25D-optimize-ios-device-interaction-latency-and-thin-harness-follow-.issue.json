@@ -138,8 +138,8 @@
     {
       "id": "T4",
       "title": "Close measured Thin Harness follow-ups",
-      "objective": "Measure and reduce patch savepoint and command-policy costs, large-repository read variance, Workbench schema size and Fast/Durable adapter duplication.",
-      "status": "ready",
+      "objective": "Measure and reduce patch savepoint and command-policy costs, large-repository read variance, Workbench schema size and Fast/Durable adapter duplication. Code and correctness verification closed on 2026-08-01: event-driven SWR freshness, compact startup summary, toolset tiers, runtime identity, git-identity hot-path caching, supervised check bridge. Formal performance acceptance is deferred to a dedicated follow-up session.",
+      "status": "integrated",
       "dependsOn": [],
       "allowedPaths": [
         "src/runtime/execution/thin-harness/**",
@@ -496,9 +496,57 @@
       "createdAt": "2026-08-01T03:40:36.825Z",
       "updatedAt": "2026-08-01T03:40:36.825Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T8",
+      "title": "Close live JD correctness and warm-path latency regressions",
+      "objective": "Use the 2026-08-01 JD real-device transcript as primary evidence. In an isolated checkout, reproduce and fix the remaining Repo Harness defects: compile the JD semantic adapter as focus/navigate -> resolve real editable control -> fill -> submit instead of filling the home-page proxy; preserve healthy sessions for selector/ref/type/semantic failures and destroy only classified transport/runner/unknown-outcome failures; make page-transition diffs and ref generations safe so a contradictory zero-diff cannot authorize stale refs; carry the resolved Apple signing context through every lazy Runner start in an interaction; and replace repeated full plugin manifest/action-schema payloads on normal plugin_action_execute responses with a bounded compact receipt plus an explicit detail path. Then add a warm multi-step execution primitive or adapter batch that performs known semantic steps without returning to the model after every action, with phase timings and bounded evidence. Keep public action IDs and sensitive-action policy unchanged.",
+      "status": "ready",
+      "dependsOn": [],
+      "allowedPaths": [
+        "src/runtime/plugins/**",
+        "src/runtime/gateway/**",
+        "src/cli/mcp/**",
+        "tests/runtime/**",
+        "tests/cli/**",
+        "tests/fixtures/**",
+        "scripts/**",
+        "docs/architecture/**",
+        "docs/operations/**"
+      ],
+      "forbiddenPaths": [
+        "tasks/issues/ISS-20260729-BF2F89-*",
+        ".github/**",
+        "CHANGELOG.md",
+        "package.json",
+        "package-lock.json",
+        "bun.lock"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:mcp-compatibility",
+        "package:check:controller-v8"
+      ],
+      "acceptanceCriteria": [
+        "JD search adapter follows the actual two-page control flow and passes fixture coverage for home proxy and real editable input.",
+        "Recoverable semantic action failures leave the interaction active; proven Runner/transport/unknown-outcome failures still close or fence it.",
+        "Contradictory or incomplete diffs invalidate refs and trigger one bounded fresh snapshot before mutation.",
+        "The Team, runner bundle and developer directory resolved at open/prepare are reused by lazy XCTest startup.",
+        "Normal plugin action responses do not repeat the complete plugin manifest and all action schemas; full detail remains explicitly retrievable.",
+        "A known JD search can execute as one bounded warm semantic operation after session open, returning one final receipt with phase timings rather than requiring model analysis after each primitive.",
+        "Focused fixture/fault/property regressions and all declared checks pass."
+      ],
+      "risk": "high",
+      "recommendedAgent": "codex",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-08-01T10:07:06.971Z",
+      "updatedAt": "2026-08-01T10:07:06.971Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     }
   ],
   "createdAt": "2026-07-20T15:31:27.625Z",
-  "updatedAt": "2026-08-01T03:40:36.825Z",
+  "updatedAt": "2026-08-01T15:20:00.000Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }

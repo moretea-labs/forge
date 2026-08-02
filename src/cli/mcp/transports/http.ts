@@ -28,6 +28,7 @@ import {
   controllerExposureSnapshot,
 } from '../toolset';
 import { ensureControllerDaemon, readControllerDaemonStatus } from '../../../runtime/control-plane/daemon-client';
+import { runtimeIdentitySnapshot } from '../../../runtime/gateway/mcp/runtime-tools';
 import { projectionBlocksReadiness, readRepositoryProjectionSnapshot } from '../../../runtime/projections/materialized-view';
 import { readRuntimeGeneration } from '../../../runtime/control-plane/runtime-generation';
 import { getRepository, listRepositories } from '../../repositories/registry';
@@ -804,6 +805,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
       toolCount: exposure.toolNames.length,
       generation: runtimeGeneration?.generation,
       source: runtimeGeneration?.source,
+      runtimeIdentity: runtimeIdentitySnapshot(toolContext),
     };
   };
 
@@ -834,6 +836,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
       toolset: health?.toolset ?? 'full',
       toolCount: health?.toolCount ?? compatibilityToolDefinitions.length,
       compatibilityToolCount: compatibilityToolDefinitions.length,
+      runtimeIdentity: health?.runtimeIdentity,
       configuredAccessMode: health?.configuredAccessMode,
       effectiveAccessMode: health?.effectiveAccessMode,
       effectiveToolset: health?.effectiveToolset,

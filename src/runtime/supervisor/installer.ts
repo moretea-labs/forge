@@ -4,6 +4,7 @@ import { dirname, join, resolve, sep } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { looksLikeControllerRuntimePackage, resolveControllerRuntimeSourceRoot } from '../control-plane/runtime-generation';
 import { readCurrentRelease, readSupervisorRelease, ensureStableSupervisorLayout, publishCurrentRelease, supervisorLogsRoot, supervisorReleasesRoot, supervisorRoot } from './paths';
+import type { SupervisorSourceIdentity } from './types';
 
 export interface SupervisorInstallResult {
   controllerHome: string;
@@ -66,9 +67,15 @@ function publishRuntimeSourceRoot(input: {
   const releaseSourceExists = existsSync(releaseSourceRoot);
   const releaseSourceLooksValid = releaseSourceExists && looksLikeControllerRuntimePackage(releaseSourceRoot);
   const managedSource = controllerManagedRuntimeSource(input.controllerHome, releaseSourceRoot);
-  if (releaseSourceLooksValid && !managedSource) return runtimeSourceRoot(releaseSourceRoot);
-
   const repoHead = gitHead(repoRoot);
+  const canonicalRepoRoot = containmentPath(repoRoot);
+  const canonicalReleaseSourceRoot = containmentPath(releaseSourceRoot);
+  if (canonicalReleaseSourceRoot === canonicalRepoRoot) return repoRoot;
+
+  // A release may have been built in an isolated checkout, but its launched
+  // runtime must always resolve source-relative behavior from the authoritative
+  // checkout bound to this Controller Home. Never persist an arbitrary sibling
+  // worktree path merely because it contains a valid runtime package.
   if (input.release.sourceCommit && repoHead === input.release.sourceCommit && looksLikeControllerRuntimePackage(repoRoot)) {
     return repoRoot;
   }
@@ -77,6 +84,7 @@ function publishRuntimeSourceRoot(input: {
     releaseSourceExists ? undefined : 'sourceRoot missing',
     releaseSourceExists && !releaseSourceLooksValid ? 'sourceRoot is not a controller runtime package' : undefined,
     managedSource ? 'sourceRoot is a controller-managed worktree' : undefined,
+    !managedSource ? `sourceRoot is not the authoritative repoRoot ${repoRoot}` : undefined,
     input.release.sourceCommit ? undefined : 'sourceCommit missing',
     repoHead && input.release.sourceCommit && repoHead !== input.release.sourceCommit
       ? `repoRoot HEAD ${repoHead} differs from release sourceCommit ${input.release.sourceCommit}`
@@ -138,6 +146,35 @@ function runtimeSourceIdentity(root: string, allowDirtyRuntimeSourceForTests = f
     cleanWorkspace,
     dirtyRuntimePaths,
   };
+}
+
+/**
+ * Re-check the immutable source binding immediately before a candidate is
+ * activated. Staging alone is insufficient: an explicit worktree may move or
+ * become dirty while the asynchronous Supervisor operation is queued.
+ */
+export function verifySupervisorSourceIdentity(
+  identity: SupervisorSourceIdentity,
+  release: NonNullable<ReturnType<typeof readSupervisorRelease>>,
+): void {
+  const expectedPath = containmentPath(identity.sourcePath);
+  const releasePath = containmentPath(release.sourceRoot ?? '');
+  if (!release.sourceRoot || expectedPath !== releasePath) {
+    throw new Error(`SUPERVISOR_SOURCE_IDENTITY_MISMATCH: release source ${release.sourceRoot ?? 'missing'} != ${identity.sourcePath}`);
+  }
+  if (release.sourceCommit !== identity.expectedHead) {
+    throw new Error(`SUPERVISOR_SOURCE_HEAD_MISMATCH: release ${release.sourceCommit ?? 'missing'} != expected ${identity.expectedHead}`);
+  }
+  if (release.releaseRevision !== identity.expectedRevision) {
+    throw new Error(`SUPERVISOR_SOURCE_REVISION_MISMATCH: release ${release.releaseRevision ?? 'missing'} != expected ${identity.expectedRevision}`);
+  }
+  const current = runtimeSourceIdentity(identity.sourcePath);
+  if (current.sourceCommit !== identity.expectedHead) {
+    throw new Error(`SUPERVISOR_SOURCE_HEAD_CHANGED: ${current.sourceCommit} != expected ${identity.expectedHead}`);
+  }
+  if (current.releaseRevision !== identity.expectedRevision || current.cleanWorkspace !== true) {
+    throw new Error(`SUPERVISOR_SOURCE_DIRTY_OR_REVISION_CHANGED: ${current.releaseRevision}`);
+  }
 }
 
 function buildEntry(sourceRoot: string, entry: string, output: string, target: 'bun' | 'node' = 'bun'): void {

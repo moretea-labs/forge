@@ -15,6 +15,7 @@ import { appStoreConnectPluginAdapter } from './app-store-connect-adapter';
 import { iosPluginAdapter } from './ios-adapter';
 import { localSystemPluginAdapter } from './local-system-adapter';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
+import { markControllerContextProjectionDirty } from '../projections/controller-context';
 import type {
   AssistantPluginAdapter,
   AssistantPluginActionDescriptor,
@@ -422,6 +423,7 @@ export function syncAssistantPluginRegistry(
   for (const manifest of manifests) {
     writeJsonAtomic(manifestPath(controllerHome, repository.repoId, manifest.pluginId), manifest);
   }
+  markControllerContextProjectionDirty(repository.canonicalRoot, 'plugin:registry-synced');
   return {
     manifests,
     index: writeRegistry(controllerHome, repository.repoId, manifests),
@@ -436,6 +438,7 @@ function syncAssistantPluginManifest(
   invalidateAssistantPluginManifestCache(controllerHome, repository.repoId, pluginId);
   const manifest = computeManifest(controllerHome, repository, pluginId);
   writeJsonAtomic(manifestPath(controllerHome, repository.repoId, manifest.pluginId), manifest);
+  markControllerContextProjectionDirty(repository.canonicalRoot, `plugin:${pluginId}:synced`);
   cacheAssistantPluginManifest(controllerHome, repository.repoId, manifest, false);
   cacheAssistantPluginManifest(controllerHome, repository.repoId, manifest, true);
   const manifests = listAssistantPluginIds(repository)

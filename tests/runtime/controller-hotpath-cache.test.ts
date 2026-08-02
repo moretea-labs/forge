@@ -13,7 +13,14 @@ import {
   clearRuntimeProcessListCacheForTest,
   collectRuntimeProcesses,
 } from '../../src/runtime/diagnostics/performance';
-import { clearGitSnapshotCacheForTest, gitSnapshot } from '../../src/cli/repository/inspector';
+import {
+  cachedGitIdentity,
+  clearGitIdentityCacheForTest,
+  clearGitSnapshotCacheForTest,
+  gitIdentityPerformanceSnapshot,
+  gitSnapshot,
+  gitSnapshotPerformanceSnapshot,
+} from '../../src/cli/repository/inspector';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import {
   readRepositoryGitStatusSample,
@@ -32,6 +39,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   clearRuntimeSourceIdentityCacheForTest();
   clearRuntimeProcessListCacheForTest();
+  clearGitIdentityCacheForTest();
   clearGitSnapshotCacheForTest();
   if (previousRuntimeSourceEnv === undefined) delete process.env[CONTROLLER_RUNTIME_SOURCE_ROOT_ENV];
   else process.env[CONTROLLER_RUNTIME_SOURCE_ROOT_ENV] = previousRuntimeSourceEnv;
@@ -70,12 +78,57 @@ describe('controller hotpath caches', () => {
     expect(explicit.canonicalRoot).toBe(first!.canonicalRoot);
   });
 
-  test('gitSnapshot reuses cache within TTL', () => {
+  test('git identity samples HEAD, branch, and dirty state with one subprocess', () => {
+    const root = temp('repo-harness-git-identity-');
+    initRepo(root);
+    clearGitIdentityCacheForTest();
+
+    const first = cachedGitIdentity(root);
+    expect(first.head).toBe(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim());
+    expect(first.branch).toBe('main');
+    expect(gitIdentityPerformanceSnapshot()).toEqual({ cacheHits: 0, samples: 1, subprocesses: 1 });
+
+    const second = cachedGitIdentity(root);
+    expect(second).toEqual(first);
+    expect(gitIdentityPerformanceSnapshot()).toEqual({ cacheHits: 1, samples: 1, subprocesses: 1 });
+
+    writeFileSync(join(root, 'src', 'index.ts'), 'export const ready = false;\n');
+    clearGitIdentityCacheForTest();
+    const dirty = cachedGitIdentity(root);
+    expect(dirty.head).toBe(first.head);
+    expect(dirty.branch).toBe(first.branch);
+    expect(dirty.workingTreeFingerprint).not.toBe(first.workingTreeFingerprint);
+    expect(gitIdentityPerformanceSnapshot()).toEqual({ cacheHits: 0, samples: 1, subprocesses: 1 });
+  });
+
+  test('git identity preserves detached HEAD without inventing a branch', () => {
+    const root = temp('repo-harness-git-detached-');
+    initRepo(root);
+    execFileSync('git', ['checkout', '--detach'], { cwd: root, stdio: 'ignore' });
+    clearGitIdentityCacheForTest();
+
+    const identity = cachedGitIdentity(root);
+    expect(identity.head).toBe(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim());
+    expect(identity.branch).toBeNull();
+    expect(gitIdentityPerformanceSnapshot().subprocesses).toBe(1);
+  });
+
+  test('gitSnapshot reuses identity and snapshot caches within TTL', () => {
     const root = temp('repo-harness-git-cache-');
     initRepo(root);
+    clearGitIdentityCacheForTest();
+    clearGitSnapshotCacheForTest();
+
     const first = gitSnapshot(root);
+    expect(first.branch).toBe('main');
+    expect(first.head).toBeTruthy();
+    expect(gitIdentityPerformanceSnapshot()).toEqual({ cacheHits: 0, samples: 1, subprocesses: 1 });
+    expect(gitSnapshotPerformanceSnapshot()).toEqual({ cacheHits: 0, refreshes: 1, subprocesses: 2 });
+
     const second = gitSnapshot(root);
     expect(second).toEqual(first);
+    expect(gitSnapshotPerformanceSnapshot()).toEqual({ cacheHits: 1, refreshes: 1, subprocesses: 2 });
+    expect(gitIdentityPerformanceSnapshot()).toEqual({ cacheHits: 0, samples: 1, subprocesses: 1 });
   });
 
   test('process list cache returns the same base samples within TTL', () => {

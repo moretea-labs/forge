@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { existsSync } from 'fs';
+import { basename } from 'path';
 import { collectRuntimePerformanceDiagnostics, inferLocalControllerProcess } from '../../diagnostics/performance';
 import type { McpToolDefinition, CallToolResult } from '../../../cli/mcp/tools';
 import type { MultiRepositoryMcpToolContext } from '../../../cli/mcp/multi-repository';
@@ -9,7 +10,7 @@ import { repositoryControllerRoot } from '../../../cli/repositories/controller-h
 import { cancelExecutionJob, findExecutionJob, getExecutionJob, getExecutionJobByRequestId, listExecutionJobs } from '../../execution/jobs/store';
 import { waitForExecutionJob } from '../../execution/jobs/wait';
 import type { ExecutionJob } from '../../execution/jobs/types';
-import { getProcessHandle, waitForProcess } from '../../execution/process-runtime';
+import { getProcessHandle, processRuntimeResourceDiagnostics, waitForProcess } from '../../execution/process-runtime';
 import { buildJobOperationDigest } from '../../control-plane/facade/operation-digest';
 import { readJobEvents } from '../../evidence/event-ledger';
 import { readExecutionArtifact } from '../../evidence/artifact-store';
@@ -19,6 +20,7 @@ import { readSchedulerHealthSnapshot } from '../../control-plane/global-schedule
 import {
   evaluateActiveRuntimeSourceDrift,
   formatRuntimeSourceDriftMessage,
+  readRuntimeGeneration,
   type RuntimeSourceIdentity,
 } from '../../control-plane/runtime-generation';
 import { rebuildRepositoryProjection, projectionObservation, readRepositoryProjectionSnapshot } from '../../projections/materialized-view';
@@ -60,7 +62,7 @@ import { assessWorkMode } from '../../../cli/controller/work-mode';
 import { scheduleControllerServiceRestart } from '../../../cli/controller/restart-coordinator';
 import { stableSupervisorFacadeMutation, stableSupervisorFacadeOperation, stableSupervisorFacadeStatus } from '../../supervisor/facade';
 import { readSupervisorState } from '../../supervisor/state-store';
-import { isStableSupervisorInstalled, readCurrentSupervisorRelease } from '../../supervisor/paths';
+import { isStableSupervisorInstalled, readCurrentSupervisorRelease, readPreviousSupervisorRelease } from '../../supervisor/paths';
 import { evaluateRuntimeReleaseCoherence, readSupervisorServiceReleaseCoherence } from '../../supervisor/release-coherence';
 import type { SupervisorOperationKind } from '../../supervisor/types';
 import { projectBoard } from '../../../cli/controller/issue-store';
@@ -70,7 +72,7 @@ import {
 } from '../../../cli/controller/task-ledger';
 import { buildControllerContextPack } from '../../../cli/controller/context-pack';
 import { buildControllerOperationalPlan } from '../../../cli/controller/operational-plan';
-import { listControllerChecks, runControllerCheck } from '../../../cli/controller/check-runner';
+import { listControllerChecks, readLatestControllerCheckEvidence, runControllerCheck } from '../../../cli/controller/check-runner';
 import {
   controllerFeatureVerify,
   controllerRestartVerify,
@@ -87,9 +89,14 @@ import {
 } from '../../../cli/repositories/selected-path-actions';
 import type { TaskRisk } from '../../../cli/controller/types';
 import {
+  controllerContextPerformanceSnapshot,
   controllerContextProjectionAgeMs,
+  controllerContextProjectionGeneration,
   controllerContextProjectionNeedsRefresh,
+  queueControllerContextProjectionRefresh,
   readControllerContextProjection,
+  readControllerContextProjectionInvalidation,
+  recordControllerContextRead,
   writeControllerContextProjection,
 } from '../../projections/controller-context';
 import { loadMcpRuntimeState } from '../../../cli/mcp/auth';
@@ -135,7 +142,8 @@ import { approveAssistantActionProposal, getAssistantActionProposal, listAssista
 import { assistantModelReadiness } from '../../assistant/model-provider';
 import { createAssistantStandingGrant, listAssistantStandingGrants, revokeAssistantStandingGrant } from '../../assistant/standing-grants';
 import { buildGmailTriagePlan, readGmailTriageRules, upsertGmailTriageRule } from '../../personal-assistant/gmail-triage-manager';
-import { gitSnapshot } from '../../../cli/repository/inspector';
+import { sessionCacheGlobalDiagnostics } from '../../../cli/repository/session-cache';
+import { cachedGitIdentity, gitIdentityPerformanceSnapshot, gitSnapshot, gitSnapshotPerformanceSnapshot } from '../../../cli/repository/inspector';
 import { buildWorkflowWatchdogReport } from '../../watchdog/workflow-watchdog';
 import { applyRuntimeCleanup, previewRuntimeCleanup } from '../../maintenance/cleanup';
 import {
@@ -416,6 +424,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
   }, [], false),
   definition('controller_rollout', 'Blue/green rollout through the single lifecycle surface: start inactive slot, verify, atomic cutover.', {
     repo_id: repoId,
+    checkout_id: { type: 'string', description: 'Exact registered checkout to use; never falls back to activeCheckoutId.' },
     skip_durable_job: { type: 'boolean' },
     reason: { type: 'string' },
   }, [], false),
@@ -1137,6 +1146,24 @@ export function summarizeControllerReadyPayload(fullPayload: Record<string, unkn
     sourceRevision: fullPayload.sourceRevision,
     expectedRevision: fullPayload.expectedRevision,
     coherence: fullPayload.coherence,
+    runtimeIdentity: (() => {
+      const identity = fullPayload.runtimeIdentity && typeof fullPayload.runtimeIdentity === 'object'
+        ? fullPayload.runtimeIdentity as Record<string, unknown>
+        : undefined;
+      if (!identity) return undefined;
+      return {
+        releaseId: identity.releaseId,
+        runtimeCommit: identity.runtimeCommit,
+        buildCommit: identity.buildCommit,
+        startedAt: identity.startedAt,
+        controllerInstanceId: identity.controllerInstanceId,
+        toolset: identity.toolset,
+        profile: identity.profile,
+        activeSlot: identity.activeSlot,
+        previousKnownGood: identity.previousKnownGood,
+        generation: identity.generation,
+      };
+    })(),
     routeBehavior: {
       schemaVersion: routeBehavior.schemaVersion,
       fingerprint: routeBehavior.fingerprint,
@@ -1144,8 +1171,11 @@ export function summarizeControllerReadyPayload(fullPayload: Record<string, unkn
     },
     toolSurface: {
       ready: toolSurface.ready,
-      expectedToolCount: expectedTools.length,
-      actualToolCount: actualTools.length,
+      // Never report 0/0 as a real tool surface: an uncomputed exposure is
+      // explicitly unknown until the snapshot has been built.
+      expectedToolCount: expectedTools.length > 0 || toolSurface.ready ? expectedTools.length : null,
+      actualToolCount: actualTools.length > 0 || toolSurface.ready ? actualTools.length : null,
+      toolSurfaceState: expectedTools.length === 0 && actualTools.length === 0 && !toolSurface.ready ? 'unknown' : 'computed',
       missingTools: toolSurface.missingTools,
       unexpectedTools: toolSurface.unexpectedTools,
       duplicateTools: toolSurface.duplicateTools,
@@ -1161,11 +1191,30 @@ export function summarizeControllerReadyPayload(fullPayload: Record<string, unkn
   };
 }
 
-function withRuntimeResponseMeta(payload: Record<string, unknown>, startedAt: number): Record<string, unknown> {
+function withRuntimeResponseMeta(
+  payload: Record<string, unknown>,
+  startedAt: number,
+  options: {
+    phaseTimingsMs?: Record<string, number>;
+    transport?: string;
+    sessionId?: string;
+    routing?: { repoId?: string; checkoutId?: string };
+    cacheHit?: boolean;
+    stale?: boolean;
+    refreshJobId?: string;
+  } = {},
+): Record<string, unknown> {
   const response = {
     ...payload,
     responseMeta: {
       serverDurationMs: Math.round((performance.now() - startedAt) * 100) / 100,
+      phaseTimingsMs: options.phaseTimingsMs ?? {},
+      transport: options.transport ?? 'runtime-local',
+      ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+      ...(options.routing ? { routing: options.routing } : {}),
+      ...(options.cacheHit !== undefined ? { cacheHit: options.cacheHit } : {}),
+      ...(options.stale !== undefined ? { stale: options.stale } : {}),
+      ...(options.refreshJobId ? { refreshJobId: options.refreshJobId } : {}),
       structuredPayloadBytes: 0,
     },
   };
@@ -1290,6 +1339,53 @@ function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String).map((entry) => entry.trim()).filter(Boolean) : [];
 }
 
+export interface RuntimeIdentitySnapshot {
+  releaseId?: string;
+  runtimeCommit?: string;
+  buildCommit?: string;
+  startedAt?: string;
+  controllerInstanceId?: string;
+  toolset?: string;
+  profile?: string;
+  activeSlot?: 'blue' | 'green';
+  previousKnownGood?: string;
+  releasePath?: string;
+  generation?: string;
+}
+
+/**
+ * Authoritative runtime identity for diagnostics and readiness. Reads only
+ * stable state files (supervisor state, release pointers, slot authority,
+ * runtime generation); never spawns processes.
+ */
+export function runtimeIdentitySnapshot(ctx: MultiRepositoryMcpToolContext): RuntimeIdentitySnapshot {
+  const stableHome = resolveStableControllerHome(ctx.controllerHome);
+  const supervisorState = readSupervisorState(stableHome);
+  const currentRelease = readCurrentSupervisorRelease(stableHome);
+  const previousRelease = readPreviousSupervisorRelease(stableHome);
+  const runtimeGeneration = readRuntimeGeneration(ctx.controllerHome);
+  const authority = readActiveSlotAuthority(stableHome);
+  const previousSlot = supervisorState?.previousSlot ?? authority.previousSlot;
+  const previousKnownGood = previousSlot
+    ? readSlotIdentity(stableHome, previousSlot)?.releaseRevision
+    : previousRelease?.releaseRevision;
+  return {
+    releaseId: currentRelease?.releasePath ? basename(currentRelease.releasePath) : currentRelease?.releaseRevision,
+    runtimeCommit: runtimeGeneration?.source?.commit ?? currentRelease?.sourceCommit,
+    buildCommit: supervisorState?.supervisor.releaseRevision ?? currentRelease?.releaseRevision,
+    startedAt: supervisorState?.supervisor.startedAt,
+    controllerInstanceId: supervisorState?.controllerDaemon?.instanceId ?? currentControllerInstanceId(),
+    toolset: ctx.toolset,
+    profile: ctx.policy.profile,
+    activeSlot: supervisorState?.activeSlot ?? authority.activeSlot,
+    ...(previousKnownGood ? { previousKnownGood } : {}),
+    ...(currentRelease?.releasePath ? { releasePath: currentRelease.releasePath } : {}),
+    ...(supervisorState?.activeGeneration ?? runtimeGeneration?.generation
+      ? { generation: supervisorState?.activeGeneration ?? runtimeGeneration?.generation }
+      : {}),
+  };
+}
+
 function controllerContextAssessment(args: Record<string, unknown>) {
   if (typeof args.description !== 'string' || !args.description.trim()) return undefined;
   return assessWorkMode({
@@ -1309,6 +1405,250 @@ function controllerContextAssessment(args: Record<string, unknown>) {
     requiresWorkerIsolation: args.requires_worker_isolation === true,
     risk: typeof args.risk === 'string' ? args.risk as TaskRisk : undefined,
   });
+}
+
+function contextRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function contextText(value: unknown, maxChars: number): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  return value.length <= maxChars ? value : `${value.slice(0, Math.max(0, maxChars - 3))}...`;
+}
+
+function compactContextTask(value: unknown): Record<string, unknown> {
+  const task = contextRecord(value);
+  return {
+    issueId: task.issueId ?? task.id,
+    taskId: task.taskId ?? task.id,
+    title: task.title,
+    effectiveStatus: task.effectiveStatus,
+    verificationStatus: task.verificationStatus,
+    latestRunStatus: task.latestRunStatus,
+    retryable: task.retryable,
+    dispatchable: task.dispatchable,
+    queueable: task.queueable,
+  };
+}
+
+function compactContextEvent(value: unknown): Record<string, unknown> | string {
+  if (typeof value === 'string') return contextText(value, 300) ?? '';
+  const event = contextRecord(value);
+  return {
+    eventId: event.eventId ?? event.id,
+    type: event.type ?? event.eventType,
+    status: event.status,
+    issueId: event.issueId,
+    taskId: event.taskId,
+    summary: contextText(event.summary ?? event.message, 300),
+    occurredAt: event.occurredAt ?? event.createdAt ?? event.at,
+  };
+}
+
+function compactContextAction(value: unknown): Record<string, unknown> | string {
+  if (typeof value === 'string') return contextText(value, 300) ?? '';
+  const action = contextRecord(value);
+  return {
+    actionId: action.actionId ?? action.id,
+    title: action.title,
+    reason: contextText(action.reason ?? action.summary, 300),
+  };
+}
+
+function compactControllerContextSummaryPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  // Idempotent: already-compacted summaries pass through untouched.
+  if (payload.detailLevel === 'summary') return payload;
+  const git = contextRecord(payload.git);
+  const repository = contextRecord(payload.repository);
+  const ledger = contextRecord(payload.taskLedger);
+  const operationalPlan = contextRecord(payload.operationalPlan);
+  const operationalView = contextRecord(payload.operationalView);
+  const ready = contextRecord(payload.controllerReady);
+  const readyHealth = contextRecord(ready.health);
+  const runtimeProjection = contextRecord(payload.runtimeProjection);
+  const runtimeProjectionState = contextRecord(payload.runtimeProjectionState);
+  const currentIssue = contextRecord(payload.currentIssue);
+  const currentIssueTasks = Array.isArray(currentIssue.tasks) ? currentIssue.tasks : [];
+  const plugins = Array.isArray(payload.plugins) ? payload.plugins : [];
+  const checks = Array.isArray(payload.checks) ? payload.checks : [];
+  const activeRuns = Array.isArray(payload.activeRuns) ? payload.activeRuns : [];
+  const attention = Array.isArray(ledger.attention) ? ledger.attention : [];
+  const readyTasks = Array.isArray(ledger.readyTasks) ? ledger.readyTasks : [];
+  const recommendedExecution = contextRecord(payload.recommendedExecution);
+  const runtimeIdentity = contextRecord(payload.runtimeIdentity);
+  const runtime = contextRecord(payload.runtime);
+  const repoId = String(payload.repoId ?? repository.repoId ?? '');
+  const enabledCount = plugins.filter((plugin) => contextRecord(plugin).enabled === true).length;
+  const unhealthyCount = plugins.filter((plugin) => {
+    const health = contextRecord(contextRecord(plugin).health);
+    return health.state === 'unhealthy' || health.ready === false;
+  }).length;
+  const attentionPluginIds = plugins
+    .filter((plugin) => {
+      const health = contextRecord(contextRecord(plugin).health);
+      return ['degraded', 'unhealthy', 'error'].includes(String(health.state));
+    })
+    .map((plugin) => contextRecord(plugin).pluginId)
+    .filter((id): id is string => typeof id === 'string')
+    .slice(0, 5);
+  const recommendedCheckIds = checks
+    .filter((check) => contextRecord(check).recommended === true || contextRecord(check).required === true)
+    .map((check) => contextRecord(check).id)
+    .filter((id): id is string => typeof id === 'string')
+    .slice(0, 8);
+  const lastFailureCount = checks.filter((check) => {
+    const value = contextRecord(check);
+    return value.lastFailureAt || value.failed === true;
+  }).length;
+  const changedFileCount = typeof git.changedFileCount === 'number'
+    ? git.changedFileCount
+    : typeof git.diffStat === 'string'
+      ? git.diffStat.split(/\r?\n/).filter((line) => line.includes('|')).length
+      : git.dirty === true ? -1 : 0;
+  const compact: Record<string, unknown> = {
+    detailLevel: 'summary',
+    // Deprecated compatibility: legacy clients read this before focus.currentIssue.
+    ...(payload.currentIssueId !== undefined ? { currentIssueId: payload.currentIssueId } : {}),
+    repoId,
+    repository: {
+      repoId,
+      checkoutId: repository.activeCheckoutId ?? repository.checkoutId,
+      root: repository.canonicalRoot ?? repository.root ?? repository.localRoot,
+      branch: git.branch,
+      head: git.head,
+      dirty: git.dirty === true,
+      changedFileCount,
+    },
+    focus: {
+      ...(currentIssue.id ? {
+        currentIssue: {
+          id: currentIssue.id,
+          title: currentIssue.title,
+          status: currentIssue.status,
+          lifecycleStatus: currentIssue.lifecycleStatus,
+          updatedAt: currentIssue.updatedAt,
+          taskCount: currentIssueTasks.length,
+          tasks: currentIssueTasks.slice(0, 5).map(compactContextTask),
+        },
+      } : {}),
+      ...(payload.currentTask && typeof payload.currentTask === 'object' ? { currentTask: payload.currentTask } : {}),
+      activeRunCount: activeRuns.length,
+      ...(typeof payload.activeJobCount === 'number' ? { activeJobCount: payload.activeJobCount } : {}),
+    },
+    health: {
+      state: ready.state,
+      blockers: Array.isArray(readyHealth.activeBlockers) ? readyHealth.activeBlockers.slice(0, 5) : [],
+      warnings: Array.isArray(readyHealth.warnings) ? readyHealth.warnings.slice(0, 5) : [],
+    },
+    attention: attention.slice(0, 5).map(compactContextTask),
+    readyTasks: readyTasks.slice(0, 5).map(compactContextTask),
+    execution: {
+      recommendedMode: recommendedExecution.mode ?? recommendedExecution.recommendedMode ?? null,
+      executionPath: recommendedExecution.executionPath ?? recommendedExecution.path ?? null,
+      requiredChecks: recommendedCheckIds,
+    },
+    runtime: {
+      releaseId: runtime.releaseId ?? runtimeIdentity.releaseId,
+      runtimeCommit: runtime.runtimeCommit ?? runtimeIdentity.runtimeCommit,
+      controllerInstanceId: runtime.controllerInstanceId ?? runtimeIdentity.controllerInstanceId,
+      toolset: runtime.toolset ?? runtimeIdentity.toolset,
+    },
+    detailPointers: {
+      git: { tool: 'repository_git_status', arguments: { repo_id: repoId } },
+      taskLedger: { tool: 'controller_context', arguments: { repo_id: repoId, detail_level: 'detail' } },
+      plugin: { tool: 'list_plugins', arguments: { repo_id: repoId } },
+      check: { tool: 'controller_context', arguments: { repo_id: repoId, detail_level: 'detail' } },
+      history: { tool: 'controller_context', arguments: { repo_id: repoId, detail_level: 'detail' } },
+    },
+    git: {
+      branch: git.branch,
+      head: git.head,
+      dirty: git.dirty === true,
+      changedFileCount,
+    },
+    plugins: { enabledCount, disabledCount: Math.max(0, plugins.length - enabledCount), unhealthyCount, attentionPluginIds },
+    checks: { availableCount: checks.length, recommendedCheckIds, lastFailureCount },
+    taskLedger: {
+      schemaVersion: ledger.schemaVersion,
+      source: ledger.source,
+      generatedAt: ledger.generatedAt,
+      currentIssueId: ledger.currentIssueId,
+      counts: ledger.counts,
+      issueCount: ledger.issueCount,
+      archivedIssueCount: ledger.archivedIssueCount,
+      status: ledger.status,
+      contextContract: {
+        strategy: contextRecord(ledger.contextContract).strategy,
+        rawCodeRequiredForImplementation: true,
+      },
+    },
+    operationalPlan: {
+      schemaVersion: operationalPlan.schemaVersion,
+      source: operationalPlan.source,
+      generatedAt: operationalPlan.generatedAt,
+      status: operationalPlan.status,
+      completedCapabilities: (Array.isArray(operationalPlan.completedCapabilities) ? operationalPlan.completedCapabilities : []).slice(0, 5),
+      remainingDecisionPoints: (Array.isArray(operationalPlan.remainingDecisionPoints) ? operationalPlan.remainingDecisionPoints : []).slice(0, 5),
+      validationStrategy: operationalPlan.validationStrategy,
+    },
+    operationalView: {
+      health: (() => {
+        const health = contextRecord(operationalView.health);
+        return {
+          state: health.state,
+          activeBlockers: (Array.isArray(health.activeBlockers) ? health.activeBlockers : []).slice(0, 5),
+        };
+      })(),
+      attention: (() => {
+        const attentionView = contextRecord(operationalView.attention);
+        return {
+          pending: (Array.isArray(attentionView.pending) ? attentionView.pending : []).slice(0, 5).map((item: unknown) => {
+            const value = contextRecord(item);
+            return { attentionId: value.attentionId, title: value.title, severity: value.severity, summary: contextText(value.summary, 300) };
+          }),
+        };
+      })(),
+      history: (() => {
+        const history = contextRecord(operationalView.history);
+        return {
+          recentIncidents: (Array.isArray(history.recentIncidents) ? history.recentIncidents : []).slice(0, 3).map((item: unknown) => {
+            const value = contextRecord(item);
+            return { incidentId: value.incidentId, kind: value.kind, status: value.status, summary: contextText(value.summary, 300), occurredAt: value.occurredAt };
+          }),
+          truncated: history.truncated === true,
+        };
+      })(),
+    },
+    // Required keys for cache-completeness and legacy readers (deprecated).
+    runtimeStorage: payload.runtimeStorage,
+    runtimeProjectionState,
+    runtimeProjection: runtimeProjection.repoId || runtimeProjection.revision !== undefined
+      ? {
+        schemaVersion: runtimeProjection.schemaVersion,
+        repoId: runtimeProjection.repoId,
+        generatedAt: runtimeProjection.generatedAt,
+        revision: runtimeProjection.revision,
+        queueDepth: runtimeProjection.queueDepth,
+        runningWorkers: runtimeProjection.runningWorkers,
+        activeLeases: runtimeProjection.activeLeases,
+        currentAttention: (Array.isArray(runtimeProjection.currentAttention) ? runtimeProjection.currentAttention : []).slice(0, 5),
+      }
+      : runtimeProjection,
+    activeRuns: activeRuns.slice(0, 5).map((run) => {
+      const value = contextRecord(run);
+      return { runId: value.runId, issueId: value.issueId, taskId: value.taskId, status: value.status, agent: value.agent, provider: value.provider, progress: value.progress, lastHeartbeatAt: value.lastHeartbeatAt, error: contextText(value.error, 300) };
+    }),
+    localBridge: (() => {
+      const localBridge = contextRecord(payload.localBridge);
+      return { reconciliation: localBridge.reconciliation };
+    })(),
+    recommendedExecution: recommendedExecution,
+    ...(payload.repository ? { repositorySummary: repository } : {}),
+  };
+  if (ready.health || ready.ready !== undefined) {
+    compact.controllerReady = summarizeControllerReadyPayload(ready);
+  }
+  return compact;
 }
 
 function authenticatedFacadeControllerIdentity(
@@ -1410,7 +1750,18 @@ function expectedRevision(args: Record<string, unknown>, key = 'expected_revisio
   return typeof args[key] === 'number' ? Math.trunc(args[key] as number) : undefined;
 }
 
-const CONTROLLER_CONTEXT_PROJECTION_REFRESH_MS = 5_000;
+/**
+ * Projection freshness is event-driven (source identity, invalidation marker,
+ * materialized-view revision). The wall-clock TTL is only a bounded fallback
+ * for lost events, so it is intentionally coarse.
+ */
+const CONTROLLER_CONTEXT_PROJECTION_REFRESH_MS = Math.max(
+  5_000,
+  Number(process.env.REPO_HARNESS_CONTEXT_PROJECTION_REFRESH_MS ?? 300_000),
+);
+
+/** Git identity sampling TTL: one bounded subprocess burst, then cheap reads. */
+const GIT_IDENTITY_SAMPLE_TTL_MS = Math.max(1_000, Number(process.env.REPO_HARNESS_GIT_IDENTITY_SAMPLE_TTL_MS ?? 3_000));
 
 function ageMs(value: string | undefined): number | undefined {
   if (!value) return undefined;
@@ -2288,6 +2639,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             message: formatRuntimeSourceDriftMessage(runtimeSource),
           });
         }
+        const toolSurfaceComputed = exposure.expectedToolNames.length > 0 || exposure.actualToolNames.length > 0 || toolSurfaceReady;
         const readinessWithToolSurface = {
           ...readiness,
           ready: effectiveReady,
@@ -2295,8 +2647,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           reasons: readinessReasons,
           toolSurface: {
             ready: toolSurfaceReady,
-            expectedToolCount: exposure.expectedToolNames.length,
-            actualToolCount: exposure.actualToolNames.length,
+            // An uncomputed exposure is explicitly unknown, never a false 0/0.
+            expectedToolCount: toolSurfaceComputed ? exposure.expectedToolNames.length : null,
+            actualToolCount: toolSurfaceComputed ? exposure.actualToolNames.length : null,
+            toolSurfaceState: toolSurfaceComputed ? 'computed' : 'unknown',
             missingTools: exposure.missingToolNames,
             unexpectedTools: exposure.unexpectedToolNames,
             duplicateTools: exposure.duplicateToolNames,
@@ -3366,7 +3720,15 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         });
       }
       case 'controller_context': {
+        const responseStartedAt = performance.now();
+        const phaseTimingsMs: Record<string, number> = {};
+        const markPhase = (name: string, startedAt: number): void => {
+          phaseTimingsMs[name] = Math.round((performance.now() - startedAt) * 100) / 100;
+        };
+        const repositoryStartedAt = performance.now();
         const repository = selected(ctx, args);
+        markPhase('repositoryRouting', repositoryStartedAt);
+        const variant = args.detail_level === 'detail' ? 'detail' as const : 'summary' as const;
         const runtimeRoot = repositoryControllerRoot(ctx.controllerHome, repository.repoId);
         const runtimeStorage = {
           repoId: repository.repoId,
@@ -3377,116 +3739,33 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const runtimeSnapshot = readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId);
         const runtimeProjection = runtimeSnapshot.projection;
         const contextSourceRevision = String(runtimeProjection.metadata?.contentRevision ?? runtimeProjection.revision);
-        const cached = readControllerContextProjection(ctx.controllerHome, repository.repoId);
-        const projectionAgeMs = controllerContextProjectionAgeMs(cached);
-        const readiness = await controllerReadiness(ctx, repository);
-        const activeCheckout = repository.checkouts.find((checkout) => checkout.checkoutId === repository.activeCheckoutId);
-        const liveGit = gitSnapshot(repository.canonicalRoot);
-        const board = projectBoard(repository.canonicalRoot);
-        const taskLedger = buildControllerTaskLedgerProjection(repository.canonicalRoot);
-        const operationalPlan = buildControllerOperationalPlan(repository.canonicalRoot, taskLedger);
-        const currentIssueRecord = board.currentIssueId
-          ? board.issues.find((issue) => issue.id === board.currentIssueId)
-          : undefined;
-        const currentIssue = currentIssueRecord ? {
-          id: currentIssueRecord.id,
-          title: currentIssueRecord.title,
-          status: currentIssueRecord.status,
-          lifecycleStatus: currentIssueRecord.lifecycleStatus,
-          updatedAt: currentIssueRecord.updatedAt,
-          tasks: Array.isArray(currentIssueRecord.tasks)
-            ? currentIssueRecord.tasks.slice(0, 20).map((task) => {
-              const item = task as Record<string, unknown>;
-              return {
-                id: item.id,
-                title: item.title,
-                effectiveStatus: item.effectiveStatus,
-                latestRunStatus: item.latestRunStatus,
-              };
-            })
-            : [],
-        } : undefined;
-        const activeRuns = listActiveAgentJobSnapshots(repository.canonicalRoot, 20).map((run) => ({
-          runId: run.runId,
-          issueId: run.issueId,
-          taskId: run.taskId,
-          status: run.status,
-          agent: run.agent,
-          provider: run.provider,
-          executionMode: run.executionMode,
-          progress: run.progress,
-          lastHeartbeatAt: run.lastHeartbeatAt,
-          error: run.error,
-        }));
-        const localJobs = listLocalBridgeJobSnapshots(repository.canonicalRoot, 12);
-        const activeLocalJobs = localJobs.filter((job) => ['approved', 'running', 'dispatched'].includes(job.status)).length;
-        const recentLocalJobs = localJobs.map((job) => ({
-          jobId: job.jobId,
-          action: job.action,
-          status: job.status,
-          runId: job.runId,
-          issueId: job.issueId,
-          taskId: job.taskId,
-          createdAt: job.createdAt,
-          updatedAt: job.updatedAt,
-          finishedAt: job.finishedAt,
-          error: job.error?.slice(0, 300),
-        }));
-        const checks = listControllerChecks(repository.canonicalRoot).map((check) => ({
-          id: check.id,
-          description: check.description,
-          timeoutMs: check.timeoutMs,
-          source: check.source,
-        }));
-        const plugins = listAssistantPluginManifests(ctx.controllerHome, repository, {
-          preferStored: true,
-        }).map((plugin) => ({
-          pluginId: plugin.pluginId,
-          provider: plugin.provider,
-          enabled: plugin.enabled,
-          revision: plugin.revision,
-          lifecycle: plugin.lifecycle,
-          health: plugin.health,
-          actions: plugin.actions.map((action) => ({
-            actionId: action.actionId,
-            readOnly: action.readOnly,
-            risk: action.risk,
-            confirmation: action.confirmation,
-          })),
-        }));
-        const payload = {
-          ...(cached?.payload ?? {}),
-          git: liveGit.branch || liveGit.status || liveGit.diffStat ? liveGit : {
-            branch: activeCheckout?.branch ?? null,
-            status: 'No live repository scan is available; showing bounded runtime state only.',
-            diffStat: '',
-            dirty: false,
-          },
-          currentIssueId: board.currentIssueId,
-          currentIssue,
-          taskLedger,
-          taskLedgerStatus: taskLedger.status,
-          operationalPlan,
-          readyTasks: board.readyTasks.slice(0, 20),
-          activeRuns,
-          localBridge: {
-            reconciliation: { scanned: localJobs.length, active: activeLocalJobs, terminalized: 0 },
-            recentJobs: recentLocalJobs,
-          },
-          plugins,
-          checks,
+        // Git identity is sampled at most once per TTL per repository; hot reads
+        // reuse the sampled HEAD/fingerprint instead of spawning subprocesses.
+        const gitIdentityStartedAt = performance.now();
+        const gitIdentity = cachedGitIdentity(repository.canonicalRoot);
+        markPhase('gitIdentity', gitIdentityStartedAt);
+        const invalidationStartedAt = performance.now();
+        const contextInvalidation = readControllerContextProjectionInvalidation(repository.canonicalRoot);
+        markPhase('invalidation', invalidationStartedAt);
+        const sourceIdentity = {
           repoId: repository.repoId,
-          repository: repositorySummary(repository),
-          runtimeStorage,
-          recommendedExecution: controllerContextAssessment(args),
-          runtimeProjection,
-          runtimeProjectionState: {
-            stale: runtimeSnapshot.stale,
-            persisted: runtimeSnapshot.persisted,
-          },
-          operationalView: readiness.operationalView,
-          controllerReady: readiness,
+          checkoutId: repository.activeCheckoutId,
+          head: gitIdentity.head,
+          workingTreeFingerprint: gitIdentity.workingTreeFingerprint,
+          runtimeGeneration: runtimeProjection.metadata?.producerGeneration,
+          sourceRevision: contextSourceRevision,
+          variant,
+          toolset: ctx.toolset,
+          profile: ctx.policy.profile,
         };
+        markPhase('identity', repositoryStartedAt);
+        const cacheStartedAt = performance.now();
+        const cached = readControllerContextProjection(ctx.controllerHome, repository.repoId, {
+          sourceIdentity,
+          allowLegacySummary: variant === 'summary',
+        });
+        const projectionAgeMs = controllerContextProjectionAgeMs(cached);
+        markPhase('cacheRead', cacheStartedAt);
         const cachedPayload = cached?.payload;
         const cachedProjectionIncomplete = !cachedPayload
           || typeof cachedPayload !== 'object'
@@ -3494,38 +3773,240 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           || !('runtimeProjectionState' in cachedPayload)
           || !('operationalView' in cachedPayload)
           || !('controllerReady' in cachedPayload);
-        let projectionRecord = cached;
-        if (
-          !cached
-          || cachedProjectionIncomplete
+        const invalidatedAfterBuild = Boolean(
+          cached
+          && contextInvalidation
+          && cached.invalidationNonce !== contextInvalidation.nonce,
+        );
+        // The materialized-view stale flag is reported, not acted on: a view
+        // that is stale-but-unchanged (daemon down) would otherwise force an
+        // endless rebuild of an already-current context projection. Context
+        // freshness tracks its own source identity, the view revision, and the
+        // invalidation marker.
+        const cacheStale = controllerContextProjectionNeedsRefresh(cached, contextSourceRevision, sourceIdentity)
+          || invalidatedAfterBuild
           || !Number.isFinite(projectionAgeMs)
-          || projectionAgeMs >= CONTROLLER_CONTEXT_PROJECTION_REFRESH_MS
-        ) {
-          try {
-            projectionRecord = writeControllerContextProjection(ctx.controllerHome, repository.repoId, payload, {
-              sourceRevision: contextSourceRevision,
-              contentFingerprint: runtimeProjection.metadata?.contentFingerprint,
-            });
-          } catch {
-            projectionRecord = cached;
-          }
+          || projectionAgeMs >= CONTROLLER_CONTEXT_PROJECTION_REFRESH_MS;
+        const projectionPayload = (
+          projectionRecord: typeof cached,
+          stale: boolean,
+          refreshJobId?: string,
+        ): Record<string, unknown> => {
+          const ageMs = controllerContextProjectionAgeMs(projectionRecord);
+          return {
+            contextProjection: {
+              variant,
+              generatedAt: projectionRecord?.generatedAt,
+              ageMs: Number.isFinite(ageMs) ? ageMs : undefined,
+              stale,
+              healthImpact: false,
+              sourceIdentity: projectionRecord?.sourceIdentity ?? sourceIdentity,
+              projectionGeneration: projectionRecord?.projectionGeneration ?? controllerContextProjectionGeneration(sourceIdentity),
+              refreshState: projectionRecord?.refreshState ?? 'idle',
+              lastRefreshError: projectionRecord?.lastRefreshError,
+              nextAttemptAt: projectionRecord?.nextAttemptAt,
+              sourceRevision: projectionRecord?.sourceRevision ?? contextSourceRevision,
+              strategy: 'event-driven-swr',
+              refreshJobId,
+              readOnly: true,
+              nonBlocking: true,
+            },
+          };
+        };
+
+        const responseOptions = {
+          phaseTimingsMs,
+          transport: 'runtime-local',
+          sessionId: ctx.sessionId,
+          routing: { repoId: repository.repoId, checkoutId: repository.activeCheckoutId },
+        };
+        const respondWith = (
+          payload: Record<string, unknown>,
+          projectionRecord: typeof cached,
+          input: { cacheHit: boolean; stale: boolean; refreshJobId?: string },
+        ): CallToolResult => {
+          const response = withRuntimeResponseMeta({
+            ...payload,
+            ...projectionPayload(projectionRecord, input.stale, input.refreshJobId),
+          }, responseStartedAt, { ...responseOptions, cacheHit: input.cacheHit, stale: input.stale, refreshJobId: input.refreshJobId });
+          const responseBytes = Buffer.byteLength(JSON.stringify(response), 'utf8');
+          recordControllerContextRead({
+            durationMs: performance.now() - responseStartedAt,
+            cacheHit: input.cacheHit,
+            stale: input.stale,
+            responseBytes,
+            phaseDurationsMs: phaseTimingsMs,
+          });
+          return result(response);
+        };
+        if (variant === 'summary' && cached && !cachedProjectionIncomplete && !cacheStale) {
+          return respondWith(compactControllerContextSummaryPayload(cached.payload), cached, { cacheHit: true, stale: false });
         }
-        const refreshedProjectionAgeMs = controllerContextProjectionAgeMs(projectionRecord);
-        return result({
-          ...payload,
-          contextProjection: {
-            generatedAt: projectionRecord?.generatedAt,
-            ageMs: Number.isFinite(refreshedProjectionAgeMs) ? refreshedProjectionAgeMs : undefined,
-            stale: runtimeSnapshot.stale || controllerContextProjectionNeedsRefresh(projectionRecord, contextSourceRevision),
-            healthImpact: false,
-            sourceRevision: projectionRecord?.sourceRevision,
-            strategy: 'event-driven',
-            refreshJobId: undefined,
-            readOnly: true,
-            nonBlocking: true,
-          },
+
+        const buildStartedAt = performance.now();
+        const buildPayload = async (): Promise<Record<string, unknown>> => {
+          const readiness = await controllerReadiness(ctx, repository);
+          const activeCheckout = repository.checkouts.find((checkout) => checkout.checkoutId === repository.activeCheckoutId);
+          const liveGit = gitSnapshot(repository.canonicalRoot);
+          const board = projectBoard(repository.canonicalRoot);
+          const taskLedger = buildControllerTaskLedgerProjection(repository.canonicalRoot, board);
+          const operationalPlan = buildControllerOperationalPlan(repository.canonicalRoot, taskLedger);
+          const currentIssueRecord = board.currentIssueId
+            ? board.issues.find((issue) => issue.id === board.currentIssueId)
+            : undefined;
+          const currentIssue = currentIssueRecord ? {
+            id: currentIssueRecord.id,
+            title: currentIssueRecord.title,
+            status: currentIssueRecord.status,
+            lifecycleStatus: currentIssueRecord.lifecycleStatus,
+            updatedAt: currentIssueRecord.updatedAt,
+            tasks: Array.isArray(currentIssueRecord.tasks)
+              ? currentIssueRecord.tasks.slice(0, 20).map((task) => {
+                const item = task as Record<string, unknown>;
+                return {
+                  id: item.id,
+                  title: item.title,
+                  effectiveStatus: item.effectiveStatus,
+                  latestRunStatus: item.latestRunStatus,
+                };
+              })
+              : [],
+          } : undefined;
+          const activeRuns = listActiveAgentJobSnapshots(repository.canonicalRoot, 20).map((run) => ({
+            runId: run.runId,
+            issueId: run.issueId,
+            taskId: run.taskId,
+            status: run.status,
+            agent: run.agent,
+            provider: run.provider,
+            executionMode: run.executionMode,
+            progress: run.progress,
+            lastHeartbeatAt: run.lastHeartbeatAt,
+            error: run.error,
+          }));
+          const localJobs = listLocalBridgeJobSnapshots(repository.canonicalRoot, 12);
+          const activeLocalJobs = localJobs.filter((job) => ['approved', 'running', 'dispatched'].includes(job.status)).length;
+          const recentLocalJobs = localJobs.map((job) => ({
+            jobId: job.jobId,
+            action: job.action,
+            status: job.status,
+            runId: job.runId,
+            issueId: job.issueId,
+            taskId: job.taskId,
+            createdAt: job.createdAt,
+            updatedAt: job.updatedAt,
+            finishedAt: job.finishedAt,
+            error: job.error?.slice(0, 300),
+          }));
+          const checks = listControllerChecks(repository.canonicalRoot).map((check) => {
+            const evidence = readLatestControllerCheckEvidence(repository.canonicalRoot, check.id);
+            return {
+              id: check.id,
+              description: check.description,
+              timeoutMs: check.timeoutMs,
+              source: check.source,
+              ...(evidence ? { lastFailureAt: evidence.ok ? undefined : evidence.executedAt, failed: !evidence.ok } : {}),
+            };
+          });
+          const plugins = listAssistantPluginManifests(ctx.controllerHome, repository, {
+            preferStored: true,
+          }).map((plugin) => ({
+            pluginId: plugin.pluginId,
+            provider: plugin.provider,
+            enabled: plugin.enabled,
+            revision: plugin.revision,
+            lifecycle: plugin.lifecycle,
+            health: plugin.health,
+            actionCount: plugin.actions.length,
+            actions: plugin.actions.map((action) => ({
+              actionId: action.actionId,
+              readOnly: action.readOnly,
+              risk: action.risk,
+              confirmation: action.confirmation,
+            })),
+          }));
+          return {
+            git: liveGit.branch || liveGit.status || liveGit.diffStat ? liveGit : {
+              branch: activeCheckout?.branch ?? null,
+              status: 'No live repository scan is available; showing bounded runtime state only.',
+              diffStat: '',
+              dirty: false,
+            },
+            currentIssueId: board.currentIssueId,
+            currentIssue,
+            taskLedger,
+            taskLedgerStatus: taskLedger.status,
+            operationalPlan,
+            readyTasks: board.readyTasks.slice(0, 20),
+            activeRuns,
+            activeJobCount: activeLocalJobs,
+            localBridge: {
+              reconciliation: { scanned: localJobs.length, active: activeLocalJobs, terminalized: 0 },
+              recentJobs: recentLocalJobs,
+            },
+            plugins,
+            checks,
+            repoId: repository.repoId,
+            repository: repositorySummary(repository),
+            runtimeStorage,
+            recommendedExecution: controllerContextAssessment(args),
+            runtimeProjection,
+            runtimeProjectionState: {
+              stale: runtimeSnapshot.stale,
+              persisted: runtimeSnapshot.persisted,
+            },
+            operationalView: readiness.operationalView,
+            controllerReady: readiness,
+            runtimeIdentity: runtimeIdentitySnapshot(ctx),
+          };
+        };
+
+        if (variant === 'summary' && cached && !cachedProjectionIncomplete) {
+          const refresh = queueControllerContextProjectionRefresh(ctx.controllerHome, repository.repoId, {
+            variant,
+            sourceIdentity,
+            projectionGeneration: controllerContextProjectionGeneration(sourceIdentity),
+            invalidationNonce: contextInvalidation?.nonce,
+            build: buildPayload,
+          });
+          markPhase('refreshQueue', buildStartedAt);
+          const refreshing = readControllerContextProjection(ctx.controllerHome, repository.repoId, {
+            sourceIdentity,
+            allowLegacySummary: false,
+          });
+          return respondWith(compactControllerContextSummaryPayload(cached.payload), refreshing ?? cached, {
+            cacheHit: true,
+            stale: true,
+            refreshJobId: refresh.refreshJobId,
+          });
+        }
+
+        const payload = await buildPayload();
+        const persistedPayload = variant === 'summary'
+          ? compactControllerContextSummaryPayload(payload)
+          : payload;
+        markPhase('build', buildStartedAt);
+        let projectionRecord: typeof cached;
+        try {
+          projectionRecord = writeControllerContextProjection(ctx.controllerHome, repository.repoId, persistedPayload, {
+            sourceRevision: contextSourceRevision,
+            contentFingerprint: runtimeProjection.metadata?.contentFingerprint,
+            invalidationNonce: contextInvalidation?.nonce,
+            sourceIdentity,
+            variant,
+            projectionGeneration: controllerContextProjectionGeneration(sourceIdentity),
+            refreshState: 'idle',
+          });
+        } catch {
+          projectionRecord = cached;
+        }
+        markPhase('serialize', performance.now());
+        return respondWith(persistedPayload, projectionRecord, {
+          cacheHit: false,
+          stale: controllerContextProjectionNeedsRefresh(projectionRecord, contextSourceRevision, sourceIdentity),
         });
       }
+
       case 'get_job': {
         const jobId = String(args.job_id ?? '').trim();
         let job = typeof args.repo_id === 'string' ? getExecutionJob(ctx.controllerHome, args.repo_id, jobId) : findExecutionJob(ctx.controllerHome, jobId);
@@ -3844,6 +4325,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           },
           access: exposure.access,
           registeredRepositories: registered.length,
+          runtimeIdentity: runtimeIdentitySnapshot(ctx),
           ...(detail && repository
             ? { repository: summarizeRuntimeProjectionForReadiness(readiness.projection ?? readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId).projection) }
             : {}),
@@ -3886,7 +4368,18 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           localControllerPid: runtime?.localController?.pid ?? inferredLocalBridge?.pid,
           localControllerEndpoint: runtime?.localController?.endpoint ?? inferredLocalBridge?.endpoint,
         });
-        return result({ ...diagnostics });
+        return result({
+          ...diagnostics,
+          contextPerformance: controllerContextPerformanceSnapshot(),
+          gitPerformance: gitSnapshotPerformanceSnapshot(),
+          gitIdentity: gitIdentityPerformanceSnapshot(),
+          runtimeIdentity: runtimeIdentitySnapshot(ctx),
+          resourceCost: {
+            processRuntime: processRuntimeResourceDiagnostics(),
+            scheduler: readSchedulerHealthSnapshot(ctx.controllerHome),
+            sessionCache: sessionCacheGlobalDiagnostics(),
+          },
+        });
       }
       case 'capability_recovery_probe': {
         const repository = selected(ctx, args);

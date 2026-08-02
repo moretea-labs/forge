@@ -2,7 +2,7 @@
 id: "ISS-20260720-66E25D"
 kind: "feature"
 status: "in_progress"
-updated_at: "2026-08-01T03:40:36.825Z"
+updated_at: "2026-08-01T10:07:06.971Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -104,6 +104,15 @@ Converge iOS physical-device automation into a fast, stable and provider-neutral
 - Allowed paths: `src/cli/mcp/legacy-tool-service.ts`, `tests/cli/mcp-controller.test.ts`, `docs/architecture/current/human-interaction-plane.md`, `docs/architecture/ios-semantic-automation-provider-v2.md`
 - Checks: `package:check:type`, `package:check:mcp-compatibility`, `package:check:controller-v8`
 - Execution hint: selected at runtime
+
+### T8 — Close live JD correctness and warm-path latency regressions
+
+- Status: `ready`
+- Objective: Use the 2026-08-01 JD real-device transcript as primary evidence. In an isolated checkout, reproduce and fix the remaining Repo Harness defects: compile the JD semantic adapter as focus/navigate -> resolve real editable control -> fill -> submit instead of filling the home-page proxy; preserve healthy sessions for selector/ref/type/semantic failures and destroy only classified transport/runner/unknown-outcome failures; make page-transition diffs and ref generations safe so a contradictory zero-diff cannot authorize stale refs; carry the resolved Apple signing context through every lazy Runner start in an interaction; and replace repeated full plugin manifest/action-schema payloads on normal plugin_action_execute responses with a bounded compact receipt plus an explicit detail path. Then add a warm multi-step execution primitive or adapter batch that performs known semantic steps without returning to the model after every action, with phase timings and bounded evidence. Keep public action IDs and sensitive-action policy unchanged.
+- Depends on: none
+- Allowed paths: `src/runtime/plugins/**`, `src/runtime/gateway/**`, `src/cli/mcp/**`, `tests/runtime/**`, `tests/cli/**`, `tests/fixtures/**`, `scripts/**`, `docs/architecture/**`, `docs/operations/**`
+- Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:mcp-compatibility`, `package:check:controller-v8`
+- Execution hint: agent / codex
 
 ## Related Artifacts
 

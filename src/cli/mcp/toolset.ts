@@ -11,11 +11,19 @@ import { repositoryToolDefinitions } from './repository-tools';
 import { runtimeToolDefinitions } from '../../runtime/gateway/mcp/runtime-tools';
 import { executionToolDefinitions } from '../../runtime/gateway/mcp/execution-tools';
 import { processToolDefinitions } from '../../runtime/gateway/mcp/process-tools';
-import { DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES, STABLE_CONTROLLER_TOOL_NAMES } from './toolset-names';
-export { BOOTSTRAP_CONTROLLER_TOOL_NAMES, DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES, STABLE_CONTROLLER_TOOL_NAMES } from './toolset-names';
+import { CORE_CONTROLLER_TOOL_NAMES, DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES, STABLE_CONTROLLER_TOOL_NAMES } from './toolset-names';
+export { BOOTSTRAP_CONTROLLER_TOOL_NAMES, CORE_CONTROLLER_TOOL_NAMES, DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES, STABLE_CONTROLLER_TOOL_NAMES } from './toolset-names';
 import type { McpToolset } from './types';
 
 export type ToolExposureClass = 'facade' | 'advanced' | 'internal' | 'compatibility';
+export type ControllerToolProfile = 'core' | 'advanced' | 'full';
+
+export interface ControllerToolInventoryEntry {
+  name: string;
+  profile: ControllerToolProfile;
+  capability: string;
+  exposedVia: 'facade' | 'core' | 'advanced' | 'full';
+}
 
 /**
  * One authoritative snapshot of the MCP schema actually served to a client.
@@ -25,6 +33,7 @@ export type ToolExposureClass = 'facade' | 'advanced' | 'internal' | 'compatibil
 export interface ControllerExposureSnapshot {
   access: ControllerAccessState;
   toolset: McpToolset;
+  profile: ControllerToolProfile;
   definitions: McpToolDefinition[];
   toolNames: string[];
   expectedToolNames: string[];
@@ -33,19 +42,18 @@ export interface ControllerExposureSnapshot {
   unexpectedToolNames: string[];
   duplicateToolNames: string[];
   fingerprint: string;
+  inventory: ControllerToolInventoryEntry[];
   schemaStableAcrossAccessModes: true;
   ready: boolean;
 }
 
 /**
- * Historical profile name retained for CLI/config compatibility. The stable
- * controller now serves the complete registered schema for core, advanced,
- * and full so a stale access setting can never hide repair/edit tools.
+ * Advanced retains every stable typed capability. Full remains the exhaustive
+ * compatibility surface. Core is intentionally small and model-facing.
  */
 
-/** Historical names retained for compatibility. Both map to the stable surface. */
+/** Historical Advanced name retained for compatibility. */
 export const ADVANCED_CONTROLLER_TOOL_NAMES = STABLE_CONTROLLER_TOOL_NAMES;
-export const CORE_CONTROLLER_TOOL_NAMES = STABLE_CONTROLLER_TOOL_NAMES;
 
 const DEFAULT_CONTROLLER_TOOL_SET = new Set<string>(STABLE_CONTROLLER_TOOL_NAMES);
 
@@ -62,7 +70,16 @@ interface StaticControllerExposureSnapshot {
   ready: boolean;
 }
 
+const STATIC_EXPOSURE_CACHE_MAX_ENTRIES = 64;
 const staticControllerExposureCache = new Map<string, StaticControllerExposureSnapshot>();
+
+function pruneStaticExposureCache(): void {
+  while (staticControllerExposureCache.size > STATIC_EXPOSURE_CACHE_MAX_ENTRIES) {
+    const oldest = staticControllerExposureCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    staticControllerExposureCache.delete(oldest);
+  }
+}
 
 export function normalizeMcpToolset(value: unknown): McpToolset {
   if (value === 'full' || value === 'advanced' || value === 'core') return value;
@@ -70,15 +87,15 @@ export function normalizeMcpToolset(value: unknown): McpToolset {
 }
 
 /**
- * null means expose every registered definition. All controller profile labels
- * now resolve to that stable schema; labels remain only for compatibility and
- * diagnostics, not authorization.
+ * null means expose every registered definition. Profile membership only
+ * changes schema discovery; authorization remains an independent policy.
  */
 export function controllerToolNamesForToolset(
   toolset: McpToolset,
   _ctx?: MultiRepositoryMcpToolContext,
 ): readonly string[] | null {
-  return toolset === 'full' ? null : STABLE_CONTROLLER_TOOL_NAMES;
+  if (toolset === 'full') return null;
+  return toolset === 'core' ? CORE_CONTROLLER_TOOL_NAMES : STABLE_CONTROLLER_TOOL_NAMES;
 }
 
 export function resolveControllerAccessStateForContext(
@@ -183,7 +200,41 @@ function staticControllerExposureSnapshot(
   if (cached) return cached;
   const built = buildStaticControllerExposureSnapshot(ctx);
   staticControllerExposureCache.set(key, built);
+  pruneStaticExposureCache();
   return built;
+}
+
+function capabilityForToolName(name: string): string {
+  if (name.startsWith('rh_')) return 'facade';
+  if (name.startsWith('git_') || name.startsWith('repository_git_')) return 'git';
+  if (name.includes('campaign')) return 'campaign';
+  if (/(^|_)(issue|task|project|worklog)(_|$)/.test(name)) return 'issue-task';
+  if (name.startsWith('repository_') || name.startsWith('search_') || name.startsWith('read_')) return 'repository';
+  if (name.startsWith('ios_')) return 'ios';
+  if (name.startsWith('web_')) return 'browser';
+  if (name.includes('plugin')) return 'plugin';
+  if (name.startsWith('result_') || name.includes('artifact') || name.includes('evidence')) return 'evidence';
+  if (name.includes('controller_')) return 'controller';
+  if (name.startsWith('process_') || name.startsWith('schedule_') || name.startsWith('runtime_') || name.startsWith('maintenance_')) return 'runtime-maintenance';
+  if (name.startsWith('work_') || name.startsWith('session_')) return 'workflow';
+  return 'compatibility';
+}
+
+function profileForToolset(toolset: McpToolset): ControllerToolProfile {
+  return toolset === 'full' ? 'full' : toolset === 'core' ? 'core' : 'advanced';
+}
+
+export function controllerToolInventory(
+  toolNames: readonly string[],
+  toolset: McpToolset,
+): ControllerToolInventoryEntry[] {
+  const profile = profileForToolset(toolset);
+  return toolNames.map((name) => ({
+    name,
+    profile,
+    capability: capabilityForToolName(name),
+    exposedVia: name.startsWith('rh_') ? 'facade' : profile,
+  }));
 }
 
 export function clearControllerExposureCacheForTest(): void {
@@ -201,6 +252,8 @@ export function controllerExposureSnapshot(ctx: MultiRepositoryMcpToolContext): 
   return {
     access: resolveControllerAccessStateForContext(ctx),
     toolset: ctx.toolset,
+    profile: profileForToolset(ctx.toolset),
+    inventory: controllerToolInventory(staticSnapshot.actualToolNames, ctx.toolset),
     ...staticSnapshot,
   };
 }
