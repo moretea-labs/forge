@@ -39,10 +39,21 @@ export interface CachedGitIdentity {
   workingTreeFingerprint?: string;
 }
 
-/** Git identity sampling TTL: one bounded subprocess burst, then cheap reads. */
+export interface GitIdentityPerformanceSnapshot {
+  cacheHits: number;
+  samples: number;
+  subprocesses: number;
+}
+
+/** Git identity sampling TTL: one bounded subprocess, then cheap reads. */
 const GIT_IDENTITY_SAMPLE_TTL_MS = Math.max(1_000, Number(process.env.REPO_HARNESS_GIT_IDENTITY_SAMPLE_TTL_MS ?? 3_000));
 const GIT_IDENTITY_CACHE_MAX_ENTRIES = 128;
 const gitIdentityCache = new Map<string, CachedGitIdentity>();
+const gitIdentityPerformance: GitIdentityPerformanceSnapshot = {
+  cacheHits: 0,
+  samples: 0,
+  subprocesses: 0,
+};
 
 function pruneGitIdentityCache(): void {
   while (gitIdentityCache.size > GIT_IDENTITY_CACHE_MAX_ENTRIES) {
@@ -52,19 +63,36 @@ function pruneGitIdentityCache(): void {
   }
 }
 
-function gitText(repoRoot: string, args: string[]): string | null {
-  const result = runProcess('git', args, { cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 4 * 1024 * 1024 });
-  return result.ok ? result.stdout.trim() || null : null;
-}
-
 function sampleGitIdentity(repoRoot: string): Omit<CachedGitIdentity, 'sampledAt'> {
-  // Sample HEAD/branch/fingerprint from the same moment so the identity is
-  // internally consistent. The full gitSnapshot (status + diff stat) is only
-  // needed for payload builds and stays behind its own cache.
+  // Porcelain v2 branch headers carry HEAD and branch identity together with
+  // the worktree status. One Git process therefore replaces the previous
+  // rev-parse + branch + status subprocess burst while preserving a coherent
+  // point-in-time fingerprint.
+  gitIdentityPerformance.samples += 1;
+  gitIdentityPerformance.subprocesses += 1;
   try {
-    const head = gitText(repoRoot, ['rev-parse', 'HEAD']);
-    const branch = gitText(repoRoot, ['branch', '--show-current']);
-    const status = gitText(repoRoot, ['status', '--porcelain=v1', '--untracked-files=all']) ?? '';
+    const result = runProcess('git', ['status', '--porcelain=v2', '--branch', '--untracked-files=all'], {
+      cwd: repoRoot,
+      timeoutMs: 10_000,
+      maxOutputBytes: 4 * 1024 * 1024,
+    });
+    if (!result.ok) return { head: null, branch: null };
+
+    let head: string | null = null;
+    let branch: string | null = null;
+    const statusLines: string[] = [];
+    for (const line of result.stdout.split(/\r?\n/)) {
+      if (line.startsWith('# branch.oid ')) {
+        const value = line.slice('# branch.oid '.length).trim();
+        head = value && value !== '(initial)' ? value : null;
+      } else if (line.startsWith('# branch.head ')) {
+        const value = line.slice('# branch.head '.length).trim();
+        branch = value && value !== '(detached)' && value !== '(unknown)' ? value : null;
+      } else if (line && !line.startsWith('# ')) {
+        statusLines.push(line);
+      }
+    }
+    const status = statusLines.join('\n');
     const workingTreeFingerprint = createHash('sha256')
       .update(`${head ?? ''}\n${branch ?? ''}\n${status}`)
       .digest('hex')
@@ -85,7 +113,10 @@ function sampleGitIdentity(repoRoot: string): Omit<CachedGitIdentity, 'sampledAt
 export function cachedGitIdentity(repoRoot: string): CachedGitIdentity {
   const now = Date.now();
   const existing = gitIdentityCache.get(repoRoot);
-  if (existing && now - existing.sampledAt < GIT_IDENTITY_SAMPLE_TTL_MS) return existing;
+  if (existing && now - existing.sampledAt < GIT_IDENTITY_SAMPLE_TTL_MS) {
+    gitIdentityPerformance.cacheHits += 1;
+    return existing;
+  }
   const sampled = sampleGitIdentity(repoRoot);
   const entry: CachedGitIdentity = { ...sampled, sampledAt: now };
   gitIdentityCache.set(repoRoot, entry);
@@ -95,16 +126,13 @@ export function cachedGitIdentity(repoRoot: string): CachedGitIdentity {
 
 export function clearGitIdentityCacheForTest(): void {
   gitIdentityCache.clear();
+  gitIdentityPerformance.cacheHits = 0;
+  gitIdentityPerformance.samples = 0;
+  gitIdentityPerformance.subprocesses = 0;
 }
 
-export function gitIdentityPerformanceSnapshot(): { cacheHits: number; samples: number } {
-  let cacheHits = 0;
-  let samples = 0;
-  for (const entry of gitIdentityCache.values()) {
-    if (Date.now() - entry.sampledAt < GIT_IDENTITY_SAMPLE_TTL_MS) cacheHits += 1;
-    else samples += 1;
-  }
-  return { cacheHits, samples };
+export function gitIdentityPerformanceSnapshot(): GitIdentityPerformanceSnapshot {
+  return { ...gitIdentityPerformance };
 }
 
 function pruneGitSnapshotCache(): void {
@@ -416,23 +444,16 @@ export function gitSnapshot(repoRoot: string, session?: RepositoryReadSession): 
     return cached.value;
   }
   gitSnapshotPerformance.refreshes += 1;
-  gitSnapshotPerformance.subprocesses += 4;
-  const branchResult = runProcess('git', ['branch', '--show-current'], {
-    cwd: repoRoot,
-    timeoutMs: 10_000,
-    maxOutputBytes: 32 * 1024,
-  });
-  const headResult = runProcess('git', ['rev-parse', 'HEAD'], {
-    cwd: repoRoot,
-    timeoutMs: 10_000,
-    maxOutputBytes: 32 * 1024,
-  });
+  // Reuse the identity sampled by controller_context (or sample it once here)
+  // and keep only the two outputs unique to the full snapshot.
+  const identity = cachedGitIdentity(repoRoot);
+  gitSnapshotPerformance.subprocesses += 2;
   const statusResult = runProcess('git', ['status', '--short', '--branch'], { cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 64 * 1024 });
   const diffResult = runProcess('git', ['diff', '--stat'], { cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 64 * 1024 });
   const status = statusResult.ok ? statusResult.stdout.trim() : statusResult.error || statusResult.stderr.trim();
   const value: GitSnapshotResult = {
-    branch: branchResult.ok ? branchResult.stdout.trim() || null : null,
-    head: headResult.ok ? headResult.stdout.trim() || null : null,
+    branch: identity.branch,
+    head: identity.head,
     status,
     diffStat: diffResult.ok ? diffResult.stdout.trim() : diffResult.error || diffResult.stderr.trim(),
     dirty: status.split(/\r?\n/).some((line) => line.trim() && !line.startsWith("##")),

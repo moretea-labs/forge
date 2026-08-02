@@ -13,11 +13,20 @@ import { spawnSync } from 'child_process';
 import { getMcpPolicy } from '../src/cli/mcp/policy';
 import { createMcpToolContext } from '../src/cli/mcp/multi-repository';
 import { exposedControllerToolDefinitions } from '../src/cli/mcp/toolset';
+import {
+  cachedGitIdentity,
+  clearGitIdentityCacheForTest,
+  clearGitSnapshotCacheForTest,
+  gitIdentityPerformanceSnapshot,
+  gitSnapshot,
+  gitSnapshotPerformanceSnapshot,
+} from '../src/cli/repository/inspector';
 import { registerRepository } from '../src/cli/repositories/registry';
 import { callRuntimeTool } from '../src/runtime/gateway/mcp/runtime-tools';
 import type { MultiRepositoryMcpToolContext } from '../src/cli/mcp/multi-repository';
 
 const HOT_READS = 30;
+const COLD_GIT_READS = 20;
 const SCALES = [0, 25, 100, 200];
 
 function gitInit(repoRoot: string): void {
@@ -27,6 +36,17 @@ function gitInit(repoRoot: string): void {
   writeFileSync(join(repoRoot, 'README.md'), 'controller hotpath benchmark\n');
   spawnSync('git', ['add', 'README.md'], { cwd: repoRoot, stdio: 'ignore' });
   spawnSync('git', ['commit', '-m', 'benchmark fixture'], { cwd: repoRoot, stdio: 'ignore' });
+}
+
+function percentile(values: number[], quantile: number): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * quantile))] ?? 0;
+}
+
+function timed<T>(fn: () => T): { value: T; ms: number } {
+  const startedAt = performance.now();
+  const value = fn();
+  return { value, ms: Math.round((performance.now() - startedAt) * 100) / 100 };
 }
 
 function writeIssueFixture(repoRoot: string, index: number): void {
@@ -117,9 +137,48 @@ async function benchmarkScale(scale: number): Promise<Record<string, unknown>> {
   }
 }
 
+function benchmarkGitSampling(): Record<string, unknown> {
+  const workspace = mkdtempSync(join(tmpdir(), 'repo-harness-git-sampling-'));
+  try {
+    gitInit(workspace);
+    const coldSamples: number[] = [];
+    for (let index = 0; index < COLD_GIT_READS; index += 1) {
+      clearGitIdentityCacheForTest();
+      coldSamples.push(timed(() => cachedGitIdentity(workspace)).ms);
+    }
+
+    clearGitIdentityCacheForTest();
+    cachedGitIdentity(workspace);
+    const warmSamples: number[] = [];
+    for (let index = 0; index < HOT_READS; index += 1) {
+      warmSamples.push(timed(() => cachedGitIdentity(workspace)).ms);
+    }
+    const identityCounters = gitIdentityPerformanceSnapshot();
+
+    clearGitIdentityCacheForTest();
+    clearGitSnapshotCacheForTest();
+    const snapshot = timed(() => gitSnapshot(workspace));
+    return {
+      coldReads: COLD_GIT_READS,
+      coldP50Ms: percentile(coldSamples, 0.5),
+      coldP95Ms: percentile(coldSamples, 0.95),
+      warmReads: HOT_READS,
+      warmP50Ms: percentile(warmSamples, 0.5),
+      warmP95Ms: percentile(warmSamples, 0.95),
+      identityCounters,
+      snapshotMs: snapshot.ms,
+      snapshotCounters: gitSnapshotPerformanceSnapshot(),
+      snapshotIdentityCounters: gitIdentityPerformanceSnapshot(),
+    };
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+}
+
 async function main(): Promise<void> {
   const scaleResults = [];
   for (const scale of SCALES) scaleResults.push(await benchmarkScale(scale));
+  const gitSampling = benchmarkGitSampling();
   const profileRepo = mkdtempSync(join(tmpdir(), 'repo-harness-tool-profile-'));
   try {
     const controllerHome = join(profileRepo, 'controller-home');
@@ -135,11 +194,14 @@ async function main(): Promise<void> {
       benchmark: 'controller-hotpath',
       hotReads: HOT_READS,
       scales: scaleResults,
+      gitSampling,
       toolsetCounts: counts,
       acceptance: {
         warmP95Ms: 100,
         maxSummaryBytes: 32 * 1024,
         coreMaxTools: 20,
+        identitySubprocessesPerSample: 1,
+        snapshotUniqueSubprocesses: 2,
       },
     }, null, 2));
   } finally {
