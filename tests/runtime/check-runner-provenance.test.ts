@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   listControllerChecks,
   readLatestControllerCheckEvidence,
+  resolveSyncSupervisorBridgeRuntime,
   runControllerCheck,
   runControllerCheckAsync,
   snapshotControllerCheck,
@@ -156,6 +157,38 @@ describe('controller check provenance and failure classification', () => {
         if (value === undefined) delete process.env[key];
         else process.env[key] = value;
       }
+    }
+  });
+
+  test('uses Bun rather than a compiled CLI executable for the synchronous bridge', () => {
+    expect(resolveSyncSupervisorBridgeRuntime('/opt/releases/repo-harness.js', {})).toBe('bun');
+    expect(resolveSyncSupervisorBridgeRuntime('/opt/bun/bin/bun', {})).toBe('/opt/bun/bin/bun');
+    expect(resolveSyncSupervisorBridgeRuntime('/opt/releases/repo-harness.js', {
+      REPO_HARNESS_BUN_EXECUTABLE: '/custom/bun',
+    })).toBe('/custom/bun');
+  });
+
+  test('keeps a synchronous bridge launch defect out of acceptance evidence', () => {
+    const command = [process.execPath, '-e', 'process.exit(0)'];
+    const repoRoot = fixture({ bridge_failure: { command } });
+    const fakeRuntimeRoot = mkdtempSync(join(tmpdir(), 'repo-harness-check-bridge-runtime-'));
+    roots.push(fakeRuntimeRoot);
+    const fakeRuntime = join(fakeRuntimeRoot, 'fake-bun');
+    writeFileSync(fakeRuntime, '#!/bin/sh\necho bridge-runtime-broken >&2\nexit 17\n');
+    chmodSync(fakeRuntime, 0o755);
+    const previousRuntime = process.env.REPO_HARNESS_BUN_EXECUTABLE;
+    try {
+      process.env.REPO_HARNESS_BUN_EXECUTABLE = fakeRuntime;
+      const result = runControllerCheck(repoRoot, 'bridge_failure');
+      expect(result.ok).toBe(false);
+      expect(result.status).toBe(17);
+      expect(result.command).toEqual(command);
+      expect(result.failureClass).toBe('infrastructure_failure');
+      expect(result.stderr).toContain('bridge-runtime-broken');
+      expect(result.stderr).toContain('CHECK_SUPERVISOR_BRIDGE_FAILED');
+    } finally {
+      if (previousRuntime === undefined) delete process.env.REPO_HARNESS_BUN_EXECUTABLE;
+      else process.env.REPO_HARNESS_BUN_EXECUTABLE = previousRuntime;
     }
   });
 

@@ -37,7 +37,38 @@ import { persistControllerAccessMode } from "../../src/cli/mcp/access-mode";
 import {
   readControllerContextProjection,
   writeControllerContextProjection} from "../../src/runtime/projections/controller-context";
-import { exposedControllerToolDefinitions } from "../../src/cli/mcp/toolset";
+import {
+  controllerToolNamesForToolset,
+  exposedControllerToolDefinitions,
+  STABLE_CONTROLLER_TOOL_NAMES,
+} from "../../src/cli/mcp/toolset";
+
+test("keeps Core and Advanced on the same bounded stable capability surface", () => {
+  expect(parseMcpToolset(undefined, "controller")).toBe("advanced");
+  expect(controllerToolNamesForToolset("core")).toEqual(STABLE_CONTROLLER_TOOL_NAMES);
+  expect(controllerToolNamesForToolset("advanced")).toEqual(STABLE_CONTROLLER_TOOL_NAMES);
+  expect(STABLE_CONTROLLER_TOOL_NAMES.length).toBeLessThanOrEqual(128);
+
+  for (const required of [
+    "repository_command_execute",
+    "run_check",
+    "git_commit_paths",
+    "quick_agent_session",
+    "create_campaign",
+    "runtime_maintenance_status",
+  ]) {
+    expect(STABLE_CONTROLLER_TOOL_NAMES).toContain(required as never);
+  }
+  for (const compatibilityOnly of [
+    "toolchain_plugin_summary",
+    "workspace_auth_login_prepare",
+    "web_domain_access_preview",
+    "web_domain_access_apply",
+    "assistant_readiness",
+  ]) {
+    expect(STABLE_CONTROLLER_TOOL_NAMES).not.toContain(compatibilityOnly as never);
+  }
+});
 
 async function jsonTool(
   ctx: McpToolContext,

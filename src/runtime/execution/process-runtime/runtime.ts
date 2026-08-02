@@ -27,7 +27,7 @@ import {
   statSync,
   writeFileSync,
 } from 'fs';
-import { dirname, join } from 'path';
+import { basename, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { capProcessOutput } from '../../../effects/process-runner';
 import { redactSensitiveText, sanitizeSensitiveTextFileInPlace } from '../../evidence/sensitive-output';
@@ -522,9 +522,20 @@ async function killTree(child: ChildProcess): Promise<void> {
   await terminateProcessTree(pid, { gracePeriodMs: 200, killAfterMs: 1_500, pollIntervalMs: 25 });
 }
 
-function runnerEntryPath(): string {
-  const configured = process.env.REPO_HARNESS_PROCESS_RUNNER_ENTRY?.trim();
+export function resolveProcessRunnerEntryPath(
+  execPath: string = process.execPath,
+  env: NodeJS.ProcessEnv = process.env,
+  cwd: string = process.cwd(),
+): string {
+  const configured = env.REPO_HARNESS_PROCESS_RUNNER_ENTRY?.trim();
   if (configured && existsSync(configured)) return configured;
+
+  // Compiled daemon/Gateway entrypoints and process-runner.js are siblings in
+  // every immutable release. Prefer that closed release surface before looking
+  // at source paths recorded only for diagnostics and development fallback.
+  const releaseSibling = join(dirname(execPath), 'process-runner.js');
+  if (existsSync(releaseSibling)) return releaseSibling;
+
   try {
     const here = typeof __dirname !== 'undefined'
       ? __dirname
@@ -536,11 +547,27 @@ function runnerEntryPath(): string {
   } catch {
     /* continue to source-root fallback */
   }
-  const sourceRoot = process.env.REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT?.trim() || process.cwd();
+  const sourceRoot = env.REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT?.trim() || cwd;
   const sourceEntry = join(sourceRoot, 'src/runtime/execution/process-runtime/process-runner-entry.ts');
   if (existsSync(sourceEntry)) return sourceEntry;
   throw new Error('PROCESS_RUNNER_ENTRY_NOT_FOUND: immutable release is missing process-runner.js');
 }
+const PROCESS_RUNNER_RUNTIME_ENV = 'REPO_HARNESS_BUN_EXECUTABLE';
+
+/**
+ * A compiled Bun executable reports the bundled repo-harness binary through
+ * process.execPath. TypeScript runner entries must instead be launched by Bun.
+ */
+export function resolveProcessRunnerRuntime(
+  execPath: string = process.execPath,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const configured = env[PROCESS_RUNNER_RUNTIME_ENV]?.trim();
+  if (configured) return configured;
+  const executable = basename(execPath).toLowerCase();
+  return executable === 'bun' || executable === 'bun.exe' ? execPath : 'bun';
+}
+
 function runnerInvocation(entry: string, descriptorPath: string): { command: string; args: string[] } {
   let standalone = process.env.REPO_HARNESS_RUNTIME_EXECUTION === 'standalone-binary';
   if (!standalone) {
@@ -554,7 +581,7 @@ function runnerInvocation(entry: string, descriptorPath: string): { command: str
   const args = ['--descriptor', descriptorPath];
   return standalone
     ? { command: entry, args }
-    : { command: process.execPath, args: [entry, ...args] };
+    : { command: resolveProcessRunnerRuntime(), args: [entry, ...args] };
 }
 
 function commandFingerprint(command: ManagedProcessRecord['command']): string {
@@ -845,7 +872,7 @@ export function processRunnerEnvironment(env: NodeJS.ProcessEnv = process.env): 
 function spawnProcessRunner(descriptor: ProcessCommandDescriptor, descriptorPath: string): ChildProcess {
   mkdirSync(dirname(descriptorPath), { recursive: true });
   writeFileSync(descriptorPath, `${JSON.stringify(descriptor, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-  const entry = runnerEntryPath();
+  const entry = resolveProcessRunnerEntryPath();
   const useProcessGroup = process.platform !== 'win32';
   const invocation = runnerInvocation(entry, descriptorPath);
   // Detached so Controller crash does not kill the runner.

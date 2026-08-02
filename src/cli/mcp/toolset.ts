@@ -11,7 +11,7 @@ import { repositoryToolDefinitions } from './repository-tools';
 import { runtimeToolDefinitions } from '../../runtime/gateway/mcp/runtime-tools';
 import { executionToolDefinitions } from '../../runtime/gateway/mcp/execution-tools';
 import { processToolDefinitions } from '../../runtime/gateway/mcp/process-tools';
-import { CORE_CONTROLLER_TOOL_NAMES, DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES, STABLE_CONTROLLER_TOOL_NAMES } from './toolset-names';
+import { DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES, STABLE_CONTROLLER_TOOL_NAMES } from './toolset-names';
 export { BOOTSTRAP_CONTROLLER_TOOL_NAMES, CORE_CONTROLLER_TOOL_NAMES, DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES, STABLE_CONTROLLER_TOOL_NAMES } from './toolset-names';
 import type { McpToolset } from './types';
 
@@ -48,8 +48,8 @@ export interface ControllerExposureSnapshot {
 }
 
 /**
- * Advanced retains every stable typed capability. Full remains the exhaustive
- * compatibility surface. Core is intentionally small and model-facing.
+ * Advanced and Core expose the same bounded stable capability surface. Full
+ * remains the exhaustive compatibility surface for legacy integrations.
  */
 
 /** Historical Advanced name retained for compatibility. */
@@ -83,7 +83,7 @@ function pruneStaticExposureCache(): void {
 
 export function normalizeMcpToolset(value: unknown): McpToolset {
   if (value === 'full' || value === 'advanced' || value === 'core') return value;
-  return 'core';
+  return 'advanced';
 }
 
 /**
@@ -95,7 +95,7 @@ export function controllerToolNamesForToolset(
   _ctx?: MultiRepositoryMcpToolContext,
 ): readonly string[] | null {
   if (toolset === 'full') return null;
-  return toolset === 'core' ? CORE_CONTROLLER_TOOL_NAMES : STABLE_CONTROLLER_TOOL_NAMES;
+  return STABLE_CONTROLLER_TOOL_NAMES;
 }
 
 export function resolveControllerAccessStateForContext(

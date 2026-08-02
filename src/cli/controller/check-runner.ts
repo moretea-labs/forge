@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { dirname, join, normalize, relative, resolve } from 'path';
+import { basename, dirname, join, normalize, relative, resolve } from 'path';
 import {
   capProcessOutput,
   redactProcessOutput,
@@ -83,6 +83,23 @@ function syncSupervisorBridgePath(repoRoot: string): string {
     if (existsSync(candidate)) return candidate;
   }
   return candidates[0];
+}
+
+const CHECK_BRIDGE_RUNTIME_ENV = 'REPO_HARNESS_BUN_EXECUTABLE';
+
+/**
+ * A compiled Bun executable reports itself through process.execPath. In a
+ * Supervisor release that path is repo-harness.js, not a JavaScript runtime,
+ * so passing the TypeScript bridge as argv would be parsed as a CLI command.
+ */
+export function resolveSyncSupervisorBridgeRuntime(
+  execPath: string = process.execPath,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const configured = env[CHECK_BRIDGE_RUNTIME_ENV]?.trim();
+  if (configured) return configured;
+  const executable = basename(execPath).toLowerCase();
+  return executable === 'bun' || executable === 'bun.exe' ? execPath : 'bun';
 }
 
 function boundedTimeout(value: unknown): number {
@@ -441,7 +458,9 @@ export function runControllerCheck(repoRoot: string, id: string, requestedTimeou
   if (heavy && !lease) throw new Error(`heavy check already running for repository: ${id}`);
   let result: ProcessRunResult;
   try {
+    const bridgeRuntime = resolveSyncSupervisorBridgeRuntime();
     const childEnvironment = repositoryChildProcessEnvironment();
+    delete childEnvironment[CHECK_BRIDGE_RUNTIME_ENV];
     childEnvironment.REPO_HARNESS_SUPERVISED_REQUEST = Buffer.from(JSON.stringify({
       command: check.command[0],
       args: check.command.slice(1),
@@ -449,7 +468,8 @@ export function runControllerCheck(repoRoot: string, id: string, requestedTimeou
       timeoutMs,
       maxOutputBytes: 256 * 1024,
     })).toString('base64url');
-    const bridge = runProcess(process.execPath, [syncSupervisorBridgePath(repoRoot)], {
+    const bridgePath = syncSupervisorBridgePath(repoRoot);
+    const bridge = runProcess(bridgeRuntime, [bridgePath], {
       cwd: repoRoot,
       env: childEnvironment,
       replaceEnv: true,
@@ -457,22 +477,49 @@ export function runControllerCheck(repoRoot: string, id: string, requestedTimeou
       maxOutputBytes: 1024 * 1024,
     });
     if (!bridge.ok) {
-      result = bridge;
-    } else {
-      const supervised = JSON.parse(bridge.stdout) as Awaited<ReturnType<typeof runBoundedChild>>;
-      const error = supervised.failureCode
-        ? `${supervised.failureCode}${supervised.error ? `: ${supervised.error}` : ''}`
-        : supervised.error ?? '';
+      const bridgeFailure = redactProcessOutput(
+        `CHECK_SUPERVISOR_BRIDGE_FAILED: ${bridge.error || `bridge exited with status ${bridge.status}`}`,
+      );
       result = {
-        ok: supervised.status === 0 && !supervised.failureCode,
-        status: supervised.status,
-        signal: supervised.signal,
-        timedOut: supervised.timedOut,
+        ok: false,
+        status: bridge.status,
+        signal: bridge.signal,
+        timedOut: bridge.timedOut,
         command: check.command,
-        stdout: capProcessOutput(redactProcessOutput(supervised.stdout), 256 * 1024),
-        stderr: capProcessOutput(redactProcessOutput([supervised.stderr, error].filter(Boolean).join('\n')), 256 * 1024),
-        error: redactProcessOutput(error),
+        stdout: capProcessOutput(redactProcessOutput(bridge.stdout), 256 * 1024),
+        stderr: capProcessOutput(redactProcessOutput([bridge.stderr, bridgeFailure].filter(Boolean).join('\n')), 256 * 1024),
+        error: bridgeFailure,
       };
+    } else {
+      try {
+        const supervised = JSON.parse(bridge.stdout) as Awaited<ReturnType<typeof runBoundedChild>>;
+        const error = supervised.failureCode
+          ? `${supervised.failureCode}${supervised.error ? `: ${supervised.error}` : ''}`
+          : supervised.error ?? '';
+        result = {
+          ok: supervised.status === 0 && !supervised.failureCode,
+          status: supervised.status,
+          signal: supervised.signal,
+          timedOut: supervised.timedOut,
+          command: check.command,
+          stdout: capProcessOutput(redactProcessOutput(supervised.stdout), 256 * 1024),
+          stderr: capProcessOutput(redactProcessOutput([supervised.stderr, error].filter(Boolean).join('\n')), 256 * 1024),
+          error: redactProcessOutput(error),
+        };
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        const protocolFailure = redactProcessOutput(`CHECK_SUPERVISOR_BRIDGE_PROTOCOL_INVALID: ${detail}`);
+        result = {
+          ok: false,
+          status: 1,
+          signal: null,
+          timedOut: false,
+          command: check.command,
+          stdout: capProcessOutput(redactProcessOutput(bridge.stdout), 256 * 1024),
+          stderr: protocolFailure,
+          error: protocolFailure,
+        };
+      }
     }
   } finally {
     lease?.release();

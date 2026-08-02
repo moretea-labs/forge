@@ -16,6 +16,8 @@ import {
   getProcessRecord,
   recoverManagedProcesses,
   readProcessLogs,
+  resolveProcessRunnerEntryPath,
+  resolveProcessRunnerRuntime,
   runCheckViaProcessRuntime,
   spawnManagedProcess,
   tryCompleteProcessRecord,
@@ -104,6 +106,22 @@ function fixture() {
 }
 
 describe('Unified Process Runtime', () => {
+  test('uses Bun rather than a compiled repo-harness binary for source runner entries', () => {
+    const releaseRoot = mkdtempSync(join(tmpdir(), 'process-runtime-release-'));
+    roots.push(releaseRoot);
+    const daemonPath = join(releaseRoot, 'daemon.js');
+    const runnerPath = join(releaseRoot, 'process-runner.js');
+    writeFileSync(daemonPath, 'daemon');
+    writeFileSync(runnerPath, 'runner');
+    expect(resolveProcessRunnerEntryPath(daemonPath, {}, releaseRoot)).toBe(runnerPath);
+
+    expect(resolveProcessRunnerRuntime('/opt/repo-harness/repo-harness.js', {})).toBe('bun');
+    expect(resolveProcessRunnerRuntime('/Users/test/.bun/bin/bun', {})).toBe('/Users/test/.bun/bin/bun');
+    expect(resolveProcessRunnerRuntime('/opt/repo-harness/repo-harness.js', {
+      REPO_HARNESS_BUN_EXECUTABLE: '/custom/bin/bun',
+    })).toBe('/custom/bin/bun');
+  });
+
   test('short command returns completed direct handle without re-exec', async () => {
     const fx = fixture();
     const handle = await spawnManagedProcess({

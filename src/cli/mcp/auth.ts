@@ -25,7 +25,7 @@ export interface McpLocalConfig {
   };
   profile?: string;
   toolset?: 'core' | 'advanced' | 'full';
-  /** Advanced persistence is explicit; unmarked legacy Advanced migrates to Core. */
+  /** Compatibility marker retained for previously persisted toolset choices. */
   toolsetExplicit?: boolean;
   accessMode?: AccessMode;
   accessModeUpdatedAt?: string;

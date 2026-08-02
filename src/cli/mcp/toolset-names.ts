@@ -14,26 +14,6 @@ export const BOOTSTRAP_CONTROLLER_TOOL_NAMES = [
   'repository_bootstrap_local_project',
 ] as const;
 
-/**
- * Model-facing Core surface. Typed specialist tools remain available through
- * Advanced/Full; Core routes ordinary work through the bounded facade.
- */
-export const CORE_CONTROLLER_TOOL_NAMES = [
-  ...PREFERRED_FACADE_TOOL_NAMES,
-  'session_start',
-  'session_bind_repository',
-  'repository_access_get',
-  'repository_list',
-  'repository_get',
-  'controller_context_pack',
-  'search_repository',
-  'read_repository_file',
-  'repository_safe_patch_plan',
-  'repository_safe_patch_apply',
-  'result_read',
-  'result_search',
-] as const;
-
 export const STABLE_CONTROLLER_TOOL_NAMES = [
   ...PREFERRED_FACADE_TOOL_NAMES,
 
@@ -166,17 +146,12 @@ export const STABLE_CONTROLLER_TOOL_NAMES = [
   'list_plugins',
   'get_plugin',
   'plugin_action_execute',
-  'toolchain_plugin_summary',
   'workspace_auth_status',
-  'workspace_auth_login_prepare',
   // Advanced assistant model/grant/proposal tools remain registered in the
   // exhaustive full compatibility profile; keep the stable connector within
   // its declared 128-tool schema budget.
   'web_targets_list',
   'web_target_snapshot',
-  'web_domain_access_preview',
-  'web_domain_access_apply',
-  'assistant_readiness',
 
   // iOS/Xcode/simulator and visual evidence.
   // Keep specialized app launch in the exhaustive `full` profile so the
@@ -195,9 +170,8 @@ export const STABLE_CONTROLLER_TOOL_NAMES = [
   'workflow_watchdog_report',
 ] as const;
 
-/**
- * Deprecated compatibility alias for the former stable Controller surface.
- * Runtime default selection is Core via parseMcpToolset; do not use this alias
- * to infer the active tools/list profile.
- */
+/** Core is a compatibility label for the same stable repair-capable schema. */
+export const CORE_CONTROLLER_TOOL_NAMES = STABLE_CONTROLLER_TOOL_NAMES;
+
+/** Default Controller surface retained as a compatibility alias. */
 export const DEFAULT_CONTROLLER_TOOL_NAMES = STABLE_CONTROLLER_TOOL_NAMES;
