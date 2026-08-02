@@ -19,7 +19,7 @@ import { SupervisorProcessManager, runtimeWriterEnvironment, supervisorProcessSt
 import { ensureMcpControllerHomeBearerToken, writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
 import { writeActiveSlotAuthority } from '../../src/cli/controller/runtime-slots';
 import { publishWriterAuthority } from '../../src/cli/controller/stable-state/writer-authority';
-import { readCurrentRelease, readCurrentSupervisorRelease, readSupervisorRelease, supervisorReleasesRoot } from '../../src/runtime/supervisor/paths';
+import { readCurrentRelease, readCurrentSupervisorRelease, readSupervisorRelease, supervisorBootstrapConfigPath, supervisorReleasesRoot } from '../../src/runtime/supervisor/paths';
 import { createSupervisorControlServer, sendSupervisorCommand } from '../../src/runtime/supervisor/control-server';
 import type { ProcessIdentityProbe } from '../../src/runtime/supervisor/identity';
 import type { SupervisorManagedProcess, SupervisorOperation, SupervisorState } from '../../src/runtime/supervisor/types';
@@ -72,9 +72,30 @@ function fakeSupervisorRelease(home: string, name: string, revision: string, opt
   ];
   const aggregate = createHash('sha256');
   const artifacts: Record<string, { sha256: string }> = {};
+  const processRunnerFixture = `#!/usr/bin/env bun
+import { readFileSync, writeFileSync } from 'fs';
+import { spawnSync } from 'child_process';
+const descriptorPath = process.argv[process.argv.indexOf('--descriptor') + 1];
+if (!descriptorPath) process.exit(2);
+const descriptor = JSON.parse(readFileSync(descriptorPath, 'utf8'));
+const result = spawnSync(descriptor.command.executable, descriptor.command.args, {
+  cwd: descriptor.command.cwd,
+  encoding: 'utf8',
+});
+writeFileSync(descriptor.stdoutPath, result.stdout ?? '');
+writeFileSync(descriptor.stderrPath, result.stderr ?? '');
+writeFileSync(descriptor.exitReceiptPath, JSON.stringify({
+  schemaVersion: 1,
+  processId: descriptor.processId,
+  exitCode: result.status,
+  commandExecutedOnce: true,
+}));
+process.exit(result.status ?? 1);
+`;
   for (const executable of executables) {
-    writeFileSync(join(releasePath, executable), '');
-    const sha256 = createHash('sha256').update('').digest('hex');
+    const contents = executable === 'process-runner.js' ? processRunnerFixture : 'fixture';
+    writeFileSync(join(releasePath, executable), contents);
+    const sha256 = createHash('sha256').update(contents).digest('hex');
     artifacts[executable] = { sha256 };
     aggregate.update(executable);
     aggregate.update('\0');
@@ -83,6 +104,7 @@ function fakeSupervisorRelease(home: string, name: string, revision: string, opt
   }
   writeFileSync(join(releasePath, 'manifest.json'), `${JSON.stringify({
     schemaVersion: 2,
+    executionMode: 'script',
     releaseRevision: revision,
     sourceCommit: options.sourceCommit ?? '0123456789abcdef0123456789abcdef01234567',
     sourceRoot: options.sourceRoot ?? process.cwd(),
@@ -124,21 +146,9 @@ describe('Stable Supervisor production hardening', () => {
       expect(existsSync(join(release.releasePath, 'process-runner.js'))).toBe(true);
       expect(existsSync(join(release.releasePath, 'browser-handoff-host.js'))).toBe(true);
       expect(existsSync(join(release.releasePath, 'browser-node-bridge-host.js'))).toBe(true);
-      const loaded = spawnSync(process.execPath, [
-        join(release.releasePath, 'process-runner.js'),
-        '--descriptor',
-        join(controllerHome, 'missing-descriptor.json'),
-      ], {
-        encoding: 'utf8',
-        env: {
-          PATH: process.env.PATH ?? '',
-          HOME: process.env.HOME ?? '',
-          REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT: join(controllerHome, 'missing-runtime-source'),
-        },
-      });
-      expect(loaded.status).toBe(2);
-      expect(loaded.stderr).toContain('descriptor not found');
+      const runnerPath = join(release.releasePath, 'process-runner.js');
       const manifest = JSON.parse(readFileSync(join(release.releasePath, 'manifest.json'), 'utf8')) as {
+        executionMode?: 'standalone-binary' | 'script';
         releaseRevision?: string;
         sourceCommit?: string;
         cleanWorkspace?: boolean;
@@ -148,6 +158,22 @@ describe('Stable Supervisor production hardening', () => {
         browserNodeBridgeHostEntrypoint?: string;
         capabilities?: string[];
       };
+      const loaded = spawnSync(
+        manifest.executionMode === 'standalone-binary' ? runnerPath : process.execPath,
+        manifest.executionMode === 'standalone-binary'
+          ? ['--descriptor', join(controllerHome, 'missing-descriptor.json')]
+          : [runnerPath, '--descriptor', join(controllerHome, 'missing-descriptor.json')],
+        {
+          encoding: 'utf8',
+          env: {
+            PATH: process.env.PATH ?? '',
+            HOME: process.env.HOME ?? '',
+            REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT: join(controllerHome, 'missing-runtime-source'),
+          },
+        },
+      );
+      expect(loaded.status).toBe(2);
+      expect(loaded.stderr).toContain('descriptor not found');
       if (!release.sourceCommit) throw new Error('release sourceCommit missing');
       const expectedRevision = `${release.sourceCommit}${release.cleanWorkspace ? '' : '-dirty'}`;
       expect(manifest.sourceCommit).toBe(release.sourceCommit);
@@ -243,10 +269,10 @@ describe('Stable Supervisor production hardening', () => {
         sourceRoot: managedSource,
         sourceCommit: currentHead(),
       });
-      const published = publishSupervisorRelease({ controllerHome, repoRoot: process.cwd(), releasePath: release });
-      const plist = readFileSync(published.launchdPlistPath, 'utf8');
-      expect(plist).toContain(process.cwd());
-      expect(plist).not.toContain(managedSource);
+      publishSupervisorRelease({ controllerHome, repoRoot: process.cwd(), releasePath: release });
+      const bootstrapConfig = JSON.parse(readFileSync(supervisorBootstrapConfigPath(controllerHome), 'utf8')) as { repoRoot?: string };
+      expect(bootstrapConfig.repoRoot).toBe(process.cwd());
+      expect(bootstrapConfig.repoRoot).not.toBe(managedSource);
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }

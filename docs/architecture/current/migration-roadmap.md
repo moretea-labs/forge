@@ -1,7 +1,24 @@
 # Target Architecture Migration Record
 
-> Status: **Completed Migration Record**  
+> Status: **Active Migration Record**
 > Completion baseline: 2026-06-25
+> Lifecycle convergence baseline: 2026-08-02
+
+The execution-plane phases below remain completed. The lifecycle itself is now a separate active convergence track governed by [`runtime-architecture-simplification.md`](runtime-architecture-simplification.md). It is not complete until its G1–G9 gates pass; current runtime health must not be interpreted as evidence that the five-service cutover has happened.
+
+## P0 — Single-Owner Runtime Convergence
+
+Active target:
+
+- fixed launchd bootstrap starts an immutable Supervisor release;
+- exactly five OS services exist: Supervisor, Recovery Gateway, Recovery Watchdog, primary tunnel, and Recovery tunnel;
+- Supervisor children are only stable ingress, Controller Daemon, and Gateway;
+- one `bootstrap/runtime-authority.json` and one `bootstrap/runtime-config.json` own primary lifecycle truth;
+- candidate/previous release activation preserves last-known-good ingress;
+- Recovery has an independent immutable release, state boundary, and tunnel;
+- legacy blue/green, nested KeepAlive, detached restart, and root/slot fallback paths are deleted after verified cutover.
+
+The implementation authority and deletion receipts are tracked by `ISS-20260802-539E7F`; the Recovery delivery line is tracked by `ISS-20260802-27931A`. The migration is one-way and fail-closed: unsupported legacy state reports `MIGRATION_REQUIRED` rather than selecting a fallback.
 
 ## P0 — Stabilize and Remove Request-Lifetime Execution
 

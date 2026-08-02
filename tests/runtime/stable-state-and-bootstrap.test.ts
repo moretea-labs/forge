@@ -30,6 +30,13 @@ import {
   commitActivationTransaction,
 } from '../../src/runtime/bootstrap/activation-transaction';
 import { markCutoverAuthority, markRollbackAuthority } from '../../src/cli/controller/runtime-slots';
+import {
+  readRuntimeAuthority,
+  readRuntimeConfig,
+  requireRuntimeAuthority,
+  writeRuntimeAuthority,
+  writeRuntimeConfig,
+} from '../../src/runtime/bootstrap/runtime-authority';
 import { evaluateRuntimeReleaseCoherence } from '../../src/runtime/supervisor/release-coherence';
 import {
   bindRuntimeWriterClaim,
@@ -99,11 +106,52 @@ describe('stable repository state migration', () => {
   });
 
   test('ensureStableLayout creates bootstrap and slots', () => {
+
     const fx = homeFixture();
     const layout = ensureStableLayout(fx.controllerHome);
     expect(existsSync(layout.bootstrap)).toBe(true);
     expect(existsSync(join(layout.runtimeSlots, 'blue', 'logs'))).toBe(true);
     expect(existsSync(join(layout.runtimeSlots, 'green', 'pids'))).toBe(true);
+  });
+});
+describe('single-owner runtime authority', () => {
+  test('persists canonical authority and config atomically', () => {
+    const fx = homeFixture();
+    ensureStableLayout(fx.controllerHome);
+    const authority = {
+      schemaVersion: 1 as const,
+      authorityTerm: 'term-1',
+      activationId: 'activation-1',
+      generation: 'generation-1',
+      active: {
+        releasePath: join(fx.controllerHome, 'releases', 'rev-1'),
+        releaseRevision: 'rev-1',
+        sourceCommit: 'commit-1',
+        manifestHash: 'hash-1',
+        publishedAt: new Date().toISOString(),
+      },
+      ingress: { host: '127.0.0.1', port: 8765 },
+    };
+    writeRuntimeAuthority(fx.controllerHome, authority);
+    writeRuntimeConfig(fx.controllerHome, {
+      schemaVersion: 1,
+      controllerHome: fx.controllerHome,
+      ingress: { host: '127.0.0.1', port: 8765 },
+      daemon: { port: 8766 },
+      gateway: { host: '127.0.0.1', port: 8795, auth: 'oauth' },
+      toolset: 'core',
+      accessMode: 'full-access',
+    });
+
+    expect(readRuntimeAuthority(fx.controllerHome)?.active.releaseRevision).toBe('rev-1');
+    expect(readRuntimeConfig(fx.controllerHome)?.daemon.port).toBe(8766);
+    expect(readRuntimeConfig(fx.controllerHome)?.controllerHome).toBe(fx.controllerHome);
+  });
+
+  test('refuses legacy-only authority instead of selecting a fallback', () => {
+    const fx = homeFixture();
+    writeFileSync(join(fx.controllerHome, 'active-slot.json'), '{"activeSlot":"green"}\n');
+    expect(() => requireRuntimeAuthority(fx.controllerHome)).toThrow('MIGRATION_REQUIRED');
   });
 });
 

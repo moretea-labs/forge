@@ -2,6 +2,8 @@
 
 > **Runtime Authority**
 
+> **Authority split:** This document records the current Supervisor implementation. The approved target that replaces persistent slots, nested KeepAlive ownership, and lifecycle fallbacks is [`runtime-architecture-simplification.md`](runtime-architecture-simplification.md).
+
 ## Current implementation
 
 An installed Controller Home is owned by `src/runtime/supervisor/entry.ts` from an immutable release bundle. The operating-system service manager launches only that stable bundle; blue/green slots, repository checkouts, and temporary worktrees never contain the top-level lifecycle authority.
@@ -77,6 +79,12 @@ Rollout and rollback are executed by the stable owner. Candidate Daemon and Gate
 
 A successful rollout retains the previous processes as standby for the rollback window. An active top-level component failure during that window may create one durable automatic rollback operation when the standby identities are still healthy. Expired standby processes are reclaimed without deleting active, candidate, or rollback-referenced slot state.
 
-## Compatibility
+## Transition compatibility
 
-Homes without `supervisor/current` continue to use the legacy lifecycle and detached restart coordinator. Existing coordinator request files remain readable. Once installed, legacy restart commands and normal ChatGPT facade actions submit durable Supervisor operations and retain the stable-domain reconnect contract.
+The following behavior is current migration compatibility, not an approved target rule:
+
+- homes without `supervisor/current` can still be read by the legacy lifecycle;
+- existing coordinator request files remain readable;
+- slot and root projections may be reconciled while the one-way migration is in progress.
+
+After the new authority/config boundary, fixed bootstrap, and rollback window are verified, these readers and the detached restart coordinator are deleted according to the deletion map. Unsupported legacy state then reports `MIGRATION_REQUIRED`; it does not silently fall back.

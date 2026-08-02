@@ -1,11 +1,11 @@
 # Current Status Snapshot
 
-<!-- updated_at: 2026-07-26 -->
+<!-- updated_at: 2026-08-02 -->
 <!-- stale_after: 24h -->
 
-> **Status**: Standalone disaster-recovery core implemented; user-level gateway/watchdog and path-scoped Tailscale Funnel are active, but Recovery Connector and known-good attestation remain incomplete.
-> **Updated At**: 2026-07-26
-> **Source**: Stable Supervisor state, release manifests, and isolated recovery-core tests.
+> **Status**: Standalone recovery remains operationally separate; compiled Supervisor bootstrap, canonical runtime authority/config, direct child ownership, and immutable release execution paths are implemented. Focused runtime and governance gates pass. Recovery Connector and known-good attestation remain incomplete.
+> **Updated At**: 2026-08-02
+> **Source**: Stable Supervisor state, release manifests, canonical runtime authority/config checks, compiled-entry smoke checks, and focused runtime tests.
 > **Target**: Establish a recovery path that never relies on the active Gateway or an unverified previous release.
 > **Stale After**: 24h
 
@@ -25,11 +25,15 @@ This snapshot is a read model, not an execution gate.
 ## Validation Completed
 
 - `bun x tsc --noEmit`: 0 errors.
-- `bun test tests/runtime/standalone-recovery.test.ts`: 2 pass.
-- Compiled recovery binary and two system LaunchDaemon plists rendered under the stable Controller Home.
-- Independent recovery Gateway MCP initialize and fixed seven-tool list verified locally and through Tailscale Funnel; no shell tool is exposed.
-- Tailscale Funnel root still maps to the primary stable ingress, and `/recovery` maps to the standalone recovery gateway.
-- Restricted Grok wrapper was invoked, but the external Grok CLI did not return a structured recovery decision before timeout/network errors; no recovery action was executed.
+- `bun run check:main`: passed; task gate and all five runtime smoke scripts passed.
+- Recovery smoke confirms `processRecovered: true`, `executionJobCount: 0`, and successful controller-session replacement.
+- `bun test tests/runtime/standalone-recovery.test.ts`: 16/16.
+- `bun test tests/runtime/stable-supervisor-hardening.test.ts`: 59/59.
+- `bun test tests/runtime/stable-state-and-bootstrap.test.ts`: 15/15.
+- `bun test tests/runtime/process-runtime.test.ts`: 39/39.
+- `bun test tests/runtime/runtime-cutover-r2.test.ts`: 39/39.
+- `bun test tests/cli/controller-service.test.ts`: 5/5.
+- Governance checks passed: deploy SQL order, architecture sync (0 blocking), task sync, strict workflow check, project-state inspection, and migration dry-run. Generated workflow runtime manifests remain absent in this isolated worktree; no non-dry-run migration was performed.
 
 ## Remaining Before Delivery
 

@@ -32,7 +32,7 @@ The architecture is both technical and operational. It defines not only modules 
 
 The documents in this directory are the sole architecture authority for the current Controller Runtime.
 
-The target topology is implemented. Normative documents may still distinguish current behavior, extension requirements and compatibility rules using these labels:
+The execution control-plane topology is implemented, but the lifecycle simplification described by `runtime-architecture-simplification.md` remains a target under migration. Normative documents must distinguish current behavior, approved target rules, and compatibility boundaries using these labels:
 
 ### Current Implementation
 
@@ -65,14 +65,15 @@ Read the architecture in this order:
 10. `failure-recovery.md` — Gateway, Controller, Worker, orphan, stale, timeout, and reconciliation behavior.
 11. `verification-and-release-gates.md` — exact-revision verification, acceptance, release freeze, and human authorization.
 12. `implementation-status.md` — verified implementation coverage and compatibility boundaries.
-13. `migration-roadmap.md` — completed phase record and maintenance gates.
-14. `runtime-directory-map.md` — executable module boundaries.
-15. `operations-runbook.md` — health, recovery and release operations.
-16. `governance.md` — ownership, ADR, drift, and maintenance rules.
-17. `session-aware-execution-and-authorization.md` — Session Context, Work Handle, Goal delegation, and resumable approval boundaries.
-18. `runtime-health-and-resource-lifecycle.md` — shared health evaluation, projection freshness, capability status, attention/history, and bounded ownership-aware cleanup.
-19. `stable-external-runtime-supervisor.md` — immutable external lifecycle ownership, recovery MCP, fencing, and slot cutover.
-20. `human-interaction-plane.md` — foreground provider sessions, durable human handoff, profile fencing, and safe resumption.
+13. `migration-roadmap.md` — completed execution-plane phases and the active lifecycle convergence record.
+14. `runtime-architecture-simplification.md` — single-owner services, canonical authority/config, immutable activation, Recovery boundary, invariants, and deletion map.
+15. `runtime-directory-map.md` — executable module boundaries.
+16. `operations-runbook.md` — health, recovery and release operations.
+17. `governance.md` — ownership, ADR, drift, and maintenance rules.
+18. `session-aware-execution-and-authorization.md` — Session Context, Work Handle, Goal delegation, and resumable approval boundaries.
+19. `runtime-health-and-resource-lifecycle.md` — shared health evaluation, projection freshness, capability status, attention/history, and bounded ownership-aware cleanup.
+20. `stable-external-runtime-supervisor.md` — current immutable lifecycle implementation and transition notes.
+21. `human-interaction-plane.md` — foreground provider sessions, durable human handoff, profile fencing, and safe resumption.
 
 
 ## Architecture Layers

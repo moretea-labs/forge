@@ -118,11 +118,12 @@ export function scheduleServiceActivation(
       '--handoff-delay-ms', String(Math.max(750, Math.min(Math.trunc(handoffDelayMs), 30_000))),
     ], {
       cwd: repo,
-      detached: true,
+      // Activation is a bounded child operation, not a detached lifecycle
+      // owner. The fixed Supervisor/bootstrap remains the only owner.
+      detached: false,
       stdio: ['ignore', logFd, logFd],
       env: { ...process.env, REPO_HARNESS_CONTROLLER_HOME: home },
     });
-    child.unref();
   } finally {
     closeSync(logFd);
   }

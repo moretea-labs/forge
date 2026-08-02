@@ -35,8 +35,8 @@ import {
 } from 'fs';
 import { dirname, join } from 'path';
 import { spawn, type ChildProcess } from 'child_process';
-import { repositoryChildProcessEnvironment } from '../../shared/process-environment';
-import { StreamingSensitiveTextRedactor } from '../../evidence/sensitive-output';
+import { repositoryChildProcessEnvironment } from '../../shared/process-environment.ts';
+import { StreamingSensitiveTextRedactor } from '../../evidence/sensitive-output.ts';
 
 export interface ProcessCommandDescriptor {
   schemaVersion: 1;
@@ -129,11 +129,12 @@ class BoundedLogWriter {
   private totalBytes = 0;
   private truncated = false;
   private readonly redactor = new StreamingSensitiveTextRedactor();
+  private readonly path: string;
+  private readonly maxBytes: number;
 
-  constructor(
-    private readonly path: string,
-    private readonly maxBytes: number,
-  ) {
+  constructor(path: string, maxBytes: number) {
+    this.path = path;
+    this.maxBytes = maxBytes;
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, '', { mode: 0o600 });
     try { chmodSync(path, 0o600); } catch { /* Windows or restricted filesystem. */ }

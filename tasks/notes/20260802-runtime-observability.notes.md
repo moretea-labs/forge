@@ -35,3 +35,24 @@ The following results were collected before the immutable-release closure and pr
 - The bundled `process-runner.js` must execute a real harmless child command and persist a successful receipt before staging, publishing, rollout, or rollback can proceed.
 - `controller_ready` reports and blocks on an incomplete active release closure.
 - Final evidence is intentionally pending because the currently active older release lacks `process-runner.js`, so governed checks cannot start until the repaired clean revision is committed and bootstrapped through the Supervisor.
+
+## Compiled Supervisor bootstrap closure
+
+- Bootstrap now selects `standalone-binary` releases without invoking Bun as a parent; legacy script releases retain the Bun fallback.
+- Stable Supervisor and managed Daemon/Gateway children propagate the execution mode and invoke compiled entrypoints directly.
+- Process Runner detects a compiled release manifest before spawning the runner, preserving script-release compatibility.
+- Daemon compiled entry detection accepts both `daemon-entry.ts` and bundled `daemon.js`.
+- Focused evidence: `stable-supervisor-hardening.test.ts` 59/59, `stable-supervisor-integration.test.ts` 5/5, and `process-runtime.test.ts` 39/39. A full compiled Supervisor smoke with a deliberately dirty test release remains readiness-blocked by the existing release-revision/source-commit mismatch, as expected for a non-production dirty release.
+
+
+## Runtime architecture convergence follow-up (2026-08-02)
+
+- Added canonical `bootstrap/runtime-authority.json` and `bootstrap/runtime-config.json` readers/writers with atomic replacement, schema validation, controller-home binding, and explicit `MIGRATION_REQUIRED` refusal for legacy-only state.
+- Stable Supervisor rejects malformed canonical authority/config files and rejects a release revision that disagrees with the canonical active authority.
+- Supervisor-managed Daemon/Gateway children are no longer detached process-group owners; the Supervisor retains direct lifecycle ownership.
+- Lifecycle start refuses an unmanaged Supervisor service instead of spawning a detached coordinator. Activation remains a bounded child operation without a second detached owner.
+- Focused evidence: TypeScript check passed; stable-state/bootstrap 15/15, process-runtime 39/39, activation/cutover 54/54, standalone Recovery 16/16, hardening 59/59, and controller-service 5/5.
+- Governance checks passed: task gate, deploy SQL order, architecture sync (0 blocking), task sync, strict workflow check, project-state inspection, and migration dry-run. The worktree still reports missing generated workflow runtime manifests; the migration command was intentionally left dry-run.
+
+- `check:main` initially exposed a real Node-loader cold-start defect: the independent process runner used a TypeScript parameter-property constructor and extensionless local imports, so `smoke:runtime-recovery` failed before executing the child command. Replaced the parameter properties with explicit fields and made the two local imports explicit `.ts` URLs.
+- Re-run evidence: `bun run check:main` passed, including all five runtime smoke scripts; Recovery smoke confirms `processRecovered: true`, `executionJobCount: 0`, and successful WorkContract/session recovery.

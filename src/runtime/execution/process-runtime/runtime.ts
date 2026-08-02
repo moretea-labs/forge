@@ -541,6 +541,21 @@ function runnerEntryPath(): string {
   if (existsSync(sourceEntry)) return sourceEntry;
   throw new Error('PROCESS_RUNNER_ENTRY_NOT_FOUND: immutable release is missing process-runner.js');
 }
+function runnerInvocation(entry: string, descriptorPath: string): { command: string; args: string[] } {
+  let standalone = process.env.REPO_HARNESS_RUNTIME_EXECUTION === 'standalone-binary';
+  if (!standalone) {
+    try {
+      const manifest = JSON.parse(readFileSync(join(dirname(entry), 'manifest.json'), 'utf8')) as { executionMode?: unknown };
+      standalone = manifest.executionMode === 'standalone-binary';
+    } catch {
+      /* source and legacy script releases have no execution manifest */
+    }
+  }
+  const args = ['--descriptor', descriptorPath];
+  return standalone
+    ? { command: entry, args }
+    : { command: process.execPath, args: [entry, ...args] };
+}
 
 function commandFingerprint(command: ManagedProcessRecord['command']): string {
   return createHash('sha256')
@@ -830,22 +845,17 @@ export function processRunnerEnvironment(env: NodeJS.ProcessEnv = process.env): 
 function spawnProcessRunner(descriptor: ProcessCommandDescriptor, descriptorPath: string): ChildProcess {
   mkdirSync(dirname(descriptorPath), { recursive: true });
   writeFileSync(descriptorPath, `${JSON.stringify(descriptor, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-
   const entry = runnerEntryPath();
-  const bun = Boolean(process.versions.bun);
   const useProcessGroup = process.platform !== 'win32';
-  const args = bun
-    ? [entry, '--descriptor', descriptorPath]
-    : ['--loader', join(process.cwd(), 'src/runtime/shared/node-ts-loader.mjs'), entry, '--descriptor', descriptorPath];
-
+  const invocation = runnerInvocation(entry, descriptorPath);
   // Detached so Controller crash does not kill the runner.
-  return spawn(process.execPath, args, {
+  return spawn(invocation.command, invocation.args, {
     cwd: descriptor.command.cwd,
     env: {
       ...processRunnerEnvironment(),
       REPO_HARNESS_PROCESS_RUNNER: '1',
     },
-    // The Runner always keeps bounded durable files. While the Controller is
+    // The Runner always keeps bounded durable files. While Controller is
     // attached, also stream redacted chunks over pipes so it does not stat and
     // reread both log files every 100ms.
     stdio: ['ignore', descriptor.streamLogs ? 'pipe' : 'ignore', descriptor.streamLogs ? 'pipe' : 'ignore'],

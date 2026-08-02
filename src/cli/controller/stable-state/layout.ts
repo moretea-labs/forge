@@ -33,6 +33,8 @@ export interface StableLayoutPaths {
   runtimeSlots: string;
   releases: string;
   writerAuthority: string;
+  runtimeAuthority: string;
+  runtimeConfig: string;
   activeSlot: string;
 }
 
@@ -83,6 +85,8 @@ export function stableLayoutPaths(controllerHome: string): StableLayoutPaths {
     runtimeSlots: join(home, 'runtime-slots'),
     releases: join(home, 'releases'),
     writerAuthority: join(home, 'bootstrap', 'writer-authority.json'),
+    runtimeAuthority: join(home, 'bootstrap', 'runtime-authority.json'),
+    runtimeConfig: join(home, 'bootstrap', 'runtime-config.json'),
     activeSlot: join(home, 'active-slot.json'),
   };
 }

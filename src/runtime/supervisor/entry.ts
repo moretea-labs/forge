@@ -4,9 +4,10 @@ import { existsSync } from 'fs';
 import { ensureControllerHome } from '../../cli/repositories/controller-home';
 import { readActiveSlotAuthority } from '../../cli/controller/runtime-slots';
 import { resolveMcpRepoRoot } from '../../cli/mcp/repo';
+import { runtimeAuthorityPath, runtimeConfigPath, readRuntimeAuthority, readRuntimeConfig } from '../bootstrap/runtime-authority';
 import { resolveControllerRuntimeSourceRoot } from '../control-plane/runtime-generation';
 import { acquireSupervisorLock } from './lock';
-import { supervisorLogPath } from './paths';
+import { supervisorLogPath, readSupervisorRelease } from './paths';
 import { readSupervisorState } from './state-store';
 import { StableSupervisorRuntime } from './supervisor-runtime';
 import { createStableIngressRouter } from './ingress-router';
@@ -114,7 +115,26 @@ export function stableSupervisorActivatesPublishedRelease(
 export async function runStableSupervisor(): Promise<void> {
   const repoRoot = resolveMcpRepoRoot(option('--repo') ?? process.cwd());
   const controllerHome = ensureControllerHome(option('--controller-home'));
-  const runtimeRoot = resolve(option('--runtime-source-root') ?? resolveControllerRuntimeSourceRoot().root ?? repoRoot);
+  const standalone = process.env.REPO_HARNESS_RUNTIME_EXECUTION === 'standalone-binary';
+  const releaseEntrypoint = standalone
+    ? process.execPath
+    : process.argv[1] ? resolve(process.argv[1]) : undefined;
+  const releaseRoot = releaseEntrypoint ? dirname(releaseEntrypoint) : undefined;
+  const release = readSupervisorRelease(releaseRoot);
+  const authority = readRuntimeAuthority(controllerHome);
+  if (existsSync(runtimeAuthorityPath(controllerHome)) && !authority) {
+    throw new Error('RUNTIME_AUTHORITY_INVALID');
+  }
+  if (authority && release?.releaseRevision && authority.active.releaseRevision !== release.releaseRevision) {
+    throw new Error(`RUNTIME_AUTHORITY_RELEASE_MISMATCH: expected ${authority.active.releaseRevision}, got ${release.releaseRevision}`);
+  }
+  const config = readRuntimeConfig(controllerHome);
+  if (existsSync(runtimeConfigPath(controllerHome)) && !config) {
+    throw new Error('RUNTIME_CONFIG_INVALID');
+  }
+  const runtimeRoot = standalone && releaseRoot
+    ? releaseRoot
+    : resolve(option('--runtime-source-root') ?? release?.sourceRoot ?? resolveControllerRuntimeSourceRoot().root ?? repoRoot);
   const previous = readSupervisorState(controllerHome);
   const lock = acquireSupervisorLock(controllerHome, previous);
   let exitScheduled = false;
@@ -124,26 +144,22 @@ export async function runStableSupervisor(): Promise<void> {
     lock.release();
     setTimeout(() => process.exit(code), 25);
   };
-  const releaseRoot = process.argv[1] ? dirname(resolve(process.argv[1])) : undefined;
-  const runtimeExecutable = releaseRoot && existsSync(join(releaseRoot, 'repo-harness.js'))
-    ? join(releaseRoot, 'repo-harness.js')
-    : undefined;
-  const daemonExecutable = releaseRoot && existsSync(join(releaseRoot, 'daemon.js'))
-    ? join(releaseRoot, 'daemon.js')
-    : undefined;
+  const runtimeExecutable = release?.runtimeExecutable;
+  const daemonExecutable = release?.daemonExecutable;
   const runtime = new StableSupervisorRuntime({
     repoRoot,
     controllerHome,
     ownerEpoch: lock.metadata.ownerEpoch,
     runtimeSourceRoot: runtimeRoot,
-    ingressExecutable: process.argv[1] ? resolve(process.argv[1]) : undefined,
+    ingressExecutable: releaseEntrypoint,
     runtimeExecutable,
     daemonExecutable,
     ...(releaseRoot ? { releasePath: releaseRoot } : {}),
+    ...(standalone ? { runtimeExecution: 'standalone-binary' as const } : {}),
     logPath: supervisorLogPath(controllerHome),
     controlHost: option('--control-host') ?? '127.0.0.1',
     controlPort: numberOption('--control-port', 8770),
-    releaseRevision: option('--release-revision'),
+    releaseRevision: option('--release-revision') ?? release?.releaseRevision,
     activatePublishedRelease: stableSupervisorActivatesPublishedRelease(),
     // A runtime-owned stop is unexpected at the top-level service boundary.
     // Exit non-zero so launchd/systemd restart the Stable Supervisor instead

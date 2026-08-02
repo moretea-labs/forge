@@ -19,6 +19,7 @@ export interface SupervisorProcessManagerOptions {
   daemonExecutable?: string;
   releasePath?: string;
   releaseRevision?: string;
+  runtimeExecution?: 'standalone-binary' | 'script';
   logPath: string;
   stableIngressHost?: string;
   stableIngressPort?: number;
@@ -233,16 +234,22 @@ export class SupervisorProcessManager {
       port: gateway.port + 1,
     };
   }
+  private runtimeInvocation(entrypoint: string, args: string[]): { command: string; args: string[] } {
+    return this.options.runtimeExecution === 'standalone-binary'
+      ? { command: entrypoint, args }
+      : { command: process.execPath, args: [entrypoint, ...args] };
+  }
 
-  private spawnDetached(component: SupervisorComponentName, home: string, args: string[], instanceId: string, slot: RuntimeSlotId): SpawnedSupervisorProcess {
-    const command = process.execPath;
+  private spawnDetached(component: SupervisorComponentName, home: string, command: string, args: string[], instanceId: string, slot: RuntimeSlotId): SpawnedSupervisorProcess {
     mkdirSync(dirname(this.options.logPath), { recursive: true });
     const fd = openSync(this.options.logPath, 'a');
     let child: ChildProcess;
     try {
       child = spawn(command, args, {
         cwd: this.options.repoRoot,
-        detached: true,
+        // Supervisor owns the child lifecycle directly. Detached process
+        // groups create a second restart/termination authority.
+        detached: false,
         stdio: ['ignore', fd, fd],
         env: {
           ...process.env,
@@ -251,12 +258,12 @@ export class SupervisorProcessManager {
           REPO_HARNESS_SUPERVISOR_CHILD: '1',
           REPO_HARNESS_SUPERVISOR_EPOCH: String(this.options.ownerEpoch),
           REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT: this.options.runtimeSourceRoot,
+          ...(this.options.runtimeExecution ? { REPO_HARNESS_RUNTIME_EXECUTION: this.options.runtimeExecution } : {}),
           REPO_HARNESS_DAEMON_INSTANCE_ID: instanceId,
           REPO_HARNESS_RUNTIME_SLOT: slot,
           ...runtimeWriterEnvironment(this.options.controllerHome, slot, instanceId),
         },
       });
-      child.unref();
     } finally {
       closeSync(fd);
     }
@@ -304,20 +311,19 @@ export class SupervisorProcessManager {
     // identity from spawnDetached so the Supervisor can proceed.
     return spawned;
   }
-
   async startDaemon(): Promise<SpawnedSupervisorProcess> {
     const slot = this.options.slot ?? readActiveSlotAuthority(this.options.controllerHome).activeSlot;
     const home = componentHome(this.options.controllerHome, slot, this.options.slot !== undefined);
     const instanceId = newProcessInstanceId('daemon');
-    const args = [
-      this.runtimeDaemon(),
+    const entrypoint = this.runtimeDaemon();
+    const invocation = this.runtimeInvocation(entrypoint, [
       '--controller-home', home,
       '--runtime-source-root', this.options.runtimeSourceRoot,
       '--owner-epoch', String(this.options.ownerEpoch),
       '--instance-id', instanceId,
       '--slot', slot,
-    ];
-    return this.identify(this.spawnDetached('controllerDaemon', home, args, instanceId, slot));
+    ]);
+    return this.identify(this.spawnDetached('controllerDaemon', home, invocation.command, invocation.args, instanceId, slot));
   }
 
   gatewayArgs(home: string, slot = this.options.slot ?? readActiveSlotAuthority(this.options.controllerHome).activeSlot): string[] {
@@ -363,7 +369,11 @@ export class SupervisorProcessManager {
     const activeSlot = this.options.slot ?? readActiveSlotAuthority(this.options.controllerHome).activeSlot;
     const home = componentHome(this.options.controllerHome, activeSlot, this.options.slot !== undefined);
     const instanceId = newProcessInstanceId('gateway');
-    return this.identify(this.spawnDetached('gatewayHost', home, this.gatewayArgs(home, activeSlot), instanceId, activeSlot));
+    const args = this.gatewayArgs(home, activeSlot);
+    const entrypoint = args.shift();
+    if (!entrypoint) throw new Error('SUPERVISOR_GATEWAY_ENTRYPOINT_REQUIRED');
+    const invocation = this.runtimeInvocation(entrypoint, args);
+    return this.identify(this.spawnDetached('gatewayHost', home, invocation.command, invocation.args, instanceId, activeSlot));
   }
 
   observe(identity: ProcessIdentity | undefined): ProcessObservation {
