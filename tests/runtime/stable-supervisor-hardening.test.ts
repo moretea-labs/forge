@@ -24,7 +24,7 @@ import { createSupervisorControlServer, sendSupervisorCommand } from '../../src/
 import type { ProcessIdentityProbe } from '../../src/runtime/supervisor/identity';
 import type { SupervisorManagedProcess, SupervisorOperation, SupervisorState } from '../../src/runtime/supervisor/types';
 import { evaluateRuntimeReleaseCoherence, evaluateSupervisorServiceReleaseCoherence, extractSupervisorServiceRelease } from '../../src/runtime/supervisor/release-coherence';
-import { publishAndScheduleSupervisorRelease } from '../../src/runtime/supervisor/service-activation';
+import { publishAndScheduleSupervisorRelease, resolveSupervisorActivationInvocation } from '../../src/runtime/supervisor/service-activation';
 import { probeSupervisorMcpReadiness } from '../../src/runtime/supervisor/mcp-readiness';
 
 const servers: Server[] = [];
@@ -2080,5 +2080,26 @@ describe('Stable Supervisor production hardening', () => {
     const operation = readSupervisorOperation(home, created.operation.operationId);
     expect(operation?.phase).toBe('failed');
     expect(operation?.error).toBe('SUPERVISOR_RESTART_INTERRUPTED_OPERATION');
+  });
+  test('compiled activation handoff executes native release binaries directly', () => {
+    const home = mkdtempSync(join(tmpdir(), 'repo-harness-supervisor-activation-entry-'));
+    try {
+      const nativeEntry = join(home, 'repo-harness.js');
+      writeFileSync(nativeEntry, Buffer.from('cffaedfe', 'hex'));
+      const activationArgs = ['supervisor', '__activate'];
+      expect(resolveSupervisorActivationInvocation(nativeEntry, activationArgs)).toEqual({
+        command: nativeEntry,
+        args: activationArgs,
+      });
+
+      const sourceEntry = join(home, 'entry.ts');
+      writeFileSync(sourceEntry, '#!/usr/bin/env bun\n');
+      expect(resolveSupervisorActivationInvocation(sourceEntry, activationArgs)).toEqual({
+        command: process.execPath,
+        args: [sourceEntry, ...activationArgs],
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

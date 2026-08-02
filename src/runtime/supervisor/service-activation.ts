@@ -14,6 +14,32 @@ import {
   type ActivationStateRecord,
 } from './activation-state-machine';
 
+const NATIVE_EXECUTABLE_MAGICS = new Set([
+  'cafebabe',
+  'bebafeca',
+  'feedface',
+  'cefaedfe',
+  'feedfacf',
+  'cffaedfe',
+]);
+
+function isNativeExecutable(path: string): boolean {
+  try {
+    return NATIVE_EXECUTABLE_MAGICS.has(readFileSync(path).subarray(0, 4).toString('hex'));
+  } catch {
+    return false;
+  }
+}
+
+export function resolveSupervisorActivationInvocation(
+  cliEntry: string,
+  args: string[],
+): { command: string; args: string[] } {
+  return isNativeExecutable(cliEntry)
+    ? { command: cliEntry, args }
+    : { command: process.execPath, args: [cliEntry, ...args] };
+}
+
 export interface SupervisorActivationSchedule {
   activationId: string;
   pid: number;
@@ -108,15 +134,15 @@ export function scheduleServiceActivation(
   const logFd = openSync(logPath, 'a');
   let child;
   try {
-    child = spawn(process.execPath, [
-      cliEntry,
+    const invocation = resolveSupervisorActivationInvocation(cliEntry, [
       'supervisor',
       '__activate',
       '--repo', repo,
       '--controller-home', home,
       '--activation-id', activationId,
       '--handoff-delay-ms', String(Math.max(750, Math.min(Math.trunc(handoffDelayMs), 30_000))),
-    ], {
+    ]);
+    child = spawn(invocation.command, invocation.args, {
       cwd: repo,
       // Activation is a bounded child operation, not a detached lifecycle
       // owner. The fixed Supervisor/bootstrap remains the only owner.
