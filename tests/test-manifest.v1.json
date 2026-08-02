@@ -388,6 +388,14 @@
       "module": "process-runtime",
       "resource": "temp-isolated"
     },
+    "tests/runtime/plan-contract-store.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/requirement-store.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/runtime-source-isolation.test.ts": {
       "module": "process-runtime",
       "resource": "process-tree"

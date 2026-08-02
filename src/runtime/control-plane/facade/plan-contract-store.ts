@@ -4,6 +4,12 @@ import { repositoryControllerRoot } from '../../../cli/repositories/controller-h
 import { withControllerLock } from '../../../cli/repositories/locks';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
 import {
+  listControlPlaneRecords,
+  readControlPlaneRecordWithinTransaction,
+  withControlPlaneTransaction,
+  writeControlPlaneRecordWithinTransaction,
+} from '../persistence/sqlite-store';
+import {
   isTerminalPlanContractStatus,
   type EvidenceRef,
   type PlanContract,
@@ -123,13 +129,73 @@ export function planContractStorePath(location: PlanContractStoreLocation): stri
 export function emptyPlanContractStore(updatedAt: string): PlanContractStore {
   return { schemaVersion: 1, updatedAt, contracts: [] };
 }
+function sqliteBacked(options: PlanContractStoreOptions): options is PlanContractStoreOptions & { controllerHome: string; repoId: string } {
+  return Boolean(!options.root && options.controllerHome?.trim() && options.repoId?.trim());
+}
 
 export function readPlanContractStore(options: PlanContractStoreOptions): PlanContractStore {
-  return readJsonFile<PlanContractStore>(planContractStorePath(options), emptyPlanContractStore(nowIso(options)));
+  if (!sqliteBacked(options)) {
+    return readJsonFile<PlanContractStore>(planContractStorePath(options), emptyPlanContractStore(nowIso(options)));
+  }
+  const records = listControlPlaneRecords<PlanContract>(options.controllerHome, {
+    namespace: 'plan_contract',
+    scope: options.repoId,
+    limit: 5_000,
+  });
+  if (records.length > 0) {
+    return {
+      schemaVersion: 1,
+      updatedAt: records[0]?.updatedAt ?? nowIso(options),
+      contracts: records.map((record) => record.value),
+    };
+  }
+
+  // One-time migration from the old JSON index. Runtime reads do not keep a
+  // fallback once a per-plan SQLite row exists.
+  const legacy = readJsonFile<PlanContractStore>(planContractStorePath(options), emptyPlanContractStore(nowIso(options)));
+  if (legacy.contracts.length > 0) {
+    withControlPlaneTransaction(options.controllerHome, (database) => {
+      for (const contract of legacy.contracts) {
+        if (readControlPlaneRecordWithinTransaction<PlanContract>(database, 'plan_contract', options.repoId, contract.planId)) continue;
+        writeControlPlaneRecordWithinTransaction(database, {
+          namespace: 'plan_contract',
+          scope: options.repoId,
+          key: contract.planId,
+          schemaVersion: 1,
+          value: contract,
+          action: 'plan_contract_legacy_import',
+          expectedRevision: null,
+        });
+      }
+    });
+  }
+  return legacy;
 }
 
 function writePlanContractStore(options: PlanContractStoreOptions, store: PlanContractStore): PlanContractStore {
-  writeJsonAtomic(planContractStorePath(options), store);
+  if (!sqliteBacked(options)) {
+    writeJsonAtomic(planContractStorePath(options), store);
+    return store;
+  }
+  withControlPlaneTransaction(options.controllerHome, (database) => {
+    for (const contract of store.contracts) {
+      const current = readControlPlaneRecordWithinTransaction<PlanContract>(
+        database,
+        'plan_contract',
+        options.repoId,
+        contract.planId,
+      );
+      writeControlPlaneRecordWithinTransaction(database, {
+        namespace: 'plan_contract',
+        scope: options.repoId,
+        key: contract.planId,
+        schemaVersion: 1,
+        value: contract,
+        action: 'plan_contract_write',
+        expectedRevision: current?.revision ?? null,
+      });
+    }
+  });
   return store;
 }
 

@@ -1,7 +1,8 @@
 import { createRequire } from 'node:module';
-import { mkdirSync } from 'fs';
-import { join } from 'path';
+import { copyFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from 'fs';
+import { dirname, join } from 'path';
 import { durableControllerHome } from '../../../cli/repositories/controller-home';
+
 
 /**
  * Small, dependency-free SQLite boundary for controller-owned runtime facts.
@@ -17,7 +18,7 @@ interface SqliteStatement {
   run(...parameters: unknown[]): unknown;
 }
 
-interface SqliteDatabase {
+export interface SqliteDatabase {
   exec(sql: string): void;
   prepare(sql: string): SqliteStatement;
   close(): void;
@@ -163,6 +164,39 @@ function writeRecord<T>(
     updatedAt: at,
   };
 }
+export function readControlPlaneRecordWithinTransaction<T>(
+  database: SqliteDatabase,
+  namespace: string,
+  scope: string,
+  key: string,
+): ControlPlaneRecord<T> | undefined {
+  return selectRecord<T>(database, namespace, scope, key);
+}
+
+export function writeControlPlaneRecordWithinTransaction<T>(
+  database: SqliteDatabase,
+  input: {
+    namespace: string;
+    scope: string;
+    key: string;
+    schemaVersion: number;
+    value: T;
+    action?: string;
+    expectedRevision?: number | null;
+  },
+): ControlPlaneRecord<T> {
+  const existing = selectRecord<T>(database, input.namespace, input.scope, input.key);
+  if (input.expectedRevision !== undefined) {
+    const matches = input.expectedRevision === null
+      ? existing === undefined
+      : existing?.revision === input.expectedRevision;
+    if (!matches) {
+      throw new ControlPlaneConflictError(input.namespace, input.scope, input.key, input.expectedRevision, existing?.revision);
+    }
+  }
+  return writeRecord(database, { ...input, action: input.action ?? 'write' }, existing);
+}
+
 
 /** Execute a read/modify/write sequence under SQLite's cross-process write lock. */
 export function withControlPlaneTransaction<T>(controllerHome: string, operation: (database: SqliteDatabase) => T): T {
@@ -190,13 +224,104 @@ export function readControlPlaneRecord<T>(controllerHome: string, namespace: str
     database.close();
   }
 }
-
 export function writeControlPlaneRecord<T>(
   controllerHome: string,
-  input: { namespace: string; scope: string; key: string; schemaVersion: number; value: T; action?: string },
+  input: {
+    namespace: string;
+    scope: string;
+    key: string;
+    schemaVersion: number;
+    value: T;
+    action?: string;
+    expectedRevision?: number | null;
+  },
 ): ControlPlaneRecord<T> {
   return withControlPlaneTransaction(controllerHome, (database) =>
-    writeRecord(database, { ...input, action: input.action ?? 'write' }, selectRecord<T>(database, input.namespace, input.scope, input.key)));
+    writeControlPlaneRecordWithinTransaction(database, input));
+}
+
+
+export class ControlPlaneConflictError extends Error {
+  readonly expectedRevision: number | null;
+  readonly actualRevision: number | undefined;
+
+  constructor(namespace: string, scope: string, key: string, expectedRevision: number | null, actualRevision: number | undefined) {
+    super(`CONTROL_PLANE_REVISION_CONFLICT: ${namespace}/${scope}/${key} expected=${expectedRevision ?? 'absent'} actual=${actualRevision ?? 'absent'}`);
+    this.name = 'ControlPlaneConflictError';
+    this.expectedRevision = expectedRevision;
+    this.actualRevision = actualRevision;
+  }
+}
+
+export function listControlPlaneRecords<T>(
+  controllerHome: string,
+  input: { namespace: string; scope?: string; limit?: number },
+): ControlPlaneRecord<T>[] {
+  const database = openDatabase(controllerHome);
+  try {
+    const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 1000), 5000));
+    const rows = input.scope === undefined
+      ? database.prepare(`
+          SELECT namespace, scope, record_key, schema_version, revision, payload, created_at, updated_at
+          FROM control_plane_records
+          WHERE namespace = ?
+          ORDER BY updated_at ASC, record_key ASC
+          LIMIT ?
+        `).all(input.namespace, limit)
+      : database.prepare(`
+          SELECT namespace, scope, record_key, schema_version, revision, payload, created_at, updated_at
+          FROM control_plane_records
+          WHERE namespace = ? AND scope = ?
+          ORDER BY updated_at ASC, record_key ASC
+          LIMIT ?
+        `).all(input.namespace, input.scope, limit);
+    return (rows as StoredRecordRow[]).map((row) => rowToRecord<T>(row));
+  } finally {
+    database.close();
+  }
+}
+
+export function backupControlPlaneDatabase(controllerHome: string, destinationPath: string): void {
+  const destination = join(destinationPath);
+  if (existsSync(destination)) throw new Error(`CONTROL_PLANE_BACKUP_EXISTS: ${destination}`);
+  mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
+  const database = openDatabase(controllerHome);
+  try {
+    database.exec(`VACUUM INTO '${destination.replaceAll("'", "''")}'`);
+  } finally {
+    database.close();
+  }
+}
+
+export function restoreControlPlaneDatabase(controllerHome: string, backupPath: string): void {
+  if (!existsSync(backupPath)) throw new Error(`CONTROL_PLANE_BACKUP_MISSING: ${backupPath}`);
+  const target = controlPlaneDatabasePath(controllerHome);
+  const staging = `${target}.restore-${Date.now()}`;
+  copyFileSync(backupPath, staging);
+  let valid = false;
+  try {
+    const runtimeModule = process.versions.bun ? 'bun:sqlite' : 'node:sqlite';
+    const sqlite = require(runtimeModule) as SqliteModule;
+    const Constructor = sqlite.Database ?? sqlite.DatabaseSync;
+    if (!Constructor) throw new Error(`CONTROL_PLANE_SQLITE_UNAVAILABLE: ${runtimeModule} did not provide a database constructor`);
+    const database = new Constructor(staging);
+    try {
+      database.exec('PRAGMA foreign_keys = ON;');
+      const row = database.prepare('SELECT version FROM control_plane_schema ORDER BY version DESC LIMIT 1').get() as { version?: number } | undefined;
+      if (!row?.version) throw new Error(`CONTROL_PLANE_BACKUP_INVALID: ${backupPath}`);
+      valid = true;
+    } finally {
+      database.close();
+    }
+    if (valid) {
+      for (const sidecar of [`${target}-wal`, `${target}-shm`]) {
+        if (existsSync(sidecar)) unlinkSync(sidecar);
+      }
+      renameSync(staging, target);
+    }
+  } finally {
+    if (existsSync(staging)) unlinkSync(staging);
+  }
 }
 
 /**

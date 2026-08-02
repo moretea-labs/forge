@@ -4,7 +4,13 @@ import { join } from 'path';
 import { ensureControllerHome, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import { withControllerLock } from '../../../cli/repositories/locks';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
-import { readOrImportControlPlaneRecord, writeControlPlaneRecord } from '../persistence/sqlite-store';
+import {
+  listControlPlaneRecords,
+  readControlPlaneRecord,
+  readControlPlaneRecordWithinTransaction,
+  withControlPlaneTransaction,
+  writeControlPlaneRecordWithinTransaction,
+} from '../persistence/sqlite-store';
 import {
   type EvidenceRef,
   type CompletionOutcome,
@@ -227,33 +233,76 @@ function normalizeWorkContractStore(store: WorkContractStore): WorkContractStore
 }
 
 export function readWorkContractStore(options: WorkContractStoreOptions): WorkContractStore {
-  if (sqliteBacked(options)) {
-    const legacyPath = workContractStorePath(options);
-    const record = readOrImportControlPlaneRecord<WorkContractStore>(options.controllerHome, {
-      namespace: 'work_contract_store',
-      scope: options.repoId,
-      key: 'index',
-      schemaVersion: 2,
-      readLegacy: () => readJsonFile<WorkContractStore>(legacyPath, emptyWorkContractStore(nowIso(options))),
-    });
-    return normalizeWorkContractStore(record?.value ?? emptyWorkContractStore(nowIso(options)));
+  if (!sqliteBacked(options)) {
+    return normalizeWorkContractStore(readJsonFile<WorkContractStore>(workContractStorePath(options), emptyWorkContractStore(nowIso(options))));
   }
-  return normalizeWorkContractStore(readJsonFile<WorkContractStore>(workContractStorePath(options), emptyWorkContractStore(nowIso(options))));
+  const records = listControlPlaneRecords<WorkContract>(options.controllerHome, {
+    namespace: 'work_contract',
+    scope: options.repoId,
+    limit: 5_000,
+  });
+  if (records.length > 0) {
+    return normalizeWorkContractStore({
+      schemaVersion: 2,
+      updatedAt: records[0]?.updatedAt ?? nowIso(options),
+      contracts: records.map((record) => record.value),
+    });
+  }
+
+  // One-time import only. Once a per-Work row exists, legacy index/file data is
+  // never consulted again and is never written back.
+  const legacyRecord = readControlPlaneRecord<WorkContractStore>(
+    options.controllerHome,
+    'work_contract_store',
+    options.repoId,
+    'index',
+  );
+  const legacy = legacyRecord?.value
+    ?? readJsonFile<WorkContractStore>(workContractStorePath(options), emptyWorkContractStore(nowIso(options)));
+  const normalized = normalizeWorkContractStore(legacy);
+  if (normalized.contracts.length > 0) {
+    withControlPlaneTransaction(options.controllerHome, (database) => {
+      for (const contract of normalized.contracts) {
+        if (readControlPlaneRecordWithinTransaction<WorkContract>(database, 'work_contract', options.repoId, contract.workId)) continue;
+        writeControlPlaneRecordWithinTransaction(database, {
+          namespace: 'work_contract',
+          scope: options.repoId,
+          key: contract.workId,
+          schemaVersion: 2,
+          value: contract,
+          action: 'work_contract_legacy_import',
+          expectedRevision: null,
+        });
+      }
+    });
+  }
+  return normalized;
 }
 
 export function writeWorkContractStore(options: WorkContractStoreOptions, store: WorkContractStore): WorkContractStore {
-  if (sqliteBacked(options)) {
-    writeControlPlaneRecord(options.controllerHome, {
-      namespace: 'work_contract_store',
-      scope: options.repoId,
-      key: 'index',
-      schemaVersion: store.schemaVersion,
-      value: store,
-      action: 'work_contract_store_write',
-    });
+  if (!sqliteBacked(options)) {
+    writeJsonAtomic(workContractStorePath(options), store);
     return store;
   }
-  writeJsonAtomic(workContractStorePath(options), store);
+  withControlPlaneTransaction(options.controllerHome, (database) => {
+    for (const contract of store.contracts) {
+      const current = readControlPlaneRecordWithinTransaction<WorkContract>(
+        database,
+        'work_contract',
+        options.repoId,
+        contract.workId,
+      );
+      writeControlPlaneRecordWithinTransaction(database, {
+        namespace: 'work_contract',
+        scope: options.repoId,
+        key: contract.workId,
+        schemaVersion: 2,
+        value: contract,
+        action: 'work_contract_write',
+        expectedRevision: current?.revision ?? null,
+      });
+    }
+  });
   return store;
 }
 
