@@ -19,12 +19,18 @@ export interface StableIngressUpstream {
   key?: string;
 }
 
+export interface StableIngressAuthorityObservation {
+  term?: string;
+  revision?: string;
+}
+
 export interface StableIngressRouterOptions {
   host: string;
   port: number;
   rescueHost: string;
   rescuePort: number;
   upstream(): StableIngressUpstream | null;
+  authorityObservation?: () => StableIngressAuthorityObservation | undefined;
   sessionStorePath?: string;
   sessionTtlMs?: number;
   maxMcpBodyBytes?: number;
@@ -372,13 +378,20 @@ export async function createStableIngressRouter(options: StableIngressRouterOpti
           else migrationUnavailable(input.response);
           resolveAttempt();
         });
+
         upstream.end(input.body);
       });
     };
     await attempt(input.route, true);
   };
+  const applyAuthorityObservation = (response: ServerResponse): void => {
+    const observation = options.authorityObservation?.();
+    if (observation?.term) response.setHeader('x-runtime-authority-term', observation.term);
+    if (observation?.revision) response.setHeader('x-runtime-authority-revision', observation.revision);
+  };
 
   const handle = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
+    applyAuthorityObservation(response);
     const url = request.url ?? '/';
     if (request.method === 'GET' && url === '/.well-known/oauth-protected-resource/rescue/mcp') {
       const proto = String(request.headers['x-forwarded-proto'] ?? 'https').split(',')[0].trim();
