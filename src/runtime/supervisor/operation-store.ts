@@ -186,17 +186,25 @@ export function createSupervisorOperation(input: {
   actor?: string;
   reason?: string;
   candidateReleasePath?: string;
+  targetReleasePath?: string;
 }): { operation: SupervisorOperation; deduplicated: boolean } {
   const requestId = safeRequestId(input.requestId);
   const candidateReleasePath = safeCandidateReleasePath(input.controllerHome, input.candidateReleasePath);
+  const targetReleasePath = safeCandidateReleasePath(input.controllerHome, input.targetReleasePath);
   if (candidateReleasePath && input.kind !== 'rollout') {
     throw new Error('SUPERVISOR_RELEASE_PATH_ONLY_VALID_FOR_ROLLOUT');
+  }
+  if (targetReleasePath && input.kind !== 'rollback') {
+    throw new Error('SUPERVISOR_TARGET_RELEASE_PATH_ONLY_VALID_FOR_ROLLBACK');
   }
   if (input.sourceIdentity && input.kind !== 'rollout') {
     throw new Error('SUPERVISOR_SOURCE_IDENTITY_ONLY_VALID_FOR_ROLLOUT');
   }
   if (input.sourceIdentity && !candidateReleasePath) {
     throw new Error('SUPERVISOR_SOURCE_IDENTITY_REQUIRES_STAGED_RELEASE');
+  }
+  if (input.kind === 'rollback' && targetReleasePath === undefined && input.targetReleasePath !== undefined) {
+    throw new Error('SUPERVISOR_TARGET_RELEASE_PATH_REQUIRED');
   }
   return withOperationScheduleLock(input.controllerHome, () => {
     const existing = findSupervisorOperationByRequestId(input.controllerHome, requestId);
@@ -227,6 +235,7 @@ export function createSupervisorOperation(input: {
       actor: boundedText(input.actor) ?? boundedText(input.requestedBy) ?? 'unknown',
       ...(input.reason ? { reason: boundedText(input.reason) } : {}),
       ...(candidateReleasePath ? { candidateReleasePath } : {}),
+      ...(targetReleasePath ? { targetReleasePath } : {}),
       phase: 'accepted',
       acceptedAt,
       updatedAt: acceptedAt,

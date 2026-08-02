@@ -413,6 +413,10 @@ async function restorePreviousActivation(
   const previous = rollback.release?.releasePath;
   let rollbackPlistPath = rollback.launchAgent.path;
   if (previous) {
+    if (rollback.launchAgent.content) {
+      mkdirSync(dirname(rollback.generatedServicePath), { recursive: true });
+      writeFileSync(rollback.generatedServicePath, rollback.launchAgent.content);
+    }
     publishSupervisorRelease({ controllerHome: home, repoRoot: repo, releasePath: previous });
     rollbackPlistPath = installLaunchAgent(rollback.generatedServicePath, supervisorServiceLabel(home)).path;
   } else {

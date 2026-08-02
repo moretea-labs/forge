@@ -57,6 +57,15 @@ export async function runStableIngressChild(): Promise<void> {
     port,
     rescueHost,
     rescuePort,
+    authorityObservation: () => {
+      const authority = readRuntimeAuthority(controllerHome);
+      return authority
+        ? {
+          term: authority.authorityTerm,
+          revision: authority.active.releaseRevision,
+        }
+        : undefined;
+    },
     sessionStorePath: stableIngressSessionStorePath(controllerHome),
     upstream: () => {
       // Routing is switched only after the newly-authoritative runtime has

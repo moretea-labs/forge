@@ -171,10 +171,13 @@
         "Recovery remains reachable while the primary Gateway is unavailable."
       ],
       "risk": "medium",
-      "notes": [],
+      "notes": [
+        "2026-08-02 P0 evidence: Gateway absence is handled as an incomplete active pair; Supervisor rollback accepts an explicitly selected targetReleasePath and restores the generated service definition with the installed service.",
+        "2026-08-02 P0 evidence: standalone Recovery refuses directory/PID/port-only releases and requires registered manifest, Controller Home, config revision/hash, and writer-fencing attestation. Focused checks passed: 77 tests, typecheck, and runtime architecture check. Full T5 smoke and launchd drills remain pending."
+      ],
       "runIds": [],
       "createdAt": "2026-08-02T05:29:04.784Z",
-      "updatedAt": "2026-08-02T05:29:04.784Z",
+      "updatedAt": "2026-08-02T12:16:37.000Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     }
   ],

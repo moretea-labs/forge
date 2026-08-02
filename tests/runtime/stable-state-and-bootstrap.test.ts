@@ -34,6 +34,7 @@ import {
   readRuntimeAuthority,
   readRuntimeConfig,
   requireRuntimeAuthority,
+  runtimeConfigHash,
   writeRuntimeAuthority,
   writeRuntimeConfig,
 } from '../../src/runtime/bootstrap/runtime-authority';
@@ -117,13 +118,25 @@ describe('stable repository state migration', () => {
 describe('single-owner runtime authority', () => {
   test('persists canonical authority and config atomically', () => {
     const fx = homeFixture();
-    ensureStableLayout(fx.controllerHome);
+    writeRuntimeConfig(fx.controllerHome, {
+      schemaVersion: 1,
+      controllerHome: fx.controllerHome,
+      configRevision: 'config-revision-1',
+      ingress: { host: '127.0.0.1', port: 8765 },
+      daemon: { port: 8766 },
+      gateway: { host: '127.0.0.1', port: 8795, auth: 'oauth' },
+      toolset: 'core',
+      accessMode: 'full-access',
+    });
     const authority = {
       schemaVersion: 1 as const,
       authorityTerm: 'term-1',
       activationId: 'activation-1',
       generation: 'generation-1',
+      configRevision: 'config-revision-1',
+      configHash: runtimeConfigHash(fx.controllerHome)!,
       active: {
+        instanceId: 'instance-active-1',
         releasePath: join(fx.controllerHome, 'releases', 'rev-1'),
         releaseRevision: 'rev-1',
         sourceCommit: 'commit-1',
@@ -133,21 +146,34 @@ describe('single-owner runtime authority', () => {
       ingress: { host: '127.0.0.1', port: 8765 },
     };
     writeRuntimeAuthority(fx.controllerHome, authority);
-    writeRuntimeConfig(fx.controllerHome, {
-      schemaVersion: 1,
-      controllerHome: fx.controllerHome,
-      ingress: { host: '127.0.0.1', port: 8765 },
-      daemon: { port: 8766 },
-      gateway: { host: '127.0.0.1', port: 8795, auth: 'oauth' },
-      toolset: 'core',
-      accessMode: 'full-access',
-    });
 
     expect(readRuntimeAuthority(fx.controllerHome)?.active.releaseRevision).toBe('rev-1');
     expect(readRuntimeConfig(fx.controllerHome)?.daemon.port).toBe(8766);
     expect(readRuntimeConfig(fx.controllerHome)?.controllerHome).toBe(fx.controllerHome);
   });
 
+
+  test('rejects authority missing config binding or release instance identity', () => {
+    const fx = homeFixture();
+    ensureStableLayout(fx.controllerHome);
+    writeFileSync(join(fx.controllerHome, 'bootstrap', 'runtime-authority.json'), JSON.stringify({
+      schemaVersion: 1,
+      authorityTerm: 'term-invalid',
+      activationId: 'activation-invalid',
+      generation: 'generation-invalid',
+      configRevision: 'config-revision-invalid',
+      configHash: 'config-hash-invalid',
+      active: {
+        releasePath: join(fx.controllerHome, 'releases', 'rev-invalid'),
+        releaseRevision: 'rev-invalid',
+        sourceCommit: 'commit-invalid',
+        manifestHash: 'hash-invalid',
+        publishedAt: new Date().toISOString(),
+      },
+      ingress: { host: '127.0.0.1', port: 8765 },
+    }));
+    expect(readRuntimeAuthority(fx.controllerHome)).toBeUndefined();
+  });
   test('refuses legacy-only authority instead of selecting a fallback', () => {
     const fx = homeFixture();
     writeFileSync(join(fx.controllerHome, 'active-slot.json'), '{"activeSlot":"green"}\n');

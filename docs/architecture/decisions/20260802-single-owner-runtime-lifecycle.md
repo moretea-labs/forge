@@ -4,8 +4,8 @@
 - **Date:** 2026-08-02
 - **Scope:** Controller Runtime process ownership, primary authority/configuration, immutable release activation, and standalone Recovery
 - **Authority:** [`../current/runtime-architecture-simplification.md`](../current/runtime-architecture-simplification.md)
-- **Implementation authority:** `ISS-20260802-539E7F`
-- **Recovery delivery line:** `ISS-20260802-27931A`
+- **Implementation authority:** `tasks/issues/ISS-20260802-539E7F-repo-harness.issue.md`
+- **Recovery delivery line:** `tasks/issues/ISS-20260802-27931A-issue.issue.md`
 
 ## Decision
 

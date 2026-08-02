@@ -3,7 +3,7 @@ import { spawn } from 'child_process';
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { connect } from 'net';
 import { homedir } from 'os';
-import { dirname, isAbsolute, join, resolve } from 'path';
+import { dirname, isAbsolute, join, resolve, sep } from 'path';
 import { createRecoveryHttpTransport, type RecoveryHttpTransport } from './http-transport';
 
 /**
@@ -48,12 +48,31 @@ interface ReleaseEvidence {
   path: string;
   revision: string;
   manifestSha256: string;
+  controllerHome?: string;
+  configRevision?: string;
+  configHash?: string;
+  writerEpoch?: string;
+  writerFencingTokenSha256?: string;
+  attestedAt?: string;
 }
 
 interface KnownGoodStore {
   schemaVersion: 1;
   releases: ReleaseEvidence[];
   updatedAt: string;
+}
+
+interface RuntimeBinding {
+  controllerHome: string;
+  configRevision: string;
+  configHash: string;
+  activeSlot: string;
+  authorityTerm?: string;
+  releaseRevision?: string;
+  releasePath?: string;
+  manifestHash?: string;
+  writerEpoch: string;
+  writerFencingTokenSha256: string;
 }
 
 interface RecoveryLock {
@@ -181,6 +200,89 @@ function releaseEvidence(path: string | undefined): ReleaseEvidence | undefined 
   } catch { return undefined; }
 }
 
+function runtimeBinding(config: RecoveryConfig): RuntimeBinding | undefined {
+  const home = realpathSync(resolve(config.controllerHome));
+  try {
+    const configPath = join(home, 'bootstrap', 'runtime-config.json');
+    const configBytes = readFileSync(configPath);
+    const runtimeConfig = JSON.parse(configBytes.toString('utf8')) as {
+      schemaVersion?: unknown;
+      controllerHome?: unknown;
+      configRevision?: unknown;
+      revision?: unknown;
+    };
+    if (runtimeConfig.schemaVersion !== 1 || resolve(String(runtimeConfig.controllerHome ?? '')) !== home) return undefined;
+    const configRevision = typeof runtimeConfig.configRevision === 'string'
+      ? runtimeConfig.configRevision
+      : typeof runtimeConfig.revision === 'string' ? runtimeConfig.revision : undefined;
+    if (!configRevision) return undefined;
+    const authority = json<{
+      schemaVersion?: unknown;
+      authorityTerm?: unknown;
+      configRevision?: unknown;
+      configHash?: unknown;
+      active?: { releasePath?: unknown; releaseRevision?: unknown; manifestHash?: unknown };
+      activeSlot?: unknown;
+    }>(join(home, 'bootstrap', 'runtime-authority.json'));
+    const writer = json<{
+      schemaVersion?: unknown;
+      activeSlot?: unknown;
+      epoch?: unknown;
+      fencingToken?: unknown;
+    }>(join(home, 'bootstrap', 'writer-authority.json'));
+    const configHash = createHash('sha256').update(configBytes).digest('hex');
+    const activeSlot = typeof authority?.activeSlot === 'string'
+      ? authority.activeSlot
+      : typeof writer?.activeSlot === 'string' ? writer.activeSlot : undefined;
+    if (
+      authority?.schemaVersion !== 1
+      || authority.configRevision !== configRevision
+      || authority.configHash !== configHash
+      || !activeSlot
+      || writer?.schemaVersion !== 1
+      || writer.activeSlot !== activeSlot
+      || typeof writer.epoch !== 'string'
+      || typeof writer.fencingToken !== 'string'
+    ) return undefined;
+    return {
+      controllerHome: home,
+      configRevision,
+      configHash: createHash('sha256').update(configBytes).digest('hex'),
+      activeSlot,
+      ...(typeof authority.authorityTerm === 'string' ? { authorityTerm: authority.authorityTerm } : {}),
+      ...(typeof authority.active?.releaseRevision === 'string' ? { releaseRevision: authority.active.releaseRevision } : {}),
+      ...(typeof authority.active?.releasePath === 'string' ? { releasePath: realpathSync(authority.active.releasePath) } : {}),
+      ...(typeof authority.active?.manifestHash === 'string' ? { manifestHash: authority.active.manifestHash } : {}),
+      writerEpoch: writer.epoch,
+      writerFencingTokenSha256: createHash('sha256').update(writer.fencingToken).digest('hex'),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function knownGoodEvidence(config: RecoveryConfig, entry: ReleaseEvidence | undefined): ReleaseEvidence | undefined {
+  if (!entry || !entry.configRevision || !entry.configHash || !entry.writerEpoch || !entry.writerFencingTokenSha256 || !entry.attestedAt) return undefined;
+  const binding = runtimeBinding(config);
+  if (!binding || typeof entry.controllerHome !== 'string' || entry.controllerHome !== binding.controllerHome) return undefined;
+  const release = releaseEvidence(entry.path);
+  if (!release) return undefined;
+  const releasesRoot = realpathSync(join(resolve(config.controllerHome), 'supervisor', 'releases'));
+  if (!release.path.startsWith(`${releasesRoot}${sep}`)) return undefined;
+  if (release.path !== entry.path || release.revision !== entry.revision || release.manifestSha256 !== entry.manifestSha256) return undefined;
+  if (entry.configRevision !== binding.configRevision || entry.configHash !== binding.configHash) return undefined;
+  return entry;
+}
+
+function selectKnownGoodRelease(config: RecoveryConfig, active: ReleaseEvidence | undefined): ReleaseEvidence | undefined {
+  const candidates = knownGood(config).releases
+    .map((entry) => knownGoodEvidence(config, entry))
+    .filter((entry): entry is ReleaseEvidence => Boolean(entry))
+    .filter((entry) => !active || entry.path !== active.path)
+    .sort((left, right) => Date.parse(right.attestedAt!) - Date.parse(left.attestedAt!));
+  return candidates[0];
+}
+
 function currentSupervisorRelease(config: RecoveryConfig): ReleaseEvidence | undefined {
   return releaseEvidence(join(resolve(config.controllerHome), 'supervisor', 'current'));
 }
@@ -201,8 +303,11 @@ function knownGood(config: RecoveryConfig): KnownGoodStore {
 
 function matchingKnownGood(config: RecoveryConfig, release: ReleaseEvidence | undefined): ReleaseEvidence | undefined {
   if (!release) return undefined;
-  return knownGood(config).releases.find((entry) => entry.revision === release.revision && entry.manifestSha256 === release.manifestSha256 && entry.path === release.path);
+  return knownGoodEvidence(config, knownGood(config).releases.find((entry) =>
+    entry.revision === release.revision && entry.manifestSha256 === release.manifestSha256 && entry.path === release.path,
+  ));
 }
+
 
 function audit(config: RecoveryConfig, event: string, detail: Record<string, unknown>): void {
   const line = JSON.stringify({ at: new Date().toISOString(), event, detail });
@@ -426,17 +531,24 @@ export async function verifyStableRuntime(config: RecoveryConfig, transport = cr
   const probes: VerifyResult['probes'] = {};
   try { state = await supervisorStatus(config); probes.supervisor_socket = { ok: true, detail: 'status received' }; }
   catch (error) { probes.supervisor_socket = { ok: false, detail: error instanceof Error ? error.message : 'status failed' }; }
-  const active = releaseEvidence(state?.gatewayHost?.releasePath) ?? slotRelease(config, state?.activeSlot) ?? currentSupervisorRelease(config);
-  const previous = slotRelease(config, state?.previousSlot);
+  const active = releaseEvidence(state?.gatewayHost?.releasePath)
+    ?? releaseEvidence(state?.controllerDaemon?.releasePath)
+    ?? slotRelease(config, state?.activeSlot)
+    ?? currentSupervisorRelease(config);
+  const previous = slotRelease(config, state?.previousSlot)
+    ?? releaseEvidence(join(resolve(config.controllerHome), 'supervisor', 'previous'));
   const known = matchingKnownGood(config, active);
-  const coherent = Boolean(active && state?.gatewayHost?.releaseRevision === active.revision && state?.controllerDaemon?.releaseRevision === active.revision);
-  probes.stable_ingress = await probe(transport, `${config.stableIngressUrl.replace(/\/$/, '')}/health`);
   if (state?.ingress?.activeUpstreamPort) probes.active_gateway = await probe(transport, `http://127.0.0.1:${state.ingress.activeUpstreamPort}/health`);
   else probes.active_gateway = { ok: false, detail: 'active upstream port unavailable' };
   if (config.publicMcpUrl) probes.external_mcp_http = await probeExternalMcp(transport, config.publicMcpUrl);
   Object.assign(probes, await probeMcp(config, transport));
   const coreChecks = Object.values(probes).every((entry) => entry.ok);
   const supervisorHealthy = state?.observedState === 'healthy' && state?.ingress?.state === 'running';
+  const coherent = Boolean(
+    active
+    && state?.gatewayHost?.releaseRevision === active.revision
+    && state?.controllerDaemon?.releaseRevision === active.revision,
+  );
   const ok = Boolean(coreChecks && supervisorHealthy && coherent);
   const result: VerifyResult = {
     ok, at: new Date().toISOString(),
@@ -446,16 +558,44 @@ export async function verifyStableRuntime(config: RecoveryConfig, transport = cr
   audit(config, 'verify', { ok, activeRevision: active?.revision, previousRevision: previous?.revision, coherent });
   return result;
 }
-
 /** Explicitly records evidence only after the full independent verification passed. */
 export async function attestKnownGood(config: RecoveryConfig): Promise<ReleaseEvidence> {
   const verified = await verifyStableRuntime(config);
-  if (!verified.ok || !verified.releases.active) throw new Error('RECOVERY_KNOWN_GOOD_ATTESTATION_REQUIRES_FULL_VERIFY');
+  const binding = runtimeBinding(config);
+  const writer = binding && verified.supervisor.activeSlot === binding.activeSlot ? binding : undefined;
+  const active = verified.releases.active;
+  if (
+    !verified.ok
+    || !active
+    || !binding
+    || !writer
+    || binding.releaseRevision !== active.revision
+    || binding.manifestHash !== active.manifestSha256
+    || !binding.releasePath
+    || binding.releasePath !== active.path
+  ) {
+    throw new Error('RECOVERY_KNOWN_GOOD_ATTESTATION_REQUIRES_FULL_VERIFY_AND_RUNTIME_BINDING');
+  }
+  const attested: ReleaseEvidence = {
+    ...active,
+    controllerHome: binding.controllerHome,
+    configRevision: binding.configRevision,
+    configHash: binding.configHash,
+    writerEpoch: binding.writerEpoch,
+    writerFencingTokenSha256: binding.writerFencingTokenSha256,
+    attestedAt: new Date().toISOString(),
+  };
   const store = knownGood(config);
-  const releases = [verified.releases.active, ...store.releases.filter((entry) => entry.path !== verified.releases.active!.path)].slice(0, 8);
+  const releases = [attested, ...store.releases.filter((entry) => entry.path !== active.path)].slice(0, 8);
   writeJson(statePath(config), { schemaVersion: 1, releases, updatedAt: new Date().toISOString() } satisfies KnownGoodStore);
-  audit(config, 'known_good_attested', { revision: verified.releases.active.revision, manifestSha256: verified.releases.active.manifestSha256 });
-  return verified.releases.active;
+  audit(config, 'known_good_attested', {
+    revision: active.revision,
+    manifestSha256: active.manifestSha256,
+    configRevision: binding.configRevision,
+    configHash: binding.configHash,
+    writerEpoch: binding.writerEpoch,
+  });
+  return attested;
 }
 
 function quarantine(config: RecoveryConfig, release: ReleaseEvidence | undefined, reason: string): void {
@@ -465,11 +605,28 @@ function quarantine(config: RecoveryConfig, release: ReleaseEvidence | undefined
   writeJson(quarantinePath(config), { schemaVersion: 1, releases });
 }
 
-async function operation(config: RecoveryConfig, requestId: string, kind: string, reason: string): Promise<{ operationId?: string; phase?: string; deduplicated?: boolean }> {
-  const response = await control(config, { command: 'operation_submit', requestId, kind, actor: 'standalone-recovery', reason });
+async function operation(
+  config: RecoveryConfig,
+  requestId: string,
+  kind: string,
+  reason: string,
+  targetReleasePath?: string,
+): Promise<{ operationId?: string; phase?: string; deduplicated?: boolean }> {
+  const response = await control(config, {
+    command: 'operation_submit',
+    requestId,
+    kind,
+    actor: 'standalone-recovery',
+    reason,
+    ...(targetReleasePath ? { targetReleasePath } : {}),
+  });
   if (response.ok !== true || !response.operation || typeof response.operation !== 'object') throw new Error('RECOVERY_OPERATION_REJECTED');
   const accepted = response.operation as { operationId?: unknown; phase?: unknown };
-  return { operationId: typeof accepted.operationId === 'string' ? accepted.operationId : undefined, phase: typeof accepted.phase === 'string' ? accepted.phase : undefined, deduplicated: response.deduplicated === true };
+  return {
+    operationId: typeof accepted.operationId === 'string' ? accepted.operationId : undefined,
+    phase: typeof accepted.phase === 'string' ? accepted.phase : undefined,
+    deduplicated: response.deduplicated === true,
+  };
 }
 
 async function waitForOperation(config: RecoveryConfig, operationId: string): Promise<{ phase?: string; error?: string }> {
@@ -493,18 +650,32 @@ export async function rollbackPrevious(config: RecoveryConfig, reason = 'standal
     const active = before.releases.active;
     const knownActive = matchingKnownGood(config, active);
     if (knownActive) return { ok: true, noOp: true, detail: 'active release is already independently attested known-good', verify: before };
-    const target = before.releases.previous;
-    const knownTarget = matchingKnownGood(config, target);
-    if (!active || !target || !knownTarget || before.supervisor.previousSlot === undefined) {
-      return { ok: false, detail: 'rollback refused: Supervisor-registered previous release lacks known-good manifest evidence', verify: before };
+    const registeredPrevious = matchingKnownGood(config, before.releases.previous);
+    const target = registeredPrevious ?? selectKnownGoodRelease(config, active);
+    if (!active || !target) {
+      audit(config, 'rollback_refused', {
+        reason: 'no registered known-good release satisfies manifest, config, Controller Home, and writer-fencing evidence',
+        activeRevision: active?.revision,
+      });
+      return {
+        ok: false,
+        detail: 'rollback refused: no registered known-good release passed manifest, config, Controller Home, and writer-fencing validation',
+        verify: before,
+      };
     }
-    const requestId = `recovery-rollback:${active.revision}:${target.revision}`;
-    const accepted = await operation(config, requestId, 'rollback', reason.slice(0, 500));
+    const requestId = `recovery-rollback:${active.revision}:${target.revision}:${target.manifestSha256.slice(0, 12)}`;
+    const accepted = await operation(config, requestId, 'rollback', reason.slice(0, 500), target.path);
     if (!accepted.operationId) return { ok: false, detail: 'rollback operation did not return an operation id' };
     const completed = await waitForOperation(config, accepted.operationId);
     if (completed.phase !== 'succeeded') {
       quarantine(config, active, completed.error ?? completed.phase ?? 'rollback failed');
-      audit(config, 'rollback_failed', { operationId: accepted.operationId, activeRevision: active.revision, reason: completed.error ?? completed.phase });
+      audit(config, 'rollback_failed', {
+        operationId: accepted.operationId,
+        activeRevision: active.revision,
+        targetRevision: target.revision,
+        targetManifestSha256: target.manifestSha256,
+        reason: completed.error ?? completed.phase,
+      });
       return { ok: false, operationId: accepted.operationId, detail: completed.error ?? 'rollback did not succeed' };
     }
     const after = await verifyStableRuntime(config);
@@ -513,8 +684,13 @@ export async function rollbackPrevious(config: RecoveryConfig, reason = 'standal
       return { ok: false, operationId: accepted.operationId, detail: 'rollback completed but independent verification failed', verify: after };
     }
     quarantine(config, active, 'rollback completed');
-    audit(config, 'rollback_succeeded', { operationId: accepted.operationId, activeRevision: active.revision, restoredRevision: target.revision });
-    return { ok: true, operationId: accepted.operationId, detail: 'previous known-good release restored and verified', verify: after };
+    audit(config, 'rollback_succeeded', {
+      operationId: accepted.operationId,
+      activeRevision: active.revision,
+      restoredRevision: target.revision,
+      restoredManifestSha256: target.manifestSha256,
+    });
+    return { ok: true, operationId: accepted.operationId, detail: 'known-good release restored and independently verified', verify: after };
   });
 }
 

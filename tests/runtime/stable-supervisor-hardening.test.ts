@@ -999,11 +999,15 @@ describe('Stable Supervisor production hardening', () => {
       port: 0,
       rescueHost: '127.0.0.1',
       rescuePort: rescue.port,
+      authorityObservation: () => ({ term: 'term-test', revision: 'revision-test' }),
       upstream: () => upstream,
     });
     try {
       const mainHealth = await fetch(`http://127.0.0.1:${router.port}/health`).then((response) => response.json()) as { source?: string };
       expect(mainHealth.source).toBe('main');
+      const mainResponse = await fetch(`http://127.0.0.1:${router.port}/health`);
+      expect(mainResponse.headers.get('x-runtime-authority-term')).toBe('term-test');
+      expect(mainResponse.headers.get('x-runtime-authority-revision')).toBe('revision-test');
       upstream = null;
       const unavailable = await fetch(`http://127.0.0.1:${router.port}/health`);
       expect(unavailable.status).toBe(503);

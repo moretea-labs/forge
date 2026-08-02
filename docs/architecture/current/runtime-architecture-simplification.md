@@ -275,5 +275,5 @@ Until G9 passes, architecture status remains **transition** and `tasks/current.m
 - [Verification and Release Gates](verification-and-release-gates.md) — exact-revision and release evidence.
 - [Architecture Governance Contract](governance.md) — authority hierarchy and update rules.
 - [Migration Roadmap](migration-roadmap.md) — ordered convergence record.
-- `tasks/issues/ISS-20260802-539E7F-simplify-runtime-architecture-and-eliminate-split-brain-lifecycl.issue.md` — implementation authority.
-- `tasks/issues/ISS-20260802-27931A-harden-standalone-recovery-lifecycle-and-dedicated-recovery-tunn.issue.md` — Recovery delivery line.
+- `tasks/issues/ISS-20260802-539E7F-repo-harness.issue.md` — implementation authority.
+- `tasks/issues/ISS-20260802-27931A-issue.issue.md` — Recovery delivery line.
