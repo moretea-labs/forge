@@ -7,7 +7,7 @@ import { resolveMcpRepoRoot } from '../../cli/mcp/repo';
 import { runtimeAuthorityPath, runtimeConfigPath, readRuntimeAuthority, readRuntimeConfig } from '../bootstrap/runtime-authority';
 import { resolveControllerRuntimeSourceRoot } from '../control-plane/runtime-generation';
 import { acquireSupervisorLock } from './lock';
-import { supervisorLogPath, readSupervisorRelease } from './paths';
+import { supervisorLogPath, readCurrentRelease, readSupervisorRelease } from './paths';
 import { readSupervisorState } from './state-store';
 import { StableSupervisorRuntime } from './supervisor-runtime';
 import { createStableIngressRouter } from './ingress-router';
@@ -119,7 +119,9 @@ export async function runStableSupervisor(): Promise<void> {
   const releaseEntrypoint = standalone
     ? process.execPath
     : process.argv[1] ? resolve(process.argv[1]) : undefined;
-  const releaseRoot = releaseEntrypoint ? dirname(releaseEntrypoint) : undefined;
+  const releaseRoot = standalone
+    ? readCurrentRelease(controllerHome) ?? (releaseEntrypoint ? dirname(releaseEntrypoint) : undefined)
+    : releaseEntrypoint ? dirname(releaseEntrypoint) : undefined;
   const release = readSupervisorRelease(releaseRoot);
   const authority = readRuntimeAuthority(controllerHome);
   if (existsSync(runtimeAuthorityPath(controllerHome)) && !authority) {
