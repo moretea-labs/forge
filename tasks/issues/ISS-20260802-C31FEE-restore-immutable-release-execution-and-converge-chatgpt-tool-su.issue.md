@@ -2,7 +2,7 @@
 id: "ISS-20260802-C31FEE"
 kind: "bug"
 status: "in_progress"
-updated_at: "2026-08-02T03:24:23.962Z"
+updated_at: "2026-08-02T03:35:36.606Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -43,7 +43,7 @@ Take over the existing codex/runtime-observability work. Restore self-hosted rep
 
 ### T1 — Close immutable release execution gap
 
-- Status: `running`
+- Status: `integrated`
 - Objective: Preserve and review the existing runtime-observability diff, identify the actual release-build/activation path that omitted process-runner.js, implement causal fixes and release-closure/readiness/rollback/canary coverage, validate on a clean exact revision, merge, activate and prove repository command execution.
 - Depends on: none
 - Allowed paths: `src/runtime/supervisor/**`, `src/runtime/execution/process-runtime/**`, `src/runtime/gateway/**`, `src/runtime/health/**`, `src/runtime/recovery/**`, `src/runtime/standalone-recovery/**`, `src/cli/**`, `scripts/**`, `tests/runtime/**`, `tests/cli/**`, `tests/test-manifest.v1.json`, `package.json`, `tasks/notes/**`
@@ -58,6 +58,15 @@ Take over the existing codex/runtime-observability work. Restore self-hosted rep
 - Allowed paths: `src/cli/mcp/**`, `src/runtime/gateway/mcp/**`, `src/runtime/tooling/**`, `tests/cli/**`, `tests/runtime/**`, `docs/**`, `package.json`
 - Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:mcp-compatibility`, `package:check:controller-v8`, `package:check:ci`
 - Execution hint: selected at runtime
+
+### T3 — Bootstrap exact runtime validation
+
+- Status: `ready`
+- Objective: Validate exact clean main bdf5aa84cc56f9c408b5c2f32d0fa834a11e440e through the formal Worker lane without modifying repository or runtime state. Confirm exact HEAD and cleanliness, run bun run check:type and bun test tests/runtime/runtime-observability.test.ts, then identify the exact supported Supervisor command sequence to stage an immutable candidate from this revision and activate it through blue-green rollout. Do not execute staging, publication, restart, rollout, rollback, Connector reconnect, Git writes, or source edits.
+- Depends on: none
+- Allowed paths: not defined
+- Checks: not defined
+- Execution hint: agent / codex
 
 ## Related Artifacts
 

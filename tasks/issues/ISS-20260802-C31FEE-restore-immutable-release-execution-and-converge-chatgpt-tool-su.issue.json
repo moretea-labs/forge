@@ -34,7 +34,7 @@
       "id": "T1",
       "title": "Close immutable release execution gap",
       "objective": "Preserve and review the existing runtime-observability diff, identify the actual release-build/activation path that omitted process-runner.js, implement causal fixes and release-closure/readiness/rollback/canary coverage, validate on a clean exact revision, merge, activate and prove repository command execution.",
-      "status": "running",
+      "status": "integrated",
       "dependsOn": [],
       "allowedPaths": [
         "src/runtime/supervisor/**",
@@ -71,11 +71,15 @@
       ],
       "risk": "high",
       "notes": [
-        "ChatGPT took over the existing codex/runtime-observability dirty checkout without discarding or overwriting changes. Baseline evidence: active release c7fb6008 is control-plane healthy but repository_command_execute fails with PROCESS_RUNNER_ENTRY_NOT_FOUND; previous slot rollback is refused because it lacks known-good manifest evidence. Current dirty diff already adds closure/readiness/rollback guards, but causal build/activation and end-to-end canary still require verification and completion."
+        "ChatGPT took over the existing codex/runtime-observability dirty checkout without discarding or overwriting changes. Baseline evidence: active release c7fb6008 is control-plane healthy but repository_command_execute fails with PROCESS_RUNNER_ENTRY_NOT_FOUND; previous slot rollback is refused because it lacks known-good manifest evidence. Current dirty diff already adds closure/readiness/rollback guards, but causal build/activation and end-to-end canary still require verification and completion.",
+        "Implementation commit bdf5aa84cc56f9c408b5c2f32d0fa834a11e440e was fast-forward merged into clean local main. Final verification is blocked only by the currently active older immutable release missing process-runner.js; a separate read-only bootstrap validation task will use the worker execution lane before activation.",
+        "Bootstrap route update: legacy quick_agent_session is retired and the current connector does not expose launcher_start/controller_rollout. Proceeding through the formal Task/Worker lane or a Supervisor control operation that does not depend on process-runner.js; no Connector reconnect is required.",
+        "Preparing a narrow temporary bootstrap task rather than changing T1 lifecycle again. It will be read-only and use the formal worker lane solely to run checks and identify the exact activation command.",
+        "No source or runtime changes in this step."
       ],
       "runIds": [],
       "createdAt": "2026-08-02T03:21:52.747Z",
-      "updatedAt": "2026-08-02T03:24:23.962Z",
+      "updatedAt": "2026-08-02T03:34:43.870Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
@@ -118,9 +122,34 @@
       "createdAt": "2026-08-02T03:21:52.747Z",
       "updatedAt": "2026-08-02T03:21:52.747Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T3",
+      "title": "Bootstrap exact runtime validation",
+      "objective": "Validate exact clean main bdf5aa84cc56f9c408b5c2f32d0fa834a11e440e through the formal Worker lane without modifying repository or runtime state. Confirm exact HEAD and cleanliness, run bun run check:type and bun test tests/runtime/runtime-observability.test.ts, then identify the exact supported Supervisor command sequence to stage an immutable candidate from this revision and activate it through blue-green rollout. Do not execute staging, publication, restart, rollout, rollback, Connector reconnect, Git writes, or source edits.",
+      "status": "ready",
+      "dependsOn": [],
+      "allowedPaths": [],
+      "forbiddenPaths": [
+        "**/*"
+      ],
+      "checks": [],
+      "acceptanceCriteria": [
+        "The run proves its source HEAD is bdf5aa84cc56f9c408b5c2f32d0fa834a11e440e and the checkout is clean.",
+        "Typecheck and the focused runtime-observability test file are executed with complete exit evidence.",
+        "No repository, Git, runtime, release, Supervisor, or Connector state is mutated.",
+        "The exact supported staging and blue-green activation commands are reported but not executed."
+      ],
+      "risk": "readonly",
+      "recommendedAgent": "codex",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-08-02T03:35:36.606Z",
+      "updatedAt": "2026-08-02T03:35:36.606Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     }
   ],
   "createdAt": "2026-08-02T03:21:52.747Z",
-  "updatedAt": "2026-08-02T03:24:23.962Z",
+  "updatedAt": "2026-08-02T03:35:36.606Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }
