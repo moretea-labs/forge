@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 5,
+  "id": "ISS-20260802-E3F4A7",
+  "title": "Harden standalone recovery lifecycle and dedicated recovery tunnel",
+  "slug": "harden-standalone-recovery-lifecycle-and-dedicated-recovery-tunn",
+  "kind": "governance",
+  "status": "cancelled",
+  "summary": "Duplicate issue created accidentally during task preparation. Canonical issue is ISS-20260802-27931A.",
+  "goals": [
+    "Preserve monorepo source ownership for Supervisor and standalone Recovery.",
+    "Install Recovery Gateway and Watchdog as immutable versioned artifacts with atomic activation.",
+    "Keep Supervisor, Recovery Gateway, Recovery Watchdog, primary tunnel, and recovery tunnel as separate OS service units.",
+    "Persist Recovery Watchdog state and prevent repeated noisy degraded loops or repeated rollback after watchdog restart.",
+    "Probe and repair the dedicated Recovery public endpoint independently from the primary MCP endpoint.",
+    "Document the exact separation between Supervisor monitor, Recovery Watchdog, Gateway KeepAlive, and workflow_watchdog_report."
+  ],
+  "nonGoals": [
+    "Do not make Recovery depend on the primary Gateway, Controller Daemon, active runtime slot, or repository worktree at runtime.",
+    "Do not let Supervisor supervise Recovery Gateway or Recovery Watchdog; launchd/systemd remains their common lower-level authority.",
+    "Do not allow arbitrary shell execution through Recovery.",
+    "Do not replace the existing Supervisor blue/green runtime model."
+  ],
+  "acceptanceCriteria": [
+    "Recovery source remains under the repo-harness repository and is built from a clean canonical revision.",
+    "Installed Recovery artifacts live under versioned immutable release directories and activate through an atomic current pointer or equivalent.",
+    "Recovery Gateway and Recovery Watchdog cold-start successfully without the primary Gateway or active runtime slot.",
+    "Both Recovery services restart after an abnormal exit and remain stopped after an explicit authorized unload.",
+    "A dedicated recovery cloudflared service exposes only the Recovery endpoint and is independently repairable.",
+    "Watchdog separately evaluates local runtime, primary public endpoint, local Recovery Gateway, and public Recovery endpoint.",
+    "Watchdog state survives its own restart and rollback/tunnel-repair actions remain idempotent and rate-limited.",
+    "Workflow watchdog remains read-only and cannot trigger process restart, rollout, or rollback.",
+    "Focused unit, smoke, launchd template, interrupted-install, and tunnel-failure tests pass."
+  ],
+  "relatedArtifacts": [],
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Define recovery authority and failure-domain contract",
+      "objective": "Add or update architecture decisions documenting monorepo source ownership, immutable installed artifacts, OS-level service ownership, and the four distinct monitoring layers.",
+      "status": "ready",
+      "dependsOn": [],
+      "allowedPaths": [
+        "docs/architecture/**",
+        "docs/operations/**",
+        "docs/wiki/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [],
+      "acceptanceCriteria": [
+        "The document explicitly distinguishes Supervisor monitor, Recovery Watchdog, Gateway KeepAlive, and workflow watchdog.",
+        "The document forbids circular Supervisor-to-Recovery ownership."
+      ],
+      "risk": "low",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-08-02T05:29:31.723Z",
+      "updatedAt": "2026-08-02T05:29:31.723Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    }
+  ],
+  "createdAt": "2026-08-02T05:29:31.723Z",
+  "updatedAt": "2026-08-02T05:29:43.848Z",
+  "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+}

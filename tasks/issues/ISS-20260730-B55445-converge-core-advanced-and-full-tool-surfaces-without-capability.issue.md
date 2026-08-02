@@ -1,14 +1,14 @@
 ---
 id: "ISS-20260730-B55445"
 kind: "feature"
-status: "in_progress"
-updated_at: "2026-07-31T11:35:33.287Z"
+status: "cancelled"
+updated_at: "2026-08-02T05:48:03.640Z"
 source: "repo-harness-controller-v8"
 ---
 
 # Converge Core, Advanced, and Full tool surfaces without capability loss
 
-Result Goal 3 of ISS-20260730-AE1BCC for the next reliability release line. The RC6 gate was satisfied at exact released revision 2a48486b7b8c3395d05e4f30201e968ee88f9779. T1 is ready to establish one authoritative stable/compatibility/experimental/retired tool inventory and freeze Core/Advanced/Full exposure invariants without changing permissions or removing callable capabilities. Final rh_work and E2E stages depend on the evidence and context foundations.
+Superseded by the concrete Core implementation preserved from ISS-20260802-C31FEE and by the single-config/legacy-deletion architecture in ISS-20260802-539E7F. The authoritative inventory document remains useful evidence, but the remaining plan—long-lived Core/Advanced/Full compatibility layers, dual Connector Shadow, migration fallback and broad specialist routing—is intentionally not continued. Future profile validation must be small, versioned and scheduled only after the simplified runtime cutover.
 
 ## Goals
 
@@ -107,8 +107,8 @@ Result Goal 3 of ISS-20260730-AE1BCC for the next reliability release line. The 
 
 ## Related Artifacts
 
-- `ISS-20260730-AE1BCC`
-- `ISS-20260729-BF2F89 (mandatory runtime gate)`
-- `ISS-20260730-A1EA53 (required before final Core work/finalize schema)`
-- `ISS-20260730-84CE88 (ContextRequirements inform specialist routing)`
-- `docs/architecture/RELIABILITY-PROGRAM.md`
+- `inventory commit facaa2bae387b32ef070de4528eeb8593561e53d`
+- `Core implementation commits 5351e340 and d38c776b`
+- `ISS-20260802-539E7F:T3`
+- `ISS-20260802-539E7F:T7`
+- `ISS-20260802-539E7F:T8`

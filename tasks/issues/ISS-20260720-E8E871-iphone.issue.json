@@ -1,0 +1,225 @@
+{
+  "schemaVersion": 5,
+  "id": "ISS-20260720-E8E871",
+  "title": "物理 iPhone 自动化能力（已合并）",
+  "slug": "iphone",
+  "kind": "feature",
+  "status": "cancelled",
+  "summary": "已合并到唯一用户需求 ISS-20260720-66E25D。已验证的 CoreDevice 设备发现、App 查询、启动和截图能力继续保留；尚未完成的 JD 搜索与 signed runner 交互作为该主需求的后续结果，不再从本 Issue 调度。",
+  "goals": [
+    "Expose paired physical iPhones separately from simulators with honest readiness and limitations.",
+    "Support exact-device installed-app lookup, foreground app launch and native screenshot capture through typed CoreDevice actions.",
+    "Support bounded snapshot, press, non-sensitive fill and scroll only through a signed, explicitly configured XCTest/WebDriverAgent-compatible runner.",
+    "Preserve provider-neutral interaction ownership, serial mutation, bounded evidence, cleanup and sensitive-input redaction.",
+    "Prove the read-only/launch path against the paired iPhone and JD app."
+  ],
+  "nonGoals": [
+    "No jailbreak, private security bypass, CAPTCHA solving or device-lock bypass.",
+    "No automated password, verification-code, biometric, checkout-submission, purchase or payment confirmation.",
+    "No bundled credentials, certificates, provisioning profiles or pairing records in repository state.",
+    "No regression or semantic expansion of the existing agent-device simulator provider."
+  ],
+  "acceptanceCriteria": [
+    "The iOS plugin reports paired physical devices and separates CoreDevice readiness from optional UI-runner readiness.",
+    "An exact paired device session can verify JD is installed, launch com.360buy.jdmobile and capture a bounded PNG artifact.",
+    "Ambiguous, unavailable, unpaired or non-iOS devices are rejected with typed actionable errors.",
+    "Snapshot, press, non-sensitive fill and scroll are exposed only when an explicitly configured signed runner passes readiness; otherwise they fail closed without simulated success.",
+    "Sensitive targets and purchase/payment flows are blocked or require explicit human handoff.",
+    "Existing simulator tests remain compatible; focused physical-device tests, typecheck, runtime architecture and controller-v8 pass."
+  ],
+  "relatedArtifacts": [
+    "ISS-20260720-66E25D",
+    "verified CoreDevice provider evidence EVD-1784526516485-68b3f338",
+    "historical physical-device provider implementation"
+  ],
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Implement bounded CoreDevice physical iOS provider",
+      "objective": "Add a separate ios-device provider reusing the existing durable interaction-session model. Use xcrun devicectl typed JSON for paired-device inventory, installed-app lookup, foreground app launch, screenshot, events and close/session lifecycle. Add an optional explicitly configured XCTest/WebDriverAgent-compatible HTTP runner adapter for UI source/snapshot, tap/press, non-sensitive fill and scroll. Never download or bootstrap third-party automation tooling at runtime; never persist signing or pairing secrets; report runner prerequisites and fail closed when unavailable. Use exact device identity and bundle identifiers, serialize mutating actions, cap/redact evidence, and maintain simulator-provider backward compatibility. Include focused tests, architecture documentation and a live smoke script or command path for discovery, JD lookup, launch and screenshot.",
+      "status": "verified",
+      "dependsOn": [],
+      "allowedPaths": [
+        "src/runtime/plugins/**",
+        "src/runtime/safe-tooling/**",
+        "tests/runtime/**",
+        "docs/architecture/current/**",
+        "docs/researches/**",
+        "scripts/**",
+        "package.json",
+        "tasks/issues/**"
+      ],
+      "forbiddenPaths": [
+        "_ops/**",
+        ".ai/harness/**",
+        "node_modules/**",
+        "dist/**"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:controller-v8"
+      ],
+      "acceptanceCriteria": [
+        "Typed CoreDevice inventory returns only exact paired/connected physical iOS devices and rejects ambiguity.",
+        "Installed-app lookup and launch accept a bundle identifier, not arbitrary shell or tokenized deep links.",
+        "Native physical screenshot is saved under Controller-owned bounded artifact storage.",
+        "Optional WDA-compatible runner readiness is explicit; unsupported UI actions return typed errors rather than no-op success.",
+        "Fill rejects sensitive selectors/labels and all purchase/payment/biometric semantics; diagnostics never contain entered text.",
+        "Focused unit tests and declared package checks pass; live smoke validates device greyson, JD lookup, launch and 1206x2622-class screenshot."
+      ],
+      "risk": "high",
+      "recommendedAgent": "codex",
+      "notes": [
+        "Verification evidence failed: One or more executed checks or reported commands failed. One or more acceptance criteria explicitly failed. This risk class requires reviewed Diff or integrated revision evidence.",
+        "Required verification evidence passed; integration and cleanup evidence remain required before completion."
+      ],
+      "runIds": [],
+      "createdAt": "2026-07-20T03:51:07.644Z",
+      "updatedAt": "2026-07-20T05:51:02.956Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "verification": {
+        "reviewedDiffHash": "164da9c4d6d9039bafa18ea6e44879dfd6b43a20e7930a7c26ecee5e1f663d29",
+        "reviewer": "ChatGPT",
+        "checkResults": [
+          {
+            "checkId": "package:check:type",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-type.json"
+          },
+          {
+            "checkId": "package:check:runtime-architecture",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-runtime-architecture.json"
+          },
+          {
+            "checkId": "package:check:controller-v8",
+            "ok": true,
+            "summary": "Passed with persisted evidence: .ai/harness/checks/controller/latest-package-check-controller-v8.json"
+          }
+        ],
+        "commandEvidence": [
+          {
+            "command": [
+              "bun",
+              "test",
+              "tests/runtime/ios-physical-device-provider.test.ts",
+              "tests/runtime/ios-agent-device-provider.test.ts"
+            ],
+            "cwd": ".",
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "17 tests passed.",
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-20T05:49:22Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "bun",
+              "scripts/smoke-ios-physical-device.ts"
+            ],
+            "cwd": ".",
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "Live smoke passed. Evidence: EVD-1784526516485-68b3f338.",
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-07-20T05:48:36Z",
+            "source": "reported"
+          }
+        ],
+        "acceptanceResults": [
+          {
+            "criterion": "Typed CoreDevice inventory returns only exact paired/connected physical iOS devices and rejects ambiguity.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Focused tests passed."
+          },
+          {
+            "criterion": "Installed-app lookup and launch accept a bundle identifier, not arbitrary shell or tokenized deep links.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Focused tests and live smoke passed."
+          },
+          {
+            "criterion": "Native physical screenshot is saved under Controller-owned bounded artifact storage.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Live smoke evidence EVD-1784526516485-68b3f338."
+          },
+          {
+            "criterion": "Optional WDA-compatible runner readiness is explicit; unsupported UI actions return typed errors rather than no-op success.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Focused tests passed."
+          },
+          {
+            "criterion": "Fill rejects sensitive selectors/labels and all purchase/payment/biometric semantics; diagnostics never contain entered text.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Focused safety tests passed."
+          },
+          {
+            "criterion": "Focused unit tests and declared package checks pass; live smoke validates device greyson, JD lookup, launch and 1206x2622-class screenshot.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "17 tests passed; live smoke evidence EVD-1784526516485-68b3f338."
+          }
+        ],
+        "verifiedAt": "2026-07-20T05:51:02.954Z",
+        "autoCompleted": false,
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
+    },
+    {
+      "id": "T2",
+      "title": "Enable direct JD app information search",
+      "objective": "Extend the verified physical iOS provider with an operational manifest refresh path and a bounded direct JD search workflow on the paired iPhone. Probe whether the installed agent-device CLI can drive physical iOS; otherwise use the explicitly configured signed local WDA-compatible runner. The workflow must launch JD, enter a non-sensitive product query, submit search, read bounded visible result text and capture a screenshot, while blocking login credentials, verification, checkout, purchase and payment actions.",
+      "status": "planned",
+      "dependsOn": [
+        "T1"
+      ],
+      "allowedPaths": [
+        "src/runtime/plugins/**",
+        "tests/runtime/**",
+        "scripts/**",
+        "docs/architecture/current/**",
+        "tasks/issues/**"
+      ],
+      "forbiddenPaths": [
+        "_ops/**",
+        ".ai/harness/**",
+        "node_modules/**",
+        "dist/**"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:controller-v8"
+      ],
+      "acceptanceCriteria": [
+        "The persisted iOS plugin manifest can be refreshed deterministically after a runtime release and exposes physical_device_* actions.",
+        "The runtime reports whether agent-device supports the paired physical iPhone and does not claim UI readiness without a working signed runner.",
+        "A typed JD search action accepts only a bounded non-sensitive query, launches com.360buy.jdmobile, performs search through a ready UI engine, returns bounded visible result text, and captures a PNG artifact.",
+        "The JD search workflow blocks login credentials, verification codes, checkout, purchase, payment and biometric confirmation semantics.",
+        "Focused tests, declared checks and a live paired-device JD search smoke pass."
+      ],
+      "risk": "high",
+      "recommendedAgent": "codex",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-07-20T06:31:39.055Z",
+      "updatedAt": "2026-07-20T06:31:39.055Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    }
+  ],
+  "createdAt": "2026-07-20T03:51:07.644Z",
+  "updatedAt": "2026-08-02T06:23:36.958Z",
+  "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+}

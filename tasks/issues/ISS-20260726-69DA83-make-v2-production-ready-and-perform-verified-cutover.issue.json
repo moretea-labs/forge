@@ -4,8 +4,8 @@
   "title": "Make V2 production-ready and perform verified cutover",
   "slug": "make-v2-production-ready-and-perform-verified-cutover",
   "kind": "bug",
-  "status": "planned",
-  "summary": "Highest-priority release convergence after the failed 7cb1585e rollout. Fix only defects that prevent the V2 runtime from operating correctly, prove functionality/performance/stability on isolated and shadow paths, then perform one verified blue-green cutover. Defer broader recovery, Grok, SSH, watchdog and resilience enhancements until V2 is active and stable.",
+  "status": "cancelled",
+  "summary": "Superseded by ISS-20260802-539E7F. This Issue is based on the retired long-lived blue/green slot, multi-writer authority and slot-local configuration model. Its useful requirements—isolated candidate validation, soak/performance evidence, uninterrupted last-known-good traffic and guarded production cutover—are preserved in the new architecture under T5, T8 and T9. No implementation should continue from this contract.",
   "goals": [
     "Eliminate the direct root causes of the previous V2 cutover failure.",
     "Prove V2 MCP, Controller, Scheduler, Worker, Local Bridge and repository operations on isolated ports.",
@@ -28,7 +28,11 @@
     "Measured p50/p95 latency and throughput are recorded against old stable; no critical regression and at least one targeted performance improvement is demonstrated.",
     "Cutover preserves the old release as an immediately usable rollback target and the primary connector remains callable after switch."
   ],
-  "relatedArtifacts": [],
+  "relatedArtifacts": [
+    "ISS-20260802-539E7F",
+    "superseded: long-lived blue/green V2 cutover contract",
+    "preserved acceptance: candidate soak, performance comparison, external connector verification"
+  ],
   "tasks": [
     {
       "id": "T1",
@@ -155,6 +159,6 @@
     }
   ],
   "createdAt": "2026-07-26T13:16:47.560Z",
-  "updatedAt": "2026-07-26T13:16:47.560Z",
+  "updatedAt": "2026-08-02T05:46:44.376Z",
   "repoId": "repo_8562319a54229e681b799d65"
 }

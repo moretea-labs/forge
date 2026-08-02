@@ -1,14 +1,14 @@
 ---
 id: "ISS-20260802-C31FEE"
 kind: "bug"
-status: "in_progress"
-updated_at: "2026-08-02T04:19:31.374Z"
+status: "cancelled"
+updated_at: "2026-08-02T05:47:49.767Z"
 source: "repo-harness-controller-v8"
 ---
 
 # Restore immutable release execution and converge ChatGPT tool surface
 
-Take over the existing codex/runtime-observability work. Restore self-hosted repository command execution by fixing the immutable release closure and the actual build/activation path for process-runner.js, add end-to-end canary and rollback gates, merge and activate a verified clean release, then physically reduce the default ChatGPT tool surface while preserving facade workflows and compatibility.
+Partially completed and then superseded by ISS-20260802-539E7F. T1 permanently fixed and verified immutable release closure/process execution. T2 produced reusable Core facade code and tests, but its live activation path depended on the old slot-local configuration and argv override lifecycle; that cutover is intentionally not completed. The new architecture owns one-config activation and legacy-path deletion. Preserve commits and evidence; do not resume old rollout logic.
 
 ## Goals
 
@@ -52,7 +52,7 @@ Take over the existing codex/runtime-observability work. Restore self-hosted rep
 
 ### T2 — Physically converge the ChatGPT tool surface
 
-- Status: `running`
+- Status: `superseded`
 - Objective: After execution recovery, change the default Connector profile from the current 133-tool static surface to a bounded facade-first surface with discovery/advanced compatibility, retain internal typed handlers, add schema/freshness tests, and reconnect only if the exposed schema actually changes.
 - Depends on: `T1`
 - Allowed paths: `src/cli/mcp/**`, `src/runtime/gateway/mcp/**`, `src/runtime/tooling/**`, `tests/cli/**`, `tests/runtime/**`, `docs/**`, `package.json`
@@ -70,4 +70,7 @@ Take over the existing codex/runtime-observability work. Restore self-hosted rep
 
 ## Related Artifacts
 
-- None.
+- `T1 verified at d4ff6727040f50ae642869e1805115c00caebe27`
+- `Core implementation commits 5351e340 and d38c776b`
+- `ISS-20260802-539E7F:T3`
+- `ISS-20260802-539E7F:T7`

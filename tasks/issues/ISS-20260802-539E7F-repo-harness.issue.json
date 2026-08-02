@@ -1,0 +1,428 @@
+{
+  "schemaVersion": 5,
+  "id": "ISS-20260802-539E7F",
+  "title": "让 Repo Harness 升级和重启时保持可用",
+  "slug": "repo-harness",
+  "kind": "governance",
+  "status": "planned",
+  "summary": "唯一的主运行时稳定性需求。目标是通过固定 Bootstrap、自包含发布、单一运行时权威与配置、Supervisor 单 owner、last-known-good 切流和独立 Recovery，消除重复进程、多配置和半完成发布造成的断联。",
+  "goals": [
+    "Reduce long-lived process managers, state authorities, configuration sources, and compatibility branches.",
+    "Make launchd start a fixed bootstrap that is independent of ordinary runtime releases and mutable worktrees.",
+    "Make every managed runtime and Recovery release self-contained and immutable.",
+    "Allow only the Supervisor to mutate primary runtime authority; Daemon and Gateway expose health but cannot write root authority.",
+    "Replace persistent blue/green slot identity with temporary candidate and previous release instances around an atomic cutover.",
+    "Keep stable ingress on the last-known-good release until the candidate passes complete readiness and post-cutover verification.",
+    "Keep Recovery source in the monorepo while installing it as independently supervised immutable binaries with a dedicated public tunnel.",
+    "Make cold start, crash recovery, interrupted rollout, stale process, and primary/Recovery failure isolation mandatory release gates.",
+    "Complete a one-way migration and delete obsolete dual-read, dual-write, slot-config, argv-override, and legacy lifecycle paths."
+  ],
+  "nonGoals": [
+    "Do not preserve internal runtime-state compatibility indefinitely.",
+    "Do not create a separate Recovery Git repository.",
+    "Do not introduce multi-host consensus or a general distributed-systems platform.",
+    "Do not allow Recovery to become a second primary runtime writer or arbitrary shell execution service.",
+    "Do not push remote changes without explicit user authorization.",
+    "Do not preserve the current long-lived blue/green data model merely for compatibility."
+  ],
+  "acceptanceCriteria": [
+    "launchd service definitions reference fixed bootstrap or stable current pointers rather than an ordinary mutable worktree or active runtime slot.",
+    "Managed runtime and Recovery can cold-start after the repository worktree is moved or unavailable.",
+    "Exactly one primary runtime authority file and one primary runtime configuration file exist after migration; root/blue/green duplicate configuration and argv business overrides are gone.",
+    "Supervisor directly owns primary runtime process lifecycle; no nested Gateway KeepAlive acts as a second process manager.",
+    "At most one committed primary generation exists; stale instances cannot mutate authority and are terminated or isolated deterministically.",
+    "Candidate failure before cutover leaves last-known-good traffic uninterrupted; post-cutover failure atomically returns traffic to a verified previous release.",
+    "Primary Gateway failure does not remove Recovery reachability, and Recovery failure does not restart or mutate the primary runtime.",
+    "The supported migration is one-way, transactional, backed up, and verified; unsupported legacy state reports MIGRATION_REQUIRED instead of fallback guessing.",
+    "Fault-injection tests cover every rollout phase, launchd restart, stale callback, duplicate process, port conflict, cold boot, tunnel failure, and interrupted install.",
+    "After verified cutover, obsolete lifecycle code, compatibility readers/writers, stale services, old worktrees/branches, and redundant Issues are removed or explicitly superseded."
+  ],
+  "relatedArtifacts": [
+    "ISS-20260802-27931A",
+    "ISS-20260802-7E1D69",
+    "ISS-20260731-CCF3E3",
+    "retired blue-green and source-identity Issues"
+  ],
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Freeze target architecture and deletion map",
+      "objective": "Write the executable target architecture, process ownership table, authoritative state/config schemas, service graph, availability invariants, one-way migration contract, and an explicit list of legacy components and fallback paths to delete. Reconcile overlapping runtime/recovery Issues so this Issue is the implementation authority and ISS-20260802-27931A remains the Recovery delivery line rather than a competing architecture.",
+      "status": "ready",
+      "dependsOn": [],
+      "allowedPaths": [
+        "docs/architecture/**",
+        "docs/operations/**",
+        "docs/runbooks/**",
+        "tasks/issues/**"
+      ],
+      "forbiddenPaths": [
+        "src/**",
+        "scripts/**",
+        "tests/**",
+        "_ops/**"
+      ],
+      "checks": [],
+      "acceptanceCriteria": [
+        "The target has five OS services only: Supervisor, Recovery Gateway, Recovery Watchdog, primary tunnel, recovery tunnel; ingress/Daemon/Gateway are Supervisor children.",
+        "The document names exactly one primary authority file, one runtime config file, and one Recovery state/config boundary.",
+        "Every current legacy component has keep/replace/delete disposition and owning later Task.",
+        "Availability invariants include uninterrupted last-known-good routing and independent Recovery reachability.",
+        "No indefinite dual-read, dual-write, or silent fallback is permitted."
+      ],
+      "risk": "low",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-08-02T05:43:48.698Z",
+      "updatedAt": "2026-08-02T05:43:48.698Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T2",
+      "title": "Build fixed bootstrap and self-contained immutable releases",
+      "objective": "Introduce a fixed Supervisor bootstrap executable or stable activation path that launchd never binds to an ordinary runtime revision. Package Supervisor/Daemon/Gateway/process runtime and all required code into self-contained immutable releases with manifests; runtime execution must not depend on the repository worktree, Bun installation path, or mutable runtime-source-root.",
+      "status": "planned",
+      "dependsOn": [
+        "T1"
+      ],
+      "allowedPaths": [
+        "src/runtime/bootstrap/**",
+        "src/runtime/supervisor/**",
+        "src/runtime/control-plane/**",
+        "src/runtime/gateway/**",
+        "src/runtime/execution/**",
+        "scripts/**",
+        "tests/runtime/**",
+        "package.json"
+      ],
+      "forbiddenPaths": [
+        "_ops/**",
+        ".ai/**",
+        "tasks/issues/ISS-20260729-BF2F89-*"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:ci"
+      ],
+      "acceptanceCriteria": [
+        "launchd starts a fixed bootstrap/stable pointer and ordinary rollout does not rewrite its executable revision.",
+        "A release manifest proves all executable closure members and digests before activation.",
+        "Cold-start succeeds with the Git checkout renamed or unavailable.",
+        "Missing Bun or changed user PATH cannot break installed Supervisor/Recovery binaries.",
+        "Interrupted publication cannot modify the active release."
+      ],
+      "risk": "high",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-08-02T05:43:48.698Z",
+      "updatedAt": "2026-08-02T05:43:48.698Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T3",
+      "title": "Converge to one runtime authority and one config",
+      "objective": "Create a single Supervisor-owned runtime authority record and one runtime configuration record. Move Daemon/Gateway to health/report-only roles, remove root authority writes from children, implement an atomic one-way migration from root/blue/green and legacy MCP configs, then refuse unmigratable state with MIGRATION_REQUIRED.",
+      "status": "planned",
+      "dependsOn": [
+        "T1",
+        "T2"
+      ],
+      "allowedPaths": [
+        "src/cli/controller/stable-state/**",
+        "src/cli/controller/runtime-slots.ts",
+        "src/cli/mcp/**",
+        "src/runtime/supervisor/**",
+        "src/runtime/control-plane/**",
+        "src/runtime/gateway/**",
+        "src/runtime/shared/**",
+        "scripts/**",
+        "tests/**",
+        "docs/operations/**"
+      ],
+      "forbiddenPaths": [
+        "_ops/**",
+        ".ai/**"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:mcp-compatibility",
+        "package:check:ci"
+      ],
+      "acceptanceCriteria": [
+        "Only Supervisor can commit active release/generation/operation/config revision.",
+        "Daemon/Gateway late callbacks cannot write root authority because no such write API is available to them.",
+        "toolset/access and other mutable business settings are read from one config; business configuration is not materialized into process argv.",
+        "Migration creates a backup, validates the new state, atomically activates it, and marks the old state retired.",
+        "After migration, legacy fallback readers and dual writers are disabled and scheduled for deletion."
+      ],
+      "risk": "high",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-08-02T05:43:48.698Z",
+      "updatedAt": "2026-08-02T05:43:48.698Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T4",
+      "title": "Collapse primary process hierarchy",
+      "objective": "Remove Gateway KeepAlive as a second process manager and make Supervisor directly spawn, observe, restart, and stop the Daemon and Gateway process groups. Replace long-lived blue/green slot ownership with release-instance identities: active, candidate, and short-lived previous.",
+      "status": "planned",
+      "dependsOn": [
+        "T2",
+        "T3"
+      ],
+      "allowedPaths": [
+        "src/runtime/supervisor/**",
+        "src/runtime/control-plane/**",
+        "src/runtime/gateway/**",
+        "src/cli/mcp/keepalive.ts",
+        "src/cli/mcp/restart.ts",
+        "src/cli/controller/**",
+        "scripts/**",
+        "tests/runtime/**",
+        "tests/cli/**"
+      ],
+      "forbiddenPaths": [
+        "_ops/**",
+        ".ai/**"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:mcp-compatibility",
+        "package:check:ci"
+      ],
+      "acceptanceCriteria": [
+        "Supervisor is the only primary runtime process manager.",
+        "No Supervisor → keepalive → serve nesting remains in managed production mode.",
+        "A release instance has releaseRevision, generation, instanceId and process group; persistent blue/green configuration/state is not authoritative.",
+        "At most one active and one bounded previous instance may exist; candidate instances are transaction-scoped.",
+        "Supervisor startup deterministically detects and handles duplicate/stale release instances without PID-only decisions."
+      ],
+      "risk": "high",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-08-02T05:43:48.698Z",
+      "updatedAt": "2026-08-02T05:43:48.698Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T5",
+      "title": "Implement transactional rollout and last-known-good ingress",
+      "objective": "Implement one durable rollout state machine: prepare candidate, start on isolated endpoint, complete readiness/canary, CAS authority, atomically switch ingress, post-verify, retain previous during rollback window, then retire it. Failed candidates must never remove service from the last-known-good instance.",
+      "status": "planned",
+      "dependsOn": [
+        "T3",
+        "T4"
+      ],
+      "allowedPaths": [
+        "src/runtime/bootstrap/**",
+        "src/runtime/supervisor/**",
+        "src/runtime/gateway/**",
+        "src/runtime/health/**",
+        "src/runtime/recovery/**",
+        "scripts/**",
+        "tests/runtime/**",
+        "docs/operations/**"
+      ],
+      "forbiddenPaths": [
+        "_ops/**",
+        ".ai/**"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:controller-v8",
+        "package:check:ci"
+      ],
+      "acceptanceCriteria": [
+        "Ingress continues routing to the committed last-known-good instance throughout candidate preparation and readiness failure.",
+        "Cutover is one authority CAS plus one atomic ingress switch; partial projection writes cannot declare success.",
+        "Post-cutover failure performs a new rollback transaction and never reuses a failed generation.",
+        "Every phase is durable and restart-resumable; a crash cannot leave candidate state interpreted as committed.",
+        "Rollout completion asserts global process, authority, config, release, ingress and external MCP coherence."
+      ],
+      "risk": "high",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-08-02T05:43:48.698Z",
+      "updatedAt": "2026-08-02T05:43:48.698Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T6",
+      "title": "Deliver standalone immutable Recovery and dedicated tunnel",
+      "objective": "Replan and complete ISS-20260802-27931A under the simplified architecture: Recovery remains in the monorepo but installs as versioned self-contained binaries, uses independent launchd services and state, monitors its own local/public endpoint through a dedicated cloudflared service, and never depends on or writes primary runtime authority.",
+      "status": "planned",
+      "dependsOn": [
+        "T1",
+        "T2",
+        "T3"
+      ],
+      "allowedPaths": [
+        "src/runtime/standalone-recovery/**",
+        "scripts/install-standalone-recovery.ts",
+        "scripts/load-standalone-recovery.sh",
+        "tests/runtime/standalone-recovery.test.ts",
+        "tests/runtime/**",
+        "docs/operations/**",
+        "recovery/**"
+      ],
+      "forbiddenPaths": [
+        "_ops/**",
+        ".ai/**"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:ci"
+      ],
+      "acceptanceCriteria": [
+        "Recovery Gateway and Watchdog cold-start with the repository, Primary Gateway and active runtime unavailable.",
+        "Recovery releases activate atomically and retain a verified previous release.",
+        "Primary and Recovery endpoint/tunnel configuration and repair actions are fully separate.",
+        "Watchdog state is durable, rate-limited, identity-scoped and cannot repeat rollback after restart.",
+        "Recovery exposes only bounded verify/restart/rollback/cleanup actions and cannot mint primary authority."
+      ],
+      "risk": "high",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-08-02T05:43:48.698Z",
+      "updatedAt": "2026-08-02T05:43:48.698Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T7",
+      "title": "Delete compatibility and obsolete lifecycle paths",
+      "objective": "After the new runtime is available behind an explicit cutover flag, remove old blue/green authority/config readers, repo-local MCP fallback, legacy toolset migration branches, nested keepalive production startup, old restart coordinators, stale service templates, and duplicate projections. Do not retain hidden fallback paths.",
+      "status": "planned",
+      "dependsOn": [
+        "T3",
+        "T4",
+        "T5",
+        "T6"
+      ],
+      "allowedPaths": [
+        "src/**",
+        "scripts/**",
+        "tests/**",
+        "docs/**",
+        "package.json"
+      ],
+      "forbiddenPaths": [
+        "_ops/**",
+        ".ai/**"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:mcp-compatibility",
+        "package:check:controller-v8",
+        "package:check:ci"
+      ],
+      "acceptanceCriteria": [
+        "Search and architecture checks prove removed legacy paths are no longer callable.",
+        "There is one supported installed-runtime startup path, rollout path, restart path and configuration path.",
+        "Compatibility is limited to the one-way migration command and explicitly versioned external APIs.",
+        "Obsolete tests are replaced with target-architecture tests rather than preserving old behavior.",
+        "No production startup silently falls back to worktree, slot-local config or legacy argv."
+      ],
+      "risk": "high",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-08-02T05:43:48.698Z",
+      "updatedAt": "2026-08-02T05:43:48.698Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T8",
+      "title": "Establish destructive fault-injection release gate",
+      "objective": "Add deterministic tests and local smoke drills that kill or corrupt each lifecycle phase, restart launchd services, introduce stale processes and callbacks, interrupt installs, break each tunnel independently, and simulate cold boot. The gate must prove availability and isolation, not merely error classification.",
+      "status": "planned",
+      "dependsOn": [
+        "T5",
+        "T6",
+        "T7"
+      ],
+      "allowedPaths": [
+        "tests/**",
+        "scripts/smoke-runtime-control-plane.ts",
+        "scripts/smoke-runtime-recovery.ts",
+        "scripts/check-release-readiness.sh",
+        "scripts/verify-controller-v8.sh",
+        "docs/operations/**",
+        "package.json"
+      ],
+      "forbiddenPaths": [
+        "_ops/**",
+        ".ai/**"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:mcp-compatibility",
+        "package:check:controller-v8",
+        "package:check:ci"
+      ],
+      "acceptanceCriteria": [
+        "Fault injection covers every rollout transition before and after authority commit.",
+        "Candidate failure produces zero primary request outage while last-known-good is healthy.",
+        "Duplicate/stale processes and late callbacks cannot change committed state.",
+        "Primary failure leaves authenticated Recovery reachable; Recovery/tunnel failure leaves primary unchanged.",
+        "Cold-start and interrupted-install tests run against installed immutable artifacts, not source shortcuts.",
+        "Release readiness fails unless process-count, authority, config, release, ingress, endpoint and cleanup invariants all pass."
+      ],
+      "risk": "destructive",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-08-02T05:43:48.698Z",
+      "updatedAt": "2026-08-02T05:43:48.698Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T9",
+      "title": "Perform staged cutover and governance cleanup",
+      "objective": "Migrate the live Controller Home using the supported one-way migrator, activate the new bootstrap/runtime/Recovery architecture, run cold-start and failure drills, retain a bounded rollback backup, then delete retired services/state and reconcile or supersede overlapping runtime reliability Issues. Do not push remotely.",
+      "status": "planned",
+      "dependsOn": [
+        "T8"
+      ],
+      "allowedPaths": [
+        "scripts/**",
+        "docs/operations/**",
+        "tasks/issues/**",
+        "tasks/notes/**"
+      ],
+      "forbiddenPaths": [
+        "src/**",
+        "tests/**",
+        "_ops/**"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:mcp-compatibility",
+        "package:check:controller-v8",
+        "package:check:ci"
+      ],
+      "acceptanceCriteria": [
+        "Live migration and cutover use exact verified artifacts and leave an auditable receipt.",
+        "Two cold restarts and all independent failure drills pass without manual process cleanup.",
+        "Old launchd services, slot configurations, stale processes and compatibility state are removed only after rollback window closure.",
+        "ISS-20260802-27931A and overlapping stability/restart/blue-green Issues are completed, superseded or narrowed with explicit evidence.",
+        "Canonical main is clean; temporary branches/worktrees are merged and deleted; no remote push occurs."
+      ],
+      "risk": "destructive",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-08-02T05:43:48.698Z",
+      "updatedAt": "2026-08-02T05:43:48.698Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    }
+  ],
+  "createdAt": "2026-08-02T05:43:48.698Z",
+  "updatedAt": "2026-08-02T06:30:18.733Z",
+  "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+}

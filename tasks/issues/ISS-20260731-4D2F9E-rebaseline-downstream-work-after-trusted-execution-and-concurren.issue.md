@@ -1,14 +1,14 @@
 ---
 id: "ISS-20260731-4D2F9E"
 kind: "governance"
-status: "planned"
-updated_at: "2026-07-31T07:51:08.017Z"
+status: "cancelled"
+updated_at: "2026-08-02T05:47:04.685Z"
 source: "repo-harness-controller-v8"
 ---
 
 # Rebaseline downstream work after trusted execution and concurrency gates
 
-Freeze non-P0 development while trusted execution is restored, then rebaseline all active downstream work before reopening execution. Highest priority is stability and fail-closed execution; second priority is safe bounded concurrency; all other optimization and product work must wait behind those gates.
+Duplicate governance plan superseded by ISS-20260731-7BB554 and now by the concrete runtime architecture authority ISS-20260802-539E7F. No implementation or portfolio rebaseline should be dispatched from this Issue. Its useful freeze/rebaseline/concurrency intent is preserved in the surviving governance line.
 
 ## Goals
 
@@ -110,14 +110,6 @@ Freeze non-P0 development while trusted execution is restored, then rebaseline a
 
 ## Related Artifacts
 
-- `ISS-20260731-B66A97`
-- `ISS-20260729-BF2F89`
-- `ISS-20260730-AE1BCC`
-- `ISS-20260731-CCF3E3`
-- `ISS-20260731-6A7BB5`
-- `ISS-20260730-B55445`
-- `ISS-20260730-A1EA53`
-- `ISS-20260730-84CE88`
-- `ISS-20260726-69DA83`
-- `ISS-20260720-66E25D`
-- `ISS-20260716-34A906`
+- `ISS-20260731-7BB554`
+- `ISS-20260802-539E7F`
+- `duplicate-of: staged reliability rebaseline`

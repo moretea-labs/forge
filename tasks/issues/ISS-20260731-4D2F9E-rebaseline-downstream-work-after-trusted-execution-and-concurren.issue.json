@@ -4,8 +4,8 @@
   "title": "Rebaseline downstream work after trusted execution and concurrency gates",
   "slug": "rebaseline-downstream-work-after-trusted-execution-and-concurren",
   "kind": "governance",
-  "status": "planned",
-  "summary": "Freeze non-P0 development while trusted execution is restored, then rebaseline all active downstream work before reopening execution. Highest priority is stability and fail-closed execution; second priority is safe bounded concurrency; all other optimization and product work must wait behind those gates.",
+  "status": "cancelled",
+  "summary": "Duplicate governance plan superseded by ISS-20260731-7BB554 and now by the concrete runtime architecture authority ISS-20260802-539E7F. No implementation or portfolio rebaseline should be dispatched from this Issue. Its useful freeze/rebaseline/concurrency intent is preserved in the surviving governance line.",
   "goals": [
     "Keep a single P0 write lane until trusted execution and receipt propagation are proven.",
     "Make stability the top priority: no wrong-checkout spawn, no silent fallback, no stale evidence reuse, no unexplained active leases.",
@@ -33,17 +33,9 @@
     "No stale ready task is dispatched solely because it was ready before P0."
   ],
   "relatedArtifacts": [
-    "ISS-20260731-B66A97",
-    "ISS-20260729-BF2F89",
-    "ISS-20260730-AE1BCC",
-    "ISS-20260731-CCF3E3",
-    "ISS-20260731-6A7BB5",
-    "ISS-20260730-B55445",
-    "ISS-20260730-A1EA53",
-    "ISS-20260730-84CE88",
-    "ISS-20260726-69DA83",
-    "ISS-20260720-66E25D",
-    "ISS-20260716-34A906"
+    "ISS-20260731-7BB554",
+    "ISS-20260802-539E7F",
+    "duplicate-of: staged reliability rebaseline"
   ],
   "tasks": [
     {
@@ -269,6 +261,6 @@
     }
   ],
   "createdAt": "2026-07-31T07:51:08.017Z",
-  "updatedAt": "2026-07-31T07:51:08.017Z",
+  "updatedAt": "2026-08-02T05:47:04.685Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }

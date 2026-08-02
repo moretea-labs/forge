@@ -1,0 +1,184 @@
+{
+  "schemaVersion": 5,
+  "id": "ISS-20260802-27931A",
+  "title": "主服务不可用时仍能远程恢复",
+  "slug": "issue",
+  "kind": "governance",
+  "status": "launch_blocked",
+  "summary": "保留为独立的 Recovery 用户需求。源码继续位于 monorepo，但安装后使用自包含不可变发布、独立 launchd、独立状态、独立公网入口和独立 tunnel，不依赖主 Gateway、Daemon、active runtime 或 worktree。实现由主运行时稳定性需求统一定义边界。",
+  "goals": [
+    "Preserve monorepo source ownership for Supervisor and standalone Recovery.",
+    "Install Recovery Gateway and Watchdog as self-contained immutable versioned artifacts with atomic activation.",
+    "Keep Recovery Gateway, Recovery Watchdog and recovery tunnel as separate OS service units from Primary runtime services.",
+    "Persist Recovery Watchdog state and prevent repeated noisy degraded loops or repeated rollback after watchdog restart.",
+    "Probe and repair the dedicated Recovery public endpoint independently from the primary MCP endpoint.",
+    "Remain usable when the repository checkout, Primary Gateway, Controller Daemon and active runtime are unavailable."
+  ],
+  "nonGoals": [
+    "Do not make Recovery depend on the primary Gateway, Controller Daemon, active runtime instance, repository worktree or Bun at runtime.",
+    "Do not let Supervisor supervise Recovery Gateway or Recovery Watchdog; launchd/systemd remains their common lower-level authority.",
+    "Do not allow arbitrary shell execution or let Recovery mint/write primary runtime authority.",
+    "Do not preserve or extend the old long-lived blue/green slot model for compatibility.",
+    "Do not create a separate Recovery Git repository."
+  ],
+  "acceptanceCriteria": [
+    "Recovery source remains under the repo-harness repository and is built from a clean canonical revision.",
+    "Installed Recovery artifacts live under versioned immutable release directories and activate atomically.",
+    "Recovery Gateway and Recovery Watchdog cold-start successfully without the repository worktree, primary Gateway, Controller Daemon or active runtime.",
+    "Both Recovery services restart after abnormal exit and remain stopped after an explicit authorized unload.",
+    "A dedicated recovery cloudflared service exposes only the Recovery endpoint and is independently repairable.",
+    "Watchdog separately evaluates local primary state, primary public endpoint, local Recovery Gateway and public Recovery endpoint.",
+    "Watchdog state survives restart and rollback/tunnel-repair actions remain idempotent, identity-scoped and rate-limited.",
+    "Recovery cannot mutate primary runtime authority and exposes only bounded verify/restart/rollback/cleanup operations.",
+    "Focused unit, smoke, launchd template, interrupted-install and tunnel-failure tests pass."
+  ],
+  "relatedArtifacts": [
+    "ISS-20260802-539E7F T6",
+    "existing standalone Recovery implementation",
+    "dedicated Recovery tunnel and watchdog requirements"
+  ],
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Define recovery authority and failure-domain contract",
+      "objective": "Add or update architecture decisions documenting monorepo source ownership, immutable installed artifacts, OS-level service ownership, and the four distinct monitoring layers.",
+      "status": "blocked",
+      "dependsOn": [],
+      "allowedPaths": [
+        "docs/architecture/**",
+        "docs/operations/**",
+        "docs/wiki/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [],
+      "acceptanceCriteria": [
+        "The document explicitly distinguishes Supervisor monitor, Recovery Watchdog, Gateway KeepAlive, and workflow watchdog.",
+        "The document forbids circular Supervisor-to-Recovery ownership."
+      ],
+      "risk": "low",
+      "notes": [
+        "Wait for ISS-20260802-539E7F:T1 target architecture and deletion map. This Issue remains the standalone Recovery delivery line, not an independent architecture authority. Reuse the monorepo-source/installed-independence requirement and remove assumptions that preserve the old long-lived blue/green model.",
+        "Blocked on ISS-20260802-539E7F:T1. Recovery remains the delivery line but cannot define a competing architecture before the target process/state/config/deletion map is frozen."
+      ],
+      "runIds": [],
+      "createdAt": "2026-08-02T05:29:04.784Z",
+      "updatedAt": "2026-08-02T05:48:36.151Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T2",
+      "title": "Version and atomically activate Recovery artifacts",
+      "objective": "Replace flat in-place Recovery binary installation with immutable release directories, manifest verification, and atomic current activation while retaining bounded cleanup.",
+      "status": "planned",
+      "dependsOn": [
+        "T1"
+      ],
+      "allowedPaths": [
+        "scripts/install-standalone-recovery.ts",
+        "scripts/load-standalone-recovery.sh",
+        "src/runtime/standalone-recovery/**",
+        "tests/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [],
+      "acceptanceCriteria": [
+        "Interrupted installation cannot corrupt the active Recovery release.",
+        "Launch service definitions reference a stable atomic activation path.",
+        "Previous verified Recovery release remains available for bounded fallback."
+      ],
+      "risk": "high",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-08-02T05:29:04.784Z",
+      "updatedAt": "2026-08-02T05:29:04.784Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T3",
+      "title": "Persist and harden Recovery Watchdog state",
+      "objective": "Persist failure counters, first-failure timestamps, rollback-used state, tunnel cooldowns, and last decision across Watchdog restarts; debounce repeated degraded logs.",
+      "status": "planned",
+      "dependsOn": [
+        "T1"
+      ],
+      "allowedPaths": [
+        "src/runtime/standalone-recovery/**",
+        "tests/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [],
+      "acceptanceCriteria": [
+        "Watchdog restart does not reset an active failure window or allow repeated rollback.",
+        "Repeated unchanged degraded decisions are rate-limited while state remains queryable.",
+        "Healthy verification clears only the appropriate failure class."
+      ],
+      "risk": "medium",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-08-02T05:29:04.784Z",
+      "updatedAt": "2026-08-02T05:29:04.784Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T4",
+      "title": "Add dedicated Recovery endpoint and tunnel supervision",
+      "objective": "Separate primary and Recovery public endpoint configuration, generate a dedicated cloudflared service contract, probe the local/public Recovery endpoint, and repair only the failed tunnel.",
+      "status": "planned",
+      "dependsOn": [
+        "T3"
+      ],
+      "allowedPaths": [
+        "src/runtime/standalone-recovery/**",
+        "scripts/install-standalone-recovery.ts",
+        "scripts/load-standalone-recovery.sh",
+        "docs/operations/**",
+        "tests/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [],
+      "acceptanceCriteria": [
+        "Primary tunnel failure cannot restart or roll back the application runtime.",
+        "Recovery tunnel failure cannot restart the primary Gateway.",
+        "Recovery public reachability is verified independently from primary MCP reachability.",
+        "Tunnel repair targets an explicitly configured dedicated service label."
+      ],
+      "risk": "high",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-08-02T05:29:04.784Z",
+      "updatedAt": "2026-08-02T05:29:04.784Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T5",
+      "title": "Verify self-recovery and failure isolation",
+      "objective": "Add focused tests and smoke drills covering Supervisor failure, Recovery Gateway failure, Watchdog failure, primary tunnel failure, Recovery tunnel failure, and concurrent operation deferral.",
+      "status": "planned",
+      "dependsOn": [
+        "T2",
+        "T4"
+      ],
+      "allowedPaths": [
+        "tests/**",
+        "scripts/smoke-runtime-recovery.ts",
+        "docs/operations/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [],
+      "acceptanceCriteria": [
+        "Each failure recovers only its owner component.",
+        "No failure scenario produces a restart storm or duplicate rollback.",
+        "Recovery remains reachable while the primary Gateway is unavailable."
+      ],
+      "risk": "medium",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-08-02T05:29:04.784Z",
+      "updatedAt": "2026-08-02T05:29:04.784Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    }
+  ],
+  "createdAt": "2026-08-02T05:29:04.784Z",
+  "updatedAt": "2026-08-02T06:25:19.727Z",
+  "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+}

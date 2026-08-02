@@ -4,8 +4,8 @@
   "title": "Restore immutable release execution and converge ChatGPT tool surface",
   "slug": "restore-immutable-release-execution-and-converge-chatgpt-tool-su",
   "kind": "bug",
-  "status": "in_progress",
-  "summary": "Take over the existing codex/runtime-observability work. Restore self-hosted repository command execution by fixing the immutable release closure and the actual build/activation path for process-runner.js, add end-to-end canary and rollback gates, merge and activate a verified clean release, then physically reduce the default ChatGPT tool surface while preserving facade workflows and compatibility.",
+  "status": "cancelled",
+  "summary": "Partially completed and then superseded by ISS-20260802-539E7F. T1 permanently fixed and verified immutable release closure/process execution. T2 produced reusable Core facade code and tests, but its live activation path depended on the old slot-local configuration and argv override lifecycle; that cutover is intentionally not completed. The new architecture owns one-config activation and legacy-path deletion. Preserve commits and evidence; do not resume old rollout logic.",
   "goals": [
     "Identify and fix the causal path that produced or activated a release without process-runner.js.",
     "Make release creation, publish, readiness, activation, rollback and command execution fail closed with end-to-end evidence.",
@@ -28,7 +28,12 @@
     "Default ChatGPT orchestration uses a materially smaller tool surface; atomic handlers remain available through bounded discovery or an advanced compatibility mode.",
     "Temporary branches/worktrees/releases created for this work are cleaned after verification."
   ],
-  "relatedArtifacts": [],
+  "relatedArtifacts": [
+    "T1 verified at d4ff6727040f50ae642869e1805115c00caebe27",
+    "Core implementation commits 5351e340 and d38c776b",
+    "ISS-20260802-539E7F:T3",
+    "ISS-20260802-539E7F:T7"
+  ],
   "tasks": [
     {
       "id": "T1",
@@ -311,7 +316,7 @@
       "id": "T2",
       "title": "Physically converge the ChatGPT tool surface",
       "objective": "After execution recovery, change the default Connector profile from the current 133-tool static surface to a bounded facade-first surface with discovery/advanced compatibility, retain internal typed handlers, add schema/freshness tests, and reconnect only if the exposed schema actually changes.",
-      "status": "running",
+      "status": "superseded",
       "dependsOn": [
         "T1"
       ],
@@ -343,11 +348,12 @@
       ],
       "risk": "high",
       "notes": [
-        "Starting physical tool-surface convergence after verified execution recovery. Plan: default controller toolset becomes bounded Core; explicit Advanced/Full remain compatibility modes; existing legacy advanced service config is migrated deterministically; add tools/list and reconnect/freshness tests."
+        "Starting physical tool-surface convergence after verified execution recovery. Plan: default controller toolset becomes bounded Core; explicit Advanced/Full remain compatibility modes; existing legacy advanced service config is migrated deterministically; add tools/list and reconnect/freshness tests.",
+        "The Core facade implementation and tests remain preserved in commits 5351e340 and d38c776b, but live tool-surface activation through slot-local config and argv overrides is superseded by ISS-20260802-539E7F:T3 and T7. Do not perform another old-lifecycle rollout or add compatibility migration branches from this Task."
       ],
       "runIds": [],
       "createdAt": "2026-08-02T03:21:52.747Z",
-      "updatedAt": "2026-08-02T04:19:31.374Z",
+      "updatedAt": "2026-08-02T05:47:30.640Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
@@ -379,6 +385,6 @@
     }
   ],
   "createdAt": "2026-08-02T03:21:52.747Z",
-  "updatedAt": "2026-08-02T04:19:31.374Z",
+  "updatedAt": "2026-08-02T05:47:49.767Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }

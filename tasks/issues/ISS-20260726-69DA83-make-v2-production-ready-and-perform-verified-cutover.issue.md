@@ -1,14 +1,14 @@
 ---
 id: "ISS-20260726-69DA83"
 kind: "bug"
-status: "planned"
-updated_at: "2026-07-26T13:16:47.560Z"
+status: "cancelled"
+updated_at: "2026-08-02T05:46:44.376Z"
 source: "repo-harness-controller-v8"
 ---
 
 # Make V2 production-ready and perform verified cutover
 
-Highest-priority release convergence after the failed 7cb1585e rollout. Fix only defects that prevent the V2 runtime from operating correctly, prove functionality/performance/stability on isolated and shadow paths, then perform one verified blue-green cutover. Defer broader recovery, Grok, SSH, watchdog and resilience enhancements until V2 is active and stable.
+Superseded by ISS-20260802-539E7F. This Issue is based on the retired long-lived blue/green slot, multi-writer authority and slot-local configuration model. Its useful requirements—isolated candidate validation, soak/performance evidence, uninterrupted last-known-good traffic and guarded production cutover—are preserved in the new architecture under T5, T8 and T9. No implementation should continue from this contract.
 
 ## Goals
 
@@ -70,4 +70,6 @@ Highest-priority release convergence after the failed 7cb1585e rollout. Fix only
 
 ## Related Artifacts
 
-- None.
+- `ISS-20260802-539E7F`
+- `superseded: long-lived blue/green V2 cutover contract`
+- `preserved acceptance: candidate soak, performance comparison, external connector verification`
