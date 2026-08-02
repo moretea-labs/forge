@@ -17,8 +17,8 @@ This snapshot is a read model, not an execution gate.
 - ✅ User-level launchd gateway and watchdog are loaded from stable Controller Home and start through a clean `env -i` environment.
 - ✅ Tailscale Funnel exposes the independent recovery gateway at a path-scoped `/recovery/mcp` endpoint while preserving the primary root mapping to stable ingress.
 - ✅ Recovery core checks Supervisor state, slot manifests, manifest hashes, primary health, MCP initialize/tools/list/read-only-call, and records separate audit/quarantine data.
-- ✅ Rollback is fail-closed: the active release is no-op when known-good, and an un-attested previous slot is refused.
-- ✅ Isolated tests cover known-good attestation, no-op rollback, and the six-observation/two-signal watchdog threshold.
+- ✅ Rollback is fail-closed: the active release is no-op when known-good; directory/PID/port-only candidates are refused; registered candidates require manifest, Controller Home, config revision/hash, and writer-fencing evidence.
+- ✅ Supervisor rollback can explicitly start a registered target release when the active Gateway process is missing, preserving a single authority transaction and generated service definition.
 - ⏭ Independently authenticate a ChatGPT Recovery Connector against the recovery Funnel endpoint.
 - ⏭ Configure the forced-command recovery SSH key after administrator approval; no SSH setting has been changed.
 
@@ -27,8 +27,8 @@ This snapshot is a read model, not an execution gate.
 - `bun x tsc --noEmit`: 0 errors.
 - `bun run check:main`: passed; task gate and all five runtime smoke scripts passed.
 - Recovery smoke confirms `processRecovered: true`, `executionJobCount: 0`, and successful controller-session replacement.
-- `bun test tests/runtime/standalone-recovery.test.ts`: 16/16.
-- `bun test tests/runtime/stable-supervisor-hardening.test.ts`: 59/59.
+- `bun test tests/runtime/standalone-recovery.test.ts`: 17/17.
+- `bun test tests/runtime/stable-supervisor-hardening.test.ts`: 60/60.
 - `bun test tests/runtime/stable-state-and-bootstrap.test.ts`: 15/15.
 - `bun test tests/runtime/process-runtime.test.ts`: 39/39.
 - `bun test tests/runtime/runtime-cutover-r2.test.ts`: 39/39.

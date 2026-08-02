@@ -139,6 +139,8 @@ export interface SupervisorOperation {
   reason?: string;
   /** Optional staged release consumed only by a rollout operation. */
   candidateReleasePath?: string;
+  /** Registered known-good release selected by standalone Recovery rollback. */
+  targetReleasePath?: string;
   phase: SupervisorOperationPhase;
   acceptedAt: string;
   scheduledAt?: string;
@@ -172,6 +174,7 @@ export interface SupervisorCommandRequest {
   sourceIdentity?: SupervisorSourceIdentity;
   reason?: string;
   candidateReleasePath?: string;
+  targetReleasePath?: string;
 }
 
 export interface SupervisorCommandResponse {

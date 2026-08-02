@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { createHash } from 'crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { createServer as createSocketServer, type Server as SocketServer } from 'net';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -201,6 +202,29 @@ describe('standalone disaster recovery core', () => {
     writeFileSync(join(home, 'runtime-slots', 'green', 'slot.json'), JSON.stringify({ releasePath: previous }));
     mkdirSync(join(home, 'mcp'), { recursive: true });
     writeFileSync(join(home, 'mcp', 'mcp.tokens.json'), JSON.stringify({ bearerToken: 'a'.repeat(32) }));
+    mkdirSync(join(home, 'bootstrap'), { recursive: true });
+    writeFileSync(join(home, 'bootstrap', 'runtime-config.json'), JSON.stringify({
+      schemaVersion: 1,
+      controllerHome: realpathSync(home),
+      configRevision: 'config-test-1',
+      ingress: { host: '127.0.0.1', port },
+    }));
+    writeFileSync(join(home, 'bootstrap', 'runtime-authority.json'), JSON.stringify({
+      schemaVersion: 1,
+      authorityTerm: 'term-test-1',
+      activeSlot: 'blue',
+      active: {
+        releasePath: realpathSync(active),
+        releaseRevision: 'release-active',
+        manifestHash: createHash('sha256').update(readFileSync(join(active, 'manifest.json'))).digest('hex'),
+      },
+    }));
+    writeFileSync(join(home, 'bootstrap', 'writer-authority.json'), JSON.stringify({
+      schemaVersion: 1,
+      activeSlot: 'blue',
+      epoch: 'epoch-test-1',
+      fencingToken: 'fencing-token-test-1',
+    }));
     const socket = createSocketServer((client) => client.on('data', () => client.end(`${JSON.stringify({ ok: true, state: { observedState: 'healthy', activeSlot: 'blue', previousSlot: 'green', ingress: { state: 'running', activeUpstreamPort: port }, gatewayHost: { releasePath: active, releaseRevision: 'release-active' }, controllerDaemon: { releasePath: active, releaseRevision: 'release-active' } } })}\n`)));
     socketServers.push(socket); mkdirSync(join(home, 'supervisor'), { recursive: true });
     await new Promise<void>((resolveListen, reject) => { socket.once('error', reject); socket.listen(join(home, 'supervisor', 'control.sock'), () => resolveListen()); });
@@ -218,6 +242,48 @@ describe('standalone disaster recovery core', () => {
     expect(rollback.ok).toBe(true);
     expect(rollback.noOp).toBe(true);
     expect(rollback.detail).toContain('known-good');
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test('refuses directory-only previous releases when active runtime is unavailable', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'standalone-recovery-deadlock-'));
+    const active = release(home, 'active', 'release-active');
+    const previous = release(home, 'previous', 'release-previous');
+    mkdirSync(join(home, 'supervisor'), { recursive: true });
+    symlinkSync(active, join(home, 'supervisor', 'current'), 'dir');
+    symlinkSync(previous, join(home, 'supervisor', 'previous'), 'dir');
+    mkdirSync(join(home, 'bootstrap'), { recursive: true });
+    writeFileSync(join(home, 'bootstrap', 'runtime-config.json'), JSON.stringify({
+      schemaVersion: 1,
+      controllerHome: realpathSync(home),
+      configRevision: 'config-deadlock-1',
+    }));
+    writeFileSync(join(home, 'bootstrap', 'runtime-authority.json'), JSON.stringify({
+      schemaVersion: 1,
+      authorityTerm: 'term-deadlock-1',
+      activeSlot: 'blue',
+      active: {
+        releasePath: realpathSync(active),
+        releaseRevision: 'release-active',
+        manifestHash: createHash('sha256').update(readFileSync(join(active, 'manifest.json'))).digest('hex'),
+      },
+    }));
+    writeFileSync(join(home, 'bootstrap', 'writer-authority.json'), JSON.stringify({
+      schemaVersion: 1,
+      activeSlot: 'blue',
+      epoch: 'epoch-deadlock-1',
+      fencingToken: 'fencing-token-deadlock-1',
+    }));
+    const manifestSha256 = createHash('sha256').update(readFileSync(join(previous, 'manifest.json'))).digest('hex');
+    mkdirSync(join(home, 'recovery', 'state'), { recursive: true });
+    writeFileSync(join(home, 'recovery', 'state', 'known-good.json'), JSON.stringify({
+      schemaVersion: 1,
+      releases: [{ path: realpathSync(previous), revision: 'release-previous', manifestSha256 }],
+      updatedAt: new Date().toISOString(),
+    }));
+    const result = await rollbackPrevious(createRecoveryConfig(home));
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('no registered known-good release');
     rmSync(home, { recursive: true, force: true });
   });
 

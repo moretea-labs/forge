@@ -985,11 +985,29 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     return readSupervisorOperation(this.options.controllerHome, operationId);
   }
 
-  submitOperation(input: { requestId: string; kind: SupervisorOperationKind; actor: string; reason?: string; candidateReleasePath?: string; repoRoot?: string; sourceIdentity?: SupervisorSourceIdentity }): { operation: SupervisorOperation; deduplicated: boolean } {
+  submitOperation(input: {
+    requestId: string;
+    kind: SupervisorOperationKind;
+    actor: string;
+    reason?: string;
+    candidateReleasePath?: string;
+    targetReleasePath?: string;
+    repoRoot?: string;
+    sourceIdentity?: SupervisorSourceIdentity;
+  }): { operation: SupervisorOperation; deduplicated: boolean } {
     return this.submitCommand(input);
   }
 
-  submitCommand(input: { requestId: string; kind: SupervisorOperationKind; actor: string; reason?: string; candidateReleasePath?: string; repoRoot?: string; sourceIdentity?: SupervisorSourceIdentity }): { operation: SupervisorOperation; deduplicated: boolean } {
+  submitCommand(input: {
+    requestId: string;
+    kind: SupervisorOperationKind;
+    actor: string;
+    reason?: string;
+    candidateReleasePath?: string;
+    targetReleasePath?: string;
+    repoRoot?: string;
+    sourceIdentity?: SupervisorSourceIdentity;
+  }): { operation: SupervisorOperation; deduplicated: boolean } {
     const accepted = createSupervisorOperation({
       controllerHome: this.options.controllerHome,
       repoRoot: input.repoRoot ?? this.options.repoRoot,
@@ -999,6 +1017,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       actor: input.actor,
       reason: input.reason,
       candidateReleasePath: input.candidateReleasePath,
+      targetReleasePath: input.targetReleasePath,
       sourceIdentity: input.sourceIdentity,
     });
     void this.runPendingOperations();
@@ -1561,7 +1580,6 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       }),
     });
   }
-
   private async stopManagedProcess(
     manager: SupervisorProcessManager,
     identity: SupervisorManagedProcess,
@@ -1577,24 +1595,28 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
   }
 
   private async stopSlotProcesses(
-    input: { slot: RuntimeSlotId; controllerDaemon: SupervisorManagedProcess; gatewayHost: SupervisorManagedProcess },
+    input: { slot: RuntimeSlotId; controllerDaemon?: SupervisorManagedProcess; gatewayHost?: SupervisorManagedProcess },
     reason = 'slot_cleanup',
     operationId = this.state.currentOperationId ?? undefined,
   ): Promise<void> {
-    await this.stopManagedProcess(
-      this.managerForManaged(input.gatewayHost, input.slot),
-      input.gatewayHost,
-      'gatewayHost',
-      reason,
-      operationId,
-    ).catch(() => undefined);
-    await this.stopManagedProcess(
-      this.managerForManaged(input.controllerDaemon, input.slot),
-      input.controllerDaemon,
-      'controllerDaemon',
-      reason,
-      operationId,
-    ).catch(() => undefined);
+    if (input.gatewayHost) {
+      await this.stopManagedProcess(
+        this.managerForManaged(input.gatewayHost, input.slot),
+        input.gatewayHost,
+        'gatewayHost',
+        reason,
+        operationId,
+      ).catch(() => undefined);
+    }
+    if (input.controllerDaemon) {
+      await this.stopManagedProcess(
+        this.managerForManaged(input.controllerDaemon, input.slot),
+        input.controllerDaemon,
+        'controllerDaemon',
+        reason,
+        operationId,
+      ).catch(() => undefined);
+    }
   }
 
   /**
@@ -1979,17 +2001,18 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     }
   }
 
-  private async rollback(operationId: string): Promise<SupervisorReleaseActivationResult | undefined> {
+  private async rollback(operationId: string, targetReleasePath?: string): Promise<SupervisorReleaseActivationResult | undefined> {
     const authority = readActiveSlotAuthority(this.options.controllerHome);
     const currentSlot = authority.activeSlot;
-    const targetSlot = authority.previousSlot ?? this.state.standby?.slot;
+    const targetSlot = authority.previousSlot ?? this.state.standby?.slot ?? (targetReleasePath ? oppositeSlot(currentSlot) : undefined);
     if (!targetSlot) throw new Error('SUPERVISOR_ROLLBACK_TARGET_MISSING');
     const failedDaemon = this.state.controllerDaemon;
     const failedGateway = this.state.gatewayHost;
-    if (!failedDaemon || !failedGateway) throw new Error('SUPERVISOR_ACTIVE_RUNTIME_MISSING');
+    if (!failedDaemon) throw new Error('SUPERVISOR_ACTIVE_RUNTIME_MISSING');
     let target: StartedRuntimeSlot;
     if (
-      this.state.standby?.slot === targetSlot
+      !targetReleasePath
+      && this.state.standby?.slot === targetSlot
       && this.manager.observe(this.state.standby.controllerDaemon) === 'alive'
       && this.manager.observe(this.state.standby.gatewayHost) === 'alive'
     ) {
@@ -2006,7 +2029,9 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     } else {
       updateSupervisorOperation(this.options.controllerHome, operationId, { phase: 'starting' });
       const targetIdentity = readSlotIdentity(this.options.controllerHome, targetSlot);
-      const targetRelease = readSupervisorRelease(targetIdentity?.releasePath) ?? readPreviousSupervisorRelease(this.options.controllerHome);
+      const targetRelease = readSupervisorRelease(targetReleasePath)
+        ?? readSupervisorRelease(targetIdentity?.releasePath)
+        ?? readPreviousSupervisorRelease(this.options.controllerHome);
       target = await this.startSlot(targetSlot, targetRelease);
     }
     // A live standby is not automatically a safe rollback target: it may have
@@ -2030,19 +2055,24 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       activeGeneration: target.generation,
       controllerDaemon: target.controllerDaemon,
       gatewayHost: target.gatewayHost,
-      standby: {
-        slot: currentSlot,
-        ...(failedDaemon.generation ? { generation: failedDaemon.generation } : {}),
-        controllerDaemon: failedDaemon,
-        gatewayHost: failedGateway,
-      },
+      ...(failedGateway ? {
+        standby: {
+          slot: currentSlot,
+          ...(failedDaemon.generation ? { generation: failedDaemon.generation } : {}),
+          controllerDaemon: failedDaemon,
+          gatewayHost: failedGateway,
+        },
+      } : { standby: undefined }),
     });
     updateSupervisorOperation(this.options.controllerHome, operationId, { phase: 'rolling_back' });
 
     let activatedTarget = target;
     let rollbackAuthorityCommitted = false;
     try {
-      markRollbackAuthority(this.options.controllerHome, target.generation);
+      markRollbackAuthority(this.options.controllerHome, target.generation, {
+        releaseRevision: rollbackRelease.releaseRevision,
+        releasePath: rollbackRelease.releasePath,
+      });
       rollbackAuthorityCommitted = true;
       activatedTarget = await this.refreshSlotWriterClaim(target);
       this.persist({
@@ -2062,8 +2092,11 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     } catch (error) {
       let restoredDaemon = failedDaemon;
       let restoredGateway = failedGateway;
-      if (rollbackAuthorityCommitted) {
-        markRollbackAuthority(this.options.controllerHome, failedDaemon.generation ?? this.state.activeGeneration);
+      if (rollbackAuthorityCommitted && failedGateway) {
+        markRollbackAuthority(this.options.controllerHome, failedDaemon.generation ?? this.state.activeGeneration, {
+          releaseRevision: failedDaemon.releaseRevision,
+          releasePath: failedDaemon.releasePath,
+        });
         const failedTarget: StartedRuntimeSlot = {
           slot: currentSlot,
           generation: failedDaemon.generation ?? this.state.activeGeneration,
@@ -2076,7 +2109,15 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
         const restored = await this.refreshSlotWriterClaim(failedTarget);
         restoredDaemon = restored.controllerDaemon;
         restoredGateway = restored.gatewayHost;
+      } else if (rollbackAuthorityCommitted) {
+        markRollbackAuthority(this.options.controllerHome, failedDaemon.generation ?? this.state.activeGeneration, {
+          releaseRevision: failedDaemon.releaseRevision,
+          releasePath: failedDaemon.releasePath,
+        });
       }
+      const restoredPort = restoredGateway
+        ? this.managerForManaged(restoredGateway, currentSlot).gatewayBinding(currentSlot).port
+        : this.state.ingress.activeUpstreamPort;
       this.persist({
         activeSlot: currentSlot,
         activeGeneration: failedDaemon.generation,
@@ -2086,7 +2127,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
         ingress: {
           ...this.state.ingress,
           activeUpstreamSlot: currentSlot,
-          activeUpstreamPort: this.managerForManaged(restoredGateway, currentSlot).gatewayBinding(currentSlot).port,
+          ...(restoredPort ? { activeUpstreamPort: restoredPort } : {}),
         },
       });
       await this.stopSlotProcesses(activatedTarget);
@@ -2278,7 +2319,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       } else if (current.kind === 'rollout') {
         releaseActivation = await this.rollout(current);
       } else {
-        releaseActivation = await this.rollback(current.operationId);
+        releaseActivation = await this.rollback(current.operationId, current.targetReleasePath);
       }
       this.synchronizeActiveRuntimeGeneration(true);
       const persistedOperation = readSupervisorOperation(this.options.controllerHome, current.operationId) ?? current;
