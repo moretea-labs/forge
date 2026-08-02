@@ -195,5 +195,9 @@ export const STABLE_CONTROLLER_TOOL_NAMES = [
   'workflow_watchdog_report',
 ] as const;
 
-/** The default connector schema is the stable repair-capable surface. */
+/**
+ * Deprecated compatibility alias for the former stable Controller surface.
+ * Runtime default selection is Core via parseMcpToolset; do not use this alias
+ * to infer the active tools/list profile.
+ */
 export const DEFAULT_CONTROLLER_TOOL_NAMES = STABLE_CONTROLLER_TOOL_NAMES;

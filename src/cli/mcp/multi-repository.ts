@@ -3,6 +3,7 @@ import { getMcpPolicy, parseMcpProfile } from './policy';
 import { buildMcpToolDefinitions, callMcpTool, type CallToolResult, type McpToolContext, type McpToolDefinition } from './tools';
 import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENT_TIMEOUT_MS, normalizeAgentTimeoutMs } from '../controller/runtime-config';
 import type { McpAgentRunnerName, McpToolset } from './types';
+import { configuredControllerToolset } from './toolset-selection';
 import { realpathSync } from 'fs';
 import { resolve } from 'path';
 import { ensureRepoPreferredControllerHome } from '../repositories/controller-home';
@@ -81,7 +82,7 @@ const REPOSITORY_LOCKED_TOOLS = new Set([
 export function parseMcpToolset(value: unknown, profile: string): McpToolset {
   if (profile !== 'controller') return 'full';
   const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
-  if (!normalized) return 'advanced';
+  if (!normalized) return 'core';
   if (normalized === 'core' || normalized === 'advanced' || normalized === 'full') return normalized;
   throw new Error(`invalid MCP toolset "${String(value)}" (expected: core, advanced, or full)`);
 }
@@ -331,8 +332,11 @@ export function createMcpToolContext(opts: McpServerOptions): MultiRepositoryMcp
     ? loadMcpServiceLocalConfig(controllerHome, explicitRepository?.canonicalRoot)
     : loadMcpLocalConfig(policyRoot);
   const toolsetOverride = opts.toolset ?? process.env.REPO_HARNESS_MCP_TOOLSET;
+  const configuredToolset = policy.profile === 'controller'
+    ? configuredControllerToolset(config)
+    : config?.toolset;
   const toolset = parseMcpToolset(
-    toolsetOverride ?? config?.toolset,
+    toolsetOverride ?? configuredToolset,
     policy.profile,
   );
   return {
@@ -341,7 +345,7 @@ export function createMcpToolContext(opts: McpServerOptions): MultiRepositoryMcp
     repoRoot: policyRoot,
     policy,
     toolset,
-    toolsetLocked: toolsetOverride !== undefined,
+    toolsetLocked: toolsetOverride !== undefined || configuredToolset !== undefined,
     enableChatgptBrowser: opts.enableChatgptBrowser === true,
     sessionId: opts.sessionId,
     principalId: opts.principalId,

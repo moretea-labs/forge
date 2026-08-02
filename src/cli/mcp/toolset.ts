@@ -83,7 +83,7 @@ function pruneStaticExposureCache(): void {
 
 export function normalizeMcpToolset(value: unknown): McpToolset {
   if (value === 'full' || value === 'advanced' || value === 'core') return value;
-  return 'advanced';
+  return 'core';
 }
 
 /**

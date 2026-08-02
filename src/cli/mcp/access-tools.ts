@@ -239,7 +239,7 @@ function previewPayload(
     schemaRefreshRequired: false,
     toolSchemaStable: true,
     restartRequired: false,
-    warning: 'Access mode changes execution approval only. The complete MCP tool schema remains available without reconnecting.',
+    warning: 'Access mode changes execution approval only. The selected Core/Advanced/Full schema remains unchanged without reconnecting.',
   };
 }
 

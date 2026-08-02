@@ -383,6 +383,37 @@ describe('runtime observability', () => {
     }
   });
 
+  test('serves a bounded Core tools/list by default and retains explicit Advanced compatibility', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-core-tools-'));
+    const listNames = async (toolset?: 'core' | 'advanced') => {
+      const server = createRepoHarnessMcpServer({ controllerHome, profile: 'controller', ...(toolset ? { toolset } : {}) });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      const client = new Client({ name: `runtime-tools-${toolset ?? 'default'}`, version: '1.0.0' }, { capabilities: {} });
+      await client.connect(clientTransport);
+      try {
+        return (await client.listTools()).tools.map((tool) => tool.name);
+      } finally {
+        await client.close();
+        await server.close();
+      }
+    };
+    try {
+      const coreNames = await listNames();
+      expect(coreNames.length).toBeLessThan(25);
+      expect(coreNames).toEqual(expect.arrayContaining(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work']));
+      expect(coreNames).not.toContain('repository_command_execute');
+      expect(coreNames).not.toContain('controller_rollout');
+
+      const advancedNames = await listNames('advanced');
+      expect(advancedNames.length).toBe(133);
+      expect(advancedNames).toContain('repository_command_execute');
+      expect(advancedNames).toContain('controller_rollout');
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
   test('writes the same trace identity into response metadata and incident records', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-trace-'));
     const server = createRepoHarnessMcpServer({ controllerHome, profile: 'controller', toolset: 'full' });

@@ -219,7 +219,7 @@ describe("controller service lifecycle", () => {
       realpathSync(join(controllerHome, 'mcp', 'mcp.runtime.json')),
     );
     if (firstStart.status.mcpRuntime?.server?.toolset) {
-      expect(firstStart.status.mcpRuntime.server.toolset).toBe('advanced');
+      expect(firstStart.status.mcpRuntime.server.toolset).toBe('core');
     }
 
     const secondStart = runCli(controllerHome, ["start", "--repo", repoRoot, "--json"], { useScript: true });

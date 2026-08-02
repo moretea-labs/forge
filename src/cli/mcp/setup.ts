@@ -23,6 +23,7 @@ import {
 } from "../controller/runtime-config";
 import { ensureControllerHome, ensureRepoPreferredControllerHome } from "../repositories/controller-home";
 import { accessModeForLegacyToolset } from "./access-mode";
+import { migrateControllerToolsetConfig } from "./toolset-selection";
 
 export interface McpSetupResult {
   status: "ok";
@@ -204,7 +205,7 @@ For a shared editable installation, keep the repo-harness checkout at a stable p
 
 \`\`\`bash
 repo-harness mcp setup chatgpt --repo .
-repo-harness mcp keepalive --repo . --profile controller --toolset advanced --enable-dev-runner --dev-runner-agents codex,claude --tunnel quick
+repo-harness mcp keepalive --repo . --profile controller --toolset core --enable-dev-runner --dev-runner-agents codex,claude --tunnel quick
 \`\`\`
 
 The \`controller\` profile starts a localhost-only visual controller at \`http://127.0.0.1:8766/\` by default. It is separate from the public MCP tunnel. Use it to launch ready Tasks, create small Codex/Claude sessions, approve local Jobs, inspect live logs, and run named checks. Add \`--open-local-ui\` to open it automatically, or \`--no-local-ui\` to disable it.
@@ -245,14 +246,14 @@ Quick tunnels are useful for one-off smoke tests, but their URL may change. For 
 cloudflared tunnel login
 cloudflared tunnel create repo-harness-mcp
 cloudflared tunnel route dns repo-harness-mcp ${CHATGPT_NAMED_TUNNEL_HOST_PLACEHOLDER}
-repo-harness mcp keepalive --repo . --profile controller --toolset advanced --enable-dev-runner --dev-runner-agents codex,claude --tunnel named --cloudflare-tunnel-name repo-harness-mcp --public-endpoint https://${CHATGPT_NAMED_TUNNEL_HOST_PLACEHOLDER}/mcp
+repo-harness mcp keepalive --repo . --profile controller --toolset core --enable-dev-runner --dev-runner-agents codex,claude --tunnel named --cloudflare-tunnel-name repo-harness-mcp --public-endpoint https://${CHATGPT_NAMED_TUNNEL_HOST_PLACEHOLDER}/mcp
 \`\`\`
 
 If Cloudflare is managed outside repo-harness, keep repo-harness on the fixed public origin without owning the tunnel process:
 
 \`\`\`bash
 repo-harness mcp setup chatgpt --repo . --endpoint https://${CHATGPT_NAMED_TUNNEL_HOST_PLACEHOLDER}/mcp
-repo-harness mcp keepalive --repo . --profile controller --toolset advanced --enable-dev-runner --dev-runner-agents codex,claude --tunnel none --public-endpoint https://${CHATGPT_NAMED_TUNNEL_HOST_PLACEHOLDER}/mcp
+repo-harness mcp keepalive --repo . --profile controller --toolset core --enable-dev-runner --dev-runner-agents codex,claude --tunnel none --public-endpoint https://${CHATGPT_NAMED_TUNNEL_HOST_PLACEHOLDER}/mcp
 \`\`\`
 
 Regenerate this guide with the stable endpoint:
@@ -295,7 +296,7 @@ Authenticate with \`Authorization: Bearer <token>\` using the token stored under
 
 ## Verify the loaded tool surface
 
-Default \`--toolset core\` exposes the ChatGPT facade (\`rh_status\`, \`rh_inbox\`, \`rh_context\`, \`rh_work\`) plus repository bootstrap/selection tools. Use \`--toolset advanced\` for the supervised controller menu or \`--toolset full\` for legacy compatibility. Confirm the four \`rh_*\` tools appear after connect. If only legacy planning tools are visible, refresh or recreate the Connector so ChatGPT reloads the MCP tool schema.
+Default \`--toolset core\` exposes the five-tool ChatGPT facade (\`rh_access\`, \`rh_status\`, \`rh_inbox\`, \`rh_context\`, \`rh_work\`) plus bounded repository discovery/edit escape hatches. Use \`--toolset advanced\` for the supervised typed controller menu or \`--toolset full\` for exhaustive legacy compatibility. Confirm all five \`rh_*\` tools appear after connect. If only legacy planning tools are visible, refresh or recreate the Connector so ChatGPT reloads the MCP tool schema.
 
 ## Refresh newly added repository tools
 
@@ -460,9 +461,10 @@ export function runMcpSetupChatgpt(opts: {
   const oauth = ensureMcpControllerHomeOAuthPassphrase(controllerHome);
   if (token.changed) changed.push(token.path);
   if (oauth.changed) changed.push(oauth.path);
-  const toolset = existingConfig?.toolset ?? "advanced";
+  const migratedToolset = migrateControllerToolsetConfig(existingConfig);
+  const toolset = migratedToolset.toolset;
   const config = {
-    version: 1,
+    version: Math.max(existingConfig?.version ?? 1, 2),
     repo: repoRoot,
     server: {
       ...existingConfig?.server,
@@ -482,7 +484,9 @@ export function runMcpSetupChatgpt(opts: {
     },
     profile: existingConfig?.profile ?? "controller",
     toolset,
-    accessMode: existingConfig?.accessMode ?? accessModeForLegacyToolset(toolset),
+    toolsetExplicit: migratedToolset.toolsetExplicit,
+    accessMode: existingConfig?.accessMode
+      ?? accessModeForLegacyToolset(existingConfig?.toolset ?? toolset),
     accessModeUpdatedAt: existingConfig?.accessModeUpdatedAt,
     accessModeRevision: existingConfig?.accessModeRevision ?? 0,
     localController: existingConfig?.localController ?? {
@@ -825,11 +829,7 @@ export function runMcpDoctor(opts: {
       : "not_adopted",
     repo: repoRoot,
     mcp: {
-      toolset: localConfig?.toolset === "full"
-        ? "full"
-        : localConfig?.toolset === "advanced"
-          ? "advanced"
-          : "core",
+      toolset: migrateControllerToolsetConfig(localConfig).toolset,
       localConfig: existsSync(mcpControllerHomeLocalConfigPath(controllerHome)) || existsSync(
         join(repoRoot, ".repo-harness", "mcp.local.json"),
       ),

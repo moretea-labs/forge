@@ -17,7 +17,7 @@ import { readControllerDaemonStatus } from "../../src/runtime/control-plane/daem
 import { terminateProcessTree } from "../../src/runtime/shared/process-tree";
 import { callRuntimeTool, controllerReadiness } from "../../src/runtime/gateway/mcp/runtime-tools";
 import { getMcpPolicy } from "../../src/cli/mcp/policy";
-import { createMcpToolContext as createMultiRepositoryContext } from "../../src/cli/mcp/multi-repository";
+import { createMcpToolContext as createMultiRepositoryContext, parseMcpToolset } from "../../src/cli/mcp/multi-repository";
 import { callRepositoryTool } from "../../src/cli/mcp/repository-tools";
 import { repositoryControllerRoot } from "../../src/cli/repositories/controller-home";
 import { registerRepository } from "../../src/cli/repositories/registry";
@@ -32,7 +32,8 @@ import {
   CONTROLLER_TOOL_SURFACE_VERSION,
   controllerToolSurfaceFingerprint} from "../../src/cli/controller/runtime-config";
 import { ensureSlotHome, writeActiveSlotAuthority } from "../../src/cli/controller/runtime-slots";
-import { writeMcpServiceRuntimeState } from "../../src/cli/mcp/auth";
+import { writeMcpServiceLocalConfig, writeMcpServiceRuntimeState } from "../../src/cli/mcp/auth";
+import { persistControllerAccessMode } from "../../src/cli/mcp/access-mode";
 import {
   readControllerContextProjection,
   writeControllerContextProjection} from "../../src/runtime/projections/controller-context";
@@ -701,14 +702,22 @@ describe("MCP controller profile", () => {
     await withController(async (repoRoot, _ctx) => {
       const controllerHome = join(repoRoot, ".controller-home");
       const repository = registerRepository({ path: repoRoot, controllerHome });
+      const defaultContext = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", controllerHome });
       const core = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", toolset: "core", controllerHome });
       const advanced = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", toolset: "advanced", controllerHome });
       const full = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", toolset: "full", controllerHome });
+      const defaultNames = exposedControllerToolDefinitions(defaultContext).map((tool) => tool.name);
       const coreNames = exposedControllerToolDefinitions(core).map((tool) => tool.name);
-      expect(coreNames).toEqual(expect.arrayContaining(["rh_status", "rh_inbox", "rh_context", "rh_work", "repository_list"]));
+      expect(parseMcpToolset(undefined, 'controller')).toBe('core');
+      expect(defaultContext.toolset).toBe('core');
+      expect(defaultNames).toEqual(coreNames);
+      expect(coreNames.length).toBeLessThan(25);
+      expect(coreNames).toEqual(expect.arrayContaining(["rh_access", "rh_status", "rh_inbox", "rh_context", "rh_work", "repository_list"]));
       // Core is the compact model-facing surface; specialist tools live in advanced.
       expect(coreNames).not.toContain("create_campaign");
       expect(coreNames).not.toContain("process_get");
+      expect(coreNames).not.toContain("repository_command_execute");
+      expect(coreNames).not.toContain("controller_rollout");
       const advancedNames = exposedControllerToolDefinitions(advanced).map((tool) => tool.name);
       const fullNames = exposedControllerToolDefinitions(full).map((tool) => tool.name);
       // Keep the public Controller surface within the declared 133-tool schema budget
@@ -757,6 +766,42 @@ describe("MCP controller profile", () => {
           await terminateProcessTree(daemonPid, { gracePeriodMs: 200, killAfterMs: 1_500 });
         }
       }
+    });
+  });
+
+  test("migrates the unmarked legacy Advanced default while preserving explicit compatibility and access-schema stability", async () => {
+    await withController(async (repoRoot, _ctx) => {
+      const controllerHome = join(repoRoot, ".controller-home");
+      writeMcpServiceLocalConfig(controllerHome, {
+        version: 1,
+        repo: repoRoot,
+        profile: "controller",
+        toolset: "advanced",
+        accessMode: "full_access"});
+
+      const migrated = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", controllerHome });
+      const migratedNames = exposedControllerToolDefinitions(migrated).map((tool) => tool.name);
+      expect(migrated.toolset).toBe("core");
+      expect(migratedNames.length).toBeLessThan(25);
+
+      persistControllerAccessMode(controllerHome, "request", repoRoot);
+      const requestMode = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", controllerHome });
+      persistControllerAccessMode(controllerHome, "full_access", repoRoot);
+      const fullAccessMode = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", controllerHome });
+      expect(exposedControllerToolDefinitions(requestMode).map((tool) => tool.name))
+        .toEqual(exposedControllerToolDefinitions(fullAccessMode).map((tool) => tool.name));
+
+      writeMcpServiceLocalConfig(controllerHome, {
+        version: 2,
+        repo: repoRoot,
+        profile: "controller",
+        toolset: "advanced",
+        toolsetExplicit: true,
+        accessMode: "full_access"});
+      const explicitAdvanced = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", controllerHome });
+      expect(explicitAdvanced.toolset).toBe("advanced");
+      expect(exposedControllerToolDefinitions(explicitAdvanced).map((tool) => tool.name))
+        .toContain("repository_command_execute");
     });
   });
 
