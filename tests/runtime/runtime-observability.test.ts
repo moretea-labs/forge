@@ -383,7 +383,7 @@ describe('runtime observability', () => {
     }
   });
 
-  test('serves a bounded Core tools/list by default and retains explicit Advanced compatibility', async () => {
+  test('serves the bounded stable tools/list by default and retains explicit Advanced compatibility', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-core-tools-'));
     const listNames = async (toolset?: 'core' | 'advanced') => {
       const server = createRepoHarnessMcpServer({ controllerHome, profile: 'controller', ...(toolset ? { toolset } : {}) });
@@ -399,14 +399,18 @@ describe('runtime observability', () => {
       }
     };
     try {
-      const coreNames = await listNames();
-      expect(coreNames.length).toBeLessThan(25);
-      expect(coreNames).toEqual(expect.arrayContaining(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work']));
-      expect(coreNames).not.toContain('repository_command_execute');
-      expect(coreNames).not.toContain('controller_rollout');
+      const defaultNames = await listNames();
+      expect(defaultNames.length).toBe(128);
+      expect(defaultNames).toEqual(expect.arrayContaining(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work']));
+      expect(defaultNames).toContain('repository_command_execute');
+      expect(defaultNames).toContain('controller_rollout');
+
+      const coreNames = await listNames('core');
+      expect(coreNames).toEqual(defaultNames);
 
       const advancedNames = await listNames('advanced');
-      expect(advancedNames.length).toBe(133);
+      expect(advancedNames).toEqual(defaultNames);
+      expect(advancedNames.length).toBe(128);
       expect(advancedNames).toContain('repository_command_execute');
       expect(advancedNames).toContain('controller_rollout');
     } finally {
@@ -477,6 +481,7 @@ describe('runtime observability', () => {
       const canary = verifySupervisorReleaseExecutionCanary({
         releasePath: staged.releasePath,
         cwd: process.cwd(),
+        executionMode: staged.executionMode,
       });
       expect(canary).toMatchObject({ exitCode: 0, commandExecutedOnce: true });
       const manifest = JSON.parse(readFileSync(join(staged.releasePath, 'manifest.json'), 'utf8')) as {

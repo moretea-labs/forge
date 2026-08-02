@@ -18,3 +18,11 @@ Date: 2026-08-02
 - Focused Requirement/Plan/Work tests: 12 passing
 
 No runtime activation, rollout, slot switch, release switch, restart, or remote write was performed.
+
+
+## Controller V8 gate repair (2026-08-02)
+
+- The restored stable MCP contract keeps `advanced` as the default and exposes the bounded 128-tool stable schema; `core` remains a compatibility label for the same schema. The stale compact-Core assertions were updated to the shipped contract.
+- Release canary verification now propagates each immutable release's manifest `executionMode` when validating candidate and rollback releases. Without this, compiled `process-runner.js` artifacts were incorrectly passed to Bun as source scripts and failed with `Unexpected �`.
+- Regression coverage: `bun test tests/cli/mcp-controller.test.ts tests/runtime/runtime-observability.test.ts` — 46 passing; `bun run check:controller-v8` — 6 selected files passing and typecheck passing.
+- Additional checks: `bun run check:public-docs`, `bun run check:type`, `bun run check:runtime-architecture`, `bun run check:test-governance`, `bash scripts/check-task-sync.sh`, and `bash scripts/check-task-workflow.sh --strict` passed. The workflow check reported existing ignored generated-runtime remediation notices only.

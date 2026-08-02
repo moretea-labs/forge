@@ -1749,6 +1749,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       verifySupervisorReleaseExecutionCanary({
         releasePath: candidateRelease.releasePath,
         cwd: operation.repoRoot ?? this.options.repoRoot,
+        executionMode: candidateRelease.executionMode,
       });
     }
     const candidate = await this.startSlot(candidateSlot, candidateRelease);
@@ -2049,6 +2050,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     verifySupervisorReleaseExecutionCanary({
       releasePath: rollbackRelease.releasePath,
       cwd: this.options.repoRoot,
+      executionMode: rollbackRelease.executionMode,
     });
     this.persist({
       activeSlot: targetSlot,

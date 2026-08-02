@@ -739,21 +739,20 @@ describe("MCP controller profile", () => {
       const full = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", toolset: "full", controllerHome });
       const defaultNames = exposedControllerToolDefinitions(defaultContext).map((tool) => tool.name);
       const coreNames = exposedControllerToolDefinitions(core).map((tool) => tool.name);
-      expect(parseMcpToolset(undefined, 'controller')).toBe('core');
-      expect(defaultContext.toolset).toBe('core');
+      expect(parseMcpToolset(undefined, 'controller')).toBe('advanced');
+      expect(defaultContext.toolset).toBe('advanced');
       expect(defaultNames).toEqual(coreNames);
-      expect(coreNames.length).toBeLessThan(25);
+      expect(coreNames.length).toBe(128);
       expect(coreNames).toEqual(expect.arrayContaining(["rh_access", "rh_status", "rh_inbox", "rh_context", "rh_work", "repository_list"]));
-      // Core is the compact model-facing surface; specialist tools live in advanced.
-      expect(coreNames).not.toContain("create_campaign");
-      expect(coreNames).not.toContain("process_get");
-      expect(coreNames).not.toContain("repository_command_execute");
-      expect(coreNames).not.toContain("controller_rollout");
+      // Core is a compatibility label for the same bounded stable surface.
+      expect(coreNames).toContain("create_campaign");
+      expect(coreNames).toContain("process_get");
+      expect(coreNames).toContain("repository_command_execute");
+      expect(coreNames).toContain("controller_rollout");
       const advancedNames = exposedControllerToolDefinitions(advanced).map((tool) => tool.name);
       const fullNames = exposedControllerToolDefinitions(full).map((tool) => tool.name);
-      // Keep the public Controller surface within the declared 133-tool schema budget
-      // (128 baseline + process_get/wait/logs/cancel + finish_edit_session).
-      expect(advancedNames.length).toBe(133);
+      // Core and Advanced share the bounded 128-tool stable schema.
+      expect(advancedNames.length).toBe(128);
       expect(advancedNames).toEqual(expect.arrayContaining([
         'process_get',
         'process_wait',
@@ -800,7 +799,7 @@ describe("MCP controller profile", () => {
     });
   });
 
-  test("migrates the unmarked legacy Advanced default while preserving explicit compatibility and access-schema stability", async () => {
+  test("preserves the unmarked legacy Advanced default while retaining explicit compatibility and access-schema stability", async () => {
     await withController(async (repoRoot, _ctx) => {
       const controllerHome = join(repoRoot, ".controller-home");
       writeMcpServiceLocalConfig(controllerHome, {
@@ -810,10 +809,10 @@ describe("MCP controller profile", () => {
         toolset: "advanced",
         accessMode: "full_access"});
 
-      const migrated = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", controllerHome });
-      const migratedNames = exposedControllerToolDefinitions(migrated).map((tool) => tool.name);
-      expect(migrated.toolset).toBe("core");
-      expect(migratedNames.length).toBeLessThan(25);
+      const legacy = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", controllerHome });
+      const legacyNames = exposedControllerToolDefinitions(legacy).map((tool) => tool.name);
+      expect(legacy.toolset).toBe("advanced");
+      expect(legacyNames.length).toBe(128);
 
       persistControllerAccessMode(controllerHome, "request", repoRoot);
       const requestMode = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", controllerHome });
