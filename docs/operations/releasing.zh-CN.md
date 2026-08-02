@@ -20,10 +20,9 @@ RC 使用 npm dist-tag `next`，稳定版使用 `latest`。`publishConfig.proven
 在目标 release commit 的干净 checkout 中执行：
 
 ```bash
-npm ci --ignore-scripts --no-audit --no-fund
-npm run check:release-version
-npm run check:release-readiness
-npm run release:dry-run
+bun install --frozen-lockfile
+bun run check:main
+bun run check:release
 ```
 
 同时验证两种启动路径：
@@ -33,7 +32,7 @@ node bin/repo-harness.mjs --help
 bun bin/repo-harness.mjs --help
 ```
 
-门禁会检查 package 身份、公开文档、许可证与 notices、tracked 文件卫生、MCP 兼容性、公开导出内容、npm pack 结果和隔离 tarball 安装。
+main 门禁复用 focused task receipt，不执行全量测试。release 门禁复用该 receipt，检查 package 身份、公开文档、许可证与 notices、tracked 文件卫生和公开导出内容，然后只在 `.ai/harness/artifacts/release/` 生成一个 tarball；隔离安装与发布都复用这个 tarball。`test:full` 仅作为人工诊断命令。
 
 ## 首次 npm 发布
 

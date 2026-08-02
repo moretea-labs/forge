@@ -11,7 +11,7 @@ This document records the intended public repository configuration. It is review
 
 ## Main branch protection
 
-Require pull requests, the exact `CI / Release readiness` status check, resolved review conversations, and a linear history. Block force pushes and deletion. The required check runs `npm run check:release-readiness` on every pull request and push to `main`; do not substitute the path-filtered Windows smoke workflow as the universal gate.
+Require pull requests, the exact `CI / Main gate` status check, resolved review conversations, and a linear history. Block force pushes and deletion. The required check installs dependencies once in the workflow and runs `bun run check:main` on every pull request and push to `main`; release packaging remains outside the ordinary CI gate.
 
 ## Release protection
 

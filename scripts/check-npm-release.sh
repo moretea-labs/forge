@@ -27,6 +27,6 @@ if ! grep -Eq 'E404|404 Not Found|No match found|not in this registry' "$LOOKUP_
   exit 1
 fi
 
-bash scripts/check-release-readiness.sh
+bun run check:release
 
 echo "[release] OK: npm package gate passed."

@@ -37,11 +37,18 @@ npm run check:release-surface
 npm run check:package-identity
 ```
 
-The complete release gate is:
+The ordinary task and frozen-candidate gates are:
 
 ```bash
-npm run check:release-readiness
+bun run check:task
+bun run check:main
+bun run check:release
 ```
+
+`check:task` and `check:main` stop at affected tests; integration and full
+tests are explicit diagnostics. `check:main` owns the focused candidate receipt.
+`check:release` reuses it and adds package validation plus one tarball shared by
+smoke and publish. `test:full` is a manual diagnostic only.
 
 ## Change rules
 

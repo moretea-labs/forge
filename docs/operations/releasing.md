@@ -20,10 +20,9 @@ RC versions use npm dist-tag `next`. Stable versions use `latest`. `publishConfi
 From a clean checkout at the intended release commit:
 
 ```bash
-npm ci --ignore-scripts --no-audit --no-fund
-npm run check:release-version
-npm run check:release-readiness
-npm run release:dry-run
+bun install --frozen-lockfile
+bun run check:main
+bun run check:release
 ```
 
 Also verify both supported launch paths:
@@ -33,7 +32,7 @@ node bin/repo-harness.mjs --help
 bun bin/repo-harness.mjs --help
 ```
 
-The release gate verifies package identity, documentation, licenses and notices, tracked-file hygiene, MCP compatibility, public export contents, npm pack output, and isolated tarball installation.
+The main gate reuses the focused task receipt and does not run the full suite. The release gate reuses that receipt, verifies package identity, documentation, licenses and notices, tracked-file hygiene and public export contents, then creates one tarball under `.ai/harness/artifacts/release/`. Isolated installation and publication consume that same tarball. `test:full` is a manual diagnostic only.
 
 ## First npm publication
 
@@ -49,7 +48,7 @@ git tag -a v1.4.0-rc.6 -m "Matea 1.4.0-rc.6"
 RELEASE_TAG=v1.4.0-rc.6 npm run release:rc
 ```
 
-If publication fails, remove the unpushed local tag, correct the problem, rerun the full gate, and create a new release commit when repository content changes. Never reuse a published package version or move a pushed release tag.
+If publication fails, remove the unpushed local tag, correct the problem, rerun the focused and release gates, and create a new release commit when repository content changes. Never reuse a published package version or move a pushed release tag.
 
 After npm confirms the package:
 

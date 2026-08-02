@@ -12,7 +12,7 @@ Use this command when the user asks whether the harness, migration, or release s
 
 1. Confirm the repo path and report dirty-worktree boundaries.
 2. Run the repo-local required checks that exist. In installed repos, helpers live under `.ai/harness/scripts/`; this self-host source repo may use root `scripts/` for the same commands.
-   - `bun test`
+   - `bun run check:task` (or the repo's affected-test equivalent)
    - `bash .ai/harness/scripts/check-deploy-sql-order.sh`
    - `bash .ai/harness/scripts/check-task-sync.sh`
    - `bash .ai/harness/scripts/check-task-workflow.sh --strict`

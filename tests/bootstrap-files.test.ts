@@ -55,15 +55,15 @@ describe("Bootstrap Script Contracts", () => {
     expect(agents).toContain("check-agent-tooling.sh --host both --check-updates");
   });
 
-  test("portable test runner preserves subprocess headroom", () => {
+  test("portable test runner keeps the ordinary lane bounded", () => {
     const runner = read("scripts/run-tests-portable.sh");
-    expect(runner).toContain('BUN_TEST_TIMEOUT_MS:-60000');
-    expect(runner).toContain('BUN_TEST_MAX_CONCURRENCY:-1');
-    expect(runner).toContain('BUN_TEST_FILE_COOLDOWN_SECONDS:-0.1');
-    expect(runner).toContain('run_test_file "$test_file"');
-    expect(runner).toContain("LC_ALL=C sort -z");
-    expect(runner).not.toContain("xargs -0");
-    expect(runner).not.toContain('"${test_files[@]}"');
+    const governance = read("scripts/test-governance.ts");
+    expect(runner).toContain("exec bun scripts/test-governance.ts affected");
+    expect(runner).toContain('exec bun scripts/test-governance.ts "$@"');
+    expect(governance).toContain("gate: TestGate = 'affected'");
+    expect(governance).toContain("validateTestManifest");
+    expect(runner).not.toContain("BUN_TEST_FILE_COOLDOWN_SECONDS");
+    expect(runner).not.toContain("git ls-files");
   });
 
   test("repo package should expose workflow verification scripts", () => {
@@ -81,7 +81,9 @@ describe("Bootstrap Script Contracts", () => {
     expect(cliEntry).toContain("CLI_VERSION");
     expect(cliEntry).toContain("buildDocsCommand");
     expect(cliEntry).not.toMatch(/\\.version\\(['\"][0-9]+\\.[0-9]+\\.[0-9]+['\"]\\)/);
-    expect(pkg.scripts["check:ci"]).toBe("bash scripts/check-ci.sh");
+    expect(pkg.scripts["check:ci"]).toBe("bun run check:main");
+    expect(pkg.scripts["check:task"]).toBe("bun scripts/run-governed-gate.ts task");
+    expect(pkg.scripts["check:main"]).toBe("bun scripts/run-governed-gate.ts main");
     expect(pkg.scripts["check:brain-manifest"]).toBe("repo-harness run check-brain-manifest");
     expect(pkg.scripts["check:task-sync"]).toBe("repo-harness run check-task-sync");
     expect(pkg.scripts["check:deploy-sql"]).toBe("repo-harness run check-deploy-sql-order");
@@ -91,17 +93,14 @@ describe("Bootstrap Script Contracts", () => {
     expect(pkg.scripts["sync:brain-docs"]).toBe("repo-harness run sync-brain-docs --all");
   });
 
-  test("ci gate should refresh handoff current before resume packet", () => {
+  test("ci gate should delegate to the content-addressed main gate", () => {
     const ciGate = read("scripts/check-ci.sh");
     const bunfig = read("bunfig.toml");
-    const prepare = 'REPO_HARNESS_SKIP_RESUME_REFRESH=1 bash scripts/prepare-handoff.sh "ci gate"';
-    const resume = 'bash scripts/codex-handoff-resume.sh --cwd . --reason "ci gate"';
 
     expect(bunfig).toContain("maxConcurrency = 4");
-    expect(ciGate).toContain(prepare);
-    expect(ciGate).toContain(resume);
-    expect(ciGate.indexOf(prepare)).toBeLessThan(ciGate.indexOf(resume));
-    expect(ciGate.indexOf(resume)).toBeLessThan(ciGate.indexOf("bash scripts/check-task-workflow.sh --strict"));
+    expect(ciGate).toContain("exec bun run check:main");
+    expect(ciGate).not.toContain("bun install");
+    expect(ciGate).not.toContain("npm pack");
   });
 
   test("release gate should delegate owned checks to the release-readiness gate", () => {
@@ -109,11 +108,12 @@ describe("Bootstrap Script Contracts", () => {
     const readinessGate = read("scripts/check-release-readiness.sh");
     const pkg = JSON.parse(read("package.json"));
     expect(releaseGate).toContain('npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}"');
-    expect(releaseGate).toContain("bash scripts/check-release-readiness.sh");
-    expect(releaseGate.indexOf("bash scripts/check-release-readiness.sh")).toBeGreaterThan(
+    expect(releaseGate).toContain("bun run check:release");
+    expect(releaseGate.indexOf("bun run check:release")).toBeGreaterThan(
       releaseGate.indexOf('npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}"')
     );
-    expect(readinessGate).toContain("bash scripts/check-tarball-install-smoke.sh");
+    expect(readinessGate).toContain('bash scripts/check-tarball-install-smoke.sh "$TARBALL_PATH"');
+    expect((readinessGate.match(/npm pack/g) ?? []).length).toBe(2);
     expect(pkg.scripts["check:release-published"]).toBe("bash scripts/check-release-published.sh");
     expect(pkg.scripts["smoke:tarball-install"]).toBe("bash scripts/check-tarball-install-smoke.sh");
   });

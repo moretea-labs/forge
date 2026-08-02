@@ -120,7 +120,10 @@ describe("run command", () => {
     try {
       mkdirSync(helpers, { recursive: true });
       const helper = join(helpers, "sleepy.sh");
-      writeFileSync(helper, "#!/bin/bash\nsleep 1\n");
+      writeFileSync(
+        helper,
+        `#!/bin/bash\nexec ${JSON.stringify(process.execPath)} -e 'setInterval(() => {}, 1000)'\n`,
+      );
       chmodSync(helper, 0o755);
 
       const res = runHelper({

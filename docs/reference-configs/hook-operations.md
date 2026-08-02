@@ -93,4 +93,4 @@ Every hook change should state whether it affects `self-host`, `generated`, or
 
 ## Verification Checklist
 
-Run after hook or workflow contract changes: `bun test`, `bash .ai/harness/scripts/check-task-sync.sh`, `bash .ai/harness/scripts/check-task-workflow.sh --strict`, and `bash scripts/migrate-project-template.sh --repo . --dry-run`.
+Run after hook or workflow contract changes: `bun run check:task`, `bash .ai/harness/scripts/check-task-sync.sh`, `bash .ai/harness/scripts/check-task-workflow.sh --strict`, and `bash scripts/migrate-project-template.sh --repo . --dry-run`. Reserve `bun run check:main` for the frozen candidate so its one full-suite receipt can be reused.

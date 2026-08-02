@@ -410,12 +410,17 @@ This skill may create or update:
 When changing the engine, migration path, contract manifest, or self-hosted workflow, run:
 
 ```bash
-bun test
+bun run check:task
 bash scripts/check-deploy-sql-order.sh
 bash scripts/check-task-sync.sh
 bash scripts/check-task-workflow.sh --strict
 bash scripts/migrate-project-template.sh --repo . --dry-run
 ```
+
+The self-host repository uses content-addressed test governance: ordinary
+verification runs the affected/task gate, and `bun run check:main` reuses that
+focused receipt without expanding to the full suite. Full testing is an
+explicit manual diagnostic, not an ordinary, CI, or release gate.
 
 For migration-focused work, also inspect and dry-run legacy doc migration explicitly:
 

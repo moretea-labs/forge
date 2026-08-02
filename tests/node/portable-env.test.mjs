@@ -13,7 +13,7 @@ test('portable launcher files are executable package entrypoints', () => {
 test('Node runtime is a first-class supported engine', () => {
   const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
   assert.match(pkg.engines.node, />=20/);
-  assert.match(pkg.scripts.test, /run-tests-portable/);
+  assert.match(pkg.scripts.test, /test-governance/);
   assert.ok(pkg.scripts['check:ci:portable']);
 });
 

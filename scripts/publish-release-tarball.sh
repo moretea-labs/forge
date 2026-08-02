@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+CHANNEL="${1:-latest}"
+if [[ "$CHANNEL" != "latest" && "$CHANNEL" != "next" ]]; then
+  echo "usage: $0 latest|next" >&2
+  exit 2
+fi
+
+node scripts/check-release-version.mjs --channel "$CHANNEL" --require-tag
+bash scripts/check-npm-release.sh
+TARBALL_PATH="$(cat .ai/harness/artifacts/release/latest-tarball.txt)"
+if [[ ! -f "$TARBALL_PATH" ]]; then
+  echo "[release] reusable tarball missing: $TARBALL_PATH" >&2
+  exit 1
+fi
+npm publish "$TARBALL_PATH" --tag "$CHANNEL" --access public

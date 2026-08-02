@@ -19,9 +19,9 @@ describe("public package release contract", () => {
       "repo-harness": "bin/repo-harness.mjs",
       "repo-harness-hook": "bin/repo-harness-hook.mjs",
     });
-    expect(pkg.scripts.prepublishOnly).toBe("bash scripts/check-npm-release.sh");
-    expect(pkg.scripts["release:rc"]).toStartWith("node scripts/check-release-version.mjs --channel next --require-tag && ");
-    expect(pkg.scripts["release:stable"]).toStartWith("node scripts/check-release-version.mjs --channel latest --require-tag && ");
+    expect(pkg.scripts.prepublishOnly).toBeUndefined();
+    expect(pkg.scripts["release:rc"]).toBe("bash scripts/publish-release-tarball.sh next");
+    expect(pkg.scripts["release:stable"]).toBe("bash scripts/publish-release-tarball.sh latest");
   });
 
   test("ships maintained public docs and excludes internal reports", () => {
@@ -50,17 +50,18 @@ describe("public package release contract", () => {
     expect(read("THIRD_PARTY_NOTICES.md")).toContain("@modelcontextprotocol/sdk");
   });
 
-  test("uses a real release-readiness CI gate for main and pull requests", () => {
+  test("uses the content-addressed main gate for main and pull requests", () => {
     const workflow = read(".github/workflows/ci.yml");
     expect(workflow).toContain("name: CI");
     expect(workflow).toContain("pull_request:");
     expect(workflow).toContain("branches:");
-    expect(workflow).toContain("release-readiness:");
-    expect(workflow).toContain("name: Release readiness");
+    expect(workflow).toContain("main-gate:");
+    expect(workflow).toContain("name: Main gate");
     expect(workflow).toContain('node-version: "22"');
     expect(workflow).toContain('bun-version: "1.3.14"');
     expect(workflow).toContain("bun install --frozen-lockfile");
-    expect(workflow).toContain("bun run check:release-readiness");
+    expect(workflow).toContain("bun run check:main");
+    expect(workflow).not.toContain("npm pack");
     expect(workflow).not.toContain("npm ci");
     expect(workflow).toContain("contents: read");
     expect(workflow).not.toContain("contents: write");
@@ -76,8 +77,10 @@ describe("public package release contract", () => {
     expect(workflow).toContain('node-version: "22"');
     expect(workflow).toContain("npm install --global npm@latest");
     expect(workflow).toContain('RELEASE_TAG="${GITHUB_REF_NAME}" node scripts/check-release-version.mjs --require-tag');
-    expect(workflow).toContain("npm run check:release-readiness");
-    expect(workflow).toContain('npm publish --tag "${RELEASE_CHANNEL}" --access public');
+    expect(workflow).toContain("bun run check:release");
+    expect(workflow).toContain('TARBALL_PATH="$(cat .ai/harness/artifacts/release/latest-tarball.txt)"');
+    expect(workflow).toContain('npm publish "$TARBALL_PATH" --tag "${RELEASE_CHANNEL}" --access public');
+    expect(workflow).not.toContain("npm pack");
     expect(workflow).toContain("gh release create");
     expect(workflow).not.toContain("NODE_AUTH_TOKEN");
     expect(workflow).not.toContain("NPM_TOKEN");

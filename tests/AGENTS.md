@@ -11,3 +11,11 @@ Keep this file focused on the local contract for this primary functional block.
 - Treat `.ai/context/context-map.json` as the index of discoverable context files.
 - Do not keep pushing context files deeper by default; add lower-level files only for a separately owned functional block with its own commands and invariants.
 - Prefer repo-local workflow artifacts over tool-specific chat memory.
+
+## Test boundary
+
+Tests are a bounded safety net, not an ever-growing specification archive.
+Extend an existing test file before adding a new one, remove duplicate or
+historical cases when behavior changes, and keep the manifest within its
+machine-checked 80-file/40,000-line budget. Preserve only current observable
+contracts and high-risk process, worktree, Controller, and release behavior.

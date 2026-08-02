@@ -1,211 +1,174 @@
 #!/usr/bin/env bun
-import { spawn } from 'child_process';
 import {
-  isProcessAlive,
-  listProcessTreeMembers,
-  terminateProcessTree,
-  type ProcessTreeTerminationResult,
-} from '../src/runtime/shared/process-tree';
+  CHILD_SUPERVISOR_FAILURE_CODES,
+  cleanupOwnedProcessGroup,
+  runBoundedChild,
+  type BoundedChildSupervisorOperations,
+} from '../src/runtime/shared/bounded-child-supervisor';
+
+export const TEST_FAILURE_CODES = {
+  SOURCE_ASSERTION_FAILED: 'TEST_SOURCE_ASSERTION_FAILED',
+  FIXTURE_OR_FLAKY_FAILED: 'TEST_FIXTURE_OR_FLAKY_FAILED',
+  INFRA_CHILD_START_FAILED: 'TEST_INFRA_CHILD_START_FAILED',
+  INFRA_FILE_WALL_TIMEOUT: 'TEST_INFRA_FILE_WALL_TIMEOUT',
+  INFRA_PORT_CONFLICT: 'TEST_INFRA_PORT_CONFLICT',
+  INFRA_RESIDUAL_PROCESS: 'TEST_INFRA_RESIDUAL_PROCESS',
+  INFRA_RUNNER_DID_NOT_CONVERGE: 'TEST_INFRA_RUNNER_DID_NOT_CONVERGE',
+  INFRA_WORKTREE_MUTATION: 'TEST_INFRA_WORKTREE_MUTATION',
+} as const;
+
+export type TestFailureCode = (typeof TEST_FAILURE_CODES)[keyof typeof TEST_FAILURE_CODES];
+export type TestFailureClass = 'source' | 'fixture' | 'infrastructure';
 
 export interface BunTestFileRunResult {
   exitCode: number;
   lingeringPids: number[];
   remainingPids: number[];
+  pidReuseFenced?: boolean;
+  durationMs?: number;
+  failureClass?: TestFailureClass;
+  failureCode?: TestFailureCode;
 }
 
-export function processGroupExists(pid: number | undefined): boolean {
-  if (!pid || pid <= 0 || process.platform === 'win32') return false;
-  try {
-    process.kill(-pid, 0);
-    return true;
-  } catch {
-    return false;
+export const DEFAULT_FILE_WALL_TIMEOUT_MS = 120_000;
+
+function parseTimeout(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function fileLabel(args: string[]): string {
+  return [...args].reverse().find((arg) => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(arg))
+    ?? [...args].reverse().find((arg) => !arg.startsWith('-'))
+    ?? 'Bun test file';
+}
+
+export function classifyBunTestExit(exitCode: number, output = ''): {
+  failureClass: 'source' | 'fixture';
+  failureCode: typeof TEST_FAILURE_CODES.SOURCE_ASSERTION_FAILED | typeof TEST_FAILURE_CODES.FIXTURE_OR_FLAKY_FAILED;
+} | undefined {
+  if (exitCode === 0) return undefined;
+  if (/\b(?:TEST_FIXTURE_FAILURE|TEST_FLAKY_FAILURE|FIXTURE_SETUP_FAILED)\b/.test(output)) {
+    return { failureClass: 'fixture', failureCode: TEST_FAILURE_CODES.FIXTURE_OR_FLAKY_FAILED };
+  }
+  return { failureClass: 'source', failureCode: TEST_FAILURE_CODES.SOURCE_ASSERTION_FAILED };
+}
+
+function mapSupervisorFailure(code: string | undefined): TestFailureCode | undefined {
+  switch (code) {
+    case CHILD_SUPERVISOR_FAILURE_CODES.CHILD_START_FAILED:
+      return TEST_FAILURE_CODES.INFRA_CHILD_START_FAILED;
+    case CHILD_SUPERVISOR_FAILURE_CODES.WALL_TIMEOUT:
+      return TEST_FAILURE_CODES.INFRA_FILE_WALL_TIMEOUT;
+    case CHILD_SUPERVISOR_FAILURE_CODES.RESIDUAL_PROCESS:
+      return TEST_FAILURE_CODES.INFRA_RESIDUAL_PROCESS;
+    case CHILD_SUPERVISOR_FAILURE_CODES.DID_NOT_CONVERGE:
+      return TEST_FAILURE_CODES.INFRA_RUNNER_DID_NOT_CONVERGE;
+    default:
+      return undefined;
   }
 }
 
-export type ClosedChildProcessGroupState = 'gone' | 'owned_residual' | 'pid_reused';
-
-export function classifyClosedChildProcessGroup(
-  pid: number | undefined,
-  groupExists: boolean,
-  leaderAliveAfterClose: boolean,
-): ClosedChildProcessGroupState {
-  if (!pid || pid <= 0 || !groupExists) return 'gone';
-  // The child `close` event means the original process was reaped. If the
-  // direct PID is alive now, the operating system reused it for a different
-  // process. Acting on -PID would target that unrelated process group.
-  if (leaderAliveAfterClose) return 'pid_reused';
-  return 'owned_residual';
-}
-
-function reportReusedPid(pid: number | undefined, label: string): void {
-  console.error(
-    `[tests] skipped residual process-group cleanup after ${label}: closed child PID ${pid ?? 'unknown'} was reused`,
-  );
-}
-
-export interface ClosedChildProcessGroupOperations {
-  processGroupExists(pid: number | undefined): boolean;
-  isProcessAlive(pid: number | undefined): boolean;
-  listProcessTreeMembers(pid: number | undefined): number[];
-  terminateProcessTree(
-    pid: number | undefined,
-    options: { gracePeriodMs: number; killAfterMs: number; pollIntervalMs: number },
-  ): Promise<ProcessTreeTerminationResult>;
-}
-
-const defaultClosedChildProcessGroupOperations: ClosedChildProcessGroupOperations = {
-  processGroupExists,
-  isProcessAlive,
-  listProcessTreeMembers,
-  terminateProcessTree,
-};
+export type ClosedChildProcessGroupOperations = BoundedChildSupervisorOperations;
 
 export async function cleanupClosedChildProcessGroup(
   pid: number | undefined,
-  label: string,
+  _label: string,
   exitCode: number,
-  operations: ClosedChildProcessGroupOperations = defaultClosedChildProcessGroupOperations,
+  operations?: ClosedChildProcessGroupOperations,
 ): Promise<BunTestFileRunResult> {
-  const initialGroupState = classifyClosedChildProcessGroup(
-    pid,
-    operations.processGroupExists(pid),
-    operations.isProcessAlive(pid),
-  );
-  if (initialGroupState === 'gone') {
-    return { exitCode, lingeringPids: [], remainingPids: [] };
-  }
-  if (initialGroupState === 'pid_reused') {
-    reportReusedPid(pid, label);
-    return { exitCode, lingeringPids: [], remainingPids: [] };
-  }
-
-  const lingeringPids = operations.listProcessTreeMembers(pid).filter((memberPid) => memberPid !== pid);
-  if (lingeringPids.length === 0) {
-    return { exitCode, lingeringPids: [], remainingPids: [] };
-  }
-
-  // Fence again immediately before signaling. Full-suite process churn can
-  // reuse a PID between the first group probe and cleanup.
-  const preTerminationState = classifyClosedChildProcessGroup(
-    pid,
-    operations.processGroupExists(pid),
-    operations.isProcessAlive(pid),
-  );
-  if (preTerminationState === 'gone') {
-    return { exitCode, lingeringPids: [], remainingPids: [] };
-  }
-  if (preTerminationState === 'pid_reused') {
-    reportReusedPid(pid, label);
-    return { exitCode, lingeringPids: [], remainingPids: [] };
-  }
-
-  const terminated = await operations.terminateProcessTree(pid, {
-    gracePeriodMs: 100,
-    killAfterMs: 2_000,
-    pollIntervalMs: 25,
-  });
-  const preview = lingeringPids.slice(0, 12).join(', ');
-  const omitted = Math.max(0, lingeringPids.length - 12);
-  console.error(
-    `[tests] reaped ${lingeringPids.length} lingering process(es) after ${label}: ${preview}${omitted > 0 ? `, ... (+${omitted})` : ''}`,
-  );
-
-  if (!terminated.exited) {
-    console.error(
-      `[tests] failed to terminate residual process group after ${label}: ${terminated.remainingPids.join(', ')}`,
-    );
-    return {
-      exitCode: exitCode === 0 ? 1 : exitCode,
-      lingeringPids,
-      remainingPids: terminated.remainingPids,
-    };
-  }
-
-  return { exitCode, lingeringPids, remainingPids: [] };
+  const cleanup = await cleanupOwnedProcessGroup(pid, operations);
+  const failureCode = mapSupervisorFailure(cleanup.failureCode);
+  return {
+    exitCode: failureCode ? 1 : exitCode,
+    lingeringPids: cleanup.residualPids,
+    remainingPids: cleanup.remainingPids,
+    pidReuseFenced: cleanup.pidReuseFenced,
+    ...(failureCode ? { failureClass: 'infrastructure' as const, failureCode } : {}),
+  };
 }
 
-export async function runBunTestFile(args: string[]): Promise<BunTestFileRunResult> {
-  if (args.length === 0) {
-    throw new Error('run-bun-test-file requires Bun test arguments');
-  }
+export interface RunBunTestFileOptions {
+  fileWallTimeoutMs?: number;
+  forwardSignals?: boolean;
+  cwd?: string;
+}
 
-  const child = spawn(process.execPath, ['test', ...args], {
-    cwd: process.cwd(),
+export async function runBunTestFile(
+  args: string[],
+  options: RunBunTestFileOptions = {},
+): Promise<BunTestFileRunResult> {
+  if (args.length === 0) throw new Error('run-bun-test-file requires Bun test arguments');
+  const label = fileLabel(args);
+  const wallTimeoutMs = options.fileWallTimeoutMs
+    ?? parseTimeout(process.env.BUN_TEST_FILE_WALL_TIMEOUT_MS, DEFAULT_FILE_WALL_TIMEOUT_MS);
+  const startedAt = performance.now();
+  const result = await runBoundedChild(process.execPath, ['test', ...args], {
+    cwd: options.cwd ?? process.cwd(),
     env: process.env,
-    detached: process.platform !== 'win32',
-    stdio: 'inherit',
-    windowsHide: true,
+    timeoutMs: wallTimeoutMs,
+    stdio: 'capture',
+    forwardSignals: options.forwardSignals ?? true,
+    termination: { gracePeriodMs: 100, killAfterMs: 2_000, pollIntervalMs: 25 },
   });
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
 
-  const interruptedExitCode = (signal: NodeJS.Signals): number => signal === 'SIGINT' ? 130 : 143;
-  let shutdownSignal: NodeJS.Signals | undefined;
-  let shutdownPromise: Promise<ProcessTreeTerminationResult> | undefined;
-  let resolveShutdownExit!: (exitCode: number) => void;
-  const shutdownExit = new Promise<number>((resolve) => {
-    resolveShutdownExit = resolve;
-  });
-
-  const requestShutdown = (signal: NodeJS.Signals): void => {
-    if (shutdownPromise) return;
-    shutdownSignal = signal;
-    console.error(`[tests] received ${signal}; terminating Bun test process group ${child.pid ?? 'unknown'}`);
-    shutdownPromise = terminateProcessTree(child.pid, {
-      gracePeriodMs: 100,
-      killAfterMs: 2_000,
-      pollIntervalMs: 25,
-    }).then((result) => {
-      if (!result.exited) {
-        console.error(
-          `[tests] failed to terminate Bun test process group after ${signal}: ${result.remainingPids.join(', ')}`,
-        );
-      }
-      child.unref();
-      resolveShutdownExit(result.exited ? interruptedExitCode(signal) : 1);
-      return result;
-    }).catch((error) => {
-      const remainingPids = listProcessTreeMembers(child.pid);
-      console.error(
-        `[tests] Bun test process-group termination failed after ${signal}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-      child.unref();
-      resolveShutdownExit(1);
-      return {
-        pid: child.pid,
-        signaled: false,
-        escalated: false,
-        exited: remainingPids.length === 0,
-        remainingPids,
-      };
-    });
-  };
-
-  const onSigInt = () => requestShutdown('SIGINT');
-  const onSigTerm = () => requestShutdown('SIGTERM');
-  process.once('SIGINT', onSigInt);
-  process.once('SIGTERM', onSigTerm);
-
-  const childExit = new Promise<number>((resolve, reject) => {
-    child.once('error', reject);
-    child.once('close', (code) => resolve(code ?? 1));
-  });
-  const observedExitCode = await Promise.race([childExit, shutdownExit]).finally(() => {
-    process.off('SIGINT', onSigInt);
-    process.off('SIGTERM', onSigTerm);
-  });
-  const shutdownResult = shutdownPromise ? await shutdownPromise : undefined;
-  const exitCode = shutdownSignal ? interruptedExitCode(shutdownSignal) : observedExitCode;
-
-  const label = args.at(-1) ?? 'Bun test file';
-  const cleanup = await cleanupClosedChildProcessGroup(child.pid, label, exitCode);
-  if (shutdownResult && !shutdownResult.exited) {
+  const infrastructureFailure = mapSupervisorFailure(result.failureCode);
+  if (result.pidReuseFenced) {
+    console.error(`[tests] ownership fence skipped cleanup for reused PID after ${label}`);
+  }
+  if (result.residualPids.length > 0) {
+    const preview = result.residualPids.slice(0, 12).join(', ');
+    console.error(`[tests] observed ${result.residualPids.length} residual process(es) after ${label}: ${preview}`);
+  }
+  if (infrastructureFailure) {
+    console.error(`[tests] ${infrastructureFailure}: ${label}`);
     return {
       exitCode: 1,
-      lingeringPids: Array.from(new Set([...cleanup.lingeringPids, ...shutdownResult.remainingPids])),
-      remainingPids: Array.from(new Set([...cleanup.remainingPids, ...shutdownResult.remainingPids])),
+      lingeringPids: result.residualPids,
+      remainingPids: result.remainingPids,
+      pidReuseFenced: result.pidReuseFenced,
+      durationMs: Math.round(performance.now() - startedAt),
+      failureClass: 'infrastructure',
+      failureCode: infrastructureFailure,
     };
   }
-  return cleanup;
+
+  if (result.signal === 'SIGINT' || result.signal === 'SIGTERM') {
+    return {
+      exitCode: result.signal === 'SIGINT' ? 130 : 143,
+      lingeringPids: [],
+      remainingPids: [],
+      pidReuseFenced: result.pidReuseFenced,
+      durationMs: Math.round(performance.now() - startedAt),
+    };
+  }
+
+  if (result.status !== 0 && /(?:EADDRINUSE|address already in use|Failed to listen at)/i.test(`${result.stdout}\n${result.stderr}`)) {
+    console.error(`[tests] ${TEST_FAILURE_CODES.INFRA_PORT_CONFLICT}: ${label}`);
+    return {
+      exitCode: 1,
+      lingeringPids: [],
+      remainingPids: [],
+      pidReuseFenced: result.pidReuseFenced,
+      durationMs: Math.round(performance.now() - startedAt),
+      failureClass: 'infrastructure',
+      failureCode: TEST_FAILURE_CODES.INFRA_PORT_CONFLICT,
+    };
+  }
+
+  const sourceFailure = classifyBunTestExit(result.status, `${result.stdout}\n${result.stderr}`);
+  if (sourceFailure) console.error(`[tests] ${sourceFailure.failureCode}: ${label} exited with code ${result.status}`);
+  return {
+    exitCode: result.status,
+    lingeringPids: [],
+    remainingPids: [],
+    pidReuseFenced: result.pidReuseFenced,
+    durationMs: Math.round(performance.now() - startedAt),
+    ...sourceFailure,
+  };
 }
 
 if (import.meta.main) {

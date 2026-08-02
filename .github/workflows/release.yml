@@ -27,8 +27,12 @@ jobs:
           node-version: "22"
           cache: npm
 
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
       - name: Install dependencies
-        run: npm ci --ignore-scripts --no-audit --no-fund
+        run: bun install --frozen-lockfile
 
       - name: Upgrade npm for Trusted Publishing
         run: npm install --global npm@latest
@@ -46,14 +50,14 @@ jobs:
           echo "RELEASE_VERSION=${VERSION}" >> "$GITHUB_ENV"
           echo "RELEASE_CHANNEL=${CHANNEL}" >> "$GITHUB_ENV"
 
-      - name: Run complete release gate
-        run: npm run check:release-readiness
+      - name: Run release gate and create one tarball
+        run: bun run check:release
 
-      - name: Inspect package contents
-        run: npm pack --dry-run --json
-
-      - name: Publish exact tagged package
-        run: npm publish --tag "${RELEASE_CHANNEL}" --access public
+      - name: Publish the verified tarball
+        shell: bash
+        run: |
+          TARBALL_PATH="$(cat .ai/harness/artifacts/release/latest-tarball.txt)"
+          npm publish "$TARBALL_PATH" --tag "${RELEASE_CHANNEL}" --access public
 
       - name: Create matching GitHub Release
         env:

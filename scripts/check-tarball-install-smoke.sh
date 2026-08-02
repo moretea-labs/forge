@@ -4,21 +4,29 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-PACKAGE_NAME="$(bun -e 'const pkg = await Bun.file("package.json").json(); console.log(pkg.name)')"
 PACKAGE_VERSION="$(bun -e 'const pkg = await Bun.file("package.json").json(); console.log(pkg.version)')"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-PACK_JSON="$TMP_DIR/pack.json"
-npm pack --json --pack-destination "$TMP_DIR" >"$PACK_JSON"
-TARBALL="$(bun - "$PACK_JSON" <<'JS_EOF'
+if [[ "$#" -gt 0 ]]; then
+  TARBALL_PATH="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+  if [[ ! -f "$TARBALL_PATH" ]]; then
+    echo "[tarball-smoke] ERROR: tarball not found: $TARBALL_PATH" >&2
+    exit 1
+  fi
+  TARBALL="$(basename "$TARBALL_PATH")"
+else
+  PACK_JSON="$TMP_DIR/pack.json"
+  npm pack --json --pack-destination "$TMP_DIR" >"$PACK_JSON"
+  TARBALL="$(bun - "$PACK_JSON" <<'JS_EOF'
 const [, , path] = process.argv;
 const pack = await Bun.file(path).json();
 const entry = Array.isArray(pack) ? pack[0] : pack;
 console.log(entry.filename);
 JS_EOF
 )"
-TARBALL_PATH="$TMP_DIR/$TARBALL"
+  TARBALL_PATH="$TMP_DIR/$TARBALL"
+fi
 APP_DIR="$TMP_DIR/app"
 TARGET_REPO="$TMP_DIR/target-repo"
 

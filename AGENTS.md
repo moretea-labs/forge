@@ -58,7 +58,7 @@ Treat ChatGPT as the controller and repo-harness as its repository execution lay
 ## Required Checks
 
 ```bash
-bun test
+bun run check:task
 bash scripts/check-deploy-sql-order.sh
 bash scripts/check-architecture-sync.sh
 bash scripts/check-task-sync.sh
@@ -66,6 +66,10 @@ bash scripts/check-task-workflow.sh --strict
 bun scripts/inspect-project-state.ts --repo . --format text
 bash scripts/migrate-project-template.sh --repo . --dry-run
 ```
+
+`bun run test` is the affected gate. `bun run check:main` reuses the focused
+task receipt and never expands to the full suite. Full testing is manual and
+explicit through `bun run test:full`; it is not a task, CI, or release gate.
 
 <!-- BEGIN ARCHITECTURE CONTRACT -->
 ## Architecture Contract

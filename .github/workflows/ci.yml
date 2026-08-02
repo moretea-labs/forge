@@ -16,8 +16,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  release-readiness:
-    name: Release readiness
+  main-gate:
+    name: Main gate
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -36,5 +36,7 @@ jobs:
       - name: Install dependencies from the committed Bun lockfile
         run: bun install --frozen-lockfile
 
-      - name: Run complete release gate
-        run: bun run check:release-readiness
+      - name: Run one content-addressed main gate
+        env:
+          TEST_BASE_REF: origin/${{ github.base_ref || 'main' }}
+        run: bun run check:main

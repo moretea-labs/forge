@@ -1,0 +1,457 @@
+{
+  "version": 1,
+  "modules": [
+    "core",
+    "controller",
+    "process-runtime",
+    "routing",
+    "repository",
+    "browser",
+    "ios",
+    "workflow",
+    "runner",
+    "release"
+  ],
+  "resources": [
+    "pure",
+    "temp-isolated",
+    "controller-home-isolated",
+    "git-worktree",
+    "process-tree",
+    "fixed-port",
+    "runtime-singleton",
+    "destructive"
+  ],
+  "policy": {
+    "maxTestFiles": 80,
+    "maxTestLines": 40000,
+    "maxPureFiles": 30,
+    "maxTempIsolatedFiles": 35,
+    "maxProcessTreeFiles": 15,
+    "maxGitWorktreeFiles": 15,
+    "maxFixedPortFiles": 6,
+    "maxRuntimeSingletonFiles": 6,
+    "maxControllerHomeIsolatedFiles": 4,
+    "maxDestructiveFiles": 0
+  },
+  "pathModuleRules": [
+    {
+      "prefix": "src/cli/controller/",
+      "modules": [
+        "controller"
+      ]
+    },
+    {
+      "prefix": "src/runtime/plugins/ios",
+      "modules": [
+        "ios"
+      ]
+    },
+    {
+      "prefix": "src/runtime/plugins/browser",
+      "modules": [
+        "browser"
+      ]
+    },
+    {
+      "prefix": "src/runtime/process",
+      "modules": [
+        "process-runtime"
+      ]
+    },
+    {
+      "prefix": "src/runtime/",
+      "modules": [
+        "process-runtime",
+        "controller"
+      ]
+    },
+    {
+      "prefix": "src/cli/repository",
+      "modules": [
+        "repository"
+      ]
+    },
+    {
+      "prefix": "scripts/run-bun-test-file.ts",
+      "modules": [
+        "runner"
+      ]
+    },
+    {
+      "prefix": "scripts/run-supervised-command.ts",
+      "modules": [
+        "runner",
+        "process-runtime"
+      ]
+    },
+    {
+      "prefix": "scripts/test-governance.ts",
+      "modules": [
+        "runner"
+      ]
+    },
+    {
+      "prefix": "src/testing/",
+      "modules": [
+        "runner"
+      ]
+    },
+    {
+      "prefix": "src/runtime/shared/bounded-child-supervisor.ts",
+      "modules": [
+        "runner",
+        "process-runtime"
+      ]
+    },
+    {
+      "prefix": "src/runtime/shared/process-tree.ts",
+      "modules": [
+        "runner",
+        "process-runtime"
+      ]
+    },
+    {
+      "prefix": "scripts/",
+      "modules": [
+        "workflow"
+      ]
+    },
+    {
+      "prefix": "assets/",
+      "modules": [
+        "workflow"
+      ]
+    },
+    {
+      "prefix": ".github/",
+      "modules": [
+        "workflow",
+        "release"
+      ]
+    },
+    {
+      "prefix": "docs/",
+      "modules": [
+        "workflow"
+      ]
+    },
+    {
+      "prefix": "package.json",
+      "modules": [
+        "core",
+        "workflow",
+        "runner",
+        "release"
+      ]
+    },
+    {
+      "prefix": "bun.lock",
+      "modules": [
+        "core",
+        "runner"
+      ]
+    }
+  ],
+  "tests": {
+    "tests/access-policy.test.ts": {
+      "module": "core",
+      "resource": "pure",
+      "smoke": true
+    },
+    "tests/architecture-event.test.ts": {
+      "module": "workflow",
+      "resource": "temp-isolated"
+    },
+    "tests/architecture-sync.test.ts": {
+      "module": "workflow",
+      "resource": "temp-isolated"
+    },
+    "tests/bootstrap-files.test.ts": {
+      "module": "workflow",
+      "resource": "temp-isolated"
+    },
+    "tests/check-agent-tooling.test.ts": {
+      "module": "workflow",
+      "resource": "process-tree"
+    },
+    "tests/check-task-sync.test.ts": {
+      "module": "workflow",
+      "resource": "temp-isolated"
+    },
+    "tests/cli/agent-executable-resolver.test.ts": {
+      "module": "core",
+      "resource": "temp-isolated"
+    },
+    "tests/cli/controller-home.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
+    "tests/cli/controller-isolation-guard.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
+    "tests/cli/controller-lifecycle-authority.test.ts": {
+      "module": "controller",
+      "resource": "temp-isolated"
+    },
+    "tests/cli/controller-service.test.ts": {
+      "module": "controller",
+      "resource": "runtime-singleton"
+    },
+    "tests/cli/init.test.ts": {
+      "module": "core",
+      "resource": "temp-isolated"
+    },
+    "tests/cli/install.test.ts": {
+      "module": "workflow",
+      "resource": "git-worktree"
+    },
+    "tests/cli/local-bridge.test.ts": {
+      "module": "controller",
+      "resource": "fixed-port"
+    },
+    "tests/cli/mcp-controller.test.ts": {
+      "module": "controller",
+      "resource": "process-tree"
+    },
+    "tests/cli/mcp-http.test.ts": {
+      "module": "controller",
+      "resource": "fixed-port"
+    },
+    "tests/cli/mcp-policy.test.ts": {
+      "module": "controller",
+      "resource": "temp-isolated"
+    },
+    "tests/cli/mcp-restart-process-ownership.test.ts": {
+      "module": "process-runtime",
+      "resource": "process-tree"
+    },
+    "tests/cli/repository-command-entry.test.ts": {
+      "module": "repository",
+      "resource": "git-worktree"
+    },
+    "tests/cli/repository-lock-routing-v81.test.ts": {
+      "module": "repository",
+      "resource": "git-worktree"
+    },
+    "tests/cli/repository-mcp-command.test.ts": {
+      "module": "repository",
+      "resource": "git-worktree"
+    },
+    "tests/cli/repository-runtime-storage-v81.test.ts": {
+      "module": "repository",
+      "resource": "git-worktree"
+    },
+    "tests/cli/run.test.ts": {
+      "module": "core",
+      "resource": "temp-isolated"
+    },
+    "tests/cli/runtime-command.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
+    "tests/cli/runtime-slots.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
+    "tests/cli/security.test.ts": {
+      "module": "controller",
+      "resource": "temp-isolated"
+    },
+    "tests/cli/status.test.ts": {
+      "module": "controller",
+      "resource": "temp-isolated"
+    },
+    "tests/cli/tool-capability-cache.test.ts": {
+      "module": "workflow",
+      "resource": "temp-isolated"
+    },
+    "tests/contract-run.test.ts": {
+      "module": "workflow",
+      "resource": "temp-isolated"
+    },
+    "tests/create-project-dirs.runtime.test.ts": {
+      "module": "workflow",
+      "resource": "git-worktree"
+    },
+    "tests/hook-contracts.test.ts": {
+      "module": "workflow",
+      "resource": "temp-isolated"
+    },
+    "tests/hook-input-parse.test.ts": {
+      "module": "workflow",
+      "resource": "pure"
+    },
+    "tests/hook-protocol.test.ts": {
+      "module": "workflow",
+      "resource": "temp-isolated"
+    },
+    "tests/hook-runtime.test.ts": {
+      "module": "workflow",
+      "resource": "temp-isolated"
+    },
+    "tests/infrastructure/test-runner-e2e.test.ts": {
+      "module": "runner",
+      "resource": "process-tree"
+    },
+    "tests/node/portable-env.test.mjs": {
+      "module": "core",
+      "resource": "temp-isolated"
+    },
+    "tests/release/package-release.test.ts": {
+      "module": "release",
+      "resource": "temp-isolated"
+    },
+    "tests/release/release-version.test.ts": {
+      "module": "release",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/activation-state-machine.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated",
+      "smoke": true
+    },
+    "tests/runtime/browser-plugin.test.ts": {
+      "module": "browser",
+      "resource": "fixed-port"
+    },
+    "tests/runtime/capability-recovery.test.ts": {
+      "module": "workflow",
+      "resource": "process-tree"
+    },
+    "tests/runtime/check-runner-provenance.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/control-plane-hardening.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/controller-daemon-ownership.test.ts": {
+      "module": "process-runtime",
+      "resource": "runtime-singleton"
+    },
+    "tests/runtime/execution-identity-guard.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/facade-contracts.test.ts": {
+      "module": "workflow",
+      "resource": "pure"
+    },
+    "tests/runtime/interactive-sync-router.test.ts": {
+      "module": "routing",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/ios-agent-device-capabilities.test.ts": {
+      "module": "ios",
+      "resource": "process-tree"
+    },
+    "tests/runtime/ios-agent-device-provider.test.ts": {
+      "module": "ios",
+      "resource": "process-tree"
+    },
+    "tests/runtime/process-check-receipt.test.ts": {
+      "module": "process-runtime",
+      "resource": "process-tree"
+    },
+    "tests/runtime/process-resource-claims.test.ts": {
+      "module": "process-runtime",
+      "resource": "process-tree"
+    },
+    "tests/runtime/process-runtime.test.ts": {
+      "module": "process-runtime",
+      "resource": "process-tree"
+    },
+    "tests/runtime/process-tree-reclamation.test.ts": {
+      "module": "process-runtime",
+      "resource": "process-tree"
+    },
+    "tests/runtime/provider-config.test.ts": {
+      "module": "process-runtime",
+      "resource": "pure"
+    },
+    "tests/runtime/repository-command-lifecycle.test.ts": {
+      "module": "repository",
+      "resource": "git-worktree"
+    },
+    "tests/runtime/runtime-cleanup.test.ts": {
+      "module": "process-runtime",
+      "resource": "process-tree"
+    },
+    "tests/runtime/runtime-cutover-r2.test.ts": {
+      "module": "process-runtime",
+      "resource": "process-tree"
+    },
+    "tests/runtime/runtime-source-isolation.test.ts": {
+      "module": "process-runtime",
+      "resource": "process-tree"
+    },
+    "tests/runtime/stable-state-and-bootstrap.test.ts": {
+      "module": "workflow",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/stable-supervisor-hardening.test.ts": {
+      "module": "process-runtime",
+      "resource": "runtime-singleton"
+    },
+    "tests/runtime/stable-supervisor-integration.test.ts": {
+      "module": "process-runtime",
+      "resource": "runtime-singleton"
+    },
+    "tests/runtime/standalone-recovery.test.ts": {
+      "module": "process-runtime",
+      "resource": "process-tree"
+    },
+    "tests/runtime/thin-harness-gateway-routing.test.ts": {
+      "module": "routing",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/thin-harness.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/work-task-receipt.test.ts": {
+      "module": "workflow",
+      "resource": "temp-isolated"
+    },
+    "tests/skill-version.test.ts": {
+      "module": "workflow",
+      "resource": "pure"
+    },
+    "tests/sprint-backlog.test.ts": {
+      "module": "workflow",
+      "resource": "temp-isolated"
+    },
+    "tests/unit/fix-mcp-session-lifecycle.test.ts": {
+      "module": "controller",
+      "resource": "pure"
+    },
+    "tests/unit/test-governance.test.ts": {
+      "module": "runner",
+      "resource": "pure"
+    },
+    "tests/unit/test-runner-state.test.ts": {
+      "module": "runner",
+      "resource": "pure",
+      "smoke": true
+    },
+    "tests/variables.test.ts": {
+      "module": "core",
+      "resource": "pure"
+    },
+    "tests/windows-paths.test.ts": {
+      "module": "core",
+      "resource": "pure"
+    },
+    "tests/workflow-contract.test.ts": {
+      "module": "workflow",
+      "resource": "temp-isolated"
+    },
+    "tests/workflow-state-lock.test.ts": {
+      "module": "workflow",
+      "resource": "temp-isolated"
+    }
+  }
+}

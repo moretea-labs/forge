@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -95,10 +95,39 @@ describe('controller check provenance and failure classification', () => {
 
     const evidence = readLatestControllerCheckEvidence(repoRoot, 'cached');
     expect(evidence).toMatchObject({
+      schemaVersion: 2,
       cacheHit: false,
       validatedRevision: first.validatedRevision,
       originalExecutedAt: first.executedAt,
     });
+    expect(readdirSync(join(repoRoot, '.ai/harness/checks/controller/cached'))).toHaveLength(1);
+  });
+
+  test('reuses same-content history across commit identity and unrelated task documents', async () => {
+    const markerRoot = mkdtempSync(join(tmpdir(), 'repo-harness-check-history-marker-'));
+    roots.push(markerRoot);
+    const marker = join(markerRoot, 'runs');
+    const command = [process.execPath, '-e', `require('fs').appendFileSync(${JSON.stringify(marker)}, 'x')`];
+    const repoRoot = fixture({ history: { command } });
+    const packagePath = join(repoRoot, 'package.json');
+    const originalPackage = readFileSync(packagePath, 'utf8');
+
+    const first = await runControllerCheckAsync(repoRoot, 'history');
+    expect(first.cacheHit).toBe(false);
+    spawnSync('git', ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '--allow-empty', '-m', 'same tree identity'], {
+      cwd: repoRoot,
+      stdio: 'ignore',
+    });
+    mkdirSync(join(repoRoot, 'tasks/issues'), { recursive: true });
+    writeFileSync(join(repoRoot, 'tasks/issues/unrelated.md'), '# unrelated task metadata\n');
+    expect((await runControllerCheckAsync(repoRoot, 'history')).cacheHit).toBe(true);
+
+    writeFileSync(packagePath, JSON.stringify({ name: 'check-provenance-fixture', changed: true }));
+    expect((await runControllerCheckAsync(repoRoot, 'history')).cacheHit).toBe(false);
+    writeFileSync(packagePath, originalPackage);
+    expect((await runControllerCheckAsync(repoRoot, 'history')).cacheHit).toBe(true);
+    expect(readFileSync(marker, 'utf8')).toBe('xx');
+    expect(existsSync(join(repoRoot, '.ai/harness/checks/controller/history'))).toBe(true);
   });
 
   test('strips Controller writer and Supervisor authority from sync and async check children', async () => {
