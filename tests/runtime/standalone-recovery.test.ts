@@ -212,6 +212,8 @@ describe('standalone disaster recovery core', () => {
     writeFileSync(join(home, 'bootstrap', 'runtime-authority.json'), JSON.stringify({
       schemaVersion: 1,
       authorityTerm: 'term-test-1',
+      configRevision: 'config-test-1',
+      configHash: createHash('sha256').update(readFileSync(join(home, 'bootstrap', 'runtime-config.json'))).digest('hex'),
       activeSlot: 'blue',
       active: {
         releasePath: realpathSync(active),
@@ -261,6 +263,8 @@ describe('standalone disaster recovery core', () => {
     writeFileSync(join(home, 'bootstrap', 'runtime-authority.json'), JSON.stringify({
       schemaVersion: 1,
       authorityTerm: 'term-deadlock-1',
+      configRevision: 'config-deadlock-1',
+      configHash: createHash('sha256').update(readFileSync(join(home, 'bootstrap', 'runtime-config.json'))).digest('hex'),
       activeSlot: 'blue',
       active: {
         releasePath: realpathSync(active),

@@ -219,6 +219,8 @@ function runtimeBinding(config: RecoveryConfig): RuntimeBinding | undefined {
     const authority = json<{
       schemaVersion?: unknown;
       authorityTerm?: unknown;
+      configRevision?: unknown;
+      configHash?: unknown;
       active?: { releasePath?: unknown; releaseRevision?: unknown; manifestHash?: unknown };
       activeSlot?: unknown;
     }>(join(home, 'bootstrap', 'runtime-authority.json'));
@@ -228,11 +230,14 @@ function runtimeBinding(config: RecoveryConfig): RuntimeBinding | undefined {
       epoch?: unknown;
       fencingToken?: unknown;
     }>(join(home, 'bootstrap', 'writer-authority.json'));
+    const configHash = createHash('sha256').update(configBytes).digest('hex');
     const activeSlot = typeof authority?.activeSlot === 'string'
       ? authority.activeSlot
       : typeof writer?.activeSlot === 'string' ? writer.activeSlot : undefined;
     if (
       authority?.schemaVersion !== 1
+      || authority.configRevision !== configRevision
+      || authority.configHash !== configHash
       || !activeSlot
       || writer?.schemaVersion !== 1
       || writer.activeSlot !== activeSlot
