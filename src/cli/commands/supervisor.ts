@@ -7,7 +7,7 @@ import { sourceIdentityFor } from '../controller/bluegreen-rollout';
 import { installLaunchAgent, launchAgentPath, restoreLaunchAgent, snapshotLaunchAgent, safeLaunchdHandoff, type LaunchAgentFileSnapshot, type LaunchdServiceProbe, type LaunchctlCommandRunner } from '../controller/launch-agents';
 import { launchStableSupervisor } from '../../runtime/supervisor/bridge';
 import { sendSupervisorCommand } from '../../runtime/supervisor/control-server';
-import { stageSupervisorRelease, startRegisteredSupervisorService, supervisorServiceLabel, supervisorSystemdUnitName } from '../../runtime/supervisor/installer';
+import { publishSupervisorRelease, stageSupervisorRelease, startRegisteredSupervisorService, supervisorServiceLabel, supervisorSystemdUnitName } from '../../runtime/supervisor/installer';
 import { isStableSupervisorInstalled, publishCurrentRelease, readCurrentRelease, readCurrentSupervisorRelease, supervisorLogPath, supervisorRoot } from '../../runtime/supervisor/paths';
 import { extractSupervisorServiceRelease, readSupervisorServiceReleaseCoherence, type SupervisorServiceReleaseCoherence, type SupervisorServiceReleaseDescriptor } from '../../runtime/supervisor/release-coherence';
 import { readSupervisorState } from '../../runtime/supervisor/state-store';
@@ -410,14 +410,15 @@ async function restorePreviousActivation(
   rollback: { release?: SupervisorServiceReleaseDescriptor; launchAgent: LaunchAgentFileSnapshot; generatedServicePath: string },
 ): Promise<Record<string, unknown>> {
   try { unregisterService(home); } catch { /* recovery below may still use a detached Supervisor */ }
-  const current = readCurrentRelease(home);
   const previous = rollback.release?.releasePath;
-  if (previous) publishCurrentRelease(home, previous, current);
-  restoreLaunchAgent(rollback.launchAgent);
-
-  if (process.platform === 'darwin' && rollback.launchAgent.content !== undefined) {
-    mkdirSync(dirname(rollback.generatedServicePath), { recursive: true, mode: 0o700 });
-    writeFileSync(rollback.generatedServicePath, rollback.launchAgent.content, { mode: 0o600 });
+  let rollbackPlistPath = rollback.launchAgent.path;
+  if (previous) {
+    publishSupervisorRelease({ controllerHome: home, repoRoot: repo, releasePath: previous });
+    rollbackPlistPath = installLaunchAgent(rollback.generatedServicePath, supervisorServiceLabel(home)).path;
+  } else {
+    restoreLaunchAgent(rollback.launchAgent);
+  }
+  if (process.platform === 'darwin' && previous) {
     const uid = typeof process.getuid === 'function'
       ? process.getuid()
       : Number(runProcess('id', ['-u'], { timeoutMs: 2_000, maxOutputBytes: 1_024 }).stdout.trim());
@@ -425,7 +426,7 @@ async function restorePreviousActivation(
     try {
       const handoffResult = await safeLaunchdHandoff({
         label: supervisorServiceLabel(home),
-        plistPath: rollback.launchAgent.path,
+        plistPath: rollbackPlistPath,
         domain: `gui/${uid}`,
         maxBootoutWaitMs: 10_000,
         maxBootstrapRetry: 3,
@@ -438,7 +439,7 @@ async function restorePreviousActivation(
           const verifyDeadline = Date.now() + 60_000;
           const verifyResult = await verifyFullReadiness(home, rollback.release.releaseRevision, verifyDeadline);
           if (verifyResult.healthy) {
-            return { ok: true, mode: 'previous_launch_agent', plistPath: rollback.launchAgent.path, bootstrapAttempts: handoffResult.bootstrapAttempts, release: rollback.release, serviceCoherence: verifyResult.serviceCoherence };
+            return { ok: true, mode: 'previous_launch_agent', plistPath: rollbackPlistPath, bootstrapAttempts: handoffResult.bootstrapAttempts, release: rollback.release, serviceCoherence: verifyResult.serviceCoherence };
           }
           // Endpoint verification failed — fall through to detached fallback
         }
