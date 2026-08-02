@@ -132,6 +132,8 @@ export interface SupervisorOperation {
   kind: SupervisorOperationKind;
   controllerHome: string;
   repoRoot?: string;
+  /** Exact source checkout identity selected for this operation. */
+  sourceIdentity?: SupervisorSourceIdentity;
   requestedBy: string;
   actor: string;
   reason?: string;
@@ -150,6 +152,14 @@ export interface SupervisorOperation {
   result?: Record<string, unknown>;
 }
 
+export interface SupervisorSourceIdentity {
+  repoId?: string;
+  checkoutId?: string;
+  sourcePath: string;
+  expectedHead: string;
+  expectedRevision: string;
+}
+
 export interface SupervisorCommandRequest {
   command: 'status' | 'operation_submit' | 'operation_get' | 'handoff' | 'stop' | 'ping';
   requestId?: string;
@@ -158,6 +168,8 @@ export interface SupervisorCommandRequest {
   kind?: SupervisorOperationKind;
   operationId?: string;
   repoRoot?: string;
+  checkoutId?: string;
+  sourceIdentity?: SupervisorSourceIdentity;
   reason?: string;
   candidateReleasePath?: string;
 }

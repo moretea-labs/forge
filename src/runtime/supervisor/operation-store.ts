@@ -12,7 +12,7 @@ import {
 } from './paths';
 import { failActivation, readActivationState } from './activation-state-machine';
 import { isProcessAlive } from '../shared/process-tree';
-import type { ProcessIdentity, SupervisorOperation, SupervisorOperationKind, SupervisorOperationPhase } from './types';
+import type { ProcessIdentity, SupervisorOperation, SupervisorOperationKind, SupervisorOperationPhase, SupervisorSourceIdentity } from './types';
 
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,160}$/;
 const MAX_ERROR_LENGTH = 1_000;
@@ -179,6 +179,7 @@ function withOperationScheduleLock<T>(controllerHome: string, action: () => T): 
 export function createSupervisorOperation(input: {
   controllerHome: string;
   repoRoot?: string;
+  sourceIdentity?: SupervisorSourceIdentity;
   requestId: string;
   kind: SupervisorOperationKind;
   requestedBy?: string;
@@ -190,6 +191,12 @@ export function createSupervisorOperation(input: {
   const candidateReleasePath = safeCandidateReleasePath(input.controllerHome, input.candidateReleasePath);
   if (candidateReleasePath && input.kind !== 'rollout') {
     throw new Error('SUPERVISOR_RELEASE_PATH_ONLY_VALID_FOR_ROLLOUT');
+  }
+  if (input.sourceIdentity && input.kind !== 'rollout') {
+    throw new Error('SUPERVISOR_SOURCE_IDENTITY_ONLY_VALID_FOR_ROLLOUT');
+  }
+  if (input.sourceIdentity && !candidateReleasePath) {
+    throw new Error('SUPERVISOR_SOURCE_IDENTITY_REQUIRES_STAGED_RELEASE');
   }
   return withOperationScheduleLock(input.controllerHome, () => {
     const existing = findSupervisorOperationByRequestId(input.controllerHome, requestId);
@@ -209,7 +216,13 @@ export function createSupervisorOperation(input: {
       requestId,
       kind: input.kind,
       controllerHome: input.controllerHome,
-      ...(input.repoRoot ? { repoRoot: input.repoRoot } : {}),
+      ...(input.repoRoot ? { repoRoot: resolve(input.repoRoot) } : {}),
+      ...(input.sourceIdentity ? {
+        sourceIdentity: {
+          ...input.sourceIdentity,
+          sourcePath: resolve(input.sourceIdentity.sourcePath),
+        },
+      } : {}),
       requestedBy: boundedText(input.requestedBy) ?? 'unknown',
       actor: boundedText(input.actor) ?? boundedText(input.requestedBy) ?? 'unknown',
       ...(input.reason ? { reason: boundedText(input.reason) } : {}),

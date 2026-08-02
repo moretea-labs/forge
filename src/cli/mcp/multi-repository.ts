@@ -3,10 +3,12 @@ import { getMcpPolicy, parseMcpProfile } from './policy';
 import { buildMcpToolDefinitions, callMcpTool, type CallToolResult, type McpToolContext, type McpToolDefinition } from './tools';
 import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENT_TIMEOUT_MS, normalizeAgentTimeoutMs } from '../controller/runtime-config';
 import type { McpAgentRunnerName, McpToolset } from './types';
+import { realpathSync } from 'fs';
+import { resolve } from 'path';
 import { ensureRepoPreferredControllerHome } from '../repositories/controller-home';
 import { bindRepositoryEntities } from '../repositories/entity-migration';
 import { withControllerLockAsync } from '../repositories/locks';
-import { registerRepository, repositorySummary, resolveRepositorySelection } from '../repositories/registry';
+import { listRepositories, registerRepository, repositorySummary, resolveRepositorySelection, selectRepositoryCheckout } from '../repositories/registry';
 import { ensureRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } from '../repositories/runtime-storage';
 import type { RepositoryRecord } from '../repositories/types';
 import {
@@ -82,6 +84,22 @@ export function parseMcpToolset(value: unknown, profile: string): McpToolset {
   if (!normalized) return 'advanced';
   if (normalized === 'core' || normalized === 'advanced' || normalized === 'full') return normalized;
   throw new Error(`invalid MCP toolset "${String(value)}" (expected: core, advanced, or full)`);
+}
+
+function repositoryForExplicitPath(path: string, controllerHome: string): RepositoryRecord | undefined {
+  const selectedPath = (() => {
+    try { return realpathSync(path); } catch { return resolve(path); }
+  })();
+  for (const repository of listRepositories(controllerHome, { includeRemoved: true })) {
+    const checkout = repository.checkouts.find((candidate) => {
+      const candidatePath = (() => {
+        try { return realpathSync(candidate.canonicalRoot); } catch { return resolve(candidate.canonicalRoot); }
+      })();
+      return candidatePath === selectedPath && candidate.lifecycle !== 'removed';
+    });
+    if (checkout) return selectRepositoryCheckout(repository, checkout.checkoutId);
+  }
+  return undefined;
 }
 
 function parseBooleanSetting(value: string | undefined): boolean | undefined {
@@ -304,7 +322,8 @@ export function repositoryScopedToolArgs(
 export function createMcpToolContext(opts: McpServerOptions): MultiRepositoryMcpToolContext {
   const controllerHome = ensureRepoPreferredControllerHome(opts.repo, opts.controllerHome);
   const explicitRepository = opts.repo?.trim()
-    ? registerRepository({ path: opts.repo, controllerHome })
+    ? repositoryForExplicitPath(opts.repo, controllerHome)
+      ?? registerRepository({ path: opts.repo, controllerHome })
     : undefined;
   const policyRoot = explicitRepository?.canonicalRoot ?? controllerHome;
   const policy = runtimePolicy(policyRoot, { ...opts, controllerHome });

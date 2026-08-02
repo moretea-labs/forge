@@ -4,6 +4,7 @@ import { dirname, join, resolve, sep } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { looksLikeControllerRuntimePackage, resolveControllerRuntimeSourceRoot } from '../control-plane/runtime-generation';
 import { readCurrentRelease, readSupervisorRelease, ensureStableSupervisorLayout, publishCurrentRelease, supervisorLogsRoot, supervisorReleasesRoot, supervisorRoot } from './paths';
+import type { SupervisorSourceIdentity } from './types';
 
 export interface SupervisorInstallResult {
   controllerHome: string;
@@ -145,6 +146,35 @@ function runtimeSourceIdentity(root: string, allowDirtyRuntimeSourceForTests = f
     cleanWorkspace,
     dirtyRuntimePaths,
   };
+}
+
+/**
+ * Re-check the immutable source binding immediately before a candidate is
+ * activated. Staging alone is insufficient: an explicit worktree may move or
+ * become dirty while the asynchronous Supervisor operation is queued.
+ */
+export function verifySupervisorSourceIdentity(
+  identity: SupervisorSourceIdentity,
+  release: NonNullable<ReturnType<typeof readSupervisorRelease>>,
+): void {
+  const expectedPath = containmentPath(identity.sourcePath);
+  const releasePath = containmentPath(release.sourceRoot ?? '');
+  if (!release.sourceRoot || expectedPath !== releasePath) {
+    throw new Error(`SUPERVISOR_SOURCE_IDENTITY_MISMATCH: release source ${release.sourceRoot ?? 'missing'} != ${identity.sourcePath}`);
+  }
+  if (release.sourceCommit !== identity.expectedHead) {
+    throw new Error(`SUPERVISOR_SOURCE_HEAD_MISMATCH: release ${release.sourceCommit ?? 'missing'} != expected ${identity.expectedHead}`);
+  }
+  if (release.releaseRevision !== identity.expectedRevision) {
+    throw new Error(`SUPERVISOR_SOURCE_REVISION_MISMATCH: release ${release.releaseRevision ?? 'missing'} != expected ${identity.expectedRevision}`);
+  }
+  const current = runtimeSourceIdentity(identity.sourcePath);
+  if (current.sourceCommit !== identity.expectedHead) {
+    throw new Error(`SUPERVISOR_SOURCE_HEAD_CHANGED: ${current.sourceCommit} != expected ${identity.expectedHead}`);
+  }
+  if (current.releaseRevision !== identity.expectedRevision || current.cleanWorkspace !== true) {
+    throw new Error(`SUPERVISOR_SOURCE_DIRTY_OR_REVISION_CHANGED: ${current.releaseRevision}`);
+  }
 }
 
 function buildEntry(sourceRoot: string, entry: string, output: string, target: 'bun' | 'node' = 'bun'): void {

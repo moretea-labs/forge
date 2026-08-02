@@ -7,7 +7,7 @@ import { supervisorControlSocketPath, supervisorRescueAuthPath } from './paths';
 import { readMcpServiceBearerToken, mcpServiceOAuthTokenStoreFallbackPaths, mcpServiceOAuthTokenStorePath } from '../../cli/mcp/auth';
 import { McpOAuthTokenStore } from '../../cli/mcp/oauth';
 import { dispatchRescueTool, RESCUE_MCP_TOOLS, type RescueDispatchContext } from './rescue-mcp';
-import type { SupervisorCommandRequest, SupervisorCommandResponse, SupervisorOperation, SupervisorOperationKind, SupervisorState } from './types';
+import type { SupervisorCommandRequest, SupervisorCommandResponse, SupervisorOperation, SupervisorOperationKind, SupervisorSourceIdentity, SupervisorState } from './types';
 
 export const DEFAULT_SUPERVISOR_CONTROL_HOST = '127.0.0.1';
 export const DEFAULT_SUPERVISOR_CONTROL_PORT = 8770;
@@ -15,7 +15,7 @@ export const DEFAULT_SUPERVISOR_CONTROL_PORT = 8770;
 export interface SupervisorControlHandlers extends RescueDispatchContext {
   handoff(): Promise<void>;
   stop(): Promise<void>;
-  submitCommand(input: { requestId: string; kind: SupervisorOperationKind; actor: string; reason?: string; candidateReleasePath?: string }): { operation: SupervisorOperation; deduplicated: boolean };
+  submitCommand(input: { requestId: string; kind: SupervisorOperationKind; actor: string; reason?: string; candidateReleasePath?: string; repoRoot?: string; sourceIdentity?: SupervisorSourceIdentity }): { operation: SupervisorOperation; deduplicated: boolean };
 }
 
 export interface SupervisorControlServerOptions {
@@ -217,6 +217,8 @@ function commandResponse(
       actor: request.actor ?? 'control-socket',
       reason: request.reason,
       candidateReleasePath: request.candidateReleasePath,
+      repoRoot: request.repoRoot,
+      sourceIdentity: request.sourceIdentity,
     });
     return { ok: true, deduplicated: accepted.deduplicated, operation: accepted.operation };
   }

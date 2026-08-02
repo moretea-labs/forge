@@ -178,7 +178,7 @@ function commandTargetsDaemon(tokens: string[]): boolean {
   ));
 }
 
-export function runtimeWriterEnvironment(controllerHome: string, slot: RuntimeSlotId): NodeJS.ProcessEnv {
+export function runtimeWriterEnvironment(controllerHome: string, slot: RuntimeSlotId, instanceId?: string): NodeJS.ProcessEnv {
   const authority = readWriterAuthority(controllerHome);
   if (!authority) return {};
   const passive = authority.activeSlot !== slot;
@@ -190,6 +190,7 @@ export function runtimeWriterEnvironment(controllerHome: string, slot: RuntimeSl
     REPO_HARNESS_WRITER_SLOT: slot,
     REPO_HARNESS_WRITER_EPOCH: authority.epoch,
     REPO_HARNESS_WRITER_FENCING_TOKEN: authority.fencingToken,
+    ...(instanceId ? { REPO_HARNESS_WRITER_INSTANCE_ID: instanceId } : {}),
     REPO_HARNESS_RUNTIME_PASSIVE: passive ? '1' : '0',
     ...(authority.generation ? { REPO_HARNESS_WRITER_GENERATION: authority.generation } : {}),
   };
@@ -252,7 +253,7 @@ export class SupervisorProcessManager {
           REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT: this.options.runtimeSourceRoot,
           REPO_HARNESS_DAEMON_INSTANCE_ID: instanceId,
           REPO_HARNESS_RUNTIME_SLOT: slot,
-          ...runtimeWriterEnvironment(this.options.controllerHome, slot),
+          ...runtimeWriterEnvironment(this.options.controllerHome, slot, instanceId),
         },
       });
       child.unref();

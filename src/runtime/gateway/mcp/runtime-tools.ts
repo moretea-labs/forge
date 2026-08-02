@@ -424,6 +424,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
   }, [], false),
   definition('controller_rollout', 'Blue/green rollout through the single lifecycle surface: start inactive slot, verify, atomic cutover.', {
     repo_id: repoId,
+    checkout_id: { type: 'string', description: 'Exact registered checkout to use; never falls back to activeCheckoutId.' },
     skip_durable_job: { type: 'boolean' },
     reason: { type: 'string' },
   }, [], false),

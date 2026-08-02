@@ -172,6 +172,7 @@ export function startControllerDaemon(controllerHome: string): void {
       controllerHome,
       slot: inheritedSlot,
       generation: inheritedGeneration,
+      instanceId: process.env.REPO_HARNESS_DAEMON_INSTANCE_ID?.trim() || ownershipEarly.instanceId,
       epoch: inheritedEpoch,
       fencingToken: inheritedToken,
       allowLegacyMissing: true,

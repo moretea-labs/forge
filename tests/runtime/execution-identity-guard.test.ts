@@ -7,6 +7,7 @@ import { ensureControllerHome } from '../../src/cli/repositories/controller-home
 import {
   addRepositoryCheckout,
   registerRepository,
+  resolveRepositorySelection,
   selectRepositoryCheckout,
   setRepositoryCheckoutLifecycle,
 } from '../../src/cli/repositories/registry';
@@ -261,6 +262,29 @@ describe('execution identity pre-spawn guard', () => {
       identity,
       cwd: fx.repoBRoot,
     })).toThrow(/CHECKOUT_NOT_ACTIVE/);
+  });
+
+  test('explicit checkout path wins over repository activeCheckoutId without mutating registry focus', () => {
+    const fx = dualRepoFixture();
+    const worktree = join(fx.root, 'repo-a-worktree');
+    const worktreeResult = spawnSync('git', ['-C', fx.repoARoot, 'worktree', 'add', '-b', 'explicit-checkout', worktree], { encoding: 'utf8' });
+    expect(worktreeResult.status).toBe(0);
+    const withCheckout = addRepositoryCheckout({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repoA.repoId,
+      path: worktree,
+      activate: false,
+    });
+    const checkout = withCheckout.checkouts.find((candidate) => candidate.canonicalRoot !== fx.repoA.canonicalRoot);
+    expect(checkout).toBeTruthy();
+    const selected = resolveRepositorySelection({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repoA.repoId,
+      explicitPath: worktree,
+      checkoutId: checkout!.checkoutId,
+    });
+    expect(selected.activeCheckoutId).toBe(checkout!.checkoutId);
+    expect(withCheckout.activeCheckoutId).toBe(fx.repoA.activeCheckoutId);
   });
 
   test('rejects an independently rooted checkout with exact Git common-directory evidence', () => {

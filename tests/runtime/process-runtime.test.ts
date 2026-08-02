@@ -21,6 +21,7 @@ import {
   tryCompleteProcessRecord,
   waitForProcess,
 } from '../../src/runtime/execution/process-runtime';
+import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import {
   claimRunnerStarted,
   runProcessRunnerFromDescriptor,
@@ -42,6 +43,7 @@ import {
   clearRuntimeWriterClaimForTests,
 } from '../../src/cli/controller/stable-state/runtime-writer-context';
 import { publishWriterAuthority } from '../../src/cli/controller/stable-state/writer-authority';
+import { defaultProcessIdentityProbe, executableFingerprint } from '../../src/runtime/supervisor/identity';
 import { stageSupervisorRelease } from '../../src/runtime/supervisor/installer';
 import { ensureRepositoryRuntimeStorage } from '../../src/cli/repositories/runtime-storage';
 import { callProcessTool, processToolDefinitions } from '../../src/runtime/gateway/mcp/process-tools';
@@ -744,6 +746,104 @@ describe('Process Runtime real lease contention', () => {
     const recovery = recoverManagedProcesses(fx.controllerHome, fx.repository.repoId);
     expect(Array.isArray(recovery.leasesReleased)).toBe(true);
     expect(listActiveLeases(fx.controllerHome, fx.repository.repoId).length).toBe(0);
+  });
+
+  test('startup recovery releases terminal leases that were removed from active-index', () => {
+    const fx = fixture();
+    const processId = 'proc_terminal_index_gap';
+    const resourceKey = `workspace:${fx.repository.activeCheckoutId}`;
+    const acquired = acquireExecutionLeases(
+      fx.controllerHome,
+      fx.repository.repoId,
+      `process:${processId}`,
+      [{ resourceKey, mode: 'write', checkoutId: fx.repository.activeCheckoutId }],
+      { ttlMs: 30_000, visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
+    );
+    expect(acquired.acquired).toBe(true);
+    createProcessRecord({
+      schemaVersion: 1,
+      processId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      controllerHome: fx.controllerHome,
+      status: 'running',
+      route: 'managed',
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(0)'], cwd: fx.repoRoot },
+      resourceClaims: [{ resourceKey, mode: 'write', repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId }],
+      // Legacy records may omit checkoutId in the lease ref. The exact
+      // resourceKey plus repo-scoped leaseId still provides safe matching.
+      leaseRefs: acquired.leases.map((lease) => ({ leaseId: lease.leaseId, resourceKey: lease.resourceKey, fencingToken: lease.fencingToken, repoId: lease.repoId })),
+      interactiveWaitMs: 0,
+      timeoutMs: 30_000,
+      maxOutputBytes: 1_024,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      terminalFenceToken: 1,
+    });
+    tryCompleteProcessRecord(fx.controllerHome, fx.repository.repoId, processId, 1, {
+      status: 'succeeded',
+      exitCode: 0,
+      finishedAt: new Date().toISOString(),
+    });
+    expect(recoverManagedProcesses(fx.controllerHome, fx.repository.repoId).leasesReleased).toContain(processId);
+    expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.leasesReleased).toBe(true);
+    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId).some((lease) => lease.ownerJobId === `process:${processId}`)).toBe(false);
+  });
+
+  test('recovery does not release a live process owned by another generation or instance', () => {
+    const fx = fixture();
+    const processId = 'proc_old_runtime_identity';
+    const resourceKey = `workspace:${fx.repository.activeCheckoutId}`;
+    const acquired = acquireExecutionLeases(
+      fx.controllerHome,
+      fx.repository.repoId,
+      `process:${processId}`,
+      [{ resourceKey, mode: 'write', checkoutId: fx.repository.activeCheckoutId }],
+      { ttlMs: 30_000, visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
+    );
+    expect(acquired.acquired).toBe(true);
+    const command = defaultProcessIdentityProbe.command(process.pid);
+    const processStartTime = defaultProcessIdentityProbe.startTime(process.pid);
+    expect(command && processStartTime).toBeTruthy();
+    const authority = publishWriterAuthority(fx.controllerHome, { activeSlot: 'green', generation: 'new-generation', reason: 'identity-test' });
+    bindRuntimeWriterClaim({
+      controllerHome: fx.controllerHome,
+      slot: 'green',
+      epoch: authority.epoch,
+      fencingToken: authority.fencingToken,
+      generation: 'new-generation',
+      instanceId: 'new-instance',
+    });
+    createProcessRecord({
+      schemaVersion: 1,
+      processId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      controllerHome: fx.controllerHome,
+      status: 'running',
+      route: 'managed',
+      command: { kind: 'argv', executable: process.execPath, args: [], cwd: fx.repoRoot },
+      identity: {
+        pid: process.pid,
+        processStartTime: processStartTime!,
+        executableFingerprint: executableFingerprint(command!),
+      },
+      resourceClaims: [{ resourceKey, mode: 'write', repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId }],
+      leaseRefs: acquired.leases.map((lease) => ({ leaseId: lease.leaseId, resourceKey: lease.resourceKey, fencingToken: lease.fencingToken, repoId: lease.repoId, checkoutId: lease.checkoutId })),
+      interactiveWaitMs: 0,
+      timeoutMs: 30_000,
+      maxOutputBytes: 1_024,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      terminalFenceToken: 1,
+      writerAuthorityEpoch: authority.epoch,
+      writerAuthorityGeneration: 'old-generation',
+      writerAuthorityInstanceId: 'old-instance',
+    });
+    const recovery = recoverManagedProcesses(fx.controllerHome, fx.repository.repoId);
+    expect(recovery.recovered).not.toContain(processId);
+    expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.status).toBe('running');
+    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId).some((lease) => lease.ownerJobId === `process:${processId}`)).toBe(true);
   });
 
   test('passive runtime cannot acquire process leases', () => {

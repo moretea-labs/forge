@@ -2,6 +2,8 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { Command } from 'commander';
 import { ensureControllerHome, resolveRepoPreferredControllerHome } from '../repositories/controller-home';
+import { listRepositories } from '../repositories/registry';
+import { sourceIdentityFor } from '../controller/bluegreen-rollout';
 import { installLaunchAgent, launchAgentPath, restoreLaunchAgent, snapshotLaunchAgent, safeLaunchdHandoff, type LaunchAgentFileSnapshot, type LaunchdServiceProbe, type LaunchctlCommandRunner } from '../controller/launch-agents';
 import { launchStableSupervisor } from '../../runtime/supervisor/bridge';
 import { sendSupervisorCommand } from '../../runtime/supervisor/control-server';
@@ -646,14 +648,47 @@ export function buildSupervisorCommand(): Command {
   for (const kind of ['rollout', 'rollback', 'unlock-and-recover'] as const) {
     command.command(kind)
       .option('--repo <path>', 'Repository root')
+      .option('--repo-id <id>', 'Registered repository id for source identity')
+      .option('--checkout-id <id>', 'Exact registered checkout to roll out')
       .option('--controller-home <path>', 'Controller-scoped state root')
       .option('--request-id <id>', 'Idempotency key')
       .option('--reason <text>', 'Bounded reason')
       .option('--json', 'Output JSON')
-      .action(async (opts: { repo?: string; controllerHome?: string; requestId?: string; reason?: string; json?: boolean }) => {
-        const home = homeFor(repoRoot(opts.repo), opts.controllerHome);
+      .action(async (opts: { repo?: string; repoId?: string; checkoutId?: string; controllerHome?: string; requestId?: string; reason?: string; json?: boolean }) => {
+        let repo = repoRoot(opts.repo);
+        let home = homeFor(repo, opts.controllerHome);
+        if (opts.checkoutId || opts.repoId) {
+          const candidates = listRepositories(home, { includeRemoved: true })
+            .filter((repository) => !opts.repoId || repository.repoId === opts.repoId)
+            .flatMap((repository) => repository.checkouts
+              .filter((checkout) => checkout.lifecycle !== 'removed')
+              .map((checkout) => ({ repository, checkout })));
+          const selected = opts.checkoutId
+            ? candidates.find(({ checkout }) => checkout.checkoutId === opts.checkoutId)
+            : candidates.find(({ repository, checkout }) => repository.repoId === opts.repoId && checkout.checkoutId === repository.activeCheckoutId);
+          if (!selected) throw new Error(`SUPERVISOR_CHECKOUT_NOT_FOUND: repoId=${opts.repoId ?? 'any'} checkoutId=${opts.checkoutId ?? 'active'}`);
+          if (opts.repo && resolve(selected.checkout.canonicalRoot) !== repo) {
+            throw new Error(`SUPERVISOR_CHECKOUT_PATH_MISMATCH: ${opts.repo} != ${selected.checkout.canonicalRoot}`);
+          }
+          repo = resolve(selected.checkout.canonicalRoot);
+          home = homeFor(repo, opts.controllerHome);
+        }
         const operation = kind === 'unlock-and-recover' ? 'unlock_and_recover' : kind;
-        const response = await sendSupervisorCommand(home, { command: 'operation_submit', requestId: requestId(opts.requestId), kind: operation as 'rollout' | 'rollback' | 'unlock_and_recover', actor: 'supervisor-cli', reason: opts.reason });
+        let staged: ReturnType<typeof stageSupervisorRelease> | undefined;
+        let sourceIdentity: ReturnType<typeof sourceIdentityFor> | undefined;
+        if (kind === 'rollout' && (opts.repo !== undefined || opts.repoId !== undefined || opts.checkoutId !== undefined)) {
+          staged = stageSupervisorRelease({ controllerHome: home, repoRoot: repo, sourceRoot: repo });
+          sourceIdentity = sourceIdentityFor(repo, home, staged);
+        }
+        const response = await sendSupervisorCommand(home, {
+          command: 'operation_submit',
+          requestId: requestId(opts.requestId),
+          kind: operation as 'rollout' | 'rollback' | 'unlock_and_recover',
+          actor: 'supervisor-cli',
+          reason: opts.reason,
+          ...(staged ? { candidateReleasePath: staged.releasePath } : {}),
+          ...(sourceIdentity ? { repoRoot: repo, sourceIdentity } : {}),
+        });
         output(response, opts.json !== false);
       });
   }

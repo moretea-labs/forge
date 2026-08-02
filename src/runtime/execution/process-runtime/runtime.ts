@@ -33,8 +33,8 @@ import { capProcessOutput } from '../../../effects/process-runner';
 import { redactSensitiveText, sanitizeSensitiveTextFileInPlace } from '../../evidence/sensitive-output';
 import { isProcessAlive, terminateProcessTree } from '../../shared/process-tree';
 import { repositoryChildProcessEnvironment } from '../../shared/process-environment';
-import { acquireExecutionLeases, releaseExecutionLeases, renewExecutionLeases } from '../../resources/leases/store';
-import { assertThisRuntimeMayWrite, assertThisRuntimeMayWriteOrThrow } from '../../../cli/controller/stable-state/runtime-writer-context';
+import { acquireExecutionLeases, listActiveLeases, releaseExecutionLeases, renewExecutionLeases } from '../../resources/leases/store';
+import { assertThisRuntimeMayWrite, assertThisRuntimeMayWriteOrThrow, getRuntimeWriterClaim } from '../../../cli/controller/stable-state/runtime-writer-context';
 import { readWriterAuthority } from '../../../cli/controller/stable-state/writer-authority';
 import { resolveStableControllerHome } from '../../../cli/controller/stable-state/stable-home';
 import { defaultProcessIdentityProbe, executableFingerprint } from '../../supervisor/identity';
@@ -42,7 +42,6 @@ import {
   claimProcessRequest,
   createProcessRecord,
   getProcessRecord,
-  listActiveProcessIds,
   listProcessRecords,
   processLogDir,
   tryCompleteProcessRecord,
@@ -339,6 +338,45 @@ function toResourceClaimSpecs(claims: ProcessResourceClaim[]): ResourceClaimSpec
   }));
 }
 
+function processWriterIdentityMatches(record: ManagedProcessRecord): boolean {
+  const expected = {
+    epoch: record.writerAuthorityEpoch,
+    generation: record.writerAuthorityGeneration,
+    instanceId: record.writerAuthorityInstanceId,
+  };
+  if (!expected.epoch && !expected.generation && !expected.instanceId) return true;
+  const claim = getRuntimeWriterClaim();
+  if (!claim) return false;
+  if (expected.epoch && expected.epoch !== claim.epoch) return false;
+  if (expected.generation && expected.generation !== claim.generation) return false;
+  if (expected.instanceId && expected.instanceId !== claim.instanceId) return false;
+  return true;
+}
+
+function expectedLeaseRefsForProcess(record: ManagedProcessRecord, repoId: string): Array<{
+  leaseId: string;
+  fencingToken: number;
+  repoId: string;
+  checkoutId?: string;
+  workId?: string;
+  resourceKey: string;
+}> {
+  return (record.leaseRefs ?? []).flatMap((ref) => {
+    // A malformed or cross-repository reference is never eligible for cleanup.
+    if (!ref.leaseId || !ref.resourceKey || (ref.repoId && ref.repoId !== repoId)) return [];
+    if (ref.checkoutId && record.checkoutId && ref.checkoutId !== record.checkoutId) return [];
+    if (ref.workId && record.workId && ref.workId !== record.workId) return [];
+    return [{
+      leaseId: ref.leaseId,
+      fencingToken: ref.fencingToken,
+      repoId,
+      ...(ref.checkoutId ? { checkoutId: ref.checkoutId } : {}),
+      ...(ref.workId ? { workId: ref.workId } : {}),
+      resourceKey: ref.resourceKey,
+    }];
+  });
+}
+
 /**
  * Release process leases exactly once. Safe under recovery/cancel/terminal races.
  * Passive / fenced runtimes must not release (lease store fences).
@@ -355,26 +393,29 @@ export function releaseProcessLeasesOnce(
   if (refs.length === 0) {
     return updateProcessRecord(controllerHome, repoId, processId, { leasesReleased: true }, { allowTerminal: true });
   }
+  const expectedRefs = expectedLeaseRefsForProcess(record, repoId);
+  if (expectedRefs.length !== refs.length) return record;
   try {
     releaseExecutionLeases(
       controllerHome,
       repoId,
       processOwnerJobId(processId),
-      refs.map((ref) => ({
-        leaseId: ref.leaseId,
-        fencingToken: ref.fencingToken,
-        repoId: ref.repoId ?? repoId,
-        checkoutId: ref.checkoutId,
-        workId: ref.workId,
-      })),
+      expectedRefs,
       { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     // Fenced passive runtime: leave leases for the active writer / recovery.
     if (message.startsWith('WRITER_FENCED:')) return record;
-    // Unexpected: still mark attempted only if we own nothing left.
+    // Unexpected: leave the record retryable. Failed cleanup must never become
+    // a durable "released" claim.
+    return record;
   }
+  const remaining = listActiveLeases(controllerHome, repoId).some((lease) => (
+    lease.ownerJobId === processOwnerJobId(processId)
+    && expectedRefs.some((ref) => ref.leaseId === lease.leaseId)
+  ));
+  if (remaining) return getProcessRecord(controllerHome, repoId, processId) ?? record;
   return updateProcessRecord(controllerHome, repoId, processId, { leasesReleased: true }, { allowTerminal: true })
     ?? getProcessRecord(controllerHome, repoId, processId);
 }
@@ -909,7 +950,9 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     startedAt,
     updatedAt: startedAt,
     terminalFenceToken: fenceToken,
-    writerAuthorityEpoch: input.writerAuthorityEpoch,
+    writerAuthorityEpoch: input.writerAuthorityEpoch ?? getRuntimeWriterClaim()?.epoch,
+    writerAuthorityGeneration: input.writerAuthorityGeneration ?? getRuntimeWriterClaim()?.generation,
+    writerAuthorityInstanceId: input.writerAuthorityInstanceId ?? getRuntimeWriterClaim()?.instanceId,
     origin: input.origin,
     exitReceiptPath,
     stdoutPath,
@@ -1386,13 +1429,15 @@ export function recoverManagedProcesses(
   const completedUnknown: string[] = [];
   const completedFromReceipt: string[] = [];
   const leasesReleased: string[] = [];
-  for (const processId of listActiveProcessIds(controllerHome, repoId)) {
+  // Terminal records are deliberately removed from active-index.json. Scan
+  // the bounded durable record set as well, otherwise a controller crash
+  // between terminal CAS and lease release leaks the process lease forever.
+  for (const record of listProcessRecords(controllerHome, repoId, 5_000)) {
+    const processId = record.processId;
     if (liveMonitors.has(processId)) {
       recovered.push(processId);
       continue;
     }
-    const record = getProcessRecord(controllerHome, repoId, processId);
-    if (!record) continue;
     if (record.terminalWritten) {
       sanitizeTerminalProcessArtifacts(record);
       // Cleanup leftover leases after crash between terminal write and release.
@@ -1411,6 +1456,12 @@ export function recoverManagedProcesses(
       continue;
     }
 
+    if (identityStillMatches(record.identity, record.identityUntrusted) && !processWriterIdentityMatches(record)) {
+      // The PID may still be alive, but it belongs to a different runtime
+      // generation/instance. Do not renew or release its leases from here.
+      continue;
+    }
+
     if (identityStillMatches(record.identity, record.identityUntrusted)) {
       updateProcessRecord(controllerHome, repoId, processId, {
         status: 'running_recovered',
@@ -1424,7 +1475,11 @@ export function recoverManagedProcesses(
             repoId,
             processOwnerJobId(processId),
             Math.max(30_000, record.timeoutMs),
-            record.leaseRefs!.map((ref) => ({ leaseId: ref.leaseId, fencingToken: ref.fencingToken })),
+            record.leaseRefs!.map((ref) => ({
+              leaseId: ref.leaseId,
+              fencingToken: ref.fencingToken,
+              resourceKey: ref.resourceKey,
+            })),
           );
         } catch {
           /* fenced or missing — leave for active writer */

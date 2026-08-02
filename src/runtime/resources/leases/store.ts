@@ -209,6 +209,7 @@ interface ExpectedLeaseRef {
   repoId?: string;
   checkoutId?: string;
   workId?: string;
+  resourceKey?: string;
 }
 
 function expectedLeaseMap(expected?: ExpectedLeaseRef[]): Map<string, ExpectedLeaseRef> | undefined {
@@ -220,6 +221,7 @@ function leaseMatchesExpected(lease: ExecutionLease, expected: ExpectedLeaseRef 
   if (expected.repoId && expected.repoId !== lease.repoId) return false;
   if (expected.checkoutId && expected.checkoutId !== lease.checkoutId) return false;
   if (expected.workId && expected.workId !== lease.workId) return false;
+  if (expected.resourceKey && expected.resourceKey !== lease.resourceKey) return false;
   return true;
 }
 
@@ -259,7 +261,7 @@ export function releaseExecutionLeases(
   ownerJobId: string,
   expected?: ExpectedLeaseRef[],
   options?: Pick<LeaseAcquisitionOptions, 'visibility' | 'notifyScheduler' | 'invalidateProjection' | 'emitRuntimeEvent'>,
-): void {
+): number {
   // Writer fencing: passive / fenced runtimes must not release leases belonging
   // to (or managed by) the active runtime, even if they still hold matching lease tokens.
   try {
@@ -268,9 +270,9 @@ export function releaseExecutionLeases(
     if (error instanceof Error && error.message.startsWith('WRITER_FENCED:')) throw error;
     /* unbound legacy */
   }
-  withControllerLock(controllerHome, { scope: 'repository', repoId }, `lease-release:${ownerJobId}`, () => {
+  return withControllerLock(controllerHome, { scope: 'repository', repoId }, `lease-release:${ownerJobId}`, () => {
     const expectedRefs = expectedLeaseMap(expected);
-    let released = false;
+    let releasedCount = 0;
     let visibility: LeaseVisibility = options?.visibility ?? 'durable';
     for (const lease of listActiveLeases(controllerHome, repoId)) {
       if (lease.ownerJobId !== ownerJobId) continue;
@@ -293,9 +295,9 @@ export function releaseExecutionLeases(
       } else {
         leaseSideEffectMetrics.ephemeralReleases += 1;
       }
-      released = true;
+      releasedCount += 1;
     }
-    if (released) {
+    if (releasedCount > 0) {
       const effects = resolveSideEffects(options, visibility);
       if (effects.invalidateProjection) {
         markRepositoryProjectionDirty(controllerHome, repoId, `leases-released:${ownerJobId}`);
@@ -306,6 +308,7 @@ export function releaseExecutionLeases(
         leaseSideEffectMetrics.schedulerWakes += 1;
       }
     }
+    return releasedCount;
   }, 10_000);
 }
 
