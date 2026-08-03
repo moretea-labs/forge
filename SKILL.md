@@ -1,6 +1,6 @@
 ---
 name: repo-harness
-description: routes repo-harness requests through the CLI and hook automation plugin for init, update, scaffold, migrate, audit, repair, and ship workflows
+description: Single canonical skill for operating repo-harness CLI, controller, hooks, planning, repair, verification, and delivery workflows
 when_to_use: "repo-harness, initialize repo-local agentic development harness, scaffold new project with repo-harness, migrate repo-local agentic development harness, audit repo-local agentic development harness, repair repo-local agentic development harness"
 ---
 
@@ -8,14 +8,14 @@ when_to_use: "repo-harness, initialize repo-local agentic development harness, s
 
 `repo-harness` is the CLI and hook automation plugin for repo-local agentic
 development. The skill entrypoint is a compatibility router over the versioned
-workflow engine and CLI command facades.
+workflow engine and CLI commands.
 
 Compatibility boundary:
 
 - internal engine: CLI plus hook-backed tasks-first harness
 - contract ID: tasks-first-harness-v1
 - canonical skill, CLI, and package name: `repo-harness`
-- new-project creation surface: `repo-harness-scaffold` (secondary generator)
+- new-project creation surface: `repo-harness scaffold`
 
 The former `repo-harness-skill` and `project-initializer` aliases have been
 fully removed. They are no longer recognized, synced, or cleaned up by any
@@ -51,8 +51,8 @@ Treat ChatGPT as the controller and repo-harness as its repository execution lay
 
 - runtime bug debugging inside an already healthy AI workflow
 - generic project scaffolding unrelated to AI routing or repo-local workflow contracts
-- using scaffold to adopt an existing repo; route that to `repo-harness-init`,
-  `repo-harness-migrate`, `repo-harness-upgrade`, or `repo-harness-repair`
+- using scaffold to adopt an existing repo; choose the canonical router's init,
+  migrate, upgrade, or repair path instead
 - ordinary product feature work
 
 ## Controller direct-change rule
@@ -80,16 +80,14 @@ Read the result fields:
 
 ### Step 2. Choose one path
 
-If the request maps to a public command facade, name that route before running
-checks or edits, then read the matching
-`assets/skill-commands/<repo-harness-command>/SKILL.md` and follow that
-facade's protocol. For example, pre-merge or release readiness requests route
-to `repo-harness-check`, while broken task sync, hook routing, handoff, context,
-policy, or helper surfaces route to `repo-harness-repair`.
+Classify the request into one canonical workflow path before running checks or
+edits. The CLI subcommands are execution surfaces, not separate skills. For
+example, pre-merge or release readiness uses the check path, while broken task
+sync, hook routing, handoff, context, policy, or helper surfaces use repair.
 
 1. **Scaffold**
    - use only when creating a new project, app, or module skeleton
-   - route to `repo-harness-scaffold`
+   - use `repo-harness scaffold`
    - choose the A-K project catalog entry, then optional `ai_native_profile`
    - attach the harness after the project structure exists
    - do not use this path for existing-repo adoption
@@ -133,36 +131,26 @@ The main engine entrypoints are:
 - `scripts/check-task-workflow.sh`
 - `scripts/create-project-dirs.sh`
 
-## CLI Command Facade Surface
+## CLI Workflow Surface
 
-The command facades live in `assets/skill-commands/` as compatibility wrappers
-over the same CLI and hook engine. Use them for routing when the host discovers
-skills; the implementation authority stays in the CLI, scripts, hooks, and
-contract files:
+`repo-harness` is the only host-discoverable skill. Planning, review, execution,
+maintenance, verification, delivery, browser consultation, and setup remain CLI
+commands or controller capabilities selected by this router. Do not install one
+skill per command.
 
-- `repo-harness-plan`: interactive planning; no repo mutation by default
-- `repo-harness-review`: plan review across product, engineering, design, and DevEx
-- `repo-harness-autoplan`: automatic plan -> self-review twice -> implementation -> check -> ship pipeline
-- `repo-harness-ship`: validate finished worktrees, push branches, and create PRs by default
-- `repo-harness-init`: install or refresh the harness in an existing repo
-- `repo-harness-scaffold`: create a new project or module scaffold, then attach the harness
-- `repo-harness-migrate`: migrate legacy workflow docs and stale harness artifacts
-- `repo-harness-upgrade`: refresh an installed harness through manifest-owned upgrade actions
-- `repo-harness-capability`: add selected capability boundaries without running full init/migrate/upgrade
-- `repo-harness-architecture`: resolve architecture drift requests and update docs or diagrams without harness refresh
-- `repo-harness-handoff`: prepare or resume Codex handoff packets for long-task rollover
-- `repo-harness-deploy`: check deploy and private operations configuration without publishing or deploying
-- `repo-harness-repair`: repair broken task sync, hook routing, handoff, context, policy, or helpers
-- `repo-harness-check`: run verification gates and report release or pre-merge readiness
-- `repo-harness-prd`: generate an upper-layer PRD in `plans/prds/`
-- `repo-harness-sprint`: plan a sprint backlog in `plans/sprints/` from a PRD or source spec, then expand each row with `$think` before the task-contract flow
-- `repo-harness-goal` / `repo-harness:goal`: prepare a Codex/Claude `/goal` prompt from detailed PRD or Sprint artifacts; request those documents before starting when missing
-- `repo-harness-gptpro-setup` / `repo-harness:gptpro_setup`: guide `gptpro_browser` ChatGPT Web browser/session setup and `gptpro_mcp` ChatGPT Connector MCP setup without treating GPT Pro as API quota
-- `repo-harness-gptpro` / `repo-harness:gptpro`: consult or continue GPT Pro through the local ChatGPT Web browser/session bridge while presenting `gptpro consult/read/continue/open` wording over the underlying `browser-*` engine commands
+Choose the smallest applicable path:
 
-Internal steps such as `hooks-init`, `docs-init`, and `create-project-dirs` are
-not public commands. They stay behind `init`, `scaffold`, `migrate`, and
-`upgrade` so users choose intent instead of implementation details.
+- planning: plan, PRD, review, sprint, or bounded goal preparation
+- lifecycle: init, scaffold, migrate, upgrade, or capability configuration
+- maintenance: architecture, deploy-readiness, handoff, repair, or check
+- execution and delivery: direct controller work, automated workflow, or ship
+- consultation: ChatGPT browser/GPT Pro setup and consult commands, preserving
+  the existing credential, session, and user-consent boundaries
+
+The implementation authority remains in the CLI, controller tools, scripts,
+hooks, and versioned contract files. Add a separate skill only when it represents
+a genuinely independent knowledge domain with a non-overlapping trigger and
+safety model; a CLI alias is not sufficient justification.
 
 ## Plan Index
 
@@ -214,7 +202,7 @@ surface, not the mandatory agent execution environment.
 
 ## AI-native scaffold overlay
 
-`repo-harness-scaffold` keeps A-K as the stack-family catalog and uses
+`repo-harness scaffold` keeps A-K as the stack-family catalog and uses
 `ai_native_profile` as a separate overlay axis. The default profile is `none`,
 so generated output stays on the selected family unless the user asks for agentic
 runtime behavior. Use an overlay only when the generated app needs agent UI,
@@ -273,8 +261,8 @@ specific model providers, vector DBs, workflow engines, tracing vendors, or
 sidecar languages mandatory defaults.
 
 Scaffold is not an existing-repo adoption path. If the target already has a
-product tree, use `repo-harness-init`, `repo-harness-migrate`,
-`repo-harness-upgrade`, or `repo-harness-repair` and preserve the existing app
+product tree, use `repo-harness init`, `repo-harness migrate`,
+`repo-harness upgrade`, or `repo-harness repair` and preserve the existing app
 shape. `create-project-dirs`, `hooks-init`, and `docs-init` remain internal
 steps behind public commands, not standalone user-facing scaffold aliases.
 

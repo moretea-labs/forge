@@ -137,39 +137,27 @@ sync_claude_alias_copies() {
   echo "[sync-installed] Claude skill copy: $alias_dest"
 }
 
-# Register every assets/skill-commands/repo-harness-* facade as its own host
-# skill so they are discoverable alongside the umbrella repo-harness router.
-# Each facade dir is self-contained (SKILL.md only), so we link/copy the dir
-# directly. Names are managed: remove_managed_dest re-links cleanly on each
-# sync. A facade removed upstream leaves an orphan dest (parity with the
-# umbrella alias, which also does not garbage-collect renamed targets).
-sync_command_facades() {
-  local root="$1"
-  local mode="$2"
-  if [[ -z "$root" ]]; then
-    return 0
-  fi
+# The host skill surface is intentionally canonical-only. CLI subcommands remain
+# available through the single repo-harness router instead of being installed as
+# separate, overlapping skills. Clean historical managed facade installs so an
+# upgrade does not leave stale skills discoverable.
+legacy_facades=(
+  repo-harness-architecture repo-harness-autoplan repo-harness-capability
+  repo-harness-check repo-harness-deploy repo-harness-goal
+  repo-harness-gptpro repo-harness-gptpro-setup repo-harness-handoff
+  repo-harness-init repo-harness-migrate repo-harness-plan repo-harness-prd
+  repo-harness-repair repo-harness-review repo-harness-scaffold
+  repo-harness-ship repo-harness-sprint repo-harness-upgrade
+  repo-harness-chatgpt-bridge repo-harness-chatgpt-browser
+)
 
-  mkdir -p "$root"
-  local facade_src
-  local synced=0
-  for facade_src in "$SOURCE_ROOT"/assets/skill-commands/repo-harness-*/; do
-    [[ -d "$facade_src" && -f "${facade_src}SKILL.md" ]] || continue
-    facade_src="${facade_src%/}"
-    local name
-    name="$(basename "$facade_src")"
-    local dest="$root/$name"
-    remove_managed_dest "$dest"
-    if [[ "$mode" == "link" ]]; then
-      create_symlink_or_explain "$facade_src" "$dest"
-    else
-      require_rsync_for_copy_mode
-      mkdir -p "$dest"
-      rsync -a --delete "${common_excludes[@]}" "$facade_src/" "$dest/"
-    fi
-    synced=$((synced + 1))
+cleanup_legacy_facades() {
+  local root="$1"
+  [[ -n "$root" ]] || return 0
+  local name
+  for name in "${legacy_facades[@]}"; do
+    remove_managed_dest "$root/$name"
   done
-  echo "[sync-installed] command facades ($mode): $synced into $root"
 }
 
 canonical_dest="$CODEX_SKILLS_ROOT/repo-harness"
@@ -179,9 +167,9 @@ if [[ "$LINK_INSTALLED_COPIES" == "1" ]]; then
   create_symlink_or_explain "$SOURCE_ROOT" "$canonical_dest"
   echo "[sync-installed] canonical skill link: $canonical_dest -> $SOURCE_ROOT"
 
-  sync_command_facades "$CODEX_SKILLS_ROOT" link
+  cleanup_legacy_facades "$CODEX_SKILLS_ROOT"
   sync_claude_alias_links
-  sync_command_facades "$CLAUDE_SKILLS_ROOT" link
+  cleanup_legacy_facades "$CLAUDE_SKILLS_ROOT"
   echo "[sync-installed] OK"
   exit 0
 fi
@@ -189,7 +177,7 @@ fi
 sync_copy "$canonical_dest"
 echo "[sync-installed] canonical skill copy: $canonical_dest"
 
-sync_command_facades "$CODEX_SKILLS_ROOT" copy
+cleanup_legacy_facades "$CODEX_SKILLS_ROOT"
 sync_claude_alias_copies
-sync_command_facades "$CLAUDE_SKILLS_ROOT" copy
+cleanup_legacy_facades "$CLAUDE_SKILLS_ROOT"
 echo "[sync-installed] OK"

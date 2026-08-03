@@ -9,7 +9,6 @@ import { runMcpKeepalive } from '../mcp/keepalive';
 import { assertControllerLifecycleOwner } from '../controller/lifecycle-authority';
 import {
   runMcpDoctor,
-  runMcpInstallSkill,
   runMcpPrintGuide,
   runMcpSetupChatgpt,
   runMcpSetupCodex,
@@ -71,11 +70,6 @@ interface McpSetupCodexOptions {
   dryRun?: boolean;
 }
 
-interface McpInstallSkillOptions {
-  repo?: string;
-  overwrite?: boolean;
-  dryRun?: boolean;
-}
 
 interface McpPrepareGoalOptions {
   repo?: string;
@@ -389,18 +383,6 @@ export function buildMcpCommand(): Command {
 
   mcp.addCommand(access);
 
-  mcp
-    .command('install-skill')
-    .description('Install the repo-harness ChatGPT bridge Codex Skill')
-    .option('--repo <path>', 'Repository root to configure', '.')
-    .option('--overwrite', 'Replace an existing repo-local bridge Skill')
-    .option('--dry-run', 'Print planned installation without writing files')
-    .action((rawOpts: McpInstallSkillOptions) => {
-      void runMcpAction(() => {
-        const result = runMcpInstallSkill(rawOpts);
-        console.log(result.lines.join('\n'));
-      });
-    });
 
   mcp
     .command('prepare-goal')
