@@ -492,6 +492,8 @@ export interface PlanContract {
   schemaVersion: 1;
   planId: string;
   repoId: string;
+  /** Stable Requirement owner. Legacy plans may omit this until portfolio migration. */
+  requirementId?: string;
   scopeKey: string;
   sourceRevision: string;
   goal: string;

@@ -32,6 +32,7 @@ export interface PlanContractStoreOptions extends PlanContractStoreLocation {
 export interface CreatePlanContractInput {
   planId: string;
   repoId: string;
+  requirementId?: string;
   scopeKey: string;
   sourceRevision: string;
   goal: string;
@@ -48,6 +49,7 @@ export interface CreatePlanContractInput {
 export interface PlanContractSummary {
   planId: string;
   repoId: string;
+  requirementId?: string;
   scopeKey: string;
   sourceRevision: string;
   goal: string;
@@ -211,6 +213,7 @@ export function createPlanContract(options: PlanContractStoreOptions, input: Cre
     schemaVersion: 1,
     planId,
     repoId: input.repoId,
+    requirementId: input.requirementId?.trim().slice(0, 160) || undefined,
     scopeKey: normalizeScopeKey(input.scopeKey),
     sourceRevision: String(input.sourceRevision ?? '').trim().slice(0, 200),
     goal: String(input.goal ?? '').trim().slice(0, 2_000),
@@ -251,6 +254,7 @@ export function summarizePlanContract(plan: PlanContract): PlanContractSummary {
   return {
     planId: plan.planId,
     repoId: plan.repoId,
+    requirementId: plan.requirementId,
     scopeKey: plan.scopeKey,
     sourceRevision: plan.sourceRevision,
     goal: plan.goal.slice(0, 240),

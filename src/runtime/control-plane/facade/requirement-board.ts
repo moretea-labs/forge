@@ -6,7 +6,7 @@ import {
 } from '../persistence/requirement-store';
 import { listPlanContracts, summarizePlanContract } from './plan-contract-store';
 import { listWorkContracts, summarizeWorkContract } from './work-contract-store';
-import type { WorkContract } from './types';
+import type { PlanContract, WorkContract } from './types';
 
 const DEFAULT_REQUIREMENT_LIMIT = 12;
 const DIAGNOSTIC_DETAIL_LIMIT = 20;
@@ -152,6 +152,26 @@ export function buildRequirementBoard(options: RequirementBoardOptions): Record<
   };
 }
 
+function summarizeDiagnosticPlan(plan: PlanContract, detailLevel: 'detail' | 'full'): Record<string, unknown> {
+  const stepLimit = detailLevel === 'full' ? 10 : 4;
+  const evidenceLimit = detailLevel === 'full' ? 10 : 5;
+  const steps = plan.steps.slice(0, stepLimit).map((step) => ({
+    id: step.id,
+    objective: boundedText(step.objective, 500),
+    status: step.status,
+    workId: step.workId,
+    checks: step.checks.slice(0, 5),
+    evidenceRefs: step.evidenceRefs.slice(0, evidenceLimit),
+  }));
+  return {
+    ...summarizePlanContract(plan),
+    evidenceRefs: plan.evidenceRefs.slice(0, evidenceLimit),
+    evidenceTruncatedCount: Math.max(0, plan.evidenceRefs.length - evidenceLimit),
+    steps,
+    stepTruncatedCount: Math.max(0, plan.steps.length - steps.length),
+  };
+}
+
 function summarizeDiagnosticWork(work: WorkContract): Record<string, unknown> {
   const checks = work.checkRefs.slice(-3).reverse().map((check) => ({
     checkId: check.checkId,
@@ -206,11 +226,12 @@ export function buildExecutionDiagnostics(
     ? listPlanContracts({ controllerHome: options.controllerHome, repoId: options.repoId, status: 'all', limit: 100 })
     : [];
   const scopedPlans = options.requirementId
-    ? allPlans.filter((plan) => selectedRequirements.some((requirement) => requirement.activePlanId === plan.planId))
+    ? allPlans.filter((plan) => plan.requirementId === options.requirementId
+      || selectedRequirements.some((requirement) => requirement.activePlanId === plan.planId))
     : allPlans;
   const requirements = selectedRequirements.map((requirement) => projectRequirement(requirement, allWork));
   const works = scopedWork.slice(0, limit).map(summarizeDiagnosticWork);
-  const plans = scopedPlans.slice(0, limit).map(summarizePlanContract);
+  const plans = scopedPlans.slice(0, limit).map((plan) => summarizeDiagnosticPlan(plan, options.detailLevel));
   const maintenanceFindings = requirements
     .filter((requirement) => requirement.needsAttention)
     .slice(0, limit)

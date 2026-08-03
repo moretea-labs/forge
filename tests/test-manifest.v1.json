@@ -23,7 +23,7 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 80,
+    "maxTestFiles": 81,
     "maxTestLines": 40000,
     "maxPureFiles": 30,
     "maxTempIsolatedFiles": 36,
@@ -31,7 +31,7 @@
     "maxGitWorktreeFiles": 15,
     "maxFixedPortFiles": 6,
     "maxRuntimeSingletonFiles": 6,
-    "maxControllerHomeIsolatedFiles": 4,
+    "maxControllerHomeIsolatedFiles": 5,
     "maxDestructiveFiles": 0
   },
   "pathModuleRules": [
@@ -401,6 +401,10 @@
       "resource": "controller-home-isolated"
     },
     "tests/runtime/requirement-store.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/requirement-portfolio-migration.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"
     },
