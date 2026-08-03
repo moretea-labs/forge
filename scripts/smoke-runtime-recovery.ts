@@ -8,7 +8,8 @@ import {
   acceptSubmittedWorkContract,
   getWorkContract,
   getWorkContractByRequestId,
-  updateWorkContract,
+  recordWorkCompletionReceipt,
+  transitionWorkContractPhase,
 } from '../src/runtime/control-plane/facade/work-contract-store';
 import {
   claimControllerSession,
@@ -87,7 +88,13 @@ try {
     sessionId: 'session-recovery-a',
     leaseMs: 60_000,
   });
-  updateWorkContract({ controllerHome, repoId: repository.repoId }, accepted.contract.workId, { status: 'running' });
+  // Recovery smoke follows the same Work-only phase API enforced in production.
+  transitionWorkContractPhase({ controllerHome, repoId: repository.repoId }, accepted.contract.workId, {
+    phase: 'implementation',
+    status: 'running',
+    state: 'active',
+    summary: 'Process Runtime recovery smoke started implementation.',
+  });
   const handle = await spawnManagedProcess({
     controllerHome,
     repoId: repository.repoId,
@@ -125,10 +132,29 @@ try {
   });
   assert(replacement.controllerId === 'controller-recovery-b', 'released Work could not be reclaimed');
   assert(getControllerSession({ controllerHome, repoId: repository.repoId }, accepted.contract.workId)?.sessionId === 'session-recovery-b', 'replacement Controller session missing');
-  updateWorkContract({ controllerHome, repoId: repository.repoId }, accepted.contract.workId, {
-    status: 'completed',
-    evidenceRefs: [{ title: 'Process Runtime recovery smoke', summary: `process:${handle.processId}:recovered`, detailLevel: 'detail' }],
-  });
+  const completionRecordedAt = new Date().toISOString();
+  const completionRevision = String(spawnSync('git', ['-C', repoRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout).trim();
+  recordWorkCompletionReceipt(
+    { controllerHome, repoId: repository.repoId },
+    accepted.contract.workId,
+    {
+      schemaVersion: 1,
+      receiptId: `REC-smoke-${accepted.contract.workId}`,
+      source: 'direct_edit',
+      issueId: 'ISS-runtime-recovery-smoke',
+      taskId: 'T1',
+      workId: accepted.contract.workId,
+      targetBranch: 'main',
+      targetRevision: completionRevision,
+      changedPaths: [],
+      delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt: completionRecordedAt },
+      cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt: completionRecordedAt },
+      verifiedAt: completionRecordedAt,
+      recordedAt: completionRecordedAt,
+    },
+    'completed_no_change',
+    'completed_no_change',
+  );
   assert(getWorkContract({ controllerHome, repoId: repository.repoId }, accepted.contract.workId)?.status === 'completed', 'completed WorkContract was not persisted');
   assert(listExecutionJobs(controllerHome, repository.repoId, 20).length === 0, 'runtime recovery created an ExecutionJob');
 
