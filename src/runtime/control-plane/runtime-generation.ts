@@ -7,6 +7,7 @@ import { ensureControllerHome } from '../../cli/repositories/controller-home';
 import { repositoryIdentity } from '../../cli/controller/runtime-config';
 import { stableCheckoutId } from '../../cli/repositories/identity';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
+import { resolveManagedRuntimeSourceIdentity } from '../supervisor/release-identity';
 
 /** Explicit override for the Controller Runtime Source root (not an execution repository). */
 export const CONTROLLER_RUNTIME_SOURCE_ROOT_ENV = 'REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT';
@@ -248,6 +249,11 @@ export function clearRuntimeSourceIdentityCacheForTest(): void {
 }
 
 export function collectRuntimeSourceIdentity(repoRoot: string): RuntimeSourceIdentity {
+  // Prefer Supervisor-injected release binding before any Git walk-up. Managed
+  // children must not follow ambient parent HEAD when the active release is frozen.
+  const bound = resolveManagedRuntimeSourceIdentity({ runtimeRoot: repoRoot });
+  if (bound) return bound;
+
   const canonicalRoot = realpathSync(repoRoot);
   const repoId = `repo_${repositoryIdentity(canonicalRoot)}`;
   const checkoutId = stableCheckoutId(repoId, canonicalRoot);

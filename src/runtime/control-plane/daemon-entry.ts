@@ -15,11 +15,13 @@ import {
   resolveControllerRuntimeSourceRoot,
   rotateRuntimeGeneration,
   type RuntimeGenerationRecord,
+  type RuntimeSourceIdentity,
 } from './runtime-generation';
 import { reconcileControllerStartup, type ControllerStartupRecoveryResult } from './startup-recovery';
 import { applyRuntimeCleanup, type RuntimeCleanupApplyResult } from '../maintenance/cleanup';
 import { recoverActivationTransaction, readActivationAuthority } from '../bootstrap/activation-transaction';
 import type { ControllerDaemonShutdownReason } from './daemon-client';
+import { resolveManagedRuntimeSourceIdentity } from '../supervisor/release-identity';
 
 function option(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -270,6 +272,37 @@ export function startControllerDaemon(controllerHome: string): void {
     });
 }
 
+/**
+ * Source identity for a Daemon process. Supervisor-managed children prefer the
+ * captured release identity binding (or immutable release manifest) and never
+ * invent a newer ambient Git HEAD. See ADR 20260803 release identity binding.
+ */
+export function resolveDaemonRuntimeSourceIdentity(
+  runtimeRoot: string,
+  env: NodeJS.ProcessEnv = process.env,
+): RuntimeSourceIdentity {
+  const bound = resolveManagedRuntimeSourceIdentity({ runtimeRoot, env });
+  if (bound) return bound;
+  return collectRuntimeSourceIdentity(runtimeRoot);
+}
+
+export function runtimeSourceIdentityNeedsRefresh(
+  existing: RuntimeSourceIdentity | undefined,
+  next: RuntimeSourceIdentity,
+): boolean {
+  if (!existing) return true;
+  return existing.repoId !== next.repoId
+    || existing.checkoutId !== next.checkoutId
+    || existing.repoRoot !== next.repoRoot
+    || existing.canonicalRoot !== next.canonicalRoot
+    || existing.branch !== next.branch
+    || existing.commit !== next.commit
+    || existing.releaseRevision !== next.releaseRevision
+    || existing.defaultBranch !== next.defaultBranch
+    || existing.defaultBranchCommit !== next.defaultBranchCommit
+    || existing.dirty !== next.dirty;
+}
+
 export function publishReadyAfterStartupRecovery(
   controllerHome: string,
   startedAt: string,
@@ -292,6 +325,7 @@ export function publishReadyAfterStartupRecovery(
       + `Set ${CONTROLLER_RUNTIME_SOURCE_ROOT_ENV} to the controller package/source checkout.`,
     );
   }
+  const sourceIdentity = () => resolveDaemonRuntimeSourceIdentity(resolvedSource.root!);
   // Recover / materialize activation authority before generation decisions.
   try {
     const recovery = recoverActivationTransaction(controllerHome);
@@ -307,13 +341,13 @@ export function publishReadyAfterStartupRecovery(
       || authority?.generation;
     if (inheritedGeneration) {
       const existing = readRuntimeGeneration(controllerHome);
-      const source = collectRuntimeSourceIdentity(resolvedSource.root);
+      const source = sourceIdentity();
       const path = join(ensureControllerHome(controllerHome), 'system', 'runtime-generation.json');
       if (existing && existing.generation === inheritedGeneration) {
-        // Reuse the generation but refresh the source identity when the
-        // release commit changed (e.g. after a supervisor-managed restart
-        // into a new immutable release built from a newer main commit).
-        if (source && existing.source?.commit !== source.commit) {
+        // Reuse the generation but refresh the complete captured source identity.
+        // The same revision may be republished into a different immutable release
+        // directory; retaining the old root would create false source-snapshot drift.
+        if (runtimeSourceIdentityNeedsRefresh(existing.source, source)) {
           writeJsonAtomic(path, {
             ...existing,
             source,
@@ -343,7 +377,7 @@ export function publishReadyAfterStartupRecovery(
   if (!generation) {
     generation = rotateRuntimeGeneration(
       controllerHome,
-      collectRuntimeSourceIdentity(resolvedSource.root),
+      sourceIdentity(),
     );
   }
   // Fail closed when authority generation and daemon generation diverge.

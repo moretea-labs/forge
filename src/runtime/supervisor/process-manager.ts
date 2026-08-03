@@ -8,6 +8,11 @@ import { ensureSlotHome, readActiveSlotAuthority, readSlotIdentity, type Runtime
 import { readWriterAuthority } from '../../cli/controller/stable-state/writer-authority';
 import { terminateProcessTree } from '../shared/process-tree';
 import { captureProcessIdentity, defaultProcessIdentityProbe, executableFingerprint, newProcessInstanceId, processIdentityMatches, type ProcessIdentityProbe } from './identity';
+import {
+  releaseIdentityBindingEnvironment,
+  resolveSupervisorReleaseIdentityBinding,
+  type ReleaseIdentityBinding,
+} from './release-identity';
 import type { ProcessIdentity, SupervisorComponentName } from './types';
 
 export interface SupervisorProcessManagerOptions {
@@ -240,9 +245,17 @@ export class SupervisorProcessManager {
       : { command: process.execPath, args: [entrypoint, ...args] };
   }
 
+  private releaseIdentityBinding(): ReleaseIdentityBinding | undefined {
+    return resolveSupervisorReleaseIdentityBinding({
+      ...(this.options.releasePath ? { releasePath: this.options.releasePath } : {}),
+      ...(this.options.releaseRevision ? { releaseRevision: this.options.releaseRevision } : {}),
+    });
+  }
+
   private spawnDetached(component: SupervisorComponentName, home: string, command: string, args: string[], instanceId: string, slot: RuntimeSlotId): SpawnedSupervisorProcess {
     mkdirSync(dirname(this.options.logPath), { recursive: true });
     const fd = openSync(this.options.logPath, 'a');
+    const releaseBinding = this.releaseIdentityBinding();
     let child: ChildProcess;
     try {
       child = spawn(command, args, {
@@ -262,6 +275,8 @@ export class SupervisorProcessManager {
           REPO_HARNESS_DAEMON_INSTANCE_ID: instanceId,
           REPO_HARNESS_RUNTIME_SLOT: slot,
           ...runtimeWriterEnvironment(this.options.controllerHome, slot, instanceId),
+          // Captured release identity: children must not re-derive via ambient Git.
+          ...(releaseBinding ? releaseIdentityBindingEnvironment(releaseBinding) : {}),
         },
       });
     } finally {

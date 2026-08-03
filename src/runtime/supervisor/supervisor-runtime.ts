@@ -907,7 +907,10 @@ export function reconcileSupervisorStateWithAuthority(
     standby: displaced,
     observedState: 'degraded',
     ingress: { ...state.ingress, activeUpstreamSlot: authority.activeSlot },
-    lastIncident: { at: now, reason: 'No managed process pair matched the active-slot authority after restart; authority recovery is required.' },
+    lastIncident: {
+      at: now,
+      reason: 'No managed process pair matched the active-slot authority after restart; rebuilding the managed pair on the active slot.',
+    },
     updatedAt: now,
   };
 }
@@ -1111,10 +1114,25 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
         rescueEndpoint: `http://${this.ingressProcess.host}:${this.ingressProcess.port}/rescue/mcp`,
       },
     });
-    await this.ensureRuntime();
-    await this.resumeInterruptedRolloutActivation();
-    reconcilePendingSupervisorActivations(this.options.controllerHome);
-    this.state = this.persist({ observedState: 'healthy' });
+    // Cold start must keep the Rescue / control plane alive even when the managed
+    // Daemon/Gateway pair cannot become ready yet. Throwing here used to exit the
+    // Supervisor process and trigger a launchd KeepAlive thrash that never reached
+    // startGateway. Degrade in place and let the monitor / durable operations retry.
+    try {
+      await this.ensureRuntime();
+      await this.resumeInterruptedRolloutActivation();
+      reconcilePendingSupervisorActivations(this.options.controllerHome);
+      this.state = this.persist({ observedState: 'healthy' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.state = this.persist({
+        observedState: 'degraded',
+        lastIncident: {
+          at: new Date().toISOString(),
+          reason: `cold start managed runtime recovery deferred: ${message}`.slice(0, 500),
+        },
+      });
+    }
     this.monitorTimer = setInterval(() => this.scheduleMonitorTick(), 5_000);
     this.monitorTimer.unref?.();
     await this.runPendingOperations();
@@ -1313,6 +1331,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       ...this.options,
       slot,
       ...(release ? {
+        runtimeSourceRoot: release.releasePath,
         runtimeExecutable: release.runtimeExecutable,
         daemonExecutable: release.daemonExecutable,
         releasePath: release.releasePath,

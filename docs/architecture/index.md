@@ -70,7 +70,8 @@ The maintained current architecture set contains:
 - `implementation-status.md` — verified implementation coverage and explicit migration gaps;
 - `migration-roadmap.md` — evidence-driven implementation convergence order;
 - `runtime-architecture-simplification.md` — single-owner services, canonical authority/config, immutable activation, Recovery boundary, invariants, and deletion map;
-- `stable-external-runtime-supervisor.md` — current immutable lifecycle implementation and transition notes.
+- `stable-external-runtime-supervisor.md` — current immutable lifecycle implementation and transition notes;
+- ADR [`decisions/20260803-release-identity-binding-and-exit-policy.md`](decisions/20260803-release-identity-binding-and-exit-policy.md) — captured release identity binding for managed children and Supervisor vs launchd failure domains.
 
 A missing or proposed rule must be recorded in an accepted architecture request or ADR and must not be inferred from historical material.
 

@@ -37,6 +37,7 @@ import { dirname, join } from 'path';
 import { spawn, type ChildProcess } from 'child_process';
 import { repositoryChildProcessEnvironment } from '../../shared/process-environment.ts';
 import { StreamingSensitiveTextRedactor } from '../../evidence/sensitive-output.ts';
+import { PROCESS_RUNNER_RELEASE_CANARY_CHILD_ARG } from './canary.ts';
 
 export interface ProcessCommandDescriptor {
   schemaVersion: 1;
@@ -407,6 +408,11 @@ export async function runProcessRunnerFromDescriptor(
 }
 
 async function main(): Promise<void> {
+  if (process.argv.includes(PROCESS_RUNNER_RELEASE_CANARY_CHILD_ARG)) {
+    process.stdout.write('repo-harness process-runner release canary\n');
+    return;
+  }
+
   const descriptorPath = option('--descriptor') ?? option('--command-json');
   if (!descriptorPath) {
     console.error('process-runner-entry requires --descriptor <path-to-command.json>');

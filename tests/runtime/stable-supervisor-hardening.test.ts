@@ -11,7 +11,7 @@ import { installSupervisorRelease, publishSupervisorRelease, renderLaunchdSuperv
 import { stableSupervisorActivatesPublishedRelease, stableSupervisorExitCode } from '../../src/runtime/supervisor/entry';
 import { createStableIngressRouter } from '../../src/runtime/supervisor/ingress-router';
 import { createStableIngressProcess } from '../../src/runtime/supervisor/ingress-process';
-import { controllerDaemonMaxLifetimeMs, controllerDaemonPassiveMode, publishReadyAfterStartupRecovery, resolveControllerDaemonShutdownReason } from '../../src/runtime/control-plane/daemon-entry';
+import { controllerDaemonMaxLifetimeMs, controllerDaemonPassiveMode, publishReadyAfterStartupRecovery, resolveControllerDaemonShutdownReason, runtimeSourceIdentityNeedsRefresh } from '../../src/runtime/control-plane/daemon-entry';
 import { createSupervisorOperation, readSupervisorOperation, updateSupervisorOperation } from '../../src/runtime/supervisor/operation-store';
 import { StableSupervisorRuntime, SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_MONITOR_FAILURE_THRESHOLD, automaticRecoveryRequestId, combinedRolloutRollbackFailure, managedProcessNeedsReleaseRefresh, observeCutoverCandidateWithSingleRecovery, observeCutoverReadinessWindow, sampleCutoverReadiness, probeAuthenticatedMcpReadiness, probeSupervisorGatewayHealth, reconcileActiveManagedGenerations, reconcilePendingSupervisorActivations, reconcileSupervisorStateWithAuthority, recoverableCutoverObservationFailure, recoverableWriterClaimRefreshFailure, refreshWriterClaimWithSingleRetry, resumableInterruptedRollout, supervisorGatewayHealthDecision, supervisorGatewayOperational, supervisorGatewayRuntimeReady, supervisorIngressHealthDecision, supervisorManagedDaemonReady, supervisorManagedGatewayReady, supervisorMonitorFailureDecision, supervisorOperationRecoverySuppressed, terminalizeInterruptedSupervisorOperations } from '../../src/runtime/supervisor/supervisor-runtime';
 import { decideRestart, newRestartBudgetRecord, recordFailure, recordRestart, recordStable } from '../../src/runtime/supervisor/restart-policy';
@@ -26,6 +26,7 @@ import type { SupervisorManagedProcess, SupervisorOperation, SupervisorState } f
 import { evaluateRuntimeReleaseCoherence, evaluateSupervisorServiceReleaseCoherence, extractSupervisorServiceRelease } from '../../src/runtime/supervisor/release-coherence';
 import { publishAndScheduleSupervisorRelease, resolveSupervisorActivationInvocation } from '../../src/runtime/supervisor/service-activation';
 import { probeSupervisorMcpReadiness } from '../../src/runtime/supervisor/mcp-readiness';
+import { readSupervisorState } from '../../src/runtime/supervisor/state-store';
 
 const servers: Server[] = [];
 
@@ -471,6 +472,57 @@ describe('Stable Supervisor production hardening', () => {
     expect(supervisorServiceLabel('/tmp/a/controller-home')).not.toBe(supervisorServiceLabel('/tmp/b/controller-home'));
   });
 
+  test('same revision at a new immutable release path refreshes runtime source identity', () => {
+    const existing = {
+      repoId: 'repo-a', checkoutId: 'checkout-a', repoRoot: '/releases/a', canonicalRoot: '/releases/a',
+      branch: null, commit: 'commit-a', releaseRevision: 'commit-a', defaultBranch: 'main',
+      defaultBranchCommit: 'commit-a', dirty: false, observedAt: '2026-08-03T00:00:00.000Z',
+    };
+    expect(runtimeSourceIdentityNeedsRefresh(existing, {
+      ...existing,
+      checkoutId: 'checkout-b',
+      repoRoot: '/releases/b',
+      canonicalRoot: '/releases/b',
+      observedAt: '2026-08-03T00:01:00.000Z',
+    })).toBe(true);
+    expect(runtimeSourceIdentityNeedsRefresh(existing, {
+      ...existing,
+      observedAt: '2026-08-03T00:01:00.000Z',
+    })).toBe(false);
+  });
+
+  test('candidate manager binds executable and runtime source root to the same release', () => {
+    const home = mkdtempSync(join(tmpdir(), 'repo-harness-candidate-source-root-'));
+    try {
+      const releasePath = join(home, 'supervisor', 'releases', 'candidate');
+      mkdirSync(releasePath, { recursive: true });
+      writeFileSync(join(releasePath, 'supervisor.js'), 'fixture');
+      writeFileSync(join(releasePath, 'repo-harness.js'), 'fixture');
+      writeFileSync(join(releasePath, 'daemon.js'), 'fixture');
+      writeFileSync(join(releasePath, 'manifest.json'), JSON.stringify({
+        releaseRevision: 'candidate-revision',
+        sourceCommit: 'candidate-commit',
+        cleanWorkspace: true,
+      }));
+      const release = readSupervisorRelease(releasePath)!;
+      const runtime = new StableSupervisorRuntime({
+        repoRoot: process.cwd(), controllerHome: home, ownerEpoch: 1,
+        runtimeSourceRoot: '/releases/previous', logPath: join(home, 'supervisor.log'),
+      });
+      const manager = (runtime as unknown as {
+        managerForSlot: (
+          slot: 'blue',
+          selected: NonNullable<ReturnType<typeof readSupervisorRelease>>,
+        ) => SupervisorProcessManager;
+      }).managerForSlot('blue', release);
+      expect(manager.options.runtimeSourceRoot).toBe(release.releasePath);
+      expect(manager.options.runtimeExecutable).toBe(release.runtimeExecutable);
+      expect(manager.options.daemonExecutable).toBe(release.daemonExecutable);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test('passive candidate daemon skips startup recovery and is explicitly marked read-only', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-passive-daemon-'));
     try {
@@ -831,6 +883,52 @@ describe('Stable Supervisor production hardening', () => {
 
       expect(calls).toEqual(['restart:controllerDaemon', 'ensure-runtime']);
       expect(readSupervisorOperation(controllerHome, accepted.operation.operationId)?.phase).toBe('succeeded');
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
+  test('cold start soft-fails managed runtime recovery so Rescue MCP stays alive', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-cold-start-soft-fail-'));
+    try {
+      writeActiveSlotAuthority(controllerHome, { activeSlot: 'green', reason: 'test' });
+      const runtime = new StableSupervisorRuntime({
+        repoRoot: process.cwd(),
+        controllerHome,
+        runtimeSourceRoot: process.cwd(),
+        ownerEpoch: 91,
+        logPath: join(controllerHome, 'supervisor.log'),
+        controlHost: '127.0.0.1',
+        controlPort: 0,
+      });
+      const internal = runtime as unknown as {
+        start: () => Promise<void>;
+        ensureRuntime: () => Promise<void>;
+        replaceIngressProcess: () => Promise<{ host: string; port: number; pid?: number; alive: () => boolean; close: () => Promise<void> }>;
+        stop: () => Promise<void>;
+        monitorTimer?: ReturnType<typeof setInterval>;
+      };
+      internal.ensureRuntime = async () => {
+        throw new Error('SUPERVISOR_CONTROLLERDAEMON_READINESS_TIMEOUT');
+      };
+      internal.replaceIngressProcess = async () => ({
+        host: '127.0.0.1',
+        port: 8765,
+        pid: 4242,
+        alive: () => true,
+        close: async () => undefined,
+      });
+
+      await expect(internal.start()).resolves.toBeUndefined();
+
+      const state = readSupervisorState(controllerHome);
+      expect(state?.observedState).toBe('degraded');
+      expect(state?.lastIncident?.reason).toContain('cold start managed runtime recovery deferred');
+      expect(state?.lastIncident?.reason).toContain('SUPERVISOR_CONTROLLERDAEMON_READINESS_TIMEOUT');
+      expect(state?.control?.host).toBe('127.0.0.1');
+      expect(internal.monitorTimer).toBeDefined();
+      if (internal.monitorTimer) clearInterval(internal.monitorTimer);
+      await runtime.stop().catch(() => undefined);
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }

@@ -29,6 +29,10 @@ import { createRepoHarnessMcpServer } from '../../src/cli/mcp/server';
 import { createStableIngressRouter } from '../../src/runtime/supervisor/ingress-router';
 import { StableIngressSessionStore } from '../../src/runtime/supervisor/ingress-session-store';
 import { writeJsonAtomic } from '../../src/runtime/shared/json-files';
+import {
+  PROCESS_RUNNER_RELEASE_CANARY_CHILD_ARG,
+  processRunnerReleaseCanaryChildCommand,
+} from '../../src/runtime/execution/process-runtime/canary';
 
 function observations(overrides: Partial<RuntimeHealthObservations> = {}): RuntimeHealthObservations {
   return {
@@ -466,6 +470,17 @@ describe('runtime observability', () => {
 
   test('keeps standalone recovery and Supervisor release entrypoint contracts aligned', () => {
     expect([...STANDALONE_RECOVERY_REQUIRED_RELEASE_FILES]).toEqual([...SUPERVISOR_RELEASE_ENTRYPOINTS]);
+  });
+
+  test('release canary targets the candidate Process Runner instead of the running Supervisor executable', () => {
+    const runnerPath = join(tmpdir(), 'candidate-release', 'process-runner.js');
+    const command = processRunnerReleaseCanaryChildCommand(runnerPath);
+
+    expect(command).toEqual({
+      executable: runnerPath,
+      args: [PROCESS_RUNNER_RELEASE_CANARY_CHILD_ARG],
+    });
+    expect(command.executable).not.toBe(process.execPath);
   });
 
   test('atomically stages a complete release whose bundled process runner passes a real canary', () => {

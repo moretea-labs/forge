@@ -194,13 +194,15 @@ Rollback is a new operation and a new authority term. It requires exact previous
 3. **Last-known-good continuity:** ingress stays on the committed release until candidate readiness and CAS commit pass. Candidate failure cannot remove current traffic.
 4. **No nested lifecycle owner:** Gateway, Daemon, ingress, tunnel, and Recovery processes cannot create a competing KeepAlive/restart loop.
 5. **Exact identity:** PID, process start time, executable fingerprint, Controller Home, service label, owner epoch, writer term, generation, release revision, and source identity must agree before a process is managed.
-6. **No stale durable writes:** every mutable write checks a captured claim and expected identity/CAS; stale callbacks return `WRITER_FENCED` or append evidence only.
-7. **Independent Recovery:** Primary Gateway, Daemon, active release, repository checkout, and primary tunnel failure do not remove Recovery reachability. Recovery failure does not restart or mutate the primary runtime.
-8. **Bounded Recovery action:** Recovery exposes only verify, request registered Supervisor restart, eligible rollback request, and cleanup actions with operation ownership, rate limits, audit, and re-verification. It cannot execute arbitrary shell, SSH, or provisioning.
-9. **Honest observations:** missing primary endpoint is `unknown`; missing independent Recovery endpoint/service is `unavailable`; malformed or normalized-equal endpoints are failed configuration. These states are never coerced to healthy.
-10. **Explicit stop semantics:** abnormal service exit may restart through launchd; an authorized unload must remain stopped until explicitly loaded again.
-11. **One-way migration:** unsupported legacy state reports `MIGRATION_REQUIRED`; it is not guessed through silent fallback.
-12. **Release closure:** no service starts, publishes, rolls out, or rolls back from an incomplete or unverified immutable release.
+6. **Captured release identity binding:** Supervisor-managed children receive a spawn-time binding (`releasePath`, `releaseRevision`, `sourceCommit`, optional `manifestHash`) and must not re-derive identity from ambient Git HEAD. See ADR [`../decisions/20260803-release-identity-binding-and-exit-policy.md`](../decisions/20260803-release-identity-binding-and-exit-policy.md).
+7. **Failure-domain separation:** child readiness and incomplete managed pairs degrade inside the Supervisor; they must not exit the Supervisor process and thrash the OS service manager. launchd/systemd restarts only abnormal Supervisor exits.
+8. **No stale durable writes:** every mutable write checks a captured claim and expected identity/CAS; stale callbacks return `WRITER_FENCED` or append evidence only.
+9. **Independent Recovery:** Primary Gateway, Daemon, active release, repository checkout, and primary tunnel failure do not remove Recovery reachability. Recovery failure does not restart or mutate the primary runtime.
+10. **Bounded Recovery action:** Recovery exposes only verify, request registered Supervisor restart, eligible rollback request, and cleanup actions with operation ownership, rate limits, audit, and re-verification. It cannot execute arbitrary shell, SSH, or provisioning.
+11. **Honest observations:** missing primary endpoint is `unknown`; missing independent Recovery endpoint/service is `unavailable`; malformed or normalized-equal endpoints are failed configuration. These states are never coerced to healthy.
+12. **Explicit stop semantics:** abnormal service exit may restart through launchd; an authorized unload must remain stopped until explicitly loaded again.
+13. **One-way migration:** unsupported legacy state reports `MIGRATION_REQUIRED`; it is not guessed through silent fallback.
+14. **Release closure:** no service starts, publishes, rolls out, or rolls back from an incomplete or unverified immutable release.
 
 ## 7. One-way migration contract
 

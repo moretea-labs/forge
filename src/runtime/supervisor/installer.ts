@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { dirname, join, resolve, sep } from 'path';
 import { runProcess } from '../../effects/process-runner';
+import { processRunnerReleaseCanaryChildCommand } from '../execution/process-runtime/canary';
 import { looksLikeControllerRuntimePackage, resolveControllerRuntimeSourceRoot } from '../control-plane/runtime-generation';
 import {
   readCurrentRelease,
@@ -366,8 +367,7 @@ export function verifySupervisorReleaseExecutionCanary(input: {
       controllerHome: canaryRoot,
       command: {
         kind: 'argv',
-        executable: process.execPath,
-        args: ['--version'],
+        ...processRunnerReleaseCanaryChildCommand(runnerPath),
         cwd: resolve(input.cwd),
       },
       timeoutMs: 10_000,

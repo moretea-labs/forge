@@ -36,7 +36,11 @@ Process termination requires PID, process start time, command fingerprint, Contr
 
 Installation over a running legacy stack uses a detached activation handoff. The activation request is persisted before the current Gateway is stopped, the legacy process tree is identity-scoped and fully stopped, then the OS service is registered and verified. A loaded service is started through launchd/systemd rather than by creating an untracked detached duplicate.
 
-launchd uses `KeepAlive.SuccessfulExit=false`, and systemd uses `Restart=on-failure`. A crash is restarted; a successful explicit stop remains stopped.
+launchd uses `KeepAlive=true`, and systemd uses `Restart=always`. Any unexpected Supervisor process exit is restarted. An authorized operator stop remains stopped by unloading/booting out the launchd service or stopping/disabling the systemd unit; process exit code is not a second stop authority.
+
+Child readiness failure, incomplete managed pairs after restart, and ambient Git HEAD drift are **not** Supervisor process crashes. After the control plane and Rescue MCP are up, managed-pair recovery soft-fails into `observedState=degraded` and remains reachable for Recovery operations. See ADR [`../decisions/20260803-release-identity-binding-and-exit-policy.md`](../decisions/20260803-release-identity-binding-and-exit-policy.md).
+
+Managed Daemon and Gateway children are spawned with a captured release identity binding (`REPO_HARNESS_RELEASE_*`). They must not recompute source identity from ambient repository HEAD for readiness.
 
 ## Durable operations and recovery
 
