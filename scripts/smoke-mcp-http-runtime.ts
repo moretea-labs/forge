@@ -10,6 +10,7 @@ import { CORE_CONTROLLER_TOOL_NAMES } from '../src/cli/mcp/toolset';
 import { writeMcpServiceLocalConfig } from '../src/cli/mcp/auth';
 import { buildMcpToolDefinitions } from '../src/cli/mcp/tools';
 import { runtimePolicy } from '../src/cli/mcp/multi-repository';
+import { resolveControllerToolsetSelection } from '../src/cli/mcp/toolset-selection';
 
 const root = mkdtempSync(join(tmpdir(), 'repo-harness-mcp-http-smoke-'));
 const repoRoot = join(root, 'repo');
@@ -91,16 +92,19 @@ try {
 
   const health = await waitJson(`http://127.0.0.1:${port}/health`, 20_000);
   if (health.status !== 200 || health.body.status !== 'ok') throw new Error(`HEALTH_FAILED: ${JSON.stringify(health)} ${stderr}`);
-  if (health.body.toolset !== 'core') throw new Error(`TOOLSET_CHANGED: ${String(health.body.toolset)}`);
-  if (health.body.toolSurface !== CONTROLLER_TOOL_SURFACE) throw new Error(`TOOL_SURFACE_CHANGED: ${String(health.body.toolSurface)}`);
-  const expectedCoreFingerprint = controllerToolSurfaceFingerprint([...CORE_CONTROLLER_TOOL_NAMES]);
-  const expectedCompatibilityToolCount = buildMcpToolDefinitions(runtimePolicy(repoRoot, {
+  const expectedPolicy = runtimePolicy(repoRoot, {
     repo: repoRoot,
     controllerHome,
     profile: 'controller',
     enableDevRunner: true,
     devRunnerAgents: 'codex,claude',
-  })).length;
+  });
+  // Unmarked Controller startup intentionally preserves the Advanced compatibility label.
+  const expectedToolset = resolveControllerToolsetSelection(null).toolset;
+  if (health.body.toolset !== expectedToolset) throw new Error(`TOOLSET_CHANGED: ${String(health.body.toolset)}`);
+  if (health.body.toolSurface !== CONTROLLER_TOOL_SURFACE) throw new Error(`TOOL_SURFACE_CHANGED: ${String(health.body.toolSurface)}`);
+  const expectedCoreFingerprint = controllerToolSurfaceFingerprint([...CORE_CONTROLLER_TOOL_NAMES]);
+  const expectedCompatibilityToolCount = buildMcpToolDefinitions(expectedPolicy).length;
   if (health.body.toolCount !== CORE_CONTROLLER_TOOL_NAMES.length) throw new Error(`TOOL_COUNT_CHANGED: ${String(health.body.toolCount)}`);
   if (health.body.compatibilityToolCount !== expectedCompatibilityToolCount) throw new Error(`LEGACY_MCP_TOOL_COUNT_CHANGED: ${String(health.body.compatibilityToolCount)}`);
   if (health.body.toolSurfaceFingerprint !== expectedCoreFingerprint) throw new Error(`FINGERPRINT_CHANGED: ${String(health.body.toolSurfaceFingerprint)}`);
