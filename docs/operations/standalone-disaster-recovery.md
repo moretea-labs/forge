@@ -98,24 +98,22 @@ bun scripts/install-standalone-recovery.ts \
 
 The prompt is copied into the immutable Recovery release as `pi-recovery.md`, hashed in `manifest.json`, and resolved through the active `recovery/current` authority. Runtime execution fails closed if the prompt path or hash no longer matches the active release. PI runs with a fixed prompt, a bounded evidence appendix, the configured repository as its working directory, a maximum runtime, bounded output, a one-hour default cooldown, the same global mutation lock, and audit records containing hashes rather than model output. It cannot be enabled by a transient watchdog state change. Missing PI, prompt tampering, timeout, non-zero exit, or lock contention is recorded once and does not create a retry storm.
 
-## Slow-path PI escalation
+## Local PI enablement helper
 
-`scripts/repo-harness-pi-recovery-watchdog.sh` is an opt-in local escalation layer above the immutable Recovery Watchdog. It does not replace the five-second Recovery loop or compete with its rollback/tunnel policy.
+`scripts/enable-standalone-recovery-pi.sh` configures the existing immutable Recovery Watchdog; it does not create a second outage detector or service-mutation loop. The helper creates an owned clean local clone outside the developer checkout, installs a minimal launchd-owned Tailscale transport for `/recovery` and `/.well-known`, preserves the primary MCP URL without taking ownership of its tunnel, and invokes `install-standalone-recovery.ts` with the manifest-bound PI prompt.
 
-The script probes local `/health` and `/ready` every 15 seconds. Transient `502`, `503`, and connection failures are left to Supervisor and standalone Recovery first. A `/ready` 503 does not escalate while `sessionCapacity.recoveryRecommended` is false, because protected active work must not be restarted. After five continuous minutes, the script supplies independent Recovery `status` and `verify` evidence to a one-shot `pi -p` repair session. PI is rate-limited to once per fifteen minutes. If PI exits or times out and health remains unavailable, the script requests the fixed-command Recovery binary's bounded `restart-supervisor`; it never performs an unverified rollback itself.
-
-Install it as an independent macOS user LaunchAgent:
+The default PI threshold is twelve failed observations over at least five minutes, followed by a one-hour cooldown. Ordinary Gateway, tunnel, Supervisor, and verified rollback paths remain ahead of PI in the single Recovery mutation order.
 
 ```sh
 REPO_HARNESS_CONTROLLER_HOME=/absolute/controller-home \
-REPO_HARNESS_PUBLIC_HEALTH_URL=https://host.example/health \
-  scripts/repo-harness-pi-recovery-watchdog.sh --install
+REPO_HARNESS_RECOVERY_PUBLIC_URL=https://host.tailnet.ts.net/recovery/mcp \
+  scripts/enable-standalone-recovery-pi.sh --install
 ```
 
-The installer copies the script below `controller-home/recovery/bin`, resolves the canonical repository from Git's common directory, records the exact PI executable path and optional public health URL, and points launchd at that copy rather than a mutable worktree. The LaunchAgent enters through `/usr/bin/env -i`, preserving only HOME, identity, PATH, PI's config directory, and watchdog-specific variables; unrelated session credentials are not inherited by the watchdog or PI. Project context-file discovery is disabled for recovery prompts. Logs and cooldown state stay below `controller-home/recovery/pi-watchdog`. A public-only failure can invoke PI to restore the tunnel, but it cannot fall through to a healthy local Supervisor restart. Remove only the PI escalation service with `--uninstall`; standalone Recovery services remain untouched.
+The helper fails closed if the dedicated PI clone is dirty or has an ownership mismatch; it never resets recovery evidence. `--print-plan`, `--prepare-workspace`, and `--verify` provide non-overlapping inspection and maintenance modes. The obsolete `repo-harness-pi-recovery-watchdog` LaunchAgent and copied executable are removed during installation so standalone Recovery remains the only recovery authority.
 
-Run deterministic regression coverage with:
+Run wrapper regression coverage with:
 
 ```sh
-bash scripts/test-repo-harness-pi-recovery-watchdog.sh
+bash scripts/test-enable-standalone-recovery-pi.sh
 ```
