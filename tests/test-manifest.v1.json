@@ -26,7 +26,7 @@
     "maxTestFiles": 80,
     "maxTestLines": 40000,
     "maxPureFiles": 30,
-    "maxTempIsolatedFiles": 35,
+    "maxTempIsolatedFiles": 36,
     "maxProcessTreeFiles": 15,
     "maxGitWorktreeFiles": 15,
     "maxFixedPortFiles": 6,
@@ -267,6 +267,10 @@
       "module": "workflow",
       "resource": "temp-isolated"
     },
+    "tests/cli/worktree-storage.test.ts": {
+      "module": "repository",
+      "resource": "temp-isolated"
+    },
     "tests/contract-run.test.ts": {
       "module": "workflow",
       "resource": "temp-isolated"
@@ -364,6 +368,10 @@
       "module": "process-runtime",
       "resource": "process-tree"
     },
+    "tests/runtime/release-identity-binding.test.ts": {
+      "module": "release",
+      "resource": "git-worktree"
+    },
     "tests/runtime/process-tree-reclamation.test.ts": {
       "module": "process-runtime",
       "resource": "process-tree"
@@ -422,6 +430,10 @@
     },
     "tests/runtime/thin-harness.test.ts": {
       "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/work-validation-reconciler.test.ts": {
+      "module": "workflow",
       "resource": "temp-isolated"
     },
     "tests/runtime/work-task-receipt.test.ts": {
