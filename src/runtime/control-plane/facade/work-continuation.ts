@@ -14,6 +14,7 @@ export interface WorkContinuationSnapshot {
     worktreeRef?: string;
   };
   semantics: {
+    phase: WorkContract['phase'];
     status: WorkContract['status'];
     workKind: WorkContract['workKind'];
     dispatchState: WorkContract['dispatchState'];
@@ -81,6 +82,7 @@ export function buildWorkContinuationSnapshot(contract: WorkContract): WorkConti
       worktreeRef: contract.worktreeRef,
     },
     semantics: {
+      phase: contract.phase,
       status: contract.status,
       workKind: contract.workKind,
       dispatchState: contract.dispatchState,

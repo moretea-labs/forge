@@ -166,13 +166,25 @@ export interface ControllerTask {
   repoId?: string;
   id: string;
   title: string;
+  /**
+   * Compatibility projection link. Once present, Work owns the execution
+   * contract and this Task must not be used as a second mutable authority.
+   */
+  workId?: string;
+  /** @deprecated Read legacy snapshots only; derive from the linked Work. */
   objective: string;
+  /** @deprecated Read legacy snapshots only; derive from the linked Work. */
   status: TaskStatus;
   dependsOn: string[];
+  /** @deprecated Read legacy snapshots only; derive from the linked Work. */
   allowedPaths: string[];
+  /** @deprecated Read legacy snapshots only; derive from the linked Work. */
   forbiddenPaths: string[];
+  /** @deprecated Read legacy snapshots only; derive from the linked Work. */
   checks: string[];
+  /** @deprecated Read legacy snapshots only; derive from the linked Work. */
   acceptanceCriteria: string[];
+  /** @deprecated Read legacy snapshots only; derive from the linked Work. */
   risk: TaskRisk;
   /** Optional planning hint only. The executor is selected at dispatch time. */
   recommendedAgent?: ControllerAgent;

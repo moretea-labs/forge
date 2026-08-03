@@ -38,6 +38,7 @@ import type {
   SuggestedNextAction,
   VerificationRecord,
   WorkContract,
+  WorkRisk,
 } from './types';
 import { selectExecutionMode } from './types';
 
@@ -116,6 +117,17 @@ function workIdFor(objective: string): string {
 
 function handoffIdFor(prefix: string): string {
   return `hnd-${prefix}-${randomUUID().slice(0, 8)}`;
+}
+
+function workRiskFor(input: GoalWorkloopStartInput): WorkRisk {
+  const risk = input.modeInput.risk;
+  if (input.modeInput.secretAccess === true || input.modeInput.destructive === true) return 'destructive';
+  if (input.modeInput.remoteWrite === true) return 'high';
+  if (risk === 'readonly') return 'readonly';
+  if (risk === 'destructive' || risk === 'destructive_remote' || risk === 'raw_secret_config') return 'destructive';
+  if (risk === 'remote_write') return 'high';
+  if (risk === 'local_repo_write') return 'low';
+  return 'medium';
 }
 
 function suggestedForWork(work: WorkContract, extras: SuggestedNextAction[] = []): SuggestedNextAction[] {
@@ -453,7 +465,9 @@ export function startGoalWorkloop(
     objective: input.objective,
     acceptanceCriteria: input.acceptanceCriteria ?? [],
     constraints: input.constraints ?? { requireHandoffOnAmbiguity: true },
+    risk: workRiskFor(input),
     status: 'running',
+    phase: 'implementation',
     issueId: input.issueId,
     taskId: input.taskId,
     planId: input.planId,
@@ -592,6 +606,7 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     });
     const updated = updateWorkContract(ctx.workStore, work.workId, {
       status: 'ready',
+      phase: 'verification',
       handoffRefs: [handoff.id, ...work.handoffRefs],
     });
     appendWorkHandoffRef(ctx.workStore, work.workId, handoff.id);
@@ -624,6 +639,7 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
   if (history.infrastructureIssues.length > 0) {
     const updated = updateWorkContract(ctx.workStore, work.workId, {
       status: 'running',
+      phase: 'implementation',
       suggestedNextActions: [
         {
           label: 'Diagnose runtime (dry-run)',
@@ -667,6 +683,7 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     ).actions;
     const updated = updateWorkContract(ctx.workStore, work.workId, {
       status: 'running',
+      phase: 'verification',
       suggestedNextActions: suggested,
       continuationPrompt: input.note
         ? `${work.continuationPrompt ?? ''}\nNote: ${input.note}`.slice(0, 2_000)
@@ -700,6 +717,7 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     ]).actions;
     const updated = updateWorkContract(ctx.workStore, work.workId, {
       status: 'running',
+      phase: 'implementation',
       suggestedNextActions: suggested,
     });
     return buildFacadeResult({
@@ -733,6 +751,7 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
   ]).actions;
   const updated = updateWorkContract(ctx.workStore, work.workId, {
     status: 'running',
+    phase: 'delivery',
     suggestedNextActions: suggested,
   });
   return buildFacadeResult({
@@ -877,7 +896,7 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
   const history = completionEvidence.history;
 
   if (input.forceFailed || completionEvidence.status === 'failed') {
-    const updated = updateWorkContract(ctx.workStore, work.workId, { status: 'failed' });
+    const updated = updateWorkContract(ctx.workStore, work.workId, { status: 'failed', phase: 'cleanup' });
     if (updated.planId && updated.planStepId && ctx.planStore) {
       completePlanStepForWork(ctx.planStore, { planId: updated.planId, stepId: updated.planStepId, workId: updated.workId, succeeded: false, evidenceRefs: updated.evidenceRefs });
     }
@@ -906,7 +925,7 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
 
   // Weak refs, partial checks, invalid ids, and infrastructure issues never imply successful completion.
   if (completionEvidence.status === 'incomplete') {
-    const updated = updateWorkContract(ctx.workStore, work.workId, { status: 'ready' });
+    const updated = updateWorkContract(ctx.workStore, work.workId, { status: 'ready', phase: 'verification' });
     return buildFacadeResult({
       status: 'blocked',
       summary: `Finalize result: waiting_for_review. ${completionEvidence.reasons.join(' ')}`,
@@ -936,7 +955,20 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     });
   }
 
-  const updated = updateWorkContract(ctx.workStore, work.workId, { status: 'completed' });
+  // Checks and result evidence are necessary but not sufficient. Delivery and
+  // cleanup must produce the exact Work-owned receipt before Work can become
+  // terminal; a Run exit or a missing receipt is never completion authority.
+  if (!work.completionReceipt) {
+    const updated = updateWorkContract(ctx.workStore, work.workId, { status: 'ready', phase: 'delivery' });
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: `Finalize blocked for ${work.workId}: an exact delivery and cleanup completion receipt is required.`,
+      data: { work: summarizeWorkContract(updated), finalStatus: 'ready', completionReceiptRequired: true },
+      suggestedNextActions: [{ label: 'Complete Work delivery and cleanup', tool: 'rh_work', operation: 'finalize', payload: { work_id: work.workId }, risk: 'local_repo_write' }],
+    });
+  }
+
+  const updated = updateWorkContract(ctx.workStore, work.workId, { status: 'completed', phase: 'cleanup' });
   if (updated.planId && updated.planStepId && ctx.planStore) {
     completePlanStepForWork(ctx.planStore, { planId: updated.planId, stepId: updated.planStepId, workId: updated.workId, succeeded: true, evidenceRefs: updated.evidenceRefs });
   }
@@ -974,6 +1006,7 @@ export function stopGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloopSt
   const destructiveCleanup = input.authorizeDestructiveCleanup === true;
   const updated = updateWorkContract(ctx.workStore, work.workId, {
     status: 'cancelled',
+    phase: 'cleanup',
     continuationPrompt: input.reason
       ? `Stopped: ${input.reason}`.slice(0, 2_000)
       : work.continuationPrompt,

@@ -79,7 +79,10 @@ function normalizeStep(step: CreatePlanContractInput['steps'][number]): PlanStep
     checks: bounded(step.checks, 30, 200),
     acceptanceCriteria: bounded(step.acceptanceCriteria, 20),
     status: step.status ?? 'pending',
-    workId: undefined,
+    // A legacy PlanStep may already carry its materialized Work link. Keep the
+    // link on read; Work remains the only execution authority and this is only
+    // a relationship/projection field.
+    workId: step.workId?.trim() || undefined,
     evidenceRefs: (step.evidenceRefs ?? []).slice(0, 20),
   };
 }

@@ -1,9 +1,10 @@
 import { createHash } from 'crypto';
 import { spawnSync } from 'child_process';
-import { getIssue, listIssues, recordTaskVerification, acceptVerifiedTask } from '../../../cli/controller/issue-store';
+import { getIssue, listIssues, recordTaskVerification, acceptVerifiedTask, updateTask } from '../../../cli/controller/issue-store';
 import { resolveCompletionTargetBranch } from '../../../cli/controller/completion-target';
 import type { CompletionReceipt, ControllerIssue } from '../../../cli/controller/types';
-import { getWorkContract, updateWorkContract } from '../facade/work-contract-store';
+import { completeRequirementFromWork } from '../persistence/requirement-store';
+import { getWorkContract, recordWorkCompletionReceipt, updateWorkContract } from '../facade/work-contract-store';
 import { WORK_RECONCILIATION_METHODS, WORK_RECONCILIATION_OUTCOMES } from '../facade/types';
 import type {
   WorkReconciliationMethod,
@@ -268,13 +269,23 @@ export function acceptVerifiedTaskFromReviewedWorkReconciliation(input: Controll
     verifiedAt: task.verification!.verifiedAt,
     recordedAt,
   };
-  recordTaskVerification(input.repoRoot, input.issueId, input.taskId, { ...task.verification!, completionReceipt: receipt });
-  const accepted = acceptVerifiedTask(
-    input.repoRoot,
-    input.issueId,
-    input.taskId,
-    input.note ?? `Accepted reviewed Work reconciliation ${reconciliation.record.reconciliationId} for ${input.workId}.`,
-  );
+  const projectedVerification = { ...task.verification!, completionReceipt: receipt };
+  const accepted = task.workId
+    ? updateTask(input.repoRoot, input.issueId, input.taskId, {
+        status: 'done',
+        verification: projectedVerification,
+        note: input.note ?? `Projected reviewed Work reconciliation ${reconciliation.record.reconciliationId} for ${input.workId}.`,
+        transition: 'work_projection',
+      })
+    : (() => {
+        recordTaskVerification(input.repoRoot, input.issueId, input.taskId, projectedVerification);
+        return acceptVerifiedTask(
+          input.repoRoot,
+          input.issueId,
+          input.taskId,
+          input.note ?? `Accepted reviewed Work reconciliation ${reconciliation.record.reconciliationId} for ${input.workId}.`,
+        );
+      })();
   return { issue: accepted, receipt };
 }
 
@@ -376,10 +387,36 @@ export function acceptVerifiedTaskFromControllerWork(input: ControllerWorkTaskRe
     recordedAt,
   };
 
-  recordTaskVerification(input.repoRoot, input.issueId, input.taskId, {
+  // Persist the Work receipt before touching the legacy Task projection. If a
+  // historical Task write is interrupted, the Work authority is still
+  // durable and a retry can safely rebuild the projection.
+  const completionOutcome = noChange ? 'completed_no_change' : contract.workKind === 'remote_effect' ? 'completed_remote' : 'completed_changed';
+  const recorded = recordWorkCompletionReceipt(
+    { controllerHome: input.controllerHome, repoId: input.repoId },
+    input.workId,
+    receipt,
+    completionOutcome,
+  );
+  if (recorded.requirementId) {
+    completeRequirementFromWork(
+      { controllerHome: input.controllerHome },
+      { requirementId: recorded.requirementId, work: recorded },
+    );
+  }
+  const projectedVerification = {
     ...task.verification,
-    completionReceipt: receipt,
-  });
+    completionReceipt: recorded.completionReceipt ?? receipt,
+  };
+  if (task.workId) {
+    const projected = updateTask(input.repoRoot, input.issueId, input.taskId, {
+      status: 'done',
+      verification: projectedVerification,
+      note: input.note ?? `Projected completed Work ${input.workId} with receipt ${receipt.receiptId}.`,
+      transition: 'work_projection',
+    });
+    return { issue: projected, receipt: recorded.completionReceipt ?? receipt };
+  }
+  recordTaskVerification(input.repoRoot, input.issueId, input.taskId, projectedVerification);
   const accepted = acceptVerifiedTask(
     input.repoRoot,
     input.issueId,

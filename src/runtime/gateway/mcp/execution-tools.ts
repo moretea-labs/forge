@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { basename, isAbsolute, relative, resolve } from 'path';
 import type { McpToolDefinition, CallToolResult } from '../../../cli/mcp/tools';
+import type { CompletionReceipt } from '../../../cli/controller/types';
 import type { MultiRepositoryMcpToolContext } from '../../../cli/mcp/multi-repository';
 import {
   getRepository,
@@ -18,7 +19,7 @@ import { classifyRepositoryCommand } from '../../../cli/repositories/command-cla
 import { ensureManagedWorkspace } from '../../workflow/campaigns/workspace';
 import { listControllerChecks } from '../../../cli/controller/check-runner';
 import { readRepositoryAccessPolicy } from '../../control-plane/governance/access-policy';
-import { appendWorkEvidence, createWorkContract, getWorkContract, updateWorkContract, appendVerificationRecord } from '../../control-plane/facade/work-contract-store';
+import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkCompletionReceipt, updateWorkContract, appendVerificationRecord } from '../../control-plane/facade/work-contract-store';
 import { isTerminalWorkContractStatus } from '../../control-plane/facade/types';
 import { buildWorkContinuationSnapshot } from '../../control-plane/facade/work-continuation';
 import { claimControllerSession, getControllerSession, resumeControllerSession } from '../../control-plane/facade/controller-session-store';
@@ -163,6 +164,64 @@ function initialStage(): WorkFinalizationStages {
 function gitHead(root: string): string | undefined {
   const output = spawnSync('git', ['-C', root, 'rev-parse', '--verify', 'HEAD'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000 });
   return output.status === 0 && typeof output.stdout === 'string' ? output.stdout.trim() : undefined;
+}
+
+function completionReceiptForFinalizedWork(
+  ctx: MultiRepositoryMcpToolContext,
+  handle: WorkHandleState,
+  contract: ReturnType<typeof contractFor>,
+  args: Record<string, unknown>,
+): CompletionReceipt {
+  const repository = getRepository(handle.repositoryId, ctx.controllerHome, { includeRemoved: true });
+  const target = selectRepositoryCheckout(repository, handle.sourceCheckoutId ?? repository.activeCheckoutId);
+  const targetBranch = typeof args.target_branch === 'string' && args.target_branch.trim()
+    ? args.target_branch.trim()
+    : repository.defaultBranch || target.branch || 'main';
+  const targetRevision = gitHead(target.canonicalRoot);
+  if (!targetRevision) throw new Error('WORK_COMPLETION_RECEIPT_TARGET_REQUIRED: target HEAD is unavailable');
+  const reachable = spawnSync('git', ['-C', target.canonicalRoot, 'merge-base', '--is-ancestor', targetRevision, targetBranch], {
+    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
+  }).status === 0;
+  if (!reachable) throw new Error(`WORK_COMPLETION_RECEIPT_DELIVERY_NOT_PROVEN: ${targetRevision} is not reachable from ${targetBranch}`);
+  const changedPaths = handle.baseCommit
+    ? Array.from(new Set(String(spawnSync('git', ['-C', target.canonicalRoot, 'diff', '--name-only', `${handle.baseCommit}..${targetRevision}`], {
+        encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
+      }).stdout ?? '').split('\n').map((entry) => entry.trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right))
+    : [];
+  const recordedAt = new Date().toISOString();
+  const noChange = args.completion_outcome === 'completed_no_change';
+  const warnings = [
+    ...(handle.finalization.branchCleanup === 'skipped' ? [{ code: 'cleanup_retained_by_request' as const, message: 'Branch cleanup was skipped by the finalization request.', resourceKind: 'branch' as const, resourceId: handle.branch, recordedAt }] : []),
+    ...(handle.finalization.worktreeCleanup === 'skipped' && handle.managedWorktree ? [{ code: 'cleanup_retained_by_request' as const, message: 'Managed worktree cleanup was skipped by the finalization request.', resourceKind: 'worktree' as const, resourceId: handle.worktreePath, recordedAt }] : []),
+  ];
+  return {
+    schemaVersion: 1,
+    receiptId: `REC-controller_work-${createHash('sha256').update(`${handle.workId}\0${targetRevision}`).digest('hex').slice(0, 16)}`,
+    source: 'controller_work',
+    issueId: contract?.issueId ?? 'work',
+    taskId: contract?.taskId ?? handle.workId,
+    workId: handle.workId,
+    targetBranch,
+    targetRevision,
+    sourceRevision: handle.baseCommit,
+    baseRevision: handle.baseCommit,
+    changedPaths,
+    delivery: {
+      kind: noChange ? 'no_change' : 'commit',
+      status: 'integrated',
+      strategy: noChange ? 'no_change' : handle.finalization.commit === 'done' ? 'edit_session_commit' : 'already_integrated',
+      reachable: true,
+      recordedAt,
+    },
+    cleanup: {
+      status: warnings.length > 0 ? 'maintenance_warning' : 'complete',
+      warnings,
+      blockers: [],
+      recordedAt,
+    },
+    verifiedAt: recordedAt,
+    recordedAt,
+  };
 }
 
 function boundedStringArray(value: unknown, limit: number): string[] {
@@ -1153,22 +1212,23 @@ function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, u
       );
     } else {
       const workId = current.workContractId ?? current.workId;
+      const completionContract = contractFor(ctx, current);
+      if (!completionContract) throw new Error(`WORK_COMPLETION_CONTRACT_MISSING: ${workId}`);
       if (requestedOutcome === 'completed_no_change') {
         appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, workId, {
           title: 'objective-specific no-change proof',
           summary: noChangeProof,
           detailLevel: 'summary',
         });
-        updateWorkContract({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, workId, {
-          status: 'completed',
-          workKind: 'completed_no_change',
-          dispatchState: 'terminal',
-          evidenceState: 'valid',
-          completionOutcome: 'completed_no_change',
-        });
-      } else {
-        updateWorkContract({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, workId, { status: 'completed' });
       }
+      const receipt = completionReceiptForFinalizedWork(ctx, current, completionContract, args);
+      recordWorkCompletionReceipt(
+        { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
+        workId,
+        receipt,
+        requestedOutcome === 'completed_no_change' ? 'completed_no_change' : 'completed_changed',
+        requestedOutcome === 'completed_no_change' ? 'completed_no_change' : 'repository_change',
+      );
     }
     if (finalState === 'cleaned') {
       updateExecutionSession(ctx.controllerHome, identity, { activeWorkId: undefined, activeCheckoutId: current.sourceCheckoutId ?? session.activeCheckoutId });

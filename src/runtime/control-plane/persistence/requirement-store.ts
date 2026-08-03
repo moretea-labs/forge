@@ -7,6 +7,7 @@ import {
   type ControlPlaneRecord,
   type SqliteDatabase,
 } from './sqlite-store';
+import type { WorkContract } from '../facade/types';
 
 export const REQUIREMENT_STATES = ['planned', 'active', 'waiting_for_user', 'done', 'cancelled'] as const;
 export type RequirementState = (typeof REQUIREMENT_STATES)[number];
@@ -171,5 +172,69 @@ export function setRequirementPlan(
     requirementId: input.requirementId,
     action: input.action ?? 'requirement_active_plan_bound',
     mutate: (current) => ({ ...current, activePlanId: id(input.planId) }),
+  });
+}
+
+export interface RequirementCompletionInput {
+  requirementId: string;
+  work: Pick<WorkContract,
+    | 'workId'
+    | 'requirementId'
+    | 'status'
+    | 'phase'
+    | 'evidenceState'
+    | 'completionOutcome'
+    | 'completionReceipt'
+  >;
+}
+
+/**
+ * Complete a Requirement only from the Work-owned completion record.
+ *
+ * This intentionally short-circuits an already audited `done` Requirement
+ * before inspecting historical execution facts. A cancelled Run, missing
+ * legacy Task receipt, or stale Work projection therefore cannot reopen or
+ * rewrite a completed user outcome.
+ */
+export function completeRequirementFromWork(
+  options: RequirementStoreOptions,
+  input: RequirementCompletionInput,
+): Requirement {
+  const requirementId = id(input.requirementId);
+  const current = readRequirement(options, requirementId);
+  if (!current) throw new Error(`REQUIREMENT_NOT_FOUND: ${requirementId}`);
+  if (current.value.state === 'done') return current.value;
+  if (current.value.state === 'cancelled') throw new Error('REQUIREMENT_CANCELLED');
+
+  const work = input.work;
+  if (work.requirementId !== requirementId) throw new Error('REQUIREMENT_WORK_IDENTITY_MISMATCH');
+  if (work.status !== 'completed') throw new Error('REQUIREMENT_WORK_NOT_COMPLETED');
+  if (work.phase !== 'cleanup') throw new Error('REQUIREMENT_WORK_CLEANUP_REQUIRED');
+  if (work.evidenceState !== 'valid') throw new Error('REQUIREMENT_WORK_EVIDENCE_NOT_VALID');
+  if (!work.completionOutcome) throw new Error('REQUIREMENT_WORK_COMPLETION_OUTCOME_REQUIRED');
+  if (work.completionOutcome === 'superseded') throw new Error('REQUIREMENT_WORK_OUTCOME_NOT_COMPLETED');
+
+  const receipt = work.completionReceipt;
+  if (!receipt) throw new Error('REQUIREMENT_WORK_COMPLETION_RECEIPT_REQUIRED');
+  if (receipt.workId !== work.workId) throw new Error('REQUIREMENT_WORK_RECEIPT_IDENTITY_MISMATCH');
+  if (receipt.delivery.kind === 'superseded' || receipt.delivery.status !== 'integrated' || !receipt.delivery.reachable) throw new Error('REQUIREMENT_WORK_DELIVERY_NOT_PROVEN');
+  if (!['complete', 'maintenance_warning'].includes(receipt.cleanup.status) || receipt.cleanup.blockers.length > 0) throw new Error('REQUIREMENT_WORK_CLEANUP_NOT_PROVEN');
+
+  return updateRequirement(options, {
+    requirementId,
+    action: 'requirement_completed_from_work_receipt',
+    mutate: (latest) => {
+      // Preserve a concurrent audited completion; stale execution evidence is
+      // never allowed to move a terminal Requirement backwards.
+      if (latest.state === 'done') return latest;
+      if (latest.state === 'cancelled') throw new Error('REQUIREMENT_CANCELLED');
+      return {
+        ...latest,
+        state: 'done',
+        needsAttention: false,
+        attentionSummary: undefined,
+        auditRefs: Array.from(new Set([...latest.auditRefs, receipt.receiptId])).slice(-50),
+      };
+    },
   });
 }

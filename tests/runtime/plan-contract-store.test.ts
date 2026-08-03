@@ -53,3 +53,19 @@ test('rejects a second create and stale writer without changing the authoritativ
   expect(() => writeControlPlaneRecord(home, { namespace: 'plan_contract', scope: 'repo-1', key: 'plan-1', schemaVersion: 1, value, expectedRevision: 99, action: 'stale' })).toThrow(ControlPlaneConflictError);
   expect(readControlPlaneRecord(home, 'plan_contract', 'repo-1', 'plan-1')?.revision).toBe(1);
 });
+
+test('keeps PlanStep materialization as a Work reference', () => {
+  const home = mkdtempSync(join('/tmp', 'repo-harness-plan-store-'));
+  homes.push(home);
+  const options = { controllerHome: home, repoId: 'repo-1' };
+  const plan = createPlanContract(options, {
+    planId: 'plan-work-link',
+    repoId: 'repo-1',
+    scopeKey: 'runtime',
+    sourceRevision: 'abc123',
+    goal: 'materialize one Work',
+    steps: [{ id: 'step-1', objective: 'execute bounded work', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['Work is bound'], workId: 'work-existing' }],
+  });
+  expect(plan.steps[0]?.workId).toBe('work-existing');
+  expect(getPlanContract(options, plan.planId)?.steps[0]?.workId).toBe('work-existing');
+});

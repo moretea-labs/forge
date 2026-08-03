@@ -76,6 +76,10 @@ A PlanStep intentionally has no independent complex lifecycle. It is either:
 - bound to one current Work; or
 - derived as satisfied from the accepted Work evidence.
 
+The materialized `workId` is the PlanStep-to-Work reference. PlanStep fields
+describe the approved planning node; after materialization they are not a
+second mutable execution contract.
+
 Retry creates another Attempt for the same Work. Replan supersedes the plan step and creates a new Work only when the execution contract materially changes.
 
 ### Work
@@ -93,7 +97,17 @@ Work is the only execution contract. It is the sole mutable owner of:
 
 Issue, Task, PlanStep, Run and ExecutionJob may reference Work but must not duplicate or override these fields after cutover.
 
-Internal Work states are bounded to `planned`, `ready`, `running`, `waiting_for_review`, `blocked`, `succeeded`, `failed`, `cancelled` and `superseded`. Projection labels may be richer, but they cannot become another authority.
+Work has two separate vocabularies. Its compatibility status is bounded to
+`open`, `running`, `blocked`, `ready`, `completed`, `failed` and `cancelled`;
+it is execution state, not the user lifecycle. Its canonical technical phase
+is exactly one of `implementation`, `verification`, `delivery` or `cleanup`.
+Projection labels may be richer, but they cannot become another authority.
+
+A Work may enter `completed` only through a Work-owned completion receipt that
+matches the Work identity, proves an exact reachable target revision and proves
+cleanup with no blockers. Historical cancelled Runs, missing receipts and
+projection lag are retained as evidence or maintenance findings and cannot
+rewrite a reviewed Requirement outcome.
 
 ### Attempt
 

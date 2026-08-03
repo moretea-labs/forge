@@ -53,6 +53,7 @@ The migration preserves the existing Issue, Task, Run, Edit Session, Local Job, 
 | External side-effect authorization | Implemented | Gateway/Portfolio/Schedule/Worker defense-in-depth policy |
 | Runtime health split | Implemented | `/health`, capacity-aware `/ready`, `/repos/:repoId/health`, and structured Supervisor recovery recommendation |
 | Legacy compatibility | Implemented | stable MCP facade, unchanged compatibility fingerprint, Local Job projection into Execution Job |
+| Work-only execution contract convergence | Implemented for Work-backed Tasks | `WorkContract` owns objective/scope/check/risk/status/phase and completion receipt; linked Task fields are read projections, PlanStep retains `workId`, and receipt/revision/cleanup gates fail closed |
 | Node/Bun process portability | Implemented | project TypeScript Loader for Daemon/Worker/Gateway smoke execution; Bun remains the supported package/test runtime |
 
 ## Public Contract and Tool Surface

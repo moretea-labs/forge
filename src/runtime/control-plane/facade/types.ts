@@ -1,4 +1,5 @@
 import type { ProcessCheckReceiptEvidence } from '../../evidence/process-check-receipt';
+import type { CompletionReceipt } from '../../../cli/controller/types';
 import type { AccessMode } from '../governance/access-policy';
 
 export const EXECUTION_MODES = ['direct_control', 'goal_workloop', 'handoff_only'] as const;
@@ -81,6 +82,17 @@ export const WORK_CONTRACT_STATUSES = [
   'cancelled',
 ] as const;
 export type WorkContractStatus = (typeof WORK_CONTRACT_STATUSES)[number];
+
+/**
+ * Work execution phases are intentionally small and technical. User-facing
+ * Requirement lifecycle belongs to Requirement, not this projection.
+ */
+export const WORK_PHASES = ['implementation', 'verification', 'delivery', 'cleanup'] as const;
+export type WorkPhase = (typeof WORK_PHASES)[number];
+
+/** Risk is part of the Work contract, never of a mutable Task projection. */
+export const WORK_RISKS = ['readonly', 'low', 'medium', 'high', 'destructive'] as const;
+export type WorkRisk = (typeof WORK_RISKS)[number];
 
 export const TERMINAL_WORK_CONTRACT_STATUSES: readonly WorkContractStatus[] = [
   'completed',
@@ -178,7 +190,7 @@ export interface HandoffCurrentState {
   changedFiles?: string[];
   checks?: Array<{ checkId: string; ok: boolean; summary?: string; outcome?: VerificationOutcome }>;
   /** Bounded durable Work semantics for a fresh controller session. */
-  workSemantics?: Pick<WorkContract, 'status' | 'workKind' | 'dispatchState' | 'evidenceState' | 'completionOutcome'>;
+  workSemantics?: Pick<WorkContract, 'phase' | 'status' | 'workKind' | 'dispatchState' | 'evidenceState' | 'completionOutcome'>;
   reconciliationRequired?: boolean;
   nextSafeAction?: string;
 }
@@ -322,6 +334,10 @@ export interface WorkContract {
   objective: string;
   acceptanceCriteria: string[];
   constraints: WorkContractConstraints;
+  /** Risk is immutable contract input and is projected to legacy Task reads. */
+  risk: WorkRisk;
+  /** Technical phase; Requirement owns the user lifecycle. */
+  phase: WorkPhase;
   /** Explicit v2 execution semantics. `status` is retained for compatibility. */
   workKind: WorkKind;
   dispatchState: DispatchState;
@@ -330,9 +346,13 @@ export interface WorkContract {
   status: WorkContractStatus;
   createdAt: string;
   updatedAt: string;
-  /** @deprecated Prefer workId; kept for phase-1 contract compatibility. */
+  /** @deprecated Prefer Requirement/Plan/Work links; kept for compatibility reads only. */
   issueId?: string;
   taskId?: string;
+  /** Stable Requirement authority that this Work may complete. */
+  requirementId?: string;
+  /** Work-owned completion receipt. Legacy Task receipts are projections only. */
+  completionReceipt?: CompletionReceipt;
   /** Provenance for complex work dispatched from a durable PlanContract step. */
   planId?: string;
   planStepId?: string;
@@ -442,7 +462,7 @@ export interface PlanStep {
   checks: string[];
   acceptanceCriteria: string[];
   status: PlanStepStatus;
-  /** WorkContract currently executing this step, when dispatched. */
+  /** Work currently executing this step, when materialized. */
   workId?: string;
   evidenceRefs: EvidenceRef[];
 }

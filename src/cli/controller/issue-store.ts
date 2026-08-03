@@ -518,6 +518,9 @@ function refreshReadiness(repoRoot: string, issue: ControllerIssue): void {
   const states = resolveIssueTaskStates(issue, readIssueRunEvidence(repoRoot, issue));
   const activeRuns = readActiveRunEvidence(repoRoot);
   for (const task of issue.tasks) {
+    // A Work-backed Task is a compatibility projection. Its status is owned by
+    // Work and must never be rewritten by legacy readiness refresh logic.
+    if (task.workId) continue;
     const state = states.get(task.id)!;
     if (state.terminal || state.inactive || state.requiresExplicitRetry || state.activeRunIds.length > 0) continue;
     if (!['planned', 'ready', 'launch_blocked'].includes(task.status)) continue;
@@ -631,6 +634,9 @@ export function createIssue(repoRoot: string, input: {
 export function planIssue(repoRoot: string, id: string, drafts: TaskDraft[]): ControllerIssue {
   const issue = getIssue(repoRoot, id);
   assertIssueExecutionActive(issue, 'plan_issue');
+  if (issue.tasks.some((task) => task.workId)) {
+    throw new Error(`TASK_PLAN_WORK_OWNED: ${issue.id} contains Work-backed Tasks; replan through Plan/Work relationships.`);
+  }
   if (issue.tasks.some((task) => task.runIds.length > 0)) throw new Error('cannot replace task plan after runs have started; append, split, or supersede Tasks instead');
   const now = new Date().toISOString();
   issue.tasks = buildTasks(drafts, now);
@@ -662,6 +668,7 @@ export function splitTask(repoRoot: string, issueIdValue: string, taskId: string
   const original = issue.tasks.find((task) => task.id === taskId);
   const originalStatus = original?.status;
   if (!original) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
+  if (original.workId) throw new Error(`TASK_PLAN_WORK_OWNED: ${issueIdValue}/${taskId} is bound to Work ${original.workId}`);
   assertIssueExecutionActive(issue, 'split_task');
   const originalState = effectiveTaskState(repoRoot, issue, original);
   if (originalState.terminal || originalState.inactive) throw new Error(`cannot split task from effective status ${originalState.effectiveStatus}`);
@@ -701,6 +708,7 @@ export function supersedeTask(repoRoot: string, issueIdValue: string, taskId: st
   const issue = getIssue(repoRoot, issueIdValue);
   const task = issue.tasks.find((entry) => entry.id === taskId);
   if (!task) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
+  if (task.workId) throw new Error(`TASK_STATUS_WORK_OWNED: ${issueIdValue}/${taskId} is bound to Work ${task.workId}`);
   assertIssueExecutionActive(issue, 'supersede_task');
   const state = effectiveTaskState(repoRoot, issue, task);
   if (state.terminal || state.inactive) throw new Error(`cannot supersede Task from effective status ${state.effectiveStatus}`);
@@ -788,13 +796,19 @@ export function updateTask(repoRoot: string, issueIdValue: string, taskId: strin
   runId?: string;
   github?: GitHubIssueLink;
   verification?: TaskVerification;
-  transition?: 'normal' | 'run_sync' | 'retry' | 'restore';
+  transition?: 'normal' | 'run_sync' | 'retry' | 'restore' | 'work_projection';
 }): ControllerIssue {
   const issue = getIssue(repoRoot, issueIdValue);
   const task = issue.tasks.find((entry) => entry.id === taskId);
   if (!task) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
   const previousStatus = task.status;
   const previousState = resolveEffectiveTaskState({ issue, task, runs: readTaskRunEvidence(repoRoot, task) });
+  if (task.workId && patch.status !== undefined && patch.transition !== 'work_projection') {
+    throw new Error(`TASK_STATUS_WORK_OWNED: ${issue.id}/${task.id} is projected from Work ${task.workId}`);
+  }
+  if (task.workId && patch.verification !== undefined && patch.transition !== 'work_projection') {
+    throw new Error(`TASK_VERIFICATION_WORK_OWNED: ${issue.id}/${task.id} is projected from Work ${task.workId}`);
+  }
   if (patch.status && patch.status !== previousStatus) {
     const executableTarget = !['done', 'cancelled', 'superseded'].includes(patch.status);
     if ((task.supersededBy?.length ?? 0) > 0 && patch.status !== 'superseded') {
@@ -826,6 +840,41 @@ export function updateTask(repoRoot: string, issueIdValue: string, taskId: strin
   if (patch.runId?.trim()) tryAppendControllerWorklogEvent(repoRoot, { category: 'run', action: 'run_linked_to_task', summary: `Linked ${patch.runId.trim()} to ${task.id}.`, issueId: issue.id, taskId: task.id, runId: patch.runId.trim() });
   if (patch.github) tryAppendControllerWorklogEvent(repoRoot, { category: 'github', action: 'task_github_linked', summary: `Linked ${task.id} to GitHub.`, issueId: issue.id, taskId: task.id, details: { url: patch.github.url } });
   if (patch.verification) tryAppendControllerWorklogEvent(repoRoot, { category: 'verification', action: task.status === 'verified' ? 'verification_passed' : 'verification_recorded', summary: `${task.id} verification recorded by ${patch.verification.reviewer}.`, issueId: issue.id, taskId: task.id, runId: patch.verification.runId, details: { checks: patch.verification.checkResults, acceptance: patch.verification.acceptanceResults } });
+  return written;
+}
+
+/**
+ * Bind a legacy Task to a Work without copying any execution contract fields.
+ * Existing fields remain readable for migration, but all new execution writes
+ * must go through Work and may only project back with `work_projection`.
+ */
+export function bindTaskToWork(
+  repoRoot: string,
+  issueIdValue: string,
+  taskId: string,
+  workId: string,
+): ControllerIssue {
+  const normalizedWorkId = workId.trim();
+  if (!normalizedWorkId) throw new Error('TASK_WORK_ID_REQUIRED');
+  const issue = getIssue(repoRoot, issueIdValue);
+  const task = issue.tasks.find((entry) => entry.id === taskId);
+  if (!task) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
+  if (task.workId && task.workId !== normalizedWorkId) {
+    throw new Error(`TASK_WORK_REBIND_FORBIDDEN: ${task.workId} -> ${normalizedWorkId}`);
+  }
+  if (task.workId === normalizedWorkId) return issue;
+  task.workId = normalizedWorkId;
+  task.updatedAt = new Date().toISOString();
+  issue.updatedAt = task.updatedAt;
+  const written = writeIssue(repoRoot, issue);
+  tryAppendControllerWorklogEvent(repoRoot, {
+    category: 'task',
+    action: 'task_bound_to_work',
+    summary: `Bound ${task.id} to Work ${normalizedWorkId}; Work owns execution fields.`,
+    issueId: issue.id,
+    taskId: task.id,
+    details: { workId: normalizedWorkId },
+  });
   return written;
 }
 
@@ -1021,6 +1070,7 @@ export function acceptVerifiedTask(repoRoot: string, issueIdValue: string, taskI
   const issue = getIssue(repoRoot, issueIdValue);
   const task = issue.tasks.find((entry) => entry.id === taskId);
   if (!task) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
+  if (task.workId) throw new Error(`TASK_COMPLETION_WORK_OWNED: ${issueIdValue}/${taskId} is projected from Work ${task.workId}`);
   if (task.status === 'done') return issue;
   if (task.status !== 'verified' || !task.verification) throw new Error(`task must have passed required verification before acceptance (current: ${task.status})`);
   const verification = task.verification;
@@ -1060,6 +1110,7 @@ export function recordTaskVerification(
   const issue = getIssue(repoRoot, issueIdValue);
   const task = issue.tasks.find((entry) => entry.id === taskId);
   if (!task) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
+  if (task.workId) throw new Error(`TASK_VERIFICATION_WORK_OWNED: ${issueIdValue}/${taskId} is projected from Work ${task.workId}`);
   const taskState = effectiveTaskState(repoRoot, issue, task);
   const doneEvidenceBackfill = task.status === 'done' && taskState.reason === 'completion_evidence_missing';
   if ((taskState.terminal || taskState.inactive) && !doneEvidenceBackfill) {

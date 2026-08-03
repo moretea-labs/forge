@@ -115,17 +115,18 @@ It owns:
 
 ```text
 taskId
-objective
 dependsOn
-allowedPaths
-forbiddenPaths
-checks
-acceptanceCriteria
-risk
 notes
 runIds
 verification
+workId
 ```
+
+When `workId` is present, the objective, scope, checks, acceptance criteria,
+risk, status, and completion evidence above are compatibility fields from the
+legacy Task ledger. Work is the only mutable execution contract; readers may
+derive these fields from the linked Work, but Task writers must not maintain a
+second lifecycle.
 
 ### Rules
 
@@ -133,9 +134,13 @@ verification
 - Dependencies are Task identities, not Run identities.
 - Agent selection occurs at dispatch time; a stored Agent is at most a recommendation.
 - A Task may have multiple Runs and Edit Sessions across its history.
-- A Task status expresses workflow intent and review state, not raw process state.
+- A Task without Work remains a legacy planning record during migration.
+- A Work-backed Task exposes a derived compatibility status; Work owns the
+  mutable execution status and technical phase.
+- Runs and Processes are evidence and execution facts. They cannot write a
+  Requirement outcome or promote a Work-backed Task to completion.
 
-### Target Lifecycle
+### Compatibility Lifecycle
 
 ```text
 backlog
@@ -169,7 +174,17 @@ Current status names include `running` instead of a distinct `executing` abstrac
 
 ### Migration Rule
 
-Existing status values remain readable. New implementation must preserve the semantic distinction between declared Task status and effective execution state.
+Existing status values remain readable for migration and UI compatibility. The
+canonical Work phase vocabulary is deliberately smaller:
+
+```text
+implementation -> verification -> delivery -> cleanup
+```
+
+The phase is technical execution context, not a user-facing Requirement
+lifecycle. A Work completion receipt must identify the Work, exact target
+branch/revision, valid delivery reachability, and blocker-free cleanup before a
+terminal completed Work can be written.
 
 ## 7. Job
 

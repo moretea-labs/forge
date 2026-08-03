@@ -3,8 +3,9 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import { createIssue, getIssue, updateTask } from '../../src/cli/controller/issue-store';
+import { bindTaskToWork, createIssue, getIssue, planIssue, updateTask } from '../../src/cli/controller/issue-store';
 import { createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { projectControllerTaskFromWork } from '../../src/runtime/control-plane/facade/work-task-projection';
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import {
   acceptVerifiedTaskFromControllerWork,
@@ -12,6 +13,7 @@ import {
   recordControllerWorkReconciliation,
 } from '../../src/runtime/control-plane/execution/work-task-receipt';
 import { verificationInputFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
+import { WORK_PHASES } from '../../src/runtime/control-plane/facade/types';
 
 const roots: string[] = [];
 
@@ -112,6 +114,17 @@ function fixture(options: { changed?: boolean; equivalentHistoricalWork?: boolea
 }
 
 describe('controller Work Task completion receipt', () => {
+  test('uses four bounded technical Work phases', () => {
+    expect(WORK_PHASES).toEqual(['implementation', 'verification', 'delivery', 'cleanup']);
+    const fx = fixture();
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)?.phase).toBe('cleanup');
+  });
+
+  test('does not allow a status write to manufacture terminal Work without a receipt', () => {
+    const fx = fixture();
+    expect(() => updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, { status: 'completed' })).toThrow(/WORK_COMPLETION_RECEIPT_REQUIRED/);
+  });
+
   test('binds a completed cleaned Work to the exact verified Task and accepts it', () => {
     const fx = fixture();
     const result = acceptVerifiedTaskFromControllerWork({
@@ -145,6 +158,39 @@ describe('controller Work Task completion receipt', () => {
       workId: fx.workId,
     });
     expect(retried.receipt.receiptId).toBe(result.receipt.receiptId);
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)?.completionReceipt).toMatchObject({ workId: fx.workId, targetRevision: fx.expectedHead });
+  });
+
+  test('treats a Work-bound Task status and contract fields as a derived compatibility projection', () => {
+    const fx = fixture();
+    bindTaskToWork(fx.repoRoot, fx.issueId, 'T1', fx.workId);
+    expect(() => updateTask(fx.repoRoot, fx.issueId, 'T1', { status: 'cancelled' })).toThrow(/TASK_STATUS_WORK_OWNED/);
+    expect(() => planIssue(fx.repoRoot, fx.issueId, [{ title: 'Replan', objective: 'Replace the bound execution contract.' }])).toThrow(/TASK_PLAN_WORK_OWNED/);
+
+    const task = getIssue(fx.repoRoot, fx.issueId).tasks[0]!;
+    const work = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
+    const projected = projectControllerTaskFromWork(task, work);
+    expect(projected).toMatchObject({
+      workId: fx.workId,
+      objective: work.objective,
+      allowedPaths: work.allowedPaths,
+      forbiddenPaths: work.forbiddenPaths,
+      checks: work.checks,
+      acceptanceCriteria: work.acceptanceCriteria,
+      risk: 'medium',
+      status: 'done',
+    });
+
+    const accepted = acceptVerifiedTaskFromControllerWork({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repoId,
+      repoRoot: fx.repoRoot,
+      issueId: fx.issueId,
+      taskId: 'T1',
+      workId: fx.workId,
+    });
+    expect(accepted.issue.tasks[0]!.status).toBe('done');
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)?.completionReceipt?.workId).toBe(fx.workId);
   });
 
   test('fails closed on revision mismatch without changing Task status', () => {

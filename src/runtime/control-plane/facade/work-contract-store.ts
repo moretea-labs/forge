@@ -23,6 +23,7 @@ import {
   type WorkReconciliationRecord,
   type WorkContract,
   type WorkContractStatus,
+  type WorkRisk,
   type WorkKind,
   type WorkContractStore,
   isTerminalWorkContractStatus,
@@ -40,8 +41,9 @@ export interface WorkContractStoreOptions extends WorkContractStoreLocation {
 
 export type CreateWorkContractInput = Omit<
   WorkContract,
-  'schemaVersion' | 'status' | 'createdAt' | 'updatedAt' | 'workKind' | 'dispatchState' | 'evidenceState' | 'completionOutcome' | 'evidenceRefs' | 'handoffRefs' | 'suggestedNextActions' | 'policyDecisions' | 'checkRefs' | 'reconciliations' | 'driver' | 'worktreePolicy' | 'evidencePolicy' | 'approvalPolicy' | 'recoveryPolicy'
+  'schemaVersion' | 'status' | 'createdAt' | 'updatedAt' | 'risk' | 'workKind' | 'dispatchState' | 'evidenceState' | 'completionOutcome' | 'phase' | 'completionReceipt' | 'evidenceRefs' | 'handoffRefs' | 'suggestedNextActions' | 'policyDecisions' | 'checkRefs' | 'reconciliations' | 'driver' | 'worktreePolicy' | 'evidencePolicy' | 'approvalPolicy' | 'recoveryPolicy'
 > & {
+  risk?: WorkRisk;
   status?: WorkContractStatus;
   createdAt?: string;
   updatedAt?: string;
@@ -49,6 +51,8 @@ export type CreateWorkContractInput = Omit<
   dispatchState?: DispatchState;
   evidenceState?: EvidenceState;
   completionOutcome?: CompletionOutcome;
+  phase?: WorkContract['phase'];
+  completionReceipt?: WorkContract['completionReceipt'];
   evidenceRefs?: EvidenceRef[];
   handoffRefs?: string[];
   suggestedNextActions?: SuggestedNextAction[];
@@ -92,6 +96,7 @@ export interface WorkContractSummary {
   workId: string;
   repoId: string;
   mode: WorkContract['mode'];
+  phase: WorkContract['phase'];
   status: WorkContractStatus;
   objective: string;
   updatedAt: string;
@@ -132,6 +137,20 @@ function inferredDispatchState(status: WorkContractStatus): DispatchState {
   return 'terminal';
 }
 
+function inferredPhase(status: WorkContractStatus): WorkContract['phase'] {
+  if (status === 'ready') return 'verification';
+  if (status === 'completed' || status === 'failed' || status === 'cancelled') return 'cleanup';
+  return 'implementation';
+}
+
+/** Legacy status writes are normalized into the bounded Work phase projection. */
+function phaseForStatusUpdate(current: WorkContract['phase'], status: WorkContractStatus | undefined): WorkContract['phase'] {
+  if (!status) return current;
+  if (status === 'ready') return 'verification';
+  if (status === 'completed' || status === 'failed' || status === 'cancelled') return 'cleanup';
+  return current;
+}
+
 function dispatchStateForStatusUpdate(current: DispatchState, status: WorkContractStatus | undefined): DispatchState {
   // `ready` means evidence/approval readiness in the legacy projection; it
   // does not mean a running dispatch was never launched.
@@ -147,6 +166,15 @@ function inferredEvidenceState(status: WorkContractStatus): EvidenceState {
 }
 
 function validateWorkSemantics(contract: WorkContract): WorkContract {
+  if (!contract.objective.trim()) throw new Error('WORK_OBJECTIVE_REQUIRED');
+  if (contract.completionReceipt) {
+    const receipt = contract.completionReceipt;
+    if (receipt.workId !== contract.workId) throw new Error('WORK_COMPLETION_RECEIPT_IDENTITY_MISMATCH');
+    if (!receipt.targetBranch.trim() || !receipt.targetRevision.trim()) throw new Error('WORK_COMPLETION_RECEIPT_TARGET_REQUIRED');
+    if (receipt.delivery.status !== 'integrated' || !receipt.delivery.reachable) throw new Error('WORK_COMPLETION_RECEIPT_DELIVERY_NOT_PROVEN');
+    if (!['complete', 'maintenance_warning'].includes(receipt.cleanup.status) || receipt.cleanup.blockers.length > 0) throw new Error('WORK_COMPLETION_RECEIPT_CLEANUP_NOT_PROVEN');
+    if (contract.status !== 'completed') throw new Error('WORK_COMPLETION_RECEIPT_REQUIRES_COMPLETED_WORK');
+  }
   const outcome = contract.completionOutcome;
   if (!outcome) return contract;
   if (contract.dispatchState !== 'terminal') {
@@ -220,6 +248,8 @@ function normalizeWorkContractStore(store: WorkContractStore): WorkContractStore
         ...legacy,
         schemaVersion: legacy.schemaVersion ?? 1,
         status,
+        phase: legacy.phase ?? inferredPhase(status),
+        risk: legacy.risk ?? 'medium',
         workKind: legacy.workKind ?? 'repository_change',
         dispatchState: legacy.dispatchState ?? inferredDispatchState(status),
         evidenceState: legacy.evidenceState ?? inferredEvidenceState(status),
@@ -340,15 +370,19 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
       objective: input.objective.slice(0, 2_000),
       acceptanceCriteria: (input.acceptanceCriteria ?? []).slice(0, 20).map((item) => item.slice(0, 500)),
       constraints: input.constraints ?? { requireHandoffOnAmbiguity: true },
+      risk: input.risk ?? 'medium',
       workKind: input.workKind ?? 'repository_change',
       dispatchState: input.dispatchState ?? inferredDispatchState(input.status ?? 'open'),
       evidenceState: input.evidenceState ?? inferredEvidenceState(input.status ?? 'open'),
       completionOutcome: input.completionOutcome,
+      phase: input.phase ?? inferredPhase(input.status ?? 'open'),
+      completionReceipt: input.completionReceipt,
       status: input.status ?? 'open',
       createdAt: at,
       updatedAt: input.updatedAt ?? at,
       issueId: input.issueId,
       taskId: input.taskId,
+      requirementId: input.requirementId,
       planId: input.planId,
       planStepId: input.planStepId,
       planSourceRevision: input.planSourceRevision,
@@ -699,6 +733,7 @@ export function summarizeWorkContract(contract: WorkContract): WorkContractSumma
     workId: contract.workId,
     repoId: contract.repoId,
     mode: contract.mode,
+    phase: contract.phase,
     status: contract.status,
     objective: contract.objective.slice(0, 240),
     updatedAt: contract.updatedAt,
@@ -720,6 +755,12 @@ export function updateWorkContract(
     if (index < 0) throw new Error(`work contract not found: ${sanitizedId}`);
     const at = nowIso(options);
     const current = store.contracts[index];
+    if (patch.status === 'completed' && !current.completionReceipt && !patch.completionReceipt) {
+      throw new Error('WORK_COMPLETION_RECEIPT_REQUIRED');
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'completionReceipt') && patch.completionReceipt === undefined && current.completionReceipt) {
+      throw new Error('WORK_COMPLETION_RECEIPT_IMMUTABLE');
+    }
     const next: WorkContract = validateWorkSemanticTransition(current, validateWorkSemantics({
     ...current,
     ...patch,
@@ -728,7 +769,9 @@ export function updateWorkContract(
     repoId: current.repoId,
     createdAt: current.createdAt,
     updatedAt: at,
+    risk: patch.risk ?? current.risk,
     workKind: patch.workKind ?? current.workKind,
+    phase: patch.phase ?? phaseForStatusUpdate(current.phase, patch.status),
     dispatchState: patch.dispatchState ?? dispatchStateForStatusUpdate(current.dispatchState, patch.status),
     evidenceState: patch.evidenceState ?? current.evidenceState,
     completionOutcome: patch.completionOutcome ?? current.completionOutcome,
@@ -780,4 +823,34 @@ export function appendVerificationRecord(
   if (!current) throw new Error(`work contract not found: ${workId}`);
   const checkRefs = [record, ...current.checkRefs].slice(0, 50);
   return updateWorkContract(options, workId, { checkRefs });
+}
+
+/**
+ * The only supported path for turning Work evidence into a completion receipt.
+ * Task/Run/Process callers may supply evidence, but they cannot manufacture a
+ * receipt or a terminal Work projection without this identity and cleanup gate.
+ */
+export function recordWorkCompletionReceipt(
+  options: WorkContractStoreOptions,
+  workId: string,
+  receipt: NonNullable<WorkContract['completionReceipt']>,
+  completionOutcome: NonNullable<WorkContract['completionOutcome']>,
+  completionWorkKind?: WorkKind,
+): WorkContract {
+  const current = getWorkContract(options, workId);
+  if (!current) throw new Error(`work contract not found: ${workId}`);
+  if (receipt.workId !== current.workId) throw new Error('WORK_COMPLETION_RECEIPT_IDENTITY_MISMATCH');
+  if (current.completionReceipt) {
+    if (current.completionReceipt.receiptId !== receipt.receiptId) throw new Error('WORK_COMPLETION_RECEIPT_ALREADY_RECORDED');
+    return current;
+  }
+  return updateWorkContract(options, current.workId, {
+    phase: 'cleanup',
+    status: 'completed',
+    dispatchState: 'terminal',
+    evidenceState: 'valid',
+    completionOutcome,
+    ...(completionWorkKind ? { workKind: completionWorkKind } : {}),
+    completionReceipt: receipt,
+  });
 }
