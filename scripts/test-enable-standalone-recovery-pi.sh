@@ -128,3 +128,36 @@ if (output.config?.agentRepair?.command !== shimPath) {
 NODE
 
 printf 'standalone Recovery PI shim regression passed\n'
+
+
+# The helper must also preserve the Node shim it uses for URL/config parsing.
+REAL_NODE="$(command -v node)"
+NODE_DISPATCHER="$TMP/node-dispatcher"
+NODE_SHIM_DIR="$TMP/node-shims"
+NODE_SHIM="$NODE_SHIM_DIR/node"
+mkdir -p "$NODE_SHIM_DIR"
+cat > "$NODE_DISPATCHER" <<EOF
+#!/usr/bin/env bash
+if [[ "\$(basename "\$0")" == "node-dispatcher" ]]; then
+  exit 126
+fi
+exec "$REAL_NODE" "\$@"
+EOF
+chmod 755 "$NODE_DISPATCHER"
+ln -s "$NODE_DISPATCHER" "$NODE_SHIM"
+"$NODE_SHIM" -e 'process.stdout.write("NODE_SHIM_OK")' | grep -q NODE_SHIM_OK || fail "node shim did not execute"
+if "$NODE_DISPATCHER" -e 'process.exit(0)'; then fail "direct node dispatcher should fail"; fi
+
+NODE_PLAN="$TMP/node-shim-plan.txt"
+env \
+  REPO_HARNESS_NODE_COMMAND="$NODE_SHIM" \
+  REPO_HARNESS_SOURCE_REPO_ROOT="$SOURCE" \
+  REPO_HARNESS_CONTROLLER_HOME="$CONTROLLER" \
+  REPO_HARNESS_RECOVERY_PUBLIC_URL="https://device.tailnet.ts.net/recovery/mcp" \
+  REPO_HARNESS_PI_COMMAND="$SHIM_PATH" \
+  REPO_HARNESS_TAILSCALE_COMMAND="/fake/tailscale" \
+  REPO_HARNESS_BUN_COMMAND="/fake/bun" \
+  REPO_HARNESS_PI_REPO_ROOT="$TMP/node-pi-workspace" \
+  "$SCRIPT" --print-plan > "$NODE_PLAN"
+assert_contains "$NODE_PLAN" "--recovery-public-url"
+printf 'standalone Recovery toolchain shim regression passed\n'

@@ -73,10 +73,6 @@ command_path() {
   printf '%s/%s' "$directory" "$(basename "$resolved")"
 }
 
-canonical_path() {
-  "$NODE_COMMAND" -e 'process.stdout.write(require("fs").realpathSync(process.argv[1]))' "$1"
-}
-
 validate_integer() {
   local name="$1" value="$2" minimum="$3"
   [[ "$value" =~ ^[0-9]+$ ]] && ((value >= minimum)) || die "$name must be an integer >= $minimum"
@@ -294,12 +290,11 @@ NODE
   printf 'RECOVERY_PI_READY controller_home=%s pi_repo=%s public=%s\n' "$CONTROLLER_HOME" "$PI_REPO_ROOT" "$RECOVERY_PUBLIC_URL"
 }
 
+# Preserve every selected executable path. Version managers and application
+# bundles may use named shims whose realpath target is only a generic dispatcher.
 NODE_COMMAND="$(command_path "$NODE_COMMAND")"
-NODE_COMMAND="$(canonical_path "$NODE_COMMAND")"
-CURL_COMMAND="$(canonical_path "$(command_path "$CURL_COMMAND")")"
-TAILSCALE_COMMAND="$(canonical_path "$(command_path "$TAILSCALE_COMMAND")")"
-# Preserve the selected shim itself. Realpathing a Volta/asdf/mise shim can
-# turn it into a generic dispatcher that refuses direct execution.
+CURL_COMMAND="$(command_path "$CURL_COMMAND")"
+TAILSCALE_COMMAND="$(command_path "$TAILSCALE_COMMAND")"
 PI_COMMAND="$(command_path "$PI_COMMAND")"
 
 if [[ "$MODE" == "verify" ]]; then
@@ -309,7 +304,7 @@ if [[ "$MODE" == "verify" ]]; then
   exit 0
 fi
 [[ "$(uname -s)" == "Darwin" ]] || die "installation currently requires macOS launchd"
-BUN_COMMAND="$(canonical_path "$(command_path "$BUN_COMMAND")")"
+BUN_COMMAND="$(command_path "$BUN_COMMAND")"
 prepare_workspace
 remove_legacy_watchdog
 install_tunnel_service
