@@ -5,39 +5,45 @@
   "slug": "repo-harness",
   "kind": "governance",
   "status": "planned",
-  "summary": "唯一的主运行时稳定性需求。目标是通过固定 Bootstrap、自包含发布、单一运行时权威与配置、Supervisor 单 owner、last-known-good 切流和独立 Recovery，消除重复进程、多配置和半完成发布造成的断联。",
+  "summary": "唯一的主运行时可用性需求。核心运行时通过固定 Bootstrap、自包含发布、单一 authority/config、Supervisor 单 owner、last-known-good 切流和独立 Recovery 消除断联；同时明确外部插件不属于主运行时 release 或进程组，Controller rollout 必须保持健康插件服务与领域 session 存活。通用插件协议与迁移由 ISS-20260802-3EC105 负责。",
   "goals": [
-    "Reduce long-lived process managers, state authorities, configuration sources, and compatibility branches.",
-    "Make launchd start a fixed bootstrap that is independent of ordinary runtime releases and mutable worktrees.",
-    "Make every managed runtime and Recovery release self-contained and immutable.",
-    "Allow only the Supervisor to mutate primary runtime authority; Daemon and Gateway expose health but cannot write root authority.",
-    "Replace persistent blue/green slot identity with temporary candidate and previous release instances around an atomic cutover.",
-    "Keep stable ingress on the last-known-good release until the candidate passes complete readiness and post-cutover verification.",
-    "Keep Recovery source in the monorepo while installing it as independently supervised immutable binaries with a dedicated public tunnel.",
-    "Make cold start, crash recovery, interrupted rollout, stale process, and primary/Recovery failure isolation mandatory release gates.",
-    "Complete a one-way migration and delete obsolete dual-read, dual-write, slot-config, argv-override, and legacy lifecycle paths."
+    "减少主运行时长期进程管理器、状态权威、配置来源和兼容分支。",
+    "让 launchd 启动与普通 runtime release 和 mutable worktree 无关的固定 Bootstrap。",
+    "让每个主运行时和 Recovery release 自包含、不可变、可验证。",
+    "只允许 Supervisor 修改主运行时 authority；Daemon/Gateway 只报告健康。",
+    "以临时候选与上一 release 实例替代长期 blue/green slot 权威。",
+    "在 candidate 完整就绪和切换后验证前，stable ingress 始终保持 last-known-good。",
+    "Recovery 使用独立监督、独立状态和独立 tunnel，不成为第二个 primary writer。",
+    "把 Plugin Broker 视为核心边界，但把 iOS、Browser 等领域服务排除在主 runtime 进程组和 release 生命周期之外。",
+    "保证 Controller/Supervisor/Gateway rollout 不停止、重签名、重建或清空健康外部插件及其 session。",
+    "完成单向迁移并删除旧 dual-read、dual-write、slot config、argv override 和嵌入式领域生命周期路径。"
   ],
   "nonGoals": [
-    "Do not preserve internal runtime-state compatibility indefinitely.",
-    "Do not create a separate Recovery Git repository.",
-    "Do not introduce multi-host consensus or a general distributed-systems platform.",
-    "Do not allow Recovery to become a second primary runtime writer or arbitrary shell execution service.",
-    "Do not push remote changes without explicit user authorization.",
-    "Do not preserve the current long-lived blue/green data model merely for compatibility."
+    "不长期保留内部 runtime state 兼容。",
+    "不创建独立 Recovery Git 仓库。",
+    "不实现多主机共识或通用分布式平台。",
+    "不允许 Recovery 写 primary authority 或执行任意 shell。",
+    "不在本 Issue 中实现完整 Plugin Protocol、SDK、registry 或领域插件迁移，这些由 ISS-20260802-3EC105 负责。",
+    "不要求 Supervisor 直接作为 iOS WDA、浏览器 profile 或其他领域服务的进程 owner。",
+    "不推送远程变更。",
+    "不保留当前长期 blue/green 数据模型。"
   ],
   "acceptanceCriteria": [
-    "launchd service definitions reference fixed bootstrap or stable current pointers rather than an ordinary mutable worktree or active runtime slot.",
-    "Managed runtime and Recovery can cold-start after the repository worktree is moved or unavailable.",
-    "Exactly one primary runtime authority file and one primary runtime configuration file exist after migration; root/blue/green duplicate configuration and argv business overrides are gone.",
-    "Supervisor directly owns primary runtime process lifecycle; no nested Gateway KeepAlive acts as a second process manager.",
-    "At most one committed primary generation exists; stale instances cannot mutate authority and are terminated or isolated deterministically.",
-    "Candidate failure before cutover leaves last-known-good traffic uninterrupted; post-cutover failure atomically returns traffic to a verified previous release.",
-    "Primary Gateway failure does not remove Recovery reachability, and Recovery failure does not restart or mutate the primary runtime.",
-    "The supported migration is one-way, transactional, backed up, and verified; unsupported legacy state reports MIGRATION_REQUIRED instead of fallback guessing.",
-    "Fault-injection tests cover every rollout phase, launchd restart, stale callback, duplicate process, port conflict, cold boot, tunnel failure, and interrupted install.",
-    "After verified cutover, obsolete lifecycle code, compatibility readers/writers, stale services, old worktrees/branches, and redundant Issues are removed or explicitly superseded."
+    "launchd 主运行时服务引用固定 bootstrap/stable pointer，而非 mutable worktree 或 active slot。",
+    "主运行时和 Recovery 可在源码仓库不可用时冷启动。",
+    "迁移后仅有一个 primary authority 文件和一个 primary runtime config；root/blue/green 重复配置与 argv business overrides 被删除。",
+    "Supervisor 直接拥有 primary Daemon/Gateway 生命周期，不存在嵌套 Gateway KeepAlive 第二 owner。",
+    "核心运行时拓扑与可选插件服务拓扑明确分离；插件服务使用独立 release、state 和 supervision。",
+    "Candidate 失败不影响 last-known-good；post-cutover 失败原子回滚到已验证 previous release。",
+    "Controller rollout/restart 后可重新连接原有外部插件，且不丢失健康插件的领域 session/Runner。",
+    "插件故障不得触发 primary runtime rollout；primary runtime 故障不得无条件重启插件。",
+    "Primary Gateway 与 Recovery reachability 相互隔离。",
+    "迁移单向、事务化、有备份；无法迁移时返回 MIGRATION_REQUIRED，不静默猜测。",
+    "故障注入覆盖 rollout、launchd restart、stale process、port conflict、cold boot、tunnel failure、interrupted install 和 core/plugin 独立重启。",
+    "切换后旧生命周期、兼容 reader/writer、stale services、嵌入式插件 owner 和冗余 Issues 被删除或明确 supersede。"
   ],
   "relatedArtifacts": [
+    "ISS-20260802-3EC105",
     "ISS-20260802-27931A",
     "ISS-20260802-7E1D69",
     "ISS-20260731-CCF3E3",
@@ -46,8 +52,8 @@
   "tasks": [
     {
       "id": "T1",
-      "title": "Freeze target architecture and deletion map",
-      "objective": "Write the executable target architecture, process ownership table, authoritative state/config schemas, service graph, availability invariants, one-way migration contract, and an explicit list of legacy components and fallback paths to delete. Reconcile overlapping runtime/recovery Issues so this Issue is the implementation authority and ISS-20260802-27931A remains the Recovery delivery line rather than a competing architecture.",
+      "title": "冻结核心运行时架构、插件边界和删除地图",
+      "objective": "定义主运行时进程拓扑、唯一 authority/config、Recovery 边界、可用性不变量、单向迁移与删除地图；核心运行时服务和可选外部插件服务必须分层描述，并引用 ISS-20260802-3EC105 的插件协议决策。",
       "status": "blocked",
       "dependsOn": [],
       "allowedPaths": [
@@ -60,29 +66,33 @@
         "src/**",
         "scripts/**",
         "tests/**",
-        "_ops/**"
+        "_ops/**",
+        ".ai/**"
       ],
-      "checks": [],
+      "checks": [
+        "package:check:public-docs"
+      ],
       "acceptanceCriteria": [
-        "The target has five OS services only: Supervisor, Recovery Gateway, Recovery Watchdog, primary tunnel, recovery tunnel; ingress/Daemon/Gateway are Supervisor children.",
-        "The document names exactly one primary authority file, one runtime config file, and one Recovery state/config boundary.",
-        "Every current legacy component has keep/replace/delete disposition and owning later Task.",
-        "Availability invariants include uninterrupted last-known-good routing and independent Recovery reachability.",
-        "No indefinite dual-read, dual-write, or silent fallback is permitted."
+        "核心运行时固定服务只有 Supervisor、Recovery Gateway、Recovery Watchdog、primary tunnel、recovery tunnel；ingress/Daemon/Gateway 是 Supervisor 子进程。",
+        "外部插件服务是独立可选 OS 服务，不属于上述核心服务计数、Supervisor 进程组或 runtime release。",
+        "文档命名一个 primary authority、一个 runtime config 和独立 Recovery 状态边界。",
+        "每个 legacy lifecycle 与嵌入式领域 owner 都有 keep/replace/delete 结论。",
+        "无长期 dual-read、dual-write、dual-owner 或静默 fallback。"
       ],
       "risk": "low",
+      "recommendedAgent": "codex",
       "notes": [
-        "为避免两份架构文档并行定义 authority、config、Git projection 和迁移边界，先完成 ISS-20260802-7E1D69:T1 的需求中心模型与全局存储边界。完成后本任务只补充运行时进程拓扑、服务所有权、可用性不变量和删除地图，并引用同一份架构决策。"
+        "外部依赖顺序：先完成 ISS-20260802-7E1D69:T1 的需求/Work 与全局存储边界，再完成 ISS-20260802-3EC105:T1 的核心/插件故障域与协议边界。本任务随后只冻结 primary runtime、Recovery、服务拓扑和删除地图，引用前两项决策，避免三份架构并行。"
       ],
       "runIds": [],
-      "createdAt": "2026-08-02T05:43:48.698Z",
-      "updatedAt": "2026-08-02T06:34:53.895Z",
+      "createdAt": "2026-08-02T06:49:27.405Z",
+      "updatedAt": "2026-08-02T06:53:30.543Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
       "id": "T2",
-      "title": "Build fixed bootstrap and self-contained immutable releases",
-      "objective": "Introduce a fixed Supervisor bootstrap executable or stable activation path that launchd never binds to an ordinary runtime revision. Package Supervisor/Daemon/Gateway/process runtime and all required code into self-contained immutable releases with manifests; runtime execution must not depend on the repository worktree, Bun installation path, or mutable runtime-source-root.",
+      "title": "构建固定 Bootstrap 与自包含核心 release",
+      "objective": "让 launchd 永远启动固定 bootstrap/stable activation path；将 Supervisor、Daemon、Gateway 和核心执行闭包打包为不可变 release，同时明确不把外部插件二进制、Runner 或领域状态打入核心 release。",
       "status": "planned",
       "dependsOn": [
         "T1"
@@ -108,23 +118,24 @@
         "package:check:ci"
       ],
       "acceptanceCriteria": [
-        "launchd starts a fixed bootstrap/stable pointer and ordinary rollout does not rewrite its executable revision.",
-        "A release manifest proves all executable closure members and digests before activation.",
-        "Cold-start succeeds with the Git checkout renamed or unavailable.",
-        "Missing Bun or changed user PATH cannot break installed Supervisor/Recovery binaries.",
-        "Interrupted publication cannot modify the active release."
+        "launchd 不引用普通 worktree 或 active runtime revision。",
+        "release manifest 验证核心 executable closure 与 digest。",
+        "源码仓库不可用时核心可冷启动。",
+        "外部插件 artifact/state 不被复制进核心 release。",
+        "中断发布不能改变 active release。"
       ],
       "risk": "high",
+      "recommendedAgent": "codex",
       "notes": [],
       "runIds": [],
-      "createdAt": "2026-08-02T05:43:48.698Z",
-      "updatedAt": "2026-08-02T05:43:48.698Z",
+      "createdAt": "2026-08-02T06:49:27.405Z",
+      "updatedAt": "2026-08-02T06:49:27.405Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
       "id": "T3",
-      "title": "Converge to one runtime authority and one config",
-      "objective": "Create a single Supervisor-owned runtime authority record and one runtime configuration record. Move Daemon/Gateway to health/report-only roles, remove root authority writes from children, implement an atomic one-way migration from root/blue/green and legacy MCP configs, then refuse unmigratable state with MIGRATION_REQUIRED.",
+      "title": "收敛为一个主运行时 authority 和 config",
+      "objective": "建立 Supervisor-only runtime authority 与单一 runtime config；Daemon/Gateway 只报告健康；完成 root/blue/green 和 legacy MCP config 的原子单向迁移，不可迁移时返回 MIGRATION_REQUIRED。插件 registry/config 由插件平台维护独立权威，不得混入 slot authority。",
       "status": "planned",
       "dependsOn": [
         "T1",
@@ -153,23 +164,24 @@
         "package:check:ci"
       ],
       "acceptanceCriteria": [
-        "Only Supervisor can commit active release/generation/operation/config revision.",
-        "Daemon/Gateway late callbacks cannot write root authority because no such write API is available to them.",
-        "toolset/access and other mutable business settings are read from one config; business configuration is not materialized into process argv.",
-        "Migration creates a backup, validates the new state, atomically activates it, and marks the old state retired.",
-        "After migration, legacy fallback readers and dual writers are disabled and scheduled for deletion."
+        "只有 Supervisor 可提交 active release/generation/operation/config revision。",
+        "Daemon/Gateway 无 root authority write API。",
+        "业务设置不再 materialize 到 process argv。",
+        "插件 registry 不成为第二个 primary runtime authority。",
+        "迁移有备份、验证、原子激活和 retired 标记。"
       ],
       "risk": "high",
+      "recommendedAgent": "codex",
       "notes": [],
       "runIds": [],
-      "createdAt": "2026-08-02T05:43:48.698Z",
-      "updatedAt": "2026-08-02T05:43:48.698Z",
+      "createdAt": "2026-08-02T06:49:27.405Z",
+      "updatedAt": "2026-08-02T06:49:27.405Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
       "id": "T4",
-      "title": "Collapse primary process hierarchy",
-      "objective": "Remove Gateway KeepAlive as a second process manager and make Supervisor directly spawn, observe, restart, and stop the Daemon and Gateway process groups. Replace long-lived blue/green slot ownership with release-instance identities: active, candidate, and short-lived previous.",
+      "title": "折叠核心进程层级并隔离插件进程",
+      "objective": "移除 Gateway KeepAlive 第二进程管理器，由 Supervisor 直接管理 Daemon/Gateway；用 active/candidate/previous release instance 替代长期 slot。Supervisor 不收养或重启 iOS、Browser 等领域插件进程，只通过 Plugin Broker 观察连接状态。",
       "status": "planned",
       "dependsOn": [
         "T2",
@@ -182,6 +194,7 @@
         "src/cli/mcp/keepalive.ts",
         "src/cli/mcp/restart.ts",
         "src/cli/controller/**",
+        "src/runtime/plugins/**",
         "scripts/**",
         "tests/runtime/**",
         "tests/cli/**"
@@ -197,23 +210,24 @@
         "package:check:ci"
       ],
       "acceptanceCriteria": [
-        "Supervisor is the only primary runtime process manager.",
-        "No Supervisor → keepalive → serve nesting remains in managed production mode.",
-        "A release instance has releaseRevision, generation, instanceId and process group; persistent blue/green configuration/state is not authoritative.",
-        "At most one active and one bounded previous instance may exist; candidate instances are transaction-scoped.",
-        "Supervisor startup deterministically detects and handles duplicate/stale release instances without PID-only decisions."
+        "Supervisor 是唯一 primary runtime process manager。",
+        "managed production 不存在 Supervisor→keepalive→serve 嵌套。",
+        "release instance 使用 releaseRevision/generation/instanceId/process group。",
+        "外部插件进程不进入 primary process group。",
+        "插件故障不会触发核心 rollout，核心 restart 不无条件 kill 插件。"
       ],
       "risk": "high",
+      "recommendedAgent": "codex",
       "notes": [],
       "runIds": [],
-      "createdAt": "2026-08-02T05:43:48.698Z",
-      "updatedAt": "2026-08-02T05:43:48.698Z",
+      "createdAt": "2026-08-02T06:49:27.405Z",
+      "updatedAt": "2026-08-02T06:49:27.405Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
       "id": "T5",
-      "title": "Implement transactional rollout and last-known-good ingress",
-      "objective": "Implement one durable rollout state machine: prepare candidate, start on isolated endpoint, complete readiness/canary, CAS authority, atomically switch ingress, post-verify, retain previous during rollback window, then retire it. Failed candidates must never remove service from the last-known-good instance.",
+      "title": "实现事务化 rollout 与 last-known-good ingress",
+      "objective": "实现 prepare candidate、isolated readiness、authority CAS、atomic ingress switch、post-verify、rollback window 和 retire previous 的单一持久状态机；rollout 只切换核心流量，并在完成时验证对外 MCP 与 Plugin Broker 重连能力。",
       "status": "planned",
       "dependsOn": [
         "T3",
@@ -225,6 +239,7 @@
         "src/runtime/gateway/**",
         "src/runtime/health/**",
         "src/runtime/recovery/**",
+        "src/runtime/plugins/**",
         "scripts/**",
         "tests/runtime/**",
         "docs/operations/**"
@@ -240,23 +255,24 @@
         "package:check:ci"
       ],
       "acceptanceCriteria": [
-        "Ingress continues routing to the committed last-known-good instance throughout candidate preparation and readiness failure.",
-        "Cutover is one authority CAS plus one atomic ingress switch; partial projection writes cannot declare success.",
-        "Post-cutover failure performs a new rollback transaction and never reuses a failed generation.",
-        "Every phase is durable and restart-resumable; a crash cannot leave candidate state interpreted as committed.",
-        "Rollout completion asserts global process, authority, config, release, ingress and external MCP coherence."
+        "candidate 准备失败时 last-known-good 请求不中断。",
+        "cutover 是一次 authority CAS 与一次 atomic ingress switch。",
+        "每个 phase durable 且 restart-resumable。",
+        "post-cutover 失败创建新 rollback transaction。",
+        "rollout 不重签名、不重建、不清空外部插件 session；完成后 Broker 可重新连接原插件。"
       ],
       "risk": "high",
+      "recommendedAgent": "codex",
       "notes": [],
       "runIds": [],
-      "createdAt": "2026-08-02T05:43:48.698Z",
-      "updatedAt": "2026-08-02T05:43:48.698Z",
+      "createdAt": "2026-08-02T06:49:27.405Z",
+      "updatedAt": "2026-08-02T06:49:27.405Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
       "id": "T6",
-      "title": "Deliver standalone immutable Recovery and dedicated tunnel",
-      "objective": "Replan and complete ISS-20260802-27931A under the simplified architecture: Recovery remains in the monorepo but installs as versioned self-contained binaries, uses independent launchd services and state, monitors its own local/public endpoint through a dedicated cloudflared service, and never depends on or writes primary runtime authority.",
+      "title": "交付独立不可变 Recovery 与专用 tunnel",
+      "objective": "按简化架构完成 ISS-20260802-27931A：Recovery 保持 monorepo 源码，但安装为独立 versioned binary，拥有独立 launchd、状态、endpoint 和 cloudflared，不依赖或写 primary authority，也不负责领域插件恢复。",
       "status": "planned",
       "dependsOn": [
         "T1",
@@ -282,23 +298,24 @@
         "package:check:ci"
       ],
       "acceptanceCriteria": [
-        "Recovery Gateway and Watchdog cold-start with the repository, Primary Gateway and active runtime unavailable.",
-        "Recovery releases activate atomically and retain a verified previous release.",
-        "Primary and Recovery endpoint/tunnel configuration and repair actions are fully separate.",
-        "Watchdog state is durable, rate-limited, identity-scoped and cannot repeat rollback after restart.",
-        "Recovery exposes only bounded verify/restart/rollback/cleanup actions and cannot mint primary authority."
+        "源码仓库和 Primary 不可用时 Recovery 可冷启动。",
+        "Recovery release 原子激活并保留 verified previous。",
+        "Primary 与 Recovery endpoint/tunnel 完全独立。",
+        "Watchdog durable、rate-limited、identity-scoped。",
+        "Recovery 只暴露 bounded verify/restart/rollback/cleanup，不管理 iOS WDA 等插件资源。"
       ],
       "risk": "high",
+      "recommendedAgent": "codex",
       "notes": [],
       "runIds": [],
-      "createdAt": "2026-08-02T05:43:48.698Z",
-      "updatedAt": "2026-08-02T05:43:48.698Z",
+      "createdAt": "2026-08-02T06:49:27.405Z",
+      "updatedAt": "2026-08-02T06:49:27.405Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
       "id": "T7",
-      "title": "Delete compatibility and obsolete lifecycle paths",
-      "objective": "After the new runtime is available behind an explicit cutover flag, remove old blue/green authority/config readers, repo-local MCP fallback, legacy toolset migration branches, nested keepalive production startup, old restart coordinators, stale service templates, and duplicate projections. Do not retain hidden fallback paths.",
+      "title": "删除旧兼容、slot 和嵌入式领域生命周期",
+      "objective": "新架构可切换后删除 blue/green readers、repo-local MCP fallback、legacy toolset migration、nested keepalive、旧 restart coordinator、重复 projection，以及已经由外部插件接管的 daemon/session owner；迁移窗口只保留明确 proxy。",
       "status": "planned",
       "dependsOn": [
         "T3",
@@ -325,23 +342,24 @@
         "package:check:ci"
       ],
       "acceptanceCriteria": [
-        "Search and architecture checks prove removed legacy paths are no longer callable.",
-        "There is one supported installed-runtime startup path, rollout path, restart path and configuration path.",
-        "Compatibility is limited to the one-way migration command and explicitly versioned external APIs.",
-        "Obsolete tests are replaced with target-architecture tests rather than preserving old behavior.",
-        "No production startup silently falls back to worktree, slot-local config or legacy argv."
+        "只有一个 core startup、rollout、restart 和 config 路径。",
+        "生产启动不回退 worktree、slot config 或 legacy argv。",
+        "已迁移插件不存在 Controller 内部第二 lifecycle owner。",
+        "兼容仅限单向 migrator 与显式版本化 proxy。",
+        "旧测试改为目标架构测试，不保留错误行为。"
       ],
       "risk": "high",
+      "recommendedAgent": "codex",
       "notes": [],
       "runIds": [],
-      "createdAt": "2026-08-02T05:43:48.698Z",
-      "updatedAt": "2026-08-02T05:43:48.698Z",
+      "createdAt": "2026-08-02T06:49:27.405Z",
+      "updatedAt": "2026-08-02T06:49:27.405Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
       "id": "T8",
-      "title": "Establish destructive fault-injection release gate",
-      "objective": "Add deterministic tests and local smoke drills that kill or corrupt each lifecycle phase, restart launchd services, introduce stale processes and callbacks, interrupt installs, break each tunnel independently, and simulate cold boot. The gate must prove availability and isolation, not merely error classification.",
+      "title": "建立核心、Recovery 与插件隔离故障注入门禁",
+      "objective": "杀死或破坏每个 rollout phase、launchd、stale callback、duplicate process、install、tunnel 和 cold boot，并加入 core/plugin 独立重启、插件崩溃、Broker 断线和 session 保留测试。",
       "status": "planned",
       "dependsOn": [
         "T5",
@@ -369,24 +387,25 @@
         "package:check:ci"
       ],
       "acceptanceCriteria": [
-        "Fault injection covers every rollout transition before and after authority commit.",
-        "Candidate failure produces zero primary request outage while last-known-good is healthy.",
-        "Duplicate/stale processes and late callbacks cannot change committed state.",
-        "Primary failure leaves authenticated Recovery reachable; Recovery/tunnel failure leaves primary unchanged.",
-        "Cold-start and interrupted-install tests run against installed immutable artifacts, not source shortcuts.",
-        "Release readiness fails unless process-count, authority, config, release, ingress, endpoint and cleanup invariants all pass."
+        "覆盖 authority commit 前后所有 rollout transition。",
+        "candidate failure 时 primary 零中断。",
+        "stale process/callback 不能改变 committed state。",
+        "Primary、Recovery 和 plugin 三个故障域互不触发错误重启。",
+        "Controller 两次重启后仍能连接原有 reference/iOS plugin session。",
+        "门禁验证 process、authority、config、release、ingress、endpoint、plugin connection 和 cleanup 一致性。"
       ],
       "risk": "destructive",
+      "recommendedAgent": "codex",
       "notes": [],
       "runIds": [],
-      "createdAt": "2026-08-02T05:43:48.698Z",
-      "updatedAt": "2026-08-02T05:43:48.698Z",
+      "createdAt": "2026-08-02T06:49:27.405Z",
+      "updatedAt": "2026-08-02T06:49:27.405Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
       "id": "T9",
-      "title": "Perform staged cutover and governance cleanup",
-      "objective": "Migrate the live Controller Home using the supported one-way migrator, activate the new bootstrap/runtime/Recovery architecture, run cold-start and failure drills, retain a bounded rollback backup, then delete retired services/state and reconcile or supersede overlapping runtime reliability Issues. Do not push remotely.",
+      "title": "执行分阶段切换和治理清理",
+      "objective": "用正式 migrator 切换 live Controller Home，激活新 bootstrap/runtime/Recovery，验证与外部插件的重连和 session 保持，运行冷启动及故障演练，保留有界 rollback backup 后删除 retired 服务与状态并收敛相关 Issues。",
       "status": "planned",
       "dependsOn": [
         "T8"
@@ -410,21 +429,22 @@
         "package:check:ci"
       ],
       "acceptanceCriteria": [
-        "Live migration and cutover use exact verified artifacts and leave an auditable receipt.",
-        "Two cold restarts and all independent failure drills pass without manual process cleanup.",
-        "Old launchd services, slot configurations, stale processes and compatibility state are removed only after rollback window closure.",
-        "ISS-20260802-27931A and overlapping stability/restart/blue-green Issues are completed, superseded or narrowed with explicit evidence.",
-        "Canonical main is clean; temporary branches/worktrees are merged and deleted; no remote push occurs."
+        "live cutover 使用 exact verified artifacts 并产生 audit receipt。",
+        "两次 cold restart 和独立故障演练通过。",
+        "至少一个外部插件跨核心 rollout 保持存活或可无损重连。",
+        "旧 launchd、slot config、stale process、嵌入式 plugin owner 仅在 rollback window 后删除。",
+        "相关 Recovery/runtime/plugin Issues 明确 completed、narrowed 或 superseded；不 remote push。"
       ],
       "risk": "destructive",
+      "recommendedAgent": "codex",
       "notes": [],
       "runIds": [],
-      "createdAt": "2026-08-02T05:43:48.698Z",
-      "updatedAt": "2026-08-02T05:43:48.698Z",
+      "createdAt": "2026-08-02T06:49:27.405Z",
+      "updatedAt": "2026-08-02T06:49:27.405Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     }
   ],
   "createdAt": "2026-08-02T05:43:48.698Z",
-  "updatedAt": "2026-08-02T06:34:53.895Z",
+  "updatedAt": "2026-08-02T06:53:30.543Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }

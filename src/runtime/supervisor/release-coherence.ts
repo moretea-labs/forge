@@ -148,7 +148,19 @@ function decodeXml(value: string): string {
     .replace(/&amp;/g, '&');
 }
 
-/** Extract the immutable Supervisor release carried by a launchd plist or systemd unit. */
+/** Extract a fixed Bootstrap service definition from a launchd plist or systemd unit. */
+export function extractSupervisorBootstrapService(text: string | undefined): { bootstrapPath: string; controllerHome: string } | undefined {
+  if (!text?.trim()) return undefined;
+  const xmlArguments = [...text.matchAll(/<string>([\s\S]*?)<\/string>/g)].map((match) => decodeXml(match[1] ?? ''));
+  const argumentsList = xmlArguments.length > 0 ? xmlArguments : text.split(/\s+/).filter(Boolean);
+  const bootstrapPath = argumentsList.find((value) => /(?:^|\/)supervisor\/bootstrap$/.test(value));
+  const controllerHomeFlag = argumentsList.indexOf('--controller-home');
+  const controllerHome = controllerHomeFlag >= 0 ? argumentsList[controllerHomeFlag + 1] : undefined;
+  if (!bootstrapPath || !controllerHome) return undefined;
+  return { bootstrapPath: resolve(bootstrapPath), controllerHome: resolve(controllerHome) };
+}
+
+/** Extract the immutable Supervisor release carried by a direct service definition. */
 export function extractSupervisorServiceRelease(text: string | undefined): SupervisorServiceReleaseDescriptor | undefined {
   if (!text?.trim()) return undefined;
   const xmlArguments = [...text.matchAll(/<string>([\s\S]*?)<\/string>/g)].map((match) => decodeXml(match[1] ?? ''));
@@ -159,6 +171,27 @@ export function extractSupervisorServiceRelease(text: string | undefined): Super
   const releasePath = executable ? dirname(resolve(executable)) : undefined;
   if (!releasePath && !releaseRevision) return undefined;
   return { releasePath, releaseRevision };
+}
+
+function extractSupervisorBootstrapRelease(
+  controllerHome: string,
+  expected: SupervisorServiceReleaseDescriptor | undefined,
+  text: string | undefined,
+): SupervisorServiceReleaseDescriptor | undefined {
+  if (!expected?.releasePath || !expected.releaseRevision) return undefined;
+  const bootstrap = extractSupervisorBootstrapService(text);
+  if (!bootstrap) return undefined;
+  const expectedBootstrapPath = join(supervisorRoot(controllerHome), 'bootstrap');
+  if (bootstrap.controllerHome !== resolve(controllerHome) || bootstrap.bootstrapPath !== resolve(expectedBootstrapPath)) return undefined;
+  const manifest = readText(join(supervisorRoot(controllerHome), 'bootstrap-manifest.json'));
+  if (!manifest) return undefined;
+  try {
+    const parsed = JSON.parse(manifest) as { sourceCommit?: unknown; bootstrapPath?: unknown };
+    if (parsed.sourceCommit !== expected.releaseRevision || resolve(String(parsed.bootstrapPath ?? '')) !== expectedBootstrapPath) return undefined;
+    return expected;
+  } catch {
+    return undefined;
+  }
 }
 
 function canonicalReleasePath(path: string): string {
@@ -234,11 +267,15 @@ export function readSupervisorServiceReleaseCoherence(
   const running = supervisorState?.supervisor
     ? { releasePath: supervisorState.supervisor.releasePath, releaseRevision: supervisorState.supervisor.releaseRevision }
     : undefined;
+  const generated = extractSupervisorServiceRelease(generatedText)
+    ?? extractSupervisorBootstrapRelease(controllerHome, expected, generatedText);
+  const installed = extractSupervisorServiceRelease(installedText)
+    ?? extractSupervisorBootstrapRelease(controllerHome, expected, installedText);
   return evaluateSupervisorServiceReleaseCoherence({
     expected,
     running,
-    generated: extractSupervisorServiceRelease(generatedText),
-    installed: extractSupervisorServiceRelease(installedText),
+    generated,
+    installed,
     serviceRegistered: Boolean(installedText?.trim()),
   });
 }

@@ -2,47 +2,52 @@
 id: "ISS-20260802-539E7F"
 kind: "governance"
 status: "planned"
-updated_at: "2026-08-02T06:34:53.895Z"
+updated_at: "2026-08-02T06:53:30.543Z"
 source: "repo-harness-controller-v8"
 ---
 
 # 让 Repo Harness 升级和重启时保持可用
 
-唯一的主运行时稳定性需求。目标是通过固定 Bootstrap、自包含发布、单一运行时权威与配置、Supervisor 单 owner、last-known-good 切流和独立 Recovery，消除重复进程、多配置和半完成发布造成的断联。
+唯一的主运行时可用性需求。核心运行时通过固定 Bootstrap、自包含发布、单一 authority/config、Supervisor 单 owner、last-known-good 切流和独立 Recovery 消除断联；同时明确外部插件不属于主运行时 release 或进程组，Controller rollout 必须保持健康插件服务与领域 session 存活。通用插件协议与迁移由 ISS-20260802-3EC105 负责。
 
 ## Goals
 
-- Reduce long-lived process managers, state authorities, configuration sources, and compatibility branches.
-- Make launchd start a fixed bootstrap that is independent of ordinary runtime releases and mutable worktrees.
-- Make every managed runtime and Recovery release self-contained and immutable.
-- Allow only the Supervisor to mutate primary runtime authority; Daemon and Gateway expose health but cannot write root authority.
-- Replace persistent blue/green slot identity with temporary candidate and previous release instances around an atomic cutover.
-- Keep stable ingress on the last-known-good release until the candidate passes complete readiness and post-cutover verification.
-- Keep Recovery source in the monorepo while installing it as independently supervised immutable binaries with a dedicated public tunnel.
-- Make cold start, crash recovery, interrupted rollout, stale process, and primary/Recovery failure isolation mandatory release gates.
-- Complete a one-way migration and delete obsolete dual-read, dual-write, slot-config, argv-override, and legacy lifecycle paths.
+- 减少主运行时长期进程管理器、状态权威、配置来源和兼容分支。
+- 让 launchd 启动与普通 runtime release 和 mutable worktree 无关的固定 Bootstrap。
+- 让每个主运行时和 Recovery release 自包含、不可变、可验证。
+- 只允许 Supervisor 修改主运行时 authority；Daemon/Gateway 只报告健康。
+- 以临时候选与上一 release 实例替代长期 blue/green slot 权威。
+- 在 candidate 完整就绪和切换后验证前，stable ingress 始终保持 last-known-good。
+- Recovery 使用独立监督、独立状态和独立 tunnel，不成为第二个 primary writer。
+- 把 Plugin Broker 视为核心边界，但把 iOS、Browser 等领域服务排除在主 runtime 进程组和 release 生命周期之外。
+- 保证 Controller/Supervisor/Gateway rollout 不停止、重签名、重建或清空健康外部插件及其 session。
+- 完成单向迁移并删除旧 dual-read、dual-write、slot config、argv override 和嵌入式领域生命周期路径。
 
 ## Non-goals
 
-- Do not preserve internal runtime-state compatibility indefinitely.
-- Do not create a separate Recovery Git repository.
-- Do not introduce multi-host consensus or a general distributed-systems platform.
-- Do not allow Recovery to become a second primary runtime writer or arbitrary shell execution service.
-- Do not push remote changes without explicit user authorization.
-- Do not preserve the current long-lived blue/green data model merely for compatibility.
+- 不长期保留内部 runtime state 兼容。
+- 不创建独立 Recovery Git 仓库。
+- 不实现多主机共识或通用分布式平台。
+- 不允许 Recovery 写 primary authority 或执行任意 shell。
+- 不在本 Issue 中实现完整 Plugin Protocol、SDK、registry 或领域插件迁移，这些由 ISS-20260802-3EC105 负责。
+- 不要求 Supervisor 直接作为 iOS WDA、浏览器 profile 或其他领域服务的进程 owner。
+- 不推送远程变更。
+- 不保留当前长期 blue/green 数据模型。
 
 ## Acceptance Criteria
 
-- [ ] launchd service definitions reference fixed bootstrap or stable current pointers rather than an ordinary mutable worktree or active runtime slot.
-- [ ] Managed runtime and Recovery can cold-start after the repository worktree is moved or unavailable.
-- [ ] Exactly one primary runtime authority file and one primary runtime configuration file exist after migration; root/blue/green duplicate configuration and argv business overrides are gone.
-- [ ] Supervisor directly owns primary runtime process lifecycle; no nested Gateway KeepAlive acts as a second process manager.
-- [ ] At most one committed primary generation exists; stale instances cannot mutate authority and are terminated or isolated deterministically.
-- [ ] Candidate failure before cutover leaves last-known-good traffic uninterrupted; post-cutover failure atomically returns traffic to a verified previous release.
-- [ ] Primary Gateway failure does not remove Recovery reachability, and Recovery failure does not restart or mutate the primary runtime.
-- [ ] The supported migration is one-way, transactional, backed up, and verified; unsupported legacy state reports MIGRATION_REQUIRED instead of fallback guessing.
-- [ ] Fault-injection tests cover every rollout phase, launchd restart, stale callback, duplicate process, port conflict, cold boot, tunnel failure, and interrupted install.
-- [ ] After verified cutover, obsolete lifecycle code, compatibility readers/writers, stale services, old worktrees/branches, and redundant Issues are removed or explicitly superseded.
+- [ ] launchd 主运行时服务引用固定 bootstrap/stable pointer，而非 mutable worktree 或 active slot。
+- [ ] 主运行时和 Recovery 可在源码仓库不可用时冷启动。
+- [ ] 迁移后仅有一个 primary authority 文件和一个 primary runtime config；root/blue/green 重复配置与 argv business overrides 被删除。
+- [ ] Supervisor 直接拥有 primary Daemon/Gateway 生命周期，不存在嵌套 Gateway KeepAlive 第二 owner。
+- [ ] 核心运行时拓扑与可选插件服务拓扑明确分离；插件服务使用独立 release、state 和 supervision。
+- [ ] Candidate 失败不影响 last-known-good；post-cutover 失败原子回滚到已验证 previous release。
+- [ ] Controller rollout/restart 后可重新连接原有外部插件，且不丢失健康插件的领域 session/Runner。
+- [ ] 插件故障不得触发 primary runtime rollout；primary runtime 故障不得无条件重启插件。
+- [ ] Primary Gateway 与 Recovery reachability 相互隔离。
+- [ ] 迁移单向、事务化、有备份；无法迁移时返回 MIGRATION_REQUIRED，不静默猜测。
+- [ ] 故障注入覆盖 rollout、launchd restart、stale process、port conflict、cold boot、tunnel failure、interrupted install 和 core/plugin 独立重启。
+- [ ] 切换后旧生命周期、兼容 reader/writer、stale services、嵌入式插件 owner 和冗余 Issues 被删除或明确 supersede。
 
 ## GitHub
 
@@ -50,89 +55,90 @@ source: "repo-harness-controller-v8"
 
 ## Tasks
 
-### T1 — Freeze target architecture and deletion map
+### T1 — 冻结核心运行时架构、插件边界和删除地图
 
 - Status: `blocked`
-- Objective: Write the executable target architecture, process ownership table, authoritative state/config schemas, service graph, availability invariants, one-way migration contract, and an explicit list of legacy components and fallback paths to delete. Reconcile overlapping runtime/recovery Issues so this Issue is the implementation authority and ISS-20260802-27931A remains the Recovery delivery line rather than a competing architecture.
+- Objective: 定义主运行时进程拓扑、唯一 authority/config、Recovery 边界、可用性不变量、单向迁移与删除地图；核心运行时服务和可选外部插件服务必须分层描述，并引用 ISS-20260802-3EC105 的插件协议决策。
 - Depends on: none
 - Allowed paths: `docs/architecture/**`, `docs/operations/**`, `docs/runbooks/**`, `tasks/issues/**`
-- Checks: not defined
-- Execution hint: selected at runtime
+- Checks: `package:check:public-docs`
+- Execution hint: agent / codex
 
-### T2 — Build fixed bootstrap and self-contained immutable releases
+### T2 — 构建固定 Bootstrap 与自包含核心 release
 
 - Status: `planned`
-- Objective: Introduce a fixed Supervisor bootstrap executable or stable activation path that launchd never binds to an ordinary runtime revision. Package Supervisor/Daemon/Gateway/process runtime and all required code into self-contained immutable releases with manifests; runtime execution must not depend on the repository worktree, Bun installation path, or mutable runtime-source-root.
+- Objective: 让 launchd 永远启动固定 bootstrap/stable activation path；将 Supervisor、Daemon、Gateway 和核心执行闭包打包为不可变 release，同时明确不把外部插件二进制、Runner 或领域状态打入核心 release。
 - Depends on: `T1`
 - Allowed paths: `src/runtime/bootstrap/**`, `src/runtime/supervisor/**`, `src/runtime/control-plane/**`, `src/runtime/gateway/**`, `src/runtime/execution/**`, `scripts/**`, `tests/runtime/**`, `package.json`
 - Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:ci`
-- Execution hint: selected at runtime
+- Execution hint: agent / codex
 
-### T3 — Converge to one runtime authority and one config
+### T3 — 收敛为一个主运行时 authority 和 config
 
 - Status: `planned`
-- Objective: Create a single Supervisor-owned runtime authority record and one runtime configuration record. Move Daemon/Gateway to health/report-only roles, remove root authority writes from children, implement an atomic one-way migration from root/blue/green and legacy MCP configs, then refuse unmigratable state with MIGRATION_REQUIRED.
+- Objective: 建立 Supervisor-only runtime authority 与单一 runtime config；Daemon/Gateway 只报告健康；完成 root/blue/green 和 legacy MCP config 的原子单向迁移，不可迁移时返回 MIGRATION_REQUIRED。插件 registry/config 由插件平台维护独立权威，不得混入 slot authority。
 - Depends on: `T1`, `T2`
 - Allowed paths: `src/cli/controller/stable-state/**`, `src/cli/controller/runtime-slots.ts`, `src/cli/mcp/**`, `src/runtime/supervisor/**`, `src/runtime/control-plane/**`, `src/runtime/gateway/**`, `src/runtime/shared/**`, `scripts/**`, `tests/**`, `docs/operations/**`
 - Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:mcp-compatibility`, `package:check:ci`
-- Execution hint: selected at runtime
+- Execution hint: agent / codex
 
-### T4 — Collapse primary process hierarchy
+### T4 — 折叠核心进程层级并隔离插件进程
 
 - Status: `planned`
-- Objective: Remove Gateway KeepAlive as a second process manager and make Supervisor directly spawn, observe, restart, and stop the Daemon and Gateway process groups. Replace long-lived blue/green slot ownership with release-instance identities: active, candidate, and short-lived previous.
+- Objective: 移除 Gateway KeepAlive 第二进程管理器，由 Supervisor 直接管理 Daemon/Gateway；用 active/candidate/previous release instance 替代长期 slot。Supervisor 不收养或重启 iOS、Browser 等领域插件进程，只通过 Plugin Broker 观察连接状态。
 - Depends on: `T2`, `T3`
-- Allowed paths: `src/runtime/supervisor/**`, `src/runtime/control-plane/**`, `src/runtime/gateway/**`, `src/cli/mcp/keepalive.ts`, `src/cli/mcp/restart.ts`, `src/cli/controller/**`, `scripts/**`, `tests/runtime/**`, `tests/cli/**`
+- Allowed paths: `src/runtime/supervisor/**`, `src/runtime/control-plane/**`, `src/runtime/gateway/**`, `src/cli/mcp/keepalive.ts`, `src/cli/mcp/restart.ts`, `src/cli/controller/**`, `src/runtime/plugins/**`, `scripts/**`, `tests/runtime/**`, `tests/cli/**`
 - Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:mcp-compatibility`, `package:check:ci`
-- Execution hint: selected at runtime
+- Execution hint: agent / codex
 
-### T5 — Implement transactional rollout and last-known-good ingress
+### T5 — 实现事务化 rollout 与 last-known-good ingress
 
 - Status: `planned`
-- Objective: Implement one durable rollout state machine: prepare candidate, start on isolated endpoint, complete readiness/canary, CAS authority, atomically switch ingress, post-verify, retain previous during rollback window, then retire it. Failed candidates must never remove service from the last-known-good instance.
+- Objective: 实现 prepare candidate、isolated readiness、authority CAS、atomic ingress switch、post-verify、rollback window 和 retire previous 的单一持久状态机；rollout 只切换核心流量，并在完成时验证对外 MCP 与 Plugin Broker 重连能力。
 - Depends on: `T3`, `T4`
-- Allowed paths: `src/runtime/bootstrap/**`, `src/runtime/supervisor/**`, `src/runtime/gateway/**`, `src/runtime/health/**`, `src/runtime/recovery/**`, `scripts/**`, `tests/runtime/**`, `docs/operations/**`
+- Allowed paths: `src/runtime/bootstrap/**`, `src/runtime/supervisor/**`, `src/runtime/gateway/**`, `src/runtime/health/**`, `src/runtime/recovery/**`, `src/runtime/plugins/**`, `scripts/**`, `tests/runtime/**`, `docs/operations/**`
 - Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:controller-v8`, `package:check:ci`
-- Execution hint: selected at runtime
+- Execution hint: agent / codex
 
-### T6 — Deliver standalone immutable Recovery and dedicated tunnel
+### T6 — 交付独立不可变 Recovery 与专用 tunnel
 
 - Status: `planned`
-- Objective: Replan and complete ISS-20260802-27931A under the simplified architecture: Recovery remains in the monorepo but installs as versioned self-contained binaries, uses independent launchd services and state, monitors its own local/public endpoint through a dedicated cloudflared service, and never depends on or writes primary runtime authority.
+- Objective: 按简化架构完成 ISS-20260802-27931A：Recovery 保持 monorepo 源码，但安装为独立 versioned binary，拥有独立 launchd、状态、endpoint 和 cloudflared，不依赖或写 primary authority，也不负责领域插件恢复。
 - Depends on: `T1`, `T2`, `T3`
 - Allowed paths: `src/runtime/standalone-recovery/**`, `scripts/install-standalone-recovery.ts`, `scripts/load-standalone-recovery.sh`, `tests/runtime/standalone-recovery.test.ts`, `tests/runtime/**`, `docs/operations/**`, `recovery/**`
 - Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:ci`
-- Execution hint: selected at runtime
+- Execution hint: agent / codex
 
-### T7 — Delete compatibility and obsolete lifecycle paths
+### T7 — 删除旧兼容、slot 和嵌入式领域生命周期
 
 - Status: `planned`
-- Objective: After the new runtime is available behind an explicit cutover flag, remove old blue/green authority/config readers, repo-local MCP fallback, legacy toolset migration branches, nested keepalive production startup, old restart coordinators, stale service templates, and duplicate projections. Do not retain hidden fallback paths.
+- Objective: 新架构可切换后删除 blue/green readers、repo-local MCP fallback、legacy toolset migration、nested keepalive、旧 restart coordinator、重复 projection，以及已经由外部插件接管的 daemon/session owner；迁移窗口只保留明确 proxy。
 - Depends on: `T3`, `T4`, `T5`, `T6`
 - Allowed paths: `src/**`, `scripts/**`, `tests/**`, `docs/**`, `package.json`
 - Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:mcp-compatibility`, `package:check:controller-v8`, `package:check:ci`
-- Execution hint: selected at runtime
+- Execution hint: agent / codex
 
-### T8 — Establish destructive fault-injection release gate
+### T8 — 建立核心、Recovery 与插件隔离故障注入门禁
 
 - Status: `planned`
-- Objective: Add deterministic tests and local smoke drills that kill or corrupt each lifecycle phase, restart launchd services, introduce stale processes and callbacks, interrupt installs, break each tunnel independently, and simulate cold boot. The gate must prove availability and isolation, not merely error classification.
+- Objective: 杀死或破坏每个 rollout phase、launchd、stale callback、duplicate process、install、tunnel 和 cold boot，并加入 core/plugin 独立重启、插件崩溃、Broker 断线和 session 保留测试。
 - Depends on: `T5`, `T6`, `T7`
 - Allowed paths: `tests/**`, `scripts/smoke-runtime-control-plane.ts`, `scripts/smoke-runtime-recovery.ts`, `scripts/check-release-readiness.sh`, `scripts/verify-controller-v8.sh`, `docs/operations/**`, `package.json`
 - Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:mcp-compatibility`, `package:check:controller-v8`, `package:check:ci`
-- Execution hint: selected at runtime
+- Execution hint: agent / codex
 
-### T9 — Perform staged cutover and governance cleanup
+### T9 — 执行分阶段切换和治理清理
 
 - Status: `planned`
-- Objective: Migrate the live Controller Home using the supported one-way migrator, activate the new bootstrap/runtime/Recovery architecture, run cold-start and failure drills, retain a bounded rollback backup, then delete retired services/state and reconcile or supersede overlapping runtime reliability Issues. Do not push remotely.
+- Objective: 用正式 migrator 切换 live Controller Home，激活新 bootstrap/runtime/Recovery，验证与外部插件的重连和 session 保持，运行冷启动及故障演练，保留有界 rollback backup 后删除 retired 服务与状态并收敛相关 Issues。
 - Depends on: `T8`
 - Allowed paths: `scripts/**`, `docs/operations/**`, `tasks/issues/**`, `tasks/notes/**`
 - Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:mcp-compatibility`, `package:check:controller-v8`, `package:check:ci`
-- Execution hint: selected at runtime
+- Execution hint: agent / codex
 
 ## Related Artifacts
 
+- `ISS-20260802-3EC105`
 - `ISS-20260802-27931A`
 - `ISS-20260802-7E1D69`
 - `ISS-20260731-CCF3E3`

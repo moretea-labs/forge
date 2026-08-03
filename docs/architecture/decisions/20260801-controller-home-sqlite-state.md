@@ -1,7 +1,8 @@
 # Controller-home SQLite state authority
 
-Status: accepted  
+Status: accepted, amended 2026-08-02
 Date: 2026-08-01
+Amended by: `20260802-requirement-centered-control-plane.md`
 
 ## Decision
 
@@ -34,7 +35,8 @@ ORM is introduced.
 | Execution sessions, Work handles, work-prepare idempotency claims, and WorkContracts | Controller-home SQLite as each namespace migrates | Legacy JSON is readable only for first import; it is never rewritten |
 | Leases, process receipts, Jobs, Runs, checks, and evidence | Existing controller-home stores until their named migration | Existing artifacts remain evidence/read compatibility sources |
 | Repository identity, checkout/worktree/branch/HEAD observations | Git plus the Controller repository registry | Never inferred from an Issue or handoff |
-| Issue/Task intent, plans, architecture decisions, and user-facing status | Git-tracked documents until their explicit projection migration | Canonical human-reviewable content, not a runtime mutation log |
+| Requirement, ExecutionPlan, PlanStep, Work relationships and user-facing lifecycle | Controller-home SQLite after the Requirement namespace cutover defined by `20260802-requirement-centered-control-plane.md` | Legacy Issue/Task files import once; optional Git snapshots are one-way, revision-stamped exports and never runtime authority |
+| Accepted architecture decisions and operator-authored documentation | Git | Human-reviewable design/source material, never a runtime mutation log |
 | Secrets and credentials | External credential providers or OS-managed stores | Never stored in SQLite payloads, projections, receipts, or audit data |
 
 SQLite records are structured facts and bounded evidence references. Large logs,
@@ -65,10 +67,12 @@ stable IDs and content/revision metadata.
    identity in every verification record.
 3. Migrate controller-owned Run, Job, and evidence indexes; keep append-only
    artifacts outside the database.
-4. Generate bounded task/status projections from controller facts, then decide
-   whether Issue/Task records remain Git-authoritative or receive a separately
-   reviewed controller projection boundary.
-5. Only after the above is stable, migrate Campaign and optional plugin state.
+4. Migrate Requirement, versioned ExecutionPlan, PlanStep and Work relationships
+   using the accepted requirement-centered boundary. Import Issue/Task records
+   exactly once, switch reads to SQLite, and permit only one-way exports.
+5. Delete runtime Issue/Task writers and legacy status fallbacks after the
+   revision-stamped portfolio migration validates. Only then migrate optional
+   Campaign and plugin state that still has durable product value.
 
 Each phase requires focused concurrent-write, interrupted-write, legacy-import,
 restart, and stale-revision tests before the next namespace becomes
@@ -79,4 +83,7 @@ authoritative.
 Phase 1 has migrated execution sessions, Work handles, idempotent
 work-prepare claims, and WorkContract stores. Their old JSON locations are
 retained solely for first-read import compatibility. Issue and Task JSON/Markdown
-have not migrated, so they must not be described as SQLite-backed runtime state.
+have not yet migrated, so they remain the temporary legacy source until the
+Requirement namespace cutover. That temporary fact does not reverse the accepted
+target: after cutover they are import-only aliases or one-way exports and cannot
+write back over SQLite.

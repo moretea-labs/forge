@@ -1,8 +1,8 @@
 ---
 id: "ISS-20260802-7E1D69"
 kind: "governance"
-status: "planned"
-updated_at: "2026-08-02T06:33:10.691Z"
+status: "in_progress"
+updated_at: "2026-08-02T14:30:00.000Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -53,20 +53,22 @@ source: "repo-harness-controller-v8"
 
 ### T1 — 冻结需求中心模型和存储边界
 
-- Status: `ready`
-- Objective: 编写并接受新的控制面架构决策，定义 Requirement、ExecutionPlan、PlanStep、Work、Attempt、MaintenanceFinding、用户状态、内部状态、完成语义和存储边界；明确替代旧 Issue/Task Git-authority 条款，并提供当前 31 个 Issue 的迁移映射。
+- Status: `done`
+- Objective: 编写并接受新的控制面架构决策，定义 Requirement、ExecutionPlan、PlanStep、Work、Attempt、MaintenanceFinding、用户状态、内部状态、完成语义和存储边界；明确替代旧 Issue/Task Git-authority 条款，并提供冻结基线中当前 33 个 Issue 的迁移映射。
 - Depends on: none
 - Allowed paths: `docs/architecture/**`, `docs/operations/**`, `docs/researches/**`, `tasks/issues/**`
 - Checks: `package:check:public-docs`
+- Notes: accepted ADR、33-Issue 迁移映射和旧 authority 修订已落地；`bun run check:public-docs` 通过。
 - Execution hint: selected at runtime
 
 ### T2 — 建立 SQLite Requirement 与 Plan 权威
 
-- Status: `planned`
+- Status: `done`
 - Objective: 在现有 control-plane SQLite envelope 上实现版本化 Requirement、ExecutionPlan、PlanStep、关系、状态事件和审计命名空间，并提供一次性旧 Issue/Task 导入、事务校验、备份与恢复。
 - Depends on: `T1`
 - Allowed paths: `src/runtime/persistence/**`, `src/runtime/control-plane/**`, `src/cli/controller/**`, `tests/runtime/**`, `tests/cli/**`, `scripts/**`, `docs/operations/**`
 - Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:controller-v8`
+- Notes: `9b3e2ae7f` 已合并到本地 `main`；Requirement、Plan、Work 已落到 SQLite per-record 事务/CAS 边界，旧 index/JSON 仅在缺失 authority 时一次性导入，WAL 备份恢复已覆盖 focused test。`check:type`、`check:runtime-architecture`、`check:test-governance`、`check:public-docs`、affected tests 和 `check:controller-v8` 均通过。
 - Execution hint: selected at runtime
 
 ### T3 — 让 Work 成为唯一执行合同
@@ -119,6 +121,10 @@ source: "repo-harness-controller-v8"
 - `ISS-20260731-CCF3E3`
 - `docs/architecture/decisions/20260801-controller-home-sqlite-state.md`
 - `docs/researches/20260801-control-plane-state-store-inventory.md`
+- `docs/architecture/decisions/20260802-requirement-centered-control-plane.md`
+- `docs/operations/20260802-requirement-portfolio-migration.md`
 - `ISS-20260802-539E7F`
+- `ISS-20260802-3EC105`
+- `ISS-20260720-66E25D`
 - `ISS-20260730-A1EA53`
 - `current Issue portfolio audit 2026-08-02`

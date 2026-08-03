@@ -56,3 +56,27 @@ The following results were collected before the immutable-release closure and pr
 
 - `check:main` initially exposed a real Node-loader cold-start defect: the independent process runner used a TypeScript parameter-property constructor and extensionless local imports, so `smoke:runtime-recovery` failed before executing the child command. Replaced the parameter properties with explicit fields and made the two local imports explicit `.ts` URLs.
 - Re-run evidence: `bun run check:main` passed, including all five runtime smoke scripts; Recovery smoke confirms `processRecovered: true`, `executionJobCount: 0`, and successful WorkContract/session recovery.
+## Manual 502/recovery probe (2026-08-02)
+
+- The failed rollback left `runtime-slots/green/system/runtime-generation.json` and the MCP runtime source bound to candidate revision `183c490dae39ecbe9db349a58a676570b5fabc71`, while Supervisor authority still pointed at rollback revision `bb5f2e7774144737e28a743f54a1336b0ef3f84d`. The mismatch caused repeated daemon readiness timeouts and an unavailable Gateway.
+- Recovery did not require rebuilding: booted out the stale LaunchAgent, republished the existing clean `183c...` release as the current Supervisor release, and bootstrapped the generated LaunchAgent. Supervisor, daemon, and Gateway then converged on `183c...`.
+- Direct probes after recovery: local ingress `/health` and `/ready` returned HTTP 200; local Gateway `/health` returned HTTP 200; authenticated MCP bearer `initialize`, `tools/list`, and `rh_status` returned HTTP 200; the public health and readiness endpoints returned HTTP 200.
+- An unauthenticated MCP request correctly returned HTTP 401. A restart-gateway rescue operation completed with `phase: succeeded`; the stable ingress remained HTTP 200 before and after the controlled restart. No HTTP 502 was observed during this probe.
+
+## Public 530 follow-up (2026-08-02)
+
+- Current Cloudflare tunnel mapping is `mcp.moretea-lab.tech -> http://127.0.0.1:8765`; `cloudflared` is running and its metrics endpoint returns HTTP 200.
+- Historical tunnel errors show the 530 condition was caused by the origin being unavailable (`dial tcp 127.0.0.1:8765: connect: connection refused`), not by the tunnel hostname mapping.
+- The origin is currently recovered without another restart: public `/health` returned HTTP 200 in three consecutive probes; local ingress and Gateway both returned HTTP 200. No disruptive action was taken because the service was already healthy.
+
+## Latest controlled restart evidence (2026-08-02)
+
+- The prior healthy probe did not establish a durable post-restart guarantee. After an explicit `scripts/controller-runtime.sh restart`, the installed `183c490...` release restarted Supervisor/Ingress and reached a `ready` Daemon, but Gateway readiness failed.
+- The active release logged `EACCES` while spawning the source-checkout `src/runtime/execution/process-runtime/process-runner-entry.ts`; local ingress `/health` returned HTTP 503 and the public primary endpoint returned HTTP 503. The source revision `2ff6eda64` contains the release-sibling `process-runner.js` resolver fix, but activating a release built from it is separately gated.
+
+## Recovery and Bootstrap coherence (2026-08-03)
+
+- Staged and installed immutable release `fc722c87dfc26a2189d9179b1ed3abad361ec6c0` through the stable Controller-home Bootstrap. The final Supervisor state is `healthy`, with `green` active and the Daemon/Gateway/Ingress owned by that release.
+- Local ingress `/health` and public `https://mcp.moretea-lab.tech/health` returned HTTP 200 after the activation attempt. Authenticated MCP `initialize` and `tools/list` succeeded; the active advanced surface reported 128 tools.
+- The activation receipt initially reported a rollback timeout because the generated and installed launchd definitions intentionally point to the fixed `supervisor/bootstrap`, not directly to `supervisor.js`. The service-coherence check treated this valid Bootstrap layout as missing release metadata.
+- `src/runtime/supervisor/release-coherence.ts` now validates fixed Bootstrap path, Controller Home, and `bootstrap-manifest.json.sourceCommit` against the current release before projecting generated/installed service metadata. This removes the false `SUPERVISOR_SERVICE_RELEASE_DRIFT` readiness blocker without weakening direct-release mismatch checks.

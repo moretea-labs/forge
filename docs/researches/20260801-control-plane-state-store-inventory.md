@@ -1,15 +1,17 @@
 # Control-plane state store inventory
 
-Date: 2026-08-01  
+Date: 2026-08-01
 Status: implementation inventory for staged SQLite cutover
+Decision update: the 2026-08-02 requirement-centered ADR fixes the target authority and supersedes the earlier open Issue/Task decision.
 
 ## Authority rule
 
 Controller-home SQLite is authoritative only for explicitly migrated namespaces.
-Git-tracked Issue/Task documents remain the human-reviewed intent and status
-surface. JSON files are either append-only artifacts, compatibility import
-inputs, or un-migrated authoritative stores; they must not be treated as SQLite
-mirrors.
+Before the Requirement namespace cutover, Git-tracked Issue/Task documents remain
+the temporary legacy intent/status source. The accepted target is no longer open:
+Requirement, ExecutionPlan, PlanStep and Work relationships move to SQLite;
+Issue/Task files import exactly once and optional Git snapshots become one-way
+exports. JSON files must never be treated as SQLite mirrors or replay authority.
 
 ## Current state classes
 
@@ -21,7 +23,7 @@ mirrors.
 | Plan contracts, handoff inbox/packets, goal contracts | Controller home JSON indexes | JSON records | later | independent bounded stores after Work/Job cutover |
 | Authorization and access-policy decisions | Controller home JSON | JSON records | later | retain immutable decision/audit semantics and secret exclusions |
 | Runtime/scheduler/daemon generation and wake state | Controller home JSON | runtime bootstrap state | last | defer while startup compatibility remains under repair |
-| Issue/Task/Plan Markdown and JSON | Repository `tasks/`, `plans/` | Git-tracked documents | explicit decision | projections must not become a runtime write log |
+| Requirement/Plan legacy Issue/Task Markdown and JSON | Repository `tasks/`, `plans/` before cutover | Temporary legacy source; target is Controller-home SQLite | accepted migration | import once from the frozen 33-Issue snapshot, then disable writers and allow only one-way exports |
 | Check outputs, logs, artifacts, diffs | Artifact roots | file artifacts | remain files | SQLite stores only bounded IDs/hashes/revisions |
 | Secrets/provider credentials | Secret files or provider stores | secret boundary | excluded | never place in SQLite payload/audit rows |
 
@@ -36,8 +38,10 @@ mirrors.
    receipts as one transactional family. Logs remain files addressed by IDs.
 4. Migrate Plan, handoff, and goal-contract stores after they consume stable
    Work/Job IDs rather than JSON paths.
-5. Generate controller status projections only after those boundaries are
-   stable; Git remains authoritative for user-authored Issue/Task intent.
+5. Migrate Requirement/ExecutionPlan/PlanStep relations from the frozen legacy
+   portfolio only after those boundaries are stable. Switch the default board to
+   SQLite, then remove runtime Issue/Task writers; Git remains authoritative only
+   for source and accepted documentation.
 
 For every namespace: SQLite is read first; a missing row imports exactly once;
 mutations write only SQLite; every payload is versioned and audited; and

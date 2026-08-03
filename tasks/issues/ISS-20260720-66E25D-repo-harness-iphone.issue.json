@@ -5,39 +5,53 @@
   "slug": "repo-harness-iphone",
   "kind": "feature",
   "status": "launch_blocked",
-  "summary": "保留为唯一的物理 iPhone 自动化用户需求。已完成的 Provider 边界、CoreDevice、agent-device、跨引擎互斥和证据分层继续保留；JD 搜索、热路径延迟和剩余验证将在新运行时与需求/Work 架构切换后重新生成执行 Work。当前没有可调度旧 Task。",
+  "summary": "保留为唯一的物理 iPhone 自动化用户需求，但执行方案已重新定基线：不再继续把签名、WDA/Runner、CoreDevice tunnel、interaction session 和 App adapter 生命周期修补在 Controller 内嵌 ios-adapter 中。新方案以 ISS-20260802-3EC105 的进程外插件协议为基础，把 ios-device 建成 controller-scoped 独立服务，Repo Harness 只负责 ChatGPT 桥接、权限、资源互斥、Durable Work 和审计；既有 provider、selector/ref 恢复、证据分层和跨引擎互斥提交作为迁移资产保留。",
   "goals": [
-    "可靠发现并独占用户选择的物理 iPhone。",
-    "在不处理密码、验证码、支付或生物识别的前提下，稳定完成已知 App 的语义操作。",
-    "让正常热路径延迟可测量、可优化，并在失败后保留可恢复的 session。",
-    "统一 CoreDevice、agent-device 和 signed runner 的能力边界与证据。"
+    "可靠发现并独占用户选择的物理 iPhone，并以 device:ios:<udid> 作为跨引擎共享资源权威。",
+    "将物理设备自动化实现为独立 ios-device 插件服务，拥有独立进程、状态、release、签名配置和恢复策略。",
+    "使用固定稳定版 Xcode、单一 Apple signing context、预构建/预安装并长驻的 WDA 或等价 XCTest Runner，消除正常热路径 xcodebuild。",
+    "让 Controller/Gateway rollout、MCP 重连和 repo-harness 升级不销毁健康 Runner、tunnel 或 interaction session。",
+    "对已知 App 使用语义 App Adapter；Accessibility 为主，局部视觉仅作为受控兜底。",
+    "在不处理密码、验证码、支付或生物识别的前提下，稳定完成京东等已知 App 的搜索、浏览和读取。",
+    "提供明确故障分类与局部恢复：semantic、app state、runner、transport、signing、locked device 分别处理。",
+    "建立冷启动、暖路径和真实 JD 流程的可重复 p50/p95、成功率和恢复时间基准。"
   ],
   "nonGoals": [
     "不越狱、不绕过 iOS 安全控制。",
     "不自动处理密码、验证码、生物识别、购买、结算或支付。",
-    "不在运行时下载或临时引入未经固定版本的自动化工具。",
-    "不在新的控制面架构完成前继续扩展旧 Task/Run 模型。"
+    "不把 ios-device 服务作为 Supervisor 子进程或打进主 Controller release。",
+    "不让 Recovery Gateway 直接管理 WDA、签名或设备 session。",
+    "不继续扩展旧 monolithic ios-adapter 的长期生命周期职责；迁移窗口只允许明确 proxy。",
+    "不在运行时下载或临时引入未固定版本的自动化工具。",
+    "不把 ios-development 的项目 build/simulator 职责与物理 ios-device 服务重新合并。"
   ],
   "acceptanceCriteria": [
-    "同一物理设备在所有自动化引擎间只有一个资源所有者。",
-    "已知语义路径可以在一个有界 session 中执行，并返回有界证据和阶段耗时。",
-    "可恢复的 selector/ref/语义失败不会无条件销毁健康 session。",
-    "Runner、传输或结果不确定故障会 fail closed 并正确释放或隔离资源。",
-    "JD 等真实流程通过 fixture、故障注入和可选实机验证。"
+    "ios-device 作为 controller-scoped 外部插件注册，Repo Harness 核心不直接拥有 WDA、签名、tunnel 或 interaction daemon 生命周期。",
+    "同一 iPhone 在 CoreDevice、WDA/agent-device 或后续引擎之间共享一个 device:ios:<udid> 写锁和审计身份。",
+    "Apple Team、signing identity、Runner bundle、DeveloperDir 和工具版本由一个持久化 signing authority 管理；普通 action 不临时改变。",
+    "暖路径不得执行 xcodebuild 或重新签名；Runner 健康时直接复用，进程死亡只重启 Runner，签名失效才进入重签流程。",
+    "Controller/Gateway 两次重启或一次 rollout 后，健康 ios-device 服务仍存活或无损重连，已有可恢复 session 不因核心升级被清空。",
+    "recoverable selector/ref/type/app-state 失败不销毁健康 session；runner/transport/unknown-outcome 故障 fail closed 并隔离资源。",
+    "JD 搜索遵循真实两页语义路径并通过 fixture、故障注入和实机验证；不依赖首页不可编辑 proxy。",
+    "稳定连接且设备已解锁时，暖 Snapshot 目标 p50≤1.5 秒、p95≤3 秒；任何未达到目标的阶段必须有分解耗时而非统一 timeout。",
+    "稳定连接且设备已解锁时，10 次暖 JD 搜索至少 9 次成功，目标 p50≤12 秒、p95≤20 秒；失败必须归类到明确层级。",
+    "证据默认有界并返回 compact receipt、阶段耗时和 artifact references；完整 tree、截图或日志只通过明确 detail 路径读取。",
+    "敏感操作边界保持不变，插件与视觉兜底不能绕过核心授权和确认。"
   ],
   "relatedArtifacts": [
-    "ISS-20260720-E8E871 merged and cancelled",
-    "ISS-20260719-F77E4C completed foundations",
+    "ISS-20260802-3EC105",
     "ISS-20260802-539E7F",
     "ISS-20260802-7E1D69",
-    "commits 85f9604d, 2125ddda, 4ce2269e"
+    "ISS-20260720-E8E871 merged and cancelled",
+    "ISS-20260719-F77E4C completed foundations",
+    "commits 85f9604d, 2125ddda, 4ce2269e, cf0df13e, 4a22e00d, 74de9d90"
   ],
   "tasks": [
     {
       "id": "T1",
       "title": "Implement bounded iOS session direct execution",
       "objective": "Design and implement a short allowlisted interaction-session execution path with ownership, cancellation, timeout, receipt and durable escalation.",
-      "status": "blocked",
+      "status": "superseded",
       "dependsOn": [],
       "allowedPaths": [
         "src/runtime/gateway/**",
@@ -61,18 +75,19 @@
       "risk": "high",
       "recommendedAgent": "codex",
       "notes": [
-        "等待 ISS-20260802-539E7F 与 ISS-20260802-7E1D69 完成运行时和 Work-only 执行模型。旧 Task 不能直接调度，后续从用户验收差距重新生成 Work。"
+        "等待 ISS-20260802-539E7F 与 ISS-20260802-7E1D69 完成运行时和 Work-only 执行模型。旧 Task 不能直接调度，后续从用户验收差距重新生成 Work。",
+        "旧任务把短会话执行直接实现进 Controller/plugin 内部，已被 ISS-20260802-3EC105 的进程外 Plugin Broker 与新的 ios-device 服务边界替代。需求保留，旧执行路径不再调度。"
       ],
       "runIds": [],
       "createdAt": "2026-07-20T15:31:27.625Z",
-      "updatedAt": "2026-08-02T06:27:10.446Z",
+      "updatedAt": "2026-08-02T06:50:22.852Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
       "id": "T2",
       "title": "Complete tiered iOS accessibility evidence",
       "objective": "Add selector or ref reuse, settle diff, exact wait, scoped snapshot and full snapshot fallback tiers with bounded redacted evidence.",
-      "status": "blocked",
+      "status": "superseded",
       "dependsOn": [],
       "allowedPaths": [
         "src/runtime/plugins/ios-agent-device.ts",
@@ -97,18 +112,19 @@
         "Completed selector-preference increment: stable search/submit selectors override cached refs, eliminating the initial snapshot and stale-ref risk when both are supplied. Focused iOS tests, type, runtime architecture, and MCP compatibility passed. Remaining T2 work: automatic stale-ref retry/recovery and measured tier escalation.",
         "Implemented and committed one-shot classified stale accessibility ref recovery for JD search at af68cee8bce75c870edf9f06cd6b978e34ace57c. Only ref/accessibility errors with stale/expired/missing/not-found semantics refresh one interactive snapshot and retry once; all other errors still failSession and close/fence ownership. Focused tests, type, runtime architecture and MCP compatibility passed. Remaining T2 work: exact-wait failure escalation to scoped/full snapshots and evidence-tier latency benchmarks.",
         "Completed and committed exact-wait evidence escalation at 2d9a55d4d4b006cd4e6841df613e140f4b0ba478. Only classified text/selector wait misses fall back to scoped interactive snapshot, then one full snapshot if scoped evidence is empty. Runner/transport/connection failures remain fail-closed and close/fence the session. Focused iOS tests, TypeScript, runtime architecture, MCP compatibility, and edit-session verification passed. Remaining T2 work is repeatable cold/warm p50/p95 evidence-tier benchmarking and any evidence-backed tuning.",
-        "已完成 selector 优先、stale-ref 恢复和 evidence escalation 的代码增量；剩余 benchmark 与调优等待新架构切换后按用户验收重新生成 Work。"
+        "已完成 selector 优先、stale-ref 恢复和 evidence escalation 的代码增量；剩余 benchmark 与调优等待新架构切换后按用户验收重新生成 Work。",
+        "selector/ref/evidence 分层的已完成提交作为迁移资产保留；剩余工作不再继续写入旧 ios-agent-device 内嵌生命周期，将在独立 ios-device interaction engine 中重新验收。"
       ],
       "runIds": [],
       "createdAt": "2026-07-20T15:31:27.625Z",
-      "updatedAt": "2026-08-02T06:27:27.777Z",
+      "updatedAt": "2026-08-02T06:50:31.360Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
       "id": "T3",
       "title": "Build repeatable iOS latency benchmark",
       "objective": "Measure controller overhead, process startup, runner round trips, settle, snapshot and artifact costs for cold and warm simulator and optional physical-device runs.",
-      "status": "blocked",
+      "status": "superseded",
       "dependsOn": [
         "T2"
       ],
@@ -130,11 +146,12 @@
       "risk": "low",
       "recommendedAgent": "codex",
       "notes": [
-        "性能基准仍有价值，但必须建立在新 Runtime、Work-only 执行路径和最终物理设备 provider 上；旧依赖链不再执行。"
+        "性能基准仍有价值，但必须建立在新 Runtime、Work-only 执行路径和最终物理设备 provider 上；旧依赖链不再执行。",
+        "旧 benchmark 混合了 Controller、旧 provider 和 Runner 冷启动，无法代表目标架构。性能验收将在独立 ios-device 服务完成后重新测量 cold prepare、warm snapshot、JD semantic flow 和 recovery time。"
       ],
       "runIds": [],
       "createdAt": "2026-07-20T15:31:27.625Z",
-      "updatedAt": "2026-08-02T06:27:41.134Z",
+      "updatedAt": "2026-08-02T06:50:41.447Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
@@ -231,7 +248,7 @@
       "id": "T6",
       "title": "Separate physical iOS resource ownership from automation engine identity",
       "objective": "Keep ios-device as the shared physical-iPhone ownership and mutual-exclusion domain while adding a backward-compatible explicit automation-engine identity to InteractionSession records and evidence. New agent-device sessions must declare the agent-device engine; CoreDevice/WDA sessions must declare the coredevice engine. Replace interaction-id/reason heuristics with engine-aware validation plus bounded legacy compatibility, ensure actions cannot consume another engine's session, and prove that active sessions from either engine block the other on the same target. Preserve all public action IDs and do not require a connected phone.",
-      "status": "blocked",
+      "status": "superseded",
       "dependsOn": [],
       "allowedPaths": [
         "src/runtime/plugins/interaction-session.ts",
@@ -274,11 +291,12 @@
         "Verification evidence failed: One or more executed checks or reported commands failed.",
         "Final exact-revision verification retry in a confirmed repository-wide quiet window. Previous retries failed only because unrelated checks from checkout_97ad06a84d3366e8393555d9 acquired the shared build-cache after verification began.",
         "Verification evidence failed: One or more executed checks or reported commands failed.",
-        "实现 commit 4ce2269e 保留。旧 changes_requested 主要来自共享 check/基线投影；等待新运行时与 Work 证据模型后重新验证，不再继续旧 Task 重试。"
+        "实现 commit 4ce2269e 保留。旧 changes_requested 主要来自共享 check/基线投影；等待新运行时与 Work 证据模型后重新验证，不再继续旧 Task 重试。",
+        "commit 4ce2269e 的跨引擎设备别名与互斥逻辑作为迁移资产保留；权威资源模型将由通用 Plugin Broker 的 device:ios:<udid> claim 接管，不再继续维护旧 InteractionSession 双引擎兼容层。"
       ],
       "runIds": [],
       "createdAt": "2026-08-01T02:19:19.193Z",
-      "updatedAt": "2026-08-02T06:28:19.981Z",
+      "updatedAt": "2026-08-02T06:50:52.871Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56",
       "verification": {
         "integratedRevision": "4ce2269e622950cc0fe2b936101907170bb84b42",
@@ -509,7 +527,7 @@
       "id": "T8",
       "title": "Close live JD correctness and warm-path latency regressions",
       "objective": "Use the 2026-08-01 JD real-device transcript as primary evidence. In an isolated checkout, reproduce and fix the remaining Repo Harness defects: compile the JD semantic adapter as focus/navigate -> resolve real editable control -> fill -> submit instead of filling the home-page proxy; preserve healthy sessions for selector/ref/type/semantic failures and destroy only classified transport/runner/unknown-outcome failures; make page-transition diffs and ref generations safe so a contradictory zero-diff cannot authorize stale refs; carry the resolved Apple signing context through every lazy Runner start in an interaction; and replace repeated full plugin manifest/action-schema payloads on normal plugin_action_execute responses with a bounded compact receipt plus an explicit detail path. Then add a warm multi-step execution primitive or adapter batch that performs known semantic steps without returning to the model after every action, with phase timings and bounded evidence. Keep public action IDs and sensitive-action policy unchanged.",
-      "status": "blocked",
+      "status": "superseded",
       "dependsOn": [],
       "allowedPaths": [
         "src/runtime/plugins/**",
@@ -548,15 +566,242 @@
       "risk": "high",
       "recommendedAgent": "codex",
       "notes": [
-        "真实 JD 正确性和热路径仍是用户需求，但必须等新 Runtime 与需求/Work 架构切换后，按剩余验收差距创建新的 Work；旧 destructive Task 不再直接调度。"
+        "真实 JD 正确性和热路径仍是用户需求，但必须等新 Runtime 与需求/Work 架构切换后，按剩余验收差距创建新的 Work；旧 destructive Task 不再直接调度。",
+        "JD 两页语义路径、compact receipt、签名上下文和 warm batch 的目标继续保留，但旧任务要求在内嵌 Controller 插件中完成，已过期。它们将作为独立 ios-device 服务的最终用户流程验收重新实施。"
       ],
       "runIds": [],
       "createdAt": "2026-08-01T10:07:06.971Z",
-      "updatedAt": "2026-08-02T06:28:45.728Z",
+      "updatedAt": "2026-08-02T06:51:03.406Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T9",
+      "title": "按通用插件协议重新定基线 iOS 迁移方案",
+      "objective": "在 ISS-20260802-3EC105 冻结 Plugin Protocol 与服务边界后，盘点现有 ios-adapter、ios-agent-device、ios-physical-device、InteractionSession、签名修复和 JD adapter 提交，形成迁移到独立 ios-device 服务的 keep/move/rewrite/delete 地图；不重新设计通用插件协议。",
+      "status": "blocked",
+      "dependsOn": [],
+      "allowedPaths": [
+        "docs/architecture/**",
+        "docs/operations/**",
+        "docs/researches/**",
+        "src/runtime/plugins/**",
+        "tests/runtime/**"
+      ],
+      "forbiddenPaths": [
+        "_ops/**",
+        ".ai/**",
+        "scripts/**",
+        "package.json",
+        "bun.lock",
+        "package-lock.json"
+      ],
+      "checks": [
+        "package:check:public-docs"
+      ],
+      "acceptanceCriteria": [
+        "明确 ios-development 与 ios-device 的 scope、进程、状态、release 和资源边界。",
+        "每个已有 iOS 模块和提交具有迁移结论。",
+        "签名、WDA、CoreDevice tunnel、session、App adapters 和 evidence 的 owner 唯一。",
+        "迁移窗口只有一个 proxy，不存在 Controller 与外部服务双 owner。",
+        "依赖 ISS-20260802-3EC105 的通用决策而不复制另一套协议。"
+      ],
+      "risk": "low",
+      "recommendedAgent": "codex",
+      "notes": [
+        "外部依赖：先完成 ISS-20260802-3EC105:T1 的通用插件架构与迁移地图。该依赖不是旧 iOS Task 依赖链的一部分，暂时显式阻塞以避免两份协议文档并行。"
+      ],
+      "runIds": [],
+      "createdAt": "2026-08-02T06:51:21.318Z",
+      "updatedAt": "2026-08-02T06:51:31.833Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T10",
+      "title": "构建独立 ios-device 服务与兼容代理",
+      "objective": "基于已交付的 External Plugin Registry、Broker 和 reference lifecycle，建立 controller-scoped ios-device 外部服务、独立 release/state/launchd、Plugin Protocol server 与 Repo Harness 兼容代理；旧 public action IDs 经单一代理转发，Controller 不再拥有领域 daemon。",
+      "status": "planned",
+      "dependsOn": [
+        "T9"
+      ],
+      "allowedPaths": [
+        "plugins/ios/**",
+        "packages/**",
+        "src/runtime/plugins/**",
+        "src/cli/**",
+        "scripts/**",
+        "tests/plugin-contract/**",
+        "tests/runtime/**",
+        "docs/operations/**",
+        "package.json",
+        "bun.lock",
+        "package-lock.json"
+      ],
+      "forbiddenPaths": [
+        "_ops/**",
+        ".ai/**"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:mcp-compatibility",
+        "package:check:controller-v8"
+      ],
+      "acceptanceCriteria": [
+        "ios-device 服务可独立构建、安装、启动、停止、升级和回滚。",
+        "Controller 只通过 Plugin Broker/compatibility proxy 调用它。",
+        "服务使用独立 state/release 路径，不位于 runtime release。",
+        "核心重启后可重新连接原服务。",
+        "迁移窗口不存在内嵌与外部双执行 owner。"
+      ],
+      "risk": "high",
+      "recommendedAgent": "codex",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-08-02T06:51:42.792Z",
+      "updatedAt": "2026-08-02T06:51:42.792Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T11",
+      "title": "实现持久设备、签名、WDA 与 Session 生命周期",
+      "objective": "在独立 ios-device 服务中实现 Device Authority、CoreDevice transport、单一 signing authority、预构建/预安装 WDA 或等价 Runner、长驻健康检查、interaction session 与故障分类恢复；迁移 74de9d90 的 signing-context 隔离思想，但不再依赖每次 CLI probe daemon。",
+      "status": "planned",
+      "dependsOn": [
+        "T10"
+      ],
+      "allowedPaths": [
+        "plugins/ios/**",
+        "packages/**",
+        "scripts/**",
+        "tests/plugin-contract/**",
+        "tests/fixtures/**",
+        "tests/runtime/**",
+        "docs/operations/**",
+        "package.json",
+        "bun.lock",
+        "package-lock.json"
+      ],
+      "forbiddenPaths": [
+        "_ops/**",
+        ".ai/**",
+        "src/runtime/supervisor/**",
+        "src/runtime/recovery/**"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:mcp-compatibility",
+        "package:check:controller-v8"
+      ],
+      "acceptanceCriteria": [
+        "签名 authority 持久保存 Team、identity、bundle、DeveloperDir、Xcode 和 Runner version。",
+        "正常暖路径不执行 xcodebuild、不重新签名。",
+        "Runner dead 只重启 Runner；transport lost 只重建 tunnel；signing invalid 停止盲目重试。",
+        "semantic/app-state 错误不销毁健康 session。",
+        "Controller rollout 和 Broker 重连不清空健康 ios-device session。",
+        "设备锁使用 device:ios:<udid> 并覆盖所有 automation engine。"
+      ],
+      "risk": "high",
+      "recommendedAgent": "codex",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-08-02T06:52:02.144Z",
+      "updatedAt": "2026-08-02T06:52:02.144Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T12",
+      "title": "迁移语义交互引擎并完成京东适配",
+      "objective": "把 selector/ref 恢复、tiered evidence、failure classification 和 JD 两页搜索逻辑迁入独立 interaction engine 与 App Adapter；Accessibility 为主，局部视觉兜底必须受权限、证据和结果验证约束；已知 JD 搜索以单个 bounded semantic action 执行。",
+      "status": "planned",
+      "dependsOn": [
+        "T11"
+      ],
+      "allowedPaths": [
+        "plugins/ios/**",
+        "packages/**",
+        "tests/fixtures/**",
+        "tests/plugin-contract/**",
+        "tests/runtime/**",
+        "scripts/**",
+        "docs/operations/**"
+      ],
+      "forbiddenPaths": [
+        "_ops/**",
+        ".ai/**",
+        "src/runtime/supervisor/**",
+        "src/runtime/recovery/**"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:mcp-compatibility",
+        "package:check:controller-v8"
+      ],
+      "acceptanceCriteria": [
+        "JD adapter 识别首页 proxy、进入搜索页、解析真实 editable field、输入并提交。",
+        "稳定 selector 优先，stale ref 只做一次有界刷新恢复。",
+        "contradictory/incomplete diff 不能授权旧 ref mutation。",
+        "视觉兜底只处理 accessibility 缺失，并在操作后重新 snapshot 验证。",
+        "action 返回 compact receipt、phase timings 和 artifact references。",
+        "敏感页面和购买/支付动作保持阻断。"
+      ],
+      "risk": "high",
+      "recommendedAgent": "codex",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-08-02T06:52:15.434Z",
+      "updatedAt": "2026-08-02T06:52:15.434Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T13",
+      "title": "完成实机性能、恢复和核心升级验收",
+      "objective": "在用户物理 iPhone 上执行冷准备、暖 Snapshot、暖 JD 搜索、Runner 重启、transport 重连、设备锁屏、Controller 两次重启和一次 rollout 的受控验证；统计 p50/p95、成功率、恢复时间与失败分类，并完成旧内嵌 owner 的切除。",
+      "status": "planned",
+      "dependsOn": [
+        "T12"
+      ],
+      "allowedPaths": [
+        "scripts/**",
+        "plugins/ios/**",
+        "tests/**",
+        "docs/operations/**",
+        "docs/researches/**",
+        "tasks/issues/**"
+      ],
+      "forbiddenPaths": [
+        "_ops/**",
+        ".ai/**",
+        "src/runtime/supervisor/**",
+        "src/runtime/recovery/**"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:mcp-compatibility",
+        "package:check:controller-v8",
+        "package:check:ci"
+      ],
+      "acceptanceCriteria": [
+        "暖 Snapshot 至少一次 warmup 加 10 次测量，p50≤1.5 秒、p95≤3 秒。",
+        "暖 JD 搜索至少 10 次测量、至少 9 次成功，目标 p50≤12 秒、p95≤20 秒。",
+        "正常暖路径日志证明没有 xcodebuild 或重新签名。",
+        "Runner/transport/signing/locked/semantic 故障均得到正确分类和局部恢复。",
+        "Controller 两次重启和一次 rollout 后 ios-device 存活或无损重连，健康 session 不被核心升级清空。",
+        "旧 Controller 内嵌 WDA/signing/session owner 被删除，compatibility proxy 仅按迁移策略保留或移除。",
+        "无购买、登录凭据、验证码、支付或生物识别操作。"
+      ],
+      "risk": "destructive",
+      "recommendedAgent": "codex",
+      "notes": [],
+      "runIds": [],
+      "createdAt": "2026-08-02T06:52:35.561Z",
+      "updatedAt": "2026-08-02T06:52:35.561Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     }
   ],
   "createdAt": "2026-07-20T15:31:27.625Z",
-  "updatedAt": "2026-08-02T06:29:12.324Z",
+  "updatedAt": "2026-08-02T06:53:59.164Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }

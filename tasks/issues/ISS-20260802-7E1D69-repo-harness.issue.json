@@ -4,7 +4,7 @@
   "title": "让 Repo Harness 只展示清晰需求并自动管理执行细节",
   "slug": "repo-harness",
   "kind": "governance",
-  "status": "planned",
+  "status": "in_progress",
   "summary": "把当前以 Issue/Task/Run 状态为中心的执行账本，重构为以用户需求为中心的控制面。用户只管理可读的 Requirement；技术方案是可替换的 Execution Plan；Work 是唯一执行合同；Attempt、Process、Check、Receipt 和 Maintenance Finding 保留为内部证据。Requirement、Plan、Work 关系与状态迁移到 Controller-home SQLite 单一权威，Git 只保留源码、架构文档和可选导出快照，不再承担运行时状态双写。运行时 Bootstrap authority/config 继续使用独立极小原子文件，避免管理数据库故障影响启动与 Recovery。",
   "goals": [
     "让用户默认只看到需求目标、当前状态、已交付结果、阻塞原因和需要用户决定的事项。",
@@ -42,7 +42,11 @@
     "ISS-20260731-CCF3E3",
     "docs/architecture/decisions/20260801-controller-home-sqlite-state.md",
     "docs/researches/20260801-control-plane-state-store-inventory.md",
+    "docs/architecture/decisions/20260802-requirement-centered-control-plane.md",
+    "docs/operations/20260802-requirement-portfolio-migration.md",
     "ISS-20260802-539E7F",
+    "ISS-20260802-3EC105",
+    "ISS-20260720-66E25D",
     "ISS-20260730-A1EA53",
     "current Issue portfolio audit 2026-08-02"
   ],
@@ -50,8 +54,8 @@
     {
       "id": "T1",
       "title": "冻结需求中心模型和存储边界",
-      "objective": "编写并接受新的控制面架构决策，定义 Requirement、ExecutionPlan、PlanStep、Work、Attempt、MaintenanceFinding、用户状态、内部状态、完成语义和存储边界；明确替代旧 Issue/Task Git-authority 条款，并提供当前 31 个 Issue 的迁移映射。",
-      "status": "ready",
+      "objective": "编写并接受新的控制面架构决策，定义 Requirement、ExecutionPlan、PlanStep、Work、Attempt、MaintenanceFinding、用户状态、内部状态、完成语义和存储边界；明确替代旧 Issue/Task Git-authority 条款，并提供冻结基线中当前 33 个 Issue 的迁移映射。",
+      "status": "done",
       "dependsOn": [],
       "allowedPaths": [
         "docs/architecture/**",
@@ -77,18 +81,20 @@
       ],
       "risk": "low",
       "notes": [
-        "本轮审计新增硬要求：Requirement.displayTitle 与 stable key/alias/存储路径必须分离。现有 slugify 对中文标题会退化为 issue、bug、repo-harness 等不可读值，并且标题修改会触发 Git 投影文件重命名。新模型必须使用不可变 Requirement ID/稳定存储键，标题可修改但不得改变权威记录地址；导出文件名也应基于稳定 ID，而不是标题 slug。"
+        "本轮审计新增硬要求：Requirement.displayTitle 与 stable key/alias/存储路径必须分离。现有 slugify 对中文标题会退化为 issue、bug、repo-harness 等不可读值，并且标题修改会触发 Git 投影文件重命名。新模型必须使用不可变 Requirement ID/稳定存储键，标题可修改但不得改变权威记录地址；导出文件名也应基于稳定 ID，而不是标题 slug。",
+        "新增迁移约束：ISS-20260720-66E25D 保留为用户可见的物理 iPhone Requirement；ISS-20260802-3EC105 是可替换的通用插件平台 Execution Plan/架构使能项，不应被误建成与 iOS、Browser、Google 各能力平级的重复用户需求。Runtime 与 Recovery 同样按用户结果和技术计划分层映射。",
+        "2026-08-02 已落地 accepted Requirement-centered ADR、完整 33-Issue 迁移映射，并修订旧 SQLite ADR 与 state-store inventory 的 Git authority 条款。",
+        "当前 ChatGPT connector 的 stale core capability snapshot 已不再阻止 `package:check:public-docs`；该门禁已通过，T1 可进入完成状态。"
       ],
-      "runIds": [],
       "createdAt": "2026-08-02T06:26:19.425Z",
-      "updatedAt": "2026-08-02T06:33:10.691Z",
+      "updatedAt": "2026-08-02T10:18:00.000Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
       "id": "T2",
       "title": "建立 SQLite Requirement 与 Plan 权威",
       "objective": "在现有 control-plane SQLite envelope 上实现版本化 Requirement、ExecutionPlan、PlanStep、关系、状态事件和审计命名空间，并提供一次性旧 Issue/Task 导入、事务校验、备份与恢复。",
-      "status": "planned",
+      "status": "done",
       "dependsOn": [
         "T1"
       ],
@@ -117,10 +123,13 @@
         "运行时 Bootstrap 和 Recovery 不依赖这些表才能启动。"
       ],
       "risk": "high",
-      "notes": [],
+      "notes": [
+        "9b3e2ae7f 已合并到本地 main；Requirement、Plan、Work 已落到 SQLite per-record 事务/CAS 边界，旧 index/JSON 仅在缺失 authority 时一次性导入，WAL 备份恢复已覆盖 focused test。",
+        "check:type、check:runtime-architecture、check:test-governance、check:public-docs、affected tests 和 check:controller-v8 均通过；Controller V8 修复同时固定了 compiled process-runner canary 的 executionMode 传递和 MCP 稳定 128-tool 契约。"
+      ],
       "runIds": [],
       "createdAt": "2026-08-02T06:26:19.425Z",
-      "updatedAt": "2026-08-02T06:26:19.425Z",
+      "updatedAt": "2026-08-02T14:30:00.000Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
@@ -328,6 +337,6 @@
     }
   ],
   "createdAt": "2026-08-02T06:26:19.425Z",
-  "updatedAt": "2026-08-02T06:33:10.691Z",
+  "updatedAt": "2026-08-02T10:18:00.000Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }
