@@ -7,6 +7,7 @@ import { sendSupervisorCommand } from './control-server';
 import { isStableSupervisorInstalled, readCurrentSupervisorRelease, supervisorLogPath } from './paths';
 import { readSupervisorState } from './state-store';
 import type { SupervisorOperation, SupervisorOperationKind, SupervisorState } from './types';
+import { resolveSupervisorActivationInvocation } from './service-activation';
 import { isProcessAlive, terminateProcessTree } from '../shared/process-tree';
 
 export interface StableSupervisorLaunchOptions {
@@ -40,7 +41,6 @@ export function launchStableSupervisor(options: StableSupervisorLaunchOptions): 
   const fd = openSync(logPath, 'a');
   try {
     const args = [
-      release.supervisorExecutable,
       '--repo', resolve(options.repoRoot),
       '--controller-home', resolve(options.controllerHome),
       '--runtime-source-root', resolve(release.sourceRoot ?? options.repoRoot),
@@ -48,7 +48,10 @@ export function launchStableSupervisor(options: StableSupervisorLaunchOptions): 
       ...(options.controlHost ? ['--control-host', options.controlHost] : []),
       ...(options.controlPort !== undefined ? ['--control-port', String(options.controlPort)] : []),
     ];
-    const child = spawn(process.execPath, args, {
+    const invocation = resolveSupervisorActivationInvocation(release.supervisorExecutable, args);
+    const executionMode = release.executionMode
+      ?? (invocation.command === release.supervisorExecutable ? 'standalone-binary' : 'script');
+    const child = spawn(invocation.command, invocation.args, {
       cwd: resolve(options.repoRoot),
       // Compatibility callers may request a start, but never create a
       // detached lifecycle owner outside the fixed bootstrap.
@@ -59,6 +62,7 @@ export function launchStableSupervisor(options: StableSupervisorLaunchOptions): 
         REPO_HARNESS_CONTROLLER_HOME: resolve(options.controllerHome),
         REPO_HARNESS_STABLE_SUPERVISOR: '1',
         REPO_HARNESS_SUPERVISOR_SERVICE_MODE: 'managed',
+        REPO_HARNESS_RUNTIME_EXECUTION: executionMode,
       },
     });
     if (!child.pid) throw new Error('SUPERVISOR_START_FAILED');
