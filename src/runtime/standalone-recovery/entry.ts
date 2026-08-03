@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
-import { resolve } from 'path';
+import { basename, resolve } from 'path';
 import { pathToFileURL } from 'url';
 import { readMcpServiceOAuthPassphrase } from '../../cli/mcp/auth';
 import {
@@ -21,7 +21,12 @@ import {
   type WatchdogState,
   type RecoveryConfig,
 } from './core';
-import { writeRecoveryRuntimeIdentity, type RecoveryRuntimeIdentity } from './release';
+import {
+  RECOVERY_RELEASE_ROLE_CANARY_ARG,
+  writeRecoveryRuntimeIdentity,
+  type RecoveryRuntimeIdentity,
+  type RecoveryRuntimeRole,
+} from './release';
 
 function option(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -54,18 +59,27 @@ function usage(): never {
   throw new Error(`RECOVERY_USAGE: ${RECOVERY_CLI_COMMANDS.join(' | ')}`);
 }
 
+export function recoveryRuntimeRoleFromExecutable(executable = process.execPath): RecoveryRuntimeRole | undefined {
+  const name = basename(executable);
+  if (name === 'repo-harness-recovery-gateway') return 'gateway';
+  if (name === 'repo-harness-recovery-watchdog') return 'watchdog';
+  return undefined;
+}
+
 async function cli(): Promise<void> {
   const command = process.argv.find((value, index) => index >= 2 && !value.startsWith('-') && process.argv[index - 1] !== '--controller-home') ?? 'status';
   const config = loadRecoveryConfig(controllerHome(), option('--config'));
-  const executable = process.argv[1]?.split('/').pop() ?? '';
-  if (executable === 'repo-harness-recovery-gateway') {
-    if (command !== 'gateway') throw new Error('RECOVERY_GATEWAY_ROLE_ONLY');
-    await startGateway(config);
-    return;
-  }
-  if (executable === 'repo-harness-recovery-watchdog') {
-    if (command !== 'watchdog') throw new Error('RECOVERY_WATCHDOG_ROLE_ONLY');
-    await startWatchdog(config);
+  const executableRole = recoveryRuntimeRoleFromExecutable();
+  if (executableRole) {
+    if (command !== executableRole) {
+      throw new Error(executableRole === 'gateway' ? 'RECOVERY_GATEWAY_ROLE_ONLY' : 'RECOVERY_WATCHDOG_ROLE_ONLY');
+    }
+    if (process.argv.includes(RECOVERY_RELEASE_ROLE_CANARY_ARG)) {
+      output({ status: 'ok', role: executableRole, executable: basename(process.execPath) });
+      return;
+    }
+    if (executableRole === 'gateway') await startGateway(config);
+    else await startWatchdog(config);
     return;
   }
   switch (command) {

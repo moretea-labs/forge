@@ -4,10 +4,10 @@ import { execFileSync } from 'child_process';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { createServer as createSocketServer, type Server as SocketServer } from 'net';
-import { dirname, join } from 'path';
+import { basename, dirname, join } from 'path';
 import { tmpdir } from 'os';
 import { attestKnownGood, createRecoveryConfig, decideWatchdog, recoveryReconnectOperation, repairPublicTunnel, restartGateway, restartSupervisor, rollbackPrevious, verifyStableRuntime, type VerifyResult } from '../../src/runtime/standalone-recovery/core';
-import { dispatchRecoveryTool, RECOVERY_CLI_COMMANDS, RECOVERY_TOOLS } from '../../src/runtime/standalone-recovery/entry';
+import { dispatchRecoveryTool, recoveryRuntimeRoleFromExecutable, RECOVERY_CLI_COMMANDS, RECOVERY_TOOLS } from '../../src/runtime/standalone-recovery/entry';
 import { createRecoveryHttpTransport, ExternalHttpsRecoveryTransport, resolveTrustedRecoveryCurl, type RecoveryHttpTransportOptions } from '../../src/runtime/standalone-recovery/http-transport';
 import { activateRecoveryRelease, captureLegacyRecoveryRelease, stageRecoveryRelease, verifyRecoveryReleaseActivation, type RecoveryActivationVerification } from '../../src/runtime/standalone-recovery/installer';
 import {
@@ -854,10 +854,17 @@ describe('standalone disaster recovery core', () => {
 });
 
 describe('immutable standalone Recovery releases', () => {
+  test('detects compiled role binaries from the executable path rather than argv metadata', () => {
+    expect(recoveryRuntimeRoleFromExecutable('/tmp/repo-harness-recovery')).toBeUndefined();
+    expect(recoveryRuntimeRoleFromExecutable('/tmp/repo-harness-recovery-gateway')).toBe('gateway');
+    expect(recoveryRuntimeRoleFromExecutable('/tmp/repo-harness-recovery-watchdog')).toBe('watchdog');
+  });
+
   test('stages one exact clean revision with complete binary hashes and no staging residue', () => {
     const source = cleanRecoverySourceRepo();
     const home = mkdtempSync(join(tmpdir(), 'recovery-release-stage-'));
     try {
+      const canaries: Array<{ binary: string; role?: string }> = [];
       const staged = stageRecoveryRelease({ controllerHome: home, sourceRoot: source.root }, {
         now: () => 1000,
         uuid: () => 'stage-test-uuid',
@@ -865,8 +872,16 @@ describe('immutable standalone Recovery releases', () => {
           writeFileSync(outputPath, 'compiled recovery fixture', { mode: 0o700 });
           return successfulProcess('built');
         },
-        runCanary: () => successfulProcess('{"status":"ok"}'),
+        runCanary: ({ binaryPath, role }) => {
+          canaries.push({ binary: basename(binaryPath), role });
+          return successfulProcess('{"status":"ok"}');
+        },
       });
+      expect(canaries).toEqual([
+        { binary: 'repo-harness-recovery', role: undefined },
+        { binary: 'repo-harness-recovery-gateway', role: 'gateway' },
+        { binary: 'repo-harness-recovery-watchdog', role: 'watchdog' },
+      ]);
       expect(staged.release.releaseRevision).toBe(source.head);
       expect(staged.release.sourceCommit).toBe(source.head);
       expect(staged.release.cleanWorkspace).toBe(true);

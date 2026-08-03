@@ -24,6 +24,7 @@ import { isProcessAlive } from '../shared/process-tree';
 import { initializeStandaloneRecovery, loadRecoveryConfig, type PublicTunnelServiceConfig, type RecoveryConfig } from './core';
 import {
   RECOVERY_RELEASE_BINARIES,
+  RECOVERY_RELEASE_ROLE_CANARY_ARG,
   publishRecoveryCompatibilityLinks,
   publishRecoveryRelease,
   readCurrentRecoveryRelease,
@@ -103,7 +104,7 @@ export interface RecoveryInstallerDependencies {
   now?: () => number;
   uuid?: () => string;
   compileBinary?: (input: { sourceRoot: string; outputPath: string }) => ProcessRunResult;
-  runCanary?: (input: { binaryPath: string; controllerHome: string }) => ProcessRunResult;
+  runCanary?: (input: { binaryPath: string; controllerHome: string; role?: RecoveryRuntimeRole }) => ProcessRunResult;
   installAgent?: typeof installLaunchAgent;
   handoff?: typeof safeLaunchdHandoff;
   verify?: (input: {
@@ -148,8 +149,11 @@ function defaultCompileBinary(input: { sourceRoot: string; outputPath: string })
   ], { cwd: input.sourceRoot, timeoutMs: 180_000, maxOutputBytes: 512 * 1024 });
 }
 
-function defaultRunCanary(input: { binaryPath: string; controllerHome: string }): ProcessRunResult {
-  return runProcess(input.binaryPath, ['status', '--controller-home', input.controllerHome], {
+function defaultRunCanary(input: { binaryPath: string; controllerHome: string; role?: RecoveryRuntimeRole }): ProcessRunResult {
+  const args = input.role
+    ? [input.role, RECOVERY_RELEASE_ROLE_CANARY_ARG, '--controller-home', input.controllerHome]
+    : ['status', '--controller-home', input.controllerHome];
+  return runProcess(input.binaryPath, args, {
     timeoutMs: 30_000,
     maxOutputBytes: 128 * 1024,
     env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
@@ -192,12 +196,28 @@ export function stageRecoveryRelease(input: {
       builtAt: new Date(now()).toISOString(),
       artifacts: completeArtifacts(staging),
     });
-    const canaryResult = (dependencies.runCanary ?? defaultRunCanary)({ binaryPath: primary, controllerHome: resolve(input.controllerHome) });
-    if (!canaryResult.ok) throw new Error(`RECOVERY_RELEASE_CANARY_FAILED: ${canaryResult.stderr || canaryResult.stdout || canaryResult.error}`.slice(0, 2_000));
+    const runCanary = dependencies.runCanary ?? defaultRunCanary;
+    const canaries: Array<{ label: string; binaryPath: string; role?: RecoveryRuntimeRole }> = [
+      { label: 'primary', binaryPath: primary },
+      { label: 'gateway', binaryPath: join(staging, 'repo-harness-recovery-gateway'), role: 'gateway' },
+      { label: 'watchdog', binaryPath: join(staging, 'repo-harness-recovery-watchdog'), role: 'watchdog' },
+    ];
+    const canaryDetails: string[] = [];
+    for (const canary of canaries) {
+      const canaryResult = runCanary({
+        binaryPath: canary.binaryPath,
+        controllerHome: resolve(input.controllerHome),
+        role: canary.role,
+      });
+      if (!canaryResult.ok) {
+        throw new Error(`RECOVERY_RELEASE_CANARY_FAILED (${canary.label}): ${canaryResult.stderr || canaryResult.stdout || canaryResult.error}`.slice(0, 2_000));
+      }
+      canaryDetails.push(`${canary.label}: ${canaryResult.stdout.trim() || 'passed'}`);
+    }
     renameSync(staging, finalPath);
     const release = readRecoveryRelease(finalPath);
     if (!release) throw new Error('RECOVERY_RELEASE_FINAL_VALIDATION_FAILED');
-    return { release, canary: { ok: true, detail: canaryResult.stdout.trim() || 'status canary passed' } };
+    return { release, canary: { ok: true, detail: canaryDetails.join('; ') } };
   } catch (error) {
     rmSync(staging, { recursive: true, force: true });
     throw error;

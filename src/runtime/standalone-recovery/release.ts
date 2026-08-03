@@ -21,6 +21,8 @@ export const RECOVERY_RELEASE_BINARIES = [
   'repo-harness-recovery-watchdog',
 ] as const;
 
+export const RECOVERY_RELEASE_ROLE_CANARY_ARG = '--repo-harness-release-role-canary';
+
 export type RecoveryReleaseBinary = (typeof RECOVERY_RELEASE_BINARIES)[number];
 export type RecoveryRuntimeRole = 'gateway' | 'watchdog';
 
