@@ -38,10 +38,19 @@ export function managedPathInside(parent: string, candidate: string): boolean {
 export function registeredRepositoryRoots(records: RepositoryRecord[]): string[] {
   const roots = new Set<string>();
   for (const record of records) {
-    const activeCheckoutRoots = record.checkouts
-      .filter((checkout) => checkout.lifecycle !== 'removed' && checkout.lifecycle !== 'archived')
+    // A RepositoryRecord's canonical roots and non-worktree checkouts are source
+    // authorities that a Controller-owned storage root must never contain or
+    // live beneath. Git worktree checkouts are occupants of managed storage,
+    // not additional storage-boundary authorities; including them here makes
+    // the parent managed root reject itself after the first allocation.
+    const activeSourceCheckoutRoots = record.checkouts
+      .filter((checkout) => (
+        !checkout.worktree
+        && checkout.lifecycle !== 'removed'
+        && checkout.lifecycle !== 'archived'
+      ))
       .flatMap((checkout) => [checkout.localRoot, checkout.canonicalRoot]);
-    for (const candidate of [record.localRoot, record.canonicalRoot, ...activeCheckoutRoots]) {
+    for (const candidate of [record.localRoot, record.canonicalRoot, ...activeSourceCheckoutRoots]) {
       if (!candidate?.trim()) continue;
       roots.add(canonicalManagedPath(candidate));
     }
