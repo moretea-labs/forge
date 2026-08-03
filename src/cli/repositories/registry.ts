@@ -922,20 +922,11 @@ export function resolveRepositorySelection(input: {
       const allowRestore = input.allowDisabledReason === 'restore';
       if (!allowRestore) throw new Error(`repository is disabled: ${record.repoId}`);
     }
-    // A server-level explicit path is only a binding when the caller also
-    // names the exact checkout. Otherwise repoId intentionally selects that
-    // repository's active checkout (for cross-repository MCP calls).
-    if (input.explicitPath?.trim() && input.checkoutId?.trim()) {
-      const explicitRoot = resolveGitRoot(input.explicitPath);
-      const matching = record.checkouts.find((checkout) => comparablePath(checkout.canonicalRoot) === comparablePath(explicitRoot));
-      if (!matching) {
-        throw new Error(`CHECKOUT_PATH_NOT_REGISTERED: ${record.repoId} has no checkout at ${explicitRoot}`);
-      }
-      if (input.checkoutId?.trim() && matching.checkoutId !== input.checkoutId.trim()) {
-        throw new Error(`CHECKOUT_PATH_ID_MISMATCH: ${input.checkoutId} != ${matching.checkoutId}`);
-      }
-      return selectRepositoryCheckout(record, matching.checkoutId);
-    }
+    // An explicit repoId + checkoutId is a complete invocation identity.
+    // explicitPath is the MCP server's default repository context; allowing it
+    // to veto a named checkout makes every non-default worktree drift back to
+    // the server startup path. Checkout registration, lifecycle, and Git
+    // boundary validation remain enforced by selectRepositoryCheckout.
     return selectRepositoryCheckout(record, input.checkoutId);
   }
   if (input.explicitPath?.trim()) {

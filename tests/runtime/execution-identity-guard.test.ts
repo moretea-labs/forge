@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
+import { callMultiRepositoryTool, createMcpToolContext } from '../../src/cli/mcp/multi-repository';
 import {
   addRepositoryCheckout,
   registerRepository,
@@ -264,7 +265,7 @@ describe('execution identity pre-spawn guard', () => {
     })).toThrow(/CHECKOUT_NOT_ACTIVE/);
   });
 
-  test('explicit checkout path wins over repository activeCheckoutId without mutating registry focus', () => {
+  test('explicit checkout identity wins over server default path without mutating registry focus', async () => {
     const fx = dualRepoFixture();
     const worktree = join(fx.root, 'repo-a-worktree');
     const worktreeResult = spawnSync('git', ['-C', fx.repoARoot, 'worktree', 'add', '-b', 'explicit-checkout', worktree], { encoding: 'utf8' });
@@ -277,14 +278,33 @@ describe('execution identity pre-spawn guard', () => {
     });
     const checkout = withCheckout.checkouts.find((candidate) => candidate.canonicalRoot !== fx.repoA.canonicalRoot);
     expect(checkout).toBeTruthy();
+    writeFileSync(join(worktree, 'checkout-only.txt'), 'from explicit worktree\n');
     const selected = resolveRepositorySelection({
       controllerHome: fx.controllerHome,
       repoId: fx.repoA.repoId,
-      explicitPath: worktree,
+      // Reproduce the real MCP shape: the server starts on main while this
+      // invocation explicitly names another registered checkout.
+      explicitPath: fx.repoA.canonicalRoot,
       checkoutId: checkout!.checkoutId,
     });
     expect(selected.activeCheckoutId).toBe(checkout!.checkoutId);
+    expect(realpathSync(selected.canonicalRoot)).toBe(realpathSync(worktree));
     expect(withCheckout.activeCheckoutId).toBe(fx.repoA.activeCheckoutId);
+
+    const ctx = createMcpToolContext({
+      controllerHome: fx.controllerHome,
+      profile: 'controller',
+      repo: fx.repoA.canonicalRoot,
+      sessionId: 'session-explicit-checkout',
+      principalId: 'principal-explicit-checkout',
+    });
+    const read = await callMultiRepositoryTool(ctx, 'read_repository_file', {
+      repo_id: fx.repoA.repoId,
+      checkout_id: checkout!.checkoutId,
+      path: 'checkout-only.txt',
+    });
+    expect(read.isError).not.toBe(true);
+    expect(JSON.stringify(read.structuredContent)).toContain('from explicit worktree');
   });
 
   test('rejects an independently rooted checkout with exact Git common-directory evidence', () => {
