@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { connect } from 'net';
 import { homedir } from 'os';
@@ -75,11 +75,31 @@ interface RuntimeBinding {
   writerFencingTokenSha256: string;
 }
 
+export type RecoveryMutationAction =
+  | 'attest_known_good'
+  | 'rollback_previous'
+  | 'restart_gateway'
+  | 'repair_public_tunnel'
+  | 'restart_supervisor';
+
 interface RecoveryLock {
+  schemaVersion?: 1;
   pid: number;
   instanceId: string;
+  processStartTime?: string;
   acquiredAt: string;
+  action?: RecoveryMutationAction;
+  requestId?: string;
 }
+
+interface RecoveryLockIntent {
+  action: RecoveryMutationAction;
+  requestId?: string;
+}
+
+type RecoveryLockAttempt<T> =
+  | { acquired: true; value: T }
+  | { acquired: false; owner: RecoveryLock };
 
 export interface VerifyResult {
   ok: boolean;
@@ -95,6 +115,31 @@ export interface RollbackResult {
   operationId?: string;
   detail: string;
   verify?: VerifyResult;
+}
+
+export interface RestartSupervisorResult {
+  ok: boolean;
+  noOp?: boolean;
+  reused?: boolean;
+  inProgress?: boolean;
+  beforePid?: number;
+  afterPid?: number;
+  activeAction?: RecoveryMutationAction;
+  activeRequestId?: string;
+  detail: string;
+  verify: VerifyResult;
+}
+
+interface RestartSupervisorReceipt {
+  schemaVersion: 1;
+  action: 'restart_supervisor';
+  requestId: string;
+  status: 'running' | 'succeeded' | 'failed' | 'interrupted';
+  ownerInstanceId: string;
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  result?: RestartSupervisorResult;
 }
 
 export interface WatchdogDecision {
@@ -142,6 +187,10 @@ function writeJson(path: string, value: unknown): void {
 function recoveryRoot(config: RecoveryConfig): string { return join(resolve(config.controllerHome), 'recovery'); }
 function statePath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'known-good.json'); }
 function lockPath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'locks', 'operation.lock'); }
+function recoveryRequestPath(config: RecoveryConfig, action: RecoveryMutationAction, requestId: string): string {
+  const digest = createHash('sha256').update(`${action}\0${requestId}`).digest('hex');
+  return join(recoveryRoot(config), 'operations', `${digest}.json`);
+}
 function auditPath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'audit', 'recovery.jsonl'); }
 function quarantinePath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'quarantine.json'); }
 function publicTunnelRepairStatePath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'public-tunnel-repair.json'); }
@@ -315,32 +364,79 @@ function audit(config: RecoveryConfig, event: string, detail: Record<string, unk
   writeFileSync(auditPath(config), `${line}\n`, { encoding: 'utf8', mode: 0o600, flag: 'a' });
 }
 
-async function withLock<T>(config: RecoveryConfig, action: () => Promise<T>): Promise<T> {
+function processStartTime(pid: number): string | undefined {
+  const result = spawnSync('/bin/ps', ['-o', 'lstart=', '-p', String(pid)], {
+    encoding: 'utf8',
+    timeout: 2_000,
+    maxBuffer: 4_096,
+  });
+  if (result.status !== 0 || typeof result.stdout !== 'string') return undefined;
+  return result.stdout.trim() || undefined;
+}
+
+function recoveryLockOwnerAlive(lock: RecoveryLock): boolean {
+  if (!pidAlive(lock.pid)) return false;
+  if (!lock.processStartTime) return true;
+  const observed = processStartTime(lock.pid);
+  return observed === undefined || observed === lock.processStartTime;
+}
+
+function recoveryBusyDetail(owner: RecoveryLock): string {
+  return `Recovery mutation already in progress: action=${owner.action ?? 'unknown'} request=${owner.requestId ?? 'unknown'} pid=${owner.pid}`;
+}
+
+async function withLock<T>(
+  config: RecoveryConfig,
+  intent: RecoveryLockIntent,
+  action: (lock: RecoveryLock) => Promise<T>,
+): Promise<RecoveryLockAttempt<T>> {
   const path = lockPath(config);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  let fd: number | undefined;
-  try {
-    fd = openSync(path, 'wx', 0o600);
-  } catch (error) {
-    const existing = json<RecoveryLock>(path);
-    const age = existing ? Date.now() - Date.parse(existing.acquiredAt) : Number.NaN;
-    if (Number.isFinite(age) && age > 10 * 60_000) {
-      // The stale lock is retained as evidence before a bounded replacement.
-      writeFileSync(`${path}.stale-${Date.now()}`, readFileSync(path));
-      rmSync(path, { force: true });
-      fd = openSync(path, 'wx', 0o600);
-    } else {
-      throw new Error('RECOVERY_OPERATION_LOCK_BUSY');
+  const lock: RecoveryLock = {
+    schemaVersion: 1,
+    pid: process.pid,
+    instanceId: randomUUID(),
+    processStartTime: processStartTime(process.pid),
+    acquiredAt: new Date().toISOString(),
+    action: intent.action,
+    ...(intent.requestId ? { requestId: intent.requestId } : {}),
+  };
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let fd: number | undefined;
+    let acquired = false;
+    try {
+      try {
+        fd = openSync(path, 'wx', 0o600);
+        writeFileSync(fd, JSON.stringify(lock));
+        acquired = true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        const existing = json<RecoveryLock>(path);
+        if (!existing || !Number.isInteger(existing.pid) || typeof existing.instanceId !== 'string') {
+          throw new Error('RECOVERY_OPERATION_LOCK_UNCERTAIN');
+        }
+        if (recoveryLockOwnerAlive(existing)) return { acquired: false, owner: existing };
+        const latest = json<RecoveryLock>(path);
+        if (!latest || latest.instanceId !== existing.instanceId) {
+          if (attempt === 1) return { acquired: false, owner: latest ?? existing };
+          continue;
+        }
+        if (recoveryLockOwnerAlive(latest)) return { acquired: false, owner: latest };
+        try { writeFileSync(`${path}.stale-${Date.now()}-${existing.instanceId}`, readFileSync(path)); } catch { /* evidence best effort */ }
+        rmSync(path, { force: true });
+        continue;
+      }
+      return { acquired: true, value: await action(lock) };
+    } finally {
+      if (fd !== undefined) closeSync(fd);
+      if (acquired) {
+        const current = json<RecoveryLock>(path);
+        if (current?.instanceId === lock.instanceId) rmSync(path, { force: true });
+      }
     }
   }
-  try {
-    const lock: RecoveryLock = { pid: process.pid, instanceId: randomUUID(), acquiredAt: new Date().toISOString() };
-    writeFileSync(fd!, JSON.stringify(lock));
-    return await action();
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-    rmSync(path, { force: true });
-  }
+  throw new Error('RECOVERY_OPERATION_LOCK_BUSY');
 }
 
 function control(config: RecoveryConfig, command: Record<string, unknown>, timeoutMs = 5_000): Promise<Record<string, unknown>> {
@@ -560,6 +656,7 @@ export async function verifyStableRuntime(config: RecoveryConfig, transport = cr
 }
 /** Explicitly records evidence only after the full independent verification passed. */
 export async function attestKnownGood(config: RecoveryConfig): Promise<ReleaseEvidence> {
+  const locked = await withLock(config, { action: 'attest_known_good' }, async () => {
   const verified = await verifyStableRuntime(config);
   const binding = runtimeBinding(config);
   const writer = binding && verified.supervisor.activeSlot === binding.activeSlot ? binding : undefined;
@@ -596,6 +693,9 @@ export async function attestKnownGood(config: RecoveryConfig): Promise<ReleaseEv
     writerEpoch: binding.writerEpoch,
   });
   return attested;
+  });
+  if (!locked.acquired) throw new Error(recoveryBusyDetail(locked.owner));
+  return locked.value;
 }
 
 function quarantine(config: RecoveryConfig, release: ReleaseEvidence | undefined, reason: string): void {
@@ -645,7 +745,7 @@ async function waitForOperation(config: RecoveryConfig, operationId: string): Pr
 }
 
 export async function rollbackPrevious(config: RecoveryConfig, reason = 'standalone recovery'): Promise<RollbackResult> {
-  return withLock(config, async () => {
+  const locked = await withLock(config, { action: 'rollback_previous' }, async () => {
     const before = await verifyStableRuntime(config);
     const active = before.releases.active;
     const knownActive = matchingKnownGood(config, active);
@@ -692,6 +792,8 @@ export async function rollbackPrevious(config: RecoveryConfig, reason = 'standal
     });
     return { ok: true, operationId: accepted.operationId, detail: 'known-good release restored and independently verified', verify: after };
   });
+  if (!locked.acquired) return { ok: false, noOp: true, detail: recoveryBusyDetail(locked.owner), verify: await verifyStableRuntime(config) };
+  return locked.value;
 }
 
 export async function reconnectMain(config: RecoveryConfig): Promise<{ ok: boolean; detail: string; verify: VerifyResult }> {
@@ -781,7 +883,7 @@ function gatewayRestartLockedOut(verified: VerifyResult, state: SupervisorState 
 }
 
 export async function restartGateway(config: RecoveryConfig, requestId?: string): Promise<{ ok: boolean; noOp?: boolean; operationId?: string; detail: string; verify: VerifyResult }> {
-  return withLock(config, async () => {
+  const locked = await withLock(config, { action: 'restart_gateway', requestId }, async () => {
     const verified = await verifyStableRuntime(config);
     if (!verified.probes.supervisor_socket?.ok) {
       audit(config, 'restart_gateway_refused', { reason: 'supervisor_control_unavailable' });
@@ -811,6 +913,8 @@ export async function restartGateway(config: RecoveryConfig, requestId?: string)
       verify: verified,
     };
   });
+  if (!locked.acquired) return { ok: false, noOp: true, detail: recoveryBusyDetail(locked.owner), verify: await verifyStableRuntime(config) };
+  return locked.value;
 }
 
 interface CommandResult { ok: boolean; status: number | null; stdout: string; stderr: string; }
@@ -993,7 +1097,7 @@ export async function repairPublicTunnel(config: RecoveryConfig, dependencies: P
   if (!tunnelRepairAllowed(config, now())) {
     return { ok: false, attempted: false, noOp: true, detail: 'public tunnel repair is in cooldown', serviceLabel: service.label, serviceTarget: service.target, verify: initial, localVerify };
   }
-  return withLock(config, async () => {
+  const locked = await withLock(config, { action: 'repair_public_tunnel' }, async () => {
     // Recheck after acquiring ownership so a concurrent watchdog never causes a restart storm.
     const before = await verify(config);
     const localBefore = await verifyLocal(config);
@@ -1024,6 +1128,8 @@ export async function repairPublicTunnel(config: RecoveryConfig, dependencies: P
     audit(config, 'public_tunnel_restart_unverified', { serviceLabel: service.label, serviceTarget: service.target });
     return { ok: false, attempted: true, detail: 'public tunnel service restarted but external endpoint did not recover before timeout', serviceLabel: service.label, serviceTarget: service.target, verify: after, localVerify: await verifyLocal(config) };
   });
+  if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner), serviceLabel: service.label, serviceTarget: service.target, verify: initial, localVerify };
+  return locked.value;
 }
 
 function pidAlive(pid: number | undefined): boolean {
@@ -1063,53 +1169,96 @@ async function waitForSupervisorControl(config: RecoveryConfig, previousPid: num
   return { ok: false, detail: lastDetail };
 }
 
-export async function restartSupervisor(config: RecoveryConfig, requestId?: string): Promise<{ ok: boolean; noOp?: boolean; beforePid?: number; afterPid?: number; detail: string; verify: VerifyResult }> {
-  return withLock(config, async () => {
-    const verified = await verifyStableRuntime(config);
+function localRuntimeHealthyForSupervisorRestart(verified: VerifyResult, state: SupervisorState | undefined): boolean {
+  return Boolean(
+    state?.observedState === 'healthy'
+    && verified.supervisor.ok
+    && verified.releases.coherent
+    && state?.supervisor?.releaseRevision === verified.releases.active?.revision
+    && releaseEvidence(state?.supervisor?.releasePath)?.path === verified.releases.active?.path
+    && verified.probes.supervisor_socket?.ok
+    && verified.probes.active_gateway?.ok,
+  );
+}
+
+function normalizedRecoveryRequestId(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (!/^[A-Za-z0-9._:-]{8,120}$/.test(value)) throw new Error('RECOVERY_REQUEST_ID_INVALID');
+  return value;
+}
+
+function restartReceipt(config: RecoveryConfig, requestId: string): RestartSupervisorReceipt | undefined {
+  const receipt = json<RestartSupervisorReceipt>(recoveryRequestPath(config, 'restart_supervisor', requestId));
+  return receipt?.schemaVersion === 1 && receipt.action === 'restart_supervisor' && receipt.requestId === requestId ? receipt : undefined;
+}
+
+function writeRestartReceipt(config: RecoveryConfig, receipt: RestartSupervisorReceipt): void {
+  writeJson(recoveryRequestPath(config, 'restart_supervisor', receipt.requestId), receipt);
+}
+
+async function waitForSupervisorLocalHealth(config: RecoveryConfig, expectedRevision: string): Promise<{ ok: boolean; verify: VerifyResult }> {
+  const deadline = Date.now() + 120_000;
+  let verified = await verifyStableRuntime({ ...config, publicMcpUrl: undefined });
+  while (Date.now() < deadline) {
     const state = await bestEffortSupervisorState(config);
-    const beforePid = supervisorPid(state);
-    const activeRelease = verified.releases.active ?? currentSupervisorRelease(config);
-    if (!activeRelease) {
-      audit(config, 'restart_supervisor_refused', { reason: 'active_release_evidence_unavailable', requestId });
-      return { ok: false, detail: 'Supervisor restart refused: active immutable release evidence is unavailable.', verify: verified };
+    if (verified.releases.active?.revision === expectedRevision && localRuntimeHealthyForSupervisorRestart(verified, state)) return { ok: true, verify: verified };
+    await sleep(2_000);
+    verified = await verifyStableRuntime({ ...config, publicMcpUrl: undefined });
+  }
+  return { ok: false, verify: verified };
+}
+
+async function performSupervisorRestart(config: RecoveryConfig, requestId?: string): Promise<RestartSupervisorResult> {
+  const verified = await verifyStableRuntime(config);
+  const state = await bestEffortSupervisorState(config);
+  const beforePid = supervisorPid(state);
+  if (localRuntimeHealthyForSupervisorRestart(verified, state)) {
+    audit(config, 'restart_supervisor_noop', { reason: 'local_runtime_healthy', requestId, beforePid });
+    return { ok: true, noOp: true, beforePid, detail: 'Local Supervisor, ingress, Gateway, and release identity are already healthy; no restart performed.', verify: verified };
+  }
+  if (state?.currentOperationId) return { ok: false, noOp: true, beforePid, detail: `Supervisor operation ${state.currentOperationId} is already in progress.`, verify: verified };
+  const activeRelease = verified.releases.active ?? currentSupervisorRelease(config);
+  if (!activeRelease) return { ok: false, detail: 'Supervisor restart refused: active immutable release evidence is unavailable.', verify: verified };
+  if (verified.probes.supervisor_socket?.ok !== true && pidAlive(beforePid)) return { ok: false, detail: `Supervisor restart refused: PID ${beforePid} is alive but control socket is unavailable.`, verify: verified };
+  const service = await launchdService(config);
+  if (!service) return { ok: false, detail: 'Supervisor restart refused: registered launchd service metadata is unavailable.', verify: verified };
+  if (verified.probes.supervisor_socket?.ok === true) {
+    try { await control(config, { command: 'handoff' }, 10_000); } catch { /* launchd remains the bounded owner */ }
+    await sleep(500);
+  }
+  const started = await ensureLaunchdServiceStarted(service);
+  if (!started.ok) return { ok: false, beforePid, detail: started.detail, verify: verified };
+  const after = await waitForSupervisorControl(config, beforePid, activeRelease.revision);
+  if (!after.ok || !after.pid) return { ok: false, beforePid, detail: after.detail, verify: verified };
+  const stabilized = await waitForSupervisorLocalHealth(config, activeRelease.revision);
+  if (!stabilized.ok) return { ok: false, beforePid, afterPid: after.pid, detail: 'Supervisor restarted but the local managed runtime did not stabilize before timeout.', verify: stabilized.verify };
+  audit(config, 'restart_supervisor_succeeded', { beforePid, afterPid: after.pid, requestId, target: service.target, releaseRevision: activeRelease.revision });
+  return { ok: true, beforePid, afterPid: after.pid, detail: `Stable Supervisor restarted via launchd (${service.target}) at release ${activeRelease.revision} and the local managed runtime stabilized.`, verify: stabilized.verify };
+}
+
+export async function restartSupervisor(config: RecoveryConfig, requestId?: string): Promise<RestartSupervisorResult> {
+  const normalized = normalizedRecoveryRequestId(requestId);
+  const prior = normalized ? restartReceipt(config, normalized) : undefined;
+  if (prior?.result && prior.status !== 'running') return { ...prior.result, reused: true };
+  const locked = await withLock(config, { action: 'restart_supervisor', requestId: normalized }, async (owner) => {
+    const current = normalized ? restartReceipt(config, normalized) : undefined;
+    if (current?.result && current.status !== 'running') return { ...current.result, reused: true };
+    if (normalized && current?.status === 'running') {
+      const verify = await verifyStableRuntime(config);
+      const interrupted: RestartSupervisorResult = { ok: false, noOp: true, detail: 'The prior restart request lost its owner before recording a terminal result; automatic replay is blocked.', verify };
+      writeRestartReceipt(config, { ...current, status: 'interrupted', result: interrupted, completedAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      return interrupted;
     }
-    if (verified.probes.supervisor_socket?.ok !== true && pidAlive(beforePid)) {
-      audit(config, 'restart_supervisor_refused', { reason: 'live_pid_without_control_socket', beforePid, requestId });
-      return { ok: false, detail: `Supervisor restart refused: PID ${beforePid} is alive but control socket is unavailable.`, verify: verified };
-    }
-    const service = await launchdService(config);
-    if (!service) {
-      audit(config, 'restart_supervisor_refused', { reason: 'launchd_service_unavailable', requestId });
-      return { ok: false, detail: 'Supervisor restart refused: registered launchd service metadata is unavailable.', verify: verified };
-    }
-    if (verified.probes.supervisor_socket?.ok === true) {
-      try {
-        await control(config, { command: 'handoff' }, 10_000);
-        audit(config, 'restart_supervisor_handoff_requested', { beforePid, requestId });
-      } catch (error) {
-        audit(config, 'restart_supervisor_handoff_failed', { beforePid, requestId, error: error instanceof Error ? error.message : String(error) });
-      }
-      await sleep(500);
-    }
-    const started = await ensureLaunchdServiceStarted(service);
-    if (!started.ok) {
-      audit(config, 'restart_supervisor_launchd_failed', { beforePid, requestId, detail: started.detail });
-      return { ok: false, beforePid, detail: started.detail, verify: verified };
-    }
-    const after = await waitForSupervisorControl(config, beforePid, activeRelease.revision);
-    if (!after.ok || !after.pid) {
-      audit(config, 'restart_supervisor_failed', { beforePid, requestId, detail: after.detail, target: service.target });
-      return { ok: false, beforePid, detail: after.detail, verify: verified };
-    }
-    audit(config, 'restart_supervisor_succeeded', { beforePid, afterPid: after.pid, requestId, target: service.target, releaseRevision: activeRelease.revision });
-    return {
-      ok: true,
-      beforePid,
-      afterPid: after.pid,
-      detail: `Stable Supervisor restarted via launchd (${service.target}) at release ${activeRelease.revision}.`,
-      verify: verified,
-    };
+    const startedAt = new Date().toISOString();
+    if (normalized) writeRestartReceipt(config, { schemaVersion: 1, action: 'restart_supervisor', requestId: normalized, status: 'running', ownerInstanceId: owner.instanceId, startedAt, updatedAt: startedAt });
+    const result = await performSupervisorRestart(config, normalized);
+    if (normalized) writeRestartReceipt(config, { schemaVersion: 1, action: 'restart_supervisor', requestId: normalized, status: result.ok ? 'succeeded' : 'failed', ownerInstanceId: owner.instanceId, startedAt, updatedAt: new Date().toISOString(), completedAt: new Date().toISOString(), result });
+    return result;
   });
+  if (locked.acquired) return locked.value;
+  const completed = normalized ? restartReceipt(config, normalized) : undefined;
+  if (completed?.result && completed.status !== 'running') return { ...completed.result, reused: true };
+  return { ok: false, noOp: true, inProgress: true, activeAction: locked.owner.action, activeRequestId: locked.owner.requestId, detail: recoveryBusyDetail(locked.owner), verify: await verifyStableRuntime(config) };
 }
 
 export function gatewayToken(config: RecoveryConfig): string | undefined {

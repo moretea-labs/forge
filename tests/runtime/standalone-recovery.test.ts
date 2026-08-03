@@ -625,6 +625,29 @@ describe('standalone disaster recovery core', () => {
     rmSync(home, { recursive: true, force: true });
   });
 
+  test('deduplicates cross-session Supervisor recovery and preserves a live global owner lock', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'standalone-recovery-singleflight-'));
+    const active = release(home, 'active', 'release-active');
+    const port = await http((_request, response) => { response.end(JSON.stringify({ status: 'ok' })); });
+    mkdirSync(join(home, 'runtime-slots', 'blue'), { recursive: true });
+    writeFileSync(join(home, 'runtime-slots', 'blue', 'slot.json'), JSON.stringify({ releasePath: active }));
+    const socket = createSocketServer((client) => client.on('data', () => client.end(`${JSON.stringify({ ok: true, state: { observedState: 'healthy', activeSlot: 'blue', ingress: { state: 'running', activeUpstreamPort: port }, gatewayHost: { releasePath: active, releaseRevision: 'release-active' }, controllerDaemon: { releasePath: active, releaseRevision: 'release-active' }, supervisor: { pid: process.pid, releasePath: active, releaseRevision: 'release-active' } } })}\n`)));
+    socketServers.push(socket); mkdirSync(join(home, 'supervisor'), { recursive: true });
+    await new Promise<void>((resolveListen, reject) => { socket.once('error', reject); socket.listen(join(home, 'supervisor', 'control.sock'), () => resolveListen()); });
+    const config = createRecoveryConfig(home, { stableIngressUrl: `http://127.0.0.1:${port}` });
+    const first = await restartSupervisor(config, 'same-restart-request');
+    const repeated = await restartSupervisor(config, 'same-restart-request');
+    const afterHealthy = await restartSupervisor(config, 'different-restart-request');
+    expect(first.noOp).toBe(true); expect(repeated.reused).toBe(true); expect(afterHealthy.noOp).toBe(true);
+    const lock = join(home, 'recovery', 'locks', 'operation.lock');
+    mkdirSync(join(home, 'recovery', 'locks'), { recursive: true });
+    writeFileSync(lock, JSON.stringify({ pid: process.pid, instanceId: 'other-session', acquiredAt: new Date(0).toISOString(), action: 'restart_supervisor', requestId: 'other-session-request' }));
+    const busy = await restartSupervisor(config, 'busy-restart-request');
+    expect(busy.inProgress).toBe(true); expect(busy.activeRequestId).toBe('other-session-request');
+    expect((JSON.parse(readFileSync(lock, 'utf8')) as { instanceId: string }).instanceId).toBe('other-session');
+    rmSync(home, { recursive: true, force: true });
+  });
+
   test('uses protected curl transport for the complete external HTTPS MCP lifecycle', async () => {
     const home = mkdtempSync(join(tmpdir(), 'standalone-recovery-curl-lifecycle-'));
     const active = release(home, 'active', 'release-active');
