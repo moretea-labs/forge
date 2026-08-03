@@ -14,6 +14,7 @@ import { join } from "path";
 import { writeJsonAtomic } from "../../src/runtime/shared/json-files";
 import { appendControllerWorklogEvent } from "../../src/cli/controller/worklog";
 import { readControllerDaemonStatus } from "../../src/runtime/control-plane/daemon-client";
+import { writeWorkHandle } from "../../src/runtime/control-plane/execution/work-handle-store";
 import { terminateProcessTree } from "../../src/runtime/shared/process-tree";
 import { callRuntimeTool, controllerReadiness } from "../../src/runtime/gateway/mcp/runtime-tools";
 import { getMcpPolicy } from "../../src/cli/mcp/policy";
@@ -790,6 +791,43 @@ describe("MCP controller profile", () => {
         const resumedValue = JSON.parse(resumed!.content[0].text);
         expect(resumedValue.work.workId).toBe(firstValue.work.workId);
         expect(resumedValue.work.requestId).toBe("work-resume-idempotent");
+
+        const now = new Date().toISOString();
+        writeWorkHandle(controllerHome, {
+          schemaVersion: 1,
+          workId: "work-handle-authority",
+          sessionId: "session-work-handle-authority",
+          principalId: "principal-work-handle-authority",
+          repositoryId: repository.repoId,
+          checkoutId: repository.activeCheckoutId,
+          worktreePath: repository.canonicalRoot,
+          branch: "main",
+          managedWorktree: false,
+          permissionSnapshotVersion: 1,
+          state: "editing",
+          createdAt: now,
+          updatedAt: now,
+          finalization: {
+            validation: "pending",
+            commit: "pending",
+            merge: "pending",
+            branchCleanup: "pending",
+            worktreeCleanup: "pending"}});
+        const handleGet = await callRuntimeTool(advanced, "work_get", {
+          repo_id: repository.repoId,
+          work_id: "work-handle-authority"});
+        const handleGetValue = JSON.parse(handleGet!.content[0].text);
+        expect(handleGetValue.work.kind).toBe("work_handle");
+        expect(handleGetValue.work.state).toBe("editing");
+        expect(handleGetValue.workHandle.checkoutId).toBe(repository.activeCheckoutId);
+
+        const handleWait = await callRuntimeTool(advanced, "work_wait", {
+          repo_id: repository.repoId,
+          work_id: "work-handle-authority",
+          wait_ms: 1});
+        const handleWaitValue = JSON.parse(handleWait!.content[0].text);
+        expect(handleWaitValue.work.kind).toBe("work_handle");
+        expect(handleWaitValue.timedOut).toBe(true);
         daemonPid = readControllerDaemonStatus(controllerHome).pid;
       } finally {
         if (daemonPid && daemonPid !== process.pid) {

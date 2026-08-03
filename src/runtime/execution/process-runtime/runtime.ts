@@ -33,7 +33,13 @@ import { capProcessOutput } from '../../../effects/process-runner';
 import { redactSensitiveText, sanitizeSensitiveTextFileInPlace } from '../../evidence/sensitive-output';
 import { isProcessAlive, terminateProcessTree } from '../../shared/process-tree';
 import { repositoryChildProcessEnvironment } from '../../shared/process-environment';
-import { acquireExecutionLeases, listActiveLeases, releaseExecutionLeases, renewExecutionLeases } from '../../resources/leases/store';
+import {
+  acquireExecutionLeases,
+  listActiveLeases,
+  releaseExecutionLeases,
+  releaseTerminalProcessLeases,
+  renewExecutionLeases,
+} from '../../resources/leases/store';
 import { assertThisRuntimeMayWrite, assertThisRuntimeMayWriteOrThrow, getRuntimeWriterClaim } from '../../../cli/controller/stable-state/runtime-writer-context';
 import { readWriterAuthority } from '../../../cli/controller/stable-state/writer-authority';
 import { resolveStableControllerHome } from '../../../cli/controller/stable-state/stable-home';
@@ -378,8 +384,9 @@ function expectedLeaseRefsForProcess(record: ManagedProcessRecord, repoId: strin
 }
 
 /**
- * Release process leases exactly once. Safe under recovery/cancel/terminal races.
- * Passive / fenced runtimes must not release (lease store fences).
+ * Release terminal Process leases exactly once. Safe under recovery/cancel races.
+ * Authorization is the durable terminal record plus exact owner/scope/token refs,
+ * not the writer generation that happened to spawn the Process.
  */
 export function releaseProcessLeasesOnce(
   controllerHome: string,
@@ -388,36 +395,43 @@ export function releaseProcessLeasesOnce(
 ): ManagedProcessRecord | undefined {
   const record = getProcessRecord(controllerHome, repoId, processId);
   if (!record) return undefined;
-  if (record.leasesReleased === true) return record;
+  if (record.leasesReleased === true || record.leaseReleaseState === 'released') return record;
+  if (!record.terminalWritten && !TERMINAL_PROCESS_STATUSES.has(record.status)) return record;
   const refs = record.leaseRefs ?? [];
   if (refs.length === 0) {
-    return updateProcessRecord(controllerHome, repoId, processId, { leasesReleased: true }, { allowTerminal: true });
+    return updateProcessRecord(
+      controllerHome,
+      repoId,
+      processId,
+      { leasesReleased: true, leaseReleaseState: 'released' },
+      { allowTerminal: true },
+    );
   }
   const expectedRefs = expectedLeaseRefsForProcess(record, repoId);
   if (expectedRefs.length !== refs.length) return record;
   try {
-    releaseExecutionLeases(
+    releaseTerminalProcessLeases(
       controllerHome,
       repoId,
-      processOwnerJobId(processId),
+      processId,
       expectedRefs,
       { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
     );
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    // Fenced passive runtime: leave leases for the active writer / recovery.
-    if (message.startsWith('WRITER_FENCED:')) return record;
-    // Unexpected: leave the record retryable. Failed cleanup must never become
-    // a durable "released" claim.
-    return record;
+  } catch {
+    // Exact-set or token mismatch remains pending and retryable. Failed cleanup
+    // must never become a durable released claim.
+    return getProcessRecord(controllerHome, repoId, processId) ?? record;
   }
-  const remaining = listActiveLeases(controllerHome, repoId).some((lease) => (
-    lease.ownerJobId === processOwnerJobId(processId)
-    && expectedRefs.some((ref) => ref.leaseId === lease.leaseId)
-  ));
+  const remaining = listActiveLeases(controllerHome, repoId)
+    .some((lease) => lease.ownerJobId === processOwnerJobId(processId));
   if (remaining) return getProcessRecord(controllerHome, repoId, processId) ?? record;
-  return updateProcessRecord(controllerHome, repoId, processId, { leasesReleased: true }, { allowTerminal: true })
-    ?? getProcessRecord(controllerHome, repoId, processId);
+  return updateProcessRecord(
+    controllerHome,
+    repoId,
+    processId,
+    { leasesReleased: true, leaseReleaseState: 'released' },
+    { allowTerminal: true },
+  ) ?? getProcessRecord(controllerHome, repoId, processId);
 }
 
 /**
@@ -425,8 +439,8 @@ export function releaseProcessLeasesOnce(
  * waitForProcess, recoverManagedProcesses, and cancelProcess.
  * Durable terminal record writes require active writer fencing.
  * Receipt itself is independent evidence and is never blocked by fencing.
- * Leases are released exactly once after a successful terminal write (or when
- * already terminal and leases remain held).
+ * Terminal persistence records a retryable pending-release phase. Exact lease
+ * cleanup then converges independently of the spawning runtime generation.
  */
 export function completeProcessFromEvidence(
   controllerHome: string,
