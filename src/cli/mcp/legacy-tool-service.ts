@@ -67,6 +67,7 @@ import {
   listControllerChecks,
 } from "../controller/check-runner";
 import { normalizeCheckIds } from '../../runtime/control-plane/facade/check-normalization';
+import { buildExecutionDiagnostics, buildRequirementBoard } from '../../runtime/control-plane/facade/requirement-board';
 import { acceptVerifiedTaskFromControllerWork } from '../../runtime/control-plane/execution/work-task-receipt';
 import { listCapabilityDescriptors, summarizeCapabilityGroups } from '../../runtime/control-plane/facade/capability-registry';
 import {
@@ -1845,11 +1846,12 @@ export function buildMcpToolDefinitions(
       },
       {
         name: "get_project_board",
-        description: "Return bounded task counts and ready work by default, with the previous full Issue/Task board available on demand.",
+        description: "Return the bounded Requirement Board by default. Explicit detail/full mode returns bounded Execution Diagnostics without exposing the full legacy Task/Run/Process ledger.",
         inputSchema: {
           type: "object",
           properties: {
             detail_level: { type: "string", enum: ["summary", "detail", "full"] },
+            requirement_id: { type: "string" },
           },
           additionalProperties: false,
         },
@@ -3714,18 +3716,29 @@ export async function callMcpTool(
             "get_project_board requires the controller profile",
           );
         const startedAt = performance.now();
-        const board = projectBoard(ctx.repoRoot);
+        const controllerHome = resolveRepoPreferredControllerHome(ctx.repoRoot);
+        const detailLevel = args.detail_level === "full" ? "full" : args.detail_level === "detail" ? "detail" : "summary";
+        const payload = detailLevel === "summary"
+          ? buildRequirementBoard({ controllerHome, repoId: ctx.repoId })
+          : {
+              ...buildExecutionDiagnostics({
+                controllerHome,
+                repoId: ctx.repoId,
+                detailLevel,
+                requirementId: typeof args.requirement_id === "string" ? args.requirement_id : undefined,
+              }),
+              legacyTaskProjection: summarizeProjectBoard(projectBoard(ctx.repoRoot) as unknown as Record<string, unknown>),
+            };
         audit(ctx, name, "ok", args);
-        if (args.detail_level === "detail" || args.detail_level === "full") return textResult(board);
-        const payload = {
-          ...summarizeProjectBoard(board as unknown as Record<string, unknown>),
+        const response = {
+          ...payload,
           responseMeta: {
             serverDurationMs: Number((performance.now() - startedAt).toFixed(2)),
             structuredPayloadBytes: 0,
           },
         };
-        payload.responseMeta.structuredPayloadBytes = Buffer.byteLength(JSON.stringify(payload), "utf8");
-        return textResult(payload);
+        response.responseMeta.structuredPayloadBytes = Buffer.byteLength(JSON.stringify(response), "utf8");
+        return textResult(response);
       }
       case "get_project_progress": {
         if (ctx.policy.profile !== "controller")

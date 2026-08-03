@@ -15,6 +15,7 @@ import { writeJsonAtomic } from "../../src/runtime/shared/json-files";
 import { appendControllerWorklogEvent } from "../../src/cli/controller/worklog";
 import { readControllerDaemonStatus } from "../../src/runtime/control-plane/daemon-client";
 import { writeWorkHandle } from "../../src/runtime/control-plane/execution/work-handle-store";
+import { createRequirement, updateRequirement } from "../../src/runtime/control-plane/persistence/requirement-store";
 import { terminateProcessTree } from "../../src/runtime/shared/process-tree";
 import { callRuntimeTool, controllerReadiness } from "../../src/runtime/gateway/mcp/runtime-tools";
 import { getMcpPolicy } from "../../src/cli/mcp/policy";
@@ -1089,50 +1090,96 @@ describe("MCP controller profile", () => {
       expect(
         unchanged.value.tasks.map((task: { status: string }) => task.status),
       ).toEqual(["verified", "planned"]);
-      const board = await jsonTool(ctx, "get_project_board");
-      expect(board.value.readyTasks).toEqual([]);
+      const board = await jsonTool(ctx, "get_project_board", { detail_level: "detail" });
+      expect(board.value.legacyTaskProjection.readyTasks).toEqual([]);
     });
   });
 
-  test("get_project_board is bounded by default and preserves full detail opt-in", async () => {
+  test("get_project_board defaults to a bounded Requirement Board with explicit execution diagnostics", async () => {
     await withController(async (_repoRoot, ctx) => {
-      const longObjective = "Inspect the complete runtime state without returning unbounded controller history. ".repeat(18);
-      for (let issueIndex = 0; issueIndex < 9; issueIndex += 1) {
-        const created = await jsonTool(ctx, "create_issue", {
-          title: `Board payload fixture ${issueIndex}`,
-          kind: "feature",
-          tasks: Array.from({ length: 4 }, (_unused, taskIndex) => ({
-            title: `Task ${issueIndex}-${taskIndex} ${"x".repeat(500)}`,
-            objective: `${longObjective}${issueIndex}-${taskIndex}`,
-            allowed_paths: ["src/runtime/**", "tests/runtime/**", "docs/**"],
-            checks: ["typecheck"],
-            depends_on: taskIndex === 0 ? [] : [`T${taskIndex}`],
-          })),
+      const controllerHome = process.env.REPO_HARNESS_CONTROLLER_HOME!;
+      for (let index = 0; index < 10; index += 1) {
+        createRequirement({ controllerHome }, {
+          requirementId: `REQ-FILLER-${index}`,
+          title: `User-visible result ${index}`,
+          outcomeStatement: `Deliver a bounded user outcome ${index} without exposing the internal Task ledger. ${"x".repeat(500)}`,
         });
-        expect(created.raw.isError).not.toBe(true);
       }
+      createRequirement({ controllerHome }, {
+        requirementId: "REQ-DONE-MAINTENANCE",
+        title: "Keep a completed result completed",
+        outcomeStatement: "The user outcome remains done even when internal cleanup needs attention.",
+      });
+      updateRequirement({ controllerHome }, {
+        requirementId: "REQ-DONE-MAINTENANCE",
+        action: "test_activate",
+        mutate: (current) => ({ ...current, state: "active" }),
+      });
+      updateRequirement({ controllerHome }, {
+        requirementId: "REQ-DONE-MAINTENANCE",
+        action: "test_complete_with_maintenance",
+        mutate: (current) => ({ ...current, state: "done", needsAttention: true, attentionSummary: "Remove one historical projection later." }),
+      });
+      createRequirement({ controllerHome }, {
+        requirementId: "REQ-USER-DECISION",
+        title: "Ask only for a real decision",
+        outcomeStatement: "Pause only when the user must choose a concrete option.",
+      });
+      updateRequirement({ controllerHome }, {
+        requirementId: "REQ-USER-DECISION",
+        action: "test_wait_for_decision",
+        mutate: (current) => ({ ...current, state: "waiting_for_user", needsAttention: true, attentionSummary: "Choose whether to keep compatibility mode." }),
+      });
+      createRequirement({ controllerHome }, {
+        requirementId: "REQ-INVALID-WAIT",
+        title: "Do not invent a user decision",
+        outcomeStatement: "An internal wait without a decision must not appear as waiting_for_user.",
+      });
+      updateRequirement({ controllerHome }, {
+        requirementId: "REQ-INVALID-WAIT",
+        action: "test_invalid_wait",
+        mutate: (current) => ({ ...current, state: "waiting_for_user" }),
+      });
+      const legacyIssue = await jsonTool(ctx, "create_issue", {
+        title: "Legacy execution diagnostics fixture",
+        kind: "feature",
+        tasks: [{ title: "Internal implementation task", objective: "Remain available only through explicit diagnostics." }],
+      });
+      expect(legacyIssue.raw.isError).not.toBe(true);
 
       const summary = await jsonTool(ctx, "get_project_board");
       expect(summary.raw.isError).not.toBe(true);
-      expect(summary.value.detailLevel).toBe("summary");
+      expect(summary.value).toMatchObject({ detailLevel: "summary", view: "requirement_board", requirementCount: 13 });
       expect(summary.value.issues).toBeUndefined();
-      expect(summary.value.issueCount).toBeGreaterThanOrEqual(9);
-      expect(summary.value.recentIssues.length).toBeLessThanOrEqual(5);
-      expect(summary.value.readyTasks.length).toBeLessThanOrEqual(8);
-      expect(summary.value.queueableTasks.length).toBeLessThanOrEqual(8);
-      expect(summary.value.detailPointer).toEqual({
-        tool: "get_project_board",
-        arguments: { detail_level: "detail" },
-      });
-      expect(JSON.stringify(summary.value)).not.toContain(longObjective.slice(0, 120));
+      expect(summary.value.readyTasks).toBeUndefined();
+      expect(summary.value.runs).toBeUndefined();
+      expect(summary.value.processes).toBeUndefined();
+      expect(summary.value.requirements.length).toBeLessThanOrEqual(12);
+      const done = summary.value.requirements.find((requirement: { requirementId: string }) => requirement.requirementId === "REQ-DONE-MAINTENANCE");
+      expect(done).toMatchObject({ state: "done", needsAttention: true, blocker: "Remove one historical projection later." });
+      const decision = summary.value.requirements.find((requirement: { requirementId: string }) => requirement.requirementId === "REQ-USER-DECISION");
+      expect(decision).toMatchObject({ state: "waiting_for_user", requiredUserDecision: "Choose whether to keep compatibility mode." });
+      const invalidWait = summary.value.requirements.find((requirement: { requirementId: string }) => requirement.requirementId === "REQ-INVALID-WAIT");
+      expect(invalidWait.state).not.toBe("waiting_for_user");
+      expect(summary.value.detailPointer).toEqual({ tool: "get_project_board", arguments: { detail_level: "detail" } });
       expect(Buffer.byteLength(JSON.stringify(summary.value), "utf8")).toBeLessThanOrEqual(16 * 1024);
       expect(summary.value.responseMeta.structuredPayloadBytes).toBeLessThanOrEqual(16 * 1024);
 
       const detail = await jsonTool(ctx, "get_project_board", { detail_level: "detail" });
       expect(detail.raw.isError).not.toBe(true);
-      expect(detail.value.issues.length).toBeGreaterThanOrEqual(9);
-      expect(detail.value.issues[0].tasks[0].objective).toBeString();
-      expect(detail.value.issues[0].tasks[0].allowedPaths).toBeArray();
+      expect(detail.value).toMatchObject({ detailLevel: "detail", view: "execution_diagnostics" });
+      expect(detail.value.legacyTaskProjection.issueCount).toBeGreaterThanOrEqual(1);
+      expect(detail.value.legacyTaskProjection.currentIssue.tasks[0].objective).toBeUndefined();
+      expect(detail.value.maintenanceFindings).toEqual(expect.arrayContaining([
+        expect.objectContaining({ requirementId: "REQ-DONE-MAINTENANCE", requirementState: "done", lifecycleUnaffected: true }),
+      ]));
+      expect(detail.value.projectionWarnings).toEqual(expect.arrayContaining([
+        expect.objectContaining({ requirementId: "REQ-INVALID-WAIT", code: "USER_DECISION_REQUIRED_TEXT_MISSING" }),
+      ]));
+      expect(detail.value.technicalDetailPointers).toEqual(expect.arrayContaining([
+        expect.objectContaining({ tool: "work_list" }),
+        expect.objectContaining({ tool: "workflow_watchdog_report" }),
+      ]));
     });
   });
 
@@ -1221,8 +1268,8 @@ describe("MCP controller profile", () => {
       const receipt = stored.value.tasks.find((task: { id: string }) => task.id === "T1")?.verification?.completionReceipt;
       expect(receipt).toMatchObject({ targetBranch: "main", targetRevision: revision });
 
-      const board = await jsonTool(ctx, "get_project_board");
-      expect(board.value.readyTasks).toEqual(expect.arrayContaining([
+      const board = await jsonTool(ctx, "get_project_board", { detail_level: "detail" });
+      expect(board.value.legacyTaskProjection.readyTasks).toEqual(expect.arrayContaining([
         expect.objectContaining({ issueId: created.value.id, taskId: "T2" }),
       ]));
     });
