@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import { bindTaskToWork, createIssue, getIssue, planIssue, updateTask } from '../../src/cli/controller/issue-store';
-import { createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { bindTaskToWork, createIssue, getIssue, getIssueReadView, planIssue, updateTask } from '../../src/cli/controller/issue-store';
+import { createWorkContract, getWorkContract, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { projectControllerTaskFromWork } from '../../src/runtime/control-plane/facade/work-task-projection';
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import {
@@ -50,7 +50,7 @@ function fixture(options: { changed?: boolean; equivalentHistoricalWork?: boolea
     expectedHead = git(repoRoot, ['rev-parse', 'HEAD']);
     git(repoRoot, ['checkout', 'main']);
   }
-  const controllerHome = join(repoRoot, '.controller-home');
+  const controllerHome = join(repoRoot, '_ops', 'controller-home');
   const repoId = 'repo-work-receipt';
   const workId = 'work_completed_fixture';
   const issue = createIssue(repoRoot, {
@@ -115,10 +115,34 @@ function fixture(options: { changed?: boolean; equivalentHistoricalWork?: boolea
 }
 
 describe('controller Work Task completion receipt', () => {
-  test('uses four bounded technical Work phases', () => {
+  test('uses four bounded technical Work phases with one Work-owned checkpoint map', () => {
     expect(WORK_PHASES).toEqual(['implementation', 'verification', 'delivery', 'cleanup']);
     const fx = fixture();
-    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)?.phase).toBe('cleanup');
+    const options = { controllerHome: fx.controllerHome, repoId: fx.repoId };
+    const initial = getWorkContract(options, fx.workId)!;
+    expect(initial.phase).toBe('cleanup');
+    expect(initial.phaseEvidence).toMatchObject({
+      implementation: { state: 'satisfied' },
+      verification: { state: 'satisfied' },
+      delivery: { state: 'satisfied' },
+      cleanup: { state: 'active' },
+    });
+    expect(() => updateWorkContract(options, fx.workId, { phase: 'verification' })).toThrow(/WORK_PHASE_REQUIRES_TRANSITION_API/);
+    const rewound = transitionWorkContractPhase(options, fx.workId, {
+      phase: 'verification',
+      status: 'running',
+      state: 'active',
+      summary: 'Re-run exact verification after delivery drift.',
+    });
+    expect(rewound.phaseEvidence).toMatchObject({
+      implementation: { state: 'satisfied' },
+      verification: { state: 'active' },
+      delivery: { state: 'pending' },
+      cleanup: { state: 'pending' },
+    });
+    const blocked = updateWorkContract(options, fx.workId, { status: 'blocked' });
+    expect(blocked.phase).toBe('verification');
+    expect(blocked.phaseEvidence.verification.state).toBe('active');
   });
 
   test('does not allow generic writes to manufacture terminal Work or inject a receipt', () => {
@@ -183,13 +207,16 @@ describe('controller Work Task completion receipt', () => {
 
   test('treats a Work-bound Task status and contract fields as a derived compatibility projection', () => {
     const fx = fixture();
-    bindTaskToWork(fx.repoRoot, fx.issueId, 'T1', fx.workId);
+    bindTaskToWork(fx.repoRoot, fx.issueId, 'T1', fx.workId, fx.repoId);
     expect(() => updateTask(fx.repoRoot, fx.issueId, 'T1', { status: 'cancelled' })).toThrow(/TASK_STATUS_WORK_OWNED/);
+    expect(() => updateTask(fx.repoRoot, fx.issueId, 'T1', {
+      verification: getIssue(fx.repoRoot, fx.issueId).tasks[0]!.verification,
+    })).toThrow(/TASK_VERIFICATION_WORK_OWNED/);
     expect(() => planIssue(fx.repoRoot, fx.issueId, [{ title: 'Replan', objective: 'Replace the bound execution contract.' }])).toThrow(/TASK_PLAN_WORK_OWNED/);
 
     const task = getIssue(fx.repoRoot, fx.issueId).tasks[0]!;
     const work = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
-    const projected = projectControllerTaskFromWork(task, work);
+    const projected = getIssueReadView(fx.repoRoot, fx.issueId, 'full').tasks[0]!;
     expect(projected).toMatchObject({
       workId: fx.workId,
       objective: work.objective,
@@ -210,13 +237,20 @@ describe('controller Work Task completion receipt', () => {
       workId: fx.workId,
     });
     expect(accepted.issue.tasks[0]!.status).toBe('done');
-    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)?.completionReceipt?.workId).toBe(fx.workId);
+    const completedWork = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
+    expect(completedWork.completionReceipt?.workId).toBe(fx.workId);
+    expect(completedWork.phaseEvidence).toMatchObject({
+      implementation: { state: 'satisfied' },
+      verification: { state: 'satisfied' },
+      delivery: { state: 'satisfied', receiptId: completedWork.completionReceipt?.receiptId },
+      cleanup: { state: 'satisfied', receiptId: completedWork.completionReceipt?.receiptId },
+    });
   });
 
   test('does not downgrade a reviewed done Task from historical failed Work evidence', () => {
     const fx = fixture({ equivalentHistoricalWork: true });
     updateTask(fx.repoRoot, fx.issueId, 'T1', { status: 'done' });
-    bindTaskToWork(fx.repoRoot, fx.issueId, 'T1', fx.workId);
+    bindTaskToWork(fx.repoRoot, fx.issueId, 'T1', fx.workId, fx.repoId);
     const task = getIssue(fx.repoRoot, fx.issueId).tasks[0]!;
     const work = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
     expect(work.status).toBe('failed');
@@ -225,7 +259,11 @@ describe('controller Work Task completion receipt', () => {
 
   test('fails closed when a Task is bound to another Work identity', () => {
     const fx = fixture();
-    bindTaskToWork(fx.repoRoot, fx.issueId, 'T1', 'work_other');
+    bindTaskToWork(fx.repoRoot, fx.issueId, 'T1', 'work_other', fx.repoId);
+    expect(getIssueReadView(fx.repoRoot, fx.issueId, 'full').tasks[0]).toMatchObject({
+      workId: 'work_other',
+      status: 'launch_blocked',
+    });
     expect(() => acceptVerifiedTaskFromControllerWork({
       controllerHome: fx.controllerHome,
       repoId: fx.repoId,

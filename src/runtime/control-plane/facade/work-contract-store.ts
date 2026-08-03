@@ -25,6 +25,10 @@ import {
   type WorkContractStatus,
   type WorkRisk,
   type WorkKind,
+  type WorkPhase,
+  type WorkPhaseEvidence,
+  type WorkPhaseEvidenceMap,
+  type WorkPhaseEvidenceState,
   type WorkContractStore,
   isTerminalWorkContractStatus,
 } from './types';
@@ -41,7 +45,7 @@ export interface WorkContractStoreOptions extends WorkContractStoreLocation {
 
 export type CreateWorkContractInput = Omit<
   WorkContract,
-  'schemaVersion' | 'status' | 'createdAt' | 'updatedAt' | 'risk' | 'workKind' | 'dispatchState' | 'evidenceState' | 'completionOutcome' | 'phase' | 'completionReceipt' | 'evidenceRefs' | 'handoffRefs' | 'suggestedNextActions' | 'policyDecisions' | 'checkRefs' | 'reconciliations' | 'driver' | 'worktreePolicy' | 'evidencePolicy' | 'approvalPolicy' | 'recoveryPolicy'
+  'schemaVersion' | 'status' | 'createdAt' | 'updatedAt' | 'risk' | 'workKind' | 'dispatchState' | 'evidenceState' | 'completionOutcome' | 'phase' | 'phaseEvidence' | 'completionReceipt' | 'evidenceRefs' | 'handoffRefs' | 'suggestedNextActions' | 'policyDecisions' | 'checkRefs' | 'reconciliations' | 'driver' | 'worktreePolicy' | 'evidencePolicy' | 'approvalPolicy' | 'recoveryPolicy'
 > & {
   risk?: WorkRisk;
   status?: WorkContractStatus;
@@ -165,8 +169,111 @@ function inferredEvidenceState(status: WorkContractStatus): EvidenceState {
   return 'none';
 }
 
+function phaseIndex(phase: WorkPhase): number {
+  return ['implementation', 'verification', 'delivery', 'cleanup'].indexOf(phase);
+}
+
+function legacyPhaseEvidence(
+  contract: Pick<WorkContract, 'phase' | 'status' | 'evidenceRefs' | 'completionReceipt' | 'updatedAt'>,
+  source: WorkPhaseEvidence['source'] = 'legacy_inferred',
+): WorkPhaseEvidenceMap {
+  const currentIndex = phaseIndex(contract.phase);
+  const completedByReceipt = Boolean(contract.completionReceipt);
+  return Object.fromEntries((['implementation', 'verification', 'delivery', 'cleanup'] as WorkPhase[]).map((phase) => {
+    const index = phaseIndex(phase);
+    let state: WorkPhaseEvidenceState = index < currentIndex ? 'satisfied' : index === currentIndex ? 'active' : 'pending';
+    if (completedByReceipt) state = 'satisfied';
+    else if (contract.status === 'failed' && phase === contract.phase) state = 'failed';
+    else if (contract.status === 'cancelled' && phase === contract.phase) state = 'skipped';
+    const receiptId = contract.completionReceipt && (phase === 'delivery' || phase === 'cleanup')
+      ? contract.completionReceipt.receiptId
+      : undefined;
+    return [phase, {
+      state,
+      source: completedByReceipt ? 'recorded' : source,
+      summary: completedByReceipt
+        ? `Phase ${phase} accepted by Work completion receipt ${contract.completionReceipt!.receiptId}.`
+        : index < currentIndex
+          ? `Legacy Work advanced beyond ${phase}.`
+          : `Legacy Work phase ${phase} is ${state}.`,
+      evidenceRefs: contract.evidenceRefs.slice(0, 20),
+      recordedAt: contract.updatedAt,
+      ...(receiptId ? { receiptId } : {}),
+    } satisfies WorkPhaseEvidence];
+  })) as WorkPhaseEvidenceMap;
+}
+
+function transitionPhaseEvidence(
+  current: Pick<WorkContract, 'phaseEvidence' | 'evidenceRefs'>,
+  targetPhase: WorkPhase,
+  input: {
+    status: WorkContractStatus;
+    summary: string;
+    evidenceRefs?: EvidenceRef[];
+    recordedAt: string;
+    source?: WorkPhaseEvidence['source'];
+  },
+): WorkPhaseEvidenceMap {
+  const targetIndex = phaseIndex(targetPhase);
+  const evidenceRefs = (input.evidenceRefs ?? current.evidenceRefs).slice(0, 20);
+  const source = input.source ?? 'recorded';
+  const phaseEvidence = { ...current.phaseEvidence };
+  for (const phase of ['implementation', 'verification', 'delivery', 'cleanup'] as WorkPhase[]) {
+    const index = phaseIndex(phase);
+    if (index < targetIndex) {
+      phaseEvidence[phase] = {
+        state: ['satisfied', 'skipped'].includes(phaseEvidence[phase].state) ? phaseEvidence[phase].state : 'satisfied',
+        source,
+        summary: `Advanced to ${targetPhase}: ${input.summary}`.slice(0, 1_000),
+        evidenceRefs,
+        recordedAt: input.recordedAt,
+      };
+    } else if (index > targetIndex) {
+      phaseEvidence[phase] = {
+        state: 'pending',
+        source,
+        summary: `Waiting for Work phase ${phase}.`,
+        evidenceRefs: [],
+        recordedAt: input.recordedAt,
+      };
+    }
+  }
+  phaseEvidence[targetPhase] = {
+    state: input.status === 'failed'
+      ? 'failed'
+      : input.status === 'cancelled'
+        ? 'skipped'
+        : input.status === 'blocked' || input.status === 'ready'
+          ? 'blocked'
+          : 'active',
+    source,
+    summary: input.summary.trim().slice(0, 1_000) || `Work entered ${targetPhase}.`,
+    evidenceRefs,
+    recordedAt: input.recordedAt,
+  };
+  return phaseEvidence;
+}
+
 function validateWorkSemantics(contract: WorkContract): WorkContract {
   if (!contract.objective.trim()) throw new Error('WORK_OBJECTIVE_REQUIRED');
+  if (contract.status === 'completed' && !contract.completionReceipt) {
+    throw new Error('WORK_COMPLETION_RECEIPT_REQUIRED');
+  }
+  const currentPhaseIndex = phaseIndex(contract.phase);
+  for (const phase of ['implementation', 'verification', 'delivery', 'cleanup'] as WorkPhase[]) {
+    const checkpoint = contract.phaseEvidence?.[phase];
+    if (!checkpoint) throw new Error(`WORK_PHASE_EVIDENCE_REQUIRED: ${phase}`);
+    const index = phaseIndex(phase);
+    if (index < currentPhaseIndex && !['satisfied', 'skipped'].includes(checkpoint.state)) {
+      throw new Error(`WORK_PHASE_EVIDENCE_PREVIOUS_NOT_SATISFIED: ${phase}`);
+    }
+    if (index === currentPhaseIndex && checkpoint.state === 'pending') {
+      throw new Error(`WORK_PHASE_EVIDENCE_REQUIRED: ${phase}`);
+    }
+    if (index > currentPhaseIndex && checkpoint.state !== 'pending') {
+      throw new Error(`WORK_PHASE_EVIDENCE_FUTURE_NOT_PENDING: ${phase}`);
+    }
+  }
   if (contract.completionReceipt) {
     const receipt = contract.completionReceipt;
     if (receipt.workId !== contract.workId) throw new Error('WORK_COMPLETION_RECEIPT_IDENTITY_MISMATCH');
@@ -174,6 +281,16 @@ function validateWorkSemantics(contract: WorkContract): WorkContract {
     if (receipt.delivery.status !== 'integrated' || !receipt.delivery.reachable) throw new Error('WORK_COMPLETION_RECEIPT_DELIVERY_NOT_PROVEN');
     if (!['complete', 'maintenance_warning'].includes(receipt.cleanup.status) || receipt.cleanup.blockers.length > 0) throw new Error('WORK_COMPLETION_RECEIPT_CLEANUP_NOT_PROVEN');
     if (contract.status !== 'completed') throw new Error('WORK_COMPLETION_RECEIPT_REQUIRES_COMPLETED_WORK');
+    for (const phase of ['implementation', 'verification', 'delivery', 'cleanup'] as WorkPhase[]) {
+      if (!['satisfied', 'skipped'].includes(contract.phaseEvidence[phase].state)) {
+        throw new Error(`WORK_COMPLETION_PHASE_NOT_SATISFIED: ${phase}`);
+      }
+    }
+    for (const phase of ['delivery', 'cleanup'] as WorkPhase[]) {
+      if (contract.phaseEvidence[phase].receiptId !== receipt.receiptId) {
+        throw new Error(`WORK_COMPLETION_PHASE_RECEIPT_MISMATCH: ${phase}`);
+      }
+    }
   }
   const outcome = contract.completionOutcome;
   if (!outcome) return contract;
@@ -246,12 +363,28 @@ function normalizeWorkContractStore(store: WorkContractStore): WorkContractStore
   return {
     ...store,
     contracts: store.contracts.map((legacy) => {
-      const status = ({ pending: 'open', waiting_for_review: 'ready', succeeded: 'completed' } as Record<string, WorkContractStatus>)[String(legacy.status)] ?? legacy.status;
+      const mappedStatus = ({ pending: 'open', waiting_for_review: 'ready', succeeded: 'completed' } as Record<string, WorkContractStatus>)[String(legacy.status)] ?? legacy.status;
+      // Historical terminal labels without the Work-owned receipt are not
+      // completion authority. Reopen them at delivery so callers can obtain an
+      // exact receipt instead of projecting an unproven success.
+      const status = mappedStatus === 'completed' && !legacy.completionReceipt ? 'ready' : mappedStatus;
+      const phase = legacy.completionReceipt
+        ? 'cleanup'
+        : mappedStatus === 'completed'
+          ? 'delivery'
+          : legacy.phase ?? inferredPhase(status);
       return validateWorkSemantics({
         ...legacy,
         schemaVersion: legacy.schemaVersion ?? 1,
         status,
-        phase: legacy.phase ?? inferredPhase(status),
+        phase,
+        phaseEvidence: legacy.phaseEvidence ?? legacyPhaseEvidence({
+          phase,
+          status,
+          evidenceRefs: legacy.evidenceRefs ?? [],
+          completionReceipt: legacy.completionReceipt,
+          updatedAt: legacy.updatedAt,
+        }),
         risk: legacy.risk ?? 'medium',
         workKind: legacy.workKind ?? 'repository_change',
         dispatchState: legacy.dispatchState ?? inferredDispatchState(status),
@@ -382,6 +515,13 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
       evidenceState: input.evidenceState ?? inferredEvidenceState(input.status ?? 'open'),
       completionOutcome: input.completionOutcome,
       phase: input.phase ?? inferredPhase(input.status ?? 'open'),
+      phaseEvidence: legacyPhaseEvidence({
+        phase: input.phase ?? inferredPhase(input.status ?? 'open'),
+        status: input.status ?? 'open',
+        evidenceRefs: input.evidenceRefs ?? [],
+        completionReceipt: input.completionReceipt,
+        updatedAt: input.updatedAt ?? at,
+      }, 'recorded'),
       completionReceipt: input.completionReceipt,
       status: input.status ?? 'open',
       createdAt: at,
@@ -754,6 +894,7 @@ function updateWorkContractInternal(
   workId: string,
   patch: Partial<Omit<WorkContract, 'schemaVersion' | 'workId' | 'repoId' | 'createdAt'>>,
   allowCompletionWrite: boolean,
+  allowPhaseWrite = false,
 ): WorkContract {
   return withWorkContractStoreWrite(options, () => {
     const sanitizedId = sanitizeFileComponent(workId);
@@ -764,6 +905,19 @@ function updateWorkContractInternal(
     const current = store.contracts[index];
     const writesCompletionReceipt = Object.prototype.hasOwnProperty.call(patch, 'completionReceipt');
     const changesCompletionOutcome = patch.completionOutcome !== undefined && patch.completionOutcome !== current.completionOutcome;
+    const writesPhase = Object.prototype.hasOwnProperty.call(patch, 'phase') || Object.prototype.hasOwnProperty.call(patch, 'phaseEvidence');
+    if (!allowPhaseWrite && writesPhase) throw new Error('WORK_PHASE_REQUIRES_TRANSITION_API');
+    const projectedPhase = patch.phase ?? phaseForStatusUpdate(current.phase, patch.status);
+    const projectedPhaseEvidence = patch.phaseEvidence ?? (
+      patch.status !== undefined && projectedPhase !== current.phase
+        ? transitionPhaseEvidence(current, projectedPhase, {
+            status: patch.status,
+            summary: `Compatibility status transition ${current.status} -> ${patch.status}.`,
+            evidenceRefs: patch.evidenceRefs ?? current.evidenceRefs,
+            recordedAt: at,
+          })
+        : current.phaseEvidence
+    );
     if (!allowCompletionWrite && (writesCompletionReceipt || changesCompletionOutcome || (patch.status === 'completed' && current.status !== 'completed'))) {
       throw new Error('WORK_COMPLETION_REQUIRES_RECORD_API');
     }
@@ -783,7 +937,8 @@ function updateWorkContractInternal(
     updatedAt: at,
     risk: patch.risk ?? current.risk,
     workKind: patch.workKind ?? current.workKind,
-    phase: patch.phase ?? phaseForStatusUpdate(current.phase, patch.status),
+    phase: projectedPhase,
+    phaseEvidence: projectedPhaseEvidence,
     dispatchState: patch.dispatchState ?? dispatchStateForStatusUpdate(current.dispatchState, patch.status),
     evidenceState: patch.evidenceState ?? current.evidenceState,
     completionOutcome: patch.completionOutcome ?? current.completionOutcome,
@@ -809,6 +964,34 @@ export function updateWorkContract(
   patch: Partial<Omit<WorkContract, 'schemaVersion' | 'workId' | 'repoId' | 'createdAt'>>,
 ): WorkContract {
   return updateWorkContractInternal(options, workId, patch, false);
+}
+
+export function transitionWorkContractPhase(
+  options: WorkContractStoreOptions,
+  workId: string,
+  input: {
+    phase: WorkPhase;
+    status: WorkContractStatus;
+    state?: Exclude<WorkPhaseEvidenceState, 'pending'>;
+    summary: string;
+    evidenceRefs?: EvidenceRef[];
+  },
+): WorkContract {
+  const current = getWorkContract(options, workId);
+  if (!current) throw new Error(`work contract not found: ${workId}`);
+  const at = nowIso(options);
+  const phaseEvidence = transitionPhaseEvidence(current, input.phase, {
+    status: input.status,
+    summary: input.summary,
+    evidenceRefs: input.evidenceRefs,
+    recordedAt: at,
+  });
+  if (input.state) phaseEvidence[input.phase] = { ...phaseEvidence[input.phase], state: input.state };
+  return updateWorkContractInternal(options, workId, {
+    phase: input.phase,
+    phaseEvidence,
+    status: input.status,
+  }, false, true);
 }
 
 export function appendWorkEvidence(
@@ -864,13 +1047,23 @@ export function recordWorkCompletionReceipt(
     if (current.completionReceipt.receiptId !== receipt.receiptId) throw new Error('WORK_COMPLETION_RECEIPT_ALREADY_RECORDED');
     return current;
   }
+  const recordedAt = receipt.recordedAt;
+  const phaseEvidence = Object.fromEntries((['implementation', 'verification', 'delivery', 'cleanup'] as WorkPhase[]).map((phase) => [phase, {
+    state: 'satisfied',
+    source: 'recorded',
+    summary: `Phase ${phase} accepted by Work completion receipt ${receipt.receiptId}.`,
+    evidenceRefs: current.evidenceRefs.slice(0, 20),
+    recordedAt,
+    ...(phase === 'delivery' || phase === 'cleanup' ? { receiptId: receipt.receiptId } : {}),
+  } satisfies WorkPhaseEvidence])) as WorkPhaseEvidenceMap;
   return updateWorkContractInternal(options, current.workId, {
     phase: 'cleanup',
+    phaseEvidence,
     status: 'completed',
     dispatchState: 'terminal',
     evidenceState: 'valid',
     completionOutcome,
     ...(completionWorkKind ? { workKind: completionWorkKind } : {}),
     completionReceipt: receipt,
-  }, true);
+  }, true, true);
 }

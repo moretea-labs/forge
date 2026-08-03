@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { spawnSync } from 'child_process';
-import { getIssue, listIssues, recordTaskVerification, acceptVerifiedTask, updateTask } from '../../../cli/controller/issue-store';
+import { getIssue, listIssues, recordTaskVerification, acceptVerifiedTask, projectTaskFromWork } from '../../../cli/controller/issue-store';
 import { resolveCompletionTargetBranch } from '../../../cli/controller/completion-target';
 import type { CompletionReceipt, ControllerIssue } from '../../../cli/controller/types';
 import { completeRequirementFromWork } from '../persistence/requirement-store';
@@ -289,11 +289,9 @@ export function acceptVerifiedTaskFromReviewedWorkReconciliation(input: Controll
   const projectedReceipt = recorded.completionReceipt ?? receipt;
   const projectedVerification = { ...task.verification!, completionReceipt: projectedReceipt };
   const accepted = task.workId
-    ? updateTask(input.repoRoot, input.issueId, input.taskId, {
-        status: 'done',
+    ? projectTaskFromWork(input.repoRoot, input.issueId, input.taskId, recorded, {
         verification: projectedVerification,
         note: input.note ?? `Projected reviewed Work reconciliation ${reconciliation.record.reconciliationId} for ${input.workId}.`,
-        transition: 'work_projection',
       })
     : (() => {
         recordTaskVerification(input.repoRoot, input.issueId, input.taskId, projectedVerification);
@@ -427,11 +425,9 @@ export function acceptVerifiedTaskFromControllerWork(input: ControllerWorkTaskRe
     completionReceipt: recorded.completionReceipt ?? receipt,
   };
   if (task.workId) {
-    const projected = updateTask(input.repoRoot, input.issueId, input.taskId, {
-      status: 'done',
+    const projected = projectTaskFromWork(input.repoRoot, input.issueId, input.taskId, recorded, {
       verification: projectedVerification,
       note: input.note ?? `Projected completed Work ${input.workId} with receipt ${receipt.receiptId}.`,
-      transition: 'work_projection',
     });
     return { issue: projected, receipt: recorded.completionReceipt ?? receipt };
   }

@@ -30,6 +30,10 @@ import { completionEvidenceComplete, executionScopesConflict, taskExecutionPolic
 import { resolveCompletionTargetBranch } from './completion-target';
 import { listControllerChecks } from './check-runner';
 import { normalizeCheckIds } from '../../runtime/control-plane/facade/check-normalization';
+import { getWorkContract } from '../../runtime/control-plane/facade/work-contract-store';
+import { projectControllerTaskFromWork } from '../../runtime/control-plane/facade/work-task-projection';
+import type { WorkContract } from '../../runtime/control-plane/facade/types';
+import { resolveRepoPreferredControllerHome } from '../repositories/controller-home';
 import { markControllerContextProjectionDirty } from '../../runtime/projections/controller-context';
 
 const ISSUE_ROOT = 'tasks/issues';
@@ -226,12 +230,37 @@ export function getIssue(repoRoot: string, id: string): ControllerIssue {
   return issue;
 }
 
+function projectIssueTasksFromWork(repoRoot: string, issue: ControllerIssue): ControllerTask[] {
+  const controllerHomes = [...new Set([
+    resolveRepoPreferredControllerHome(repoRoot),
+    join(repoRoot, '_ops', 'controller-home'),
+  ])];
+  return issue.tasks.map((task) => {
+    if (!task.workId) return task;
+    const repoId = task.repoId ?? issue.repoId;
+    if (!repoId) return task.status === 'done' ? task : { ...task, status: 'launch_blocked' };
+    for (const controllerHome of controllerHomes) {
+      try {
+        const work = getWorkContract({ controllerHome, repoId }, task.workId);
+        if (!work || (work.issueId && work.issueId !== issue.id) || (work.taskId && work.taskId !== task.id)) continue;
+        if (work.status === 'completed' && !work.completionReceipt) continue;
+        return projectControllerTaskFromWork(task, work);
+      } catch {
+        // A compatibility read never manufactures state from an unavailable
+        // Work authority. Try the bounded repo-local authority, then close.
+      }
+    }
+    return task.status === 'done' ? task : { ...task, status: 'launch_blocked' };
+  });
+}
+
 export function projectIssueEffectiveView(repoRoot: string, issue: ControllerIssue) {
-  const states = resolveIssueTaskStates(issue, readIssueRunEvidence(repoRoot, issue));
+  const projectedIssue = { ...issue, tasks: projectIssueTasksFromWork(repoRoot, issue) };
+  const states = resolveIssueTaskStates(projectedIssue, readIssueRunEvidence(repoRoot, projectedIssue));
   return {
-    ...issue,
-    lifecycleStatus: resolveIssueLifecycleStatus(issue),
-    tasks: issue.tasks.map((task) => {
+    ...projectedIssue,
+    lifecycleStatus: resolveIssueLifecycleStatus(projectedIssue),
+    tasks: projectedIssue.tasks.map((task) => {
       const state = states.get(task.id)!;
       return {
         ...task,
@@ -796,17 +825,17 @@ export function updateTask(repoRoot: string, issueIdValue: string, taskId: strin
   runId?: string;
   github?: GitHubIssueLink;
   verification?: TaskVerification;
-  transition?: 'normal' | 'run_sync' | 'retry' | 'restore' | 'work_projection';
+  transition?: 'normal' | 'run_sync' | 'retry' | 'restore';
 }): ControllerIssue {
   const issue = getIssue(repoRoot, issueIdValue);
   const task = issue.tasks.find((entry) => entry.id === taskId);
   if (!task) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
   const previousStatus = task.status;
   const previousState = resolveEffectiveTaskState({ issue, task, runs: readTaskRunEvidence(repoRoot, task) });
-  if (task.workId && patch.status !== undefined && patch.transition !== 'work_projection') {
+  if (task.workId && patch.status !== undefined) {
     throw new Error(`TASK_STATUS_WORK_OWNED: ${issue.id}/${task.id} is projected from Work ${task.workId}`);
   }
-  if (task.workId && patch.verification !== undefined && patch.transition !== 'work_projection') {
+  if (task.workId && patch.verification !== undefined) {
     throw new Error(`TASK_VERIFICATION_WORK_OWNED: ${issue.id}/${task.id} is projected from Work ${task.workId}`);
   }
   if (patch.status && patch.status !== previousStatus) {
@@ -853,17 +882,23 @@ export function bindTaskToWork(
   issueIdValue: string,
   taskId: string,
   workId: string,
+  repoId?: string,
 ): ControllerIssue {
   const normalizedWorkId = workId.trim();
   if (!normalizedWorkId) throw new Error('TASK_WORK_ID_REQUIRED');
+  const normalizedRepoId = repoId?.trim();
   const issue = getIssue(repoRoot, issueIdValue);
   const task = issue.tasks.find((entry) => entry.id === taskId);
   if (!task) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
   if (task.workId && task.workId !== normalizedWorkId) {
     throw new Error(`TASK_WORK_REBIND_FORBIDDEN: ${task.workId} -> ${normalizedWorkId}`);
   }
-  if (task.workId === normalizedWorkId) return issue;
+  if (normalizedRepoId && task.repoId && task.repoId !== normalizedRepoId) {
+    throw new Error(`TASK_WORK_REPO_REBIND_FORBIDDEN: ${task.repoId} -> ${normalizedRepoId}`);
+  }
+  if (task.workId === normalizedWorkId && (!normalizedRepoId || task.repoId === normalizedRepoId)) return issue;
   task.workId = normalizedWorkId;
+  if (normalizedRepoId) task.repoId = normalizedRepoId;
   task.updatedAt = new Date().toISOString();
   issue.updatedAt = task.updatedAt;
   const written = writeIssue(repoRoot, issue);
@@ -874,6 +909,62 @@ export function bindTaskToWork(
     issueId: issue.id,
     taskId: task.id,
     details: { workId: normalizedWorkId },
+  });
+  return written;
+}
+
+/**
+ * The only supported write path for a Work-backed Task compatibility projection.
+ * Work identity, lifecycle, contract fields and receipt are validated before the
+ * legacy JSON projection is updated.
+ */
+export function projectTaskFromWork(
+  repoRoot: string,
+  issueIdValue: string,
+  taskId: string,
+  work: WorkContract,
+  input: { verification?: TaskVerification; note?: string } = {},
+): ControllerIssue {
+  const issue = getIssue(repoRoot, issueIdValue);
+  const task = issue.tasks.find((entry) => entry.id === taskId);
+  if (!task) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
+  if (!task.workId || task.workId !== work.workId) {
+    throw new Error(`TASK_WORK_PROJECTION_IDENTITY_MISMATCH: ${task.workId ?? 'unbound'} != ${work.workId}`);
+  }
+  if (task.repoId && task.repoId !== work.repoId) {
+    throw new Error(`TASK_WORK_PROJECTION_REPO_MISMATCH: ${task.repoId} != ${work.repoId}`);
+  }
+  if (work.issueId && work.issueId !== issue.id) throw new Error(`TASK_WORK_PROJECTION_ISSUE_MISMATCH: ${work.issueId} != ${issue.id}`);
+  if (work.taskId && work.taskId !== task.id) throw new Error(`TASK_WORK_PROJECTION_TASK_MISMATCH: ${work.taskId} != ${task.id}`);
+  if (input.verification?.completionReceipt && input.verification.completionReceipt.receiptId !== work.completionReceipt?.receiptId) {
+    throw new Error('TASK_WORK_PROJECTION_RECEIPT_MISMATCH');
+  }
+  const projected = projectControllerTaskFromWork(task, work);
+  if (projected.status === 'done' && !work.completionReceipt) {
+    throw new Error('TASK_WORK_PROJECTION_COMPLETION_RECEIPT_REQUIRED');
+  }
+  task.repoId = work.repoId;
+  task.objective = projected.objective;
+  task.status = projected.status;
+  task.allowedPaths = projected.allowedPaths;
+  task.forbiddenPaths = projected.forbiddenPaths;
+  task.checks = projected.checks;
+  task.acceptanceCriteria = projected.acceptanceCriteria;
+  task.risk = projected.risk;
+  task.verification = input.verification ?? projected.verification;
+  if (input.note?.trim()) task.notes.push(input.note.trim());
+  task.updatedAt = new Date().toISOString();
+  issue.updatedAt = task.updatedAt;
+  refreshReadiness(repoRoot, issue);
+  const written = writeIssue(repoRoot, issue);
+  tryAppendControllerWorklogEvent(repoRoot, {
+    category: 'task',
+    action: 'task_projected_from_work',
+    summary: `Projected ${task.id} from Work ${work.workId} (${work.phase}/${work.status}).`,
+    issueId: issue.id,
+    taskId: task.id,
+    statusTo: task.status,
+    details: { workId: work.workId, phase: work.phase, workStatus: work.status, receiptId: work.completionReceipt?.receiptId },
   });
   return written;
 }

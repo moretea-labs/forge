@@ -16,6 +16,7 @@ import {
   type PlanContractStatus,
   type PlanContractStore,
   type PlanStep,
+  type WorkContract,
 } from './types';
 
 export interface PlanContractStoreLocation {
@@ -360,24 +361,37 @@ export function claimPlanStepForWork(
 
 export function completePlanStepForWork(
   options: PlanContractStoreOptions,
-  input: { planId: string; stepId: string; workId: string; succeeded: boolean; evidenceRefs?: EvidenceRef[] },
+  input: {
+    planId: string;
+    stepId: string;
+    work: Pick<WorkContract, 'workId' | 'status' | 'phase' | 'evidenceState' | 'completionOutcome' | 'completionReceipt' | 'evidenceRefs'>;
+  },
 ): PlanContract {
   return updatePlanContract(options, input.planId, (current) => {
     const stepIndex = current.steps.findIndex((step) => step.id === sanitizeFileComponent(input.stepId));
     if (stepIndex < 0) throw new Error(`PLAN_STEP_NOT_FOUND: ${input.stepId}`);
     const step = current.steps[stepIndex];
-    if (step.workId !== input.workId) throw new Error(`PLAN_STEP_WORK_MISMATCH: ${input.stepId}`);
+    if (step.workId !== input.work.workId) throw new Error(`PLAN_STEP_WORK_MISMATCH: ${input.stepId}`);
+    const completed = input.work.status === 'completed'
+      && input.work.phase === 'cleanup'
+      && input.work.evidenceState === 'valid'
+      && Boolean(input.work.completionOutcome && input.work.completionOutcome !== 'superseded')
+      && Boolean(input.work.completionReceipt);
+    const failed = input.work.status === 'failed' || input.work.status === 'cancelled';
+    if (!completed && !failed) throw new Error(`PLAN_STEP_WORK_NOT_TERMINAL: ${input.work.workId}`);
     const at = nowIso(options);
     const steps = [...current.steps];
     steps[stepIndex] = {
       ...step,
-      status: input.succeeded ? 'completed' : 'validating',
-      evidenceRefs: input.evidenceRefs ? input.evidenceRefs.slice(0, 20) : step.evidenceRefs,
+      status: completed ? 'completed' : 'validating',
+      evidenceRefs: input.work.evidenceRefs.length > 0
+        ? input.work.evidenceRefs.slice(0, 20)
+        : step.evidenceRefs,
     };
     const allCompleted = steps.every((candidate) => candidate.status === 'completed');
     return {
       ...current,
-      status: input.succeeded ? (allCompleted ? 'ready_to_finalize' : 'executing') : 'replanning',
+      status: completed ? (allCompleted ? 'ready_to_finalize' : 'executing') : 'replanning',
       steps,
       updatedAt: at,
     };

@@ -90,6 +90,21 @@ export type WorkContractStatus = (typeof WORK_CONTRACT_STATUSES)[number];
 export const WORK_PHASES = ['implementation', 'verification', 'delivery', 'cleanup'] as const;
 export type WorkPhase = (typeof WORK_PHASES)[number];
 
+export const WORK_PHASE_EVIDENCE_STATES = ['pending', 'active', 'satisfied', 'blocked', 'failed', 'skipped'] as const;
+export type WorkPhaseEvidenceState = (typeof WORK_PHASE_EVIDENCE_STATES)[number];
+
+/** Durable evidence checkpoint for one technical Work phase. */
+export interface WorkPhaseEvidence {
+  state: WorkPhaseEvidenceState;
+  source?: 'recorded' | 'legacy_inferred';
+  summary: string;
+  evidenceRefs: EvidenceRef[];
+  recordedAt: string;
+  receiptId?: string;
+}
+
+export type WorkPhaseEvidenceMap = Record<WorkPhase, WorkPhaseEvidence>;
+
 /** Risk is part of the Work contract, never of a mutable Task projection. */
 export const WORK_RISKS = ['readonly', 'low', 'medium', 'high', 'destructive'] as const;
 export type WorkRisk = (typeof WORK_RISKS)[number];
@@ -338,6 +353,8 @@ export interface WorkContract {
   risk: WorkRisk;
   /** Technical phase; Requirement owns the user lifecycle. */
   phase: WorkPhase;
+  /** Work-owned phase checkpoints. Task/Run/Process records may contribute evidence but cannot write this map directly. */
+  phaseEvidence: WorkPhaseEvidenceMap;
   /** Explicit v2 execution semantics. `status` is retained for compatibility. */
   workKind: WorkKind;
   dispatchState: DispatchState;

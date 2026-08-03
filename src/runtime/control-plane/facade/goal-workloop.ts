@@ -10,6 +10,7 @@ import {
   createWorkContract,
   getWorkContract,
   summarizeWorkContract,
+  transitionWorkContractPhase,
   updateWorkContract,
   type WorkContractStoreOptions,
 } from './work-contract-store';
@@ -604,12 +605,14 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
         },
       ],
     });
-    const updated = updateWorkContract(ctx.workStore, work.workId, {
+    transitionWorkContractPhase(ctx.workStore, work.workId, {
       status: 'ready',
       phase: 'verification',
-      handoffRefs: [handoff.id, ...work.handoffRefs],
+      state: 'blocked',
+      summary: `Acceptance failure requires review through handoff ${handoff.id}.`,
+      evidenceRefs: work.evidenceRefs,
     });
-    appendWorkHandoffRef(ctx.workStore, work.workId, handoff.id);
+    const updated = appendWorkHandoffRef(ctx.workStore, work.workId, handoff.id);
 
     return buildFacadeResult({
       status: 'blocked',
@@ -637,9 +640,14 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
 
   // Infrastructure issues: suggest self-healing, not acceptance failure.
   if (history.infrastructureIssues.length > 0) {
-    const updated = updateWorkContract(ctx.workStore, work.workId, {
+    transitionWorkContractPhase(ctx.workStore, work.workId, {
       status: 'running',
       phase: 'implementation',
+      state: 'active',
+      summary: `Infrastructure issues require repair: ${history.infrastructureIssues.join(', ')}.`,
+      evidenceRefs: work.evidenceRefs,
+    });
+    const updated = updateWorkContract(ctx.workStore, work.workId, {
       suggestedNextActions: [
         {
           label: 'Diagnose runtime (dry-run)',
@@ -681,9 +689,14 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
       })),
       { validCheckIds: work.checks },
     ).actions;
-    const updated = updateWorkContract(ctx.workStore, work.workId, {
+    transitionWorkContractPhase(ctx.workStore, work.workId, {
       status: 'running',
       phase: 'verification',
+      state: 'active',
+      summary: `Verification remains for: ${remaining.join(', ')}.`,
+      evidenceRefs: work.evidenceRefs,
+    });
+    const updated = updateWorkContract(ctx.workStore, work.workId, {
       suggestedNextActions: suggested,
       continuationPrompt: input.note
         ? `${work.continuationPrompt ?? ''}\nNote: ${input.note}`.slice(0, 2_000)
@@ -715,9 +728,14 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
         reason: 'A WorkContract is orchestration state, not proof that source changes or an agent run occurred.',
       },
     ]).actions;
-    const updated = updateWorkContract(ctx.workStore, work.workId, {
+    transitionWorkContractPhase(ctx.workStore, work.workId, {
       status: 'running',
       phase: 'implementation',
+      state: 'active',
+      summary: `Meaningful implementation evidence is still missing: ${completionEvidence.reasons.join(' ')}`,
+      evidenceRefs: work.evidenceRefs,
+    });
+    const updated = updateWorkContract(ctx.workStore, work.workId, {
       suggestedNextActions: suggested,
     });
     return buildFacadeResult({
@@ -749,9 +767,14 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
       confidence: 'high',
     },
   ]).actions;
-  const updated = updateWorkContract(ctx.workStore, work.workId, {
+  transitionWorkContractPhase(ctx.workStore, work.workId, {
     status: 'running',
     phase: 'delivery',
+    state: 'active',
+    summary: 'Implementation and verification evidence are sufficient; exact delivery and cleanup receipt is next.',
+    evidenceRefs: work.evidenceRefs,
+  });
+  const updated = updateWorkContract(ctx.workStore, work.workId, {
     suggestedNextActions: suggested,
   });
   return buildFacadeResult({
@@ -896,9 +919,15 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
   const history = completionEvidence.history;
 
   if (input.forceFailed || completionEvidence.status === 'failed') {
-    const updated = updateWorkContract(ctx.workStore, work.workId, { status: 'failed', phase: 'cleanup' });
+    const updated = transitionWorkContractPhase(ctx.workStore, work.workId, {
+      status: 'failed',
+      phase: 'cleanup',
+      state: 'failed',
+      summary: `Work failed acceptance/finalization: ${history.acceptanceFailures.join(', ') || 'forced failure'}.`,
+      evidenceRefs: work.evidenceRefs,
+    });
     if (updated.planId && updated.planStepId && ctx.planStore) {
-      completePlanStepForWork(ctx.planStore, { planId: updated.planId, stepId: updated.planStepId, workId: updated.workId, succeeded: false, evidenceRefs: updated.evidenceRefs });
+      completePlanStepForWork(ctx.planStore, { planId: updated.planId, stepId: updated.planStepId, work: updated });
     }
     return buildFacadeResult({
       status: 'failed',
@@ -925,7 +954,13 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
 
   // Weak refs, partial checks, invalid ids, and infrastructure issues never imply successful completion.
   if (completionEvidence.status === 'incomplete') {
-    const updated = updateWorkContract(ctx.workStore, work.workId, { status: 'ready', phase: 'verification' });
+    const updated = transitionWorkContractPhase(ctx.workStore, work.workId, {
+      status: 'ready',
+      phase: 'verification',
+      state: 'blocked',
+      summary: `Completion evidence remains incomplete: ${completionEvidence.reasons.join(' ')}`,
+      evidenceRefs: work.evidenceRefs,
+    });
     return buildFacadeResult({
       status: 'blocked',
       summary: `Finalize result: waiting_for_review. ${completionEvidence.reasons.join(' ')}`,
@@ -959,7 +994,13 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
   // cleanup must produce the exact Work-owned receipt before Work can become
   // terminal; a Run exit or a missing receipt is never completion authority.
   if (!work.completionReceipt) {
-    const updated = updateWorkContract(ctx.workStore, work.workId, { status: 'ready', phase: 'delivery' });
+    const updated = transitionWorkContractPhase(ctx.workStore, work.workId, {
+      status: 'ready',
+      phase: 'delivery',
+      state: 'blocked',
+      summary: 'Exact delivery and cleanup completion receipt is required.',
+      evidenceRefs: work.evidenceRefs,
+    });
     return buildFacadeResult({
       status: 'blocked',
       summary: `Finalize blocked for ${work.workId}: an exact delivery and cleanup completion receipt is required.`,
@@ -968,9 +1009,9 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     });
   }
 
-  const updated = updateWorkContract(ctx.workStore, work.workId, { status: 'completed', phase: 'cleanup' });
+  const updated = getWorkContract(ctx.workStore, work.workId)!;
   if (updated.planId && updated.planStepId && ctx.planStore) {
-    completePlanStepForWork(ctx.planStore, { planId: updated.planId, stepId: updated.planStepId, workId: updated.workId, succeeded: true, evidenceRefs: updated.evidenceRefs });
+    completePlanStepForWork(ctx.planStore, { planId: updated.planId, stepId: updated.planStepId, work: updated });
   }
   return buildFacadeResult({
     status: 'ok',
@@ -1004,9 +1045,14 @@ export function stopGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloopSt
   }
 
   const destructiveCleanup = input.authorizeDestructiveCleanup === true;
-  const updated = updateWorkContract(ctx.workStore, work.workId, {
+  transitionWorkContractPhase(ctx.workStore, work.workId, {
     status: 'cancelled',
     phase: 'cleanup',
+    state: 'skipped',
+    summary: input.reason ? `Stopped: ${input.reason}` : 'Work stopped without destructive cleanup.',
+    evidenceRefs: work.evidenceRefs,
+  });
+  const updated = updateWorkContract(ctx.workStore, work.workId, {
     continuationPrompt: input.reason
       ? `Stopped: ${input.reason}`.slice(0, 2_000)
       : work.continuationPrompt,
