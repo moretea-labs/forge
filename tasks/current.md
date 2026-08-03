@@ -3,7 +3,7 @@
 <!-- updated_at: 2026-08-03 -->
 <!-- stale_after: 24h -->
 
-> **Status**: Stable Supervisor, daemon, gateway, ingress, public tunnel, and the 128-tool MCP surface are operational on immutable release `fc722c87...`. The old 502/503 condition was caused by a stale service/runtime handoff; the repaired release is active and local/public health probes return HTTP 200.
+> **Status**: Stable Supervisor, daemon, gateway, ingress, public tunnel, and the 128-tool MCP surface are operational on immutable release `9776f1b8...`. The old 502/503 condition was caused by a stale service/runtime handoff; the repaired release is active and local/public health probes return HTTP 200.
 > **Updated At**: 2026-08-03
 > **Source**: Stable Supervisor state, release manifests, authenticated MCP initialize/tools/list/controller_ready probes, and local/public HTTP probes.
 > **Target**: Keep one fixed Bootstrap service aligned with the current immutable release and complete the accepted Requirement-centered control-plane migration.
@@ -13,7 +13,7 @@ This snapshot is a read model, not an execution gate.
 
 ## Current Focus
 
-- ✅ Immutable standalone Supervisor release `fc722c87...` is active through the fixed Controller-home Bootstrap and launchd service.
+- ✅ Immutable standalone Supervisor release `9776f1b8...` is active through the fixed Controller-home Bootstrap and launchd service.
 - ✅ Supervisor, daemon, gateway, and stable ingress converge on the same release; ingress `/health` and `/ready` return HTTP 200.
 - ✅ Public `https://mcp.moretea-lab.tech/health` returns HTTP 200 through the Cloudflare tunnel.
 - ✅ Authenticated MCP `initialize` and `tools/list` succeed; the active advanced surface exposes 128 tools.
