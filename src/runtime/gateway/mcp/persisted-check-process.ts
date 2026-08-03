@@ -14,6 +14,20 @@ import {
 } from '../../execution/process-runtime';
 const INTERNAL_CHECK_SUBCOMMAND = ['controller', 'run-check-process'] as const;
 
+export function resolvePersistedCheckCliInvocation(
+  cliEntry: string,
+  args: string[],
+  options: { runtimeExecutable?: string; env?: NodeJS.ProcessEnv } = {},
+): { executable: string; args: string[] } {
+  const runtimeExecutable = options.runtimeExecutable ?? process.execPath;
+  const env = options.env ?? process.env;
+  const standalone = env.REPO_HARNESS_RUNTIME_EXECUTION === 'standalone-binary'
+    || cliEntry.includes('$bunfs');
+  return standalone
+    ? { executable: runtimeExecutable, args }
+    : { executable: runtimeExecutable, args: [cliEntry, ...args] };
+}
+
 export function resolveRuntimeCliEntry(): string {
   const configured = process.env.REPO_HARNESS_RUNTIME_CLI_ENTRY?.trim();
   if (configured && existsSync(configured)) return resolve(configured);
@@ -111,6 +125,18 @@ export async function runPersistedCheckViaProcessRuntime(
     .update(JSON.stringify(checkSnapshot))
     .digest('hex');
   const cliEntry = resolveRuntimeCliEntry();
+  const checkArgs = [
+    ...INTERNAL_CHECK_SUBCOMMAND,
+    '--repo',
+    executionIdentity.canonicalRoot,
+    '--check-id',
+    input.checkId,
+    '--timeout-ms',
+    String(timeoutMs),
+    '--expected-check-fingerprint',
+    checkFingerprint,
+  ];
+  const invocation = resolvePersistedCheckCliInvocation(cliEntry, checkArgs);
   const handle = await spawnManagedProcess({
     controllerHome: input.controllerHome,
     repoId: executionIdentity.repositoryId,
@@ -120,19 +146,8 @@ export async function runPersistedCheckViaProcessRuntime(
     commandId: input.commandId,
     command: {
       kind: 'argv',
-      executable: process.execPath,
-      args: [
-        cliEntry,
-        ...INTERNAL_CHECK_SUBCOMMAND,
-        '--repo',
-        executionIdentity.canonicalRoot,
-        '--check-id',
-        input.checkId,
-        '--timeout-ms',
-        String(timeoutMs),
-        '--expected-check-fingerprint',
-        checkFingerprint,
-      ],
+      executable: invocation.executable,
+      args: invocation.args,
       cwd: executionIdentity.canonicalRoot,
     },
     interactiveWaitMs,

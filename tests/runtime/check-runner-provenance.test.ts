@@ -11,6 +11,7 @@ import {
   runControllerCheckAsync,
   snapshotControllerCheck,
 } from '../../src/cli/controller/check-runner';
+import { resolvePersistedCheckCliInvocation } from '../../src/runtime/gateway/mcp/persisted-check-process';
 
 const roots: string[] = [];
 
@@ -166,6 +167,21 @@ describe('controller check provenance and failure classification', () => {
     expect(resolveSyncSupervisorBridgeRuntime('/opt/releases/repo-harness.js', {
       REPO_HARNESS_BUN_EXECUTABLE: '/custom/bun',
     })).toBe('/custom/bun');
+  });
+
+  test('launches persisted checks directly from standalone Bun releases', () => {
+    const args = ['controller', 'run-check-process', '--check-id', 'package:check:type'];
+    expect(resolvePersistedCheckCliInvocation('/$bunfs/root/repo-harness.js', args, {
+      runtimeExecutable: '/opt/releases/repo-harness.js',
+      env: {},
+    })).toEqual({ executable: '/opt/releases/repo-harness.js', args });
+    expect(resolvePersistedCheckCliInvocation('/repo/bin/repo-harness.mjs', args, {
+      runtimeExecutable: '/opt/bun/bin/bun',
+      env: {},
+    })).toEqual({
+      executable: '/opt/bun/bin/bun',
+      args: ['/repo/bin/repo-harness.mjs', ...args],
+    });
   });
 
   test('keeps a synchronous bridge launch defect out of acceptance evidence', () => {
