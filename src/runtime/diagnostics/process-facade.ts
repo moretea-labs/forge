@@ -2,6 +2,7 @@ import { executionIdentityForRepository } from '../control-plane/execution/execu
 import { existsSync } from 'fs';
 import { basename, join, resolve } from 'path';
 import type { RepositoryRecord } from '../../cli/repositories/types';
+import { resolveCliChildInvocation, type CliChildInvocationOptions } from '../../cli/runtime-invocation';
 import { resolveControllerRuntimeSourceRoot } from '../control-plane/runtime-generation';
 import { readProcessLogs, spawnManagedProcess, type ProcessHandle } from '../execution/process-runtime';
 import { isReadOnlyDiagnosticTool, type ReadOnlyDiagnosticTool } from './read-only-tool';
@@ -47,6 +48,14 @@ function runtimeCliEntry(): { entry: string; cwd: string } {
     throw new Error(`DIAGNOSTIC_RUNTIME_ENTRY_MISSING: ${entry}`);
   }
   return { entry, cwd: source.root };
+}
+
+export function resolveDiagnosticCliInvocation(
+  entry: string,
+  args: readonly string[],
+  options: CliChildInvocationOptions = {},
+): { executable: string; args: string[] } {
+  return resolveCliChildInvocation(entry, args, options);
 }
 
 function diagnosticArguments(args: Record<string, unknown>): Record<string, unknown> {
@@ -122,8 +131,10 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
   args: Record<string, unknown>;
   /** Internal test/embedding override; MCP callers use the fixed 16KiB budget. */
   inlineMaxBytes?: number;
+  /** Internal test/embedding override for deterministic runtime launch fixtures. */
+  cliInvocation?: { entry: string; options?: CliChildInvocationOptions };
 }): Promise<Record<string, unknown>> {
-  const { entry } = runtimeCliEntry();
+  const entry = input.cliInvocation?.entry ?? runtimeCliEntry().entry;
   const semanticArgs = diagnosticArguments(input.args);
   const encodedArgs = Buffer.from(JSON.stringify(semanticArgs), 'utf8').toString('base64url');
   const returnHandleImmediately = input.args.apply_mode === 'async';
@@ -156,9 +167,7 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
     commandId: `diagnostic:${input.tool}`,
     command: {
       kind: 'argv',
-      executable: process.execPath,
-      args: [
-        entry,
+      ...resolveDiagnosticCliInvocation(entry, [
         'runtime',
         'diagnostic-read',
         '--controller-home',
@@ -169,7 +178,7 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
         input.tool,
         '--args-base64',
         encodedArgs,
-      ],
+      ], input.cliInvocation?.options),
       // The executable entry may live in the repo-harness runtime source tree,
       // but execution ownership belongs to the selected repository checkout.
       // Keeping cwd inside that checkout preserves fail-closed route identity.

@@ -23,10 +23,10 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 81,
+    "maxTestFiles": 82,
     "maxTestLines": 40000,
     "maxPureFiles": 30,
-    "maxTempIsolatedFiles": 36,
+    "maxTempIsolatedFiles": 37,
     "maxProcessTreeFiles": 15,
     "maxGitWorktreeFiles": 15,
     "maxFixedPortFiles": 6,
@@ -325,6 +325,10 @@
       "resource": "process-tree"
     },
     "tests/runtime/check-runner-provenance.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/diagnostic-process-invocation.test.ts": {
       "module": "process-runtime",
       "resource": "temp-isolated"
     },

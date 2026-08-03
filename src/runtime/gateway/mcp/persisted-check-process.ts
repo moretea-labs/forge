@@ -3,6 +3,7 @@ import { existsSync } from 'fs';
 import { basename, dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { listControllerChecks, snapshotControllerCheck } from '../../../cli/controller/check-runner';
+import { resolveCliChildInvocation } from '../../../cli/runtime-invocation';
 import {
   checkRequiresDurableWorkflow,
   claimsForCheck,
@@ -19,13 +20,7 @@ export function resolvePersistedCheckCliInvocation(
   args: string[],
   options: { runtimeExecutable?: string; env?: NodeJS.ProcessEnv } = {},
 ): { executable: string; args: string[] } {
-  const runtimeExecutable = options.runtimeExecutable ?? process.execPath;
-  const env = options.env ?? process.env;
-  const standalone = env.REPO_HARNESS_RUNTIME_EXECUTION === 'standalone-binary'
-    || cliEntry.includes('$bunfs');
-  return standalone
-    ? { executable: runtimeExecutable, args }
-    : { executable: runtimeExecutable, args: [cliEntry, ...args] };
+  return resolveCliChildInvocation(cliEntry, args, options);
 }
 
 export function resolveRuntimeCliEntry(): string {
