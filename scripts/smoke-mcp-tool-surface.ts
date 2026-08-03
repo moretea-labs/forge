@@ -63,23 +63,17 @@ for (const name of EXPECTED_FACADE_TOOLS) {
   assert(coreExposed.includes(name), `exposed core tools missing ${name}`);
 }
 assert(coreExposed.includes('repository_list'), 'default surface missing repository_list');
-// Core is the compact model-facing surface; bootstrap and interactive
-// development tools live behind the Advanced profile.
-assert(!coreExposed.includes('repository_bootstrap_local_project'), 'core must not expose the bootstrap tool');
-assert(advancedExposed.includes('repository_bootstrap_local_project'), 'advanced surface missing bootstrap tool');
-assert(advancedExposed.length <= 133, `stable tools/list exceeds schema budget: ${advancedExposed.length}`);
-for (const name of coreExposed) {
-  assert(advancedExposed.includes(name), `advanced alias missing core tool ${name}`);
-}
+assert(coreExposed.includes('repository_bootstrap_local_project'), 'stable surface missing bootstrap tool');
+assert(advancedExposed.includes('repository_bootstrap_local_project'), 'advanced alias missing bootstrap tool');
+assert(coreExposed.length === DEFAULT_CONTROLLER_TOOL_NAMES.length, `core stable tool count changed: ${coreExposed.length}`);
+assert(advancedExposed.length === DEFAULT_CONTROLLER_TOOL_NAMES.length, `advanced stable tool count changed: ${advancedExposed.length}`);
+assert(
+  JSON.stringify(coreExposed) === JSON.stringify(advancedExposed),
+  'Core and Advanced must remain schema-stable aliases of the same bounded tool surface',
+);
 for (const name of OPTIONAL_INTERACTIVE_DEVELOPMENT_TOOLS) {
+  assert(coreExposed.includes(name), `stable surface missing interactive ${name}`);
   assert(advancedExposed.includes(name), `advanced alias missing interactive ${name}`);
-  // Core keeps only the safe patch apply surface; git/work lifecycle tools
-  // require the Advanced profile.
-  if (name === 'repository_safe_patch_apply') {
-    assert(coreExposed.includes(name), 'core must keep the safe patch apply surface');
-  } else {
-    assert(!coreExposed.includes(name), `core must not expose interactive ${name}`);
-  }
 }
 
 const unable = evaluateConnectorFreshness({ localToolNames: expected });
