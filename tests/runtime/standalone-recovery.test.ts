@@ -6,11 +6,12 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { createServer as createSocketServer, type Server as SocketServer } from 'net';
 import { basename, dirname, join } from 'path';
 import { tmpdir } from 'os';
-import { attestKnownGood, createRecoveryConfig, decideWatchdog, recoveryReconnectOperation, repairPublicTunnel, restartGateway, restartSupervisor, rollbackPrevious, verifyStableRuntime, type VerifyResult } from '../../src/runtime/standalone-recovery/core';
+import { attestKnownGood, createRecoveryConfig, decideWatchdog, initializeStandaloneRecovery, loadWatchdogState, recoveryReconnectOperation, repairPublicTunnel, restartGateway, restartRecoveryGateway, restartSupervisor, rollbackPrevious, runAgentRepair, saveWatchdogState, verifyStableRuntime, type VerifyResult } from '../../src/runtime/standalone-recovery/core';
 import { dispatchRecoveryTool, recoveryRuntimeRoleFromExecutable, RECOVERY_CLI_COMMANDS, RECOVERY_TOOLS } from '../../src/runtime/standalone-recovery/entry';
 import { createRecoveryHttpTransport, ExternalHttpsRecoveryTransport, resolveTrustedRecoveryCurl, type RecoveryHttpTransportOptions } from '../../src/runtime/standalone-recovery/http-transport';
 import { activateRecoveryRelease, captureLegacyRecoveryRelease, stageRecoveryRelease, verifyRecoveryReleaseActivation, type RecoveryActivationVerification } from '../../src/runtime/standalone-recovery/installer';
 import {
+  RECOVERY_AGENT_PROMPT,
   RECOVERY_RELEASE_BINARIES,
   publishRecoveryCompatibilityLinks,
   publishRecoveryRelease,
@@ -181,9 +182,11 @@ function cleanRecoverySourceRepo(): { root: string; head: string } {
   const root = mkdtempSync(join(tmpdir(), 'recovery-release-source-'));
   mkdirSync(join(root, 'src', 'runtime', 'standalone-recovery'), { recursive: true });
   mkdirSync(join(root, 'scripts'), { recursive: true });
+  mkdirSync(join(root, 'recovery', 'prompts'), { recursive: true });
   writeFileSync(join(root, 'src', 'runtime', 'standalone-recovery', 'entry.ts'), 'console.log("fixture")\n');
   writeFileSync(join(root, 'scripts', 'install-standalone-recovery.ts'), '// fixture\n');
   writeFileSync(join(root, 'scripts', 'load-standalone-recovery.sh'), '#!/bin/sh\n');
+  writeFileSync(join(root, 'recovery', 'prompts', RECOVERY_AGENT_PROMPT), '# fixed recovery prompt\n');
   writeFileSync(join(root, 'package.json'), '{}\n');
   writeFileSync(join(root, 'bun.lock'), 'fixture\n');
   execFileSync('git', ['init', '-q'], { cwd: root });
@@ -719,6 +722,162 @@ describe('standalone disaster recovery core', () => {
     rmSync(home, { recursive: true, force: true });
   });
 
+  test('persists watchdog failure windows and restart decisions across process restarts', () => {
+    const home = mkdtempSync(join(tmpdir(), 'standalone-recovery-watchdog-state-'));
+    try {
+      const config = createRecoveryConfig(home);
+      const saved = saveWatchdogState(config, {
+        failures: 7,
+        firstFailureAt: 1234,
+        rollbackUsed: true,
+        publicTunnelFailures: 3,
+        publicTunnelRepairFailures: 2,
+        recoveryGatewayRestartUsed: true,
+        lastDecision: 'degraded',
+      });
+      expect(saved.updatedAt).toBeString();
+      expect(loadWatchdogState(config)).toEqual(saved);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('restarts the independent Recovery Gateway before touching primary runtime recovery', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'standalone-recovery-gateway-self-heal-'));
+    try {
+      const label = 'com.moretea.repo-harness-recovery-gateway';
+      const plist = join(home, 'recovery', 'launchd', `${label}.plist`);
+      mkdirSync(dirname(plist), { recursive: true });
+      writeFileSync(plist, '<plist/>', { mode: 0o600 });
+      const config = initializeStandaloneRecovery(home, 8787);
+      const commands: string[][] = [];
+      let probes = 0;
+      let clock = 0;
+      const result = await restartRecoveryGateway(config, {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        probeGateway: async () => ({ ok: ++probes >= 3, detail: probes >= 3 ? 'healthy' : 'connection refused' }),
+        runCommand: async (_command, args) => { commands.push(args); return { ok: true, status: 0, stdout: '', stderr: '' }; },
+        now: () => { clock += 1_000; return clock; },
+        sleep: async () => {},
+      });
+      expect(result).toMatchObject({ ok: true, attempted: true, serviceTarget: `gui/501/${label}` });
+      expect(commands).toEqual([['print', `gui/501/${label}`], ['kickstart', '-k', `gui/501/${label}`]]);
+      expect(readFileSync(join(home, 'recovery', 'audit', 'recovery.jsonl'), 'utf8')).toContain('recovery_gateway_restart_succeeded');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('uses the PI agent only when explicitly enabled with an active manifest-bound prompt and cooldown', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'standalone-recovery-pi-agent-'));
+    try {
+      const releasePath = join(home, 'recovery', 'releases', 'agent-release');
+      const repoRoot = join(home, 'repair-worktree');
+      mkdirSync(releasePath, { recursive: true });
+      mkdirSync(repoRoot, { recursive: true });
+      const prompt = '# immutable PI repair prompt\n';
+      const promptPath = join(releasePath, RECOVERY_AGENT_PROMPT);
+      writeFileSync(promptPath, prompt, { mode: 0o400 });
+      writeFileSync(join(releasePath, 'manifest.json'), JSON.stringify({
+        schemaVersion: 1,
+        resources: { [RECOVERY_AGENT_PROMPT]: { sha256: createHash('sha256').update(prompt).digest('hex') } },
+      }));
+      symlinkSync(join('releases', 'agent-release'), join(home, 'recovery', 'current'), 'dir');
+      const config = createRecoveryConfig(home, {
+        agentRepair: {
+          enabled: true,
+          command: 'pi',
+          promptFile: join(home, 'recovery', 'current', RECOVERY_AGENT_PROMPT),
+          repoRoot,
+          cooldownMs: 60_000,
+        },
+      });
+      const invocations: Array<{ command: string; args: string[]; cwd: string }> = [];
+      const first = await runAgentRepair(config, publicTunnelVerification(false), {
+        now: () => 100_000,
+        runCommand: async (command, args, _timeout, cwd) => {
+          invocations.push({ command, args, cwd });
+          return { ok: true, status: 0, stdout: 'repaired', stderr: '' };
+        },
+      });
+      expect(first).toMatchObject({ ok: true, attempted: true, status: 0 });
+      expect(invocations).toHaveLength(1);
+      expect(invocations[0]?.command).toBe('pi');
+      expect(invocations[0]?.cwd).toBe(realpathSync(repoRoot));
+      expect(invocations[0]?.args.slice(0, 2)).toEqual(['-p', `@${realpathSync(promptPath)}`]);
+      expect(invocations[0]?.args.at(-1)).toContain('exhausted bounded restart/tunnel/rollback paths');
+      const repeated = await runAgentRepair(config, publicTunnelVerification(false), {
+        now: () => 120_000,
+        runCommand: async () => { throw new Error('cooldown must suppress PI'); },
+      });
+      expect(repeated).toMatchObject({ ok: false, attempted: false, noOp: true });
+      expect(repeated.detail).toContain('cooldown');
+      expect(readFileSync(join(home, 'recovery', 'audit', 'recovery.jsonl'), 'utf8')).not.toContain('repaired');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps PI disabled by default and orders local Recovery restart before rollback or agent repair', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'standalone-recovery-pi-disabled-'));
+    try {
+      const disabled = await runAgentRepair(createRecoveryConfig(home), publicTunnelVerification(false));
+      expect(disabled).toMatchObject({ ok: false, attempted: false, noOp: true });
+      expect(decideWatchdog({
+        failures: 2,
+        firstFailureAt: Date.now() - 6_000,
+        evidenceClasses: ['recovery_gateway'],
+        activeKnownGood: true,
+        previousKnownGood: true,
+        operationInFlight: false,
+        rollbackUsed: false,
+        recoveryGatewayFailed: true,
+      }).action).toBe('restart_recovery_gateway');
+      expect(decideWatchdog({
+        failures: 12,
+        firstFailureAt: Date.now() - 121_000,
+        evidenceClasses: [],
+        activeKnownGood: false,
+        previousKnownGood: true,
+        operationInFlight: false,
+        rollbackUsed: false,
+        recoveryGatewayRestartUsed: true,
+        agentRepairEnabled: true,
+        agentRepairCooldownElapsed: true,
+      }).action).toBe('run_agent_repair');
+      expect(decideWatchdog({
+        failures: 12,
+        firstFailureAt: Date.now() - 121_000,
+        evidenceClasses: [],
+        activeKnownGood: false,
+        previousKnownGood: true,
+        operationInFlight: true,
+        rollbackUsed: false,
+        publicTunnelConfigured: true,
+        publicTunnelFailed: true,
+        publicTunnelFailures: 12,
+        publicTunnelFirstFailureAt: Date.now() - 121_000,
+        publicTunnelRepairFailures: 2,
+        agentRepairEnabled: true,
+        agentRepairCooldownElapsed: true,
+      }).action).toBe('degraded');
+      expect(decideWatchdog({
+        failures: 12,
+        firstFailureAt: Date.now() - 121_000,
+        evidenceClasses: [],
+        activeKnownGood: false,
+        previousKnownGood: true,
+        operationInFlight: false,
+        rollbackUsed: false,
+        recoveryGatewayFailed: true,
+        recoveryGatewayRestartUsed: true,
+      }).action).not.toBe('rollback');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test('uses protected curl transport for the complete external HTTPS MCP lifecycle', async () => {
     const home = mkdtempSync(join(tmpdir(), 'standalone-recovery-curl-lifecycle-'));
     const active = release(home, 'active', 'release-active');
@@ -886,6 +1045,8 @@ describe('immutable standalone Recovery releases', () => {
       expect(staged.release.sourceCommit).toBe(source.head);
       expect(staged.release.cleanWorkspace).toBe(true);
       expect(Object.keys(staged.release.artifacts).sort()).toEqual([...RECOVERY_RELEASE_BINARIES].sort());
+      expect(staged.release.resources[RECOVERY_AGENT_PROMPT]?.sha256).toBe(createHash('sha256').update('# fixed recovery prompt\n').digest('hex'));
+      expect(readFileSync(join(staged.release.releasePath, RECOVERY_AGENT_PROMPT), 'utf8')).toBe('# fixed recovery prompt\n');
       expect(readdirSync(join(home, 'recovery', 'releases')).some((entry) => entry.startsWith('.staging-'))).toBe(false);
       writeFileSync(join(source.root, 'scripts', 'load-standalone-recovery.sh'), '# dirty\n');
       expect(() => stageRecoveryRelease({ controllerHome: home, sourceRoot: source.root }, {

@@ -9,6 +9,8 @@ import {
   gatewayToken,
   listSlots,
   loadRecoveryConfig,
+  loadWatchdogState,
+  saveWatchdogState,
   reconnectMain,
   restartGateway,
   repairPublicTunnel,
@@ -105,11 +107,11 @@ async function cli(): Promise<void> {
 async function startWatchdog(config: RecoveryConfig): Promise<void> {
   const runtimeIdentity = writeRecoveryRuntimeIdentity(config.controllerHome, 'watchdog');
   process.stdout.write(JSON.stringify({ status: 'ready', role: 'watchdog', runtimeIdentity }) + '\n');
-  let state: WatchdogState = { failures: 0, rollbackUsed: false };
+  let state: WatchdogState = loadWatchdogState(config);
   for (;;) {
     try {
       const result = await watchdogTick(config, state);
-      state = result.state;
+      state = saveWatchdogState(config, result.state);
       process.stdout.write(JSON.stringify({
         at: new Date().toISOString(),
         action: result.decision.action,
@@ -119,7 +121,7 @@ async function startWatchdog(config: RecoveryConfig): Promise<void> {
         publicTunnelDetail: result.publicTunnelRepair?.detail,
       }) + '\n');
     } catch (error) {
-      state = { ...state, failures: state.failures + 1, firstFailureAt: state.firstFailureAt ?? Date.now() };
+      state = saveWatchdogState(config, { ...state, failures: state.failures + 1, firstFailureAt: state.firstFailureAt ?? Date.now() });
       process.stderr.write(`watchdog probe failed: ${error instanceof Error ? error.message : String(error)}\n`);
     }
     await new Promise((resolveSleep) => setTimeout(resolveSleep, 5_000));
