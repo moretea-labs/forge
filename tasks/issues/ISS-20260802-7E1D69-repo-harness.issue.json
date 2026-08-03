@@ -4,7 +4,7 @@
   "title": "让 Repo Harness 只展示清晰需求并自动管理执行细节",
   "slug": "repo-harness",
   "kind": "governance",
-  "status": "in_progress",
+  "status": "planned",
   "summary": "把当前以 Issue/Task/Run 状态为中心的执行账本，重构为以用户需求为中心的控制面。用户只管理可读的 Requirement；技术方案是可替换的 Execution Plan；Work 是唯一执行合同；Attempt、Process、Check、Receipt 和 Maintenance Finding 保留为内部证据。Requirement、Plan、Work 关系与状态迁移到 Controller-home SQLite 单一权威，Git 只保留源码、架构文档和可选导出快照，不再承担运行时状态双写。运行时 Bootstrap authority/config 继续使用独立极小原子文件，避免管理数据库故障影响启动与 Recovery。",
   "goals": [
     "让用户默认只看到需求目标、当前状态、已交付结果、阻塞原因和需要用户决定的事项。",
@@ -84,11 +84,98 @@
         "本轮审计新增硬要求：Requirement.displayTitle 与 stable key/alias/存储路径必须分离。现有 slugify 对中文标题会退化为 issue、bug、repo-harness 等不可读值，并且标题修改会触发 Git 投影文件重命名。新模型必须使用不可变 Requirement ID/稳定存储键，标题可修改但不得改变权威记录地址；导出文件名也应基于稳定 ID，而不是标题 slug。",
         "新增迁移约束：ISS-20260720-66E25D 保留为用户可见的物理 iPhone Requirement；ISS-20260802-3EC105 是可替换的通用插件平台 Execution Plan/架构使能项，不应被误建成与 iOS、Browser、Google 各能力平级的重复用户需求。Runtime 与 Recovery 同样按用户结果和技术计划分层映射。",
         "2026-08-02 已落地 accepted Requirement-centered ADR、完整 33-Issue 迁移映射，并修订旧 SQLite ADR 与 state-store inventory 的 Git authority 条款。",
-        "当前 ChatGPT connector 的 stale core capability snapshot 已不再阻止 `package:check:public-docs`；该门禁已通过，T1 可进入完成状态。"
+        "当前 ChatGPT connector 的 stale core capability snapshot 已不再阻止 `package:check:public-docs`；该门禁已通过，T1 可进入完成状态。",
+        "Reconciled missing completion evidence with receipt REC-reconciled-36f4171e922e97f7; declared Task status remains done."
       ],
       "createdAt": "2026-08-02T06:26:19.425Z",
-      "updatedAt": "2026-08-02T10:18:00.000Z",
-      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      "updatedAt": "2026-08-03T01:03:37.902Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "runIds": [],
+      "verification": {
+        "integratedRevision": "13d138ac4f36a25c19f2bcc30f0f31e5baa10723",
+        "reviewer": "ChatGPT",
+        "checkResults": [
+          {
+            "checkId": "package:check:public-docs",
+            "ok": true,
+            "summary": "[public-docs] OK on current clean main"
+          }
+        ],
+        "commandEvidence": [
+          {
+            "command": [
+              "bun",
+              "run",
+              "check:public-docs"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "[public-docs] OK",
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-08-03T01:03:37.862Z",
+            "source": "reported"
+          }
+        ],
+        "acceptanceResults": [
+          {
+            "criterion": "架构图明确用户面与执行面的分层。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Requirement-centered ADR separates Requirement from ExecutionPlan, PlanStep, Work, Attempt and MaintenanceFinding."
+          },
+          {
+            "criterion": "SQLite、运行时原子文件、Git 和 artifact 文件各自只有一个明确权威边界。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Accepted ADR and updated storage documents define the four authority boundaries."
+          },
+          {
+            "criterion": "当前每个 Issue 都有 Requirement、history-only、merged、cancelled 或 completed 的迁移归属。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "The portfolio migration document contains the audited 33-Issue mapping."
+          },
+          {
+            "criterion": "没有长期 dual-read、dual-write 或静默 fallback。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "The frozen design requires one-way import and SQLite-only writes after migration."
+          }
+        ],
+        "verifiedAt": "2026-08-03T01:03:37.862Z",
+        "autoCompleted": true,
+        "completionReceipt": {
+          "schemaVersion": 1,
+          "receiptId": "REC-reconciled-36f4171e922e97f7",
+          "source": "remote_no_change_execution",
+          "issueId": "ISS-20260802-7E1D69",
+          "taskId": "T1",
+          "targetBranch": "main",
+          "targetRevision": "13d138ac4f36a25c19f2bcc30f0f31e5baa10723",
+          "sourceRevision": "13d138ac4f36a25c19f2bcc30f0f31e5baa10723",
+          "changedPaths": [],
+          "delivery": {
+            "kind": "commit",
+            "status": "integrated",
+            "strategy": "remote",
+            "reachable": true,
+            "recordedAt": "2026-08-03T01:03:37.900Z"
+          },
+          "cleanup": {
+            "status": "complete",
+            "warnings": [],
+            "blockers": [],
+            "recordedAt": "2026-08-03T01:03:37.900Z"
+          },
+          "verifiedAt": "2026-08-03T01:03:37.862Z",
+          "recordedAt": "2026-08-03T01:03:37.900Z"
+        },
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
     },
     {
       "id": "T2",
@@ -125,18 +212,140 @@
       "risk": "high",
       "notes": [
         "9b3e2ae7f 已合并到本地 main；Requirement、Plan、Work 已落到 SQLite per-record 事务/CAS 边界，旧 index/JSON 仅在缺失 authority 时一次性导入，WAL 备份恢复已覆盖 focused test。",
-        "check:type、check:runtime-architecture、check:test-governance、check:public-docs、affected tests 和 check:controller-v8 均通过；Controller V8 修复同时固定了 compiled process-runner canary 的 executionMode 传递和 MCP 稳定 128-tool 契约。"
+        "check:type、check:runtime-architecture、check:test-governance、check:public-docs、affected tests 和 check:controller-v8 均通过；Controller V8 修复同时固定了 compiled process-runner canary 的 executionMode 传递和 MCP 稳定 128-tool 契约。",
+        "Reconciled missing completion evidence with receipt REC-reconciled-dc1ad83320f49822; declared Task status remains done."
       ],
       "runIds": [],
       "createdAt": "2026-08-02T06:26:19.425Z",
-      "updatedAt": "2026-08-02T14:30:00.000Z",
-      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      "updatedAt": "2026-08-03T01:03:58.038Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "verification": {
+        "integratedRevision": "13d138ac4f36a25c19f2bcc30f0f31e5baa10723",
+        "reviewer": "ChatGPT",
+        "checkResults": [
+          {
+            "checkId": "package:check:type",
+            "ok": true,
+            "summary": "bun x tsc --noEmit passed on current clean main"
+          },
+          {
+            "checkId": "package:check:runtime-architecture",
+            "ok": true,
+            "summary": "[runtime-architecture] OK (34 required modules/documents checked)"
+          },
+          {
+            "checkId": "package:check:controller-v8",
+            "ok": true,
+            "summary": "Controller V8 affected suite passed on current clean main"
+          }
+        ],
+        "commandEvidence": [
+          {
+            "command": [
+              "bun",
+              "run",
+              "check:type"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "stderr": "$ bun x tsc --noEmit",
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-08-03T01:03:58.004Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "bun",
+              "run",
+              "check:runtime-architecture"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "[runtime-architecture] OK (34 required modules/documents checked)",
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-08-03T01:03:58.004Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "bun",
+              "run",
+              "check:controller-v8"
+            ],
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "affected Controller V8 suites passed",
+            "reportedBy": "ChatGPT",
+            "executedAt": "2026-08-03T01:03:58.004Z",
+            "source": "reported"
+          }
+        ],
+        "acceptanceResults": [
+          {
+            "criterion": "SQLite-first、缺失时一次性导入、导入后 SQLite-only 写入。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "9b3e2ae7f implemented SQLite per-record authority with one-time legacy import only when authority is absent."
+          },
+          {
+            "criterion": "Requirement/Plan 更新具有 monotonic revision、审计和 CAS 冲突处理。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Requirement and Plan persistence use versioned revisions, audit records and transactional CAS boundaries."
+          },
+          {
+            "criterion": "损坏旧记录、未知 schema 和中断迁移 fail closed，并保留 last-known-good。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Focused persistence coverage and WAL backup/recovery paths enforce fail-closed migration and retained known-good state."
+          },
+          {
+            "criterion": "运行时 Bootstrap 和 Recovery 不依赖这些表才能启动。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Runtime bootstrap authority/config and Recovery state remain separate atomic-file boundaries."
+          }
+        ],
+        "verifiedAt": "2026-08-03T01:03:58.004Z",
+        "autoCompleted": true,
+        "completionReceipt": {
+          "schemaVersion": 1,
+          "receiptId": "REC-reconciled-dc1ad83320f49822",
+          "source": "remote_no_change_execution",
+          "issueId": "ISS-20260802-7E1D69",
+          "taskId": "T2",
+          "targetBranch": "main",
+          "targetRevision": "13d138ac4f36a25c19f2bcc30f0f31e5baa10723",
+          "sourceRevision": "13d138ac4f36a25c19f2bcc30f0f31e5baa10723",
+          "changedPaths": [],
+          "delivery": {
+            "kind": "commit",
+            "status": "integrated",
+            "strategy": "remote",
+            "reachable": true,
+            "recordedAt": "2026-08-03T01:03:58.036Z"
+          },
+          "cleanup": {
+            "status": "complete",
+            "warnings": [],
+            "blockers": [],
+            "recordedAt": "2026-08-03T01:03:58.036Z"
+          },
+          "verifiedAt": "2026-08-03T01:03:58.004Z",
+          "recordedAt": "2026-08-03T01:03:58.036Z"
+        },
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
     },
     {
       "id": "T3",
       "title": "让 Work 成为唯一执行合同",
       "objective": "移除 ControllerTask 与 WorkContract 之间重复的 objective、scope、checks、risk、status 和 completion authority。PlanStep 只引用 Work；Attempt/Run/Process 成为 Work 的执行尝试和证据，不再反向决定用户需求生命周期。",
-      "status": "planned",
+      "status": "ready",
       "dependsOn": [
         "T1",
         "T2"
@@ -337,6 +546,6 @@
     }
   ],
   "createdAt": "2026-08-02T06:26:19.425Z",
-  "updatedAt": "2026-08-02T10:18:00.000Z",
+  "updatedAt": "2026-08-03T01:03:58.038Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }

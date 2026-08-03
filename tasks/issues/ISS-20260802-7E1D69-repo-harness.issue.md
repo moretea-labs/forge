@@ -1,8 +1,8 @@
 ---
 id: "ISS-20260802-7E1D69"
 kind: "governance"
-status: "in_progress"
-updated_at: "2026-08-02T14:30:00.000Z"
+status: "planned"
+updated_at: "2026-08-03T01:03:58.038Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -58,7 +58,6 @@ source: "repo-harness-controller-v8"
 - Depends on: none
 - Allowed paths: `docs/architecture/**`, `docs/operations/**`, `docs/researches/**`, `tasks/issues/**`
 - Checks: `package:check:public-docs`
-- Notes: accepted ADR、33-Issue 迁移映射和旧 authority 修订已落地；`bun run check:public-docs` 通过。
 - Execution hint: selected at runtime
 
 ### T2 — 建立 SQLite Requirement 与 Plan 权威
@@ -68,12 +67,11 @@ source: "repo-harness-controller-v8"
 - Depends on: `T1`
 - Allowed paths: `src/runtime/persistence/**`, `src/runtime/control-plane/**`, `src/cli/controller/**`, `tests/runtime/**`, `tests/cli/**`, `scripts/**`, `docs/operations/**`
 - Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:controller-v8`
-- Notes: `9b3e2ae7f` 已合并到本地 `main`；Requirement、Plan、Work 已落到 SQLite per-record 事务/CAS 边界，旧 index/JSON 仅在缺失 authority 时一次性导入，WAL 备份恢复已覆盖 focused test。`check:type`、`check:runtime-architecture`、`check:test-governance`、`check:public-docs`、affected tests 和 `check:controller-v8` 均通过。
 - Execution hint: selected at runtime
 
 ### T3 — 让 Work 成为唯一执行合同
 
-- Status: `planned`
+- Status: `ready`
 - Objective: 移除 ControllerTask 与 WorkContract 之间重复的 objective、scope、checks、risk、status 和 completion authority。PlanStep 只引用 Work；Attempt/Run/Process 成为 Work 的执行尝试和证据，不再反向决定用户需求生命周期。
 - Depends on: `T1`, `T2`
 - Allowed paths: `src/runtime/control-plane/**`, `src/runtime/execution/**`, `src/runtime/workflow/**`, `src/cli/controller/**`, `src/cli/mcp/**`, `tests/**`, `docs/architecture/**`
