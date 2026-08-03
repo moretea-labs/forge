@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'child_process';
+import { resolveSupervisorActivationInvocation } from './service-activation';
 
 export interface StableIngressProcessOptions {
   executable: string;
@@ -50,8 +51,7 @@ async function stopChild(child: ChildProcess): Promise<void> {
 }
 
 export async function createStableIngressProcess(options: StableIngressProcessOptions): Promise<StableIngressProcessHandle> {
-  const args = [
-    options.executable,
+  const invocation = resolveSupervisorActivationInvocation(options.executable, [
     '--ingress-child',
     '--repo', options.repoRoot,
     '--controller-home', options.controllerHome,
@@ -62,8 +62,8 @@ export async function createStableIngressProcess(options: StableIngressProcessOp
     '--blue-upstream-port', String(options.blueUpstreamPort),
     '--green-upstream-port', String(options.greenUpstreamPort),
     '--parent-pid', String(process.pid),
-  ];
-  const child = spawn(process.execPath, args, {
+  ]);
+  const child = spawn(invocation.command, invocation.args, {
     cwd: options.repoRoot,
     stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
     env: {
