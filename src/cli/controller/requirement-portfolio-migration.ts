@@ -229,6 +229,11 @@ function planIdForMapping(entry: PortfolioIssueMapping): string {
   return entry.planId ?? `PLAN-${entry.issueId.replace(/^ISS-/, '')}`;
 }
 
+export function portfolioPlanIdForIssue(issueId: string): string | undefined {
+  const entry = PORTFOLIO_ISSUE_MAPPINGS.find((candidate) => candidate.issueId === issueId.trim());
+  return entry ? planIdForMapping(entry) : undefined;
+}
+
 function stableJson(value: unknown): string {
   return JSON.stringify(value);
 }

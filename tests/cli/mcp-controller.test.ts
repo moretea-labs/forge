@@ -1091,7 +1091,7 @@ describe("MCP controller profile", () => {
         unchanged.value.tasks.map((task: { status: string }) => task.status),
       ).toEqual(["verified", "planned"]);
       const board = await jsonTool(ctx, "get_project_board", { detail_level: "detail" });
-      expect(board.value.legacyTaskProjection.readyTasks).toEqual([]);
+      expect(board.value.legacyTaskProjection).toBeUndefined();
     });
   });
 
@@ -1168,8 +1168,8 @@ describe("MCP controller profile", () => {
       const detail = await jsonTool(ctx, "get_project_board", { detail_level: "detail" });
       expect(detail.raw.isError).not.toBe(true);
       expect(detail.value).toMatchObject({ detailLevel: "detail", view: "execution_diagnostics" });
-      expect(detail.value.legacyTaskProjection.issueCount).toBeGreaterThanOrEqual(1);
-      expect(detail.value.legacyTaskProjection.currentIssue.tasks[0].objective).toBeUndefined();
+      expect(detail.value.legacyTaskProjection).toBeUndefined();
+      expect(JSON.stringify(detail.value)).not.toContain("Internal implementation task");
       expect(detail.value.maintenanceFindings).toEqual(expect.arrayContaining([
         expect.objectContaining({ requirementId: "REQ-DONE-MAINTENANCE", requirementState: "done", lifecycleUnaffected: true }),
       ]));
@@ -1268,10 +1268,10 @@ describe("MCP controller profile", () => {
       const receipt = stored.value.tasks.find((task: { id: string }) => task.id === "T1")?.verification?.completionReceipt;
       expect(receipt).toMatchObject({ targetBranch: "main", targetRevision: revision });
 
-      const board = await jsonTool(ctx, "get_project_board", { detail_level: "detail" });
-      expect(board.value.legacyTaskProjection.readyTasks).toEqual(expect.arrayContaining([
-        expect.objectContaining({ issueId: created.value.id, taskId: "T2" }),
-      ]));
+      expect(stored.value.tasks.find((task: { id: string }) => task.id === "T2")).toMatchObject({
+        id: "T2",
+        effectiveStatus: "ready",
+      });
     });
   });
 

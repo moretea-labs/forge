@@ -35,6 +35,7 @@ import { projectControllerTaskFromWork } from '../../runtime/control-plane/facad
 import type { WorkContract } from '../../runtime/control-plane/facade/types';
 import { resolveRepoPreferredControllerHome } from '../repositories/controller-home';
 import { markControllerContextProjectionDirty } from '../../runtime/projections/controller-context';
+import { assertLegacyIssueWritesAllowed, assertLegacyProjectBoardAvailable } from './legacy-issue-cutover';
 
 const ISSUE_ROOT = 'tasks/issues';
 const EPHEMERAL_ISSUE_ROOT = '.ai/harness/ephemeral-issues';
@@ -182,6 +183,7 @@ function renderIssueMarkdown(issue: ControllerIssue): string {
 }
 
 function writeIssue(repoRoot: string, issue: ControllerIssue): ControllerIssue {
+  assertLegacyIssueWritesAllowed(repoRoot, issue);
   const root = join(repoRoot, issueRoot(issue));
   mkdirSync(root, { recursive: true });
   issue.schemaVersion = 5;
@@ -1278,6 +1280,7 @@ export function projectBoard(repoRoot: string): {
   currentIssueId?: string;
   archivedIssueCount: number;
 } {
+  assertLegacyProjectBoardAvailable(repoRoot);
   const issues = listIssues(repoRoot);
   const projectState = loadControllerProjectState(repoRoot);
   const currentIssueId = projectState.currentIssueId

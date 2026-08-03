@@ -16,6 +16,7 @@ import { currentCompletionTarget, resolveCompletionTargetBranch } from './comple
 import { runControllerCheck } from './check-runner';
 import type { CleanupEvidence, ControllerIssue, ControllerTask, IntegrationEvidence, TaskCommandEvidence, TaskVerification } from './types';
 import type { CompletionMaintenanceWarning, CompletionReceipt, CompletionReceiptSource, CompletionResourceBlocker } from './types';
+import { legacyIssueAuthorityRetired, migratedTaskCompletionState, recordMigratedTaskCompletion } from './legacy-issue-cutover';
 
 export type TaskReviewDecision =
   | 'auto'
@@ -316,6 +317,17 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
 
   const issue = getIssue(repoRoot, initialSession.issueId);
   const task = taskForRun(issue, initialSession.taskId);
+  const migratedCompletion = migratedTaskCompletionState(repoRoot, issue.id, task.id);
+  if (migratedCompletion.migrated && migratedCompletion.completed) {
+    return editResult(repoRoot, {
+      action: 'already_done',
+      sessionId: initialSession.sessionId,
+      issueId: issue.id,
+      taskId: task.id,
+      decision,
+      taskStatus: 'done',
+    });
+  }
   if (task.status === 'done') {
     if (!completionEvidenceComplete(task.verification, {
       issueId: issue.id,
@@ -697,6 +709,39 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
       completionReceipt,
       reason: completionReceipt.cleanup.blockers.map((entry) => entry.message).join(' '),
       commitSha,
+    });
+  }
+
+  if (legacyIssueAuthorityRetired(repoRoot)) {
+    const migrated = recordMigratedTaskCompletion(repoRoot, {
+      issueId: issue.id,
+      taskId: task.id,
+      receipt: completionReceipt,
+      reviewer,
+      note: options.note,
+      checks: (session.checkResults.length > 0 ? session.checkResults : standaloneCheckResults).map((result) => ({
+        checkId: result.checkId,
+        ok: result.ok,
+        summary: result.summary,
+      })),
+    });
+    if (!migrated.migrated || !migrated.completed) {
+      return editResult(repoRoot, {
+        action: 'blocked', sessionId: session.sessionId, issueId: issue.id, taskId: task.id, decision,
+        taskStatus: task.status, changedPaths, completionReceipt, commitSha,
+        reason: `Migrated PlanStep completion was not recorded for ${issue.id}/${task.id}.`,
+      });
+    }
+    return editResult(repoRoot, {
+      action: changedPaths.length === 0 ? 'no_change' : 'finished',
+      sessionId: session.sessionId,
+      issueId: issue.id,
+      taskId: task.id,
+      decision,
+      taskStatus: 'done',
+      changedPaths,
+      commitSha,
+      completionReceipt,
     });
   }
 

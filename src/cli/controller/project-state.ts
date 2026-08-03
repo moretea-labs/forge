@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { tryAppendControllerWorklogEvent } from "./worklog";
+import { assertLegacyCurrentIssueWriteAllowed, legacyIssueAuthorityRetired } from "./legacy-issue-cutover";
 
 const PROJECT_STATE_PATH = ".ai/harness/controller/project-state.json";
 
@@ -32,7 +33,7 @@ export function loadControllerProjectState(repoRoot: string): ControllerProjectS
   if (!existsSync(path)) return defaultState();
   try {
     const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<ControllerProjectState>;
-    return {
+    const loaded: ControllerProjectState = {
       schemaVersion: 1,
       currentIssueId: typeof parsed.currentIssueId === "string" && parsed.currentIssueId.trim()
         ? parsed.currentIssueId.trim()
@@ -43,6 +44,7 @@ export function loadControllerProjectState(repoRoot: string): ControllerProjectS
       showArchivedByDefault: parsed.showArchivedByDefault === true,
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString(),
     };
+    return legacyIssueAuthorityRetired(repoRoot) ? { ...loaded, currentIssueId: undefined } : loaded;
   } catch (_error) {
     return defaultState();
   }
@@ -53,6 +55,7 @@ export function saveControllerProjectState(
   patch: Partial<Pick<ControllerProjectState, "currentIssueId" | "issueCreationMode" | "showArchivedByDefault">>,
   actor = "repo-harness-controller",
 ): ControllerProjectState {
+  if (Object.prototype.hasOwnProperty.call(patch, "currentIssueId")) assertLegacyCurrentIssueWriteAllowed(repoRoot);
   const previous = loadControllerProjectState(repoRoot);
   const next: ControllerProjectState = {
     ...previous,
@@ -97,6 +100,7 @@ export function saveControllerProjectState(
 }
 
 export function clearCurrentIssue(repoRoot: string, actor?: string): ControllerProjectState {
+  if (legacyIssueAuthorityRetired(repoRoot)) return loadControllerProjectState(repoRoot);
   const previous = loadControllerProjectState(repoRoot);
   const next: ControllerProjectState = {
     ...previous,

@@ -3720,15 +3720,12 @@ export async function callMcpTool(
         const detailLevel = args.detail_level === "full" ? "full" : args.detail_level === "detail" ? "detail" : "summary";
         const payload = detailLevel === "summary"
           ? buildRequirementBoard({ controllerHome, repoId: ctx.repoId })
-          : {
-              ...buildExecutionDiagnostics({
-                controllerHome,
-                repoId: ctx.repoId,
-                detailLevel,
-                requirementId: typeof args.requirement_id === "string" ? args.requirement_id : undefined,
-              }),
-              legacyTaskProjection: summarizeProjectBoard(projectBoard(ctx.repoRoot) as unknown as Record<string, unknown>),
-            };
+          : buildExecutionDiagnostics({
+              controllerHome,
+              repoId: ctx.repoId,
+              detailLevel,
+              requirementId: typeof args.requirement_id === "string" ? args.requirement_id : undefined,
+            });
         audit(ctx, name, "ok", args);
         const response = {
           ...payload,

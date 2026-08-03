@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { ControllerIssue, ControllerTask, IssueStatus, TaskStatus } from '../../src/cli/controller/types';
@@ -10,8 +10,12 @@ import {
   prepareRequirementPortfolioMigration,
 } from '../../src/cli/controller/requirement-portfolio-migration';
 import { createRequirement, listRequirements } from '../../src/runtime/control-plane/persistence/requirement-store';
+import { createIssue, projectBoard, updateIssue } from '../../src/cli/controller/issue-store';
+import { clearCurrentIssue, saveControllerProjectState } from '../../src/cli/controller/project-state';
+import { migratedTaskCompletionState, recordMigratedTaskCompletion } from '../../src/cli/controller/legacy-issue-cutover';
+import { exportRequirementPortfolio } from '../../src/cli/controller/requirement-portfolio-export';
 import { listControlPlaneRecords } from '../../src/runtime/control-plane/persistence/sqlite-store';
-import { listPlanContracts } from '../../src/runtime/control-plane/facade/plan-contract-store';
+import { getPlanContract, listPlanContracts } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { buildExecutionDiagnostics } from '../../src/runtime/control-plane/facade/requirement-board';
 
 const REPO_ID = 'repo_portfolio_test';
@@ -79,8 +83,14 @@ function fixtures(): ControllerIssue[] {
   return PORTFOLIO_ISSUE_MAPPINGS.map((entry) => {
     const status = fixtureStatus(entry.issueId, entry.disposition, entry.requirementId);
     const taskStatus: TaskStatus = status === 'done' ? 'done' : status === 'cancelled' ? 'cancelled' : 'ready';
-    const tasks = [task(entry.issueId, 'T1', taskStatus)];
-    if (entry.issueId === 'ISS-20260802-7E1D69') tasks.push(task(entry.issueId, 'T5', 'ready'));
+    const tasks = entry.issueId === 'ISS-20260802-7E1D69'
+      ? [
+          task(entry.issueId, 'T1', 'done'),
+          task(entry.issueId, 'T5', 'ready'),
+          task(entry.issueId, 'T6', 'ready'),
+          task(entry.issueId, 'T7', 'ready'),
+        ]
+      : [task(entry.issueId, 'T1', taskStatus)];
     return {
       schemaVersion: 5,
       repoId: entry.issueId === 'ISS-20260726-69DA83' ? 'repo_legacy_registration' : REPO_ID,
@@ -168,6 +178,66 @@ describe('Requirement portfolio migration', () => {
       expect(() => applyRequirementPortfolioMigration(input(controllerHome, unknown))).toThrow('REQUIREMENT_PORTFOLIO_SOURCE_SET_MISMATCH');
       expect(listRequirements({ controllerHome }, 100)).toEqual([]);
     });
+  });
+
+  test('retires legacy writes, records migrated completion, and exports deterministic offline snapshots', () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'requirement-cutover-repo-'));
+    const controllerHome = join(repoRoot, '_ops', 'controller-home');
+    try {
+      mkdirSync(join(repoRoot, '.ai', 'harness'), { recursive: true });
+      writeFileSync(join(repoRoot, '.ai', 'harness', 'repository.json'), `${JSON.stringify({ schemaVersion: 1, repoId: REPO_ID }, null, 2)}\n`, 'utf8');
+      const legacyIssue = createIssue(repoRoot, {
+        title: 'Legacy writable fixture',
+        kind: 'feature',
+        summary: 'This file becomes frozen history after cutover.',
+        tasks: [{ title: 'Legacy task', objective: 'Do not mutate after migration.' }],
+      });
+      const issueDir = join(repoRoot, 'tasks', 'issues');
+      const beforeFiles = readdirSync(issueDir).sort();
+      const beforeContents = Object.fromEntries(beforeFiles.map((name) => [name, readFileSync(join(issueDir, name), 'utf8')]));
+
+      applyRequirementPortfolioMigration(input(controllerHome));
+      expect(() => updateIssue(repoRoot, legacyIssue.id, { summary: 'Refused mutation.' })).toThrow('LEGACY_ISSUE_WRITES_RETIRED');
+      expect(() => createIssue(repoRoot, { title: 'Refused new durable Issue', kind: 'bug' })).toThrow('LEGACY_ISSUE_WRITES_RETIRED');
+      expect(() => projectBoard(repoRoot)).toThrow('LEGACY_PROJECT_BOARD_RETIRED');
+      expect(() => saveControllerProjectState(repoRoot, { currentIssueId: legacyIssue.id })).toThrow('LEGACY_CURRENT_ISSUE_RETIRED');
+      expect(clearCurrentIssue(repoRoot).currentIssueId).toBeUndefined();
+      expect(readdirSync(issueDir).sort()).toEqual(beforeFiles);
+      expect(Object.fromEntries(beforeFiles.map((name) => [name, readFileSync(join(issueDir, name), 'utf8')]))).toEqual(beforeContents);
+
+      const t6Receipt = completionReceipt('ISS-20260802-7E1D69', 'T6');
+      const first = recordMigratedTaskCompletion(repoRoot, {
+        issueId: 'ISS-20260802-7E1D69',
+        taskId: 'T6',
+        receipt: t6Receipt,
+        reviewer: 'test',
+        checks: [{ checkId: 'package:check:type', ok: true, summary: 'passed' }],
+      });
+      expect(first).toMatchObject({ migrated: true, completed: true, planId: 'PLAN-20260802-7E1D69', receiptId: t6Receipt.receiptId });
+      expect(migratedTaskCompletionState(repoRoot, 'ISS-20260802-7E1D69', 'T6')).toMatchObject({ completed: true, receiptId: t6Receipt.receiptId });
+      expect(recordMigratedTaskCompletion(repoRoot, {
+        issueId: 'ISS-20260802-7E1D69', taskId: 'T6', receipt: t6Receipt, reviewer: 'test',
+      }).receiptId).toBe(t6Receipt.receiptId);
+      expect(getPlanContract({ controllerHome, repoId: REPO_ID }, 'PLAN-20260802-7E1D69')?.steps.find((step) => step.id === 'T6')).toMatchObject({ status: 'completed' });
+      expect(listRequirements({ controllerHome }, 100).find((record) => record.value.requirementId === 'REQ-CONTROL-PLANE')?.value.state).toBe('active');
+
+      const t7Receipt = completionReceipt('ISS-20260802-7E1D69', 'T7');
+      recordMigratedTaskCompletion(repoRoot, { issueId: 'ISS-20260802-7E1D69', taskId: 'T7', receipt: t7Receipt, reviewer: 'test' });
+      expect(listRequirements({ controllerHome }, 100).find((record) => record.value.requirementId === 'REQ-CONTROL-PLANE')?.value.state).toBe('done');
+
+      const outputDir = join(repoRoot, 'offline-requirement-export');
+      const exported = exportRequirementPortfolio({ controllerHome, repoId: REPO_ID, repoRoot, outputDir });
+      const firstManifest = readFileSync(join(outputDir, 'manifest.json'), 'utf8');
+      const repeated = exportRequirementPortfolio({ controllerHome, repoId: REPO_ID, repoRoot, outputDir });
+      expect(repeated).toEqual(exported);
+      expect(readFileSync(join(outputDir, 'manifest.json'), 'utf8')).toBe(firstManifest);
+      expect(readdirSync(join(outputDir, 'requirements')).some((name) => name === 'REQ-CONTROL-PLANE.json')).toBe(true);
+      expect(exported).toMatchObject({ requirementCount: 10, planCount: 36 });
+      expect(() => exportRequirementPortfolio({ controllerHome, repoId: REPO_ID, repoRoot, outputDir: issueDir })).toThrow('REQUIREMENT_EXPORT_LEGACY_AUTHORITY_PATH_REFUSED');
+      expect(readdirSync(issueDir).sort()).toEqual(beforeFiles);
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
   });
 
   test('rejects partial authority and rejects a changed source after migration', () => {
