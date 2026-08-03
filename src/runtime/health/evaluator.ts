@@ -61,7 +61,6 @@ export interface ProjectionObservation {
 
 export interface ProjectionSourceReconciliation {
   status: 'consistent' | 'mismatch' | 'unknown';
-  blocking?: boolean;
   projectionRunningWorkers?: number;
   ledgerRunningTasks?: number;
   ledgerRunningTaskIds?: string[];
@@ -300,11 +299,10 @@ function evaluateProjection(observation: ProjectionObservation): ComponentHealth
     }
   }
   if (observation.sourceReconciliation?.status === 'mismatch') {
-    const mismatch = reason('projection', 'PROJECTION_SOURCE_MISMATCH', 'Task Ledger and runtime projection disagree about active work.', {
+    const mismatch = reason('projection', 'PROJECTION_SOURCE_MISMATCH', 'Task workflow progress and runtime worker ownership differ.', {
       ...observation.sourceReconciliation,
     });
-    if (observation.sourceReconciliation.blocking === true) blockers.push(mismatch);
-    else warnings.push(mismatch);
+    warnings.push(mismatch);
   }
   return classifyComponent(blockers, warnings);
 }

@@ -897,7 +897,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
       .filter(({ snapshot }) => snapshot.stale)
       .map(({ repoId }) => repoId);
     const blockingStaleRepositories = projectionSnapshots
-      .filter(({ snapshot, reconciliation }) => projectionBlocksReadiness(snapshot, reconciliation))
+      .filter(({ snapshot }) => projectionBlocksReadiness(snapshot))
       .map(({ repoId }) => repoId);
     const sourceMismatches = projectionSnapshots
       .filter(({ reconciliation }) => reconciliation.status === 'mismatch')

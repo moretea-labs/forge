@@ -301,8 +301,8 @@ export interface RepositoryProjectionRefreshResult {
 
 /**
  * Compare the projection's active worker count with the controller Task Ledger.
- * A mismatch is diagnostic evidence; the specific active-work gap where the
- * ledger has running tasks but the projection reports zero workers blocks readiness.
+ * Task status describes workflow progress, not live process ownership, so every
+ * mismatch is repository-scoped diagnostic evidence and never a runtime gate.
  */
 export function reconcileProjectionWithTaskLedger(
   snapshot: RepositoryRuntimeProjectionSnapshot,
@@ -314,10 +314,8 @@ export function reconcileProjectionWithTaskLedger(
   const projectionRunningWorkers = Math.max(0, snapshot.projection.runningWorkers);
   const ledgerRunningTasks = runningTasks.length;
   const status = projectionRunningWorkers === ledgerRunningTasks ? 'consistent' : 'mismatch';
-  const blocking = ledgerRunningTasks > 0 && projectionRunningWorkers === 0;
   return {
     status,
-    ...(status === 'mismatch' ? { blocking } : {}),
     projectionRunningWorkers,
     ledgerRunningTasks,
     ...(runningTasks.length > 0 ? { ledgerRunningTaskIds: runningTasks.map((task) => `${task.issueId}/${task.taskId}`) } : {}),
@@ -556,7 +554,6 @@ export function refreshRepositoryProjectionForRepository(
 
 export function projectionBlocksReadiness(
   snapshot: RepositoryRuntimeProjectionSnapshot,
-  sourceReconciliation?: ProjectionSourceReconciliation,
 ): boolean {
   const ageMs = snapshot.dirtySinceAt
     ? Math.max(0, Date.now() - Date.parse(snapshot.dirtySinceAt))
@@ -574,8 +571,7 @@ export function projectionBlocksReadiness(
     || snapshot.refreshStatus === 'running'
     || snapshot.refreshStatus === 'failed'
   );
-  return (requiredRefresh && ageMs >= RUNTIME_HEALTH_THRESHOLDS.projectionRefreshGraceMs)
-    || sourceReconciliation?.blocking === true;
+  return requiredRefresh && ageMs >= RUNTIME_HEALTH_THRESHOLDS.projectionRefreshGraceMs;
 }
 
 export function projectionObservation(

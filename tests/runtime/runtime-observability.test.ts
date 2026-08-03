@@ -276,22 +276,22 @@ describe('runtime observability', () => {
     }
   });
 
-  test('detects a running Task Ledger task missing from the runtime projection', () => {
+  test('reports a running Task Ledger task without treating it as live worker ownership', () => {
     const snapshot = projectionSnapshot();
     const reconciliation = reconcileProjectionWithTaskLedger(snapshot, ledgerWithRunningTask());
     expect(reconciliation).toMatchObject({
       status: 'mismatch',
-      blocking: true,
       projectionRunningWorkers: 0,
       ledgerRunningTasks: 1,
     });
-    // The ledger-running/zero-worker gap is a bounded readiness blocker.
-    expect(projectionBlocksReadiness(snapshot, reconciliation)).toBe(true);
+    expect('blocking' in reconciliation).toBe(false);
+    expect(projectionBlocksReadiness(snapshot)).toBe(false);
     const observation = projectionObservation(snapshot, reconciliation);
     expect(observation.sourceReconciliation?.status).toBe('mismatch');
     const health = evaluateRuntimeHealth(observations({ projection: observation }));
-    expect(health.ready).toBe(false);
-    expect(health.activeBlockers.map((item) => item.code)).toContain('PROJECTION_SOURCE_MISMATCH');
+    expect(health.ready).toBe(true);
+    expect(health.warnings.map((item) => item.code)).toContain('PROJECTION_SOURCE_MISMATCH');
+    expect(health.activeBlockers.map((item) => item.code)).not.toContain('PROJECTION_SOURCE_MISMATCH');
   });
 
   test('keeps a non-blocking ledger contradiction diagnostic without changing projectionBlocksReadiness', () => {
@@ -300,7 +300,6 @@ describe('runtime observability', () => {
     const reconciliation = reconcileProjectionWithTaskLedger(contradictory, ledgerWithRunningTask());
     expect(reconciliation).toMatchObject({
       status: 'mismatch',
-      blocking: false,
       projectionRunningWorkers: 2,
       ledgerRunningTasks: 1,
     });
@@ -310,13 +309,57 @@ describe('runtime observability', () => {
     expect(observation.sourceReconciliation?.detail).toBeTruthy();
     // The contradiction is diagnostic evidence; the readiness decision keeps its
     // original value (a fresh, non-stale snapshot is not blocking).
-    expect(projectionBlocksReadiness(contradictory, reconciliation))
+    expect(projectionBlocksReadiness(contradictory))
       .toBe(projectionBlocksReadiness(contradictory));
-    expect(projectionBlocksReadiness(contradictory, reconciliation)).toBe(false);
+    expect(projectionBlocksReadiness(contradictory)).toBe(false);
     const health = evaluateRuntimeHealth(observations({ projection: observation }));
     expect(health.ready).toBe(true);
     expect(health.warnings.map((item) => item.code)).toContain('PROJECTION_SOURCE_MISMATCH');
     expect(health.activeBlockers.map((item) => item.code)).not.toContain('PROJECTION_SOURCE_MISMATCH');
+  });
+
+  test('keeps global readiness available when one repository has workflow-only running state', () => {
+    const healthy = projectionSnapshot();
+    const workflowOnly = {
+      ...projectionSnapshot(),
+      projection: { ...projectionSnapshot().projection, repoId: 'repo-workflow-only' },
+    };
+    const reconciliation = reconcileProjectionWithTaskLedger(workflowOnly, ledgerWithRunningTask());
+    const repositories = [
+      { repoId: 'repo-healthy', snapshot: healthy },
+      { repoId: 'repo-workflow-only', snapshot: workflowOnly },
+    ];
+
+    expect(reconciliation).toMatchObject({
+      status: 'mismatch',
+      projectionRunningWorkers: 0,
+      ledgerRunningTasks: 1,
+    });
+    expect(repositories.filter(({ snapshot }) => projectionBlocksReadiness(snapshot))).toEqual([]);
+  });
+
+  test('still blocks a stale projection when live execution invariants are at risk', () => {
+    const snapshot = projectionSnapshot();
+    const staleActiveSnapshot: RepositoryRuntimeProjectionSnapshot = {
+      ...snapshot,
+      stale: true,
+      dirtySinceAt: new Date(Date.now() - 60_000).toISOString(),
+      sourceRevisionChanged: true,
+      projection: {
+        ...snapshot.projection,
+        activeJobs: [{
+          jobId: 'job-live',
+          type: 'agent-run',
+          status: 'running',
+          priority: 'P1',
+          updatedAt: new Date().toISOString(),
+          workerPid: process.pid,
+        }],
+        runningWorkers: 1,
+      },
+    };
+
+    expect(projectionBlocksReadiness(staleActiveSnapshot)).toBe(true);
   });
 
   test('classifies supervisor probe aborts separately from generic runtime failures', () => {

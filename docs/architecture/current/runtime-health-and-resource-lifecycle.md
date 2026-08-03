@@ -21,6 +21,14 @@ usable even when old. A dirty/source-changed projection is warning-level during
 the bounded refresh grace period and becomes a blocker only when the required
 refresh is missed or the build fails.
 
+Task Ledger status describes workflow progress and is not live process
+ownership. A Task may remain `running` across sequential Runs while no Worker is
+currently active. Differences between Task Ledger running counts and runtime
+Worker counts are repository-scoped attention evidence; they never block the
+global Gateway, Controller readiness, or release rollout. Execution readiness
+continues to fail closed on durable Job, queue, Lease, current-attention, and
+projection-build evidence.
+
 ## Projection content and producer health
 
 `RepositoryRuntimeProjection.metadata` distinguishes content revision, source
