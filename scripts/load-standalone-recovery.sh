@@ -1,49 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "${OSTYPE:-}" != darwin* ]]; then
-  echo "standalone recovery LaunchAgents require macOS" >&2
-  exit 2
-fi
+cat >&2 <<'EOF'
+Direct standalone-Recovery reload is disabled.
 
-if [[ $# -ne 1 || -z "${1:-}" ]]; then
-  echo "usage: $0 /absolute/controller-home" >&2
-  exit 2
-fi
+Recovery Gateway and Watchdog must be changed only by the immutable Recovery
+installer, which stages a complete release, records exact current/previous
+evidence, performs a bounded two-service launchd handoff, and verifies or rolls
+back the exact previous release.
 
-controller_home="$1"
-case "$controller_home" in
-  /*) ;;
-  *)
-    echo "controller home must be an absolute path" >&2
-    exit 2
-    ;;
-esac
+Use:
+  bun scripts/install-standalone-recovery.ts --controller-home /absolute/controller-home
 
-uid="$(id -u)"
-domain="gui/$uid"
-
-ensure_loaded() {
-  local label="$1"
-  local plist="$2"
-  local target="$domain/$label"
-
-  if launchctl print "$target" >/dev/null 2>&1; then
-    printf 'already loaded: %s\n' "$target"
-    return 0
-  fi
-  if [[ ! -f "$plist" ]]; then
-    echo "missing LaunchAgent plist: $plist" >&2
-    return 1
-  fi
-  launchctl bootstrap "$domain" "$plist"
-  launchctl print "$target" >/dev/null
-  printf 'loaded: %s\n' "$target"
-}
-
-ensure_loaded \
-  com.moretea.repo-harness-recovery-watchdog \
-  "$controller_home/recovery/launchd/com.moretea.repo-harness-recovery-watchdog.plist"
-ensure_loaded \
-  com.moretea.repo-harness-recovery-gateway \
-  "$controller_home/recovery/launchd/com.moretea.repo-harness-recovery-gateway.plist"
+Use --stage-only to build and inspect a candidate without changing services.
+EOF
+exit 2

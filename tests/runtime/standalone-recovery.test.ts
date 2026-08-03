@@ -1,13 +1,28 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
+import { execFileSync } from 'child_process';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { createServer as createSocketServer, type Server as SocketServer } from 'net';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { tmpdir } from 'os';
 import { attestKnownGood, createRecoveryConfig, decideWatchdog, recoveryReconnectOperation, repairPublicTunnel, restartGateway, restartSupervisor, rollbackPrevious, verifyStableRuntime, type VerifyResult } from '../../src/runtime/standalone-recovery/core';
 import { dispatchRecoveryTool, RECOVERY_CLI_COMMANDS, RECOVERY_TOOLS } from '../../src/runtime/standalone-recovery/entry';
 import { createRecoveryHttpTransport, ExternalHttpsRecoveryTransport, resolveTrustedRecoveryCurl, type RecoveryHttpTransportOptions } from '../../src/runtime/standalone-recovery/http-transport';
+import { activateRecoveryRelease, captureLegacyRecoveryRelease, stageRecoveryRelease, verifyRecoveryReleaseActivation, type RecoveryActivationVerification } from '../../src/runtime/standalone-recovery/installer';
+import {
+  RECOVERY_RELEASE_BINARIES,
+  publishRecoveryCompatibilityLinks,
+  publishRecoveryRelease,
+  readCurrentRecoveryRelease,
+  readPreviousRecoveryRelease,
+  readRecoveryRelease,
+  readRecoveryRuntimeIdentity,
+  recoveryIdentityFromExecutable,
+  writeRecoveryReleaseManifest,
+  writeRecoveryRuntimeIdentity,
+  type RecoveryReleaseDescriptor,
+} from '../../src/runtime/standalone-recovery/release';
 
 const httpServers: Server[] = [];
 const socketServers: SocketServer[] = [];
@@ -131,6 +146,62 @@ function fakeCurlOptions(executable: string, overrides: RecoveryHttpTransportOpt
       return environment;
     },
     ...overrides,
+  };
+}
+
+function successfulProcess(stdout = '') {
+  return { ok: true, status: 0, signal: null, timedOut: false, command: [], stdout, stderr: '', error: '' };
+}
+
+function recoveryReleaseFixture(home: string, name: string, revision: string, legacy = false): RecoveryReleaseDescriptor {
+  const releasePath = join(home, 'recovery', 'releases', name);
+  mkdirSync(releasePath, { recursive: true, mode: 0o700 });
+  const artifacts = {} as Record<(typeof RECOVERY_RELEASE_BINARIES)[number], { sha256: string }>;
+  for (const binary of RECOVERY_RELEASE_BINARIES) {
+    const content = `${revision}:${binary}`;
+    writeFileSync(join(releasePath, binary), content, { mode: 0o700 });
+    artifacts[binary] = { sha256: createHash('sha256').update(content).digest('hex') };
+  }
+  writeRecoveryReleaseManifest(releasePath, {
+    schemaVersion: 1,
+    releaseRevision: revision,
+    sourceCommit: legacy ? 'legacy-unattributed' : revision,
+    sourceRoot: home,
+    cleanWorkspace: !legacy,
+    builtAt: '2026-08-03T00:00:00.000Z',
+    ...(legacy ? { legacy: true } : {}),
+    artifacts,
+  });
+  const release = readRecoveryRelease(releasePath);
+  if (!release) throw new Error('test recovery release invalid');
+  return release;
+}
+
+function cleanRecoverySourceRepo(): { root: string; head: string } {
+  const root = mkdtempSync(join(tmpdir(), 'recovery-release-source-'));
+  mkdirSync(join(root, 'src', 'runtime', 'standalone-recovery'), { recursive: true });
+  mkdirSync(join(root, 'scripts'), { recursive: true });
+  writeFileSync(join(root, 'src', 'runtime', 'standalone-recovery', 'entry.ts'), 'console.log("fixture")\n');
+  writeFileSync(join(root, 'scripts', 'install-standalone-recovery.ts'), '// fixture\n');
+  writeFileSync(join(root, 'scripts', 'load-standalone-recovery.sh'), '#!/bin/sh\n');
+  writeFileSync(join(root, 'package.json'), '{}\n');
+  writeFileSync(join(root, 'bun.lock'), 'fixture\n');
+  execFileSync('git', ['init', '-q'], { cwd: root });
+  execFileSync('git', ['add', '.'], { cwd: root });
+  execFileSync('git', ['-c', 'user.name=Recovery Test', '-c', 'user.email=recovery@example.test', 'commit', '-qm', 'fixture'], { cwd: root });
+  const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+  return { root, head };
+}
+
+function successfulHandoff() {
+  return {
+    bootstrapAttempts: 1,
+    bootoutClean: true,
+    pidWaitClean: true,
+    portWaitClean: true,
+    plistInstalled: true,
+    serviceRegistered: true,
+    diagnostics: { bootstrapResults: [], serviceProbeResults: [], pidAliveChecks: [], portChecks: [] },
   };
 }
 
@@ -779,5 +850,225 @@ describe('standalone disaster recovery core', () => {
     const transport = new ExternalHttpsRecoveryTransport(home, { platform: 'win32', resolveCurlExecutable: async () => trusted });
     await expect(transport.request({ url: 'https://recovery.example.test/mcp' })).resolves.toMatchObject({ status: 401 });
     rmSync(home, { recursive: true, force: true });
+  });
+});
+
+describe('immutable standalone Recovery releases', () => {
+  test('stages one exact clean revision with complete binary hashes and no staging residue', () => {
+    const source = cleanRecoverySourceRepo();
+    const home = mkdtempSync(join(tmpdir(), 'recovery-release-stage-'));
+    try {
+      const staged = stageRecoveryRelease({ controllerHome: home, sourceRoot: source.root }, {
+        now: () => 1000,
+        uuid: () => 'stage-test-uuid',
+        compileBinary: ({ outputPath }) => {
+          writeFileSync(outputPath, 'compiled recovery fixture', { mode: 0o700 });
+          return successfulProcess('built');
+        },
+        runCanary: () => successfulProcess('{"status":"ok"}'),
+      });
+      expect(staged.release.releaseRevision).toBe(source.head);
+      expect(staged.release.sourceCommit).toBe(source.head);
+      expect(staged.release.cleanWorkspace).toBe(true);
+      expect(Object.keys(staged.release.artifacts).sort()).toEqual([...RECOVERY_RELEASE_BINARIES].sort());
+      expect(readdirSync(join(home, 'recovery', 'releases')).some((entry) => entry.startsWith('.staging-'))).toBe(false);
+      writeFileSync(join(source.root, 'scripts', 'load-standalone-recovery.sh'), '# dirty\n');
+      expect(() => stageRecoveryRelease({ controllerHome: home, sourceRoot: source.root }, {
+        compileBinary: () => successfulProcess(),
+        runCanary: () => successfulProcess(),
+      })).toThrow('RECOVERY_RELEASE_DIRTY_SOURCE');
+    } finally {
+      rmSync(source.root, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('captures flat binaries as an exact legacy release before first activation', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'recovery-release-legacy-'));
+    try {
+      const binRoot = join(home, 'recovery', 'bin');
+      mkdirSync(binRoot, { recursive: true });
+      for (const binary of RECOVERY_RELEASE_BINARIES) writeFileSync(join(binRoot, binary), `legacy:${binary}`, { mode: 0o700 });
+      const candidate = recoveryReleaseFixture(home, 'candidate', 'candidate-revision');
+      const lockPath = join(home, 'recovery', 'locks', 'operation.lock');
+      mkdirSync(dirname(lockPath), { recursive: true });
+      writeFileSync(lockPath, JSON.stringify({ pid: 999999, instanceId: 'dead-installer', acquiredAt: new Date(0).toISOString() }));
+      const config = createRecoveryConfig(home, { gateway: { host: '127.0.0.1', port: 8787, bearerTokenFile: join(home, 'token.json') } });
+      const activated = await activateRecoveryRelease({ controllerHome: home, config, candidate }, {
+        uid: () => 501,
+        currentPid: () => undefined,
+        installAgent: (sourcePath) => ({ path: sourcePath }),
+        handoff: async () => successfulHandoff(),
+        verify: async ({ expectedRelease }): Promise<RecoveryActivationVerification> => ({
+          ok: true,
+          expectedReleaseRevision: expectedRelease.releaseRevision,
+          failures: [],
+          gatewayPid: 100,
+          watchdogPid: 101,
+          healthStatus: 200,
+        }),
+      });
+      expect(activated.migratedLegacy?.legacy).toBe(true);
+      expect(activated.migratedLegacy?.sourceRoot).toBe(activated.migratedLegacy?.releasePath);
+      expect(readdirSync(dirname(lockPath)).some((name) => name.includes('stale-') && name.includes('dead-installer'))).toBe(true);
+      expect(readCurrentRecoveryRelease(home)?.releaseRevision).toBe('candidate-revision');
+      expect(readPreviousRecoveryRelease(home)?.releaseRevision).toBe(activated.migratedLegacy?.releaseRevision);
+      for (const binary of RECOVERY_RELEASE_BINARIES) {
+        expect(realpathSync(join(binRoot, binary))).toBe(join(candidate.releasePath, binary));
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('no-ops a repeated activation with the same healthy release payload', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'recovery-release-repeat-noop-'));
+    try {
+      const current = recoveryReleaseFixture(home, 'current-release', 'same-revision');
+      const candidate = recoveryReleaseFixture(home, 'candidate-release', 'same-revision');
+      publishRecoveryRelease(home, current.releasePath);
+      publishRecoveryCompatibilityLinks(home);
+      let handoffs = 0;
+      const result = await activateRecoveryRelease({ controllerHome: home, config: createRecoveryConfig(home), candidate }, {
+        uid: () => 501,
+        installAgent: (sourcePath) => ({ path: sourcePath }),
+        handoff: async () => { handoffs += 1; return successfulHandoff(); },
+        verify: async ({ expectedRelease }) => ({
+          ok: true,
+          expectedReleaseRevision: expectedRelease.releaseRevision,
+          failures: [],
+          gatewayPid: 300,
+          watchdogPid: 301,
+          healthStatus: 200,
+        }),
+      });
+      expect(result.noOp).toBe(true);
+      expect(handoffs).toBe(0);
+      expect(result.release.releasePath).toBe(current.releasePath);
+      expect(readCurrentRecoveryRelease(home)?.releasePath).toBe(current.releasePath);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('strict verification binds role identity PIDs to launchd service PIDs', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'recovery-release-launchd-pid-'));
+    const release = recoveryReleaseFixture(home, 'current-release', 'current-revision');
+    publishRecoveryRelease(home, release.releasePath);
+    publishRecoveryCompatibilityLinks(home);
+    writeRecoveryRuntimeIdentity(home, 'gateway', join(release.releasePath, 'repo-harness-recovery-gateway'));
+    writeRecoveryRuntimeIdentity(home, 'watchdog', join(release.releasePath, 'repo-harness-recovery-watchdog'));
+    const port = await http((_request, response) => {
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({
+        status: 'ok',
+        releaseRevision: release.releaseRevision,
+        manifestSha256: release.manifestSha256,
+      }));
+    });
+    try {
+      const verification = await verifyRecoveryReleaseActivation({
+        controllerHome: home,
+        config: createRecoveryConfig(home, { gateway: { host: '127.0.0.1', port, bearerTokenFile: join(home, 'token.json') } }),
+        expectedRelease: release,
+        timeoutMs: 10,
+      }, {
+        servicePid: (_controllerHome, role) => role === 'gateway' ? process.pid : process.pid + 1,
+      });
+      expect(verification.ok).toBe(false);
+      expect(verification.failures).toContain('watchdog runtime identity PID does not match launchd PID');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('restores the exact previous release when candidate verification fails', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'recovery-release-rollback-'));
+    try {
+      const previous = recoveryReleaseFixture(home, 'previous', 'previous-revision');
+      const candidate = recoveryReleaseFixture(home, 'candidate', 'candidate-revision');
+      publishRecoveryRelease(home, previous.releasePath);
+      publishRecoveryCompatibilityLinks(home);
+      const config = createRecoveryConfig(home, { gateway: { host: '127.0.0.1', port: 8787, bearerTokenFile: join(home, 'token.json') } });
+      const verified: string[] = [];
+      let handoffs = 0;
+      await expect(activateRecoveryRelease({ controllerHome: home, config, candidate }, {
+        uid: () => 501,
+        currentPid: () => undefined,
+        installAgent: (sourcePath) => ({ path: sourcePath }),
+        handoff: async () => { handoffs += 1; return successfulHandoff(); },
+        verify: async ({ expectedRelease }): Promise<RecoveryActivationVerification> => {
+          verified.push(expectedRelease.releaseRevision);
+          return {
+            ok: expectedRelease.releaseRevision === 'previous-revision',
+            expectedReleaseRevision: expectedRelease.releaseRevision,
+            failures: expectedRelease.releaseRevision === 'previous-revision' ? [] : ['candidate identity mismatch'],
+            gatewayPid: 200,
+            watchdogPid: 201,
+            healthStatus: 200,
+          };
+        },
+      })).rejects.toThrow('RECOVERY_RELEASE_ACTIVATION_FAILED_ROLLED_BACK');
+      expect(handoffs).toBe(4);
+      expect(verified).toEqual(['candidate-revision', 'previous-revision']);
+      expect(readCurrentRecoveryRelease(home)?.releaseRevision).toBe('previous-revision');
+      expect(readPreviousRecoveryRelease(home)?.releaseRevision).toBe('candidate-revision');
+      expect(existsSync(join(home, 'recovery', 'locks', 'operation.lock'))).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('preserves a live Recovery release activation owner across sessions', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'recovery-release-live-lock-'));
+    try {
+      const candidate = recoveryReleaseFixture(home, 'candidate', 'candidate-revision');
+      const lockPath = join(home, 'recovery', 'locks', 'operation.lock');
+      mkdirSync(dirname(lockPath), { recursive: true });
+      writeFileSync(lockPath, JSON.stringify({ pid: process.pid, instanceId: 'live-installer', acquiredAt: new Date(0).toISOString() }));
+      await expect(activateRecoveryRelease({ controllerHome: home, config: createRecoveryConfig(home), candidate }, {
+        uid: () => 501,
+        handoff: async () => successfulHandoff(),
+        installAgent: (sourcePath) => ({ path: sourcePath }),
+        verify: async ({ expectedRelease }) => ({ ok: true, expectedReleaseRevision: expectedRelease.releaseRevision, failures: [] }),
+      })).rejects.toThrow('RECOVERY_OPERATION_LOCK_BUSY');
+      expect((JSON.parse(readFileSync(lockPath, 'utf8')) as { instanceId: string }).instanceId).toBe('live-installer');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('refuses current authority outside the canonical Recovery releases root', () => {
+    const home = mkdtempSync(join(tmpdir(), 'recovery-release-contained-'));
+    const outside = mkdtempSync(join(tmpdir(), 'recovery-release-outside-'));
+    try {
+      const external = recoveryReleaseFixture(outside, 'external', 'external-revision');
+      expect(() => publishRecoveryRelease(home, external.releasePath)).toThrow('RECOVERY_RELEASE_OUTSIDE_AUTHORITY');
+      expect(() => publishRecoveryCompatibilityLinks(home)).toThrow('RECOVERY_CURRENT_RELEASE_INVALID');
+      mkdirSync(join(home, 'recovery'), { recursive: true });
+      symlinkSync(external.releasePath, join(home, 'recovery', 'current'), 'dir');
+      expect(() => publishRecoveryCompatibilityLinks(home)).toThrow('RECOVERY_RELEASE_OUTSIDE_AUTHORITY');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  test('derives and persists Gateway runtime identity from the immutable executable', () => {
+    const home = mkdtempSync(join(tmpdir(), 'recovery-release-identity-'));
+    try {
+      const release = recoveryReleaseFixture(home, 'identity', 'identity-revision');
+      const executable = join(release.releasePath, 'repo-harness-recovery-gateway');
+      expect(recoveryIdentityFromExecutable(executable)).toMatchObject({
+        releasePath: release.releasePath,
+        releaseRevision: 'identity-revision',
+        manifestSha256: release.manifestSha256,
+      });
+      const written = writeRecoveryRuntimeIdentity(home, 'gateway', executable);
+      expect(written?.pid).toBe(process.pid);
+      expect(readRecoveryRuntimeIdentity(home, 'gateway')).toEqual(written);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

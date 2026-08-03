@@ -47,7 +47,7 @@ The current source already has useful building blocks:
 - `src/cli/mcp/keepalive.ts` and `src/cli/mcp/restart.ts` still combine Gateway serving, tunnel management, detached restart behavior, and compatibility lifecycle logic.
 - `src/cli/controller/runtime-slots.ts`, `src/cli/controller/bluegreen-rollout.ts`, and slot-local homes implement the current blue/green model.
 - `src/runtime/bootstrap/activation-transaction.ts` and stable-state writer fencing provide partial transaction and claim primitives.
-- `src/runtime/standalone-recovery/` and `scripts/install-standalone-recovery.ts` provide a Recovery source and installer, but the installed artifact/lifecycle contract is still being hardened.
+- `src/runtime/standalone-recovery/` and `scripts/install-standalone-recovery.ts` now provide staged immutable Recovery releases, exact current/previous authority, role runtime identity, bounded two-service launchd handoff, and verified exact-previous rollback. Broader Recovery tunnel separation and final legacy cleanup remain migration work.
 
 The current implementation may report a healthy local runtime while the installed Supervisor release and mutable runtime source identify different revisions. It also has root, slot, and repository-local configuration readers. Those are migration evidence, not approved future authority.
 
@@ -241,9 +241,9 @@ The following map is the implementation boundary for T2–T9. A row marked **del
 | `src/cli/mcp/restart.ts` PID/launch-agent fallback restart | replace, then delete fallback | typed Supervisor operation client | T4/T7 |
 | `src/cli/mcp/auth.ts` root/blue/green token search | narrow, then delete fallback search | canonical runtime config/token boundary | T3/T7 |
 | `src/runtime/supervisor/bridge.ts` compatibility restart/lifecycle bridge | replace, then delete legacy branch | stable Supervisor control client | T4/T7 |
-| `src/runtime/standalone-recovery/*` flat/in-process Recovery lifecycle assumptions | replace in place | self-contained versioned Recovery Gateway/Watchdog artifacts | T6 |
-| `scripts/install-standalone-recovery.ts` flat binary installation | replace | staged immutable Recovery release + atomic `current` activation | T6 |
-| `scripts/load-standalone-recovery.sh` shared/implicit service assumptions | replace | two explicit Recovery launchd services plus dedicated tunnel | T6 |
+| `src/runtime/standalone-recovery/*` flat/in-process Recovery lifecycle assumptions | immutable release/identity replacement implemented; remove remaining compatibility branches after rollback evidence | self-contained versioned Recovery Gateway/Watchdog artifacts | T6 |
+| `scripts/install-standalone-recovery.ts` flat binary installation | replaced; retain thin installer facade | staged immutable Recovery release + atomic `current`/`previous` activation | T6 |
+| `scripts/load-standalone-recovery.sh` shared/implicit service assumptions | direct mutation disabled; delete after migration documentation no longer references it | installer-owned bounded two-service launchd handoff | T6 |
 | `scripts/controller-runtime.sh` and repo-local service restart helpers | narrow, then delete runtime mutation paths | fixed bootstrap and Supervisor operation client | T2/T4/T7 |
 | `scripts/controller-ngrok-rotation.sh` primary tunnel lifecycle | replace, then delete | primary cloudflared service contract | T6/T7 |
 | repository-local `.repo-harness/mcp.*` runtime config fallback | read for migration, then delete | Controller Home `runtime-config.json` | T3/T7 |

@@ -21,6 +21,7 @@ import {
   type WatchdogState,
   type RecoveryConfig,
 } from './core';
+import { writeRecoveryRuntimeIdentity, type RecoveryRuntimeIdentity } from './release';
 
 function option(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -88,6 +89,8 @@ async function cli(): Promise<void> {
 }
 
 async function startWatchdog(config: RecoveryConfig): Promise<void> {
+  const runtimeIdentity = writeRecoveryRuntimeIdentity(config.controllerHome, 'watchdog');
+  process.stdout.write(JSON.stringify({ status: 'ready', role: 'watchdog', runtimeIdentity }) + '\n');
   let state: WatchdogState = { failures: 0, rollbackUsed: false };
   for (;;) {
     try {
@@ -405,6 +408,7 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
   if (!gateway || gateway.host !== '127.0.0.1' || !Number.isInteger(gateway.port) || gateway.port < 1024 || gateway.port > 65535) {
     throw new Error('RECOVERY_GATEWAY_CONFIG_INVALID');
   }
+  let runtimeIdentity: RecoveryRuntimeIdentity | undefined;
   const recentMutations = new Map<string, number[]>();
   const oauthCodes = new Map<string, PendingOAuthCode>();
   const oauthClients = new Map<string, OAuthClient>();
@@ -415,7 +419,19 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
       response.end();
       return;
     }
-    if (request.method === 'GET' && matchesAnyPath(request.url, ['/health', '/recovery/health'])) { json(response, 200, { status: 'ok', service: 'repo-harness-standalone-recovery' }); return; }
+    if (request.method === 'GET' && matchesAnyPath(request.url, ['/health', '/recovery/health'])) {
+      json(response, 200, {
+        status: 'ok',
+        service: 'repo-harness-standalone-recovery',
+        ...(runtimeIdentity ? {
+          releasePath: runtimeIdentity.releasePath,
+          releaseRevision: runtimeIdentity.releaseRevision,
+          sourceCommit: runtimeIdentity.sourceCommit,
+          manifestSha256: runtimeIdentity.manifestSha256,
+        } : {}),
+      });
+      return;
+    }
     if (request.method === 'GET' && isProtectedResourceMetadataPath(request)) { json(response, 200, recoveryProtectedResourceMetadata(request)); return; }
     if (request.method === 'GET' && isOAuthMetadataPath(request)) { json(response, 200, recoveryAuthorizationServerMetadata(request)); return; }
     if ((request.method === 'GET' || request.method === 'POST') && isAuthorizePath(request)) {
@@ -568,7 +584,8 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
     } catch (error) { json(response, 200, rpcError(id, -32602, error instanceof Error ? error.message : 'Recovery request rejected')); }
   });
   await new Promise<void>((resolveListen, reject) => { server.once('error', reject); server.listen(gateway.port, gateway.host, () => resolveListen()); });
-  process.stdout.write(JSON.stringify({ status: 'ready', host: gateway.host, port: gateway.port }) + '\n');
+  runtimeIdentity = writeRecoveryRuntimeIdentity(config.controllerHome, 'gateway');
+  process.stdout.write(JSON.stringify({ status: 'ready', host: gateway.host, port: gateway.port, runtimeIdentity }) + '\n');
 }
 
 const isDirectExecution = import.meta.main === true
