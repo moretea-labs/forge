@@ -52,6 +52,8 @@ export function legacyIssueCutoverState(repoRoot: string): LegacyIssueCutoverSta
 }
 
 export function legacyIssueAuthorityRetired(repoRoot: string): boolean {
+  // Only the immutable SQLite migration marker can retire or retain legacy writers;
+  // repository projection files never reactivate themselves after cutover.
   return legacyIssueCutoverState(repoRoot).retired;
 }
 
