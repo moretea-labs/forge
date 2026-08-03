@@ -20,6 +20,8 @@ export interface RuntimeSourceIdentity {
   canonicalRoot: string;
   branch: string | null;
   commit?: string;
+  /** Exact immutable release identity when the runtime executes from a staged release. */
+  releaseRevision?: string;
   defaultBranch: string;
   defaultBranchCommit?: string;
   dirty: boolean;
@@ -82,6 +84,43 @@ function gitOk(root: string, args: string[]): boolean {
     timeout: 10_000,
   });
   return result.status === 0;
+}
+
+interface ImmutableRuntimeReleaseIdentity {
+  sourceCommit: string;
+  releaseRevision: string;
+  cleanWorkspace: boolean;
+}
+
+function ownGitCheckoutRoot(root: string): string | undefined {
+  const topLevel = gitText(root, ['rev-parse', '--show-toplevel']);
+  if (!topLevel) return undefined;
+  try {
+    return realpathSync(topLevel);
+  } catch {
+    return resolve(topLevel);
+  }
+}
+
+function readImmutableRuntimeReleaseIdentity(root: string): ImmutableRuntimeReleaseIdentity | undefined {
+  const manifestPath = join(root, 'manifest.json');
+  if (!existsSync(manifestPath)) return undefined;
+  let manifest: Record<string, unknown>;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
+  } catch {
+    throw new Error(`RUNTIME_RELEASE_MANIFEST_INVALID: ${manifestPath}`);
+  }
+  const sourceCommit = typeof manifest.sourceCommit === 'string' ? manifest.sourceCommit.trim() : '';
+  const releaseRevision = typeof manifest.releaseRevision === 'string' ? manifest.releaseRevision.trim() : '';
+  if (!sourceCommit || !releaseRevision || typeof manifest.cleanWorkspace !== 'boolean') {
+    throw new Error(`RUNTIME_RELEASE_MANIFEST_INCOMPLETE: ${manifestPath}`);
+  }
+  return {
+    sourceCommit,
+    releaseRevision,
+    cleanWorkspace: manifest.cleanWorkspace,
+  };
 }
 
 function detectDefaultBranch(root: string): string {
@@ -211,10 +250,45 @@ export function clearRuntimeSourceIdentityCacheForTest(): void {
 export function collectRuntimeSourceIdentity(repoRoot: string): RuntimeSourceIdentity {
   const canonicalRoot = realpathSync(repoRoot);
   const repoId = `repo_${repositoryIdentity(canonicalRoot)}`;
+  const checkoutId = stableCheckoutId(repoId, canonicalRoot);
+  const gitRoot = ownGitCheckoutRoot(canonicalRoot);
+  const ownsGitCheckout = gitRoot === canonicalRoot;
+
+  if (!ownsGitCheckout) {
+    const release = readImmutableRuntimeReleaseIdentity(canonicalRoot);
+    if (release) {
+      return {
+        repoId,
+        checkoutId,
+        repoRoot,
+        canonicalRoot,
+        branch: null,
+        commit: release.sourceCommit,
+        releaseRevision: release.releaseRevision,
+        defaultBranch: 'main',
+        defaultBranchCommit: release.sourceCommit,
+        dirty: !release.cleanWorkspace,
+        observedAt: nowIso(),
+      };
+    }
+    // An install tree without its own Git checkout must remain unversioned. Never
+    // inherit branch/HEAD/dirty state from an ambient parent repository.
+    return {
+      repoId,
+      checkoutId,
+      repoRoot,
+      canonicalRoot,
+      branch: null,
+      defaultBranch: 'main',
+      dirty: false,
+      observedAt: nowIso(),
+    };
+  }
+
   const defaultBranch = detectDefaultBranch(canonicalRoot);
   return {
     repoId,
-    checkoutId: stableCheckoutId(repoId, canonicalRoot),
+    checkoutId,
     repoRoot,
     canonicalRoot,
     branch: gitText(canonicalRoot, ['branch', '--show-current']) ?? null,
@@ -348,6 +422,9 @@ export function evaluateRuntimeSourceDrift(
   // clean feature/stable branch look stale until it was merged into main.
   if (active.commit && current.commit && active.commit !== current.commit) {
     reasons.push(`runtime commit changed from ${active.commit} to ${current.commit}`);
+  }
+  if ((active.releaseRevision ?? '') !== (current.releaseRevision ?? '')) {
+    reasons.push(`runtime release changed from ${active.releaseRevision ?? 'source-checkout'} to ${current.releaseRevision ?? 'source-checkout'}`);
   }
   if (active.dirty) {
     reasons.push('runtime was started from a dirty source checkout');

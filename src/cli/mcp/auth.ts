@@ -63,6 +63,7 @@ export interface McpRuntimeState {
     canonicalRoot: string;
     branch: string | null;
     commit?: string;
+    releaseRevision?: string;
     defaultBranch: string;
     defaultBranchCommit?: string;
     dirty: boolean;

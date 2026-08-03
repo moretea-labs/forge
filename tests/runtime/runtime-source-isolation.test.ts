@@ -85,6 +85,44 @@ describe('runtime source isolation', () => {
     expect(realpathSync(resolved.root!)).not.toBe(realpathSync(business));
   });
 
+  test('immutable release identity never inherits a newer ambient parent Git HEAD', () => {
+    const parent = tempRoot('repo-harness-release-parent-');
+    initGitRepo(parent, 'controller-runtime-fixture');
+    const sourceCommit = git(parent, 'rev-parse', 'HEAD');
+    const releaseRoot = join(parent, '_ops', 'controller-home', 'supervisor', 'releases', `release-${sourceCommit}`);
+    mkdirSync(releaseRoot, { recursive: true });
+    writeFileSync(join(releaseRoot, 'manifest.json'), JSON.stringify({
+      schemaVersion: 3,
+      releaseRevision: sourceCommit,
+      sourceCommit,
+      cleanWorkspace: true,
+    }));
+
+    writeFileSync(join(parent, 'src', 'newer-main.ts'), 'export const newerMain = true;\n');
+    git(parent, 'add', '.');
+    git(parent, 'commit', '-m', 'advance ambient main');
+    const ambientHead = git(parent, 'rev-parse', 'HEAD');
+    expect(ambientHead).not.toBe(sourceCommit);
+
+    const identity = collectRuntimeSourceIdentity(releaseRoot);
+    expect(identity.canonicalRoot).toBe(realpathSync(releaseRoot));
+    expect(identity.branch).toBeNull();
+    expect(identity.commit).toBe(sourceCommit);
+    expect(identity.releaseRevision).toBe(sourceCommit);
+    expect(identity.defaultBranchCommit).toBe(sourceCommit);
+    expect(identity.dirty).toBe(false);
+  });
+
+  test('malformed immutable release manifest fails closed instead of using ambient Git identity', () => {
+    const parent = tempRoot('repo-harness-invalid-release-parent-');
+    initGitRepo(parent, 'controller-runtime-fixture');
+    const releaseRoot = join(parent, '_ops', 'controller-home', 'supervisor', 'releases', 'invalid-release');
+    mkdirSync(releaseRoot, { recursive: true });
+    writeFileSync(join(releaseRoot, 'manifest.json'), JSON.stringify({ sourceCommit: git(parent, 'rev-parse', 'HEAD') }));
+
+    expect(() => collectRuntimeSourceIdentity(releaseRoot)).toThrow(/RUNTIME_RELEASE_MANIFEST_INCOMPLETE/);
+  });
+
   test('execution repository is never used as current runtime source for drift', () => {
     const runtimeRoot = tempRoot('repo-harness-runtime-src-');
     const businessRoot = tempRoot('repo-harness-business-src-');

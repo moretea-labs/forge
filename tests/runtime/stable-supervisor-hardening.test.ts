@@ -668,7 +668,7 @@ describe('Stable Supervisor production hardening', () => {
       startedAt: '2026-07-31T10:00:01.000Z',
       updatedAt: '2026-07-31T10:00:02.000Z',
       generation: 'generation-current',
-      source: { commit: 'release-current' },
+      source: { commit: 'source-current', releaseRevision: 'release-current' },
       server: { healthy: true, generation: 'generation-current' },
     } as any;
     expect(supervisorManagedGatewayReady(currentRuntime, managed, Date.parse('2026-07-31T10:00:00.000Z'))).toBe(true);
@@ -679,7 +679,7 @@ describe('Stable Supervisor production hardening', () => {
     }, managed, Date.parse('2026-07-31T10:00:00.000Z'))).toBe(false);
     expect(supervisorManagedGatewayReady({
       ...currentRuntime,
-      source: { commit: 'release-stale' },
+      source: { commit: 'source-current', releaseRevision: 'release-stale' },
     }, managed, Date.parse('2026-07-31T10:00:00.000Z'))).toBe(false);
     expect(supervisorManagedGatewayReady({
       ...currentRuntime,
@@ -695,7 +695,7 @@ describe('Stable Supervisor production hardening', () => {
       ownerEpoch: managed.ownerEpoch,
       slot: managed.slot,
       generation: managed.generation,
-      source: { commit: managed.releaseRevision },
+      source: { commit: 'source-current', releaseRevision: managed.releaseRevision },
     } as any;
     expect(supervisorManagedDaemonReady(daemonReady, managed, Date.parse('2026-07-31T10:00:00.000Z'))).toBe(true);
     expect(supervisorManagedDaemonReady({ ...daemonReady, pid: 41999 }, managed)).toBe(false);

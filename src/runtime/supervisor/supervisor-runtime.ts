@@ -153,7 +153,8 @@ export function supervisorManagedDaemonReady(
   if (status.ownerEpoch !== managed.ownerEpoch) return false;
   if (managed.slot && status.slot !== managed.slot) return false;
   if (managed.generation && status.generation !== managed.generation) return false;
-  if (managed.releaseRevision && status.source?.commit !== managed.releaseRevision) return false;
+  const observedReleaseRevision = status.source?.releaseRevision ?? status.source?.commit;
+  if (managed.releaseRevision && observedReleaseRevision !== managed.releaseRevision) return false;
   return timestampMatchesManagedLaunch(status.startedAt, readinessBoundaryMs(managed, notBeforeMs));
 }
 
@@ -165,7 +166,8 @@ export function supervisorManagedGatewayReady(
   if (!supervisorGatewayRuntimeReady(runtime)) return false;
   if (managed.generation
     && (runtime?.generation !== managed.generation || runtime.server.generation !== managed.generation)) return false;
-  if (managed.releaseRevision && runtime?.source?.commit !== managed.releaseRevision) return false;
+  const observedReleaseRevision = runtime?.source?.releaseRevision ?? runtime?.source?.commit;
+  if (managed.releaseRevision && observedReleaseRevision !== managed.releaseRevision) return false;
   const boundaryMs = readinessBoundaryMs(managed, notBeforeMs);
   return timestampMatchesManagedLaunch(runtime?.startedAt, boundaryMs)
     && timestampMatchesManagedLaunch(runtime?.updatedAt, boundaryMs);
