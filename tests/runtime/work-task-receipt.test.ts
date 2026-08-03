@@ -81,7 +81,8 @@ function fixture(options: { changed?: boolean; equivalentHistoricalWork?: boolea
     forbiddenPaths: [],
     checks: [],
     requestedBy: 'chatgpt',
-    status: options.equivalentHistoricalWork ? 'failed' : 'completed',
+    status: options.equivalentHistoricalWork ? 'failed' : 'running',
+    phase: 'cleanup',
   });
   const handle: WorkHandleState = {
     schemaVersion: 1,
@@ -120,9 +121,28 @@ describe('controller Work Task completion receipt', () => {
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)?.phase).toBe('cleanup');
   });
 
-  test('does not allow a status write to manufacture terminal Work without a receipt', () => {
+  test('does not allow generic writes to manufacture terminal Work or inject a receipt', () => {
     const fx = fixture();
-    expect(() => updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, { status: 'completed' })).toThrow(/WORK_COMPLETION_RECEIPT_REQUIRED/);
+    expect(() => updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, { status: 'completed' })).toThrow(/WORK_COMPLETION_REQUIRES_RECORD_API/);
+    expect(() => updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
+      status: 'completed',
+      completionOutcome: 'completed_changed',
+      completionReceipt: {
+        schemaVersion: 1,
+        receiptId: 'forged-receipt',
+        source: 'controller_work',
+        issueId: fx.issueId,
+        taskId: 'T1',
+        workId: fx.workId,
+        targetBranch: 'main',
+        targetRevision: fx.expectedHead,
+        changedPaths: ['feature.txt'],
+        delivery: { kind: 'commit', status: 'integrated', strategy: 'already_integrated', reachable: true, recordedAt: new Date().toISOString() },
+        cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt: new Date().toISOString() },
+        verifiedAt: new Date().toISOString(),
+        recordedAt: new Date().toISOString(),
+      },
+    })).toThrow(/WORK_COMPLETION_REQUIRES_RECORD_API/);
   });
 
   test('binds a completed cleaned Work to the exact verified Task and accepts it', () => {
@@ -178,7 +198,7 @@ describe('controller Work Task completion receipt', () => {
       checks: work.checks,
       acceptanceCriteria: work.acceptanceCriteria,
       risk: 'medium',
-      status: 'done',
+      status: 'cleanup_pending',
     });
 
     const accepted = acceptVerifiedTaskFromControllerWork({
@@ -191,6 +211,29 @@ describe('controller Work Task completion receipt', () => {
     });
     expect(accepted.issue.tasks[0]!.status).toBe('done');
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)?.completionReceipt?.workId).toBe(fx.workId);
+  });
+
+  test('does not downgrade a reviewed done Task from historical failed Work evidence', () => {
+    const fx = fixture({ equivalentHistoricalWork: true });
+    updateTask(fx.repoRoot, fx.issueId, 'T1', { status: 'done' });
+    bindTaskToWork(fx.repoRoot, fx.issueId, 'T1', fx.workId);
+    const task = getIssue(fx.repoRoot, fx.issueId).tasks[0]!;
+    const work = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
+    expect(work.status).toBe('failed');
+    expect(projectControllerTaskFromWork(task, work).status).toBe('done');
+  });
+
+  test('fails closed when a Task is bound to another Work identity', () => {
+    const fx = fixture();
+    bindTaskToWork(fx.repoRoot, fx.issueId, 'T1', 'work_other');
+    expect(() => acceptVerifiedTaskFromControllerWork({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repoId,
+      repoRoot: fx.repoRoot,
+      issueId: fx.issueId,
+      taskId: 'T1',
+      workId: fx.workId,
+    })).toThrow(/TASK_WORK_MISMATCH/);
   });
 
   test('fails closed on revision mismatch without changing Task status', () => {
@@ -259,9 +302,7 @@ describe('controller Work Task completion receipt', () => {
     const fx = fixture({ changed: false });
     updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
       workKind: 'completed_no_change',
-      dispatchState: 'terminal',
       evidenceState: 'valid',
-      completionOutcome: 'completed_no_change',
       evidenceRefs: [{ title: 'objective-specific no-change proof', summary: 'The required repository state was observed at the exact target revision.', detailLevel: 'summary' }],
     });
     writeWorkHandle(fx.controllerHome, {
@@ -315,7 +356,8 @@ describe('controller Work Task completion receipt', () => {
     });
     expect(result.issue.tasks[0]!.status).toBe('done');
     const contract = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
-    expect(contract.status).toBe('failed');
+    expect(contract.status).toBe('completed');
+    expect(contract.completionReceipt?.receiptId).toBe(result.receipt.receiptId);
     expect(contract.reconciliations).toHaveLength(1);
     expect(contract.reconciliations[0]).toMatchObject({
       outcome: 'accepted_equivalence',

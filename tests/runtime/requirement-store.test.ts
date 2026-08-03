@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { backupControlPlaneDatabase, restoreControlPlaneDatabase } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { completeRequirementFromWork, createRequirement, readRequirement, setRequirementPlan, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { createWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, recordWorkCompletionReceipt, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 
 const homes: string[] = [];
 afterEach(() => {
@@ -76,6 +76,8 @@ test('historical cancelled Work evidence cannot reopen a reviewed Requirement ou
     allowedPaths: [],
     forbiddenPaths: [],
     checks: [],
+    constraints: { requireHandoffOnAmbiguity: true },
+    requestedBy: 'chatgpt',
     status: 'cancelled',
   });
   expect(work.status).toBe('cancelled');
@@ -135,6 +137,8 @@ test('requires a Work-owned receipt before completing an active Requirement', ()
     allowedPaths: [],
     forbiddenPaths: [],
     checks: [],
+    constraints: { requireHandoffOnAmbiguity: true },
+    requestedBy: 'chatgpt',
     workKind: 'completed_no_change',
     status: 'running',
   });
@@ -164,14 +168,13 @@ test('requires a Work-owned receipt before completing an active Requirement', ()
     verifiedAt: '2026-08-02T00:00:00.000Z',
     recordedAt: '2026-08-02T00:00:00.000Z',
   };
-  const completedWork = updateWorkContract({ controllerHome: home, repoId: 'repo-req' }, work.workId, {
-    status: 'completed',
-    phase: 'cleanup',
-    dispatchState: 'terminal',
-    evidenceState: 'valid',
-    completionOutcome: 'completed_no_change',
-    completionReceipt: receipt,
-  });
+  const completedWork = recordWorkCompletionReceipt(
+    { controllerHome: home, repoId: 'repo-req' },
+    work.workId,
+    receipt,
+    'completed_no_change',
+    'completed_no_change',
+  );
   const done = completeRequirementFromWork(options, {
     requirementId: 'req-work-completion',
     work: completedWork,

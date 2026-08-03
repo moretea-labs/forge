@@ -177,6 +177,9 @@ function validateWorkSemantics(contract: WorkContract): WorkContract {
   }
   const outcome = contract.completionOutcome;
   if (!outcome) return contract;
+  if (contract.status !== 'completed' || !contract.completionReceipt) {
+    throw new Error(`WORK_SEMANTICS_INVALID: ${outcome} requires a completed Work receipt`);
+  }
   if (contract.dispatchState !== 'terminal') {
     throw new Error(`WORK_SEMANTICS_INVALID: ${outcome} requires terminal dispatch`);
   }
@@ -359,6 +362,9 @@ function defaultDriver(mode: WorkContract['mode']): WorkContract['driver'] {
 }
 
 export function createWorkContract(options: WorkContractStoreOptions, input: CreateWorkContractInput): WorkContract {
+  if (input.status === 'completed' || input.completionReceipt || input.completionOutcome) {
+    throw new Error('WORK_COMPLETION_REQUIRES_RECORD_API');
+  }
   return withWorkContractStoreWrite(options, () => {
     const at = input.createdAt ?? input.updatedAt ?? nowIso(options);
     const workId = sanitizeFileComponent(input.workId);
@@ -743,10 +749,11 @@ export function summarizeWorkContract(contract: WorkContract): WorkContractSumma
   };
 }
 
-export function updateWorkContract(
+function updateWorkContractInternal(
   options: WorkContractStoreOptions,
   workId: string,
   patch: Partial<Omit<WorkContract, 'schemaVersion' | 'workId' | 'repoId' | 'createdAt'>>,
+  allowCompletionWrite: boolean,
 ): WorkContract {
   return withWorkContractStoreWrite(options, () => {
     const sanitizedId = sanitizeFileComponent(workId);
@@ -755,10 +762,15 @@ export function updateWorkContract(
     if (index < 0) throw new Error(`work contract not found: ${sanitizedId}`);
     const at = nowIso(options);
     const current = store.contracts[index];
+    const writesCompletionReceipt = Object.prototype.hasOwnProperty.call(patch, 'completionReceipt');
+    const changesCompletionOutcome = patch.completionOutcome !== undefined && patch.completionOutcome !== current.completionOutcome;
+    if (!allowCompletionWrite && (writesCompletionReceipt || changesCompletionOutcome || (patch.status === 'completed' && current.status !== 'completed'))) {
+      throw new Error('WORK_COMPLETION_REQUIRES_RECORD_API');
+    }
     if (patch.status === 'completed' && !current.completionReceipt && !patch.completionReceipt) {
       throw new Error('WORK_COMPLETION_RECEIPT_REQUIRED');
     }
-    if (Object.prototype.hasOwnProperty.call(patch, 'completionReceipt') && patch.completionReceipt === undefined && current.completionReceipt) {
+    if (writesCompletionReceipt && patch.completionReceipt === undefined && current.completionReceipt) {
       throw new Error('WORK_COMPLETION_RECEIPT_IMMUTABLE');
     }
     const next: WorkContract = validateWorkSemanticTransition(current, validateWorkSemantics({
@@ -789,6 +801,14 @@ export function updateWorkContract(
     writeWorkContractStore(options, { schemaVersion: 2, updatedAt: at, contracts });
     return next;
   });
+}
+
+export function updateWorkContract(
+  options: WorkContractStoreOptions,
+  workId: string,
+  patch: Partial<Omit<WorkContract, 'schemaVersion' | 'workId' | 'repoId' | 'createdAt'>>,
+): WorkContract {
+  return updateWorkContractInternal(options, workId, patch, false);
 }
 
 export function appendWorkEvidence(
@@ -844,7 +864,7 @@ export function recordWorkCompletionReceipt(
     if (current.completionReceipt.receiptId !== receipt.receiptId) throw new Error('WORK_COMPLETION_RECEIPT_ALREADY_RECORDED');
     return current;
   }
-  return updateWorkContract(options, current.workId, {
+  return updateWorkContractInternal(options, current.workId, {
     phase: 'cleanup',
     status: 'completed',
     dispatchState: 'terminal',
@@ -852,5 +872,5 @@ export function recordWorkCompletionReceipt(
     completionOutcome,
     ...(completionWorkKind ? { workKind: completionWorkKind } : {}),
     completionReceipt: receipt,
-  });
+  }, true);
 }

@@ -231,12 +231,14 @@ export function recordControllerWorkReconciliation(input: ControllerWorkReconcil
 /**
  * Produce a Task receipt only from an explicit accepted reconciliation record.
  * Unlike the normal path this records historical gaps instead of inventing
- * finalization stages; it never marks the Work completed.
+ * finalization stages, then atomically records the accepted Work completion
+ * before projecting any legacy Task state.
  */
 export function acceptVerifiedTaskFromReviewedWorkReconciliation(input: ControllerWorkReconciliationInput): ControllerWorkTaskReceiptResult {
   const issue = getIssue(input.repoRoot, input.issueId);
   const task = issue.tasks.find((entry) => entry.id === input.taskId);
   if (!task) throw new Error(`task not found: ${input.issueId}/${input.taskId}`);
+  if (task.workId && task.workId !== input.workId) throw new Error(`CONTROLLER_WORK_RECEIPT_TASK_WORK_MISMATCH: ${task.workId} != ${input.workId}`);
   if (task.status === 'done' && task.verification?.completionReceipt?.workId === input.workId) {
     return { issue, receipt: task.verification.completionReceipt };
   }
@@ -252,6 +254,7 @@ export function acceptVerifiedTaskFromReviewedWorkReconciliation(input: Controll
   assertWorkNotBoundElsewhere(input.repoRoot, input.workId, input.issueId, input.taskId);
 
   const recordedAt = new Date().toISOString();
+  const noChange = contract.workKind === 'completed_no_change';
   const receipt: CompletionReceipt = {
     schemaVersion: 1,
     receiptId: `REC-work-reconciled-${createHash('sha256').update(`${input.repoId}\0${input.issueId}\0${input.taskId}\0${input.workId}\0${reconciliation.record.reconciliationId}`).digest('hex').slice(0, 16)}`,
@@ -263,13 +266,28 @@ export function acceptVerifiedTaskFromReviewedWorkReconciliation(input: Controll
     targetRevision: reconciliation.record.observedTargetRevision,
     sourceRevision: reconciliation.record.originalExpectedRevision,
     baseRevision: reconciliation.record.baseRevision,
-    changedPaths: reconciliation.record.comparedPaths,
-    delivery: { kind: 'commit', status: 'integrated', strategy: 'already_integrated', reachable: true, recordedAt },
+    changedPaths: noChange ? [] : reconciliation.record.comparedPaths,
+    delivery: { kind: noChange ? 'no_change' : 'commit', status: 'integrated', strategy: noChange ? 'no_change' : 'already_integrated', reachable: true, recordedAt },
     cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt },
     verifiedAt: task.verification!.verifiedAt,
     recordedAt,
   };
-  const projectedVerification = { ...task.verification!, completionReceipt: receipt };
+  const completionOutcome = noChange ? 'completed_no_change' : contract.workKind === 'remote_effect' ? 'completed_remote' : 'completed_changed';
+  const recorded = recordWorkCompletionReceipt(
+    { controllerHome: input.controllerHome, repoId: input.repoId },
+    input.workId,
+    receipt,
+    completionOutcome,
+    contract.workKind,
+  );
+  if (recorded.requirementId) {
+    completeRequirementFromWork(
+      { controllerHome: input.controllerHome },
+      { requirementId: recorded.requirementId, work: recorded },
+    );
+  }
+  const projectedReceipt = recorded.completionReceipt ?? receipt;
+  const projectedVerification = { ...task.verification!, completionReceipt: projectedReceipt };
   const accepted = task.workId
     ? updateTask(input.repoRoot, input.issueId, input.taskId, {
         status: 'done',
@@ -286,7 +304,7 @@ export function acceptVerifiedTaskFromReviewedWorkReconciliation(input: Controll
           input.note ?? `Accepted reviewed Work reconciliation ${reconciliation.record.reconciliationId} for ${input.workId}.`,
         );
       })();
-  return { issue: accepted, receipt };
+  return { issue: accepted, receipt: projectedReceipt };
 }
 
 /**
@@ -298,6 +316,7 @@ export function acceptVerifiedTaskFromControllerWork(input: ControllerWorkTaskRe
   const issue = getIssue(input.repoRoot, input.issueId);
   const task = issue.tasks.find((entry) => entry.id === input.taskId);
   if (!task) throw new Error(`task not found: ${input.issueId}/${input.taskId}`);
+  if (task.workId && task.workId !== input.workId) throw new Error(`CONTROLLER_WORK_RECEIPT_TASK_WORK_MISMATCH: ${task.workId} != ${input.workId}`);
   if (task.status === 'done' && task.verification?.completionReceipt?.workId === input.workId) {
     return { issue, receipt: task.verification.completionReceipt };
   }
@@ -309,11 +328,11 @@ export function acceptVerifiedTaskFromControllerWork(input: ControllerWorkTaskRe
   if (!handle) throw new Error(`CONTROLLER_WORK_RECEIPT_WORK_NOT_FOUND: ${input.workId}`);
   if (handle.repositoryId !== input.repoId) throw new Error(`CONTROLLER_WORK_RECEIPT_REPOSITORY_MISMATCH: ${input.workId}`);
   const contract = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repoId }, handle.workContractId ?? input.workId);
-  if (!contract || contract.repoId !== input.repoId || contract.status !== 'completed') {
-    throw new Error(`CONTROLLER_WORK_RECEIPT_CONTRACT_INCOMPLETE: ${input.workId}`);
+  if (!contract || contract.repoId !== input.repoId) {
+    throw new Error(`CONTROLLER_WORK_RECEIPT_CONTRACT_NOT_FOUND: ${input.workId}`);
   }
-  const noChange = contract.completionOutcome === 'completed_no_change'
-    && contract.workKind === 'completed_no_change'
+  if (contract.status === 'cancelled') throw new Error(`CONTROLLER_WORK_RECEIPT_CONTRACT_CANCELLED: ${input.workId}`);
+  const noChange = contract.workKind === 'completed_no_change'
     && contract.evidenceState === 'valid';
   const stages = handle.finalization;
   const complete = noChange

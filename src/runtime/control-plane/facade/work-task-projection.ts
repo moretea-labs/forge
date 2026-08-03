@@ -39,7 +39,9 @@ export function projectControllerTaskFromWork(
     checks: [...work.checks],
     acceptanceCriteria: [...work.acceptanceCriteria],
     risk: workRiskToTaskRisk(work.risk),
-    status: taskStatusFromWork(work),
+    // A reviewed legacy outcome is user-facing evidence. Historical failed or
+    // cancelled execution facts cannot move it backwards.
+    status: task.status === 'done' && work.status !== 'completed' ? 'done' : taskStatusFromWork(work),
   };
   if (work.completionReceipt && projected.verification) {
     projected.verification = {

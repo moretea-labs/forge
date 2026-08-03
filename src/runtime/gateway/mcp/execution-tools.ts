@@ -20,6 +20,7 @@ import { ensureManagedWorkspace } from '../../workflow/campaigns/workspace';
 import { listControllerChecks } from '../../../cli/controller/check-runner';
 import { readRepositoryAccessPolicy } from '../../control-plane/governance/access-policy';
 import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkCompletionReceipt, updateWorkContract, appendVerificationRecord } from '../../control-plane/facade/work-contract-store';
+import { completeRequirementFromWork } from '../../control-plane/persistence/requirement-store';
 import { isTerminalWorkContractStatus } from '../../control-plane/facade/types';
 import { buildWorkContinuationSnapshot } from '../../control-plane/facade/work-continuation';
 import { claimControllerSession, getControllerSession, resumeControllerSession } from '../../control-plane/facade/controller-session-store';
@@ -176,7 +177,7 @@ function completionReceiptForFinalizedWork(
   const target = selectRepositoryCheckout(repository, handle.sourceCheckoutId ?? repository.activeCheckoutId);
   const targetBranch = typeof args.target_branch === 'string' && args.target_branch.trim()
     ? args.target_branch.trim()
-    : repository.defaultBranch || target.branch || 'main';
+    : repository.defaultBranch || 'main';
   const targetRevision = gitHead(target.canonicalRoot);
   if (!targetRevision) throw new Error('WORK_COMPLETION_RECEIPT_TARGET_REQUIRED: target HEAD is unavailable');
   const reachable = spawnSync('git', ['-C', target.canonicalRoot, 'merge-base', '--is-ancestor', targetRevision, targetBranch], {
@@ -1222,13 +1223,19 @@ function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, u
         });
       }
       const receipt = completionReceiptForFinalizedWork(ctx, current, completionContract, args);
-      recordWorkCompletionReceipt(
+      const recorded = recordWorkCompletionReceipt(
         { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
         workId,
         receipt,
         requestedOutcome === 'completed_no_change' ? 'completed_no_change' : 'completed_changed',
         requestedOutcome === 'completed_no_change' ? 'completed_no_change' : 'repository_change',
       );
+      if (recorded.requirementId) {
+        completeRequirementFromWork(
+          { controllerHome: ctx.controllerHome },
+          { requirementId: recorded.requirementId, work: recorded },
+        );
+      }
     }
     if (finalState === 'cleaned') {
       updateExecutionSession(ctx.controllerHome, identity, { activeWorkId: undefined, activeCheckoutId: current.sourceCheckoutId ?? session.activeCheckoutId });
