@@ -61,7 +61,7 @@ while (($#)); do
 done
 
 command_path() {
-  local value="$1" resolved
+  local value="$1" resolved directory
   if [[ "$value" == */* ]]; then
     [[ -x "$value" ]] || die "executable is unavailable: $value"
     resolved="$value"
@@ -69,7 +69,8 @@ command_path() {
     resolved="$(command -v "$value" 2>/dev/null || true)"
     [[ -n "$resolved" && -x "$resolved" ]] || die "executable is unavailable: $value"
   fi
-  printf '%s' "$resolved"
+  directory="$(cd "$(dirname "$resolved")" && pwd -P)"
+  printf '%s/%s' "$directory" "$(basename "$resolved")"
 }
 
 canonical_path() {
@@ -297,7 +298,9 @@ NODE_COMMAND="$(command_path "$NODE_COMMAND")"
 NODE_COMMAND="$(canonical_path "$NODE_COMMAND")"
 CURL_COMMAND="$(canonical_path "$(command_path "$CURL_COMMAND")")"
 TAILSCALE_COMMAND="$(canonical_path "$(command_path "$TAILSCALE_COMMAND")")"
-PI_COMMAND="$(canonical_path "$(command_path "$PI_COMMAND")")"
+# Preserve the selected shim itself. Realpathing a Volta/asdf/mise shim can
+# turn it into a generic dispatcher that refuses direct execution.
+PI_COMMAND="$(command_path "$PI_COMMAND")"
 
 if [[ "$MODE" == "verify" ]]; then
   [[ -d "$PI_REPO_ROOT" ]] || die "configured PI workspace is unavailable: $PI_REPO_ROOT"

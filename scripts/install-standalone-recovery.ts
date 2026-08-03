@@ -38,7 +38,10 @@ function resolveExecutable(value: string): string {
   for (const candidate of candidates) {
     try {
       accessSync(candidate, constants.X_OK);
-      if (statSync(candidate).isFile()) return realpathSync(candidate);
+      // Preserve the invoked path. Version-manager shims (Volta, asdf, mise) may
+      // intentionally dispatch based on argv[0] and fail when their target is
+      // realpathed and executed directly.
+      if (statSync(candidate).isFile()) return resolve(candidate);
     } catch { /* keep searching */ }
   }
   throw new Error('RECOVERY_PI_COMMAND_NOT_EXECUTABLE');

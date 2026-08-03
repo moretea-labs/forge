@@ -90,3 +90,41 @@ if env \
 fi
 
 printf 'standalone Recovery PI enablement tests passed\n'
+
+
+# Installer must preserve an executable shim path instead of resolving its
+# target. This models Volta, whose generic dispatcher rejects direct calls.
+SHIM_DIR="$TMP/shims"
+SHIM_TARGET="$TMP/volta-shim"
+SHIM_PATH="$SHIM_DIR/pi"
+mkdir -p "$SHIM_DIR"
+cat > "$SHIM_TARGET" <<'EOF'
+#!/usr/bin/env bash
+[[ "$(basename "$0")" != "volta-shim" ]]
+EOF
+chmod 755 "$SHIM_TARGET"
+ln -s "$SHIM_TARGET" "$SHIM_PATH"
+"$SHIM_PATH" || fail "shim path should be executable"
+if "$SHIM_TARGET"; then fail "direct generic dispatcher should fail"; fi
+
+INSTALLER_CONTROLLER="$TMP/installer-controller"
+INSTALLER_OUTPUT="$TMP/installer-output.json"
+(
+  cd "$ROOT"
+  bun scripts/install-standalone-recovery.ts \
+    --controller-home "$INSTALLER_CONTROLLER" \
+    --stage-only \
+    --enable-pi-agent \
+    --pi-command "$SHIM_PATH" \
+    --pi-repo-root "$SOURCE"
+) > "$INSTALLER_OUTPUT"
+node - "$INSTALLER_OUTPUT" "$SHIM_PATH" <<'NODE'
+const fs = require('fs');
+const [outputPath, shimPath] = process.argv.slice(2);
+const output = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
+if (output.config?.agentRepair?.command !== shimPath) {
+  throw new Error(`installer rewrote shim path: ${output.config?.agentRepair?.command}`);
+}
+NODE
+
+printf 'standalone Recovery PI shim regression passed\n'
