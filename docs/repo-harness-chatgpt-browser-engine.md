@@ -26,6 +26,16 @@
 - **`native` — deprecated.** The homegrown Chrome CDP engine is no longer maintained and is kept only as a short-term diagnostic entry (`browser-doctor --provider native`). It will be removed. Chrome 136+ also blocks remote-debugging switches against the *default* Chrome data directory (custom `--user-data-dir` still works), but the deprecation is a maintenance decision, not a Chrome limitation.
 - **`bridge` — experimental, explicit-only.** The localhost Chrome-extension bridge is not a fallback yet; it still derives completion from a DOM heuristic. Select it explicitly only. It now requires a per-binding capability token and has a server-side backstop (see below).
 
+## Controller Browser Plugin Compatibility
+
+The controller-scoped `browser` plugin is separate from the `repo-harness chatgpt browser-*` provider selection documented below. On macOS, its `attach_preferred` mode now uses this order:
+
+1. configured loopback CDP endpoints;
+2. Apple Events against the active tab of an already-running Vivaldi or Google Chrome instance;
+3. the configured managed persistent fallback.
+
+This Apple Events path is not the deprecated ChatGPT `native` provider. It reuses the user's visible, signed-in active tab, keeps the browser process open, does not copy cookies or storage, and preserves the browser plugin's domain allowlist and authorization checks. Vivaldi and Chrome candidates are configurable; the frontmost scriptable browser wins. When macOS Automation permission or browser JavaScript-from-Apple-Events permission is unavailable, the controller records the failed native attempt and follows the configured fallback policy.
+
 ## Runtime Boundary
 
 repo-harness remains a Bun-first CLI package. The Oracle CLI package currently requires `node >=24`, but that requirement belongs to the resolved Oracle binary, not to repo-harness' overall package runtime. Keep Oracle optional and pinned: install it in a runtime that satisfies its own engine requirement, pass an explicit `--oracle-bin`, set `REPO_HARNESS_ORACLE_BIN`, or expose a trusted `oracle` on `PATH`.

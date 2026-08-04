@@ -1,6 +1,6 @@
 # Controller Browser Plugin
 
-The `browser` plugin gives the controller a local Playwright-backed browser surface for bounded page reading and explicitly authorized interaction.
+The `browser` plugin gives the controller a bounded local browser surface for page reading and explicitly authorized interaction. It supports Playwright-managed contexts, loopback CDP attachment, and macOS active-tab attachment through Apple Events for Google Chrome and Vivaldi.
 
 ## Scope
 
@@ -25,9 +25,9 @@ Interactions that can mutate remote state still require `confirm_authorization=t
 ## Runtime model
 
 - `plugin_id` stays `browser`
-- the provider is local Playwright, either attached through a configured CDP endpoint or launched as a persistent context
+- the provider is local browser automation: configured loopback CDP, macOS Apple Events for an already-running Chrome/Vivaldi tab, or a Playwright persistent context
 - the default profile mode is `repo_local`, with profile data under `.repo-harness/browser/profiles/`
-- `profileMode=custom` is explicit-only and uses the configured Chrome/Chromium profile path directly
+- `profileMode=custom` is explicit-only and uses the configured Chromium-family profile path directly when launching a managed context
 - saved sessions live under `.repo-harness/browser/sessions/`
 - screenshots live under `.repo-harness/browser/screenshots/`
 - downloads live under `.repo-harness/browser/downloads/`
@@ -35,7 +35,7 @@ Interactions that can mutate remote state still require `confirm_authorization=t
 The browser mode is explicit:
 
 - `managed_persistent` is the default and preserves the previous behavior: each action launches a visible persistent Playwright context, restores the target URL, performs one bounded operation, persists session metadata, then closes the context.
-- `attach_preferred` first attempts to attach to one of the configured loopback CDP endpoints with `chromium.connectOverCDP`. It inventories existing tabs, reuses the best URL/title match, and disconnects from the browser instead of closing it.
+- `attach_preferred` uses a strict order: configured loopback CDP endpoints; then the active tab of an already-running, scriptable macOS Vivaldi or Google Chrome instance; then `cdpAttachFallback`. CDP inventory reuses the best URL/title match. Apple Events reuses only the front browser's active tab and never closes the user's browser.
 - `isolated` launches a visible persistent context with a per-session repo-local profile under `.repo-harness/browser/profiles/isolated/<session_id>`. It does not share the default plugin profile or a configured custom profile.
 
 Session metadata is reusable across actions via `session_id`. Transient navigation failures can retry with `retries` (1–3).
@@ -44,10 +44,10 @@ Session metadata is reusable across actions via `session_id`. Transient navigati
 
 - Domain allowlist is checked before navigation and after interactive URL changes.
 - Selector failures include repair hints (`repairHint`) when possible.
-- Console errors and failed requests are captured per open cycle.
+- Console errors and failed requests are captured for Playwright/CDP cycles. Apple Events attachment reports empty console/network diagnostics because those streams are not exposed by the browser scripting dictionary.
 - Artifacts stay under `.repo-harness/browser/**` (not arbitrary local paths).
-- CDP attach is bounded to configured loopback endpoints only; the plugin does not scan arbitrary ports or remote hosts.
-- Attached browsers are disconnected from after the action; managed contexts are closed after the action.
+- CDP attach is bounded to configured loopback endpoints only; the plugin does not scan arbitrary ports or remote hosts. Native discovery checks only the configured Chrome/Vivaldi candidates and does not launch them.
+- CDP browsers are disconnected after the action; Apple Events leaves the active browser/tab open; managed contexts are closed after the action.
 - Health `userFacingStatus` reports `ready`, `domain restricted`, `session active`, or setup states.
 
 ## Configuration
@@ -61,8 +61,11 @@ Example:
   "schemaVersion": 1,
   "enabled": true,
   "provider": "playwright",
-  "browserMode": "managed_persistent",
+  "browserMode": "attach_preferred",
   "profileMode": "repo_local",
+  "nativeAttachMode": "auto",
+  "nativeBrowserCandidates": ["vivaldi", "chrome"],
+  "cdpAttachFallback": "managed_persistent",
   "browserChannel": "chromium",
   "defaultTimeoutMs": 30000,
   "allowedDomains": ["example.com", "docs.example.com"]
@@ -75,7 +78,7 @@ Additional browser/profile fields:
 
 - `browserMode`
   - `managed_persistent` keeps the existing persistent-context lifecycle.
-  - `attach_preferred` tries configured CDP endpoints first and then follows `cdpAttachFallback`.
+  - `attach_preferred` tries configured CDP endpoints, then macOS Apple Events when enabled, then follows `cdpAttachFallback`.
   - `isolated` uses a per-session repo-local profile under `.repo-harness/browser/profiles/isolated/`.
 - `profileMode`
   - `repo_local` keeps the plugin on the repo-owned Playwright profile under `.repo-harness/browser/profiles/default`.
@@ -103,11 +106,18 @@ Additional browser/profile fields:
   - bounded to 5 seconds; default is 1500 ms
 - `cdpAttachFallback`
   - `managed_persistent` (default) launches the managed persistent context when attach fails
-  - `fail_closed` returns `PLUGIN_BROWSER_CDP_UNAVAILABLE` with endpoint attempt diagnostics and does not launch a new browser
+  - `fail_closed` returns `PLUGIN_BROWSER_ATTACH_UNAVAILABLE` with CDP and native-attempt diagnostics and does not launch a new browser
+- `nativeAttachMode`
+  - `auto` (default) enables macOS Apple Events attachment after CDP attempts fail
+  - `disabled` skips native browser discovery
+- `nativeBrowserCandidates`
+  - ordered list containing `vivaldi` and/or `chrome`; the default is `["vivaldi", "chrome"]`
+  - if multiple candidates are running and scriptable, the frontmost browser wins; otherwise candidate order wins
+  - discovery checks installation, process state, and active-tab metadata without launching the browser
 
-For an existing signed-in Chrome profile, prefer `profileMode=custom` plus `browserChannel=chrome` or an explicit `executablePath`. The plugin does not attach to a real user profile unless that custom mode is configured on purpose.
+For an already-running signed-in browser on macOS, prefer `browserMode=attach_preferred` with `nativeAttachMode=auto`. The plugin can reuse the active Vivaldi or Google Chrome tab without copying profile data. `profileMode=custom` remains the explicit path for launching a separate Playwright context against a selected Chromium-family profile.
 
-Example custom Chrome binding:
+Example custom Chrome automation-profile binding:
 
 ```json
 {
@@ -130,6 +140,27 @@ If `profileMode=custom` points at a live personal Chrome profile, close that sam
 
 For `attach_preferred`, start Chrome/Chromium with a non-default automation profile and `--remote-debugging-port=<port>`. Chrome 136+ blocks remote debugging against the default user data directory; use a separate automation profile. The plugin does not launch Chrome with remote debugging flags by itself.
 
+### Active signed-in Chrome or Vivaldi on macOS
+
+Use native attachment when the target session is already logged in:
+
+```json
+{
+  "schemaVersion": 1,
+  "enabled": true,
+  "provider": "playwright",
+  "browserMode": "attach_preferred",
+  "nativeAttachMode": "auto",
+  "nativeBrowserCandidates": ["vivaldi", "chrome"],
+  "cdpAttachFallback": "managed_persistent",
+  "allowedDomains": ["chatgpt.com", "example.com"]
+}
+```
+
+The attach order is CDP, then Apple Events, then managed fallback. macOS may require Automation permission for the controller/Node process to control Vivaldi or Google Chrome. The browser must also permit JavaScript from Apple Events for DOM extraction and interaction. If either permission is unavailable or the browser has no window, the attempt is recorded and fallback policy applies. The provider operates on the active tab only, does not read cookies or storage, and re-checks the active URL against `allowedDomains` before and after actions.
+
+Native limitations are explicit: console/network event capture is unavailable, element screenshots fall back to the visible browser-window region, and native file-input/download semantics are not equivalent to Playwright. Use CDP or a managed context for workflows that require those capabilities.
+
 ## Tab Resume And Diagnostics
 
 When attaching through CDP, the plugin inventories existing tabs by index, URL, and title. Selection is deterministic:
@@ -142,7 +173,7 @@ When attaching through CDP, the plugin inventories existing tabs by index, URL, 
 
 This avoids opening duplicate tabs when a matching tab already exists. Saved session metadata includes the last browser mode, active mode, CDP endpoint, fallback outcome when applicable, tab key, tab URL/title/index, and a resume diagnostic. If the saved tab is not present during a later attach, responses include `sessionResume.status=stale_tab` and explain whether another target URL tab, a blank tab, or a new tab was used.
 
-Stale or unavailable CDP endpoints return attempt-level diagnostics. With `cdpAttachFallback=managed_persistent`, those diagnostics appear in `browserConnection.fallback`; with `fail_closed`, the action fails before launching a managed context.
+Stale or unavailable CDP endpoints and unavailable native browsers return attempt-level diagnostics. With `cdpAttachFallback=managed_persistent`, those diagnostics appear in `browserConnection.fallback`; with `fail_closed`, the action fails before launching a managed context. Native sessions record `provider=macos-apple-events` and `browserProduct=vivaldi|chrome`.
 
 ## Policy surface
 
@@ -228,13 +259,13 @@ Example response shape:
 - If both `session_id` and `url` are provided, they must resolve to the same page target.
 - `close_page` only removes saved session metadata. It does not delete the persistent profile.
 - `profile_dir` is rejected unless `profile_mode=custom` is already configured or supplied in the same `configure` call.
-- Visible Chrome/Chromium launches are supported, but managed actions still close after they complete. For longer human-driven login, MFA, or consent steps, use `request_human_handoff` and resume or cancel it explicitly.
+- Visible Chromium-family launches are supported, but managed actions still close after they complete. Apple Events attachment preserves the user's current Vivaldi/Chrome process and login state. For longer human-driven login, MFA, or consent steps in a managed profile, use `request_human_handoff` and resume or cancel it explicitly.
 
-## Bun runtime and the Node CDP bridge
+## Bun runtime and the Node browser-attach bridge
 
-The Controller Gateway remains Bun-hosted. For `browserMode=attach_preferred`, page actions are executed by a short-lived, bounded Node child because Playwright CDP WebSocket attachment is not reliable in the supported Bun runtime. The bridge does not create a second Browser implementation: it serializes the already-authorized plugin action over stdin and invokes the same Browser adapter under Node.
+The Controller Gateway remains Bun-hosted. For `browserMode=attach_preferred`, page actions are executed by a short-lived, bounded Node child because Playwright CDP WebSocket attachment is not reliable in the supported Bun runtime and native attach must share the same authorized adapter path. The bridge does not create a second Browser implementation: it serializes the already-authorized plugin action over stdin and invokes the same Browser adapter under Node.
 
-The child is started directly without a shell. The CDP endpoint remains loopback-only, request and response payloads are bounded, execution has a bounded timeout, and credentials are never placed in argv. Cookies, storage state, authorization headers, and page secrets are not returned by the bridge protocol. The child disconnects from an attached browser rather than closing the user's Chrome instance.
+The child is started directly without a shell. The CDP endpoint remains loopback-only, request and response payloads are bounded, execution has a bounded timeout, and credentials are never placed in argv. Cookies, storage state, authorization headers, and page secrets are not returned by the bridge protocol. The child disconnects from CDP or releases the Apple Events operation without closing the user's Chrome or Vivaldi instance.
 
 `managed_persistent` and `isolated` continue to run directly in the Controller runtime. Configuration, session listing and cleanup, and human-handoff lifecycle actions also remain local. Set `REPO_HARNESS_NODE_EXECUTABLE` only to an explicitly trusted executable; an invalid configured path fails closed.
 
