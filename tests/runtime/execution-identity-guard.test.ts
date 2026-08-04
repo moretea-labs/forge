@@ -353,6 +353,42 @@ describe('execution identity pre-spawn guard', () => {
     }
   });
 
+  test('WorkHandle identity ignores mutable repository checkout projection', () => {
+    const fx = dualRepoFixture();
+    const handle = sampleHandle({
+      workId: 'work_projection',
+      repositoryId: fx.repoA.repoId,
+      checkoutId: fx.repoA.activeCheckoutId,
+      worktreePath: fx.repoA.canonicalRoot,
+      branch: 'main',
+      expectedHead: fx.headA,
+    });
+    const staleProjection = {
+      ...fx.repoA,
+      activeCheckoutId: fx.repoB.activeCheckoutId,
+      canonicalRoot: fx.repoB.canonicalRoot,
+      localRoot: fx.repoB.localRoot,
+    };
+    const identity = executionIdentityForWork(staleProjection, handle);
+    expect(identity.repositoryId).toBe(fx.repoA.repoId);
+    expect(identity.checkoutId).toBe(fx.repoA.activeCheckoutId);
+    expect(identity.canonicalRoot).toBe(fx.repoA.canonicalRoot);
+    expect(identity.worktreePath).toBe(fx.repoA.canonicalRoot);
+  });
+
+  test('WorkHandle still rejects a repository identity mismatch', () => {
+    const fx = dualRepoFixture();
+    const handle = sampleHandle({
+      workId: 'work_wrong_repo',
+      repositoryId: fx.repoA.repoId,
+      checkoutId: fx.repoA.activeCheckoutId,
+      worktreePath: fx.repoA.canonicalRoot,
+      branch: 'main',
+      expectedHead: fx.headA,
+    });
+    expect(() => executionIdentityForWork(fx.repoB, handle)).toThrow(/EXECUTION_IDENTITY_MISMATCH/);
+  });
+
   test('legacy ambiguous WorkContract identity is rejected', () => {
     const fx = dualRepoFixture();
     const handleA = sampleHandle({

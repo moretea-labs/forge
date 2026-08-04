@@ -27,6 +27,8 @@ export interface WorkValidationRunState {
 
 export interface WorkHandleState {
   schemaVersion: 1;
+  /** SQLite envelope revision used for compare-and-swap lifecycle writes. */
+  recordRevision?: number;
   workId: string;
   sessionId: string;
   principalId: string;
@@ -72,22 +74,24 @@ export function readWorkHandle(controllerHome: string, repositoryId: string, wor
     readLegacy: () => existsSync(path) ? readJsonFile<WorkHandleState>(path) : undefined,
   });
   const handle = record?.value;
-  if (!handle) return undefined;
+  if (!handle || !record) return undefined;
   if (handle.workId !== workId || handle.repositoryId !== repositoryId) throw new Error('WORK_HANDLE_IDENTITY_MISMATCH');
-  return handle;
+  return { ...handle, recordRevision: record.revision };
 }
 
 export function writeWorkHandle(controllerHome: string, handle: WorkHandleState): WorkHandleState {
-  const updated = { ...handle, updatedAt: now() };
-  writeControlPlaneRecord(controllerHome, {
+  const { recordRevision, ...persistedHandle } = handle;
+  const updated: Omit<WorkHandleState, 'recordRevision'> = { ...persistedHandle, updatedAt: now() };
+  const record = writeControlPlaneRecord(controllerHome, {
     namespace: 'execution_work_handle',
     scope: updated.repositoryId,
     key: sanitizeFileComponent(updated.workId),
     schemaVersion: updated.schemaVersion,
     value: updated,
     action: 'work_handle_write',
+    ...(recordRevision !== undefined ? { expectedRevision: recordRevision } : {}),
   });
-  return updated;
+  return { ...record.value, recordRevision: record.revision };
 }
 
 const TRANSITIONS: Record<WorkHandleStateName, readonly WorkHandleStateName[]> = {

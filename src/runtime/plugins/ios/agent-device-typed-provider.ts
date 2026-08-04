@@ -32,6 +32,7 @@ interface TypedProviderHooks {
 }
 
 const require = createRequire(import.meta.url);
+const AGENT_DEVICE_MODULE_NAME = 'agent-device';
 const MIN_TYPED_CLIENT_NODE_VERSION = '22.12.0';
 
 function parseVersion(value: string): [number, number, number] | undefined {
@@ -77,14 +78,14 @@ function agentDevicePackageVersion(start: string): string | undefined {
 
 function defaultResolveModule(): string | undefined {
   try {
-    return realpathSync(require.resolve('agent-device'));
+    return realpathSync(require.resolve(AGENT_DEVICE_MODULE_NAME));
   } catch {
     return undefined;
   }
 }
 
 let hooks: TypedProviderHooks = {
-  loadModule: async () => import('agent-device') as unknown as TypedAgentDeviceModule,
+  loadModule: async () => import(AGENT_DEVICE_MODULE_NAME) as unknown as TypedAgentDeviceModule,
   resolveModule: defaultResolveModule,
   runtimeNodeVersion: () => process.versions.node,
 };
@@ -97,7 +98,7 @@ export function setAgentDeviceTypedProviderHooksForTest(
 
 export function resetAgentDeviceTypedProviderHooksForTest(): void {
   hooks = {
-    loadModule: async () => import('agent-device') as unknown as TypedAgentDeviceModule,
+    loadModule: async () => import(AGENT_DEVICE_MODULE_NAME) as unknown as TypedAgentDeviceModule,
     resolveModule: defaultResolveModule,
     runtimeNodeVersion: () => process.versions.node,
   };

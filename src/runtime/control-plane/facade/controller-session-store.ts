@@ -15,6 +15,8 @@ export interface ControllerSessionClaimInput {
   sessionId: string;
   principalId?: string;
   controllerInstanceId?: string;
+  /** Optional compare-and-swap fence supplied by a recovering caller. */
+  expectedClaimGeneration?: number;
   leaseMs?: number;
 }
 
@@ -57,10 +59,21 @@ function assertIdentity(input: ControllerSessionClaimInput): void {
   }
 }
 
-function claimedSession(options: ControllerSessionStoreOptions, input: ControllerSessionClaimInput, claimedAt: string): ControllerSession {
+function claimedSession(
+  options: ControllerSessionStoreOptions,
+  input: ControllerSessionClaimInput,
+  claimedAt: string,
+  previous?: ControllerSession,
+): ControllerSession {
   const leaseExpiresAt = new Date(
     Date.parse(claimedAt) + Math.max(1_000, Math.min(input.leaseMs ?? 300_000, 3_600_000)),
   ).toISOString();
+  const sameOwner = previous?.controllerId === input.controllerId
+    && previous.sessionId === input.sessionId
+    && (previous.controllerInstanceId ?? '') === (input.controllerInstanceId?.trim() ?? '');
+  const claimGeneration = sameOwner
+    ? Math.max(1, previous?.claimGeneration ?? 1)
+    : Math.max(0, previous?.claimGeneration ?? 0) + 1;
   return {
     schemaVersion: 1,
     workId: input.workId,
@@ -69,18 +82,28 @@ function claimedSession(options: ControllerSessionStoreOptions, input: Controlle
     sessionId: input.sessionId,
     ...(input.principalId?.trim() ? { principalId: input.principalId.trim() } : {}),
     ...(input.controllerInstanceId?.trim() ? { controllerInstanceId: input.controllerInstanceId.trim() } : {}),
+    claimGeneration,
     claimedAt,
     leaseExpiresAt,
   };
+}
+
+function assertExpectedGeneration(input: ControllerSessionClaimInput, current: ControllerSession | undefined): void {
+  if (input.expectedClaimGeneration === undefined) return;
+  const actual = current?.claimGeneration ?? 0;
+  if (actual !== input.expectedClaimGeneration) {
+    throw new Error(`WORK_CLAIM_GENERATION_MISMATCH: ${input.workId} expected=${input.expectedClaimGeneration} actual=${actual}`);
+  }
 }
 
 function persistClaim(
   options: ControllerSessionStoreOptions,
   store: ControllerSessionStore,
   input: ControllerSessionClaimInput,
+  previous?: ControllerSession,
 ): ControllerSession {
   const claimedAt = now(options);
-  const session = claimedSession(options, input, claimedAt);
+  const session = claimedSession(options, input, claimedAt, previous);
   const sessions = [
     ...store.sessions.filter((entry) => entry.workId !== input.workId && Date.parse(entry.leaseExpiresAt) > Date.now()),
     session,
@@ -109,10 +132,11 @@ export function claimControllerSession(
     () => {
       const store = read(options);
       const current = activeSession(store, input.workId);
+      assertExpectedGeneration(input, current);
       if (current && (current.controllerId !== input.controllerId || current.sessionId !== input.sessionId)) {
         throw new Error(`WORK_ALREADY_CLAIMED: ${input.workId} is owned by ${current.controllerId}`);
       }
-      return persistClaim(options, store, input);
+      return persistClaim(options, store, input, current);
     },
   );
 }
@@ -138,16 +162,17 @@ export function resumeControllerSession(
     () => {
       const store = read(options);
       const current = activeSession(store, input.workId);
+      assertExpectedGeneration(input, current);
       if (!current) return persistClaim(options, store, input);
+      const priorExecution = peekExecutionSession(options.controllerHome, current.sessionId);
+      const currentPrincipal = current.principalId?.trim() || priorExecution?.principalId?.trim() || current.controllerId;
+      if (currentPrincipal !== input.principalId.trim()) {
+        throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${input.workId} is owned by another authenticated principal`);
+      }
       if (current.controllerId !== input.controllerId) {
         throw new Error(`WORK_ALREADY_CLAIMED: ${input.workId} is owned by ${current.controllerId}`);
       }
       if (current.sessionId !== input.sessionId) {
-        const priorExecution = peekExecutionSession(options.controllerHome, current.sessionId);
-        const currentPrincipal = current.principalId?.trim() || priorExecution?.principalId?.trim() || current.controllerId;
-        if (currentPrincipal !== input.principalId.trim()) {
-          throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${input.workId} is owned by another authenticated principal`);
-        }
         const priorInstance = current.controllerInstanceId?.trim() || priorExecution?.controllerInstanceId?.trim();
         const priorSessionUnavailable = !priorExecution || Boolean(priorExecution.invalidatedAt);
         const crossedControllerEpoch = Boolean(priorInstance && priorInstance !== input.controllerInstanceId.trim());
@@ -155,7 +180,7 @@ export function resumeControllerSession(
           throw new Error(`WORK_ALREADY_CLAIMED: ${input.workId} has an active session ${current.sessionId}`);
         }
       }
-      return persistClaim(options, store, input);
+      return persistClaim(options, store, input, current);
     },
   );
 }

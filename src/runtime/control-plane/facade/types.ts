@@ -439,6 +439,8 @@ export interface ControllerSession {
   principalId?: string;
   /** Controller process/epoch that admitted the transport session. */
   controllerInstanceId?: string;
+  /** Monotonic ownership fence. It changes only when ownership moves. */
+  claimGeneration?: number;
   claimedAt: string;
   leaseExpiresAt: string;
 }

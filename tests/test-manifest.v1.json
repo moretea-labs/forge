@@ -23,10 +23,10 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 83,
+    "maxTestFiles": 85,
     "maxTestLines": 40000,
     "maxPureFiles": 30,
-    "maxTempIsolatedFiles": 37,
+    "maxTempIsolatedFiles": 39,
     "maxProcessTreeFiles": 15,
     "maxGitWorktreeFiles": 15,
     "maxFixedPortFiles": 6,
@@ -344,6 +344,10 @@
       "module": "process-runtime",
       "resource": "runtime-singleton"
     },
+    "tests/runtime/controller-session-store.test.ts": {
+      "module": "controller",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/execution-identity-guard.test.ts": {
       "module": "process-runtime",
       "resource": "temp-isolated"
@@ -444,8 +448,12 @@
       "module": "process-runtime",
       "resource": "temp-isolated"
     },
+    "tests/runtime/work-handle-store.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/work-validation-reconciler.test.ts": {
-      "module": "workflow",
+      "module": "process-runtime",
       "resource": "temp-isolated"
     },
     "tests/runtime/work-task-receipt.test.ts": {

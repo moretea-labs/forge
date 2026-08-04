@@ -2047,11 +2047,12 @@ function summarizeWork(job: ExecutionJob, repoRoot?: string): Record<string, unk
 
 const TERMINAL_WORK_HANDLE_STATES = new Set<WorkHandleState['state']>(['cleaned', 'failed']);
 
-function workHandlePhase(handle: WorkHandleState): 'implementation' | 'verification' | 'delivery' | 'cleanup' | 'attention' {
-  if (handle.state === 'validating') return 'verification';
-  if (handle.state === 'committed' || handle.state === 'merged') return 'delivery';
-  if (handle.state === 'cleaned') return 'cleanup';
+function workHandlePhase(handle: WorkHandleState): 'implementation' | 'verification' | 'delivery' | 'cleanup' | 'completed' | 'attention' {
+  if (handle.state === 'cleaned') return 'completed';
   if (handle.state === 'failed') return 'attention';
+  if (handle.state === 'validating') return 'verification';
+  if (handle.state === 'committed') return 'delivery';
+  if (handle.state === 'merged') return 'cleanup';
   return 'implementation';
 }
 
@@ -2062,7 +2063,13 @@ function reconcileReadableWorkHandle(
 ): WorkHandleState | undefined {
   const handle = readWorkHandle(controllerHome, repoId, workId);
   if (!handle) return undefined;
-  return reconcileWorkValidation(controllerHome, handle).handle;
+  try {
+    return reconcileWorkValidation(controllerHome, handle).handle;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes('CONTROL_PLANE_REVISION_CONFLICT')) throw error;
+    return readWorkHandle(controllerHome, repoId, workId);
+  }
 }
 
 async function waitForReadableWorkHandle(
@@ -2091,7 +2098,6 @@ function summarizeWorkHandle(
   contract?: NonNullable<ReturnType<typeof getWorkContract>>,
 ): Record<string, unknown> {
   const terminal = TERMINAL_WORK_HANDLE_STATES.has(handle.state);
-  const phase = workHandlePhase(handle);
   const summary = contract?.objective?.trim()
     ? contract.objective.slice(0, 240)
     : `Work ${handle.workId} is ${handle.state}.`;
@@ -2101,7 +2107,7 @@ function summarizeWorkHandle(
     repoId: handle.repositoryId,
     checkoutId: handle.checkoutId,
     state: handle.state,
-    phase,
+    phase: workHandlePhase(handle),
     statusLabel: handle.state,
     summary,
     terminal,
