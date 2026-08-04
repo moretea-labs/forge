@@ -7,7 +7,7 @@ import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import { bootstrapLaunchAgentWithRetry } from '../../src/cli/controller/launch-agents';
 import { selectSupervisorRollbackRelease, serviceActivationStatePath, supervisorActivationMatchesRelease, waitForServiceActivation } from '../../src/cli/commands/supervisor';
-import { installSupervisorRelease, publishSupervisorRelease, renderLaunchdSupervisorPlist, renderSystemdSupervisorUnit, stageSupervisorRelease, supervisorServiceLabel, supervisorSystemdUnitName, verifySupervisorSourceIdentity } from '../../src/runtime/supervisor/installer';
+import { installSupervisorRelease, publishSupervisorRelease, renderLaunchdSupervisorPlist, renderSystemdSupervisorUnit, stageSupervisorRelease, supervisorServiceLabel, supervisorSystemdUnitName, verifySupervisorBrowserNodeBridgeHost, verifySupervisorSourceIdentity } from '../../src/runtime/supervisor/installer';
 import { stableSupervisorActivatesPublishedRelease, stableSupervisorExitCode } from '../../src/runtime/supervisor/entry';
 import { createStableIngressRouter } from '../../src/runtime/supervisor/ingress-router';
 import { createStableIngressProcess } from '../../src/runtime/supervisor/ingress-process';
@@ -27,6 +27,7 @@ import { evaluateRuntimeReleaseCoherence, evaluateSupervisorServiceReleaseCohere
 import { publishAndScheduleSupervisorRelease, resolveSupervisorActivationInvocation } from '../../src/runtime/supervisor/service-activation';
 import { probeSupervisorMcpReadiness } from '../../src/runtime/supervisor/mcp-readiness';
 import { readSupervisorState } from '../../src/runtime/supervisor/state-store';
+import { resolveBrowserBridgeNodeExecutable } from '../../src/runtime/plugins/browser-node-bridge';
 
 const servers: Server[] = [];
 
@@ -188,10 +189,40 @@ describe('Stable Supervisor production hardening', () => {
       expect(manifest.capabilities).toContain('independent_process_runner');
       expect(manifest.capabilities).toContain('browser_handoff_host');
       expect(manifest.capabilities).toContain('browser_node_cdp_bridge');
+      const browserNodeHostPath = join(release.releasePath, 'browser-node-bridge-host.js');
+      const nodeProbe = spawnSync(resolveBrowserBridgeNodeExecutable(), [browserNodeHostPath], {
+        cwd: release.releasePath,
+        encoding: 'utf8',
+        input: '{"schemaVersion":0}',
+        env: {
+          PATH: process.env.PATH ?? '',
+          HOME: process.env.HOME ?? '',
+          REPO_HARNESS_BROWSER_NODE_BRIDGE_HOST: '1',
+        },
+      });
+      expect(nodeProbe.status).toBe(1);
+      expect(JSON.parse(nodeProbe.stdout)).toMatchObject({ schemaVersion: 1, ok: false });
+      expect(verifySupervisorBrowserNodeBridgeHost({
+        releasePath: release.releasePath,
+        nodeExecutable: resolveBrowserBridgeNodeExecutable(),
+      })).toMatchObject({ nodeChecked: true, hostPath: browserNodeHostPath });
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }
   }, 180_000);
+
+  test('release staging rejects a native executable masquerading as the Browser Node host', () => {
+    const releasePath = mkdtempSync(join(tmpdir(), 'repo-harness-browser-node-native-'));
+    try {
+      writeFileSync(join(releasePath, 'browser-node-bridge-host.js'), Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0x00]));
+      expect(() => verifySupervisorBrowserNodeBridgeHost({
+        releasePath,
+        nodeExecutable: resolveBrowserBridgeNodeExecutable(),
+      })).toThrow('native executable, not a Node JavaScript bundle');
+    } finally {
+      rmSync(releasePath, { recursive: true, force: true });
+    }
+  });
 
   test('release staging refuses dirty runtime source paths', () => {
     const root = mkdtempSync(join(tmpdir(), 'repo-harness-dirty-release-source-'));

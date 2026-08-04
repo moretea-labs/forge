@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSyn
 import { dirname, join, resolve, sep } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { processRunnerReleaseCanaryChildCommand } from '../execution/process-runtime/canary';
+import { resolveBrowserBridgeNodeExecutable } from '../plugins/browser-node-bridge';
 import { looksLikeControllerRuntimePackage, resolveControllerRuntimeSourceRoot } from '../control-plane/runtime-generation';
 import {
   readCurrentRelease,
@@ -190,15 +191,89 @@ function buildEntry(
   output: string,
   target: 'bun' | 'node' = 'bun',
   standalone = true,
+  format?: 'esm' | 'cjs',
 ): void {
   const bun = process.versions.bun ? process.execPath : 'bun';
-  const args = ['build', ...(standalone ? ['--compile'] : []), join(sourceRoot, entry), '--outfile', output, '--target', target];
+  const args = [
+    'build',
+    ...(standalone ? ['--compile'] : []),
+    join(sourceRoot, entry),
+    '--outfile', output,
+    '--target', target,
+    ...(format ? ['--format', format] : []),
+  ];
   const result = runProcess(bun, args, {
     cwd: sourceRoot,
     timeoutMs: 180_000,
     maxOutputBytes: 128 * 1024,
   });
   if (!result.ok) throw new Error(`SUPERVISOR_RELEASE_BUILD_FAILED: ${result.stderr || result.stdout}`.slice(0, 2_000));
+}
+
+export interface SupervisorBrowserNodeBridgeCanaryResult {
+  hostPath: string;
+  nodeExecutable?: string;
+  nodeChecked: boolean;
+}
+
+function nativeExecutableMagic(prefix: Buffer): boolean {
+  if (prefix.length < 2) return false;
+  if (prefix[0] === 0x4d && prefix[1] === 0x5a) return true; // PE/COFF
+  if (prefix.length < 4) return false;
+  const magic = prefix.subarray(0, 4).toString('hex');
+  return magic === '7f454c46' // ELF
+    || magic === 'feedface'
+    || magic === 'feedfacf'
+    || magic === 'cefaedfe'
+    || magic === 'cffaedfe'; // Mach-O variants
+}
+
+/**
+ * Prove that the Browser CDP bridge host is a Node-readable JavaScript bundle,
+ * not a Bun standalone executable with a misleading `.js` suffix. When Node
+ * is installed, execute a bounded malformed-request probe and require the
+ * structured bridge protocol response before publishing the release.
+ */
+export function verifySupervisorBrowserNodeBridgeHost(input: {
+  releasePath: string;
+  nodeExecutable?: string;
+}): SupervisorBrowserNodeBridgeCanaryResult {
+  const hostPath = join(resolve(input.releasePath), 'browser-node-bridge-host.js');
+  if (!existsSync(hostPath)) {
+    throw new Error('SUPERVISOR_RELEASE_BROWSER_NODE_HOST_FAILED: browser-node-bridge-host.js is missing');
+  }
+  const prefix = readFileSync(hostPath).subarray(0, 4);
+  if (nativeExecutableMagic(prefix)) {
+    throw new Error('SUPERVISOR_RELEASE_BROWSER_NODE_HOST_FAILED: browser-node-bridge-host.js is a native executable, not a Node JavaScript bundle');
+  }
+
+  let nodeExecutable = input.nodeExecutable;
+  if (!nodeExecutable) {
+    try {
+      nodeExecutable = resolveBrowserBridgeNodeExecutable();
+    } catch {
+      return { hostPath, nodeChecked: false };
+    }
+  }
+  const probe = runProcess(nodeExecutable, [hostPath], {
+    cwd: dirname(hostPath),
+    env: { REPO_HARNESS_BROWSER_NODE_BRIDGE_HOST: '1' },
+    input: '{"schemaVersion":0}',
+    timeoutMs: 15_000,
+    maxOutputBytes: 16 * 1024,
+  });
+  let response: { schemaVersion?: number; ok?: boolean } | undefined;
+  try {
+    response = JSON.parse(probe.stdout) as { schemaVersion?: number; ok?: boolean };
+  } catch {
+    // handled below with the bounded process diagnostic
+  }
+  if (probe.status !== 1 || response?.schemaVersion !== 1 || response.ok !== false) {
+    throw new Error(
+      `SUPERVISOR_RELEASE_BROWSER_NODE_HOST_FAILED: ${probe.stderr || probe.stdout || probe.error || `exit ${probe.status}`}`.slice(0, 2_000),
+    );
+  }
+  return { hostPath, nodeExecutable, nodeChecked: true };
 }
 
 function serviceSuffix(controllerHome: string): string {
@@ -502,7 +577,15 @@ export function stageSupervisorRelease(input: { controllerHome: string; repoRoot
     buildEntry(sourceRoot, 'src/runtime/execution/workers/worker-entry.ts', join(stagingPath, 'worker.js'));
     buildEntry(sourceRoot, 'src/runtime/execution/process-runtime/process-runner-entry.ts', join(stagingPath, 'process-runner.js'));
     buildEntry(sourceRoot, 'src/runtime/plugins/browser-handoff-host.ts', join(stagingPath, 'browser-handoff-host.js'));
-    buildEntry(sourceRoot, 'src/runtime/plugins/browser-node-bridge-host.ts', join(stagingPath, 'browser-node-bridge-host.js'));
+    buildEntry(
+      sourceRoot,
+      'src/runtime/plugins/browser-node-bridge-host.ts',
+      join(stagingPath, 'browser-node-bridge-host.js'),
+      'node',
+      false,
+      'esm',
+    );
+    verifySupervisorBrowserNodeBridgeHost({ releasePath: stagingPath });
     const missing = supervisorReleaseClosureMissing(stagingPath);
     if (missing.length > 0) {
       throw new Error(`SUPERVISOR_RELEASE_CLOSURE_INCOMPLETE: staged release is missing required executables: ${missing.join(', ')}`);
