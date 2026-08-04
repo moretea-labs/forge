@@ -63,6 +63,7 @@ import {
   updateIssue,
   updateTask,
 } from "../controller/issue-store";
+import { applyMigratedIssueDecision } from '../controller/migrated-issue-decision';
 import {
   listControllerChecks,
 } from "../controller/check-runner";
@@ -4083,7 +4084,8 @@ export async function callMcpTool(
             "TOOL_DISABLED",
             "update_issue requires the controller profile",
           );
-        const issue = updateIssue(ctx.repoRoot, String(args.issue_id ?? ""), {
+        const issueId = String(args.issue_id ?? "");
+        const patch = {
           title: typeof args.title === "string" ? args.title : undefined,
           status:
             typeof args.status === "string"
@@ -4100,7 +4102,16 @@ export async function callMcpTool(
           relatedArtifacts: Array.isArray(args.related_artifacts)
             ? stringList(args.related_artifacts)
             : undefined,
+        };
+        const migrated = applyMigratedIssueDecision(ctx.repoRoot, {
+          issueId,
+          ...patch,
         });
+        if (migrated) {
+          audit(ctx, name, "ok", args, `requirements/${migrated.requirement.requirementId}`);
+          return textResult(migrated);
+        }
+        const issue = updateIssue(ctx.repoRoot, issueId, patch);
         audit(ctx, name, "ok", args, `tasks/issues/${issue.id}`);
         return textResult(projectIssueEffectiveView(ctx.repoRoot, issue));
       }

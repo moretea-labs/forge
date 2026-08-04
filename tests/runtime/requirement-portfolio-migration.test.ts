@@ -14,6 +14,7 @@ import { createIssue, projectBoard, updateIssue } from '../../src/cli/controller
 import { clearCurrentIssue, saveControllerProjectState } from '../../src/cli/controller/project-state';
 import { migratedTaskCompletionState, recordMigratedTaskCompletion } from '../../src/cli/controller/legacy-issue-cutover';
 import { exportRequirementPortfolio } from '../../src/cli/controller/requirement-portfolio-export';
+import { applyMigratedIssueDecision } from '../../src/cli/controller/migrated-issue-decision';
 import { listControlPlaneRecords } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { getPlanContract, listPlanContracts } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { buildExecutionDiagnostics } from '../../src/runtime/control-plane/facade/requirement-board';
@@ -165,6 +166,83 @@ describe('Requirement portfolio migration', () => {
       expect(second.status).toBe('deduplicated');
       expect(listControlPlaneRecords(controllerHome, { namespace: 'requirement', scope: 'controller', limit: 100 }).map((record) => record.revision)).toEqual(revisionsBefore);
     });
+  });
+
+  test('applies explicit legacy Issue close and block decisions to Requirement/Plan authority without rewriting frozen files', () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'requirement-decision-repo-'));
+    const controllerHome = join(repoRoot, '_ops', 'controller-home');
+    try {
+      mkdirSync(join(repoRoot, '.ai', 'harness'), { recursive: true });
+      writeFileSync(join(repoRoot, '.ai', 'harness', 'repository.json'), `${JSON.stringify({ schemaVersion: 1, repoId: REPO_ID }, null, 2)}\n`, 'utf8');
+      const legacyIssue = createIssue(repoRoot, {
+        title: 'Frozen legacy issue',
+        kind: 'bug',
+        summary: 'Frozen after migration.',
+        tasks: [{ title: 'Legacy task', objective: 'Historical only.' }],
+      });
+      const issueDir = join(repoRoot, 'tasks', 'issues');
+      const beforeFiles = readdirSync(issueDir).sort();
+      const beforeContents = Object.fromEntries(beforeFiles.map((name) => [name, readFileSync(join(issueDir, name), 'utf8')]));
+      applyRequirementPortfolioMigration(input(controllerHome));
+
+      const closed = applyMigratedIssueDecision(repoRoot, {
+        issueId: 'ISS-20260731-B66A97',
+        status: 'done',
+        summary: 'User accepted the delivered route-integrity outcome; remaining old fault-matrix steps move to current architecture work.',
+      });
+      expect(closed).toMatchObject({ migrated: true, legacyIssueFrozen: true, legacyIssueId: 'ISS-20260731-B66A97' });
+      expect(closed).toMatchObject({ legacyPlanClosed: true, requirementClosed: false });
+      expect(closed?.requirement).toMatchObject({ requirementId: 'REQ-ROUTE-INTEGRITY', state: 'active', needsAttention: true });
+      expect(closed?.plan.status).toBe('superseded');
+      expect(closed?.plan.steps.some((step) => step.status !== 'completed')).toBe(true);
+      const repeated = applyMigratedIssueDecision(repoRoot, {
+        issueId: 'ISS-20260731-B66A97',
+        status: 'done',
+        summary: 'User accepted the delivered route-integrity outcome; remaining old fault-matrix steps move to current architecture work.',
+      });
+      expect(repeated?.decisionId).toBe(closed?.decisionId);
+      expect(repeated?.requirement.revision).toBe(closed?.requirement.revision);
+      const resumedSibling = applyMigratedIssueDecision(repoRoot, {
+        issueId: 'ISS-20260803-90E84B',
+        status: 'in_progress',
+      });
+      expect(resumedSibling?.requirement.state).toBe('active');
+
+      const remoteRecovery = applyMigratedIssueDecision(repoRoot, {
+        issueId: 'ISS-20260802-27931A',
+        status: 'done',
+        summary: 'The standalone remote Recovery outcome is delivered; remaining fault drills are owned by runtime availability work.',
+      });
+      expect(remoteRecovery).toMatchObject({ legacyPlanClosed: true, requirementClosed: true });
+      expect(remoteRecovery?.requirement).toMatchObject({ requirementId: 'REQ-REMOTE-RECOVERY', state: 'done' });
+      expect(() => applyMigratedIssueDecision(repoRoot, {
+        issueId: 'ISS-20260802-27931A',
+        status: 'in_progress',
+      })).toThrow('MIGRATED_REQUIREMENT_STATE_TRANSITION_INVALID');
+
+      const blocked = applyMigratedIssueDecision(repoRoot, {
+        issueId: 'ISS-20260730-CCF211',
+        status: 'launch_blocked',
+        summary: 'Retain the investigation, but redesign the experiment and plan against the current Requirement/Work architecture.',
+      });
+      expect(blocked?.requirement).toMatchObject({
+        requirementId: 'REQ-DEFECT-REVIEW',
+        state: 'planned',
+        needsAttention: true,
+        attentionSummary: 'Retain the investigation, but redesign the experiment and plan against the current Requirement/Work architecture.',
+      });
+      expect(blocked?.plan.status).toBe('replanning');
+      expect(() => applyMigratedIssueDecision(repoRoot, {
+        issueId: 'ISS-20260730-CCF211',
+        goals: ['Unsupported compatibility mutation'],
+      })).toThrow('MIGRATED_ISSUE_FIELD_RETIRED');
+
+      expect(readdirSync(issueDir).sort()).toEqual(beforeFiles);
+      expect(Object.fromEntries(beforeFiles.map((name) => [name, readFileSync(join(issueDir, name), 'utf8')]))).toEqual(beforeContents);
+      expect(() => updateIssue(repoRoot, legacyIssue.id, { summary: 'Still frozen.' })).toThrow('LEGACY_ISSUE_WRITES_RETIRED');
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
   });
 
   test('fails closed before writing when the source set is missing or unknown', () => {
