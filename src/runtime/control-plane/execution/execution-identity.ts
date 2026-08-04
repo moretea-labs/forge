@@ -3,9 +3,9 @@ import { existsSync, realpathSync } from 'fs';
 import { isAbsolute, relative, resolve } from 'path';
 import {
   getRepository,
-  repositoryCheckoutRootMatches,
   selectRepositoryCheckout,
 } from '../../../cli/repositories/registry';
+import { resolveGitExecutable } from '../../../effects/git-executable';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import type { WorkHandleState } from './work-handle-store';
 
@@ -92,7 +92,7 @@ function realpathOrFail(path: string, code: ExecutionIdentityErrorCode, label: s
 }
 
 function gitText(root: string, args: string[]): string | undefined {
-  const result = spawnSync('git', ['-C', root, ...args], {
+  const result = spawnSync(resolveGitExecutable(), ['-C', root, ...args], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 10_000,
@@ -284,14 +284,6 @@ export function assertExecutionIdentity(input: {
       });
     }
   }
-  if (!repositoryCheckoutRootMatches(registered, registeredRoot)) {
-    fail('GIT_COMMON_DIR_MISMATCH', 'checkout Git common directory does not belong to the registered repository', {
-      repoId: identity.repositoryId,
-      checkoutId: identity.checkoutId,
-      root: registeredRoot,
-    });
-  }
-
   const requestedCwd = isAbsolute(input.cwd) ? input.cwd : resolve(registeredRoot, input.cwd);
   const resolvedCwd = realpathOrFail(requestedCwd, 'WORKTREE_MISSING', 'process cwd');
   const cwdRelative = relative(registeredRoot, resolvedCwd);

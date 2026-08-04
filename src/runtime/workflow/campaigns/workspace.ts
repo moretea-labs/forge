@@ -11,6 +11,7 @@ import {
 } from '../../../cli/repositories/registry';
 import { managedWorktreePath } from '../../../cli/repositories/worktree-storage';
 import { withControllerLock } from '../../../cli/repositories/locks';
+import { resolveGitExecutable } from '../../../effects/git-executable';
 import { runProcess } from '../../../effects/process-runner';
 import { readJsonFile, writeJsonAtomic } from '../../shared/json-files';
 import type { CampaignWorkspace } from './types';
@@ -51,7 +52,7 @@ function slug(value: string): string {
 }
 
 function git(root: string, args: string[], timeoutMs = 30_000): string {
-  const result = runProcess('git', ['-C', root, ...args], {
+  const result = runProcess(resolveGitExecutable(), ['-C', root, ...args], {
     timeoutMs,
     maxOutputBytes: 64 * 1024,
   });
@@ -63,7 +64,7 @@ function git(root: string, args: string[], timeoutMs = 30_000): string {
 }
 
 function gitSucceeds(root: string, args: string[]): boolean {
-  return runProcess('git', ['-C', root, ...args], {
+  return runProcess(resolveGitExecutable(), ['-C', root, ...args], {
     timeoutMs: 15_000,
     maxOutputBytes: 8 * 1024,
   }).ok;
@@ -77,7 +78,7 @@ function assertBranch(root: string, branch: string): void {
 
 function existingWorkspace(path: string, branch: string): boolean {
   if (!existsSync(path)) return false;
-  const root = runProcess('git', ['-C', path, 'rev-parse', '--show-toplevel'], {
+  const root = runProcess(resolveGitExecutable(), ['-C', path, 'rev-parse', '--show-toplevel'], {
     timeoutMs: 15_000,
     maxOutputBytes: 8 * 1024,
   });

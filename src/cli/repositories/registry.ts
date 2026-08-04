@@ -11,6 +11,7 @@ import {
 } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
 import { tmpdir } from 'os';
+import { resolveGitExecutable } from '../../effects/git-executable';
 import {
   durableControllerHome,
   ensureControllerHome,
@@ -129,7 +130,7 @@ function activeCheckouts(record: RepositoryRecord): RepositoryCheckout[] {
 }
 
 function git(root: string, args: string[]): string | undefined {
-  const result = spawnSync('git', ['-C', root, ...args], {
+  const result = spawnSync(resolveGitExecutable(), ['-C', root, ...args], {
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 10_000,
