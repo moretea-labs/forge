@@ -5,6 +5,7 @@ import { collectRuntimePerformanceDiagnostics, inferLocalControllerProcess } fro
 import type { McpToolDefinition, CallToolResult } from '../../../cli/mcp/tools';
 import type { MultiRepositoryMcpToolContext } from '../../../cli/mcp/multi-repository';
 import { repositoryScopedToolArgs } from '../../../cli/mcp/multi-repository';
+import { reconcileReadinessProjectionSource } from '../../../cli/mcp/readiness-projection';
 import { listRepositories, repositorySummary, resolveRepositorySelection } from '../../../cli/repositories/registry';
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import { cancelExecutionJob, findExecutionJob, getExecutionJob, getExecutionJobByRequestId, listExecutionJobs } from '../../execution/jobs/store';
@@ -73,6 +74,7 @@ import {
   writeControllerTaskLedgerArtifacts,
 } from '../../../cli/controller/task-ledger';
 import { buildControllerContextPack } from '../../../cli/controller/context-pack';
+import { legacyIssueAuthorityRetired } from '../../../cli/controller/legacy-issue-cutover';
 import { buildControllerOperationalPlan } from '../../../cli/controller/operational-plan';
 import { listControllerChecks, readLatestControllerCheckEvidence, runControllerCheck } from '../../../cli/controller/check-runner';
 import {
@@ -1808,9 +1810,11 @@ export async function controllerReadiness(
   const scheduler = readSchedulerHealthSnapshot(ctx.controllerHome);
   const projectionSnapshot = repository ? readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId) : undefined;
   const projection = projectionSnapshot?.projection;
-  const taskLedger = repository ? buildControllerTaskLedgerProjection(repository.canonicalRoot) : undefined;
-  const projectionReconciliation = projectionSnapshot && taskLedger
-    ? reconcileProjectionWithTaskLedger(projectionSnapshot, taskLedger)
+  const taskLedger = repository && !legacyIssueAuthorityRetired(repository.canonicalRoot)
+    ? buildControllerTaskLedgerProjection(repository.canonicalRoot)
+    : undefined;
+  const projectionReconciliation = projectionSnapshot
+    ? reconcileReadinessProjectionSource(projectionSnapshot, taskLedger)
     : undefined;
   const localBridgeSurface = repository
     ? resolveLocalBridgeSurface({
