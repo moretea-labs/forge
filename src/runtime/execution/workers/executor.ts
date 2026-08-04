@@ -23,7 +23,6 @@ import {
 import { markOperationDelegated } from '../jobs/receipt-store';
 import { assertAutomatedOperationAllowed } from '../../control-plane/governance/external-effects';
 import { recordCandidateFinding, updateCandidateFinding } from '../../workflow/findings/store';
-import { writeControllerContextProjection } from '../../projections/controller-context';
 import { triggerWorkspaceAgent } from '../../workflow/campaigns/workspace-agent';
 import { executeAssistantPluginAction } from '../../plugins/store';
 import { CONTROLLER_SCOPE_REPO_ID, controllerSystemRoot, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
@@ -590,9 +589,6 @@ export async function executeExecutionJob(controllerHome: string, job: Execution
       repository: repositorySummary(repository),
       runtimeStorage,
     };
-    if (job.payload.operation === 'controller_context' && !result.isError) {
-      writeControllerContextProjection(controllerHome, repository.repoId, record);
-    }
     let outcome: ExecutionJobOutcome | undefined;
     const legacyJobId = legacyJobIdFromResult(record);
     if (legacyJobId) {

@@ -11,7 +11,9 @@ export type ControllerContextProjectionRefreshState = 'idle' | 'pending' | 'refr
 export interface ControllerContextProjectionSourceIdentity {
   repoId: string;
   checkoutId?: string;
+  canonicalRoot?: string;
   head?: string | null;
+  branch?: string | null;
   workingTreeFingerprint?: string;
   runtimeGeneration?: string;
   sourceRevision?: string;
@@ -58,16 +60,15 @@ export interface ControllerContextProjection {
 }
 
 export interface ControllerContextProjectionReadOptions {
-  sourceIdentity?: ControllerContextProjectionSourceIdentity;
-  allowLegacySummary?: boolean;
+  sourceIdentity: ControllerContextProjectionSourceIdentity;
 }
 
 export interface ControllerContextProjectionWriteOptions {
+  sourceIdentity: ControllerContextProjectionSourceIdentity;
   sourceRevision?: string;
   contentFingerprint?: string;
   invalidationNonce?: string;
   variant?: ControllerContextProjectionVariant;
-  sourceIdentity?: ControllerContextProjectionSourceIdentity;
   projectionGeneration?: string;
   refreshState?: ControllerContextProjectionRefreshState;
   refreshAttempt?: number;
@@ -220,15 +221,13 @@ export function clearControllerContextPerformanceSnapshotForTest(): void {
   refreshGenerations.clear();
 }
 
-function legacyContextProjectionPath(controllerHome: string, repoId: string): string {
-  return join(repositoryControllerRoot(controllerHome, repoId), 'projections', 'controller-context.json');
-}
-
 function sourceIdentityValue(identity: ControllerContextProjectionSourceIdentity): Record<string, unknown> {
   return {
     repoId: identity.repoId,
     checkoutId: identity.checkoutId ?? null,
+    canonicalRoot: identity.canonicalRoot ? resolve(identity.canonicalRoot) : null,
     head: identity.head ?? null,
+    branch: identity.branch ?? null,
     workingTreeFingerprint: identity.workingTreeFingerprint ?? null,
     runtimeGeneration: identity.runtimeGeneration ?? null,
     sourceRevision: identity.sourceRevision ?? null,
@@ -281,9 +280,8 @@ function pruneContextProjectionFiles(
 function contextProjectionPath(
   controllerHome: string,
   repoId: string,
-  sourceIdentity?: ControllerContextProjectionSourceIdentity,
+  sourceIdentity: ControllerContextProjectionSourceIdentity,
 ): string {
-  if (!sourceIdentity) return legacyContextProjectionPath(controllerHome, repoId);
   return join(
     repositoryControllerRoot(controllerHome, repoId),
     'projections',
@@ -301,13 +299,46 @@ function sourceIdentityMatches(
   })) === JSON.stringify(sourceIdentityValue(right));
 }
 
+function projectionRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+export function controllerContextProjectionPayloadMatchesSourceIdentity(
+  payload: Record<string, unknown>,
+  sourceIdentity: ControllerContextProjectionSourceIdentity,
+): boolean {
+  const repository = projectionRecord(payload.repository);
+  const git = projectionRecord(payload.git);
+  if (payload.repoId !== sourceIdentity.repoId || repository.repoId !== sourceIdentity.repoId) return false;
+  if (sourceIdentity.checkoutId) {
+    const checkoutId = repository.checkoutId ?? repository.activeCheckoutId;
+    if (checkoutId !== sourceIdentity.checkoutId) return false;
+  }
+  if (sourceIdentity.canonicalRoot) {
+    const root = repository.root ?? repository.canonicalRoot ?? repository.localRoot;
+    if (typeof root !== 'string' || resolve(root) !== resolve(sourceIdentity.canonicalRoot)) return false;
+  }
+  if (sourceIdentity.head !== undefined) {
+    const head = git.head ?? repository.head ?? null;
+    if (head !== sourceIdentity.head) return false;
+  }
+  if (sourceIdentity.branch !== undefined) {
+    const branch = git.branch ?? repository.branch ?? null;
+    if (branch !== sourceIdentity.branch) return false;
+  }
+  return true;
+}
+
 function normalizeProjection(
   projection: ControllerContextProjection,
   repoId: string,
-  sourceIdentity?: ControllerContextProjectionSourceIdentity,
+  sourceIdentity: ControllerContextProjectionSourceIdentity,
 ): ControllerContextProjection | undefined {
   if (projection.schemaVersion !== 1 || projection.repoId !== repoId || !projection.payload) return undefined;
-  if (sourceIdentity && projection.sourceIdentity && !sourceIdentityMatches(projection.sourceIdentity, sourceIdentity)) return undefined;
+  if (!projection.sourceIdentity || !sourceIdentityMatches(projection.sourceIdentity, sourceIdentity)) return undefined;
+  if (!controllerContextProjectionPayloadMatchesSourceIdentity(projection.payload, sourceIdentity)) return undefined;
   return {
     ...projection,
     variant: projection.variant ?? 'summary',
@@ -319,7 +350,7 @@ function normalizeProjection(
 function readProjectionAt(
   path: string,
   repoId: string,
-  sourceIdentity?: ControllerContextProjectionSourceIdentity,
+  sourceIdentity: ControllerContextProjectionSourceIdentity,
 ): ControllerContextProjection | undefined {
   try {
     return normalizeProjection(readJsonFile<ControllerContextProjection>(path), repoId, sourceIdentity);
@@ -356,21 +387,14 @@ function recoverStaleRefresh(
 export function readControllerContextProjection(
   controllerHome: string,
   repoId: string,
-  options: ControllerContextProjectionReadOptions = {},
+  options: ControllerContextProjectionReadOptions,
 ): ControllerContextProjection | undefined {
-  if (options.sourceIdentity) {
-    const keyed = readProjectionAt(
-      contextProjectionPath(controllerHome, repoId, options.sourceIdentity),
-      repoId,
-      options.sourceIdentity,
-    );
-    if (keyed) return recoverStaleRefresh(controllerHome, repoId, options.sourceIdentity, keyed);
-    if (options.allowLegacySummary !== false && options.sourceIdentity.variant === 'summary') {
-      return readProjectionAt(legacyContextProjectionPath(controllerHome, repoId), repoId);
-    }
-    return undefined;
-  }
-  return readProjectionAt(legacyContextProjectionPath(controllerHome, repoId), repoId);
+  const keyed = readProjectionAt(
+    contextProjectionPath(controllerHome, repoId, options.sourceIdentity),
+    repoId,
+    options.sourceIdentity,
+  );
+  return keyed ? recoverStaleRefresh(controllerHome, repoId, options.sourceIdentity, keyed) : undefined;
 }
 
 function writeProjectionState(
@@ -408,29 +432,29 @@ export function writeControllerContextProjection(
   controllerHome: string,
   repoId: string,
   payload: Record<string, unknown>,
-  options: ControllerContextProjectionWriteOptions = {},
+  options: ControllerContextProjectionWriteOptions,
 ): ControllerContextProjection {
   const generatedAt = new Date().toISOString();
-  const sourceIdentity = options.sourceIdentity ?? (options.variant ? {
-    repoId,
-    variant: options.variant,
-    sourceRevision: options.sourceRevision,
-  } : undefined);
+  const sourceIdentity = options.sourceIdentity;
+  if (sourceIdentity.repoId !== repoId) {
+    throw new Error('CONTEXT_PROJECTION_REPOSITORY_ID_MISMATCH: source identity must match the target repository');
+  }
+  if (!controllerContextProjectionPayloadMatchesSourceIdentity(payload, sourceIdentity)) {
+    throw new Error('CONTEXT_PROJECTION_SOURCE_MISMATCH: payload repository and Git identity must match sourceIdentity');
+  }
   const projection: ControllerContextProjection = {
     schemaVersion: 1,
     repoId,
     generatedAt,
-    ...(sourceIdentity ? {
-      variant: sourceIdentity.variant,
-      sourceIdentity,
-      projectionGeneration: options.projectionGeneration,
-      refreshState: options.refreshState ?? 'idle',
-      refreshAttempt: options.refreshAttempt ?? 0,
-    } : {}),
+    variant: sourceIdentity.variant,
+    sourceIdentity,
+    projectionGeneration: options.projectionGeneration,
+    refreshState: options.refreshState ?? 'idle',
+    refreshAttempt: options.refreshAttempt ?? 0,
     ...(options.refreshOwner ? { refreshOwner: options.refreshOwner } : {}),
     ...(options.lastRefreshError ? { lastRefreshError: options.lastRefreshError } : {}),
     ...(options.nextAttemptAt ? { nextAttemptAt: options.nextAttemptAt } : {}),
-    ...(options.sourceRevision || sourceIdentity?.sourceRevision ? { sourceRevision: options.sourceRevision ?? sourceIdentity?.sourceRevision } : {}),
+    ...(options.sourceRevision || sourceIdentity.sourceRevision ? { sourceRevision: options.sourceRevision ?? sourceIdentity.sourceRevision } : {}),
     ...(options.contentFingerprint ? { contentFingerprint: options.contentFingerprint } : {}),
     ...(options.invalidationNonce ? { invalidationNonce: options.invalidationNonce } : {}),
     lastSuccessfulBuildAt: generatedAt,
@@ -438,7 +462,7 @@ export function writeControllerContextProjection(
   };
   const path = contextProjectionPath(controllerHome, repoId, sourceIdentity);
   writeJsonAtomic(path, projection);
-  if (sourceIdentity) pruneContextProjectionFiles(controllerHome, repoId, sourceIdentity, path);
+  pruneContextProjectionFiles(controllerHome, repoId, sourceIdentity, path);
   return projection;
 }
 
@@ -479,7 +503,7 @@ export function queueControllerContextProjectionRefresh(
 ): ControllerContextProjectionRefreshResult {
   const key = controllerContextProjectionKey(request.sourceIdentity);
   const existingFlight = refreshFlights.get(key);
-  const existing = readControllerContextProjection(controllerHome, repoId, { sourceIdentity: request.sourceIdentity, allowLegacySummary: false });
+  const existing = readControllerContextProjection(controllerHome, repoId, { sourceIdentity: request.sourceIdentity });
   if (existingFlight) {
     return {
       key,
@@ -537,14 +561,7 @@ export function queueControllerContextProjectionRefresh(
   const flight = Promise.resolve().then(async () => {
     try {
       const payload = await request.build();
-      if ((refreshGenerations.get(baseKey) ?? generation) !== generation) {
-        writeProjectionState(controllerHome, repoId, request.sourceIdentity, {
-          refreshState: 'pending',
-          refreshAttempt: attempt,
-          projectionGeneration,
-        });
-        return;
-      }
+      if (refreshGenerations.get(baseKey) !== generation) return;
       writeControllerContextProjection(controllerHome, repoId, payload, {
         sourceIdentity: request.sourceIdentity,
         variant: request.variant,
@@ -555,14 +572,7 @@ export function queueControllerContextProjectionRefresh(
         refreshAttempt: attempt,
       });
     } catch (error) {
-      if ((refreshGenerations.get(baseKey) ?? generation) !== generation) {
-        writeProjectionState(controllerHome, repoId, request.sourceIdentity, {
-          refreshState: 'pending',
-          refreshAttempt: attempt,
-          projectionGeneration,
-        });
-        return;
-      }
+      if (refreshGenerations.get(baseKey) !== generation) return;
       const failedAt = new Date().toISOString();
       const delayMs = Math.min(30_000, 1_000 * (2 ** Math.min(Math.max(attempt - 1, 0), 5)));
       const nextAttemptAt = new Date(Date.now() + delayMs).toISOString();
@@ -581,8 +591,8 @@ export function queueControllerContextProjectionRefresh(
     }
   }).finally(() => {
     if (refreshFlights.get(key) === flight) refreshFlights.delete(key);
-    // The generation ledger is only needed while a build can still publish.
-    refreshGenerations.delete(baseKey);
+    // An older flight must never delete the fencing generation of a newer one.
+    if (refreshGenerations.get(baseKey) === generation) refreshGenerations.delete(baseKey);
   });
   refreshFlights.set(key, flight);
   return { key, refreshJobId, projectionGeneration, queued: true };

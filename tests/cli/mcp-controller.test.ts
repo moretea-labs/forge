@@ -37,6 +37,8 @@ import { ensureSlotHome, writeActiveSlotAuthority } from "../../src/cli/controll
 import { writeMcpServiceLocalConfig, writeMcpServiceRuntimeState } from "../../src/cli/mcp/auth";
 import { persistControllerAccessMode } from "../../src/cli/mcp/access-mode";
 import {
+  clearControllerContextPerformanceSnapshotForTest,
+  queueControllerContextProjectionRefresh,
   readControllerContextProjection,
   writeControllerContextProjection} from "../../src/runtime/projections/controller-context";
 import {
@@ -997,6 +999,140 @@ describe("MCP controller profile", () => {
       expect(handoffValue.artifacts[1].path).toBe(".ai/harness/handoff/resume.md");
       expect(existsSync(join(repoRoot, ".ai", "harness", "handoff", "current.md"))).toBe(true);
       expect(existsSync(join(repoRoot, ".ai", "harness", "handoff", "resume.md"))).toBe(true);
+    });
+  });
+
+  test("controller context projections reject legacy and mixed identities", async () => {
+    await withController(async (repoRoot, _ctx) => {
+      const controllerHome = join(repoRoot, ".controller-home");
+      const repository = registerRepository({ path: repoRoot, controllerHome });
+      const head = null;
+      const branch = spawnSync("git", ["branch", "--show-current"], { cwd: repoRoot, encoding: "utf-8" }).stdout.trim();
+      const sourceIdentity = {
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        canonicalRoot: repository.canonicalRoot,
+        head,
+        branch,
+        workingTreeFingerprint: "current-tree",
+        sourceRevision: "projection-1",
+        variant: "summary" as const,
+        toolset: "advanced",
+        profile: "controller",
+      };
+      const payload = {
+        repoId: repository.repoId,
+        repository: {
+          repoId: repository.repoId,
+          checkoutId: repository.activeCheckoutId,
+          root: repository.canonicalRoot,
+        },
+        git: { head, branch },
+        runtimeProjectionState: {},
+        operationalView: {},
+        controllerReady: {},
+      };
+      const projectionsRoot = join(repositoryControllerRoot(controllerHome, repository.repoId), "projections");
+      mkdirSync(projectionsRoot, { recursive: true });
+      writeJsonAtomic(join(projectionsRoot, "controller-context.json"), {
+        schemaVersion: 1,
+        repoId: repository.repoId,
+        generatedAt: new Date().toISOString(),
+        payload: {
+          ...payload,
+          repository: { ...payload.repository, checkoutId: "stale-checkout", root: join(repoRoot, "stale") },
+          git: { head: "stale-head", branch: "stale-branch" },
+        },
+      });
+
+      expect(readControllerContextProjection(controllerHome, repository.repoId, { sourceIdentity })).toBeUndefined();
+
+      const multi = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", controllerHome });
+      const response = JSON.parse((await callRuntimeTool(multi, "controller_context", {
+        repo_id: repository.repoId,
+        checkout_id: repository.activeCheckoutId,
+      }))!.content[0].text);
+      expect(response.error).toBeUndefined();
+      expect(response.repository).toMatchObject({
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        root: repository.canonicalRoot,
+        branch,
+        head,
+      });
+      expect(response.contextProjection.sourceIdentity).toMatchObject({
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        canonicalRoot: repository.canonicalRoot,
+        branch,
+        head,
+      });
+
+      expect(() => writeControllerContextProjection(controllerHome, repository.repoId, {
+        ...payload,
+        repository: { ...payload.repository, checkoutId: "wrong-checkout" },
+      }, { sourceIdentity })).toThrow("CONTEXT_PROJECTION_SOURCE_MISMATCH");
+
+      writeControllerContextProjection(controllerHome, repository.repoId, payload, { sourceIdentity });
+      expect(readControllerContextProjection(controllerHome, repository.repoId, { sourceIdentity })?.payload).toEqual(payload);
+    });
+  });
+
+  test("controller context refresh fencing rejects late stale generations", async () => {
+    await withController(async (repoRoot, _ctx) => {
+      clearControllerContextPerformanceSnapshotForTest();
+      const controllerHome = join(repoRoot, ".controller-home");
+      const repository = registerRepository({ path: repoRoot, controllerHome });
+      const branch = spawnSync("git", ["branch", "--show-current"], { cwd: repoRoot, encoding: "utf-8" }).stdout.trim();
+      const baseIdentity = {
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        canonicalRoot: repository.canonicalRoot,
+        branch,
+        variant: "summary" as const,
+        toolset: "advanced",
+        profile: "controller",
+      };
+      const oldIdentity = { ...baseIdentity, head: "old-head", workingTreeFingerprint: "old-tree", sourceRevision: "old-source" };
+      const newIdentity = { ...baseIdentity, head: "new-head", workingTreeFingerprint: "new-tree", sourceRevision: "new-source" };
+      const payloadFor = (head: string) => ({
+        repoId: repository.repoId,
+        repository: {
+          repoId: repository.repoId,
+          checkoutId: repository.activeCheckoutId,
+          root: repository.canonicalRoot,
+        },
+        git: { head, branch },
+        runtimeProjectionState: {},
+        operationalView: {},
+        controllerReady: {},
+      });
+      let releaseOld!: () => void;
+      let releaseNew!: () => void;
+      const oldGate = new Promise<void>((resolve) => { releaseOld = resolve; });
+      const newGate = new Promise<void>((resolve) => { releaseNew = resolve; });
+
+      queueControllerContextProjectionRefresh(controllerHome, repository.repoId, {
+        variant: "summary",
+        sourceIdentity: oldIdentity,
+        build: async () => { await oldGate; return payloadFor("old-head"); },
+      });
+      queueControllerContextProjectionRefresh(controllerHome, repository.repoId, {
+        variant: "summary",
+        sourceIdentity: newIdentity,
+        build: async () => { await newGate; return payloadFor("new-head"); },
+      });
+      releaseNew();
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if (readControllerContextProjection(controllerHome, repository.repoId, { sourceIdentity: newIdentity })) break;
+        await Bun.sleep(5);
+      }
+      releaseOld();
+      await Bun.sleep(20);
+
+      expect(readControllerContextProjection(controllerHome, repository.repoId, { sourceIdentity: newIdentity })?.payload).toEqual(payloadFor("new-head"));
+      expect(readControllerContextProjection(controllerHome, repository.repoId, { sourceIdentity: oldIdentity })).toBeUndefined();
+      clearControllerContextPerformanceSnapshotForTest();
     });
   });
 

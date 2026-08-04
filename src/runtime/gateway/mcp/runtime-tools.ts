@@ -96,6 +96,7 @@ import {
   controllerContextPerformanceSnapshot,
   controllerContextProjectionAgeMs,
   controllerContextProjectionGeneration,
+  controllerContextProjectionPayloadMatchesSourceIdentity,
   controllerContextProjectionNeedsRefresh,
   queueControllerContextProjectionRefresh,
   readControllerContextProjection,
@@ -1963,9 +1964,29 @@ async function capabilityRecoveryInput(ctx: MultiRepositoryMcpToolContext, repos
   const runtimeSnapshot = readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId);
   const localBridge = loadMcpRuntimeState(repository.canonicalRoot)?.localController;
   const inferredLocalBridge = inferLocalControllerProcess(repository.canonicalRoot);
-  const contextProjection = readControllerContextProjection(ctx.controllerHome, repository.repoId);
   const contextProjectionSourceRevision = String(runtimeSnapshot.projection.metadata?.contentRevision ?? runtimeSnapshot.projection.revision);
-  const contextProjectionStale = Boolean(contextProjection && controllerContextProjectionNeedsRefresh(contextProjection, contextProjectionSourceRevision));
+  const contextGitIdentity = cachedGitIdentity(repository.canonicalRoot);
+  const contextSourceIdentity = {
+    repoId: repository.repoId,
+    checkoutId: repository.activeCheckoutId,
+    canonicalRoot: repository.canonicalRoot,
+    head: contextGitIdentity.head,
+    branch: contextGitIdentity.branch,
+    workingTreeFingerprint: contextGitIdentity.workingTreeFingerprint,
+    runtimeGeneration: runtimeSnapshot.projection.metadata?.producerGeneration,
+    sourceRevision: contextProjectionSourceRevision,
+    variant: 'summary' as const,
+    toolset: ctx.toolset,
+    profile: ctx.policy.profile,
+  };
+  const contextProjection = readControllerContextProjection(ctx.controllerHome, repository.repoId, {
+    sourceIdentity: contextSourceIdentity,
+  });
+  const contextProjectionStale = controllerContextProjectionNeedsRefresh(
+    contextProjection,
+    contextProjectionSourceRevision,
+    contextSourceIdentity,
+  );
   const recentErrors = Array.isArray(args.recent_errors) ? args.recent_errors.map(String) : [];
   let runtimeStorageReady: boolean | undefined;
   let runtimeStorageWarnings: string[] = [];
@@ -3910,7 +3931,9 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const sourceIdentity = {
           repoId: repository.repoId,
           checkoutId: repository.activeCheckoutId,
+          canonicalRoot: repository.canonicalRoot,
           head: gitIdentity.head,
+          branch: gitIdentity.branch,
           workingTreeFingerprint: gitIdentity.workingTreeFingerprint,
           runtimeGeneration: runtimeProjection.metadata?.producerGeneration,
           sourceRevision: contextSourceRevision,
@@ -3922,7 +3945,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const cacheStartedAt = performance.now();
         const cached = readControllerContextProjection(ctx.controllerHome, repository.repoId, {
           sourceIdentity,
-          allowLegacySummary: variant === 'summary',
         });
         const projectionAgeMs = controllerContextProjectionAgeMs(cached);
         markPhase('cacheRead', cacheStartedAt);
@@ -3985,6 +4007,26 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           projectionRecord: typeof cached,
           input: { cacheHit: boolean; stale: boolean; refreshJobId?: string },
         ): CallToolResult => {
+          if (!controllerContextProjectionPayloadMatchesSourceIdentity(payload, sourceIdentity)) {
+            const response = withRuntimeResponseMeta({
+              error: {
+                code: 'CONTEXT_PROJECTION_SOURCE_MISMATCH',
+                message: 'Refusing controller context whose payload identity differs from the selected repository checkout.',
+                errorClass: 'infrastructure_failure',
+                summary: 'Controller context identity validation failed closed.',
+              },
+              ...projectionPayload(projectionRecord, true, input.refreshJobId),
+            }, responseStartedAt, { ...responseOptions, cacheHit: input.cacheHit, stale: true, refreshJobId: input.refreshJobId });
+            const responseBytes = Buffer.byteLength(JSON.stringify(response), 'utf8');
+            recordControllerContextRead({
+              durationMs: performance.now() - responseStartedAt,
+              cacheHit: input.cacheHit,
+              stale: true,
+              responseBytes,
+              phaseDurationsMs: phaseTimingsMs,
+            });
+            return result(response, true);
+          }
           const response = withRuntimeResponseMeta({
             ...payload,
             ...projectionPayload(projectionRecord, input.stale, input.refreshJobId),
@@ -4086,8 +4128,9 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             })),
           }));
           return {
-            git: liveGit.branch || liveGit.status || liveGit.diffStat ? liveGit : {
-              branch: activeCheckout?.branch ?? null,
+            git: liveGit.branch || liveGit.head || liveGit.status || liveGit.diffStat ? liveGit : {
+              branch: activeCheckout?.branch ?? sourceIdentity.branch ?? null,
+              head: sourceIdentity.head ?? null,
               status: 'No live repository scan is available; showing bounded runtime state only.',
               diffStat: '',
               dirty: false,
@@ -4132,7 +4175,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           markPhase('refreshQueue', buildStartedAt);
           const refreshing = readControllerContextProjection(ctx.controllerHome, repository.repoId, {
             sourceIdentity,
-            allowLegacySummary: false,
           });
           return respondWith(compactControllerContextSummaryPayload(cached.payload), refreshing ?? cached, {
             cacheHit: true,
