@@ -11,7 +11,11 @@ import {
   resetBrowserPluginRuntimeHooksForTest,
   setBrowserPluginRuntimeHooksForTest,
 } from '../../src/runtime/plugins/browser-adapter';
-import { resolveBrowserBridgeNodeExecutable, shouldUseBrowserNodeBridge } from '../../src/runtime/plugins/browser-node-bridge';
+import {
+  resolveBrowserBridgeNodeExecutable,
+  resolveBrowserNodeBridgeHostPath,
+  shouldUseBrowserNodeBridge,
+} from '../../src/runtime/plugins/browser-node-bridge';
 import { listBrowserHandoffs, resetBrowserHandoffRuntimeHooksForTest, setBrowserHandoffRuntimeHooksForTest } from '../../src/runtime/plugins/browser-handoff';
 import { interactionCommandPath, patchInteractionSession } from '../../src/runtime/plugins/interaction-session';
 import {
@@ -1127,6 +1131,41 @@ describe('browser plugin', () => {
     expect(resolveBrowserBridgeNodeExecutable({ REPO_HARNESS_NODE_EXECUTABLE: executable })).toBe(executable);
     expect(() => resolveBrowserBridgeNodeExecutable({ REPO_HARNESS_NODE_EXECUTABLE: join(root, 'missing') }))
       .toThrow('PLUGIN_BROWSER_NODE_UNAVAILABLE');
+  });
+
+  test('resolves the Browser Node bridge host from the immutable compiled release before virtual bunfs source', () => {
+    const root = mkdtempSync(join(tmpdir(), 'repo-harness-browser-node-release-'));
+    roots.push(root);
+    const runtimeExecutable = join(root, 'repo-harness.js');
+    const releaseHost = join(root, 'browser-node-bridge-host.js');
+    writeFileSync(runtimeExecutable, 'runtime', 'utf8');
+    writeFileSync(releaseHost, 'host', 'utf8');
+    expect(resolveBrowserNodeBridgeHostPath({
+      runtimeExecutable,
+      argvEntry: '/$bunfs/root/repo-harness.js',
+      sourceHostPath: '/$bunfs/root/src/runtime/plugins/browser-node-bridge-host.ts',
+    })).toBe(releaseHost);
+  });
+
+  test('fails closed when a compiled release omits the Browser Node bridge host', () => {
+    expect(() => resolveBrowserNodeBridgeHostPath({
+      runtimeExecutable: '/tmp/missing-release/repo-harness.js',
+      argvEntry: '/$bunfs/root/repo-harness.js',
+      sourceHostPath: '/$bunfs/root/src/runtime/plugins/browser-node-bridge-host.ts',
+      pathExists: () => false,
+    })).toThrow('PLUGIN_BROWSER_NODE_HOST_UNAVAILABLE');
+  });
+
+  test('keeps the source Browser Node bridge host for non-compiled development runtimes', () => {
+    const root = mkdtempSync(join(tmpdir(), 'repo-harness-browser-node-source-'));
+    roots.push(root);
+    const sourceHost = join(root, 'browser-node-bridge-host.ts');
+    writeFileSync(sourceHost, 'host', 'utf8');
+    expect(resolveBrowserNodeBridgeHostPath({
+      runtimeExecutable: '/opt/homebrew/bin/bun',
+      argvEntry: join(root, 'src', 'cli', 'index.ts'),
+      sourceHostPath: sourceHost,
+    })).toBe(sourceHost);
   });
 
   test('denies open_page outside allowed domains before launch', async () => {

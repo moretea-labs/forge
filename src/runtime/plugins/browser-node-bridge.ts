@@ -85,6 +85,39 @@ export function resolveBrowserBridgeNodeExecutable(env: NodeJS.ProcessEnv = proc
   });
 }
 
+export function resolveBrowserNodeBridgeHostPath(options: {
+  runtimeExecutable?: string;
+  argvEntry?: string;
+  sourceHostPath?: string;
+  pathExists?: (path: string) => boolean;
+} = {}): string {
+  const runtimeExecutable = options.runtimeExecutable ?? process.execPath;
+  const argvEntry = options.argvEntry ?? process.argv[1];
+  const sourceHostPath = options.sourceHostPath
+    ?? fileURLToPath(new URL('./browser-node-bridge-host.ts', import.meta.url));
+  const pathExists = options.pathExists ?? existsSync;
+  const releaseCandidates = [
+    runtimeExecutable ? join(dirname(runtimeExecutable), 'browser-node-bridge-host.js') : undefined,
+    argvEntry ? join(dirname(argvEntry), 'browser-node-bridge-host.js') : undefined,
+  ].filter((value): value is string => Boolean(value));
+  for (const candidate of releaseCandidates) {
+    if (pathExists(candidate)) return candidate;
+  }
+  if (sourceHostPath.replace(/\\/g, '/').includes('/$bunfs/')) {
+    throw new AssistantPluginError(
+      'PLUGIN_BROWSER_NODE_HOST_UNAVAILABLE',
+      'The immutable Browser Node bridge host is missing from the active runtime release.',
+      { retryable: false },
+    );
+  }
+  if (pathExists(sourceHostPath)) return sourceHostPath;
+  throw new AssistantPluginError(
+    'PLUGIN_BROWSER_NODE_HOST_UNAVAILABLE',
+    'Browser Node bridge host could not be resolved.',
+    { retryable: false },
+  );
+}
+
 export function shouldUseBrowserNodeBridge(actionId: string, browserMode: string | undefined, runtimeHooksCustomized: boolean): boolean {
   const bunHosted = typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined';
   return bunHosted
@@ -131,11 +164,7 @@ function parseResponse(raw: string): BridgeResponse {
 
 export async function executeBrowserActionThroughNode(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
   const nodeExecutable = resolveBrowserBridgeNodeExecutable();
-  const releaseHostPath = process.argv[1]
-    ? join(dirname(process.argv[1]), 'browser-node-bridge-host.js')
-    : undefined;
-  const sourceHostPath = fileURLToPath(new URL('./browser-node-bridge-host.ts', import.meta.url));
-  const hostPath = releaseHostPath && existsSync(releaseHostPath) ? releaseHostPath : sourceHostPath;
+  const hostPath = resolveBrowserNodeBridgeHostPath();
   const sourceLoaderPath = fileURLToPath(new URL('../shared/node-ts-loader.mjs', import.meta.url));
   const childArgs = hostPath.endsWith('.js')
     ? [hostPath]
