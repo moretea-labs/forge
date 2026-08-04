@@ -7,7 +7,7 @@ import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import { bootstrapLaunchAgentWithRetry } from '../../src/cli/controller/launch-agents';
 import { selectSupervisorRollbackRelease, serviceActivationStatePath, supervisorActivationMatchesRelease, waitForServiceActivation } from '../../src/cli/commands/supervisor';
-import { browserNodeBridgeReleaseCapabilities, installSupervisorRelease, publishSupervisorRelease, renderLaunchdSupervisorPlist, renderSystemdSupervisorUnit, stageSupervisorRelease, supervisorServiceLabel, supervisorSystemdUnitName, verifySupervisorBrowserNodeBridgeHost, verifySupervisorSourceIdentity } from '../../src/runtime/supervisor/installer';
+import { browserNodeBridgeReleaseCapabilities, installSupervisorRelease, publishSupervisorRelease, renderLaunchdSupervisorPlist, renderSystemdSupervisorUnit, resolveSupervisorBuildRuntime, stageSupervisorRelease, supervisorServiceLabel, supervisorSystemdUnitName, verifySupervisorBrowserNodeBridgeHost, verifySupervisorSourceIdentity } from '../../src/runtime/supervisor/installer';
 import { stableSupervisorActivatesPublishedRelease, stableSupervisorExitCode } from '../../src/runtime/supervisor/entry';
 import { createStableIngressRouter } from '../../src/runtime/supervisor/ingress-router';
 import { createStableIngressProcess } from '../../src/runtime/supervisor/ingress-process';
@@ -134,6 +134,14 @@ function managedProcess(slot: 'blue' | 'green', pid: number, generation: string)
 }
 
 describe('Stable Supervisor production hardening', () => {
+  test('compiled Supervisor release builds use Bun rather than re-executing the Supervisor binary', () => {
+    expect(resolveSupervisorBuildRuntime('/opt/repo-harness/releases/supervisor.js', {})).toBe('bun');
+    expect(resolveSupervisorBuildRuntime('/Users/test/.bun/bin/bun', {})).toBe('/Users/test/.bun/bin/bun');
+    expect(resolveSupervisorBuildRuntime('/opt/repo-harness/releases/supervisor.js', {
+      REPO_HARNESS_BUN_EXECUTABLE: '/custom/bin/bun',
+    })).toBe('/custom/bin/bun');
+  });
+
   test('release bundles include durable runtime entrypoints and load the immutable process runner', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-worker-release-'));
     try {

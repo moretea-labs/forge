@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
-import { dirname, join, resolve, sep } from 'path';
+import { basename, dirname, join, resolve, sep } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { processRunnerReleaseCanaryChildCommand } from '../execution/process-runtime/canary';
 import { resolveBrowserBridgeNodeExecutable } from '../plugins/browser-node-bridge';
@@ -185,6 +185,18 @@ export function verifySupervisorSourceIdentity(
   }
 }
 
+const SUPERVISOR_BUILD_RUNTIME_ENV = 'REPO_HARNESS_BUN_EXECUTABLE';
+
+export function resolveSupervisorBuildRuntime(
+  execPath: string = process.execPath,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const configured = env[SUPERVISOR_BUILD_RUNTIME_ENV]?.trim();
+  if (configured) return configured;
+  const executable = basename(execPath).toLowerCase();
+  return executable === 'bun' || executable === 'bun.exe' ? execPath : 'bun';
+}
+
 function buildEntry(
   sourceRoot: string,
   entry: string,
@@ -193,7 +205,7 @@ function buildEntry(
   standalone = true,
   format?: 'esm' | 'cjs',
 ): void {
-  const bun = process.versions.bun ? process.execPath : 'bun';
+  const bun = resolveSupervisorBuildRuntime();
   const args = [
     'build',
     ...(standalone ? ['--compile'] : []),
