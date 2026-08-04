@@ -266,6 +266,12 @@ export interface WorkContractConstraints {
   /** current is the stability-first default; isolated is opt-in or used for explicit parallelism. */
   workspaceMode?: 'current' | 'isolated' | 'auto';
   requireWorktree?: boolean;
+  /** True when a change alters the agreed architecture direction rather than only implementation details. */
+  architectureStrategyChange?: boolean;
+  /** True when the proposed change weakens the thin-harness / high-performance execution policy. */
+  conflictsWithThinHarnessPolicy?: boolean;
+  /** True when the change alters the default routing or execution mode visible to users. */
+  changesDefaultExecutionStrategy?: boolean;
 }
 
 export interface WorkContractDriverPolicy {
@@ -602,10 +608,20 @@ export function selectExecutionMode(input: ExecutionModeSelectionInput): Executi
     || input.risk === 'remote_write'
     || input.risk === 'raw_secret_config';
 
-  const objectiveClear = input.scopeClear && (input.objective === undefined || input.objective.trim().length > 0);
+  const objectiveClear = input.objective === undefined ? input.scopeClear : input.objective.trim().length > 0;
   const missingContractFields: string[] = [];
   if (!input.scopeClear) missingContractFields.push('scopeSummary', 'acceptanceCriteria', 'allowedPaths');
   if (input.objective !== undefined && input.objective.trim().length === 0) missingContractFields.push('objective');
+
+  if (input.requiresUserApproval === true) {
+    return {
+      mode: 'handoff_only',
+      reason: 'The request changes or conflicts with user-approved architecture strategy and requires explicit user approval before execution.',
+      missingContractFields: [],
+      createWorkContract: false,
+      createHandoff: true,
+    };
+  }
 
   if (!objectiveClear || (highRisk && requiresApproval && !input.scopeClear)) {
     return {
@@ -635,7 +651,6 @@ export function selectExecutionMode(input: ExecutionModeSelectionInput): Executi
     || input.requiresLongRunningChecks === true
     || input.requiresParallelism === true
     || input.needsDependencies === true
-    || requiresApproval
     || expectedFiles > 3
     || expectedChangedLines > 200;
 

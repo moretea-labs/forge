@@ -39,6 +39,48 @@ describe('handoff and facade contracts', () => {
     ).toMatchObject({ mode: 'direct_control', missingContractFields: [], createWorkContract: false });
   });
 
+  test('keeps approval-gated small work on the direct control path', () => {
+    expect(
+      selectExecutionMode({
+        objective: 'Apply a bounded policy fix',
+        expectedFiles: 1,
+        expectedChangedLines: 40,
+        scopeClear: true,
+        requiresRecovery: false,
+        requiresWorker: false,
+        requiresExternalEffect: false,
+        requiresApproval: true,
+      }),
+    ).toMatchObject({ mode: 'direct_control', createWorkContract: false });
+  });
+
+  test('keeps small objective-only work direct instead of forcing handoff for missing scope fields', () => {
+    expect(
+      selectExecutionMode({
+        objective: 'Fix the bounded router regression',
+        expectedFiles: 1,
+        expectedChangedLines: 40,
+        scopeClear: false,
+        requiresRecovery: false,
+        requiresWorker: false,
+        requiresExternalEffect: false,
+        requiresApproval: false,
+      }),
+    ).toMatchObject({ mode: 'direct_control', createWorkContract: false, createHandoff: false });
+  });
+
+  test('requires explicit user approval for architecture strategy conflicts', () => {
+    expect(
+      selectExecutionMode({
+        objective: 'Change the default execution strategy',
+        expectedFiles: 1,
+        expectedChangedLines: 40,
+        scopeClear: true,
+        requiresUserApproval: true,
+      }),
+    ).toMatchObject({ mode: 'handoff_only', createHandoff: true, createWorkContract: false });
+  });
+
   test('selects handoff only when the request is underspecified', () => {
     expect(
       selectExecutionMode({

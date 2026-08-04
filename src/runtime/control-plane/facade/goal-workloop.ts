@@ -229,6 +229,16 @@ export function routeWorkStart(
   ctx: GoalWorkloopContext,
   input: GoalWorkloopStartInput,
 ): FacadeResult {
+  const strategyConflictRequiresApproval = input.constraints?.architectureStrategyChange === true
+    || input.constraints?.conflictsWithThinHarnessPolicy === true
+    || input.constraints?.changesDefaultExecutionStrategy === true;
+  const effectiveModeInput: ExecutionModeSelectionInput = {
+    ...input.modeInput,
+    objective: input.objective,
+    requiresUserApproval: input.approvalConfirmed === true
+      ? false
+      : input.modeInput.requiresUserApproval === true || strategyConflictRequiresApproval,
+  };
   const mode = input.forceMode
     ? {
         mode: input.forceMode,
@@ -237,10 +247,7 @@ export function routeWorkStart(
         createWorkContract: input.forceMode === 'goal_workloop',
         createHandoff: input.forceMode === 'handoff_only',
       }
-    : selectExecutionMode({
-        ...input.modeInput,
-        objective: input.objective,
-      });
+    : selectExecutionMode(effectiveModeInput);
 
   const policy = evaluatePolicyGate({
     capabilityId: mode.mode === 'direct_control' ? 'repository.direct_edit' : mode.mode === 'goal_workloop' ? 'controller.goal_workloop' : 'controller.handoff_inbox',
@@ -256,10 +263,10 @@ export function routeWorkStart(
     approvalConfirmed: input.approvalConfirmed === true,
     dryRun: input.dryRun === true,
     directEditBoundary: {
-      scopeClear: input.modeInput.scopeClear,
-      maxChangedFiles: input.modeInput.expectedFiles,
-      maxChangedLines: input.modeInput.expectedChangedLines,
-      pathsExplicit: input.modeInput.scopeClear,
+      scopeClear: effectiveModeInput.scopeClear,
+      maxChangedFiles: effectiveModeInput.expectedFiles,
+      maxChangedLines: effectiveModeInput.expectedChangedLines,
+      pathsExplicit: effectiveModeInput.scopeClear,
     },
   });
 
