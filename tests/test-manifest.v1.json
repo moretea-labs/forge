@@ -23,7 +23,7 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 85,
+    "maxTestFiles": 86,
     "maxTestLines": 40000,
     "maxPureFiles": 30,
     "maxTempIsolatedFiles": 39,
@@ -355,6 +355,10 @@
     "tests/runtime/facade-contracts.test.ts": {
       "module": "workflow",
       "resource": "pure"
+    },
+    "tests/runtime/git-executable-and-workspace.test.ts": {
+      "module": "repository",
+      "resource": "git-worktree"
     },
     "tests/runtime/interactive-sync-router.test.ts": {
       "module": "routing",
