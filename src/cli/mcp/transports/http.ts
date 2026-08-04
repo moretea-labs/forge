@@ -29,10 +29,12 @@ import {
 } from '../toolset';
 import { ensureControllerDaemon, readControllerDaemonStatus } from '../../../runtime/control-plane/daemon-client';
 import { runtimeIdentitySnapshot } from '../../../runtime/gateway/mcp/runtime-tools';
-import { projectionBlocksReadiness, readRepositoryProjectionSnapshot, reconcileProjectionWithTaskLedger } from '../../../runtime/projections/materialized-view';
+import { projectionBlocksReadiness, readRepositoryProjectionSnapshot } from '../../../runtime/projections/materialized-view';
 import { readRuntimeGeneration } from '../../../runtime/control-plane/runtime-generation';
 import { getRepository, listRepositories } from '../../repositories/registry';
 import { buildControllerTaskLedgerProjection } from '../../controller/task-ledger';
+import { legacyIssueAuthorityRetired } from '../../controller/legacy-issue-cutover';
+import { reconcileReadinessProjectionSource } from '../readiness-projection';
 import {
   CONTROLLER_SCHEMA_VERSION,
   CONTROLLER_TOOL_SURFACE,
@@ -887,9 +889,11 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     const repositories = listRepositories(runtimeControllerHome).filter((repository) => repository.enabled && !repository.removedAt);
     const projectionSnapshots = repositories.map((repository) => {
       const snapshot = readRepositoryProjectionSnapshot(runtimeControllerHome, repository.repoId);
-      const reconciliation = reconcileProjectionWithTaskLedger(
+      const reconciliation = reconcileReadinessProjectionSource(
         snapshot,
-        buildControllerTaskLedgerProjection(repository.canonicalRoot),
+        legacyIssueAuthorityRetired(repository.canonicalRoot)
+          ? undefined
+          : buildControllerTaskLedgerProjection(repository.canonicalRoot),
       );
       return { repoId: repository.repoId, snapshot, reconciliation };
     });
