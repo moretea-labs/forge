@@ -5,6 +5,7 @@ import { basename, isAbsolute, relative, resolve } from 'path';
 import type { McpToolDefinition, CallToolResult } from '../../../cli/mcp/tools';
 import type { CompletionReceipt } from '../../../cli/controller/types';
 import type { MultiRepositoryMcpToolContext } from '../../../cli/mcp/multi-repository';
+import type { RepositoryRecord } from '../../../cli/repositories/types';
 import {
   getRepository,
   listRepositories,
@@ -26,7 +27,7 @@ import { buildWorkContinuationSnapshot } from '../../control-plane/facade/work-c
 import { claimControllerSession, getControllerSession, resumeControllerSession } from '../../control-plane/facade/controller-session-store';
 import { currentControllerInstanceId, requireExecutionSession, startExecutionSession, updateExecutionSession, type ExecutionSessionContext, type SessionIdentity } from '../../control-plane/execution/session-store';
 import { currentPermissionSnapshotVersion, validateWorkHandle } from '../../control-plane/execution/validation';
-import { commandFingerprint, verificationInputFingerprint } from '../../control-plane/execution/verification-evidence';
+import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint, workValidationInputFingerprint } from '../../control-plane/execution/verification-evidence';
 import { executionIdentityForWork, resolveLegacyWorkContractIdentity } from '../../control-plane/execution/execution-identity';
 import { withWorkPrepareRequest } from '../../control-plane/execution/work-prepare-request-store';
 import { markWorkHandleFailed, newWorkId, readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkFinalizationStages, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
@@ -41,7 +42,7 @@ import { getCheckProcessHandle } from '../../execution/process-runtime/check-fac
 import { processCheckCompletionReceipt } from '../../execution/process-runtime/check-receipt';
 import { claimProcessInvocation, getProcessRecord } from '../../execution/process-runtime/store';
 import { runPersistedCheckViaProcessRuntime } from './persisted-check-process';
-import { projectWorkValidationOutcome, reconcileWorkValidation } from './work-validation-reconciler';
+import { hasCurrentWorkValidationAuthority, markWorkValidationPending, projectWorkValidationOutcome, reconcileWorkValidation } from './work-validation-reconciler';
 
 const MAX_INLINE_RESULT_BYTES = 64 * 1024;
 
@@ -762,19 +763,27 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
   const validationInvocationId = typeof args.request_id === 'string' && args.request_id.trim()
     ? args.request_id.trim()
     : `validate-${session.sessionId}-${handle.workId}-${Date.now()}-${randomUUID().slice(0, 8)}`;
-  const validationHead = gitHead(validated.worktreeRepository.canonicalRoot)
+  const validationStatus = repositoryGitStatus(validated.worktreeRepository);
+  const validationHead = validationStatus.head
     ?? handle.expectedHead
     ?? handle.baseCommit
     ?? 'unknown';
-  const validationFingerprint = createHash('sha256')
-    .update(JSON.stringify({ head: validationHead, requestedChecks }))
-    .digest('hex');
+  const workspaceFingerprint = workspaceValidationFingerprint(
+    validated.worktreeRepository.canonicalRoot,
+    validationStatus,
+  );
+  const validationFingerprint = workValidationInputFingerprint(
+    validationHead,
+    workspaceFingerprint,
+    requestedChecks,
+  );
   const previousRun = handle.validationRun?.fingerprint === validationFingerprint
     ? handle.validationRun
     : undefined;
   let validationRun: NonNullable<WorkHandleState['validationRun']> = previousRun ?? {
     fingerprint: validationFingerprint,
     head: validationHead,
+    workspaceFingerprint,
     requestedChecks,
     resumeState: handle.state === 'committed' || handle.state === 'merged' ? handle.state : 'editing',
     processes: {},
@@ -783,6 +792,7 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     finalization: { ...handle.finalization, validation: 'pending', lastError: undefined },
     validationRun,
   });
+  markWorkValidationPending(ctx.controllerHome, current);
   const available = new Set(listControllerChecks(validated.worktreeRepository.canonicalRoot).map((check) => check.id));
   const checks: Array<Record<string, unknown>> = [];
   for (const [index, checkId] of requestedChecks.entries()) {
@@ -854,8 +864,10 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       summary: receipt.summary,
       recordedAt: receipt.finishedAt,
       sourceRevision: validationHead,
+      workspaceFingerprint,
       verificationInputFingerprint: verificationInputFingerprint({
         sourceRevision: validationHead,
+        workspaceFingerprint,
         checkId,
         requestedChecks,
         commandId: receipt.commandId,
@@ -908,6 +920,7 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       lastError: failureSummary,
     },
     validationRun: completed ? undefined : validationRun,
+    ...(passed ? { validatedInputFingerprint: validationFingerprint } : {}),
     ...(acceptedFailure ? { failureReason: failureSummary } : { failureReason: undefined }),
   });
   if (completed) {
@@ -917,10 +930,6 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       infrastructureFailure ? 'infrastructure_failure' : passed ? 'passed' : 'failed',
       failureSummary,
     );
-  } else if (contract) {
-    updateWorkContract({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, contract.workId, {
-      evidenceState: 'partial',
-    });
   }
   const value = { work: compactHandle(next), validation: { passed, completed, checks, targeted: true } };
   return makeBoundedResult(ctx, session, handle.repositoryId, handle.workId, 'validation', value);
@@ -1039,6 +1048,22 @@ function finalStateForStages(stages: WorkFinalizationStages, fallback: WorkHandl
   return fallback === 'failed' ? 'editing' : fallback;
 }
 
+function currentWorkValidationInput(
+  repository: RepositoryRecord,
+  handle: WorkHandleState,
+  requestedChecks: string[],
+): { head: string; workspaceFingerprint: string; fingerprint: string; clean: boolean } {
+  const status = repositoryGitStatus(repository);
+  const head = status.head ?? handle.expectedHead ?? handle.baseCommit ?? 'unknown';
+  const workspaceFingerprint = workspaceValidationFingerprint(repository.canonicalRoot, status);
+  return {
+    head,
+    workspaceFingerprint,
+    fingerprint: workValidationInputFingerprint(head, workspaceFingerprint, requestedChecks),
+    clean: status.clean,
+  };
+}
+
 function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Record<string, unknown> {
   const session = requireSession(ctx, args);
   let current = workForSession(ctx, session, args);
@@ -1130,26 +1155,46 @@ function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, u
     }));
   }
 
-  if (current.finalization.validation !== 'done') {
-    current = transact('validation-start', (fresh) => writeWorkHandle(ctx.controllerHome, {
+  const terminalCleanupOnly = Boolean(cleanupReconciliation && wants.cleanup && !wants.commit && !wants.merge);
+  if (terminalCleanupOnly) {
+    current = transact('terminal-cleanup-validation-skipped', (fresh) => writeWorkHandle(ctx.controllerHome, {
       ...fresh,
-      state: 'validating',
-      finalization: { ...fresh.finalization, validation: 'pending', lastError: undefined },
+      finalization: { ...fresh.finalization, validation: 'done', lastError: undefined },
     }));
+  } else {
+    let validatedRepository: RepositoryRecord;
     try {
-      validateWorkHandle(ctx.controllerHome, current, identity, 'full', 'finalize');
+      validatedRepository = validateWorkHandle(ctx.controllerHome, current, identity, 'full', 'finalize').worktreeRepository;
     } catch (error) {
       return failStage('validation', error instanceof Error ? error.message : String(error));
     }
-    current = transact('validation-done', (fresh) => writeWorkHandle(ctx.controllerHome, {
-      ...fresh,
-      state: fresh.finalization.merge === 'done'
-        ? 'merged'
-        : fresh.finalization.commit === 'done'
-          ? 'committed'
-          : fresh.state === 'validating' ? 'editing' : fresh.state,
-      finalization: { ...fresh.finalization, validation: 'done', lastError: undefined },
-    }));
+    const validationContract = contractFor(ctx, current);
+    if (!validationContract) throw new Error(`WORK_VALIDATION_CONTRACT_MISSING: ${current.workContractId ?? current.workId}`);
+    const validationInput = currentWorkValidationInput(validatedRepository, current, validationContract.checks);
+    if (validationContract.checks.length === 0) {
+      current = transact('validation-no-checks', (fresh) => writeWorkHandle(ctx.controllerHome, {
+        ...fresh,
+        validatedInputFingerprint: validationInput.fingerprint,
+        finalization: { ...fresh.finalization, validation: 'done', lastError: undefined },
+      }));
+      projectWorkValidationOutcome(ctx.controllerHome, current, 'passed', 'No validation checks were required.');
+    } else if (!hasCurrentWorkValidationAuthority({
+      finalizationValidation: current.finalization.validation,
+      validatedInputFingerprint: current.validatedInputFingerprint,
+      evidenceState: validationContract.evidenceState,
+      expectedFingerprint: validationInput.fingerprint,
+    })) {
+      current = transact('validation-required', (fresh) => writeWorkHandle(ctx.controllerHome, {
+        ...fresh,
+        validatedInputFingerprint: undefined,
+        finalization: { ...fresh.finalization, validation: 'pending', lastError: undefined },
+      }));
+      markWorkValidationPending(ctx.controllerHome, current);
+      throw new Error('WORK_VALIDATION_REQUIRED: run work_validate against the exact current workspace before finalization');
+    }
+    if (wants.merge && !wants.commit && current.finalization.commit !== 'done' && !validationInput.clean) {
+      throw new Error('WORK_MERGE_UNCOMMITTED_CHANGES: commit the validated workspace before merging');
+    }
   }
 
   if (requestedOutcome === 'completed_no_change') {
@@ -1171,9 +1216,31 @@ function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, u
     if (!committed.committed) return { ...failStage('commit', committed.error?.message ?? 'commit failed'), commit: committed };
     current = transact('commit-done', (fresh) => transitionWorkHandle(ctx.controllerHome, fresh, 'committed', {
       expectedHead: gitHead(validated.worktreeRepository.canonicalRoot),
-      finalization: { ...fresh.finalization, commit: 'done', lastError: undefined },
+      finalization: {
+        ...fresh.finalization,
+        validation: contract?.checks.length ? 'pending' : 'done',
+        commit: 'done',
+        lastError: undefined,
+      },
+      validatedInputFingerprint: contract?.checks.length ? undefined : fresh.validatedInputFingerprint,
       failureReason: undefined,
     }));
+    if (contract?.checks.length) {
+      markWorkValidationPending(ctx.controllerHome, current);
+      return {
+        work: compactHandle(current),
+        stages: current.finalization,
+        completed: false,
+        continuation: 'WORK_COMMITTED_REVALIDATION_REQUIRED: run work_validate on the exact committed HEAD before merge or completion',
+      };
+    }
+    const postCommitInput = currentWorkValidationInput(validated.worktreeRepository, current, []);
+    current = transact('commit-no-checks-validation', (fresh) => writeWorkHandle(ctx.controllerHome, {
+      ...fresh,
+      expectedHead: postCommitInput.head,
+      validatedInputFingerprint: postCommitInput.fingerprint,
+    }));
+    projectWorkValidationOutcome(ctx.controllerHome, current, 'passed', 'No validation checks were required after commit.');
   } else if (!wants.commit && current.finalization.commit === 'pending') {
     current = transact('commit-skipped', (fresh) => writeWorkHandle(ctx.controllerHome, { ...fresh, finalization: { ...fresh.finalization, commit: 'skipped' } }));
   }

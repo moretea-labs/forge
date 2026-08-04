@@ -24,6 +24,35 @@ export interface WorkValidationReconciliation {
   summary?: string;
 }
 
+export function hasCurrentWorkValidationAuthority(input: {
+  finalizationValidation: WorkHandleState['finalization']['validation'];
+  validatedInputFingerprint?: string;
+  evidenceState: string;
+  expectedFingerprint: string;
+}): boolean {
+  return input.finalizationValidation === 'done'
+    && input.evidenceState === 'valid'
+    && input.validatedInputFingerprint === input.expectedFingerprint;
+}
+
+/**
+ * A new validation run invalidates delivery authority without deleting or
+ * rewriting the prior receipts. `stale` is the only valid transition from an
+ * already-valid evidence set; all other retryable states converge through
+ * `partial`.
+ */
+export function markWorkValidationPending(controllerHome: string, handle: WorkHandleState): void {
+  const contractId = handle.workContractId;
+  if (!contractId) return;
+  const options = { controllerHome, repoId: handle.repositoryId };
+  const contract = getWorkContract(options, contractId);
+  if (!contract || contract.completionReceipt) return;
+  const evidenceState = contract.evidenceState === 'valid' || contract.evidenceState === 'stale'
+    ? 'stale'
+    : 'partial';
+  if (contract.evidenceState !== evidenceState) updateWorkContract(options, contractId, { evidenceState });
+}
+
 /**
  * Project durable validation evidence into the Work-owned contract lifecycle.
  * Process and Check records contribute evidence only; they never become a
@@ -72,7 +101,9 @@ export function projectWorkValidationOutcome(
     summary: summary ?? 'Validation infrastructure did not produce an accepted result; retry is required.',
     evidenceRefs: contract.evidenceRefs,
   });
-  updateWorkContract(options, contractId, { evidenceState: 'partial' });
+  updateWorkContract(options, contractId, {
+    evidenceState: contract.evidenceState === 'valid' || contract.evidenceState === 'stale' ? 'stale' : 'partial',
+  });
 }
 
 function settleInfrastructureFailure(
@@ -110,6 +141,7 @@ export function reconcileWorkValidation(
     const next = transitionWorkHandle(controllerHome, handle, run.resumeState, {
       finalization: { ...handle.finalization, validation: 'done', lastError: undefined },
       validationRun: undefined,
+      validatedInputFingerprint: run.fingerprint,
       failureReason: undefined,
     });
     projectWorkValidationOutcome(controllerHome, next, 'passed', 'No validation checks were required.');
@@ -161,6 +193,7 @@ export function reconcileWorkValidation(
   const next = transitionWorkHandle(controllerHome, handle, run.resumeState, {
     finalization: { ...handle.finalization, validation: 'done', lastError: undefined },
     validationRun: undefined,
+    validatedInputFingerprint: run.fingerprint,
     failureReason: undefined,
   });
   projectWorkValidationOutcome(controllerHome, next, 'passed', 'All requested validation receipts passed.');

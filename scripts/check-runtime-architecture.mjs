@@ -261,7 +261,14 @@ forbidBetween(
   'repository_runtime_snapshot must be a bounded materialized-view read, never a live rebuild',
 );
 requireText('src/cli/local-bridge/job-store.ts', 'listLocalBridgeJobSnapshots');
-requireText('src/runtime/execution/workers/executor.ts', 'writeControllerContextProjection');
+forbid(
+  'src/runtime/execution/workers/executor.ts',
+  /\bwriteControllerContextProjection\b/,
+  'Execution Workers must not write controller-context projections; the keyed projection owner is the only writer',
+);
+requireText('src/runtime/projections/controller-context.ts', 'controllerContextProjectionPayloadMatchesSourceIdentity');
+requireText('src/runtime/projections/controller-context.ts', 'sourceIdentityMatches');
+requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'CONTEXT_PROJECTION_SOURCE_MISMATCH');
 forbid('src/runtime/gateway/mcp/router.ts', /const DIRECT_HOT_READ_TOOLS = new Set\([\s\S]*?['"]controller_context['"][\s\S]*?\);/, 'controller_context must use a materialized projection or Durable Job, never the legacy Gateway path');
 forbid('src/runtime/gateway/mcp/router.ts', /const DIRECT_HOT_READ_TOOLS = new Set\([\s\S]*?['"](?:local_bridge_status|get_local_job|get_local_job_output)['"][\s\S]*?\);/, 'Local Bridge observations must use bounded snapshots, never reconciliation in the Gateway');
 requireText('src/runtime/execution/jobs/types.ts', 'requestId: string');

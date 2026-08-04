@@ -311,6 +311,8 @@ export interface VerificationRecord {
   recordedAt: string;
   /** Exact checked revision. Absence denotes legacy/non-authoritative evidence. */
   sourceRevision?: string;
+  /** Exact dirty-workspace content identity observed by the check. */
+  workspaceFingerprint?: string;
   /** Hash of the check inputs that must match before this result can be reused. */
   verificationInputFingerprint?: string;
   /** Bounded identity of the command/configuration that produced the result. */

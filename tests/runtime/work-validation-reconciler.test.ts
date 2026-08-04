@@ -1,12 +1,19 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import type { ManagedProcessRecord } from '../../src/runtime/execution/process-runtime/types';
-import { reconcileWorkValidation } from '../../src/runtime/gateway/mcp/work-validation-reconciler';
+import { hasCurrentWorkValidationAuthority, markWorkValidationPending, reconcileWorkValidation } from '../../src/runtime/gateway/mcp/work-validation-reconciler';
+import {
+  effectiveVerificationEvidence,
+  verificationInputFingerprint,
+  workspaceValidationFingerprint,
+  workValidationInputFingerprint,
+} from '../../src/runtime/control-plane/execution/verification-evidence';
+import type { VerificationRecord } from '../../src/runtime/control-plane/facade/types';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -60,6 +67,7 @@ function fixture(status: 'succeeded' | 'failed' | 'timed_out', options: { create
     validationRun: {
       fingerprint: 'validation-fingerprint',
       head: 'abc123',
+      workspaceFingerprint: 'workspace-fingerprint',
       requestedChecks: [checkId],
       resumeState: 'editing',
       processes: { [checkId]: { processId, requestId: 'request-validation' } },
@@ -111,6 +119,7 @@ describe('Work validation receipt convergence', () => {
     expect(result).toMatchObject({ outcome: 'passed', changed: true, handle: { state: 'editing' } });
     expect(result.handle.finalization.validation).toBe('done');
     expect(result.handle.validationRun).toBeUndefined();
+    expect(result.handle.validatedInputFingerprint).toBe('validation-fingerprint');
     expect(contractFor(fx)).toMatchObject({ status: 'running', phase: 'delivery', evidenceState: 'valid' });
 
     const repeated = reconcileWorkValidation(fx.controllerHome, result.handle);
@@ -126,6 +135,30 @@ describe('Work validation receipt convergence', () => {
     expect(contractFor(fx)).toMatchObject({ status: 'failed', phase: 'verification', evidenceState: 'failed' });
   });
 
+  test('authorizes delivery only for valid evidence bound to the exact current input', () => {
+    const valid = {
+      finalizationValidation: 'done' as const,
+      validatedInputFingerprint: 'workspace-current',
+      evidenceState: 'valid',
+      expectedFingerprint: 'workspace-current',
+    };
+    expect(hasCurrentWorkValidationAuthority(valid)).toBe(true);
+    expect(hasCurrentWorkValidationAuthority({ ...valid, expectedFingerprint: 'workspace-changed' })).toBe(false);
+    expect(hasCurrentWorkValidationAuthority({ ...valid, evidenceState: 'stale' })).toBe(false);
+    expect(hasCurrentWorkValidationAuthority({ ...valid, finalizationValidation: 'pending' })).toBe(false);
+  });
+
+  test('a changed-input revalidation marks prior valid evidence stale without rewriting receipts', () => {
+    const fx = fixture('succeeded');
+    updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, { evidenceState: 'valid' });
+
+    markWorkValidationPending(fx.controllerHome, fx.handle);
+    expect(contractFor(fx)).toMatchObject({ evidenceState: 'stale' });
+
+    markWorkValidationPending(fx.controllerHome, fx.handle);
+    expect(contractFor(fx)).toMatchObject({ evidenceState: 'stale' });
+  });
+
   test('timeout and missing Process records return to a retryable Work state', () => {
     const timedOut = fixture('timed_out');
     const timedOutResult = reconcileWorkValidation(timedOut.controllerHome, timedOut.handle);
@@ -139,5 +172,87 @@ describe('Work validation receipt convergence', () => {
     expect(missingResult).toMatchObject({ outcome: 'infrastructure_failure', handle: { state: 'editing' } });
     expect(missingResult.handle.validationRun).toBeUndefined();
     expect(contractFor(missing)).toMatchObject({ status: 'running', phase: 'implementation', evidenceState: 'partial' });
+  });
+});
+
+function workspaceStatus(path: string, porcelain = ` M ${path}`) {
+  return {
+    head: 'abc123',
+    branch: 'work/validation-integrity',
+    porcelain,
+    staged: [],
+    unstaged: [path],
+    untracked: [],
+  };
+}
+
+describe('workspace-bound validation identity', () => {
+  test('changes when file content changes without a HEAD or status-shape change', () => {
+    const root = mkdtempSync(join(tmpdir(), 'repo-harness-verification-evidence-'));
+    roots.push(root);
+    const path = 'source.ts';
+    writeFileSync(join(root, path), 'export const value = 1;\n');
+    const first = workspaceValidationFingerprint(root, workspaceStatus(path));
+
+    writeFileSync(join(root, path), 'export const value = 2;\n');
+    const second = workspaceValidationFingerprint(root, workspaceStatus(path));
+
+    expect(second).not.toBe(first);
+    expect(workspaceValidationFingerprint(root, workspaceStatus(path))).toBe(second);
+  });
+
+  test('decodes Git quoted paths before hashing exact content', () => {
+    const root = mkdtempSync(join(tmpdir(), 'repo-harness-verification-evidence-'));
+    roots.push(root);
+    const path = 'space name.txt';
+    const quoted = '"space name.txt"';
+    writeFileSync(join(root, path), 'first\n');
+    const first = workspaceValidationFingerprint(root, workspaceStatus(quoted, `?? ${quoted}`));
+
+    writeFileSync(join(root, path), 'second\n');
+    expect(workspaceValidationFingerprint(root, workspaceStatus(quoted, `?? ${quoted}`))).not.toBe(first);
+  });
+
+  test('fails closed when Git status output is truncated', () => {
+    const root = mkdtempSync(join(tmpdir(), 'repo-harness-verification-evidence-'));
+    roots.push(root);
+    expect(() => workspaceValidationFingerprint(root, {
+      ...workspaceStatus('source.ts'),
+      porcelain: '[output truncated after 524288 bytes]',
+    })).toThrow('WORK_VALIDATION_STATUS_TRUNCATED');
+  });
+
+  test('binds reusable receipts to workspace content and a stable check set', () => {
+    const requestedChecks = ['check:b', 'check:a'];
+    const firstWork = workValidationInputFingerprint('abc123', 'workspace-one', requestedChecks);
+    expect(firstWork).toBe(workValidationInputFingerprint('abc123', 'workspace-one', [...requestedChecks].reverse()));
+    expect(firstWork).not.toBe(workValidationInputFingerprint('abc123', 'workspace-two', requestedChecks));
+
+    const record: VerificationRecord = {
+      checkId: 'check:a',
+      outcome: 'valid_pass',
+      summary: 'passed',
+      recordedAt: '2026-08-04T00:00:00.000Z',
+      sourceRevision: 'abc123',
+      workspaceFingerprint: 'workspace-one',
+      verificationInputFingerprint: verificationInputFingerprint({
+        sourceRevision: 'abc123',
+        workspaceFingerprint: 'workspace-one',
+        checkId: 'check:a',
+        requestedChecks,
+      }),
+    };
+    expect(effectiveVerificationEvidence([record], {
+      sourceRevision: 'abc123',
+      workspaceFingerprint: 'workspace-one',
+      checkId: 'check:a',
+      requestedChecks,
+    })[0]).toMatchObject({ current: true });
+    expect(effectiveVerificationEvidence([record], {
+      sourceRevision: 'abc123',
+      workspaceFingerprint: 'workspace-two',
+      checkId: 'check:a',
+      requestedChecks,
+    })[0]).toMatchObject({ current: false, staleReason: 'workspace content changed' });
   });
 });
