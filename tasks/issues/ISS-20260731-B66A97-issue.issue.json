@@ -4,7 +4,7 @@
   "title": "确保任务只在选定仓库中执行",
   "slug": "issue",
   "kind": "bug",
-  "status": "review",
+  "status": "planned",
   "summary": "核心执行身份与 worktree 隔离已经完成并通过用户验收。旧 T3 对抗验证已阻塞，等待新运行时进程模型和 Work-only 执行合同后重写 fault matrix。该需求当前处于复核阶段，没有可直接调度的旧 Task。",
   "goals": [
     "Make WorkHandle the sole execution identity authority for work_id-bound operations.",
@@ -357,11 +357,12 @@
       ],
       "risk": "high",
       "notes": [
-        "阻塞到 ISS-20260802-539E7F 完成新运行时进程/authority 模型，并由 ISS-20260802-7E1D69 完成 Work-only 执行合同后。旧 blue-green/Task 生命周期上的对抗验证不再直接执行，后续必须重写为新架构 fault matrix。"
+        "阻塞到 ISS-20260802-539E7F 完成新运行时进程/authority 模型，并由 ISS-20260802-7E1D69 完成 Work-only 执行合同后。旧 blue-green/Task 生命周期上的对抗验证不再直接执行，后续必须重写为新架构 fault matrix。",
+        "2026-08-03 live regression on active c47bd42d: explicit low-level repository_git_status correctly resolved yaozhunshi repo_21712be862868339083670ec / checkout_7cf243390e0dd1207ad50469, but high-level get_project_board/get_issue/list_checks still injected /Users/greyson/DevProjects/repo-harness-controller-runtime and failed CHECKOUT_PATH_NOT_REGISTERED. The preserved dirty AddMedication checkout was intact at c37d6e8d. No xcodebuild was running. Focused test launch was blocked by Process Runtime lease leaks: terminal succeeded proc_mscpgd52_a002727a (exit 0) retained git-refs/workspace/git-index leases; recovery.reconcile_jobs and rebuild_projection did not release them. Stable Supervisor restart on c47bd42d cleared one build-cache lease and passed full MCP verification, but persisted lease leakage remained. runtime_maintenance_status/workflow_watchdog_report fail with unknown command '/$bunfs/root/repo-harness.js', and rh_status repair incorrectly requires a repository-local scripts/controller-runtime.sh. This is direct evidence for the rewritten new-runtime fault matrix: facade checkout projection, terminal-process lease release, WorkHandle session/lifecycle recovery, and controller-owned maintenance execution must all be covered before T3 can complete."
       ],
       "runIds": [],
       "createdAt": "2026-07-31T05:57:46.949Z",
-      "updatedAt": "2026-08-02T06:26:57.494Z",
+      "updatedAt": "2026-08-03T04:08:32.537Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
@@ -668,6 +669,6 @@
     }
   ],
   "createdAt": "2026-07-31T05:57:46.949Z",
-  "updatedAt": "2026-08-02T06:29:27.140Z",
+  "updatedAt": "2026-08-03T04:08:32.537Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }

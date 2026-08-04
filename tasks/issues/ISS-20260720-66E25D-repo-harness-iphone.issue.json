@@ -4,7 +4,7 @@
   "title": "让 Repo Harness 稳定、快速地操作物理 iPhone",
   "slug": "repo-harness-iphone",
   "kind": "feature",
-  "status": "launch_blocked",
+  "status": "in_progress",
   "summary": "保留为唯一的物理 iPhone 自动化用户需求，但执行方案已重新定基线：不再继续把签名、WDA/Runner、CoreDevice tunnel、interaction session 和 App adapter 生命周期修补在 Controller 内嵌 ios-adapter 中。新方案以 ISS-20260802-3EC105 的进程外插件协议为基础，把 ios-device 建成 controller-scoped 独立服务，Repo Harness 只负责 ChatGPT 桥接、权限、资源互斥、Durable Work 和审计；既有 provider、selector/ref 恢复、证据分层和跨引擎互斥提交作为迁移资产保留。",
   "goals": [
     "可靠发现并独占用户选择的物理 iPhone，并以 device:ios:<udid> 作为跨引擎共享资源权威。",
@@ -237,12 +237,20 @@
         "Phase 1 integrated at 85f9604d. Focused iOS tests 28/28, type, runtime architecture, MCP compatibility and a clean full Controller V8 rerun passed before commit. Edit Session EDIT-1785543410038-a9c04b57 later recorded three native checks as failed even though their persisted latest artifacts report ok=true and independent executions passed; treat this as Process/Edit Session bookkeeping evidence, not a source regression. Continue Phase 2 in a fresh bounded edit session; do not alter unrelated tasks/issues dirty files.",
         "Phase 2 adds exact optional dependency agent-device@0.20.2 for the typed read backend. package-lock.json must be included alongside package.json and bun.lock because the repository declares npm as packageManager; update lock only with scripts disabled. Allowed dependency metadata paths for this task now include package-lock.json and THIRD_PARTY_NOTICES.md.",
         "Provider-boundary refactor integrated in two reviewed checkpoints: 85f9604d (capability negotiation, semantic App adapters, recoverable failure disposition and unknown-outcome fencing) and 2125ddda (provider-neutral typed snapshot backend, exact optional agent-device@0.20.2 dependency, Node/runtime/version identity gates, CLI fallback evidence and release hardening). Upstream agent-device source and current Xcode 27 devicectl help were compared; the terminate contract is valid, so no speculative fork was introduced. The proven upstream typed-client limitation is lack of public AbortSignal, therefore mutations deliberately remain on the cancellable CLI path. Live phone latency belongs to T3 and is not claimed here.",
-        "Provider 边界重构已在 85f9604d 和 2125ddda 集成并通过聚焦验证。作为已交付基础关闭；剩余实机延迟和 JD 正确性不属于此技术步骤。"
+        "Provider 边界重构已在 85f9604d 和 2125ddda 集成并通过聚焦验证。作为已交付基础关闭；剩余实机延迟和 JD 正确性不属于此技术步骤。",
+        "Synced to GitHub: https://github.com/moretea-labs/matea/issues/46"
       ],
       "runIds": [],
       "createdAt": "2026-08-01T00:06:32.147Z",
-      "updatedAt": "2026-08-02T06:28:07.540Z",
-      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      "updatedAt": "2026-08-03T06:40:48.449Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "github": {
+        "owner": "moretea-labs",
+        "repo": "matea",
+        "number": 46,
+        "url": "https://github.com/moretea-labs/matea/issues/46",
+        "syncedAt": "2026-08-03T06:40:48.445Z"
+      }
     },
     {
       "id": "T6",
@@ -608,12 +616,20 @@
       "risk": "low",
       "recommendedAgent": "codex",
       "notes": [
-        "外部依赖：先完成 ISS-20260802-3EC105:T1 的通用插件架构与迁移地图。该依赖不是旧 iOS Task 依赖链的一部分，暂时显式阻塞以避免两份协议文档并行。"
+        "外部依赖：先完成 ISS-20260802-3EC105:T1 的通用插件架构与迁移地图。该依赖不是旧 iOS Task 依赖链的一部分，暂时显式阻塞以避免两份协议文档并行。",
+        "Synced to GitHub: https://github.com/moretea-labs/matea/issues/47"
       ],
       "runIds": [],
       "createdAt": "2026-08-02T06:51:21.318Z",
-      "updatedAt": "2026-08-02T06:51:31.833Z",
-      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      "updatedAt": "2026-08-03T06:41:02.551Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "github": {
+        "owner": "moretea-labs",
+        "repo": "matea",
+        "number": 47,
+        "url": "https://github.com/moretea-labs/matea/issues/47",
+        "syncedAt": "2026-08-03T06:41:02.537Z"
+      }
     },
     {
       "id": "T10",
@@ -655,11 +671,20 @@
       ],
       "risk": "high",
       "recommendedAgent": "codex",
-      "notes": [],
+      "notes": [
+        "Synced to GitHub: https://github.com/moretea-labs/matea/issues/48"
+      ],
       "runIds": [],
       "createdAt": "2026-08-02T06:51:42.792Z",
-      "updatedAt": "2026-08-02T06:51:42.792Z",
-      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      "updatedAt": "2026-08-03T06:41:16.869Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "github": {
+        "owner": "moretea-labs",
+        "repo": "matea",
+        "number": 48,
+        "url": "https://github.com/moretea-labs/matea/issues/48",
+        "syncedAt": "2026-08-03T06:41:16.857Z"
+      }
     },
     {
       "id": "T11",
@@ -703,11 +728,20 @@
       ],
       "risk": "high",
       "recommendedAgent": "codex",
-      "notes": [],
+      "notes": [
+        "Synced to GitHub: https://github.com/moretea-labs/matea/issues/49"
+      ],
       "runIds": [],
       "createdAt": "2026-08-02T06:52:02.144Z",
-      "updatedAt": "2026-08-02T06:52:02.144Z",
-      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      "updatedAt": "2026-08-03T06:41:31.833Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "github": {
+        "owner": "moretea-labs",
+        "repo": "matea",
+        "number": 49,
+        "url": "https://github.com/moretea-labs/matea/issues/49",
+        "syncedAt": "2026-08-03T06:41:31.820Z"
+      }
     },
     {
       "id": "T12",
@@ -748,11 +782,20 @@
       ],
       "risk": "high",
       "recommendedAgent": "codex",
-      "notes": [],
+      "notes": [
+        "Synced to GitHub: https://github.com/moretea-labs/matea/issues/50"
+      ],
       "runIds": [],
       "createdAt": "2026-08-02T06:52:15.434Z",
-      "updatedAt": "2026-08-02T06:52:15.434Z",
-      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      "updatedAt": "2026-08-03T06:41:46.670Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "github": {
+        "owner": "moretea-labs",
+        "repo": "matea",
+        "number": 50,
+        "url": "https://github.com/moretea-labs/matea/issues/50",
+        "syncedAt": "2026-08-03T06:41:46.635Z"
+      }
     },
     {
       "id": "T13",
@@ -794,14 +837,75 @@
       ],
       "risk": "destructive",
       "recommendedAgent": "codex",
-      "notes": [],
+      "notes": [
+        "Synced to GitHub: https://github.com/moretea-labs/matea/issues/51"
+      ],
       "runIds": [],
       "createdAt": "2026-08-02T06:52:35.561Z",
-      "updatedAt": "2026-08-02T06:52:35.561Z",
-      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      "updatedAt": "2026-08-03T06:42:00.782Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "github": {
+        "owner": "moretea-labs",
+        "repo": "matea",
+        "number": 51,
+        "url": "https://github.com/moretea-labs/matea/issues/51",
+        "syncedAt": "2026-08-03T06:42:00.757Z"
+      }
+    },
+    {
+      "id": "T14",
+      "title": "提供真机 Debug 构建、安装与日志采集闭环",
+      "objective": "修复 iOS build 对真机 UDID 错投影为 iOS Simulator，并提供结构化的 Debug app 安装、带启动参数/环境变量启动、stdout/unified log 持续采集和有界日志 artifact。",
+      "status": "ready",
+      "dependsOn": [],
+      "allowedPaths": [
+        "src/runtime/plugins/**",
+        "src/plugins/ios/**",
+        "tests/runtime/**",
+        "tests/fixtures/**",
+        "docs/operations/**",
+        "scripts/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:mcp-compatibility",
+        "package:check:controller-v8"
+      ],
+      "acceptanceCriteria": [
+        "physical-device build 使用 platform=iOS 而非 iOS Simulator",
+        "可结构化安装已签名 Debug .app 到明确设备，要求用户授权但不依赖任意 shell",
+        "可传递 launch arguments 和 environment variables，并桥接 console/unified logs",
+        "长时间日志采集返回可续查句柄，Gateway 重连后不丢失",
+        "日志按 subsystem/category/process 过滤并保存为有界 artifact",
+        "在药准时真机上验证 -YZSFirstInteractionPerf 可采集两个卡顿入口的 YZS_PERF 记录"
+      ],
+      "risk": "high",
+      "notes": [
+        "Synced to GitHub: https://github.com/moretea-labs/matea/issues/52"
+      ],
+      "runIds": [],
+      "createdAt": "2026-08-03T06:39:47.210Z",
+      "updatedAt": "2026-08-03T06:42:16.873Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "github": {
+        "owner": "moretea-labs",
+        "repo": "matea",
+        "number": 52,
+        "url": "https://github.com/moretea-labs/matea/issues/52",
+        "syncedAt": "2026-08-03T06:42:16.844Z"
+      }
     }
   ],
   "createdAt": "2026-07-20T15:31:27.625Z",
-  "updatedAt": "2026-08-02T06:53:59.164Z",
-  "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+  "updatedAt": "2026-08-03T06:42:16.873Z",
+  "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+  "github": {
+    "owner": "moretea-labs",
+    "repo": "matea",
+    "number": 45,
+    "url": "https://github.com/moretea-labs/matea/issues/45",
+    "syncedAt": "2026-08-03T06:40:33.753Z"
+  }
 }

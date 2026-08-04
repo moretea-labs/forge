@@ -1,8 +1,8 @@
 ---
 id: "ISS-20260720-66E25D"
 kind: "feature"
-status: "launch_blocked"
-updated_at: "2026-08-02T06:53:59.164Z"
+status: "in_progress"
+updated_at: "2026-08-03T06:42:16.873Z"
 source: "repo-harness-controller-v8"
 ---
 
@@ -47,7 +47,9 @@ source: "repo-harness-controller-v8"
 
 ## GitHub
 
-- Not published.
+- Issue: https://github.com/moretea-labs/matea/issues/45
+- Repository: `moretea-labs/matea`
+- Last synced: 2026-08-03T06:40:33.753Z
 
 ## Tasks
 
@@ -95,6 +97,7 @@ source: "repo-harness-controller-v8"
 - Allowed paths: `src/runtime/plugins/**`, `src/runtime/safe-tooling/**`, `src/plugins/ios/**`, `tests/runtime/**`, `tests/fixtures/**`, `scripts/**`, `docs/architecture/**`, `docs/operations/**`, `docs/researches/**`, `package.json`, `bun.lock`, `third_party/**`, `vendor/**`
 - Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:mcp-compatibility`, `package:check:controller-v8`
 - Execution hint: agent / codex
+- GitHub: https://github.com/moretea-labs/matea/issues/46
 
 ### T6 — Separate physical iOS resource ownership from automation engine identity
 
@@ -131,6 +134,7 @@ source: "repo-harness-controller-v8"
 - Allowed paths: `docs/architecture/**`, `docs/operations/**`, `docs/researches/**`, `src/runtime/plugins/**`, `tests/runtime/**`
 - Checks: `package:check:public-docs`
 - Execution hint: agent / codex
+- GitHub: https://github.com/moretea-labs/matea/issues/47
 
 ### T10 — 构建独立 ios-device 服务与兼容代理
 
@@ -140,6 +144,7 @@ source: "repo-harness-controller-v8"
 - Allowed paths: `plugins/ios/**`, `packages/**`, `src/runtime/plugins/**`, `src/cli/**`, `scripts/**`, `tests/plugin-contract/**`, `tests/runtime/**`, `docs/operations/**`, `package.json`, `bun.lock`, `package-lock.json`
 - Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:mcp-compatibility`, `package:check:controller-v8`
 - Execution hint: agent / codex
+- GitHub: https://github.com/moretea-labs/matea/issues/48
 
 ### T11 — 实现持久设备、签名、WDA 与 Session 生命周期
 
@@ -149,6 +154,7 @@ source: "repo-harness-controller-v8"
 - Allowed paths: `plugins/ios/**`, `packages/**`, `scripts/**`, `tests/plugin-contract/**`, `tests/fixtures/**`, `tests/runtime/**`, `docs/operations/**`, `package.json`, `bun.lock`, `package-lock.json`
 - Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:mcp-compatibility`, `package:check:controller-v8`
 - Execution hint: agent / codex
+- GitHub: https://github.com/moretea-labs/matea/issues/49
 
 ### T12 — 迁移语义交互引擎并完成京东适配
 
@@ -158,6 +164,7 @@ source: "repo-harness-controller-v8"
 - Allowed paths: `plugins/ios/**`, `packages/**`, `tests/fixtures/**`, `tests/plugin-contract/**`, `tests/runtime/**`, `scripts/**`, `docs/operations/**`
 - Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:mcp-compatibility`, `package:check:controller-v8`
 - Execution hint: agent / codex
+- GitHub: https://github.com/moretea-labs/matea/issues/50
 
 ### T13 — 完成实机性能、恢复和核心升级验收
 
@@ -167,6 +174,17 @@ source: "repo-harness-controller-v8"
 - Allowed paths: `scripts/**`, `plugins/ios/**`, `tests/**`, `docs/operations/**`, `docs/researches/**`, `tasks/issues/**`
 - Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:mcp-compatibility`, `package:check:controller-v8`, `package:check:ci`
 - Execution hint: agent / codex
+- GitHub: https://github.com/moretea-labs/matea/issues/51
+
+### T14 — 提供真机 Debug 构建、安装与日志采集闭环
+
+- Status: `ready`
+- Objective: 修复 iOS build 对真机 UDID 错投影为 iOS Simulator，并提供结构化的 Debug app 安装、带启动参数/环境变量启动、stdout/unified log 持续采集和有界日志 artifact。
+- Depends on: none
+- Allowed paths: `src/runtime/plugins/**`, `src/plugins/ios/**`, `tests/runtime/**`, `tests/fixtures/**`, `docs/operations/**`, `scripts/**`
+- Checks: `package:check:type`, `package:check:runtime-architecture`, `package:check:mcp-compatibility`, `package:check:controller-v8`
+- Execution hint: selected at runtime
+- GitHub: https://github.com/moretea-labs/matea/issues/52
 
 ## Related Artifacts
 

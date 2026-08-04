@@ -9,7 +9,8 @@ import {
 } from '../../runtime/control-plane/persistence/sqlite-store';
 import type { Requirement } from '../../runtime/control-plane/persistence/requirement-store';
 import type { EvidenceRef, PlanContract } from '../../runtime/control-plane/facade/types';
-import type { CompletionReceipt } from './types';
+import type { CompletionReceipt, ControllerIssue, IssueStatus, TaskStatus } from './types';
+import type { EffectiveTaskState, IssueLifecycleStatus, VerificationStatus } from './task-status-resolver';
 import {
   REQUIREMENT_PORTFOLIO_MIGRATION_ID,
   portfolioPlanIdForIssue,
@@ -109,6 +110,85 @@ function completionEvidence(receipt: CompletionReceipt, input: {
   }
   if (input.note?.trim()) refs.push({ title: 'Review note', summary: input.note.trim().slice(0, 1_000), detailLevel: 'detail' });
   return refs.slice(0, 12);
+}
+
+export interface MigratedIssueReadinessProjection {
+  planId: string;
+  requirementId: string;
+  issueStatus: IssueStatus;
+  states: Map<string, EffectiveTaskState>;
+}
+
+function projectedIssueStatus(state: Requirement['state']): { issueStatus: IssueStatus; lifecycle: IssueLifecycleStatus } {
+  if (state === 'done') return { issueStatus: 'done', lifecycle: 'completed' };
+  if (state === 'cancelled') return { issueStatus: 'cancelled', lifecycle: 'cancelled' };
+  if (state === 'planned') return { issueStatus: 'planned', lifecycle: 'active' };
+  return { issueStatus: 'in_progress', lifecycle: 'active' };
+}
+
+function planStepTaskState(
+  issue: ControllerIssue,
+  taskId: string,
+  status: PlanContract['steps'][number]['status'],
+  lifecycle: IssueLifecycleStatus,
+): EffectiveTaskState {
+  const task = issue.tasks.find((candidate) => candidate.id === taskId);
+  if (!task) throw new Error(`MIGRATED_TASK_NOT_FOUND: ${issue.id}/${taskId}`);
+  const mapping: Record<typeof status, {
+    declaredStatus: TaskStatus;
+    effectiveStatus: EffectiveTaskState['effectiveStatus'];
+    verificationStatus: VerificationStatus;
+    terminal: boolean;
+    dispatchable: boolean;
+    dependencySatisfied: boolean;
+  }> = {
+    pending: { declaredStatus: 'planned', effectiveStatus: 'ready', verificationStatus: 'not_started', terminal: false, dispatchable: true, dependencySatisfied: false },
+    ready: { declaredStatus: 'ready', effectiveStatus: 'ready', verificationStatus: 'not_started', terminal: false, dispatchable: true, dependencySatisfied: false },
+    executing: { declaredStatus: 'running', effectiveStatus: 'running', verificationStatus: 'pending', terminal: false, dispatchable: false, dependencySatisfied: false },
+    validating: { declaredStatus: 'verifying', effectiveStatus: 'verifying', verificationStatus: 'pending', terminal: false, dispatchable: false, dependencySatisfied: false },
+    completed: { declaredStatus: 'done', effectiveStatus: 'done', verificationStatus: 'passed', terminal: true, dispatchable: false, dependencySatisfied: true },
+  };
+  const selected = mapping[status];
+  return {
+    taskId,
+    declaredStatus: selected.declaredStatus,
+    effectiveStatus: selected.effectiveStatus,
+    reason: status === 'completed' ? 'declared_done' : 'declared_status',
+    issueLifecycleStatus: lifecycle,
+    activeRunIds: [],
+    historicalRunOutcomes: [],
+    verificationStatus: selected.verificationStatus,
+    replacementTaskIds: [],
+    terminal: selected.terminal,
+    inactive: false,
+    dispatchable: selected.dispatchable,
+    retryable: false,
+    requiresExplicitRetry: false,
+    dependencySatisfied: selected.dependencySatisfied,
+    multipleActiveRuns: false,
+  };
+}
+
+export function migratedIssueReadinessProjection(
+  repoRoot: string,
+  issue: ControllerIssue,
+): MigratedIssueReadinessProjection | undefined {
+  const cutover = legacyIssueCutoverState(repoRoot);
+  if (!cutover.retired || !cutover.repoId) return undefined;
+  const planId = portfolioPlanIdForIssue(issue.id);
+  if (!planId) return undefined;
+  const plan = readControlPlaneRecord<PlanContract>(cutover.controllerHome, 'plan_contract', cutover.repoId, planId)?.value;
+  if (!plan?.requirementId) throw new Error(`MIGRATED_PLAN_REQUIREMENT_MISSING: ${planId}`);
+  const requirement = readControlPlaneRecord<Requirement>(cutover.controllerHome, 'requirement', 'controller', plan.requirementId)?.value;
+  if (!requirement) throw new Error(`MIGRATED_REQUIREMENT_NOT_FOUND: ${plan.requirementId}`);
+  const projected = projectedIssueStatus(requirement.state);
+  const states = new Map<string, EffectiveTaskState>();
+  for (const task of issue.tasks) {
+    const step = plan.steps.find((candidate) => candidate.id === task.id);
+    if (!step) throw new Error(`MIGRATED_PLAN_STEP_NOT_FOUND: ${planId}/${task.id}`);
+    states.set(task.id, planStepTaskState(issue, task.id, step.status, projected.lifecycle));
+  }
+  return { planId, requirementId: plan.requirementId, issueStatus: projected.issueStatus, states };
 }
 
 export function migratedTaskCompletionState(repoRoot: string, issueId: string, taskId: string): MigratedTaskCompletionState {

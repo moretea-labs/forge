@@ -35,7 +35,11 @@ import { projectControllerTaskFromWork } from '../../runtime/control-plane/facad
 import type { WorkContract } from '../../runtime/control-plane/facade/types';
 import { resolveRepoPreferredControllerHome } from '../repositories/controller-home';
 import { markControllerContextProjectionDirty } from '../../runtime/projections/controller-context';
-import { assertLegacyIssueWritesAllowed, assertLegacyProjectBoardAvailable } from './legacy-issue-cutover';
+import {
+  assertLegacyIssueWritesAllowed,
+  assertLegacyProjectBoardAvailable,
+  migratedIssueReadinessProjection,
+} from './legacy-issue-cutover';
 
 const ISSUE_ROOT = 'tasks/issues';
 const EPHEMERAL_ISSUE_ROOT = '.ai/harness/ephemeral-issues';
@@ -539,6 +543,11 @@ export function inspectTaskReadiness(
   const issue = getIssue(repoRoot, issueIdValue);
   const task = issue.tasks.find((entry) => entry.id === taskId);
   if (!task) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
+  const migrated = migratedIssueReadinessProjection(repoRoot, issue);
+  if (migrated) {
+    const projectedIssue = { ...issue, status: migrated.issueStatus };
+    return buildTaskReadiness(repoRoot, projectedIssue, task, migrated.states, options);
+  }
   const states = resolveIssueTaskStates(issue, readIssueRunEvidence(repoRoot, issue));
   return buildTaskReadiness(repoRoot, issue, task, states, options);
 }

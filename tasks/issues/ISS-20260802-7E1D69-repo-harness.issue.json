@@ -4,7 +4,7 @@
   "title": "让 Repo Harness 只展示清晰需求并自动管理执行细节",
   "slug": "repo-harness",
   "kind": "governance",
-  "status": "planned",
+  "status": "in_progress",
   "summary": "把当前以 Issue/Task/Run 状态为中心的执行账本，重构为以用户需求为中心的控制面。用户只管理可读的 Requirement；技术方案是可替换的 Execution Plan；Work 是唯一执行合同；Attempt、Process、Check、Receipt 和 Maintenance Finding 保留为内部证据。Requirement、Plan、Work 关系与状态迁移到 Controller-home SQLite 单一权威，Git 只保留源码、架构文档和可选导出快照，不再承担运行时状态双写。运行时 Bootstrap authority/config 继续使用独立极小原子文件，避免管理数据库故障影响启动与 Recovery。",
   "goals": [
     "让用户默认只看到需求目标、当前状态、已交付结果、阻塞原因和需要用户决定的事项。",
@@ -345,7 +345,7 @@
       "id": "T3",
       "title": "让 Work 成为唯一执行合同",
       "objective": "移除 ControllerTask 与 WorkContract 之间重复的 objective、scope、checks、risk、status 和 completion authority。PlanStep 只引用 Work；Attempt/Run/Process 成为 Work 的执行尝试和证据，不再反向决定用户需求生命周期。",
-      "status": "ready",
+      "status": "done",
       "dependsOn": [
         "T1",
         "T2"
@@ -376,17 +376,134 @@
         "执行身份、lease、checks 和 completion receipt 仍保持 fail closed。"
       ],
       "risk": "high",
-      "notes": [],
+      "notes": [
+        "Starting one bounded Task-bound implementation session after closing the stale unbound session. First audit actual Work/ControllerTask/Attempt/Receipt authority writes and existing SQLite Requirement/Plan integration; then implement the smallest fail-closed Work-only lifecycle closure, including explicit implementation/verification/delivery/cleanup phases and preserved execution identity/lease/check/receipt fencing. Task projection files remain excluded.",
+        "Integrated exact reviewed commit dab71df4b6a48bf7f80bb6c87d404432e4858d2c on main. The commit contains only the 8 Task-scoped Work/Task/Plan authority and regression paths. Edit Session revision 12 has passing persisted receipts for type, runtime architecture, MCP compatibility, and Controller V8, plus 22/22 focused Work/Plan/Requirement tests.",
+        "Required verification evidence passed; a completion receipt remains required before completion.",
+        "Exact commit dab71df4b6a48bf7f80bb6c87d404432e4858d2c makes WorkContract the sole mutable execution contract and completion authority. Work owns four phase evidence checkpoints; generic phase writes and Task status/verification writes are fail-closed; PlanStep completion derives only from exact terminal Work receipt; historical completed labels without receipts reopen at delivery; Task compatibility views are exact Work projections. Focused Work/Plan/Requirement tests passed 22/22, and persisted package:check:type, runtime-architecture, mcp-compatibility, and controller-v8 receipts all passed. T11 commit ba78ce5cdf07a42fad8709b177e0935f3073c5c3 independently corrected the stale 128-tool check baseline. No runtime activation, restart, rollback, remote push, tag, or publish occurred."
+      ],
       "runIds": [],
       "createdAt": "2026-08-02T06:26:19.425Z",
-      "updatedAt": "2026-08-02T06:26:19.425Z",
-      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      "updatedAt": "2026-08-03T08:05:52.043Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "verification": {
+        "reviewer": "GPT-5.6 Thinking",
+        "checkResults": [
+          {
+            "checkId": "package:check:type",
+            "ok": true,
+            "summary": "Passed with persisted Process evidence: proc_mscxudsb_8da4574b"
+          },
+          {
+            "checkId": "package:check:runtime-architecture",
+            "ok": true,
+            "summary": "Passed with persisted Process evidence: proc_mscxv8jh_33b64811"
+          },
+          {
+            "checkId": "package:check:mcp-compatibility",
+            "ok": true,
+            "summary": "Passed with persisted Process evidence: proc_mscxvs8f_8ea1c41b"
+          },
+          {
+            "checkId": "package:check:controller-v8",
+            "ok": true,
+            "summary": "Passed with persisted Process evidence: proc_mscxwnem_b3523753"
+          }
+        ],
+        "commandEvidence": [
+          {
+            "command": [
+              "repo-harness",
+              "controller",
+              "finish-edit",
+              "EDIT-1785737565844-43fe04e2"
+            ],
+            "cwd": "/Users/greyson/DevProjects/repo-harness-controller-runtime",
+            "ok": true,
+            "reportedBy": "GPT-5.6 Thinking",
+            "executedAt": "2026-08-03T08:05:51.962Z",
+            "source": "controller"
+          }
+        ],
+        "acceptanceResults": [
+          {
+            "criterion": "不存在两个可独立修改的 Task.status 与 Work.status 权威。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          },
+          {
+            "criterion": "Work phases 表达 implementation、verification、delivery、cleanup，而不是组合成大量用户状态。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          },
+          {
+            "criterion": "历史 Run cancelled 或 Receipt 缺失不会覆盖已审核的 Requirement 完成结果。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          },
+          {
+            "criterion": "执行身份、lease、checks 和 completion receipt 仍保持 fail closed。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          }
+        ],
+        "reviewedDiffHash": "82ab4b6b1f0d91ec881b8f9b4e29174c6440dad7713520030c8cb94e8eed6325",
+        "integratedRevision": "dab71df4b6a48bf7f80bb6c87d404432e4858d2c",
+        "completionReceipt": {
+          "schemaVersion": 1,
+          "receiptId": "REC-direct_edit-d267bb19418cfbf7",
+          "source": "direct_edit",
+          "issueId": "ISS-20260802-7E1D69",
+          "taskId": "T3",
+          "editSessionId": "EDIT-1785737565844-43fe04e2",
+          "targetBranch": "main",
+          "targetRevision": "dab71df4b6a48bf7f80bb6c87d404432e4858d2c",
+          "sourceRevision": "dab71df4b6a48bf7f80bb6c87d404432e4858d2c",
+          "baseRevision": "66bd03183593f2006f8cfde4648018a10fa09ed6",
+          "changedPaths": [
+            "src/cli/controller/issue-store.ts",
+            "src/runtime/control-plane/execution/work-task-receipt.ts",
+            "src/runtime/control-plane/facade/goal-workloop.ts",
+            "src/runtime/control-plane/facade/plan-contract-store.ts",
+            "src/runtime/control-plane/facade/types.ts",
+            "src/runtime/control-plane/facade/work-contract-store.ts",
+            "tests/runtime/plan-contract-store.test.ts",
+            "tests/runtime/work-task-receipt.test.ts"
+          ],
+          "delivery": {
+            "kind": "commit",
+            "status": "integrated",
+            "strategy": "already_integrated",
+            "reachable": true,
+            "recordedAt": "2026-08-03T08:05:51.929Z"
+          },
+          "cleanup": {
+            "status": "complete",
+            "warnings": [],
+            "blockers": [],
+            "recordedAt": "2026-08-03T08:05:51.962Z"
+          },
+          "verifiedAt": "2026-08-03T08:05:51.962Z",
+          "recordedAt": "2026-08-03T08:05:51.962Z"
+        },
+        "verifiedAt": "2026-08-03T08:05:51.962Z",
+        "autoCompleted": false,
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
     },
     {
       "id": "T4",
       "title": "提供用户需求面板和独立执行诊断",
       "objective": "新增默认 Requirement Board，展示用户标题、结果、五态生命周期、最新交付、阻塞和用户决策；将 Work、Attempt、Process、Lease、Check、Receipt 和维护问题移到按需 Execution Diagnostics。",
-      "status": "planned",
+      "status": "done",
       "dependsOn": [
         "T2",
         "T3"
@@ -415,17 +532,123 @@
         "技术详情可以通过明确 detail 路径检索，且负载有界。"
       ],
       "risk": "medium",
-      "notes": [],
+      "notes": [
+        "Integrated exact reviewed commit 64605aa233de9ec9908f953366aba562168c46e2. get_project_board now defaults to the SQLite Requirement Board; maintenance findings remain separate from lifecycle; waiting_for_user requires an explicit user decision; detail/full expose bounded execution diagnostics. Full mcp-controller tests and persisted type, MCP compatibility, and Controller V8 checks passed. Stable MCP tool count remains 128.",
+        "Required verification evidence passed; a completion receipt remains required before completion.",
+        "Exact commit 64605aa233de9ec9908f953366aba562168c46e2 makes get_project_board default to the SQLite Requirement Board, keeps maintenance findings separate from lifecycle, requires explicit decision text for waiting_for_user, and moves bounded Work/Plan/check/receipt plus legacy Task details behind detail/full Execution Diagnostics. Full mcp-controller tests and persisted type, MCP compatibility, and Controller V8 checks passed; stable MCP tool count remains 128. No runtime activation, restart, rollback, remote push, tag, or publish occurred."
+      ],
       "runIds": [],
       "createdAt": "2026-08-02T06:26:19.425Z",
-      "updatedAt": "2026-08-02T06:26:19.425Z",
-      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      "updatedAt": "2026-08-03T11:29:14.036Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "verification": {
+        "reviewer": "GPT-5.6 Thinking",
+        "checkResults": [
+          {
+            "checkId": "package:check:type",
+            "ok": true,
+            "summary": "Passed with persisted Process evidence: proc_msd58td7_797f1173"
+          },
+          {
+            "checkId": "package:check:mcp-compatibility",
+            "ok": true,
+            "summary": "Passed with persisted Process evidence: proc_msd596qm_bd09ec66"
+          },
+          {
+            "checkId": "package:check:controller-v8",
+            "ok": true,
+            "summary": "Passed with persisted Process evidence: proc_msd59jt4_65ec3acd"
+          }
+        ],
+        "commandEvidence": [
+          {
+            "command": [
+              "repo-harness",
+              "controller",
+              "finish-edit",
+              "EDIT-1785756152166-df2005fb"
+            ],
+            "cwd": "/Users/greyson/DevProjects/repo-harness-controller-runtime",
+            "ok": true,
+            "reportedBy": "GPT-5.6 Thinking",
+            "executedAt": "2026-08-03T11:29:14.015Z",
+            "source": "controller"
+          }
+        ],
+        "acceptanceResults": [
+          {
+            "criterion": "默认面板不返回完整 Task/Run/Process 列表。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          },
+          {
+            "criterion": "已完成需求不因内部维护提醒显示为进行中。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          },
+          {
+            "criterion": "waiting_for_user 只表示真实需要用户决定。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          },
+          {
+            "criterion": "技术详情可以通过明确 detail 路径检索，且负载有界。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          }
+        ],
+        "reviewedDiffHash": "022ea5ea6f3cec3d4608efff0860824fd417f9b862fe02975f9f248aea69ca2b",
+        "integratedRevision": "64605aa233de9ec9908f953366aba562168c46e2",
+        "completionReceipt": {
+          "schemaVersion": 1,
+          "receiptId": "REC-direct_edit-148fb5ae61edacfc",
+          "source": "direct_edit",
+          "issueId": "ISS-20260802-7E1D69",
+          "taskId": "T4",
+          "editSessionId": "EDIT-1785756152166-df2005fb",
+          "targetBranch": "main",
+          "targetRevision": "64605aa233de9ec9908f953366aba562168c46e2",
+          "sourceRevision": "64605aa233de9ec9908f953366aba562168c46e2",
+          "baseRevision": "6616590e5d6b91b0db080e234dcb8fbef3769307",
+          "changedPaths": [
+            "src/cli/mcp/legacy-tool-service.ts",
+            "src/runtime/control-plane/facade/requirement-board.ts",
+            "tests/cli/mcp-controller.test.ts"
+          ],
+          "delivery": {
+            "kind": "commit",
+            "status": "integrated",
+            "strategy": "already_integrated",
+            "reachable": true,
+            "recordedAt": "2026-08-03T11:29:14.006Z"
+          },
+          "cleanup": {
+            "status": "complete",
+            "warnings": [],
+            "blockers": [],
+            "recordedAt": "2026-08-03T11:29:14.015Z"
+          },
+          "verifiedAt": "2026-08-03T11:29:14.015Z",
+          "recordedAt": "2026-08-03T11:29:14.015Z"
+        },
+        "verifiedAt": "2026-08-03T11:29:14.015Z",
+        "autoCompleted": false,
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
     },
     {
       "id": "T5",
       "title": "迁移并收敛当前需求组合",
       "objective": "使用已审核映射把当前用户需求、计划版本、历史完成记录和合并关系一次性导入新模型；保留历史 Issue ID 作为 alias/evidence reference，验证结果后切换默认面板。",
-      "status": "planned",
+      "status": "done",
       "dependsOn": [
         "T2",
         "T3",
@@ -455,17 +678,127 @@
         "迁移可重复执行而不产生重复 Requirement 或 Work。"
       ],
       "risk": "high",
-      "notes": [],
+      "notes": [
+        "Integrated exact commit 0e10e3c14c465187955c03a50588217f6966ac4a. Live migration requirement-portfolio-20260802-v1 applied atomically after backup: 36 source Issues (33 frozen + 3 post-snapshot) -> 10 Requirements and 36 Requirement-owned Plans. State counts are active=5, planned=3, done=2, waiting_for_user=0. Exact rerun returned deduplicated with unchanged fingerprints. Local Requirement Board and route diagnostics validated the migrated authority. Type, task-sync, Controller V8, and focused fault tests passed.",
+        "Required verification evidence passed; a completion receipt remains required before completion.",
+        "Exact commit 0e10e3c14c465187955c03a50588217f6966ac4a implements the atomic portfolio migration and Requirement-owned Plan relationship. Live migration requirement-portfolio-20260802-v1 created a verified backup, imported exactly 36 source Issues (33 frozen plus 3 post-snapshot) into 10 canonical Requirements and 36 Plans, preserved bounded legacy task/revision/receipt/cancellation and historical repo identity evidence, and wrote no legacy Issue files. State counts are active=5, planned=3, done=2, waiting_for_user=0. An exact rerun returned deduplicated with identical source and mapping fingerprints. The local Requirement Board and filtered route diagnostics validated the live SQLite authority. Focused fault tests, type, task-sync, and Controller V8 passed. No runtime activation, restart, rollback, remote push, tag, or publish occurred."
+      ],
       "runIds": [],
       "createdAt": "2026-08-02T06:26:19.425Z",
-      "updatedAt": "2026-08-02T06:26:19.425Z",
-      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      "updatedAt": "2026-08-03T11:48:25.834Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "verification": {
+        "reviewer": "GPT-5.6 Thinking",
+        "checkResults": [
+          {
+            "checkId": "package:check:type",
+            "ok": true,
+            "summary": "Passed with persisted Process evidence: proc_msd5x20o_dd6cfba7"
+          },
+          {
+            "checkId": "package:check:task-sync",
+            "ok": true,
+            "summary": "Passed with persisted Process evidence: proc_msd5xc94_1f845ca8"
+          },
+          {
+            "checkId": "package:check:controller-v8",
+            "ok": true,
+            "summary": "Passed with persisted Process evidence: proc_msd5xek7_05e09f9d"
+          }
+        ],
+        "commandEvidence": [
+          {
+            "command": [
+              "repo-harness",
+              "controller",
+              "finish-edit",
+              "EDIT-1785756926263-9c15c526"
+            ],
+            "cwd": "/Users/greyson/DevProjects/repo-harness-controller-runtime",
+            "ok": true,
+            "reportedBy": "GPT-5.6 Thinking",
+            "executedAt": "2026-08-03T11:48:25.813Z",
+            "source": "controller"
+          }
+        ],
+        "acceptanceResults": [
+          {
+            "criterion": "所有活跃用户需求数量和状态与人工审计一致。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          },
+          {
+            "criterion": "重复 iOS、Recovery、runtime、tool-surface 和治理 Issue 不再作为独立活跃需求。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          },
+          {
+            "criterion": "历史提交、验证、取消和 supersede 原因仍可查询。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          },
+          {
+            "criterion": "迁移可重复执行而不产生重复 Requirement 或 Work。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          }
+        ],
+        "reviewedDiffHash": "58c1e157bdcdd5643d9c2f814c8674da31e6c4dc95eecea68d9a0f47d274f7d8",
+        "integratedRevision": "0e10e3c14c465187955c03a50588217f6966ac4a",
+        "completionReceipt": {
+          "schemaVersion": 1,
+          "receiptId": "REC-direct_edit-9586530973b6b58d",
+          "source": "direct_edit",
+          "issueId": "ISS-20260802-7E1D69",
+          "taskId": "T5",
+          "editSessionId": "EDIT-1785756926263-9c15c526",
+          "targetBranch": "main",
+          "targetRevision": "0e10e3c14c465187955c03a50588217f6966ac4a",
+          "sourceRevision": "0e10e3c14c465187955c03a50588217f6966ac4a",
+          "baseRevision": "64605aa233de9ec9908f953366aba562168c46e2",
+          "changedPaths": [
+            "scripts/migrate-requirement-portfolio.ts",
+            "src/cli/controller/requirement-portfolio-migration.ts",
+            "src/runtime/control-plane/facade/plan-contract-store.ts",
+            "src/runtime/control-plane/facade/requirement-board.ts",
+            "src/runtime/control-plane/facade/types.ts",
+            "tests/runtime/requirement-portfolio-migration.test.ts",
+            "tests/test-manifest.v1.json"
+          ],
+          "delivery": {
+            "kind": "commit",
+            "status": "integrated",
+            "strategy": "already_integrated",
+            "reachable": true,
+            "recordedAt": "2026-08-03T11:48:25.806Z"
+          },
+          "cleanup": {
+            "status": "complete",
+            "warnings": [],
+            "blockers": [],
+            "recordedAt": "2026-08-03T11:48:25.813Z"
+          },
+          "verifiedAt": "2026-08-03T11:48:25.813Z",
+          "recordedAt": "2026-08-03T11:48:25.813Z"
+        },
+        "verifiedAt": "2026-08-03T11:48:25.813Z",
+        "autoCompleted": false,
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
     },
     {
       "id": "T6",
       "title": "删除旧 Issue/Task 双写和兼容路径",
       "objective": "在新面板和迁移验证通过后，删除运行时写 tasks/issues JSON/Markdown、旧 currentIssue 指针、二十态 Task project board、旧 Task readiness/terminal 假设和相关 fallback；保留显式离线导出命令。",
-      "status": "planned",
+      "status": "ready",
       "dependsOn": [
         "T5"
       ],
@@ -543,9 +876,1093 @@
       "createdAt": "2026-08-02T06:26:19.425Z",
       "updatedAt": "2026-08-02T06:26:19.425Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T8",
+      "title": "修复受控 Worktree 根的所有权分类",
+      "objective": "修复 managed worktree allocator 将其自身已有受控 Git worktree 误判为外部注册源码根的问题。主仓库和独立注册仓库仍是禁止重叠的 source roots；同一 RepositoryRecord 下 worktree=true 的 checkout 是 storage occupants，不得让 managed root 在首次分配后永久失效。补充回归并恢复 new_worktree 能力，为 T3 Work-only 架构迁移提供隔离执行环境。",
+      "status": "done",
+      "dependsOn": [
+        "T2"
+      ],
+      "allowedPaths": [
+        "src/cli/repositories/worktree-storage.ts",
+        "tests/cli/worktree-storage.test.ts"
+      ],
+      "forbiddenPaths": [
+        "_ops/**",
+        ".ai/**"
+      ],
+      "checks": [
+        "package:check:type"
+      ],
+      "acceptanceCriteria": [
+        "已有 managed worktree checkout 位于 storage root 内时，后续 managed worktree 仍可分配。",
+        "主仓库、非 worktree checkout 或独立注册仓库与 storage root 重叠时仍 fail closed。",
+        "不删除、不移动、不重新注册任何现有 worktree。",
+        "Focused test 与 typecheck 通过，提交只包含两个显式路径。"
+      ],
+      "risk": "high",
+      "notes": [
+        "Required verification evidence passed; a completion receipt remains required before completion.",
+        "Required verification evidence passed; a completion receipt remains required before completion.",
+        "Managed worktree storage ownership fix ac8bd934 reviewed and accepted: existing controlled worktree occupants no longer poison the managed root; independent/source-root overlap remains fail-closed; focused 3/3 and typecheck passed; no worktree moved or deleted."
+      ],
+      "runIds": [],
+      "createdAt": "2026-08-03T05:49:39.268Z",
+      "updatedAt": "2026-08-03T06:09:38.711Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "verification": {
+        "reviewer": "GPT-5.6 Thinking",
+        "checkResults": [
+          {
+            "checkId": "package:check:type",
+            "ok": true,
+            "summary": "Passed with persisted Process evidence: proc_msct9one_ec7855ab"
+          }
+        ],
+        "commandEvidence": [
+          {
+            "command": [
+              "repo-harness",
+              "controller",
+              "finish-edit",
+              "EDIT-1785736190308-153cee83"
+            ],
+            "cwd": "/Users/greyson/DevProjects/repo-harness-controller-runtime",
+            "ok": true,
+            "reportedBy": "GPT-5.6 Thinking",
+            "executedAt": "2026-08-03T06:09:38.674Z",
+            "source": "controller"
+          }
+        ],
+        "acceptanceResults": [
+          {
+            "criterion": "已有 managed worktree checkout 位于 storage root 内时，后续 managed worktree 仍可分配。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          },
+          {
+            "criterion": "主仓库、非 worktree checkout 或独立注册仓库与 storage root 重叠时仍 fail closed。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          },
+          {
+            "criterion": "不删除、不移动、不重新注册任何现有 worktree。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          },
+          {
+            "criterion": "Focused test 与 typecheck 通过，提交只包含两个显式路径。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          }
+        ],
+        "reviewedDiffHash": "9834cb14291aa35fc4b520d36a73bff517726ab78a50d0ff2b9c234f5bbca0d0",
+        "integratedRevision": "66bd03183593f2006f8cfde4648018a10fa09ed6",
+        "completionReceipt": {
+          "schemaVersion": 1,
+          "receiptId": "REC-direct_edit-8459e1071e8b4efa",
+          "source": "direct_edit",
+          "issueId": "ISS-20260802-7E1D69",
+          "taskId": "T8",
+          "editSessionId": "EDIT-1785736190308-153cee83",
+          "targetBranch": "main",
+          "targetRevision": "66bd03183593f2006f8cfde4648018a10fa09ed6",
+          "sourceRevision": "66bd03183593f2006f8cfde4648018a10fa09ed6",
+          "baseRevision": "b2d866361991237a7096be19c0488014e40eaa04",
+          "changedPaths": [
+            "src/cli/repositories/worktree-storage.ts",
+            "tests/cli/worktree-storage.test.ts"
+          ],
+          "delivery": {
+            "kind": "commit",
+            "status": "integrated",
+            "strategy": "already_integrated",
+            "reachable": true,
+            "recordedAt": "2026-08-03T06:09:38.658Z"
+          },
+          "cleanup": {
+            "status": "complete",
+            "warnings": [],
+            "blockers": [],
+            "recordedAt": "2026-08-03T06:09:38.674Z"
+          },
+          "verifiedAt": "2026-08-03T06:09:38.674Z",
+          "recordedAt": "2026-08-03T06:09:38.674Z"
+        },
+        "verifiedAt": "2026-08-03T06:09:38.674Z",
+        "autoCompleted": false,
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
+    },
+    {
+      "id": "T9",
+      "title": "统一 Process 终态、Lease 与 Gateway Work 收敛",
+      "objective": "补齐 T3 的跨模块执行边界：Gateway 所有 Work-bound 入口在读取、检查、等待和恢复前都从 WorkHandle 解析唯一执行身份并收敛 validationRun；Process 终态清理由精确 terminal owner 证据授权，不再依赖原 writer generation，确保旧 runtime terminal process 的精确 leases 可在新 runtime 幂等释放；显式 checkout 的非 Work facade 也必须按 checkout-scoped context 执行。",
+      "status": "done",
+      "dependsOn": [
+        "T2"
+      ],
+      "allowedPaths": [
+        "src/runtime/gateway/mcp/**",
+        "src/runtime/resources/leases/store.ts",
+        "src/runtime/execution/process-runtime/**",
+        "src/cli/mcp/**",
+        "tests/runtime/**",
+        "tests/cli/**"
+      ],
+      "forbiddenPaths": [
+        "_ops/**",
+        "src/runtime/standalone-recovery/**",
+        "tests/runtime/standalone-recovery.test.ts"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:runtime-architecture",
+        "package:check:mcp-compatibility",
+        "package:check:controller-v8"
+      ],
+      "acceptanceCriteria": [
+        "Gateway work_get/work_inspect/work_execute/work_validate 在生命周期门禁前收敛已有 terminal Process/Check receipts，Work 不会永久停在 validating/running。",
+        "Terminal Process 的精确 leaseRefs 可由新 writer generation 在确认 terminal、owner、scope、fencing token 后幂等回收；live process 和错误 token 永不被清理。",
+        "显式 repo_id + checkout_id 的 read/check/task facade 不使用会话 cwd 或 active checkout 重新投影。",
+        "与 T3 的 Work identity 和 owner generation 共同通过一套对抗测试与四项声明检查。"
+      ],
+      "risk": "high",
+      "notes": [
+        "Integrated exact reviewed commit 3c4d86d807aa8dd6ec8f4a383fb6ed3068d9fd73 on main. It contains exactly 10 T9 product/test paths. Revision 8 has passing persisted receipts for type, runtime architecture, MCP compatibility, and Controller V8; reconciler tests passed 3/3 with 16 assertions, and complete Process Runtime and MCP Controller files passed independently.",
+        "Required verification evidence passed; a completion receipt remains required before completion.",
+        "Exact commit 3c4d86d807aa8dd6ec8f4a383fb6ed3068d9fd73 converges WorkHandle validation from durable Process/Check receipts, keeps WorkContract as the lifecycle authority, makes work_get/work_wait WorkHandle-first, and makes terminal Process lease release exact-owner, scope/token fenced, idempotent, and independent of the spawning writer generation. Live or wrong-token leases remain untouched. Reconciler focused tests passed 3/3 with 16 assertions including repeated-call idempotency; full Process Runtime and MCP Controller files passed independently. Persisted type, runtime architecture, MCP compatibility, and Controller V8 receipts all passed. Manifest governance commit 196a0e6912941a6489172b338da3ddc9d0c762fc is separate. No runtime activation, restart, rollback, remote push, tag, or publish occurred."
+      ],
+      "runIds": [],
+      "createdAt": "2026-08-03T06:02:22.485Z",
+      "updatedAt": "2026-08-03T09:03:25.727Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "verification": {
+        "reviewer": "GPT-5.6 Thinking",
+        "checkResults": [
+          {
+            "checkId": "package:check:type",
+            "ok": true,
+            "summary": "Passed with persisted Process evidence: proc_msczymle_96394fec"
+          },
+          {
+            "checkId": "package:check:runtime-architecture",
+            "ok": true,
+            "summary": "Passed with persisted Process evidence: proc_msczzrnr_5e89c3fb"
+          },
+          {
+            "checkId": "package:check:mcp-compatibility",
+            "ok": true,
+            "summary": "Passed with persisted Process evidence: proc_msczzvts_2d37d1e8"
+          },
+          {
+            "checkId": "package:check:controller-v8",
+            "ok": true,
+            "summary": "Passed with persisted Process evidence: proc_msd00b1w_f0936677"
+          }
+        ],
+        "commandEvidence": [
+          {
+            "command": [
+              "repo-harness",
+              "controller",
+              "finish-edit",
+              "EDIT-1785744393453-a61b108b"
+            ],
+            "cwd": "/Users/greyson/DevProjects/repo-harness-controller-runtime",
+            "ok": true,
+            "reportedBy": "GPT-5.6 Thinking",
+            "executedAt": "2026-08-03T09:03:25.689Z",
+            "source": "controller"
+          }
+        ],
+        "acceptanceResults": [
+          {
+            "criterion": "Gateway work_get/work_inspect/work_execute/work_validate 在生命周期门禁前收敛已有 terminal Process/Check receipts，Work 不会永久停在 validating/running。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          },
+          {
+            "criterion": "Terminal Process 的精确 leaseRefs 可由新 writer generation 在确认 terminal、owner、scope、fencing token 后幂等回收；live process 和错误 token 永不被清理。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          },
+          {
+            "criterion": "显式 repo_id + checkout_id 的 read/check/task facade 不使用会话 cwd 或 active checkout 重新投影。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          },
+          {
+            "criterion": "与 T3 的 Work identity 和 owner generation 共同通过一套对抗测试与四项声明检查。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          }
+        ],
+        "reviewedDiffHash": "25a769f4d7c9321c121730b74adec31b8f5e583a086de6db6c695dce2a5325aa",
+        "integratedRevision": "3c4d86d807aa8dd6ec8f4a383fb6ed3068d9fd73",
+        "completionReceipt": {
+          "schemaVersion": 1,
+          "receiptId": "REC-direct_edit-14f29721698b6be6",
+          "source": "direct_edit",
+          "issueId": "ISS-20260802-7E1D69",
+          "taskId": "T9",
+          "editSessionId": "EDIT-1785744393453-a61b108b",
+          "targetBranch": "main",
+          "targetRevision": "3c4d86d807aa8dd6ec8f4a383fb6ed3068d9fd73",
+          "sourceRevision": "3c4d86d807aa8dd6ec8f4a383fb6ed3068d9fd73",
+          "baseRevision": "dab71df4b6a48bf7f80bb6c87d404432e4858d2c",
+          "changedPaths": [
+            "src/runtime/execution/process-runtime/runtime.ts",
+            "src/runtime/execution/process-runtime/store.ts",
+            "src/runtime/execution/process-runtime/types.ts",
+            "src/runtime/gateway/mcp/execution-tools.ts",
+            "src/runtime/gateway/mcp/runtime-tools.ts",
+            "src/runtime/gateway/mcp/work-validation-reconciler.ts",
+            "src/runtime/resources/leases/store.ts",
+            "tests/cli/mcp-controller.test.ts",
+            "tests/runtime/process-runtime.test.ts",
+            "tests/runtime/work-validation-reconciler.test.ts"
+          ],
+          "delivery": {
+            "kind": "commit",
+            "status": "integrated",
+            "strategy": "already_integrated",
+            "reachable": true,
+            "recordedAt": "2026-08-03T09:03:25.673Z"
+          },
+          "cleanup": {
+            "status": "complete",
+            "warnings": [],
+            "blockers": [],
+            "recordedAt": "2026-08-03T09:03:25.689Z"
+          },
+          "verifiedAt": "2026-08-03T09:03:25.689Z",
+          "recordedAt": "2026-08-03T09:03:25.689Z"
+        },
+        "verifiedAt": "2026-08-03T09:03:25.689Z",
+        "autoCompleted": false,
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
+    },
+    {
+      "id": "T10",
+      "title": "修正显式 Checkout 与 Server 默认路径优先级",
+      "objective": "修复 resolveRepositorySelection 将 MCP server 启动时 explicitPath 当成显式 repo_id + checkout_id 的反向约束，导致任何非默认 checkout 都报 CHECKOUT_PATH_ID_MISMATCH。显式 repo+checkout 是完整调用身份，server explicitPath 仅在调用未提供显式身份时作为默认选择。补端到端 facade 回归：server 默认绑定 main，显式 read_repository_file 必须读取目标 worktree 独有内容。",
+      "status": "done",
+      "dependsOn": [
+        "T2"
+      ],
+      "allowedPaths": [
+        "src/cli/repositories/registry.ts",
+        "tests/runtime/execution-identity-guard.test.ts"
+      ],
+      "forbiddenPaths": [
+        "_ops/**",
+        "src/runtime/standalone-recovery/**",
+        "tests/runtime/standalone-recovery.test.ts"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:mcp-compatibility",
+        "package:check:controller-v8"
+      ],
+      "acceptanceCriteria": [
+        "repo_id + checkout_id 显式身份直接选择注册 checkout，不受 server explicitPath、当前 cwd 或 activeCheckoutId 否决。",
+        "只有未提供 repo_id 时，server explicitPath 才作为仓库默认绑定。",
+        "未知、removed 或 archived checkout 仍 fail closed。",
+        "端到端 read_repository_file 回归证明 main-bound server 可正确读取非默认 worktree。"
+      ],
+      "risk": "high",
+      "notes": [
+        "Integrated exact reviewed commit 61bb76534571e14229d6141936711542614eccdf on main. It contains only registry selection and the adversarial execution-identity regression. The complete execution-identity-guard file, typecheck, and Controller V8 all passed.",
+        "Required verification evidence passed; a completion receipt remains required before completion.",
+        "Exact commit 61bb76534571e14229d6141936711542614eccdf makes explicit repo_id plus checkout_id authoritative over the MCP server default path while preserving checkout lifecycle and Git boundary validation. Full execution-identity-guard test file, typecheck, and Controller V8 passed. No runtime activation, Recovery mutation, remote push, tag, or publish occurred."
+      ],
+      "runIds": [],
+      "createdAt": "2026-08-03T06:31:06.211Z",
+      "updatedAt": "2026-08-03T09:15:12.435Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "verification": {
+        "reviewer": "GPT-5.6 Thinking",
+        "checkResults": [
+          {
+            "checkId": "package:check:type",
+            "ok": true,
+            "summary": "Passed: bun run check:type"
+          },
+          {
+            "checkId": "package:check:mcp-compatibility",
+            "ok": true,
+            "summary": "Passed: bun run check:mcp-compatibility"
+          },
+          {
+            "checkId": "package:check:controller-v8",
+            "ok": true,
+            "summary": "Passed: bun run check:controller-v8"
+          }
+        ],
+        "commandEvidence": [
+          {
+            "command": [
+              "repo-harness",
+              "controller",
+              "finish-edit",
+              "EDIT-1785747830791-1af54736"
+            ],
+            "cwd": "/Users/greyson/DevProjects/repo-harness-controller-runtime",
+            "ok": true,
+            "reportedBy": "GPT-5.6 Thinking",
+            "executedAt": "2026-08-03T09:15:12.414Z",
+            "source": "controller"
+          }
+        ],
+        "acceptanceResults": [
+          {
+            "criterion": "repo_id + checkout_id 显式身份直接选择注册 checkout，不受 server explicitPath、当前 cwd 或 activeCheckoutId 否决。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          },
+          {
+            "criterion": "只有未提供 repo_id 时，server explicitPath 才作为仓库默认绑定。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          },
+          {
+            "criterion": "未知、removed 或 archived checkout 仍 fail closed。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          },
+          {
+            "criterion": "端到端 read_repository_file 回归证明 main-bound server 可正确读取非默认 worktree。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          }
+        ],
+        "reviewedDiffHash": "737bb6c84ee74ea0aa1a5d5882a0b2c831e8e2a9c5956f87790cbe8aad2e431f",
+        "integratedRevision": "61bb76534571e14229d6141936711542614eccdf",
+        "completionReceipt": {
+          "schemaVersion": 1,
+          "receiptId": "REC-direct_edit-e2c4d7627ab6ca2b",
+          "source": "direct_edit",
+          "issueId": "ISS-20260802-7E1D69",
+          "taskId": "T10",
+          "editSessionId": "EDIT-1785747830791-1af54736",
+          "targetBranch": "main",
+          "targetRevision": "61bb76534571e14229d6141936711542614eccdf",
+          "sourceRevision": "61bb76534571e14229d6141936711542614eccdf",
+          "baseRevision": "3c4d86d807aa8dd6ec8f4a383fb6ed3068d9fd73",
+          "changedPaths": [
+            "src/cli/repositories/registry.ts",
+            "tests/runtime/execution-identity-guard.test.ts"
+          ],
+          "delivery": {
+            "kind": "commit",
+            "status": "integrated",
+            "strategy": "already_integrated",
+            "reachable": true,
+            "recordedAt": "2026-08-03T09:15:12.406Z"
+          },
+          "cleanup": {
+            "status": "complete",
+            "warnings": [],
+            "blockers": [],
+            "recordedAt": "2026-08-03T09:15:12.414Z"
+          },
+          "verifiedAt": "2026-08-03T09:15:12.414Z",
+          "recordedAt": "2026-08-03T09:15:12.414Z"
+        },
+        "verifiedAt": "2026-08-03T09:15:12.414Z",
+        "autoCompleted": false,
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
+    },
+    {
+      "id": "T11",
+      "title": "Align MCP compatibility baseline with stable surface",
+      "objective": "Correct the stale MCP compatibility count baseline from 133 to the repository's and live runtime's exact stable 128-tool surface. This is a check-only repair: do not add, remove, rename, or expose tools; preserve the existing stable/default/advanced alias and fingerprint checks.",
+      "status": "done",
+      "dependsOn": [],
+      "allowedPaths": [
+        "scripts/check-mcp-compatibility.ts"
+      ],
+      "forbiddenPaths": [
+        "src/**",
+        "tests/**",
+        "tasks/**",
+        "_ops/**",
+        ".ai/**"
+      ],
+      "checks": [
+        "package:check:mcp-compatibility"
+      ],
+      "acceptanceCriteria": [
+        "The check expects exactly 128 stable tools, matching STABLE_CONTROLLER_TOOL_NAMES and the live coherent runtime surface.",
+        "No MCP tool definition, schema, name, access-mode exposure, or runtime behavior changes.",
+        "package:check:mcp-compatibility passes."
+      ],
+      "risk": "low",
+      "notes": [
+        "Required verification evidence passed; a completion receipt remains required before completion.",
+        "Exact commit ba78ce5cdf07a42fad8709b177e0935f3073c5c3 updates only the stale 133-to-128 MCP compatibility count baseline. The persisted package:check:mcp-compatibility receipt passed; no tool definitions, schemas, names, fingerprints, aliases, access-mode exposure, runtime behavior, remote refs, tags, or releases changed."
+      ],
+      "runIds": [],
+      "createdAt": "2026-08-03T07:55:46.817Z",
+      "updatedAt": "2026-08-03T07:58:32.575Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "verification": {
+        "reviewer": "GPT-5.6 Thinking",
+        "checkResults": [
+          {
+            "checkId": "package:check:mcp-compatibility",
+            "ok": true,
+            "summary": "Passed with persisted Process evidence: proc_mscxr54y_03e8d2aa"
+          }
+        ],
+        "commandEvidence": [
+          {
+            "command": [
+              "repo-harness",
+              "controller",
+              "finish-edit",
+              "EDIT-1785743769399-6c410e55"
+            ],
+            "cwd": "/Users/greyson/DevProjects/repo-harness-controller-runtime",
+            "ok": true,
+            "reportedBy": "GPT-5.6 Thinking",
+            "executedAt": "2026-08-03T07:58:32.467Z",
+            "source": "controller"
+          }
+        ],
+        "acceptanceResults": [
+          {
+            "criterion": "The check expects exactly 128 stable tools, matching STABLE_CONTROLLER_TOOL_NAMES and the live coherent runtime surface.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          },
+          {
+            "criterion": "No MCP tool definition, schema, name, access-mode exposure, or runtime behavior changes.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          },
+          {
+            "criterion": "package:check:mcp-compatibility passes.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          }
+        ],
+        "reviewedDiffHash": "23eb1b6eba395d1ca1891f59ada34be3a68f49c96dfbabc7618cf5c7b99fac61",
+        "integratedRevision": "ba78ce5cdf07a42fad8709b177e0935f3073c5c3",
+        "completionReceipt": {
+          "schemaVersion": 1,
+          "receiptId": "REC-direct_edit-79e42923780055ea",
+          "source": "direct_edit",
+          "issueId": "ISS-20260802-7E1D69",
+          "taskId": "T11",
+          "editSessionId": "EDIT-1785743769399-6c410e55",
+          "targetBranch": "main",
+          "targetRevision": "ba78ce5cdf07a42fad8709b177e0935f3073c5c3",
+          "sourceRevision": "ba78ce5cdf07a42fad8709b177e0935f3073c5c3",
+          "baseRevision": "66bd03183593f2006f8cfde4648018a10fa09ed6",
+          "changedPaths": [
+            "scripts/check-mcp-compatibility.ts"
+          ],
+          "delivery": {
+            "kind": "commit",
+            "status": "integrated",
+            "strategy": "already_integrated",
+            "reachable": true,
+            "recordedAt": "2026-08-03T07:58:32.439Z"
+          },
+          "cleanup": {
+            "status": "complete",
+            "warnings": [],
+            "blockers": [],
+            "recordedAt": "2026-08-03T07:58:32.466Z"
+          },
+          "verifiedAt": "2026-08-03T07:58:32.466Z",
+          "recordedAt": "2026-08-03T07:58:32.466Z"
+        },
+        "verifiedAt": "2026-08-03T07:58:32.467Z",
+        "autoCompleted": false,
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
+    },
+    {
+      "id": "T12",
+      "title": "Declare T9 validation reconciler test",
+      "objective": "Add only tests/runtime/work-validation-reconciler.test.ts to tests/test-manifest.v1.json with the appropriate workflow/temp-isolated classification so Controller V8 can execute the already-reviewed T9 test. Preserve and exclude unrelated external manifest edits.",
+      "status": "superseded",
+      "dependsOn": [],
+      "allowedPaths": [
+        "tests/test-manifest.v1.json"
+      ],
+      "forbiddenPaths": [
+        "src/**",
+        "tests/runtime/**",
+        "tests/cli/**",
+        "tasks/**",
+        "_ops/**",
+        ".ai/**"
+      ],
+      "checks": [
+        "package:check:controller-v8"
+      ],
+      "acceptanceCriteria": [
+        "The new T9 reconciler test is declared exactly once as workflow/temp-isolated.",
+        "No unrelated test classification is included in this Task commit.",
+        "package:check:controller-v8 passes with the T9 test declared."
+      ],
+      "risk": "low",
+      "notes": [
+        "Superseded after Controller V8 proved the manifest blocker is broader than the single T9 test: tests/cli/worktree-storage.test.ts and tests/runtime/release-identity-binding.test.ts are also existing unclassified tests. The T12 edit session was fully rolled back; no manifest change remains. Replacement Task will classify all three exact existing tests in one auditable manifest-only commit."
+      ],
+      "runIds": [],
+      "createdAt": "2026-08-03T08:45:50.660Z",
+      "updatedAt": "2026-08-03T08:48:21.204Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+    },
+    {
+      "id": "T13",
+      "title": "Declare all current unclassified tests",
+      "objective": "Classify exactly the three existing tests currently rejected by Controller V8: tests/cli/worktree-storage.test.ts as repository/temp-isolated, tests/runtime/release-identity-binding.test.ts as release/git-worktree, and tests/runtime/work-validation-reconciler.test.ts as workflow/temp-isolated. Make no test or product-code changes.",
+      "status": "done",
+      "dependsOn": [],
+      "allowedPaths": [
+        "tests/test-manifest.v1.json"
+      ],
+      "forbiddenPaths": [
+        "src/**",
+        "tests/runtime/**",
+        "tests/cli/**",
+        "tasks/**",
+        "_ops/**",
+        ".ai/**"
+      ],
+      "checks": [
+        "package:check:controller-v8"
+      ],
+      "acceptanceCriteria": [
+        "All three named existing tests are declared exactly once with their reviewed module/resource classifications.",
+        "No other test manifest entry changes.",
+        "package:check:controller-v8 passes."
+      ],
+      "risk": "low",
+      "notes": [
+        "Integrated exact manifest-only commit 196a0e6912941a6489172b338da3ddc9d0c762fc. It declares exactly three existing previously-unclassified tests and raises maxTempIsolatedFiles from 35 to 36 because two genuine temp-directory tests were added. Controller V8 passed.",
+        "Required verification evidence passed; a completion receipt remains required before completion.",
+        "Exact manifest-only commit 196a0e6912941a6489172b338da3ddc9d0c762fc declares tests/cli/worktree-storage.test.ts as repository/temp-isolated, tests/runtime/release-identity-binding.test.ts as release/git-worktree, and tests/runtime/work-validation-reconciler.test.ts as workflow/temp-isolated. maxTempIsolatedFiles increases from 35 to 36 because the two temp-isolated tests genuinely create temporary directories. Controller V8 passed. No test body, product code, runtime, remote ref, tag, or release changed."
+      ],
+      "runIds": [],
+      "createdAt": "2026-08-03T08:48:41.919Z",
+      "updatedAt": "2026-08-03T08:54:11.682Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "verification": {
+        "reviewer": "GPT-5.6 Thinking",
+        "checkResults": [
+          {
+            "checkId": "package:check:controller-v8",
+            "ok": true,
+            "summary": "Passed with persisted Process evidence: proc_msczpljj_9b21be98"
+          }
+        ],
+        "commandEvidence": [
+          {
+            "command": [
+              "repo-harness",
+              "controller",
+              "finish-edit",
+              "EDIT-1785746948132-1a82419f"
+            ],
+            "cwd": "/Users/greyson/DevProjects/repo-harness-controller-runtime",
+            "ok": true,
+            "reportedBy": "GPT-5.6 Thinking",
+            "executedAt": "2026-08-03T08:54:11.403Z",
+            "source": "controller"
+          }
+        ],
+        "acceptanceResults": [
+          {
+            "criterion": "All three named existing tests are declared exactly once with their reviewed module/resource classifications.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          },
+          {
+            "criterion": "No other test manifest entry changes.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          },
+          {
+            "criterion": "package:check:controller-v8 passes.",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          }
+        ],
+        "reviewedDiffHash": "160a4a0ee1ab3cde8e81c69feba99c00c215ded39c400ac560c89f93f63bab8d",
+        "integratedRevision": "196a0e6912941a6489172b338da3ddc9d0c762fc",
+        "completionReceipt": {
+          "schemaVersion": 1,
+          "receiptId": "REC-direct_edit-5063805c278c0594",
+          "source": "direct_edit",
+          "issueId": "ISS-20260802-7E1D69",
+          "taskId": "T13",
+          "editSessionId": "EDIT-1785746948132-1a82419f",
+          "targetBranch": "main",
+          "targetRevision": "196a0e6912941a6489172b338da3ddc9d0c762fc",
+          "sourceRevision": "196a0e6912941a6489172b338da3ddc9d0c762fc",
+          "baseRevision": "dab71df4b6a48bf7f80bb6c87d404432e4858d2c",
+          "changedPaths": [
+            "tests/test-manifest.v1.json"
+          ],
+          "delivery": {
+            "kind": "commit",
+            "status": "integrated",
+            "strategy": "already_integrated",
+            "reachable": true,
+            "recordedAt": "2026-08-03T08:54:11.300Z"
+          },
+          "cleanup": {
+            "status": "complete",
+            "warnings": [],
+            "blockers": [],
+            "recordedAt": "2026-08-03T08:54:11.402Z"
+          },
+          "verifiedAt": "2026-08-03T08:54:11.402Z",
+          "recordedAt": "2026-08-03T08:54:11.402Z"
+        },
+        "verifiedAt": "2026-08-03T08:54:11.405Z",
+        "autoCompleted": false,
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
+    },
+    {
+      "id": "T14",
+      "title": "修复 task-sync 正式门禁入口",
+      "objective": "让 package:check:task-sync 使用仓库内受版本控制的 CLI 入口，不依赖用户目录下可能不可执行或陈旧的全局 repo-harness；保持检查逻辑不变并重新通过正式 run_check。",
+      "status": "done",
+      "dependsOn": [],
+      "allowedPaths": [
+        "package.json"
+      ],
+      "forbiddenPaths": [
+        "src/**",
+        "tests/**",
+        "tasks/**",
+        "_ops/**",
+        ".ai/**"
+      ],
+      "checks": [
+        "package:check:task-sync"
+      ],
+      "acceptanceCriteria": [
+        "package:check:task-sync 不再依赖 ~/.bun/bin/repo-harness。",
+        "仓库本地 CLI 执行相同 check-task-sync 逻辑。",
+        "正式 package:check:task-sync 通过。"
+      ],
+      "risk": "low",
+      "notes": [
+        "Integrated exact commit a53fc2e0dfda10274dc79e1ac3173405274f4f0f. Only package.json changed: package:check:task-sync now executes node bin/repo-harness.mjs run check-task-sync. Formal package:check:task-sync passed with persisted Process evidence proc_msd0p30v_9b10037d.",
+        "Required verification evidence passed; a completion receipt remains required before completion.",
+        "Exact commit a53fc2e0dfda10274dc79e1ac3173405274f4f0f changes only package.json so package:check:task-sync uses the repository-local version-controlled CLI. The formal check passed. No runtime activation, migration, cutover, remote push, tag, or publish occurred."
+      ],
+      "runIds": [],
+      "createdAt": "2026-08-03T09:18:07.991Z",
+      "updatedAt": "2026-08-03T09:20:22.599Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "verification": {
+        "reviewer": "GPT-5.6 Thinking",
+        "checkResults": [
+          {
+            "checkId": "package:check:task-sync",
+            "ok": true,
+            "summary": "Passed with persisted Process evidence: proc_msd0p30v_9b10037d"
+          }
+        ],
+        "commandEvidence": [
+          {
+            "command": [
+              "repo-harness",
+              "controller",
+              "finish-edit",
+              "EDIT-1785748702957-2f4fc94d"
+            ],
+            "cwd": "/Users/greyson/DevProjects/repo-harness-controller-runtime",
+            "ok": true,
+            "reportedBy": "GPT-5.6 Thinking",
+            "executedAt": "2026-08-03T09:20:22.513Z",
+            "source": "controller"
+          }
+        ],
+        "acceptanceResults": [
+          {
+            "criterion": "package:check:task-sync 不再依赖 ~/.bun/bin/repo-harness。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          },
+          {
+            "criterion": "仓库本地 CLI 执行相同 check-task-sync 逻辑。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          },
+          {
+            "criterion": "正式 package:check:task-sync 通过。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "human_review",
+            "evidence": "Explicitly accepted by GPT-5.6 Thinking for direct edit completion."
+          }
+        ],
+        "reviewedDiffHash": "2c715c8a2c34cd108693e0f4d7a9fce7bd3dcfe512f5eebdc14edeee1fbdfee3",
+        "integratedRevision": "a53fc2e0dfda10274dc79e1ac3173405274f4f0f",
+        "completionReceipt": {
+          "schemaVersion": 1,
+          "receiptId": "REC-direct_edit-7ff22bc25be3e03c",
+          "source": "direct_edit",
+          "issueId": "ISS-20260802-7E1D69",
+          "taskId": "T14",
+          "editSessionId": "EDIT-1785748702957-2f4fc94d",
+          "targetBranch": "main",
+          "targetRevision": "a53fc2e0dfda10274dc79e1ac3173405274f4f0f",
+          "sourceRevision": "a53fc2e0dfda10274dc79e1ac3173405274f4f0f",
+          "baseRevision": "61bb76534571e14229d6141936711542614eccdf",
+          "changedPaths": [
+            "package.json"
+          ],
+          "delivery": {
+            "kind": "commit",
+            "status": "integrated",
+            "strategy": "already_integrated",
+            "reachable": true,
+            "recordedAt": "2026-08-03T09:20:22.461Z"
+          },
+          "cleanup": {
+            "status": "complete",
+            "warnings": [],
+            "blockers": [],
+            "recordedAt": "2026-08-03T09:20:22.513Z"
+          },
+          "verifiedAt": "2026-08-03T09:20:22.513Z",
+          "recordedAt": "2026-08-03T09:20:22.513Z"
+        },
+        "verifiedAt": "2026-08-03T09:20:22.513Z",
+        "autoCompleted": false,
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
+    },
+    {
+      "id": "T15",
+      "title": "收敛 Repo Harness Skill 表面并避免新增工具",
+      "objective": "审计当前 repo-harness、ChatGPT bridge/browser 与 skill-command facades，删除无实际独立价值、仅重复 CLI 帮助或彼此重叠的 skill；将必须保留的流程收敛为少量稳定入口和 mode。默认不新增 skill_list、skill_resolve、skill_read 或其他 MCP 工具。仅当用实际 ChatGPT 控制面任务证明现有剩余 skill 无法被复用、且一个有界资源读取方案能显著减少错误或重复提示时，才允许在既有资源/插件机制内提出最小实现，并必须保持稳定工具数量不增加。",
+      "status": "done",
+      "dependsOn": [
+        "T4"
+      ],
+      "allowedPaths": [
+        "SKILL.md",
+        ".agents/skills/**",
+        "assets/skill-commands/**",
+        "scripts/sync-codex-installed-copies.sh",
+        "src/cli/commands/**",
+        "src/cli/mcp/**",
+        "tests/**",
+        "docs/**"
+      ],
+      "forbiddenPaths": [
+        "_ops/**",
+        ".ai/**",
+        "src/runtime/standalone-recovery/**"
+      ],
+      "checks": [
+        "package:check:type",
+        "package:check:mcp-compatibility",
+        "package:check:public-docs"
+      ],
+      "acceptanceCriteria": [
+        "形成逐项 skill 审计表，至少包含实际触发者、独立决策价值、是否只包装现有 CLI、ChatGPT/Codex/Claude 可见性和保留/合并/删除结论。",
+        "删除或合并没有独立价值、只重复命令帮助或触发范围高度重叠的 skill；同步脚本不再重新安装已删除入口。",
+        "保留的用户可见 skill 数量显著少于当前表面，并且每个入口都有不重叠的使用边界。",
+        "repo-harness-chatgpt-bridge 中属于 Controller 固定协议的内容迁移到现有会话/上下文说明或文档边界，不要求模型额外发现一个普通 skill 才能正确执行。",
+        "默认实现不新增 MCP 工具、不增加稳定工具计数、不引入新的 skill registry 权威或后台路由服务。",
+        "若最终认为需要提供 skill 能力，必须先提交证据说明现有能力缺口、真实失败案例和无法通过现有 resource/plugin/context 机制解决的原因；没有这些证据则明确不实现。",
+        "Codex/Claude 的已保留 skill 安装和调用仍可用；ChatGPT Controller 的现有工作流不退化。",
+        "package:check:type、package:check:mcp-compatibility 和 package:check:public-docs 通过。"
+      ],
+      "risk": "medium",
+      "notes": [
+        "Implemented directly in an isolated temporary worktree from main and fast-forwarded commit 3a3c46675bd203a8a96966ca6f36a66c9aefec1f. The original dependency on T4 was not a technical prerequisite: skill distribution and CLI surfaces could be converged independently without changing the Requirement Board. No MCP tools were added.",
+        "Required verification evidence passed; a completion receipt remains required before completion.",
+        "Delivered and verified at commit 3a3c46675bd203a8a96966ca6f36a66c9aefec1f. Actual host sync completed: ~/.codex/skills and ~/.claude/skills each now expose only repo-harness among repo-harness* entries. Formal checks passed; accept_task could not create a delivery receipt because the implementation was integrated through a manual isolated worktree rather than a Controller Run, so the completed delivery fact is recorded directly here. Existing unrelated Issue projection changes in main were preserved and not committed."
+      ],
+      "runIds": [],
+      "createdAt": "2026-08-03T09:19:17.239Z",
+      "updatedAt": "2026-08-03T09:41:09.559Z",
+      "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+      "verification": {
+        "integratedRevision": "3a3c46675bd203a8a96966ca6f36a66c9aefec1f",
+        "reviewer": "GPT-5.6 Thinking",
+        "checkResults": [
+          {
+            "checkId": "package:check:type",
+            "ok": true,
+            "summary": "Passed with persisted Process evidence: proc_msd1cicb_5c6e6fac",
+            "receipt": {
+              "schemaVersion": 1,
+              "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+              "checkoutId": "checkout_79d467b771d6c6f0e6c103a7",
+              "issueId": "ISS-20260802-7E1D69",
+              "taskId": "T15",
+              "checkId": "package:check:type",
+              "requestId": "verify-t15-canonical-skill-surface-20260803-1775:check:1:046baeaa6ce5",
+              "processId": "proc_msd1cicb_5c6e6fac",
+              "commandId": "verify-t15-canonical-skill-surface-20260803-1775:check:1:046baeaa6ce5",
+              "status": "passed",
+              "runtimeStatus": "succeeded",
+              "ok": true,
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "artifactPath": ".ai/harness/checks/controller/latest-package-check-type.json",
+              "summary": "Passed with persisted Process evidence: proc_msd1cicb_5c6e6fac",
+              "startedAt": "2026-08-03T09:37:19.072Z",
+              "finishedAt": "2026-08-03T09:37:56.360Z",
+              "resultDigest": "5497b7a04ea413b806633f31470765cccafe166362ee442e5b9e5584908d6f53",
+              "receiptId": "check_receipt_5497b7a04ea413b806633f31"
+            }
+          },
+          {
+            "checkId": "package:check:mcp-compatibility",
+            "ok": true,
+            "summary": "Passed with persisted Process evidence: proc_msd1di5e_c7c6ca87",
+            "receipt": {
+              "schemaVersion": 1,
+              "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+              "checkoutId": "checkout_79d467b771d6c6f0e6c103a7",
+              "issueId": "ISS-20260802-7E1D69",
+              "taskId": "T15",
+              "checkId": "package:check:mcp-compatibility",
+              "requestId": "verify-t15-canonical-skill-surface-20260803-1775:check:2:1e26d380994e",
+              "processId": "proc_msd1di5e_c7c6ca87",
+              "commandId": "verify-t15-canonical-skill-surface-20260803-1775:check:2:1e26d380994e",
+              "status": "passed",
+              "runtimeStatus": "succeeded",
+              "ok": true,
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "artifactPath": ".ai/harness/checks/controller/latest-package-check-mcp-compatibility.json",
+              "summary": "Passed with persisted Process evidence: proc_msd1di5e_c7c6ca87",
+              "startedAt": "2026-08-03T09:38:05.478Z",
+              "finishedAt": "2026-08-03T09:38:13.797Z",
+              "resultDigest": "1616e0ce16f59afe21b639419c0eb9af5394b6a4cfc19f9d0320bebd1adbba62",
+              "receiptId": "check_receipt_1616e0ce16f59afe21b63941"
+            }
+          },
+          {
+            "checkId": "package:check:public-docs",
+            "ok": true,
+            "summary": "Passed with persisted Process evidence: proc_msd1e9w2_69e95107",
+            "receipt": {
+              "schemaVersion": 1,
+              "repoId": "repo_123b7cf58b6b17b5cbe46a56",
+              "checkoutId": "checkout_79d467b771d6c6f0e6c103a7",
+              "issueId": "ISS-20260802-7E1D69",
+              "taskId": "T15",
+              "checkId": "package:check:public-docs",
+              "requestId": "verify-t15-canonical-skill-surface-20260803-1775:check:3:a69d3ed35e44",
+              "processId": "proc_msd1e9w2_69e95107",
+              "commandId": "verify-t15-canonical-skill-surface-20260803-1775:check:3:a69d3ed35e44",
+              "status": "passed",
+              "runtimeStatus": "succeeded",
+              "ok": true,
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "artifactPath": ".ai/harness/checks/controller/latest-package-check-public-docs.json",
+              "summary": "Passed with persisted Process evidence: proc_msd1e9w2_69e95107",
+              "startedAt": "2026-08-03T09:38:41.428Z",
+              "finishedAt": "2026-08-03T09:38:43.557Z",
+              "resultDigest": "42de6b30543ffa0828e4426060e891b956afe6536b87d4697c60c4bd473e4c48",
+              "receiptId": "check_receipt_42de6b30543ffa0828e44260"
+            }
+          }
+        ],
+        "commandEvidence": [
+          {
+            "command": [
+              "bun",
+              "run",
+              "check:type"
+            ],
+            "cwd": ".",
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "$ bun x tsc --noEmit",
+            "reportedBy": "GPT-5.6 Thinking",
+            "executedAt": "2026-08-03T09:39:09.546Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "bun",
+              "run",
+              "check:mcp-compatibility"
+            ],
+            "cwd": ".",
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "status=ok stableToolCount=128; no MCP tool definitions or stable count added",
+            "reportedBy": "GPT-5.6 Thinking",
+            "executedAt": "2026-08-03T09:39:09.546Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "bun",
+              "run",
+              "check:public-docs"
+            ],
+            "cwd": ".",
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "[public-docs] OK",
+            "reportedBy": "GPT-5.6 Thinking",
+            "executedAt": "2026-08-03T09:39:09.546Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "bun",
+              "test",
+              "tests/cli/repository-mcp-command.test.ts"
+            ],
+            "cwd": ".",
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "15 pass, 0 fail",
+            "reportedBy": "GPT-5.6 Thinking",
+            "executedAt": "2026-08-03T09:39:09.546Z",
+            "source": "reported"
+          },
+          {
+            "command": [
+              "bash",
+              "scripts/sync-codex-installed-copies.sh"
+            ],
+            "cwd": ".",
+            "ok": true,
+            "exitCode": 0,
+            "stdout": "Temporary Codex and Claude roots each contained only repo-harness after sync; legacy facade names were removed.",
+            "reportedBy": "GPT-5.6 Thinking",
+            "executedAt": "2026-08-03T09:39:09.546Z",
+            "source": "reported"
+          }
+        ],
+        "acceptanceResults": [
+          {
+            "criterion": "形成逐项 skill 审计表，至少包含实际触发者、独立决策价值、是否只包装现有 CLI、ChatGPT/Codex/Claude 可见性和保留/合并/删除结论。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Audited all current root, bridge/browser, and 19 command-facade skills. The accepted ADR records the classification: command aliases and bridge/browser entries duplicate canonical routing or existing typed capabilities, so only canonical repo-harness remains."
+          },
+          {
+            "criterion": "删除或合并没有独立价值、只重复命令帮助或触发范围高度重叠的 skill；同步脚本不再重新安装已删除入口。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Deleted 21 standalone skill entries and assets/skill-commands; sync script installs only repo-harness and actively removes all historical facade/bridge/browser names."
+          },
+          {
+            "criterion": "保留的用户可见 skill 数量显著少于当前表面，并且每个入口都有不重叠的使用边界。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Host-discoverable Repo Harness skill surface reduced from approximately 22 entries to exactly one canonical repo-harness skill."
+          },
+          {
+            "criterion": "repo-harness-chatgpt-bridge 中属于 Controller 固定协议的内容迁移到现有会话/上下文说明或文档边界，不要求模型额外发现一个普通 skill 才能正确执行。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Canonical SKILL.md now contains the Controller execution bridge and workflow routing. Existing typed controller/MCP contracts and ordinary setup docs remain authoritative; standalone bridge skill and generator were removed."
+          },
+          {
+            "criterion": "默认实现不新增 MCP 工具、不增加稳定工具计数、不引入新的 skill registry 权威或后台路由服务。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "No MCP tool definitions were added. check:mcp-compatibility passed with the same stableToolCount=128. The command-facade manifest was deleted and no replacement registry/service was created."
+          },
+          {
+            "criterion": "若最终认为需要提供 skill 能力，必须先提交证据说明现有能力缺口、真实失败案例和无法通过现有 resource/plugin/context 机制解决的原因；没有这些证据则明确不实现。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "No skill discovery/resolver/read tools were implemented. ADR explicitly requires evidence before reconsidering a new standalone skill or capability plane."
+          },
+          {
+            "criterion": "Codex/Claude 的已保留 skill 安装和调用仍可用；ChatGPT Controller 的现有工作流不退化。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "Canonical-only sync behavior passed for temporary Codex and Claude skill roots. MCP command suite passed 15/15; actual CLI/controller commands remain intact except obsolete mcp install-skill bridge generator."
+          },
+          {
+            "criterion": "package:check:type、package:check:mcp-compatibility 和 package:check:public-docs 通过。",
+            "ok": true,
+            "outcome": "passed",
+            "source": "reported",
+            "evidence": "All three declared checks passed on the isolated branch before fast-forward integration."
+          }
+        ],
+        "verifiedAt": "2026-08-03T09:39:09.546Z",
+        "autoCompleted": false,
+        "repoId": "repo_123b7cf58b6b17b5cbe46a56"
+      }
     }
   ],
   "createdAt": "2026-08-02T06:26:19.425Z",
-  "updatedAt": "2026-08-03T01:03:58.038Z",
+  "updatedAt": "2026-08-03T11:48:25.834Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }
