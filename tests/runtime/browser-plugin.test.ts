@@ -17,6 +17,11 @@ import {
   shouldUseBrowserNodeBridge,
 } from '../../src/runtime/plugins/browser-node-bridge';
 import { listBrowserHandoffs, resetBrowserHandoffRuntimeHooksForTest, setBrowserHandoffRuntimeHooksForTest } from '../../src/runtime/plugins/browser-handoff';
+import {
+  discoverMacOsBrowserAttachment,
+  resetMacOsBrowserRuntimeHooksForTest,
+  setMacOsBrowserRuntimeHooksForTest,
+} from '../../src/runtime/plugins/browser-macos-bridge';
 import { interactionCommandPath, patchInteractionSession } from '../../src/runtime/plugins/interaction-session';
 import {
   clearAssistantPluginManifestCacheForTest,
@@ -29,6 +34,7 @@ const roots: string[] = [];
 afterEach(() => {
   resetBrowserPluginRuntimeHooksForTest();
   resetBrowserHandoffRuntimeHooksForTest();
+  resetMacOsBrowserRuntimeHooksForTest();
   clearAssistantPluginManifestCacheForTest();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   delete process.env.REPO_HARNESS_CONTROLLER_HOME;
@@ -481,6 +487,7 @@ describe('browser plugin', () => {
       browserMode: 'attach_preferred',
       cdpEndpoint: 'ws://127.0.0.1:9222/devtools/browser/stale',
       cdpAttachFallback: 'managed_persistent',
+      nativeAttachMode: 'disabled',
       allowedDomains: ['example.com'],
     });
     const runtime = mockAttachPlaywright([], { connectError: 'ECONNREFUSED 127.0.0.1:9222' }) as unknown as {
@@ -568,6 +575,93 @@ describe('browser plugin', () => {
     });
   });
 
+  test('macOS active-browser discovery prefers the frontmost Chrome or Vivaldi window', async () => {
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async (script) => script.includes('Google Chrome')
+        ? `true\x1ehttps://example.com/chrome\x1eChrome\x1e10\x1e20\x1e1210\x1e820`
+        : `false\x1ehttps://example.com/vivaldi\x1eVivaldi\x1e30\x1e40\x1e1230\x1e840`,
+    });
+
+    const discovered = await discoverMacOsBrowserAttachment(['vivaldi', 'chrome']);
+
+    expect(discovered.attachment?.metadata).toMatchObject({
+      product: 'chrome',
+      appName: 'Google Chrome',
+      frontmost: true,
+      url: 'https://example.com/chrome',
+    });
+    expect(discovered.attempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ product: 'vivaldi', status: 'available' }),
+      expect.objectContaining({ product: 'chrome', status: 'selected' }),
+    ]));
+    expect(discovered.attempts.every((attempt) => !('url' in attempt))).toBe(true);
+  });
+
+  test('attach_preferred uses the signed-in Vivaldi active tab after CDP fails', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpEndpoint: 'ws://127.0.0.1:9222/devtools/browser/stale',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['vivaldi', 'chrome'],
+      allowedDomains: ['example.com'],
+    });
+    const runtime = mockAttachPlaywright([], { connectError: 'ECONNREFUSED 127.0.0.1:9222' }) as unknown as {
+      events: {
+        connects: string[];
+        launches: Array<{ userDataDir: string; options: Record<string, unknown> }>;
+      };
+    };
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      loadPlaywright: () => runtime as never,
+    });
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async (script) => script.includes('Vivaldi')
+        ? `true\x1ehttps://example.com/\x1eSigned-in Vivaldi\x1e0\x1e25\x1e1280\x1e925`
+        : `false\x1ehttps://example.com/chrome\x1eChrome\x1e0\x1e25\x1e1280\x1e925`,
+      captureRegion: async (_region, path) => {
+        writeFileSync(path, 'png');
+        return Buffer.from('png');
+      },
+    });
+
+    const result = await executeBrowserPluginAction({
+      controllerHome: repoRoot,
+      repoId: 'repo',
+      repoRoot,
+      pluginId: 'browser',
+      actionId: 'open_page',
+      requestId: 'browser-attach-vivaldi-native',
+      args: { url: 'https://example.com/' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+
+    expect(runtime.events.connects).toEqual(['ws://127.0.0.1:9222/devtools/browser/stale']);
+    expect(runtime.events.launches).toHaveLength(0);
+    expect(result.browserConnection).toMatchObject({
+      requestedMode: 'attach_preferred',
+      mode: 'attach_preferred',
+      provider: 'macos-apple-events',
+      attached: true,
+      browserProduct: 'vivaldi',
+    });
+    expect(result.session).toMatchObject({
+      url: 'https://example.com/',
+      title: 'Signed-in Vivaldi',
+    });
+  });
+
   test('attach_preferred fail_closed reports stale CDP endpoint diagnostics', async () => {
     const { repoRoot } = repoFixture();
     writeBrowserConfig(repoRoot, {
@@ -577,6 +671,7 @@ describe('browser plugin', () => {
       browserMode: 'attach_preferred',
       cdpEndpoint: 'ws://127.0.0.1:9222/devtools/browser/stale',
       cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'disabled',
       allowedDomains: ['example.com'],
     });
     const runtime = mockAttachPlaywright([], { connectError: 'ECONNREFUSED 127.0.0.1:9222' }) as unknown as {
@@ -605,8 +700,8 @@ describe('browser plugin', () => {
     }
 
     expect(error).toBeInstanceOf(AssistantPluginError);
-    expect((error as AssistantPluginError).code).toBe('PLUGIN_BROWSER_CDP_UNAVAILABLE');
-    expect((error as Error).message).toContain('No configured browser CDP endpoint was attachable');
+    expect((error as AssistantPluginError).code).toBe('PLUGIN_BROWSER_ATTACH_UNAVAILABLE');
+    expect((error as Error).message).toContain('No configured browser attach provider was available');
     expect((error as AssistantPluginError).details).toMatchObject({
       browserMode: 'attach_preferred',
       fallbackPolicy: 'fail_closed',

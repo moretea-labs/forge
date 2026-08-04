@@ -80,7 +80,7 @@ export function resolveBrowserBridgeNodeExecutable(env: NodeJS.ProcessEnv = proc
     const absolute = isAbsolute(candidate) ? candidate : resolve(candidate);
     if (isExecutable(absolute)) return absolute;
   }
-  throw new AssistantPluginError('PLUGIN_BROWSER_NODE_UNAVAILABLE', 'Browser CDP attach requires a trusted Node executable, but none was found.', {
+  throw new AssistantPluginError('PLUGIN_BROWSER_NODE_UNAVAILABLE', 'Browser attach operations require a trusted Node executable, but none was found.', {
     retryable: false,
   });
 }

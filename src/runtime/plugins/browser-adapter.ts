@@ -13,6 +13,13 @@ import type {
 import { AssistantPluginError, toAssistantPluginError } from './errors';
 import { executeBrowserActionThroughNode, shouldUseBrowserNodeBridge } from './browser-node-bridge';
 import {
+  createMacOsBrowserPage,
+  discoverMacOsBrowserAttachment,
+  macOsActiveBrowserAttachSupported,
+  type MacOsBrowserAttachAttempt,
+  type MacOsBrowserProduct,
+} from './browser-macos-bridge';
+import {
   assertBrowserProfileAvailable,
   assertBrowserSessionAvailable,
   cancelBrowserHandoff,
@@ -38,6 +45,7 @@ type BrowserMode = 'attach_preferred' | 'managed_persistent' | 'isolated';
 type BrowserProfileMode = 'repo_local' | 'custom';
 type BrowserChannel = 'chromium' | 'chrome' | 'chrome-beta' | 'chrome-dev' | 'chrome-canary';
 type BrowserCdpAttachFallback = 'managed_persistent' | 'fail_closed';
+type BrowserNativeAttachMode = 'auto' | 'disabled';
 
 interface BrowserPluginConfig {
   schemaVersion: 1;
@@ -53,6 +61,8 @@ interface BrowserPluginConfig {
   cdpEndpointCandidates?: string[];
   cdpDiscoveryTimeoutMs?: number;
   cdpAttachFallback?: BrowserCdpAttachFallback;
+  nativeAttachMode?: BrowserNativeAttachMode;
+  nativeBrowserCandidates?: MacOsBrowserProduct[];
   defaultTimeoutMs?: number;
   allowedDomains?: string[];
 }
@@ -70,9 +80,10 @@ interface BrowserTabResumeState {
 interface BrowserSessionConnectionState {
   mode: BrowserMode;
   activeMode: BrowserMode;
-  provider: 'playwright-cdp' | 'playwright-persistent-context';
+  provider: 'playwright-cdp' | 'playwright-persistent-context' | 'macos-apple-events';
   endpoint?: string;
   browserVersion?: string;
+  browserProduct?: MacOsBrowserProduct;
   fallback?: BrowserConnectionFallback;
   tab?: BrowserTabResumeState;
   sessionResume?: BrowserSessionResumeDiagnostic;
@@ -247,6 +258,18 @@ function browserCdpAttachFallback(value: unknown): BrowserCdpAttachFallback | un
   return value === 'managed_persistent' || value === 'fail_closed' ? value : undefined;
 }
 
+function browserNativeAttachMode(value: unknown): BrowserNativeAttachMode | undefined {
+  return value === 'auto' || value === 'disabled' ? value : undefined;
+}
+
+function browserProductList(value: unknown): MacOsBrowserProduct[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const normalized = value
+    .map((entry) => String(entry).trim().toLowerCase())
+    .filter((entry): entry is MacOsBrowserProduct => entry === 'chrome' || entry === 'vivaldi');
+  return normalized.length > 0 ? Array.from(new Set(normalized)) : undefined;
+}
+
 function stringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const normalized = value
@@ -326,6 +349,8 @@ function normalizeConfig(raw: Partial<BrowserPluginConfig>): BrowserPluginConfig
       ? Math.min(positiveNumber(raw.cdpDiscoveryTimeoutMs, DEFAULT_CDP_DISCOVERY_TIMEOUT_MS), MAX_CDP_DISCOVERY_TIMEOUT_MS)
       : undefined,
     cdpAttachFallback: browserCdpAttachFallback(raw.cdpAttachFallback) ?? 'managed_persistent',
+    nativeAttachMode: browserNativeAttachMode(raw.nativeAttachMode) ?? 'auto',
+    nativeBrowserCandidates: browserProductList(raw.nativeBrowserCandidates) ?? ['vivaldi', 'chrome'],
     defaultTimeoutMs: typeof raw.defaultTimeoutMs === 'number' ? positiveNumber(raw.defaultTimeoutMs, DEFAULT_TIMEOUT_MS) : undefined,
     allowedDomains: stringArray(raw.allowedDomains),
   };
@@ -447,6 +472,20 @@ function parseCdpAttachFallbackInput(value: unknown): BrowserCdpAttachFallback |
   throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'cdp_attach_fallback must be managed_persistent or fail_closed.', { retryable: false });
 }
 
+function parseNativeAttachModeInput(value: unknown): BrowserNativeAttachMode | undefined {
+  if (value === undefined) return undefined;
+  const parsed = browserNativeAttachMode(value);
+  if (parsed) return parsed;
+  throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'native_attach_mode must be auto or disabled.', { retryable: false });
+}
+
+function parseNativeBrowserCandidatesInput(value: unknown): MacOsBrowserProduct[] | undefined {
+  if (value === undefined) return undefined;
+  const parsed = browserProductList(value);
+  if (parsed) return parsed;
+  throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'native_browser_candidates must contain chrome and/or vivaldi.', { retryable: false });
+}
+
 function cdpEndpoints(config: BrowserPluginConfig): string[] {
   return Array.from(new Set([
     ...(config.cdpEndpoint ? [config.cdpEndpoint] : []),
@@ -496,8 +535,11 @@ function validateConfig(config: BrowserPluginConfig): string[] {
     const error = cdpEndpointValidationError(endpoint);
     if (error) errors.push(error);
   }
-  if (config.browserMode === 'attach_preferred' && endpoints.length === 0 && config.cdpAttachFallback === 'fail_closed') {
-    errors.push('cdpEndpoint or cdpEndpointCandidates is required when browserMode=attach_preferred and cdpAttachFallback=fail_closed.');
+  if (config.browserMode === 'attach_preferred'
+    && endpoints.length === 0
+    && config.cdpAttachFallback === 'fail_closed'
+    && config.nativeAttachMode === 'disabled') {
+    errors.push('A CDP endpoint or nativeAttachMode=auto is required when browserMode=attach_preferred and cdpAttachFallback=fail_closed.');
   }
   return errors;
 }
@@ -508,13 +550,17 @@ function configWarnings(config: BrowserPluginConfig): string[] {
     warnings.push('allowedDomains is empty; browser actions can target any domain.');
   }
   if (config.profileMode === 'custom') {
-    warnings.push('Custom profile mode uses the configured browser profile directly. If the browser reports the profile is in use, fully close the matching Chrome/Chromium instance first.');
+    warnings.push('Custom profile mode uses the configured browser profile directly. If the browser reports the profile is in use, fully close the matching browser instance first.');
     if (!config.executablePath && (config.browserChannel ?? 'chromium') === 'chromium') {
       warnings.push('Custom profile mode is more reliable with an explicit Chrome channel or executable path that matches the selected profile format.');
     }
   }
   if (config.browserMode === 'attach_preferred' && cdpEndpoints(config).length === 0) {
-    warnings.push('browserMode=attach_preferred has no configured CDP endpoint; actions will use the configured fallback policy.');
+    if (config.nativeAttachMode === 'auto' && macOsActiveBrowserAttachSupported()) {
+      warnings.push('browserMode=attach_preferred has no configured CDP endpoint; macOS active-browser attach will be attempted before managed fallback.');
+    } else {
+      warnings.push('browserMode=attach_preferred has no configured CDP endpoint; actions will use the configured fallback policy.');
+    }
   }
   if (config.browserMode === 'isolated') {
     warnings.push('browserMode=isolated uses a per-session repo-local profile and will not share the default browser profile.');
@@ -691,6 +737,7 @@ interface BrowserConnectionFallback {
   to: 'managed_persistent';
   reason: string;
   attempts: CdpAttachAttempt[];
+  nativeAttempts?: MacOsBrowserAttachAttempt[];
 }
 
 interface CdpAttachAttempt {
@@ -704,10 +751,11 @@ interface CdpAttachAttempt {
 interface BrowserConnectionSummary {
   requestedMode: BrowserMode;
   mode: BrowserMode;
-  provider: 'playwright-cdp' | 'playwright-persistent-context';
+  provider: 'playwright-cdp' | 'playwright-persistent-context' | 'macos-apple-events';
   attached: boolean;
   endpoint?: string;
   browserVersion?: string;
+  browserProduct?: MacOsBrowserProduct;
   fallback?: BrowserConnectionFallback;
   profile: {
     profileMode?: BrowserProfileMode;
@@ -920,6 +968,7 @@ function sessionConnectionFromSummary(connection: BrowserConnectionSummary): Bro
     provider: connection.provider,
     endpoint: connection.endpoint,
     browserVersion: connection.browserVersion,
+    browserProduct: connection.browserProduct,
     fallback: connection.fallback,
     tab: connection.tab,
     sessionResume: connection.sessionResume,
@@ -1106,6 +1155,75 @@ async function openAttachedContext(
   return { attempts };
 }
 
+async function openNativeAttachedContext(
+  repoRoot: string,
+  config: BrowserPluginConfig,
+  target: BrowserActionTarget,
+  args: Record<string, unknown>,
+): Promise<{ handle?: BrowserOpenHandle; attempts: MacOsBrowserAttachAttempt[] }> {
+  if (config.nativeAttachMode === 'disabled') return { attempts: [] };
+  const timeout = positiveNumber(args.timeout_ms, config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const discovered = await discoverMacOsBrowserAttachment(
+    config.nativeBrowserCandidates ?? ['vivaldi', 'chrome'],
+    Math.min(timeout, MAX_CDP_DISCOVERY_TIMEOUT_MS),
+  );
+  if (!discovered.attachment) return { attempts: discovered.attempts };
+
+  const page = createMacOsBrowserPage(discovered.attachment, timeout) as unknown as PageLike;
+  const initialUrl = page.url();
+  if (!isRemoteHttpUrl(initialUrl) || comparableUrl(initialUrl) !== comparableUrl(target.url)) {
+    await page.goto(target.url, { waitUntil: waitUntil(args.wait_until), timeout });
+  }
+  const title = await page.title();
+  const pageUrl = normalizedUrl(page.url());
+  assertUrlAllowed(pageUrl, config);
+  const inventory: BrowserTabInventoryEntry[] = [{ index: 0, key: tabKey(pageUrl, title), url: pageUrl, title }];
+  const savedTab = target.existingSession?.browser?.tab;
+  const sessionResume: BrowserSessionResumeDiagnostic = savedTab
+    ? {
+        sessionId: target.sessionId,
+        status: comparableUrl(savedTab.url) === comparableUrl(pageUrl) ? 'matched' : 'stale_tab',
+        reason: comparableUrl(savedTab.url) === comparableUrl(pageUrl)
+          ? 'Saved tab URL matched the active macOS browser tab.'
+          : 'The saved tab was unavailable; the active macOS browser tab was reused.',
+        savedTab,
+      }
+    : {
+        sessionId: target.sessionId,
+        status: 'no_saved_tab',
+        reason: 'No saved tab metadata was available; the active macOS browser tab was reused.',
+      };
+  const metadata = discovered.attachment.metadata;
+  const connection = refreshConnectionTab({
+    requestedMode: 'attach_preferred',
+    mode: 'attach_preferred',
+    provider: 'macos-apple-events',
+    attached: true,
+    browserProduct: metadata.product,
+    profile: {
+      profileMode: config.profileMode,
+      profileDirectory: config.profileDirectory,
+      selectedProfilePath: `macos:${metadata.product}:active-profile`,
+    },
+    tabInventory: inventory,
+    sessionResume,
+  }, pageUrl, title, 'exact_url');
+  const diagnostics: PageDiagnostics = {
+    consoleErrors: [],
+    failedRequests: [],
+    navigation: { url: pageUrl },
+  };
+  return {
+    attempts: discovered.attempts,
+    handle: {
+      page,
+      diagnostics,
+      connection,
+      close: async () => undefined,
+    },
+  };
+}
+
 async function openBrowser(
   repoRoot: string,
   config: BrowserPluginConfig,
@@ -1117,15 +1235,24 @@ async function openBrowser(
   if (requestedMode === 'attach_preferred') {
     const attached = await openAttachedContext(runtime, repoRoot, config, target, args);
     if (attached.handle) return attached.handle;
+
+    const native = await openNativeAttachedContext(repoRoot, config, target, args);
+    if (native.handle) return native.handle;
+
     const fallbackPolicy = config.cdpAttachFallback ?? 'managed_persistent';
-    const reason = attached.attempts.map((attempt) => `${attempt.endpoint}: ${attempt.error ?? 'unavailable'}`).join('; ') || 'No CDP endpoint candidates were configured.';
+    const cdpReason = attached.attempts.map((attempt) => `${attempt.endpoint}: ${attempt.error ?? 'unavailable'}`).join('; ')
+      || 'No CDP endpoint candidates were configured.';
+    const nativeReason = native.attempts.map((attempt) => `${attempt.appName}: ${attempt.error ?? attempt.status}`).join('; ')
+      || (config.nativeAttachMode === 'disabled' ? 'Native browser attach is disabled.' : 'No scriptable macOS browser was available.');
+    const reason = `CDP: ${cdpReason} Native: ${nativeReason}`;
     if (fallbackPolicy === 'fail_closed') {
-      throw new AssistantPluginError('PLUGIN_BROWSER_CDP_UNAVAILABLE', `No configured browser CDP endpoint was attachable. Fallback policy fail_closed prevented managed launch. ${reason}`, {
+      throw new AssistantPluginError('PLUGIN_BROWSER_ATTACH_UNAVAILABLE', `No configured browser attach provider was available. Fallback policy fail_closed prevented managed launch. ${reason}`, {
         retryable: true,
         details: {
           browserMode: requestedMode,
           fallbackPolicy,
           attempts: attached.attempts,
+          nativeAttempts: native.attempts,
         },
       });
     }
@@ -1135,6 +1262,7 @@ async function openBrowser(
       to: 'managed_persistent',
       reason,
       attempts: attached.attempts,
+      nativeAttempts: native.attempts,
     });
   }
 
@@ -1260,9 +1388,9 @@ async function finalizeInteractiveAction(
   extra: Record<string, unknown> = {},
 ): Promise<Record<string, unknown>> {
   const warnings: string[] = [];
+  const title = await page.title();
   const pageUrl = normalizedUrl(page.url());
   assertUrlAllowed(pageUrl, config);
-  const title = await page.title();
   const session = sessionFromPage(target, pageUrl, title, connection);
   saveSession(repoRoot, session);
   let screenshot: BrowserActionScreenshot | undefined;
@@ -1414,6 +1542,8 @@ function actions(): AssistantPluginActionDescriptor[] {
           clear_cdp_endpoint_candidates: { type: 'boolean' },
           cdp_discovery_timeout_ms: { type: 'number' },
           cdp_attach_fallback: { type: 'string', enum: ['managed_persistent', 'fail_closed'] },
+          native_attach_mode: { type: 'string', enum: ['auto', 'disabled'] },
+          native_browser_candidates: { type: 'array', items: { type: 'string', enum: ['vivaldi', 'chrome'] }, maxItems: 2 },
           default_timeout_ms: { type: 'number' },
           allowed_domains: { type: 'array', items: { type: 'string' } },
           clear_allowed_domains: { type: 'boolean' },
@@ -1778,6 +1908,9 @@ function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPlugin
     cdpEndpointCount: cdpEndpoints(config).length,
     cdpAttachFallback: config.cdpAttachFallback,
     cdpDiscoveryTimeoutMs: cdpDiscoveryTimeout(config),
+    nativeAttachMode: config.nativeAttachMode,
+    nativeBrowserCandidates: config.nativeBrowserCandidates,
+    nativeAttachSupported: macOsActiveBrowserAttachSupported(),
     windowMode: 'visible' as const,
     sessionCount,
     activeHandoffCount,
@@ -1822,7 +1955,7 @@ function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPlugin
       details: {
         ...baseDetails,
         provider: config.browserMode === 'attach_preferred'
-          ? 'playwright-cdp-attach-or-persistent-context'
+          ? 'cdp-or-macos-active-browser-or-persistent-context'
           : 'playwright-persistent-context',
         userFacingStatus: 'not ready',
       },
@@ -1839,7 +1972,7 @@ function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPlugin
       ...baseDetails,
       allowedDomains: config.allowedDomains,
       provider: config.browserMode === 'attach_preferred'
-        ? 'playwright-cdp-attach-or-persistent-context'
+        ? 'cdp-or-macos-active-browser-or-persistent-context'
         : 'playwright-persistent-context',
       userFacingStatus: browserUserFacingStatus(config, true, sessionCount),
     },
@@ -1857,7 +1990,7 @@ export function buildBrowserPluginManifest(previousRevision = 0, previousUpdated
     pluginId: BROWSER_PLUGIN_ID,
     provider: 'local-browser',
     displayName: 'Controller Browser Plugin',
-    pluginVersion: '1.0.0',
+    pluginVersion: '1.1.0',
     authority: {
       strategy: 'derived',
       duplicateStateAllowed: false,
@@ -1869,7 +2002,7 @@ export function buildBrowserPluginManifest(previousRevision = 0, previousUpdated
       reason: !config.enabled
         ? 'Browser plugin is disabled.'
         : state.ready
-          ? `Browser plugin is ready via ${config.browserMode === 'attach_preferred' ? 'Playwright CDP attach with explicit fallback.' : 'Playwright persistent context.'}`
+          ? `Browser plugin is ready via ${config.browserMode === 'attach_preferred' ? 'CDP, macOS active-browser attach, and explicit managed fallback.' : 'Playwright persistent context.'}`
           : state.errors[0],
     },
     health: state,
@@ -1912,6 +2045,8 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           ? undefined
           : stringList(args.cdp_endpoint_candidates) ?? current.cdpEndpointCandidates;
         const nextCdpAttachFallback = parseCdpAttachFallbackInput(args.cdp_attach_fallback) ?? current.cdpAttachFallback;
+        const nextNativeAttachMode = parseNativeAttachModeInput(args.native_attach_mode) ?? current.nativeAttachMode;
+        const nextNativeBrowserCandidates = parseNativeBrowserCandidatesInput(args.native_browser_candidates) ?? current.nativeBrowserCandidates;
         const config = saveConfig(input.repoRoot, {
           enabled: typeof args.enabled === 'boolean' ? args.enabled : current.enabled,
           browserMode: nextBrowserMode,
@@ -1926,6 +2061,8 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             ? Math.min(positiveNumber(args.cdp_discovery_timeout_ms, DEFAULT_CDP_DISCOVERY_TIMEOUT_MS), MAX_CDP_DISCOVERY_TIMEOUT_MS)
             : current.cdpDiscoveryTimeoutMs,
           cdpAttachFallback: nextCdpAttachFallback,
+          nativeAttachMode: nextNativeAttachMode,
+          nativeBrowserCandidates: nextNativeBrowserCandidates,
           defaultTimeoutMs: typeof args.default_timeout_ms === 'number'
             ? positiveNumber(args.default_timeout_ms, DEFAULT_TIMEOUT_MS)
             : current.defaultTimeoutMs,
@@ -2311,6 +2448,9 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           throw new AssistantPluginError('PLUGIN_POLICY_BLOCKED', 'Executable file attachments are not allowed.', { retryable: false });
         }
         return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+          if (connection.provider === 'macos-apple-events') {
+            throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_ACTION_UNSUPPORTED', 'Native Apple Events attachment does not support local file input. Use CDP or a managed browser context.', { retryable: false });
+          }
           await page.evaluate((payload) => {
             const args = payload as { selector: string; path: string };
             const el = document.querySelector(args.selector) as HTMLInputElement | null;
@@ -2337,6 +2477,9 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         const safeName = suggested.replace(/[^a-zA-Z0-9._-]+/g, '_');
         const dest = join(downloadDir, safeName);
         return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+          if (connection.provider === 'macos-apple-events') {
+            throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_ACTION_UNSUPPORTED', 'Native Apple Events attachment does not support download capture. Use CDP or a managed browser context.', { retryable: false });
+          }
           await page.click(selector, { timeout: positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS) });
           // Best-effort artifact placeholder when Playwright download events are unavailable in mocks.
           if (!existsSync(dest)) writeFileSync(dest, '');
