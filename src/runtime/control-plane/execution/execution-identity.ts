@@ -46,6 +46,26 @@ export interface GuardedExecutionIdentity extends ResolvedExecutionIdentity {
   readonly currentHead?: string;
 }
 
+export type GitCommonDirectoryDriftKind =
+  | 'missing_actual_common_dir'
+  | 'missing_registered_checkout_common_dir'
+  | 'missing_repository_common_dir'
+  | 'registered_checkout_common_dir_drift'
+  | 'repository_common_dir_drift';
+
+export interface GitCommonDirectoryDriftEvidence {
+  readonly kind: GitCommonDirectoryDriftKind;
+  readonly repoId: string;
+  readonly checkoutId: string;
+  readonly actualCommonDirectory?: string;
+  readonly registeredCheckoutCommonDirectory?: string;
+  readonly repositoryCommonDirectory?: string;
+  readonly registeredRoot: string;
+  readonly identityRoot: string;
+  readonly resolvedCwd: string;
+  readonly safeAutomaticRepair: boolean;
+}
+
 export class ExecutionIdentityError extends Error {
   readonly code: ExecutionIdentityErrorCode;
   readonly details: Record<string, string | undefined>;
@@ -110,6 +130,29 @@ function gitPath(root: string, args: string[]): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+export function classifyGitCommonDirectoryDrift(input: {
+  repoId: string;
+  checkoutId: string;
+  actualCommonDirectory?: string;
+  registeredCheckoutCommonDirectory?: string;
+  repositoryCommonDirectory?: string;
+  registeredRoot: string;
+  identityRoot: string;
+  resolvedCwd: string;
+}): GitCommonDirectoryDriftEvidence | undefined {
+  const { actualCommonDirectory, registeredCheckoutCommonDirectory, repositoryCommonDirectory } = input;
+  if (!actualCommonDirectory) return { ...input, kind: 'missing_actual_common_dir', safeAutomaticRepair: false };
+  if (!registeredCheckoutCommonDirectory) return { ...input, kind: 'missing_registered_checkout_common_dir', safeAutomaticRepair: false };
+  if (!repositoryCommonDirectory) return { ...input, kind: 'missing_repository_common_dir', safeAutomaticRepair: false };
+  if (!samePath(actualCommonDirectory, registeredCheckoutCommonDirectory)) {
+    return { ...input, kind: 'registered_checkout_common_dir_drift', safeAutomaticRepair: false };
+  }
+  if (!samePath(actualCommonDirectory, repositoryCommonDirectory)) {
+    return { ...input, kind: 'repository_common_dir_drift', safeAutomaticRepair: false };
+  }
+  return undefined;
 }
 
 export function executionIdentityForRepository(
@@ -309,18 +352,36 @@ export function assertExecutionIdentity(input: {
   const gitCommonDirectory = gitPath(resolvedCwd, ['rev-parse', '--git-common-dir']);
   const registeredCommonDirectory = gitPath(registeredRoot, ['rev-parse', '--git-common-dir']);
   const repositoryCommonDirectory = gitPath(registered.canonicalRoot, ['rev-parse', '--git-common-dir']);
-  if (
-    !gitCommonDirectory
-    || !registeredCommonDirectory
-    || !repositoryCommonDirectory
-    || !samePath(gitCommonDirectory, registeredCommonDirectory)
-    || !samePath(gitCommonDirectory, repositoryCommonDirectory)
-  ) {
-    fail('GIT_COMMON_DIR_MISMATCH', 'Git common directory does not match registered repository ownership', {
+  const commonDirectoryDrift = classifyGitCommonDirectoryDrift({
+    repoId: identity.repositoryId,
+    checkoutId: identity.checkoutId,
+    actualCommonDirectory: gitCommonDirectory,
+    registeredCheckoutCommonDirectory: registeredCommonDirectory,
+    repositoryCommonDirectory,
+    registeredRoot,
+    identityRoot,
+    resolvedCwd,
+  });
+  if (commonDirectoryDrift) {
+    fail('GIT_COMMON_DIR_MISMATCH', 'Git common directory does not match registered repository ownership; quarantine or audited reconciliation is required', {
       repoId: identity.repositoryId,
       checkoutId: identity.checkoutId,
+      driftKind: commonDirectoryDrift.kind,
       expected: repositoryCommonDirectory ?? 'missing',
+      registeredCheckoutCommonDirectory: registeredCommonDirectory ?? 'missing',
       actual: gitCommonDirectory ?? 'missing',
+      registeredRoot,
+      identityRoot,
+      resolvedCwd,
+      safeAutomaticRepair: String(commonDirectoryDrift.safeAutomaticRepair),
+    });
+  }
+  const verifiedGitCommonDirectory = gitCommonDirectory;
+  if (!verifiedGitCommonDirectory) {
+    fail('GIT_COMMON_DIR_MISMATCH', 'Git common directory disappeared after successful reconciliation classification', {
+      repoId: identity.repositoryId,
+      checkoutId: identity.checkoutId,
+      actual: 'missing',
     });
   }
 
@@ -350,7 +411,7 @@ export function assertExecutionIdentity(input: {
     canonicalRoot: registeredRoot,
     resolvedCwd,
     gitTopLevel,
-    gitCommonDirectory,
+    gitCommonDirectory: verifiedGitCommonDirectory,
     currentBranch,
     currentHead,
   });

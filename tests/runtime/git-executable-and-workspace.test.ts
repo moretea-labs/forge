@@ -14,6 +14,7 @@ import {
   assertExecutionIdentity,
   executionIdentityForRepository,
 } from '../../src/runtime/control-plane/execution/execution-identity';
+import { branchRef, campaignBranchName, validateBranchName } from '../../src/cli/repositories/branch-name-policy';
 import { ensureManagedWorkspace } from '../../src/runtime/workflow/campaigns/workspace';
 
 const roots: string[] = [];
@@ -34,6 +35,22 @@ afterEach(() => {
 });
 
 describe('Git executable and managed workspace guards', () => {
+
+
+  test('uses one BranchNamePolicy for generated campaign branches and refs', () => {
+    const branch = campaignBranchName({
+      title: 'Comprehensively audit model property test fault!!',
+      identity: '6b3219db2a69',
+    });
+    expect(branch).toBe('campaign/comprehensively-audit-model-property-test-fault-6b3219db2a69');
+    expect(validateBranchName(branch, { purpose: 'CAMPAIGN_WORKSPACE_BRANCH' })).toBe(branch);
+    expect(branchRef(branch, { purpose: 'CAMPAIGN_WORKSPACE_BRANCH' })).toBe(`refs/heads/${branch}`);
+  });
+
+  test('rejects invalid campaign branch metadata before cleanup-style ref construction', () => {
+    expect(() => validateBranchName('campaign/bad branch', { purpose: 'CAMPAIGN_WORKSPACE_BRANCH' })).toThrow(/CAMPAIGN_WORKSPACE_BRANCH_INVALID/);
+    expect(() => branchRef('refs/heads/campaign/full-ref', { purpose: 'CAMPAIGN_WORKSPACE_BRANCH' })).toThrow(/CAMPAIGN_WORKSPACE_BRANCH_INVALID/);
+  });
   test('resolves an absolute Git executable without depending solely on service PATH', () => {
     const git = resolveGitExecutable();
     expect(isAbsolute(git)).toBe(true);
@@ -64,17 +81,21 @@ describe('Git executable and managed workspace guards', () => {
       title: 'Git Runtime Workspace',
       branchName: 'campaign/git-runtime-workspace',
     });
+    expect(workspace.root).toBeTruthy();
+    expect(workspace.checkoutId).toBeTruthy();
+    const workspaceRoot = workspace.root!;
+    const workspaceCheckoutId = workspace.checkoutId!;
     const refreshed = getRepository(repository.repoId, controllerHome);
-    const selected = selectRepositoryCheckout(refreshed, workspace.checkoutId);
+    const selected = selectRepositoryCheckout(refreshed, workspaceCheckoutId);
     const guarded = assertExecutionIdentity({
       controllerHome,
       identity: executionIdentityForRepository(selected),
-      cwd: workspace.root,
+      cwd: workspaceRoot,
       requestedRepoId: repository.repoId,
-      requestedCheckoutId: workspace.checkoutId,
+      requestedCheckoutId: workspaceCheckoutId,
     });
 
-    expect(guarded.gitTopLevel).toBe(workspace.root);
+    expect(guarded.gitTopLevel).toBe(workspaceRoot);
     expect(guarded.gitCommonDirectory).toBeTruthy();
     expect(guarded.currentBranch).toBe('campaign/git-runtime-workspace');
   });

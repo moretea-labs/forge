@@ -14,6 +14,7 @@ import {
 } from '../../src/cli/repositories/registry';
 import {
   assertExecutionIdentity,
+  classifyGitCommonDirectoryDrift,
   executionIdentityForRepository,
   executionIdentityForWork,
   executionIdentityFromCoordinates,
@@ -307,6 +308,24 @@ describe('execution identity pre-spawn guard', () => {
     expect(JSON.stringify(read.structuredContent)).toContain('from explicit worktree');
   });
 
+
+
+  test('classifies Git common-directory drift before failing closed', () => {
+    const fx = dualRepoFixture();
+    const drift = classifyGitCommonDirectoryDrift({
+      repoId: fx.repoA.repoId,
+      checkoutId: fx.repoA.activeCheckoutId,
+      actualCommonDirectory: join(fx.root, 'actual.git'),
+      registeredCheckoutCommonDirectory: join(fx.root, 'actual.git'),
+      repositoryCommonDirectory: join(fx.root, 'registry.git'),
+      registeredRoot: fx.repoARoot,
+      identityRoot: fx.repoARoot,
+      resolvedCwd: fx.repoARoot,
+    });
+    expect(drift?.kind).toBe('repository_common_dir_drift');
+    expect(drift?.safeAutomaticRepair).toBe(false);
+  });
+
   test('rejects an independently rooted checkout with exact Git common-directory evidence', () => {
     const fx = dualRepoFixture();
     const withCheckout = addRepositoryCheckout({
@@ -319,11 +338,19 @@ describe('execution identity pre-spawn guard', () => {
     expect(addedCheckout).toBeTruthy();
     const selected = selectRepositoryCheckout(withCheckout, addedCheckout!.checkoutId);
     const identity = executionIdentityForRepository(selected);
-    expect(() => assertExecutionIdentity({
-      controllerHome: fx.controllerHome,
-      identity,
-      cwd: fx.repoBRoot,
-    })).toThrow(/GIT_COMMON_DIR_MISMATCH/);
+    try {
+      assertExecutionIdentity({
+        controllerHome: fx.controllerHome,
+        identity,
+        cwd: fx.repoBRoot,
+      });
+      throw new Error('expected GIT_COMMON_DIR_MISMATCH');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ExecutionIdentityError);
+      expect((error as ExecutionIdentityError).code).toBe('GIT_COMMON_DIR_MISMATCH');
+      expect((error as ExecutionIdentityError).details.driftKind).toBe('repository_common_dir_drift');
+      expect((error as ExecutionIdentityError).details.safeAutomaticRepair).toBe('false');
+    }
   });
 
   test('legacy ambiguous WorkContract identity is rejected', () => {

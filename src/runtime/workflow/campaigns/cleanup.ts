@@ -1,5 +1,6 @@
 import { existsSync, realpathSync } from 'fs';
 import { resolve } from 'path';
+import { branchRef, validateBranchName } from '../../../cli/repositories/branch-name-policy';
 import { getRepository, setRepositoryCheckoutLifecycle } from '../../../cli/repositories/registry';
 import { runProcess } from '../../../effects/process-runner';
 import { cancelExecutionJob, findExecutionJob } from '../../execution/jobs/store';
@@ -37,6 +38,17 @@ function cleanupManagedWorkspace(
   const sourceRoot = repository.canonicalRoot;
   const worktree = workspace.root;
   const branch = workspace.branch ?? undefined;
+  let safeBranch: string | undefined;
+  if (branch) {
+    try {
+      safeBranch = validateBranchName(branch, { purpose: 'CAMPAIGN_WORKSPACE_BRANCH' });
+    } catch (error) {
+      const message = `Managed Campaign workspace has invalid branch metadata; preserved ${branch}.`;
+      resources.push({ kind: 'branch', id: branch, status: 'preserved', message });
+      leaks.push(message);
+      return { resources, leaks };
+    }
+  }
   const baseRevision = workspace.baseRevision ?? undefined;
 
   if (samePath(sourceRoot, worktree)) {
@@ -50,7 +62,7 @@ function cleanupManagedWorkspace(
     const top = git(worktree, ['rev-parse', '--show-toplevel']);
     const currentBranch = git(worktree, ['branch', '--show-current']);
     const status = git(worktree, ['status', '--porcelain=v1', '--untracked-files=all']);
-    if (!top.ok || !samePath(top.stdout, worktree) || (branch && currentBranch.stdout !== branch)) {
+    if (!top.ok || !samePath(top.stdout, worktree) || (safeBranch && currentBranch.stdout !== safeBranch)) {
       const message = `Workspace ownership mismatch; preserved ${worktree}.`;
       resources.push({ kind: 'worktree', id: worktree, status: 'preserved', message });
       leaks.push(message);
@@ -97,26 +109,26 @@ function cleanupManagedWorkspace(
     }
   }
 
-  if (branch) {
-    const branchRevision = git(sourceRoot, ['rev-parse', '--verify', `refs/heads/${branch}`]);
+  if (safeBranch) {
+    const branchRevision = git(sourceRoot, ['rev-parse', '--verify', branchRef(safeBranch, { purpose: 'CAMPAIGN_WORKSPACE_BRANCH' })]);
     if (!branchRevision.ok) {
-      resources.push({ kind: 'branch', id: branch, status: 'missing' });
+      resources.push({ kind: 'branch', id: safeBranch, status: 'missing' });
     } else {
       const safe = options?.targetBranch
-        ? git(sourceRoot, ['branch', '--merged', options.targetBranch, '--list', branch]).stdout.includes(branch)
+        ? git(sourceRoot, ['branch', '--merged', options.targetBranch, '--list', safeBranch]).stdout.includes(safeBranch)
         : !baseRevision || branchRevision.stdout === baseRevision;
       if (!safe) {
         const message = options?.targetBranch
-          ? `Campaign branch has unmerged commits into ${options.targetBranch}; preserved ${branch}.`
-          : `Campaign branch has commits beyond its base revision; preserved ${branch}.`;
-        resources.push({ kind: 'branch', id: branch, status: 'preserved', message });
+          ? `Campaign branch has unmerged commits into ${options.targetBranch}; preserved ${safeBranch}.`
+          : `Campaign branch has commits beyond its base revision; preserved ${safeBranch}.`;
+        resources.push({ kind: 'branch', id: safeBranch, status: 'preserved', message });
         leaks.push(message);
       } else {
-        const deleted = git(sourceRoot, ['branch', '-D', branch]);
-        if (deleted.ok) resources.push({ kind: 'branch', id: branch, status: 'cleaned' });
+        const deleted = git(sourceRoot, ['branch', '-D', safeBranch]);
+        if (deleted.ok) resources.push({ kind: 'branch', id: safeBranch, status: 'cleaned' });
         else {
           const message = `Failed to delete managed branch: ${deleted.stderr}`;
-          resources.push({ kind: 'branch', id: branch, status: 'failed', message });
+          resources.push({ kind: 'branch', id: safeBranch, status: 'failed', message });
           leaks.push(message);
         }
       }

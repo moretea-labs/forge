@@ -10,6 +10,7 @@ import {
   selectRepositoryCheckout,
 } from '../../../cli/repositories/registry';
 import { managedWorktreePath } from '../../../cli/repositories/worktree-storage';
+import { campaignBranchName, validateBranchName } from '../../../cli/repositories/branch-name-policy';
 import { withControllerLock } from '../../../cli/repositories/locks';
 import { resolveGitExecutable } from '../../../effects/git-executable';
 import { runProcess } from '../../../effects/process-runner';
@@ -43,14 +44,6 @@ function suffix(repoId: string, requestId: string): string {
   return createHash('sha256').update(`${repoId}:${requestId}`).digest('hex').slice(0, 12);
 }
 
-function slug(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, '-')
-    .replace(/^[.-]+|[.-]+$/g, '')
-    .slice(0, 48) || 'automation';
-}
-
 function git(root: string, args: string[], timeoutMs = 30_000): string {
   const result = runProcess(resolveGitExecutable(), ['-C', root, ...args], {
     timeoutMs,
@@ -70,10 +63,12 @@ function gitSucceeds(root: string, args: string[]): boolean {
   }).ok;
 }
 
-function assertBranch(root: string, branch: string): void {
-  if (!branch || branch.length > 180 || !gitSucceeds(root, ['check-ref-format', '--branch', branch])) {
-    throw new Error(`CAMPAIGN_WORKSPACE_BRANCH_INVALID: ${branch}`);
+function assertBranch(root: string, branch: string): string {
+  const normalized = validateBranchName(branch, { purpose: 'CAMPAIGN_WORKSPACE_BRANCH' });
+  if (!gitSucceeds(root, ['check-ref-format', '--branch', normalized])) {
+    throw new Error(`CAMPAIGN_WORKSPACE_BRANCH_INVALID: ${normalized}`);
   }
+  return normalized;
 }
 
 function existingWorkspace(path: string, branch: string): boolean {
@@ -117,9 +112,11 @@ export function ensureManagedWorkspace(
   if (!requestId) throw new Error('CAMPAIGN_REQUEST_ID_REQUIRED');
   const identity = suffix(repository.repoId, requestId);
   const sourceRoot = repository.canonicalRoot;
-  const requestedBranch = input.branchName?.trim() || `campaign/${slug(input.title)}-${identity}`;
+  const requestedBranch = assertBranch(
+    sourceRoot,
+    input.branchName?.trim() || campaignBranchName({ title: input.title, identity }),
+  );
   const requestedBaseRef = input.baseRef?.trim() || 'HEAD';
-  assertBranch(sourceRoot, requestedBranch);
   const requestedPath = managedWorktreePath(
     controllerHome,
     repository.repoId,

@@ -1,6 +1,7 @@
 import { spawnSync } from 'child_process';
 import { capProcessOutput, redactProcessOutput } from '../../effects/process-runner';
 import { executeRepositoryGitCommand, type RepositoryGitExecution } from './git-command-executor';
+import { validateBranchName } from './branch-name-policy';
 import type { RepositoryRecord } from './types';
 import type { AuthorizationDecision } from '../../runtime/control-plane/governance/authorization';
 
@@ -90,12 +91,13 @@ function gitText(repository: RepositoryRecord, args: string[]): string | null {
 }
 
 function assertSafeBranchName(raw: unknown): string {
-  const branch = String(raw ?? '').trim();
-  if (!branch) throw new Error('GIT_BRANCH_REQUIRED: branch name is required');
-  if (branch.length > 200 || branch.startsWith('-') || branch.includes('..') || /[\s~^:?*[\\\]\0]/.test(branch) || branch.endsWith('/') || branch.endsWith('.lock')) {
-    throw new Error(`GIT_BRANCH_INVALID: unsafe branch name: ${branch}`);
+  try {
+    return validateBranchName(raw, { purpose: 'GIT_BRANCH' });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes('branch name is required')) throw new Error('GIT_BRANCH_REQUIRED: branch name is required');
+    throw new Error(`GIT_BRANCH_INVALID: unsafe branch name: ${String(raw ?? '').trim()}`);
   }
-  return branch;
 }
 
 function normalizeCommitMessage(raw: unknown): string {
