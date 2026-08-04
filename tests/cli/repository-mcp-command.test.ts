@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
-import { registerRepository } from "../../src/cli/repositories/registry";
+import { getRepository, registerRepository } from "../../src/cli/repositories/registry";
 import { callMcpTool } from "../../src/cli/mcp/tools";
 import { callRepositoryTool } from "../../src/cli/mcp/repository-tools";
 import { createMcpToolContext } from "../../src/cli/mcp/multi-repository";
@@ -62,6 +62,41 @@ function writeLocalJobFixture(
 }
 
 describe("repository MCP command tools", () => {
+  test("registering an existing repository worktree preserves canonical repository authority", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "repo-harness-register-worktree-"));
+    const controllerHome = join(workspace, "controller-home");
+    const repoRoot = join(workspace, "source");
+    const worktreeRoot = join(workspace, "release-source");
+    try {
+      mkdirSync(controllerHome, { recursive: true });
+      mkdirSync(repoRoot, { recursive: true });
+      git(repoRoot, ["init", "-q"]);
+      git(repoRoot, ["config", "user.email", "repo-harness@example.invalid"]);
+      git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
+      git(repoRoot, ["remote", "add", "origin", "https://github.com/moretea-labs/matea.git"]);
+      writeFileSync(join(repoRoot, "README.md"), "# source\n");
+      git(repoRoot, ["add", "README.md"]);
+      git(repoRoot, ["commit", "-qm", "initial"]);
+      const canonical = registerRepository({ path: repoRoot, controllerHome, displayName: "canonical-name" });
+      git(repoRoot, ["worktree", "add", "--detach", worktreeRoot, "HEAD"]);
+
+      const selectedWorktree = registerRepository({ path: worktreeRoot, controllerHome, displayName: "must-not-replace" });
+      const persisted = getRepository(canonical.repoId, controllerHome);
+      const worktreeCheckout = persisted.checkouts.find((checkout) => checkout.checkoutId === selectedWorktree.activeCheckoutId);
+
+      expect(selectedWorktree.canonicalRoot).toBe(realpathSync(worktreeRoot));
+      expect(worktreeCheckout?.worktree).toBe(true);
+      expect(persisted.canonicalRoot).toBe(realpathSync(repoRoot));
+      expect(persisted.localRoot).toBe(realpathSync(repoRoot));
+      expect(persisted.activeCheckoutId).toBe(canonical.activeCheckoutId);
+      expect(persisted.displayName).toBe("canonical-name");
+      expect(persisted.configurationPath).toBe(join(realpathSync(repoRoot), ".ai/harness/repository.json"));
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot, worktreeRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   test("diagnoses the latest sibling source tree through MCP without mutating the project directories", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "repo-harness-mcp-repo-diagnose-"));
     const controllerHome = join(workspace, "controller-home");

@@ -560,11 +560,15 @@ export function registerRepository(input: RegisterRepositoryInput): RepositoryRe
   const repoId = existingByRoot?.repoId ?? derivedRepoId;
   const checkoutId = stableCheckoutId(repoId, canonicalRoot);
   const existing = existingByRoot ?? registry.repositories.find((record) => record.repoId === repoId);
+  const worktree = Boolean(
+    git(canonicalRoot, ['rev-parse', '--git-common-dir'])
+    && git(canonicalRoot, ['rev-parse', '--git-dir']) !== git(canonicalRoot, ['rev-parse', '--git-common-dir']),
+  );
   const checkout: RepositoryCheckout = {
     checkoutId,
     localRoot: canonicalRoot,
     canonicalRoot,
-    worktree: Boolean(git(canonicalRoot, ['rev-parse', '--git-common-dir']) && git(canonicalRoot, ['rev-parse', '--git-dir']) !== git(canonicalRoot, ['rev-parse', '--git-common-dir'])),
+    worktree,
     branch: git(canonicalRoot, ['branch', '--show-current']) ?? null,
     createdAt: existing?.checkouts.find((value) => value.checkoutId === checkoutId)?.createdAt ?? timestamp,
     updatedAt: timestamp,
@@ -573,6 +577,42 @@ export function registerRepository(input: RegisterRepositoryInput): RepositoryRe
   };
   const restoringExisting = Boolean(existing && (existing.removedAt || existing.enabled === false));
   const enabled = input.enabled ?? (restoringExisting ? true : existing?.enabled ?? true);
+
+  // A repository-scoped command may start from a managed checkout (for example
+  // immutable release construction). Registering that path must add/update the
+  // checkout only; it must never promote the ephemeral worktree to repository
+  // canonical authority. Explicit activation remains available through
+  // addRepositoryCheckout({ activate: true }).
+  if (existing && worktree && existing.canonicalRemote && canonicalRemote !== existing.canonicalRemote) {
+    throw new Error(`CHECKOUT_REPOSITORY_MISMATCH: ${canonicalRoot}`);
+  }
+  if (existing && worktree && existing.canonicalRoot !== canonicalRoot) {
+    const next: RepositoryRecord = {
+      ...existing,
+      enabled,
+      checkouts: [
+        ...existing.checkouts.filter((value) => value.checkoutId !== checkoutId),
+        checkout,
+      ],
+      updatedAt: timestamp,
+      lastSeenAt: timestamp,
+      disabledAt: enabled ? undefined : existing.disabledAt,
+      removedAt: enabled ? undefined : existing.removedAt,
+    };
+    const index = registry.repositories.findIndex((candidate) => candidate.repoId === existing.repoId);
+    registry.repositories[index] = next;
+    saveRepositoryRegistry(registry, home);
+    ensureRepositoryControllerLayout(home, next.repoId);
+    ensureHarnessRuntimeIgnored(canonicalRoot);
+    atomicJson(join(canonicalRoot, LOCAL_CONFIG), {
+      schemaVersion: 1,
+      repoId: next.repoId,
+      checkoutId,
+      stateStorageStrategy: next.stateStorageStrategy,
+    });
+    return selectRepositoryCheckout(next, checkoutId);
+  }
+
   const record: RepositoryRecord = {
     schemaVersion: 1,
     repoId,
