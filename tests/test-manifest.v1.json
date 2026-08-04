@@ -23,7 +23,7 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 82,
+    "maxTestFiles": 83,
     "maxTestLines": 40000,
     "maxPureFiles": 30,
     "maxTempIsolatedFiles": 37,
@@ -218,6 +218,10 @@
     "tests/cli/mcp-http.test.ts": {
       "module": "controller",
       "resource": "fixed-port"
+    },
+    "tests/cli/readiness-projection.test.ts": {
+      "module": "controller",
+      "resource": "pure"
     },
     "tests/cli/mcp-policy.test.ts": {
       "module": "controller",
