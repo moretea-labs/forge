@@ -14,10 +14,10 @@ import {
 } from '../src/cli/mcp/toolset';
 
 // Versioned v8 stable surface. Update deliberately when the exported contract changes.
-// The stable Controller surface currently publishes 133 unique tools. Keep the
+// The stable Controller surface currently publishes 128 unique tools. Keep the
 // exact count and upper budget aligned so accidental additions remain visible.
-const EXPECTED_STABLE_TOOL_COUNT = 133;
-const MAX_STABLE_TOOL_COUNT = 133;
+const EXPECTED_STABLE_TOOL_COUNT = 128;
+const MAX_STABLE_TOOL_COUNT = 128;
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

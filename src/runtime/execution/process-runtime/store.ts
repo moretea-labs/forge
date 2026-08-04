@@ -336,10 +336,14 @@ export function tryCompleteProcessRecord(
   if (current.terminalFenceToken !== fenceToken) {
     return { ok: false, reason: 'fence_mismatch', record: current };
   }
+  const hasLeases = (current.leaseRefs?.length ?? 0) > 0;
+  const leasesReleased = current.leasesReleased === true || !hasLeases;
   const next: ManagedProcessRecord = {
     ...current,
     ...patch,
     terminalWritten: true,
+    leaseReleaseState: leasesReleased ? 'released' : 'pending',
+    leasesReleased,
     finishedAt: patch.finishedAt ?? new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };

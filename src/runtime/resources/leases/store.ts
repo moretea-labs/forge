@@ -203,7 +203,7 @@ export function acquireExecutionLeases(
   }, 10_000);
 }
 
-interface ExpectedLeaseRef {
+export interface ExpectedLeaseRef {
   leaseId: string;
   fencingToken: number;
   repoId?: string;
@@ -305,6 +305,85 @@ export function releaseExecutionLeases(
       }
       if (effects.notifyScheduler) {
         touchSchedulerWakeSignal(controllerHome, `leases-released:${ownerJobId}`);
+        leaseSideEffectMetrics.schedulerWakes += 1;
+      }
+    }
+    return releasedCount;
+  }, 10_000);
+}
+
+/**
+ * Release only the exact active lease set owned by one terminal Process.
+ *
+ * This deliberately does not use runtime-writer fencing: a controller restart
+ * changes the writer generation, while terminal Process ownership and fencing
+ * tokens remain durable. Safety comes from an all-or-nothing exact comparison
+ * under the repository lock. A live Process must never call this path.
+ */
+export function releaseTerminalProcessLeases(
+  controllerHome: string,
+  repoId: string,
+  processId: string,
+  expected: ExpectedLeaseRef[],
+  options?: Pick<LeaseAcquisitionOptions, 'visibility' | 'notifyScheduler' | 'invalidateProjection' | 'emitRuntimeEvent'>,
+): number {
+  const normalizedProcessId = processId.trim();
+  if (!normalizedProcessId) throw new Error('TERMINAL_PROCESS_ID_REQUIRED');
+  const ownerJobId = `process:${normalizedProcessId}`;
+  return withControllerLock(controllerHome, { scope: 'repository', repoId }, `terminal-lease-release:${ownerJobId}`, () => {
+    const expectedRefs = expectedLeaseMap(expected) ?? new Map<string, ExpectedLeaseRef>();
+    if (expectedRefs.size !== expected.length) {
+      throw new Error(`TERMINAL_PROCESS_LEASE_SET_INVALID: ${normalizedProcessId} contains duplicate lease ids`);
+    }
+    for (const ref of expected) {
+      if (ref.repoId && ref.repoId !== repoId) {
+        throw new Error(`TERMINAL_PROCESS_LEASE_SCOPE_MISMATCH: ${normalizedProcessId} references another repository`);
+      }
+    }
+
+    const owned = listActiveLeases(controllerHome, repoId)
+      .filter((lease) => lease.ownerJobId === ownerJobId);
+    for (const lease of owned) {
+      const ref = expectedRefs.get(lease.leaseId);
+      if (!ref) {
+        throw new Error(`TERMINAL_PROCESS_LEASE_SET_MISMATCH: ${normalizedProcessId} owns an unrecorded lease ${lease.leaseId}`);
+      }
+      if (!leaseMatchesExpected(lease, ref)) {
+        throw new Error(`TERMINAL_PROCESS_LEASE_FENCE_MISMATCH: ${normalizedProcessId} no longer owns the recorded lease ${lease.leaseId}`);
+      }
+    }
+
+    let releasedCount = 0;
+    let visibility: LeaseVisibility = options?.visibility ?? 'durable';
+    for (const lease of owned) {
+      visibility = lease.visibility ?? visibility;
+      removeFile(leasePath(controllerHome, repoId, lease.leaseId));
+      const effects = resolveSideEffects(options, lease.visibility);
+      if (effects.emitRuntimeEvent) {
+        appendRuntimeEvent(controllerHome, {
+          repoId,
+          entityType: 'lease',
+          entityId: lease.leaseId,
+          eventType: 'lease_released',
+          requestId: ownerJobId,
+          correlationId: ownerJobId,
+          revision: lease.fencingToken,
+          data: { resourceKey: lease.resourceKey, mode: lease.mode, visibility: lease.visibility, terminalProcessId: normalizedProcessId },
+        });
+        leaseSideEffectMetrics.durableReleaseEvents += 1;
+      } else {
+        leaseSideEffectMetrics.ephemeralReleases += 1;
+      }
+      releasedCount += 1;
+    }
+    if (releasedCount > 0) {
+      const effects = resolveSideEffects(options, visibility);
+      if (effects.invalidateProjection) {
+        markRepositoryProjectionDirty(controllerHome, repoId, `terminal-leases-released:${ownerJobId}`);
+        leaseSideEffectMetrics.projectionDirtyMarks += 1;
+      }
+      if (effects.notifyScheduler) {
+        touchSchedulerWakeSignal(controllerHome, `terminal-leases-released:${ownerJobId}`);
         leaseSideEffectMetrics.schedulerWakes += 1;
       }
     }

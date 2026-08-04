@@ -136,15 +136,15 @@ export function executionIdentityForWork(
       workId: handle.workId,
     });
   }
-  if (repository.activeCheckoutId !== handle.checkoutId) {
-    fail('WORK_HANDLE_CHECKOUT_DRIFT', 'validated checkout does not match WorkHandle', {
-      expectedCheckoutId: handle.checkoutId,
-      actualCheckoutId: repository.activeCheckoutId,
-      workId: handle.workId,
-      repoId: handle.repositoryId,
-    });
-  }
-  return executionIdentityForRepository(repository, {
+
+  // Once a Work exists, its immutable coordinates are the execution authority.
+  // Repository.activeCheckoutId/canonicalRoot are mutable UI/session projection
+  // fields and must never veto or rewrite an explicit Work-bound invocation.
+  return Object.freeze({
+    schemaVersion: 1 as const,
+    repositoryId: handle.repositoryId,
+    checkoutId: handle.checkoutId,
+    canonicalRoot: handle.worktreePath,
     workId: handle.workId,
     worktreePath: handle.worktreePath,
     branch: handle.branch,

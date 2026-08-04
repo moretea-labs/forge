@@ -767,6 +767,9 @@ describe('Process Runtime real lease contention', () => {
   });
 
   test('startup recovery releases terminal leases that were removed from active-index', () => {
+    // This existing regression covers the active-writer path. Cross-generation
+    // and malformed-reference cases are covered immediately after it.
+
     const fx = fixture();
     const processId = 'proc_terminal_index_gap';
     const resourceKey = `workspace:${fx.repository.activeCheckoutId}`;
@@ -806,6 +809,143 @@ describe('Process Runtime real lease contention', () => {
     expect(recoverManagedProcesses(fx.controllerHome, fx.repository.repoId).leasesReleased).toContain(processId);
     expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.leasesReleased).toBe(true);
     expect(listActiveLeases(fx.controllerHome, fx.repository.repoId).some((lease) => lease.ownerJobId === `process:${processId}`)).toBe(false);
+  });
+
+  test('terminal recovery releases exact leases after writer generation changes', () => {
+    const fx = fixture();
+    const processId = 'proc_terminal_old_generation';
+    const resourceKey = `workspace:${fx.repository.activeCheckoutId}`;
+    const oldAuthority = publishWriterAuthority(fx.controllerHome, {
+      activeSlot: 'green',
+      generation: 'old-generation',
+      reason: 'terminal-old-generation',
+    });
+    bindRuntimeWriterClaim({
+      controllerHome: fx.controllerHome,
+      slot: 'green',
+      epoch: oldAuthority.epoch,
+      fencingToken: oldAuthority.fencingToken,
+      generation: 'old-generation',
+      instanceId: 'old-instance',
+    });
+    const acquired = acquireExecutionLeases(
+      fx.controllerHome,
+      fx.repository.repoId,
+      `process:${processId}`,
+      [{
+        resourceKey,
+        mode: 'write',
+        repoId: fx.repository.repoId,
+        checkoutId: fx.repository.activeCheckoutId,
+        workId: 'work-terminal-old-generation',
+      }],
+      { ttlMs: 30_000, visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
+    );
+    expect(acquired.acquired).toBe(true);
+    createProcessRecord({
+      schemaVersion: 1,
+      processId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      workId: 'work-terminal-old-generation',
+      controllerHome: fx.controllerHome,
+      status: 'running',
+      route: 'managed',
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(0)'], cwd: fx.repoRoot },
+      resourceClaims: [{
+        resourceKey,
+        mode: 'write',
+        repoId: fx.repository.repoId,
+        checkoutId: fx.repository.activeCheckoutId,
+        workId: 'work-terminal-old-generation',
+      }],
+      leaseRefs: acquired.leases.map((lease) => ({
+        leaseId: lease.leaseId,
+        resourceKey: lease.resourceKey,
+        fencingToken: lease.fencingToken,
+        repoId: lease.repoId,
+        checkoutId: lease.checkoutId,
+        workId: lease.workId,
+      })),
+      interactiveWaitMs: 0,
+      timeoutMs: 30_000,
+      maxOutputBytes: 1_024,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      terminalFenceToken: 41,
+      writerAuthorityEpoch: oldAuthority.epoch,
+      writerAuthorityGeneration: 'old-generation',
+      writerAuthorityInstanceId: 'old-instance',
+    });
+    const completed = tryCompleteProcessRecord(fx.controllerHome, fx.repository.repoId, processId, 41, {
+      status: 'succeeded',
+      exitCode: 0,
+      finishedAt: new Date().toISOString(),
+    });
+    expect(completed.record?.leaseReleaseState).toBe('pending');
+
+    publishWriterAuthority(fx.controllerHome, {
+      activeSlot: 'green',
+      generation: 'new-generation',
+      reason: 'terminal-new-generation',
+    });
+    clearRuntimeWriterClaimForTests();
+
+    const recovery = recoverManagedProcesses(fx.controllerHome, fx.repository.repoId);
+    expect(recovery.leasesReleased).toContain(processId);
+    expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.leaseReleaseState).toBe('released');
+    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)
+      .some((lease) => lease.ownerJobId === `process:${processId}`)).toBe(false);
+    expect(recoverManagedProcesses(fx.controllerHome, fx.repository.repoId).leasesReleased).not.toContain(processId);
+  });
+
+  test('terminal recovery preserves leases when the durable fencing token is wrong', () => {
+    const fx = fixture();
+    const processId = 'proc_terminal_bad_lease_ref';
+    const resourceKey = `workspace:${fx.repository.activeCheckoutId}`;
+    const acquired = acquireExecutionLeases(
+      fx.controllerHome,
+      fx.repository.repoId,
+      `process:${processId}`,
+      [{ resourceKey, mode: 'write', checkoutId: fx.repository.activeCheckoutId }],
+      { ttlMs: 30_000, visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
+    );
+    expect(acquired.acquired).toBe(true);
+    createProcessRecord({
+      schemaVersion: 1,
+      processId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      controllerHome: fx.controllerHome,
+      status: 'running',
+      route: 'managed',
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(0)'], cwd: fx.repoRoot },
+      resourceClaims: [{ resourceKey, mode: 'write', repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId }],
+      leaseRefs: acquired.leases.map((lease) => ({
+        leaseId: lease.leaseId,
+        resourceKey: lease.resourceKey,
+        fencingToken: lease.fencingToken + 1,
+        repoId: lease.repoId,
+        checkoutId: lease.checkoutId,
+      })),
+      interactiveWaitMs: 0,
+      timeoutMs: 30_000,
+      maxOutputBytes: 1_024,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      terminalFenceToken: 42,
+    });
+    tryCompleteProcessRecord(fx.controllerHome, fx.repository.repoId, processId, 42, {
+      status: 'succeeded',
+      exitCode: 0,
+      finishedAt: new Date().toISOString(),
+    });
+
+    const recovery = recoverManagedProcesses(fx.controllerHome, fx.repository.repoId);
+    expect(recovery.leasesReleased).not.toContain(processId);
+    expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.leaseReleaseState).toBe('pending');
+    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)
+      .some((lease) => lease.ownerJobId === `process:${processId}`)).toBe(true);
   });
 
   test('recovery does not release a live process owned by another generation or instance', () => {

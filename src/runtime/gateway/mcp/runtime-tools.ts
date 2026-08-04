@@ -12,6 +12,8 @@ import { waitForExecutionJob } from '../../execution/jobs/wait';
 import type { ExecutionJob } from '../../execution/jobs/types';
 import { getProcessHandle, processRuntimeResourceDiagnostics, waitForProcess } from '../../execution/process-runtime';
 import { buildJobOperationDigest } from '../../control-plane/facade/operation-digest';
+import { readWorkHandle, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
+import { reconcileWorkValidation } from './work-validation-reconciler';
 import { readJobEvents } from '../../evidence/event-ledger';
 import { readExecutionArtifact } from '../../evidence/artifact-store';
 import { readExecutionEvidence } from '../../evidence/evidence-store';
@@ -2039,6 +2041,81 @@ function summarizeWork(job: ExecutionJob, repoRoot?: string): Record<string, unk
   };
 }
 
+const TERMINAL_WORK_HANDLE_STATES = new Set<WorkHandleState['state']>(['cleaned', 'failed']);
+
+function workHandlePhase(handle: WorkHandleState): 'implementation' | 'verification' | 'delivery' | 'cleanup' | 'completed' | 'attention' {
+  if (handle.state === 'cleaned') return 'completed';
+  if (handle.state === 'failed') return 'attention';
+  if (handle.state === 'validating') return 'verification';
+  if (handle.state === 'committed') return 'delivery';
+  if (handle.state === 'merged') return 'cleanup';
+  return 'implementation';
+}
+
+function reconcileReadableWorkHandle(
+  controllerHome: string,
+  repoId: string,
+  workId: string,
+): WorkHandleState | undefined {
+  const handle = readWorkHandle(controllerHome, repoId, workId);
+  if (!handle) return undefined;
+  try {
+    return reconcileWorkValidation(controllerHome, handle).handle;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes('CONTROL_PLANE_REVISION_CONFLICT')) throw error;
+    return readWorkHandle(controllerHome, repoId, workId);
+  }
+}
+
+async function waitForReadableWorkHandle(
+  controllerHome: string,
+  repoId: string,
+  workId: string,
+  waitMs: number,
+): Promise<{ handle?: WorkHandleState; timedOut: boolean; waitedMs: number }> {
+  const startedAt = Date.now();
+  let handle = reconcileReadableWorkHandle(controllerHome, repoId, workId);
+  while (handle && !TERMINAL_WORK_HANDLE_STATES.has(handle.state) && Date.now() - startedAt < waitMs) {
+    const remaining = waitMs - (Date.now() - startedAt);
+    await new Promise((resolve) => setTimeout(resolve, Math.max(1, Math.min(100, remaining))));
+    handle = reconcileReadableWorkHandle(controllerHome, repoId, workId);
+  }
+  const waitedMs = Date.now() - startedAt;
+  return {
+    handle,
+    timedOut: Boolean(handle && !TERMINAL_WORK_HANDLE_STATES.has(handle.state)),
+    waitedMs,
+  };
+}
+
+function summarizeWorkHandle(
+  handle: WorkHandleState,
+  contract?: NonNullable<ReturnType<typeof getWorkContract>>,
+): Record<string, unknown> {
+  const terminal = TERMINAL_WORK_HANDLE_STATES.has(handle.state);
+  const summary = contract?.objective?.trim()
+    ? contract.objective.slice(0, 240)
+    : `Work ${handle.workId} is ${handle.state}.`;
+  return {
+    kind: 'work_handle',
+    workId: handle.workId,
+    repoId: handle.repositoryId,
+    checkoutId: handle.checkoutId,
+    state: handle.state,
+    phase: workHandlePhase(handle),
+    statusLabel: handle.state,
+    summary,
+    terminal,
+    resumable: !terminal,
+    branch: handle.branch,
+    expectedHead: handle.expectedHead,
+    validation: handle.finalization.validation,
+    updatedAt: handle.updatedAt,
+    nextAction: terminal ? undefined : handle.state === 'validating' ? 'Wait for persisted validation receipts.' : 'Continue the existing WorkHandle.',
+  };
+}
+
 function summarizeWorkListItem(job: ExecutionJob): Record<string, unknown> {
   const digest = buildJobOperationDigest(job);
   return {
@@ -3323,15 +3400,41 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
       }
       case 'work_get': {
         const repository = selected(ctx, args);
+        const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+        const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
+        const contract = workId
+          ? getWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, workId)
+          : requestId
+            ? getWorkContractByRequestId(ctx.controllerHome, requestId, repository.repoId)
+            : undefined;
+        const handleId = workId || contract?.workId || '';
+        if (handleId) {
+          const waited = args.wait === true || typeof args.wait_ms === 'number';
+          const waitMs = typeof args.wait_ms === 'number' ? Math.max(0, args.wait_ms) : 15_000;
+          const resolved = waited
+            ? await waitForReadableWorkHandle(ctx.controllerHome, repository.repoId, handleId, waitMs)
+            : { handle: reconcileReadableWorkHandle(ctx.controllerHome, repository.repoId, handleId), timedOut: false, waitedMs: 0 };
+          if (resolved.handle) {
+            const work = summarizeWorkHandle(resolved.handle, contract);
+            return result({
+              work,
+              workHandle: resolved.handle,
+              ...(contract ? {
+                workContract: contract,
+                continuation: buildWorkContinuationSnapshot(contract),
+              } : {}),
+              summary: work.summary,
+              phase: work.phase,
+              statusLabel: work.statusLabel,
+              waited,
+              timedOut: resolved.timedOut,
+              waitedMs: resolved.waitedMs,
+              next: work.nextAction,
+            }, resolved.handle.state === 'failed');
+          }
+        }
         let job = resolveWorkJob(ctx, repository.repoId, args);
         if (!job) {
-          const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-          const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
-          const contract = workId
-            ? getWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, workId)
-            : requestId
-              ? getWorkContractByRequestId(ctx.controllerHome, requestId, repository.repoId)
-              : undefined;
           if (contract) {
             const work = summarizeSubmittedWorkContract(contract);
             const waited = args.wait === true || typeof args.wait_ms === 'number';
@@ -3381,8 +3484,37 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
       }
       case 'work_wait': {
         const repository = selected(ctx, args);
+        const waitMs = typeof args.wait_ms === 'number' ? Math.max(0, args.wait_ms) : 15_000;
+        const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+        const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
+        const contract = workId
+          ? getWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, workId)
+          : requestId
+            ? getWorkContractByRequestId(ctx.controllerHome, requestId, repository.repoId)
+            : undefined;
+        const handleId = workId || contract?.workId || '';
+        if (handleId) {
+          const waitedHandle = await waitForReadableWorkHandle(ctx.controllerHome, repository.repoId, handleId, waitMs);
+          if (waitedHandle.handle) {
+            const work = summarizeWorkHandle(waitedHandle.handle, contract);
+            return result({
+              work,
+              workHandle: waitedHandle.handle,
+              ...(contract ? {
+                workContract: contract,
+                continuation: buildWorkContinuationSnapshot(contract),
+              } : {}),
+              summary: work.summary,
+              phase: work.phase,
+              statusLabel: work.statusLabel,
+              waited: true,
+              timedOut: waitedHandle.timedOut,
+              waitedMs: waitedHandle.waitedMs,
+              next: work.nextAction,
+            }, waitedHandle.handle.state === 'failed');
+          }
+        }
         const job = resolveWorkJob(ctx, repository.repoId, args);
-        const waitMs = typeof args.wait_ms === 'number' ? args.wait_ms : 15_000;
         if (!job) {
           const processRef = String(args.work_id ?? args.request_id ?? '').trim();
           const process = getProcessHandle(ctx.controllerHome, repository.repoId, processRef);

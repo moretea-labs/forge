@@ -107,7 +107,9 @@ export interface ManagedProcessRecord {
   resourceClaims: ProcessResourceClaim[];
   /** Real execution leases acquired before spawn; released exactly once on terminal. */
   leaseRefs?: ProcessLeaseRef[];
-  /** True after leases were released (prevents double-release on recovery/cancel). */
+  /** Durable terminal cleanup phase; pending is retryable after controller restart. */
+  leaseReleaseState?: 'pending' | 'released';
+  /** Compatibility projection of leaseReleaseState === released. */
   leasesReleased?: boolean;
   interactiveWaitMs: number;
   timeoutMs: number;

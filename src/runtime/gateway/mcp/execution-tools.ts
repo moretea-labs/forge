@@ -41,6 +41,7 @@ import { getCheckProcessHandle } from '../../execution/process-runtime/check-fac
 import { processCheckCompletionReceipt } from '../../execution/process-runtime/check-receipt';
 import { claimProcessInvocation, getProcessRecord } from '../../execution/process-runtime/store';
 import { runPersistedCheckViaProcessRuntime } from './persisted-check-process';
+import { reconcileWorkValidation } from './work-validation-reconciler';
 
 const MAX_INLINE_RESULT_BYTES = 64 * 1024;
 
@@ -301,7 +302,8 @@ function findWorkHandle(
 }
 
 function workForSession(ctx: MultiRepositoryMcpToolContext, session: ExecutionSessionContext, args: Record<string, unknown>): WorkHandleState {
-  const handle = findWorkHandle(ctx, session, args);
+  let handle = findWorkHandle(ctx, session, args);
+  handle = reconcileWorkValidation(ctx.controllerHome, handle).handle;
   if (handle.principalId !== session.principalId) throw new Error('WORK_HANDLE_PRINCIPAL_MISMATCH: work handle belongs to another principal');
   if (
     session.activeRepositoryId !== handle.repositoryId
@@ -874,22 +876,41 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     });
     if (!receipt.ok) break;
   }
-  const completed = checks.length === requestedChecks.length && checks.every((check) => check.ok !== undefined);
-  const passed = completed && checks.every((check) => check.ok === true);
-  const nextState = !completed ? 'validating' : passed ? validationRun.resumeState : 'failed';
-  const validation = !completed ? 'pending' : passed ? 'done' : 'failed';
+  const infrastructureFailure = checks.some((check) => (
+    check.status === 'missing'
+    || check.status === 'infrastructure_failure'
+    || check.status === 'deferred'
+  ));
+  const acceptedFailure = checks.some((check) => check.status === 'failed');
+  const allObserved = checks.length === requestedChecks.length && checks.every((check) => check.ok !== undefined);
+  const completed = infrastructureFailure || acceptedFailure || allObserved;
+  const passed = completed && !infrastructureFailure && !acceptedFailure && checks.every((check) => check.ok === true);
+  const nextState = !completed
+    ? 'validating'
+    : infrastructureFailure
+      ? validationRun.resumeState
+      : passed
+        ? validationRun.resumeState
+        : 'failed';
+  const validation = !completed || infrastructureFailure ? 'pending' : passed ? 'done' : 'failed';
+  const failureSummary = infrastructureFailure
+    ? String(checks.find((check) => check.status === 'missing' || check.status === 'infrastructure_failure' || check.status === 'deferred')?.summary ?? 'validation infrastructure failure')
+    : acceptedFailure
+      ? 'targeted validation failed'
+      : undefined;
   const next = transitionWorkHandle(ctx.controllerHome, current, nextState, {
     finalization: {
       ...current.finalization,
       validation,
-      lastError: completed && !passed ? 'targeted validation failed' : undefined,
+      lastError: failureSummary,
     },
     validationRun: completed ? undefined : validationRun,
+    ...(acceptedFailure ? { failureReason: failureSummary } : {}),
   });
   if (contract) {
     updateWorkContract({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, handle.workId, {
-      status: completed && !passed ? 'failed' : 'running',
-      evidenceState: completed ? (passed ? 'valid' : 'failed') : 'partial',
+      status: acceptedFailure ? 'failed' : 'running',
+      evidenceState: passed ? 'valid' : acceptedFailure ? 'failed' : 'partial',
     });
   }
   const value = { work: compactHandle(next), validation: { passed, completed, checks, targeted: true } };
