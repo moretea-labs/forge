@@ -214,6 +214,13 @@ export interface SupervisorBrowserNodeBridgeCanaryResult {
   hostPath: string;
   nodeExecutable?: string;
   nodeChecked: boolean;
+  availability: 'verified' | 'node_unavailable';
+}
+
+export function browserNodeBridgeReleaseCapabilities(
+  result: SupervisorBrowserNodeBridgeCanaryResult,
+): string[] {
+  return result.nodeChecked ? ['browser_node_cdp_bridge'] : [];
 }
 
 function nativeExecutableMagic(prefix: Buffer): boolean {
@@ -237,6 +244,7 @@ function nativeExecutableMagic(prefix: Buffer): boolean {
 export function verifySupervisorBrowserNodeBridgeHost(input: {
   releasePath: string;
   nodeExecutable?: string;
+  resolveNodeExecutable?: () => string;
 }): SupervisorBrowserNodeBridgeCanaryResult {
   const hostPath = join(resolve(input.releasePath), 'browser-node-bridge-host.js');
   if (!existsSync(hostPath)) {
@@ -250,9 +258,9 @@ export function verifySupervisorBrowserNodeBridgeHost(input: {
   let nodeExecutable = input.nodeExecutable;
   if (!nodeExecutable) {
     try {
-      nodeExecutable = resolveBrowserBridgeNodeExecutable();
+      nodeExecutable = (input.resolveNodeExecutable ?? resolveBrowserBridgeNodeExecutable)();
     } catch {
-      return { hostPath, nodeChecked: false };
+      return { hostPath, nodeChecked: false, availability: 'node_unavailable' };
     }
   }
   const probe = runProcess(nodeExecutable, [hostPath], {
@@ -273,7 +281,7 @@ export function verifySupervisorBrowserNodeBridgeHost(input: {
       `SUPERVISOR_RELEASE_BROWSER_NODE_HOST_FAILED: ${probe.stderr || probe.stdout || probe.error || `exit ${probe.status}`}`.slice(0, 2_000),
     );
   }
-  return { hostPath, nodeExecutable, nodeChecked: true };
+  return { hostPath, nodeExecutable, nodeChecked: true, availability: 'verified' };
 }
 
 function serviceSuffix(controllerHome: string): string {
@@ -557,7 +565,13 @@ function assertOwnedReleasePath(controllerHome: string, releasePath: string): st
   return candidate;
 }
 
-export function stageSupervisorRelease(input: { controllerHome: string; repoRoot: string; sourceRoot?: string; allowDirtyRuntimeSourceForTests?: boolean }): SupervisorStagedRelease {
+export function stageSupervisorRelease(input: {
+  controllerHome: string;
+  repoRoot: string;
+  sourceRoot?: string;
+  allowDirtyRuntimeSourceForTests?: boolean;
+  resolveBrowserNodeExecutableForCanary?: () => string;
+}): SupervisorStagedRelease {
   const controllerHome = resolve(input.controllerHome);
   const sourceRoot = runtimeSourceRoot(input.sourceRoot ?? input.repoRoot);
   ensureStableSupervisorLayout(controllerHome);
@@ -585,7 +599,10 @@ export function stageSupervisorRelease(input: { controllerHome: string; repoRoot
       false,
       'esm',
     );
-    verifySupervisorBrowserNodeBridgeHost({ releasePath: stagingPath });
+    const browserNodeBridgeCanary = verifySupervisorBrowserNodeBridgeHost({
+      releasePath: stagingPath,
+      resolveNodeExecutable: input.resolveBrowserNodeExecutableForCanary,
+    });
     const missing = supervisorReleaseClosureMissing(stagingPath);
     if (missing.length > 0) {
       throw new Error(`SUPERVISOR_RELEASE_CLOSURE_INCOMPLETE: staged release is missing required executables: ${missing.join(', ')}`);
@@ -610,7 +627,18 @@ export function stageSupervisorRelease(input: { controllerHome: string; repoRoot
       processRunnerEntrypoint: 'process-runner.js',
       browserHandoffHostEntrypoint: 'browser-handoff-host.js',
       browserNodeBridgeHostEntrypoint: 'browser-node-bridge-host.js',
-      capabilities: ['staged_rollout_release', 'browser_handoff_host', 'browser_node_cdp_bridge', 'independent_process_runner', 'reproducible_release_manifest', 'process_runner_canary'],
+      browserNodeBridgeValidation: {
+        status: browserNodeBridgeCanary.availability,
+        nodeChecked: browserNodeBridgeCanary.nodeChecked,
+      },
+      capabilities: [
+        'staged_rollout_release',
+        'browser_handoff_host',
+        ...browserNodeBridgeReleaseCapabilities(browserNodeBridgeCanary),
+        'independent_process_runner',
+        'reproducible_release_manifest',
+        'process_runner_canary',
+      ],
     }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
     for (const executable of RELEASE_EXECUTABLES) {
       try { chmodSync(join(stagingPath, executable), 0o700); } catch { /* best effort */ }

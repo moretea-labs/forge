@@ -7,7 +7,7 @@ import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import { bootstrapLaunchAgentWithRetry } from '../../src/cli/controller/launch-agents';
 import { selectSupervisorRollbackRelease, serviceActivationStatePath, supervisorActivationMatchesRelease, waitForServiceActivation } from '../../src/cli/commands/supervisor';
-import { installSupervisorRelease, publishSupervisorRelease, renderLaunchdSupervisorPlist, renderSystemdSupervisorUnit, stageSupervisorRelease, supervisorServiceLabel, supervisorSystemdUnitName, verifySupervisorBrowserNodeBridgeHost, verifySupervisorSourceIdentity } from '../../src/runtime/supervisor/installer';
+import { browserNodeBridgeReleaseCapabilities, installSupervisorRelease, publishSupervisorRelease, renderLaunchdSupervisorPlist, renderSystemdSupervisorUnit, stageSupervisorRelease, supervisorServiceLabel, supervisorSystemdUnitName, verifySupervisorBrowserNodeBridgeHost, verifySupervisorSourceIdentity } from '../../src/runtime/supervisor/installer';
 import { stableSupervisorActivatesPublishedRelease, stableSupervisorExitCode } from '../../src/runtime/supervisor/entry';
 import { createStableIngressRouter } from '../../src/runtime/supervisor/ingress-router';
 import { createStableIngressProcess } from '../../src/runtime/supervisor/ingress-process';
@@ -158,6 +158,7 @@ describe('Stable Supervisor production hardening', () => {
         processRunnerEntrypoint?: string;
         browserHandoffHostEntrypoint?: string;
         browserNodeBridgeHostEntrypoint?: string;
+        browserNodeBridgeValidation?: { status?: string; nodeChecked?: boolean };
         capabilities?: string[];
       };
       const loaded = spawnSync(
@@ -188,24 +189,36 @@ describe('Stable Supervisor production hardening', () => {
       expect(manifest.capabilities).toContain('staged_rollout_release');
       expect(manifest.capabilities).toContain('independent_process_runner');
       expect(manifest.capabilities).toContain('browser_handoff_host');
-      expect(manifest.capabilities).toContain('browser_node_cdp_bridge');
       const browserNodeHostPath = join(release.releasePath, 'browser-node-bridge-host.js');
-      const nodeProbe = spawnSync(resolveBrowserBridgeNodeExecutable(), [browserNodeHostPath], {
-        cwd: release.releasePath,
-        encoding: 'utf8',
-        input: '{"schemaVersion":0}',
-        env: {
-          PATH: process.env.PATH ?? '',
-          HOME: process.env.HOME ?? '',
-          REPO_HARNESS_BROWSER_NODE_BRIDGE_HOST: '1',
-        },
-      });
-      expect(nodeProbe.status).toBe(1);
-      expect(JSON.parse(nodeProbe.stdout)).toMatchObject({ schemaVersion: 1, ok: false });
-      expect(verifySupervisorBrowserNodeBridgeHost({
-        releasePath: release.releasePath,
-        nodeExecutable: resolveBrowserBridgeNodeExecutable(),
-      })).toMatchObject({ nodeChecked: true, hostPath: browserNodeHostPath });
+      let nodeExecutable: string | undefined;
+      try {
+        nodeExecutable = resolveBrowserBridgeNodeExecutable();
+      } catch {
+        // Browser Node support is optional for the Supervisor release itself.
+      }
+      if (nodeExecutable) {
+        expect(manifest.browserNodeBridgeValidation).toMatchObject({ status: 'verified', nodeChecked: true });
+        expect(manifest.capabilities).toContain('browser_node_cdp_bridge');
+        const nodeProbe = spawnSync(nodeExecutable, [browserNodeHostPath], {
+          cwd: release.releasePath,
+          encoding: 'utf8',
+          input: '{"schemaVersion":0}',
+          env: {
+            PATH: process.env.PATH ?? '',
+            HOME: process.env.HOME ?? '',
+            REPO_HARNESS_BROWSER_NODE_BRIDGE_HOST: '1',
+          },
+        });
+        expect(nodeProbe.status).toBe(1);
+        expect(JSON.parse(nodeProbe.stdout)).toMatchObject({ schemaVersion: 1, ok: false });
+        expect(verifySupervisorBrowserNodeBridgeHost({
+          releasePath: release.releasePath,
+          nodeExecutable,
+        })).toMatchObject({ nodeChecked: true, availability: 'verified', hostPath: browserNodeHostPath });
+      } else {
+        expect(manifest.browserNodeBridgeValidation).toMatchObject({ status: 'node_unavailable', nodeChecked: false });
+        expect(manifest.capabilities).not.toContain('browser_node_cdp_bridge');
+      }
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }
@@ -217,8 +230,28 @@ describe('Stable Supervisor production hardening', () => {
       writeFileSync(join(releasePath, 'browser-node-bridge-host.js'), Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0x00]));
       expect(() => verifySupervisorBrowserNodeBridgeHost({
         releasePath,
-        nodeExecutable: resolveBrowserBridgeNodeExecutable(),
       })).toThrow('native executable, not a Node JavaScript bundle');
+    } finally {
+      rmSync(releasePath, { recursive: true, force: true });
+    }
+  });
+
+  test('release metadata does not advertise the Browser Node bridge when trusted Node is unavailable', () => {
+    const releasePath = mkdtempSync(join(tmpdir(), 'repo-harness-browser-node-unavailable-'));
+    try {
+      writeFileSync(join(releasePath, 'browser-node-bridge-host.js'), 'export {};\n');
+      const canary = verifySupervisorBrowserNodeBridgeHost({
+        releasePath,
+        resolveNodeExecutable: () => {
+          throw new Error('trusted Node unavailable');
+        },
+      });
+      expect(canary).toMatchObject({
+        hostPath: join(releasePath, 'browser-node-bridge-host.js'),
+        nodeChecked: false,
+        availability: 'node_unavailable',
+      });
+      expect(browserNodeBridgeReleaseCapabilities(canary)).toEqual([]);
     } finally {
       rmSync(releasePath, { recursive: true, force: true });
     }
