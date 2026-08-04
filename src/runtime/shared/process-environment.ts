@@ -1,3 +1,5 @@
+import { delimiter, isAbsolute, join } from 'path';
+
 /**
  * Environment boundary for repository-owned child processes.
  *
@@ -21,6 +23,11 @@ const RUNTIME_PRIVATE_ENV_KEYS = new Set([
   'REPO_HARNESS_STABLE_SUPERVISOR',
 ]);
 
+function appendExecutableDirectory(pathEntries: string[], candidate: string | undefined): void {
+  if (!candidate || !isAbsolute(candidate) || pathEntries.includes(candidate)) return;
+  pathEntries.push(candidate);
+}
+
 export function repositoryChildProcessEnvironment(
   env: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
@@ -33,5 +40,13 @@ export function repositoryChildProcessEnvironment(
       delete sanitized[key];
     }
   }
+
+  const pathEntries = (sanitized.PATH ?? '').split(delimiter).filter(Boolean);
+  const bunInstall = sanitized.BUN_INSTALL?.trim();
+  const home = sanitized.HOME?.trim() || sanitized.USERPROFILE?.trim();
+  appendExecutableDirectory(pathEntries, bunInstall ? join(bunInstall, 'bin') : undefined);
+  appendExecutableDirectory(pathEntries, home ? join(home, '.bun', 'bin') : undefined);
+  sanitized.PATH = pathEntries.join(delimiter);
+
   return sanitized;
 }

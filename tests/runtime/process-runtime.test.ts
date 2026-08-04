@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { delimiter, join } from 'path';
 import { spawnSync } from 'child_process';
 import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import {
@@ -50,6 +50,7 @@ import { stageSupervisorRelease } from '../../src/runtime/supervisor/installer';
 import { ensureRepositoryRuntimeStorage } from '../../src/cli/repositories/runtime-storage';
 import { callProcessTool, processToolDefinitions } from '../../src/runtime/gateway/mcp/process-tools';
 import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repository';
+import { repositoryChildProcessEnvironment } from '../../src/runtime/shared/process-environment';
 
 const roots: string[] = [];
 
@@ -121,6 +122,23 @@ describe('Unified Process Runtime', () => {
     expect(resolveProcessRunnerRuntime('/opt/repo-harness/repo-harness.js', {
       REPO_HARNESS_BUN_EXECUTABLE: '/custom/bin/bun',
     })).toBe('/custom/bin/bun');
+  });
+
+  test('repository child PATH discovers standard Bun installs without changing existing precedence', () => {
+    const home = join(tmpdir(), 'repo-harness-user');
+    const bunInstall = join(home, '.bun');
+    const existing = [join(home, 'existing-bin'), '/usr/bin'];
+    const sanitized = repositoryChildProcessEnvironment({
+      HOME: home,
+      BUN_INSTALL: bunInstall,
+      PATH: existing.join(delimiter),
+      REPO_HARNESS_CONTROLLER_SECRET: 'remove-me',
+    });
+    expect(sanitized.PATH?.split(delimiter)).toEqual([
+      ...existing,
+      join(bunInstall, 'bin'),
+    ]);
+    expect(sanitized.REPO_HARNESS_CONTROLLER_SECRET).toBeUndefined();
   });
 
   test('short command returns completed direct handle without re-exec', async () => {
