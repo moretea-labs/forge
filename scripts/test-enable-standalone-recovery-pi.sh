@@ -4,7 +4,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 SCRIPT="$ROOT/scripts/enable-standalone-recovery-pi.sh"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+FAKE_SUPERVISOR_PID=""
+INSTALLER_CONTROLLER=""
+trap 'if [[ -n "${FAKE_SUPERVISOR_PID:-}" ]]; then kill "$FAKE_SUPERVISOR_PID" 2>/dev/null || true; fi; rm -rf "$TMP"; if [[ -n "${INSTALLER_CONTROLLER:-}" ]]; then rm -rf "$INSTALLER_CONTROLLER"; fi' EXIT
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert_contains() { grep -q -- "$2" "$1" || fail "$1 does not contain $2"; }
@@ -107,8 +109,60 @@ ln -s "$SHIM_TARGET" "$SHIM_PATH"
 "$SHIM_PATH" || fail "shim path should be executable"
 if "$SHIM_TARGET"; then fail "direct generic dispatcher should fail"; fi
 
-INSTALLER_CONTROLLER="$TMP/installer-controller"
+INSTALLER_CONTROLLER="$(mktemp -d /tmp/rh-installer.XXXXXX)"
 INSTALLER_OUTPUT="$TMP/installer-output.json"
+FAKE_SUPERVISOR_LOG="$TMP/fake-supervisor.log"
+FAKE_SUPERVISOR_SCRIPT="$TMP/fake-supervisor.py"
+TEST_PYTHON="/usr/bin/python3"
+mkdir -p "$INSTALLER_CONTROLLER/supervisor"
+cat > "$FAKE_SUPERVISOR_SCRIPT" <<'PY'
+import json
+import os
+import signal
+import socket
+import sys
+
+socket_path = sys.argv[1]
+try:
+    os.unlink(socket_path)
+except FileNotFoundError:
+    pass
+
+server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+server.bind(socket_path)
+server.listen(4)
+
+def stop(_signum, _frame):
+    server.close()
+    raise SystemExit(0)
+
+signal.signal(signal.SIGTERM, stop)
+while True:
+    connection, _ = server.accept()
+    with connection:
+        data = b''
+        while b'\n' not in data:
+            chunk = connection.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        response = {'ok': True, 'state': {'observedState': 'healthy'}}
+        connection.sendall(json.dumps(response).encode('utf-8') + b'\n')
+PY
+"$TEST_PYTHON" "$FAKE_SUPERVISOR_SCRIPT" "$INSTALLER_CONTROLLER/supervisor/control.sock" >"$FAKE_SUPERVISOR_LOG" 2>&1 &
+FAKE_SUPERVISOR_PID=$!
+for _ in {1..500}; do
+  [[ -S "$INSTALLER_CONTROLLER/supervisor/control.sock" ]] && break
+  if ! kill -0 "$FAKE_SUPERVISOR_PID" 2>/dev/null; then
+    cat "$FAKE_SUPERVISOR_LOG" >&2 || true
+    fail "fake Supervisor process exited before creating its socket"
+  fi
+  sleep 0.02
+done
+if [[ ! -S "$INSTALLER_CONTROLLER/supervisor/control.sock" ]]; then
+  cat "$FAKE_SUPERVISOR_LOG" >&2 || true
+  fail "fake Supervisor socket did not start"
+fi
 (
   cd "$ROOT"
   bun scripts/install-standalone-recovery.ts \
@@ -118,6 +172,9 @@ INSTALLER_OUTPUT="$TMP/installer-output.json"
     --pi-command "$SHIM_PATH" \
     --pi-repo-root "$SOURCE"
 ) > "$INSTALLER_OUTPUT"
+kill "$FAKE_SUPERVISOR_PID" 2>/dev/null || true
+wait "$FAKE_SUPERVISOR_PID" 2>/dev/null || true
+FAKE_SUPERVISOR_PID=""
 node - "$INSTALLER_OUTPUT" "$SHIM_PATH" <<'NODE'
 const fs = require('fs');
 const [outputPath, shimPath] = process.argv.slice(2);
@@ -161,3 +218,11 @@ env \
   "$SCRIPT" --print-plan > "$NODE_PLAN"
 assert_contains "$NODE_PLAN" "--recovery-public-url"
 printf 'standalone Recovery toolchain shim regression passed\n'
+
+# Funnel verification must not pipe into grep -q under pipefail: grep may exit
+# early and make the upstream Tailscale CLI report SIGPIPE despite valid routes.
+if grep -Fq 'funnel status | grep -q' "$SCRIPT"; then
+  fail "unsafe Tailscale Funnel pipefail pipeline remains"
+fi
+[[ "$(grep -c 'funnel_status=' "$SCRIPT")" -ge 2 ]] || fail "Funnel status is not captured before route checks"
+printf 'standalone Recovery Funnel pipefail regression passed\n'

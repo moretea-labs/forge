@@ -233,8 +233,9 @@ status="\$("\$TAILSCALE" status --json 2>/dev/null || true)"
 if ! grep -Eq '"BackendState"[[:space:]]*:[[:space:]]*"Running"' <<<"\$status"; then "\$TAILSCALE" up; fi
 "\$TAILSCALE" funnel --bg --yes --https=443 --set-path /recovery http://127.0.0.1:8787
 "\$TAILSCALE" funnel --bg --yes --https=443 --set-path /.well-known http://127.0.0.1:8787
-"\$TAILSCALE" funnel status | grep -q '/recovery'
-"\$TAILSCALE" funnel status | grep -q '/.well-known'
+funnel_status="\$("\$TAILSCALE" funnel status)"
+grep -Fq '/recovery' <<<"\$funnel_status"
+grep -Fq '/.well-known' <<<"\$funnel_status"
 EOF
   chmod 700 "$helper_tmp"
   mv "$helper_tmp" "$RECOVERY_TUNNEL_HELPER"
@@ -266,7 +267,7 @@ EOF
 }
 
 verify_install() {
-  local recovery_bin="$CONTROLLER_HOME/recovery/bin/repo-harness-recovery" public_health
+  local recovery_bin="$CONTROLLER_HOME/recovery/bin/repo-harness-recovery" public_health funnel_status
   [[ -x "$recovery_bin" ]] || die "immutable Recovery binary is unavailable"
   "$NODE_COMMAND" - "$CURRENT_CONFIG" "$RECOVERY_PUBLIC_URL" "$RECOVERY_TUNNEL_LABEL" "$RECOVERY_TUNNEL_PLIST" "$PI_COMMAND" "$PI_REPO_ROOT" "$PI_MINIMUM_FAILURES" "$PI_MINIMUM_FAILURE_DURATION_MS" "$PI_COOLDOWN_MS" <<'NODE'
 const fs=require('fs');
@@ -285,8 +286,9 @@ NODE
   launchctl print "gui/$UID/$RECOVERY_TUNNEL_LABEL" >/dev/null
   public_health="$(health_url "$RECOVERY_PUBLIC_URL")"
   "$CURL_COMMAND" -fsS --connect-timeout 5 --max-time 15 "$public_health" >/dev/null
-  "$TAILSCALE_COMMAND" funnel status | grep -q '/recovery'
-  "$TAILSCALE_COMMAND" funnel status | grep -q '/.well-known'
+  funnel_status="$("$TAILSCALE_COMMAND" funnel status)"
+  grep -Fq '/recovery' <<<"$funnel_status"
+  grep -Fq '/.well-known' <<<"$funnel_status"
   printf 'RECOVERY_PI_READY controller_home=%s pi_repo=%s public=%s\n' "$CONTROLLER_HOME" "$PI_REPO_ROOT" "$RECOVERY_PUBLIC_URL"
 }
 
