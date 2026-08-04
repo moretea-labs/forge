@@ -24,13 +24,14 @@ import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkComp
 import { completeRequirementFromWork } from '../../control-plane/persistence/requirement-store';
 import { isTerminalWorkContractStatus } from '../../control-plane/facade/types';
 import { buildWorkContinuationSnapshot } from '../../control-plane/facade/work-continuation';
-import { claimControllerSession, getControllerSession, resumeControllerSession } from '../../control-plane/facade/controller-session-store';
+import { claimControllerSession, getControllerSession, releaseControllerSession, resumeControllerSession } from '../../control-plane/facade/controller-session-store';
 import { currentControllerInstanceId, requireExecutionSession, startExecutionSession, updateExecutionSession, type ExecutionSessionContext, type SessionIdentity } from '../../control-plane/execution/session-store';
 import { currentPermissionSnapshotVersion, validateWorkHandle } from '../../control-plane/execution/validation';
 import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint, workValidationInputFingerprint } from '../../control-plane/execution/verification-evidence';
 import { executionIdentityForWork, resolveLegacyWorkContractIdentity } from '../../control-plane/execution/execution-identity';
 import { withWorkPrepareRequest } from '../../control-plane/execution/work-prepare-request-store';
-import { markWorkHandleFailed, newWorkId, readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkFinalizationStages, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
+import { markWorkHandleFailed, newWorkId, readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkFinalizationStages, type WorkHandleState, type WorkTerminalOutcome } from '../../control-plane/execution/work-handle-store';
+import { cleanupTerminalWork } from '../../control-plane/execution/work-terminal-cleanup';
 import { assertResolvedAuthorization, createGoalDelegation, decideAuthorization, resolveAuthorizationRequest, type AuthorizationDecision, type AuthorizationRiskClass } from '../../control-plane/governance/authorization';
 import { readControllerResult, searchControllerResult, writeControllerResult } from '../../evidence/result-store';
 import { resumeExecutionJobAfterApproval } from '../../execution/jobs/store';
@@ -156,7 +157,10 @@ function compactHandle(handle: WorkHandleState): Record<string, unknown> {
     worktreePath: handle.worktreePath, branch: handle.branch, sourceCheckoutId: handle.sourceCheckoutId, goalId: handle.goalId, delegationVersion: handle.delegationVersion,
     workContractId: handle.workContractId, baseCommit: handle.baseCommit, expectedHead: handle.expectedHead,
     permissionSnapshotVersion: handle.permissionSnapshotVersion, state: handle.state, managedWorktree: handle.managedWorktree,
-    createdAt: handle.createdAt, updatedAt: handle.updatedAt, finalization: handle.finalization, ...(handle.failureReason ? { failureReason: handle.failureReason } : {}),
+    createdAt: handle.createdAt, updatedAt: handle.updatedAt, finalization: handle.finalization,
+    ...(handle.failureReason ? { failureReason: handle.failureReason } : {}),
+    ...(handle.cleanupResponsibility ? { cleanupResponsibility: handle.cleanupResponsibility } : {}),
+    ...(handle.cleanupReceipt ? { cleanupReceipt: handle.cleanupReceipt } : {}),
   };
 }
 
@@ -371,6 +375,92 @@ function claimPreparedWorkOwnership(
   });
 }
 
+function releasePreparedWorkOwnership(
+  ctx: MultiRepositoryMcpToolContext,
+  handle: WorkHandleState,
+): 'released' | 'already_released' {
+  const workIdValue = handle.workContractId ?? handle.workId;
+  const current = getControllerSession(
+    { controllerHome: ctx.controllerHome, repoId: handle.repositoryId },
+    workIdValue,
+  );
+  if (!current) return 'already_released';
+  releaseControllerSession(
+    { controllerHome: ctx.controllerHome, repoId: handle.repositoryId },
+    workIdValue,
+    current.controllerId,
+  );
+  return 'released';
+}
+
+function terminalCleanupOutcome(
+  ctx: MultiRepositoryMcpToolContext,
+  handle: WorkHandleState,
+): WorkTerminalOutcome | undefined {
+  if (handle.cleanupReceipt) return handle.cleanupReceipt.terminalOutcome;
+  const contract = contractFor(ctx, handle);
+  if (contract?.status === 'cancelled') return 'cancelled';
+  const reason = `${handle.failureReason ?? ''} ${handle.finalization.lastError ?? ''}`.toLowerCase();
+  if (contract?.status === 'blocked' && reason.includes('terminal')) return 'blocked_terminal';
+  if (contract?.status === 'failed' || handle.state === 'failed' || handle.state === 'failed_terminal_cleanup') {
+    if (reason.includes('infrastructure') || reason.includes('timed out') || reason.includes('unavailable')) {
+      return 'infrastructure_failed';
+    }
+    if (handle.finalization.validation === 'failed') return 'validation_failed';
+    return 'failed';
+  }
+  return undefined;
+}
+
+async function reconcileTerminalCleanup(
+  ctx: MultiRepositoryMcpToolContext,
+  session: ExecutionSessionContext,
+  handle: WorkHandleState,
+  args: Record<string, unknown>,
+  outcome: WorkTerminalOutcome,
+): Promise<Record<string, unknown>> {
+  const wasComplete = handle.cleanupReceipt?.complete === true;
+  const cleaned = await cleanupTerminalWork({
+    controllerHome: ctx.controllerHome,
+    handle,
+    targetBranch: typeof args.target_branch === 'string' ? args.target_branch : undefined,
+    deleteBranch: args.delete_branch !== false,
+    terminalOutcome: outcome,
+    failureReason: handle.failureReason ?? handle.finalization.lastError,
+  });
+  const ownership = releasePreparedWorkOwnership(ctx, cleaned.handle);
+  cleaned.receipt.ownership.controllerLease = ownership;
+  const persisted = writeWorkHandle(ctx.controllerHome, {
+    ...cleaned.handle,
+    cleanupReceipt: cleaned.receipt,
+  });
+  updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
+    activeWorkId: undefined,
+    activeCheckoutId: persisted.sourceCheckoutId ?? session.activeCheckoutId,
+  });
+  if (cleaned.receipt.complete && !wasComplete) {
+    appendWorkEvidence(
+      { controllerHome: ctx.controllerHome, repoId: persisted.repositoryId },
+      persisted.workContractId ?? persisted.workId,
+      {
+        title: 'terminal cleanup receipt',
+        summary: `Cleanup ${cleaned.receipt.receiptId} completed for ${outcome}; Work outcome was preserved and no completion receipt was fabricated.`,
+        detailLevel: 'summary',
+      },
+    );
+  }
+  return {
+    work: compactHandle(persisted),
+    stages: persisted.finalization,
+    completed: false,
+    cleanupCompleted: cleaned.receipt.complete,
+    cleanupPartial: cleaned.receipt.partial,
+    failurePreserved: true,
+    cleanupReceipt: cleaned.receipt,
+    idempotent: wasComplete,
+  };
+}
+
 function invalidateActiveWork(ctx: MultiRepositoryMcpToolContext, session: ExecutionSessionContext, reason: string): void {
   if (!session.activeRepositoryId || !session.activeWorkId) return;
   const handle = readWorkHandle(ctx.controllerHome, session.activeRepositoryId, session.activeWorkId);
@@ -533,6 +623,7 @@ function prepareWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, un
         sourceCheckoutId: baseCheckoutId, managedWorktree: workspace.managed, workContractId: contract.workId, goalId, delegationVersion: delegation.version,
         baseCommit: workspace.baseRevision ?? head, expectedHead: head, permissionSnapshotVersion: policy.revision,
         state: 'prepared', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), finalization: initialStage(),
+        cleanupResponsibility: { owner: 'work_finalizer', registeredAt: new Date().toISOString() },
       };
       writeWorkHandle(ctx.controllerHome, handle);
       updateWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, contract.workId, { status: 'running', worktreeRef: checkout.canonicalRoot });
@@ -754,12 +845,41 @@ async function executeWork(ctx: MultiRepositoryMcpToolContext, args: Record<stri
   return response;
 }
 
+export function selectDefaultWorkValidationChecks(
+  contract: ReturnType<typeof contractFor>,
+  changedPaths: string[],
+): string[] {
+  if (!contract || changedPaths.length === 0) return [];
+  if (contract.risk === 'medium' || contract.risk === 'high' || contract.risk === 'destructive') {
+    return [...contract.checks];
+  }
+  const sourceTypeScriptChanged = changedPaths.some((path) =>
+    /\.(?:ts|tsx|mts|cts)$/.test(path)
+    && !/(?:^|\/)(?:tests?|__tests__|fixtures)(?:\/|$)/.test(path));
+  return contract.checks.filter((checkId) => {
+    const normalized = checkId.toLowerCase();
+    if (normalized.includes('package:test') || normalized.includes('full') || normalized.includes('architecture') || normalized.includes('release') || normalized.includes('runtime')) {
+      return false;
+    }
+    if (normalized.includes('type')) return sourceTypeScriptChanged;
+    return normalized.includes('focused') || normalized.includes('unit') || normalized.includes('changed') || normalized.includes('target');
+  });
+}
+
 async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const session = requireSession(ctx, args);
   const handle = workForSession(ctx, session, args);
+  const terminalOutcome = terminalCleanupOutcome(ctx, handle);
+  if (terminalOutcome && args.cleanup !== false) {
+    return await reconcileTerminalCleanup(ctx, session, handle, args, terminalOutcome);
+  }
   const validated = validateWorkHandle(ctx.controllerHome, handle, identityFor(ctx, args), 'full', 'validate');
   const contract = contractFor(ctx, handle);
-  const requestedChecks = Array.isArray(args.check_ids) ? args.check_ids.map(String).filter(Boolean) : contract?.checks ?? [];
+  const changed = repositoryGitDiff(validated.worktreeRepository, { maxBytes: 64 * 1024 });
+  const changedPaths = Array.isArray(changed.nameOnly) ? changed.nameOnly.map(String) : [];
+  const requestedChecks = Array.isArray(args.check_ids)
+    ? args.check_ids.map(String).filter(Boolean)
+    : selectDefaultWorkValidationChecks(contract, changedPaths);
   const validationInvocationId = typeof args.request_id === 'string' && args.request_id.trim()
     ? args.request_id.trim()
     : `validate-${session.sessionId}-${handle.workId}-${Date.now()}-${randomUUID().slice(0, 8)}`;
@@ -907,12 +1027,10 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       : undefined;
   const nextState = !completed
     ? 'validating'
-    : infrastructureFailure
+    : passed
       ? validationRun.resumeState
-      : passed
-        ? validationRun.resumeState
-        : 'failed';
-  const validation = !completed || infrastructureFailure ? 'pending' : passed ? 'done' : 'failed';
+      : 'failed';
+  const validation = !completed ? 'pending' : passed ? 'done' : 'failed';
   const next = transitionWorkHandle(ctx.controllerHome, current, nextState, {
     finalization: {
       ...current.finalization,
@@ -921,7 +1039,7 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     },
     validationRun: completed ? undefined : validationRun,
     ...(passed ? { validatedInputFingerprint: validationFingerprint } : {}),
-    ...(acceptedFailure ? { failureReason: failureSummary } : { failureReason: undefined }),
+    ...(failureSummary ? { failureReason: failureSummary } : { failureReason: undefined }),
   });
   if (completed) {
     projectWorkValidationOutcome(
@@ -931,7 +1049,21 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       failureSummary,
     );
   }
-  const value = { work: compactHandle(next), validation: { passed, completed, checks, targeted: true } };
+  if (completed && !passed) {
+    const cleanup = await reconcileTerminalCleanup(
+      ctx,
+      session,
+      next,
+      args,
+      infrastructureFailure ? 'infrastructure_failed' : 'validation_failed',
+    );
+    const value = {
+      ...cleanup,
+      validation: { passed, completed, checks, targeted: true, changedPaths, cleanupTriggered: true },
+    };
+    return makeBoundedResult(ctx, session, handle.repositoryId, handle.workId, 'validation', value);
+  }
+  const value = { work: compactHandle(next), validation: { passed, completed, checks, targeted: true, changedPaths } };
   return makeBoundedResult(ctx, session, handle.repositoryId, handle.workId, 'validation', value);
 }
 
@@ -1001,6 +1133,62 @@ function cleanupOnlyMergedHead(
   return { currentHead, cancelledContract, worktreeMissing: false };
 }
 
+interface FailedCleanupProof {
+  currentHead: string;
+  worktreeMissing: boolean;
+  targetBranch: string;
+}
+
+/**
+ * Prove that a failed Work owns an unchanged, clean managed worktree whose
+ * branch is already contained in the target branch. This authorizes resource
+ * cleanup only; it never proves successful verification or delivery.
+ */
+function failedCleanupOnlyHead(
+  ctx: MultiRepositoryMcpToolContext,
+  current: WorkHandleState,
+  args: Record<string, unknown>,
+): FailedCleanupProof | undefined {
+  if (
+    current.state !== 'failed'
+    || args.cleanup !== true
+    || args.commit === true
+    || args.merge === true
+    || !current.managedWorktree
+  ) return undefined;
+  const contract = contractFor(ctx, current);
+  if (contract?.status !== 'failed') return undefined;
+
+  const expectedHead = current.expectedHead ?? current.baseCommit;
+  if (!expectedHead) return undefined;
+  const repository = getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true });
+  const target = selectRepositoryCheckout(repository, current.sourceCheckoutId ?? repository.activeCheckoutId);
+  const targetBranch = typeof args.target_branch === 'string' && args.target_branch.trim()
+    ? args.target_branch.trim()
+    : repository.defaultBranch || 'main';
+  const merged = spawnSync('git', ['-C', target.canonicalRoot, 'merge-base', '--is-ancestor', expectedHead, targetBranch], {
+    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
+  });
+  if (merged.status !== 0) return undefined;
+
+  const worktreeMissing = !existsSync(current.worktreePath);
+  if (worktreeMissing) {
+    return current.finalization.worktreeCleanup === 'done'
+      ? { currentHead: expectedHead, worktreeMissing: true, targetBranch }
+      : undefined;
+  }
+
+  const worktree = selectRepositoryCheckout(repository, current.checkoutId, { allowArchived: true });
+  if (resolve(worktree.canonicalRoot) !== resolve(current.worktreePath)) return undefined;
+  if (!repositoryGitStatus(worktree).clean) return undefined;
+  if (gitHead(worktree.canonicalRoot) !== expectedHead) return undefined;
+  const currentBranch = spawnSync('git', ['-C', worktree.canonicalRoot, 'branch', '--show-current'], {
+    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
+  });
+  if (currentBranch.status !== 0 || String(currentBranch.stdout ?? '').trim() !== current.branch) return undefined;
+  return { currentHead: expectedHead, worktreeMissing: false, targetBranch };
+}
+
 function resetFailedFinalizationStages(stages: WorkFinalizationStages, wants: { commit: boolean; merge: boolean; cleanup: boolean }): WorkFinalizationStages {
   const next = { ...stages };
   let reset = false;
@@ -1064,11 +1252,35 @@ function currentWorkValidationInput(
   };
 }
 
-function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Record<string, unknown> {
+async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const session = requireSession(ctx, args);
   let current = workForSession(ctx, session, args);
+  const terminalOutcome = terminalCleanupOutcome(ctx, current);
+  if (terminalOutcome && args.cleanup !== false) {
+    return await reconcileTerminalCleanup(ctx, session, current, args, terminalOutcome);
+  }
   assertWorkControllerOwnership(ctx, session, current, args);
   if (current.state === 'cleaned') {
+    const terminalContract = contractFor(ctx, current);
+    if (
+      terminalContract?.status === 'failed'
+      && current.finalization.validation === 'failed'
+      && current.finalization.worktreeCleanup === 'done'
+    ) {
+      releasePreparedWorkOwnership(ctx, current);
+      updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
+        activeWorkId: undefined,
+        activeCheckoutId: current.sourceCheckoutId ?? session.activeCheckoutId,
+      });
+      return {
+        idempotent: true,
+        work: compactHandle(current),
+        stages: current.finalization,
+        completed: false,
+        cleanupCompleted: true,
+        failurePreserved: true,
+      };
+    }
     validateWorkHandle(ctx.controllerHome, current, identityFor(ctx, args), 'none', 'finalize');
     return { idempotent: true, work: compactHandle(current) };
   }
@@ -1098,12 +1310,25 @@ function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, u
     return { work: compactHandle(current), stages: current.finalization, completed: false };
   };
 
-  current = transact('begin', (fresh) => writeWorkHandle(ctx.controllerHome, {
-    ...fresh,
-    state: fresh.state === 'failed' ? 'validating' : fresh.state,
-    failureReason: undefined,
-    finalization: resetFailedFinalizationStages(fresh.finalization, wants),
-  }));
+  const failedCleanupRequested = current.state === 'failed'
+    && wants.cleanup
+    && !wants.commit
+    && !wants.merge;
+  const failedCleanupProof = failedCleanupRequested
+    ? failedCleanupOnlyHead(ctx, current, args)
+    : undefined;
+  if (failedCleanupRequested && !failedCleanupProof) {
+    throw new Error('WORK_FAILED_CLEANUP_UNSAFE: failed Work cleanup requires exact checkout/branch ownership and an unchanged clean controller-owned managed worktree whose exact HEAD is already contained in the target branch');
+  }
+
+  if (!failedCleanupRequested) {
+    current = transact('begin', (fresh) => writeWorkHandle(ctx.controllerHome, {
+      ...fresh,
+      state: fresh.state === 'failed' ? 'validating' : fresh.state,
+      failureReason: undefined,
+      finalization: resetFailedFinalizationStages(fresh.finalization, wants),
+    }));
+  }
 
   const approvalRequestId = typeof args.approval_request_id === 'string' ? args.approval_request_id.trim() : '';
   const resolvedAuthorization = approvalRequestId
@@ -1128,6 +1353,128 @@ function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, u
       command: 'work_finalize',
     });
   if (gitAuthorization.decision !== 'allow') return { authorization: gitAuthorization, work: compactHandle(current), stages: current.finalization };
+
+  if (failedCleanupProof) {
+    const preservedFailure = current.failureReason ?? current.finalization.lastError ?? 'Work validation failed.';
+    current = transact('failed-cleanup-begin', (fresh) => writeWorkHandle(ctx.controllerHome, {
+      ...fresh,
+      state: 'failed',
+      failureReason: preservedFailure,
+      finalization: {
+        ...fresh.finalization,
+        validation: 'failed',
+        commit: fresh.finalization.commit === 'pending' ? 'skipped' : fresh.finalization.commit,
+        merge: fresh.finalization.merge === 'pending' ? 'skipped' : fresh.finalization.merge,
+        branchCleanup: args.delete_branch === false ? 'skipped' : fresh.finalization.branchCleanup,
+        lastError: preservedFailure,
+      },
+    }));
+
+    if (!failedCleanupProof.worktreeMissing && current.finalization.worktreeCleanup !== 'done') {
+      const target = selectRepositoryCheckout(
+        getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true }),
+        current.sourceCheckoutId ?? current.checkoutId,
+      );
+      const cleanup = runCleanup(target.canonicalRoot, current.worktreePath);
+      if (!cleanup.ok) {
+        throw new Error(`WORK_FAILED_CLEANUP_UNSAFE: ${cleanup.message ?? 'managed worktree cleanup failed'}`);
+      }
+      current = transact('failed-worktree-cleanup-done', (fresh) => {
+        setRepositoryCheckoutLifecycle({
+          controllerHome: ctx.controllerHome,
+          repoId: fresh.repositoryId,
+          checkoutId: fresh.checkoutId,
+          lifecycle: 'removed',
+          reason: `Failed Work ${fresh.workId} cleanup completed without changing delivery state.`,
+        });
+        markRepositoryProjectionDirty(ctx.controllerHome, fresh.repositoryId, `cleanup:${fresh.workId}:failed-worktree`);
+        return writeWorkHandle(ctx.controllerHome, {
+          ...fresh,
+          state: 'failed',
+          failureReason: preservedFailure,
+          finalization: { ...fresh.finalization, worktreeCleanup: 'done', lastError: preservedFailure },
+        });
+      });
+    }
+
+    if (args.delete_branch !== false && current.finalization.branchCleanup !== 'done') {
+      const target = selectRepositoryCheckout(
+        getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true }),
+        current.sourceCheckoutId ?? current.checkoutId,
+      );
+      const deleted = repositoryGitDeleteBranch(ctx.controllerHome, target, {
+        branch: current.branch,
+        force: false,
+        authorizationDecision: gitAuthorization,
+        sessionId: session.sessionId,
+        principalId: session.principalId,
+        workId: current.workId,
+        goalId: current.goalId,
+      });
+      if (deleted.execution.authorizationDecision?.decision === 'user_confirmation_required') {
+        return { authorization: deleted.execution.authorizationDecision, work: compactHandle(current), stages: current.finalization };
+      }
+      if (deleted.execution.status !== 'executed' || deleted.execution.ok !== true) {
+        current = transact('failed-branch-cleanup-failed', (fresh) => writeWorkHandle(ctx.controllerHome, {
+          ...fresh,
+          state: 'failed',
+          failureReason: preservedFailure,
+          finalization: {
+            ...fresh.finalization,
+            branchCleanup: 'failed',
+            lastError: String(deleted.execution.stderr || 'feature branch cleanup failed').slice(0, 1_000),
+          },
+        }));
+        return {
+          work: compactHandle(current),
+          stages: current.finalization,
+          completed: false,
+          cleanupCompleted: false,
+          failurePreserved: true,
+        };
+      }
+      current = transact('failed-branch-cleanup-done', (fresh) => {
+        markRepositoryProjectionDirty(ctx.controllerHome, fresh.repositoryId, `cleanup:${fresh.workId}:failed-branch`);
+        return writeWorkHandle(ctx.controllerHome, {
+          ...fresh,
+          state: 'failed',
+          failureReason: preservedFailure,
+          finalization: { ...fresh.finalization, branchCleanup: 'done', lastError: preservedFailure },
+        });
+      });
+    }
+
+    current = transact('failed-cleanup-complete', (fresh) => transitionWorkHandle(ctx.controllerHome, fresh, 'cleaned', {
+      failureReason: preservedFailure,
+      finalization: {
+        ...fresh.finalization,
+        validation: 'failed',
+        commit: fresh.finalization.commit === 'pending' ? 'skipped' : fresh.finalization.commit,
+        merge: fresh.finalization.merge === 'pending' ? 'skipped' : fresh.finalization.merge,
+        branchCleanup: args.delete_branch === false ? 'skipped' : fresh.finalization.branchCleanup,
+        worktreeCleanup: 'done',
+        lastError: preservedFailure,
+      },
+    }));
+    appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId ?? current.workId, {
+      title: 'failed work cleanup completed',
+      summary: `Controller preserved the failed Work outcome while removing its unchanged clean managed worktree and ${args.delete_branch === false ? 'retaining' : 'removing'} the local branch after proving ${failedCleanupProof.currentHead} is contained in ${failedCleanupProof.targetBranch}.`,
+      detailLevel: 'summary',
+    });
+    releasePreparedWorkOwnership(ctx, current);
+    updateExecutionSession(ctx.controllerHome, identity, {
+      activeWorkId: undefined,
+      activeCheckoutId: current.sourceCheckoutId ?? session.activeCheckoutId,
+    });
+    return {
+      work: compactHandle(current),
+      stages: current.finalization,
+      completed: false,
+      cleanupCompleted: true,
+      failurePreserved: true,
+      idempotent: false,
+    };
+  }
 
   const contractAtStart = contractFor(ctx, current);
   const cancelledCleanupRequested = contractAtStart?.status === 'cancelled'
@@ -1335,6 +1682,7 @@ function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, u
       }
     }
     if (finalState === 'cleaned') {
+      releasePreparedWorkOwnership(ctx, current);
       updateExecutionSession(ctx.controllerHome, identity, { activeWorkId: undefined, activeCheckoutId: current.sourceCheckoutId ?? session.activeCheckoutId });
     }
   }
@@ -1354,7 +1702,7 @@ export async function callExecutionTool(ctx: MultiRepositoryMcpToolContext, name
       case 'work_inspect': return result(inspectWork(ctx, args));
       case 'work_execute': return result(await executeWork(ctx, args));
       case 'work_validate': return result(await validateWork(ctx, args));
-      case 'work_finalize': return result(finalizeWork(ctx, args));
+      case 'work_finalize': return result(await finalizeWork(ctx, args));
       case 'approval_resolve': {
         const session = requireSession(ctx, args);
         const repositoryId = typeof args.repo_id === 'string' && args.repo_id.trim() ? args.repo_id.trim() : session.activeRepositoryId;

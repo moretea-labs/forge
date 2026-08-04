@@ -132,7 +132,7 @@ describe('Work validation receipt convergence', () => {
     const result = reconcileWorkValidation(fx.controllerHome, fx.handle);
     expect(result).toMatchObject({ outcome: 'failed', changed: true, handle: { state: 'failed' } });
     expect(result.handle.finalization.validation).toBe('failed');
-    expect(contractFor(fx)).toMatchObject({ status: 'failed', phase: 'verification', evidenceState: 'failed' });
+    expect(contractFor(fx)).toMatchObject({ status: 'failed', phase: 'cleanup', evidenceState: 'failed' });
   });
 
   test('authorizes delivery only for valid evidence bound to the exact current input', () => {
@@ -159,19 +159,19 @@ describe('Work validation receipt convergence', () => {
     expect(contractFor(fx)).toMatchObject({ evidenceState: 'stale' });
   });
 
-  test('timeout and missing Process records return to a retryable Work state', () => {
+  test('timeout and missing Process records become terminal cleanup candidates', () => {
     const timedOut = fixture('timed_out');
     const timedOutResult = reconcileWorkValidation(timedOut.controllerHome, timedOut.handle);
-    expect(timedOutResult).toMatchObject({ outcome: 'infrastructure_failure', handle: { state: 'editing' } });
-    expect(timedOutResult.handle.finalization.validation).toBe('pending');
+    expect(timedOutResult).toMatchObject({ outcome: 'infrastructure_failure', handle: { state: 'failed' } });
+    expect(timedOutResult.handle.finalization.validation).toBe('failed');
     expect(timedOutResult.handle.validationRun).toBeUndefined();
-    expect(contractFor(timedOut)).toMatchObject({ status: 'running', phase: 'implementation', evidenceState: 'partial' });
+    expect(contractFor(timedOut)).toMatchObject({ status: 'failed', phase: 'cleanup', evidenceState: 'partial' });
 
     const missing = fixture('succeeded', { createProcess: false });
     const missingResult = reconcileWorkValidation(missing.controllerHome, missing.handle);
-    expect(missingResult).toMatchObject({ outcome: 'infrastructure_failure', handle: { state: 'editing' } });
+    expect(missingResult).toMatchObject({ outcome: 'infrastructure_failure', handle: { state: 'failed' } });
     expect(missingResult.handle.validationRun).toBeUndefined();
-    expect(contractFor(missing)).toMatchObject({ status: 'running', phase: 'implementation', evidenceState: 'partial' });
+    expect(contractFor(missing)).toMatchObject({ status: 'failed', phase: 'cleanup', evidenceState: 'partial' });
   });
 });
 

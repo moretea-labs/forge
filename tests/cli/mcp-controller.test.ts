@@ -14,9 +14,12 @@ import { join } from "path";
 import { writeJsonAtomic } from "../../src/runtime/shared/json-files";
 import { appendControllerWorklogEvent } from "../../src/cli/controller/worklog";
 import { readControllerDaemonStatus } from "../../src/runtime/control-plane/daemon-client";
-import { writeWorkHandle } from "../../src/runtime/control-plane/execution/work-handle-store";
+import { readWorkHandle, writeWorkHandle } from "../../src/runtime/control-plane/execution/work-handle-store";
+import { getControllerSession } from "../../src/runtime/control-plane/facade/controller-session-store";
+import { getWorkContract, updateWorkContract } from "../../src/runtime/control-plane/facade/work-contract-store";
 import { createRequirement, updateRequirement } from "../../src/runtime/control-plane/persistence/requirement-store";
 import { terminateProcessTree } from "../../src/runtime/shared/process-tree";
+import { callExecutionTool } from "../../src/runtime/gateway/mcp/execution-tools";
 import { callRuntimeTool, controllerReadiness } from "../../src/runtime/gateway/mcp/runtime-tools";
 import { getMcpPolicy } from "../../src/cli/mcp/policy";
 import { createMcpToolContext as createMultiRepositoryContext, parseMcpToolset } from "../../src/cli/mcp/multi-repository";
@@ -81,6 +84,16 @@ async function jsonTool(
 ) {
   const result = await callMcpTool(ctx, name, args);
   return { raw: result, value: JSON.parse(result.content[0].text) };
+}
+
+async function executionJson(
+  ctx: ReturnType<typeof createMultiRepositoryContext>,
+  name: string,
+  args: Record<string, unknown> = {},
+) {
+  const result = await callExecutionTool(ctx, name, args);
+  if (!result) throw new Error(`execution tool not found: ${name}`);
+  return JSON.parse(result.content[0].text);
 }
 
 async function verifyTaskUntilSettled(
@@ -837,6 +850,178 @@ describe("MCP controller profile", () => {
           await terminateProcessTree(daemonPid, { gracePeriodMs: 200, killAfterMs: 1_500 });
         }
       }
+    });
+  });
+
+  test("automatically cleans validation-failed managed Work while preserving failure and releasing ownership", async () => {
+    await withController(async (repoRoot, _ctx) => {
+      const controllerHome = process.env.REPO_HARNESS_CONTROLLER_HOME!;
+      writeFileSync(join(repoRoot, ".repo-harness/checks.json"), JSON.stringify({
+        version: 1,
+        checks: {
+          "validation-fail": {
+            description: "Intentional validation failure",
+            command: [process.execPath, "-e", "process.exit(7)"],
+            timeoutMs: 10_000,
+          },
+        },
+      }));
+      spawnSync("git", ["config", "user.name", "Repo Harness Test"], { cwd: repoRoot, stdio: "ignore" });
+      spawnSync("git", ["config", "user.email", "repo-harness@example.test"], { cwd: repoRoot, stdio: "ignore" });
+      spawnSync("git", ["add", "."], { cwd: repoRoot, stdio: "ignore" });
+      expect(spawnSync("git", ["commit", "-m", "fixture"], { cwd: repoRoot, stdio: "ignore" }).status).toBe(0);
+      const repository = registerRepository({ path: repoRoot, controllerHome });
+      persistControllerAccessMode(controllerHome, "full_access", repoRoot);
+      const advanced = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", toolset: "advanced", controllerHome });
+      const started = await executionJson(advanced, "session_start", {});
+      const sessionId = String(started.session.sessionId);
+      await executionJson(advanced, "session_bind_repository", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        checkout_id: repository.activeCheckoutId,
+      });
+      const prepared = await executionJson(advanced, "work_prepare", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        checkout_id: repository.activeCheckoutId,
+        request_id: "validation-failed-auto-cleanup",
+        objective: "Prove validation failure automatically enters cleanup",
+        checks: ["validation-fail"],
+        isolation: "new_worktree",
+      });
+      expect(prepared.error).toBeUndefined();
+      const workId = String(prepared.work.workId);
+      const handle = readWorkHandle(controllerHome, repository.repoId, workId)!;
+      expect(getControllerSession({ controllerHome, repoId: repository.repoId }, handle.workContractId!)).toBeDefined();
+
+      let cleaned = await executionJson(advanced, "work_validate", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        work_id: workId,
+        check_ids: ["validation-fail"],
+        cleanup: true,
+        delete_branch: true,
+        target_branch: "main",
+      });
+      for (let attempt = 0; attempt < 120 && cleaned.cleanupCompleted !== true; attempt += 1) {
+        await Bun.sleep(25);
+        cleaned = await executionJson(advanced, "work_validate", {
+          session_id: sessionId,
+          repo_id: repository.repoId,
+          work_id: workId,
+          check_ids: ["validation-fail"],
+          cleanup: true,
+          delete_branch: true,
+          target_branch: "main",
+        });
+      }
+      expect(cleaned.error).toBeUndefined();
+      expect(cleaned).toMatchObject({
+        completed: false,
+        cleanupCompleted: true,
+        failurePreserved: true,
+        work: { state: "cleaned" },
+        stages: { validation: "failed", commit: "skipped", merge: "skipped", branchCleanup: "done", worktreeCleanup: "done" },
+        cleanupReceipt: {
+          terminalOutcome: "validation_failed",
+          complete: true,
+          processes: { allTerminal: true },
+          ownership: { controllerLease: "released", processLeases: "released" },
+          verification: { mode: "cleanup_only", checksRun: [] },
+        },
+      });
+      expect(String(cleaned.work.failureReason)).toContain("targeted validation failed");
+      expect(existsSync(handle.worktreePath)).toBe(false);
+      const failedContract = getWorkContract({ controllerHome, repoId: repository.repoId }, handle.workContractId!);
+      expect(failedContract).toMatchObject({ status: "failed", phase: "cleanup" });
+      expect(failedContract?.completionReceipt).toBeUndefined();
+      expect(getControllerSession({ controllerHome, repoId: repository.repoId }, handle.workContractId!)).toBeUndefined();
+
+      const retried = await executionJson(advanced, "work_finalize", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        work_id: workId,
+        cleanup: true,
+        delete_branch: true,
+        target_branch: "main",
+      });
+      expect(retried).toMatchObject({
+        idempotent: true,
+        completed: false,
+        cleanupCompleted: true,
+        failurePreserved: true,
+        work: { state: "cleaned" },
+      });
+    });
+  });
+
+  test("failed Work cleanup checkpoints dirty content despite unrelated check failure", async () => {
+    await withController(async (repoRoot, _ctx) => {
+      const controllerHome = process.env.REPO_HARNESS_CONTROLLER_HOME!;
+      spawnSync("git", ["config", "user.name", "Repo Harness Test"], { cwd: repoRoot, stdio: "ignore" });
+      spawnSync("git", ["config", "user.email", "repo-harness@example.test"], { cwd: repoRoot, stdio: "ignore" });
+      spawnSync("git", ["add", "."], { cwd: repoRoot, stdio: "ignore" });
+      expect(spawnSync("git", ["commit", "-m", "fixture"], { cwd: repoRoot, stdio: "ignore" }).status).toBe(0);
+      const repository = registerRepository({ path: repoRoot, controllerHome });
+      persistControllerAccessMode(controllerHome, "full_access", repoRoot);
+      const advanced = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", toolset: "advanced", controllerHome });
+      const started = await executionJson(advanced, "session_start", {});
+      const sessionId = String(started.session.sessionId);
+      await executionJson(advanced, "session_bind_repository", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        checkout_id: repository.activeCheckoutId,
+      });
+      const prepared = await executionJson(advanced, "work_prepare", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        checkout_id: repository.activeCheckoutId,
+        request_id: "failed-cleanup-dirty-work",
+        objective: "Create a dirty failed cleanup fixture",
+        isolation: "new_worktree",
+      });
+      expect(prepared.error).toBeUndefined();
+      const workId = String(prepared.work.workId);
+      const handle = readWorkHandle(controllerHome, repository.repoId, workId)!;
+      writeFileSync(join(handle.worktreePath, "dirty.txt"), "retain me\n");
+      const failure = "verification failed";
+      writeWorkHandle(controllerHome, {
+        ...handle,
+        state: "failed",
+        failureReason: failure,
+        finalization: { ...handle.finalization, validation: "failed", lastError: failure },
+      });
+      updateWorkContract({ controllerHome, repoId: repository.repoId }, handle.workContractId!, {
+        status: "failed",
+        evidenceState: "failed",
+      });
+
+      const cleaned = await executionJson(advanced, "work_finalize", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        work_id: workId,
+        cleanup: true,
+        delete_branch: true,
+        target_branch: "main",
+      });
+      expect(cleaned.error).toBeUndefined();
+      expect(cleaned).toMatchObject({
+        cleanupCompleted: true,
+        failurePreserved: true,
+        work: { state: "cleaned", failureReason: failure },
+        cleanupReceipt: {
+          complete: true,
+          preservation: { status: "checkpointed" },
+          branchCleanup: { status: "archived" },
+          verification: { mode: "cleanup_only", checksRun: [] },
+        },
+      });
+      expect(cleaned.cleanupReceipt.preservation.checkpointCommit).toBeTruthy();
+      expect(cleaned.cleanupReceipt.preservation.bundlePath).toBeTruthy();
+      expect(existsSync(cleaned.cleanupReceipt.preservation.bundlePath)).toBe(true);
+      expect(existsSync(handle.worktreePath)).toBe(false);
+      expect(readWorkHandle(controllerHome, repository.repoId, workId)).toMatchObject({ state: "cleaned", failureReason: failure });
+      expect(getWorkContract({ controllerHome, repoId: repository.repoId }, handle.workContractId!)).toMatchObject({ status: "failed" });
     });
   });
 

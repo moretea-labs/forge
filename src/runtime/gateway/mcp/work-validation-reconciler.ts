@@ -84,10 +84,10 @@ export function projectWorkValidationOutcome(
 
   if (outcome === 'failed') {
     transitionWorkContractPhase(options, contractId, {
-      phase: 'verification',
+      phase: 'cleanup',
       status: 'failed',
       state: 'failed',
-      summary: summary ?? 'A requested validation check failed.',
+      summary: summary ?? 'A requested validation check failed; terminal cleanup is next.',
       evidenceRefs: contract.evidenceRefs,
     });
     updateWorkContract(options, contractId, { evidenceState: 'failed' });
@@ -95,10 +95,10 @@ export function projectWorkValidationOutcome(
   }
 
   transitionWorkContractPhase(options, contractId, {
-    phase: 'implementation',
-    status: 'running',
-    state: 'active',
-    summary: summary ?? 'Validation infrastructure did not produce an accepted result; retry is required.',
+    phase: 'cleanup',
+    status: 'failed',
+    state: 'failed',
+    summary: summary ?? 'Validation infrastructure failed; terminal cleanup is required without treating this as an acceptance failure.',
     evidenceRefs: contract.evidenceRefs,
   });
   updateWorkContract(options, contractId, {
@@ -111,11 +111,10 @@ function settleInfrastructureFailure(
   handle: WorkHandleState,
   summary: string,
 ): WorkValidationReconciliation {
-  const run = handle.validationRun!;
-  const next = transitionWorkHandle(controllerHome, handle, run.resumeState, {
-    finalization: { ...handle.finalization, validation: 'pending', lastError: summary },
+  const next = transitionWorkHandle(controllerHome, handle, 'failed', {
+    finalization: { ...handle.finalization, validation: 'failed', lastError: summary },
     validationRun: undefined,
-    failureReason: undefined,
+    failureReason: summary,
   });
   projectWorkValidationOutcome(controllerHome, next, 'infrastructure_failure', summary);
   return { handle: next, changed: true, outcome: 'infrastructure_failure', summary };
@@ -125,8 +124,8 @@ function settleInfrastructureFailure(
  * Converge a persisted Work validation run from durable Process receipts.
  *
  * No command is launched here. Missing/running bindings stay pending; timeout,
- * cancellation, missing process state, or malformed receipt returns the Work to
- * its retryable phase; only an accepted failed check makes the Work failed.
+ * cancellation, missing process state, or malformed receipt makes the Work
+ * terminally failed for cleanup without classifying it as an acceptance failure.
  */
 export function reconcileWorkValidation(
   controllerHome: string,
@@ -159,7 +158,7 @@ export function reconcileWorkValidation(
         `Validation process record is unavailable: ${binding.processId}`,
       );
     }
-    if (record.status === 'running') {
+    if (record.status === 'running' || record.status === 'starting' || record.status === 'running_recovered') {
       return { handle, changed: false, outcome: 'running' };
     }
 

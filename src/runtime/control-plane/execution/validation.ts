@@ -42,10 +42,10 @@ export function currentPermissionSnapshotVersion(controllerHome: string, repoId:
 
 export function assertWorkHandleLifecycle(handle: WorkHandleState, operation: 'inspect' | 'execute' | 'validate' | 'finalize'): void {
   const allowed: Record<typeof operation, readonly WorkHandleState['state'][]> = {
-    inspect: ['prepared', 'editing', 'validating', 'committed', 'merged'],
+    inspect: ['prepared', 'editing', 'validating', 'committed', 'merged', 'failed', 'failed_terminal_cleanup', 'cleaned'],
     execute: ['prepared', 'editing'],
     validate: ['prepared', 'editing', 'validating', 'committed', 'merged'],
-    finalize: ['prepared', 'editing', 'validating', 'committed', 'merged', 'cleaned', 'failed'],
+    finalize: ['prepared', 'editing', 'validating', 'committed', 'merged', 'failed_terminal_cleanup', 'cleaned', 'failed'],
   };
   if (!allowed[operation].includes(handle.state)) {
     fail('WORK_HANDLE_LIFECYCLE_INVALID', `${operation} is not valid while handle is ${handle.state}`);

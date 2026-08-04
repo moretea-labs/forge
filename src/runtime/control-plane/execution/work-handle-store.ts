@@ -3,10 +3,85 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import { readJsonFile, sanitizeFileComponent } from '../../shared/json-files';
-import { readOrImportControlPlaneRecord, writeControlPlaneRecord } from '../persistence/sqlite-store';
+import { listControlPlaneRecords, readOrImportControlPlaneRecord, writeControlPlaneRecord } from '../persistence/sqlite-store';
 
-export const WORK_HANDLE_STATES = ['prepared', 'editing', 'validating', 'committed', 'merged', 'cleaned', 'failed'] as const;
+export const WORK_HANDLE_STATES = [
+  'prepared',
+  'editing',
+  'validating',
+  'committed',
+  'merged',
+  'failed_terminal_cleanup',
+  'cleaned',
+  'failed',
+] as const;
 export type WorkHandleStateName = (typeof WORK_HANDLE_STATES)[number];
+
+export type WorkTerminalOutcome =
+  | 'failed'
+  | 'cancelled'
+  | 'blocked_terminal'
+  | 'validation_failed'
+  | 'infrastructure_failed';
+
+export interface WorkCleanupReceipt {
+  schemaVersion: 1;
+  receiptId: string;
+  repoId: string;
+  checkoutId: string;
+  workId: string;
+  branch: string;
+  targetBranch: string;
+  terminalOutcome: WorkTerminalOutcome;
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  verification: {
+    mode: 'cleanup_only';
+    checksRun: string[];
+  };
+  processes: {
+    examined: string[];
+    terminated: string[];
+    blocking: string[];
+    allTerminal: boolean;
+  };
+  ownership: {
+    controllerLease: 'pending' | 'released' | 'already_released';
+    processLeases: 'pending' | 'released' | 'partial';
+  };
+  preservation: {
+    status: 'not_needed' | 'checkpointed' | 'patch_archived' | 'failed';
+    checkpointCommit?: string;
+    patchArchivePath?: string;
+    patchArchiveSha256?: string;
+    bundlePath?: string;
+    bundleSha256?: string;
+    recoveryInstructions?: string;
+  };
+  worktree: {
+    path: string;
+    status: 'pending' | 'removed' | 'already_removed' | 'retained' | 'failed';
+    reason?: string;
+  };
+  branchCleanup: {
+    branch: string;
+    status: 'pending' | 'deleted' | 'already_deleted' | 'retained' | 'archived' | 'failed';
+    uniqueCommits?: number;
+    reason?: string;
+  };
+  checkoutRegistry: {
+    status: 'pending' | 'removed' | 'already_removed' | 'failed';
+    reason?: string;
+  };
+  prune: {
+    status: 'pending' | 'done' | 'failed';
+    reason?: string;
+  };
+  complete: boolean;
+  partial: boolean;
+  blockers: string[];
+}
 
 export interface WorkFinalizationStages {
   validation: 'pending' | 'done' | 'failed';
@@ -53,6 +128,13 @@ export interface WorkHandleState {
   validationRun?: WorkValidationRunState;
   /** Exact successful validation input; finalization must recompute and match it. */
   validatedInputFingerprint?: string;
+  /** Every managed checkout creator registers the Work finalizer as cleanup owner. */
+  cleanupResponsibility?: {
+    owner: 'work_finalizer';
+    registeredAt: string;
+  };
+  /** Durable terminal cleanup progress. It is intentionally independent from completion/verification receipts. */
+  cleanupReceipt?: WorkCleanupReceipt;
 }
 
 function workHandlePath(controllerHome: string, handle: Pick<WorkHandleState, 'repositoryId' | 'workId'>): string {
@@ -82,6 +164,14 @@ export function readWorkHandle(controllerHome: string, repositoryId: string, wor
   return { ...handle, recordRevision: record.revision };
 }
 
+export function listWorkHandles(controllerHome: string, repositoryId: string, limit = 5_000): WorkHandleState[] {
+  return listControlPlaneRecords<WorkHandleState>(controllerHome, {
+    namespace: 'execution_work_handle',
+    scope: repositoryId,
+    limit: Math.max(1, limit),
+  }).map((record) => ({ ...record.value, recordRevision: record.revision }));
+}
+
 export function writeWorkHandle(controllerHome: string, handle: WorkHandleState): WorkHandleState {
   const { recordRevision, ...persistedHandle } = handle;
   const updated: Omit<WorkHandleState, 'recordRevision'> = { ...persistedHandle, updatedAt: now() };
@@ -98,20 +188,21 @@ export function writeWorkHandle(controllerHome: string, handle: WorkHandleState)
 }
 
 const TRANSITIONS: Record<WorkHandleStateName, readonly WorkHandleStateName[]> = {
-  prepared: ['editing', 'validating', 'committed', 'failed'],
-  editing: ['validating', 'committed', 'merged', 'failed'],
-  validating: ['editing', 'committed', 'merged', 'failed'],
-  committed: ['validating', 'merged', 'cleaned', 'failed'],
-  merged: ['cleaned', 'failed'],
+  prepared: ['editing', 'validating', 'committed', 'failed', 'failed_terminal_cleanup'],
+  editing: ['validating', 'committed', 'merged', 'failed', 'failed_terminal_cleanup'],
+  validating: ['editing', 'committed', 'merged', 'failed', 'failed_terminal_cleanup'],
+  committed: ['validating', 'merged', 'cleaned', 'failed', 'failed_terminal_cleanup'],
+  merged: ['cleaned', 'failed', 'failed_terminal_cleanup'],
+  failed_terminal_cleanup: ['failed_terminal_cleanup', 'cleaned'],
   cleaned: [],
-  failed: ['validating', 'editing', 'committed', 'merged', 'cleaned'],
+  failed: ['validating', 'editing', 'committed', 'merged', 'cleaned', 'failed_terminal_cleanup'],
 };
 
 export function transitionWorkHandle(
   controllerHome: string,
   handle: WorkHandleState,
   nextState: WorkHandleStateName,
-  patch: Partial<Pick<WorkHandleState, 'failureReason' | 'expectedHead' | 'finalization' | 'validationRun' | 'validatedInputFingerprint'>> = {},
+  patch: Partial<Pick<WorkHandleState, 'failureReason' | 'expectedHead' | 'finalization' | 'validationRun' | 'validatedInputFingerprint' | 'cleanupReceipt'>> = {},
 ): WorkHandleState {
   if (handle.state !== nextState && !TRANSITIONS[handle.state].includes(nextState)) {
     throw new Error(`WORK_HANDLE_LIFECYCLE_INVALID: cannot transition ${handle.state} -> ${nextState}`);
