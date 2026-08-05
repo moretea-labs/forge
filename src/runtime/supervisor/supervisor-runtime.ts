@@ -22,7 +22,8 @@ import { createSupervisorOperation, listSupervisorOperations, readSupervisorOper
 import { DEFAULT_RESTART_POLICY, decideRestart, lockout, newRestartBudgetRecord, recordFailure, recordRestart, recordStable } from './restart-policy';
 import { SupervisorProcessManager, type SpawnedSupervisorProcess, type SupervisorProcessManagerOptions } from './process-manager';
 import { createSupervisorState, readSupervisorState, writeSupervisorState } from './state-store';
-import { readCurrentSupervisorRelease, readPreviousSupervisorRelease, readSupervisorRelease, supervisorControlSocketPath, supervisorIngressSessionStorePath, supervisorReleasesRoot, supervisorReleaseClosureMissing, type SupervisorReleaseDescriptor } from './paths';
+import { readCurrentSupervisorRelease, readPreviousSupervisorRelease, readSupervisorRelease, supervisorControlSocketPath, supervisorReleasesRoot, supervisorReleaseClosureMissing, type SupervisorReleaseDescriptor } from './paths';
+import { stableIngressSessionStorePath } from './ingress-session-store';
 import { publishSupervisorRelease, verifySupervisorReleaseExecutionCanary, verifySupervisorSourceIdentity } from './installer';
 import {
   publishAndScheduleSupervisorRelease,
@@ -1070,7 +1071,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       port: this.options.stableIngressPort ?? 8765,
       rescueHost: this.control.host,
       rescuePort: this.control.port,
-      sessionStorePath: supervisorIngressSessionStorePath(this.options.controllerHome),
+      sessionStorePath: stableIngressSessionStorePath(this.options.controllerHome),
       upstream: () => {
         const authority = readActiveSlotAuthority(this.options.controllerHome);
         const binding = this.manager.gatewayBinding(authority.activeSlot);
@@ -1573,7 +1574,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
           state: 'running',
           activeUpstreamSlot: this.state.activeSlot,
           activeUpstreamPort: this.manager.gatewayBinding(this.state.activeSlot).port,
-          ...(this.ingressProcess ? { pid: this.ingressProcess.pid } : {}),
+          pid: process.pid,
           consecutiveFailures: 0,
           lastHealthyAt: new Date().toISOString(),
           lastFailureAt: undefined,
