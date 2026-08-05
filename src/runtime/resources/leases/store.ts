@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
-import { withControllerLock } from '../../../cli/repositories/locks';
+import { ControllerLockContentionError, withControllerLock } from '../../../cli/repositories/locks';
 import type { ResourceClaimSpec } from '../../execution/jobs/types';
 import { readJsonFile, removeFile, writeJsonAtomic } from '../../shared/json-files';
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
@@ -15,6 +15,7 @@ import type {
   LeaseAcquisitionOptions,
   LeaseAcquisitionResult,
   LeaseVisibility,
+  ExecutionLeaseOwnerIdentity,
 } from './types';
 
 function leaseRoot(controllerHome: string, repoId: string): string {
@@ -46,6 +47,49 @@ function validateClaimScopes(repoId: string, claims: ResourceClaimSpec[]): void 
   }
   if (checkoutIds.size > 1) throw new Error('LEASE_CHECKOUT_SCOPE_AMBIGUOUS');
   if (workIds.size > 1) throw new Error('LEASE_WORK_SCOPE_AMBIGUOUS');
+}
+
+function ownerIdentityDigest(identity: ExecutionLeaseOwnerIdentity): string {
+  return createHash('sha256').update(JSON.stringify([
+    identity.repositoryId,
+    identity.checkoutId,
+    identity.worktreeId,
+    identity.branch,
+    identity.principalId,
+    identity.controllerInstanceId,
+    identity.controllerGeneration,
+  ])).digest('hex');
+}
+
+function normalizedOwnerIdentity(
+  repoId: string,
+  ownerJobId: string,
+  claims: ResourceClaimSpec[],
+  provided?: ExecutionLeaseOwnerIdentity,
+): ExecutionLeaseOwnerIdentity {
+  const claimCheckout = claims.find((claim) => claim.checkoutId?.trim())?.checkoutId?.trim();
+  if (provided?.repositoryId !== undefined && provided.repositoryId !== repoId) {
+    throw new Error(`LEASE_OWNER_REPOSITORY_MISMATCH: expected ${repoId}, received ${provided.repositoryId}`);
+  }
+  if (provided?.checkoutId && claimCheckout && provided.checkoutId !== claimCheckout) {
+    throw new Error(`LEASE_OWNER_CHECKOUT_MISMATCH: claim ${claimCheckout}, owner ${provided.checkoutId}`);
+  }
+  const checkoutId = provided?.checkoutId?.trim() || claimCheckout || 'unscoped';
+  return {
+    repositoryId: repoId,
+    checkoutId,
+    worktreeId: provided?.worktreeId?.trim() || checkoutId,
+    branch: provided?.branch?.trim() || 'unknown',
+    principalId: provided?.principalId?.trim() || `owner:${ownerJobId}`,
+    controllerInstanceId: provided?.controllerInstanceId?.trim()
+      || process.env.REPO_HARNESS_WRITER_INSTANCE_ID?.trim()
+      || process.env.REPO_HARNESS_DAEMON_INSTANCE_ID?.trim()
+      || `process:${process.pid}`,
+    controllerGeneration: provided?.controllerGeneration?.trim()
+      || process.env.REPO_HARNESS_WRITER_GENERATION?.trim()
+      || process.env.REPO_HARNESS_ACTIVE_RUNTIME_REVISION?.trim()
+      || 'unbound',
+  };
 }
 
 function nextFencingToken(controllerHome: string, repoId: string, resourceKey: string): number {
@@ -142,12 +186,15 @@ export function acquireExecutionLeases(
     : ttlMsOrOptions;
   const ttlMs = options.ttlMs ?? 30_000;
   const effects = resolveSideEffects(options);
+  const ownerIdentity = normalizedOwnerIdentity(repoId, ownerJobId, claims, options.ownerIdentity);
+  const identityDigest = ownerIdentityDigest(ownerIdentity);
 
-  return withControllerLock(controllerHome, { scope: 'repository', repoId }, `lease-acquire:${ownerJobId}`, () => {
+  try {
+    return withControllerLock(controllerHome, { scope: 'repository', repoId }, `lease-acquire:${ownerJobId}`, () => {
     const active = listActiveLeases(controllerHome, repoId).filter((lease) => lease.ownerJobId !== ownerJobId);
     const blockers = claims.flatMap((claim) => active
       .filter((lease) => claimsConflict(claim, lease))
-      .map((lease) => ({ resourceKey: lease.resourceKey, ownerJobId: lease.ownerJobId, leaseId: lease.leaseId, mode: lease.mode })));
+      .map((lease) => ({ resourceKey: lease.resourceKey, ownerJobId: lease.ownerJobId, leaseId: lease.leaseId, mode: lease.mode, ownerIdentityDigest: lease.ownerIdentityDigest })));
     if (blockers.length > 0) return { acquired: false, leases: [], blockers };
     const timestamp = new Date().toISOString();
     const expiresAt = new Date(Date.now() + Math.max(5_000, ttlMs)).toISOString();
@@ -160,6 +207,8 @@ export function acquireExecutionLeases(
       resourceKey: claim.resourceKey,
       mode: claim.mode,
       ownerJobId,
+      ownerIdentity,
+      ownerIdentityDigest: identityDigest,
       fencingToken: nextFencingToken(controllerHome, repoId, claim.resourceKey),
       acquiredAt: timestamp,
       expiresAt,
@@ -200,7 +249,22 @@ export function acquireExecutionLeases(
       }
     }
     return { acquired: true, leases, blockers: [] };
-  }, 10_000);
+    }, 10_000);
+  } catch (error) {
+    if (error instanceof ControllerLockContentionError) {
+      return {
+        acquired: false,
+        leases: [],
+        blockers: [{
+          resourceKey: 'controller-lock',
+          ownerJobId: error.contention.existing?.owner ?? 'controller-lock',
+          leaseId: error.contention.existing?.lockId ?? 'controller-lock-contention',
+          mode: 'exclusive',
+        }],
+      };
+    }
+    throw error;
+  }
 }
 
 export interface ExpectedLeaseRef {
@@ -210,6 +274,7 @@ export interface ExpectedLeaseRef {
   checkoutId?: string;
   workId?: string;
   resourceKey?: string;
+  ownerIdentityDigest?: string;
 }
 
 function expectedLeaseMap(expected?: ExpectedLeaseRef[]): Map<string, ExpectedLeaseRef> | undefined {
@@ -222,6 +287,7 @@ function leaseMatchesExpected(lease: ExecutionLease, expected: ExpectedLeaseRef 
   if (expected.checkoutId && expected.checkoutId !== lease.checkoutId) return false;
   if (expected.workId && expected.workId !== lease.workId) return false;
   if (expected.resourceKey && expected.resourceKey !== lease.resourceKey) return false;
+  if (expected.ownerIdentityDigest && expected.ownerIdentityDigest !== lease.ownerIdentityDigest) return false;
   return true;
 }
 
@@ -305,6 +371,73 @@ export function releaseExecutionLeases(
       }
       if (effects.notifyScheduler) {
         touchSchedulerWakeSignal(controllerHome, `leases-released:${ownerJobId}`);
+        leaseSideEffectMetrics.schedulerWakes += 1;
+      }
+    }
+    return releasedCount;
+  }, 10_000);
+}
+
+export function releaseExactExecutionLeases(
+  controllerHome: string,
+  repoId: string,
+  ownerJobId: string,
+  expected: ExpectedLeaseRef[],
+  options?: Pick<LeaseAcquisitionOptions, 'visibility' | 'notifyScheduler' | 'invalidateProjection' | 'emitRuntimeEvent'>,
+): number {
+  try {
+    assertThisRuntimeMayWriteOrThrow('release_lease', controllerHome);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('WRITER_FENCED:')) throw error;
+    /* unbound legacy */
+  }
+  return withControllerLock(controllerHome, { scope: 'repository', repoId }, `lease-release-exact:${ownerJobId}`, () => {
+    const expectedRefs = expectedLeaseMap(expected) ?? new Map<string, ExpectedLeaseRef>();
+    if (expectedRefs.size !== expected.length) {
+      throw new Error(`LEASE_SET_INVALID: ${ownerJobId} contains duplicate lease ids`);
+    }
+    const owned = listActiveLeases(controllerHome, repoId)
+      .filter((lease) => lease.ownerJobId === ownerJobId);
+    if (owned.length !== expectedRefs.size) {
+      throw new Error(`LEASE_SET_MISMATCH: ${ownerJobId} owns ${owned.length} active leases, expected ${expectedRefs.size}`);
+    }
+    for (const lease of owned) {
+      if (!leaseMatchesExpected(lease, expectedRefs.get(lease.leaseId))) {
+        throw new Error(`LEASE_SET_FENCE_MISMATCH: ${ownerJobId} no longer owns ${lease.leaseId}`);
+      }
+    }
+
+    let releasedCount = 0;
+    let visibility: LeaseVisibility = options?.visibility ?? 'durable';
+    for (const lease of owned) {
+      visibility = lease.visibility ?? visibility;
+      removeFile(leasePath(controllerHome, repoId, lease.leaseId));
+      const effects = resolveSideEffects(options, lease.visibility);
+      if (effects.emitRuntimeEvent) {
+        appendRuntimeEvent(controllerHome, {
+          repoId,
+          entityType: 'lease',
+          entityId: lease.leaseId,
+          eventType: 'lease_released',
+          requestId: ownerJobId,
+          correlationId: ownerJobId,
+          revision: lease.fencingToken,
+          data: { resourceKey: lease.resourceKey, mode: lease.mode, visibility: lease.visibility, exactSet: true },
+        });
+        leaseSideEffectMetrics.durableReleaseEvents += 1;
+      } else {
+        leaseSideEffectMetrics.ephemeralReleases += 1;
+      }
+      releasedCount += 1;
+    }
+    if (releasedCount > 0) {
+      const effects = resolveSideEffects(options, visibility);
+      if (effects.invalidateProjection) {
+        markRepositoryProjectionDirty(controllerHome, repoId, `leases-released-exact:${ownerJobId}`);
+        leaseSideEffectMetrics.projectionDirtyMarks += 1;
+      }
+      if (effects.notifyScheduler) {
+        touchSchedulerWakeSignal(controllerHome, `leases-released-exact:${ownerJobId}`);
         leaseSideEffectMetrics.schedulerWakes += 1;
       }
     }

@@ -1,9 +1,15 @@
 import { executionIdentityForRepository } from '../control-plane/execution/execution-identity';
 import { existsSync } from 'fs';
-import { basename, join, resolve } from 'path';
+import { resolve } from 'path';
 import type { RepositoryRecord } from '../../cli/repositories/types';
-import { resolveCliChildInvocation, type CliChildInvocationOptions } from '../../cli/runtime-invocation';
-import { resolveControllerRuntimeSourceRoot } from '../control-plane/runtime-generation';
+import {
+  currentCliRuntimeTarget,
+  resolveCliChildInvocation,
+  type CliChildInvocation,
+  type CliChildInvocationOptions,
+  type CliRuntimeTarget,
+} from '../../cli/runtime-invocation';
+import { readRuntimeGeneration, resolveControllerRuntimeSourceRoot } from '../control-plane/runtime-generation';
 import { readProcessLogs, spawnManagedProcess, type ProcessHandle } from '../execution/process-runtime';
 import { isReadOnlyDiagnosticTool, type ReadOnlyDiagnosticTool } from './read-only-tool';
 
@@ -25,36 +31,31 @@ const ROUTING_ONLY_ARGUMENTS = new Set([
   'interactive_wait_ms',
 ]);
 
-function runtimeCliEntry(): { entry: string; cwd: string } {
-  const currentEntry = process.argv[1] ? resolve(process.argv[1]) : undefined;
-  if (currentEntry && existsSync(currentEntry)) {
-    const name = basename(currentEntry);
-    if (name === 'repo-harness.js' || name === 'index.ts') {
-      return { entry: currentEntry, cwd: resolveControllerRuntimeSourceRoot().root ?? process.cwd() };
-    }
-  }
-  // Tests and source worktrees must execute the CLI from the same source tree as
-  // this module, not an inherited runtime-source environment pointing at main.
+function runtimeCliTarget(controllerHome: string): CliRuntimeTarget {
   const moduleSourceRoot = resolve(import.meta.dir, '..', '..', '..');
-  const moduleEntry = join(moduleSourceRoot, 'src', 'cli', 'index.ts');
-  if (existsSync(moduleEntry)) return { entry: moduleEntry, cwd: moduleSourceRoot };
-
-  const source = resolveControllerRuntimeSourceRoot();
-  if (!source.root) {
-    throw new Error(`DIAGNOSTIC_RUNTIME_SOURCE_UNAVAILABLE: ${source.reason}`);
-  }
-  const entry = join(source.root, 'src', 'cli', 'index.ts');
-  if (!existsSync(entry)) {
-    throw new Error(`DIAGNOSTIC_RUNTIME_ENTRY_MISSING: ${entry}`);
-  }
-  return { entry, cwd: source.root };
+  const moduleEntryExists = existsSync(resolve(moduleSourceRoot, 'src', 'cli', 'index.ts'));
+  const source = resolveControllerRuntimeSourceRoot({
+    explicitRoot: moduleEntryExists ? moduleSourceRoot : undefined,
+  });
+  const generation = readRuntimeGeneration(controllerHome);
+  const sourceRevision = generation?.source.releaseRevision
+    ?? generation?.source.commit
+    ?? process.env.REPO_HARNESS_ACTIVE_RUNTIME_REVISION;
+  return currentCliRuntimeTarget({
+    env: process.env,
+    argv: process.env.REPO_HARNESS_RUNTIME_EXECUTION === 'standalone-binary' ? process.argv : [],
+    moduleUrl: import.meta.url,
+    sourceRoot: source.root,
+    cwd: source.root ?? moduleSourceRoot,
+    sourceRevision,
+  });
 }
 
 export function resolveDiagnosticCliInvocation(
   entry: string,
   args: readonly string[],
   options: CliChildInvocationOptions = {},
-): { executable: string; args: string[] } {
+): CliChildInvocation {
   return resolveCliChildInvocation(entry, args, options);
 }
 
@@ -134,7 +135,34 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
   /** Internal test/embedding override for deterministic runtime launch fixtures. */
   cliInvocation?: { entry: string; options?: CliChildInvocationOptions };
 }): Promise<Record<string, unknown>> {
-  const entry = input.cliInvocation?.entry ?? runtimeCliEntry().entry;
+  let invocation: CliChildInvocation;
+  let target: CliRuntimeTarget | undefined;
+  let resolutionFailure: string | undefined;
+  try {
+    if (input.cliInvocation) {
+      invocation = resolveDiagnosticCliInvocation(
+        input.cliInvocation.entry,
+        [],
+        input.cliInvocation.options,
+      );
+    } else {
+      target = runtimeCliTarget(input.controllerHome);
+      invocation = resolveDiagnosticCliInvocation(target.entry, [], {
+        runtimeExecutable: process.execPath,
+        runtimeKind: target.runtimeKind,
+        sourceRevision: target.sourceRevision,
+        immutable: target.immutable,
+        ...(target.runtimeKind === 'package_launcher' ? { launcherEntry: target.entry } : {}),
+      });
+    }
+  } catch (error) {
+    resolutionFailure = error instanceof Error ? error.message : String(error);
+    invocation = resolveDiagnosticCliInvocation('<runtime-resolution-failure>', [], {
+      runtimeExecutable: process.execPath,
+      runtimeKind: process.versions.bun ? 'bun_source' : 'node_source',
+      sourceRevision: 'resolution-failure',
+    });
+  }
   const semanticArgs = diagnosticArguments(input.args);
   const encodedArgs = Buffer.from(JSON.stringify(semanticArgs), 'utf8').toString('base64url');
   const returnHandleImmediately = input.args.apply_mode === 'async';
@@ -144,7 +172,7 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
       input.args.interactive_wait_ms,
       DEFAULT_DIAGNOSTIC_INTERACTIVE_WAIT_MS,
       0,
-      120_000,
+      5_000,
     );
   const inlineMaxBytes = boundedNumber(
     input.inlineMaxBytes,
@@ -167,18 +195,35 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
     commandId: `diagnostic:${input.tool}`,
     command: {
       kind: 'argv',
-      ...resolveDiagnosticCliInvocation(entry, [
-        'runtime',
-        'diagnostic-read',
-        '--controller-home',
-        input.controllerHome,
-        '--repo-id',
-        input.repository.repoId,
-        '--tool',
-        input.tool,
-        '--args-base64',
-        encodedArgs,
-      ], input.cliInvocation?.options),
+      ...(resolutionFailure
+        ? {
+          executable: process.execPath,
+          args: ['-e', `console.error(${JSON.stringify(resolutionFailure)}); process.exit(78);`],
+        }
+        : resolveDiagnosticCliInvocation(
+          target?.entry ?? input.cliInvocation!.entry,
+          [
+            'runtime',
+            'diagnostic-read',
+            '--controller-home',
+            input.controllerHome,
+            '--repo-id',
+            input.repository.repoId,
+            '--tool',
+            input.tool,
+            '--args-base64',
+            encodedArgs,
+          ],
+          target
+            ? {
+              runtimeExecutable: invocation.executable,
+              runtimeKind: target.runtimeKind,
+              sourceRevision: target.sourceRevision,
+              immutable: target.immutable,
+              ...(target.runtimeKind === 'package_launcher' ? { launcherEntry: target.entry } : {}),
+            }
+            : input.cliInvocation?.options,
+        )),
       // The executable entry may live in the repo-harness runtime source tree,
       // but execution ownership belongs to the selected repository checkout.
       // Keeping cwd inside that checkout preserves fail-closed route identity.
@@ -204,11 +249,17 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
         mode: 'process_direct',
         path: 'process_direct',
         error: {
-          code: 'DIAGNOSTIC_PROCESS_FAILED',
+          code: resolutionFailure ? 'DIAGNOSTIC_RUNTIME_UNRESOLVED' : 'DIAGNOSTIC_PROCESS_FAILED',
           message: handle.stderr || handle.stderrTail || `diagnostic process ${handle.processId} failed`,
         },
         process: processSummary(handle),
         processPointers: pointers,
+        diagnosticRuntime: {
+          runtimeKind: target?.runtimeKind ?? invocation.runtimeKind,
+          sourceRevision: target?.sourceRevision ?? invocation.sourceRevision,
+          immutable: target?.immutable ?? invocation.immutable,
+          explanation: resolutionFailure ?? target?.explanation ?? invocation.diagnostic,
+        },
         durableSideEffects: handle.durableSideEffects,
       };
     }
@@ -229,6 +280,12 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
           inlineLimitBytes: inlineMaxBytes,
           reason: returnHandleImmediately ? 'caller_requested_async' : 'result_exceeds_inline_limit',
         },
+        diagnosticRuntime: {
+          runtimeKind: target?.runtimeKind ?? invocation.runtimeKind,
+          sourceRevision: target?.sourceRevision ?? invocation.sourceRevision,
+          immutable: target?.immutable ?? invocation.immutable,
+          explanation: target?.explanation ?? invocation.diagnostic,
+        },
         durableSideEffects: handle.durableSideEffects,
       };
     }
@@ -245,6 +302,12 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
         inlineLimitBytes: inlineMaxBytes,
         durableSideEffects: handle.durableSideEffects,
         processPointers: pointers,
+        runtime: {
+          runtimeKind: target?.runtimeKind ?? invocation.runtimeKind,
+          sourceRevision: target?.sourceRevision ?? invocation.sourceRevision,
+          immutable: target?.immutable ?? invocation.immutable,
+          explanation: target?.explanation ?? invocation.diagnostic,
+        },
       },
     };
   }
@@ -261,6 +324,12 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
       available: false,
       inline: false,
       reason: returnHandleImmediately ? 'caller_requested_async' : 'interactive_wait_expired',
+    },
+    diagnosticRuntime: {
+      runtimeKind: target?.runtimeKind ?? invocation.runtimeKind,
+      sourceRevision: target?.sourceRevision ?? invocation.sourceRevision,
+      immutable: target?.immutable ?? invocation.immutable,
+      explanation: target?.explanation ?? invocation.diagnostic,
     },
     durableSideEffects: handle.durableSideEffects,
   };

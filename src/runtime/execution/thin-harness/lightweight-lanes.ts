@@ -511,6 +511,15 @@ export async function integratePatchProposals(
       checkoutId: ctx.repository.activeCheckoutId,
       repoRoot: ctx.repository.canonicalRoot,
       owner: `fast:integrate:${requestId}`,
+      ownerIdentity: {
+        repositoryId: ctx.repository.repoId,
+        checkoutId: ctx.repository.activeCheckoutId,
+        worktreeId: ctx.repository.checkouts.find((checkout) => checkout.checkoutId === ctx.repository.activeCheckoutId)?.canonicalRoot
+          ?? ctx.repository.canonicalRoot,
+        branch: ctx.repository.checkouts.find((checkout) => checkout.checkoutId === ctx.repository.activeCheckoutId)?.branch
+          ?? 'detached',
+        principalId: ctx.principalId ?? ctx.sessionId ?? `request:${requestId}`,
+      },
       ttlMs: 45_000,
       signal: options.signal,
       ownership: {

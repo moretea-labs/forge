@@ -23,10 +23,10 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 91,
+    "maxTestFiles": 92,
     "maxTestLines": 40000,
     "maxPureFiles": 30,
-    "maxTempIsolatedFiles": 39,
+    "maxTempIsolatedFiles": 40,
     "maxProcessTreeFiles": 17,
     "maxGitWorktreeFiles": 15,
     "maxFixedPortFiles": 6,
@@ -439,6 +439,10 @@
     "tests/runtime/requirement-portfolio-migration.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"
+    },
+    "tests/runtime/route-session-concurrency.test.ts": {
+      "module": "routing",
+      "resource": "temp-isolated"
     },
     "tests/runtime/runtime-source-isolation.test.ts": {
       "module": "process-runtime",

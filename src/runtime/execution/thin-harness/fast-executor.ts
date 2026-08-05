@@ -1029,6 +1029,15 @@ export async function executeFast(
           checkoutId: ctx.repository.activeCheckoutId,
           repoRoot: root,
           owner,
+          ownerIdentity: {
+            repositoryId: ctx.repository.repoId,
+            checkoutId: ctx.repository.activeCheckoutId,
+            worktreeId: ctx.repository.checkouts.find((checkout) => checkout.checkoutId === ctx.repository.activeCheckoutId)?.canonicalRoot
+              ?? ctx.repository.canonicalRoot,
+            branch: ctx.repository.checkouts.find((checkout) => checkout.checkoutId === ctx.repository.activeCheckoutId)?.branch
+              ?? 'detached',
+            principalId: ctx.principalId ?? ctx.sessionId ?? `request:${owner}`,
+          },
           ttlMs: timeoutMs + 10_000,
           signal: request.signal,
           ownership,

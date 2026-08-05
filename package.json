@@ -79,6 +79,7 @@
   },
   "scripts": {
     "benchmark:skills": "bun scripts/run-skill-evals.ts",
+    "benchmark:route-session-concurrency": "bun scripts/benchmark-route-session-concurrency.ts",
     "test": "bun scripts/test-governance.ts affected",
     "test:core": "bun scripts/test-governance.ts core",
     "test:integration": "bun scripts/test-governance.ts integration",

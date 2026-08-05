@@ -14,10 +14,11 @@ import { createHash } from 'crypto';
 import {
   acquireExecutionLeases,
   assertFencingToken,
-  releaseExecutionLeases,
+  releaseExactExecutionLeases,
   renewExecutionLeases,
 } from '../../resources/leases/store';
-import type { ExecutionLease } from '../../resources/leases/types';
+import type { ExecutionLease, ExecutionLeaseOwnerIdentity } from '../../resources/leases/types';
+import { recordGatewayLatency } from '../../observability/gateway-contention-metrics';
 import type { ResourceClaimSpec } from '../../execution/jobs/types';
 import { runBoundedGit } from './async-process';
 import { terminateProcessTree } from '../../shared/process-tree';
@@ -42,6 +43,8 @@ export interface CheckoutMutationGate {
   ttlMs: number;
   renewCount: number;
   claims: ResourceClaimSpec[];
+  ownerIdentity: ExecutionLeaseOwnerIdentity;
+  ownerIdentityDigest: string;
 }
 
 export interface MutationGateBusy {
@@ -85,6 +88,36 @@ const EPHEMERAL_OPTS = {
   invalidateProjection: false,
   emitRuntimeEvent: false,
 };
+
+export function normalizeMutationOwnerIdentity(input: {
+  repoId: string;
+  checkoutId: string;
+  owner: string;
+  ownerIdentity?: Partial<ExecutionLeaseOwnerIdentity>;
+}): ExecutionLeaseOwnerIdentity {
+  const supplied = input.ownerIdentity;
+  if (supplied?.repositoryId && supplied.repositoryId !== input.repoId) {
+    throw new Error(`MUTATION_OWNER_REPOSITORY_MISMATCH: expected ${input.repoId}, received ${supplied.repositoryId}`);
+  }
+  if (supplied?.checkoutId && supplied.checkoutId !== input.checkoutId) {
+    throw new Error(`MUTATION_OWNER_CHECKOUT_MISMATCH: expected ${input.checkoutId}, received ${supplied.checkoutId}`);
+  }
+  return {
+    repositoryId: input.repoId,
+    checkoutId: input.checkoutId,
+    worktreeId: supplied?.worktreeId?.trim() || input.checkoutId,
+    branch: supplied?.branch?.trim() || 'unknown',
+    principalId: supplied?.principalId?.trim() || `owner:${input.owner}`,
+    controllerInstanceId: supplied?.controllerInstanceId?.trim()
+      || process.env.REPO_HARNESS_WRITER_INSTANCE_ID?.trim()
+      || process.env.REPO_HARNESS_DAEMON_INSTANCE_ID?.trim()
+      || `process:${process.pid}`,
+    controllerGeneration: supplied?.controllerGeneration?.trim()
+      || process.env.REPO_HARNESS_WRITER_GENERATION?.trim()
+      || process.env.REPO_HARNESS_ACTIVE_RUNTIME_REVISION?.trim()
+      || 'unbound',
+  };
+}
 
 export function checkoutMutationResourceKey(checkoutId: string): string {
   return `workspace:${checkoutId}`;
@@ -155,6 +188,7 @@ function gateFromLeases(
   leases: ExecutionLease[],
   snap: { head: string | null; statusHash: string | null },
   ttlMs: number,
+  ownerIdentity: ExecutionLeaseOwnerIdentity,
 ): CheckoutMutationGate {
   const primary = leases.find((lease) => lease.resourceKey === `workspace:${checkoutId}`) ?? leases[0]!;
   const fencingTokens: Record<string, number> = {};
@@ -181,6 +215,8 @@ function gateFromLeases(
     ttlMs,
     renewCount: 0,
     claims,
+    ownerIdentity,
+    ownerIdentityDigest: primary.ownerIdentityDigest ?? createHash('sha256').update(JSON.stringify(ownerIdentity)).digest('hex'),
   };
 }
 
@@ -196,9 +232,16 @@ export async function acquireCheckoutMutationGate(input: {
   owner: string;
   ttlMs?: number;
   ownership?: MutationOwnershipOptions;
+  ownerIdentity?: Partial<ExecutionLeaseOwnerIdentity>;
 }): Promise<MutationGateAcquireResult> {
   const ttlMs = Math.max(MIN_TTL_MS, Math.min(input.ttlMs ?? DEFAULT_TTL_MS, MAX_TTL_MS));
-  const claims = buildMutationClaims(input.checkoutId, input.ownership);
+  const startedAt = performance.now();
+  const ownerIdentity = normalizeMutationOwnerIdentity(input);
+  const claims = buildMutationClaims(input.checkoutId, input.ownership).map((claim) => ({
+    ...claim,
+    repoId: input.repoId,
+    checkoutId: input.checkoutId,
+  }));
   const ownerJobId = input.owner.startsWith('fast:') || input.owner.startsWith('JOB-')
     ? input.owner
     : `fast:${input.owner}`;
@@ -211,10 +254,19 @@ export async function acquireCheckoutMutationGate(input: {
     {
       ...EPHEMERAL_OPTS,
       ttlMs,
+      ownerIdentity,
     },
   );
 
   if (!result.acquired || result.leases.length === 0) {
+    recordGatewayLatency({
+      repoId: input.repoId,
+      checkoutId: input.checkoutId,
+      operationClass: 'mutation',
+      phase: 'lock_wait',
+      durationMs: performance.now() - startedAt,
+      outcome: 'contention',
+    });
     return {
       busy: true,
       reason: 'mutation_ownership_busy',
@@ -231,11 +283,17 @@ export async function acquireCheckoutMutationGate(input: {
   try {
     snap = await snapshotHash(input.repoRoot);
   } catch (error) {
-    releaseExecutionLeases(
+    releaseExactExecutionLeases(
       input.controllerHome,
       input.repoId,
       ownerJobId,
-      result.leases.map((lease) => ({ leaseId: lease.leaseId, fencingToken: lease.fencingToken })),
+      result.leases.map((lease) => ({
+        leaseId: lease.leaseId,
+        fencingToken: lease.fencingToken,
+        repoId: input.repoId,
+        checkoutId: input.checkoutId,
+        ownerIdentityDigest: lease.ownerIdentityDigest,
+      })),
       EPHEMERAL_OPTS,
     );
     return {
@@ -248,9 +306,17 @@ export async function acquireCheckoutMutationGate(input: {
     };
   }
 
+  recordGatewayLatency({
+    repoId: input.repoId,
+    checkoutId: input.checkoutId,
+    operationClass: 'mutation',
+    phase: 'lock_wait',
+    durationMs: performance.now() - startedAt,
+    outcome: 'success',
+  });
   return {
     acquired: true,
-    gate: gateFromLeases(ownerJobId, input.repoId, input.checkoutId, claims, result.leases, snap, ttlMs),
+    gate: gateFromLeases(ownerJobId, input.repoId, input.checkoutId, claims, result.leases, snap, ttlMs, ownerIdentity),
   };
 }
 
@@ -263,6 +329,7 @@ export function renewCheckoutMutationGate(
   const expected = gate.leaseIds.map((leaseId) => ({
     leaseId,
     fencingToken: gate.fencingTokens[leaseId] ?? gate.fencingToken,
+    ownerIdentityDigest: gate.ownerIdentityDigest,
   }));
   const renewed = renewExecutionLeases(
     controllerHome,
@@ -302,10 +369,16 @@ export function assertCheckoutMutationGate(
   for (const leaseId of gate.leaseIds) {
     const token = gate.fencingTokens[leaseId] ?? gate.fencingToken;
     const lease = assertFencingToken(controllerHome, gate.repoId, leaseId, token);
+    if (lease.ownerIdentityDigest !== gate.ownerIdentityDigest) {
+      throw new Error(`MUTATION_OWNER_IDENTITY_STALE: ${leaseId}`);
+    }
     if (leaseId === gate.primaryLeaseId) primary = lease;
   }
   if (!primary) {
     primary = assertFencingToken(controllerHome, gate.repoId, gate.leaseId, gate.fencingToken);
+    if (primary.ownerIdentityDigest !== gate.ownerIdentityDigest) {
+      throw new Error(`MUTATION_OWNER_IDENTITY_STALE: ${gate.leaseId}`);
+    }
   }
   return primary;
 }
@@ -313,15 +386,18 @@ export function assertCheckoutMutationGate(
 export function releaseCheckoutMutationGate(
   controllerHome: string,
   repoId: string,
-  _checkoutId: string,
+  checkoutId: string,
   gateIdOrOwner?: string,
   fencing?: { leaseId: string; fencingToken: number } | Array<{ leaseId: string; fencingToken: number }>,
 ): void {
   if (!gateIdOrOwner) return;
-  const expected = fencing
-    ? (Array.isArray(fencing) ? fencing : [fencing])
-    : undefined;
-  releaseExecutionLeases(
+  if (!fencing) throw new Error('MUTATION_RELEASE_FENCING_REQUIRED');
+  const expected = (Array.isArray(fencing) ? fencing : [fencing]).map((entry) => ({
+    ...entry,
+    repoId,
+    checkoutId,
+  }));
+  releaseExactExecutionLeases(
     controllerHome,
     repoId,
     gateIdOrOwner,
@@ -334,13 +410,16 @@ export function releaseCheckoutMutationGateOwned(
   controllerHome: string,
   gate: CheckoutMutationGate,
 ): void {
-  releaseExecutionLeases(
+  releaseExactExecutionLeases(
     controllerHome,
     gate.repoId,
     gate.ownerJobId,
     gate.leaseIds.map((leaseId) => ({
       leaseId,
       fencingToken: gate.fencingTokens[leaseId] ?? gate.fencingToken,
+      repoId: gate.repoId,
+      checkoutId: gate.checkoutId,
+      ownerIdentityDigest: gate.ownerIdentityDigest,
     })),
     EPHEMERAL_OPTS,
   );
@@ -382,6 +461,7 @@ export async function withCheckoutMutationGate<T>(
     ttlMs?: number;
     signal?: AbortSignal;
     ownership?: MutationOwnershipOptions;
+    ownerIdentity?: Partial<ExecutionLeaseOwnerIdentity>;
   },
   operation: (gate: CheckoutMutationGate, helpers: MutationGateHelpers) => Promise<T>,
 ): Promise<WithMutationGateResult<T> | { ok: false; busy: MutationGateBusy }> {
