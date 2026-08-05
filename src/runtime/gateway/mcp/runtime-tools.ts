@@ -2729,22 +2729,34 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         }
         const toolSurfaceComputed = exposure.expectedToolNames.length > 0 || exposure.actualToolNames.length > 0 || toolSurfaceReady;
         const readinessWithToolSurface = {
-          ...readiness,
           ready: effectiveReady,
-          state: effectiveReady ? readiness.state : 'degraded' as const,
-          reasons: readinessReasons,
-          toolSurface: {
-            ready: toolSurfaceReady,
-            // An uncomputed exposure is explicitly unknown, never a false 0/0.
-            expectedToolCount: toolSurfaceComputed ? exposure.expectedToolNames.length : null,
-            actualToolCount: toolSurfaceComputed ? exposure.actualToolNames.length : null,
-            toolSurfaceState: toolSurfaceComputed ? 'computed' : 'unknown',
-            missingTools: exposure.missingToolNames,
-            unexpectedTools: exposure.unexpectedToolNames,
-            duplicateTools: exposure.duplicateToolNames,
-            fingerprint: exposure.fingerprint,
-            schemaStableAcrossAccessModes: exposure.schemaStableAcrossAccessModes,
+          reasonCodes: [...new Set(
+            readinessReasons
+              .map((reason) => reason.code)
+              .filter((code): code is string => typeof code === 'string' && code.length > 0),
+          )],
+          diagnostics: {
+            runtime: {
+              ready: readiness.ready,
+            },
+            toolSurface: {
+              ready: toolSurfaceReady,
+              // An uncomputed exposure is explicitly unknown, never a false 0/0.
+              expectedToolCount: toolSurfaceComputed ? exposure.expectedToolNames.length : null,
+              actualToolCount: toolSurfaceComputed ? exposure.actualToolNames.length : null,
+              observation: toolSurfaceComputed ? 'computed' : 'unknown',
+              missingTools: exposure.missingToolNames,
+              unexpectedTools: exposure.unexpectedToolNames,
+              duplicateTools: exposure.duplicateToolNames,
+              fingerprint: exposure.fingerprint,
+              schemaStableAcrossAccessModes: exposure.schemaStableAcrossAccessModes,
+            },
+            sourceCoherence: {
+              ready: !sourceSnapshotStale,
+              reasons: runtimeSource.reasons,
+            },
           },
+          observedAt: new Date().toISOString(),
         };
         const detailLevel = args.detail_level === 'detail' ? 'detail' : 'summary';
         // Always prefer stored plugin manifests on rh_status get. Live host probes
@@ -2788,7 +2800,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             toolSurface: detailLevel === 'detail'
               ? exposure.actualToolNames
               : preferredFacadeTools.filter((name) => exposure.actualToolNames.includes(name)),
-            toolSurfaceStatus: readinessWithToolSurface.toolSurface,
+            toolSurfaceStatus: readinessWithToolSurface.diagnostics.toolSurface,
             access: exposure.access,
           },
           suggestedNextActions: pendingHandoffs.length > 0 ? [{

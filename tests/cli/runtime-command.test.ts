@@ -88,6 +88,16 @@ describe('runtime command surface', () => {
     expect(httpTransport).toContain('readControllerDaemonStatus');
     expect(runtimeTools).not.toContain('ensureControllerDaemon');
     expect(runtimeTools).not.toContain('cli/mcp/keepalive');
+    const readinessStart = runtimeTools.indexOf('const readinessWithToolSurface = {');
+    const readinessEnd = runtimeTools.indexOf('const detailLevel', readinessStart);
+    const readinessBlock = runtimeTools.slice(readinessStart, readinessEnd);
+    expect(readinessStart).toBeGreaterThanOrEqual(0);
+    expect(readinessEnd).toBeGreaterThan(readinessStart);
+    expect(readinessBlock).toContain('ready: effectiveReady');
+    expect(readinessBlock).toContain('reasonCodes:');
+    expect(readinessBlock).toContain('diagnostics:');
+    expect(readinessBlock).not.toContain('state:');
+    expect(readinessBlock).not.toContain('...readiness');
     expect(runtimeTools).toContain('readControllerDaemonStatus');
     for (const legacy of [
       'controller_restart_verify',
