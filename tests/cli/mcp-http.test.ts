@@ -6,6 +6,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { mcpControllerHomeOAuthPath, mcpControllerHomeTokenPath } from '../../src/cli/mcp/auth';
 import { runMcpSetupChatgpt } from '../../src/cli/mcp/setup';
+import { mergeNoProxy, withDirectNetworkProxyBypass } from '../../src/cli/mcp/proxy-env';
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -93,6 +94,18 @@ function isolatedMcpProcessEnv(
 }
 
 describe('mcp http transport', () => {
+  test('preserves existing proxy settings while bypassing direct Runtime endpoints', () => {
+    const merged = mergeNoProxy('127.0.0.1,localhost', '.ts.net', '127.0.0.1');
+    expect(merged.split(',')).toEqual(['127.0.0.1', 'localhost', '.ts.net']);
+    const env = withDirectNetworkProxyBypass({
+      NO_PROXY: 'mirrors.aliyun.com',
+      HTTPS_PROXY: 'http://127.0.0.1:7897',
+    });
+    expect(env.NO_PROXY).toContain('mirrors.aliyun.com');
+    expect(env.NO_PROXY).toContain('.ts.net');
+    expect(env.HTTPS_PROXY).toBe('http://127.0.0.1:7897');
+  });
+
   test('requires bearer auth and accepts authenticated initialize requests', async () => {
     const repoRoot = mkdtempSync(join(tmpdir(), 'repo-harness-mcp-http-'));
     const port = await freePort();
