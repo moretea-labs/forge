@@ -1,6 +1,6 @@
 # Controller-home SQLite state authority
 
-Status: accepted, amended 2026-08-02
+Status: accepted, amended 2026-08-02, implemented for the Requirement control plane 2026-08-05
 Date: 2026-08-01
 Amended by: `20260802-requirement-centered-control-plane.md`
 
@@ -80,10 +80,21 @@ authoritative.
 
 ## Current implementation
 
-Phase 1 has migrated execution sessions, Work handles, idempotent
-work-prepare claims, and WorkContract stores. Their old JSON locations are
-retained solely for first-read import compatibility. Issue and Task JSON/Markdown
-have not yet migrated, so they remain the temporary legacy source until the
-Requirement namespace cutover. That temporary fact does not reverse the accepted
-target: after cutover they are import-only aliases or one-way exports and cannot
-write back over SQLite.
+The Requirement control-plane cutover is complete. Execution sessions, Work
+handles, idempotent work-prepare claims, WorkContracts, Requirements,
+ExecutionPlans, PlanSteps, Work relationships, migration markers, revisions and
+audit continuity are mutable only through
+`<durable-controller-home>/control-plane.sqlite`.
+
+Repository Issue/Task JSON and Markdown, `currentIssue`, the legacy project
+board and task-ledger artifacts are frozen compatibility material. A missing
+SQLite record may consume its reviewed import source only during the named
+one-time migration transaction. Once a row exists, later repository changes are
+ignored. Compatibility reads are SQLite-derived and explicitly marked
+`deprecated`, `frozen` and `readOnly`.
+
+Offline exports are revision-stamped, one-way SQLite-to-filesystem snapshots.
+They cannot be written under `tasks/issues`, cannot be replayed into existing
+rows and are not a rollback mechanism. Post-cutover rollback accepts only a
+verified SQLite backup whose schema, integrity, audit continuity and entity
+relationships pass validation.

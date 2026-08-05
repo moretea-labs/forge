@@ -1,9 +1,10 @@
-import { createHash } from 'crypto';
-import { mkdirSync, rmSync, writeFileSync } from 'fs';
-import { join, relative, resolve } from 'path';
+import { createHash, randomBytes } from 'crypto';
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'fs';
+import { dirname, join, relative, resolve } from 'path';
 import type { Requirement } from '../../runtime/control-plane/persistence/requirement-store';
 import type { PlanContract } from '../../runtime/control-plane/facade/types';
 import { listControlPlaneRecords, readControlPlaneRecord } from '../../runtime/control-plane/persistence/sqlite-store';
+import { assertControlPlaneMetadataPayload } from '../../runtime/control-plane/persistence/metadata-payload-policy';
 import {
   REQUIREMENT_PORTFOLIO_MIGRATION_ID,
   type RequirementPortfolioMigrationRecord,
@@ -14,11 +15,17 @@ export interface RequirementPortfolioExportOptions {
   repoId: string;
   outputDir: string;
   repoRoot?: string;
+  /** Deterministic test-only failure before an export file is published. */
+  faultInjection?: { failAfterWrites?: number };
 }
 
 export interface RequirementPortfolioExportManifest {
   schemaVersion: 1;
   kind: 'requirement_portfolio_offline_export';
+  compatibility: 'deprecated_frozen_projection';
+  direction: 'sqlite_to_offline_only';
+  authority: 'controller-home-sqlite';
+  replayAllowed: false;
   migrationId: string;
   repoId: string;
   sourceRevision: string;
@@ -50,6 +57,20 @@ function assertOutputBoundary(options: RequirementPortfolioExportOptions): strin
   return outputDir;
 }
 
+function publishDirectory(staging: string, outputDir: string): void {
+  const previous = `${outputDir}.previous-${process.pid}-${randomBytes(4).toString('hex')}`;
+  const hadPrevious = existsSync(outputDir);
+  if (hadPrevious) renameSync(outputDir, previous);
+  try {
+    renameSync(staging, outputDir);
+    if (hadPrevious) rmSync(previous, { recursive: true, force: true });
+  } catch (error) {
+    if (existsSync(outputDir)) rmSync(outputDir, { recursive: true, force: true });
+    if (hadPrevious && existsSync(previous)) renameSync(previous, outputDir);
+    throw error;
+  }
+}
+
 export function exportRequirementPortfolio(options: RequirementPortfolioExportOptions): RequirementPortfolioExportManifest {
   const outputDir = assertOutputBoundary(options);
   const migration = readControlPlaneRecord<RequirementPortfolioMigrationRecord>(
@@ -73,10 +94,15 @@ export function exportRequirementPortfolio(options: RequirementPortfolioExportOp
     requirements: requirements.map((record) => ({ key: record.key, revision: record.revision, value: record.value })),
     plans: plans.map((record) => ({ key: record.key, revision: record.revision, value: record.value })),
   };
+  assertControlPlaneMetadataPayload(content, 'requirement_portfolio_export');
   const contentFingerprint = sha256(stableJson(content));
   const manifest: RequirementPortfolioExportManifest = {
     schemaVersion: 1,
     kind: 'requirement_portfolio_offline_export',
+    compatibility: 'deprecated_frozen_projection',
+    direction: 'sqlite_to_offline_only',
+    authority: 'controller-home-sqlite',
+    replayAllowed: false,
     migrationId: migration.value.migrationId,
     repoId: options.repoId,
     sourceRevision: migration.value.sourceRevision,
@@ -92,15 +118,29 @@ export function exportRequirementPortfolio(options: RequirementPortfolioExportOp
     generatedFromMigrationAt: migration.value.appliedAt,
   };
 
-  rmSync(outputDir, { recursive: true, force: true });
-  mkdirSync(join(outputDir, 'requirements'), { recursive: true });
-  mkdirSync(join(outputDir, 'plans'), { recursive: true });
-  for (const record of requirements) {
-    writeFileSync(join(outputDir, 'requirements', `${record.key}.json`), stableJson({ revision: record.revision, value: record.value }), 'utf8');
+  mkdirSync(dirname(outputDir), { recursive: true, mode: 0o700 });
+  const staging = `${outputDir}.staging-${process.pid}-${randomBytes(4).toString('hex')}`;
+  let writes = 0;
+  const write = (path: string, value: unknown): void => {
+    writeFileSync(path, stableJson(value), 'utf8');
+    writes += 1;
+    if (options.faultInjection?.failAfterWrites === writes) {
+      throw new Error(`REQUIREMENT_EXPORT_FAULT_INJECTED: after_write=${writes}`);
+    }
+  };
+  try {
+    mkdirSync(join(staging, 'requirements'), { recursive: true, mode: 0o700 });
+    mkdirSync(join(staging, 'plans'), { recursive: true, mode: 0o700 });
+    for (const record of requirements) {
+      write(join(staging, 'requirements', `${record.key}.json`), { revision: record.revision, value: record.value });
+    }
+    for (const record of plans) {
+      write(join(staging, 'plans', `${record.key}.json`), { revision: record.revision, value: record.value });
+    }
+    write(join(staging, 'manifest.json'), manifest);
+    publishDirectory(staging, outputDir);
+    return manifest;
+  } finally {
+    if (existsSync(staging)) rmSync(staging, { recursive: true, force: true });
   }
-  for (const record of plans) {
-    writeFileSync(join(outputDir, 'plans', `${record.key}.json`), stableJson({ revision: record.revision, value: record.value }), 'utf8');
-  }
-  writeFileSync(join(outputDir, 'manifest.json'), stableJson(manifest), 'utf8');
-  return manifest;
 }

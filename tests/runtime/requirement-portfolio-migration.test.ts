@@ -293,9 +293,11 @@ describe('Requirement portfolio migration', () => {
       });
       expect(first).toMatchObject({ migrated: true, completed: true, planId: 'PLAN-20260802-7E1D69', receiptId: t6Receipt.receiptId });
       expect(migratedTaskCompletionState(repoRoot, 'ISS-20260802-7E1D69', 'T6')).toMatchObject({ completed: true, receiptId: t6Receipt.receiptId });
+      const completedPlanBeforeRetry = getPlanContract({ controllerHome, repoId: REPO_ID }, 'PLAN-20260802-7E1D69');
       expect(recordMigratedTaskCompletion(repoRoot, {
         issueId: 'ISS-20260802-7E1D69', taskId: 'T6', receipt: t6Receipt, reviewer: 'test',
       }).receiptId).toBe(t6Receipt.receiptId);
+      expect(getPlanContract({ controllerHome, repoId: REPO_ID }, 'PLAN-20260802-7E1D69')).toEqual(completedPlanBeforeRetry);
       expect(getPlanContract({ controllerHome, repoId: REPO_ID }, 'PLAN-20260802-7E1D69')?.steps.find((step) => step.id === 'T6')).toMatchObject({ status: 'completed' });
       expect(listRequirements({ controllerHome }, 100).find((record) => record.value.requirementId === 'REQ-CONTROL-PLANE')?.value.state).toBe('active');
 
@@ -310,12 +312,55 @@ describe('Requirement portfolio migration', () => {
       expect(repeated).toEqual(exported);
       expect(readFileSync(join(outputDir, 'manifest.json'), 'utf8')).toBe(firstManifest);
       expect(readdirSync(join(outputDir, 'requirements')).some((name) => name === 'REQ-CONTROL-PLANE.json')).toBe(true);
-      expect(exported).toMatchObject({ requirementCount: 10, planCount: 36 });
+      expect(exported).toMatchObject({
+        requirementCount: 10,
+        planCount: 36,
+        compatibility: 'deprecated_frozen_projection',
+        direction: 'sqlite_to_offline_only',
+        replayAllowed: false,
+      });
+      const authorityBeforeFailedExport = {
+        requirements: listControlPlaneRecords(controllerHome, { namespace: 'requirement', scope: 'controller', limit: 100 }),
+        plans: listControlPlaneRecords(controllerHome, { namespace: 'plan_contract', scope: REPO_ID, limit: 100 }),
+      };
+      expect(() => exportRequirementPortfolio({
+        controllerHome, repoId: REPO_ID, repoRoot, outputDir, faultInjection: { failAfterWrites: 1 },
+      })).toThrow('REQUIREMENT_EXPORT_FAULT_INJECTED');
+      expect(readFileSync(join(outputDir, 'manifest.json'), 'utf8')).toBe(firstManifest);
+      expect({
+        requirements: listControlPlaneRecords(controllerHome, { namespace: 'requirement', scope: 'controller', limit: 100 }),
+        plans: listControlPlaneRecords(controllerHome, { namespace: 'plan_contract', scope: REPO_ID, limit: 100 }),
+      }).toEqual(authorityBeforeFailedExport);
       expect(() => exportRequirementPortfolio({ controllerHome, repoId: REPO_ID, repoRoot, outputDir: issueDir })).toThrow('REQUIREMENT_EXPORT_LEGACY_AUTHORITY_PATH_REFUSED');
       expect(readdirSync(issueDir).sort()).toEqual(beforeFiles);
     } finally {
       rmSync(repoRoot, { recursive: true, force: true });
     }
+  });
+
+  test('rolls back every interrupted migration transaction boundary', () => {
+    const totalWrites = CANONICAL_REQUIREMENTS.length + PORTFOLIO_ISSUE_MAPPINGS.length + 1;
+    for (let failAfterWrites = 1; failAfterWrites <= totalWrites; failAfterWrites += 1) {
+      withHome((controllerHome) => {
+        expect(() => applyRequirementPortfolioMigration({
+          ...input(controllerHome),
+          faultInjection: { failAfterWrites },
+        })).toThrow(`REQUIREMENT_PORTFOLIO_FAULT_INJECTED: after_write=${failAfterWrites}`);
+        expect(listControlPlaneRecords(controllerHome, { namespace: 'requirement', limit: 100 })).toEqual([]);
+        expect(listControlPlaneRecords(controllerHome, { namespace: 'plan_contract', limit: 100 })).toEqual([]);
+        expect(listControlPlaneRecords(controllerHome, { namespace: 'requirement_portfolio_migration', limit: 10 })).toEqual([]);
+      });
+    }
+  });
+
+  test('rejects secret-bearing migration metadata before the first durable write', () => {
+    withHome((controllerHome) => {
+      const issues = fixtures();
+      issues[0] = { ...issues[0], summary: '-----BEGIN PRIVATE KEY-----' };
+      expect(() => applyRequirementPortfolioMigration(input(controllerHome, issues))).toThrow('CONTROL_PLANE_METADATA_SECRET_REFUSED');
+      expect(listControlPlaneRecords(controllerHome, { namespace: 'requirement', limit: 100 })).toEqual([]);
+      expect(listControlPlaneRecords(controllerHome, { namespace: 'plan_contract', limit: 100 })).toEqual([]);
+    });
   });
 
   test('rejects partial authority and rejects a changed source after migration', () => {

@@ -44,6 +44,8 @@ import { buildControllerOperationalPlan } from "../controller/operational-plan";
 import { exportControllerWorklog, listControllerWorklogEvents, parseWorklogCategory } from "../controller/worklog";
 import { inspectProjectGovernance, reconcileProjectGovernance } from "../controller/governance";
 import { clearCurrentIssue, loadControllerProjectState, saveControllerProjectState } from "../controller/project-state";
+import { legacyIssueAuthorityRetired } from "../controller/legacy-issue-cutover";
+import { buildExecutionDiagnostics, buildRequirementBoard } from "../../runtime/control-plane/facade/requirement-board";
 import {
   closeIssueWithGitHubPlugin,
   getGitHubPluginStatus,
@@ -276,6 +278,16 @@ function localBridgeExecutionRetiredPayload(): Record<string, unknown> {
   };
 }
 
+function legacyControlPlaneMutationRetiredPayload(): Record<string, unknown> {
+  return {
+    error: "LEGACY_CONTROL_PLANE_MUTATION_RETIRED",
+    message: "Issue, Task, currentIssue and legacy project-board mutation APIs are frozen after SQLite cutover. Use Requirement, Plan and Work APIs.",
+    authority: "controller-home-sqlite",
+    deprecated: true,
+    frozen: true,
+  };
+}
+
 function queryString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
@@ -336,15 +348,48 @@ function runtimeControllerSnapshot(repoRoot: string) {
 }
 
 export function buildLocalControllerSnapshot(repoRoot: string) {
+  const retiredLegacyControlPlane = legacyIssueAuthorityRetired(repoRoot);
+  const authoritativeControllerHome = resolveRepoPreferredControllerHome(repoRoot);
+  const runtimeRepository = loadRepositoryRegistry(authoritativeControllerHome).repositories.find(
+    (entry) => entry.canonicalRoot.replace(/\\/g, '/') === repoRoot.replace(/\\/g, '/'),
+  );
+  const requirementBoard = retiredLegacyControlPlane
+    ? buildRequirementBoard({ controllerHome: authoritativeControllerHome, repoId: runtimeRepository?.repoId })
+    : undefined;
+  const executionDiagnostics = retiredLegacyControlPlane
+    ? buildExecutionDiagnostics({ controllerHome: authoritativeControllerHome, repoId: runtimeRepository?.repoId, detailLevel: "detail" })
+    : undefined;
   const runs = listAgentJobs(repoRoot, 30);
   const editSessions = listEditSessions(repoRoot, 30);
   const localJobs = listLocalBridgeJobs(repoRoot, 30);
-  const board = projectBoard(repoRoot);
+  const board = retiredLegacyControlPlane
+    ? {
+        schemaVersion: 1,
+        projection: "deprecated_frozen_legacy_board",
+        authority: "controller-home-sqlite",
+        deprecated: true,
+        frozen: true,
+        issues: [],
+        counts: requirementBoard?.counts ?? {},
+        declaredCounts: {},
+        archivedCounts: {},
+        readyTasks: [],
+        queueableTasks: [],
+        archivedIssueCount: 0,
+        notice: "Requirement Board is authoritative. Legacy Issue/Task board data is intentionally omitted.",
+      }
+    : projectBoard(repoRoot);
   const taskLedger = buildControllerTaskLedgerProjection(repoRoot);
   const operationalPlan = buildControllerOperationalPlan(repoRoot, taskLedger);
-  const completionBacklog = inspectCompletionBacklog(repoRoot, { limit: 100 });
-  const completionQueues = completionDecisionQueues(repoRoot, { limit: 100 });
-  const stuckStates = inspectStuckControllerStates(repoRoot, { limit: 100 });
+  const completionBacklog = retiredLegacyControlPlane
+    ? { scannedAt: new Date().toISOString(), counts: {}, finishableRunIds: [], needsHumanReviewRunIds: [], retryTaskRefs: [], items: [], recommendations: ["Use Work and Execution Diagnostics."] }
+    : inspectCompletionBacklog(repoRoot, { limit: 100 });
+  const completionQueues = retiredLegacyControlPlane
+    ? { scannedAt: new Date().toISOString(), counts: {}, autoFinish: [], needsHumanReview: [], retryRequired: [], noRunEvidence: [], systemBlocked: [], recentlyTerminal: [], recommendations: ["Use Work and Execution Diagnostics."] }
+    : completionDecisionQueues(repoRoot, { limit: 100 });
+  const stuckStates = retiredLegacyControlPlane
+    ? { generatedAt: new Date().toISOString(), findings: [], counts: {}, recommendations: ["Use Work and Execution Diagnostics."] }
+    : inspectStuckControllerStates(repoRoot, { limit: 100 });
   const runtime = runtimeControllerSnapshot(repoRoot);
   const executionJobs = "executionJobs" in runtime ? (runtime.executionJobs ?? []) : [];
   const controllerHome = resolveControllerHome();
@@ -463,7 +508,7 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
     runtimeProjectionPersisted: Boolean(runtimeProjection),
     commandPreviewAvailable: connectorHealthy,
     commandExecuteAvailable: connectorHealthy,
-    issueToolsAvailable: true,
+    issueToolsAvailable: !retiredLegacyControlPlane,
     jobToolsAvailable: true,
     checksAvailable: listControllerChecks(repoRoot).length > 0,
     pluginStates: assistantPlugins.map((plugin) => ({
@@ -535,6 +580,13 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
       taskAgentBinding: false,
       localRiskApprovalGate: false,
     },
+    requirementBoard,
+    executionDiagnostics,
+    legacyCompatibility: retiredLegacyControlPlane ? {
+      authority: "controller-home-sqlite",
+      projection: "deprecated_frozen",
+      mutationApis: "retired",
+    } : undefined,
     board,
     taskLedger,
     operationalPlan,
@@ -2416,6 +2468,10 @@ export async function startLocalBridgeServer(
     try {
       const body = request.body ?? {};
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
+      if (legacyIssueAuthorityRetired(repoRoot)) {
+        response.status(410).json(legacyControlPlaneMutationRetiredPayload());
+        return;
+      }
       if (body.currentIssueId === null || body.currentIssueId === "") {
         response.json(clearCurrentIssue(repoRoot, "local-ui"));
         return;
@@ -2436,6 +2492,10 @@ export async function startLocalBridgeServer(
   app.post("/api/issues/:issueId/focus", (request, response) => {
     try {
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
+      if (legacyIssueAuthorityRetired(repoRoot)) {
+        response.status(410).json(legacyControlPlaneMutationRetiredPayload());
+        return;
+      }
       const issue = getIssue(repoRoot, request.params.issueId);
       if (issue.archivedAt || ["done", "cancelled"].includes(issue.status)) throw new Error("only an active, non-archived Issue can become the execution focus");
       response.json(saveControllerProjectState(repoRoot, { currentIssueId: issue.id }, "local-ui"));
@@ -2451,14 +2511,24 @@ export async function startLocalBridgeServer(
   });
   app.post("/api/issues/:issueId/archive", (request, response) => {
     try {
-      response.json(archiveIssue(requestRepositoryRoot(request, options, controllerHome), request.params.issueId));
+      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
+      if (legacyIssueAuthorityRetired(repoRoot)) {
+        response.status(410).json(legacyControlPlaneMutationRetiredPayload());
+        return;
+      }
+      response.json(archiveIssue(repoRoot, request.params.issueId));
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
   });
   app.post("/api/issues/:issueId/restore", (request, response) => {
     try {
-      response.json(restoreIssue(requestRepositoryRoot(request, options, controllerHome), request.params.issueId));
+      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
+      if (legacyIssueAuthorityRetired(repoRoot)) {
+        response.status(410).json(legacyControlPlaneMutationRetiredPayload());
+        return;
+      }
+      response.json(restoreIssue(repoRoot, request.params.issueId));
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
@@ -2469,6 +2539,10 @@ export async function startLocalBridgeServer(
   app.post("/api/issues/:issueId/tasks/:taskId/verify", async (request, response) => {
     try {
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
+      if (legacyIssueAuthorityRetired(repoRoot)) {
+        response.status(410).json(legacyControlPlaneMutationRetiredPayload());
+        return;
+      }
       const issue = getIssue(repoRoot, request.params.issueId);
       const task = issue.tasks.find((entry) => entry.id === request.params.taskId);
       if (!task) throw new Error("task not found");
@@ -2550,6 +2624,10 @@ export async function startLocalBridgeServer(
   app.post("/api/issues/:issueId/tasks/:taskId/accept", (request, response) => {
     try {
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
+      if (legacyIssueAuthorityRetired(repoRoot)) {
+        response.status(410).json(legacyControlPlaneMutationRetiredPayload());
+        return;
+      }
       const issue = getIssue(repoRoot, request.params.issueId);
       const task = issue.tasks.find((entry) => entry.id === request.params.taskId);
       if (!task) throw new Error("task not found");
@@ -2569,6 +2647,10 @@ export async function startLocalBridgeServer(
   app.post("/api/issues/:issueId/tasks/:taskId/request-changes", (request, response) => {
     try {
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
+      if (legacyIssueAuthorityRetired(repoRoot)) {
+        response.status(410).json(legacyControlPlaneMutationRetiredPayload());
+        return;
+      }
       const issue = getIssue(repoRoot, request.params.issueId);
       const task = issue.tasks.find((entry) => entry.id === request.params.taskId);
       if (!task) throw new Error("task not found");
@@ -2581,6 +2663,10 @@ export async function startLocalBridgeServer(
   app.post("/api/issues/:issueId/tasks/:taskId/cancel", (request, response) => {
     try {
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
+      if (legacyIssueAuthorityRetired(repoRoot)) {
+        response.status(410).json(legacyControlPlaneMutationRetiredPayload());
+        return;
+      }
       const issue = getIssue(repoRoot, request.params.issueId);
       const task = issue.tasks.find((entry) => entry.id === request.params.taskId);
       if (!task) throw new Error("task not found");
@@ -2593,8 +2679,13 @@ export async function startLocalBridgeServer(
   });
   app.post("/api/issues/:issueId/tasks/:taskId/dependencies", (request, response) => {
     try {
+      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
+      if (legacyIssueAuthorityRetired(repoRoot)) {
+        response.status(410).json(legacyControlPlaneMutationRetiredPayload());
+        return;
+      }
       if (!Array.isArray(request.body?.dependsOn)) throw new Error("dependsOn must be an array");
-      response.json(setTaskDependencies(requestRepositoryRoot(request, options, controllerHome), request.params.issueId, request.params.taskId, request.body.dependsOn.map(String)));
+      response.json(setTaskDependencies(repoRoot, request.params.issueId, request.params.taskId, request.body.dependsOn.map(String)));
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }

@@ -38,6 +38,9 @@ import { markControllerContextProjectionDirty } from '../../runtime/projections/
 import {
   assertLegacyIssueWritesAllowed,
   assertLegacyProjectBoardAvailable,
+  frozenLegacyIssueProjection,
+  legacyIssueAuthorityRetired,
+  listFrozenLegacyIssueProjections,
   migratedIssueReadinessProjection,
 } from './legacy-issue-cutover';
 
@@ -363,6 +366,8 @@ export function getIssueReadView(
   id: string,
   detailLevel: 'summary' | 'full' = 'summary',
 ) {
+  const frozen = frozenLegacyIssueProjection(repoRoot, id, detailLevel);
+  if (frozen) return frozen;
   const full = getIssueEffectiveView(repoRoot, id);
   if (detailLevel === 'full') return { ...full, detailLevel };
   return {
@@ -374,6 +379,7 @@ export function getIssueReadView(
 }
 
 export function listIssueEffectiveViews(repoRoot: string) {
+  if (legacyIssueAuthorityRetired(repoRoot)) return listFrozenLegacyIssueProjections(repoRoot);
   return listIssues(repoRoot).map((issue) => projectIssueEffectiveView(repoRoot, issue));
 }
 
@@ -540,6 +546,9 @@ export function inspectTaskReadiness(
   taskId: string,
   options: TaskReadinessOptions = {},
 ): TaskReadiness {
+  if (legacyIssueAuthorityRetired(repoRoot)) {
+    throw new Error('LEGACY_TASK_READINESS_RETIRED: use PlanStep and Work diagnostics from controller-home SQLite.');
+  }
   const issue = getIssue(repoRoot, issueIdValue);
   const task = issue.tasks.find((entry) => entry.id === taskId);
   if (!task) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
@@ -612,6 +621,7 @@ export function createIssue(repoRoot: string, input: {
   ephemeral?: boolean;
   ephemeralOwnerJobId?: string;
 }): ControllerIssue {
+  if (!input.ephemeral) assertLegacyIssueWritesAllowed(repoRoot);
   const title = input.title.trim();
   if (!title) throw new Error('issue title is required');
   const projectState = loadControllerProjectState(repoRoot);
@@ -672,6 +682,7 @@ export function createIssue(repoRoot: string, input: {
 }
 
 export function planIssue(repoRoot: string, id: string, drafts: TaskDraft[]): ControllerIssue {
+  assertLegacyIssueWritesAllowed(repoRoot, { id });
   const issue = getIssue(repoRoot, id);
   assertIssueExecutionActive(issue, 'plan_issue');
   if (issue.tasks.some((task) => task.workId)) {
@@ -689,6 +700,7 @@ export function planIssue(repoRoot: string, id: string, drafts: TaskDraft[]): Co
 }
 
 export function appendTask(repoRoot: string, issueIdValue: string, draft: TaskDraft): ControllerIssue {
+  assertLegacyIssueWritesAllowed(repoRoot, { id: issueIdValue });
   const issue = getIssue(repoRoot, issueIdValue);
   assertIssueExecutionActive(issue, 'append_task');
   const now = new Date().toISOString();
@@ -703,6 +715,7 @@ export function appendTask(repoRoot: string, issueIdValue: string, draft: TaskDr
 }
 
 export function splitTask(repoRoot: string, issueIdValue: string, taskId: string, drafts: TaskDraft[]): ControllerIssue {
+  assertLegacyIssueWritesAllowed(repoRoot, { id: issueIdValue });
   if (drafts.length < 2) throw new Error('split_task requires at least two replacement tasks');
   const issue = getIssue(repoRoot, issueIdValue);
   const original = issue.tasks.find((task) => task.id === taskId);
@@ -745,6 +758,7 @@ export function splitTask(repoRoot: string, issueIdValue: string, taskId: string
 }
 
 export function supersedeTask(repoRoot: string, issueIdValue: string, taskId: string, replacementTaskIds: string[] = []): ControllerIssue {
+  assertLegacyIssueWritesAllowed(repoRoot, { id: issueIdValue });
   const issue = getIssue(repoRoot, issueIdValue);
   const task = issue.tasks.find((entry) => entry.id === taskId);
   if (!task) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
@@ -777,6 +791,7 @@ export function supersedeTask(repoRoot: string, issueIdValue: string, taskId: st
 }
 
 export function setTaskDependencies(repoRoot: string, issueIdValue: string, taskId: string, dependsOn: string[]): ControllerIssue {
+  assertLegacyIssueWritesAllowed(repoRoot, { id: issueIdValue });
   const issue = getIssue(repoRoot, issueIdValue);
   const task = issue.tasks.find((entry) => entry.id === taskId);
   if (!task) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
@@ -803,6 +818,7 @@ export function updateIssue(repoRoot: string, id: string, patch: {
   relatedArtifacts?: string[];
   github?: GitHubIssueLink;
 }): ControllerIssue {
+  assertLegacyIssueWritesAllowed(repoRoot, { id });
   const issue = getIssue(repoRoot, id);
   const previousStatus = issue.status;
   if (patch.title !== undefined) {
@@ -838,6 +854,7 @@ export function updateTask(repoRoot: string, issueIdValue: string, taskId: strin
   verification?: TaskVerification;
   transition?: 'normal' | 'run_sync' | 'retry' | 'restore';
 }): ControllerIssue {
+  assertLegacyIssueWritesAllowed(repoRoot, { id: issueIdValue });
   const issue = getIssue(repoRoot, issueIdValue);
   const task = issue.tasks.find((entry) => entry.id === taskId);
   if (!task) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
@@ -895,6 +912,7 @@ export function bindTaskToWork(
   workId: string,
   repoId?: string,
 ): ControllerIssue {
+  assertLegacyIssueWritesAllowed(repoRoot, { id: issueIdValue });
   const normalizedWorkId = workId.trim();
   if (!normalizedWorkId) throw new Error('TASK_WORK_ID_REQUIRED');
   const normalizedRepoId = repoId?.trim();
@@ -925,9 +943,9 @@ export function bindTaskToWork(
 }
 
 /**
- * The only supported write path for a Work-backed Task compatibility projection.
- * Work identity, lifecycle, contract fields and receipt are validated before the
- * legacy JSON projection is updated.
+ * Pre-cutover compatibility writer retained only for an unmigrated repository.
+ * Once the SQLite migration marker exists this function fails before reading or
+ * mutating legacy Issue/Task files; Work remains the sole execution writer.
  */
 export function projectTaskFromWork(
   repoRoot: string,
@@ -936,6 +954,7 @@ export function projectTaskFromWork(
   work: WorkContract,
   input: { verification?: TaskVerification; note?: string } = {},
 ): ControllerIssue {
+  assertLegacyIssueWritesAllowed(repoRoot, { id: issueIdValue });
   const issue = getIssue(repoRoot, issueIdValue);
   const task = issue.tasks.find((entry) => entry.id === taskId);
   if (!task) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
@@ -985,6 +1004,9 @@ function finding(code: string, level: 'blocker' | 'warning', message: string, ta
 }
 
 export function inspectIssueReadiness(repoRoot: string, issueIdValue: string): IssueReadiness {
+  if (legacyIssueAuthorityRetired(repoRoot)) {
+    throw new Error('LEGACY_ISSUE_READINESS_RETIRED: use Requirement Board, Plan and Work diagnostics from controller-home SQLite.');
+  }
   const issue = getIssue(repoRoot, issueIdValue);
   const lifecycle = resolveIssueLifecycleStatus(issue);
   const states = resolveIssueTaskStates(issue, readIssueRunEvidence(repoRoot, issue));
@@ -1057,6 +1079,7 @@ export function removeEphemeralIssue(repoRoot: string, issueIdValue: string): bo
 }
 
 export function archiveIssue(repoRoot: string, issueIdValue: string): ControllerIssue {
+  assertLegacyIssueWritesAllowed(repoRoot, { id: issueIdValue });
   const issue = getIssue(repoRoot, issueIdValue);
   if (!['done', 'cancelled'].includes(issue.status)) throw new Error(`only done or cancelled Issues can be archived (current: ${issue.status})`);
   if (issue.archivedAt) return issue;
@@ -1070,6 +1093,7 @@ export function archiveIssue(repoRoot: string, issueIdValue: string): Controller
 }
 
 export function restoreIssue(repoRoot: string, issueIdValue: string): ControllerIssue {
+  assertLegacyIssueWritesAllowed(repoRoot, { id: issueIdValue });
   const issue = getIssue(repoRoot, issueIdValue);
   if (!issue.archivedAt) return issue;
   const archivedAt = issue.archivedAt;
@@ -1169,6 +1193,7 @@ function historicalTaskCompletionReceipt(
 }
 
 export function acceptVerifiedTask(repoRoot: string, issueIdValue: string, taskId: string, note = 'Accepted after controller verification.'): ControllerIssue {
+  assertLegacyIssueWritesAllowed(repoRoot, { id: issueIdValue });
   const issue = getIssue(repoRoot, issueIdValue);
   const task = issue.tasks.find((entry) => entry.id === taskId);
   if (!task) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
@@ -1209,6 +1234,7 @@ export function recordTaskVerification(
   verification: TaskVerification,
   options: { completingRunId?: string } = {},
 ): ControllerIssue {
+  assertLegacyIssueWritesAllowed(repoRoot, { id: issueIdValue });
   const issue = getIssue(repoRoot, issueIdValue);
   const task = issue.tasks.find((entry) => entry.id === taskId);
   if (!task) throw new Error(`task not found: ${issueIdValue}/${taskId}`);

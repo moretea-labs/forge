@@ -64,6 +64,7 @@ import {
   updateTask,
 } from "../controller/issue-store";
 import { applyMigratedIssueDecision } from '../controller/migrated-issue-decision';
+import { legacyIssueAuthorityRetired } from '../controller/legacy-issue-cutover';
 import {
   listControllerChecks,
 } from "../controller/check-runner";
@@ -2934,12 +2935,39 @@ export function controllerExpectedToolNames(
   return [...STABLE_CONTROLLER_TOOL_NAMES];
 }
 
+const RETIRED_LEGACY_MUTATION_TOOLS = new Set([
+  "reconcile_project_governance",
+  "set_current_issue",
+  "archive_issue",
+  "restore_issue",
+  "publish_issue_to_github",
+  "refresh_github_issue",
+  "close_github_issue",
+  "prepare_issue_launch",
+  "create_issue",
+  "plan_issue",
+  "append_task",
+  "split_task",
+  "supersede_task",
+  "set_task_dependencies",
+  "update_task",
+  "record_task_verification",
+  "accept_verified_task",
+]);
+
 export async function callMcpTool(
   ctx: McpToolContext,
   name: string,
   args: Record<string, unknown> = {},
 ): Promise<CallToolResult> {
   try {
+    if (RETIRED_LEGACY_MUTATION_TOOLS.has(name) && legacyIssueAuthorityRetired(ctx.repoRoot)) {
+      audit(ctx, name, "blocked", args);
+      return errorResult(
+        "LEGACY_CONTROL_PLANE_MUTATION_RETIRED",
+        `${name} cannot mutate frozen Issue/Task/currentIssue/project-board compatibility files after SQLite cutover. Use Requirement, Plan and Work APIs.`,
+      );
+    }
     switch (name) {
       case "harness_status": {
         const roots = [
@@ -3277,8 +3305,13 @@ export async function callMcpTool(
             "TOOL_DISABLED",
             "controller_context requires the controller profile",
           );
-        const board = projectBoard(ctx.repoRoot);
-        const taskLedger = buildControllerTaskLedgerProjection(ctx.repoRoot);
+        const controllerHome = resolveRepoPreferredControllerHome(ctx.repoRoot);
+        const requirementBoard = buildRequirementBoard({ controllerHome, repoId: ctx.repoId });
+        const executionDiagnostics = buildExecutionDiagnostics({
+          controllerHome,
+          repoId: ctx.repoId,
+          detailLevel: "detail",
+        });
         const runs = listAgentJobs(ctx.repoRoot, 8);
         const reconciliation = reconcileLocalBridgeJobs(ctx.repoRoot);
         const jobs = listLocalBridgeJobs(ctx.repoRoot, 8);
@@ -3303,17 +3336,13 @@ export async function callMcpTool(
           : undefined;
         const payload = {
           git: gitSnapshot(ctx.repoRoot),
-          currentIssueId: board.currentIssueId,
-          taskLedger,
-          taskLedgerStatus: taskLedger.status,
-          currentIssue: board.issues.find((issue) => issue.id === board.currentIssueId)
-            ? {
-                id: board.issues.find((issue) => issue.id === board.currentIssueId)?.id,
-                title: board.issues.find((issue) => issue.id === board.currentIssueId)?.title,
-                status: board.issues.find((issue) => issue.id === board.currentIssueId)?.status,
-              }
-            : undefined,
-          readyTasks: board.readyTasks.slice(0, 10),
+          requirementBoard,
+          executionDiagnostics,
+          legacyCompatibility: {
+            currentIssue: "deprecated_frozen",
+            issueTaskBoard: "deprecated_frozen",
+            authority: "controller-home-sqlite",
+          },
           activeRuns: runs.map((run) => ({
             runId: run.runId,
             issueId: run.issueId,
@@ -3427,23 +3456,12 @@ export async function callMcpTool(
             preview: redactMcpText(raw).text.slice(0, 400),
           };
         });
-        const board = projectBoard(ctx.repoRoot);
-        const compactIssues = board.issues.slice(0, 50).map((value) => {
-          const issue = value as Record<string, any>;
-          const tasks = Array.isArray(issue.tasks) ? issue.tasks : [];
-          return {
-            id: issue.id,
-            title: issue.title,
-            status: issue.status,
-            lifecycleStatus: issue.lifecycleStatus,
-            isCurrent: issue.isCurrent,
-            updatedAt: issue.updatedAt,
-            taskCounts: tasks.reduce<Record<string, number>>((counts, task) => {
-              const status = String(task.effectiveStatus ?? task.status ?? "unknown");
-              counts[status] = (counts[status] ?? 0) + 1;
-              return counts;
-            }, {}),
-          };
+        const controllerHome = resolveRepoPreferredControllerHome(ctx.repoRoot);
+        const requirementBoard = buildRequirementBoard({ controllerHome, repoId: ctx.repoId });
+        const executionDiagnostics = buildExecutionDiagnostics({
+          controllerHome,
+          repoId: ctx.repoId,
+          detailLevel: "detail",
         });
         const snapshotRuns = listAgentJobs(ctx.repoRoot, 11);
         const runs = snapshotRuns.slice(0, 10).map((run) => ({
@@ -3461,23 +3479,16 @@ export async function callMcpTool(
         }));
         const payload = {
           git: gitSnapshot(ctx.repoRoot),
-          board: {
-            counts: board.counts,
-            declaredCounts: board.declaredCounts,
-            archivedCounts: board.archivedCounts,
-            currentIssueId: board.currentIssueId,
-            readyTasks: board.readyTasks.slice(0, 50),
-            queueableTasks: board.queueableTasks.slice(0, 50),
-            issueCount: board.issues.length,
-            archivedIssueCount: board.archivedIssueCount,
-            issues: compactIssues,
+          requirementBoard,
+          executionDiagnostics,
+          legacyCompatibility: {
+            currentIssue: "deprecated_frozen",
+            issueTaskBoard: "deprecated_frozen",
+            authority: "controller-home-sqlite",
           },
           runs,
           markers,
           truncated: {
-            issues: board.issues.length > compactIssues.length,
-            readyTasks: board.readyTasks.length > 50,
-            queueableTasks: board.queueableTasks.length > 50,
             runs: snapshotRuns.length > 10,
           },
         };

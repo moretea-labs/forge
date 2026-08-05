@@ -1,13 +1,13 @@
 # Requirement-centered control plane authority
 
-Status: accepted  
+Status: accepted; Requirement control-plane cutover implemented 2026-08-05  
 Date: 2026-08-02  
 Decision owners: Controller architecture  
 Supersedes: the Issue/Task Git-authority clauses in `20260801-controller-home-sqlite-state.md` and `20260801-control-plane-state-store-inventory.md`
 
 ## Context
 
-Repo Harness currently exposes one repository Issue/Task ledger as both human planning material and mutable runtime state. Objective, scope, checks, status and completion evidence are repeated across Issue, Task, WorkContract, Run and ExecutionJob. Runtime state updates continuously dirty the source checkout, historical cleanup defects can reopen already delivered outcomes, and a technical replan often appears as a second user requirement.
+Before the 2026-08-05 cutover, Repo Harness exposed one repository Issue/Task ledger as both human planning material and mutable runtime state. Objective, scope, checks, status and completion evidence were repeated across Issue, Task, WorkContract, Run and ExecutionJob. The implemented cutover removes repository Issue/Task state from the mutable runtime path while preserving it as frozen historical evidence and deprecated aliases.
 
 The accepted SQLite envelope already proves that bounded controller facts can use one transactional Controller-home authority. This decision completes the product model and freezes the cutover boundary before implementation.
 
@@ -202,4 +202,4 @@ Implementation and cutover must prove:
 
 ## Consequences
 
-This removes Git cleanliness from the runtime correctness path, prevents technical replans from multiplying user requirements and makes completion evidence explicit. It also requires a deliberate one-time migration and deletion of familiar Issue/Task compatibility APIs. Until a namespace is cut over, its current authority remains in force; shadow dual-write is forbidden throughout the transition.
+This removes Git cleanliness from the runtime correctness path, prevents technical replans from multiplying user requirements and makes completion evidence explicit. The Requirement namespace is now cut over: familiar Issue/Task mutation APIs are retired, compatibility projections are SQLite-derived, and shadow dual-write remains forbidden. Namespaces not listed in the final authority inventory retain their separately documented authority until their own migration.

@@ -2,6 +2,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { projectBoard } from "./issue-store";
 import { listControllerWorklogEvents } from "./worklog";
+import { legacyIssueCutoverState } from "./legacy-issue-cutover";
+import { resolveRepoPreferredControllerHome } from "../repositories/controller-home";
+import { buildRequirementBoard } from "../../runtime/control-plane/facade/requirement-board";
 
 const LEDGER_JSON_PATH = ".ai/harness/controller/task-ledger.json";
 const LEDGER_HANDOFF_PATH = ".ai/harness/handoff/controller-current.md";
@@ -96,6 +99,11 @@ export interface TaskLedgerProjection {
     rawCodeRequiredForImplementation: true;
     notes: string[];
   };
+  deprecated?: true;
+  frozen?: true;
+  readOnly?: true;
+  authority?: "controller-home-sqlite";
+  notice?: string;
 }
 
 export interface TaskLedgerArtifactPreview {
@@ -424,6 +432,46 @@ export function buildControllerTaskLedgerProjection(
   repoRoot: string,
   boardInput?: ControllerBoardProjection,
 ): TaskLedgerProjection {
+  const cutover = legacyIssueCutoverState(repoRoot);
+  if (cutover.retired) {
+    const board = buildRequirementBoard({
+      controllerHome: resolveRepoPreferredControllerHome(repoRoot),
+      repoId: cutover.repoId,
+    }) as { counts?: Record<string, number>; requirementCount?: number };
+    return {
+      schemaVersion: LEDGER_SCHEMA_VERSION,
+      generatedAt: cutover.migration?.appliedAt ?? "1970-01-01T00:00:00.000Z",
+      source: "controller-task-ledger",
+      counts: { ...(board.counts ?? {}) },
+      declaredCounts: {},
+      archivedCounts: {},
+      issueCount: 0,
+      archivedIssueCount: 0,
+      status: {
+        kind: "complete_or_idle",
+        severity: "info",
+        label: "Legacy task ledger retired",
+        reason: "Requirement Board, Plan and Work records in controller-home SQLite are authoritative.",
+        nextAction: "Use get_project_board summary or Execution Diagnostics.",
+      },
+      issues: [],
+      attention: [],
+      readyTasks: [],
+      queueableTasks: [],
+      recentEvents: [],
+      suggestedNextActions: ["Use Requirement Board for user-facing status and Work diagnostics for execution details."],
+      contextContract: {
+        strategy: "deprecated-frozen-compatibility-projection",
+        rawCodeRequiredForImplementation: true,
+        notes: ["Repository Issue/Task and task-ledger files are frozen history and cannot drive runtime state."],
+      },
+      deprecated: true,
+      frozen: true,
+      readOnly: true,
+      authority: "controller-home-sqlite",
+      notice: `Deprecated frozen compatibility projection for ${board.requirementCount ?? 0} authoritative Requirements.`,
+    };
+  }
   // Callers that already materialized the Board can thread it through here.
   // This keeps the public helper backwards compatible while removing the
   // controller_context Board -> Ledger double scan.
@@ -559,6 +607,9 @@ function artifactPreview(repoRoot: string, path: string): TaskLedgerArtifactPrev
 }
 
 export function writeControllerTaskLedgerArtifacts(repoRoot: string, input: { reason?: unknown } = {}): WrittenTaskLedgerArtifacts {
+  if (legacyIssueCutoverState(repoRoot).retired) {
+    throw new Error("LEGACY_TASK_LEDGER_WRITES_RETIRED: task-ledger and handoff files are frozen after SQLite cutover.");
+  }
   const reason = String(input.reason ?? "manual").trim() || "manual";
   const projection = buildControllerTaskLedgerProjection(repoRoot);
   const jsonPath = join(repoRoot, LEDGER_JSON_PATH);

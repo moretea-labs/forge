@@ -3,13 +3,12 @@ import { copyFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from 'fs'
 import { dirname, join } from 'path';
 import { durableControllerHome } from '../../../cli/repositories/controller-home';
 
-
 /**
  * Small, dependency-free SQLite boundary for controller-owned runtime facts.
  *
  * Bun is the normal runtime, while the package launcher can fall back to Node
- * 22.  Both provide a synchronous SQLite binding, but expose it under a
- * different module/class name.  Keeping the adapter here avoids leaking either
+ * 22. Both provide a synchronous SQLite binding, but expose it under a
+ * different module/class name. Keeping the adapter here avoids leaking either
  * runtime API into persistence callers or adding a native npm dependency.
  */
 interface SqliteStatement {
@@ -51,6 +50,16 @@ export interface ControlPlaneRecord<T> {
   updatedAt: string;
 }
 
+export interface ControlPlaneDatabaseInspection {
+  path: string;
+  integrity: 'ok';
+  schemaVersion: number;
+  recordCount: number;
+  auditEventCount: number;
+  orphanRecordCount: number;
+}
+
+export const CONTROL_PLANE_SCHEMA_VERSION = 1;
 const DATABASE_FILE = 'control-plane.sqlite';
 const require = createRequire(import.meta.url);
 
@@ -58,19 +67,63 @@ function now(): string {
   return new Date().toISOString();
 }
 
-export function controlPlaneDatabasePath(controllerHome: string): string {
-  const home = durableControllerHome(controllerHome);
-  mkdirSync(home, { recursive: true, mode: 0o700 });
-  return join(home, DATABASE_FILE);
-}
-
-function openDatabase(controllerHome: string): SqliteDatabase {
+function sqliteConstructor(): new (path: string) => SqliteDatabase {
   const runtimeModule = process.versions.bun ? 'bun:sqlite' : 'node:sqlite';
   const sqlite = require(runtimeModule) as SqliteModule;
   const Constructor = sqlite.Database ?? sqlite.DatabaseSync;
   if (!Constructor) throw new Error(`CONTROL_PLANE_SQLITE_UNAVAILABLE: ${runtimeModule} did not provide a database constructor`);
-  const database = new Constructor(controlPlaneDatabasePath(controllerHome));
-  database.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+  return Constructor;
+}
+
+function openRawDatabase(path: string): SqliteDatabase {
+  const Constructor = sqliteConstructor();
+  try {
+    return new Constructor(path);
+  } catch (error) {
+    throw new Error(`CONTROL_PLANE_SQLITE_CORRUPT: ${path}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function scalar(row: unknown): unknown {
+  if (!row || typeof row !== 'object') return undefined;
+  return Object.values(row as Record<string, unknown>)[0];
+}
+
+function assertDatabaseIntegrity(database: SqliteDatabase, path: string): void {
+  try {
+    const result = scalar(database.prepare('PRAGMA quick_check').get());
+    if (result !== 'ok') throw new Error(String(result ?? 'missing quick_check result'));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith('CONTROL_PLANE_SQLITE_CORRUPT:')) throw error;
+    throw new Error(`CONTROL_PLANE_SQLITE_CORRUPT: ${path}: ${message}`);
+  }
+}
+
+function tableExists(database: SqliteDatabase, table: string): boolean {
+  const row = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { name?: string } | undefined;
+  return row?.name === table;
+}
+
+function currentSchemaVersion(database: SqliteDatabase): number | undefined {
+  if (!tableExists(database, 'control_plane_schema')) return undefined;
+  const value = scalar(database.prepare('SELECT MAX(version) AS version FROM control_plane_schema').get());
+  return typeof value === 'number' && Number.isInteger(value) ? value : undefined;
+}
+
+function assertSupportedSchema(database: SqliteDatabase, path: string, requireSchema = false): number | undefined {
+  const version = currentSchemaVersion(database);
+  if (version === undefined) {
+    if (requireSchema) throw new Error(`CONTROL_PLANE_BACKUP_INVALID: ${path}: control_plane_schema is missing`);
+    return undefined;
+  }
+  if (version !== CONTROL_PLANE_SCHEMA_VERSION) {
+    throw new Error(`CONTROL_PLANE_SCHEMA_VERSION_UNSUPPORTED: ${path} required=${version} supported=${CONTROL_PLANE_SCHEMA_VERSION}`);
+  }
+  return version;
+}
+
+function initializeSchema(database: SqliteDatabase): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS control_plane_schema (
       version INTEGER PRIMARY KEY,
@@ -99,8 +152,33 @@ function openDatabase(controllerHome: string): SqliteDatabase {
       occurred_at TEXT NOT NULL
     );
   `);
-  database.prepare('INSERT OR IGNORE INTO control_plane_schema (version, applied_at) VALUES (?, ?)').run(1, now());
-  return database;
+  database.prepare('INSERT OR IGNORE INTO control_plane_schema (version, applied_at) VALUES (?, ?)').run(CONTROL_PLANE_SCHEMA_VERSION, now());
+}
+
+export function controlPlaneDatabasePath(controllerHome: string): string {
+  const home = durableControllerHome(controllerHome);
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  return join(home, DATABASE_FILE);
+}
+
+function openDatabase(controllerHome: string): SqliteDatabase {
+  const path = controlPlaneDatabasePath(controllerHome);
+  const existed = existsSync(path);
+  const database = openRawDatabase(path);
+  try {
+    if (existed) {
+      assertDatabaseIntegrity(database, path);
+      assertSupportedSchema(database, path);
+    }
+    database.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+    initializeSchema(database);
+    assertSupportedSchema(database, path, true);
+    assertDatabaseIntegrity(database, path);
+    return database;
+  } catch (error) {
+    database.close();
+    throw error;
+  }
 }
 
 function rowToRecord<T>(row: StoredRecordRow): ControlPlaneRecord<T> {
@@ -164,6 +242,7 @@ function writeRecord<T>(
     updatedAt: at,
   };
 }
+
 export function readControlPlaneRecordWithinTransaction<T>(
   database: SqliteDatabase,
   namespace: string,
@@ -197,7 +276,6 @@ export function writeControlPlaneRecordWithinTransaction<T>(
   return writeRecord(database, { ...input, action: input.action ?? 'write' }, existing);
 }
 
-
 /** Execute a read/modify/write sequence under SQLite's cross-process write lock. */
 export function withControlPlaneTransaction<T>(controllerHome: string, operation: (database: SqliteDatabase) => T): T {
   const database = openDatabase(controllerHome);
@@ -224,6 +302,7 @@ export function readControlPlaneRecord<T>(controllerHome: string, namespace: str
     database.close();
   }
 }
+
 export function writeControlPlaneRecord<T>(
   controllerHome: string,
   input: {
@@ -239,7 +318,6 @@ export function writeControlPlaneRecord<T>(
   return withControlPlaneTransaction(controllerHome, (database) =>
     writeControlPlaneRecordWithinTransaction(database, input));
 }
-
 
 export class ControlPlaneConflictError extends Error {
   readonly expectedRevision: number | null;
@@ -281,7 +359,67 @@ export function listControlPlaneRecords<T>(
   }
 }
 
-export function backupControlPlaneDatabase(controllerHome: string, destinationPath: string): void {
+function inspectOpenDatabase(database: SqliteDatabase, path: string): ControlPlaneDatabaseInspection {
+  assertDatabaseIntegrity(database, path);
+  const schemaVersion = assertSupportedSchema(database, path, true)!;
+  if (!tableExists(database, 'control_plane_records') || !tableExists(database, 'control_plane_audit')) {
+    throw new Error(`CONTROL_PLANE_BACKUP_INVALID: ${path}: required tables are missing`);
+  }
+  const recordCount = Number(scalar(database.prepare('SELECT COUNT(*) AS count FROM control_plane_records').get()) ?? 0);
+  const auditEventCount = Number(scalar(database.prepare('SELECT COUNT(*) AS count FROM control_plane_audit').get()) ?? 0);
+  const orphanRecordCount = Number(scalar(database.prepare(`
+    SELECT COUNT(*) AS count
+    FROM control_plane_records record
+    WHERE (
+      SELECT COUNT(DISTINCT audit.revision)
+      FROM control_plane_audit audit
+      WHERE audit.namespace = record.namespace
+        AND audit.scope = record.scope
+        AND audit.record_key = record.record_key
+        AND audit.revision BETWEEN 1 AND record.revision
+    ) != record.revision
+      OR COALESCE((
+        SELECT MIN(audit.revision)
+        FROM control_plane_audit audit
+        WHERE audit.namespace = record.namespace
+          AND audit.scope = record.scope
+          AND audit.record_key = record.record_key
+      ), 0) != 1
+      OR COALESCE((
+        SELECT MAX(audit.revision)
+        FROM control_plane_audit audit
+        WHERE audit.namespace = record.namespace
+          AND audit.scope = record.scope
+          AND audit.record_key = record.record_key
+      ), 0) != record.revision
+  `).get()) ?? 0);
+  if (orphanRecordCount > 0) {
+    throw new Error(`CONTROL_PLANE_AUDIT_CONTINUITY_INVALID: ${path}: discontinuous_records=${orphanRecordCount}`);
+  }
+  return { path, integrity: 'ok', schemaVersion, recordCount, auditEventCount, orphanRecordCount };
+}
+
+export function inspectControlPlaneDatabase(controllerHome: string): ControlPlaneDatabaseInspection {
+  const path = controlPlaneDatabasePath(controllerHome);
+  const database = openDatabase(controllerHome);
+  try {
+    return inspectOpenDatabase(database, path);
+  } finally {
+    database.close();
+  }
+}
+
+export function inspectControlPlaneDatabaseFile(path: string): ControlPlaneDatabaseInspection {
+  if (!existsSync(path)) throw new Error(`CONTROL_PLANE_BACKUP_MISSING: ${path}`);
+  const database = openRawDatabase(path);
+  try {
+    return inspectOpenDatabase(database, path);
+  } finally {
+    database.close();
+  }
+}
+
+export function backupControlPlaneDatabase(controllerHome: string, destinationPath: string): ControlPlaneDatabaseInspection {
   const destination = join(destinationPath);
   if (existsSync(destination)) throw new Error(`CONTROL_PLANE_BACKUP_EXISTS: ${destination}`);
   mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
@@ -291,34 +429,26 @@ export function backupControlPlaneDatabase(controllerHome: string, destinationPa
   } finally {
     database.close();
   }
+  try {
+    return inspectControlPlaneDatabaseFile(destination);
+  } catch (error) {
+    if (existsSync(destination)) unlinkSync(destination);
+    throw error;
+  }
 }
 
-export function restoreControlPlaneDatabase(controllerHome: string, backupPath: string): void {
+export function restoreControlPlaneDatabase(controllerHome: string, backupPath: string): ControlPlaneDatabaseInspection {
   if (!existsSync(backupPath)) throw new Error(`CONTROL_PLANE_BACKUP_MISSING: ${backupPath}`);
   const target = controlPlaneDatabasePath(controllerHome);
-  const staging = `${target}.restore-${Date.now()}`;
+  const staging = `${target}.restore-${process.pid}-${Date.now()}`;
   copyFileSync(backupPath, staging);
-  let valid = false;
   try {
-    const runtimeModule = process.versions.bun ? 'bun:sqlite' : 'node:sqlite';
-    const sqlite = require(runtimeModule) as SqliteModule;
-    const Constructor = sqlite.Database ?? sqlite.DatabaseSync;
-    if (!Constructor) throw new Error(`CONTROL_PLANE_SQLITE_UNAVAILABLE: ${runtimeModule} did not provide a database constructor`);
-    const database = new Constructor(staging);
-    try {
-      database.exec('PRAGMA foreign_keys = ON;');
-      const row = database.prepare('SELECT version FROM control_plane_schema ORDER BY version DESC LIMIT 1').get() as { version?: number } | undefined;
-      if (!row?.version) throw new Error(`CONTROL_PLANE_BACKUP_INVALID: ${backupPath}`);
-      valid = true;
-    } finally {
-      database.close();
+    const verified = inspectControlPlaneDatabaseFile(staging);
+    for (const sidecar of [`${target}-wal`, `${target}-shm`]) {
+      if (existsSync(sidecar)) unlinkSync(sidecar);
     }
-    if (valid) {
-      for (const sidecar of [`${target}-wal`, `${target}-shm`]) {
-        if (existsSync(sidecar)) unlinkSync(sidecar);
-      }
-      renameSync(staging, target);
-    }
+    renameSync(staging, target);
+    return { ...verified, path: target };
   } finally {
     if (existsSync(staging)) unlinkSync(staging);
   }
@@ -326,15 +456,13 @@ export function restoreControlPlaneDatabase(controllerHome: string, backupPath: 
 
 /**
  * Imports a legacy JSON record once and only when SQLite has no authoritative
- * row.  A failed import never modifies either source.  Afterwards callers
- * write only SQLite, preventing a long-lived dual source of truth.
+ * row. A failed import never modifies either source. Afterwards callers write
+ * only SQLite, preventing a long-lived dual source of truth.
  */
 export function readOrImportControlPlaneRecord<T>(
   controllerHome: string,
   input: { namespace: string; scope: string; key: string; schemaVersion: number; readLegacy: () => T | undefined },
 ): ControlPlaneRecord<T> | undefined {
-  // Normal recovery reads stay read-only.  Only a missing row enters the
-  // immediate transaction that arbitrates a single legacy import.
   const existing = readControlPlaneRecord<T>(controllerHome, input.namespace, input.scope, input.key);
   if (existing) return existing;
   return withControlPlaneTransaction(controllerHome, (database) => {

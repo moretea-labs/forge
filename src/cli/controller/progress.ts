@@ -6,6 +6,9 @@ import { loadControllerProjectState } from "./project-state";
 import { taskExecutionPolicy, verificationEvidencePassed } from "./execution-policy";
 import type { ControllerIssue, ControllerTask, TaskStatus, TaskVerification } from "./types";
 import { resolveEffectiveTaskState, resolveIssueTaskStates, resolveTaskDependencies } from "./task-status-resolver";
+import { frozenLegacyTaskProjection, legacyIssueCutoverState } from "./legacy-issue-cutover";
+import { resolveRepoPreferredControllerHome } from "../repositories/controller-home";
+import { buildRequirementBoard } from "../../runtime/control-plane/facade/requirement-board";
 import {
   listControllerWorklogEvents,
   type ControllerWorklogEvent,
@@ -115,6 +118,12 @@ export interface ProjectProgressSnapshot {
   issues: IssueProgressSnapshot[];
   archivedIssues: IssueProgressSnapshot[];
   attention: ProgressAttentionItem[];
+  view?: "requirement_progress";
+  deprecatedLegacyApi?: true;
+  frozenCompatibility?: true;
+  authority?: "controller-home-sqlite";
+  requirementBoard?: unknown;
+  notice?: string;
 }
 
 export interface ControllerTimelineEvent {
@@ -390,6 +399,35 @@ function issueProgress(repoRoot: string, issue: ControllerIssue, currentIssueId?
 }
 
 export function getProjectProgress(repoRoot: string): ProjectProgressSnapshot {
+  const cutover = legacyIssueCutoverState(repoRoot);
+  if (cutover.retired) {
+    const requirementBoard = buildRequirementBoard({
+      controllerHome: resolveRepoPreferredControllerHome(repoRoot),
+      repoId: cutover.repoId,
+    });
+    return {
+      generatedAt: new Date().toISOString(),
+      completedGates: 0,
+      totalGates: 0,
+      issueCount: 0,
+      activeIssueCount: 0,
+      archivedIssueCount: 0,
+      taskCount: 0,
+      activeRunCount: 0,
+      completedTaskCount: 0,
+      totals: {},
+      throughput: { completedLast24Hours: 0, completedLast7Days: 0, averageCycleTimeMs: null },
+      issues: [],
+      archivedIssues: [],
+      attention: [],
+      view: "requirement_progress",
+      deprecatedLegacyApi: true,
+      frozenCompatibility: true,
+      authority: "controller-home-sqlite",
+      requirementBoard,
+      notice: "Issue/Task progress is retired. requirementBoard is the authoritative projection.",
+    };
+  }
   const now = Date.now();
   const allIssues = listIssues(repoRoot);
   const state = loadControllerProjectState(repoRoot);
@@ -563,6 +601,19 @@ export function getTaskProgressReadView(
   taskId: string,
   detailLevel: "summary" | "full" = "summary",
 ) {
+  const frozen = frozenLegacyTaskProjection(repoRoot, issueId, taskId, detailLevel);
+  if (frozen) {
+    return {
+      ...frozen,
+      detailLevel,
+      projection: "deprecated_frozen_legacy_task",
+      deprecated: true,
+      frozen: true,
+      readOnly: true,
+      authority: "controller-home-sqlite",
+      notice: "Task status is derived from the authoritative PlanStep; repository Task JSON and Agent Run aliases cannot change it.",
+    };
+  }
   const full = getTaskProgressDetail(repoRoot, issueId, taskId);
   if (detailLevel === "full") return { ...full, detailLevel };
 

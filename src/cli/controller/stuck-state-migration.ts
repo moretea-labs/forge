@@ -6,6 +6,7 @@ import { getIssue, listIssues, updateIssue, updateTask } from './issue-store';
 import { completionEvidenceComplete, taskExecutionPolicy, verificationEvidencePassed } from './execution-policy';
 import type { CompletionReceipt, ControllerIssue, ControllerTask } from './types';
 import { resolveCompletionTargetBranch } from './completion-target';
+import { legacyIssueAuthorityRetired } from './legacy-issue-cutover';
 
 export type StuckStateKind =
   | 'finishable_run'
@@ -304,6 +305,14 @@ function extraFindings(repoRoot: string, issue: ControllerIssue, task: Controlle
 }
 
 export function inspectStuckControllerStates(repoRoot: string, options: { limit?: number } = {}): StuckControllerStateReport {
+  if (legacyIssueAuthorityRetired(repoRoot)) {
+    return {
+      scannedAt: new Date().toISOString(),
+      counts: { ...ZERO_COUNTS },
+      findings: [],
+      recommendations: ['Legacy Issue/Task stuck-state inspection is retired. Use Requirement Board, Work and Execution Diagnostics.'],
+    };
+  }
   const limit = Math.max(1, Math.min(options.limit ?? 500, 5000));
   const backlog = inspectCompletionBacklog(repoRoot, { includeTerminal: false, limit });
   const findings: StuckStateFinding[] = backlog.items
@@ -326,6 +335,9 @@ export function inspectStuckControllerStates(repoRoot: string, options: { limit?
 }
 
 export function applyStuckStateMigration(repoRoot: string, options: ApplyStuckStateMigrationOptions = {}): ApplyStuckStateMigrationResult {
+  if (legacyIssueAuthorityRetired(repoRoot)) {
+    throw new Error('LEGACY_STUCK_STATE_MIGRATION_RETIRED: frozen Issue/Task files cannot be reconciled into SQLite authority after cutover.');
+  }
   const report = inspectStuckControllerStates(repoRoot, { limit: options.limit ?? 100 });
   const dryRun = options.dryRun !== false;
   const reviewer = options.reviewer?.trim() || 'repo-harness-stuck-state-migration';

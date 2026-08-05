@@ -81,6 +81,138 @@ export function assertLegacyCurrentIssueWriteAllowed(repoRoot: string): void {
   );
 }
 
+export interface FrozenLegacyTaskProjection {
+  id: string;
+  taskId: string;
+  objective: string;
+  status: TaskStatus;
+  declaredStatus: TaskStatus;
+  effectiveStatus: TaskStatus;
+  planStepStatus: PlanContract['steps'][number]['status'];
+  workId?: string;
+  checks: string[];
+  acceptanceCriteria: string[];
+  evidenceRefs: EvidenceRef[];
+  deprecated: true;
+  frozen: true;
+  readOnly: true;
+  authority: 'controller-home-sqlite';
+}
+
+export interface FrozenLegacyIssueProjection {
+  schemaVersion: 1;
+  projection: 'deprecated_frozen_legacy_issue';
+  detailLevel: 'summary' | 'full';
+  deprecated: true;
+  frozen: true;
+  readOnly: true;
+  authority: 'controller-home-sqlite';
+  migrationId: string;
+  sourceRevision: string;
+  id: string;
+  legacyIssueId: string;
+  requirementId: string;
+  planId: string;
+  title: string;
+  summary: string;
+  kind: 'legacy_compatibility';
+  status: IssueStatus;
+  archivedAt?: undefined;
+  lifecycleStatus: IssueLifecycleStatus;
+  updatedAt: string;
+  tasks: FrozenLegacyTaskProjection[];
+  notice: string;
+}
+
+function projectedTaskStatus(status: PlanContract['steps'][number]['status']): TaskStatus {
+  if (status === 'completed') return 'done';
+  if (status === 'validating') return 'verifying';
+  if (status === 'executing') return 'running';
+  if (status === 'ready') return 'ready';
+  return 'planned';
+}
+
+export function frozenLegacyIssueProjection(
+  repoRoot: string,
+  issueId: string,
+  detailLevel: 'summary' | 'full' = 'summary',
+): FrozenLegacyIssueProjection | undefined {
+  const cutover = legacyIssueCutoverState(repoRoot);
+  if (!cutover.retired || !cutover.repoId || !cutover.migration) return undefined;
+  const planId = portfolioPlanIdForIssue(issueId);
+  if (!planId || !cutover.migration.sourceIssueIds.includes(issueId)) return undefined;
+  const plan = readControlPlaneRecord<PlanContract>(cutover.controllerHome, 'plan_contract', cutover.repoId, planId)?.value;
+  if (!plan?.requirementId) throw new Error(`MIGRATED_PLAN_REQUIREMENT_MISSING: ${planId}`);
+  const requirement = readControlPlaneRecord<Requirement>(cutover.controllerHome, 'requirement', 'controller', plan.requirementId)?.value;
+  if (!requirement) throw new Error(`MIGRATED_REQUIREMENT_NOT_FOUND: ${plan.requirementId}`);
+  const projected = projectedIssueStatus(requirement.state);
+  const tasks = plan.steps.map((step) => ({
+    id: step.id,
+    taskId: step.id,
+    objective: step.objective,
+    status: projectedTaskStatus(step.status),
+    declaredStatus: projectedTaskStatus(step.status),
+    effectiveStatus: projectedTaskStatus(step.status),
+    planStepStatus: step.status,
+    workId: step.workId,
+    checks: step.checks,
+    acceptanceCriteria: step.acceptanceCriteria,
+    evidenceRefs: detailLevel === 'full' ? step.evidenceRefs : step.evidenceRefs.slice(-3),
+    deprecated: true as const,
+    frozen: true as const,
+    readOnly: true as const,
+    authority: 'controller-home-sqlite' as const,
+  }));
+  return {
+    schemaVersion: 1,
+    projection: 'deprecated_frozen_legacy_issue',
+    detailLevel,
+    deprecated: true,
+    frozen: true,
+    readOnly: true,
+    authority: 'controller-home-sqlite',
+    migrationId: cutover.migration.migrationId,
+    sourceRevision: cutover.migration.sourceRevision,
+    id: issueId,
+    legacyIssueId: issueId,
+    requirementId: requirement.requirementId,
+    planId,
+    title: requirement.title,
+    summary: plan.goal,
+    kind: 'legacy_compatibility',
+    status: projected.issueStatus,
+    archivedAt: undefined,
+    lifecycleStatus: projected.lifecycle,
+    updatedAt: [requirement.updatedAt, plan.updatedAt].sort().at(-1) ?? requirement.updatedAt,
+    tasks,
+    notice: 'Deprecated frozen compatibility projection. Requirement, Plan and Work records in controller-home SQLite are authoritative; repository Issue/Task file changes are ignored.',
+  };
+}
+
+export function listFrozenLegacyIssueProjections(
+  repoRoot: string,
+  detailLevel: 'summary' | 'full' = 'summary',
+): FrozenLegacyIssueProjection[] {
+  const cutover = legacyIssueCutoverState(repoRoot);
+  if (!cutover.retired || !cutover.migration) return [];
+  return cutover.migration.sourceIssueIds
+    .map((issueId) => frozenLegacyIssueProjection(repoRoot, issueId, detailLevel))
+    .filter((projection): projection is FrozenLegacyIssueProjection => Boolean(projection));
+}
+
+export function frozenLegacyTaskProjection(
+  repoRoot: string,
+  issueId: string,
+  taskId: string,
+  detailLevel: 'summary' | 'full' = 'summary',
+): { issue: FrozenLegacyIssueProjection; task: FrozenLegacyTaskProjection } | undefined {
+  const issue = frozenLegacyIssueProjection(repoRoot, issueId, detailLevel);
+  if (!issue) return undefined;
+  const task = issue.tasks.find((candidate) => candidate.taskId === taskId);
+  if (!task) throw new Error(`MIGRATED_PLAN_STEP_NOT_FOUND: ${issue.planId}/${taskId}`);
+  return { issue, task };
+}
+
 export interface MigratedTaskCompletionState {
   migrated: boolean;
   completed: boolean;
@@ -127,13 +259,10 @@ function projectedIssueStatus(state: Requirement['state']): { issueStatus: Issue
 }
 
 function planStepTaskState(
-  issue: ControllerIssue,
   taskId: string,
   status: PlanContract['steps'][number]['status'],
   lifecycle: IssueLifecycleStatus,
 ): EffectiveTaskState {
-  const task = issue.tasks.find((candidate) => candidate.id === taskId);
-  if (!task) throw new Error(`MIGRATED_TASK_NOT_FOUND: ${issue.id}/${taskId}`);
   const mapping: Record<typeof status, {
     declaredStatus: TaskStatus;
     effectiveStatus: EffectiveTaskState['effectiveStatus'];
@@ -183,10 +312,8 @@ export function migratedIssueReadinessProjection(
   if (!requirement) throw new Error(`MIGRATED_REQUIREMENT_NOT_FOUND: ${plan.requirementId}`);
   const projected = projectedIssueStatus(requirement.state);
   const states = new Map<string, EffectiveTaskState>();
-  for (const task of issue.tasks) {
-    const step = plan.steps.find((candidate) => candidate.id === task.id);
-    if (!step) throw new Error(`MIGRATED_PLAN_STEP_NOT_FOUND: ${planId}/${task.id}`);
-    states.set(task.id, planStepTaskState(issue, task.id, step.status, projected.lifecycle));
+  for (const step of plan.steps) {
+    states.set(step.id, planStepTaskState(step.id, step.status, projected.lifecycle));
   }
   return { planId, requirementId: plan.requirementId, issueStatus: projected.issueStatus, states };
 }

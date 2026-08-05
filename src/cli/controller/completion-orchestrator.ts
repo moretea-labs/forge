@@ -1634,6 +1634,9 @@ function finishTaskRunUnlocked(repoRoot: string, options: FinishTaskRunOptions):
 }
 
 export function finishTaskRun(repoRoot: string, options: FinishTaskRunOptions): FinishTaskRunResult {
+  if (legacyIssueAuthorityRetired(repoRoot)) {
+    throw new Error('LEGACY_TASK_RUN_COMPLETION_RETIRED: Agent Run aliases cannot mutate PlanStep or completion state after SQLite cutover; finalize authoritative Work/Process receipts instead.');
+  }
   const targetBranch = resolveCompletionTargetBranch(repoRoot);
   const resource = `integration-${createHash('sha256').update(`${repoRoot}\0${targetBranch}`).digest('hex').slice(0, 24)}`;
   return withControllerLock(
@@ -1646,6 +1649,9 @@ export function finishTaskRun(repoRoot: string, options: FinishTaskRunOptions): 
 }
 
 export function finishEditSession(repoRoot: string, options: FinishEditSessionOptions): FinishEditSessionResult {
+  if (legacyIssueAuthorityRetired(repoRoot)) {
+    throw new Error('LEGACY_EDIT_SESSION_COMPLETION_RETIRED: Direct Edit Issue/Task completion aliases cannot mutate PlanStep state after SQLite cutover; use authoritative Work completion.');
+  }
   const targetBranch = resolveCompletionTargetBranch(repoRoot);
   const resource = `integration-${createHash('sha256').update(`${repoRoot}\0${targetBranch}`).digest('hex').slice(0, 24)}`;
   return withControllerLock(

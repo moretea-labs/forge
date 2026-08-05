@@ -16,6 +16,9 @@ import { resolveCompletionTargetBranch } from "./completion-target";
 import { readIssueRunEvidence } from "./run-evidence";
 import { resolveEffectiveTaskState, resolveIssueTaskStates, resolveTaskDependencies, type EffectiveTaskState } from "./task-status-resolver";
 import { tryAppendControllerWorklogEvent } from "./worklog";
+import { legacyIssueCutoverState } from "./legacy-issue-cutover";
+import { resolveRepoPreferredControllerHome } from "../repositories/controller-home";
+import { buildRequirementBoard } from "../../runtime/control-plane/facade/requirement-board";
 
 export type GovernanceSeverity = "info" | "warning" | "critical";
 export type GovernanceAction =
@@ -64,6 +67,12 @@ export interface ProjectGovernanceSnapshot {
   executionQueue: ExecutionQueueItem[];
   findings: GovernanceFinding[];
   counts: Record<string, number>;
+  view?: "requirement_governance";
+  deprecatedLegacyApi?: true;
+  frozenCompatibility?: true;
+  authority?: "controller-home-sqlite";
+  requirements?: unknown[];
+  notice?: string;
 }
 
 export interface ReconcileResult {
@@ -215,6 +224,41 @@ function taskQueueItem(issue: ControllerIssue, task: ControllerTask, state: Effe
 }
 
 export function inspectProjectGovernance(repoRoot: string): ProjectGovernanceSnapshot {
+  const cutover = legacyIssueCutoverState(repoRoot);
+  if (cutover.retired) {
+    const board = buildRequirementBoard({
+      controllerHome: resolveRepoPreferredControllerHome(repoRoot),
+      repoId: cutover.repoId,
+    }) as {
+      requirements?: unknown[];
+      counts?: Record<string, number>;
+      activeRequirementCount?: number;
+      needsAttentionCount?: number;
+    };
+    const needsAttention = board.needsAttentionCount ?? 0;
+    return {
+      generatedAt: new Date().toISOString(),
+      health: needsAttention > 0 ? "attention" : "healthy",
+      status: {
+        kind: "idle",
+        label: needsAttention > 0 ? "Requirement maintenance findings" : "Requirement authority healthy",
+        reason: needsAttention > 0
+          ? `${needsAttention} Requirement maintenance finding(s) are visible without reopening completed outcomes.`
+          : "Requirement, Plan and Work authority is consistent in controller-home SQLite.",
+      },
+      activeIssueCount: board.activeRequirementCount ?? 0,
+      archivedIssueCount: 0,
+      executionQueue: [],
+      findings: [],
+      counts: { ...(board.counts ?? {}) },
+      view: "requirement_governance",
+      deprecatedLegacyApi: true,
+      frozenCompatibility: true,
+      authority: "controller-home-sqlite",
+      requirements: board.requirements ?? [],
+      notice: "Legacy Issue governance and currentIssue focus are retired. Use Requirement Board and Work diagnostics.",
+    };
+  }
   const issues = listIssues(repoRoot);
   const runs = listAgentJobs(repoRoot, 2000);
   const byId = new Map(runs.map((run) => [run.runId, run]));
@@ -450,6 +494,9 @@ export function inspectProjectGovernance(repoRoot: string): ProjectGovernanceSna
 }
 
 export function reconcileProjectGovernance(repoRoot: string): ReconcileResult {
+  if (legacyIssueCutoverState(repoRoot).retired) {
+    throw new Error("LEGACY_GOVERNANCE_RECONCILIATION_RETIRED: reconciliation cannot mutate frozen Issue/Task/project-state files after SQLite cutover.");
+  }
   const changes: ReconcileResult["changes"] = [];
   const issues = listIssues(repoRoot);
   const runs = listAgentJobs(repoRoot, 2000);

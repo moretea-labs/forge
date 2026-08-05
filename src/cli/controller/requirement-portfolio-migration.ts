@@ -7,6 +7,7 @@ import {
   writeControlPlaneRecordWithinTransaction,
 } from '../../runtime/control-plane/persistence/sqlite-store';
 import type { EvidenceRef, PlanContract, PlanContractStatus, PlanStep, PlanStepStatus } from '../../runtime/control-plane/facade/types';
+import { assertControlPlaneMetadataPayload } from '../../runtime/control-plane/persistence/metadata-payload-policy';
 
 export const REQUIREMENT_PORTFOLIO_MIGRATION_ID = 'requirement-portfolio-20260802-v1';
 export const FROZEN_PORTFOLIO_SOURCE_REVISION = '183c490dae39ecbe9db349a58a676570b5fabc71';
@@ -186,6 +187,8 @@ export interface RequirementPortfolioMigrationInput {
   sourceRevision: string;
   issues: ControllerIssue[];
   now?: () => string;
+  /** Deterministic test-only transaction interruption after N durable writes. */
+  faultInjection?: { failAfterWrites?: number };
 }
 
 export interface RequirementPortfolioMigrationRecord {
@@ -539,6 +542,14 @@ export function previewRequirementPortfolioMigration(input: RequirementPortfolio
 
 export function applyRequirementPortfolioMigration(input: RequirementPortfolioMigrationInput): RequirementPortfolioMigrationResult {
   const prepared = prepareRequirementPortfolioMigration(input);
+  assertControlPlaneMetadataPayload(prepared, 'requirement_portfolio_migration');
+  let writeCount = 0;
+  const checkpoint = (): void => {
+    writeCount += 1;
+    if (input.faultInjection?.failAfterWrites === writeCount) {
+      throw new Error(`REQUIREMENT_PORTFOLIO_FAULT_INJECTED: after_write=${writeCount}`);
+    }
+  };
   return withControlPlaneTransaction(input.controllerHome, (database) => {
     const existingMigration = readControlPlaneRecordWithinTransaction<RequirementPortfolioMigrationRecord>(
       database,
@@ -573,6 +584,7 @@ export function applyRequirementPortfolioMigration(input: RequirementPortfolioMi
         action: 'requirement_portfolio_import',
         expectedRevision: null,
       });
+      checkpoint();
     }
     for (const plan of prepared.plans) {
       writeControlPlaneRecordWithinTransaction(database, {
@@ -584,6 +596,7 @@ export function applyRequirementPortfolioMigration(input: RequirementPortfolioMi
         action: 'requirement_portfolio_plan_import',
         expectedRevision: null,
       });
+      checkpoint();
     }
     writeControlPlaneRecordWithinTransaction(database, {
       namespace: 'requirement_portfolio_migration',
@@ -594,6 +607,7 @@ export function applyRequirementPortfolioMigration(input: RequirementPortfolioMi
       action: 'requirement_portfolio_migration_completed',
       expectedRevision: null,
     });
+    checkpoint();
     return resultFromPrepared('applied', prepared);
   });
 }

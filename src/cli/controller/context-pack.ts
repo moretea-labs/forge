@@ -5,6 +5,7 @@ import type { McpPolicy } from "../mcp/types";
 import { redactMcpText } from "../mcp/redaction";
 import { projectBoard } from "./issue-store";
 import { buildControllerTaskLedgerProjection, type TaskLedgerTaskProjection } from "./task-ledger";
+import { legacyIssueAuthorityRetired } from "./legacy-issue-cutover";
 
 const CONTEXT_PACK_SCHEMA_VERSION = 3;
 const DEFAULT_MAX_FILES = 8;
@@ -338,7 +339,7 @@ export function buildControllerContextPack(
   // Only bind Issue/Task context when the caller explicitly requests it.
   const hasExplicitFocus = Boolean(options.issueId || options.taskId);
   const git = gitSnapshot(repoRoot);
-  const board = hasExplicitFocus ? projectBoard(repoRoot) : undefined;
+  const board = hasExplicitFocus && !legacyIssueAuthorityRetired(repoRoot) ? projectBoard(repoRoot) : undefined;
   const focus = board ? issueTaskFocus(board, options.issueId, options.taskId) : {};
   const ledger = board ? buildControllerTaskLedgerProjection(repoRoot, board) : undefined;
   const compactTask = ledger ? ledgerTask(ledger, focus.issue?.id, focus.task?.id) : undefined;

@@ -6,6 +6,7 @@ import { runControllerCheck } from './check-runner';
 import { cleanupEvidenceResourceBlockers, completionEvidenceComplete, taskExecutionPolicy } from './execution-policy';
 import { acceptVerifiedTask, getIssue, recordTaskVerification, updateTask } from './issue-store';
 import type { CompletionReceipt, CompletionReceiptSource, TaskCommandEvidence, TaskVerification } from './types';
+import { legacyIssueAuthorityRetired } from './legacy-issue-cutover';
 
 export interface CompletionContinuationResult {
   continued: boolean;
@@ -74,6 +75,12 @@ export function continueTaskAfterSuccessfulRun(
   repoRoot: string,
   run: AgentJobMeta,
 ): CompletionContinuationResult {
+  if (legacyIssueAuthorityRetired(repoRoot)) {
+    return {
+      continued: false,
+      reason: 'Legacy Agent Run continuation is retired after SQLite cutover; authoritative Work/Process completion owns PlanStep side effects.',
+    };
+  }
   if (run.status !== 'succeeded') return { continued: false, reason: `Run status is ${run.status}.` };
   if (run.provider === 'local' && run.worktree !== repoRoot && !run.integratedSessionId) {
     return { continued: false, reason: 'Isolated Run is awaiting integration.' };

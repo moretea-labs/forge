@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { tryAppendControllerWorklogEvent } from "./worklog";
-import { assertLegacyCurrentIssueWriteAllowed, legacyIssueAuthorityRetired } from "./legacy-issue-cutover";
+import { assertLegacyCurrentIssueWriteAllowed, legacyIssueAuthorityRetired, legacyIssueCutoverState } from "./legacy-issue-cutover";
 
 const PROJECT_STATE_PATH = ".ai/harness/controller/project-state.json";
 
@@ -13,6 +13,11 @@ export interface ControllerProjectState {
   issueCreationMode: IssueCreationMode;
   showArchivedByDefault: boolean;
   updatedAt: string;
+  deprecated?: true;
+  frozen?: true;
+  readOnly?: true;
+  authority?: "controller-home-sqlite";
+  notice?: string;
 }
 
 function defaultState(): ControllerProjectState {
@@ -29,6 +34,20 @@ function statePath(repoRoot: string): string {
 }
 
 export function loadControllerProjectState(repoRoot: string): ControllerProjectState {
+  const cutover = legacyIssueCutoverState(repoRoot);
+  if (cutover.retired) {
+    return {
+      schemaVersion: 1,
+      issueCreationMode: "paused",
+      showArchivedByDefault: false,
+      updatedAt: cutover.migration?.appliedAt ?? "1970-01-01T00:00:00.000Z",
+      deprecated: true,
+      frozen: true,
+      readOnly: true,
+      authority: "controller-home-sqlite",
+      notice: "Legacy project state and currentIssue are frozen compatibility metadata. Requirement Board is the default control-plane view.",
+    };
+  }
   const path = statePath(repoRoot);
   if (!existsSync(path)) return defaultState();
   try {
@@ -44,7 +63,7 @@ export function loadControllerProjectState(repoRoot: string): ControllerProjectS
       showArchivedByDefault: parsed.showArchivedByDefault === true,
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString(),
     };
-    return legacyIssueAuthorityRetired(repoRoot) ? { ...loaded, currentIssueId: undefined } : loaded;
+    return loaded;
   } catch (_error) {
     return defaultState();
   }
@@ -55,7 +74,10 @@ export function saveControllerProjectState(
   patch: Partial<Pick<ControllerProjectState, "currentIssueId" | "issueCreationMode" | "showArchivedByDefault">>,
   actor = "repo-harness-controller",
 ): ControllerProjectState {
-  if (Object.prototype.hasOwnProperty.call(patch, "currentIssueId")) assertLegacyCurrentIssueWriteAllowed(repoRoot);
+  if (legacyIssueAuthorityRetired(repoRoot)) {
+    if (Object.prototype.hasOwnProperty.call(patch, "currentIssueId")) assertLegacyCurrentIssueWriteAllowed(repoRoot);
+    throw new Error("LEGACY_PROJECT_STATE_WRITES_RETIRED: project-state.json is frozen after SQLite cutover.");
+  }
   const previous = loadControllerProjectState(repoRoot);
   const next: ControllerProjectState = {
     ...previous,

@@ -1,78 +1,68 @@
 # Control-plane state store inventory
 
-Date: 2026-08-01
-Status: implementation inventory for staged SQLite cutover
-Decision update: the 2026-08-02 requirement-centered ADR fixes the target authority and supersedes the earlier open Issue/Task decision.
+Date: 2026-08-01  
+Updated: 2026-08-05  
+Status: implemented inventory for the Requirement SQLite cutover
 
 ## Authority rule
 
-Controller-home SQLite is authoritative only for explicitly migrated namespaces.
-Before the Requirement namespace cutover, Git-tracked Issue/Task documents remain
-the temporary legacy intent/status source. The accepted target is no longer open:
-Requirement, ExecutionPlan, PlanStep and Work relationships move to SQLite;
-Issue/Task files import exactly once and optional Git snapshots become one-way
-exports. JSON files must never be treated as SQLite mirrors or replay authority.
+`<durable-controller-home>/control-plane.sqlite` is the sole mutable authority
+for every namespace listed as migrated below. Requirement, ExecutionPlan,
+PlanStep, Work relationships, lifecycle, revision, migration idempotency and
+audit are cut over. Repository Issue/Task documents are frozen history and
+one-time import evidence; they are not a temporary authority anymore.
+
+A compatibility read checks SQLite first. If an authoritative row exists, all
+later JSON or Markdown changes are ignored. No code path may replay, reconcile
+or overwrite an existing SQLite row from repository Issue/Task state. Optional
+exports flow only from SQLite to an explicit offline directory and carry source
+revision, SQLite revisions and content fingerprints.
 
 ## Current state classes
 
-| Class | Current location | Authority | Priority | Migration boundary |
-| --- | --- | --- | --- | --- |
-| Execution session, Work handle, work-prepare request, WorkContract, controller claim | Controller home JSON plus SQLite envelope | SQLite | migrated | one-time JSON import; subsequent writes SQLite-only |
-| Process records, request/invocation bindings, leases | Controller home process directories | JSON records plus lease fencing | next | move indexes/bindings first; retain logs/exit receipts as artifacts |
-| Execution Jobs and operation receipts | Controller home execution-job records/indexes | JSON records | next | Job/request/index mutation must cut over together |
-| Plan contracts, handoff inbox/packets, goal contracts | Controller home JSON indexes | JSON records | later | independent bounded stores after Work/Job cutover |
-| Authorization and access-policy decisions | Controller home JSON | JSON records | later | retain immutable decision/audit semantics and secret exclusions |
-| Runtime/scheduler/daemon generation and wake state | Controller home JSON | runtime bootstrap state | last | defer while startup compatibility remains under repair |
-| Requirement/Plan legacy Issue/Task Markdown and JSON | Repository `tasks/`, `plans/` before cutover | Temporary legacy source; target is Controller-home SQLite | accepted migration | import once from the frozen 33-Issue snapshot, then disable writers and allow only one-way exports |
-| Check outputs, logs, artifacts, diffs | Artifact roots | file artifacts | remain files | SQLite stores only bounded IDs/hashes/revisions |
-| Secrets/provider credentials | Secret files or provider stores | secret boundary | excluded | never place in SQLite payload/audit rows |
+| Record family | Current authority | Filesystem role | Cutover state |
+| --- | --- | --- | --- |
+| Execution session, Work handle, work-prepare idempotency and WorkContract | Controller-home SQLite | first-import compatibility and bounded artifacts only | migrated |
+| Requirement | Controller-home SQLite namespace `requirement/controller` | frozen aliases and one-way export only | migrated |
+| ExecutionPlan and PlanStep | Controller-home SQLite namespace `plan_contract/<repoId>`; PlanSteps are versioned inside the Plan | frozen Issue/Task aliases and one-way export only | migrated |
+| Requirement portfolio migration marker | Controller-home SQLite namespace `requirement_portfolio_migration/<repoId>` | reviewed Git mapping remains immutable design evidence | migrated |
+| Work relationships and completion linkage | Controller-home SQLite Work/contract namespaces | logs and large evidence remain external artifacts referenced by IDs | migrated |
+| Control-plane revision and audit | `control_plane_records` and `control_plane_audit` | no writable repository mirror | migrated |
+| Process logs, check output, large evidence, diffs and binaries | bounded artifact roots | authoritative artifact bytes; SQLite stores only IDs, hashes and revisions | intentionally remain files |
+| Repository identity, checkout, branch and HEAD | Git plus Controller repository registry | never inferred from Issue/Task | unchanged |
+| Secrets and credentials | provider or OS-managed secret stores | forbidden in migration/export payloads, SQLite records and audit | excluded |
+| Legacy Issue/Task JSON and Markdown | none for runtime mutation | frozen history or reviewed first-import source | retired |
+| `currentIssue`, legacy project state, project board and task ledger | none for runtime mutation | deprecated frozen projection only | retired |
 
-## Dependency order and controls
+## Implemented controls
 
-1. The migrated Work boundary (sessions, handles, idempotency, contracts, and
-   controller claims) reads SQLite first and imports legacy JSON only once.
-2. Migrate Process Runtime request/invocation indexes and lease records
-   together: partial cutover could duplicate a launch or release the wrong
-   lease.
-3. Migrate Job records, request idempotency, active/recent indexes, and
-   receipts as one transactional family. Logs remain files addressed by IDs.
-4. Migrate Plan, handoff, and goal-contract stores after they consume stable
-   Work/Job IDs rather than JSON paths.
-5. Migrate Requirement/ExecutionPlan/PlanStep relations from the frozen legacy
-   portfolio only after those boundaries are stable. Switch the default board to
-   SQLite, then remove runtime Issue/Task writers; Git remains authoritative only
-   for source and accepted documentation.
+1. Existing SQLite rows always win over legacy files.
+2. Migration writes Requirement, Plan and marker rows inside one transaction;
+   interruption at any write boundary rolls the entire transaction back.
+3. Unknown required schema versions and corrupt databases fail before schema
+   initialization or overwrite.
+4. Concurrent updates use revision CAS and fail closed.
+5. Backups are produced from SQLite, then integrity/schema/audit continuity are
+   verified. Restore validates a staging copy before atomic replacement.
+6. Offline export is staged and atomically published. Export failure does not
+   roll back or alter authoritative writes.
+7. Migration and export reject secrets, credentials, binary payloads and large
+   log-like strings.
+8. Stable Supervisor bootstrap and standalone Recovery do not read Issue/Task
+   files for minimum recovery capability.
+9. Default MCP and Local Bridge views expose Requirement Board plus Execution
+   Diagnostics; legacy aliases are labelled deprecated/frozen/read-only.
+10. Durable Issue, Task, `currentIssue`, project-board, task-ledger and
+    governance reconciliation mutations fail at the public boundary after
+    cutover.
 
-For every namespace: SQLite is read first; a missing row imports exactly once;
-mutations write only SQLite; every payload is versioned and audited; and
-concurrent mutation, corrupt legacy projection, restart recovery, stale
-revision, and rollback are tested before the next family moves. Failed
-migrations roll back and stale JSON cannot overwrite an existing row.
+## Rollback boundary
 
-## Immediate next slice
+Before a migration transaction commits, failure leaves no partial namespace.
+After cutover, rollback means restoring a verified SQLite backup that preserves
+record revisions, audit continuity and Requirement/Plan/Work relationships.
+Repository Issue/Task JSON, Markdown, task-ledger output and offline exports are
+never replayed over existing SQLite records.
 
-Process request and invocation bindings now use SQLite-first, one-time JSON
-import. The remaining implementation is Process records plus the derived
-active-index projection; migrate those together so record transitions cannot
-leave an independently authoritative JSON index behind.
-
-## Process Runtime shadow-cutover design
-
-The migration is **not** a dual writer. A compatibility read first checks the
-SQLite row; only an absent row imports its matching legacy JSON file inside the
-SQLite transaction. Once the row exists, JSON changes are ignored. The cutover
-unit is one repository-scoped family containing Process records, request
-bindings, invocation bindings, and the active-index projection:
-
-1. introduce independent SQLite namespaces and one-time import readers;
-2. write every member under one SQLite transaction, retaining process logs and
-   exit receipts as filesystem artifacts;
-3. derive the active-index projection from SQLite rather than treating it as a
-   second authority; and
-4. prove duplicate requests, interrupted process completion, corrupted legacy
-   binding, restart recovery, stale lease release, and rollback against the
-   exact same repository/check-out identity.
-
-Rollback is read-only: stop writes at the affected migration version, retain
-the last valid SQLite rows and artifacts, and use legacy JSON only where no
-authoritative row was ever imported. It never replays JSON over SQLite.
+The current writer-by-family inventory and deleted compatibility paths are
+maintained in `docs/architecture/current/control-plane-authority-inventory.md`.

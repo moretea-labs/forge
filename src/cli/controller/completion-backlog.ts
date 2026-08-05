@@ -5,6 +5,7 @@ import { completionEvidenceComplete, taskExecutionPolicy } from './execution-pol
 import type { ControllerIssue, ControllerTask, TaskStatus } from './types';
 import { finishTaskRun, type FinishTaskRunResult } from './completion-orchestrator';
 import { resolveCompletionTargetBranch } from './completion-target';
+import { legacyIssueAuthorityRetired } from './legacy-issue-cutover';
 
 export type CompletionBacklogAction =
   | 'auto_finish'
@@ -196,6 +197,17 @@ function classifyTask(repoRoot: string, issue: ControllerIssue, task: Controller
 }
 
 export function inspectCompletionBacklog(repoRoot: string, options: { includeTerminal?: boolean; limit?: number } = {}): CompletionBacklogReport {
+  if (legacyIssueAuthorityRetired(repoRoot)) {
+    return {
+      scannedAt: new Date().toISOString(),
+      counts: itemCounts([]),
+      finishableRunIds: [],
+      needsHumanReviewRunIds: [],
+      retryTaskRefs: [],
+      items: [],
+      recommendations: ['Legacy Issue/Task completion backlog is retired. Use Work and Execution Diagnostics from controller-home SQLite.'],
+    };
+  }
   const limit = Math.max(1, Math.min(options.limit ?? 500, 5000));
   const issues = listIssues(repoRoot, { includeEphemeral: false });
   const items: CompletionBacklogItem[] = [];
@@ -233,6 +245,9 @@ export function inspectCompletionBacklog(repoRoot: string, options: { includeTer
 }
 
 export function finishCompletionBacklog(repoRoot: string, options: FinishCompletionBacklogOptions = {}): FinishCompletionBacklogResult {
+  if (legacyIssueAuthorityRetired(repoRoot)) {
+    throw new Error('LEGACY_COMPLETION_BACKLOG_RETIRED: completion backlog cannot mutate frozen Issue/Task state after SQLite cutover.');
+  }
   const report = inspectCompletionBacklog(repoRoot, { limit: options.limit ?? 100 });
   const selected = report.items
     .filter((item) => item.action === 'auto_finish' && item.runId)
@@ -271,6 +286,9 @@ export function finishCompletionBacklog(repoRoot: string, options: FinishComplet
 }
 
 export function markBacklogTaskInspected(repoRoot: string, issueId: string, taskId: string, note: string): CompletionBacklogReport {
+  if (legacyIssueAuthorityRetired(repoRoot)) {
+    throw new Error('LEGACY_COMPLETION_BACKLOG_RETIRED: inspection notes cannot mutate frozen Task files after SQLite cutover.');
+  }
   getIssue(repoRoot, issueId); // preserve existing not-found errors and issue normalization.
   updateTask(repoRoot, issueId, taskId, { note });
   return inspectCompletionBacklog(repoRoot);
@@ -332,6 +350,9 @@ export function completionDecisionQueues(repoRoot: string, options: { includeTer
 }
 
 export function applyCompletionDecision(repoRoot: string, options: ApplyCompletionDecisionOptions): ApplyCompletionDecisionResult {
+  if (legacyIssueAuthorityRetired(repoRoot)) {
+    throw new Error('LEGACY_COMPLETION_DECISION_RETIRED: legacy Run/Task decisions cannot mutate PlanStep or completion state after SQLite cutover.');
+  }
   const reviewer = options.reviewer?.trim() || 'repo-harness-completion-decision';
   if (options.action === 'finish' || options.action === 'approve_and_finish' || options.action === 'request_changes' || options.action === 'discard') {
     if (!options.runId) throw new Error(`${options.action} requires runId`);
