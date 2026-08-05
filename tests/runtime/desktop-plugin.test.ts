@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { join } from 'path';
@@ -93,7 +93,7 @@ describe('bundled Desktop plugin', () => {
       argvEntry: '/missing/repo-harness.js',
       runtimeExecutable: '/missing/runtime',
       sourceHelperPath: '/missing/source-helper.mjs',
-    })).toBe(helperPath);
+    })).toBe(realpathSync(helperPath));
   });
 
   test('configure enables the plugin and status routes through the managed helper', async () => {
