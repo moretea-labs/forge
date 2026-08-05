@@ -23,7 +23,7 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 93,
+    "maxTestFiles": 94,
     "maxTestLines": 40000,
     "maxPureFiles": 30,
     "maxTempIsolatedFiles": 41,
@@ -31,7 +31,7 @@
     "maxGitWorktreeFiles": 15,
     "maxFixedPortFiles": 6,
     "maxRuntimeSingletonFiles": 6,
-    "maxControllerHomeIsolatedFiles": 7,
+    "maxControllerHomeIsolatedFiles": 8,
     "maxDestructiveFiles": 0
   },
   "pathModuleRules": [
@@ -339,6 +339,10 @@
     "tests/runtime/diagnostic-process-invocation.test.ts": {
       "module": "process-runtime",
       "resource": "temp-isolated"
+    },
+    "tests/runtime/canonical-single-runtime.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
     },
     "tests/runtime/control-plane-hardening.test.ts": {
       "module": "process-runtime",
