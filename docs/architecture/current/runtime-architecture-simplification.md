@@ -149,7 +149,7 @@ The following paths are legacy implementation inventory, not target building blo
 | --- | --- |
 | `src/runtime/supervisor/**` | delete after Canonical Runtime launch/release/rollback replacement is verified |
 | `src/runtime/supervisor/ingress-router.ts` and ingress session/process state | delete in phase 4 |
-| public/hidden MCP KeepAlive and restart commands | removed from the supported CLI surface in phase 2; no CLI may supervise or restart the Runtime through MCP compatibility code |
+| public/hidden MCP KeepAlive and restart commands plus `src/cli/mcp/restart.ts` | CLI entrypoints and the 911-line component restart implementation are deleted in phase 2; no MCP compatibility code may restart the Runtime |
 | `src/cli/mcp/keepalive.ts` lifecycle and tunnel ownership | no longer reachable from the MCP CLI; delete implementation and retain only reusable MCP serving modules outside KeepAlive |
 | `src/runtime/control-plane/daemon-entry.ts` as an independent service | fold initialization/recovery into Runtime Root, then delete the service entry |
 | `src/cli/controller/runtime-slots.ts` and slot homes | delete in phase 4 |

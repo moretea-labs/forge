@@ -47,7 +47,7 @@ Deliver one mergeable vertical slice in which one `repo-harness-runtime` process
 | --- | --- | --- |
 | `src/cli/controller/lifecycle.ts` Supervisor/component manager | no longer reachable from canonical `runtime` or public `controller` lifecycle commands; remaining internal legacy callers only | Phase 2 then Phase 7 |
 | `src/cli/commands/supervisor.ts` | public registration removed; retained only as internal legacy implementation/test inventory | Phase 2 then Phase 7 |
-| MCP KeepAlive and MCP restart commands | public/hidden CLI entrypoints removed; implementation remains deletion inventory | Phase 2 then Phase 7 |
+| MCP KeepAlive and MCP restart paths | public/hidden CLI entrypoints removed and `src/cli/mcp/restart.ts` deleted; KeepAlive implementation remains deletion inventory | Phase 2 then Phase 7 |
 | Daemon auto-start in legacy HTTP transport | legacy `mcp serve` compatibility only; remove after Controller Services are fully Runtime-owned | Phase 2 |
 | Controller Daemon/local bridge internal port | legacy tools not yet migrated | Phase 2 |
 | standalone Recovery autonomous PI/agent repair | removed; Recovery may not launch a coding agent or mutate a source checkout | Phase 2 complete for this authority |
