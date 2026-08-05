@@ -52,11 +52,31 @@ describe('runtime command surface', () => {
     expect(existsSync(join(ROOT, 'src/cli/mcp/restart.ts'))).toBe(false);
     const httpTransport = readFileSync(join(ROOT, 'src/cli/mcp/transports/http.ts'), 'utf8');
     const runtimeTools = readFileSync(join(ROOT, 'src/runtime/gateway/mcp/runtime-tools.ts'), 'utf8');
+    const facadeActions = readFileSync(join(ROOT, 'src/runtime/control-plane/facade/suggested-actions.ts'), 'utf8');
+    const capabilityRegistry = readFileSync(join(ROOT, 'src/runtime/control-plane/facade/capability-registry.ts'), 'utf8');
     expect(httpTransport).not.toContain('ensureControllerDaemon');
     expect(httpTransport).toContain('readControllerDaemonStatus');
     expect(runtimeTools).not.toContain('ensureControllerDaemon');
     expect(runtimeTools).not.toContain('cli/mcp/keepalive');
     expect(runtimeTools).toContain('readControllerDaemonStatus');
+    for (const legacy of [
+      'controller_restart_verify',
+      'controller_feature_verify',
+      'controller_rollout',
+      'controller_rollback',
+      'runRuntimeSupervisorFacade',
+      'runtime_restart_controller',
+      'runtime_restart_gateway',
+      'runtime_restart_full',
+      'runtime_rollout',
+      'runtime_rollback',
+      'runtime_unlock_and_recover',
+      'scheduleControllerServiceRestart',
+    ]) {
+      expect(runtimeTools).not.toContain(legacy);
+      expect(facadeActions).not.toContain(legacy);
+    }
+    expect(capabilityRegistry).not.toContain('controller.stable_supervisor');
 
     for (const legacy of ['keepalive', 'restart']) {
       const result = spawnSync('bun', [CLI, 'mcp', legacy, '--help'], { cwd: ROOT, encoding: 'utf-8' });

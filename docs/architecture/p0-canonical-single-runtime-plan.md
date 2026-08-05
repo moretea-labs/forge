@@ -45,12 +45,13 @@ Deliver one mergeable vertical slice in which one `repo-harness-runtime` process
 
 | Legacy layer | Temporary role | Delete phase |
 | --- | --- | --- |
-| `src/cli/controller/lifecycle.ts` Supervisor/component manager | no longer reachable from canonical `runtime` or public `controller` lifecycle commands; remaining internal legacy callers only | Phase 2 then Phase 7 |
+| `src/cli/controller/lifecycle.ts` Supervisor/component manager | no longer reachable from canonical `runtime`, public `controller`, MCP direct tools, or `rh_status`/`rh_work`; remaining internal legacy callers only | Phase 2 then Phase 7 |
 | `src/cli/commands/supervisor.ts` | public registration removed; retained only as internal legacy implementation/test inventory | Phase 2 then Phase 7 |
 | MCP KeepAlive and MCP restart paths | public/hidden CLI entrypoints plus both lifecycle implementations deleted; only reusable HTTP/stdio transport modules remain | Phase 2 complete for this authority |
 | Daemon auto-start in MCP transport and Gateway tools | removed; transport/tool layers perform read-only diagnostics and leave execution ownership with the active Runtime | Phase 2 complete for these callers |
 | Controller Daemon/local bridge internal port | legacy tools not yet migrated | Phase 2 |
 | standalone Recovery autonomous PI/agent repair | removed; Recovery may not launch a coding agent or mutate a source checkout | Phase 2 complete for this authority |
+| Gateway/MCP component restart, rollout, rollback and Supervisor facade operations | direct tools, facade allowlists, fallback restart coordinator, and capability descriptor removed | Phase 2 complete for this authority |
 | Stable Ingress and blue/green runtime slots | legacy release activation | Phase 4 |
 | Component rollout/rollback and writer slot authority | compatibility until whole-release updater | Phase 5 then Phase 7 |
 | Legacy health/readiness combinations | compatibility output | Phase 3 |

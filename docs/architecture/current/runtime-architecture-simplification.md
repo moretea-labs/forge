@@ -56,7 +56,7 @@ No core module may create a KeepAlive loop, detached restart coordinator, second
 | Phase | Required result | Current source assessment |
 | --- | --- | --- |
 | 1. Establish Canonical Single Runtime | MCP Transport, Gateway Adapter, Controller Services, Scheduler, SQLite, and Worker Manager are started by one Runtime Root | Partial: the vertical slice exists, but it remains parallel to the legacy installed lifecycle |
-| 2. Converge lifecycle ownership | Runtime Root is the only core start/stop/failure/recovery owner | In progress: `repo-harness-runtime` is the sole canonical start entry; `runtime` is observation-only; public `controller` lifecycle/blue-green commands, the public `supervisor` command, MCP KeepAlive/restart, autonomous Recovery agent repair, and all MCP transport/Gateway tool Daemon auto-start callers are removed; the independent legacy Daemon entry, Supervisor, and bounded recovery callers still require deletion |
+| 2. Converge lifecycle ownership | Runtime Root is the only core start/stop/failure/recovery owner | In progress: `repo-harness-runtime` is the sole canonical start entry; `runtime` is observation-only; public `controller`/Supervisor/MCP lifecycle commands, autonomous Recovery agent repair, MCP/Gateway Daemon auto-start, Gateway component restart/rollout/rollback tools, Supervisor facade operations, and repair-triggered detached restart are removed; the independent legacy Daemon entry, Supervisor process, and bounded recovery callers still require deletion |
 | 3. Simplify readiness | Public Runtime readiness is only `ready: true/false`; module observations are diagnostic evidence | In progress: Canonical Runtime uses the binary contract; legacy component readiness remains |
 | 4. Remove ingress and Runtime slots | No Stable Ingress, fixed blue/green ports, runtime slots, mixed generation, adoption, or component cutover | Not complete |
 | 5. Whole-Runtime publish and rollback | Code, configuration, entrypoint, manifest, SQLite schema/backup, and Worker protocol move as one compatible set | Partial manifest model exists; legacy component and slot rollout remains |
@@ -159,7 +159,8 @@ The following paths are legacy implementation inventory, not target building blo
 | standalone Recovery PI/agent repair and repository-write authority | removed in phase 2; Recovery code must never launch an agent in, generate scripts in, move files from, or otherwise mutate a source checkout |
 | stable ingress ports and private blue/green ports | delete; one Runtime endpoint is configured directly |
 | component generation and mixed-generation coherence | delete; one Runtime instance/release identity remains |
-| component rollout/rollback operation stores | delete; one whole-Runtime release operation remains |
+| Gateway/MCP component restart, rollout, rollback, green-gate and Supervisor facade operations | removed from direct tools and `rh_status`/`rh_work` in phase 2; no compatibility facade may trigger lifecycle changes |
+| component rollout/rollback operation stores | no longer reachable through MCP facades; delete internal stores with the remaining Supervisor implementation |
 | compatibility authority projections | migrate once, then delete; no permanent dual-read or dual-write |
 
 Legacy code may receive only deletion-enabling or safety-fencing changes. New features, new states, new rollback protocols, or new recovery automation must not be added to it. Recovery diagnostics may read source identity, but must never write a source checkout. Recovery state, evidence, and configuration remain below Controller Home; temporary OS service metadata is legacy deletion inventory, not a new authority. Autonomous code repair is not an allowed Runtime recovery mechanism.
