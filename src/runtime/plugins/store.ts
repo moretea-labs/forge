@@ -21,6 +21,10 @@ import type {
 
 const PLUGIN_ADAPTERS = createFirstPartyPluginAdapterMap();
 
+export function assistantPluginScope(pluginId: string): AssistantPluginAdapter['scope'] | undefined {
+  return PLUGIN_ADAPTERS.get(pluginId)?.scope;
+}
+
 const PLUGIN_MANIFEST_CACHE_TTL_MS = 5_000;
 
 
