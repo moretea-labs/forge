@@ -118,6 +118,19 @@ describe('runtime command surface', () => {
     expect(selfHealingBlock).toContain('AUTONOMOUS_RUNTIME_RECOVERY_RETIRED');
     expect(selfHealingBlock).not.toContain('buildSelfHealingLoopPlan');
     expect(selfHealingBlock).not.toContain('buildSelfHealingMonitorReport');
+    const contextSummaryStart = runtimeTools.indexOf('function compactControllerContextSummaryPayload');
+    const contextSummaryEnd = runtimeTools.indexOf('function authenticatedFacadeControllerIdentity', contextSummaryStart);
+    const contextSummaryBlock = runtimeTools.slice(contextSummaryStart, contextSummaryEnd);
+    expect(contextSummaryBlock).toContain('ready: ready.ready === true');
+    expect(contextSummaryBlock).toContain('reasonCodes:');
+    expect(contextSummaryBlock).not.toContain('state: ready.state');
+    expect(contextSummaryBlock).not.toContain('operationalView:');
+    const contextHandlerStart = runtimeTools.indexOf("case 'controller_context':");
+    const contextHandlerEnd = runtimeTools.indexOf("case 'get_job':", contextHandlerStart);
+    const contextHandlerBlock = runtimeTools.slice(contextHandlerStart, contextHandlerEnd);
+    expect(contextHandlerBlock).toContain('await controllerReadiness(ctx, repository)');
+    expect(contextHandlerBlock).not.toContain('await controllerReadinessEvidence(ctx, repository)');
+    expect(contextHandlerBlock).not.toContain('operationalView: readiness.operationalView');
     expect(runtimeTools).toContain('readControllerDaemonStatus');
     for (const legacy of [
       'controller_restart_verify',

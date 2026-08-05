@@ -1438,9 +1438,7 @@ function compactControllerContextSummaryPayload(payload: Record<string, unknown>
   const repository = contextRecord(payload.repository);
   const ledger = contextRecord(payload.taskLedger);
   const operationalPlan = contextRecord(payload.operationalPlan);
-  const operationalView = contextRecord(payload.operationalView);
   const ready = contextRecord(payload.controllerReady);
-  const readyHealth = contextRecord(ready.health);
   const runtimeProjection = contextRecord(payload.runtimeProjection);
   const runtimeProjectionState = contextRecord(payload.runtimeProjectionState);
   const currentIssue = contextRecord(payload.currentIssue);
@@ -1512,9 +1510,10 @@ function compactControllerContextSummaryPayload(payload: Record<string, unknown>
       ...(typeof payload.activeJobCount === 'number' ? { activeJobCount: payload.activeJobCount } : {}),
     },
     health: {
-      state: ready.state,
-      blockers: Array.isArray(readyHealth.activeBlockers) ? readyHealth.activeBlockers.slice(0, 5) : [],
-      warnings: Array.isArray(readyHealth.warnings) ? readyHealth.warnings.slice(0, 5) : [],
+      ready: ready.ready === true,
+      reasonCodes: Array.isArray(ready.reasonCodes) ? ready.reasonCodes.slice(0, 10) : [],
+      diagnostics: contextRecord(ready.diagnostics),
+      observedAt: ready.observedAt,
     },
     attention: attention.slice(0, 5).map(compactContextTask),
     readyTasks: readyTasks.slice(0, 5).map(compactContextTask),
@@ -1566,34 +1565,6 @@ function compactControllerContextSummaryPayload(payload: Record<string, unknown>
       completedCapabilities: (Array.isArray(operationalPlan.completedCapabilities) ? operationalPlan.completedCapabilities : []).slice(0, 5),
       remainingDecisionPoints: (Array.isArray(operationalPlan.remainingDecisionPoints) ? operationalPlan.remainingDecisionPoints : []).slice(0, 5),
       validationStrategy: operationalPlan.validationStrategy,
-    },
-    operationalView: {
-      health: (() => {
-        const health = contextRecord(operationalView.health);
-        return {
-          state: health.state,
-          activeBlockers: (Array.isArray(health.activeBlockers) ? health.activeBlockers : []).slice(0, 5),
-        };
-      })(),
-      attention: (() => {
-        const attentionView = contextRecord(operationalView.attention);
-        return {
-          pending: (Array.isArray(attentionView.pending) ? attentionView.pending : []).slice(0, 5).map((item: unknown) => {
-            const value = contextRecord(item);
-            return { attentionId: value.attentionId, title: value.title, severity: value.severity, summary: contextText(value.summary, 300) };
-          }),
-        };
-      })(),
-      history: (() => {
-        const history = contextRecord(operationalView.history);
-        return {
-          recentIncidents: (Array.isArray(history.recentIncidents) ? history.recentIncidents : []).slice(0, 3).map((item: unknown) => {
-            const value = contextRecord(item);
-            return { incidentId: value.incidentId, kind: value.kind, status: value.status, summary: contextText(value.summary, 300), occurredAt: value.occurredAt };
-          }),
-          truncated: history.truncated === true,
-        };
-      })(),
     },
     // Required keys for cache-completeness and legacy readers (deprecated).
     runtimeStorage: payload.runtimeStorage,
@@ -3924,7 +3895,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           || typeof cachedPayload !== 'object'
           || !('repoId' in cachedPayload)
           || !('runtimeProjectionState' in cachedPayload)
-          || !('operationalView' in cachedPayload)
           || !('controllerReady' in cachedPayload);
         const invalidatedAfterBuild = Boolean(
           cached
@@ -4018,7 +3988,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
 
         const buildStartedAt = performance.now();
         const buildPayload = async (): Promise<Record<string, unknown>> => {
-          const readiness = await controllerReadinessEvidence(ctx, repository);
+          const readiness = await controllerReadiness(ctx, repository);
           const activeCheckout = repository.checkouts.find((checkout) => checkout.checkoutId === repository.activeCheckoutId);
           const liveGit = gitSnapshot(repository.canonicalRoot);
           const board = legacyIssueAuthorityRetired(repository.canonicalRoot)
@@ -4131,7 +4101,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               stale: runtimeSnapshot.stale,
               persisted: runtimeSnapshot.persisted,
             },
-            operationalView: readiness.operationalView,
             controllerReady: readiness,
             runtimeIdentity: runtimeIdentitySnapshot(ctx),
           };
