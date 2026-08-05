@@ -22,6 +22,7 @@ import {
   getProcessHandle,
   isManagedProcessActive,
   isManagedProcessTerminal,
+  reconcileAbandonedPreSpawnProcess,
   releaseProcessLeasesOnce,
 } from '../../execution/process-runtime';
 import { getProcessRecord, listProcessRecords } from '../../execution/process-runtime/store';
@@ -233,7 +234,14 @@ async function settleProcesses(input: TerminalWorkCleanupInput, receipt: WorkCle
     if (record.exitReceiptPath) {
       getProcessHandle(input.controllerHome, input.handle.repositoryId, record.processId);
     }
-    const current = getProcessRecord(input.controllerHome, input.handle.repositoryId, record.processId) ?? record;
+    let current = getProcessRecord(input.controllerHome, input.handle.repositoryId, record.processId) ?? record;
+    if (isManagedProcessActive(current)) {
+      current = reconcileAbandonedPreSpawnProcess(
+        input.controllerHome,
+        input.handle.repositoryId,
+        record.processId,
+      ) ?? current;
+    }
     if (isManagedProcessTerminal(current)) {
       releaseProcessLeasesOnce(input.controllerHome, input.handle.repositoryId, current.processId);
       return getProcessRecord(input.controllerHome, input.handle.repositoryId, current.processId) ?? current;

@@ -16,6 +16,7 @@ import {
   getProcessRecord,
   listActiveProcessIds,
   processLogDir,
+  reconcileAbandonedPreSpawnProcess,
   recoverManagedProcesses,
   readProcessLogs,
   resolveProcessRunnerEntryPath,
@@ -1063,6 +1064,52 @@ describe('Process Runtime real lease contention', () => {
       terminalWritten: true,
       exitCode: 0,
     });
+    expect(listActiveProcessIds(fx.controllerHome, fx.repository.repoId)).not.toContain(processId);
+  });
+
+  test('stale pre-spawn records reconcile only after proving no spawn artifacts or leases', () => {
+    const fx = fixture();
+    const processId = 'proc_stale_pre_spawn_abandonment';
+    const startedAt = new Date('2026-08-05T09:00:00.000Z').toISOString();
+    publishWriterAuthority(fx.controllerHome, { activeSlot: 'green', reason: 'pre-spawn-abandonment-test' });
+    clearRuntimeWriterClaimForTests();
+    createProcessRecord({
+      schemaVersion: 1,
+      processId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      controllerHome: fx.controllerHome,
+      status: 'starting',
+      route: 'direct',
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(0)'], cwd: fx.repoRoot },
+      resourceClaims: [{ resourceKey: `workspace:${fx.repository.activeCheckoutId}`, mode: 'read' }],
+      interactiveWaitMs: 800,
+      timeoutMs: 30_000,
+      maxOutputBytes: 1_024,
+      startedAt,
+      updatedAt: startedAt,
+      terminalFenceToken: 17,
+      exitReceiptPath: join(processLogDir(fx.controllerHome, fx.repository.repoId), `${processId}.exit.json`),
+      commandDescriptorPath: join(processLogDir(fx.controllerHome, fx.repository.repoId), `${processId}.command.json`),
+    });
+
+    const fresh = reconcileAbandonedPreSpawnProcess(
+      fx.controllerHome,
+      fx.repository.repoId,
+      processId,
+      { nowMs: Date.parse(startedAt) + 60_000, minAgeMs: 5 * 60_000 },
+    );
+    expect(fresh?.status).toBe('starting');
+    expect(listActiveProcessIds(fx.controllerHome, fx.repository.repoId)).toContain(processId);
+
+    const reconciled = reconcileAbandonedPreSpawnProcess(
+      fx.controllerHome,
+      fx.repository.repoId,
+      processId,
+      { nowMs: Date.parse(startedAt) + 6 * 60_000, minAgeMs: 5 * 60_000 },
+    );
+    expect(reconciled).toMatchObject({ status: 'failed', terminalWritten: true, exitCode: 1 });
+    expect(reconciled?.error?.message).toContain('PROCESS_PRESPAWN_ABANDONED');
     expect(listActiveProcessIds(fx.controllerHome, fx.repository.repoId)).not.toContain(processId);
   });
 

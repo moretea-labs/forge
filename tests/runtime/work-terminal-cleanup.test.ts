@@ -237,6 +237,39 @@ describe('terminal Work cleanup', () => {
     expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(true);
   });
 
+  test('reconciles a stale process proven abandoned before OS spawn', async () => {
+    const fx = fixture('stale-pre-spawn-process');
+    const stale = new Date(Date.now() - 10 * 60_000).toISOString();
+    const processId = 'proc-stale-pre-spawn-cleanup';
+    createProcessRecord({
+      schemaVersion: 1,
+      processId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.workspace.checkoutId,
+      workId: undefined,
+      controllerHome: fx.controllerHome,
+      status: 'starting',
+      route: 'direct',
+      commandId: 'stale-pre-spawn-command',
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(0)'], cwd: fx.workspace.root! },
+      resourceClaims: [{ resourceKey: `workspace:${fx.workspace.checkoutId}`, mode: 'read' }],
+      interactiveWaitMs: 800,
+      timeoutMs: 30_000,
+      maxOutputBytes: 1_024,
+      startedAt: stale,
+      updatedAt: stale,
+      terminalFenceToken: 5,
+      exitReceiptPath: join(processLogDir(fx.controllerHome, fx.repository.repoId), `${processId}.exit.json`),
+      commandDescriptorPath: join(processLogDir(fx.controllerHome, fx.repository.repoId), `${processId}.command.json`),
+    } satisfies ManagedProcessRecord);
+
+    const result = await cleanup(fx);
+    expect(result.receipt.complete).toBe(true);
+    expect(result.receipt.processes.blocking).toEqual([]);
+    expect(result.receipt.blockers).toEqual([]);
+    expect(result.handle.state).toBe('cleaned');
+  });
+
   test('reconciles a receipt-backed terminal process before checkout blocker classification', async () => {
     const fx = fixture('receipt-backed-process');
     const now = new Date().toISOString();

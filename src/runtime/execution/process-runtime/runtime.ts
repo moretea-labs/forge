@@ -463,12 +463,13 @@ export function completeProcessFromEvidence(
     stdoutTail?: string;
     stderrTail?: string;
   },
-  options: { authority?: 'runtime_writer' | 'durable_exit_receipt' } = {},
+  options: { authority?: 'runtime_writer' | 'durable_exit_receipt' | 'durable_pre_spawn_abandonment' } = {},
 ): ManagedProcessRecord | undefined {
-  // A validated independent Runner receipt may only perform the monotonic,
+  // Validated independent evidence may only perform the monotonic,
   // fence-token-bound terminal CAS below. It does not grant general writer
   // authority, queue access, process signalling, or arbitrary record updates.
-  let mayWriteTerminal = options.authority === 'durable_exit_receipt';
+  let mayWriteTerminal = options.authority === 'durable_exit_receipt'
+    || options.authority === 'durable_pre_spawn_abandonment';
   if (!mayWriteTerminal) {
     mayWriteTerminal = true;
     try {
@@ -521,6 +522,41 @@ export function completeProcessFromEvidence(
     return releaseProcessLeasesOnce(controllerHome, repoId, processId) ?? afterTerminal;
   }
   return afterTerminal;
+}
+
+const DEFAULT_PRE_SPAWN_ABANDONMENT_MS = 5 * 60_000;
+
+/**
+ * Reconcile a Process record that was durably created but provably never
+ * crossed the OS-spawn boundary. This is intentionally narrower than generic
+ * orphan recovery: a candidate must remain `starting`, have no captured
+ * identity or leases, have no descriptor and no exit receipt, and exceed a
+ * bounded startup grace period. Fresh or ambiguous records remain active.
+ */
+export function reconcileAbandonedPreSpawnProcess(
+  controllerHome: string,
+  repoId: string,
+  processId: string,
+  options: { nowMs?: number; minAgeMs?: number } = {},
+): ManagedProcessRecord | undefined {
+  const record = getProcessRecord(controllerHome, repoId, processId);
+  if (!record || isManagedProcessTerminal(record) || record.status !== 'starting') return record;
+  if (record.identity || (record.leaseRefs?.length ?? 0) > 0) return record;
+  const updatedAtMs = Date.parse(record.updatedAt || record.startedAt);
+  const nowMs = options.nowMs ?? Date.now();
+  const minAgeMs = Math.max(1_000, options.minAgeMs ?? DEFAULT_PRE_SPAWN_ABANDONMENT_MS);
+  if (!Number.isFinite(updatedAtMs) || nowMs - updatedAtMs < minAgeMs) return record;
+  const descriptorPath = record.commandDescriptorPath
+    ?? descriptorPathFor(controllerHome, repoId, processId);
+  const exitReceiptPath = record.exitReceiptPath
+    ?? receiptPathFor(controllerHome, repoId, processId);
+  if (existsSync(descriptorPath) || existsSync(exitReceiptPath)) return record;
+  return completeProcessFromEvidence(controllerHome, repoId, processId, record.terminalFenceToken, {
+    status: 'failed',
+    exitCode: 1,
+    finishedAt: new Date(nowMs).toISOString(),
+    errorMessage: 'PROCESS_PRESPAWN_ABANDONED: no lease, descriptor, receipt, or PID after startup grace period',
+  }, { authority: 'durable_pre_spawn_abandonment' });
 }
 
 async function killTree(child: ChildProcess): Promise<void> {
@@ -1063,19 +1099,31 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
   // Acquire real execution leases BEFORE spawning the runner. Fail closed on conflict.
   let leaseRefs: ProcessLeaseRef[] = [];
   if (resourceClaims.length > 0) {
-    const acquisition = acquireExecutionLeases(
-      input.controllerHome,
-      input.repoId,
-      processOwnerJobId(processId),
-      toResourceClaimSpecs(resourceClaims),
-      {
-        ttlMs: Math.max(30_000, timeoutMs + 30_000),
-        visibility: 'ephemeral',
-        notifyScheduler: false,
-        invalidateProjection: false,
-        emitRuntimeEvent: false,
-      },
-    );
+    let acquisition: ReturnType<typeof acquireExecutionLeases>;
+    try {
+      acquisition = acquireExecutionLeases(
+        input.controllerHome,
+        input.repoId,
+        processOwnerJobId(processId),
+        toResourceClaimSpecs(resourceClaims),
+        {
+          ttlMs: Math.max(30_000, timeoutMs + 30_000),
+          visibility: 'ephemeral',
+          notifyScheduler: false,
+          invalidateProjection: false,
+          emitRuntimeEvent: false,
+        },
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const failed = completeProcessFromEvidence(input.controllerHome, input.repoId, processId, fenceToken, {
+        status: 'failed',
+        exitCode: 1,
+        errorMessage: `PROCESS_LEASE_ACQUISITION_FAILED_BEFORE_SPAWN: ${message}`,
+        exitReceiptPath,
+      }, { authority: 'durable_pre_spawn_abandonment' });
+      return recordToHandle(failed ?? record, { completed: true, stdout: '', stderr: message });
+    }
     if (!acquisition.acquired) {
       const blockers = acquisition.blockers
         .map((b) => `${b.resourceKey}@${b.ownerJobId}`)
