@@ -69,6 +69,7 @@ function fakeSupervisorRelease(home: string, name: string, revision: string, opt
   const processRunnerFixture = `#!/usr/bin/env bun
 import { readFileSync, writeFileSync } from 'fs';
 import { spawnSync } from 'child_process';
+if (process.argv.includes('--repo-harness-release-canary-child')) process.exit(0);
 const descriptorPath = process.argv[process.argv.indexOf('--descriptor') + 1];
 if (!descriptorPath) process.exit(2);
 const descriptor = JSON.parse(readFileSync(descriptorPath, 'utf8'));
