@@ -760,8 +760,15 @@ describe("MCP controller profile", () => {
         expected_changed_lines: 2,
         risk: "low"});
       expect(context.value.git.branch).toBe("main");
-      expect(context.value.currentIssueId).toBe(created.value.id);
-      expect(context.value.readyTasks.length).toBeGreaterThan(0);
+      expect(context.value.currentIssueId).toBeUndefined();
+      expect(context.value.readyTasks).toBeUndefined();
+      expect(context.value.requirementBoard).toBeDefined();
+      expect(context.value.executionDiagnostics).toBeDefined();
+      expect(context.value.legacyCompatibility).toEqual({
+        currentIssue: "deprecated_frozen",
+        issueTaskBoard: "deprecated_frozen",
+        authority: "controller-home-sqlite",
+      });
       expect(context.value.checks.some((check: { id: string }) => check.id === "focused")).toBe(true);
       expect(context.value.recommendedExecution.recommendedMode).toBe("direct_edit");
 
