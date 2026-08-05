@@ -60,7 +60,12 @@ function currentHead(): string {
   return result.stdout.trim();
 }
 
-function fakeSupervisorRelease(home: string, name: string, revision: string, options: { sourceRoot?: string; sourceCommit?: string } = {}): string {
+function fakeSupervisorRelease(
+  home: string,
+  name: string,
+  revision: string,
+  options: { sourceRoot?: string; sourceCommit?: string; executionMode?: 'standalone-binary' | 'script' } = {},
+): string {
   const releasePath = join(supervisorReleasesRoot(home), name);
   mkdirSync(releasePath, { recursive: true });
   const executables = [...SUPERVISOR_RELEASE_ENTRYPOINTS];
@@ -101,7 +106,7 @@ process.exit(result.status ?? 1);
   }
   writeFileSync(join(releasePath, 'manifest.json'), `${JSON.stringify({
     schemaVersion: 2,
-    executionMode: 'script',
+    executionMode: options.executionMode ?? 'script',
     releaseRevision: revision,
     sourceCommit: options.sourceCommit ?? '0123456789abcdef0123456789abcdef01234567',
     sourceRoot: options.sourceRoot ?? process.cwd(),
@@ -322,6 +327,7 @@ describe('Stable Supervisor production hardening', () => {
       const first = fakeSupervisorRelease(controllerHome, 'first', 'revision-first', {
         sourceRoot: process.cwd(),
         sourceCommit: currentHead(),
+        executionMode: 'standalone-binary',
       });
       publishSupervisorRelease({ controllerHome, repoRoot: process.cwd(), releasePath: first });
 
@@ -329,6 +335,7 @@ describe('Stable Supervisor production hardening', () => {
       const second = fakeSupervisorRelease(controllerHome, 'second', 'revision-second', {
         sourceRoot: removedSource,
         sourceCommit: '1111111111111111111111111111111111111111',
+        executionMode: 'standalone-binary',
       });
       const published = publishSupervisorRelease({
         controllerHome,
