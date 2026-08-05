@@ -61,8 +61,12 @@ function completionReceipt(taskId: string, head: string, changedPaths: string[],
 function main(): void {
   const repoRoot = resolve(process.argv[2] ?? process.cwd());
   const expectedHead = (process.argv[3] ?? '').trim();
+  const deliveryBase = (process.argv[4] ?? '').trim();
   if (!/^[0-9a-f]{40}$/.test(expectedHead)) {
-    throw new Error('USAGE: bun scripts/complete-control-plane-cutover.ts <repo-root> <expected-40-char-head>');
+    throw new Error('USAGE: bun scripts/complete-control-plane-cutover.ts <repo-root> <expected-40-char-head> [delivery-base-40-char-head]');
+  }
+  if (deliveryBase && !/^[0-9a-f]{40}$/.test(deliveryBase)) {
+    throw new Error(`CONTROL_PLANE_COMPLETION_INVALID_DELIVERY_BASE: ${deliveryBase}`);
   }
 
   const branch = git(repoRoot, ['branch', '--show-current']);
@@ -78,7 +82,10 @@ function main(): void {
   if (!cutover.retired || !cutover.repoId || !cutover.migration) {
     throw new Error('CONTROL_PLANE_CUTOVER_MARKER_NOT_FOUND');
   }
-  const changedPaths = [...new Set(git(repoRoot, ['show', '--pretty=format:', '--name-only', head]).split('\n').filter(Boolean))].sort();
+  const changedPathArgs = deliveryBase
+    ? ['diff', '--name-only', `${deliveryBase}..${head}`]
+    : ['show', '--pretty=format:', '--name-only', head];
+  const changedPaths = [...new Set(git(repoRoot, changedPathArgs).split('\n').filter(Boolean))].sort();
   const recordedAt = new Date().toISOString();
   const outcomes = TASK_IDS.map((taskId) => {
     const current = migratedTaskCompletionState(repoRoot, ISSUE_ID, taskId);
@@ -88,13 +95,7 @@ function main(): void {
       taskId,
       receipt: completionReceipt(taskId, head, changedPaths, recordedAt),
       reviewer: 'repo-harness-final-cutover',
-      note: 'Final SQLite cutover, legacy writer retirement, failure recovery matrix and exact-HEAD validation completed.',
-      checks: [
-        { checkId: 'package:check:type', ok: true },
-        { checkId: 'package:check:runtime-architecture', ok: true },
-        { checkId: 'package:check:controller-v8', ok: true },
-        { checkId: 'package:test', ok: true },
-      ],
+      note: 'Final SQLite cutover and legacy writer retirement were integrated at user direction. Final-HEAD tests were explicitly skipped; no check-pass claim is recorded.',
     });
     return { taskId, action: 'completed', ...completed };
   });
@@ -113,6 +114,8 @@ function main(): void {
     repoId: cutover.repoId,
     branch,
     head,
+    deliveryBase: deliveryBase || undefined,
+    verification: { status: 'skipped_by_user', checksRecorded: [] },
     migrationId: cutover.migration.migrationId,
     requirement: { requirementId: REQUIREMENT_ID, state: requirement.value.state, revision: requirement.revision },
     plan: { planId: PLAN_ID, status: plan?.value.status, revision: plan?.revision },
