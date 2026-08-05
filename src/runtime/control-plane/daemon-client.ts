@@ -2,7 +2,7 @@ import { spawn } from 'child_process';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { fileURLToPath } from 'url';
-import { durableControllerHome, ensureControllerHome } from '../../cli/repositories/controller-home';
+import { durableControllerHome, ensureControllerHome, resolveControllerHome } from '../../cli/repositories/controller-home';
 import { withControllerLock } from '../../cli/repositories/locks';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { readSchedulerHealthSnapshot } from './global-scheduler/scheduler';
@@ -46,8 +46,8 @@ export interface ControllerDaemonStatus {
   passive?: boolean;
 }
 
-function daemonPidPath(controllerHome: string): string { return join(ensureControllerHome(controllerHome), 'daemon', 'controller.pid'); }
-function daemonStatePath(controllerHome: string): string { return join(ensureControllerHome(controllerHome), 'daemon', 'state.json'); }
+function daemonPidPath(controllerHome: string): string { return join(resolveControllerHome(controllerHome), 'daemon', 'controller.pid'); }
+function daemonStatePath(controllerHome: string): string { return join(resolveControllerHome(controllerHome), 'daemon', 'state.json'); }
 export const LEGACY_SCHEDULER_HEARTBEAT_TIMEOUT_MS = 60_000;
 const MIN_SCHEDULER_HEARTBEAT_TIMEOUT_MS = 5_000;
 const DAEMON_STARTUP_GRACE_MS = 15_000;
@@ -77,7 +77,7 @@ function schedulerHeartbeatHealthy(controllerHome: string): boolean {
 }
 
 export function resolveControllerDaemonStatusHome(controllerHome: string): string {
-  const requestedHome = ensureControllerHome(controllerHome);
+  const requestedHome = resolveControllerHome(controllerHome);
   const stableHome = durableControllerHome(requestedHome);
   // Direct slot callers must stay slot-local. Root callers, including
   // controller_ready and lifecycle diagnostics, follow the Supervisor-owned
@@ -89,7 +89,7 @@ export function resolveControllerDaemonStatusHome(controllerHome: string): strin
     controllerDaemon?: { controllerHome?: string };
   }>(supervisorStatePath(stableHome), {});
   const activeHome = supervisor.controllerDaemon?.controllerHome?.trim();
-  return activeHome ? ensureControllerHome(activeHome) : requestedHome;
+  return activeHome ? resolveControllerHome(activeHome) : requestedHome;
 }
 
 export function readControllerDaemonStatus(controllerHome: string): ControllerDaemonStatus {

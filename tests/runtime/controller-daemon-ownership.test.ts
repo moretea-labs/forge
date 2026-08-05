@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { controllerDaemonOwnsPidFile } from '../../src/runtime/control-plane/daemon-ownership';
+import { readControllerDaemonStatus } from '../../src/runtime/control-plane/daemon-client';
 
 const roots: string[] = [];
 
@@ -11,6 +12,16 @@ afterEach(() => {
 });
 
 describe('controller daemon ownership', () => {
+  test('status observation does not create Controller Home or start a daemon', () => {
+    const root = mkdtempSync(join(tmpdir(), 'repo-harness-daemon-status-readonly-'));
+    roots.push(root);
+    const controllerHome = join(root, 'missing-controller-home');
+
+    expect(existsSync(controllerHome)).toBe(false);
+    expect(readControllerDaemonStatus(controllerHome)).toMatchObject({ status: 'unavailable' });
+    expect(existsSync(controllerHome)).toBe(false);
+  });
+
   test('only the pid recorded in the shared pid file owns terminal state writes', () => {
     const root = mkdtempSync(join(tmpdir(), 'repo-harness-daemon-owner-'));
     roots.push(root);

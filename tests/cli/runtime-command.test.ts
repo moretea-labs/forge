@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 
 const ROOT = join(import.meta.dir, '../..');
@@ -50,6 +50,9 @@ describe('runtime command surface', () => {
     expect(help.stdout).not.toMatch(/^\s+restart\b/m);
     expect(existsSync(join(ROOT, 'src/cli/mcp/keepalive.ts'))).toBe(false);
     expect(existsSync(join(ROOT, 'src/cli/mcp/restart.ts'))).toBe(false);
+    const httpTransport = readFileSync(join(ROOT, 'src/cli/mcp/transports/http.ts'), 'utf8');
+    expect(httpTransport).not.toContain('ensureControllerDaemon');
+    expect(httpTransport).toContain('readControllerDaemonStatus');
 
     for (const legacy of ['keepalive', 'restart']) {
       const result = spawnSync('bun', [CLI, 'mcp', legacy, '--help'], { cwd: ROOT, encoding: 'utf-8' });

@@ -26,7 +26,7 @@ import { resolveControllerHome } from '../../repositories/controller-home';
 import {
   controllerExposureSnapshot,
 } from '../toolset';
-import { ensureControllerDaemon, readControllerDaemonStatus } from '../../../runtime/control-plane/daemon-client';
+import { readControllerDaemonStatus } from '../../../runtime/control-plane/daemon-client';
 import { runtimeIdentitySnapshot } from '../../../runtime/gateway/mcp/runtime-tools';
 import { projectionBlocksReadiness, readRepositoryProjectionSnapshot } from '../../../runtime/projections/materialized-view';
 import { readRuntimeGeneration } from '../../../runtime/control-plane/runtime-generation';
@@ -783,7 +783,6 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     devRunnerMaxTimeoutMs: opts.devRunnerMaxTimeoutMs,
   };
   const runtimeControllerHome = 'controllerHome' in toolContext ? toolContext.controllerHome : undefined;
-  if (runtimeControllerHome) ensureControllerDaemon(runtimeControllerHome);
   const runtimeGeneration = runtimeControllerHome ? readRuntimeGeneration(runtimeControllerHome) : undefined;
   const localControllerConfig = {
     enabled: serviceConfig?.localController?.enabled ?? profile === 'controller',

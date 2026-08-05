@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join, resolve } from 'path';
 import { cpus, freemem, loadavg } from 'os';
 import { listRepositories } from '../../../cli/repositories/registry';
-import { ensureControllerHome } from '../../../cli/repositories/controller-home';
+import { resolveControllerHome } from '../../../cli/repositories/controller-home';
 import { writeAgentExecutableReadinessSnapshot } from '../../../cli/agent-jobs/executable-resolver';
 import { withControllerLock } from '../../../cli/repositories/locks';
 import { assertThisRuntimeMayWrite, getRuntimeWriterClaim } from '../../../cli/controller/stable-state/runtime-writer-context';
@@ -133,7 +133,7 @@ interface SchedulerState {
 }
 
 function schedulerStatePath(controllerHome: string): string {
-  return join(ensureControllerHome(controllerHome), 'scheduler', 'state.json');
+  return join(resolveControllerHome(controllerHome), 'scheduler', 'state.json');
 }
 
 export interface SchedulerHealthSnapshot {

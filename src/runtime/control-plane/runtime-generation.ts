@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync } from '
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
-import { ensureControllerHome } from '../../cli/repositories/controller-home';
+import { ensureControllerHome, resolveControllerHome } from '../../cli/repositories/controller-home';
 import { repositoryIdentity } from '../../cli/controller/runtime-config';
 import { stableCheckoutId } from '../../cli/repositories/identity';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
@@ -233,7 +233,7 @@ export function resolveControllerRuntimeSourceRoot(options: {
 }
 
 export function runtimeGenerationPath(controllerHome: string): string {
-  return join(ensureControllerHome(controllerHome), 'system', 'runtime-generation.json');
+  return join(resolveControllerHome(controllerHome), 'system', 'runtime-generation.json');
 }
 
 /**
