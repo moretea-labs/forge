@@ -23,11 +23,11 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 88,
+    "maxTestFiles": 91,
     "maxTestLines": 40000,
     "maxPureFiles": 30,
     "maxTempIsolatedFiles": 39,
-    "maxProcessTreeFiles": 15,
+    "maxProcessTreeFiles": 17,
     "maxGitWorktreeFiles": 15,
     "maxFixedPortFiles": 6,
     "maxRuntimeSingletonFiles": 6,
@@ -356,6 +356,10 @@
       "module": "controller",
       "resource": "temp-isolated"
     },
+    "tests/runtime/desktop-plugin.test.ts": {
+      "module": "controller",
+      "resource": "process-tree"
+    },
     "tests/runtime/execution-identity-guard.test.ts": {
       "module": "process-runtime",
       "resource": "temp-isolated"
@@ -378,6 +382,10 @@
     },
     "tests/runtime/ios-agent-device-provider.test.ts": {
       "module": "ios",
+      "resource": "process-tree"
+    },
+    "tests/runtime/managed-process-plugin.test.ts": {
+      "module": "controller",
       "resource": "process-tree"
     },
     "tests/runtime/process-check-receipt.test.ts": {
@@ -463,6 +471,10 @@
     "tests/runtime/work-handle-store.test.ts": {
       "module": "process-runtime",
       "resource": "temp-isolated"
+    },
+    "tests/runtime/work-terminal-cleanup.test.ts": {
+      "module": "workflow",
+      "resource": "git-worktree"
     },
     "tests/runtime/work-validation-reconciler.test.ts": {
       "module": "process-runtime",

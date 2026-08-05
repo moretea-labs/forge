@@ -166,3 +166,42 @@ The current source-aligned assistant baseline is:
   Calendar account adapter.
 - Live Google credentials remain environment-only; this repo persists plugin
   config and derived health, not tokens.
+
+
+## 8. Bundled first-party and managed-provider boundary
+
+The current plugin baseline also includes a controller-scoped `desktop` plugin.
+It establishes the boundary between bundled first-party capability modules and
+managed native providers without introducing a plugin marketplace:
+
+- Core Controller authority remains compiled into Repo Harness: admission,
+  authorization, resource claims, receipts, audit events, Work, Process, Git,
+  Supervisor, recovery, and plugin discovery are not replaceable plugins.
+- First-party domain capabilities remain bundled with the Repo Harness package
+  and are registered through `src/runtime/plugins/first-party-registry.ts`.
+- Desktop is the first bundled capability whose domain implementation executes
+  through the generic `managed-process-adapter.ts` backend.
+- The helper is package-owned and resolved from the active installation. Users do
+  not configure an absolute executable path, socket, or registration descriptor.
+- The initial transport is a one-shot versioned JSON-lines stdio protocol with
+  handshake, request identity, capability negotiation, bounded input/output,
+  timeout, cancellation, crash cleanup, and structured errors.
+- Existing `list_plugins`, `get_plugin`, and `plugin_action_execute` tools remain
+  the only public plugin entry points. This does not imply dynamic MCP schema
+  loading.
+
+Desktop configuration authority is
+`<controller-home>/system/desktop/config.json`. The manifest and registry index are
+derived projections, not a second source of truth. Current Desktop actions are
+limited to enable/disable, live status, frontmost-application observation through
+AppKit `NSWorkspace`, and explicitly authorized application launch. Screen capture,
+clicks, coordinates, keyboard input, accessibility-tree access, arbitrary shell,
+plugin downloads, and marketplace installation are intentionally absent.
+
+The managed helper threat model is process compromise, hidden native side effects,
+permission overclaim, protocol confusion, and unbounded output. Current controls
+are direct no-shell spawn, package-owned helper resolution, minimal environment,
+versioned handshake, required-capability matching, bounded diagnostics, timeout and
+AbortSignal handling, SIGTERM/SIGKILL cleanup, read-only observation, and typed
+application selectors. Any future interaction or screen-observation capability
+requires a separate permission model and fault-injection review.
