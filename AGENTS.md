@@ -29,6 +29,18 @@ Treat ChatGPT as the controller and repo-harness as its repository execution lay
 - `docs/architecture/index.md` for umbrella architecture status, drift requests, snapshots, and diagram links
 - `docs/reference-configs/agentic-development-flow.md` for gstack/Waza routing rules
 
+## Runtime Architecture Guardrails
+
+- Treat repo-harness as one local MCP application, one active Runtime, one deployable release, and one lifecycle owner. Gateway, MCP transport, Controller, and Scheduler may be modules; they are not independently deployable generations by default.
+- Bounded restart downtime is acceptable. Prefer `stop -> switch complete release -> start -> verify -> full rollback`; do not add ingress, blue/green slots, adoption, or mixed generations without an explicit product requirement.
+- Do not respond to an incident by adding another status, boolean, state file, daemon, proxy, keepalive, watchdog, recovery owner, or fallback path. First identify the violated invariant and remove, merge, or correct the existing cause.
+- Readiness is one derived whole-system conclusion. Multiple diagnostic checks and reason codes are allowed, but they must not become independent durable readiness state machines.
+- Keep lifecycle, readiness, liveness, capability, authorization, release identity, and diagnostics separate. Do not create composite states such as `status=ready` with `degraded=true`.
+- Only one component may perform lifecycle or recovery side effects. Observers and probes are read-only and submit typed requests to that owner.
+- Release and rollback scope is the complete compatible Runtime, configuration, entrypoint, and SQLite schema/backup state; component-level rollback is forbidden.
+- Any new process, persistent state, enum value, health mode, authority file, or compatibility fallback requires an explicit architecture decision, transition owner, cleanup/removal criterion, and failure-injection tests.
+- Follow `docs/reference-configs/runtime-architecture-guardrails.md` for the normative review gates and target topology.
+
 ## Operating Rules
 
 - Sync `tasks/` whenever substantive repo changes are made.
