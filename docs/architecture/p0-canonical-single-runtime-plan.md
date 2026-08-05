@@ -45,7 +45,8 @@ Deliver one mergeable vertical slice in which one `repo-harness-runtime` process
 
 | Legacy layer | Temporary role | Delete phase |
 | --- | --- | --- |
-| `src/cli/controller/lifecycle.ts` Supervisor/component manager | no longer reachable from canonical `runtime` CLI; remaining legacy callers only | Phase 2 then Phase 7 |
+| `src/cli/controller/lifecycle.ts` Supervisor/component manager | no longer reachable from canonical `runtime` or public `controller` lifecycle commands; remaining internal legacy callers only | Phase 2 then Phase 7 |
+| `src/cli/commands/supervisor.ts` | public registration removed; retained only as internal legacy implementation/test inventory | Phase 2 then Phase 7 |
 | MCP KeepAlive and daemon auto-start in legacy HTTP transport | legacy `mcp serve` compatibility | Phase 2 |
 | Controller Daemon/local bridge internal port | legacy tools not yet migrated | Phase 2 |
 | Stable Ingress and blue/green runtime slots | legacy release activation | Phase 4 |

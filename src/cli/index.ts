@@ -25,7 +25,6 @@ import { buildRunCommand } from './commands/run';
 import { buildControllerCommand } from './commands/controller';
 import { buildRepositoryCommand } from './commands/repository';
 import { buildRuntimeCommand } from './commands/runtime';
-import { buildSupervisorCommand } from './commands/supervisor';
 import { formatSecurityScan, runSecurityScan } from './commands/security';
 import { runGlobalRuntimeSetup } from './commands/global-runtime';
 import { runPromptGuardDecideCli } from './commands/prompt-guard-decision';
@@ -537,7 +536,6 @@ export function buildProgram(): Command {
   program.addCommand(buildControllerCommand());
   program.addCommand(buildRepositoryCommand());
   program.addCommand(buildRuntimeCommand());
-  program.addCommand(buildSupervisorCommand());
   program
     .command('prompt-guard-decide', { hidden: true })
     .description('Internal prompt-guard intent/state decision engine')

@@ -66,6 +66,8 @@ const required = [
   'src/runtime/root/status.ts',
   'src/runtime/root/release-manifest.ts',
   'src/cli/commands/runtime.ts',
+  'src/cli/commands/controller.ts',
+  'src/cli/index.ts',
   'docs/architecture/current/runtime-architecture-simplification.md',
   'docs/architecture/current/implementation-status.md',
   'docs/architecture/current/runtime-directory-map.md',
@@ -118,6 +120,17 @@ forbid(
 );
 requireText('src/cli/commands/runtime.ts', 'observeRuntimeStatus');
 requireText('src/cli/commands/runtime.ts', 'readRepositoryProjection');
+forbid(
+  'src/cli/index.ts',
+  /buildSupervisorCommand|addCommand\(buildSupervisorCommand\(\)\)/,
+  'the public root CLI must not expose the legacy Supervisor lifecycle',
+);
+forbid(
+  'src/cli/commands/controller.ts',
+  /controller\/lifecycle|restart-coordinator|bluegreen-rollout|controllerRestartVerify|controllerFeatureVerify|\.command\(['"](?:start|stop|status|restart|logs|rollout|rollback|restart-verify|feature-verify)['"]\)/,
+  'the public controller CLI must not expose component lifecycle, restart, blue-green rollout, rollback, or green-gate commands',
+);
+requireText('src/cli/commands/controller.ts', 'repositoryChangeVerify');
 requireText('src/runtime/root/release-manifest.ts', "entrypoint must be repo-harness-runtime");
 requireText('src/runtime/root/release-manifest.ts', 'databaseSchemaCompatibility');
 requireText('src/runtime/root/release-manifest.ts', 'workerProtocolVersion');

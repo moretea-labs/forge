@@ -17,20 +17,7 @@ import { finalizeEditSession, getEditSession, getEditSessionDiff, listEditSessio
 import { loadControllerProjectState, saveControllerProjectState } from '../controller/project-state';
 import { closeIssueWithGitHubPlugin, getGitHubPluginStatus, publishIssueWithGitHubPlugin, refreshIssueWithGitHubPlugin, saveGitHubPluginConfig } from '../github/plugin';
 import { getGitHubStatus } from '../github/github';
-import {
-  controllerServiceLogs,
-  controllerServiceStatus,
-  formatControllerServiceStatus,
-  startControllerService,
-  stopControllerService,
-} from '../controller/lifecycle';
-import { formatControllerRestartScheduled, requestControllerServiceRestart } from '../controller/restart-coordinator';
-import { controllerRollback, controllerRollout } from '../controller/bluegreen-rollout';
-import {
-  controllerFeatureVerify,
-  controllerRestartVerify,
-  repositoryChangeVerify,
-} from '../controller/composite-operations';
+import { repositoryChangeVerify } from '../controller/composite-operations';
 import { executeLocalBridgeJob } from '../local-bridge/job-store';
 
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
@@ -639,123 +626,6 @@ export function buildControllerCommand(): Command {
     });
 
 
-  command.command('start')
-    .description('Start the complete Controller stack through the single lifecycle supervisor')
-    .option('--repo <path>', 'Repository root')
-    .option('--controller-home <path>', 'Controller state root; defaults to repo _ops/controller-home when present')
-    .option('--log-file <path>', 'Combined supervisor log file')
-    .option('--json', 'Output JSON')
-    .action(async (opts: { repo?: string; controllerHome?: string; logFile?: string; json?: boolean }) => {
-      const result = await startControllerService({ repo: opts.repo, controllerHome: opts.controllerHome, logFile: opts.logFile });
-      output(opts.json ? result : formatControllerServiceStatus(result.status), opts.json === true);
-    });
-
-  command.command('stop')
-    .description('Stop the complete Controller stack')
-    .option('--repo <path>', 'Repository root')
-    .option('--controller-home <path>', 'Controller state root; defaults to repo _ops/controller-home when present')
-    .option('--log-file <path>', 'Combined supervisor log file')
-    .option('--json', 'Output JSON')
-    .action(async (opts: { repo?: string; controllerHome?: string; logFile?: string; json?: boolean }) => {
-      const result = await stopControllerService({ repo: opts.repo, controllerHome: opts.controllerHome, logFile: opts.logFile });
-      output(opts.json ? result : formatControllerServiceStatus(result.status), opts.json === true);
-    });
-
-  command.command('status')
-    .description('Report one coherent Controller lifecycle and runtime generation')
-    .option('--repo <path>', 'Repository root')
-    .option('--controller-home <path>', 'Controller state root; defaults to repo _ops/controller-home when present')
-    .option('--log-file <path>', 'Combined supervisor log file')
-    .option('--json', 'Output JSON')
-    .action(async (opts: { repo?: string; controllerHome?: string; logFile?: string; json?: boolean }) => {
-      const result = await controllerServiceStatus({ repo: opts.repo, controllerHome: opts.controllerHome, logFile: opts.logFile });
-      output(opts.json ? result : formatControllerServiceStatus(result), opts.json === true);
-    });
-
-  command.command('restart')
-    .description('Replace the complete Controller stack through the restart coordinator')
-    .option('--repo <path>', 'Repository root')
-    .option('--controller-home <path>', 'Controller state root; defaults to repo _ops/controller-home when present')
-    .option('--log-file <path>', 'Combined supervisor log file')
-    .option('--request-id <id>', 'Idempotent restart request id')
-    .option('--reason <text>', 'Bounded restart reason')
-    .option('--detached', 'Always hand the restart to the out-of-band coordinator')
-    .option('--json', 'Output JSON')
-    .action(async (opts: { repo?: string; controllerHome?: string; logFile?: string; requestId?: string; reason?: string; detached?: boolean; json?: boolean }) => {
-      const result = await requestControllerServiceRestart({
-        repo: opts.repo,
-        controllerHome: opts.controllerHome,
-        logFile: opts.logFile,
-        requestId: opts.requestId,
-        reason: opts.reason,
-        requestedBy: 'controller-cli',
-        mode: opts.detached ? 'detached' : 'auto',
-      });
-      output(
-        opts.json
-          ? result
-          : result.action === 'restart_scheduled'
-            ? formatControllerRestartScheduled(result)
-            : formatControllerServiceStatus(result.status),
-        opts.json === true,
-      );
-    });
-
-  command.command('logs')
-    .description('Read the combined Controller supervisor log')
-    .option('--repo <path>', 'Repository root')
-    .option('--controller-home <path>', 'Controller state root; defaults to repo _ops/controller-home when present')
-    .option('--log-file <path>', 'Combined supervisor log file')
-    .option('--tail <lines>', 'Approximate number of recent log lines', '200')
-    .option('--json', 'Output JSON')
-    .action(async (opts: { repo?: string; controllerHome?: string; logFile?: string; tail?: string; json?: boolean }) => {
-      const result = await controllerServiceLogs({
-        repo: opts.repo,
-        controllerHome: opts.controllerHome,
-        logFile: opts.logFile,
-        tail: Math.max(1, Number(opts.tail ?? 200)),
-      });
-      output(opts.json ? result : result.text || `(no log output yet)\nlog: ${result.logPath}`, opts.json === true);
-    });
-
-  command.command('rollout')
-    .description('Blue/green rollout: start inactive slot, verify, atomically cut over active-slot authority')
-    .option('--repo <path>', 'Repository root')
-    .option('--controller-home <path>', 'Controller state root')
-    .option('--skip-durable-job', 'Skip minimal durable job smoke during verification')
-    .option('--reason <text>', 'Operator-visible rollout reason stored with the Supervisor operation')
-    .option('--wait', 'Wait for the Supervisor operation to complete (only safe from external CLI, not inside managed runtime)')
-    .option('--json', 'Output JSON')
-    .action(async (opts: { repo?: string; controllerHome?: string; skipDurableJob?: boolean; reason?: string; wait?: boolean; json?: boolean }) => {
-      const result = await controllerRollout({
-        repo: opts.repo,
-        controllerHome: opts.controllerHome,
-        skipDurableJob: opts.skipDurableJob === true,
-        reason: opts.reason,
-        wait: opts.wait === true,
-      });
-      output(result, opts.json === true);
-      if (result.status === 'failed') process.exitCode = 1;
-    });
-
-  command.command('rollback')
-    .description('Rollback to the previous healthy runtime slot within the bounded window')
-    .option('--repo <path>', 'Repository root')
-    .option('--controller-home <path>', 'Controller state root')
-    .option('--skip-durable-job', 'Skip durable job smoke during verification')
-    .option('--wait', 'Wait for the Supervisor operation to complete (only safe from external CLI, not inside managed runtime)')
-    .option('--json', 'Output JSON')
-    .action(async (opts: { repo?: string; controllerHome?: string; skipDurableJob?: boolean; wait?: boolean; json?: boolean }) => {
-      const result = await controllerRollback({
-        repo: opts.repo,
-        controllerHome: opts.controllerHome,
-        skipDurableJob: opts.skipDurableJob === true,
-        wait: opts.wait === true,
-      });
-      output(result, opts.json === true);
-      if (result.status === 'failed') process.exitCode = 1;
-    });
-
   command.command('change-verify')
     .description('Composite: verify checkout, apply bounded patch, run checks, return first failure inline')
     .option('--repo <path>', 'Repository root')
@@ -777,25 +647,6 @@ export function buildControllerCommand(): Command {
       if (result.status === 'failed') process.exitCode = 1;
     });
 
-  command.command('restart-verify')
-    .description('Composite: durable restart/rollout request with full health verification and resume by request id')
-    .option('--repo <path>', 'Repository root')
-    .option('--controller-home <path>', 'Controller state root')
-    .option('--request-id <id>', 'Idempotent request id')
-    .option('--poll-only', 'Only read an existing durable request; never submit a new restart')
-    .option('--reason <text>', 'Bounded restart reason')
-    .option('--json', 'Output JSON')
-    .action(async (opts: { repo?: string; controllerHome?: string; requestId?: string; pollOnly?: boolean; reason?: string; json?: boolean }) => {
-      const result = await controllerRestartVerify({
-        repo: opts.repo,
-        controllerHome: opts.controllerHome,
-        requestId: opts.requestId,
-        pollOnly: opts.pollOnly === true,
-        reason: opts.reason,
-      });
-      output(result, opts.json === true);
-      if (result.status === 'failed') process.exitCode = 1;
-    });
 
   command.command('run-check-process', { hidden: true })
     .description('Internal persisted check process entry')
@@ -822,19 +673,6 @@ export function buildControllerCommand(): Command {
       process.exitCode = result.ok ? 0 : Math.max(1, result.status || 1);
     });
 
-  command.command('feature-verify')
-    .description('Composite: feature-branch unit + isolated lifecycle gate for green rollout readiness')
-    .option('--repo <path>', 'Repository root')
-    .option('--skip-lifecycle', 'Skip Level 2 isolated lifecycle suite')
-    .option('--json', 'Output JSON')
-    .action((opts: { repo?: string; skipLifecycle?: boolean; json?: boolean }) => {
-      const result = controllerFeatureVerify({
-        repo: opts.repo,
-        skipLifecycle: opts.skipLifecycle === true,
-      });
-      output(result, opts.json === true);
-      if (result.status === 'failed') process.exitCode = 1;
-    });
 
   return command;
 }

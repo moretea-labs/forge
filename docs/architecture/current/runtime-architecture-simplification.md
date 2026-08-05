@@ -56,7 +56,7 @@ No core module may create a KeepAlive loop, detached restart coordinator, second
 | Phase | Required result | Current source assessment |
 | --- | --- | --- |
 | 1. Establish Canonical Single Runtime | MCP Transport, Gateway Adapter, Controller Services, Scheduler, SQLite, and Worker Manager are started by one Runtime Root | Partial: the vertical slice exists, but it remains parallel to the legacy installed lifecycle |
-| 2. Converge lifecycle ownership | Runtime Root is the only core start/stop/failure/recovery owner | In progress: `repo-harness-runtime` is the sole canonical start entry and the `runtime` CLI is read-only; legacy Supervisor, Daemon, KeepAlive, restart, and recovery callers still require deletion |
+| 2. Converge lifecycle ownership | Runtime Root is the only core start/stop/failure/recovery owner | In progress: `repo-harness-runtime` is the sole canonical start entry; `runtime` is observation-only; public `controller` lifecycle/blue-green commands and the public `supervisor` command are removed; internal legacy Daemon, KeepAlive, restart, Supervisor, and recovery callers still require deletion |
 | 3. Simplify readiness | Public Runtime readiness is only `ready: true/false`; module observations are diagnostic evidence | In progress: Canonical Runtime uses the binary contract; legacy component readiness remains |
 | 4. Remove ingress and Runtime slots | No Stable Ingress, fixed blue/green ports, runtime slots, mixed generation, adoption, or component cutover | Not complete |
 | 5. Whole-Runtime publish and rollback | Code, configuration, entrypoint, manifest, SQLite schema/backup, and Worker protocol move as one compatible set | Partial manifest model exists; legacy component and slot rollout remains |
@@ -153,7 +153,8 @@ The following paths are legacy implementation inventory, not target building blo
 | `src/runtime/control-plane/daemon-entry.ts` as an independent service | fold initialization/recovery into Runtime Root, then delete the service entry |
 | `src/cli/controller/runtime-slots.ts` and slot homes | delete in phase 4 |
 | `src/cli/controller/bluegreen-rollout.ts` | delete in phases 4/7 |
-| detached restart coordinator and component restart bridges | replace with whole-Runtime stop/start, then delete |
+| public `controller` lifecycle/blue-green commands and public `supervisor` command | removed from the supported CLI surface in phase 2; implementation modules remain deletion inventory |
+| detached restart coordinator and component restart bridges | no longer reachable through the canonical/public lifecycle CLI; delete remaining internal callers |
 | stable ingress ports and private blue/green ports | delete; one Runtime endpoint is configured directly |
 | component generation and mixed-generation coherence | delete; one Runtime instance/release identity remains |
 | component rollout/rollback operation stores | delete; one whole-Runtime release operation remains |
