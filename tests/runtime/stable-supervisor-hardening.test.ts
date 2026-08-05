@@ -11,7 +11,6 @@ import { browserNodeBridgeReleaseCapabilities, installSupervisorRelease, publish
 import { stableSupervisorActivatesPublishedRelease, stableSupervisorExitCode } from '../../src/runtime/supervisor/entry';
 import { currentSupervisorBootstrapCommand } from '../../src/runtime/bootstrap/entry';
 import { createStableIngressRouter } from '../../src/runtime/supervisor/ingress-router';
-import { createStableIngressProcess } from '../../src/runtime/supervisor/ingress-process';
 import { controllerDaemonMaxLifetimeMs, controllerDaemonPassiveMode, publishReadyAfterStartupRecovery, resolveControllerDaemonShutdownReason, runtimeSourceIdentityNeedsRefresh } from '../../src/runtime/control-plane/daemon-entry';
 import { createSupervisorOperation, readSupervisorOperation, updateSupervisorOperation } from '../../src/runtime/supervisor/operation-store';
 import { StableSupervisorRuntime, SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_MONITOR_FAILURE_THRESHOLD, automaticRecoveryRequestId, combinedRolloutRollbackFailure, managedProcessNeedsReleaseRefresh, observeCutoverCandidateWithSingleRecovery, observeCutoverReadinessWindow, sampleCutoverReadiness, probeAuthenticatedMcpReadiness, probeSupervisorGatewayHealth, reconcileActiveManagedGenerations, reconcilePendingSupervisorActivations, reconcileSupervisorStateWithAuthority, recoverableCutoverObservationFailure, recoverableWriterClaimRefreshFailure, refreshWriterClaimWithSingleRetry, resumableInterruptedRollout, supervisorGatewayHealthDecision, supervisorGatewayOperational, supervisorGatewayRuntimeReady, supervisorIngressHealthDecision, supervisorManagedDaemonReady, supervisorManagedGatewayReady, supervisorMonitorFailureDecision, supervisorOperationRecoverySuppressed, terminalizeInterruptedSupervisorOperations } from '../../src/runtime/supervisor/supervisor-runtime';
@@ -987,18 +986,16 @@ describe('Stable Supervisor production hardening', () => {
       const internal = runtime as unknown as {
         start: () => Promise<void>;
         ensureRuntime: () => Promise<void>;
-        replaceIngressProcess: () => Promise<{ host: string; port: number; pid?: number; alive: () => boolean; close: () => Promise<void> }>;
+        replaceIngressRouter: () => Promise<{ host: string; port: number; close: () => Promise<void> }>;
         stop: () => Promise<void>;
         monitorTimer?: ReturnType<typeof setInterval>;
       };
       internal.ensureRuntime = async () => {
         throw new Error('SUPERVISOR_CONTROLLERDAEMON_READINESS_TIMEOUT');
       };
-      internal.replaceIngressProcess = async () => ({
+      internal.replaceIngressRouter = async () => ({
         host: '127.0.0.1',
         port: 8765,
-        pid: 4242,
-        alive: () => true,
         close: async () => undefined,
       });
 
@@ -1095,46 +1092,34 @@ describe('Stable Supervisor production hardening', () => {
     }
   });
 
-  test('stable ingress data plane runs in a supervised process separate from lifecycle control', async () => {
-    const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-ingress-process-'));
+  test('stable ingress data plane runs inside the Supervisor lifecycle owner', async () => {
     const main = await listen((_request, response) => {
       response.setHeader('content-type', 'application/json');
-      response.end(JSON.stringify({ status: 'ok', source: 'isolated-main' }));
+      response.end(JSON.stringify({ status: 'ok', source: 'inline-main' }));
     });
     const rescue = await listen((request, response) => {
       response.setHeader('content-type', 'application/json');
       response.end(JSON.stringify({ status: 'ok', path: request.url }));
     });
-    const ingress = await createStableIngressProcess({
-      executable: join(process.cwd(), 'src/runtime/supervisor/entry.ts'),
-      repoRoot: process.cwd(),
-      controllerHome,
+    const ingress = await createStableIngressRouter({
       host: '127.0.0.1',
       port: 0,
       rescueHost: '127.0.0.1',
       rescuePort: rescue.port,
-      blueUpstreamPort: main.port,
-      greenUpstreamPort: main.port,
+      upstream: () => ({ host: '127.0.0.1', port: main.port }),
     });
     try {
-      expect(ingress.pid).not.toBe(process.pid);
-      expect(ingress.alive()).toBe(true);
       const health = await fetch(`http://127.0.0.1:${ingress.port}/health`).then((response) => response.json()) as { source?: string };
-      expect(health.source).toBe('isolated-main');
+      expect(health.source).toBe('inline-main');
       const rescueHealth = await fetch(`http://127.0.0.1:${ingress.port}/rescue/health`).then((response) => response.json()) as { path?: string };
       expect(rescueHealth.path).toBe('/health');
     } finally {
       await ingress.close();
-      rmSync(controllerHome, { recursive: true, force: true });
     }
-    expect(ingress.alive()).toBe(false);
   });
 
-  test('stable ingress false-health is observable while its child process remains alive', async () => {
-    const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-ingress-false-health-'));
-    const unavailableUpstream = await listen((_request, response) => {
-      response.end('temporary');
-    });
+  test('inline stable ingress false-health is observable without a second process owner', async () => {
+    const unavailableUpstream = await listen((_request, response) => response.end('temporary'));
     await new Promise<void>((resolve) => unavailableUpstream.server.close(() => resolve()));
     const serverIndex = servers.indexOf(unavailableUpstream.server);
     if (serverIndex >= 0) servers.splice(serverIndex, 1);
@@ -1142,25 +1127,20 @@ describe('Stable Supervisor production hardening', () => {
       response.setHeader('content-type', 'application/json');
       response.end(JSON.stringify({ status: 'ok' }));
     });
-    const ingress = await createStableIngressProcess({
-      executable: join(process.cwd(), 'src/runtime/supervisor/entry.ts'),
-      repoRoot: process.cwd(),
-      controllerHome,
+    const ingress = await createStableIngressRouter({
       host: '127.0.0.1',
       port: 0,
       rescueHost: '127.0.0.1',
       rescuePort: rescue.port,
-      blueUpstreamPort: unavailableUpstream.port,
-      greenUpstreamPort: unavailableUpstream.port,
+      upstream: () => ({ host: '127.0.0.1', port: unavailableUpstream.port }),
     });
     try {
-      expect(ingress.alive()).toBe(true);
       const health = await probeSupervisorGatewayHealth(`http://127.0.0.1:${ingress.port}/ready`);
       expect(health).toMatchObject({ healthy: false, statusCode: 503 });
-      expect(ingress.alive()).toBe(true);
+      const rescueHealth = await fetch(`http://127.0.0.1:${ingress.port}/rescue/health`);
+      expect(rescueHealth.status).toBe(200);
     } finally {
       await ingress.close();
-      rmSync(controllerHome, { recursive: true, force: true });
     }
   });
 
@@ -1616,7 +1596,9 @@ describe('Stable Supervisor production hardening', () => {
     });
     const args = manager.gatewayArgs(home);
     expect(args[args.indexOf('--port') + 1]).toBe('8785');
-    expect(args[args.indexOf('--tunnel') + 1]).toBe('none');
+    expect(args.slice(0, 3)).toEqual([expect.any(String), 'mcp', 'serve']);
+    expect(args).not.toContain('--tunnel');
+    expect(args).not.toContain('--local-ui');
     expect(manager.localControllerBinding('blue').port).toBe(8786);
     expect(manager.localControllerBinding('green').port).toBe(8796);
     expect(manager.localControllerBinding('blue').port).not.toBe(8766);
