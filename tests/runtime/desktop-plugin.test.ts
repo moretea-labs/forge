@@ -74,12 +74,13 @@ describe('bundled Desktop plugin', () => {
 
   test('configure enables the plugin and status routes through the managed helper', async () => {
     const { controllerHome, repository } = fixture();
-    const calls: Array<{ actionId: string; input: Record<string, unknown> }> = [];
+    const calls: Array<{ actionId: string; input: Record<string, unknown>; runtimeExecutable?: string }> = [];
     setDesktopPluginHooksForTest({
       platform: 'darwin',
       resolveHelperPath: () => '/bundled/helper.mjs',
-      executeManaged: async (_spec, request) => {
-        calls.push({ actionId: request.actionId, input: request.input });
+      resolveRuntimeExecutable: () => '/trusted/node',
+      executeManaged: async (spec, request) => {
+        calls.push({ actionId: request.actionId, input: request.input, runtimeExecutable: spec.runtimeExecutable });
         return { managed: true, actionId: request.actionId };
       },
     });
@@ -105,7 +106,7 @@ describe('bundled Desktop plugin', () => {
       origin: { surface: 'mcp', actor: 'test' },
     });
     expect(status.result?.result).toEqual({ managed: true, actionId: 'status' });
-    expect(calls).toEqual([{ actionId: 'status', input: {} }]);
+    expect(calls).toEqual([{ actionId: 'status', input: {}, runtimeExecutable: '/trusted/node' }]);
   });
 
   test('disabled actions fail closed before the helper starts', async () => {
@@ -128,6 +129,7 @@ describe('bundled Desktop plugin', () => {
     setDesktopPluginHooksForTest({
       platform: 'darwin',
       resolveHelperPath: () => '/bundled/helper.mjs',
+      resolveRuntimeExecutable: () => '/trusted/node',
       executeManaged: async () => ({ opened: true }),
     });
     await executeDesktopPluginAction(actionInput(controllerHome, 'configure', { enabled: true }));

@@ -16,6 +16,7 @@ export const SUPERVISOR_RELEASE_ENTRYPOINTS = [
   'process-runner.js',
   'browser-handoff-host.js',
   'browser-node-bridge-host.js',
+  'repo-harness-desktop-helper.mjs',
 ] as const;
 
 /** Executables missing or empty in a release directory; empty array means complete. */

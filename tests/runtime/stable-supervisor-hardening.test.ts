@@ -19,7 +19,7 @@ import { SupervisorProcessManager, runtimeWriterEnvironment, supervisorProcessSt
 import { ensureMcpControllerHomeBearerToken, writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
 import { writeActiveSlotAuthority } from '../../src/cli/controller/runtime-slots';
 import { publishWriterAuthority } from '../../src/cli/controller/stable-state/writer-authority';
-import { readCurrentRelease, readCurrentSupervisorRelease, readSupervisorRelease, supervisorBootstrapConfigPath, supervisorBootstrapManifestPath, supervisorReleasesRoot } from '../../src/runtime/supervisor/paths';
+import { readCurrentRelease, readCurrentSupervisorRelease, readSupervisorRelease, supervisorBootstrapConfigPath, supervisorBootstrapManifestPath, supervisorReleasesRoot, SUPERVISOR_RELEASE_ENTRYPOINTS, supervisorReleaseClosureMissing } from '../../src/runtime/supervisor/paths';
 import { createSupervisorControlServer, sendSupervisorCommand } from '../../src/runtime/supervisor/control-server';
 import type { ProcessIdentityProbe } from '../../src/runtime/supervisor/identity';
 import type { SupervisorManagedProcess, SupervisorOperation, SupervisorState } from '../../src/runtime/supervisor/types';
@@ -71,6 +71,7 @@ function fakeSupervisorRelease(home: string, name: string, revision: string, opt
     'process-runner.js',
     'browser-handoff-host.js',
     'browser-node-bridge-host.js',
+    'repo-harness-desktop-helper.mjs',
   ];
   const aggregate = createHash('sha256');
   const artifacts: Record<string, { sha256: string }> = {};
@@ -156,6 +157,7 @@ describe('Stable Supervisor production hardening', () => {
       expect(existsSync(join(release.releasePath, 'process-runner.js'))).toBe(true);
       expect(existsSync(join(release.releasePath, 'browser-handoff-host.js'))).toBe(true);
       expect(existsSync(join(release.releasePath, 'browser-node-bridge-host.js'))).toBe(true);
+      expect(existsSync(join(release.releasePath, 'repo-harness-desktop-helper.mjs'))).toBe(true);
       const runnerPath = join(release.releasePath, 'process-runner.js');
       const manifest = JSON.parse(readFileSync(join(release.releasePath, 'manifest.json'), 'utf8')) as {
         executionMode?: 'standalone-binary' | 'script';
@@ -166,6 +168,7 @@ describe('Stable Supervisor production hardening', () => {
         processRunnerEntrypoint?: string;
         browserHandoffHostEntrypoint?: string;
         browserNodeBridgeHostEntrypoint?: string;
+        desktopHelperEntrypoint?: string;
         browserNodeBridgeValidation?: { status?: string; nodeChecked?: boolean };
         capabilities?: string[];
       };
@@ -194,10 +197,13 @@ describe('Stable Supervisor production hardening', () => {
       expect(manifest.processRunnerEntrypoint).toBe('process-runner.js');
       expect(manifest.browserHandoffHostEntrypoint).toBe('browser-handoff-host.js');
       expect(manifest.browserNodeBridgeHostEntrypoint).toBe('browser-node-bridge-host.js');
+      expect(manifest.desktopHelperEntrypoint).toBe('repo-harness-desktop-helper.mjs');
       expect(manifest.capabilities).toContain('staged_rollout_release');
       expect(manifest.capabilities).toContain('independent_process_runner');
       expect(manifest.capabilities).toContain('browser_handoff_host');
+      expect(manifest.capabilities).toContain('desktop_managed_helper');
       const browserNodeHostPath = join(release.releasePath, 'browser-node-bridge-host.js');
+      const desktopHelperPath = join(release.releasePath, 'repo-harness-desktop-helper.mjs');
       let nodeExecutable: string | undefined;
       try {
         nodeExecutable = resolveBrowserBridgeNodeExecutable();
@@ -223,6 +229,19 @@ describe('Stable Supervisor production hardening', () => {
           releasePath: release.releasePath,
           nodeExecutable,
         })).toMatchObject({ nodeChecked: true, availability: 'verified', hostPath: browserNodeHostPath });
+        const desktopProbe = spawnSync(nodeExecutable, [desktopHelperPath], {
+          cwd: release.releasePath,
+          encoding: 'utf8',
+          input: `${JSON.stringify({ schemaVersion: 1, type: 'execute', requestId: 'release-desktop-status', actionId: 'status', input: {} })}\n`,
+          env: {
+            PATH: process.env.PATH ?? '',
+            HOME: process.env.HOME ?? '',
+          },
+        });
+        expect(desktopProbe.status).toBe(0);
+        const desktopLines = desktopProbe.stdout.trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+        expect(desktopLines[0]).toMatchObject({ schemaVersion: 1, type: 'handshake', pluginId: 'desktop' });
+        expect(desktopLines[1]).toMatchObject({ schemaVersion: 1, type: 'result', requestId: 'release-desktop-status', ok: true });
       } else {
         expect(manifest.browserNodeBridgeValidation).toMatchObject({ status: 'node_unavailable', nodeChecked: false });
         expect(manifest.capabilities).not.toContain('browser_node_cdp_bridge');
@@ -231,6 +250,19 @@ describe('Stable Supervisor production hardening', () => {
       rmSync(controllerHome, { recursive: true, force: true });
     }
   }, 180_000);
+
+  test('release closure rejects a missing Desktop helper artifact', () => {
+    const releasePath = mkdtempSync(join(tmpdir(), 'repo-harness-desktop-closure-'));
+    try {
+      for (const entrypoint of SUPERVISOR_RELEASE_ENTRYPOINTS) {
+        if (entrypoint === 'repo-harness-desktop-helper.mjs') continue;
+        writeFileSync(join(releasePath, entrypoint), 'fixture');
+      }
+      expect(supervisorReleaseClosureMissing(releasePath)).toEqual(['repo-harness-desktop-helper.mjs']);
+    } finally {
+      rmSync(releasePath, { recursive: true, force: true });
+    }
+  });
 
   test('release staging rejects a native executable masquerading as the Browser Node host', () => {
     const releasePath = mkdtempSync(join(tmpdir(), 'repo-harness-browser-node-native-'));

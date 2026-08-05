@@ -42,7 +42,7 @@ async function http(handler: (request: IncomingMessage, response: ServerResponse
 
 function release(home: string, name: string, revision: string): string {
   const path = join(home, 'supervisor', 'releases', name); mkdirSync(path, { recursive: true });
-  for (const file of ['supervisor.js', 'repo-harness.js', 'daemon.js', 'worker.js', 'process-runner.js', 'browser-handoff-host.js', 'browser-node-bridge-host.js']) writeFileSync(join(path, file), 'fixture');
+  for (const file of ['supervisor.js', 'repo-harness.js', 'daemon.js', 'worker.js', 'process-runner.js', 'browser-handoff-host.js', 'browser-node-bridge-host.js', 'repo-harness-desktop-helper.mjs']) writeFileSync(join(path, file), 'fixture');
   writeFileSync(join(path, 'manifest.json'), JSON.stringify({ schemaVersion: 1, releaseRevision: revision }));
   return path;
 }

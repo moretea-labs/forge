@@ -267,6 +267,7 @@ export const STANDALONE_RECOVERY_REQUIRED_RELEASE_FILES = [
   'process-runner.js',
   'browser-handoff-host.js',
   'browser-node-bridge-host.js',
+  'repo-harness-desktop-helper.mjs',
 ] as const;
 const REQUIRED_RELEASE_FILES = STANDALONE_RECOVERY_REQUIRED_RELEASE_FILES;
 

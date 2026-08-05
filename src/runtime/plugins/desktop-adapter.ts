@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import { controllerSystemRoot } from '../../cli/repositories/controller-home';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { AssistantPluginError } from './errors';
+import { resolveBrowserBridgeNodeExecutable } from './browser-node-bridge';
 import { executeManagedPluginProcess, type ManagedPluginProcessRequest, type ManagedPluginProcessSpec } from './managed-process-adapter';
 import type {
   AssistantPluginActionDescriptor,
@@ -28,6 +29,7 @@ export interface DesktopPluginHooks {
   now?: () => Date;
   platform?: NodeJS.Platform;
   resolveHelperPath?: () => string;
+  resolveRuntimeExecutable?: () => string;
   executeManaged?: (spec: ManagedPluginProcessSpec, request: ManagedPluginProcessRequest) => Promise<Record<string, unknown>>;
 }
 
@@ -73,6 +75,10 @@ function saveConfig(systemRoot: string, config: DesktopPluginConfig): DesktopPlu
   return config;
 }
 
+export function resolveDesktopRuntimeExecutable(): string {
+  return hooks.resolveRuntimeExecutable?.() ?? resolveBrowserBridgeNodeExecutable();
+}
+
 export function resolveDesktopHelperPath(options: {
   argvEntry?: string;
   runtimeExecutable?: string;
@@ -106,9 +112,18 @@ function helperAvailability(): { available: boolean; path?: string; error?: stri
   }
 }
 
+function runtimeAvailability(): { available: boolean; path?: string; error?: string } {
+  try {
+    return { available: true, path: resolveDesktopRuntimeExecutable() };
+  } catch (error) {
+    return { available: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 function health(config: DesktopPluginConfig): AssistantPluginHealth {
   const helper = helperAvailability();
   const currentPlatform = platform();
+  const runtime = config.enabled && currentPlatform === 'darwin' ? runtimeAvailability() : undefined;
   const details = {
     provider: 'bundled-managed-desktop',
     scope: 'controller',
@@ -118,6 +133,9 @@ function health(config: DesktopPluginConfig): AssistantPluginHealth {
     helperVersion: HELPER_VERSION,
     helperBundled: helper.available,
     helperPathReturned: false,
+    runtimeProbed: Boolean(runtime),
+    runtimeAvailable: runtime?.available ?? false,
+    runtimePathReturned: false,
     readinessMode: 'on_demand_helper',
     platform: currentPlatform,
   };
@@ -150,6 +168,17 @@ function health(config: DesktopPluginConfig): AssistantPluginHealth {
       ready: false,
       probed: true,
       errors: [helper.error ?? 'Bundled Desktop helper is unavailable.'],
+      warnings: [],
+      details,
+    };
+  }
+  if (!runtime?.available) {
+    return {
+      state: 'error',
+      checkedAt: now(),
+      ready: false,
+      probed: true,
+      errors: [runtime?.error ?? 'A trusted Node runtime for the Desktop helper is unavailable.'],
       warnings: [],
       details,
     };
@@ -314,10 +343,12 @@ export async function executeDesktopPluginAction(input: AssistantPluginActionExe
     }
   }
   const helperPath = resolveDesktopHelperPath();
+  const runtimeExecutable = resolveDesktopRuntimeExecutable();
   const executeManaged = hooks.executeManaged ?? executeManagedPluginProcess;
   return await executeManaged({
     pluginId: PLUGIN_ID,
     helperPath,
+    runtimeExecutable,
     requiredCapabilities: REQUIRED_CAPABILITIES,
     timeoutMs: input.timeoutMs,
   }, {

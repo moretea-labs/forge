@@ -35,7 +35,7 @@ export interface SupervisorInstallResult {
   systemdUnitPath: string;
 }
 
-const RUNTIME_RELEASE_PATHS = ['src', 'scripts', 'package.json', 'bun.lock'] as const;
+const RUNTIME_RELEASE_PATHS = ['src', 'scripts', 'bin/repo-harness-desktop-helper.mjs', 'package.json', 'bun.lock'] as const;
 const RELEASE_EXECUTABLES = SUPERVISOR_RELEASE_ENTRYPOINTS;
 
 function runtimeSourceRoot(explicit?: string): string {
@@ -611,6 +611,14 @@ export function stageSupervisorRelease(input: {
       false,
       'esm',
     );
+    buildEntry(
+      sourceRoot,
+      'bin/repo-harness-desktop-helper.mjs',
+      join(stagingPath, 'repo-harness-desktop-helper.mjs'),
+      'node',
+      false,
+      'esm',
+    );
     const browserNodeBridgeCanary = verifySupervisorBrowserNodeBridgeHost({
       releasePath: stagingPath,
       resolveNodeExecutable: input.resolveBrowserNodeExecutableForCanary,
@@ -639,6 +647,7 @@ export function stageSupervisorRelease(input: {
       processRunnerEntrypoint: 'process-runner.js',
       browserHandoffHostEntrypoint: 'browser-handoff-host.js',
       browserNodeBridgeHostEntrypoint: 'browser-node-bridge-host.js',
+      desktopHelperEntrypoint: 'repo-harness-desktop-helper.mjs',
       browserNodeBridgeValidation: {
         status: browserNodeBridgeCanary.availability,
         nodeChecked: browserNodeBridgeCanary.nodeChecked,
@@ -647,6 +656,7 @@ export function stageSupervisorRelease(input: {
         'staged_rollout_release',
         'browser_handoff_host',
         ...browserNodeBridgeReleaseCapabilities(browserNodeBridgeCanary),
+        'desktop_managed_helper',
         'independent_process_runner',
         'reproducible_release_manifest',
         'process_runner_canary',

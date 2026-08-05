@@ -105,3 +105,8 @@ The plugin fails closed when:
 
 A helper failure is surfaced as a structured `PLUGIN_MANAGED_PROCESS_*` or
 `PLUGIN_DESKTOP_*` error through the existing plugin receipt and audit path.
+
+
+## Immutable release packaging
+
+Stable Supervisor releases include `repo-harness-desktop-helper.mjs` as a required, hashed release artifact. The Desktop adapter resolves that sibling artifact from the active immutable release and launches it with the same trusted Node resolver used by the bounded Node bridge path; it does not execute the compiled Repo Harness binary as a JavaScript interpreter. Release staging fails closed when the helper is missing or empty, and plugin health reports both helper availability and trusted runtime availability without returning either local path.
