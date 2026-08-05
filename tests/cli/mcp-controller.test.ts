@@ -15,7 +15,7 @@ import { writeJsonAtomic } from "../../src/runtime/shared/json-files";
 import { appendControllerWorklogEvent } from "../../src/cli/controller/worklog";
 import { readControllerDaemonStatus } from "../../src/runtime/control-plane/daemon-client";
 import { readWorkHandle, writeWorkHandle } from "../../src/runtime/control-plane/execution/work-handle-store";
-import { getControllerSession } from "../../src/runtime/control-plane/facade/controller-session-store";
+import { claimControllerSession, getControllerSession, releaseControllerSession } from "../../src/runtime/control-plane/facade/controller-session-store";
 import { getWorkContract, updateWorkContract } from "../../src/runtime/control-plane/facade/work-contract-store";
 import { createRequirement, updateRequirement } from "../../src/runtime/control-plane/persistence/requirement-store";
 import { terminateProcessTree } from "../../src/runtime/shared/process-tree";
@@ -850,6 +850,287 @@ describe("MCP controller profile", () => {
           await terminateProcessTree(daemonPid, { gracePeriodMs: 200, killAfterMs: 1_500 });
         }
       }
+    });
+  });
+
+  test("adopts only an exact clean in-scope successor HEAD and preserves historical evidence", async () => {
+    await withController(async (repoRoot, _ctx) => {
+      const controllerHome = process.env.REPO_HARNESS_CONTROLLER_HOME!;
+      spawnSync("git", ["config", "user.name", "Repo Harness Test"], { cwd: repoRoot, stdio: "ignore" });
+      spawnSync("git", ["config", "user.email", "repo-harness@example.test"], { cwd: repoRoot, stdio: "ignore" });
+      writeFileSync(join(repoRoot, "seed.txt"), "seed\n");
+      spawnSync("git", ["add", "."], { cwd: repoRoot, stdio: "ignore" });
+      expect(spawnSync("git", ["commit", "-m", "fixture"], { cwd: repoRoot, stdio: "ignore" }).status).toBe(0);
+      const repository = registerRepository({ path: repoRoot, controllerHome });
+      persistControllerAccessMode(controllerHome, "full_access", repoRoot);
+      const advanced = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", toolset: "advanced", controllerHome });
+      const started = await executionJson(advanced, "session_start", {});
+      const sessionId = String(started.session.sessionId);
+      await executionJson(advanced, "session_bind_repository", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        checkout_id: repository.activeCheckoutId,
+      });
+      const prepared = await executionJson(advanced, "work_prepare", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        checkout_id: repository.activeCheckoutId,
+        request_id: "head-adoption-success",
+        objective: "Adopt a controlled successor commit",
+        allowed_paths: ["allowed.txt"],
+        isolation: "new_worktree",
+      });
+      expect(prepared.error).toBeUndefined();
+      const workId = String(prepared.work.workId);
+      const handle = readWorkHandle(controllerHome, repository.repoId, workId)!;
+      const previousHead = String(handle.expectedHead);
+      writeFileSync(join(handle.worktreePath, "allowed.txt"), "allowed\n");
+      expect(spawnSync("git", ["add", "--", "allowed.txt"], { cwd: handle.worktreePath, stdio: "ignore" }).status).toBe(0);
+      expect(spawnSync("git", ["commit", "-m", "controlled successor"], { cwd: handle.worktreePath, stdio: "ignore" }).status).toBe(0);
+      const candidateHead = String(spawnSync("git", ["rev-parse", "HEAD"], { cwd: handle.worktreePath, encoding: "utf-8" }).stdout).trim();
+      const historicalCheck = {
+        checkId: "historical-check",
+        outcome: "valid_pass" as const,
+        summary: "Historical evidence must remain immutable.",
+        recordedAt: new Date().toISOString(),
+        sourceRevision: previousHead,
+        workspaceFingerprint: "historical-workspace",
+        verificationInputFingerprint: "historical-input",
+        commandFingerprint: "historical-command",
+      };
+      updateWorkContract({ controllerHome, repoId: repository.repoId }, handle.workContractId!, { checkRefs: [historicalCheck] });
+
+      const strictReuse = await executionJson(advanced, "work_prepare", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        checkout_id: handle.checkoutId,
+        work_id: workId,
+      });
+      expect(strictReuse.error.code).toBe("WORK_HANDLE_HEAD_CHANGED");
+
+      const wrongCheckout = await executionJson(advanced, "work_prepare", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        checkout_id: repository.activeCheckoutId,
+        work_id: workId,
+        expected_previous_head: previousHead,
+        adopt_candidate_head: candidateHead,
+      });
+      expect(wrongCheckout.error.code).toBe("WORK_HEAD_ADOPTION_CHECKOUT_MISMATCH");
+
+      writeFileSync(join(handle.worktreePath, "dirty.tmp"), "dirty\n");
+      const dirty = await executionJson(advanced, "work_prepare", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        checkout_id: handle.checkoutId,
+        work_id: workId,
+        expected_previous_head: previousHead,
+        adopt_candidate_head: candidateHead,
+      });
+      expect(dirty.error.code).toBe("EXECUTION_TOOL_FAILED");
+      expect(String(dirty.error.message)).toContain("WORK_HEAD_ADOPTION_WORKTREE_DIRTY");
+      rmSync(join(handle.worktreePath, "dirty.tmp"));
+
+      const stalePrevious = await executionJson(advanced, "work_prepare", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        checkout_id: handle.checkoutId,
+        work_id: workId,
+        expected_previous_head: candidateHead,
+        adopt_candidate_head: candidateHead,
+      });
+      expect(stalePrevious.error.code).toBe("WORK_HEAD_ADOPTION_PREVIOUS_HEAD_MISMATCH");
+
+      const owner = getControllerSession({ controllerHome, repoId: repository.repoId }, handle.workContractId!)!;
+      releaseControllerSession({ controllerHome, repoId: repository.repoId }, handle.workContractId!, owner.controllerId);
+      claimControllerSession({ controllerHome, repoId: repository.repoId }, {
+        workId: handle.workContractId!,
+        controllerId: "foreign-controller",
+        controllerType: "chatgpt",
+        sessionId: "foreign-session",
+        principalId: "foreign-principal",
+        controllerInstanceId: "foreign-instance",
+        expectedClaimGeneration: 0,
+        leaseMs: 60_000,
+      });
+      const foreignOwner = await executionJson(advanced, "work_prepare", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        checkout_id: handle.checkoutId,
+        work_id: workId,
+        expected_previous_head: previousHead,
+        adopt_candidate_head: candidateHead,
+      });
+      expect(foreignOwner.error.code).toBe("WORK_CONTROLLER_PRINCIPAL_MISMATCH");
+      releaseControllerSession({ controllerHome, repoId: repository.repoId }, handle.workContractId!, "foreign-controller");
+
+      const adopted = await executionJson(advanced, "work_prepare", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        checkout_id: handle.checkoutId,
+        work_id: workId,
+        expected_previous_head: previousHead,
+        adopt_candidate_head: candidateHead,
+      });
+      expect(adopted).toMatchObject({
+        adopted: true,
+        reused: true,
+        work: { expectedHead: candidateHead, state: "editing" },
+        adoption: { previousHead, candidateHead, changedPaths: ["allowed.txt"] },
+      });
+      const persisted = readWorkHandle(controllerHome, repository.repoId, workId)!;
+      expect(persisted.expectedHead).toBe(candidateHead);
+      expect(persisted.finalization.validation).toBe("pending");
+      const contract = getWorkContract({ controllerHome, repoId: repository.repoId }, handle.workContractId!)!;
+      expect(contract.checkRefs).toEqual([historicalCheck]);
+      expect(contract.completionReceipt).toBeUndefined();
+      expect(contract.evidenceState).toBe("partial");
+      expect(contract.reconciliations[0]).toMatchObject({
+        originalExpectedRevision: previousHead,
+        observedTargetRevision: candidateHead,
+        comparedPaths: ["allowed.txt"],
+        outcome: "accepted_equivalence",
+      });
+    });
+  });
+
+  test("rejects non-descendant and out-of-scope successor HEAD adoption", async () => {
+    await withController(async (repoRoot, _ctx) => {
+      const controllerHome = process.env.REPO_HARNESS_CONTROLLER_HOME!;
+      spawnSync("git", ["config", "user.name", "Repo Harness Test"], { cwd: repoRoot, stdio: "ignore" });
+      spawnSync("git", ["config", "user.email", "repo-harness@example.test"], { cwd: repoRoot, stdio: "ignore" });
+      writeFileSync(join(repoRoot, "seed.txt"), "seed\n");
+      spawnSync("git", ["add", "."], { cwd: repoRoot, stdio: "ignore" });
+      expect(spawnSync("git", ["commit", "-m", "fixture"], { cwd: repoRoot, stdio: "ignore" }).status).toBe(0);
+      const repository = registerRepository({ path: repoRoot, controllerHome });
+      persistControllerAccessMode(controllerHome, "full_access", repoRoot);
+      const advanced = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", toolset: "advanced", controllerHome });
+      const started = await executionJson(advanced, "session_start", {});
+      const sessionId = String(started.session.sessionId);
+      await executionJson(advanced, "session_bind_repository", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        checkout_id: repository.activeCheckoutId,
+      });
+      const prepare = async (requestId: string) => {
+        const prepared = await executionJson(advanced, "work_prepare", {
+          session_id: sessionId,
+          repo_id: repository.repoId,
+          checkout_id: repository.activeCheckoutId,
+          request_id: requestId,
+          objective: requestId,
+          allowed_paths: ["allowed.txt"],
+          isolation: "new_worktree",
+        });
+        expect(prepared.error).toBeUndefined();
+        return readWorkHandle(controllerHome, repository.repoId, String(prepared.work.workId))!;
+      };
+
+      const unrelated = await prepare("head-adoption-non-descendant");
+      const unrelatedPrevious = String(unrelated.expectedHead);
+      const tree = String(spawnSync("git", ["rev-parse", "HEAD^{tree}"], { cwd: unrelated.worktreePath, encoding: "utf-8" }).stdout).trim();
+      const unrelatedHead = String(spawnSync("git", ["commit-tree", tree, "-m", "unrelated root"], { cwd: unrelated.worktreePath, encoding: "utf-8" }).stdout).trim();
+      expect(spawnSync("git", ["reset", "--hard", unrelatedHead], { cwd: unrelated.worktreePath, stdio: "ignore" }).status).toBe(0);
+      const nonDescendant = await executionJson(advanced, "work_prepare", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        checkout_id: unrelated.checkoutId,
+        work_id: unrelated.workId,
+        expected_previous_head: unrelatedPrevious,
+        adopt_candidate_head: unrelatedHead,
+      });
+      expect(nonDescendant.error.code).toBe("EXECUTION_TOOL_FAILED");
+      expect(String(nonDescendant.error.message)).toContain("WORK_HEAD_ADOPTION_NOT_DESCENDANT");
+
+      const outOfScope = await prepare("head-adoption-out-of-scope");
+      const outOfScopePrevious = String(outOfScope.expectedHead);
+      writeFileSync(join(outOfScope.worktreePath, "forbidden.txt"), "forbidden\n");
+      expect(spawnSync("git", ["add", "--", "forbidden.txt"], { cwd: outOfScope.worktreePath, stdio: "ignore" }).status).toBe(0);
+      expect(spawnSync("git", ["commit", "-m", "out of scope"], { cwd: outOfScope.worktreePath, stdio: "ignore" }).status).toBe(0);
+      const outOfScopeHead = String(spawnSync("git", ["rev-parse", "HEAD"], { cwd: outOfScope.worktreePath, encoding: "utf-8" }).stdout).trim();
+      const rejectedPath = await executionJson(advanced, "work_prepare", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        checkout_id: outOfScope.checkoutId,
+        work_id: outOfScope.workId,
+        expected_previous_head: outOfScopePrevious,
+        adopt_candidate_head: outOfScopeHead,
+      });
+      expect(rejectedPath.error.code).toBe("WORK_HEAD_ADOPTION_PATH_OUT_OF_SCOPE");
+    });
+  });
+
+  test("work_validate polling preserves the Process binding until an exact check receipt is recorded", async () => {
+    await withController(async (repoRoot, _ctx) => {
+      const controllerHome = process.env.REPO_HARNESS_CONTROLLER_HOME!;
+      writeFileSync(join(repoRoot, ".repo-harness/checks.json"), JSON.stringify({
+        version: 1,
+        checks: {
+          "validation-pass": {
+            description: "Intentional validation success",
+            command: [process.execPath, "-e", "process.exit(0)"],
+            timeoutMs: 10_000,
+          },
+        },
+      }));
+      spawnSync("git", ["config", "user.name", "Repo Harness Test"], { cwd: repoRoot, stdio: "ignore" });
+      spawnSync("git", ["config", "user.email", "repo-harness@example.test"], { cwd: repoRoot, stdio: "ignore" });
+      spawnSync("git", ["add", "."], { cwd: repoRoot, stdio: "ignore" });
+      expect(spawnSync("git", ["commit", "-m", "fixture"], { cwd: repoRoot, stdio: "ignore" }).status).toBe(0);
+      const repository = registerRepository({ path: repoRoot, controllerHome });
+      persistControllerAccessMode(controllerHome, "full_access", repoRoot);
+      const advanced = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", toolset: "advanced", controllerHome });
+      const started = await executionJson(advanced, "session_start", {});
+      const sessionId = String(started.session.sessionId);
+      await executionJson(advanced, "session_bind_repository", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        checkout_id: repository.activeCheckoutId,
+      });
+      const prepared = await executionJson(advanced, "work_prepare", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        checkout_id: repository.activeCheckoutId,
+        request_id: "validation-pass-exact-receipt",
+        objective: "Record the exact successful validation receipt",
+        checks: ["validation-pass"],
+        isolation: "new_worktree",
+      });
+      expect(prepared.error).toBeUndefined();
+      const workId = String(prepared.work.workId);
+      const initial = readWorkHandle(controllerHome, repository.repoId, workId)!;
+      let validated = await executionJson(advanced, "work_validate", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        work_id: workId,
+        check_ids: ["validation-pass"],
+      });
+      for (let attempt = 0; attempt < 120 && validated.validation?.completed !== true; attempt += 1) {
+        await Bun.sleep(25);
+        validated = await executionJson(advanced, "work_validate", {
+          session_id: sessionId,
+          repo_id: repository.repoId,
+          work_id: workId,
+          check_ids: ["validation-pass"],
+        });
+      }
+      expect(validated.error).toBeUndefined();
+      expect(validated.validation).toMatchObject({ passed: true, completed: true, targeted: true });
+      const persisted = readWorkHandle(controllerHome, repository.repoId, workId)!;
+      expect(persisted.state).toBe("editing");
+      expect(persisted.finalization.validation).toBe("done");
+      const contract = getWorkContract({ controllerHome, repoId: repository.repoId }, initial.workContractId!)!;
+      expect(contract.evidenceState).toBe("valid");
+      expect(contract.checkRefs).toHaveLength(1);
+      expect(contract.checkRefs[0]).toMatchObject({
+        checkId: "validation-pass",
+        outcome: "valid_pass",
+        sourceRevision: initial.expectedHead,
+      });
+      expect(contract.checkRefs[0]?.workspaceFingerprint).toBeTruthy();
+      expect(contract.checkRefs[0]?.verificationInputFingerprint).toBeTruthy();
+      expect(contract.checkRefs[0]?.commandFingerprint).toBeTruthy();
+      expect(contract.checkRefs[0]?.receipt?.processId).toBeTruthy();
     });
   });
 
