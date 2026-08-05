@@ -3,6 +3,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { controllerSystemRoot } from '../../cli/repositories/controller-home';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
+import { readReleaseIdentityBindingFromEnv } from '../supervisor/release-identity';
 import { AssistantPluginError } from './errors';
 import { resolveBrowserBridgeNodeExecutable } from './browser-node-bridge';
 import { executeManagedPluginProcess, type ManagedPluginProcessRequest, type ManagedPluginProcessSpec } from './managed-process-adapter';
@@ -83,15 +84,20 @@ export function resolveDesktopHelperPath(options: {
   argvEntry?: string;
   runtimeExecutable?: string;
   sourceHelperPath?: string;
+  releasePath?: string;
+  env?: NodeJS.ProcessEnv;
   pathExists?: (path: string) => boolean;
 } = {}): string {
   if (hooks.resolveHelperPath) return hooks.resolveHelperPath();
+  const releasePath = options.releasePath
+    ?? readReleaseIdentityBindingFromEnv(options.env ?? process.env)?.releasePath;
   const argvEntry = options.argvEntry ?? process.argv[1];
   const runtimeExecutable = options.runtimeExecutable ?? process.execPath;
   const sourceHelperPath = options.sourceHelperPath
     ?? fileURLToPath(new URL('../../../bin/repo-harness-desktop-helper.mjs', import.meta.url));
   const pathExists = options.pathExists ?? existsSync;
   const candidates = [
+    releasePath ? join(releasePath, 'repo-harness-desktop-helper.mjs') : undefined,
     argvEntry ? join(dirname(argvEntry), 'repo-harness-desktop-helper.mjs') : undefined,
     runtimeExecutable ? join(dirname(runtimeExecutable), 'repo-harness-desktop-helper.mjs') : undefined,
     sourceHelperPath,

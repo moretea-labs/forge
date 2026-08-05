@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { join } from 'path';
@@ -8,6 +8,7 @@ import { executeManagedPluginProcess } from '../../src/runtime/plugins/managed-p
 import {
   buildDesktopPluginManifest,
   executeDesktopPluginAction,
+  resolveDesktopHelperPath,
   resetDesktopPluginHooksForTest,
   setDesktopPluginHooksForTest,
 } from '../../src/runtime/plugins/desktop-adapter';
@@ -70,6 +71,29 @@ describe('bundled Desktop plugin', () => {
     expect(desktop?.health.state).toBe('disabled');
     expect(desktop?.health.details?.runtime).toBe('managed_process');
     expect(desktop?.health.details?.helperPathReturned).toBe(false);
+  });
+
+  test('resolves the helper from the validated Supervisor release identity before development fallbacks', () => {
+    const releasePath = mkdtempSync(join(tmpdir(), 'repo-harness-desktop-release-'));
+    roots.push(releasePath);
+    const helperPath = join(releasePath, 'repo-harness-desktop-helper.mjs');
+    writeFileSync(helperPath, 'export {};\n');
+    writeFileSync(join(releasePath, 'manifest.json'), `${JSON.stringify({
+      schemaVersion: 3,
+      releaseRevision: 'desktop-release-test',
+      sourceCommit: 'desktop-source-test',
+    })}\n`);
+
+    expect(resolveDesktopHelperPath({
+      env: {
+        REPO_HARNESS_RELEASE_PATH: releasePath,
+        REPO_HARNESS_RELEASE_REVISION: 'desktop-release-test',
+        REPO_HARNESS_RELEASE_SOURCE_COMMIT: 'desktop-source-test',
+      },
+      argvEntry: '/missing/repo-harness.js',
+      runtimeExecutable: '/missing/runtime',
+      sourceHelperPath: '/missing/source-helper.mjs',
+    })).toBe(helperPath);
   });
 
   test('configure enables the plugin and status routes through the managed helper', async () => {
