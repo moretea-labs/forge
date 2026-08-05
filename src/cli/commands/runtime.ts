@@ -1,9 +1,10 @@
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
 import { Command } from 'commander';
 import { ensureControllerHome } from '../repositories/controller-home';
 import {
   controllerServiceStatus,
   formatControllerServiceStatus,
-  startControllerService,
   stopControllerService,
 } from '../controller/lifecycle';
 import { requestControllerServiceRestart } from '../controller/restart-coordinator';
@@ -14,20 +15,47 @@ import { getRepository, listRepositories } from '../repositories/registry';
 import { executeReadOnlyDiagnostic, isReadOnlyDiagnosticTool } from '../../runtime/diagnostics/read-only-tool';
 import { rebuildRepositoryProjection } from '../../runtime/projections/materialized-view';
 import { listOccurrences, listSchedules } from '../../runtime/workflow/schedules/store';
+import { CanonicalRepoHarnessRuntime } from '../../runtime/root/runtime';
 
 function output(value: unknown, json = true): void {
   console.log(json ? JSON.stringify(value, null, 2) : String(value));
 }
 
 export function buildRuntimeCommand(): Command {
-  const command = new Command('runtime').description('Manage the separated Gateway, Controller Daemon, durable Jobs, Repo Actors, and Workers');
+  const command = new Command('runtime').description('Run the canonical Runtime or inspect legacy compatibility state');
 
   command.command('start')
-    .description('Start the unified runtime supervisor')
-    .option('--controller-home <path>', 'Controller state root')
-    .option('--repo <path>', 'Repository root')
-    .option('--log-file <path>', 'Combined runtime log file')
-    .action(async (opts: { controllerHome?: string; repo?: string; logFile?: string }) => output(await startControllerService(opts)));
+    .description('Compatibility adapter: start the canonical repo-harness-runtime in this process')
+    .requiredOption('--controller-home <path>', 'Explicit Controller Home')
+    .requiredOption('--repo <path>', 'Explicit repository root')
+    .requiredOption('--release-manifest <path>', 'Complete release manifest')
+    .requiredOption('--host <host>', 'MCP listener host')
+    .requiredOption('--port <port>', 'MCP listener port')
+    .requiredOption('--auth-token-file <path>', 'Bearer token file')
+    .option('--exclusive-work-id <id>', 'Persistently admit only this P0 Work')
+    .action(async (opts: { controllerHome: string; repo: string; releaseManifest: string; host: string; port: string; authTokenFile: string; exclusiveWorkId?: string }) => {
+      const port = Number(opts.port);
+      if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error('RUNTIME_CONFIG_INVALID: port');
+      const authToken = readFileSync(resolve(opts.authTokenFile), 'utf8').trim();
+      if (!authToken) throw new Error('RUNTIME_CONFIG_REQUIRED: auth token file is empty');
+      const runtime = new CanonicalRepoHarnessRuntime({
+        controllerHome: resolve(opts.controllerHome),
+        repositoryRoot: resolve(opts.repo),
+        releaseManifestPath: resolve(opts.releaseManifest),
+        host: opts.host,
+        port,
+        authToken,
+        exclusiveWorkId: opts.exclusiveWorkId,
+      });
+      await runtime.start();
+      output({ runtimeInstanceId: runtime.runtimeInstanceId, endpoint: runtime.endpoint(), readiness: runtime.readiness() });
+      const stop = (signal: NodeJS.Signals): void => { void runtime.stop(`SIGNAL_${signal}`); };
+      process.once('SIGINT', stop);
+      process.once('SIGTERM', stop);
+      await runtime.waitForStopped();
+      process.off('SIGINT', stop);
+      process.off('SIGTERM', stop);
+    });
 
   command.command('status')
     .description('Show unified runtime readiness, active durable Jobs, and per-repository materialized projections')
