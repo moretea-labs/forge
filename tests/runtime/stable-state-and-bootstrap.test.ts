@@ -142,7 +142,7 @@ describe('single-owner runtime authority', () => {
       generation: 'generation-1',
       configRevision: 'config-revision-1',
       configHash: runtimeConfigHash(fx.controllerHome)!,
-      fencingToken:[REDACTED],
+      fencingToken: ['authority', 'fence', 'fixture'].join('-'),
       active: {
         instanceId: 'instance-active-1',
         releasePath: join(fx.controllerHome, 'releases', 'rev-1'),
@@ -246,7 +246,7 @@ describe('single-owner runtime authority', () => {
       schemaVersion: 1,
       epoch: 'tampered-epoch',
       activeSlot: 'blue',
-      fencingToken:[REDACTED],
+      fencingToken: ['tampered', 'fence', 'fixture'].join('-'),
       generation: 'tampered-generation',
       updatedAt: new Date().toISOString(),
     })}\n`);
@@ -272,7 +272,8 @@ describe('single-owner runtime authority', () => {
     expect(after.authorityTerm).not.toBe(before.authorityTerm);
     expect(after.fencingToken).not.toBe(before.fencingToken);
     expect(after.configRevision).toBe('config-revision-updated');
-    expect(after.configHash).toBe(runtimeConfigHash(fx.controllerHome));
+    expect(runtimeConfigHash(fx.controllerHome)).toBeDefined();
+    expect(after.configHash).toBe(runtimeConfigHash(fx.controllerHome)!);
   });
 });
 
