@@ -106,11 +106,11 @@ export class CanonicalRepoHarnessRuntime {
   async start(): Promise<void> {
     if (this.started) throw new Error('RUNTIME_ALREADY_STARTED');
     this.started = true;
-    this.readinessState.setLifecycle('starting');
+    this.readinessState.markNotReady();
     let stage: 'release' | 'ownership' | 'database' | 'scheduler' | 'transport' | 'probe' = 'release';
     try {
       this.release = this.dependencies.loadReleaseManifest(this.config.releaseManifestPath, this.config.controllerHome);
-      this.readinessState.setCheck('releaseCoherence', 'pass');
+      this.readinessState.setDiagnostic('releaseCoherence', 'pass');
 
       stage = 'ownership';
       this.ownership = this.dependencies.acquireOwnership(this.config.controllerHome, this.runtimeInstanceId);
@@ -124,7 +124,7 @@ export class CanonicalRepoHarnessRuntime {
         this.dependencies.inspectDatabase,
       );
       this.controller.initialize();
-      this.readinessState.setCheck('database', 'pass');
+      this.readinessState.setDiagnostic('database', 'pass');
       if (this.config.exclusiveWorkId) {
         activateExclusiveWorkAdmission(this.config.controllerHome, {
           allowedWorkId: this.config.exclusiveWorkId,
@@ -138,7 +138,7 @@ export class CanonicalRepoHarnessRuntime {
         this.config.schedulerReadyTimeoutMs,
       );
       await this.scheduler.ready;
-      this.readinessState.setCheck('scheduler', 'pass');
+      this.readinessState.setDiagnostic('scheduler', 'pass');
       void this.scheduler.done.then(
         () => this.failCore('SCHEDULER_STOPPED', 'Scheduler stopped while Runtime was active.'),
         (error) => this.failCore('SCHEDULER_STALLED', error instanceof Error ? error.message : String(error)),
@@ -156,8 +156,8 @@ export class CanonicalRepoHarnessRuntime {
 
       stage = 'probe';
       await this.dependencies.runMcpProbe(this.transport.endpoint, this.config.authToken);
-      this.readinessState.setCheck('mcpEndToEnd', 'pass');
-      this.readinessState.setLifecycle('running');
+      this.readinessState.setDiagnostic('mcpEndToEnd', 'pass');
+      this.readinessState.markReady();
     } catch (error) {
       const reason = this.startupReason(stage);
       this.markStartupFailure(stage, reason);
@@ -176,17 +176,17 @@ export class CanonicalRepoHarnessRuntime {
   }
 
   private markStartupFailure(stage: string, reason: string): void {
-    if (stage === 'release') this.readinessState.setCheck('releaseCoherence', 'fail', reason);
-    else if (stage === 'database') this.readinessState.setCheck('database', 'fail', reason);
-    else if (stage === 'scheduler') this.readinessState.setCheck('scheduler', 'fail', reason);
-    else if (stage === 'transport' || stage === 'probe') this.readinessState.setCheck('mcpEndToEnd', 'fail', reason);
+    if (stage === 'release') this.readinessState.setDiagnostic('releaseCoherence', 'fail', reason);
+    else if (stage === 'database') this.readinessState.setDiagnostic('database', 'fail', reason);
+    else if (stage === 'scheduler') this.readinessState.setDiagnostic('scheduler', 'fail', reason);
+    else if (stage === 'transport' || stage === 'probe') this.readinessState.setDiagnostic('mcpEndToEnd', 'fail', reason);
     this.readinessState.addReason(reason);
   }
 
   private failCore(reasonCode: string, message: string): void {
-    if (this.stopping || this.readiness().lifecycle === 'stopped') return;
-    if (reasonCode.startsWith('SCHEDULER_')) this.readinessState.setCheck('scheduler', 'fail', reasonCode);
-    if (reasonCode.startsWith('MCP_')) this.readinessState.setCheck('mcpEndToEnd', 'fail', reasonCode);
+    if (this.stopping || this.lastExit) return;
+    if (reasonCode.startsWith('SCHEDULER_')) this.readinessState.setDiagnostic('scheduler', 'fail', reasonCode);
+    if (reasonCode.startsWith('MCP_')) this.readinessState.setDiagnostic('mcpEndToEnd', 'fail', reasonCode);
     this.readinessState.addReason(reasonCode);
     void this.stop(reasonCode, message);
   }
@@ -195,14 +195,13 @@ export class CanonicalRepoHarnessRuntime {
     if (this.stopPromise) return this.stopPromise;
     this.stopPromise = (async () => {
       this.stopping = true;
-      this.readinessState.setLifecycle('stopping');
+      this.readinessState.markNotReady(reasonCode);
       // Stop accepting new MCP work before quiescing Scheduler activity, then
       // release the Controller Home claim only after all in-process services stop.
       await this.transport?.close().catch(() => undefined);
       await this.scheduler?.stop().catch(() => undefined);
       this.ownership?.release();
       this.lastExit = { reasonCode, observedAt: new Date().toISOString(), ...(message ? { message } : {}) };
-      this.readinessState.setLifecycle('stopped');
       this.stopping = false;
       this.stoppedResolve();
     })();

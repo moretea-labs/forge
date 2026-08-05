@@ -1,321 +1,202 @@
-# Single-Owner Runtime Architecture and Deletion Map
+# Canonical Single Runtime Architecture and Seven-Phase Replacement
 
 > **Status: Runtime Authority — Approved Target Architecture**
 >
-> **Scope:** process ownership, runtime authority/configuration, immutable release activation, and standalone Recovery.
+> **Scope:** Repo Harness local Runtime process ownership, readiness, release/rollback, Worker fencing, and deletion of legacy lifecycle paths.
 >
-> **Current implementation status:** transition. T1 and T2 of the seven-phase replacement are implemented in source; T3–T7 and the final live cutover remain incomplete. The installed lifecycle still contains blue/green slots, nested KeepAlive ownership, and compatibility fallbacks. This document is the target and migration contract; it must not be read as evidence that the cutover is complete.
+> **Current implementation status:** transition. `src/runtime/root/` provides the first Canonical Runtime vertical slice, but the repository still contains a parallel Supervisor/Daemon/Ingress/slot lifecycle. That legacy stack is not the target and must not be expanded.
 
-### Seven-phase replacement ledger
+## 1. Non-negotiable end state
 
-| Phase | Contract | Source status |
+Repo Harness converges to:
+
+```text
+one local MCP application
+one active Runtime
+one root lifecycle owner
+one complete release
+one whole-Runtime readiness result
+one whole-Runtime publish and rollback unit
+```
+
+Gateway Adapter, Controller Services, Scheduler, SQLite, MCP Transport, and Worker Manager retain module boundaries for code organization. They are not independent deployments, generations, lifecycle owners, readiness authorities, or rollback units.
+
+The only supported core process topology is:
+
+```text
+repo-harness-runtime
+  ├─ MCP Transport                 in process
+  ├─ Gateway Adapter               in process
+  ├─ Controller Services           in process
+  ├─ Scheduler                     in process
+  ├─ SQLite                        in process / library boundary
+  └─ Worker processes              bounded child execution units
+```
+
+External tunnels are optional transports. They may connect to the Runtime endpoint, but they cannot start, stop, restart, adopt, publish, roll back, or determine readiness for the Runtime.
+
+## 2. Target Runtime
+
+`CanonicalRepoHarnessRuntime` is the sole root lifecycle owner. It performs one ordered startup, one ordered shutdown, and one fatal-failure path for the complete application.
+
+It alone may:
+
+- acquire the Controller Home Runtime ownership claim;
+- initialize SQLite and Controller Services;
+- start the in-process Scheduler;
+- create the Gateway Adapter and MCP Transport;
+- start and fence Workers through the Scheduler/Worker Manager boundary;
+- publish the single Runtime readiness result;
+- stop the complete Runtime after a fatal core-module failure.
+
+No core module may create a KeepAlive loop, detached restart coordinator, secondary generation, child lifecycle supervisor, component release pointer, or component rollback operation.
+
+## 3. Seven phases
+
+| Phase | Required result | Current source assessment |
 | --- | --- | --- |
-| T1 | Freeze the target ownership model, invariants, deletion map, and gates | Complete |
-| T2 | Install one fixed Bootstrap and publish a self-contained immutable core Runtime release | Implemented; release/cold-start/failure gates are authoritative |
-| T3 | Collapse authority and configuration to one committed primary record each | Implemented in source; migration/fencing gates are authoritative |
-| T4 | Collapse the primary hierarchy and delete Gateway KeepAlive/tunnel lifecycle ownership | Implemented in source; direct-child and inline-ingress gates are authoritative |
-| T5 | Replace slot rollout with one transactional candidate/current/previous activation protocol | Pending |
-| T6 | Complete independent immutable Recovery Gateway, Watchdog, and tunnel services | Pending |
-| T7 | Delete legacy slot, restart, embedded, fallback, and compatibility lifecycle paths | Pending |
+| 1. Establish Canonical Single Runtime | MCP Transport, Gateway Adapter, Controller Services, Scheduler, SQLite, and Worker Manager are started by one Runtime Root | Partial: the vertical slice exists, but it remains parallel to the legacy installed lifecycle |
+| 2. Converge lifecycle ownership | Runtime Root is the only core start/stop/failure/recovery owner | Not complete: Supervisor, Daemon lifecycle, KeepAlive, restart coordinator, and recovery utilities still overlap |
+| 3. Simplify readiness | Public Runtime readiness is only `ready: true/false`; module observations are diagnostic evidence | In progress: Canonical Runtime uses the binary contract; legacy component readiness remains |
+| 4. Remove ingress and Runtime slots | No Stable Ingress, fixed blue/green ports, runtime slots, mixed generation, adoption, or component cutover | Not complete |
+| 5. Whole-Runtime publish and rollback | Code, configuration, entrypoint, manifest, SQLite schema/backup, and Worker protocol move as one compatible set | Partial manifest model exists; legacy component and slot rollout remains |
+| 6. Complete Worker isolation and fencing | Workers are bounded Runtime-owned children; stale Workers cannot commit control-plane side effects | Existing fencing primitives are reusable; ownership must be bound to the Canonical Runtime instance/release |
+| 7. Delete legacy architecture | Supervisor, Ingress, KeepAlive, slots, component rollout/rollback, and old authority are removed | Not complete |
 
-T4 establishes these additional non-negotiable boundaries:
+A change that cannot be assigned to one phase, or that does not reduce core processes, lifecycle owners, readiness authorities, release units, or compatibility paths, is presumed scope drift and must stop for review.
 
-- Supervisor launches Gateway as the direct one-process `mcp serve --transport http` child, never `mcp keepalive`;
-- Gateway child arguments contain no Local UI, public tunnel, or public endpoint lifecycle ownership;
-- stable ingress is an in-process Supervisor router, not an independently supervised child process;
-- the supported Supervisor entrypoint has no `--ingress-child` execution mode;
-- Supervisor child inventory remains core-only: Daemon and Gateway hosts; domain plugin helpers are never adopted or restarted by Supervisor;
-- ingress telemetry records the Supervisor PID, making the single lifecycle owner explicit.
+## 4. Readiness contract
 
-T3 establishes these additional non-negotiable boundaries:
+The public contract is intentionally small:
 
-- `bootstrap/runtime-authority.json` is the only primary Runtime decision record;
-- `activation-authority.json`, `writer-authority.json`, `active-runtime.json`, and root `active-slot.json` are compatibility projections only;
-- projection corruption or disagreement can never override a valid primary authority;
-- root, blue, green, and repo-local MCP configs are normalized into one `bootstrap/runtime-config.json` exactly once;
-- multiple legacy configs must normalize identically; otherwise startup fails with `MIGRATION_REQUIRED` and writes no primary config;
-- secrets, OAuth token stores, plugin registry, plugin config, plugin health and domain state remain outside RuntimeConfig;
-- RuntimeConfig changes rotate the primary authority term and fencing token and atomically rebind the config revision/hash.
-
-T2 establishes these non-negotiable boundaries:
-
-- launchd/systemd arguments contain only the fixed Bootstrap path and Controller Home;
-- Bootstrap configuration does not persist a repository checkout or mutable source root;
-- ordinary Runtime publication cannot rewrite the fixed Bootstrap;
-- the immutable core release closure is exactly Supervisor, core CLI/Gateway host, Daemon, Worker, and Process Runner;
-- Browser/Desktop/plugin helper binaries and domain state are external-plugin lifecycle assets and are rejected if present in a core release;
-- after the fixed Bootstrap is installed, a clean immutable release remains publishable and cold-startable when its build checkout no longer exists.
-
-## 1. Decision
-
-The Controller Runtime converges to one local authority and one primary runtime instance. A fixed operating-system bootstrap starts one immutable Supervisor release. The Supervisor owns the primary ingress, Controller Daemon, and Gateway children. Recovery is an independent, immutable service family with its own state boundary and public tunnel. No ordinary runtime release, repository worktree, Gateway child, or Recovery process may become a second lifecycle owner.
-
-The supported lifecycle is:
-
-```text
-macOS launchd (exactly five services)
-├── repo-harness Supervisor
-│   ├── stable ingress child (public loopback bind and last-known-good routing)
-│   ├── Controller Daemon (scheduler and repository actors)
-│   └── Gateway (MCP HTTP/stdio host and optional local UI)
-├── primary cloudflared (primary public URL -> stable ingress)
-├── Recovery Gateway (loopback-only bounded Recovery MCP)
-├── Recovery Watchdog (local/primary/Recovery probes and bounded decisions)
-└── recovery cloudflared (Recovery public URL -> Recovery Gateway)
-```
-
-The five launchd services are:
-
-| Service | Owner | Boundary | Restart rule |
-| --- | --- | --- | --- |
-| `repo-harness Supervisor` | launchd | Fixed bootstrap plus immutable Supervisor release | Restart on abnormal exit; explicit authorized unload remains stopped |
-| `primary cloudflared` | launchd | Primary public endpoint only | Restart only its own tunnel; never starts or stops the Gateway |
-| `Recovery Gateway` | launchd | Recovery loopback endpoint only | Restart on abnormal exit; explicit authorized unload remains stopped |
-| `Recovery Watchdog` | launchd | Recovery observation and bounded action dispatch | Restart on abnormal exit; persisted cooldowns prevent noisy loops |
-| `recovery cloudflared` | launchd | Recovery public endpoint only | Restart only its own tunnel; never changes primary authority |
-
-`launchd` owns service restart. The Supervisor does **not** supervise Recovery Gateway, Recovery Watchdog, or either cloudflared service. `cloudflared` does **not** supervise a Gateway. The Supervisor is the only process allowed to create or terminate the primary ingress, Daemon, and Gateway children.
-
-## 2. Current implementation versus target
-
-### Current implementation facts
-
-The current source already has useful building blocks:
-
-- `src/runtime/supervisor/` provides a stable lifecycle parent, control socket, operation store, process identity checks, and structured readiness.
-- `src/runtime/control-plane/daemon-entry.ts` provides a separately runnable Daemon.
-- `src/cli/mcp/keepalive.ts` and `src/cli/mcp/restart.ts` still combine Gateway serving, tunnel management, detached restart behavior, and compatibility lifecycle logic.
-- `src/cli/controller/runtime-slots.ts`, `src/cli/controller/bluegreen-rollout.ts`, and slot-local homes implement the current blue/green model.
-- `src/runtime/bootstrap/activation-transaction.ts` and stable-state writer fencing provide partial transaction and claim primitives.
-- `src/runtime/standalone-recovery/` and `scripts/install-standalone-recovery.ts` now provide staged immutable Recovery releases, exact current/previous authority, role runtime identity, bounded two-service launchd handoff, and verified exact-previous rollback. Broader Recovery tunnel separation and final legacy cleanup remain migration work.
-
-The current implementation may report a healthy local runtime while the installed Supervisor release and mutable runtime source identify different revisions. It also has root, slot, and repository-local configuration readers. Those are migration evidence, not approved future authority.
-
-### Target facts
-
-After cutover:
-
-- the launchd plist contains only a fixed bootstrap path and stable Controller Home; it never points at a repository worktree or a mutable runtime source root;
-- the Supervisor release contains all code required to start the Supervisor, ingress, Daemon, and Gateway children, with a manifest and exact digest;
-- one committed primary authority record selects one active release and one generation;
-- one primary runtime config record supplies service topology and endpoint policy;
-- a candidate and a previous release may exist temporarily, but there is no persistent blue/green slot identity;
-- Gateway serving has no KeepAlive child manager and no tunnel lifecycle;
-- Recovery binaries can cold-start without the repository checkout, Primary Gateway, Controller Daemon, active runtime, or Bun;
-- Recovery state is never used as a primary authority projection and Recovery actions cannot mint, adopt, or write a primary writer claim.
-
-## 3. Ownership and write boundaries
-
-| Concern | Sole owner | Allowed writes | Forbidden writes |
-| --- | --- | --- | --- |
-| launchd registration and service restart | OS service manager plus explicit installer | service definitions and load/unload state | runtime authority, release selection |
-| primary release publication/cutover | Supervisor release transaction | candidate/previous manifests, authority CAS, ingress route | arbitrary repository files, Recovery state |
-| primary process lifecycle | Supervisor | child spawn, identity-scoped stop, health projection | Recovery process lifecycle, tunnel process lifecycle |
-| primary authority | Supervisor activation transaction | one committed authority record and atomic projections | Daemon/Gateway/Recovery direct authority mutation |
-| primary runtime config | Controller Home installer/config writer | one canonical config record | slot/root/repository-local business overrides |
-| ingress route | stable ingress child, using committed authority | route observation and per-request read | release selection or authority mutation |
-| scheduling and repository actors | Controller Daemon | durable execution state under Controller Home | root runtime authority, release selection |
-| MCP request handling | Gateway | sessions, schema, bounded acknowledgements, runtime observations | child process supervision, tunnel start/stop, authority mutation |
-| primary public endpoint | primary cloudflared service | its own service/process state | Gateway/Daemon/Recovery lifecycle |
-| Recovery endpoint | Recovery Gateway | Recovery-local state and audit records | primary Controller Home authority/config |
-| Recovery decisions | Recovery Watchdog | Recovery state, bounded Supervisor operation request | direct shell, SSH, arbitrary command, primary authority |
-| Recovery public endpoint | recovery cloudflared service | its own service/process state | primary tunnel or primary authority |
-| evidence and audit | owning component, append-only | receipts and observations scoped to owner | last-writer-wins replacement of another owner’s state |
-
-A process may write only records carrying its captured owner identity, generation, and fencing token. Late health, shutdown, callback, and `finally` paths use the same write fence. An unproven PID is observed and preserved; it is never sufficient authorization for cleanup or takeover.
-
-## 4. Canonical state and configuration
-
-### 4.1 Primary authority
-
-The canonical primary record is:
-
-```text
-<controllerHome>/bootstrap/runtime-authority.json
-```
-
-It is the only committed primary authority. Its minimum schema is:
-
-```json
-{
-  "schemaVersion": 1,
-  "authorityTerm": "wa-<monotonic-decimal>",
-  "activationId": "<idempotency-key>",
-  "generation": "<new-per-activation>",
-  "active": {
-    "releasePath": "<immutable-release-directory>",
-    "releaseRevision": "<exact-commit-or-build-revision>",
-    "sourceCommit": "<source-identity-recorded-at-build>",
-    "manifestHash": "<sha256>",
-    "publishedAt": "<timestamp>"
-  },
-  "previous": {
-    "releasePath": "<immutable-release-directory>",
-    "releaseRevision": "<exact-revision>",
-    "manifestHash": "<sha256>",
-    "rollbackUntil": "<timestamp>"
-  },
-  "ingress": { "host": "127.0.0.1", "port": 8765 },
-  "operationId": "<optional-in-flight-operation>"
+```ts
+interface RuntimeReadiness {
+  ready: boolean;
+  reasonCodes: string[];
+  diagnostics: {
+    database: DiagnosticEvidence;
+    scheduler: DiagnosticEvidence;
+    releaseCoherence: DiagnosticEvidence;
+    mcpEndToEnd: DiagnosticEvidence;
+  };
+  observedAt: string;
 }
 ```
 
-`previous` is rollback evidence, not a second active owner. A prepared transaction, operation receipt, audit record, Supervisor observation, slot manifest left by migration, and runtime-generation projection are not authority. Reconciliation rebuilds projections from this record; it never repairs authority by editing a projection alone.
+Only `ready` is the Runtime decision. Diagnostic evidence explains why the complete Runtime is or is not ready. It must not become a second lifecycle state machine.
 
-`authorityTerm`, Supervisor `ownerEpoch`, runtime `generation`, operation `operationId`, and resource lease fencing tokens are distinct. None may be substituted for another. Authority terms are monotonic and are never reused after a reservation crash.
+Forbidden public Runtime readiness combinations include:
 
-### 4.2 Primary runtime config
+- `degraded`, `partial`, `recovering`, or component-specific top-level states;
+- independently authoritative Gateway, Controller, Scheduler, or database readiness;
+- port/PID health promoted to Runtime readiness;
+- readiness that remains true after any fatal core module exits.
 
-The canonical primary config is:
+The Runtime becomes ready only after release compatibility, SQLite, Scheduler, MCP initialize, tools/list, authenticated Controller access, and a SQLite-backed read all succeed in the same Runtime instance.
 
-```text
-<controllerHome>/bootstrap/runtime-config.json
-```
+## 5. Whole-Runtime release and rollback
 
-It contains only service topology and policy required by the Supervisor and its children:
-
-```json
-{
-  "schemaVersion": 1,
-  "controllerHome": "<canonical-home>",
-  "ingress": { "host": "127.0.0.1", "port": 8765 },
-  "daemon": { "port": 8786 },
-  "gateway": { "host": "127.0.0.1", "port": 8795, "auth": "oauth" },
-  "primaryPublicEndpoint": "<optional-normalized-url>",
-  "primaryTunnelService": "<launchd-label>",
-  "toolset": "advanced",
-  "accessMode": "full-access"
-}
-```
-
-The config does not contain arbitrary command strings, repository-specific runtime overrides, slot names, or mutable source paths. Token stores and repository durable state remain under their established Controller Home boundaries, but they are selected by this config and no longer discovered through root/slot/repository fallback precedence.
-
-### 4.3 Projections and transaction records
-
-The Supervisor may persist observations, operation receipts, activation journals, incidents, launch quarantine, and append-only audit records below `supervisor/`. Those records are scoped by the authority term and activation ID and cannot become a competing authority. Temporary transaction directories are deleted or archived after commit/abort according to the release retention policy.
-
-Compatibility projections such as `active-slot.json`, `bootstrap/writer-authority.json`, slot `generation.json`, and legacy `runtime-generation.json` are migration inputs only. They are rewritten from `runtime-authority.json` during the one-way migration, then removed after the rollback window closes.
-
-### 4.4 Recovery boundary
-
-Recovery owns a separate home, denoted `<recoveryHome>`, and exactly one durable state boundary:
+A Runtime release is one immutable compatibility set:
 
 ```text
-<recoveryHome>/config.json
-<recoveryHome>/state/recovery-state.json
-<recoveryHome>/audit/
-<recoveryHome>/releases/<release-id>/
-<recoveryHome>/current -> <release-id>
+entrypoint
+core code and assets
+Runtime configuration schema
+release manifest
+SQLite schema compatibility
+pre-upgrade database backup contract
+Worker protocol version
+migration and rollback metadata
 ```
 
-`recovery-state.json` contains the Recovery binary/config identity, failure window, first/last observation times, classified evidence, rollback-used flag, cooldowns, last decision, and watchdog writer identity. It never contains or mirrors a primary writer claim. Corrupt, expired, identity-mismatched, or concurrently owned Recovery state resets to a new degraded observation; it never reuses old failure counters.
+Release validation is offline and does not require a second serving Runtime, traffic router, fixed alternate port, or persistent slot identity.
 
-## 5. Immutable release and activation contract
+Activation is a whole-Runtime restart:
 
-Every published primary and Recovery release is self-contained, non-empty, manifest-addressed, and installed below a versioned directory. A `current` pointer is activated only after the complete release closure and harmless process-runner receipt pass. Publication uses hidden staging plus atomic directory rename; an interrupted install leaves the prior current release usable and does not create a partially valid release.
+1. validate the complete immutable release and configuration;
+2. verify database compatibility and create the required backup before mutation;
+3. stop admission and quiesce the current Runtime;
+4. stop the complete current Runtime;
+5. start the complete new Runtime from one release entrypoint;
+6. require whole-Runtime readiness;
+7. on failure, stop the failed Runtime and restore the complete previous release/config/database compatibility set;
+8. start the previous Runtime and require whole-Runtime readiness.
 
-A primary activation follows this order:
+No operation may independently publish, restart, or roll back Gateway, Controller, Scheduler, MCP Transport, SQLite schema, or Worker protocol.
 
-1. Acquire the local authority lock and read the committed authority, config, operation, and current release manifest.
-2. Validate the expected old `(authorityTerm, activationId, generation, releaseRevision, sourceCommit, manifestHash)` tuple. A mismatch refuses the transaction.
-3. Reserve a new monotonic authority term and write a prepared transaction record. Do not change committed authority or ingress.
-4. Start candidate Supervisor children from the immutable candidate release with the prepared claim. Candidate state is transaction-scoped.
-5. Require Daemon, Gateway, stable ingress, control socket, authenticated MCP read-only, generation, and exact release/source coherence before cutover.
-6. Reacquire the lock and CAS the unchanged committed tuple. If it changed, abort only the candidate transaction.
-7. Atomically commit `runtime-authority.json` and ingress projection, fence the old claim, and verify post-cutover control, ingress, and MCP readiness.
-8. Retain the former active release as `previous` for the bounded rollback window. Stop and reclaim the candidate/old processes only with matching process identity and claim.
+## 6. Worker boundary and fencing
 
-Rollback is a new operation and a new authority term. It requires exact previous path, revision, manifest hash, open rollback window, healthy standby evidence, no conflicting operation, and independent post-rollback verification. Missing evidence produces `degraded` or `quarantined`; it never mutates authority.
+Workers remain separate processes because they execute bounded external work. They are not Runtime owners.
 
-## 6. Availability and safety invariants
+Every Worker attempt must carry:
 
-1. **One primary authority:** exactly one committed primary writer claim exists for a Controller Home.
-2. **One primary instance:** at most one committed primary generation serves traffic; stale children are fenced and terminated or isolated deterministically.
-3. **Last-known-good continuity:** ingress stays on the committed release until candidate readiness and CAS commit pass. Candidate failure cannot remove current traffic.
-4. **No nested lifecycle owner:** Gateway, Daemon, ingress, tunnel, and Recovery processes cannot create a competing KeepAlive/restart loop.
-5. **Exact identity:** PID, process start time, executable fingerprint, Controller Home, service label, owner epoch, writer term, generation, release revision, and source identity must agree before a process is managed.
-6. **Captured release identity binding:** Supervisor-managed children receive a spawn-time binding (`releasePath`, `releaseRevision`, `sourceCommit`, optional `manifestHash`) and must not re-derive identity from ambient Git HEAD. See ADR [`../decisions/20260803-release-identity-binding-and-exit-policy.md`](../decisions/20260803-release-identity-binding-and-exit-policy.md).
-7. **Failure-domain separation:** child readiness and incomplete managed pairs degrade inside the Supervisor; they must not exit the Supervisor process and thrash the OS service manager. launchd/systemd restarts only abnormal Supervisor exits.
-8. **No stale durable writes:** every mutable write checks a captured claim and expected identity/CAS; stale callbacks return `WRITER_FENCED` or append evidence only.
-9. **Independent Recovery:** Primary Gateway, Daemon, active release, repository checkout, and primary tunnel failure do not remove Recovery reachability. Recovery failure does not restart or mutate the primary runtime.
-10. **Bounded Recovery action:** Recovery exposes only verify, request registered Supervisor restart, eligible rollback request, and cleanup actions with operation ownership, rate limits, audit, and re-verification. It cannot execute arbitrary shell, SSH, or provisioning.
-11. **Honest observations:** missing primary endpoint is `unknown`; missing independent Recovery endpoint/service is `unavailable`; malformed or normalized-equal endpoints are failed configuration. These states are never coerced to healthy.
-12. **Explicit stop semantics:** abnormal service exit may restart through launchd; an authorized unload must remain stopped until explicitly loaded again.
-13. **One-way migration:** unsupported legacy state reports `MIGRATION_REQUIRED`; it is not guessed through silent fallback.
-14. **Release closure:** no service starts, publishes, rolls out, or rolls back from an incomplete or unverified immutable release.
+- Runtime instance identity;
+- Runtime release identity;
+- Worker protocol version;
+- Job/Work identity and attempt;
+- exact Lease and fencing token set;
+- bounded deadline and cancellation channel.
 
-## 7. One-way migration contract
+A Worker created by an old Runtime cannot renew Leases, publish heartbeats, commit results, write evidence as current, release replacement ownership, or perform control-plane side effects after Runtime ownership changes.
 
-Migration is a bounded, transactional cutover from the current installed lifecycle. It is not a permanent dual-read/dual-write compatibility mode.
+Workers cannot schedule other Workers, select releases, recover the Runtime, mutate Runtime authority, or maintain a forever loop.
 
-1. **Inventory and freeze:** record all active PIDs, service labels, source/release identities, root/slot config paths, tunnel processes, and Recovery artifacts. Stop new rollout/restart requests.
-2. **Bootstrap:** install a fixed launchd Supervisor bootstrap that references only the stable Controller Home and immutable Supervisor release. Do not use the current checkout as a service executable.
-3. **Canonicalize:** under the authority lock, validate the current active release and convert surviving state into `runtime-authority.json` and `runtime-config.json`. Preserve raw legacy inputs as migration evidence only.
-4. **Quiesce:** identity-safely stop detached KeepAlive, `mcp serve`, Local Controller, old Daemon, old Supervisor, slot processes, and repo-local launch agents. Never stop an unproven PID.
-5. **Activate:** start the Supervisor from the new immutable release; it starts ingress, Daemon, and Gateway children, verifies complete readiness, and publishes one committed generation.
-6. **Separate tunnels:** load primary and Recovery cloudflared services independently. Each service has one endpoint and one local upstream; neither is launched by Gateway KeepAlive.
-7. **Exercise faults:** run cold start without the worktree, crash/restart each service, candidate failure, interrupted install, port conflict, stale callback, primary tunnel failure, Recovery tunnel failure, and explicit unload.
-8. **Close window:** after exact-revision and rollback evidence is recorded, remove old launchd templates, slot directories, fallback readers/writers, detached restart coordinator, and duplicate Issues or narrow them explicitly.
-9. **Finalize governance:** update `tasks/current.md`, task notes, architecture status, release evidence, and the deletion receipts. No remote push is implied by this migration.
+## 7. Legacy inventory and deletion order
 
-If any canonicalization or identity check fails, the system stops with `MIGRATION_REQUIRED` and leaves the last-known-good service/state untouched.
+The following paths are legacy implementation inventory, not target building blocks:
 
-## 8. Deletion and replacement map
+| Legacy area | Required disposition |
+| --- | --- |
+| `src/runtime/supervisor/**` | delete after Canonical Runtime launch/release/rollback replacement is verified |
+| `src/runtime/supervisor/ingress-router.ts` and ingress session/process state | delete in phase 4 |
+| `src/cli/mcp/keepalive.ts` lifecycle and tunnel ownership | delete; retain only reusable MCP serving modules outside KeepAlive |
+| `src/runtime/control-plane/daemon-entry.ts` as an independent service | fold initialization/recovery into Runtime Root, then delete the service entry |
+| `src/cli/controller/runtime-slots.ts` and slot homes | delete in phase 4 |
+| `src/cli/controller/bluegreen-rollout.ts` | delete in phases 4/7 |
+| detached restart coordinator and component restart bridges | replace with whole-Runtime stop/start, then delete |
+| stable ingress ports and private blue/green ports | delete; one Runtime endpoint is configured directly |
+| component generation and mixed-generation coherence | delete; one Runtime instance/release identity remains |
+| component rollout/rollback operation stores | delete; one whole-Runtime release operation remains |
+| compatibility authority projections | migrate once, then delete; no permanent dual-read or dual-write |
 
-The following map is the implementation boundary for T2–T9. A row marked **delete** is not removed until its replacement has passed the specified cutover and rollback-window evidence.
+Legacy code may receive only deletion-enabling or safety-fencing changes. New features, new states, new rollback protocols, or new recovery automation must not be added to it.
 
-| Current component or path | Disposition | Replacement / owner | Task |
-| --- | --- | --- | --- |
-| `src/runtime/supervisor/installer.ts` mutable source-root launchd/systemd templates | replace, then delete old template branch | fixed bootstrap + immutable Supervisor manifest | T2 |
-| `src/runtime/supervisor/entry.ts` runtime-source fallback to checkout | narrow, then delete fallback | release-bound Supervisor entry | T2/T7 |
-| `src/cli/controller/runtime-slots.ts` and slot-local authority discovery | migrate, then delete | candidate/previous release records in one authority file | T3/T5/T7 |
-| `src/cli/controller/bluegreen-rollout.ts` persistent blue/green orchestration | replace, then delete | single candidate transaction and last-known-good ingress | T5/T7 |
-| `src/cli/controller/stable-state/stable-home.ts` dual root/slot home resolution | replace, then delete | one canonical Controller Home + transaction directory | T3/T7 |
-| `src/cli/controller/stable-state/writer-authority.ts` as a second projection | merge, then delete compatibility projection | `bootstrap/runtime-authority.json` term/token claim | T3/T7 |
-| `src/runtime/bootstrap/stable-bootstrap.ts` active-slot compatibility projection | simplify, then delete projection writes | authority transaction and ingress pointer commit | T3/T5/T7 |
-| `src/runtime/bootstrap/activation-transaction.ts` slot-specific commit paths | retain primitives, remove slot branches | release activation transaction | T5/T7 |
-| `src/runtime/supervisor/process-manager.ts` slot/KeepAlive process kinds | simplify | Supervisor children only: ingress, Daemon, Gateway | T4/T7 |
-| `src/cli/controller/lifecycle.ts` detached KeepAlive lifecycle and repo-local fallback | replace, then delete | Supervisor-owned child lifecycle | T4/T7 |
-| `src/cli/controller/restart-coordinator.ts` detached Gateway ancestry replacement | replace, then delete | durable Supervisor restart operation | T4/T7 |
-| `src/cli/mcp/keepalive.ts` tunnel spawning and nested MCP lifecycle | split, then delete lifecycle half | Gateway server plus launchd cloudflared services | T4/T6/T7 |
-| `src/cli/mcp/restart.ts` PID/launch-agent fallback restart | replace, then delete fallback | typed Supervisor operation client | T4/T7 |
-| `src/cli/mcp/auth.ts` root/blue/green token search | narrow, then delete fallback search | canonical runtime config/token boundary | T3/T7 |
-| `src/runtime/supervisor/bridge.ts` compatibility restart/lifecycle bridge | replace, then delete legacy branch | stable Supervisor control client | T4/T7 |
-| `src/runtime/standalone-recovery/*` flat/in-process Recovery lifecycle assumptions | immutable release/identity replacement implemented; remove remaining compatibility branches after rollback evidence | self-contained versioned Recovery Gateway/Watchdog artifacts | T6 |
-| `scripts/install-standalone-recovery.ts` flat binary installation | replaced; retain thin installer facade | staged immutable Recovery release + atomic `current`/`previous` activation | T6 |
-| `scripts/load-standalone-recovery.sh` shared/implicit service assumptions | direct mutation disabled; delete after migration documentation no longer references it | installer-owned bounded two-service launchd handoff | T6 |
-| `scripts/controller-runtime.sh` and repo-local service restart helpers | narrow, then delete runtime mutation paths | fixed bootstrap and Supervisor operation client | T2/T4/T7 |
-| `scripts/controller-ngrok-rotation.sh` primary tunnel lifecycle | replace, then delete | primary cloudflared service contract | T6/T7 |
-| repository-local `.repo-harness/mcp.*` runtime config fallback | read for migration, then delete | Controller Home `runtime-config.json` | T3/T7 |
-| `<controllerHome>/runtime-slots/{blue,green}` service/config trees | retain only migration evidence, then delete | release directories plus one transaction workspace | T3/T5/T7 |
-| legacy launchd labels and plist templates discovered by `findRepoLaunchAgents` | boot out after identity audit, then delete discovery fallback | five declared service labels | T4/T7 |
-| compatibility Issues that overlap lifecycle ownership | supersede or narrow with receipts | `ISS-20260802-539E7F` implementation authority; `ISS-20260802-27931A` Recovery delivery line | T1/T9 |
+## 8. Scope-drift assessment of prior work
 
-This table is exhaustive for the lifecycle boundary. Execution-plane compatibility (`Issue`, `Task`, `Run`, Edit Session, Job, Agent, repository, and MCP facade records) remains supported unless a later architecture decision explicitly changes it.
+The earlier fixed release-manifest work, Controller Home ownership, explicit Runtime configuration, SQLite inspection, in-process Scheduler, authenticated MCP end-to-end probe, and Worker fencing primitives remain useful.
 
-## 9. Sequenced implementation gates
+The following earlier direction is no longer an approved target:
 
-| Gate | Required result | Owner task |
-| --- | --- | --- |
-| G1 | This target, ownership table, canonical schemas, invariants, migration contract, and deletion map are linked from the current architecture index. | T1 |
-| G2 | Fixed bootstrap and self-contained Supervisor release pass clean install, manifest, interrupted-install, and cold-start checks. | T2 |
-| G3 | One authority/config boundary is active; stale root/slot projections are rejected or migrated one-way. | T3 |
-| G4 | Supervisor is the only primary child lifecycle owner; Gateway KeepAlive and detached restart fallbacks are gone from the supported path. | T4 |
-| G5 | Candidate activation preserves last-known-good ingress and rollback is a new-term transaction. | T5 |
-| G6 | Recovery artifacts, state, services, and tunnel are independent and can cold-start without Primary or Bun. | T6 |
-| G7 | Legacy readers, writers, services, and slot state are deleted only after rollback-window receipts. | T7 |
-| G8 | Fault injection covers every service boundary and release phase; no gate accepts port/PID health alone. | T8 |
-| G9 | A real clean-revision migration, reboot, explicit unload, and governance sync produce exact receipts. | T9 |
+- treating Supervisor as the permanent root application;
+- retaining independently managed Daemon and Gateway processes;
+- moving Stable Ingress into the Supervisor process instead of deleting it;
+- replacing blue/green slots with candidate/current/previous traffic switching;
+- preserving component readiness, component restart budgets, and component rollback;
+- adding an independent primary Recovery service family for the local application.
 
-Until G9 passes, architecture status remains **transition** and `tasks/current.md` must not claim unattended Recovery readiness.
+Those changes may be retained temporarily only as legacy transition code while the Canonical Runtime replaces them. They do not count as completion of the seven phases above.
 
-## 10. Related authority documents
+## 9. Required review questions
 
-- [System Overview](system-overview.md) — execution control plane and current process facts.
-- [Stable External Runtime Supervisor](stable-external-runtime-supervisor.md) — current Supervisor implementation and transition notes.
-- [Failure Recovery](failure-recovery.md) — failure evidence and recovery invariants.
-- [Verification and Release Gates](verification-and-release-gates.md) — exact-revision and release evidence.
-- [Architecture Governance Contract](governance.md) — authority hierarchy and update rules.
-- [Migration Roadmap](migration-roadmap.md) — ordered convergence record.
-- `tasks/issues/ISS-20260802-539E7F-repo-harness.issue.md` — implementation authority.
-- `tasks/issues/ISS-20260802-27931A-issue.issue.md` — Recovery delivery line.
+Every Runtime refactor review answers:
+
+1. Which of the seven phases owns this work?
+2. Does it directly reduce the gap for that phase?
+3. Does it add a process, state, owner, authority, or long-term compatibility path?
+4. Does it reintroduce component deployment, recovery, or rollback?
+5. Does completion move the system toward one Runtime, one Owner, and one release?
+6. Which legacy layers still remain?
+7. What is the next deletion or convergence step?
+
+## 10. Immediate execution order
+
+1. Make `repo-harness-runtime` the only supported core startup entry.
+2. Move Controller startup recovery and Worker Manager ownership into Runtime Root.
+3. Remove public component readiness and use only whole-Runtime readiness.
+4. Remove Stable Ingress and bind MCP Transport directly to the configured Runtime endpoint.
+5. Remove runtime slots, fixed alternate ports, mixed generations, and component cutover.
+6. Implement whole-Runtime release/backup/rollback.
+7. Bind Worker commits to Runtime instance and release fencing.
+8. Delete Supervisor, KeepAlive, Daemon service entry, component rollout/rollback, and compatibility authority.
+
+No rollout, service restart, or live cutover is implied by source implementation work. Live activation requires separate explicit authorization and exact release evidence.

@@ -1,15 +1,23 @@
-export type RuntimeLifecycle = 'starting' | 'running' | 'stopping' | 'stopped';
-export type RuntimeCheckState = 'pass' | 'fail' | 'unknown';
+export type RuntimeDiagnosticOutcome = 'pass' | 'fail' | 'not_observed';
 
+export interface RuntimeDiagnosticEvidence {
+  outcome: RuntimeDiagnosticOutcome;
+  reasonCode?: string;
+}
+
+/**
+ * The complete Runtime has one readiness result. Module observations are
+ * diagnostic evidence only; callers must never promote them into independent
+ * lifecycle or recovery state machines.
+ */
 export interface RuntimeReadiness {
-  lifecycle: RuntimeLifecycle;
   ready: boolean;
   reasonCodes: string[];
-  checks: {
-    database: RuntimeCheckState;
-    scheduler: RuntimeCheckState;
-    releaseCoherence: RuntimeCheckState;
-    mcpEndToEnd: RuntimeCheckState;
+  diagnostics: {
+    database: RuntimeDiagnosticEvidence;
+    scheduler: RuntimeDiagnosticEvidence;
+    releaseCoherence: RuntimeDiagnosticEvidence;
+    mcpEndToEnd: RuntimeDiagnosticEvidence;
   };
   observedAt: string;
 }

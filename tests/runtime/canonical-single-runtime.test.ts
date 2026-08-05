@@ -116,12 +116,20 @@ function inertScheduler() {
 }
 
 describe('canonical single Runtime', () => {
-  test('readiness is false while starting and contains no degraded state', () => {
+  test('readiness exposes one boolean while module observations remain diagnostic evidence', () => {
     const state = new RuntimeReadinessState(() => '2026-08-05T00:00:00.000Z');
     const starting = state.snapshot();
-    expect(starting.lifecycle).toBe('starting');
     expect(starting.ready).toBe(false);
+    expect(starting.diagnostics).toEqual({
+      database: { outcome: 'not_observed' },
+      scheduler: { outcome: 'not_observed' },
+      releaseCoherence: { outcome: 'not_observed' },
+      mcpEndToEnd: { outcome: 'not_observed' },
+    });
+    expect('lifecycle' in starting).toBe(false);
     expect('degraded' in starting).toBe(false);
+    expect('partial' in starting).toBe(false);
+    expect(() => state.markReady()).toThrow('RUNTIME_READINESS_INCOMPLETE');
   });
 
   test('one process serves authenticated initialize, tools/list, Controller call, and SQLite read', async () => {
@@ -131,13 +139,12 @@ describe('canonical single Runtime', () => {
     await runtime.start();
 
     expect(runtime.readiness()).toMatchObject({
-      lifecycle: 'running',
       ready: true,
-      checks: {
-        database: 'pass',
-        scheduler: 'pass',
-        releaseCoherence: 'pass',
-        mcpEndToEnd: 'pass',
+      diagnostics: {
+        database: { outcome: 'pass' },
+        scheduler: { outcome: 'pass' },
+        releaseCoherence: { outcome: 'pass' },
+        mcpEndToEnd: { outcome: 'pass' },
       },
     });
     const endpoint = runtime.endpoint();
@@ -252,9 +259,8 @@ describe('canonical single Runtime', () => {
     });
     await expect(runtime.start()).rejects.toThrow('injected sqlite open failure');
     expect(runtime.readiness()).toMatchObject({
-      lifecycle: 'stopped',
       ready: false,
-      checks: { database: 'fail' },
+      diagnostics: { database: { outcome: 'fail', reasonCode: 'DATABASE_UNAVAILABLE' } },
     });
     expect(runtime.lastExit?.reasonCode).toBe('DATABASE_UNAVAILABLE');
   });
@@ -270,9 +276,8 @@ describe('canonical single Runtime', () => {
     });
     await expect(runtime.start()).rejects.toThrow('injected scheduler failure');
     expect(runtime.readiness()).toMatchObject({
-      lifecycle: 'stopped',
       ready: false,
-      checks: { scheduler: 'fail' },
+      diagnostics: { scheduler: { outcome: 'fail', reasonCode: 'SCHEDULER_INITIALIZATION_FAILED' } },
     });
     expect(runtime.lastExit?.reasonCode).toBe('SCHEDULER_INITIALIZATION_FAILED');
   });
@@ -290,7 +295,7 @@ describe('canonical single Runtime', () => {
     await expect(runtime.start()).rejects.toThrow('injected listener failure');
     expect(schedulerStopped).toBe(true);
     expect(runtime.lastExit?.reasonCode).toBe('MCP_LISTENER_FAILED');
-    expect(runtime.readiness().lifecycle).toBe('stopped');
+    expect(runtime.readiness().ready).toBe(false);
   });
 
   test('a fatal Scheduler runtime error shuts down the complete Runtime', async () => {
@@ -322,9 +327,8 @@ describe('canonical single Runtime', () => {
     expect(transportClosed).toBe(true);
     expect(runtime.lastExit?.reasonCode).toBe('SCHEDULER_STALLED');
     expect(runtime.readiness()).toMatchObject({
-      lifecycle: 'stopped',
       ready: false,
-      checks: { scheduler: 'fail' },
+      diagnostics: { scheduler: { outcome: 'fail', reasonCode: 'SCHEDULER_STALLED' } },
     });
   });
 
@@ -351,7 +355,7 @@ describe('canonical single Runtime', () => {
     await runtime.start();
     await runtime.stop('TEST_SHUTDOWN');
     expect(stopped).toEqual(['transport', 'scheduler']);
-    expect(runtime.readiness().lifecycle).toBe('stopped');
+    expect(runtime.readiness().ready).toBe(false);
     const replacement = acquireRuntimeOwnership(fixture.controllerHome, 'replacement-runtime');
     replacement.release();
   });

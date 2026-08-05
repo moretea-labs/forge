@@ -6,63 +6,51 @@
 
 repo-harness Controller Runtime is an Agent Engineering Control Plane for one or more local Git repositories. ChatGPT, Local UI, CLI and optional GitHub integrations submit decisions and commands. The runtime persists accepted work, schedules it under repository-owned conflict rules, executes it outside the Gateway process and records evidence for recovery, acceptance and release.
 
-## 2. Implemented Process Topology
+## 2. Canonical Runtime Topology
 
 ```text
 Client
-  -> isolated stable ingress child (public loopback HTTP data plane)
+  -> repo-harness-runtime (one local MCP application)
+       MCP Transport
+       Gateway Adapter
+       Controller Services
+       SQLite control plane
+       Global Scheduler + Per-Repository Actors
+       Evidence Plane + Materialized Projections
        |
-       v
-  -> repo-harness-gateway (MCP HTTP/stdio)
-       auth / schema / repository routing / hot projections / durable acknowledgement
-       |
-       v
-     Controller Home
-       execution job + request index + event ledger
-       |
-       v
-  -> repo-harness-controller-daemon
-       Global Scheduler
-       Per-Repository Actors
-       reconciliation / schedules / portfolio DAG
-       |
-       v
-  -> repo-harness-worker (one bounded Job)
-       command / check / Agent dispatch / integration / release gate
-       |
-       v
-     repository workspace, Worktree, GitHub provider
-       |
-       v
-     Evidence Plane + Materialized Projections
+       +-> repo-harness-worker (bounded Runtime-owned child)
+             command / check / Agent dispatch / integration / release gate
+             |
+             v
+           repository workspace, Worktree, GitHub provider
 ```
 
-The processes communicate through atomic file-backed state. Gateway restart does not cancel accepted Jobs. Worker exit does not take down Gateway or Daemon. Daemon restart persists `starting`, rebuilds durable indexes and projections, reconciles Jobs, Local Jobs and Leases, and publishes `ready` only after bounded startup recovery returns. Partial recovery publishes structured degraded state instead of silently claiming health.
+The durable execution model continues to use atomic state, bounded Worker processes, Leases, and fencing. The core application lifecycle is converging separately: Gateway Adapter, Controller Services, Scheduler, SQLite, and MCP Transport run inside one Canonical Runtime process, while Workers remain bounded child execution units.
 
-The Stable Supervisor lifecycle parent owns control and recovery decisions, while a supervised ingress child owns long-lived public proxy sockets. This data-plane/control-plane split prevents SSE connection count from sharing the lifecycle owner's event loop. The child reads `active-slot.json` for each request and exits when its parent identity disappears.
+Supervisor, independent Daemon/Gateway services, Stable Ingress, runtime slots, component generations, and component rollout/rollback are deprecated transition code. They are not the final lifecycle graph and must not receive new lifecycle features.
 
-The process topology above describes the implemented execution control plane, not the final lifecycle service graph. The approved lifecycle target is [`runtime-architecture-simplification.md`](runtime-architecture-simplification.md): one Supervisor-owned primary instance, exactly five OS services, no nested Gateway KeepAlive, and independent Recovery services/tunnel. Until that migration completes, the existing slot and compatibility paths are explicitly transitional.
+The approved target is [`runtime-architecture-simplification.md`](runtime-architecture-simplification.md): one local MCP application, one active Runtime, one root lifecycle owner, one binary readiness result, and one whole-Runtime release/rollback unit.
 
-## 3. Thin Gateway
+## 3. Gateway Adapter
 
-Implemented under:
+Implemented as a module under:
 
 - `src/cli/mcp/server.ts`
 - `src/cli/mcp/transports/http.ts`
 - `src/runtime/gateway/mcp/router.ts`
 - `src/runtime/gateway/mcp/runtime-tools.ts`
 
-The Gateway performs authentication, schema validation, repository selection, compact reads and Job admission. Mutating or potentially long legacy tools are converted to `ExecutionJob` records and acknowledged immediately. It does not start an Agent or wait for a full check in the HTTP request stack.
+The Gateway Adapter performs authentication, schema validation, repository selection, compact reads and Job admission inside the Canonical Runtime. Mutating or potentially long legacy tools are converted to durable execution records and acknowledged immediately. It does not own process lifecycle, start an Agent directly, or wait for a full check in the MCP request stack.
 
 Bounded direct reads include health, Controller context, Job/Run status and bounded logs. Overload is rejected with explicit 429/503 responses instead of unbounded accumulation.
 
 The three MCP HTTP paths share one global session registry. SSE streams are bounded transport leases, not work ownership. Client DELETE, explicit prior-session replacement, lease expiry, absolute lifetime and oldest-safe capacity eviction may close a session with no active POST; capacity management never evicts active POST work. `/health` reports the global pool, while `/ready` reports whether a new initialize can be admitted safely.
 
-## 4. Global Control Plane
+## 4. Controller Services and Scheduler
 
-Implemented under `src/runtime/control-plane/`.
+Implemented under `src/runtime/control-plane/` and initialized by the Runtime Root.
 
-The Controller Daemon owns:
+The in-process Controller Services and Scheduler own:
 
 - fair cross-repository dispatch;
 - global Worker and Agent quotas;
@@ -152,7 +140,7 @@ A Release Gate is a durable Job with an exclusive repository-wide release Claim.
 - active-Issue Task completion;
 - exact-revision verification evidence;
 - repository/Git/GitHub identity consistency;
-- Controller Daemon readiness;
+- whole-Runtime readiness evidence;
 - package metadata.
 
 The successful result is a release-ready manifest. Push, merge, publish and deployment remain separate, explicitly authorized operations.

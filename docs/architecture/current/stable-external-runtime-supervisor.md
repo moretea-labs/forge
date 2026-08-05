@@ -1,6 +1,8 @@
-# Stable External Runtime Supervisor
+# Stable External Runtime Supervisor — Deprecated Legacy Inventory
 
-> **Runtime Authority**
+> This document describes transition code that remains in the repository. It is not an approved target architecture. The governing replacement is [`runtime-architecture-simplification.md`](runtime-architecture-simplification.md), which requires one Canonical Runtime process and deletion of Supervisor, Stable Ingress, slots, and component rollout/rollback.
+
+> **Status: Deprecated legacy implementation note**
 
 > **Authority split:** This document records the current Supervisor implementation. The approved target that replaces persistent slots, nested KeepAlive ownership, and lifecycle fallbacks is [`runtime-architecture-simplification.md`](runtime-architecture-simplification.md).
 

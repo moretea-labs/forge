@@ -1,27 +1,52 @@
-import type { RuntimeCheckState, RuntimeLifecycle, RuntimeReadiness } from './types';
+import type {
+  RuntimeDiagnosticEvidence,
+  RuntimeDiagnosticOutcome,
+  RuntimeReadiness,
+} from './types';
 
-const CORE_CHECKS = ['database', 'scheduler', 'releaseCoherence', 'mcpEndToEnd'] as const;
-type CoreCheck = (typeof CORE_CHECKS)[number];
+const DIAGNOSTICS = ['database', 'scheduler', 'releaseCoherence', 'mcpEndToEnd'] as const;
+type RuntimeDiagnostic = (typeof DIAGNOSTICS)[number];
+
+function notObserved(): RuntimeDiagnosticEvidence {
+  return { outcome: 'not_observed' };
+}
 
 export class RuntimeReadinessState {
-  private lifecycle: RuntimeLifecycle = 'starting';
+  private ready = false;
   private readonly reasons = new Set<string>();
-  private readonly checks: Record<CoreCheck, RuntimeCheckState> = {
-    database: 'unknown',
-    scheduler: 'unknown',
-    releaseCoherence: 'unknown',
-    mcpEndToEnd: 'unknown',
+  private readonly diagnostics: Record<RuntimeDiagnostic, RuntimeDiagnosticEvidence> = {
+    database: notObserved(),
+    scheduler: notObserved(),
+    releaseCoherence: notObserved(),
+    mcpEndToEnd: notObserved(),
   };
 
   constructor(private readonly now: () => string = () => new Date().toISOString()) {}
 
-  setLifecycle(lifecycle: RuntimeLifecycle): void {
-    this.lifecycle = lifecycle;
+  setDiagnostic(
+    diagnostic: RuntimeDiagnostic,
+    outcome: RuntimeDiagnosticOutcome,
+    reasonCode?: string,
+  ): void {
+    this.diagnostics[diagnostic] = {
+      outcome,
+      ...(reasonCode ? { reasonCode } : {}),
+    };
+    if (outcome === 'fail' && reasonCode) this.reasons.add(reasonCode);
+    if (outcome !== 'pass') this.ready = false;
   }
 
-  setCheck(check: CoreCheck, state: RuntimeCheckState, reasonCode?: string): void {
-    this.checks[check] = state;
-    if (state === 'fail' && reasonCode) this.reasons.add(reasonCode);
+  markReady(): void {
+    const incomplete = DIAGNOSTICS.filter((diagnostic) => this.diagnostics[diagnostic].outcome !== 'pass');
+    if (incomplete.length > 0) {
+      throw new Error(`RUNTIME_READINESS_INCOMPLETE: ${incomplete.join(',')}`);
+    }
+    this.ready = true;
+  }
+
+  markNotReady(reasonCode?: string): void {
+    this.ready = false;
+    if (reasonCode?.trim()) this.reasons.add(reasonCode.trim());
   }
 
   addReason(reasonCode: string): void {
@@ -29,12 +54,15 @@ export class RuntimeReadinessState {
   }
 
   snapshot(): RuntimeReadiness {
-    const allCoreChecksPass = CORE_CHECKS.every((check) => this.checks[check] === 'pass');
     return {
-      lifecycle: this.lifecycle,
-      ready: this.lifecycle === 'running' && allCoreChecksPass,
+      ready: this.ready,
       reasonCodes: [...this.reasons],
-      checks: { ...this.checks },
+      diagnostics: {
+        database: { ...this.diagnostics.database },
+        scheduler: { ...this.diagnostics.scheduler },
+        releaseCoherence: { ...this.diagnostics.releaseCoherence },
+        mcpEndToEnd: { ...this.diagnostics.mcpEndToEnd },
+      },
       observedAt: this.now(),
     };
   }

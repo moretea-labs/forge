@@ -26,9 +26,9 @@ The migration preserves the existing Issue, Task, Run, Edit Session, Local Job, 
 | Thin Harness V1 Fast Path | Implemented | `src/runtime/execution/thin-harness/` router, fast executor, receipts, typed batch, lightweight lanes; eligible short repository commands skip Local Job / ExecutionJob; docs in `thin-harness-v1.md` |
 | Deterministic MCP transport lifecycle | Implemented | global `McpSessionRegistry`, three-path DELETE support, stream leases, active-POST protection, capacity-aware `/ready`, and reconnect regression coverage |
 | Persist-before-execute durable commands | Implemented | `src/runtime/execution/jobs/store.ts`, global request index and semantic conflict detection |
-| Independently restartable Controller Daemon | Implemented | `src/runtime/control-plane/daemon-entry.ts`, `daemon-client.ts` |
-| Stable external lifecycle Supervisor | Implemented | `src/runtime/supervisor/`, immutable release installer, lifecycle bridge, typed Rescue MCP, durable operation store, identity fencing, and bounded recovery policy |
-| Stable ingress event-loop isolation | Implemented in source; deployment pending | supervised ingress child from the immutable Supervisor bundle, IPC startup proof, parent-loss exit, active-slot routing, and child-process integration test |
+| Legacy independently restartable Controller Daemon | Deprecated transition code | Controller startup recovery and scheduling ownership must move into `src/runtime/root/`; the standalone service entry is deleted in phases 2/7 |
+| Canonical Single Runtime vertical slice | Implemented in source; production cutover pending | `src/runtime/root/` starts Controller Services, SQLite, Scheduler, Gateway Adapter, and MCP Transport under one lifecycle owner |
+| Legacy Supervisor/Ingress/slot lifecycle | Deprecated transition code | Must be deleted under the seven-phase Canonical Single Runtime replacement; it is not an approved target architecture |
 | Isolated Worker processes | Implemented | `src/runtime/execution/workers/worker-entry.ts`, Scheduler process spawning |
 | Per-Repository Actor | Implemented | `src/runtime/control-plane/repo-actor/actor.ts`, actor registry and repository mailbox lock |
 | Resource Claims | Implemented | `src/runtime/gateway/mcp/resource-policy.ts`, `resources/claims/conflicts.ts` |
