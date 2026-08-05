@@ -769,7 +769,11 @@ export async function routeDurableMcpCall(
         controllerHome: ctx.controllerHome,
         repository,
         tool: name,
-        args,
+        args: {
+          ...args,
+          __diagnostic_toolset: ctx.toolset,
+          __diagnostic_profile: ctx.policy.profile,
+        },
       });
       return result(payload, payload.accepted === false);
     } catch (error) {

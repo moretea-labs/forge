@@ -229,6 +229,16 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       expect(sideEffects.workerSpawnCount ?? 0).toBe(0);
       expect(sideEffects.projectionUpdateCount ?? 0).toBe(0);
       expect(JSON.stringify(payload)).not.toContain('EXECUTION_JOB_RETIRED');
+      if (tool === 'runtime_performance_diagnostics' && payload.diagnosticExecution) {
+        expect((payload.runtimeIdentity as { profile?: string }).profile).toBe('controller');
+      }
+      if (tool === 'capability_recovery_probe' && payload.diagnosticExecution) {
+        const capabilities = (payload.recovery as {
+          capabilities?: Array<{ id?: string; evidence?: Array<{ details?: Record<string, unknown> }> }>;
+        }).capabilities ?? [];
+        const contextCapability = capabilities.find((capability) => capability.id === 'context.projection');
+        expect(typeof contextCapability?.evidence?.[0]?.details?.stale).toBe('boolean');
+      }
       if (tool === 'runtime_cleanup_preview') {
         expect((payload.diagnosticExecution as { path?: string } | undefined)?.path).toBe('process_direct');
       }

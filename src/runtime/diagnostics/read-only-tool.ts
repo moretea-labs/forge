@@ -5,6 +5,7 @@ import { listLocalBridgeJobSnapshots } from '../../cli/local-bridge/job-store';
 import { ensureRepositoryRuntimeStorage } from '../../cli/repositories/runtime-storage';
 import { sessionCacheGlobalDiagnostics } from '../../cli/repository/session-cache';
 import {
+  cachedGitIdentity,
   gitIdentityPerformanceSnapshot,
   gitSnapshotPerformanceSnapshot,
 } from '../../cli/repository/inspector';
@@ -20,11 +21,16 @@ import {
   inferLocalControllerProcess,
 } from './performance';
 import { readRepositoryProjectionSnapshot } from '../projections/materialized-view';
-import { controllerContextPerformanceSnapshot } from '../projections/controller-context';
+import {
+  controllerContextPerformanceSnapshot,
+  controllerContextProjectionNeedsRefresh,
+  readControllerContextProjection,
+} from '../projections/controller-context';
 import { listExecutionJobs } from '../execution/jobs/store';
 import { processRuntimeResourceDiagnostics } from '../execution/process-runtime';
 import { readSchedulerHealthSnapshot } from '../control-plane/global-scheduler/scheduler';
 import { readControllerDaemonStatus } from '../control-plane/daemon-client';
+import { listAssistantPluginManifests } from '../plugins/store';
 
 export const READ_ONLY_DIAGNOSTIC_TOOLS = [
   'runtime_maintenance_status',
@@ -56,6 +62,7 @@ function performanceDiagnostic(
   const runtime = loadMcpRuntimeState(repository.canonicalRoot);
   const inferredLocalBridge = inferLocalControllerProcess(repository.canonicalRoot);
   const activeJobs = activeExecutionJobs(controllerHome, repository.repoId);
+  const daemon = readControllerDaemonStatus(controllerHome);
   return {
     ...collectRuntimePerformanceDiagnostics({
       repoId: repository.repoId,
@@ -74,12 +81,45 @@ function performanceDiagnostic(
     contextPerformance: controllerContextPerformanceSnapshot(),
     gitPerformance: gitSnapshotPerformanceSnapshot(),
     gitIdentity: gitIdentityPerformanceSnapshot(),
+    runtimeIdentity: {
+      runtimeCommit: daemon.source?.commit,
+      buildCommit: daemon.source?.releaseRevision,
+      controllerInstanceId: daemon.instanceId,
+      generation: daemon.generation,
+      toolset: typeof args.__diagnostic_toolset === 'string' ? args.__diagnostic_toolset : 'advanced',
+      profile: typeof args.__diagnostic_profile === 'string' ? args.__diagnostic_profile : 'controller',
+    },
     resourceCost: {
       processRuntime: processRuntimeResourceDiagnostics(),
       scheduler: readSchedulerHealthSnapshot(controllerHome),
       sessionCache: sessionCacheGlobalDiagnostics(),
     },
   };
+}
+
+function diagnosticContextProjectionStale(
+  controllerHome: string,
+  repository: RepositoryRecord,
+  args: Record<string, unknown>,
+): boolean {
+  const runtimeSnapshot = readRepositoryProjectionSnapshot(controllerHome, repository.repoId);
+  const sourceRevision = String(runtimeSnapshot.projection.metadata?.contentRevision ?? runtimeSnapshot.projection.revision);
+  const gitIdentity = cachedGitIdentity(repository.canonicalRoot);
+  const sourceIdentity = {
+    repoId: repository.repoId,
+    checkoutId: repository.activeCheckoutId,
+    canonicalRoot: repository.canonicalRoot,
+    head: gitIdentity.head,
+    branch: gitIdentity.branch,
+    workingTreeFingerprint: gitIdentity.workingTreeFingerprint,
+    runtimeGeneration: runtimeSnapshot.projection.metadata?.producerGeneration,
+    sourceRevision,
+    variant: 'summary' as const,
+    toolset: typeof args.__diagnostic_toolset === 'string' ? args.__diagnostic_toolset : 'advanced',
+    profile: typeof args.__diagnostic_profile === 'string' ? args.__diagnostic_profile : 'controller',
+  };
+  const projection = readControllerContextProjection(controllerHome, repository.repoId, { sourceIdentity });
+  return controllerContextProjectionNeedsRefresh(projection, sourceRevision, sourceIdentity);
 }
 
 function recoveryProbe(
@@ -108,6 +148,8 @@ function recoveryProbe(
   }
   const localJobs = listLocalBridgeJobSnapshots(repository.canonicalRoot, 30);
   const recentErrors = Array.isArray(args.recent_errors) ? args.recent_errors.map(String) : [];
+  const contextProjectionStale = diagnosticContextProjectionStale(controllerHome, repository, args);
+  const plugins = listAssistantPluginManifests(controllerHome, repository, { preferStored: true });
   const recovery = buildCapabilityRecoverySnapshot({
     generatedAt: new Date().toISOString(),
     daemonStatus: daemon.status === 'ready' ? 'ready' : daemon.status,
@@ -121,6 +163,7 @@ function recoveryProbe(
     localBridgeError: localBridge?.error,
     runtimeProjectionStale: projectionSnapshot.stale,
     runtimeProjectionPersisted: projectionSnapshot.persisted,
+    contextProjectionStale,
     commandPreviewAvailable: args.command_preview_available === undefined ? true : args.command_preview_available === true,
     commandExecuteAvailable: args.command_execute_available === undefined ? true : args.command_execute_available === true,
     issueToolsAvailable: args.issue_tools_available === undefined ? true : args.issue_tools_available === true,
@@ -128,6 +171,14 @@ function recoveryProbe(
     checksAvailable: listControllerChecks(repository.canonicalRoot).length > 0,
     runtimeStorageReady,
     runtimeStorageWarnings,
+    pluginStates: plugins.map((plugin) => ({
+      pluginId: plugin.pluginId,
+      enabled: plugin.enabled,
+      healthState: plugin.health.state,
+      ready: plugin.health.ready,
+      errors: plugin.health.errors,
+      warnings: plugin.health.warnings,
+    })),
     recentErrors,
     localJobs: localJobs.map((job) => ({ status: job.status, error: job.error, updatedAt: job.updatedAt })),
     executionJobs: activeJobs.map((job) => ({
