@@ -1,0 +1,720 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-08-05T01:42:41.632Z",
+  "iterations": 7,
+  "thresholdPolicy": "max(1ms, observed p99 * 1.25, observed p95 * 1.5)",
+  "notes": {
+    "durableJobSubmit": "ExecutionJob creation is retired; this measures durable Process admission and persistence.",
+    "gatewayRestartRecovery": "A fresh Process store read is performed before terminal completion."
+  },
+  "scenarios": {
+    "context_cold_read": {
+      "samples": 7,
+      "phases": {
+        "wallClockMs": {
+          "p50": 0.2,
+          "p95": 78.65,
+          "p99": 78.65
+        },
+        "queueTimeMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "lockWaitMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "storageTimeMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "gitObservationMs": {
+          "p50": 0.18,
+          "p95": 78.62,
+          "p99": 78.62
+        },
+        "workerProcessMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "projectionMs": {
+          "p50": 0.18,
+          "p95": 78.62,
+          "p99": 78.62
+        },
+        "serializationMs": {
+          "p50": 0.02,
+          "p95": 0.02,
+          "p99": 0.02
+        }
+      },
+      "successRate": 1,
+      "timeoutRate": 0,
+      "contentionRate": 0,
+      "failureRate": 0,
+      "derivedThresholds": {
+        "wallClockMs": 118,
+        "queueTimeMs": 1,
+        "lockWaitMs": 1,
+        "storageTimeMs": 1,
+        "gitObservationMs": 118,
+        "workerProcessMs": 1,
+        "projectionMs": 118,
+        "serializationMs": 1
+      }
+    },
+    "context_warm_read": {
+      "samples": 7,
+      "phases": {
+        "wallClockMs": {
+          "p50": 0.12,
+          "p95": 0.36,
+          "p99": 0.36
+        },
+        "queueTimeMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "lockWaitMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "storageTimeMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "gitObservationMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "workerProcessMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "projectionMs": {
+          "p50": 0.11,
+          "p95": 0.34,
+          "p99": 0.34
+        },
+        "serializationMs": {
+          "p50": 0.02,
+          "p95": 0.02,
+          "p99": 0.02
+        }
+      },
+      "successRate": 1,
+      "timeoutRate": 0,
+      "contentionRate": 0,
+      "failureRate": 0,
+      "derivedThresholds": {
+        "wallClockMs": 1,
+        "queueTimeMs": 1,
+        "lockWaitMs": 1,
+        "storageTimeMs": 1,
+        "gitObservationMs": 1,
+        "workerProcessMs": 1,
+        "projectionMs": 1,
+        "serializationMs": 1
+      }
+    },
+    "requirement_board_read": {
+      "samples": 7,
+      "phases": {
+        "wallClockMs": {
+          "p50": 7.78,
+          "p95": 25.3,
+          "p99": 25.3
+        },
+        "queueTimeMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "lockWaitMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "storageTimeMs": {
+          "p50": 7.78,
+          "p95": 25.3,
+          "p99": 25.3
+        },
+        "gitObservationMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "workerProcessMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "projectionMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "serializationMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        }
+      },
+      "successRate": 1,
+      "timeoutRate": 0,
+      "contentionRate": 0,
+      "failureRate": 0,
+      "derivedThresholds": {
+        "wallClockMs": 38,
+        "queueTimeMs": 1,
+        "lockWaitMs": 1,
+        "storageTimeMs": 38,
+        "gitObservationMs": 1,
+        "workerProcessMs": 1,
+        "projectionMs": 1,
+        "serializationMs": 1
+      }
+    },
+    "work_prepare": {
+      "samples": 7,
+      "phases": {
+        "wallClockMs": {
+          "p50": 3.92,
+          "p95": 5.58,
+          "p99": 5.58
+        },
+        "queueTimeMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "lockWaitMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "storageTimeMs": {
+          "p50": 3.92,
+          "p95": 5.58,
+          "p99": 5.58
+        },
+        "gitObservationMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "workerProcessMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "projectionMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "serializationMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        }
+      },
+      "successRate": 1,
+      "timeoutRate": 0,
+      "contentionRate": 0,
+      "failureRate": 0,
+      "derivedThresholds": {
+        "wallClockMs": 9,
+        "queueTimeMs": 1,
+        "lockWaitMs": 1,
+        "storageTimeMs": 9,
+        "gitObservationMs": 1,
+        "workerProcessMs": 1,
+        "projectionMs": 1,
+        "serializationMs": 1
+      }
+    },
+    "direct_edit_claim": {
+      "samples": 7,
+      "phases": {
+        "wallClockMs": {
+          "p50": 22.86,
+          "p95": 25.73,
+          "p99": 25.73
+        },
+        "queueTimeMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "lockWaitMs": {
+          "p50": 22.86,
+          "p95": 25.73,
+          "p99": 25.73
+        },
+        "storageTimeMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "gitObservationMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "workerProcessMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "projectionMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "serializationMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        }
+      },
+      "successRate": 1,
+      "timeoutRate": 0,
+      "contentionRate": 0,
+      "failureRate": 0,
+      "derivedThresholds": {
+        "wallClockMs": 39,
+        "queueTimeMs": 1,
+        "lockWaitMs": 39,
+        "storageTimeMs": 1,
+        "gitObservationMs": 1,
+        "workerProcessMs": 1,
+        "projectionMs": 1,
+        "serializationMs": 1
+      }
+    },
+    "durable_job_submit": {
+      "samples": 7,
+      "phases": {
+        "wallClockMs": {
+          "p50": 125.63,
+          "p95": 132.44,
+          "p99": 132.44
+        },
+        "queueTimeMs": {
+          "p50": 125.63,
+          "p95": 132.44,
+          "p99": 132.44
+        },
+        "lockWaitMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "storageTimeMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "gitObservationMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "workerProcessMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "projectionMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "serializationMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        }
+      },
+      "successRate": 1,
+      "timeoutRate": 0,
+      "contentionRate": 0,
+      "failureRate": 0,
+      "derivedThresholds": {
+        "wallClockMs": 199,
+        "queueTimeMs": 199,
+        "lockWaitMs": 1,
+        "storageTimeMs": 1,
+        "gitObservationMs": 1,
+        "workerProcessMs": 1,
+        "projectionMs": 1,
+        "serializationMs": 1
+      }
+    },
+    "process_start": {
+      "samples": 7,
+      "phases": {
+        "wallClockMs": {
+          "p50": 176.54,
+          "p95": 220.56,
+          "p99": 220.56
+        },
+        "queueTimeMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "lockWaitMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "storageTimeMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "gitObservationMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "workerProcessMs": {
+          "p50": 176.53,
+          "p95": 220.56,
+          "p99": 220.56
+        },
+        "projectionMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "serializationMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        }
+      },
+      "successRate": 1,
+      "timeoutRate": 0,
+      "contentionRate": 0,
+      "failureRate": 0,
+      "derivedThresholds": {
+        "wallClockMs": 331,
+        "queueTimeMs": 1,
+        "lockWaitMs": 1,
+        "storageTimeMs": 1,
+        "gitObservationMs": 1,
+        "workerProcessMs": 331,
+        "projectionMs": 1,
+        "serializationMs": 1
+      }
+    },
+    "check_completion": {
+      "samples": 7,
+      "phases": {
+        "wallClockMs": {
+          "p50": 180.27,
+          "p95": 228.12,
+          "p99": 228.12
+        },
+        "queueTimeMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "lockWaitMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "storageTimeMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "gitObservationMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "workerProcessMs": {
+          "p50": 180.27,
+          "p95": 228.12,
+          "p99": 228.12
+        },
+        "projectionMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "serializationMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        }
+      },
+      "successRate": 1,
+      "timeoutRate": 0,
+      "contentionRate": 0,
+      "failureRate": 0,
+      "derivedThresholds": {
+        "wallClockMs": 343,
+        "queueTimeMs": 1,
+        "lockWaitMs": 1,
+        "storageTimeMs": 1,
+        "gitObservationMs": 1,
+        "workerProcessMs": 343,
+        "projectionMs": 1,
+        "serializationMs": 1
+      }
+    },
+    "concurrent_two_repository_load": {
+      "samples": 7,
+      "phases": {
+        "wallClockMs": {
+          "p50": 0.6,
+          "p95": 52.91,
+          "p99": 52.91
+        },
+        "queueTimeMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "lockWaitMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "storageTimeMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "gitObservationMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "workerProcessMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "projectionMs": {
+          "p50": 0.6,
+          "p95": 52.9,
+          "p99": 52.9
+        },
+        "serializationMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        }
+      },
+      "successRate": 1,
+      "timeoutRate": 0,
+      "contentionRate": 0,
+      "failureRate": 0,
+      "derivedThresholds": {
+        "wallClockMs": 80,
+        "queueTimeMs": 1,
+        "lockWaitMs": 1,
+        "storageTimeMs": 1,
+        "gitObservationMs": 1,
+        "workerProcessMs": 1,
+        "projectionMs": 80,
+        "serializationMs": 1
+      }
+    },
+    "same_repository_different_checkout_load": {
+      "samples": 7,
+      "phases": {
+        "wallClockMs": {
+          "p50": 5.56,
+          "p95": 10.02,
+          "p99": 10.02
+        },
+        "queueTimeMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "lockWaitMs": {
+          "p50": 5.56,
+          "p95": 10.02,
+          "p99": 10.02
+        },
+        "storageTimeMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "gitObservationMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "workerProcessMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "projectionMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "serializationMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        }
+      },
+      "successRate": 1,
+      "timeoutRate": 0,
+      "contentionRate": 0,
+      "failureRate": 0,
+      "derivedThresholds": {
+        "wallClockMs": 16,
+        "queueTimeMs": 1,
+        "lockWaitMs": 16,
+        "storageTimeMs": 1,
+        "gitObservationMs": 1,
+        "workerProcessMs": 1,
+        "projectionMs": 1,
+        "serializationMs": 1
+      }
+    },
+    "same_checkout_contention": {
+      "samples": 7,
+      "phases": {
+        "wallClockMs": {
+          "p50": 2.75,
+          "p95": 4.87,
+          "p99": 4.87
+        },
+        "queueTimeMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "lockWaitMs": {
+          "p50": 2.75,
+          "p95": 4.87,
+          "p99": 4.87
+        },
+        "storageTimeMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "gitObservationMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "workerProcessMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "projectionMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "serializationMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        }
+      },
+      "successRate": 0,
+      "timeoutRate": 0,
+      "contentionRate": 1,
+      "failureRate": 0,
+      "derivedThresholds": {
+        "wallClockMs": 8,
+        "queueTimeMs": 1,
+        "lockWaitMs": 8,
+        "storageTimeMs": 1,
+        "gitObservationMs": 1,
+        "workerProcessMs": 1,
+        "projectionMs": 1,
+        "serializationMs": 1
+      }
+    },
+    "gateway_restart_recovery": {
+      "samples": 7,
+      "phases": {
+        "wallClockMs": {
+          "p50": 193.58,
+          "p95": 210.62,
+          "p99": 210.62
+        },
+        "queueTimeMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "lockWaitMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "storageTimeMs": {
+          "p50": 0.44,
+          "p95": 0.6,
+          "p99": 0.6
+        },
+        "gitObservationMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "workerProcessMs": {
+          "p50": 193.58,
+          "p95": 210.62,
+          "p99": 210.62
+        },
+        "projectionMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "serializationMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        }
+      },
+      "successRate": 1,
+      "timeoutRate": 0,
+      "contentionRate": 0,
+      "failureRate": 0,
+      "derivedThresholds": {
+        "wallClockMs": 316,
+        "queueTimeMs": 1,
+        "lockWaitMs": 1,
+        "storageTimeMs": 1,
+        "gitObservationMs": 1,
+        "workerProcessMs": 316,
+        "projectionMs": 1,
+        "serializationMs": 1
+      }
+    }
+  }
+}

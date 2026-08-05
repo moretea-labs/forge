@@ -23,7 +23,7 @@ import { classifyRepositoryCommand } from '../../src/cli/repositories/command-cl
 import { assessWorkMode } from '../../src/cli/controller/work-mode';
 import { routeExecution, isFastEligibleTool } from '../../src/runtime/execution/thin-harness';
 import { listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
-import { waitForProcess } from '../../src/runtime/execution/process-runtime/runtime';
+import { getProcessHandle, waitForProcess } from '../../src/runtime/execution/process-runtime/runtime';
 import { runReadOnlyDiagnosticViaProcessRuntime } from '../../src/runtime/diagnostics/process-facade';
 import {
   applyEditOperations,
@@ -206,6 +206,12 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       ['workflow_watchdog_report', { repo_id: fx.repository.repoId, include_processes: false }],
       ['runtime_maintenance_status', { repo_id: fx.repository.repoId }],
       ['runtime_cleanup_preview', { repo_id: fx.repository.repoId, include_temp_dirs: false }],
+      ['runtime_performance_diagnostics', {
+        repo_id: fx.repository.repoId,
+        include_processes: false,
+        include_temp_dirs: false,
+      }],
+      ['capability_recovery_probe', { repo_id: fx.repository.repoId }],
     ] as const).entries()) {
       const requestId = `diagnostic-${index}`;
       const routed = await routeDurableMcpCall(fx.ctx, tool, { ...args, request_id: requestId }, {
@@ -282,7 +288,169 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect((conflict?.structuredContent as { error?: { code?: string } }).error?.code).toBe('PROCESS_REQUEST_ID_CONFLICT');
 
     expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
-    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId).length).toBe(processesBefore + 5);
+    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId).length).toBe(processesBefore + 7);
+  });
+
+  test('one repository diagnostic cannot block bounded reads for another repository session', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const secondRoot = join(fx.root, 'repo-two');
+    mkdirSync(secondRoot, { recursive: true });
+    git(secondRoot, ['init', '-b', 'main']);
+    git(secondRoot, ['config', 'user.name', 'Test']);
+    git(secondRoot, ['config', 'user.email', 'test@example.com']);
+    writeFileSync(join(secondRoot, 'README.md'), 'second repository\n');
+    git(secondRoot, ['add', '.']);
+    git(secondRoot, ['commit', '-m', 'init']);
+    const secondRepository = registerRepository({
+      path: secondRoot,
+      controllerHome: fx.controllerHome,
+      displayName: 'gw-route-two',
+    });
+    const secondContext = createMcpToolContext({
+      controllerHome: fx.controllerHome,
+      profile: 'controller',
+      repo: secondRoot,
+    });
+    const slowEntry = join(fx.root, 'slow diagnostic.ts');
+    writeFileSync(slowEntry, [
+      'setTimeout(() => {',
+      '  process.stdout.write(JSON.stringify({ status: "normal", source: "slow-fixture" }));',
+      '}, 1200);',
+    ].join('\n'));
+
+    const admissionStarted = performance.now();
+    const heavy = await runReadOnlyDiagnosticViaProcessRuntime({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      tool: 'runtime_performance_diagnostics',
+      args: {
+        request_id: 'cross-repository-slow-diagnostic',
+        apply_mode: 'async',
+        execution_timeout_ms: 10_000,
+      },
+      cliInvocation: {
+        entry: slowEntry,
+        options: {
+          runtimeExecutable: process.execPath,
+          runtimeKind: 'bun_source',
+          sourceRevision: 'slow-fixture-source',
+          env: {},
+        },
+      },
+    });
+    expect(heavy.path).toBe('process_managed');
+    expect(performance.now() - admissionStarted).toBeLessThan(500);
+
+    const routeStarted = performance.now();
+    expect(await routeDurableMcpCall(secondContext, 'get_project_board', {
+      repo_id: secondRepository.repoId,
+    })).toBeUndefined();
+    const board = await callMultiRepositoryTool(secondContext, 'get_project_board', {
+      repo_id: secondRepository.repoId,
+    });
+    const readElapsedMs = performance.now() - routeStarted;
+    expect(board.isError).not.toBe(true);
+    expect(readElapsedMs).toBeLessThan(500);
+
+    const completed = await waitForProcess(
+      fx.controllerHome,
+      fx.repository.repoId,
+      String(heavy.processId),
+      { timeoutMs: 10_000 },
+    );
+    expect(completed.ok).toBe(true);
+    expect(completed.stdout).toContain('slow-fixture');
+  });
+
+  test('explicit repository identity overrides the session default for isolated diagnostics', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const secondRoot = join(fx.root, 'explicit-repository');
+    mkdirSync(secondRoot, { recursive: true });
+    git(secondRoot, ['init', '-b', 'main']);
+    git(secondRoot, ['config', 'user.name', 'Test']);
+    git(secondRoot, ['config', 'user.email', 'test@example.com']);
+    writeFileSync(join(secondRoot, 'README.md'), 'explicit repository\n');
+    git(secondRoot, ['add', '.']);
+    git(secondRoot, ['commit', '-m', 'init']);
+    const explicitRepository = registerRepository({
+      path: secondRoot,
+      controllerHome: fx.controllerHome,
+      displayName: 'explicit-repository',
+    });
+
+    const routed = await routeDurableMcpCall(fx.ctx, 'runtime_performance_diagnostics', {
+      repo_id: explicitRepository.repoId,
+      apply_mode: 'async',
+      include_processes: false,
+      include_temp_dirs: false,
+      request_id: 'explicit-repository-diagnostic',
+    }, { allowReadOnly: true, forceDurable: true });
+    expect(routed?.isError).not.toBe(true);
+    const payload = routed?.structuredContent as Record<string, unknown>;
+    const processId = String(payload.processId ?? '');
+    expect(processId).toBeTruthy();
+    expect(getProcessHandle(fx.controllerHome, explicitRepository.repoId, processId)).toBeTruthy();
+    expect(getProcessHandle(fx.controllerHome, fx.repository.repoId, processId)).toBeUndefined();
+    const completed = await waitForProcess(
+      fx.controllerHome,
+      explicitRepository.repoId,
+      processId,
+      { timeoutMs: 10_000 },
+    );
+    expect(completed.ok).toBe(true);
+  });
+
+  test('diagnostic completion remains readable after request timeout and Gateway context recreation', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const slowEntry = join(fx.root, 'late diagnostic.ts');
+    writeFileSync(slowEntry, [
+      'setTimeout(() => {',
+      '  process.stdout.write(JSON.stringify({ status: "normal", terminalReceipt: "late" }));',
+      '}, 120);',
+    ].join('\n'));
+
+    const started = await runReadOnlyDiagnosticViaProcessRuntime({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      tool: 'runtime_maintenance_status',
+      args: {
+        request_id: 'late-diagnostic-terminal-receipt',
+        interactive_wait_ms: 5,
+        execution_timeout_ms: 10_000,
+      },
+      cliInvocation: {
+        entry: slowEntry,
+        options: {
+          runtimeExecutable: process.execPath,
+          runtimeKind: 'bun_source',
+          sourceRevision: 'late-receipt-source',
+          env: {},
+        },
+      },
+    });
+    expect(started.path).toBe('process_managed');
+    expect((started.result as { reason?: string }).reason).toBe('interactive_wait_expired');
+    const processId = String(started.processId ?? '');
+    expect(processId).toBeTruthy();
+
+    const recreatedContext = createMcpToolContext({
+      controllerHome: fx.controllerHome,
+      profile: 'controller',
+      repo: fx.repoRoot,
+    });
+    const waited = await callProcessTool(recreatedContext, 'process_wait', {
+      repo_id: fx.repository.repoId,
+      process_id: processId,
+      timeout_ms: 10_000,
+    });
+    expect(waited?.isError).not.toBe(true);
+    const terminal = getProcessHandle(fx.controllerHome, fx.repository.repoId, processId);
+    expect(terminal?.completed).toBe(true);
+    expect(terminal?.ok).toBe(true);
+    expect(terminal?.stdout).toContain('terminalReceipt');
   });
 
   test('structured local Git mutations use direct local handlers instead of retired ExecutionJob routing', async () => {

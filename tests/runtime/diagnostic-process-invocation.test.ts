@@ -3,7 +3,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import { resolveCliChildInvocation } from '../../src/cli/runtime-invocation';
+import {
+  CliRuntimeResolutionError,
+  currentCliRuntimeTarget,
+  resolveCliChildInvocation,
+} from '../../src/cli/runtime-invocation';
 import { resolveDiagnosticCliInvocation, runReadOnlyDiagnosticViaProcessRuntime } from '../../src/runtime/diagnostics/process-facade';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
@@ -59,6 +63,95 @@ describe('typed CLI child invocation', () => {
     });
   });
 
+  test('returns typed runtime identity and source revision in source and compiled modes', () => {
+    const compiled = resolveCliChildInvocation('/$bunfs/root/repo-harness.js', diagnosticArgs, {
+      runtimeExecutable: '/Applications/Repo Harness/repo-harness',
+      sourceRevision: 'release-abc',
+      env: {},
+    });
+    expect(compiled.argv).toEqual(diagnosticArgs);
+    expect(compiled.runtimeKind).toBe('compiled_bun_release');
+    expect(compiled.sourceRevision).toBe('release-abc');
+    expect(compiled.immutable).toBe(true);
+    expect(compiled.diagnostic).toContain('immutable compiled release');
+
+    const node = resolveCliChildInvocation('/repo with spaces/src/cli/index.ts', diagnosticArgs, {
+      runtimeExecutable: '/usr/local/bin/node',
+      sourceRevision: 'source-def',
+      env: {},
+    });
+    expect(node.argv).toEqual(['/repo with spaces/src/cli/index.ts', ...diagnosticArgs]);
+    expect(node.runtimeKind).toBe('node_source');
+    expect(node.sourceRevision).toBe('source-def');
+    expect(node.immutable).toBe(false);
+  });
+
+  test('uses explicit package launcher identity for shims and paths containing spaces', () => {
+    const launcher = '/Applications/Repo Harness/bin/repo-harness shim';
+    const invocation = resolveCliChildInvocation('/ignored', diagnosticArgs, {
+      runtimeExecutable: '/Applications/Node Runtime/bin/node',
+      runtimeKind: 'package_launcher',
+      launcherEntry: launcher,
+      sourceRevision: 'global-package-1',
+      env: {},
+    });
+    expect(invocation.executable).toBe('/Applications/Node Runtime/bin/node');
+    expect(invocation.args).toEqual([launcher, ...diagnosticArgs]);
+    expect(invocation.runtimeKind).toBe('package_launcher');
+    expect(invocation.sourceRevision).toBe('global-package-1');
+  });
+
+  test('locates explicit source, compiled release, and package targets without extension guessing', () => {
+    const existing = new Set([
+      '/repo with spaces/src/cli/index.ts',
+      '/Applications/Repo Harness/lib/repo-harness.js',
+    ]);
+    const source = currentCliRuntimeTarget({
+      argv: [],
+      env: {},
+      sourceRoot: '/repo with spaces',
+      runtimeExecutable: '/usr/bin/node',
+      sourceRevision: 'source-1',
+      entryExists: (path) => existing.has(path),
+    });
+    expect(source.runtimeKind).toBe('node_source');
+    expect(source.entry).toBe('/repo with spaces/src/cli/index.ts');
+
+    const compiled = currentCliRuntimeTarget({
+      argv: ['/Applications/Repo Harness/repo-harness', '/$bunfs/root/repo-harness.js'],
+      env: { REPO_HARNESS_RUNTIME_EXECUTION: 'standalone-binary' },
+      runtimeExecutable: '/Applications/Repo Harness/repo-harness',
+      sourceRevision: 'compiled-1',
+      entryExists: () => false,
+    });
+    expect(compiled.runtimeKind).toBe('compiled_bun_release');
+    expect(compiled.immutable).toBe(true);
+
+    const installed = currentCliRuntimeTarget({
+      argv: [],
+      env: {},
+      moduleUrl: 'file:///Applications/Repo%20Harness/lib/diagnostics.js',
+      runtimeExecutable: '/usr/bin/node',
+      sourceRevision: 'package-1',
+      entryExists: (path) => existing.has(path),
+    });
+    expect(installed.runtimeKind).toBe('package_launcher');
+    expect(installed.entry).toBe('/Applications/Repo Harness/lib/repo-harness.js');
+  });
+
+  test('fails closed when runtime identity cannot be resolved', () => {
+    expect(() => resolveCliChildInvocation('/opaque/entry', diagnosticArgs, {
+      runtimeExecutable: '/opt/custom/runner',
+      env: {},
+    })).toThrow(CliRuntimeResolutionError);
+    expect(() => currentCliRuntimeTarget({
+      argv: [],
+      env: {},
+      runtimeExecutable: '/opt/custom/runner',
+      entryExists: () => false,
+    })).toThrow('CLI_RUNTIME_UNRESOLVED');
+  });
+
   test('reports a completed nonzero diagnostic process as failed rather than running', async () => {
     const root = mkdtempSync(join(tmpdir(), 'diagnostic-process-failure-'));
     try {
@@ -102,6 +195,52 @@ describe('typed CLI child invocation', () => {
       expect((result.process as { status?: string }).status).toBe('failed');
       expect((result.process as { contractStatus?: string }).contractStatus).toBe('failed');
       expect((result.process as { exitCode?: number }).exitCode).toBe(23);
+      expect(JSON.stringify(result)).not.toContain('"status":"running"');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('records unresolved runtime launch as a truthful terminal Process failure', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'diagnostic-runtime-unresolved-'));
+    try {
+      const controllerHome = join(root, 'controller');
+      const repoRoot = join(root, 'repo');
+      mkdirSync(controllerHome, { recursive: true });
+      mkdirSync(repoRoot, { recursive: true });
+      const git = (args: string[]) => {
+        const result = spawnSync('git', ['-C', repoRoot, ...args], { encoding: 'utf8' });
+        if (result.status !== 0) throw new Error(result.stderr || `git ${args.join(' ')} failed`);
+      };
+      git(['init', '-b', 'main']);
+      git(['config', 'user.name', 'Test']);
+      git(['config', 'user.email', 'test@example.com']);
+      writeFileSync(join(repoRoot, 'README.md'), 'fixture\n');
+      git(['add', '.']);
+      git(['commit', '-m', 'init']);
+      ensureControllerHome(controllerHome);
+      const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'runtime-unresolved' });
+
+      const result = await runReadOnlyDiagnosticViaProcessRuntime({
+        controllerHome,
+        repository,
+        tool: 'workflow_watchdog_report',
+        args: {
+          request_id: 'diagnostic-runtime-unresolved-terminal',
+          interactive_wait_ms: 20_000,
+          execution_timeout_ms: 20_000,
+        },
+        cliInvocation: {
+          entry: '/opaque/entry',
+          options: { runtimeExecutable: '/opt/custom/runner', env: {} },
+        },
+      });
+
+      expect(result.accepted).toBe(false);
+      expect((result.error as { code?: string }).code).toBe('DIAGNOSTIC_RUNTIME_UNRESOLVED');
+      expect((result.process as { completed?: boolean }).completed).toBe(true);
+      expect((result.process as { status?: string }).status).toBe('failed');
+      expect((result.diagnosticRuntime as { explanation?: string }).explanation).toContain('CLI_RUNTIME_UNRESOLVED');
       expect(JSON.stringify(result)).not.toContain('"status":"running"');
     } finally {
       rmSync(root, { recursive: true, force: true });

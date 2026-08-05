@@ -22,6 +22,7 @@ import {
   isFocusedCheckCommand,
   listFastReceipts,
   releaseCheckoutMutationGate,
+  releaseCheckoutMutationGateOwned,
   resetFastPathMetrics,
   routeExecution,
   runBoundedProcess,
@@ -31,11 +32,24 @@ import {
 import { listExecutionJobs } from '../../src/runtime/execution/jobs/store';
 import {
   acquireExecutionLeases,
+  assertFencingToken,
   getLeaseSideEffectMetrics,
+  listActiveLeases,
   releaseExecutionLeases,
+  renewExecutionLeases,
   resetLeaseSideEffectMetrics,
 } from '../../src/runtime/resources/leases/store';
 import { resourceKeysOverlap } from '../../src/runtime/resources/claims/conflicts';
+import {
+  acquireControllerLock,
+  acquireControllerLockAsync,
+  releaseControllerLock,
+  tryAcquireControllerLock,
+} from '../../src/cli/repositories/locks';
+import {
+  gatewayLatencySummaries,
+  resetGatewayLatencyMetrics,
+} from '../../src/runtime/observability/gateway-contention-metrics';
 
 const roots: string[] = [];
 
@@ -90,6 +104,7 @@ afterEach(() => {
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
   resetFastPathMetrics();
   resetLeaseSideEffectMetrics();
+  resetGatewayLatencyMetrics();
 });
 
 describe('Thin Harness execution router', () => {
@@ -496,10 +511,7 @@ describe('Thin Harness fast execution', () => {
       expect((competing.result?.error as { code?: string } | undefined)?.code).toBe('MUTATION_BUSY');
     } finally {
       if ('acquired' in gate && gate.acquired) {
-        releaseCheckoutMutationGate(controllerHome, repository.repoId, repository.activeCheckoutId, gate.gate.ownerJobId, {
-          leaseId: gate.gate.leaseId,
-          fencingToken: gate.gate.fencingToken,
-        });
+        releaseCheckoutMutationGateOwned(controllerHome, gate.gate);
       }
     }
   });
@@ -612,11 +624,271 @@ describe('Thin Harness fast execution', () => {
       expect(durable.blockers.some((blocker) => blocker.ownerJobId.includes('fast:'))).toBe(true);
     } finally {
       if ('acquired' in gate && gate.acquired) {
-        releaseCheckoutMutationGate(controllerHome, repository.repoId, repository.activeCheckoutId, gate.gate.ownerJobId, {
-          leaseId: gate.gate.leaseId,
-          fencingToken: gate.gate.fencingToken,
-        });
+        releaseCheckoutMutationGateOwned(controllerHome, gate.gate);
       }
+    }
+  });
+
+  test('same checkout serializes writers while different checkouts acquire in parallel', () => {
+    const { controllerHome, repository } = fixture();
+    const repoId = repository.repoId;
+    const first = acquireExecutionLeases(
+      controllerHome,
+      repoId,
+      'JOB-checkout-a-owner',
+      [{ repoId, checkoutId: 'checkout-a', resourceKey: 'workspace:checkout-a', mode: 'write' }],
+      {
+        ttlMs: 15_000,
+        ownerIdentity: {
+          repositoryId: repoId,
+          checkoutId: 'checkout-a',
+          worktreeId: 'worktree-a',
+          branch: 'feature/a',
+          principalId: 'principal-a',
+          controllerInstanceId: 'controller-a',
+          controllerGeneration: 'generation-1',
+        },
+      },
+    );
+    expect(first.acquired).toBe(true);
+
+    const secondCheckout = acquireExecutionLeases(
+      controllerHome,
+      repoId,
+      'JOB-checkout-b-owner',
+      [{ repoId, checkoutId: 'checkout-b', resourceKey: 'workspace:checkout-b', mode: 'write' }],
+      {
+        ttlMs: 15_000,
+        ownerIdentity: {
+          repositoryId: repoId,
+          checkoutId: 'checkout-b',
+          worktreeId: 'worktree-b',
+          branch: 'feature/b',
+          principalId: 'principal-b',
+          controllerInstanceId: 'controller-b',
+          controllerGeneration: 'generation-1',
+        },
+      },
+    );
+    expect(secondCheckout.acquired).toBe(true);
+
+    const sameCheckout = acquireExecutionLeases(
+      controllerHome,
+      repoId,
+      'JOB-checkout-a-contender',
+      [{ repoId, checkoutId: 'checkout-a', resourceKey: 'workspace:checkout-a', mode: 'write' }],
+      {
+        ttlMs: 15_000,
+        ownerIdentity: {
+          repositoryId: repoId,
+          checkoutId: 'checkout-a',
+          worktreeId: 'worktree-a-2',
+          branch: 'feature/a-2',
+          principalId: 'principal-c',
+          controllerInstanceId: 'controller-c',
+          controllerGeneration: 'generation-1',
+        },
+      },
+    );
+    expect(sameCheckout.acquired).toBe(false);
+    expect(sameCheckout.blockers.some((entry) => entry.ownerJobId === 'JOB-checkout-a-owner')).toBe(true);
+
+    releaseExecutionLeases(controllerHome, repoId, 'JOB-checkout-a-owner');
+    releaseExecutionLeases(controllerHome, repoId, 'JOB-checkout-b-owner');
+  });
+
+  test('mutation owner identity is persisted and mismatched payload identity fails closed', async () => {
+    const { controllerHome, repository, repoRoot } = fixture();
+    const branch = repository.checkouts.find((entry) => entry.checkoutId === repository.activeCheckoutId)?.branch ?? 'main';
+    const acquired = await acquireCheckoutMutationGate({
+      controllerHome,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      repoRoot,
+      owner: 'fast:structured-owner',
+      ownerIdentity: {
+        repositoryId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        worktreeId: repository.canonicalRoot,
+        branch,
+        principalId: 'principal-structured',
+        controllerInstanceId: 'controller-instance-1',
+        controllerGeneration: 'generation-1',
+      },
+    });
+    expect('acquired' in acquired && acquired.acquired).toBe(true);
+    if ('acquired' in acquired && acquired.acquired) {
+      expect(acquired.gate.ownerIdentity).toEqual({
+        repositoryId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        worktreeId: repository.canonicalRoot,
+        branch,
+        principalId: 'principal-structured',
+        controllerInstanceId: 'controller-instance-1',
+        controllerGeneration: 'generation-1',
+      });
+      expect(acquired.gate.ownerIdentityDigest).toHaveLength(64);
+      expect(listActiveLeases(controllerHome, repository.repoId).every((lease) =>
+        lease.ownerIdentityDigest === acquired.gate.ownerIdentityDigest)).toBe(true);
+      releaseCheckoutMutationGateOwned(controllerHome, acquired.gate);
+    }
+
+    await expect(acquireCheckoutMutationGate({
+      controllerHome,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      repoRoot,
+      owner: 'fast:mismatched-owner',
+      ownerIdentity: {
+        repositoryId: 'repo-wrong',
+      },
+    })).rejects.toThrow('MUTATION_OWNER_REPOSITORY_MISMATCH');
+  });
+
+  test('stale owner generation cannot renew or release the live mutation owner', async () => {
+    const { controllerHome, repository, repoRoot } = fixture();
+    const acquired = await acquireCheckoutMutationGate({
+      controllerHome,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      repoRoot,
+      owner: 'fast:owner-generation-one',
+      ownerIdentity: {
+        repositoryId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        worktreeId: repository.canonicalRoot,
+        branch: 'main',
+        principalId: 'principal-owner',
+        controllerInstanceId: 'controller-one',
+        controllerGeneration: 'generation-one',
+      },
+    });
+    expect('acquired' in acquired && acquired.acquired).toBe(true);
+    if (!('acquired' in acquired) || !acquired.acquired) return;
+
+    const expected = acquired.gate.leaseIds.map((leaseId) => ({
+      leaseId,
+      fencingToken: acquired.gate.fencingTokens[leaseId] ?? acquired.gate.fencingToken,
+      ownerIdentityDigest: '0'.repeat(64),
+    }));
+    expect(() => renewExecutionLeases(
+      controllerHome,
+      repository.repoId,
+      acquired.gate.ownerJobId,
+      10_000,
+      expected,
+    )).toThrow('FENCING_TOKEN_STALE');
+    expect(releaseExecutionLeases(
+      controllerHome,
+      repository.repoId,
+      acquired.gate.ownerJobId,
+      expected,
+      { visibility: 'ephemeral' },
+    )).toBe(0);
+    expect(assertFencingToken(
+      controllerHome,
+      repository.repoId,
+      acquired.gate.primaryLeaseId,
+      acquired.gate.fencingToken,
+    ).ownerIdentityDigest).toBe(acquired.gate.ownerIdentityDigest);
+    releaseCheckoutMutationGateOwned(controllerHome, acquired.gate);
+
+    const reclaimed = await acquireCheckoutMutationGate({
+      controllerHome,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      repoRoot,
+      owner: 'fast:owner-generation-two',
+      ownerIdentity: {
+        repositoryId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        worktreeId: repository.canonicalRoot,
+        branch: 'main',
+        principalId: 'principal-owner',
+        controllerInstanceId: 'controller-two',
+        controllerGeneration: 'generation-two',
+      },
+    });
+    expect('acquired' in reclaimed && reclaimed.acquired).toBe(true);
+    if ('acquired' in reclaimed && reclaimed.acquired) {
+      expect(reclaimed.gate.fencingToken).toBeGreaterThan(acquired.gate.fencingToken);
+      releaseCheckoutMutationGateOwned(controllerHome, reclaimed.gate);
+    }
+  });
+
+  test('incomplete mutation lease-set release fails closed without partial release', async () => {
+    const { controllerHome, repository, repoRoot } = fixture();
+    const acquired = await acquireCheckoutMutationGate({
+      controllerHome,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      repoRoot,
+      owner: 'fast:exact-release-owner',
+      ownerIdentity: {
+        repositoryId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        worktreeId: repository.canonicalRoot,
+        branch: 'main',
+        principalId: 'principal-exact-release',
+        controllerInstanceId: 'controller-exact-release',
+        controllerGeneration: 'generation-exact-release',
+      },
+    });
+    expect('acquired' in acquired && acquired.acquired).toBe(true);
+    if (!('acquired' in acquired) || !acquired.acquired) return;
+
+    const before = listActiveLeases(controllerHome, repository.repoId)
+      .filter((lease) => lease.ownerJobId === acquired.gate.ownerJobId)
+      .map((lease) => lease.leaseId)
+      .sort();
+    expect(before.length).toBeGreaterThan(1);
+    expect(() => releaseCheckoutMutationGate(
+      controllerHome,
+      repository.repoId,
+      repository.activeCheckoutId,
+      acquired.gate.ownerJobId,
+      {
+        leaseId: acquired.gate.primaryLeaseId,
+        fencingToken: acquired.gate.fencingToken,
+      },
+    )).toThrow('LEASE_SET_MISMATCH');
+    const after = listActiveLeases(controllerHome, repository.repoId)
+      .filter((lease) => lease.ownerJobId === acquired.gate.ownerJobId)
+      .map((lease) => lease.leaseId)
+      .sort();
+    expect(after).toEqual(before);
+    releaseCheckoutMutationGateOwned(controllerHome, acquired.gate);
+    expect(listActiveLeases(controllerHome, repository.repoId)
+      .some((lease) => lease.ownerJobId === acquired.gate.ownerJobId)).toBe(false);
+  });
+
+  test('Gateway-reachable controller locks fail immediately and async waits stay bounded', async () => {
+    const { controllerHome, repository } = fixture();
+    const key = { scope: 'repository' as const, repoId: repository.repoId };
+    const held = acquireControllerLock(controllerHome, key, 'owner-a', 10_000);
+    try {
+      const syncStarted = performance.now();
+      const attempted = tryAcquireControllerLock(controllerHome, key, 'owner-b', 10_000);
+      expect(attempted.acquired).toBe(false);
+      expect(performance.now() - syncStarted).toBeLessThan(100);
+
+      const compatibilityStarted = performance.now();
+      expect(() => acquireControllerLock(controllerHome, key, 'owner-c', 10_000, 60_000)).toThrow('LOCK_HELD');
+      expect(performance.now() - compatibilityStarted).toBeLessThan(100);
+
+      const asyncStarted = performance.now();
+      await expect(acquireControllerLockAsync(controllerHome, key, 'owner-d', 10_000, 30)).rejects.toThrow('LOCK_HELD');
+      expect(performance.now() - asyncStarted).toBeLessThan(500);
+
+      const summaries = gatewayLatencySummaries();
+      expect(summaries.some((entry) =>
+        entry.operationClass === 'controller_lock'
+        && entry.phase === 'lock_wait'
+        && entry.contentionRate > 0)).toBe(true);
+      expect(JSON.stringify(summaries)).not.toContain(controllerHome);
+      expect(JSON.stringify(summaries)).not.toContain(repository.repoId);
+    } finally {
+      releaseControllerLock(controllerHome, key, held.lockId);
     }
   });
 
@@ -661,10 +933,7 @@ describe('Thin Harness fast execution', () => {
       expect(refLease.acquired).toBe(false);
     } finally {
       if ('acquired' in gate && gate.acquired) {
-        releaseCheckoutMutationGate(controllerHome, repository.repoId, repository.activeCheckoutId, gate.gate.ownerJobId, {
-          leaseId: gate.gate.leaseId,
-          fencingToken: gate.gate.fencingToken,
-        });
+        releaseCheckoutMutationGateOwned(controllerHome, gate.gate);
       }
     }
   });

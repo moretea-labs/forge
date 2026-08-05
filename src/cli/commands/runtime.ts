@@ -115,7 +115,7 @@ export function buildRuntimeCommand(): Command {
     .requiredOption('--repo-id <id>', 'Repository id')
     .requiredOption('--tool <name>', 'Read-only diagnostic tool name')
     .requiredOption('--args-base64 <payload>', 'Base64url JSON arguments')
-    .action((opts: { controllerHome: string; repoId: string; tool: string; argsBase64: string }) => {
+    .action(async (opts: { controllerHome: string; repoId: string; tool: string; argsBase64: string }) => {
       const home = ensureControllerHome(opts.controllerHome);
       const repository = getRepository(opts.repoId, home);
       if (!repository) throw new Error(`REPOSITORY_NOT_FOUND: ${opts.repoId}`);
@@ -129,7 +129,7 @@ export function buildRuntimeCommand(): Command {
         const detail = error instanceof Error ? error.message : String(error);
         throw new Error(`DIAGNOSTIC_ARGUMENTS_INVALID: ${detail}`);
       }
-      process.stdout.write(JSON.stringify(executeReadOnlyDiagnostic(opts.tool, home, repository, args)));
+      process.stdout.write(JSON.stringify(await executeReadOnlyDiagnostic(opts.tool, home, repository, args)));
     });
 
   command.command('schedules')

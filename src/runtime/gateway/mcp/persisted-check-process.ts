@@ -1,9 +1,15 @@
 import { createHash } from 'crypto';
 import { existsSync } from 'fs';
-import { basename, dirname, join, resolve } from 'path';
-import { fileURLToPath } from 'url';
+import { resolve } from 'path';
 import { listControllerChecks, snapshotControllerCheck } from '../../../cli/controller/check-runner';
-import { resolveCliChildInvocation } from '../../../cli/runtime-invocation';
+import {
+  currentCliRuntimeTarget,
+  resolveCliChildInvocation,
+  type CliChildInvocation,
+  type CliChildInvocationOptions,
+  type CliRuntimeTarget,
+} from '../../../cli/runtime-invocation';
+import { readRuntimeGeneration, resolveControllerRuntimeSourceRoot } from '../../control-plane/runtime-generation';
 import {
   checkRequiresDurableWorkflow,
   claimsForCheck,
@@ -18,32 +24,33 @@ const INTERNAL_CHECK_SUBCOMMAND = ['controller', 'run-check-process'] as const;
 export function resolvePersistedCheckCliInvocation(
   cliEntry: string,
   args: string[],
-  options: { runtimeExecutable?: string; env?: NodeJS.ProcessEnv } = {},
-): { executable: string; args: string[] } {
+  options: CliChildInvocationOptions = {},
+): CliChildInvocation {
   return resolveCliChildInvocation(cliEntry, args, options);
 }
 
-export function resolveRuntimeCliEntry(): string {
-  const configured = process.env.REPO_HARNESS_RUNTIME_CLI_ENTRY?.trim();
-  if (configured && existsSync(configured)) return resolve(configured);
+export function resolveRuntimeCliTarget(controllerHome?: string): CliRuntimeTarget {
+  const moduleSourceRoot = resolve(import.meta.dir, '..', '..', '..', '..');
+  const source = resolveControllerRuntimeSourceRoot({
+    explicitRoot: existsSync(resolve(moduleSourceRoot, 'src', 'cli', 'index.ts'))
+      ? moduleSourceRoot
+      : undefined,
+  });
+  const generation = controllerHome ? readRuntimeGeneration(controllerHome) : undefined;
+  return currentCliRuntimeTarget({
+    env: process.env,
+    argv: process.env.REPO_HARNESS_RUNTIME_EXECUTION === 'standalone-binary' ? process.argv : [],
+    moduleUrl: import.meta.url,
+    sourceRoot: source.root,
+    cwd: source.root ?? moduleSourceRoot,
+    sourceRevision: generation?.source.releaseRevision
+      ?? generation?.source.commit
+      ?? process.env.REPO_HARNESS_ACTIVE_RUNTIME_REVISION,
+  });
+}
 
-  const argvEntry = process.argv[1]?.trim();
-  if (argvEntry && /^repo-harness\.(?:js|mjs)$/.test(basename(argvEntry)) && existsSync(argvEntry)) {
-    return resolve(argvEntry);
-  }
-
-  try {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const installed = join(here, 'repo-harness.js');
-    if (existsSync(installed)) return installed;
-  } catch {
-    // Continue to the source checkout fallback used by local development/tests.
-  }
-
-  const sourceRoot = process.env.REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT?.trim() || process.cwd();
-  const sourceEntry = join(resolve(sourceRoot), 'bin', 'repo-harness.mjs');
-  if (existsSync(sourceEntry)) return sourceEntry;
-  throw new Error('CHECK_PROCESS_CLI_ENTRY_NOT_FOUND: immutable runtime CLI entry is unavailable');
+export function resolveRuntimeCliEntry(controllerHome?: string): string {
+  return resolveRuntimeCliTarget(controllerHome).entry;
 }
 
 /**
@@ -119,7 +126,7 @@ export async function runPersistedCheckViaProcessRuntime(
   const checkFingerprint = createHash('sha256')
     .update(JSON.stringify(checkSnapshot))
     .digest('hex');
-  const cliEntry = resolveRuntimeCliEntry();
+  const cliTarget = resolveRuntimeCliTarget(input.controllerHome);
   const checkArgs = [
     ...INTERNAL_CHECK_SUBCOMMAND,
     '--repo',
@@ -131,7 +138,13 @@ export async function runPersistedCheckViaProcessRuntime(
     '--expected-check-fingerprint',
     checkFingerprint,
   ];
-  const invocation = resolvePersistedCheckCliInvocation(cliEntry, checkArgs);
+  const invocation = resolvePersistedCheckCliInvocation(cliTarget.entry, checkArgs, {
+    runtimeExecutable: process.execPath,
+    runtimeKind: cliTarget.runtimeKind,
+    sourceRevision: cliTarget.sourceRevision,
+    immutable: cliTarget.immutable,
+    ...(cliTarget.runtimeKind === 'package_launcher' ? { launcherEntry: cliTarget.entry } : {}),
+  });
   const handle = await spawnManagedProcess({
     controllerHome: input.controllerHome,
     repoId: executionIdentity.repositoryId,
