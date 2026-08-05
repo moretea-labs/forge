@@ -23,7 +23,7 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 86,
+    "maxTestFiles": 87,
     "maxTestLines": 40000,
     "maxPureFiles": 30,
     "maxTempIsolatedFiles": 39,
@@ -455,6 +455,10 @@
     "tests/runtime/work-handle-store.test.ts": {
       "module": "process-runtime",
       "resource": "temp-isolated"
+    },
+    "tests/runtime/work-terminal-cleanup.test.ts": {
+      "module": "workflow",
+      "resource": "git-worktree"
     },
     "tests/runtime/work-validation-reconciler.test.ts": {
       "module": "process-runtime",
