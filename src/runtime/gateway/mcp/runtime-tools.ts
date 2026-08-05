@@ -17,7 +17,7 @@ import { readWorkHandle, type WorkHandleState } from '../../control-plane/execut
 import { readJobEvents } from '../../evidence/event-ledger';
 import { readExecutionArtifact } from '../../evidence/artifact-store';
 import { readExecutionEvidence } from '../../evidence/evidence-store';
-import { ensureControllerDaemon, readControllerDaemonStatus } from '../../control-plane/daemon-client';
+import { readControllerDaemonStatus } from '../../control-plane/daemon-client';
 import { readSchedulerHealthSnapshot } from '../../control-plane/global-scheduler/scheduler';
 import {
   evaluateActiveRuntimeSourceDrift,
@@ -105,7 +105,11 @@ import {
   writeControllerContextProjection,
 } from '../../projections/controller-context';
 import { loadMcpRuntimeState } from '../../../cli/mcp/auth';
-import { isExpectedLocalControllerHealth } from '../../../cli/mcp/keepalive';
+import {
+  CONTROLLER_SCHEMA_VERSION,
+  CONTROLLER_TOOL_SURFACE,
+  CONTROLLER_TOOL_SURFACE_VERSION,
+} from '../../../cli/controller/runtime-config';
 import { readActiveSlotAuthority, readSlotIdentity } from '../../../cli/controller/runtime-slots';
 import { resolveStableControllerHome } from '../../../cli/controller/stable-state/stable-home';
 import { redactMcpText } from '../../../cli/mcp/redaction';
@@ -1827,6 +1831,18 @@ async function probeLocalControllerHealth(endpoint: string | undefined): Promise
   }
 }
 
+function localControllerDiagnosticMatchesRuntime(
+  payload: Record<string, unknown> | null,
+  expected: { repoRoot?: string; generation?: string } = {},
+): boolean {
+  return payload?.status === 'ok'
+    && payload.toolSurface === CONTROLLER_TOOL_SURFACE
+    && payload.schemaVersion === CONTROLLER_SCHEMA_VERSION
+    && payload.toolSurfaceVersion === CONTROLLER_TOOL_SURFACE_VERSION
+    && (expected.repoRoot === undefined || payload.repoRoot === expected.repoRoot)
+    && (expected.generation === undefined || payload.generation === expected.generation);
+}
+
 export interface ControllerReadinessSignals {
   externalEndpoint?: GradedObservation;
   mcpHandshake?: GradedObservation;
@@ -1867,7 +1883,7 @@ export async function controllerReadiness(
     : null;
   const localBridgeEndpointReachable = localBridgeLiveHealth !== null;
   const localBridgeExpectedSurface = shouldProbeLocalBridge
-    ? isExpectedLocalControllerHealth(localBridgeLiveHealth, {
+    ? localControllerDiagnosticMatchesRuntime(localBridgeLiveHealth, {
       repoRoot: repository?.canonicalRoot,
       generation: localBridgeSurface?.generation,
     })
@@ -3715,7 +3731,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const liveHealth = shouldProbe ? await probeLocalControllerHealth(endpoint) : null;
         const endpointReachable = liveHealth !== null;
         const expectedSurface = shouldProbe
-          ? isExpectedLocalControllerHealth(liveHealth, {
+          ? localControllerDiagnosticMatchesRuntime(liveHealth, {
             repoRoot: repository.canonicalRoot,
             generation: surface.generation ?? runtime?.generation,
           })
@@ -5498,7 +5514,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
           origin: { surface: 'mcp', actor: 'web_target_snapshot', correlationId: requestId },
         });
-        const daemon = ensureControllerDaemon(ctx.controllerHome);
         return result({
           accepted: true,
           deduplicated: submitted.deduplicated,
@@ -5509,7 +5524,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             arbitraryUrlAccepted: false,
           },
           job: summarizeWork(submitted.job, repository.canonicalRoot),
-          daemon: { status: daemon.status, pid: daemon.pid },
           next: `Call work_status_digest with work_ref ${submitted.job.jobId}.`,
         });
       }
@@ -5539,14 +5553,12 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           confirmAuthorization: true,
           origin: { surface: 'mcp', actor: 'web_domain_access_apply', correlationId: requestId },
         });
-        const daemon = ensureControllerDaemon(ctx.controllerHome);
         return result({
           accepted: true,
           deduplicated: submitted.deduplicated,
           preview,
           allowedDomainCount: allowedDomains.length,
           job: summarizeWork(submitted.job, repository.canonicalRoot),
-          daemon: { status: daemon.status, pid: daemon.pid },
           next: `Call work_status_digest with work_ref ${submitted.job.jobId}.`,
         });
       }
@@ -5753,8 +5765,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           },
           createdBy: 'chatgpt',
         });
-        const daemon = ensureControllerDaemon(ctx.controllerHome);
-        return result({ ...campaign, daemon: { status: daemon.status, pid: daemon.pid }, next: 'Use get_campaign_review_packet when the campaign opens a checkpoint.' });
+        return result({ ...campaign, next: 'Use get_campaign_review_packet when the campaign opens a checkpoint.' });
       }
       case 'list_campaigns': {
         const repository = selected(ctx, args);
@@ -5783,7 +5794,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           campaignTaskInput(args.task, repository.repoId, existingCampaign.checkoutId),
           expectedRevision(args),
         );
-        ensureControllerDaemon(ctx.controllerHome);
         return result({ campaign });
       }
       case 'pause_campaign': {
@@ -5921,7 +5931,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           eventId: typeof args.event_id === 'string' ? args.event_id : undefined,
           data: args.event_data && typeof args.event_data === 'object' ? args.event_data as Record<string, unknown> : undefined,
         });
-        ensureControllerDaemon(ctx.controllerHome);
         return result({ occurrence });
       }
       case 'request_release_gate': {
@@ -5977,8 +5986,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             };
           }),
         });
-        const daemon = ensureControllerDaemon(ctx.controllerHome);
-        return result({ workflow, daemon: { status: daemon.status, pid: daemon.pid } });
+        return result({ workflow });
       }
       case 'list_portfolio_workflows':
         return result({ workflows: listPortfolioWorkflows(ctx.controllerHome, typeof args.limit === 'number' ? args.limit : 100) });

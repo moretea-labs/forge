@@ -51,8 +51,12 @@ describe('runtime command surface', () => {
     expect(existsSync(join(ROOT, 'src/cli/mcp/keepalive.ts'))).toBe(false);
     expect(existsSync(join(ROOT, 'src/cli/mcp/restart.ts'))).toBe(false);
     const httpTransport = readFileSync(join(ROOT, 'src/cli/mcp/transports/http.ts'), 'utf8');
+    const runtimeTools = readFileSync(join(ROOT, 'src/runtime/gateway/mcp/runtime-tools.ts'), 'utf8');
     expect(httpTransport).not.toContain('ensureControllerDaemon');
     expect(httpTransport).toContain('readControllerDaemonStatus');
+    expect(runtimeTools).not.toContain('ensureControllerDaemon');
+    expect(runtimeTools).not.toContain('cli/mcp/keepalive');
+    expect(runtimeTools).toContain('readControllerDaemonStatus');
 
     for (const legacy of ['keepalive', 'restart']) {
       const result = spawnSync('bun', [CLI, 'mcp', legacy, '--help'], { cwd: ROOT, encoding: 'utf-8' });
