@@ -1,10 +1,10 @@
 # Requirement portfolio migration map
 
-Status: accepted migration input  
+Status: completed migration input; frozen after cutover 2026-08-05  
 Snapshot date: 2026-08-02  
 Source revision: `183c490dae39ecbe9db349a58a676570b5fabc71`  
-Source authority: repository `tasks/issues/*.issue.{json,md}` before Requirement cutover  
-Target authority: `<durable-controller-home>/control-plane.sqlite`
+Source role: reviewed repository `tasks/issues/*.issue.{json,md}` snapshot used once before cutover  
+Current authority: `<durable-controller-home>/control-plane.sqlite`
 
 ## Purpose
 
@@ -100,7 +100,7 @@ Legacy status is evidence, not the target lifecycle. In particular, `done` does 
 6. Evaluate Requirement state from acceptance and delivery evidence.
 7. Convert non-acceptance operational residue into MaintenanceFindings.
 8. Validate that every source Issue is consumed exactly once and every source Task is either linked or explicitly archived.
-9. Switch the default board to SQLite, then disable Issue/Task runtime writers.
+9. Switch the default board to SQLite and retire Issue/Task, `currentIssue`, project-board, task-ledger and reconciliation writers. **Completed 2026-08-05.**
 
 ## Validation gates
 
@@ -116,6 +116,24 @@ Cutover must fail closed unless all gates pass:
 - no migration step writes back to repository Issue/Task state;
 - one-way exports contain SQLite revision and content fingerprint.
 
+## Post-cutover operation
+
+The migration map and source Issue/Task files are frozen. Operators query the
+Requirement Board for user-facing status and Execution Diagnostics for Plan,
+PlanStep, Work and historical aliases. Compatibility output must say
+`deprecated_frozen_projection`, include the source revision and SQLite
+revisions, and remain read-only.
+
+A new or modified Issue/Task file after the marker exists is a late historical
+write. It is ignored and must not trigger reconciliation, Requirement changes,
+Plan changes, Work changes or completion side effects.
+
 ## Rollback
 
-Before read cutover, rollback removes the incomplete imported namespace transaction and leaves the frozen Git source untouched. After cutover, rollback restores a verified SQLite backup and compatible artifact indexes. Git Issue/Task documents are never replayed over an existing authoritative record.
+Before a migration transaction commits, an interruption rolls back all imported
+Requirement, Plan and marker rows. After cutover, rollback restores only a
+verified SQLite backup and compatible artifact indexes. Verification includes
+SQLite integrity, supported schema version, record/audit continuity and entity
+relationships. Git Issue/Task documents, task-ledger artifacts and offline
+exports are never replayed over an existing authoritative record. See
+`docs/operations/sqlite-control-plane-recovery.md`.

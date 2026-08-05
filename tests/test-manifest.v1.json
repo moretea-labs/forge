@@ -23,7 +23,7 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 86,
+    "maxTestFiles": 88,
     "maxTestLines": 40000,
     "maxPureFiles": 30,
     "maxTempIsolatedFiles": 39,
@@ -31,7 +31,7 @@
     "maxGitWorktreeFiles": 15,
     "maxFixedPortFiles": 6,
     "maxRuntimeSingletonFiles": 6,
-    "maxControllerHomeIsolatedFiles": 5,
+    "maxControllerHomeIsolatedFiles": 7,
     "maxDestructiveFiles": 0
   },
   "pathModuleRules": [
@@ -195,6 +195,10 @@
       "module": "controller",
       "resource": "temp-isolated"
     },
+    "tests/cli/legacy-control-plane-cutover.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
     "tests/cli/controller-service.test.ts": {
       "module": "controller",
       "resource": "runtime-singleton"
@@ -339,6 +343,10 @@
     "tests/runtime/control-plane-hardening.test.ts": {
       "module": "process-runtime",
       "resource": "temp-isolated"
+    },
+    "tests/runtime/control-plane-final-cutover.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
     },
     "tests/runtime/controller-daemon-ownership.test.ts": {
       "module": "process-runtime",
