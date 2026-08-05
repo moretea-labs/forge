@@ -431,7 +431,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     include_temp_dirs: { type: 'boolean', description: 'Include bounded repo-harness temporary directory scan. Defaults to true.' },
     cleanup_preview: { type: 'boolean', description: 'Return a no-side-effect cleanup plan for orphan workers and stale temp entries.' },
   }),
-  definition('capability_recovery_probe', 'Read-only capability recovery probe for daemon, bridge, scheduler, workers, connector, tools, plugins, and fallback state.', {
+  definition('capability_recovery_probe', 'Read-only Runtime diagnostic evidence. This tool never starts, stops, restarts, repairs, or replaces Runtime modules.', {
     repo_id: repoId,
     recent_errors: { type: 'array', items: { type: 'string' } },
     command_preview_available: { type: 'boolean' },
@@ -439,11 +439,11 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     issue_tools_available: { type: 'boolean' },
     job_tools_available: { type: 'boolean' },
   }),
-  definition('capability_recovery_plan', 'Return a deterministic recovery plan without mutating local state.', {
+  definition('capability_recovery_plan', 'Return a diagnostic handoff plan without Runtime lifecycle actions or automatic source repair.', {
     repo_id: repoId,
     recent_errors: { type: 'array', items: { type: 'string' } },
   }),
-  definition('capability_recovery_apply', 'Apply one bounded repo-harness recovery action after explicit authorization.', {
+  definition('capability_recovery_apply', 'Apply bounded metadata maintenance after explicit authorization. Runtime start, stop, restart, rollout, and component recovery actions are retired.', {
     repo_id: repoId,
     action_id: { type: 'string' },
     confirm_authorization: { type: 'boolean' },
@@ -468,7 +468,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     max_candidates: { type: 'number' },
     cancel_pending_approvals: { type: 'boolean' },
   }, ['action_id', 'confirm_maintenance', 'authorization'], false),
-  definition('self_healing_loop_plan', 'Return the full self-healing loop plan, including local maintenance, restart fallback, and model-assisted source repair delegation.', {
+  definition('self_healing_loop_plan', 'Deprecated compatibility surface. Returns a diagnostic handoff only; autonomous Runtime recovery and source repair are retired.', {
     repo_id: repoId,
     objective: { type: 'string' },
     recent_errors: { type: 'array', items: { type: 'string' } },
@@ -478,7 +478,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     codex_cli_available: { type: 'boolean' },
     deepseek_available: { type: 'boolean' },
   }),
-  definition('self_healing_monitor_tick', 'Run one read-only self-healing monitor pass across runtime storage, plugins, browser targets, external filesystem grants, and model repair fallback.', {
+  definition('self_healing_monitor_tick', 'Deprecated compatibility surface. Returns bounded diagnostics only and never owns Runtime lifecycle or source repair.', {
     repo_id: repoId,
     recent_errors: { type: 'array', items: { type: 'string' } },
     objective: { type: 'string' },
@@ -4407,19 +4407,45 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
       case 'capability_recovery_probe': {
         const repository = selected(ctx, args);
         const snapshot = await capabilityRecoverySnapshot(ctx, repository, args);
-        return result({ recovery: snapshot, audit: listRecoveryAuditRecords(ctx.controllerHome, repository.repoId, 10) });
+        const blockingCapabilityCount = snapshot.capabilities
+          .filter((capability) => ['blocked', 'unavailable', 'degraded'].includes(capability.state))
+          .length;
+        const ready = blockingCapabilityCount === 0 && snapshot.platformBlocked !== true;
+        return result({
+          ready,
+          reasonCodes: ready ? [] : ['RUNTIME_DIAGNOSTICS_ATTENTION_REQUIRED'],
+          diagnostics: {
+            capabilityCount: snapshot.capabilities.length,
+            blockingCapabilityCount,
+            platformBlocked: snapshot.platformBlocked === true,
+            recentAuditCount: listRecoveryAuditRecords(ctx.controllerHome, repository.repoId, 10).length,
+          },
+          observedAt: snapshot.generatedAt,
+          mutatesState: false,
+          ownsRuntimeLifecycle: false,
+        });
       }
       case 'capability_recovery_plan': {
         const repository = selected(ctx, args);
         const snapshot = await capabilityRecoverySnapshot(ctx, repository, args);
+        const blockingCapabilityCount = snapshot.capabilities
+          .filter((capability) => ['blocked', 'unavailable', 'degraded'].includes(capability.state))
+          .length;
+        const ready = blockingCapabilityCount === 0 && snapshot.platformBlocked !== true;
         return result({
-          repoId: repository.repoId,
-          generatedAt: snapshot.generatedAt,
-          overallState: snapshot.overallState,
-          fallbackRequired: snapshot.fallbackRequired,
-          recommendedActions: snapshot.recommendedActions,
-          blockingCapabilities: snapshot.capabilities.filter((capability) => ['blocked', 'unavailable', 'degraded'].includes(capability.state)),
+          ready,
+          reasonCodes: ready ? [] : ['RUNTIME_DIAGNOSTICS_ATTENTION_REQUIRED'],
+          diagnostics: {
+            capabilityCount: snapshot.capabilities.length,
+            blockingCapabilityCount,
+            platformBlocked: snapshot.platformBlocked === true,
+          },
+          observedAt: snapshot.generatedAt,
+          handoffRequired: !ready,
           notes: snapshot.notes,
+          next: ready
+            ? 'Continue through the current Runtime and Work interfaces.'
+            : 'Inspect runtime_maintenance_status and create an rh_inbox handoff when operator or external Controller action is required.',
         });
       }
       case 'runtime_maintenance_status': {
@@ -4447,15 +4473,13 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         }) as unknown as Record<string, unknown>);
       }
       case 'self_healing_loop_plan': {
-        return result(buildSelfHealingLoopPlan({
-          objective: typeof args.objective === 'string' ? args.objective : undefined,
-          recentErrors: Array.isArray(args.recent_errors) ? args.recent_errors.map(String) : undefined,
-          platformBlocked: args.platform_blocked === true,
-          sourceDefectSuspected: args.source_defect_suspected === true,
-          chatgptAvailable: args.chatgpt_available === undefined ? undefined : args.chatgpt_available === true,
-          codexCliAvailable: args.codex_cli_available === true,
-          deepseekAvailable: args.deepseek_available === true,
-        }) as unknown as Record<string, unknown>);
+        return result({
+          retired: true,
+          reasonCode: 'AUTONOMOUS_RUNTIME_RECOVERY_RETIRED',
+          summary: 'Runtime recovery is owned by the Canonical Runtime lifecycle. This compatibility tool cannot restart modules or dispatch source repair.',
+          replacements: ['runtime_maintenance_status', 'rh_context', 'rh_inbox'],
+          mutatesState: false,
+        });
       }
       case 'self_healing_monitor_tick': {
         const repository = selected(ctx, args);
@@ -4467,59 +4491,33 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const browserManifest = getAssistantPluginManifest(ctx.controllerHome, repository, 'browser');
         const browserTargets = listWebTargets(repository.canonicalRoot, browserManifest);
         const externalFilesystem = listExternalFilesystemTargets(repository.canonicalRoot);
-        const loop = buildSelfHealingLoopPlan({
-          objective: typeof args.objective === 'string' ? args.objective : undefined,
-          recentErrors,
-          platformBlocked: recovery.platformBlocked,
-          sourceDefectSuspected: recovery.summary.topRisks.includes('source_defect_suspected'),
-          chatgptAvailable: !recovery.platformBlocked,
-          codexCliAvailable: false,
-          deepseekAvailable: false,
-        });
-        const browser = {
-          ready: browserTargets.length > 0,
-          targets: browserTargets,
-        };
-        const report = buildSelfHealingMonitorReport({
-          repoId: repository.repoId,
-          mode: args.active_mode === true ? 'active' : 'shadow',
-          recovery,
-          maintenance,
-          auth,
-          browser,
-          externalFilesystem,
-          recentErrors,
-        });
+        const blockingCapabilityCount = recovery.capabilities
+          .filter((capability) => ['blocked', 'unavailable', 'degraded'].includes(capability.state))
+          .length;
+        const ready = blockingCapabilityCount === 0 && recovery.platformBlocked !== true;
         return result({
-          schemaVersion: 1,
-          generatedAt: new Date().toISOString(),
-          repoId: repository.repoId,
-          overallState: recovery.overallState,
-          recovery,
-          maintenance,
-          auth,
-          browser: {
-            ready: browser.ready,
-            targetCount: browser.targets.length,
-            targets: browser.targets,
-            next: 'Use web_domain_access_preview/apply for new domains; browser submit/payment/upload/download actions remain intentionally unavailable.',
+          retired: true,
+          ready,
+          reasonCodes: ready ? [] : ['RUNTIME_DIAGNOSTICS_ATTENTION_REQUIRED'],
+          diagnostics: {
+            capabilityCount: recovery.capabilities.length,
+            blockingCapabilityCount,
+            runtimeMaintenanceRecommendedActions: maintenance.recommendedActions,
+            workspaceAuthActionRequired: Array.isArray((auth as { actionRequired?: unknown[] }).actionRequired)
+              ? (auth as { actionRequired?: unknown[] }).actionRequired!.length
+              : 0,
+            browserTargetCount: browserTargets.length,
+            externalFilesystemTargetCount: Array.isArray(externalFilesystem) ? externalFilesystem.length : 0,
           },
-          externalFilesystem,
-          loop,
-          report,
-          candidateFindings: report.candidateFindings,
-          nextActions: [
-            ...report.nextSteps.map((step) => step.id),
-            ...maintenance.recommendedActions.map((action) => `runtime_maintenance_apply:${action}`),
-            ...(Array.isArray((auth as { actionRequired?: unknown[] }).actionRequired) && (auth as { actionRequired?: unknown[] }).actionRequired!.length > 0 ? ['workspace_auth_login_prepare'] : []),
-            'retry original task only after runtime.storage is ready',
-          ],
+          observedAt: new Date().toISOString(),
+          summary: 'Autonomous self-healing is retired. Diagnostics are evidence only; Runtime lifecycle remains owned by repo-harness-runtime.',
+          replacements: ['runtime_maintenance_status', 'rh_context', 'rh_inbox'],
           safety: {
             mutatesState: false,
             startsJobs: false,
             readsSecrets: false,
-            shadowMode: report.mode === 'shadow',
-            canAutoModifySource: report.automationPolicy.canAutoModifySource,
+            canAutoModifySource: false,
+            canRestartRuntime: false,
           },
         });
       }
@@ -4844,48 +4842,15 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             break;
           }
           case 'recovery.restart_controller':
-          case 'recovery.restart_local_bridge': {
-            const requestId = typeof args.request_id === 'string' && args.request_id.trim()
-              ? args.request_id.trim()
-              : `capability-recovery-${action.id}-${Date.now()}`;
-            const kind: SupervisorOperationKind = action.id === 'recovery.restart_local_bridge'
-              ? 'restart_gateway'
-              : 'restart_controller';
-            const supervisorRestart = await stableSupervisorFacadeMutation({
-              controllerHome: ctx.controllerHome,
-              requestId,
-              kind,
-              actor: 'capability_recovery_apply',
-              reason,
-            });
-            if (supervisorRestart.installed) {
-              if (!supervisorRestart.accepted || !supervisorRestart.operation) {
-                throw new Error(supervisorRestart.error ?? 'SUPERVISOR_OPERATION_REJECTED');
-              }
-              payload = {
-                runtimeSupervisor: supervisorRestart,
-                note: kind === 'restart_controller'
-                  ? 'The Stable Supervisor owns a controller-only restart and preserves the Gateway unless generation reconciliation requires a refresh.'
-                  : 'The Stable Supervisor owns the Gateway/embedded Local Controller restart. The request returns with a reconnect-safe operation ID.',
-              };
-              affectedPaths = ['_ops/controller-home/supervisor/operations'];
-              break;
-            }
-            const restart = scheduleControllerServiceRestart({
-              repo: repository.canonicalRoot,
-              controllerHome: ctx.controllerHome,
-              requestId,
-              requestedBy: 'capability_recovery_apply',
-              reason,
-              mode: 'detached',
-            });
-            payload = {
-              restart,
-              note: 'Stable Supervisor is not installed; the legacy detached coordinator owns the full Controller stack restart.',
-            };
-            affectedPaths = ['_ops/controller-home/restart'];
-            break;
-          }
+          case 'recovery.restart_local_bridge':
+            return result({
+              error: {
+                code: 'RUNTIME_LIFECYCLE_ACTION_RETIRED',
+                message: 'Component restart recovery is retired. Runtime lifecycle is owned only by repo-harness-runtime.',
+              },
+              retired: true,
+              replacement: 'repo-harness-runtime',
+            }, true);
           case 'recovery.create_patch_handoff':
             payload = prepareFallbackHandoffArtifacts(repository, { reason }) as unknown as Record<string, unknown>;
             affectedPaths = ['.ai/handoff'];

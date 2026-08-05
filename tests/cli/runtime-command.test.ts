@@ -98,6 +98,26 @@ describe('runtime command surface', () => {
     expect(readinessBlock).toContain('diagnostics:');
     expect(readinessBlock).not.toContain('state:');
     expect(readinessBlock).not.toContain('...readiness');
+    const recoveryProbeStart = runtimeTools.indexOf("case 'capability_recovery_probe':");
+    const recoveryProbeEnd = runtimeTools.indexOf("case 'capability_recovery_plan':", recoveryProbeStart);
+    const recoveryProbeBlock = runtimeTools.slice(recoveryProbeStart, recoveryProbeEnd);
+    expect(recoveryProbeBlock).toContain('ownsRuntimeLifecycle: false');
+    expect(recoveryProbeBlock).not.toContain('recovery: snapshot');
+    expect(recoveryProbeBlock).not.toContain('recommendedActions');
+    const recoveryApplyStart = runtimeTools.indexOf("case 'capability_recovery_apply':");
+    const recoveryApplyEnd = runtimeTools.indexOf("case 'runtime_storage_repair_preview':", recoveryApplyStart);
+    const recoveryApplyBlock = runtimeTools.slice(recoveryApplyStart, recoveryApplyEnd);
+    expect(recoveryApplyStart).toBeGreaterThanOrEqual(0);
+    expect(recoveryApplyEnd).toBeGreaterThan(recoveryApplyStart);
+    expect(recoveryApplyBlock).toContain('RUNTIME_LIFECYCLE_ACTION_RETIRED');
+    expect(recoveryApplyBlock).not.toContain('stableSupervisorFacadeMutation');
+    expect(recoveryApplyBlock).not.toContain('scheduleControllerServiceRestart');
+    const selfHealingStart = runtimeTools.indexOf("case 'self_healing_loop_plan':");
+    const selfHealingEnd = runtimeTools.indexOf("case 'goal_create':", selfHealingStart);
+    const selfHealingBlock = runtimeTools.slice(selfHealingStart, selfHealingEnd);
+    expect(selfHealingBlock).toContain('AUTONOMOUS_RUNTIME_RECOVERY_RETIRED');
+    expect(selfHealingBlock).not.toContain('buildSelfHealingLoopPlan');
+    expect(selfHealingBlock).not.toContain('buildSelfHealingMonitorReport');
     expect(runtimeTools).toContain('readControllerDaemonStatus');
     for (const legacy of [
       'controller_restart_verify',
