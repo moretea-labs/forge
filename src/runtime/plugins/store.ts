@@ -6,14 +6,7 @@ import { existsSync, mkdirSync, readdirSync} from 'fs';
 import type { ExecutionJob, ResourceClaimSpec } from '../execution/jobs/types';
 import { appendRuntimeEvent } from '../evidence/event-ledger';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
-import { gmailPluginAdapter } from './gmail-adapter';
-import { googleCalendarPluginAdapter } from './google-calendar-adapter';
-import { googleTasksPluginAdapter } from './google-tasks-adapter';
-import { githubPluginAdapter } from './github-adapter';
-import { browserPluginAdapter } from './browser-adapter';
-import { appStoreConnectPluginAdapter } from './app-store-connect-adapter';
-import { iosPluginAdapter } from './ios-adapter';
-import { localSystemPluginAdapter } from './local-system-adapter';
+import { createFirstPartyPluginAdapterMap } from './first-party-registry';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
 import { markControllerContextProjectionDirty } from '../projections/controller-context';
 import type {
@@ -26,16 +19,7 @@ import type {
   AssistantPluginRegistryIndexEntry,
 } from './types';
 
-const PLUGIN_ADAPTERS = new Map<string, AssistantPluginAdapter>([
-  [githubPluginAdapter.pluginId, githubPluginAdapter],
-  [browserPluginAdapter.pluginId, browserPluginAdapter],
-  [appStoreConnectPluginAdapter.pluginId, appStoreConnectPluginAdapter],
-  [iosPluginAdapter.pluginId, iosPluginAdapter],
-  [gmailPluginAdapter.pluginId, gmailPluginAdapter],
-  [googleCalendarPluginAdapter.pluginId, googleCalendarPluginAdapter],
-  [googleTasksPluginAdapter.pluginId, googleTasksPluginAdapter],
-  [localSystemPluginAdapter.pluginId, localSystemPluginAdapter],
-]);
+const PLUGIN_ADAPTERS = createFirstPartyPluginAdapterMap();
 
 const PLUGIN_MANIFEST_CACHE_TTL_MS = 5_000;
 
