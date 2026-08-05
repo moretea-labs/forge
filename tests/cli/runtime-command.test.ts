@@ -30,6 +30,9 @@ describe('runtime command surface', () => {
     expect(root.stdout).toContain('controller');
     expect(root.stdout).toContain('runtime');
     expect(root.stdout).not.toMatch(/^\s+supervisor\b/m);
+    const rootSource = readFileSync(join(ROOT, 'src/cli/index.ts'), 'utf8');
+    expect(rootSource).not.toContain("'supervisor'");
+    expect(rootSource).not.toContain('bindInheritedRuntimeWriterClaimFromEnvironment');
 
     const controller = spawnSync('bun', [CLI, 'controller', '--help'], { cwd: ROOT, encoding: 'utf-8' });
     expect(controller.status).toBe(0);
@@ -72,10 +75,15 @@ describe('runtime command surface', () => {
     expect(help.stdout).not.toMatch(/^\s+restart\b/m);
     expect(existsSync(join(ROOT, 'src/cli/mcp/keepalive.ts'))).toBe(false);
     expect(existsSync(join(ROOT, 'src/cli/mcp/restart.ts'))).toBe(false);
+    const mcpCommand = readFileSync(join(ROOT, 'src/cli/commands/mcp.ts'), 'utf8');
+    const lifecycleAuthority = readFileSync(join(ROOT, 'src/cli/controller/lifecycle-authority.ts'), 'utf8');
     const httpTransport = readFileSync(join(ROOT, 'src/cli/mcp/transports/http.ts'), 'utf8');
     const runtimeTools = readFileSync(join(ROOT, 'src/runtime/gateway/mcp/runtime-tools.ts'), 'utf8');
     const facadeActions = readFileSync(join(ROOT, 'src/runtime/control-plane/facade/suggested-actions.ts'), 'utf8');
     const capabilityRegistry = readFileSync(join(ROOT, 'src/runtime/control-plane/facade/capability-registry.ts'), 'utf8');
+    expect(mcpCommand).toContain('bindInheritedRuntimeWriterClaimFromEnvironment');
+    expect(lifecycleAuthority).toContain('repo-harness-runtime');
+    expect(lifecycleAuthority).not.toContain('controller start|stop|restart');
     expect(httpTransport).not.toContain('ensureControllerDaemon');
     expect(httpTransport).toContain('readControllerDaemonStatus');
     expect(runtimeTools).not.toContain('ensureControllerDaemon');

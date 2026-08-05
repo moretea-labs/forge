@@ -9,8 +9,8 @@ export function isControllerLifecycleOwnerEnvironment(
 export function assertControllerLifecycleOwner(component: string): void {
   if (isControllerLifecycleOwnerEnvironment()) return;
   throw new Error(
-    `${component} is an internal Controller component. `
-    + 'Use `repo-harness controller start|stop|restart|status|logs|rollout|rollback`; '
-    + 'the Controller lifecycle owns Gateway, Local UI, tunnel, and daemon startup.',
+    `${component} is an internal Runtime module. `
+    + 'Start the complete application through `repo-harness-runtime`; '
+    + 'Gateway, Controller Services, Scheduler and MCP Transport share one Runtime lifecycle owner.',
   );
 }
