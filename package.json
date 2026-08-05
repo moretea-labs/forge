@@ -128,7 +128,6 @@
     "controller:restart": "bash scripts/restart-repo-harness.sh",
     "runtime:restart": "bash scripts/restart-repo-harness.sh",
     "runtime:activate-source-baseline": "bun scripts/activate-source-baseline.ts request",
-    "check:activate-source-baseline": "bun scripts/activate-source-baseline.ts request",
     "controller:logs": "bash scripts/controller-runtime.sh logs",
     "sync:brain-docs": "repo-harness run sync-brain-docs --all",
     "sync:codex-installed": "bash scripts/sync-codex-installed-copies.sh",
