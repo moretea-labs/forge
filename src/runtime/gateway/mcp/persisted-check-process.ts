@@ -31,16 +31,21 @@ export function resolvePersistedCheckCliInvocation(
 
 export function resolveRuntimeCliTarget(controllerHome?: string): CliRuntimeTarget {
   const moduleSourceRoot = resolve(import.meta.dir, '..', '..', '..', '..');
+  const sourceEntry = resolve(moduleSourceRoot, 'src', 'cli', 'index.ts');
   const source = resolveControllerRuntimeSourceRoot({
-    explicitRoot: existsSync(resolve(moduleSourceRoot, 'src', 'cli', 'index.ts'))
-      ? moduleSourceRoot
-      : undefined,
+    explicitRoot: existsSync(sourceEntry) ? moduleSourceRoot : undefined,
   });
+  const sourceMode = Boolean(source.root && existsSync(resolve(source.root, 'src', 'cli', 'index.ts')));
+  const runtimeEnv = { ...process.env };
+  if (sourceMode) {
+    delete runtimeEnv.REPO_HARNESS_RUNTIME_EXECUTION;
+    delete runtimeEnv.REPO_HARNESS_RUNTIME_CLI_ENTRY;
+  }
   const generation = controllerHome ? readRuntimeGeneration(controllerHome) : undefined;
   return currentCliRuntimeTarget({
-    env: process.env,
-    argv: process.env.REPO_HARNESS_RUNTIME_EXECUTION === 'standalone-binary' ? process.argv : [],
-    moduleUrl: import.meta.url,
+    env: runtimeEnv,
+    argv: sourceMode ? [] : process.argv,
+    moduleUrl: sourceMode ? undefined : import.meta.url,
     sourceRoot: source.root,
     cwd: source.root ?? moduleSourceRoot,
     sourceRevision: generation?.source.releaseRevision

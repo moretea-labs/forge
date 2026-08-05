@@ -230,7 +230,9 @@ async function settleProcesses(input: TerminalWorkCleanupInput, receipt: WorkCle
     // Reconcile independent Runner receipts before classifying ownership. This
     // never re-executes a command and can only perform a monotonic,
     // fence-token-bound terminal transition.
-    getProcessHandle(input.controllerHome, input.handle.repositoryId, record.processId);
+    if (record.exitReceiptPath) {
+      getProcessHandle(input.controllerHome, input.handle.repositoryId, record.processId);
+    }
     const current = getProcessRecord(input.controllerHome, input.handle.repositoryId, record.processId) ?? record;
     if (isManagedProcessTerminal(current)) {
       releaseProcessLeasesOnce(input.controllerHome, input.handle.repositoryId, current.processId);
