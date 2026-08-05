@@ -631,7 +631,6 @@ export function stageSupervisorRelease(input: {
 
 function assertPublishableRelease(
   release: NonNullable<ReturnType<typeof readSupervisorRelease>>,
-  canaryCwd: string,
   allowUnreproducibleReleaseForTests = false,
 ): void {
   const externalPluginArtifacts = supervisorReleaseExternalPluginArtifacts(release.releasePath);
@@ -663,7 +662,11 @@ function assertPublishableRelease(
   if (failures.length > 0) {
     throw new Error(`SUPERVISOR_RELEASE_NOT_REPRODUCIBLE: refusing to publish Supervisor Release (${failures.join('; ')})`);
   }
-  verifySupervisorReleaseExecutionCanary({ releasePath: release.releasePath, cwd: canaryCwd, executionMode: release.executionMode });
+  verifySupervisorReleaseExecutionCanary({
+    releasePath: release.releasePath,
+    cwd: release.releasePath,
+    executionMode: release.executionMode,
+  });
 }
 
 export function publishSupervisorRelease(input: { controllerHome: string; repoRoot: string; releasePath: string; allowUnreproducibleReleaseForTests?: boolean }): SupervisorInstallResult {
@@ -671,7 +674,7 @@ export function publishSupervisorRelease(input: { controllerHome: string; repoRo
   const releasePath = assertOwnedReleasePath(controllerHome, input.releasePath);
   const release = readSupervisorRelease(releasePath);
   if (!release) throw new Error('SUPERVISOR_STAGED_RELEASE_INVALID');
-  assertPublishableRelease(release, input.repoRoot, input.allowUnreproducibleReleaseForTests === true);
+  assertPublishableRelease(release, input.allowUnreproducibleReleaseForTests === true);
   const revision = release.releaseRevision ?? `local-${Date.now()}`;
   const previous = readCurrentRelease(controllerHome);
   const bootstrapSourceRoot = release.sourceRoot ?? input.repoRoot;
