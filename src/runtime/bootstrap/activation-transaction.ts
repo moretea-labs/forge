@@ -2,9 +2,9 @@
  * Atomic activation authority transaction.
  *
  * Single source of truth:
- *   bootstrap/activation-authority.json
+ *   bootstrap/runtime-authority.json
  *
- * Compatibility projections (written only after commit):
+ * Compatibility projections (written only after the primary commit):
  *   bootstrap/active-runtime.json
  *   bootstrap/writer-authority.json
  *   active-slot.json
@@ -30,6 +30,14 @@ import type { RuntimeSlotId } from '../../cli/controller/runtime-slots';
 import type { WriterAuthority } from '../../cli/controller/stable-state/writer-authority';
 import type { ActiveRuntimePointer } from './stable-bootstrap';
 import { assertThisRuntimeMayWriteOrThrow } from '../../cli/controller/stable-state/runtime-writer-context';
+import {
+  migrateRuntimeAuthority,
+  migrateRuntimeConfig,
+  readRuntimeAuthority,
+  runtimeConfigHash,
+  writeRuntimeAuthority,
+  type RuntimeAuthority,
+} from './runtime-authority';
 
 export type ActivationTxStatus =
   | 'committed'
@@ -126,12 +134,44 @@ function safeUnlink(path: string): void {
   }
 }
 
+function primaryAuthorityToActivation(value: RuntimeAuthority): ActivationAuthorityRecord {
+  const previousRuntime = value.previous && value.previousLegacySlot
+    ? {
+        activeSlot: value.previousLegacySlot,
+        generation: value.previous.instanceId,
+        ...(value.previous.releaseRevision ? { releaseRevision: value.previous.releaseRevision } : {}),
+        ...(value.previous.releasePath ? { releasePath: value.previous.releasePath } : {}),
+      }
+    : undefined;
+  return {
+    schemaVersion: 1,
+    status: 'committed',
+    activeSlot: value.legacySlot,
+    generation: value.generation,
+    ...(value.active.releaseRevision ? { releaseRevision: value.active.releaseRevision } : {}),
+    ...(value.active.releasePath ? { releasePath: value.active.releasePath } : {}),
+    writerEpoch: value.authorityTerm,
+    fencingToken: value.fencingToken,
+    daemonPort: value.daemon.port,
+    gatewayPort: value.gateway.port,
+    ...(value.previousLegacySlot ? { previousSlot: value.previousLegacySlot } : {}),
+    ...(previousRuntime ? { previousRuntime } : {}),
+    ...(value.rollbackUntil ? { rollbackUntil: value.rollbackUntil } : {}),
+    committedAt: value.committedAt,
+    transactionId: value.activationId,
+    ...(value.operationId ? { reason: value.operationId } : {}),
+  };
+}
+
 export function readActivationAuthority(controllerHome: string): ActivationAuthorityRecord | undefined {
-  const value = readJson<ActivationAuthorityRecord>(activationAuthorityPath(controllerHome));
-  if (!value || value.schemaVersion !== 1 || value.status !== 'committed') return undefined;
-  if (value.activeSlot !== 'blue' && value.activeSlot !== 'green') return undefined;
-  if (!value.writerEpoch || !value.fencingToken) return undefined;
-  return value;
+  const primary = readRuntimeAuthority(controllerHome);
+  if (primary) return primaryAuthorityToActivation(primary);
+  try {
+    return primaryAuthorityToActivation(migrateRuntimeAuthority(controllerHome));
+  } catch (error) {
+    if (error instanceof Error && error.message === 'RUNTIME_AUTHORITY_MISSING') return undefined;
+    throw error;
+  }
 }
 
 export function readActivationPrepare(controllerHome: string): ActivationPrepareJournal | undefined {
@@ -174,11 +214,11 @@ function writeCompatibilityProjections(
     epoch: authority.writerEpoch,
     activeSlot: authority.activeSlot,
     fencingToken: authority.fencingToken,
-    generation: authority.generation,
-    releaseRevision: authority.releaseRevision,
-    releasePath: authority.releasePath,
+    ...(authority.generation ? { generation: authority.generation } : {}),
+    ...(authority.releaseRevision ? { releaseRevision: authority.releaseRevision } : {}),
+    ...(authority.releasePath ? { releasePath: authority.releasePath } : {}),
     updatedAt: authority.committedAt,
-    reason: authority.reason,
+    ...(authority.reason ? { reason: authority.reason } : {}),
   };
   atomicWrite(join(bootstrap, 'writer-authority.json'), writer);
 
@@ -186,13 +226,13 @@ function writeCompatibilityProjections(
   const pointer: ActiveRuntimePointer = {
     schemaVersion: 1,
     activeSlot: authority.activeSlot,
-    generation: authority.generation,
-    releaseRevision: authority.releaseRevision,
-    releasePath: authority.releasePath,
+    ...(authority.generation ? { generation: authority.generation } : {}),
+    ...(authority.releaseRevision ? { releaseRevision: authority.releaseRevision } : {}),
+    ...(authority.releasePath ? { releasePath: authority.releasePath } : {}),
     writerEpoch: authority.writerEpoch,
     fencingToken: authority.fencingToken,
-    daemonPort: authority.daemonPort,
-    gatewayPort: authority.gatewayPort,
+    ...(authority.daemonPort !== undefined ? { daemonPort: authority.daemonPort } : {}),
+    ...(authority.gatewayPort !== undefined ? { gatewayPort: authority.gatewayPort } : {}),
     updatedAt: authority.committedAt,
   };
   atomicWrite(join(bootstrap, 'active-runtime.json'), pointer);
@@ -201,10 +241,10 @@ function writeCompatibilityProjections(
   const activeSlot = {
     schemaVersion: 1,
     activeSlot: authority.activeSlot,
-    previousSlot: authority.previousSlot,
-    generation: authority.generation,
-    reason: authority.reason,
-    rollbackUntil: authority.rollbackUntil,
+    ...(authority.previousSlot ? { previousSlot: authority.previousSlot } : {}),
+    ...(authority.generation ? { generation: authority.generation } : {}),
+    ...(authority.reason ? { reason: authority.reason } : {}),
+    ...(authority.rollbackUntil ? { rollbackUntil: authority.rollbackUntil } : {}),
     updatedAt: authority.committedAt,
   };
   atomicWrite(join(home, 'active-slot.json'), activeSlot);
@@ -285,21 +325,23 @@ export function commitActivationTransaction(
         }
       : undefined);
 
+  const previousEpoch = input.previousEpoch ?? existing?.writerEpoch;
+  const previousSlot = input.previousSlot ?? existing?.activeSlot;
   const intended: ActivationPrepareJournal['intended'] = {
     transactionId,
     activeSlot: input.activeSlot,
-    generation: input.generation,
-    releaseRevision: input.releaseRevision,
-    releasePath: input.releasePath,
+    ...(input.generation ? { generation: input.generation } : {}),
+    ...(input.releaseRevision ? { releaseRevision: input.releaseRevision } : {}),
+    ...(input.releasePath ? { releasePath: input.releasePath } : {}),
     writerEpoch,
     fencingToken,
-    daemonPort: input.daemonPort,
-    gatewayPort: input.gatewayPort,
-    reason: input.reason,
-    previousEpoch: input.previousEpoch ?? existing?.writerEpoch,
-    previousSlot: input.previousSlot ?? existing?.activeSlot,
-    previousRuntime,
-    rollbackUntil: input.rollbackUntil,
+    ...(input.daemonPort !== undefined ? { daemonPort: input.daemonPort } : {}),
+    ...(input.gatewayPort !== undefined ? { gatewayPort: input.gatewayPort } : {}),
+    ...(input.reason ? { reason: input.reason } : {}),
+    ...(previousEpoch ? { previousEpoch } : {}),
+    ...(previousSlot ? { previousSlot } : {}),
+    ...(previousRuntime ? { previousRuntime } : {}),
+    ...(input.rollbackUntil ? { rollbackUntil: input.rollbackUntil } : {}),
   };
 
   const prepare: ActivationPrepareJournal = {
@@ -323,7 +365,43 @@ export function commitActivationTransaction(
     committedAt,
   };
 
-  // Commit authority record (atomic rename).
+  // Commit the primary Runtime authority first. The historical activation,
+  // writer, active-runtime and active-slot files are projections only.
+  const config = migrateRuntimeConfig(home);
+  const previous = previousRuntime && input.rollbackUntil
+    ? {
+        instanceId: previousRuntime.generation ?? previousRuntime.transactionId ?? `previous-${previousRuntime.activeSlot}`,
+        ...(previousRuntime.releasePath ? { releasePath: previousRuntime.releasePath } : {}),
+        ...(previousRuntime.releaseRevision ? { releaseRevision: previousRuntime.releaseRevision } : {}),
+        publishedAt: committedAt,
+        rollbackUntil: input.rollbackUntil,
+      }
+    : undefined;
+  writeRuntimeAuthority(home, {
+    schemaVersion: 2,
+    status: 'committed',
+    authorityTerm: writerEpoch,
+    activationId: transactionId,
+    generation: input.generation ?? `generation-${transactionId}`,
+    configRevision: config.configRevision,
+    configHash: runtimeConfigHash(home)!,
+    fencingToken,
+    active: {
+      instanceId: input.generation ?? transactionId,
+      ...(input.releasePath ? { releasePath: input.releasePath } : {}),
+      ...(input.releaseRevision ? { releaseRevision: input.releaseRevision } : {}),
+      publishedAt: committedAt,
+    },
+    ...(previous ? { previous } : {}),
+    ingress: config.ingress,
+    daemon: { port: input.daemonPort ?? config.daemon.port },
+    gateway: { host: config.gateway.host, port: input.gatewayPort ?? config.gateway.port },
+    legacySlot: input.activeSlot,
+    ...(previousSlot ? { previousLegacySlot: previousSlot } : {}),
+    ...(input.rollbackUntil ? { rollbackUntil: input.rollbackUntil } : {}),
+    ...(input.reason ? { operationId: input.reason } : {}),
+    committedAt,
+  });
   atomicWrite(activationAuthorityPath(home), authority);
 
   if (input.crashAfterCommitBeforeProjections) {
@@ -345,6 +423,24 @@ export function commitActivationTransaction(
  */
 export function recoverActivationTransaction(controllerHome: string): ActivationTransactionResult {
   const home = root(controllerHome);
+  const primary = readRuntimeAuthority(home);
+  if (primary) {
+    const authority = primaryAuthorityToActivation(primary);
+    atomicWrite(activationAuthorityPath(home), authority);
+    writeCompatibilityProjections(home, authority);
+    const prepare = readActivationPrepare(home);
+    if (prepare && prepare.transactionId !== authority.transactionId) {
+      return {
+        ok: false,
+        status: 'incomplete',
+        authority,
+        recovered: false,
+        error: `prepared_pending_resolution: prepare ${prepare.transactionId} does not match committed ${authority.transactionId}`,
+      };
+    }
+    if (prepare) safeUnlink(activationPreparePath(home));
+    return { ok: true, status: 'committed', authority, recovered: true };
+  }
   const inspect = inspectActivationTransaction(home);
   const authority = readActivationAuthority(home);
   const prepare = readActivationPrepare(home);
@@ -382,31 +478,22 @@ export function recoverActivationTransaction(controllerHome: string): Activation
     };
   }
 
-  // Fall back: if only projections exist (pre-transaction layout), synthesize authority once.
-  const writer = readJson<WriterAuthority>(join(home, 'bootstrap', 'writer-authority.json'));
-  const pointer = readJson<ActiveRuntimePointer>(join(home, 'bootstrap', 'active-runtime.json'));
-  if (writer && pointer && writer.activeSlot === pointer.activeSlot) {
-    const synthesized: ActivationAuthorityRecord = {
-      schemaVersion: 1,
-      status: 'committed',
-      activeSlot: writer.activeSlot,
-      generation: writer.generation ?? pointer.generation,
-      releaseRevision: writer.releaseRevision ?? pointer.releaseRevision,
-      releasePath: writer.releasePath ?? pointer.releasePath,
-      writerEpoch: writer.epoch,
-      fencingToken: writer.fencingToken,
-      daemonPort: pointer.daemonPort,
-      gatewayPort: pointer.gatewayPort,
-      reason: writer.reason ?? 'recovered_from_projections',
-      committedAt: writer.updatedAt ?? new Date().toISOString(),
-      transactionId: `atx-recover-${Date.now()}`,
-    };
+  // One-way legacy migration is strict: all available projections must agree.
+  // An ambiguous split-brain is operator-visible and never defaults to blue.
+  try {
+    const migrated = migrateRuntimeAuthority(home);
+    const synthesized = primaryAuthorityToActivation(migrated);
     atomicWrite(activationAuthorityPath(home), synthesized);
     writeCompatibilityProjections(home, synthesized);
     return { ok: true, status: 'committed', authority: synthesized, recovered: true };
+  } catch (error) {
+    if (error instanceof Error && error.message === 'RUNTIME_AUTHORITY_MISSING') return inspect;
+    return {
+      ok: false,
+      status: 'incomplete',
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
-
-  return inspect;
 }
 
 /**

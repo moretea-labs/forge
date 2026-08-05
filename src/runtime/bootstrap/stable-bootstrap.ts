@@ -25,7 +25,6 @@ import { isProcessAlive } from '../shared/process-tree';
 import { defaultProcessIdentityProbe, processIdentityMatches, type ProcessIdentityProbe } from '../supervisor/identity';
 import type { ProcessIdentity } from '../supervisor/types';
 import {
-  publishWriterAuthority,
   readWriterAuthority,
   type WriterAuthority,
 } from '../../cli/controller/stable-state/writer-authority';
@@ -37,6 +36,11 @@ import {
   readActivationAuthority,
   recoverActivationTransaction,
 } from './activation-transaction';
+import {
+  hasLegacyRuntimeAuthorityState,
+  migrateRuntimeAuthority,
+  readRuntimeAuthority,
+} from './runtime-authority';
 
 export interface BootstrapIdentity {
   schemaVersion: 1;
@@ -115,30 +119,57 @@ export function bootstrapIdentityPath(controllerHome: string): string {
 }
 
 export function readActiveRuntimePointer(controllerHome: string): ActiveRuntimePointer | undefined {
-  const value = readJson<ActiveRuntimePointer>(activeRuntimePointerPath(controllerHome));
-  if (!value || value.schemaVersion !== 1) return undefined;
-  if (value.activeSlot !== 'blue' && value.activeSlot !== 'green') return undefined;
-  return value;
+  let primary = readRuntimeAuthority(controllerHome);
+  if (!primary && hasLegacyRuntimeAuthorityState(controllerHome)) primary = migrateRuntimeAuthority(controllerHome);
+  if (!primary) return undefined;
+  return {
+    schemaVersion: 1,
+    activeSlot: primary.legacySlot,
+    generation: primary.generation,
+    ...(primary.active.releaseRevision ? { releaseRevision: primary.active.releaseRevision } : {}),
+    ...(primary.active.releasePath ? { releasePath: primary.active.releasePath } : {}),
+    writerEpoch: primary.authorityTerm,
+    fencingToken: primary.fencingToken,
+    daemonPort: primary.daemon.port,
+    gatewayPort: primary.gateway.port,
+    updatedAt: primary.committedAt,
+  };
 }
 
 export function writeActiveRuntimePointer(
   controllerHome: string,
   pointer: Omit<ActiveRuntimePointer, 'schemaVersion' | 'updatedAt'> & { updatedAt?: string },
 ): ActiveRuntimePointer {
-  const next: ActiveRuntimePointer = {
-    schemaVersion: 1,
+  const current = readRuntimeAuthority(controllerHome);
+  const generation = pointer.generation ?? current?.generation;
+  const releaseRevision = pointer.releaseRevision ?? current?.active.releaseRevision;
+  const releasePath = pointer.releasePath ?? current?.active.releasePath;
+  const daemonPort = pointer.daemonPort ?? current?.daemon.port;
+  const gatewayPort = pointer.gatewayPort ?? current?.gateway.port;
+  const previousEpoch = pointer.writerEpoch ?? current?.authorityTerm;
+  const activated = atomicActivateRuntime(controllerHome, {
     activeSlot: pointer.activeSlot,
-    generation: pointer.generation,
-    releaseRevision: pointer.releaseRevision,
-    releasePath: pointer.releasePath,
-    writerEpoch: pointer.writerEpoch,
-    fencingToken: pointer.fencingToken,
-    daemonPort: pointer.daemonPort,
-    gatewayPort: pointer.gatewayPort,
-    updatedAt: pointer.updatedAt ?? new Date().toISOString(),
+    ...(generation ? { generation } : {}),
+    ...(releaseRevision ? { releaseRevision } : {}),
+    ...(releasePath ? { releasePath } : {}),
+    ...(daemonPort !== undefined ? { daemonPort } : {}),
+    ...(gatewayPort !== undefined ? { gatewayPort } : {}),
+    ...(previousEpoch ? { previousEpoch } : {}),
+    ...(current?.legacySlot ? { previousSlot: current.legacySlot } : {}),
+    reason: 'compatibility-active-runtime-write',
+  });
+  return {
+    schemaVersion: 1,
+    activeSlot: activated.pointer.activeSlot,
+    ...(activated.pointer.generation ? { generation: activated.pointer.generation } : {}),
+    ...(activated.pointer.releaseRevision ? { releaseRevision: activated.pointer.releaseRevision } : {}),
+    ...(activated.pointer.releasePath ? { releasePath: activated.pointer.releasePath } : {}),
+    ...(activated.pointer.writerEpoch ? { writerEpoch: activated.pointer.writerEpoch } : {}),
+    ...(activated.pointer.fencingToken ? { fencingToken: activated.pointer.fencingToken } : {}),
+    ...(activated.pointer.daemonPort !== undefined ? { daemonPort: activated.pointer.daemonPort } : {}),
+    ...(activated.pointer.gatewayPort !== undefined ? { gatewayPort: activated.pointer.gatewayPort } : {}),
+    updatedAt: pointer.updatedAt ?? activated.pointer.updatedAt,
   };
-  atomicWrite(activeRuntimePointerPath(controllerHome), next);
-  return next;
 }
 
 /**

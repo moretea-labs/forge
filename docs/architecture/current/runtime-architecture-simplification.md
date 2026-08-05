@@ -12,11 +12,21 @@
 | --- | --- | --- |
 | T1 | Freeze the target ownership model, invariants, deletion map, and gates | Complete |
 | T2 | Install one fixed Bootstrap and publish a self-contained immutable core Runtime release | Implemented; release/cold-start/failure gates are authoritative |
-| T3 | Collapse authority and configuration to one committed primary record each | Pending |
+| T3 | Collapse authority and configuration to one committed primary record each | Implemented in source; migration/fencing gates are authoritative |
 | T4 | Collapse the primary hierarchy and delete Gateway KeepAlive/tunnel lifecycle ownership | Pending |
 | T5 | Replace slot rollout with one transactional candidate/current/previous activation protocol | Pending |
 | T6 | Complete independent immutable Recovery Gateway, Watchdog, and tunnel services | Pending |
 | T7 | Delete legacy slot, restart, embedded, fallback, and compatibility lifecycle paths | Pending |
+
+T3 establishes these additional non-negotiable boundaries:
+
+- `bootstrap/runtime-authority.json` is the only primary Runtime decision record;
+- `activation-authority.json`, `writer-authority.json`, `active-runtime.json`, and root `active-slot.json` are compatibility projections only;
+- projection corruption or disagreement can never override a valid primary authority;
+- root, blue, green, and repo-local MCP configs are normalized into one `bootstrap/runtime-config.json` exactly once;
+- multiple legacy configs must normalize identically; otherwise startup fails with `MIGRATION_REQUIRED` and writes no primary config;
+- secrets, OAuth token stores, plugin registry, plugin config, plugin health and domain state remain outside RuntimeConfig;
+- RuntimeConfig changes rotate the primary authority term and fencing token and atomically rebind the config revision/hash.
 
 T2 establishes these non-negotiable boundaries:
 

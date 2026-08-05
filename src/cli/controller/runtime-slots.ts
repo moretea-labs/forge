@@ -3,6 +3,11 @@ import { dirname, join, resolve } from 'path';
 import { ensureControllerHome } from '../repositories/controller-home';
 import { managedResource, type ManagedResource } from '../../runtime/resources';
 import { atomicActivateRuntime } from '../../runtime/bootstrap/stable-bootstrap';
+import {
+  hasLegacyRuntimeAuthorityState,
+  migrateRuntimeAuthority,
+  readRuntimeAuthority,
+} from '../../runtime/bootstrap/runtime-authority';
 
 export type RuntimeSlotId = 'blue' | 'green';
 
@@ -104,16 +109,25 @@ export function runtimeSlotForHome(controllerHome: string): RuntimeSlotId | unde
 }
 
 export function readActiveSlotAuthority(controllerHome: string): ActiveSlotAuthority {
-  const path = activeSlotAuthorityPath(controllerHome);
-  const value = readJson<ActiveSlotAuthority>(path);
-  if (value?.schemaVersion === 1 && (value.activeSlot === 'blue' || value.activeSlot === 'green')) {
-    return value;
+  const home = controllerAuthorityHome(controllerHome);
+  let primary = readRuntimeAuthority(home);
+  if (!primary && hasLegacyRuntimeAuthorityState(home)) primary = migrateRuntimeAuthority(home);
+  if (primary) {
+    return {
+      schemaVersion: 1,
+      activeSlot: primary.legacySlot,
+      ...(primary.previousLegacySlot ? { previousSlot: primary.previousLegacySlot } : {}),
+      generation: primary.generation,
+      ...(primary.operationId ? { reason: primary.operationId } : {}),
+      ...(primary.rollbackUntil ? { rollbackUntil: primary.rollbackUntil } : {}),
+      updatedAt: primary.committedAt,
+    };
   }
   return {
     schemaVersion: 1,
     activeSlot: 'blue',
     updatedAt: nowIso(),
-    reason: 'default-bootstrap',
+    reason: 'fresh-bootstrap-default',
   };
 }
 
@@ -121,17 +135,30 @@ export function writeActiveSlotAuthority(
   controllerHome: string,
   patch: Omit<ActiveSlotAuthority, 'schemaVersion' | 'updatedAt'> & { updatedAt?: string },
 ): ActiveSlotAuthority {
-  const next: ActiveSlotAuthority = {
-    schemaVersion: 1,
+  const current = readRuntimeAuthority(controllerAuthorityHome(controllerHome));
+  const previousSlot = patch.previousSlot ?? current?.legacySlot;
+  const generation = patch.generation ?? current?.generation;
+  const activated = atomicActivateRuntime(controllerHome, {
     activeSlot: patch.activeSlot,
-    previousSlot: patch.previousSlot,
-    generation: patch.generation,
-    reason: patch.reason,
-    rollbackUntil: patch.rollbackUntil,
-    updatedAt: patch.updatedAt ?? nowIso(),
+    ...(previousSlot ? { previousSlot } : {}),
+    ...(generation ? { generation } : {}),
+    ...(current?.active.releaseRevision ? { releaseRevision: current.active.releaseRevision } : {}),
+    ...(current?.active.releasePath ? { releasePath: current.active.releasePath } : {}),
+    ...(current?.daemon.port !== undefined ? { daemonPort: current.daemon.port } : {}),
+    ...(current?.gateway.port !== undefined ? { gatewayPort: current.gateway.port } : {}),
+    reason: patch.reason ?? 'compatibility-active-slot-write',
+    ...(current?.authorityTerm ? { previousEpoch: current.authorityTerm } : {}),
+    ...(patch.rollbackUntil ? { rollbackUntil: patch.rollbackUntil } : {}),
+  });
+  return {
+    schemaVersion: 1,
+    activeSlot: activated.authority.activeSlot,
+    ...(previousSlot ? { previousSlot } : {}),
+    ...(activated.authority.generation ? { generation: activated.authority.generation } : {}),
+    ...(patch.reason ? { reason: patch.reason } : {}),
+    ...(patch.rollbackUntil ? { rollbackUntil: patch.rollbackUntil } : {}),
+    updatedAt: patch.updatedAt ?? activated.authority.updatedAt,
   };
-  atomicWrite(activeSlotAuthorityPath(controllerHome), next);
-  return next;
 }
 
 export function ensureSlotHome(controllerHome: string, slot: RuntimeSlotId): string {
@@ -271,38 +298,29 @@ export function markCutoverAuthority(
   release?: { releaseRevision?: string; releasePath?: string },
 ): ActiveSlotAuthority {
   const current = readActiveSlotAuthority(controllerHome);
-  let authority: ActiveSlotAuthority;
-  if (current.activeSlot === nextActive) {
-    authority = writeActiveSlotAuthority(controllerHome, {
-      ...current,
-      generation: generation ?? current.generation,
-      reason: 'cutover-idempotent',
-    });
-  } else {
-    authority = writeActiveSlotAuthority(controllerHome, {
-      activeSlot: nextActive,
-      previousSlot: current.activeSlot,
-      generation,
-      reason: 'cutover',
-      rollbackUntil: new Date(Date.now() + Math.max(0, rollbackWindowMs)).toISOString(),
-    });
-  }
-  // Stable Bootstrap writer fencing via activation transaction.
-  // Failures must surface — silent ignore would leave split-brain authority.
+  const idempotent = current.activeSlot === nextActive;
+  const rollbackUntil = idempotent
+    ? current.rollbackUntil
+    : new Date(Date.now() + Math.max(0, rollbackWindowMs)).toISOString();
+  const nextGeneration = generation ?? current.generation;
+  const previousSlot = idempotent ? current.previousSlot : current.activeSlot;
   const activated = atomicActivateRuntime(controllerHome, {
-    activeSlot: authority.activeSlot,
-    generation: authority.generation,
+    activeSlot: nextActive,
+    ...(nextGeneration ? { generation: nextGeneration } : {}),
     ...(release?.releaseRevision ? { releaseRevision: release.releaseRevision } : {}),
     ...(release?.releasePath ? { releasePath: release.releasePath } : {}),
-    reason: authority.reason,
-    previousSlot: authority.previousSlot,
-    rollbackUntil: authority.rollbackUntil,
+    reason: idempotent ? 'cutover-idempotent' : 'cutover',
+    ...(previousSlot ? { previousSlot } : {}),
+    ...(rollbackUntil ? { rollbackUntil } : {}),
   });
-  // Re-read projection written by the transaction (authoritative slot fields).
+  const activatedGeneration = activated.authority.generation ?? nextGeneration;
   return {
-    ...authority,
+    schemaVersion: 1,
     activeSlot: activated.authority.activeSlot,
-    generation: activated.authority.generation ?? authority.generation,
+    ...(previousSlot ? { previousSlot } : {}),
+    ...(activatedGeneration ? { generation: activatedGeneration } : {}),
+    reason: idempotent ? 'cutover-idempotent' : 'cutover',
+    ...(rollbackUntil ? { rollbackUntil } : {}),
     updatedAt: activated.authority.updatedAt,
   };
 }
@@ -317,18 +335,18 @@ export function markRollbackAuthority(
   const activated = atomicActivateRuntime(controllerHome, {
     activeSlot: previous,
     previousSlot: current.activeSlot,
-    generation,
+    ...(generation ? { generation } : {}),
     ...(release?.releaseRevision ? { releaseRevision: release.releaseRevision } : {}),
     ...(release?.releasePath ? { releasePath: release.releasePath } : {}),
     reason: 'rollback',
   });
+  const activatedGeneration = activated.authority.generation ?? generation;
   return {
     schemaVersion: 1,
     activeSlot: activated.authority.activeSlot,
     previousSlot: current.activeSlot,
-    generation: activated.authority.generation ?? generation,
+    ...(activatedGeneration ? { generation: activatedGeneration } : {}),
     reason: 'rollback',
-    rollbackUntil: undefined,
     updatedAt: activated.authority.updatedAt,
   };
 }

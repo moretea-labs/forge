@@ -31,10 +31,14 @@ import {
 } from '../../src/runtime/bootstrap/activation-transaction';
 import { markCutoverAuthority, markRollbackAuthority } from '../../src/cli/controller/runtime-slots';
 import {
+  commitRuntimeConfig,
+  migrateRuntimeAuthority,
+  migrateRuntimeConfig,
   readRuntimeAuthority,
   readRuntimeConfig,
   requireRuntimeAuthority,
   runtimeConfigHash,
+  runtimeConfigPath,
   writeRuntimeAuthority,
   writeRuntimeConfig,
 } from '../../src/runtime/bootstrap/runtime-authority';
@@ -123,18 +127,22 @@ describe('single-owner runtime authority', () => {
       controllerHome: fx.controllerHome,
       configRevision: 'config-revision-1',
       ingress: { host: '127.0.0.1', port: 8765 },
-      daemon: { port: 8766 },
+      daemon: { port: 8766, enabled: true, autoOpen: false },
       gateway: { host: '127.0.0.1', port: 8795, auth: 'oauth' },
+      profile: 'controller',
       toolset: 'core',
+      toolsetExplicit: true,
       accessMode: 'full-access',
     });
     const authority = {
-      schemaVersion: 1 as const,
+      schemaVersion: 2 as const,
+      status: 'committed' as const,
       authorityTerm: 'term-1',
       activationId: 'activation-1',
       generation: 'generation-1',
       configRevision: 'config-revision-1',
       configHash: runtimeConfigHash(fx.controllerHome)!,
+      fencingToken:[REDACTED],
       active: {
         instanceId: 'instance-active-1',
         releasePath: join(fx.controllerHome, 'releases', 'rev-1'),
@@ -144,6 +152,10 @@ describe('single-owner runtime authority', () => {
         publishedAt: new Date().toISOString(),
       },
       ingress: { host: '127.0.0.1', port: 8765 },
+      daemon: { port: 8766 },
+      gateway: { host: '127.0.0.1', port: 8795 },
+      legacySlot: 'green' as const,
+      committedAt: new Date().toISOString(),
     };
     writeRuntimeAuthority(fx.controllerHome, authority);
 
@@ -174,10 +186,93 @@ describe('single-owner runtime authority', () => {
     }));
     expect(readRuntimeAuthority(fx.controllerHome)).toBeUndefined();
   });
-  test('refuses legacy-only authority instead of selecting a fallback', () => {
+  test('refuses incomplete legacy-only authority instead of selecting a fallback', () => {
     const fx = homeFixture();
     writeFileSync(join(fx.controllerHome, 'active-slot.json'), '{"activeSlot":"green"}\n');
     expect(() => requireRuntimeAuthority(fx.controllerHome)).toThrow('MIGRATION_REQUIRED');
+    expect(() => migrateRuntimeAuthority(fx.controllerHome)).toThrow('MIGRATION_REQUIRED');
+  });
+
+  test('migrates agreeing root and slot MCP configs exactly once', () => {
+    const fx = homeFixture();
+    const legacy = {
+      server: { host: '127.0.0.1', port: 8770, transport: 'http' },
+      auth: { mode: 'oauth' },
+      toolset: 'controller',
+      accessMode: 'full_access',
+      localController: { host: '127.0.0.1', port: 8776 },
+    };
+    for (const path of [
+      join(fx.controllerHome, 'mcp', 'mcp.local.json'),
+      join(fx.controllerHome, 'runtime-slots', 'blue', 'mcp', 'mcp.local.json'),
+      join(fx.controllerHome, 'runtime-slots', 'green', 'mcp', 'mcp.local.json'),
+    ]) {
+      mkdirSync(join(path, '..'), { recursive: true });
+      writeFileSync(path, `${JSON.stringify(legacy)}\n`);
+    }
+    const migrated = migrateRuntimeConfig(fx.controllerHome);
+    expect(migrated).toMatchObject({
+      ingress: { host: '127.0.0.1', port: 8770 },
+      daemon: { port: 8776 },
+      gateway: { host: '127.0.0.1', port: 8770, auth: 'oauth' },
+      toolset: 'controller',
+      accessMode: 'full_access',
+    });
+    expect(existsSync(runtimeConfigPath(fx.controllerHome))).toBe(true);
+    expect(migrateRuntimeConfig(fx.controllerHome)).toEqual(migrated);
+  });
+
+  test('conflicting root and slot MCP configs require explicit migration', () => {
+    const fx = homeFixture();
+    const rootPath = join(fx.controllerHome, 'mcp', 'mcp.local.json');
+    const bluePath = join(fx.controllerHome, 'runtime-slots', 'blue', 'mcp', 'mcp.local.json');
+    mkdirSync(join(rootPath, '..'), { recursive: true });
+    mkdirSync(join(bluePath, '..'), { recursive: true });
+    writeFileSync(rootPath, '{"server":{"host":"127.0.0.1","port":8770}}\n');
+    writeFileSync(bluePath, '{"server":{"host":"127.0.0.1","port":8795}}\n');
+    expect(() => migrateRuntimeConfig(fx.controllerHome)).toThrow(/MIGRATION_REQUIRED: conflicting runtime config candidates/);
+    expect(existsSync(runtimeConfigPath(fx.controllerHome))).toBe(false);
+  });
+
+  test('primary authority ignores a conflicting compatibility projection', () => {
+    const fx = homeFixture();
+    atomicActivateRuntime(fx.controllerHome, {
+      activeSlot: 'green',
+      generation: 'primary-generation',
+      releaseRevision: 'primary-release',
+      reason: 'primary-test',
+    });
+    writeFileSync(join(fx.controllerHome, 'bootstrap', 'writer-authority.json'), `${JSON.stringify({
+      schemaVersion: 1,
+      epoch: 'tampered-epoch',
+      activeSlot: 'blue',
+      fencingToken:[REDACTED],
+      generation: 'tampered-generation',
+      updatedAt: new Date().toISOString(),
+    })}\n`);
+    expect(readWriterAuthority(fx.controllerHome)).toMatchObject({
+      activeSlot: 'green',
+      generation: 'primary-generation',
+    });
+    expect(readRuntimeAuthority(fx.controllerHome)?.legacySlot).toBe('green');
+  });
+
+  test('config commit rotates fencing and keeps authority bound to the new hash', () => {
+    const fx = homeFixture();
+    atomicActivateRuntime(fx.controllerHome, { activeSlot: 'blue', generation: 'g-config', reason: 'before-config' });
+    const before = readRuntimeAuthority(fx.controllerHome)!;
+    const config = readRuntimeConfig(fx.controllerHome)!;
+    commitRuntimeConfig(fx.controllerHome, {
+      ...config,
+      configRevision: 'config-revision-updated',
+      ingress: { host: '127.0.0.1', port: 8870 },
+      gateway: { ...config.gateway, port: 8870 },
+    });
+    const after = readRuntimeAuthority(fx.controllerHome)!;
+    expect(after.authorityTerm).not.toBe(before.authorityTerm);
+    expect(after.fencingToken).not.toBe(before.fencingToken);
+    expect(after.configRevision).toBe('config-revision-updated');
+    expect(after.configHash).toBe(runtimeConfigHash(fx.controllerHome));
   });
 });
 
@@ -287,27 +382,47 @@ describe('activation authority generation coherence', () => {
     clearRuntimeWriterClaimForTests();
   });
 
-  test('recoverActivationTransaction synthesizes authority from projections', () => {
+  test('recoverActivationTransaction migrates agreeing legacy projections into primary authority', () => {
     const fx = homeFixture();
-    publishWriterAuthority(fx.controllerHome, {
+    const updatedAt = new Date().toISOString();
+    const epoch = 'legacy-epoch-recover-1';
+    const fencingToken = 'token-recover-1';
+    mkdirSync(join(fx.controllerHome, 'bootstrap'), { recursive: true });
+    writeFileSync(join(fx.controllerHome, 'bootstrap', 'writer-authority.json'), `${JSON.stringify({
+      schemaVersion: 1,
+      epoch,
       activeSlot: 'green',
+      fencingToken,
       generation: 'gen-recover-1',
       releaseRevision: 'rev-r1',
-      reason: 'projection-only',
-    });
-    // active-runtime projection only (no activation-authority yet)
+      updatedAt,
+    }, null, 2)}\n`);
     writeFileSync(join(fx.controllerHome, 'bootstrap', 'active-runtime.json'), `${JSON.stringify({
       schemaVersion: 1,
       activeSlot: 'green',
       generation: 'gen-recover-1',
-      writerEpoch: readWriterAuthority(fx.controllerHome)!.epoch,
+      writerEpoch: epoch,
       fencingToken: readWriterAuthority(fx.controllerHome)!.fencingToken,
-      updatedAt: new Date().toISOString(),
+      updatedAt,
     }, null, 2)}\n`);
+    writeFileSync(join(fx.controllerHome, 'active-slot.json'), `${JSON.stringify({
+      schemaVersion: 1,
+      activeSlot: 'green',
+      generation: 'gen-recover-1',
+      updatedAt,
+    }, null, 2)}\n`);
+    expect(existsSync(join(fx.controllerHome, 'bootstrap', 'runtime-authority.json'))).toBe(false);
     expect(existsSync(join(fx.controllerHome, 'bootstrap', 'activation-authority.json'))).toBe(false);
     const recovered = recoverActivationTransaction(fx.controllerHome);
     expect(recovered.ok).toBe(true);
     expect(recovered.authority?.generation).toBe('gen-recover-1');
+    expect(readRuntimeAuthority(fx.controllerHome)).toMatchObject({
+      schemaVersion: 2,
+      legacySlot: 'green',
+      generation: 'gen-recover-1',
+      authorityTerm: epoch,
+      fencingToken,
+    });
     expect(readActivationAuthority(fx.controllerHome)?.generation).toBe('gen-recover-1');
   });
 

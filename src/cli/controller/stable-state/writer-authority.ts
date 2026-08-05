@@ -11,11 +11,19 @@
  *   - update active projections
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
+import { mkdirSync, renameSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { randomUUID } from 'crypto';
 import { ensureControllerHome } from '../../repositories/controller-home';
 import type { RuntimeSlotId } from '../runtime-slots';
+import {
+  hasLegacyRuntimeAuthorityState,
+  migrateRuntimeAuthority,
+  migrateRuntimeConfig,
+  readRuntimeAuthority,
+  runtimeConfigHash,
+  writeRuntimeAuthority,
+} from '../../../runtime/bootstrap/runtime-authority';
 
 export interface WriterAuthority {
   schemaVersion: 1;
@@ -48,16 +56,24 @@ function atomicWrite(path: string, value: unknown): void {
 }
 
 export function readWriterAuthority(controllerHome: string): WriterAuthority | undefined {
-  const path = authorityPath(controllerHome);
-  if (!existsSync(path)) return undefined;
-  try {
-    const value = JSON.parse(readFileSync(path, 'utf8')) as WriterAuthority;
-    if (value?.schemaVersion !== 1 || !value.epoch || !value.fencingToken) return undefined;
-    if (value.activeSlot !== 'blue' && value.activeSlot !== 'green') return undefined;
-    return value;
-  } catch {
-    return undefined;
+  let primary = readRuntimeAuthority(controllerHome);
+  if (!primary && hasLegacyRuntimeAuthorityState(controllerHome)) {
+    primary = migrateRuntimeAuthority(controllerHome);
   }
+  if (primary) {
+    return {
+      schemaVersion: 1,
+      epoch: primary.authorityTerm,
+      activeSlot: primary.legacySlot,
+      fencingToken: primary.fencingToken,
+      generation: primary.generation,
+      ...(primary.active.releaseRevision ? { releaseRevision: primary.active.releaseRevision } : {}),
+      ...(primary.active.releasePath ? { releasePath: primary.active.releasePath } : {}),
+      updatedAt: primary.committedAt,
+      ...(primary.operationId ? { reason: primary.operationId } : {}),
+    };
+  }
+  return undefined;
 }
 
 /**
@@ -75,25 +91,61 @@ export function publishWriterAuthority(
     previousEpoch?: string;
   },
 ): WriterAuthority {
-  const existing = readWriterAuthority(controllerHome);
-  // CAS: if caller provided previousEpoch, require match (prevents dual cutover).
-  if (input.previousEpoch && existing && existing.epoch !== input.previousEpoch) {
+  const home = ensureControllerHome(controllerHome);
+  const existing = readRuntimeAuthority(home)
+    ?? (hasLegacyRuntimeAuthorityState(home) ? migrateRuntimeAuthority(home) : undefined);
+  if (input.previousEpoch && existing && existing.authorityTerm !== input.previousEpoch) {
     throw new Error(
-      `WRITER_AUTHORITY_CAS_FAILED: expected previous epoch ${input.previousEpoch}, found ${existing.epoch}`,
+      `WRITER_AUTHORITY_CAS_FAILED: expected previous epoch ${input.previousEpoch}, found ${existing.authorityTerm}`,
     );
   }
+  const config = migrateRuntimeConfig(home);
+  const committedAt = new Date().toISOString();
+  const authorityTerm = `wa-${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const fencingToken = randomUUID();
+  const generation = input.generation ?? existing?.generation ?? `generation-${authorityTerm}`;
+  const releasePath = input.releasePath ?? existing?.active.releasePath;
+  const releaseRevision = input.releaseRevision ?? existing?.active.releaseRevision;
+  const previousLegacySlot = existing?.legacySlot !== input.activeSlot ? existing?.legacySlot : existing?.previousLegacySlot;
+  writeRuntimeAuthority(home, {
+    schemaVersion: 2,
+    status: 'committed',
+    authorityTerm,
+    activationId: `writer-rotation-${randomUUID()}`,
+    generation,
+    configRevision: config.configRevision,
+    configHash: runtimeConfigHash(home)!,
+    fencingToken,
+    active: {
+      instanceId: generation,
+      ...(releasePath ? { releasePath } : {}),
+      ...(releaseRevision ? { releaseRevision } : {}),
+      ...(existing?.active.sourceCommit ? { sourceCommit: existing.active.sourceCommit } : {}),
+      ...(existing?.active.manifestHash ? { manifestHash: existing.active.manifestHash } : {}),
+      publishedAt: existing?.active.publishedAt ?? committedAt,
+    },
+    ...(existing?.previous ? { previous: existing.previous } : {}),
+    ingress: config.ingress,
+    daemon: existing?.daemon ?? config.daemon,
+    gateway: existing?.gateway ?? { host: config.gateway.host, port: config.gateway.port },
+    legacySlot: input.activeSlot,
+    ...(previousLegacySlot ? { previousLegacySlot } : {}),
+    ...(existing?.rollbackUntil ? { rollbackUntil: existing.rollbackUntil } : {}),
+    ...(input.reason ? { operationId: input.reason } : {}),
+    committedAt,
+  });
   const next: WriterAuthority = {
     schemaVersion: 1,
-    epoch: `wa-${Date.now()}-${randomUUID().slice(0, 8)}`,
+    epoch: authorityTerm,
     activeSlot: input.activeSlot,
-    fencingToken: randomUUID(),
-    generation: input.generation,
-    releaseRevision: input.releaseRevision,
-    releasePath: input.releasePath,
-    updatedAt: new Date().toISOString(),
-    reason: input.reason,
+    fencingToken,
+    generation,
+    ...(releaseRevision ? { releaseRevision } : {}),
+    ...(releasePath ? { releasePath } : {}),
+    updatedAt: committedAt,
+    ...(input.reason ? { reason: input.reason } : {}),
   };
-  atomicWrite(authorityPath(controllerHome), next);
+  atomicWrite(authorityPath(home), next);
   return next;
 }
 
