@@ -56,6 +56,28 @@ export interface CanonicalRuntimeConfig {
   schedulerReadyTimeoutMs?: number;
 }
 
+export interface RuntimeStatusSnapshot {
+  schemaVersion: 1;
+  runtimeInstanceId: string;
+  pid: number;
+  releaseId: string;
+  artifactIdentity: string;
+  endpoint?: string;
+  readiness: RuntimeReadiness;
+  startedAt: string;
+  updatedAt: string;
+}
+
+export interface RuntimeStatusObservation {
+  schemaVersion: 1;
+  running: boolean;
+  ready: boolean;
+  stale: boolean;
+  reasonCodes: string[];
+  snapshot?: RuntimeStatusSnapshot;
+  observedAt: string;
+}
+
 export interface RuntimeControllerSnapshot {
   runtimeInstanceId: string;
   releaseId: string;

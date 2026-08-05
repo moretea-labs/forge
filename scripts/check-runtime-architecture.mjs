@@ -63,7 +63,9 @@ const required = [
   'src/runtime/root/runtime.ts',
   'src/runtime/root/readiness.ts',
   'src/runtime/root/types.ts',
+  'src/runtime/root/status.ts',
   'src/runtime/root/release-manifest.ts',
+  'src/cli/commands/runtime.ts',
   'docs/architecture/current/runtime-architecture-simplification.md',
   'docs/architecture/current/implementation-status.md',
   'docs/architecture/current/runtime-directory-map.md',
@@ -104,6 +106,18 @@ forbid(
   /\bdegraded\b|\bpartial\b|\brecovering\b|setLifecycle|RuntimeLifecycle/,
   'Canonical Runtime readiness must not grow another lifecycle or recovery state machine',
 );
+requireText('src/runtime/root/status.ts', 'This is a read-only projection, never lifecycle authority.');
+requireText('src/runtime/root/status.ts', 'owner.runtimeInstanceId === snapshot.runtimeInstanceId');
+requireText('src/runtime/root/status.ts', 'owner.pid === snapshot.pid');
+requireText('src/runtime/root/runtime.ts', 'writeRuntimeStatusSnapshot');
+requireText('src/runtime/root/runtime.ts', 'removeRuntimeStatusSnapshot');
+forbid(
+  'src/cli/commands/runtime.ts',
+  /controller\/lifecycle|restart-coordinator|daemon-client|CanonicalRepoHarnessRuntime|ensureControllerHome|\.command\(['"](?:start|stop|restart|doctor)['"]\)|rebuildRepositoryProjection/,
+  'runtime CLI must remain a read-only observer; repo-harness-runtime is the sole canonical lifecycle entrypoint',
+);
+requireText('src/cli/commands/runtime.ts', 'observeRuntimeStatus');
+requireText('src/cli/commands/runtime.ts', 'readRepositoryProjection');
 requireText('src/runtime/root/release-manifest.ts', "entrypoint must be repo-harness-runtime");
 requireText('src/runtime/root/release-manifest.ts', 'databaseSchemaCompatibility');
 requireText('src/runtime/root/release-manifest.ts', 'workerProtocolVersion');

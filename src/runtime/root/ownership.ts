@@ -8,11 +8,11 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'fs';
-import { join } from 'path';
-import { ensureControllerHome } from '../../cli/repositories/controller-home';
+import { dirname, join } from 'path';
+import { resolveControllerHome } from '../../cli/repositories/controller-home';
 import { isProcessAlive } from '../shared/process-tree';
 
-interface RuntimeOwnerRecord {
+export interface RuntimeOwnerRecord {
   schemaVersion: 1;
   runtimeInstanceId: string;
   pid: number;
@@ -24,13 +24,11 @@ export interface RuntimeOwnershipHandle {
   release(): void;
 }
 
-function ownerPath(controllerHome: string): string {
-  const root = join(ensureControllerHome(controllerHome), 'runtime');
-  mkdirSync(root, { recursive: true, mode: 0o700 });
-  return join(root, 'active-runtime-owner.json');
+export function runtimeOwnerPath(controllerHome: string): string {
+  return join(resolveControllerHome(controllerHome), 'runtime', 'active-runtime-owner.json');
 }
 
-function readOwner(path: string): RuntimeOwnerRecord | undefined {
+function readOwnerPath(path: string): RuntimeOwnerRecord | undefined {
   if (!existsSync(path)) return undefined;
   try {
     const value = JSON.parse(readFileSync(path, 'utf8')) as RuntimeOwnerRecord;
@@ -41,13 +39,18 @@ function readOwner(path: string): RuntimeOwnerRecord | undefined {
   }
 }
 
+export function readRuntimeOwner(controllerHome: string): RuntimeOwnerRecord | undefined {
+  return readOwnerPath(runtimeOwnerPath(controllerHome));
+}
+
 export function acquireRuntimeOwnership(
   controllerHome: string,
   runtimeInstanceId: string,
   now: () => string = () => new Date().toISOString(),
 ): RuntimeOwnershipHandle {
   if (!runtimeInstanceId.trim()) throw new Error('RUNTIME_INSTANCE_ID_REQUIRED');
-  const path = ownerPath(controllerHome);
+  const path = runtimeOwnerPath(controllerHome);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const record: RuntimeOwnerRecord = {
     schemaVersion: 1,
     runtimeInstanceId,
@@ -66,7 +69,7 @@ export function acquireRuntimeOwnership(
       return {
         record,
         release: () => {
-          const current = readOwner(path);
+          const current = readOwnerPath(path);
           if (current?.runtimeInstanceId === runtimeInstanceId && current.pid === process.pid) {
             try { unlinkSync(path); } catch { /* already released */ }
           }
@@ -75,7 +78,7 @@ export function acquireRuntimeOwnership(
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== 'EEXIST') throw error;
-      const current = readOwner(path);
+      const current = readOwnerPath(path);
       if (current && isProcessAlive(current.pid)) {
         throw new Error(
           `RUNTIME_OWNERSHIP_CONFLICT: controller home is owned by ${current.runtimeInstanceId} pid=${current.pid}`,

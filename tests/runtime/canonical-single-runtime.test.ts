@@ -16,6 +16,7 @@ import {
 } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { RuntimeReadinessState } from '../../src/runtime/root/readiness';
+import { observeRuntimeStatus, writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import {
   CanonicalRepoHarnessRuntime,
   type CanonicalRuntimeDependencies,
@@ -160,6 +161,79 @@ describe('canonical single Runtime', () => {
     });
     expect(unauthorized.status).toBe(401);
   }, 20_000);
+
+  test('Runtime Root publishes one instance-bound status projection and removes it on exit', async () => {
+    const fixture = createFixture({ runtimeInstanceId: 'runtime-status-test' });
+    const runtime = new CanonicalRepoHarnessRuntime(fixture.config, {
+      startScheduler: () => inertScheduler(),
+      startTransport: async () => ({
+        endpoint: 'http://127.0.0.1:9876/mcp',
+        host: '127.0.0.1',
+        port: 9876,
+        close: async () => undefined,
+      }),
+      runMcpProbe: async () => undefined,
+    });
+    cleanups.push(() => runtime.stop('TEST_CLEANUP'));
+
+    await runtime.start();
+    expect(observeRuntimeStatus(fixture.controllerHome, () => '2026-08-05T00:00:01.000Z')).toMatchObject({
+      running: true,
+      ready: true,
+      stale: false,
+      snapshot: {
+        runtimeInstanceId: 'runtime-status-test',
+        releaseId: 'release-test-1',
+        artifactIdentity: 'sha256:test-artifact',
+        endpoint: 'http://127.0.0.1:9876/mcp',
+      },
+    });
+
+    await runtime.stop('TEST_STOP');
+    expect(observeRuntimeStatus(fixture.controllerHome, () => '2026-08-05T00:00:02.000Z')).toEqual({
+      schemaVersion: 1,
+      running: false,
+      ready: false,
+      stale: false,
+      reasonCodes: ['RUNTIME_NOT_RUNNING'],
+      observedAt: '2026-08-05T00:00:02.000Z',
+    });
+  });
+
+  test('a stale or identity-mismatched ready projection never reports Runtime ready', () => {
+    const fixture = createFixture();
+    const owner = acquireRuntimeOwnership(fixture.controllerHome, 'runtime-real-owner');
+    cleanups.push(() => owner.release());
+    writeRuntimeStatusSnapshot(fixture.controllerHome, {
+      schemaVersion: 1,
+      runtimeInstanceId: 'runtime-forged-status',
+      pid: process.pid,
+      releaseId: 'release-test-1',
+      artifactIdentity: 'sha256:test-artifact',
+      endpoint: 'http://127.0.0.1:9876/mcp',
+      readiness: {
+        ready: true,
+        reasonCodes: [],
+        diagnostics: {
+          database: { outcome: 'pass' },
+          scheduler: { outcome: 'pass' },
+          releaseCoherence: { outcome: 'pass' },
+          mcpEndToEnd: { outcome: 'pass' },
+        },
+        observedAt: '2026-08-05T00:00:00.000Z',
+      },
+      startedAt: owner.record.acquiredAt,
+      updatedAt: '2026-08-05T00:00:00.000Z',
+    });
+
+    expect(observeRuntimeStatus(fixture.controllerHome)).toMatchObject({
+      running: false,
+      ready: false,
+      stale: true,
+      reasonCodes: ['RUNTIME_STATUS_STALE'],
+      snapshot: { runtimeInstanceId: 'runtime-forged-status' },
+    });
+  });
 
   test('duplicate active Runtime ownership is rejected without port inference', () => {
     const fixture = createFixture();

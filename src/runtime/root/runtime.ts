@@ -12,6 +12,7 @@ import { acquireRuntimeOwnership, type RuntimeOwnershipHandle } from './ownershi
 import { RuntimeReadinessState } from './readiness';
 import { loadRuntimeReleaseManifest } from './release-manifest';
 import { startInProcessScheduler, type RuntimeSchedulerHandle } from './scheduler';
+import { removeRuntimeStatusSnapshot, writeRuntimeStatusSnapshot } from './status';
 import type {
   CanonicalRuntimeConfig,
   RuntimeExitEvidence,
@@ -99,6 +100,26 @@ export class CanonicalRepoHarnessRuntime {
     return this.readinessState.snapshot();
   }
 
+  private publishStatus(): void {
+    if (!this.ownership || !this.release) return;
+    try {
+      writeRuntimeStatusSnapshot(this.config.controllerHome, {
+        schemaVersion: 1,
+        runtimeInstanceId: this.runtimeInstanceId,
+        pid: this.ownership.record.pid,
+        releaseId: this.release.releaseId,
+        artifactIdentity: this.release.artifactIdentity,
+        ...(this.transport?.endpoint ? { endpoint: this.transport.endpoint } : {}),
+        readiness: this.readiness(),
+        startedAt: this.ownership.record.acquiredAt,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch {
+      // Status is a read-only projection. Projection failure cannot become a
+      // second Runtime readiness or lifecycle authority.
+    }
+  }
+
   endpoint(): string | undefined {
     return this.transport?.endpoint;
   }
@@ -114,6 +135,7 @@ export class CanonicalRepoHarnessRuntime {
 
       stage = 'ownership';
       this.ownership = this.dependencies.acquireOwnership(this.config.controllerHome, this.runtimeInstanceId);
+      this.publishStatus();
 
       stage = 'database';
       this.controller = new RuntimeControllerServices(
@@ -125,6 +147,7 @@ export class CanonicalRepoHarnessRuntime {
       );
       this.controller.initialize();
       this.readinessState.setDiagnostic('database', 'pass');
+      this.publishStatus();
       if (this.config.exclusiveWorkId) {
         activateExclusiveWorkAdmission(this.config.controllerHome, {
           allowedWorkId: this.config.exclusiveWorkId,
@@ -139,6 +162,7 @@ export class CanonicalRepoHarnessRuntime {
       );
       await this.scheduler.ready;
       this.readinessState.setDiagnostic('scheduler', 'pass');
+      this.publishStatus();
       void this.scheduler.done.then(
         () => this.failCore('SCHEDULER_STOPPED', 'Scheduler stopped while Runtime was active.'),
         (error) => this.failCore('SCHEDULER_STALLED', error instanceof Error ? error.message : String(error)),
@@ -153,11 +177,13 @@ export class CanonicalRepoHarnessRuntime {
         createServer: (principalId) => createRuntimeGatewayServer(this.controller!, principalId),
         onFatal: (error) => this.failCore('MCP_TRANSPORT_FAILED', error.message),
       });
+      this.publishStatus();
 
       stage = 'probe';
       await this.dependencies.runMcpProbe(this.transport.endpoint, this.config.authToken);
       this.readinessState.setDiagnostic('mcpEndToEnd', 'pass');
       this.readinessState.markReady();
+      this.publishStatus();
     } catch (error) {
       const reason = this.startupReason(stage);
       this.markStartupFailure(stage, reason);
@@ -181,6 +207,7 @@ export class CanonicalRepoHarnessRuntime {
     else if (stage === 'scheduler') this.readinessState.setDiagnostic('scheduler', 'fail', reason);
     else if (stage === 'transport' || stage === 'probe') this.readinessState.setDiagnostic('mcpEndToEnd', 'fail', reason);
     this.readinessState.addReason(reason);
+    this.publishStatus();
   }
 
   private failCore(reasonCode: string, message: string): void {
@@ -188,6 +215,7 @@ export class CanonicalRepoHarnessRuntime {
     if (reasonCode.startsWith('SCHEDULER_')) this.readinessState.setDiagnostic('scheduler', 'fail', reasonCode);
     if (reasonCode.startsWith('MCP_')) this.readinessState.setDiagnostic('mcpEndToEnd', 'fail', reasonCode);
     this.readinessState.addReason(reasonCode);
+    this.publishStatus();
     void this.stop(reasonCode, message);
   }
 
@@ -196,11 +224,16 @@ export class CanonicalRepoHarnessRuntime {
     this.stopPromise = (async () => {
       this.stopping = true;
       this.readinessState.markNotReady(reasonCode);
+      this.publishStatus();
       // Stop accepting new MCP work before quiescing Scheduler activity, then
       // release the Controller Home claim only after all in-process services stop.
       await this.transport?.close().catch(() => undefined);
       await this.scheduler?.stop().catch(() => undefined);
+      const ownerPid = this.ownership?.record.pid;
       this.ownership?.release();
+      if (ownerPid !== undefined) {
+        removeRuntimeStatusSnapshot(this.config.controllerHome, this.runtimeInstanceId, ownerPid);
+      }
       this.lastExit = { reasonCode, observedAt: new Date().toISOString(), ...(message ? { message } : {}) };
       this.stopping = false;
       this.stoppedResolve();

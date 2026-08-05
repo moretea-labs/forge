@@ -49,14 +49,14 @@ It alone may:
 - publish the single Runtime readiness result;
 - stop the complete Runtime after a fatal core-module failure.
 
-No core module may create a KeepAlive loop, detached restart coordinator, secondary generation, child lifecycle supervisor, component release pointer, or component rollback operation.
+No core module may create a KeepAlive loop, detached restart coordinator, secondary generation, child lifecycle supervisor, component release pointer, or component rollback operation. The canonical `runtime` CLI is observation-only; it cannot start, stop, restart, or recover the application.
 
 ## 3. Seven phases
 
 | Phase | Required result | Current source assessment |
 | --- | --- | --- |
 | 1. Establish Canonical Single Runtime | MCP Transport, Gateway Adapter, Controller Services, Scheduler, SQLite, and Worker Manager are started by one Runtime Root | Partial: the vertical slice exists, but it remains parallel to the legacy installed lifecycle |
-| 2. Converge lifecycle ownership | Runtime Root is the only core start/stop/failure/recovery owner | Not complete: Supervisor, Daemon lifecycle, KeepAlive, restart coordinator, and recovery utilities still overlap |
+| 2. Converge lifecycle ownership | Runtime Root is the only core start/stop/failure/recovery owner | In progress: `repo-harness-runtime` is the sole canonical start entry and the `runtime` CLI is read-only; legacy Supervisor, Daemon, KeepAlive, restart, and recovery callers still require deletion |
 | 3. Simplify readiness | Public Runtime readiness is only `ready: true/false`; module observations are diagnostic evidence | In progress: Canonical Runtime uses the binary contract; legacy component readiness remains |
 | 4. Remove ingress and Runtime slots | No Stable Ingress, fixed blue/green ports, runtime slots, mixed generation, adoption, or component cutover | Not complete |
 | 5. Whole-Runtime publish and rollback | Code, configuration, entrypoint, manifest, SQLite schema/backup, and Worker protocol move as one compatible set | Partial manifest model exists; legacy component and slot rollout remains |

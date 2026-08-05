@@ -17,8 +17,8 @@ Deliver one mergeable vertical slice in which one `repo-harness-runtime` process
 3. The canonical MCP path is `MCP HTTP -> in-process Gateway Adapter -> Controller Services -> SQLite`; it never calls `ensureControllerDaemon` and has no internal Gateway/Controller TCP port.
 4. Runtime ownership is one process-lifetime Controller Home claim. A live owner rejects a second Runtime; stale owner records can be replaced without port or cwd inference.
 5. Scheduler tick failures are fatal in canonical mode. Runtime Root records the reason and stops the complete Runtime instead of restarting a component.
-6. Readiness is derived at read time from lifecycle plus database, scheduler, release coherence, and authenticated MCP end-to-end checks. Optional plugins, tunnel, and worker count are not core checks.
-7. The existing Supervisor, Stable Ingress, KeepAlive, daemon, and slot code remain compatibility/legacy layers in this slice. `repo-harness-runtime` is the sole canonical entrypoint; legacy `runtime start` delegates to that same implementation rather than creating a second Runtime root.
+6. Runtime readiness exposes one `ready: boolean`; database, Scheduler, release coherence, and authenticated MCP end-to-end observations are diagnostic evidence only. Optional plugins, tunnel, and worker count are not core checks.
+7. `repo-harness-runtime` is the sole canonical lifecycle entrypoint. The `runtime` CLI namespace is read-only and contains no start, stop, restart, doctor, detached coordinator, or independent Daemon ownership path.
 
 ## Execution steps
 
@@ -26,7 +26,7 @@ Deliver one mergeable vertical slice in which one `repo-harness-runtime` process
 2. **Runtime Root** — validate explicit config and complete release manifest; acquire Controller Home ownership; initialize SQLite and Controller Services; start strict in-process Scheduler.
 3. **MCP vertical path** — start bearer-authenticated MCP listener; support initialize, tools/list, and `controller_ready`; ensure the call reads SQLite through Controller Services.
 4. **Readiness and shutdown** — run authenticated self-probe, derive readiness, monitor Scheduler/Transport fatal errors, and perform ordered complete shutdown.
-5. **Compatibility adapter and docs** — expose `repo-harness-runtime`; make legacy `runtime start` delegate to the same implementation; document retained legacy deletion phases.
+5. **Lifecycle namespace convergence** — expose `repo-harness-runtime` as the only start entry; keep `runtime status` as an instance-bound read-only projection and remove legacy lifecycle commands from that namespace.
 6. **Verification and delivery** — focused tests, type check, runtime architecture check, commit, merge to `main`, delete branch, clean worktree.
 
 ## Checks
@@ -45,7 +45,7 @@ Deliver one mergeable vertical slice in which one `repo-harness-runtime` process
 
 | Legacy layer | Temporary role | Delete phase |
 | --- | --- | --- |
-| `src/cli/controller/lifecycle.ts` Supervisor/component manager | status/stop compatibility only | Phase 2 then Phase 7 |
+| `src/cli/controller/lifecycle.ts` Supervisor/component manager | no longer reachable from canonical `runtime` CLI; remaining legacy callers only | Phase 2 then Phase 7 |
 | MCP KeepAlive and daemon auto-start in legacy HTTP transport | legacy `mcp serve` compatibility | Phase 2 |
 | Controller Daemon/local bridge internal port | legacy tools not yet migrated | Phase 2 |
 | Stable Ingress and blue/green runtime slots | legacy release activation | Phase 4 |
