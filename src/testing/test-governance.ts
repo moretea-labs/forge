@@ -69,8 +69,15 @@ const INFRASTRUCTURE_RESOURCES = new Set<TestResource>([
   'git-worktree', 'process-tree', 'fixed-port', 'runtime-singleton',
 ]);
 const CONTENT_EXCLUDES = [
-  '.ai/', '.git/', '.codegraph/', '_ops/', 'node_modules/', 'tasks/', 'plans/',
+  '.ai/', '.git/', '.codegraph/', '.repo-harness/', '_ops/', 'node_modules/', 'tasks/', 'plans/',
+  'dist/', 'coverage/',
 ];
+const CHANGE_EXCLUDES = [...CONTENT_EXCLUDES, 'tmp/', 'temp/'];
+const EPHEMERAL_SUFFIXES = [
+  '.log', '.tmp', '.temp', '.pid', '.lock', '.trace', '.out', '.cache', '.bak', '.swp', '.swo',
+];
+const TEST_INPUT_CONFIG = [MANIFEST_PATH, 'package.json', 'bun.lock', 'tsconfig.json'];
+const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs', '.json'];
 
 function git(repoRoot: string, args: string[]): string {
   const result = spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
@@ -108,6 +115,91 @@ export function testContentDigest(repoRoot: string): string {
 
 export function trackedTreeDigest(repoRoot: string): string {
   return hashFiles(repoRoot, repositoryFiles(repoRoot, false), 'repo-harness-tracked-tree-v1');
+}
+
+export function isTestRelevantChangedPath(rawPath: string): boolean {
+  const path = String(rawPath ?? '').replace(/^\.\//, '').replace(/\\/g, '/').trim();
+  if (!path || CHANGE_EXCLUDES.some((prefix) => path.startsWith(prefix))) return false;
+  const name = path.split('/').at(-1) ?? '';
+  if (!name || name === '.DS_Store') return false;
+  if (path.startsWith('tests/') && name.startsWith('.') && !/\.test\.(?:ts|mjs)$/.test(name)) return false;
+  if (EPHEMERAL_SUFFIXES.some((suffix) => name.endsWith(suffix))) return false;
+  return true;
+}
+
+/**
+ * Fingerprint only the candidate's actual Git delta. This remains fail-closed
+ * for tracked, staged, and untracked pollution without re-reading every clean
+ * tracked file after each test.
+ */
+export function workspaceMutationDigest(repoRoot: string): string {
+  const hash = createHash('sha256').update('repo-harness-workspace-mutation-v2\n');
+  hash.update(git(repoRoot, ['diff', '--binary', '--no-ext-diff']));
+  hash.update('\0staged\0');
+  hash.update(git(repoRoot, ['diff', '--cached', '--binary', '--no-ext-diff']));
+  const untracked = git(repoRoot, ['ls-files', '--others', '--exclude-standard', '-z'])
+    .split('\0')
+    .filter(Boolean)
+    .filter(isTestRelevantChangedPath);
+  hash.update('\0untracked\0');
+  hash.update(hashFiles(repoRoot, untracked, 'repo-harness-untracked-mutation-v2'));
+  return hash.digest('hex');
+}
+
+function resolveLocalDependency(repoRoot: string, importer: string, specifier: string): string | undefined {
+  const absoluteBase = specifier.startsWith('.')
+    ? resolve(dirname(resolve(repoRoot, importer)), specifier)
+    : resolve(repoRoot, specifier);
+  const candidates = [
+    absoluteBase,
+    ...SOURCE_EXTENSIONS.map((extension) => `${absoluteBase}${extension}`),
+    ...SOURCE_EXTENSIONS.map((extension) => join(absoluteBase, `index${extension}`)),
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (!existsSync(candidate) || !statSync(candidate).isFile()) continue;
+      const local = relative(repoRoot, candidate).replace(/\\/g, '/');
+      if (!local.startsWith('../') && local !== '..') return local;
+    } catch (_error) {
+      // A disappearing candidate is simply not an input.
+    }
+  }
+  return undefined;
+}
+
+export function testInputPaths(repoRoot: string, testFile: string): string[] {
+  const pending = [testFile.replace(/^\.\//, '')];
+  const inputs = new Set<string>();
+  while (pending.length > 0 && inputs.size < 2_000) {
+    const file = pending.shift()!;
+    if (inputs.has(file)) continue;
+    inputs.add(file);
+    let source: string;
+    try {
+      source = readFileSync(resolve(repoRoot, file), 'utf8');
+    } catch (_error) {
+      continue;
+    }
+    const specifiers = new Set<string>();
+    for (const pattern of [
+      /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*)['"]([^'"]+)['"]/g,
+      /['"]((?:src|scripts|tests|assets)\/[^'"]+)['"]/g,
+    ]) {
+      pattern.lastIndex = 0;
+      for (let match = pattern.exec(source); match; match = pattern.exec(source)) specifiers.add(match[1]!);
+    }
+    for (const specifier of specifiers) {
+      if (!specifier.startsWith('.') && !/^(?:src|scripts|tests|assets)\//.test(specifier)) continue;
+      const dependency = resolveLocalDependency(repoRoot, file, specifier);
+      if (dependency && !inputs.has(dependency)) pending.push(dependency);
+    }
+  }
+  for (const config of TEST_INPUT_CONFIG) if (existsSync(resolve(repoRoot, config))) inputs.add(config);
+  return [...inputs].sort();
+}
+
+export function testInputDigest(repoRoot: string, testFile: string): string {
+  return hashFiles(repoRoot, testInputPaths(repoRoot, testFile), 'repo-harness-test-input-v2');
 }
 
 function listTestsOnDisk(directory: string, repoRoot: string): string[] {
@@ -189,7 +281,7 @@ export function collectChangedPaths(repoRoot: string, options: ChangedPathOption
   ]) {
     for (const path of git(repoRoot, args).split('\0').filter(Boolean)) paths.add(path);
   }
-  return [...paths].filter((path) => !path.startsWith('.ai/harness/checks/')).sort();
+  return [...paths].filter(isTestRelevantChangedPath).sort();
 }
 
 function modulesForChangedPath(path: string, manifest: TestManifest): TestModule[] {
@@ -212,12 +304,13 @@ export function selectTests(
   changedPaths: string[],
   explicitTestFiles: string[] = [],
 ): TestSelection {
+  const meaningfulChangedPaths = [...new Set(changedPaths.map((path) => path.replace(/^\.\//, '')).filter(isTestRelevantChangedPath))].sort();
   const changedModules = new Set<TestModule>();
-  for (const path of changedPaths) for (const module of modulesForChangedPath(path, manifest)) changedModules.add(module);
+  for (const path of meaningfulChangedPaths) for (const module of modulesForChangedPath(path, manifest)) changedModules.add(module);
   if (changedModules.size === 0) changedModules.add('core');
   const direct = new Set(explicitTestFiles.length > 0
     ? explicitTestFiles
-    : changedPaths.filter((path) => Boolean(manifest.tests[path])));
+    : meaningfulChangedPaths.filter((path) => Boolean(manifest.tests[path])));
   const entries = Object.entries(manifest.tests);
   let selected: string[];
   if (explicitTestFiles.length > 0) {
@@ -225,7 +318,7 @@ export function selectTests(
   } else if (gate === 'core') {
     selected = entries.filter(([, entry]) => entry.smoke || (entry.module === 'core' && entry.resource === 'pure')).map(([file]) => file);
   } else if (gate === 'affected') {
-    selected = changedPaths.length === 0
+    selected = meaningfulChangedPaths.length === 0
       ? entries.filter(([, entry]) => entry.smoke).map(([file]) => file)
       : entries.filter(([file, entry]) => (
           (direct.has(file) && !INFRASTRUCTURE_RESOURCES.has(entry.resource) && entry.resource !== 'destructive')
@@ -243,10 +336,10 @@ export function selectTests(
     selected = entries.filter(([, entry]) => entry.resource !== 'destructive').map(([file]) => file);
   }
   selected.sort();
-  const noChanges = changedPaths.length === 0;
+  const noChanges = meaningfulChangedPaths.length === 0;
   return {
     gate,
-    changedPaths,
+    changedPaths: meaningfulChangedPaths,
     modules: [...changedModules].sort(),
     files: selected,
     reason: explicitTestFiles.length > 0
@@ -256,9 +349,9 @@ export function selectTests(
 }
 
 interface TestCheckpoint {
-  version: 1;
+  version: 2;
   key: string;
-  contentDigest: string;
+  inputDigest: string;
   runnerDigest: string;
   testDigest: string;
   toolchain: string;
@@ -297,7 +390,7 @@ function readPassedCheckpoint(path: string, key: string): TestCheckpoint | undef
   if (!existsSync(path)) return undefined;
   try {
     const checkpoint = JSON.parse(readFileSync(path, 'utf8')) as TestCheckpoint;
-    return checkpoint.version === 1 && checkpoint.key === key && checkpoint.status === 'passed' ? checkpoint : undefined;
+    return checkpoint.version === 2 && checkpoint.key === key && checkpoint.status === 'passed' ? checkpoint : undefined;
   } catch (_error) {
     return undefined;
   }
@@ -327,7 +420,7 @@ export async function runTestSelection(
   options: RunTestSelectionOptions = {},
 ): Promise<number> {
   const useCache = options.useCache ?? true;
-  const baselineTree = trackedTreeDigest(repoRoot);
+  const baselineWorkspace = workspaceMutationDigest(repoRoot);
   const contentDigest = testContentDigest(repoRoot);
   const runnerDigest = hashFiles(repoRoot, [
     MANIFEST_PATH,
@@ -349,8 +442,9 @@ export async function runTestSelection(
     if (contaminated) return;
     const entry = manifest.tests[file]!;
     const testDigest = hashFiles(repoRoot, [file], 'test-file-v1');
+    const inputDigest = testInputDigest(repoRoot, file);
     const key = createHash('sha256').update(JSON.stringify({
-      contentDigest, runnerDigest, testDigest, toolchain, capability, file,
+      inputDigest, runnerDigest, testDigest, toolchain, capability, file,
     })).digest('hex');
     const checkpointPath = join(repoRoot, CHECKPOINT_ROOT, `${key}.json`);
     const cachedCheckpoint = useCache ? readPassedCheckpoint(checkpointPath, key) : undefined;
@@ -422,7 +516,7 @@ export async function runTestSelection(
           file,
         ], { forwardSignals: true, cwd: repoRoot });
       }
-      if (trackedTreeDigest(repoRoot) !== baselineTree) {
+      if (workspaceMutationDigest(repoRoot) !== baselineWorkspace) {
         contaminated = true;
         result = {
           ...result,
@@ -436,9 +530,9 @@ export async function runTestSelection(
     } while (result.failureClass === 'infrastructure' && attempts < 2);
 
     const checkpoint: TestCheckpoint = {
-      version: 1,
+      version: 2,
       key,
-      contentDigest,
+      inputDigest,
       runnerDigest,
       testDigest,
       toolchain,
@@ -474,6 +568,8 @@ export async function runTestSelection(
     console.error(`[tests] serial lane ${resource}: ${files.length} file(s)`);
     for (const file of files) await runOne(file);
   }));
+
+  if (workspaceMutationDigest(repoRoot) !== baselineWorkspace) contaminated = true;
 
   const durationMs = Math.round(performance.now() - runStartedAt);
   const serialReduction = serialEquivalentMs > 0
