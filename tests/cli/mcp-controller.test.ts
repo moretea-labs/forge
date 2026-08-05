@@ -20,7 +20,7 @@ import { getWorkContract, updateWorkContract } from "../../src/runtime/control-p
 import { createRequirement, updateRequirement } from "../../src/runtime/control-plane/persistence/requirement-store";
 import { terminateProcessTree } from "../../src/runtime/shared/process-tree";
 import { callExecutionTool } from "../../src/runtime/gateway/mcp/execution-tools";
-import { callRuntimeTool, controllerReadiness } from "../../src/runtime/gateway/mcp/runtime-tools";
+import { callRuntimeTool, controllerReadiness, controllerReadinessEvidence } from "../../src/runtime/gateway/mcp/runtime-tools";
 import { getMcpPolicy } from "../../src/cli/mcp/policy";
 import { createMcpToolContext as createMultiRepositoryContext, parseMcpToolset } from "../../src/cli/mcp/multi-repository";
 import { callRepositoryTool } from "../../src/cli/mcp/repository-tools";
@@ -279,11 +279,29 @@ test("uses the active slot service runtime for aggregate Local Bridge health", a
         profile: "controller",
         toolset: "advanced",
         controllerHome});
-      const readiness = await controllerReadiness(multi, repository);
-      expect(readiness.health.components.localBridge).toMatchObject({
+      const evidence = await controllerReadinessEvidence(multi, repository);
+      expect(evidence.health.components.localBridge).toMatchObject({
         state: "healthy",
         ready: true});
-      expect(readiness.health.components.localBridge.activeBlockers).toEqual([]);
+      expect(evidence.health.components.localBridge.activeBlockers).toEqual([]);
+
+      const readiness = await controllerReadiness(multi, repository);
+      expect(Object.keys(readiness).sort()).toEqual(["diagnostics", "observedAt", "ready", "reasonCodes"]);
+      expect(readiness).not.toHaveProperty("state");
+      expect(readiness).not.toHaveProperty("daemon");
+      expect(readiness).not.toHaveProperty("durableScheduler");
+      expect(readiness).not.toHaveProperty("workerLoop");
+      expect(readiness).not.toHaveProperty("localBridge");
+
+      const toolResult = await callRuntimeTool(multi, "controller_ready", {});
+      expect(toolResult).toBeDefined();
+      expect(toolResult?.isError).not.toBe(true);
+      const toolPayload = JSON.parse(toolResult!.content[0].text);
+      expect(Object.keys(toolPayload).sort()).toEqual(["diagnostics", "observedAt", "ready", "reasonCodes"]);
+      expect(toolPayload).not.toHaveProperty("state");
+      expect(toolPayload).not.toHaveProperty("stableSupervisor");
+      expect(toolPayload).not.toHaveProperty("stableIngress");
+      expect(toolPayload).not.toHaveProperty("activeSlot");
     } finally {
       await new Promise<void>((resolvePromise, reject) => server.close((error) => error ? reject(error) : resolvePromise()));
     }

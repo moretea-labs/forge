@@ -57,7 +57,7 @@ No core module may create a KeepAlive loop, detached restart coordinator, second
 | --- | --- | --- |
 | 1. Establish Canonical Single Runtime | MCP Transport, Gateway Adapter, Controller Services, Scheduler, SQLite, and Worker Manager are started by one Runtime Root | Partial: the vertical slice exists, but it remains parallel to the legacy installed lifecycle |
 | 2. Converge lifecycle ownership | Runtime Root is the only core start/stop/failure/recovery owner | In progress: `repo-harness-runtime` is the sole canonical start entry; `runtime` is observation-only; public `controller`/Supervisor/MCP lifecycle commands, autonomous Recovery agent repair, MCP/Gateway Daemon auto-start, Gateway component restart/rollout/rollback tools, Supervisor facade operations, and repair-triggered detached restart are removed; the independent legacy Daemon entry, Supervisor process, and bounded recovery callers still require deletion |
-| 3. Simplify readiness | Public Runtime readiness is only `ready: true/false`; module observations are diagnostic evidence | In progress: Canonical Runtime uses the binary contract; legacy component readiness remains |
+| 3. Simplify readiness | Public Runtime readiness is only `ready: true/false`; module observations are diagnostic evidence | In progress: Canonical Runtime and public `controller_ready` use the binary contract; detailed component observations remain internal evidence for legacy status/recovery paths and require further deletion |
 | 4. Remove ingress and Runtime slots | No Stable Ingress, fixed blue/green ports, runtime slots, mixed generation, adoption, or component cutover | Not complete |
 | 5. Whole-Runtime publish and rollback | Code, configuration, entrypoint, manifest, SQLite schema/backup, and Worker protocol move as one compatible set | Partial manifest model exists; legacy component and slot rollout remains |
 | 6. Complete Worker isolation and fencing | Workers are bounded Runtime-owned children; stale Workers cannot commit control-plane side effects | Existing fencing primitives are reusable; ownership must be bound to the Canonical Runtime instance/release |
@@ -83,7 +83,7 @@ interface RuntimeReadiness {
 }
 ```
 
-Only `ready` is the Runtime decision. Diagnostic evidence explains why the complete Runtime is or is not ready. It must not become a second lifecycle state machine.
+Only `ready` is the Runtime decision. `reasonCodes`, `diagnostics`, and `observedAt` explain the decision. Public readiness does not expose `state`, component top-level readiness objects, slots, generations, Supervisor state, or Ingress state. Detailed legacy observations may remain internal temporarily, but must not become a second lifecycle state machine.
 
 Forbidden public Runtime readiness combinations include:
 

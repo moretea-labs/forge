@@ -413,9 +413,8 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     detail_level: { type: 'string', enum: ['summary', 'full'] },
   }),
   definition('cancel_job', 'Cancel one queued or running durable Execution Job.', { job_id: { type: 'string' }, repo_id: repoId, reason: { type: 'string' } }, ['job_id'], false),
-  definition('controller_ready', 'Return Gateway, Controller Daemon, Worker isolation, queue, and repository projection readiness.', {
+  definition('controller_ready', 'Return one binary Runtime readiness decision with bounded diagnostic evidence.', {
     repo_id: repoId,
-    detail_level: { type: 'string', enum: ['summary', 'detail'], description: 'Defaults to summary; detail returns full runtime, tool-surface, history, and projection evidence.' },
   }),
   definition('repository_runtime_snapshot', 'Read the materialized runtime projection without scanning historical state.', { repo_id: repoId }),
   definition('schedule_dedupe_report', 'Read-only report that groups duplicate schedules by semantic trigger/action identity.', {
@@ -1814,7 +1813,7 @@ export interface ControllerReadinessSignals {
   sessionContinuity?: GradedObservation;
 }
 
-export async function controllerReadiness(
+export async function controllerReadinessEvidence(
   ctx: MultiRepositoryMcpToolContext,
   repository = ctx.explicitRepository,
   signals: ControllerReadinessSignals = {},
@@ -1971,8 +1970,86 @@ export async function controllerReadiness(
   };
 }
 
+export async function controllerReadiness(
+  ctx: MultiRepositoryMcpToolContext,
+  repository = ctx.explicitRepository,
+  signals: ControllerReadinessSignals = {},
+) {
+  const evidence = await controllerReadinessEvidence(ctx, repository, signals);
+  const runtimeSource = runtimeSourceSnapshotStatus(evidence.daemon.source);
+  const reasonCodes = new Set(evidence.reasons.map((item) => item.code));
+  if (runtimeSource.restartRequired) {
+    reasonCodes.add(runtimeSource.code ?? 'RUNTIME_SOURCE_SNAPSHOT_STALE');
+  }
+  const controllerServicesReady = evidence.daemon.status === 'ready' && evidence.daemon.degraded !== true;
+  const schedulerReady = evidence.durableScheduler.status === 'ready';
+  const workersReady = evidence.workerLoop.consuming;
+  const databaseReady = evidence.projectionSnapshot?.persisted !== false;
+  const releaseCoherenceReady = !runtimeSource.restartRequired;
+  const ready = evidence.ready
+    && controllerServicesReady
+    && schedulerReady
+    && workersReady
+    && databaseReady
+    && releaseCoherenceReady;
+
+  return {
+    ready,
+    reasonCodes: [...reasonCodes],
+    diagnostics: {
+      database: {
+        ready: databaseReady,
+        evidence: {
+          persisted: evidence.projectionSnapshot?.persisted,
+          stale: evidence.projectionSnapshot?.stale,
+          projectionRevision: evidence.projection?.revision,
+        },
+      },
+      controllerServices: {
+        ready: controllerServicesReady,
+        evidence: {
+          status: evidence.daemon.status,
+          degraded: evidence.daemon.degraded,
+          error: evidence.daemon.error,
+        },
+      },
+      scheduler: {
+        ready: schedulerReady,
+        evidence: {
+          loopStartedAt: evidence.durableScheduler.loopStartedAt,
+          lastTickAt: evidence.durableScheduler.lastTickAt,
+          lastDispatchAt: evidence.durableScheduler.lastDispatchAt,
+          heartbeatAgeMs: evidence.durableScheduler.heartbeatAgeMs,
+          dispatchHeartbeatAgeMs: evidence.durableScheduler.dispatchHeartbeatAgeMs,
+        },
+      },
+      workers: {
+        ready: workersReady,
+        evidence: {
+          queueDepth: evidence.workerLoop.queueDepth,
+          runningWorkers: evidence.workerLoop.runningWorkers,
+          activeLeases: evidence.workerLoop.activeLeases,
+          consuming: evidence.workerLoop.consuming,
+        },
+      },
+      releaseCoherence: {
+        ready: releaseCoherenceReady,
+        evidence: runtimeSource,
+      },
+      mcpEndToEnd: {
+        ready: evidence.ready,
+        evidence: {
+          activeBlockers: evidence.reasons,
+          warnings: evidence.warnings,
+        },
+      },
+    },
+    observedAt: new Date().toISOString(),
+  };
+}
+
 async function capabilityRecoveryInput(ctx: MultiRepositoryMcpToolContext, repository: ReturnType<typeof selected>, args: Record<string, unknown>) {
-  const readiness = await controllerReadiness(ctx, repository);
+  const readiness = await controllerReadinessEvidence(ctx, repository);
   const runtimeSnapshot = readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId);
   const localBridge = loadMcpRuntimeState(repository.canonicalRoot)?.localController;
   const inferredLocalBridge = inferLocalControllerProcess(repository.canonicalRoot);
@@ -2387,7 +2464,7 @@ async function runFacadeRepair(
   }
 
   const daemon = readControllerDaemonStatus(ctx.controllerHome);
-  const readiness = await controllerReadiness(ctx, repository);
+  const readiness = await controllerReadinessEvidence(ctx, repository);
   const facade = runSelfHealingLoop(
     { repoId: repository.repoId, handoffStore: store },
     {
@@ -2621,7 +2698,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         if (operation === 'repair') {
           return await runFacadeRepair(ctx, repository, args);
         }
-        const readiness = await controllerReadiness(ctx, repository);
+        const readiness = await controllerReadinessEvidence(ctx, repository);
         const liveGit = gitSnapshot(repository.canonicalRoot);
         // Compare startup Runtime Source against the Controller package authority —
         // never against the selected execution repository.
@@ -3929,7 +4006,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
 
         const buildStartedAt = performance.now();
         const buildPayload = async (): Promise<Record<string, unknown>> => {
-          const readiness = await controllerReadiness(ctx, repository);
+          const readiness = await controllerReadinessEvidence(ctx, repository);
           const activeCheckout = repository.checkouts.find((checkout) => checkout.checkoutId === repository.activeCheckoutId);
           const liveGit = gitSnapshot(repository.canonicalRoot);
           const board = legacyIssueAuthorityRetired(repository.canonicalRoot)
@@ -4234,199 +4311,40 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         return result({ job: summarizeExecutionJob(cancelled, repoRoot) });
       }
       case 'controller_ready': {
-        const responseStartedAt = performance.now();
-        const detail = args.detail_level === 'detail';
         const explicitRepoId = typeof args.repo_id === 'string' && args.repo_id.trim() ? args.repo_id.trim() : undefined;
         const registered = listRepositories(ctx.controllerHome).filter((repository) => repository.enabled && !repository.removedAt);
         const repository = explicitRepoId
           ? selected(ctx, args)
           : (ctx.explicitRepository ?? (registered.length === 1 ? registered[0] : undefined));
+        const readiness = await controllerReadiness(ctx, repository);
         const toolset = await import('../../../cli/mcp/toolset');
         const exposure = toolset.controllerExposureSnapshot(ctx);
-        const localRegisteredToolNames = toolset.allControllerToolDefinitions(ctx).map((tool) => tool.name).sort();
         const toolSurfaceReady = exposure.ready && exposure.missingToolNames.length === 0;
-        const stableHome = resolveStableControllerHome(ctx.controllerHome);
-        const supervisorState = readSupervisorState(stableHome);
-        const currentRelease = readCurrentSupervisorRelease(stableHome);
-        const stableSupervisorPresent = Boolean(supervisorState) || Boolean(currentRelease) || isStableSupervisorInstalled(stableHome);
-        const supervisorServiceCoherence = stableSupervisorPresent
-          ? readSupervisorServiceReleaseCoherence(stableHome, supervisorState)
-          : { ok: true, serviceRegistered: false, failures: [], expected: undefined, running: undefined, generated: undefined, installed: undefined };
-        const activeSlotAuthority = readActiveSlotAuthority(stableHome);
-        const activeSlotIdentity = readSlotIdentity(stableHome, activeSlotAuthority.activeSlot);
-        const runtimeReleaseCoherence = stableSupervisorPresent
-          ? evaluateRuntimeReleaseCoherence({ supervisorState, authority: activeSlotAuthority, slotIdentity: activeSlotIdentity ?? undefined })
-          : {
-            ok: true,
-            legacyReleaseMetadata: true,
-            releasePathCoherent: true,
-            releaseRevisionCoherent: true,
-            releaseCoherent: true,
-            generationCoherent: true,
-            slotCoherent: true,
-            failures: [],
-          };
-        const revisionView = buildControllerReadyRevisionView({
-          currentRelease,
-          supervisorState,
-          activeSlotIdentity,
-          serviceCoherence: supervisorServiceCoherence,
-          runtimeCoherence: runtimeReleaseCoherence,
-        });
-        const routeBehavior = gatewayRouteBehaviorSnapshot();
-        // Execution-surface closure: the active immutable release must contain
-        // every executable the Unified Process Runtime needs (process-runner.js
-        // and the other entrypoints). Control plane liveness says nothing about
-        // whether a repository command can actually run, so a release with a
-        // missing runner entrypoint blocks readiness instead of failing the
-        // first real command with PROCESS_RUNNER_ENTRY_NOT_FOUND.
-        const releaseClosureMissing = stableSupervisorPresent && currentRelease
-          ? supervisorReleaseClosureMissing(currentRelease.releasePath)
-          : [];
-        // Stable ingress health: separate from the daemon-based readiness.
-        // A Supervisor that looks healthy internally can still have an
-        // unreachable ingress that makes the public Connector 502.
-        const ingressState = supervisorState?.ingress;
-        const ingressHealthy = Boolean(
-          ingressState?.state === 'running'
-          && ingressState.pid
-          && (ingressState.consecutiveFailures ?? 0) === 0,
-        );
-        const ingressLocalReady = Boolean(
-          ingressHealthy
-          && ingressState?.activeUpstreamSlot
-          && ingressState?.activeUpstreamPort,
-        );
-        // External / public endpoint probe: if configured, a repeated failure
-        // means the Stable Connector is unreachable even when localhost passes.
-        const publicHealthEndpoint = process.env.REPO_HARNESS_SUPERVISOR_PUBLIC_HEALTH_ENDPOINT?.trim();
-        const externalEndpointStatus: 'healthy' | 'unhealthy' | 'unknown' = publicHealthEndpoint
-          ? supervisorState?.externalEndpointHealthy === true
-            ? 'healthy'
-            : supervisorState?.externalEndpointHealthy === false
-              ? 'unhealthy'
-              : 'unknown'
-          : 'unknown';
-        const externalEndpointLastChecked = supervisorState?.externalEndpointLastCheckedAt;
-        const externalEndpointDetail = supervisorState?.externalEndpointLastDetail;
-        const stableIngressReady = ingressLocalReady && (externalEndpointStatus !== 'unhealthy');
-        const readiness = await controllerReadiness(ctx, repository, {
-          externalEndpoint: {
-            status: externalEndpointStatus,
-            ...(externalEndpointDetail ? { detail: externalEndpointDetail } : {}),
-            details: {
-              configured: Boolean(publicHealthEndpoint),
-              lastCheckedAt: externalEndpointLastChecked,
+        const reasonCodes = new Set(readiness.reasonCodes);
+        if (!toolSurfaceReady) reasonCodes.add('MCP_TOOL_SURFACE_INCOMPLETE');
+        const mcpReady = readiness.diagnostics.mcpEndToEnd.ready && toolSurfaceReady;
+        const ready = readiness.ready && mcpReady;
+        const payload = {
+          ready,
+          reasonCodes: [...reasonCodes],
+          diagnostics: {
+            ...readiness.diagnostics,
+            mcpEndToEnd: {
+              ready: mcpReady,
+              evidence: {
+                ...readiness.diagnostics.mcpEndToEnd.evidence,
+                expectedToolCount: exposure.expectedToolNames.length,
+                actualToolCount: exposure.actualToolNames.length,
+                missingTools: exposure.missingToolNames,
+                unexpectedTools: exposure.unexpectedToolNames,
+                duplicateTools: exposure.duplicateToolNames,
+                fingerprint: exposure.fingerprint,
+              },
             },
           },
-          mcpHandshake: stableSupervisorPresent
-            ? {
-              status: supervisorState?.observedState === 'healthy' ? 'healthy' : 'unknown',
-              detail: supervisorState?.observedState === 'healthy'
-                ? 'Stable Supervisor reports a healthy MCP-serving runtime.'
-                : 'No successful MCP handshake is persisted in the readiness snapshot.',
-            }
-            : undefined,
-          sessionContinuity: stableSupervisorPresent
-            ? {
-              status: ingressLocalReady ? 'healthy' : 'unknown',
-              detail: ingressLocalReady
-                ? `Ingress is bound to upstream slot ${ingressState?.activeUpstreamSlot}.`
-                : 'Ingress session continuity cannot be evaluated without an active upstream slot.',
-            }
-            : undefined,
-        });
-        const effectiveReady = readiness.ready && toolSurfaceReady && revisionView.coherence.ok && releaseClosureMissing.length === 0 && (stableSupervisorPresent ? stableIngressReady : true);
-        const taskLedger = readiness.taskLedger;
-        const agentExecutors = detail ? readAgentExecutableReadinessSnapshot(ctx.controllerHome) : undefined;
-        const fullPayload: Record<string, unknown> = {
-          repoId: repository?.repoId,
-          ready: effectiveReady,
-          state: effectiveReady ? readiness.state : 'degraded',
-          taskLedgerStatus: taskLedger?.status,
-          taskLedgerCounts: taskLedger ? {
-            issueCount: taskLedger.issueCount,
-            archivedIssueCount: taskLedger.archivedIssueCount,
-            effective: taskLedger.counts,
-            attention: taskLedger.attention.length,
-            ready: taskLedger.readyTasks.length,
-            queueable: taskLedger.queueableTasks.length,
-          } : undefined,
-          gateway: { ready: true, thin: true, longOperationsAreDurable: true },
-          health: readiness.health,
-          projectionReconciliation: readiness.projectionReconciliation,
-          operationalView: readiness.operationalView,
-          daemon: readiness.daemon,
-          durableScheduler: readiness.durableScheduler,
-          workerLoop: readiness.workerLoop,
-          localBridge: readiness.localBridge,
-          agentExecutors: agentExecutors
-            ? { status: 'probed', ...agentExecutors }
-            : { status: 'not_probed', executors: {} },
-          stableSupervisor: stableSupervisorPresent ? {
-            ready: revisionView.coherence.ok,
-            loaded: true,
-            pid: supervisorState?.supervisor.pid,
-            healthy: supervisorState?.observedState === 'healthy',
-            expectedReleaseRevision: supervisorServiceCoherence.expected?.releaseRevision,
-            runningReleaseRevision: supervisorServiceCoherence.running?.releaseRevision,
-            generatedServiceReleaseRevision: supervisorServiceCoherence.generated?.releaseRevision,
-            installedServiceReleaseRevision: supervisorServiceCoherence.installed?.releaseRevision,
-            failures: [...new Set([...supervisorServiceCoherence.failures, ...runtimeReleaseCoherence.failures])],
-          } : { ready: true, installed: false, loaded: false, failures: [] },
-          stableIngress: {
-            pid: ingressState?.pid,
-            localReady: ingressLocalReady,
-            state: ingressState?.state ?? (stableSupervisorPresent ? 'unknown' : 'not_applicable'),
-            consecutiveFailures: ingressState?.consecutiveFailures ?? 0,
-          },
-          externalEndpoint: {
-            status: externalEndpointStatus,
-            lastCheckedAt: externalEndpointLastChecked,
-            detail: externalEndpointDetail,
-          },
-          releaseClosure: {
-            complete: releaseClosureMissing.length === 0,
-            missing: releaseClosureMissing,
-          },
-          reasons: [
-            ...readiness.reasons,
-            ...(!toolSurfaceReady ? [{ code: 'MCP_TOOL_SURFACE_INCOMPLETE', message: 'Registered and exposed MCP tool schemas do not match.' }] : []),
-            ...(!supervisorServiceCoherence.ok ? [{ code: 'SUPERVISOR_SERVICE_RELEASE_DRIFT', message: supervisorServiceCoherence.failures.join('; ') }] : []),
-            ...(!runtimeReleaseCoherence.ok ? [{ code: 'ACTIVE_RUNTIME_RELEASE_DRIFT', message: runtimeReleaseCoherence.failures.join('; ') }] : []),
-            ...(stableSupervisorPresent && !ingressLocalReady ? [{ code: 'STABLE_INGRESS_NOT_READY', message: 'Stable ingress is not serving traffic or has accumulated health failures.' }] : []),
-            ...(releaseClosureMissing.length > 0 ? [{ code: 'RELEASE_CLOSURE_INCOMPLETE', message: `Immutable release is missing required executable entrypoints: ${releaseClosureMissing.join(', ')}` }] : []),
-            ...(externalEndpointStatus === 'unhealthy' ? [{ code: 'PUBLIC_STABLE_ENDPOINT_UNHEALTHY', message: externalEndpointDetail ?? 'Public stable endpoint is unreachable even though localhost checks pass.' }] : []),
-          ],
-          ...revisionView,
-          routeBehavior: detail
-            ? routeBehavior
-            : { schemaVersion: routeBehavior.schemaVersion, fingerprint: routeBehavior.fingerprint, probeCount: routeBehavior.probeCount },
-          toolSurface: {
-            ready: toolSurfaceReady,
-            localExpectedTools: exposure.expectedToolNames,
-            localRegisteredTools: localRegisteredToolNames,
-            connectorExposedTools: exposure.actualToolNames,
-            currentCallableTools: exposure.actualToolNames,
-            expectedTools: exposure.expectedToolNames,
-            actualTools: exposure.actualToolNames,
-            missingTools: exposure.missingToolNames,
-            unexpectedTools: exposure.unexpectedToolNames,
-            duplicateTools: exposure.duplicateToolNames,
-            fingerprint: exposure.fingerprint,
-            schemaStableAcrossAccessModes: true,
-          },
-          access: exposure.access,
-          registeredRepositories: registered.length,
-          runtimeIdentity: runtimeIdentitySnapshot(ctx),
-          ...(detail && repository
-            ? { repository: summarizeRuntimeProjectionForReadiness(readiness.projection ?? readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId).projection) }
-            : {}),
+          observedAt: readiness.observedAt,
         };
-        const payload = detail
-          ? { detailLevel: 'detail', ...fullPayload }
-          : summarizeControllerReadyPayload(fullPayload);
-        return result(withRuntimeResponseMeta(payload, responseStartedAt));
+        return result(payload);
       }
       case 'repository_runtime_snapshot': {
         const repository = selected(ctx, args);

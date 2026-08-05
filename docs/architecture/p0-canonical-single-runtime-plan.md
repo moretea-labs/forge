@@ -17,7 +17,7 @@ Deliver one mergeable vertical slice in which one `repo-harness-runtime` process
 3. The canonical MCP path is `MCP HTTP -> in-process Gateway Adapter -> Controller Services -> SQLite`; it never calls `ensureControllerDaemon` and has no internal Gateway/Controller TCP port.
 4. Runtime ownership is one process-lifetime Controller Home claim. A live owner rejects a second Runtime; stale owner records can be replaced without port or cwd inference.
 5. Scheduler tick failures are fatal in canonical mode. Runtime Root records the reason and stops the complete Runtime instead of restarting a component.
-6. Runtime readiness exposes one `ready: boolean`; database, Scheduler, release coherence, and authenticated MCP end-to-end observations are diagnostic evidence only. Optional plugins, tunnel, and worker count are not core checks.
+6. Runtime readiness exposes one `ready: boolean`; database, Scheduler, release coherence, and authenticated MCP end-to-end observations are diagnostic evidence only. Public `controller_ready` is limited to `ready`, `reasonCodes`, `diagnostics`, and `observedAt`; it does not expose component state, Supervisor, Ingress, slot, or generation authority. Optional plugins, tunnel, and worker count are not core checks.
 7. `repo-harness-runtime` is the sole canonical lifecycle entrypoint. The `runtime` CLI namespace is read-only and contains no start, stop, restart, doctor, detached coordinator, or independent Daemon ownership path.
 
 ## Execution steps
@@ -54,4 +54,4 @@ Deliver one mergeable vertical slice in which one `repo-harness-runtime` process
 | Gateway/MCP component restart, rollout, rollback and Supervisor facade operations | direct tools, facade allowlists, fallback restart coordinator, and capability descriptor removed | Phase 2 complete for this authority |
 | Stable Ingress and blue/green runtime slots | legacy release activation | Phase 4 |
 | Component rollout/rollback and writer slot authority | compatibility until whole-release updater | Phase 5 then Phase 7 |
-| Legacy health/readiness combinations | compatibility output | Phase 3 |
+| Legacy health/readiness combinations | public `controller_ready` binary contract completed; detailed component combinations remain internal compatibility evidence | Phase 3 then Phase 7 |
