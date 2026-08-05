@@ -2326,4 +2326,40 @@ describe('Stable Supervisor production hardening', () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  test('T4 core hierarchy has one Supervisor lifecycle owner for Gateway, Daemon, and stable ingress', () => {
+    const home = mkdtempSync(join(tmpdir(), 'repo-harness-t4-core-hierarchy-'));
+    try {
+      const manager = new SupervisorProcessManager({
+        repoRoot: process.cwd(),
+        controllerHome: home,
+        ownerEpoch: 1,
+        runtimeSourceRoot: process.cwd(),
+        runtimeExecutable: '/runtime/repo-harness.js',
+        logPath: join(home, 'supervisor.log'),
+      });
+      const gatewayArgs = (manager as unknown as {
+        gatewayArgs: (componentHome: string, slot: 'blue' | 'green') => string[];
+      }).gatewayArgs(home, 'blue');
+      expect(gatewayArgs.slice(0, 3)).toEqual(['/runtime/repo-harness.js', 'mcp', 'serve']);
+      expect(gatewayArgs).toContain('--transport');
+      expect(gatewayArgs).toContain('http');
+      expect(gatewayArgs).not.toContain('keepalive');
+      expect(gatewayArgs).not.toContain('--local-ui');
+      expect(gatewayArgs).not.toContain('--tunnel');
+      expect(gatewayArgs).not.toContain('--public-endpoint');
+
+      const entrySource = readFileSync(join(process.cwd(), 'src/runtime/supervisor/entry.ts'), 'utf8');
+      const runtimeSource = readFileSync(join(process.cwd(), 'src/runtime/supervisor/supervisor-runtime.ts'), 'utf8');
+      const managerSource = readFileSync(join(process.cwd(), 'src/runtime/supervisor/process-manager.ts'), 'utf8');
+      expect(entrySource).not.toContain("process.argv.includes('--ingress-child')");
+      expect(entrySource).not.toContain('runStableIngressChild');
+      expect(runtimeSource).toContain('createStableIngressRouter');
+      expect(runtimeSource).not.toContain('createStableIngressProcess');
+      expect(managerSource).not.toContain("this.runtimeCli(), 'mcp', 'keepalive'");
+      expect(managerSource).not.toContain('repo-harness-desktop-helper');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });

@@ -13,10 +13,19 @@
 | T1 | Freeze the target ownership model, invariants, deletion map, and gates | Complete |
 | T2 | Install one fixed Bootstrap and publish a self-contained immutable core Runtime release | Implemented; release/cold-start/failure gates are authoritative |
 | T3 | Collapse authority and configuration to one committed primary record each | Implemented in source; migration/fencing gates are authoritative |
-| T4 | Collapse the primary hierarchy and delete Gateway KeepAlive/tunnel lifecycle ownership | Pending |
+| T4 | Collapse the primary hierarchy and delete Gateway KeepAlive/tunnel lifecycle ownership | Implemented in source; direct-child and inline-ingress gates are authoritative |
 | T5 | Replace slot rollout with one transactional candidate/current/previous activation protocol | Pending |
 | T6 | Complete independent immutable Recovery Gateway, Watchdog, and tunnel services | Pending |
 | T7 | Delete legacy slot, restart, embedded, fallback, and compatibility lifecycle paths | Pending |
+
+T4 establishes these additional non-negotiable boundaries:
+
+- Supervisor launches Gateway as the direct one-process `mcp serve --transport http` child, never `mcp keepalive`;
+- Gateway child arguments contain no Local UI, public tunnel, or public endpoint lifecycle ownership;
+- stable ingress is an in-process Supervisor router, not an independently supervised child process;
+- the supported Supervisor entrypoint has no `--ingress-child` execution mode;
+- Supervisor child inventory remains core-only: Daemon and Gateway hosts; domain plugin helpers are never adopted or restarted by Supervisor;
+- ingress telemetry records the Supervisor PID, making the single lifecycle owner explicit.
 
 T3 establishes these additional non-negotiable boundaries:
 

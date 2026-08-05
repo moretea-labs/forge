@@ -17,12 +17,12 @@ import {
 import { readControllerDaemonStatus, type ControllerDaemonStatus } from '../control-plane/daemon-client';
 import { readRuntimeGeneration } from '../control-plane/runtime-generation';
 import { createSupervisorControlServer, type SupervisorControlServerHandle, type SupervisorControlHandlers } from './control-server';
-import { createStableIngressProcess, type StableIngressProcessHandle } from './ingress-process';
+import { createStableIngressRouter, type StableIngressRouterHandle } from './ingress-router';
 import { createSupervisorOperation, listSupervisorOperations, readSupervisorOperation, updateSupervisorOperation } from './operation-store';
 import { DEFAULT_RESTART_POLICY, decideRestart, lockout, newRestartBudgetRecord, recordFailure, recordRestart, recordStable } from './restart-policy';
 import { SupervisorProcessManager, type SpawnedSupervisorProcess, type SupervisorProcessManagerOptions } from './process-manager';
 import { createSupervisorState, readSupervisorState, writeSupervisorState } from './state-store';
-import { readCurrentSupervisorRelease, readPreviousSupervisorRelease, readSupervisorRelease, supervisorControlSocketPath, supervisorReleasesRoot, supervisorReleaseClosureMissing, type SupervisorReleaseDescriptor } from './paths';
+import { readCurrentSupervisorRelease, readPreviousSupervisorRelease, readSupervisorRelease, supervisorControlSocketPath, supervisorIngressSessionStorePath, supervisorReleasesRoot, supervisorReleaseClosureMissing, type SupervisorReleaseDescriptor } from './paths';
 import { publishSupervisorRelease, verifySupervisorReleaseExecutionCanary, verifySupervisorSourceIdentity } from './installer';
 import {
   publishAndScheduleSupervisorRelease,
@@ -37,7 +37,6 @@ export interface StableSupervisorRuntimeOptions extends SupervisorProcessManager
   controlPort?: number;
   rescueAuthToken?: string;
   releaseRevision?: string;
-  ingressExecutable?: string;
   serviceActivationScheduler?: typeof scheduleServiceActivation;
   activatePublishedRelease?: boolean;
   onHandoff?: () => void;
@@ -930,7 +929,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
   readonly manager: SupervisorProcessManager;
   private state: SupervisorState;
   private control?: SupervisorControlServerHandle;
-  private ingressProcess?: StableIngressProcessHandle;
+  private ingressRouter?: StableIngressRouterHandle;
   private monitorTimer?: ReturnType<typeof setInterval>;
   private monitorPromise?: Promise<void>;
   private executionPromise?: Promise<void>;
@@ -1063,22 +1062,26 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     if (decision.shouldRestart) this.requestSupervisorSelfRestart(reason);
   }
 
-  private async replaceIngressProcess(): Promise<StableIngressProcessHandle> {
-    await this.ingressProcess?.close();
-    const ingressExecutable = this.options.ingressExecutable ?? process.argv[1];
-    if (!ingressExecutable || !this.control) throw new Error('SUPERVISOR_INGRESS_RESTART_CONTEXT_MISSING');
-    this.ingressProcess = await createStableIngressProcess({
-      executable: ingressExecutable,
-      repoRoot: this.options.repoRoot,
-      controllerHome: this.options.controllerHome,
+  private async replaceIngressRouter(): Promise<StableIngressRouterHandle> {
+    await this.ingressRouter?.close();
+    if (!this.control) throw new Error('SUPERVISOR_INGRESS_CONTEXT_MISSING');
+    this.ingressRouter = await createStableIngressRouter({
       host: this.options.stableIngressHost ?? '127.0.0.1',
       port: this.options.stableIngressPort ?? 8765,
       rescueHost: this.control.host,
       rescuePort: this.control.port,
-      blueUpstreamPort: this.manager.gatewayBinding('blue').port,
-      greenUpstreamPort: this.manager.gatewayBinding('green').port,
+      sessionStorePath: supervisorIngressSessionStorePath(this.options.controllerHome),
+      upstream: () => {
+        const authority = readActiveSlotAuthority(this.options.controllerHome);
+        const binding = this.manager.gatewayBinding(authority.activeSlot);
+        return { host: binding.host, port: binding.port, key: authority.activeSlot };
+      },
+      authorityObservation: () => {
+        const authority = readActiveSlotAuthority(this.options.controllerHome);
+        return { term: authority.generation, revision: authority.updatedAt };
+      },
     });
-    return this.ingressProcess;
+    return this.ingressRouter;
   }
 
   async start(): Promise<void> {
@@ -1098,20 +1101,21 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       onHandoff: this.options.onHandoff,
       onStopped: this.options.onStopped,
     });
-    this.ingressProcess = await this.replaceIngressProcess();
+    this.ingressRouter = await this.replaceIngressRouter();
     this.state = this.persist({
       ingress: {
         ...this.state.ingress,
         state: 'running',
         activeUpstreamSlot: this.state.activeSlot,
         activeUpstreamPort: this.manager.gatewayBinding(this.state.activeSlot).port,
+        pid: process.pid,
         lastHealthyAt: new Date().toISOString(),
       },
       control: {
         host: this.control.host,
         port: this.control.port,
         socketPath: supervisorControlSocketPath(this.options.controllerHome),
-        rescueEndpoint: `http://${this.ingressProcess.host}:${this.ingressProcess.port}/rescue/mcp`,
+        rescueEndpoint: `http://${this.ingressRouter.host}:${this.ingressRouter.port}/rescue/mcp`,
       },
     });
     // Cold start must keep the Rescue / control plane alive even when the managed
@@ -2483,37 +2487,38 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     if (this.stopping || this.selfRestartRequested || this.state.desiredState !== 'running') return;
     reconcilePendingSupervisorActivations(this.options.controllerHome);
     let degraded = !this.synchronizeActiveRuntimeGeneration(false);
-    let ingressDegraded = false;
-    if (!this.ingressProcess?.alive()) {
-      ingressDegraded = true;
+    let ingressDegraded = this.ingressRouter === undefined;
+    if (!this.ingressRouter) {
       const now = new Date().toISOString();
       try {
-        this.ingressProcess = await this.replaceIngressProcess();
+        this.ingressRouter = await this.replaceIngressRouter();
         this.persist({
           ingress: {
             ...this.state.ingress,
             state: 'degraded',
-            pid: this.ingressProcess.pid,
+            pid: process.pid,
             consecutiveFailures: 0,
             lastFailureAt: now,
-            lastFailureDetail: 'stable ingress process was not alive and was replaced; awaiting full-path verification',
+            lastFailureDetail: 'inline stable ingress router was missing and was recreated; awaiting full-path verification',
           },
         });
+        ingressDegraded = false;
       } catch (error) {
         const detail = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').slice(0, 200);
         this.persist({
           ingress: {
             ...this.state.ingress,
             state: 'degraded',
+            pid: process.pid,
             lastFailureAt: now,
             lastFailureDetail: detail,
           },
           lastIncident: {
             at: now,
-            reason: `stable ingress process recovery failed: ${detail}`,
+            reason: `inline stable ingress router recovery failed: ${detail}`,
           },
         });
-        this.recordMonitorFailure(`stable ingress process recovery failed: ${detail}`);
+        this.recordMonitorFailure(`inline stable ingress router recovery failed: ${detail}`);
       }
     }
     for (const component of ['controllerDaemon', 'gatewayHost'] as const) {
@@ -2583,12 +2588,12 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       );
       const operationActive = Boolean(this.state.currentOperationId);
       let ingressPathHealthy = false;
-      if (gatewayHealthy && this.ingressProcess?.alive()) {
+      if (gatewayHealthy && this.ingressRouter) {
         if (operationActive) {
           ingressPathHealthy = this.state.ingress.state === 'running'
             && (this.state.ingress.consecutiveFailures ?? 0) === 0;
         } else {
-          const ingressEndpoint = `http://${this.ingressProcess.host}:${this.ingressProcess.port}/ready`;
+          const ingressEndpoint = `http://${this.ingressRouter.host}:${this.ingressRouter.port}/ready`;
           const health = await probeSupervisorGatewayHealth(ingressEndpoint);
           const decision = supervisorIngressHealthDecision(
             this.state.ingress.consecutiveFailures ?? 0,
@@ -2603,7 +2608,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
                 state: 'running',
                 activeUpstreamSlot: this.state.activeSlot,
                 activeUpstreamPort: this.manager.gatewayBinding(this.state.activeSlot).port,
-                pid: this.ingressProcess.pid,
+                pid: process.pid,
                 consecutiveFailures: 0,
                 lastHealthyAt: new Date().toISOString(),
               },
@@ -2612,13 +2617,12 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
             ingressDegraded = decision.shouldReplace;
             ingressPathHealthy = !decision.shouldReplace;
             const now = new Date().toISOString();
-            const failureReason = `stable ingress full-path probe failed ${decision.consecutiveFailures}/${SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD} slot=${this.state.activeSlot} targetPort=${this.manager.gatewayBinding(this.state.activeSlot).port}: ${health.detail}`;
+            const failureReason = `inline stable ingress full-path probe failed ${decision.consecutiveFailures}/${SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD} slot=${this.state.activeSlot} targetPort=${this.manager.gatewayBinding(this.state.activeSlot).port}: ${health.detail}`;
             if (decision.shouldReplace) {
-              const previousPid = this.ingressProcess.pid;
               try {
-                this.ingressProcess = await this.replaceIngressProcess();
+                this.ingressRouter = await this.replaceIngressRouter();
                 const replacementHealth = await probeSupervisorGatewayHealth(
-                  `http://${this.ingressProcess.host}:${this.ingressProcess.port}/ready`,
+                  `http://${this.ingressRouter.host}:${this.ingressRouter.port}/ready`,
                 );
                 if (replacementHealth.healthy) {
                   ingressPathHealthy = true;
@@ -2629,22 +2633,22 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
                       state: 'running',
                       activeUpstreamSlot: this.state.activeSlot,
                       activeUpstreamPort: this.manager.gatewayBinding(this.state.activeSlot).port,
-                      pid: this.ingressProcess.pid,
+                      pid: process.pid,
                       consecutiveFailures: 0,
                       lastHealthyAt: new Date().toISOString(),
                     },
                     lastIncident: {
                       at: now,
-                      reason: `stable ingress false-health recovered by process replacement oldPid=${previousPid} newPid=${this.ingressProcess.pid}`,
+                      reason: `inline stable ingress false-health recovered by router replacement ownerPid=${process.pid}`,
                     },
                   });
                 } else {
-                  const replacementDetail = `replacement full-path probe failed: ${replacementHealth.detail}`;
+                  const replacementDetail = `inline router replacement full-path probe failed: ${replacementHealth.detail}`;
                   this.persist({
                     ingress: {
                       ...this.state.ingress,
                       state: 'degraded',
-                      pid: this.ingressProcess.pid,
+                      pid: process.pid,
                       consecutiveFailures: 1,
                       lastFailureAt: now,
                       lastFailureDetail: replacementDetail,
@@ -2659,20 +2663,21 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
                   ingress: {
                     ...this.state.ingress,
                     state: 'degraded',
+                    pid: process.pid,
                     consecutiveFailures: decision.consecutiveFailures,
                     lastFailureAt: now,
                     lastFailureDetail: detail,
                   },
-                  lastIncident: { at: now, reason: `stable ingress replacement failed: ${detail}` },
+                  lastIncident: { at: now, reason: `inline stable ingress router replacement failed: ${detail}` },
                 });
-                this.requestSupervisorSelfRestart(`stable ingress replacement failed: ${detail}`);
+                this.requestSupervisorSelfRestart(`inline stable ingress router replacement failed: ${detail}`);
               }
             } else {
               this.persist({
                 ingress: {
                   ...this.state.ingress,
                   state: 'running',
-                  pid: this.ingressProcess.pid,
+                  pid: process.pid,
                   consecutiveFailures: decision.consecutiveFailures,
                   lastFailureAt: now,
                   lastFailureDetail: health.detail,
@@ -2764,6 +2769,8 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
         reason: 'Supervisor service handoff preserved managed runtime processes.',
       },
     });
+    if (this.ingressRouter) await this.ingressRouter.close();
+    this.ingressRouter = undefined;
     if (this.control) await this.control.close();
     this.control = undefined;
   }
@@ -2777,8 +2784,8 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     await this.stopComponent('controllerDaemon');
     if (this.state.standby) await this.stopSlotProcesses(this.state.standby);
     this.persist({ standby: undefined });
-    if (this.ingressProcess) await this.ingressProcess.close();
-    this.ingressProcess = undefined;
+    if (this.ingressRouter) await this.ingressRouter.close();
+    this.ingressRouter = undefined;
     if (this.control) await this.control.close();
     this.control = undefined;
     this.persist({ currentOperationId: null, ingress: { ...this.state.ingress, state: 'stopped' } });

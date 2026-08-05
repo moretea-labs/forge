@@ -2,7 +2,6 @@ import { appendFileSync, closeSync, mkdirSync, openSync } from 'fs';
 import { spawn, type ChildProcess } from 'child_process';
 import { dirname, join, resolve } from 'path';
 import { randomUUID } from 'crypto';
-import { loadLocalBridgeConfig } from '../../cli/local-bridge/job-store';
 import { loadMcpServiceLocalConfig } from '../../cli/mcp/auth';
 import { ensureSlotHome, readActiveSlotAuthority, readSlotIdentity, type RuntimeSlotId } from '../../cli/controller/runtime-slots';
 import { readWriterAuthority } from '../../cli/controller/stable-state/writer-authority';
@@ -269,6 +268,7 @@ export class SupervisorProcessManager {
           REPO_HARNESS_CONTROLLER_HOME: home,
           REPO_HARNESS_CONTROLLER_LIFECYCLE_OWNER: '1',
           REPO_HARNESS_SUPERVISOR_CHILD: '1',
+          REPO_HARNESS_SUPERVISOR_MANAGED_DAEMON: component === 'gatewayHost' ? '1' : '0',
           REPO_HARNESS_SUPERVISOR_EPOCH: String(this.options.ownerEpoch),
           REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT: this.options.runtimeSourceRoot,
           ...(this.options.runtimeExecution ? { REPO_HARNESS_RUNTIME_EXECUTION: this.options.runtimeExecution } : {}),
@@ -343,21 +343,14 @@ export class SupervisorProcessManager {
 
   gatewayArgs(home: string, slot = this.options.slot ?? readActiveSlotAuthority(this.options.controllerHome).activeSlot): string[] {
     const localConfig = loadMcpServiceLocalConfig(home, this.options.repoRoot);
-    const bridge = loadLocalBridgeConfig(this.options.repoRoot);
     const binding = this.gatewayBinding(slot);
     const host = binding.host;
     const port = binding.port;
     const profile = localConfig?.profile ?? 'controller';
     const auth = localConfig?.auth?.mode ?? 'oauth';
     const toolset = localConfig?.toolset ?? 'advanced';
-    const localHost = localConfig?.localController?.host ?? bridge.host ?? '127.0.0.1';
-    const localPort = localConfig?.localController?.port ?? bridge.port ?? 8766;
-    const publicEndpoint = localConfig?.chatgpt?.endpoint;
-    // The stable Supervisor owns the public ingress. Gateway hosts bind private
-    // backend ports and must never create a competing tunnel lifecycle owner.
-    const tunnelMode = 'none';
     const args = [
-      this.runtimeCli(), 'mcp', 'keepalive',
+      this.runtimeCli(), 'mcp', 'serve',
       '--repo', this.options.repoRoot,
       '--controller-home', home,
       '--host', host,
@@ -365,12 +358,8 @@ export class SupervisorProcessManager {
       '--profile', profile,
       '--auth', auth,
       '--toolset', toolset,
-      '--local-ui',
-      '--local-ui-host', localHost,
-      '--local-ui-port', String(localPort),
-      '--tunnel', tunnelMode,
+      '--transport', 'http',
     ];
-    if (publicEndpoint) args.push('--public-endpoint', publicEndpoint);
     if (localConfig?.devMode?.agentRunner) {
       args.push('--enable-dev-runner');
       if (localConfig.devMode.allowedAgents?.length) args.push('--dev-runner-agents', localConfig.devMode.allowedAgents.join(','));
