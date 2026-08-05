@@ -206,6 +206,8 @@ function normalizedConfigBody(controllerHome: string, legacy: LegacyMcpConfig): 
   const host = legacy.server?.host?.trim() || '127.0.0.1';
   const port = validPort(legacy.server?.port) ? legacy.server!.port! : 8765;
   const daemonPort = validPort(legacy.localController?.port) ? legacy.localController!.port! : 8766;
+  const profile = legacy.profile?.trim() || 'controller';
+  const toolset = legacy.toolset?.trim() || (profile === 'controller' ? 'advanced' : 'core');
   return {
     schemaVersion: 1,
     controllerHome: resolve(controllerHome),
@@ -217,8 +219,8 @@ function normalizedConfigBody(controllerHome: string, legacy: LegacyMcpConfig): 
     },
     gateway: { host, port, auth: legacy.auth?.mode?.trim() || 'oauth' },
     ...(legacy.chatgpt?.endpoint ? { primaryPublicEndpoint: legacy.chatgpt.endpoint } : {}),
-    profile: legacy.profile?.trim() || 'controller',
-    toolset: legacy.toolset?.trim() || 'core',
+    profile,
+    toolset,
     toolsetExplicit: legacy.toolsetExplicit === true,
     accessMode: legacy.accessMode?.trim() || 'request',
     ...(legacy.devMode ? { devMode: legacy.devMode } : {}),

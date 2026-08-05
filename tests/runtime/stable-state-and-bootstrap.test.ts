@@ -412,6 +412,9 @@ describe('activation authority generation coherence', () => {
       generation: 'gen-recover-1',
       updatedAt,
     }, null, 2)}\n`);
+    // Isolate a genuine pre-T3 legacy state even when another helper in this
+    // file has already exercised automatic migration for the same fixture.
+    rmSync(join(fx.controllerHome, 'bootstrap', 'runtime-authority.json'), { force: true });
     expect(existsSync(join(fx.controllerHome, 'bootstrap', 'runtime-authority.json'))).toBe(false);
     expect(existsSync(join(fx.controllerHome, 'bootstrap', 'activation-authority.json'))).toBe(false);
     const recovered = recoverActivationTransaction(fx.controllerHome);
