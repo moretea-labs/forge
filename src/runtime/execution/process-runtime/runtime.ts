@@ -1461,7 +1461,7 @@ export function sanitizeHistoricalProcessArtifacts(
   let failed = 0;
   const processIds: string[] = [];
   for (const record of records) {
-    if (!record.terminalWritten && !TERMINAL_PROCESS_STATUSES.has(record.status)) continue;
+    if (!isManagedProcessTerminal(record)) continue;
     eligible += 1;
     try {
       const before = record.outputRedaction?.sanitizedAt;

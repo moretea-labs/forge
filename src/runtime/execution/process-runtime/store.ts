@@ -24,6 +24,7 @@ import {
   type ManagedProcessRecord,
   type ProcessInvocationBinding,
   type ProcessRequestBinding,
+  type ProcessRuntimeStatus,
 } from './types';
 
 function processesRoot(controllerHome: string, repoId: string): string {

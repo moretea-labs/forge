@@ -78,6 +78,7 @@ function workInput(workId: string, repoId = 'repo-test') {
     allowedPaths: ['src/**'],
     forbiddenPaths: [],
     checks: ['test'],
+    requestedBy: 'canonical-runtime-test',
   };
 }
 

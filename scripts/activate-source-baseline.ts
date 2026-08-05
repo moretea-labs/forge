@@ -156,7 +156,7 @@ function runCheck(repoRoot: string, definition: CheckDefinition): CheckReceipt {
     id: definition.id,
     command: [process.execPath, ...definition.args],
     ok: result.ok,
-    exitCode: result.exitCode,
+    exitCode: result.status,
     timedOut: result.timedOut,
     durationMs: Date.now() - started,
     stdoutTail: boundedTail(result.stdout),
