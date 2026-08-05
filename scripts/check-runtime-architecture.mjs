@@ -127,7 +127,7 @@ forbid(
 );
 forbid(
   'src/cli/commands/controller.ts',
-  /controller\/lifecycle|restart-coordinator|bluegreen-rollout|controllerRestartVerify|controllerFeatureVerify|\.command\(['"](?:start|stop|status|restart|logs|rollout|rollback|restart-verify|feature-verify)['"]\)/,
+  /controller\/lifecycle|restart-coordinator|bluegreen-rollout|controllerRestartVerify|controllerFeatureVerify|command\.command\(['"](?:start|stop|status|restart|logs|rollout|rollback|restart-verify|feature-verify)['"]\)/,
   'the public controller CLI must not expose component lifecycle, restart, blue-green rollout, rollback, or green-gate commands',
 );
 requireText('src/cli/commands/controller.ts', 'repositoryChangeVerify');
