@@ -59,6 +59,10 @@ import {
   DEFAULT_MAX_OUTPUT_BYTES,
   DEFAULT_PROCESS_TIMEOUT_MS,
   PROCESS_LOG_TAIL_BYTES,
+  effectiveProcessStatus,
+  isManagedProcessActive,
+  isManagedProcessTerminal,
+  isTerminalProcessStatus,
   type ManagedProcessRecord,
   type ProcessHandle,
   type ProcessLeaseRef,
@@ -111,16 +115,12 @@ function newProcessId(): string {
   return `proc_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`;
 }
 
-const TERMINAL_PROCESS_STATUSES = new Set<ManagedProcessRecord['status']>([
-  'succeeded', 'failed', 'timed_out', 'cancelled', 'orphaned', 'completed_unknown', 'unknown',
-]);
-
 function safeProcessText(value: string): string {
   return redactSensitiveText(value).text;
 }
 
 function sanitizeTerminalProcessArtifacts(record: ManagedProcessRecord): ManagedProcessRecord {
-  if (!record.terminalWritten && !TERMINAL_PROCESS_STATUSES.has(record.status)) return record;
+  if (!isManagedProcessTerminal(record)) return record;
   let filesExamined = 0;
   let filesChanged = 0;
   let redactionCount = 0;
@@ -396,7 +396,7 @@ export function releaseProcessLeasesOnce(
   const record = getProcessRecord(controllerHome, repoId, processId);
   if (!record) return undefined;
   if (record.leasesReleased === true || record.leaseReleaseState === 'released') return record;
-  if (!record.terminalWritten && !TERMINAL_PROCESS_STATUSES.has(record.status)) return record;
+  if (!isManagedProcessTerminal(record)) return record;
   const refs = record.leaseRefs ?? [];
   if (refs.length === 0) {
     return updateProcessRecord(
@@ -463,19 +463,25 @@ export function completeProcessFromEvidence(
     stdoutTail?: string;
     stderrTail?: string;
   },
+  options: { authority?: 'runtime_writer' | 'durable_exit_receipt' } = {},
 ): ManagedProcessRecord | undefined {
-  // Passive / fenced runtimes may observe exit but must not write shared durable terminal state.
-  let mayWriteTerminal = true;
-  try {
-    const fence = assertThisRuntimeMayWrite('write_process_terminal', controllerHome);
-    if (!fence.allowed) mayWriteTerminal = false;
-  } catch {
-    // Unbound: only allow when no stable authority exists (legacy single-runtime).
+  // A validated independent Runner receipt may only perform the monotonic,
+  // fence-token-bound terminal CAS below. It does not grant general writer
+  // authority, queue access, process signalling, or arbitrary record updates.
+  let mayWriteTerminal = options.authority === 'durable_exit_receipt';
+  if (!mayWriteTerminal) {
+    mayWriteTerminal = true;
     try {
-      const authority = readWriterAuthority(resolveStableControllerHome(controllerHome));
-      if (authority) mayWriteTerminal = false;
+      const fence = assertThisRuntimeMayWrite('write_process_terminal', controllerHome);
+      if (!fence.allowed) mayWriteTerminal = false;
     } catch {
-      /* legacy allow */
+      // Unbound: only allow when no stable authority exists (legacy single-runtime).
+      try {
+        const authority = readWriterAuthority(resolveStableControllerHome(controllerHome));
+        if (authority) mayWriteTerminal = false;
+      } catch {
+        /* legacy allow */
+      }
     }
   }
 
@@ -845,9 +851,10 @@ function recordToHandle(
   record: ManagedProcessRecord,
   extras?: { stdout?: string; stderr?: string; completed?: boolean; deduplicated?: boolean },
 ): ProcessHandle {
-  const completed = extras?.completed
-    ?? ['succeeded', 'failed', 'timed_out', 'cancelled', 'orphaned', 'completed_unknown'].includes(record.status);
-  const safeRecord = completed ? sanitizeTerminalProcessArtifacts(record) : record;
+  const hintedStatus = effectiveProcessStatus(record, extras?.completed === true);
+  const completed = isTerminalProcessStatus(hintedStatus) || record.terminalWritten === true;
+  const coherentRecord = hintedStatus === record.status ? record : { ...record, status: hintedStatus };
+  const safeRecord = completed ? sanitizeTerminalProcessArtifacts(coherentRecord) : coherentRecord;
   return {
     processId: safeRecord.processId,
     workId: safeRecord.workId,
@@ -1222,6 +1229,10 @@ function applyReceiptIfPresent(
 ): ManagedProcessRecord | undefined {
   const receipt = readExitReceipt(record.exitReceiptPath) ?? readExitReceipt(receiptPathFor(controllerHome, repoId, processId));
   if (!receipt) return undefined;
+  if (receipt.processId !== processId) return undefined;
+  if (!receipt.finishedAt || !Number.isFinite(Date.parse(receipt.finishedAt))) return undefined;
+  if (receipt.commandExecutedOnce === false) return undefined;
+  if (receipt.exitCode !== null && !Number.isInteger(receipt.exitCode)) return undefined;
   return completeProcessFromEvidence(controllerHome, repoId, processId, record.terminalFenceToken, {
     status: statusFromReceipt(receipt),
     exitCode: receipt.exitCode,
@@ -1234,7 +1245,7 @@ function applyReceiptIfPresent(
     stdoutStoredBytes: receipt.stdoutStoredBytes,
     stderrStoredBytes: receipt.stderrStoredBytes,
     logTruncated: receipt.logTruncated,
-  });
+  }, { authority: 'durable_exit_receipt' });
 }
 
 export function getProcessHandle(
@@ -1244,7 +1255,7 @@ export function getProcessHandle(
 ): ProcessHandle | undefined {
   const record = getProcessRecord(controllerHome, repoId, processId);
   if (!record) return undefined;
-  if ((record.status === 'running' || record.status === 'starting' || record.status === 'running_recovered') && !liveMonitors.has(processId)) {
+  if (isManagedProcessActive(record) && !liveMonitors.has(processId)) {
     const fromReceipt = applyReceiptIfPresent(controllerHome, repoId, processId, record);
     if (fromReceipt) return recordToHandle(fromReceipt, { completed: true });
     if (!identityStillMatches(record.identity, record.identityUntrusted)) {
@@ -1489,7 +1500,7 @@ export function recoverManagedProcesses(
       recovered.push(processId);
       continue;
     }
-    if (record.terminalWritten) {
+    if (isManagedProcessTerminal(record)) {
       sanitizeTerminalProcessArtifacts(record);
       // Cleanup leftover leases after crash between terminal write and release.
       if (record.leasesReleased !== true && (record.leaseRefs?.length ?? 0) > 0) {

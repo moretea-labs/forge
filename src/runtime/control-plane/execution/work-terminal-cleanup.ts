@@ -16,7 +16,14 @@ import {
 } from '../../../cli/repositories/registry';
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { getWorkContract } from '../facade/work-contract-store';
-import { cancelProcess, releaseProcessLeasesOnce } from '../../execution/process-runtime/runtime';
+import { isTerminalWorkContractStatus } from '../facade/types';
+import {
+  cancelProcess,
+  getProcessHandle,
+  isManagedProcessActive,
+  isManagedProcessTerminal,
+  releaseProcessLeasesOnce,
+} from '../../execution/process-runtime';
 import { getProcessRecord, listProcessRecords } from '../../execution/process-runtime/store';
 import {
   listWorkHandles,
@@ -27,7 +34,6 @@ import {
   type WorkTerminalOutcome,
 } from './work-handle-store';
 
-const ACTIVE_PROCESS_STATES = new Set(['starting', 'running', 'running_recovered']);
 const CHECKPOINT_MESSAGE = 'chore(checkpoint): preserve terminal work before cleanup';
 
 export interface TerminalWorkCleanupInput {
@@ -218,10 +224,22 @@ function createVerifiedBundle(controllerHome: string, handle: WorkHandleState, t
 }
 
 async function settleProcesses(input: TerminalWorkCleanupInput, receipt: WorkCleanupReceipt): Promise<void> {
-  const records = listProcessRecords(input.controllerHome, input.handle.repositoryId, 5_000)
+  const observed = listProcessRecords(input.controllerHome, input.handle.repositoryId, 5_000)
     .filter((record) => record.checkoutId === input.handle.checkoutId);
+  const records = observed.map((record) => {
+    // Reconcile independent Runner receipts before classifying ownership. This
+    // never re-executes a command and can only perform a monotonic,
+    // fence-token-bound terminal transition.
+    getProcessHandle(input.controllerHome, input.handle.repositoryId, record.processId);
+    const current = getProcessRecord(input.controllerHome, input.handle.repositoryId, record.processId) ?? record;
+    if (isManagedProcessTerminal(current)) {
+      releaseProcessLeasesOnce(input.controllerHome, input.handle.repositoryId, current.processId);
+      return getProcessRecord(input.controllerHome, input.handle.repositoryId, current.processId) ?? current;
+    }
+    return current;
+  });
   const otherOwners = records.filter((record) =>
-    ACTIVE_PROCESS_STATES.has(record.status)
+    isManagedProcessActive(record)
     && record.workId !== input.handle.workId);
   for (const record of otherOwners) {
     receipt.processes.blocking = appendUnique(receipt.processes.blocking, record.processId);
@@ -236,13 +254,13 @@ async function settleProcesses(input: TerminalWorkCleanupInput, receipt: WorkCle
   const owned = records.filter((record) => record.workId === input.handle.workId);
   for (const record of owned) {
     receipt.processes.examined = appendUnique(receipt.processes.examined, record.processId);
-    if (ACTIVE_PROCESS_STATES.has(record.status)) {
+    if (isManagedProcessActive(record)) {
       await cancelProcess(input.controllerHome, input.handle.repositoryId, record.processId);
       receipt.processes.terminated = appendUnique(receipt.processes.terminated, record.processId);
     }
     releaseProcessLeasesOnce(input.controllerHome, input.handle.repositoryId, record.processId);
     const settled = getProcessRecord(input.controllerHome, input.handle.repositoryId, record.processId);
-    if (settled && ACTIVE_PROCESS_STATES.has(settled.status)) {
+    if (settled && isManagedProcessActive(settled)) {
       receipt.processes.blocking = appendUnique(receipt.processes.blocking, record.processId);
       addBlocker(receipt, `PROCESS_STILL_ACTIVE: ${record.processId}`);
     }
@@ -263,7 +281,7 @@ function workHandleOwnsCheckout(controllerHome: string, handle: WorkHandleState)
   // WorkContract completion is the authoritative ownership boundary. Older
   // runtimes could persist a completed contract while leaving the handle in a
   // non-terminal state; that historical handle must not remain a live owner.
-  return contract?.status !== 'completed';
+  return contract === undefined || !isTerminalWorkContractStatus(contract.status);
 }
 
 function assertNoOtherLiveWork(input: TerminalWorkCleanupInput, receipt: WorkCleanupReceipt): void {
@@ -364,6 +382,8 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
   // from durable Work/Process/Git state after a controller restart or retry.
   receipt.blockers = [];
   receipt.partial = false;
+  receipt.processes.examined = [];
+  receipt.processes.terminated = [];
   receipt.processes.blocking = [];
   receipt.processes.allTerminal = false;
   if (receipt.worktree.status === 'failed' || receipt.worktree.status === 'retained') receipt.worktree.status = 'pending';

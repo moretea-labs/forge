@@ -14,6 +14,7 @@ import {
   type WorkHandleState,
 } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { cleanupTerminalWork } from '../../src/runtime/control-plane/execution/work-terminal-cleanup';
+import { processLogDir } from '../../src/runtime/execution/process-runtime';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import type { ManagedProcessRecord } from '../../src/runtime/execution/process-runtime/types';
 import { selectDefaultWorkValidationChecks } from '../../src/runtime/gateway/mcp/execution-tools';
@@ -236,6 +237,45 @@ describe('terminal Work cleanup', () => {
     expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(true);
   });
 
+  test('reconciles a receipt-backed terminal process before checkout blocker classification', async () => {
+    const fx = fixture('receipt-backed-process');
+    const now = new Date().toISOString();
+    const processId = 'proc-receipt-backed-terminal';
+    const exitReceiptPath = join(processLogDir(fx.controllerHome, fx.repository.repoId), `${processId}.exit.json`);
+    createProcessRecord({
+      schemaVersion: 1,
+      processId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.workspace.checkoutId,
+      controllerHome: fx.controllerHome,
+      status: 'starting',
+      route: 'managed',
+      commandId: 'receipt-backed-command',
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(0)'], cwd: fx.workspace.root! },
+      resourceClaims: [],
+      interactiveWaitMs: 0,
+      timeoutMs: 30_000,
+      maxOutputBytes: 1_024,
+      startedAt: now,
+      updatedAt: now,
+      terminalFenceToken: 9,
+      exitReceiptPath,
+    } satisfies ManagedProcessRecord);
+    writeFileSync(exitReceiptPath, `${JSON.stringify({
+      schemaVersion: 1,
+      processId,
+      exitCode: 0,
+      finishedAt: now,
+      commandExecutedOnce: true,
+    })}\n`);
+
+    const result = await cleanup(fx);
+    expect(result.receipt.complete).toBe(true);
+    expect(result.receipt.processes.blocking).toEqual([]);
+    expect(result.receipt.blockers).toEqual([]);
+    expect(result.handle.state).toBe('cleaned');
+  });
+
   test('continues partial cleanup from the durable receipt after owner removal', async () => {
     const fx = fixture('restart');
     const now = new Date().toISOString();
@@ -260,6 +300,43 @@ describe('terminal Work cleanup', () => {
     expect(recovered.receipt.complete).toBe(true);
     expect(recovered.receipt.blockers).toEqual([]);
     expect(existsSync(fx.workspace.root!)).toBe(false);
+  });
+
+  test('does not treat a cancelled WorkContract with a stale prepared handle as a live checkout owner', async () => {
+    const fx = fixture('cancelled-owner');
+    const now = new Date().toISOString();
+    const otherWorkId = 'work-cancelled-stale-owner';
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId: otherWorkId,
+      repoId: fx.repository.repoId,
+      mode: 'direct_control',
+      objective: 'Cancelled auxiliary cleanup ownership must not retain the checkout.',
+      acceptanceCriteria: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'cancelled',
+      phase: 'cleanup',
+    });
+    writeWorkHandle(fx.controllerHome, {
+      ...fx.handle,
+      recordRevision: undefined,
+      workId: otherWorkId,
+      workContractId: otherWorkId,
+      sessionId: 'session-cancelled-stale-owner',
+      state: 'prepared',
+      failureReason: undefined,
+      cleanupReceipt: undefined,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const result = await cleanup(fx);
+    expect(result.receipt.complete).toBe(true);
+    expect(result.receipt.blockers).toEqual([]);
+    expect(result.handle.state).toBe('cleaned');
   });
 
   test('does not treat a completed WorkContract with a stale prepared handle as a live checkout owner', async () => {

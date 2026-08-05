@@ -18,6 +18,60 @@ export type ProcessRuntimeStatus =
   | 'completed_unknown'
   | 'unknown';
 
+export const ACTIVE_PROCESS_RUNTIME_STATUSES = ['starting', 'running', 'running_recovered'] as const satisfies readonly ProcessRuntimeStatus[];
+export const TERMINAL_PROCESS_RUNTIME_STATUSES = [
+  'succeeded',
+  'failed',
+  'timed_out',
+  'cancelled',
+  'orphaned',
+  'completed_unknown',
+  'unknown',
+] as const satisfies readonly ProcessRuntimeStatus[];
+
+const ACTIVE_PROCESS_RUNTIME_STATUS_SET = new Set<ProcessRuntimeStatus>(ACTIVE_PROCESS_RUNTIME_STATUSES);
+const TERMINAL_PROCESS_RUNTIME_STATUS_SET = new Set<ProcessRuntimeStatus>(TERMINAL_PROCESS_RUNTIME_STATUSES);
+
+export function isActiveProcessStatus(status: ProcessRuntimeStatus): boolean {
+  return ACTIVE_PROCESS_RUNTIME_STATUS_SET.has(status);
+}
+
+export function isTerminalProcessStatus(status: ProcessRuntimeStatus): boolean {
+  return TERMINAL_PROCESS_RUNTIME_STATUS_SET.has(status);
+}
+
+export function isManagedProcessTerminal(record: {
+  status: ProcessRuntimeStatus;
+  terminalWritten?: boolean;
+}): boolean {
+  return record.terminalWritten === true || isTerminalProcessStatus(record.status);
+}
+
+export function isManagedProcessActive(record: {
+  status: ProcessRuntimeStatus;
+  terminalWritten?: boolean;
+}): boolean {
+  return !isManagedProcessTerminal(record) && isActiveProcessStatus(record.status);
+}
+
+export function effectiveProcessStatus(record: {
+  status: ProcessRuntimeStatus;
+  terminalWritten?: boolean;
+  exitCode?: number;
+  timedOut?: boolean;
+  cancelled?: boolean;
+  finishedAt?: string;
+}, completedHint = false): ProcessRuntimeStatus {
+  if (isTerminalProcessStatus(record.status)) return record.status;
+  if (!record.terminalWritten && !completedHint) return record.status;
+  if (record.cancelled) return 'cancelled';
+  if (record.timedOut) return 'timed_out';
+  if (record.exitCode === 0) return 'succeeded';
+  if (typeof record.exitCode === 'number') return 'failed';
+  if (record.finishedAt || record.terminalWritten) return 'completed_unknown';
+  return record.status;
+}
+
 export type ProcessRouteMode = 'direct' | 'managed' | 'durable';
 
 /** Stable Process state exposed to SuperControllers. */

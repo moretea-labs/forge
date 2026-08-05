@@ -1694,6 +1694,27 @@ function selected(ctx: MultiRepositoryMcpToolContext, args: Record<string, unkno
   });
 }
 
+function schemaAwareWorkSubmitArguments(
+  name: string,
+  explicitArguments: Record<string, unknown>,
+  repository: ReturnType<typeof selected>,
+  definition: McpToolDefinition,
+  timeoutMs: unknown,
+): Record<string, unknown> {
+  const schema = definition.inputSchema as { properties?: Record<string, unknown> };
+  const declared = new Set(Object.keys(schema.properties ?? {}));
+  const candidates = repositoryScopedToolArgs(name, {
+    ...explicitArguments,
+    ...(declared.has('repo_id') ? { repo_id: repository.repoId } : {}),
+    ...(declared.has('timeout_ms') && typeof timeoutMs === 'number' ? { timeout_ms: timeoutMs } : {}),
+  }, repository);
+  const scoped: Record<string, unknown> = { ...explicitArguments };
+  for (const [key, value] of Object.entries(candidates)) {
+    if (Object.hasOwn(explicitArguments, key) || declared.has(key)) scoped[key] = value;
+  }
+  return scoped;
+}
+
 function pluginRepository(
   ctx: MultiRepositoryMcpToolContext,
   args: Record<string, unknown>,
@@ -3373,13 +3394,13 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           ? { ...(args.arguments as Record<string, unknown>) }
           : {};
         const isRepositoryTool = operation.startsWith('repository_');
-        const workerArgs = isRepositoryTool
-          ? { ...operationArgs, repo_id: repository.repoId }
-          : repositoryScopedToolArgs(operation, {
-              ...operationArgs,
-              repo_id: repository.repoId,
-              ...(typeof args.timeout_ms === 'number' ? { timeout_ms: args.timeout_ms } : {}),
-            }, repository);
+        const workerArgs = schemaAwareWorkSubmitArguments(
+          operation,
+          operationArgs,
+          repository,
+          definition,
+          args.timeout_ms,
+        );
         // Validate the target operation before any WorkContract / index write.
         validateMcpToolArguments(operation, injectDurableCommandFields(definition), workerArgs);
         delete workerArgs.request_id;
@@ -4060,10 +4081,12 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           const readiness = await controllerReadiness(ctx, repository);
           const activeCheckout = repository.checkouts.find((checkout) => checkout.checkoutId === repository.activeCheckoutId);
           const liveGit = gitSnapshot(repository.canonicalRoot);
-          const board = projectBoard(repository.canonicalRoot);
+          const board = legacyIssueAuthorityRetired(repository.canonicalRoot)
+            ? undefined
+            : projectBoard(repository.canonicalRoot);
           const taskLedger = buildControllerTaskLedgerProjection(repository.canonicalRoot, board);
           const operationalPlan = buildControllerOperationalPlan(repository.canonicalRoot, taskLedger);
-          const currentIssueRecord = board.currentIssueId
+          const currentIssueRecord = board?.currentIssueId
             ? board.issues.find((issue) => issue.id === board.currentIssueId)
             : undefined;
           const currentIssue = currentIssueRecord ? {
@@ -4145,12 +4168,12 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               diffStat: '',
               dirty: false,
             },
-            currentIssueId: board.currentIssueId,
+            currentIssueId: board?.currentIssueId ?? taskLedger.currentIssueId,
             currentIssue,
             taskLedger,
             taskLedgerStatus: taskLedger.status,
             operationalPlan,
-            readyTasks: board.readyTasks.slice(0, 20),
+            readyTasks: (board?.readyTasks ?? taskLedger.readyTasks).slice(0, 20),
             activeRuns,
             activeJobCount: activeLocalJobs,
             localBridge: {

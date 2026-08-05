@@ -14,6 +14,8 @@ import {
   fingerprintProcessCommand,
   getProcessHandle,
   getProcessRecord,
+  listActiveProcessIds,
+  processLogDir,
   recoverManagedProcesses,
   readProcessLogs,
   resolveProcessRunnerEntryPath,
@@ -1012,6 +1014,56 @@ describe('Process Runtime real lease contention', () => {
     expect(recovery.recovered).not.toContain(processId);
     expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.status).toBe('running');
     expect(listActiveLeases(fx.controllerHome, fx.repository.repoId).some((lease) => lease.ownerJobId === `process:${processId}`)).toBe(true);
+  });
+
+  test('validated Runner receipt performs monotonic terminal CAS while runtime writer is fenced', () => {
+    const fx = fixture();
+    const processId = 'proc_receipt_terminal_while_fenced';
+    const authority = publishWriterAuthority(fx.controllerHome, { activeSlot: 'green', reason: 'receipt-terminal-test' });
+    bindRuntimeWriterClaim({
+      controllerHome: fx.controllerHome,
+      slot: 'blue',
+      epoch: 'stale-receipt-epoch',
+      fencingToken: authority.fencingToken,
+      generation: authority.generation,
+      instanceId: 'stale-receipt-instance',
+    });
+    const exitReceiptPath = join(processLogDir(fx.controllerHome, fx.repository.repoId), `${processId}.exit.json`);
+    createProcessRecord({
+      schemaVersion: 1,
+      processId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      controllerHome: fx.controllerHome,
+      status: 'starting',
+      route: 'managed',
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(0)'], cwd: fx.repoRoot },
+      resourceClaims: [],
+      interactiveWaitMs: 0,
+      timeoutMs: 30_000,
+      maxOutputBytes: 1_024,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      terminalFenceToken: 71,
+      exitReceiptPath,
+    });
+    expect(listActiveProcessIds(fx.controllerHome, fx.repository.repoId)).toContain(processId);
+    writeFileSync(exitReceiptPath, `${JSON.stringify({
+      schemaVersion: 1,
+      processId,
+      exitCode: 0,
+      finishedAt: new Date().toISOString(),
+      commandExecutedOnce: true,
+    })}\n`);
+
+    const handle = getProcessHandle(fx.controllerHome, fx.repository.repoId, processId);
+    expect(handle).toMatchObject({ status: 'succeeded', contractStatus: 'succeeded', completed: true, ok: true });
+    expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)).toMatchObject({
+      status: 'succeeded',
+      terminalWritten: true,
+      exitCode: 0,
+    });
+    expect(listActiveProcessIds(fx.controllerHome, fx.repository.repoId)).not.toContain(processId);
   });
 
   test('passive runtime cannot acquire process leases', () => {

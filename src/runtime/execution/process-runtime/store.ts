@@ -19,14 +19,12 @@ import { basename, dirname, join } from 'path';
 import { ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import { mutateControlPlaneRecord, readOrImportControlPlaneRecord } from '../../control-plane/persistence/sqlite-store';
 import { isSensitiveOutputKey, redactSensitiveText } from '../../evidence/sensitive-output';
-import type {
-  ManagedProcessRecord,
-  ProcessInvocationBinding,
-  ProcessRequestBinding,
-  ProcessRuntimeStatus,
+import {
+  isManagedProcessActive,
+  type ManagedProcessRecord,
+  type ProcessInvocationBinding,
+  type ProcessRequestBinding,
 } from './types';
-
-const ACTIVE_STATUSES = new Set<ProcessRuntimeStatus>(['starting', 'running', 'running_recovered']);
 
 function processesRoot(controllerHome: string, repoId: string): string {
   const root = ensureRepositoryControllerLayout(controllerHome, repoId);
@@ -282,7 +280,7 @@ function rebuildActiveIndex(controllerHome: string, repoId: string): string[] {
   for (const entry of readdirSync(root)) {
     if (!entry.endsWith('.json') || entry === 'active-index.json') continue;
     const record = readProcessRecord(join(root, entry));
-    if (record && ACTIVE_STATUSES.has(record.status)) active.push(record.processId);
+    if (record && isManagedProcessActive(record)) active.push(record.processId);
   }
   active.sort();
   atomicWrite(indexPath(controllerHome, repoId), {
@@ -377,7 +375,7 @@ export function updateProcessRecord(
   };
   const sanitized = sanitizeProcessRecord(next).record;
   atomicWrite(path, sanitized);
-  if (ACTIVE_STATUSES.has(current.status) !== ACTIVE_STATUSES.has(sanitized.status)) {
+  if (isManagedProcessActive(current) !== isManagedProcessActive(sanitized)) {
     rebuildActiveIndex(controllerHome, repoId);
   }
   return sanitized;
@@ -385,8 +383,16 @@ export function updateProcessRecord(
 
 export function listActiveProcessIds(controllerHome: string, repoId: string): string[] {
   const index = readJson<{ processIds?: string[] }>(indexPath(controllerHome, repoId));
-  if (Array.isArray(index?.processIds)) return index.processIds;
-  return rebuildActiveIndex(controllerHome, repoId);
+  if (!Array.isArray(index?.processIds)) return rebuildActiveIndex(controllerHome, repoId);
+  const indexed = [...new Set(index.processIds.filter((value): value is string => typeof value === 'string' && value.length > 0))].sort();
+  const verified = indexed.filter((processId) => {
+    const record = getProcessRecord(controllerHome, repoId, processId);
+    return record !== undefined && isManagedProcessActive(record);
+  });
+  if (verified.length !== indexed.length || verified.some((value, indexValue) => value !== indexed[indexValue])) {
+    return rebuildActiveIndex(controllerHome, repoId);
+  }
+  return verified;
 }
 
 export function listProcessRecords(

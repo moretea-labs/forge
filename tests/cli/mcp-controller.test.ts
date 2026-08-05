@@ -841,6 +841,17 @@ describe("MCP controller profile", () => {
         expect(secondValue.deduplicated).toBe(true);
         expect(secondValue.work.workId).toBe(firstValue.work.workId);
 
+        const processCancelWork = await callRuntimeTool(advanced, "work_submit", {
+          repo_id: repository.repoId,
+          request_id: "work-submit-process-cancel-schema-aware",
+          operation: "process_cancel",
+          arguments: { process_id: "proc-schema-aware-fixture" },
+          timeout_ms: 5_000});
+        const processCancelValue = JSON.parse(processCancelWork!.content[0].text);
+        expect(processCancelWork!.isError).not.toBe(true);
+        expect(processCancelValue.work.operation).toBe("process_cancel");
+        expect(processCancelValue.work.status).toBe("open");
+
         const resumed = await callRuntimeTool(advanced, "work_get", {
           repo_id: repository.repoId,
           request_id: "work-resume-idempotent"});
