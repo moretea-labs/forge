@@ -5,6 +5,7 @@ import { join } from 'path';
 
 const ROOT = join(import.meta.dir, '../..');
 const CLI = join(ROOT, 'src/cli/index.ts');
+const PACKAGE_JSON = join(ROOT, 'package.json');
 
 describe('runtime command surface', () => {
   test('is read-only and exposes no parallel lifecycle owner', () => {
@@ -38,6 +39,27 @@ describe('runtime command surface', () => {
     for (const legacy of ['start', 'stop', 'status', 'restart', 'logs', 'rollout', 'rollback', 'restart-verify', 'feature-verify']) {
       expect(controller.stdout).not.toMatch(new RegExp(`^\\s+${legacy}\\b`, 'm'));
     }
+  });
+
+  test('package scripts expose no legacy lifecycle or component rollout owner', () => {
+    const pkg = JSON.parse(readFileSync(PACKAGE_JSON, 'utf8')) as {
+      scripts?: Record<string, string>;
+      bin?: Record<string, string>;
+    };
+    const scripts = pkg.scripts ?? {};
+    for (const legacy of [
+      'controller:start',
+      'controller:stop',
+      'controller:status',
+      'controller:restart',
+      'controller:logs',
+      'runtime:restart',
+      'repo:rollout',
+    ]) {
+      expect(scripts).not.toHaveProperty(legacy);
+    }
+    expect(Object.values(scripts).join('\n')).not.toMatch(/controller-runtime\.sh|restart-repo-harness\.sh|rollout-all-registered-repos\.sh/);
+    expect(pkg.bin?.['repo-harness-runtime']).toBe('bin/repo-harness-runtime.mjs');
   });
 
   test('MCP command surface exposes no KeepAlive or restart lifecycle owner', () => {

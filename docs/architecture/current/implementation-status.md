@@ -28,7 +28,7 @@ The migration preserves the existing Issue, Task, Run, Edit Session, Local Job, 
 | Persist-before-execute durable commands | Implemented | `src/runtime/execution/jobs/store.ts`, global request index and semantic conflict detection |
 | Legacy independently restartable Controller Daemon | Deprecated transition code | Controller startup recovery and scheduling ownership must move into `src/runtime/root/`; the standalone service entry is deleted in phases 2/7 |
 | Canonical Single Runtime vertical slice | Implemented in source; production cutover pending | `src/runtime/root/` starts Controller Services, SQLite, Scheduler, Gateway Adapter, and MCP Transport under one lifecycle owner |
-| Legacy Supervisor/Ingress/slot lifecycle | Deprecated transition code | Must be deleted under the seven-phase Canonical Single Runtime replacement; it is not an approved target architecture |
+| Legacy Supervisor/Ingress/slot lifecycle | Deprecated transition code, unreachable from public CLI/package lifecycle commands | Public `runtime`, `controller`, MCP and package-script lifecycle/rollout entrypoints are removed; internal implementation remains deletion inventory for phases 2/4/7 |
 | Isolated Worker processes | Implemented | `src/runtime/execution/workers/worker-entry.ts`, Scheduler process spawning |
 | Per-Repository Actor | Implemented | `src/runtime/control-plane/repo-actor/actor.ts`, actor registry and repository mailbox lock |
 | Resource Claims | Implemented | `src/runtime/gateway/mcp/resource-policy.ts`, `resources/claims/conflicts.ts` |
@@ -51,7 +51,7 @@ The migration preserves the existing Issue, Task, Run, Edit Session, Local Job, 
 | Materialized projections | Implemented | dirty-marker invalidation, indexed runtime projections and non-blocking Controller Context refresh |
 | Release Freeze and Gate | Implemented | exclusive `release:<repoId>` Lease and deterministic exact-revision release manifest |
 | External side-effect authorization | Implemented | Gateway/Portfolio/Schedule/Worker defense-in-depth policy |
-| Runtime health split | Implemented | `/health`, capacity-aware `/ready`, `/repos/:repoId/health`, and structured Supervisor recovery recommendation |
+| Whole-Runtime readiness | Implemented in the Canonical Runtime source path | Public readiness is one `ready: boolean`; database, Scheduler, release coherence, MCP transport and repository checks are diagnostic evidence rather than independent lifecycle states |
 | Legacy compatibility | Implemented | stable MCP facade, unchanged compatibility fingerprint, Local Job projection into Execution Job |
 | Work-only execution contract convergence | Implemented for Work-backed Tasks | `WorkContract` owns objective/scope/check/risk/status/phase and completion receipt; linked Task fields are read projections, PlanStep retains `workId`, and receipt/revision/cleanup gates fail closed |
 | Node/Bun process portability | Implemented | project TypeScript Loader for Daemon/Worker/Gateway smoke execution; Bun remains the supported package/test runtime |
