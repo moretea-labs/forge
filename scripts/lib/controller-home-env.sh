@@ -66,3 +66,18 @@ repo_harness_resolve_bun() {
 
   return 1
 }
+
+# A byte-for-byte executable copy of scripts/controller-runtime.sh named
+# activate-source-baseline.command enters the audited source-baseline path here.
+# Keeping the dispatch in this sourced library preserves the executable mode of
+# the copied shell script; normal controller-runtime.sh invocations are unchanged.
+if [[ "$(basename "$0")" == "activate-source-baseline.command" ]]; then
+  repo_harness_use_local_controller_home "${ROOT:?repo root is required}"
+  repo_harness_prepare_runtime_path
+  _repo_harness_source_bun="$(repo_harness_resolve_bun || true)"
+  if [[ -z "$_repo_harness_source_bun" ]]; then
+    echo "Bun is required to activate the source Runtime baseline." >&2
+    exit 127
+  fi
+  exec "$_repo_harness_source_bun" "$ROOT/scripts/activate-source-baseline.ts" request --repo "$ROOT"
+fi
