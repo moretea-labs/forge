@@ -41,8 +41,8 @@ export function resolveStableIngressSlot(controllerHome: string): 'blue' | 'gree
 }
 
 export async function runStableIngressChild(): Promise<void> {
-  const repoRoot = resolveMcpRepoRoot(option('--repo') ?? process.cwd());
   const controllerHome = ensureControllerHome(option('--controller-home'));
+  const repoRoot = option('--repo') ? resolveMcpRepoRoot(option('--repo')) : controllerHome;
   const host = option('--stable-ingress-host') ?? '127.0.0.1';
   const port = integerOption('--stable-ingress-port', 8765);
   const rescueHost = option('--rescue-host') ?? '127.0.0.1';
@@ -122,16 +122,23 @@ export function stableSupervisorActivatesPublishedRelease(
 }
 
 export async function runStableSupervisor(): Promise<void> {
-  const repoRoot = resolveMcpRepoRoot(option('--repo') ?? process.cwd());
   const controllerHome = ensureControllerHome(option('--controller-home'));
   const standalone = process.env.REPO_HARNESS_RUNTIME_EXECUTION === 'standalone-binary';
+  const repoRoot = standalone
+    ? resolve(option('--repo') ?? controllerHome)
+    : resolveMcpRepoRoot(option('--repo') ?? process.cwd());
   const releaseEntrypoint = standalone
     ? process.execPath
     : process.argv[1] ? resolve(process.argv[1]) : undefined;
   const releaseRoot = standalone
-    ? readCurrentRelease(controllerHome) ?? (releaseEntrypoint ? dirname(releaseEntrypoint) : undefined)
+    ? readCurrentRelease(controllerHome)
     : releaseEntrypoint ? dirname(releaseEntrypoint) : undefined;
+  if (standalone && !releaseRoot) throw new Error('SUPERVISOR_CURRENT_RELEASE_MISSING');
+  if (standalone && releaseEntrypoint && resolve(dirname(releaseEntrypoint)) !== resolve(releaseRoot!)) {
+    throw new Error(`SUPERVISOR_BOOTSTRAP_RELEASE_MISMATCH: current=${releaseRoot} executable=${releaseEntrypoint}`);
+  }
   const release = readSupervisorRelease(releaseRoot);
+  if (standalone && !release) throw new Error('SUPERVISOR_CURRENT_RELEASE_INVALID');
   const authority = readRuntimeAuthority(controllerHome);
   if (existsSync(runtimeAuthorityPath(controllerHome)) && !authority) {
     throw new Error('RUNTIME_AUTHORITY_INVALID');
@@ -143,8 +150,8 @@ export async function runStableSupervisor(): Promise<void> {
   if (existsSync(runtimeConfigPath(controllerHome)) && !config) {
     throw new Error('RUNTIME_CONFIG_INVALID');
   }
-  const runtimeRoot = standalone && releaseRoot
-    ? releaseRoot
+  const runtimeRoot = standalone
+    ? resolve(releaseRoot!)
     : resolve(option('--runtime-source-root') ?? release?.sourceRoot ?? resolveControllerRuntimeSourceRoot().root ?? repoRoot);
   const previous = readSupervisorState(controllerHome);
   const lock = acquireSupervisorLock(controllerHome, previous);

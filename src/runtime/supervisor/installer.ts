@@ -4,7 +4,7 @@ import { basename, dirname, join, resolve, sep } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { processRunnerReleaseCanaryChildCommand } from '../execution/process-runtime/canary';
 import { resolveBrowserBridgeNodeExecutable } from '../plugins/browser-node-bridge';
-import { looksLikeControllerRuntimePackage, resolveControllerRuntimeSourceRoot } from '../control-plane/runtime-generation';
+import { resolveControllerRuntimeSourceRoot } from '../control-plane/runtime-generation';
 import {
   readCurrentRelease,
   readSupervisorRelease,
@@ -18,6 +18,7 @@ import {
   supervisorRoot,
   SUPERVISOR_RELEASE_ENTRYPOINTS,
   supervisorReleaseClosureMissing,
+  supervisorReleaseExternalPluginArtifacts,
 } from './paths';
 import type { SupervisorSourceIdentity } from './types';
 
@@ -35,7 +36,7 @@ export interface SupervisorInstallResult {
   systemdUnitPath: string;
 }
 
-const RUNTIME_RELEASE_PATHS = ['src', 'scripts', 'bin/repo-harness-desktop-helper.mjs', 'package.json', 'bun.lock'] as const;
+const RUNTIME_RELEASE_PATHS = ['src', 'scripts', 'package.json', 'bun.lock'] as const;
 const RELEASE_EXECUTABLES = SUPERVISOR_RELEASE_ENTRYPOINTS;
 
 function runtimeSourceRoot(explicit?: string): string {
@@ -47,61 +48,6 @@ function runtimeSourceRoot(explicit?: string): string {
 function gitHead(root: string): string | undefined {
   const result = runProcess('git', ['-C', root, 'rev-parse', '--verify', 'HEAD'], { timeoutMs: 10_000, maxOutputBytes: 4_096 });
   return result.ok && result.stdout.trim() ? result.stdout.trim() : undefined;
-}
-
-function containmentPath(path: string): string {
-  try { return realpathSync(path); } catch { return resolve(path); }
-}
-
-function pathIsInside(parent: string, candidate: string): boolean {
-  const normalizedParent = containmentPath(parent);
-  const normalizedCandidate = containmentPath(candidate);
-  return normalizedCandidate === normalizedParent || normalizedCandidate.startsWith(`${normalizedParent}${sep}`);
-}
-
-function controllerManagedRuntimeSource(controllerHome: string, sourceRoot: string): boolean {
-  return pathIsInside(join(resolve(controllerHome), 'repositories'), sourceRoot);
-}
-
-function publishRuntimeSourceRoot(input: {
-  controllerHome: string;
-  repoRoot: string;
-  release: NonNullable<ReturnType<typeof readSupervisorRelease>>;
-}): string {
-  const repoRoot = runtimeSourceRoot(input.repoRoot);
-  const releaseSourceRoot = input.release.sourceRoot ? resolve(input.release.sourceRoot) : undefined;
-  if (!releaseSourceRoot) return repoRoot;
-
-  const releaseSourceExists = existsSync(releaseSourceRoot);
-  const releaseSourceLooksValid = releaseSourceExists && looksLikeControllerRuntimePackage(releaseSourceRoot);
-  const managedSource = controllerManagedRuntimeSource(input.controllerHome, releaseSourceRoot);
-  const repoHead = gitHead(repoRoot);
-  const canonicalRepoRoot = containmentPath(repoRoot);
-  const canonicalReleaseSourceRoot = containmentPath(releaseSourceRoot);
-  if (canonicalReleaseSourceRoot === canonicalRepoRoot) return repoRoot;
-
-  // A release may have been built in an isolated checkout, but its launched
-  // runtime must always resolve source-relative behavior from the authoritative
-  // checkout bound to this Controller Home. Never persist an arbitrary sibling
-  // worktree path merely because it contains a valid runtime package.
-  if (input.release.sourceCommit && repoHead === input.release.sourceCommit && looksLikeControllerRuntimePackage(repoRoot)) {
-    return repoRoot;
-  }
-
-  const reasons = [
-    releaseSourceExists ? undefined : 'sourceRoot missing',
-    releaseSourceExists && !releaseSourceLooksValid ? 'sourceRoot is not a controller runtime package' : undefined,
-    managedSource ? 'sourceRoot is a controller-managed worktree' : undefined,
-    !managedSource ? `sourceRoot is not the authoritative repoRoot ${repoRoot}` : undefined,
-    input.release.sourceCommit ? undefined : 'sourceCommit missing',
-    repoHead && input.release.sourceCommit && repoHead !== input.release.sourceCommit
-      ? `repoRoot HEAD ${repoHead} differs from release sourceCommit ${input.release.sourceCommit}`
-      : undefined,
-  ].filter(Boolean).join('; ');
-  throw new Error(
-    `SUPERVISOR_RELEASE_SOURCE_UNPUBLISHABLE: refusing to publish release ${input.release.releaseRevision ?? input.release.releasePath} `
-    + `with unsafe runtime source ${releaseSourceRoot} (${reasons || 'unknown reason'})`,
-  );
 }
 
 interface RuntimeSourceReleaseIdentity {
@@ -513,49 +459,70 @@ export function verifySupervisorReleaseExecutionCanary(input: {
     rmSync(canaryRoot, { recursive: true, force: true });
   }
 }
-function installFixedSupervisorBootstrap(controllerHome: string, sourceRoot: string, repoRoot: string): string {
+function installFixedSupervisorBootstrap(controllerHome: string, sourceRoot: string): string {
   const home = resolve(controllerHome);
   ensureStableSupervisorLayout(home);
   const bootstrapPath = supervisorBootstrapPath(home);
-  const sourceCommit = gitHead(sourceRoot);
-  let installedManifest: { executionMode?: string; sourceCommit?: string } | undefined;
-  try {
-    installedManifest = JSON.parse(readFileSync(supervisorBootstrapManifestPath(home), 'utf8')) as {
-      executionMode?: string;
-      sourceCommit?: string;
-    };
-  } catch {
-    installedManifest = undefined;
+  const manifestPath = supervisorBootstrapManifestPath(home);
+  const bootstrapExists = existsSync(bootstrapPath);
+  const manifestExists = existsSync(manifestPath);
+  if (bootstrapExists !== manifestExists) {
+    throw new Error('SUPERVISOR_BOOTSTRAP_INCOMPLETE: bootstrap executable and manifest must be installed atomically');
   }
-  const needsRefresh = !existsSync(bootstrapPath)
-    || statSync(bootstrapPath).size === 0
-    || installedManifest?.executionMode !== 'standalone-binary'
-    || installedManifest.sourceCommit !== sourceCommit;
-  if (needsRefresh) {
+
+  if (bootstrapExists) {
+    let installedManifest: { schemaVersion?: number; executionMode?: string; artifactHash?: string } | undefined;
+    try {
+      installedManifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as typeof installedManifest;
+    } catch {
+      installedManifest = undefined;
+    }
+    const actualHash = statSync(bootstrapPath).size > 0 ? fileSha256(bootstrapPath) : undefined;
+    if (
+      installedManifest?.schemaVersion !== 2
+      || installedManifest.executionMode !== 'standalone-binary'
+      || !installedManifest.artifactHash
+      || installedManifest.artifactHash !== actualHash
+    ) {
+      throw new Error('SUPERVISOR_BOOTSTRAP_INTEGRITY_FAILED: fixed bootstrap is invalid or was modified outside the bootstrap upgrade transaction');
+    }
+  } else {
     const temporary = `${bootstrapPath}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
+    const temporaryManifest = `${manifestPath}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
     try {
       buildEntry(sourceRoot, 'src/runtime/bootstrap/entry.ts', temporary, 'bun', true);
       chmodSync(temporary, 0o700);
+      const artifactHash = fileSha256(temporary);
+      writeFileSync(temporaryManifest, `${JSON.stringify({
+        schemaVersion: 2,
+        executionMode: 'standalone-binary',
+        bootstrapRevision: gitHead(sourceRoot),
+        artifactHash,
+        bootstrapPath,
+        installedAt: new Date().toISOString(),
+      }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
       renameSync(temporary, bootstrapPath);
+      renameSync(temporaryManifest, manifestPath);
     } finally {
       rmSync(temporary, { force: true });
+      rmSync(temporaryManifest, { force: true });
     }
-    writeFileSync(supervisorBootstrapManifestPath(home), `${JSON.stringify({
-      schemaVersion: 1,
-      executionMode: 'standalone-binary',
-      sourceCommit,
-      bootstrapPath,
-      installedAt: new Date().toISOString(),
-    }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   }
+
   const now = new Date().toISOString();
   const configPath = supervisorBootstrapConfigPath(home);
+  let createdAt = now;
+  try {
+    const current = JSON.parse(readFileSync(configPath, 'utf8')) as { createdAt?: string };
+    if (typeof current.createdAt === 'string' && current.createdAt) createdAt = current.createdAt;
+  } catch {
+    // first install or one-way migration from the mutable-path bootstrap config
+  }
   const temporaryConfig = `${configPath}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
   writeFileSync(temporaryConfig, `${JSON.stringify({
-    schemaVersion: 1,
+    schemaVersion: 2,
     controllerHome: home,
-    repoRoot: resolve(repoRoot),
-    createdAt: now,
+    createdAt,
     updatedAt: now,
   }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   renameSync(temporaryConfig, configPath);
@@ -602,27 +569,6 @@ export function stageSupervisorRelease(input: {
     buildEntry(sourceRoot, 'src/runtime/control-plane/daemon-entry.ts', join(stagingPath, 'daemon.js'));
     buildEntry(sourceRoot, 'src/runtime/execution/workers/worker-entry.ts', join(stagingPath, 'worker.js'));
     buildEntry(sourceRoot, 'src/runtime/execution/process-runtime/process-runner-entry.ts', join(stagingPath, 'process-runner.js'));
-    buildEntry(sourceRoot, 'src/runtime/plugins/browser-handoff-host.ts', join(stagingPath, 'browser-handoff-host.js'));
-    buildEntry(
-      sourceRoot,
-      'src/runtime/plugins/browser-node-bridge-host.ts',
-      join(stagingPath, 'browser-node-bridge-host.js'),
-      'node',
-      false,
-      'esm',
-    );
-    buildEntry(
-      sourceRoot,
-      'bin/repo-harness-desktop-helper.mjs',
-      join(stagingPath, 'repo-harness-desktop-helper.mjs'),
-      'node',
-      false,
-      'esm',
-    );
-    const browserNodeBridgeCanary = verifySupervisorBrowserNodeBridgeHost({
-      releasePath: stagingPath,
-      resolveNodeExecutable: input.resolveBrowserNodeExecutableForCanary,
-    });
     const missing = supervisorReleaseClosureMissing(stagingPath);
     if (missing.length > 0) {
       throw new Error(`SUPERVISOR_RELEASE_CLOSURE_INCOMPLETE: staged release is missing required executables: ${missing.join(', ')}`);
@@ -630,7 +576,9 @@ export function stageSupervisorRelease(input: {
     verifySupervisorReleaseExecutionCanary({ releasePath: stagingPath, cwd: sourceRoot, executionMode: 'standalone-binary' });
     const artifactIdentity = releaseArtifactHash(stagingPath);
     writeFileSync(join(stagingPath, 'manifest.json'), `${JSON.stringify({
-      schemaVersion: 3,
+      schemaVersion: 4,
+      releaseKind: 'core-runtime',
+      closureVersion: 1,
       executionMode: 'standalone-binary',
       releaseRevision: revision,
       sourceCommit: identity.sourceCommit,
@@ -639,24 +587,17 @@ export function stageSupervisorRelease(input: {
       dirtyRuntimePaths: identity.dirtyRuntimePaths,
       artifactHash: artifactIdentity.artifactHash,
       artifacts: artifactIdentity.artifacts,
+      externalPluginArtifacts: [],
       builtAt: new Date().toISOString(),
       entrypoint: 'supervisor.js',
       runtimeEntrypoint: 'repo-harness.js',
       daemonEntrypoint: 'daemon.js',
       workerEntrypoint: 'worker.js',
       processRunnerEntrypoint: 'process-runner.js',
-      browserHandoffHostEntrypoint: 'browser-handoff-host.js',
-      browserNodeBridgeHostEntrypoint: 'browser-node-bridge-host.js',
-      desktopHelperEntrypoint: 'repo-harness-desktop-helper.mjs',
-      browserNodeBridgeValidation: {
-        status: browserNodeBridgeCanary.availability,
-        nodeChecked: browserNodeBridgeCanary.nodeChecked,
-      },
       capabilities: [
         'staged_rollout_release',
-        'browser_handoff_host',
-        ...browserNodeBridgeReleaseCapabilities(browserNodeBridgeCanary),
-        'desktop_managed_helper',
+        'self_contained_core_runtime',
+        'external_plugin_lifecycle_excluded',
         'independent_process_runner',
         'reproducible_release_manifest',
         'process_runner_canary',
@@ -689,6 +630,10 @@ function assertPublishableRelease(
   canaryCwd: string,
   allowUnreproducibleReleaseForTests = false,
 ): void {
+  const externalPluginArtifacts = supervisorReleaseExternalPluginArtifacts(release.releasePath);
+  if (externalPluginArtifacts.length > 0) {
+    throw new Error(`SUPERVISOR_RELEASE_CONTAINS_EXTERNAL_PLUGIN_ARTIFACTS: ${externalPluginArtifacts.join(', ')}`);
+  }
   if (allowUnreproducibleReleaseForTests) return;
   // Explicit execution-surface closure: every entrypoint must exist and be
   // non-empty. The artifact hash below would also fail on a missing file, but
@@ -723,10 +668,10 @@ export function publishSupervisorRelease(input: { controllerHome: string; repoRo
   const release = readSupervisorRelease(releasePath);
   if (!release) throw new Error('SUPERVISOR_STAGED_RELEASE_INVALID');
   assertPublishableRelease(release, input.repoRoot, input.allowUnreproducibleReleaseForTests === true);
-  const sourceRoot = publishRuntimeSourceRoot({ controllerHome, repoRoot: input.repoRoot, release });
   const revision = release.releaseRevision ?? `local-${Date.now()}`;
   const previous = readCurrentRelease(controllerHome);
-  const bootstrapPath = installFixedSupervisorBootstrap(controllerHome, sourceRoot, input.repoRoot);
+  const bootstrapSourceRoot = release.sourceRoot ?? input.repoRoot;
+  const bootstrapPath = installFixedSupervisorBootstrap(controllerHome, bootstrapSourceRoot);
   const label = serviceLabel(controllerHome);
   const launchdDir = join(supervisorRoot(controllerHome), 'launchd');
   const systemdDir = join(supervisorRoot(controllerHome), 'systemd');

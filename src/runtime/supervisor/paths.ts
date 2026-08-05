@@ -4,9 +4,9 @@ import { ensureControllerHome } from '../../cli/repositories/controller-home';
 import { sanitizeFileComponent } from '../shared/json-files';
 
 /**
- * Every executable an immutable runtime release must contain for the execution
- * surface to work. The supervisor, gateway and daemon alone are not enough:
- * Unified Process Runtime commands launch `process-runner.js` from the release.
+ * Complete immutable core-runtime execution closure. Domain plugin helpers are
+ * deliberately excluded: they have their own installation, process and state
+ * lifecycle and must survive primary Runtime publication independently.
  */
 export const SUPERVISOR_RELEASE_ENTRYPOINTS = [
   'supervisor.js',
@@ -14,6 +14,10 @@ export const SUPERVISOR_RELEASE_ENTRYPOINTS = [
   'daemon.js',
   'worker.js',
   'process-runner.js',
+] as const;
+
+/** Assets that prove a release incorrectly captured an external plugin lifecycle. */
+export const SUPERVISOR_EXTERNAL_PLUGIN_ENTRYPOINTS = [
   'browser-handoff-host.js',
   'browser-node-bridge-host.js',
   'repo-harness-desktop-helper.mjs',
@@ -31,6 +35,16 @@ export function supervisorReleaseClosureMissing(releasePath: string): string[] {
     }
   }
   return missing;
+}
+
+export function supervisorReleaseExternalPluginArtifacts(releasePath: string): string[] {
+  return SUPERVISOR_EXTERNAL_PLUGIN_ENTRYPOINTS.filter((entrypoint) => {
+    try {
+      return existsSync(join(releasePath, entrypoint));
+    } catch {
+      return false;
+    }
+  });
 }
 
 export function supervisorRoot(controllerHome: string): string {

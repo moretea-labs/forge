@@ -2,13 +2,14 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import { bootstrapLaunchAgentWithRetry } from '../../src/cli/controller/launch-agents';
 import { selectSupervisorRollbackRelease, serviceActivationStatePath, supervisorActivationMatchesRelease, waitForServiceActivation } from '../../src/cli/commands/supervisor';
 import { browserNodeBridgeReleaseCapabilities, installSupervisorRelease, publishSupervisorRelease, renderLaunchdSupervisorPlist, renderSystemdSupervisorUnit, resolveSupervisorBuildRuntime, stageSupervisorRelease, supervisorServiceLabel, supervisorSystemdUnitName, verifySupervisorBrowserNodeBridgeHost, verifySupervisorSourceIdentity } from '../../src/runtime/supervisor/installer';
 import { stableSupervisorActivatesPublishedRelease, stableSupervisorExitCode } from '../../src/runtime/supervisor/entry';
+import { currentSupervisorBootstrapCommand } from '../../src/runtime/bootstrap/entry';
 import { createStableIngressRouter } from '../../src/runtime/supervisor/ingress-router';
 import { createStableIngressProcess } from '../../src/runtime/supervisor/ingress-process';
 import { controllerDaemonMaxLifetimeMs, controllerDaemonPassiveMode, publishReadyAfterStartupRecovery, resolveControllerDaemonShutdownReason, runtimeSourceIdentityNeedsRefresh } from '../../src/runtime/control-plane/daemon-entry';
@@ -19,7 +20,7 @@ import { SupervisorProcessManager, runtimeWriterEnvironment, supervisorProcessSt
 import { ensureMcpControllerHomeBearerToken, writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
 import { writeActiveSlotAuthority } from '../../src/cli/controller/runtime-slots';
 import { publishWriterAuthority } from '../../src/cli/controller/stable-state/writer-authority';
-import { readCurrentRelease, readCurrentSupervisorRelease, readSupervisorRelease, supervisorBootstrapConfigPath, supervisorBootstrapManifestPath, supervisorReleasesRoot, SUPERVISOR_RELEASE_ENTRYPOINTS, supervisorReleaseClosureMissing } from '../../src/runtime/supervisor/paths';
+import { readCurrentRelease, readCurrentSupervisorRelease, readSupervisorRelease, supervisorBootstrapConfigPath, supervisorBootstrapManifestPath, supervisorReleasesRoot, SUPERVISOR_EXTERNAL_PLUGIN_ENTRYPOINTS, SUPERVISOR_RELEASE_ENTRYPOINTS, supervisorReleaseClosureMissing, supervisorReleaseExternalPluginArtifacts } from '../../src/runtime/supervisor/paths';
 import { createSupervisorControlServer, sendSupervisorCommand } from '../../src/runtime/supervisor/control-server';
 import type { ProcessIdentityProbe } from '../../src/runtime/supervisor/identity';
 import type { SupervisorManagedProcess, SupervisorOperation, SupervisorState } from '../../src/runtime/supervisor/types';
@@ -27,7 +28,6 @@ import { evaluateRuntimeReleaseCoherence, evaluateSupervisorServiceReleaseCohere
 import { publishAndScheduleSupervisorRelease, resolveSupervisorActivationInvocation } from '../../src/runtime/supervisor/service-activation';
 import { probeSupervisorMcpReadiness } from '../../src/runtime/supervisor/mcp-readiness';
 import { readSupervisorState } from '../../src/runtime/supervisor/state-store';
-import { resolveBrowserBridgeNodeExecutable } from '../../src/runtime/plugins/browser-node-bridge';
 
 const servers: Server[] = [];
 
@@ -63,16 +63,7 @@ function currentHead(): string {
 function fakeSupervisorRelease(home: string, name: string, revision: string, options: { sourceRoot?: string; sourceCommit?: string } = {}): string {
   const releasePath = join(supervisorReleasesRoot(home), name);
   mkdirSync(releasePath, { recursive: true });
-  const executables = [
-    'supervisor.js',
-    'repo-harness.js',
-    'daemon.js',
-    'worker.js',
-    'process-runner.js',
-    'browser-handoff-host.js',
-    'browser-node-bridge-host.js',
-    'repo-harness-desktop-helper.mjs',
-  ];
+  const executables = [...SUPERVISOR_RELEASE_ENTRYPOINTS];
   const aggregate = createHash('sha256');
   const artifacts: Record<string, { sha256: string }> = {};
   const processRunnerFixture = `#!/usr/bin/env bun
@@ -143,7 +134,7 @@ describe('Stable Supervisor production hardening', () => {
     })).toBe('/custom/bin/bun');
   });
 
-  test('release bundles include durable runtime entrypoints and load the immutable process runner', () => {
+  test('release bundles the complete core closure and excludes external plugin helpers', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-worker-release-'));
     try {
       const release = installSupervisorRelease({
@@ -153,25 +144,41 @@ describe('Stable Supervisor production hardening', () => {
         allowDirtyRuntimeSourceForTests: true,
         allowUnreproducibleReleaseForTests: true,
       });
-      expect(existsSync(join(release.releasePath, 'worker.js'))).toBe(true);
-      expect(existsSync(join(release.releasePath, 'process-runner.js'))).toBe(true);
-      expect(existsSync(join(release.releasePath, 'browser-handoff-host.js'))).toBe(true);
-      expect(existsSync(join(release.releasePath, 'browser-node-bridge-host.js'))).toBe(true);
-      expect(existsSync(join(release.releasePath, 'repo-harness-desktop-helper.mjs'))).toBe(true);
+      for (const entrypoint of SUPERVISOR_RELEASE_ENTRYPOINTS) {
+        expect(existsSync(join(release.releasePath, entrypoint))).toBe(true);
+      }
+      for (const entrypoint of SUPERVISOR_EXTERNAL_PLUGIN_ENTRYPOINTS) {
+        expect(existsSync(join(release.releasePath, entrypoint))).toBe(false);
+      }
+      expect(supervisorReleaseExternalPluginArtifacts(release.releasePath)).toEqual([]);
+
       const runnerPath = join(release.releasePath, 'process-runner.js');
       const manifest = JSON.parse(readFileSync(join(release.releasePath, 'manifest.json'), 'utf8')) as {
+        schemaVersion?: number;
+        releaseKind?: string;
+        closureVersion?: number;
         executionMode?: 'standalone-binary' | 'script';
         releaseRevision?: string;
         sourceCommit?: string;
         cleanWorkspace?: boolean;
         workerEntrypoint?: string;
         processRunnerEntrypoint?: string;
-        browserHandoffHostEntrypoint?: string;
-        browserNodeBridgeHostEntrypoint?: string;
-        desktopHelperEntrypoint?: string;
-        browserNodeBridgeValidation?: { status?: string; nodeChecked?: boolean };
+        externalPluginArtifacts?: string[];
         capabilities?: string[];
       };
+      expect(manifest).toMatchObject({
+        schemaVersion: 4,
+        releaseKind: 'core-runtime',
+        closureVersion: 1,
+        workerEntrypoint: 'worker.js',
+        processRunnerEntrypoint: 'process-runner.js',
+        externalPluginArtifacts: [],
+      });
+      expect(manifest.capabilities).toContain('self_contained_core_runtime');
+      expect(manifest.capabilities).toContain('external_plugin_lifecycle_excluded');
+      expect(manifest.capabilities).not.toContain('browser_handoff_host');
+      expect(manifest.capabilities).not.toContain('desktop_managed_helper');
+
       const loaded = spawnSync(
         manifest.executionMode === 'standalone-binary' ? runnerPath : process.execPath,
         manifest.executionMode === 'standalone-binary'
@@ -179,6 +186,7 @@ describe('Stable Supervisor production hardening', () => {
           : [runnerPath, '--descriptor', join(controllerHome, 'missing-descriptor.json')],
         {
           encoding: 'utf8',
+          cwd: release.releasePath,
           env: {
             PATH: process.env.PATH ?? '',
             HOME: process.env.HOME ?? '',
@@ -189,76 +197,31 @@ describe('Stable Supervisor production hardening', () => {
       expect(loaded.status).toBe(2);
       expect(loaded.stderr).toContain('descriptor not found');
       if (!release.sourceCommit) throw new Error('release sourceCommit missing');
-      const expectedRevision = `${release.sourceCommit}${release.cleanWorkspace ? '' : '-dirty'}`;
       expect(manifest.sourceCommit).toBe(release.sourceCommit);
-      expect(manifest.releaseRevision).toBe(expectedRevision);
-      expect(release.releaseRevision).toBe(expectedRevision);
-      expect(manifest.workerEntrypoint).toBe('worker.js');
-      expect(manifest.processRunnerEntrypoint).toBe('process-runner.js');
-      expect(manifest.browserHandoffHostEntrypoint).toBe('browser-handoff-host.js');
-      expect(manifest.browserNodeBridgeHostEntrypoint).toBe('browser-node-bridge-host.js');
-      expect(manifest.desktopHelperEntrypoint).toBe('repo-harness-desktop-helper.mjs');
-      expect(manifest.capabilities).toContain('staged_rollout_release');
-      expect(manifest.capabilities).toContain('independent_process_runner');
-      expect(manifest.capabilities).toContain('browser_handoff_host');
-      expect(manifest.capabilities).toContain('desktop_managed_helper');
-      const browserNodeHostPath = join(release.releasePath, 'browser-node-bridge-host.js');
-      const desktopHelperPath = join(release.releasePath, 'repo-harness-desktop-helper.mjs');
-      let nodeExecutable: string | undefined;
-      try {
-        nodeExecutable = resolveBrowserBridgeNodeExecutable();
-      } catch {
-        // Browser Node support is optional for the Supervisor release itself.
-      }
-      if (nodeExecutable) {
-        expect(manifest.browserNodeBridgeValidation).toMatchObject({ status: 'verified', nodeChecked: true });
-        expect(manifest.capabilities).toContain('browser_node_cdp_bridge');
-        const nodeProbe = spawnSync(nodeExecutable, [browserNodeHostPath], {
-          cwd: release.releasePath,
-          encoding: 'utf8',
-          input: '{"schemaVersion":0}',
-          env: {
-            PATH: process.env.PATH ?? '',
-            HOME: process.env.HOME ?? '',
-            REPO_HARNESS_BROWSER_NODE_BRIDGE_HOST: '1',
-          },
-        });
-        expect(nodeProbe.status).toBe(1);
-        expect(JSON.parse(nodeProbe.stdout)).toMatchObject({ schemaVersion: 1, ok: false });
-        expect(verifySupervisorBrowserNodeBridgeHost({
-          releasePath: release.releasePath,
-          nodeExecutable,
-        })).toMatchObject({ nodeChecked: true, availability: 'verified', hostPath: browserNodeHostPath });
-        const desktopProbe = spawnSync(nodeExecutable, [desktopHelperPath], {
-          cwd: release.releasePath,
-          encoding: 'utf8',
-          input: `${JSON.stringify({ schemaVersion: 1, type: 'execute', requestId: 'release-desktop-status', actionId: 'status', input: {} })}\n`,
-          env: {
-            PATH: process.env.PATH ?? '',
-            HOME: process.env.HOME ?? '',
-          },
-        });
-        expect(desktopProbe.status).toBe(0);
-        const desktopLines = desktopProbe.stdout.trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
-        expect(desktopLines[0]).toMatchObject({ schemaVersion: 1, type: 'handshake', pluginId: 'desktop' });
-        expect(desktopLines[1]).toMatchObject({ schemaVersion: 1, type: 'result', requestId: 'release-desktop-status', ok: true });
-      } else {
-        expect(manifest.browserNodeBridgeValidation).toMatchObject({ status: 'node_unavailable', nodeChecked: false });
-        expect(manifest.capabilities).not.toContain('browser_node_cdp_bridge');
-      }
+      expect(manifest.releaseRevision).toBe(release.releaseRevision);
+
+      const bootstrapConfig = JSON.parse(readFileSync(supervisorBootstrapConfigPath(controllerHome), 'utf8')) as Record<string, unknown>;
+      expect(bootstrapConfig).toMatchObject({ schemaVersion: 2, controllerHome: resolve(controllerHome) });
+      expect(bootstrapConfig).not.toHaveProperty('repoRoot');
+      const command = currentSupervisorBootstrapCommand(controllerHome);
+      expect(command.command).toBe(join(release.releasePath, 'supervisor.js'));
+      expect(command.args).toEqual(['--controller-home', resolve(controllerHome)]);
+      expect(command.cwd).toBe(release.releasePath);
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }
   }, 180_000);
 
-  test('release closure rejects a missing Desktop helper artifact', () => {
-    const releasePath = mkdtempSync(join(tmpdir(), 'repo-harness-desktop-closure-'));
+  test('core release closure rejects missing core executables and detects external plugin assets', () => {
+    const releasePath = mkdtempSync(join(tmpdir(), 'repo-harness-core-closure-'));
     try {
       for (const entrypoint of SUPERVISOR_RELEASE_ENTRYPOINTS) {
-        if (entrypoint === 'repo-harness-desktop-helper.mjs') continue;
+        if (entrypoint === 'process-runner.js') continue;
         writeFileSync(join(releasePath, entrypoint), 'fixture');
       }
-      expect(supervisorReleaseClosureMissing(releasePath)).toEqual(['repo-harness-desktop-helper.mjs']);
+      expect(supervisorReleaseClosureMissing(releasePath)).toEqual(['process-runner.js']);
+      writeFileSync(join(releasePath, 'repo-harness-desktop-helper.mjs'), 'plugin fixture');
+      expect(supervisorReleaseExternalPluginArtifacts(releasePath)).toEqual(['repo-harness-desktop-helper.mjs']);
     } finally {
       rmSync(releasePath, { recursive: true, force: true });
     }
@@ -350,73 +313,77 @@ describe('Stable Supervisor production hardening', () => {
     }
   });
 
-  test('release publication refuses stale managed worktree runtime sources', () => {
-    const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-stale-managed-source-'));
+  test('an installed fixed Bootstrap publishes a self-contained release after its source checkout disappears', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-source-free-publication-'));
     try {
-      const staleManagedSource = join(controllerHome, 'repositories', 'repo_test', 'worktrees', 'campaign-stale');
-      const stale = fakeSupervisorRelease(controllerHome, 'stale', 'revision-stale', {
-        sourceRoot: staleManagedSource,
-        sourceCommit: '1111111111111111111111111111111111111111',
-      });
-      expect(() => publishSupervisorRelease({ controllerHome, repoRoot: process.cwd(), releasePath: stale }))
-        .toThrow(/SUPERVISOR_RELEASE_SOURCE_UNPUBLISHABLE/);
-    } finally {
-      rmSync(controllerHome, { recursive: true, force: true });
-    }
-  });
-
-  test('release publication rewrites matching managed worktree sources to the canonical repo root', () => {
-    const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-managed-source-main-'));
-    try {
-      const managedSource = join(controllerHome, 'repositories', 'repo_test', 'worktrees', 'campaign-current');
-      mkdirSync(managedSource, { recursive: true });
-      const release = fakeSupervisorRelease(controllerHome, 'current', 'revision-current', {
-        sourceRoot: managedSource,
-        sourceCommit: currentHead(),
-      });
-      publishSupervisorRelease({ controllerHome, repoRoot: process.cwd(), releasePath: release });
-      const bootstrapConfig = JSON.parse(readFileSync(supervisorBootstrapConfigPath(controllerHome), 'utf8')) as { repoRoot?: string };
-      expect(bootstrapConfig.repoRoot).toBe(process.cwd());
-      expect(bootstrapConfig.repoRoot).not.toBe(managedSource);
-    } finally {
-      rmSync(controllerHome, { recursive: true, force: true });
-    }
-  });
-
-  test('refreshes the fixed Supervisor bootstrap when its source revision changes', () => {
-    const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-bootstrap-refresh-'));
-    try {
-      const sourceCommit = currentHead();
       const first = fakeSupervisorRelease(controllerHome, 'first', 'revision-first', {
         sourceRoot: process.cwd(),
-        sourceCommit,
+        sourceCommit: currentHead(),
       });
-      publishSupervisorRelease({
-        controllerHome,
-        repoRoot: process.cwd(),
-        releasePath: first,
-      });
+      publishSupervisorRelease({ controllerHome, repoRoot: process.cwd(), releasePath: first });
 
-      writeFileSync(join(controllerHome, 'supervisor', 'bootstrap'), 'stale-bootstrap\n');
-      writeFileSync(supervisorBootstrapManifestPath(controllerHome), `${JSON.stringify({
-        schemaVersion: 1,
-        executionMode: 'standalone-binary',
-        sourceCommit: 'stale-source-commit',
-      })}\n`);
-
+      const removedSource = join(controllerHome, 'repositories', 'repo_test', 'worktrees', 'removed-source');
       const second = fakeSupervisorRelease(controllerHome, 'second', 'revision-second', {
-        sourceRoot: process.cwd(),
-        sourceCommit,
+        sourceRoot: removedSource,
+        sourceCommit: '1111111111111111111111111111111111111111',
       });
-      publishSupervisorRelease({
+      const published = publishSupervisorRelease({
         controllerHome,
-        repoRoot: process.cwd(),
+        repoRoot: join(controllerHome, 'missing-canonical-repo'),
         releasePath: second,
       });
+      expect(published.releasePath).toBe(second);
+      expect(readCurrentRelease(controllerHome)).toBe(second);
+      const config = JSON.parse(readFileSync(supervisorBootstrapConfigPath(controllerHome), 'utf8')) as Record<string, unknown>;
+      expect(config).toMatchObject({ schemaVersion: 2, controllerHome: resolve(controllerHome) });
+      expect(config).not.toHaveProperty('repoRoot');
+      const command = currentSupervisorBootstrapCommand(controllerHome);
+      expect(command.cwd).toBe(second);
+      expect(command.args).toEqual(['--controller-home', resolve(controllerHome)]);
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
 
-      const manifest = JSON.parse(readFileSync(supervisorBootstrapManifestPath(controllerHome), 'utf8')) as { sourceCommit?: string };
-      expect(manifest.sourceCommit).toBe(sourceCommit);
-      expect(readFileSync(join(controllerHome, 'supervisor', 'bootstrap'), 'utf8')).not.toBe('stale-bootstrap\n');
+  test('ordinary release publication never rewrites the fixed Bootstrap', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-bootstrap-fixed-'));
+    try {
+      const first = fakeSupervisorRelease(controllerHome, 'first', 'revision-first', {
+        sourceRoot: process.cwd(),
+        sourceCommit: currentHead(),
+      });
+      publishSupervisorRelease({ controllerHome, repoRoot: process.cwd(), releasePath: first });
+      const bootstrapPath = join(controllerHome, 'supervisor', 'bootstrap');
+      const beforeBootstrap = readFileSync(bootstrapPath);
+      const beforeManifest = readFileSync(supervisorBootstrapManifestPath(controllerHome));
+
+      const second = fakeSupervisorRelease(controllerHome, 'second', 'revision-second', {
+        sourceRoot: join(controllerHome, 'missing-source'),
+        sourceCommit: '2222222222222222222222222222222222222222',
+      });
+      publishSupervisorRelease({ controllerHome, repoRoot: join(controllerHome, 'missing-repo'), releasePath: second });
+      expect(readFileSync(bootstrapPath)).toEqual(beforeBootstrap);
+      expect(readFileSync(supervisorBootstrapManifestPath(controllerHome))).toEqual(beforeManifest);
+      expect(readCurrentRelease(controllerHome)).toBe(second);
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
+  test('tampered or partially installed Bootstrap fails closed before the active release pointer changes', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-bootstrap-integrity-'));
+    try {
+      const first = fakeSupervisorRelease(controllerHome, 'first', 'revision-first', {
+        sourceRoot: process.cwd(),
+        sourceCommit: currentHead(),
+      });
+      publishSupervisorRelease({ controllerHome, repoRoot: process.cwd(), releasePath: first });
+      writeFileSync(join(controllerHome, 'supervisor', 'bootstrap'), 'tampered-bootstrap\n');
+
+      const second = fakeSupervisorRelease(controllerHome, 'second', 'revision-second');
+      expect(() => publishSupervisorRelease({ controllerHome, repoRoot: process.cwd(), releasePath: second }))
+        .toThrow(/SUPERVISOR_BOOTSTRAP_INTEGRITY_FAILED/);
+      expect(readCurrentRelease(controllerHome)).toBe(first);
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }
@@ -434,8 +401,10 @@ describe('Stable Supervisor production hardening', () => {
       expect(readCurrentRelease(controllerHome)).toBeUndefined();
       expect(readCurrentSupervisorRelease(controllerHome)).toBeUndefined();
       expect(existsSync(join(staged.releasePath, 'worker.js'))).toBe(true);
-      expect(existsSync(join(staged.releasePath, 'browser-handoff-host.js'))).toBe(true);
-      expect(existsSync(join(staged.releasePath, 'browser-node-bridge-host.js'))).toBe(true);
+      expect(supervisorReleaseExternalPluginArtifacts(staged.releasePath)).toEqual([]);
+      for (const entrypoint of SUPERVISOR_EXTERNAL_PLUGIN_ENTRYPOINTS) {
+        expect(existsSync(join(staged.releasePath, entrypoint))).toBe(false);
+      }
 
       const published = publishSupervisorRelease({
         controllerHome,

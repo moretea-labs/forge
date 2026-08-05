@@ -65,12 +65,13 @@ const CHECKS: readonly CheckDefinition[] = [
   { id: 'package:check:type', args: ['run', 'check:type'], timeoutMs: 10 * 60_000 },
   { id: 'package:check:runtime-architecture', args: ['run', 'check:runtime-architecture'], timeoutMs: 3 * 60_000 },
   {
-    id: 'focused:canonical-runtime-repair',
+    id: 'focused:runtime-architecture-replacement',
     args: [
       'test',
       'tests/runtime/process-runtime.test.ts',
       'tests/runtime/work-terminal-cleanup.test.ts',
       'tests/runtime/canonical-single-runtime.test.ts',
+      'tests/runtime/stable-supervisor-hardening.test.ts',
       'tests/cli/mcp-controller.test.ts',
     ],
     timeoutMs: 15 * 60_000,

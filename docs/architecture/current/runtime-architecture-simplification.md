@@ -4,7 +4,28 @@
 >
 > **Scope:** process ownership, runtime authority/configuration, immutable release activation, and standalone Recovery.
 >
-> **Current implementation status:** transition. The execution control plane described by `system-overview.md` is implemented, but the installed lifecycle still contains blue/green slots, nested KeepAlive ownership, and compatibility fallbacks. This document is the target and migration contract; it must not be read as evidence that the cutover is complete.
+> **Current implementation status:** transition. T1 and T2 of the seven-phase replacement are implemented in source; T3–T7 and the final live cutover remain incomplete. The installed lifecycle still contains blue/green slots, nested KeepAlive ownership, and compatibility fallbacks. This document is the target and migration contract; it must not be read as evidence that the cutover is complete.
+
+### Seven-phase replacement ledger
+
+| Phase | Contract | Source status |
+| --- | --- | --- |
+| T1 | Freeze the target ownership model, invariants, deletion map, and gates | Complete |
+| T2 | Install one fixed Bootstrap and publish a self-contained immutable core Runtime release | Implemented; release/cold-start/failure gates are authoritative |
+| T3 | Collapse authority and configuration to one committed primary record each | Pending |
+| T4 | Collapse the primary hierarchy and delete Gateway KeepAlive/tunnel lifecycle ownership | Pending |
+| T5 | Replace slot rollout with one transactional candidate/current/previous activation protocol | Pending |
+| T6 | Complete independent immutable Recovery Gateway, Watchdog, and tunnel services | Pending |
+| T7 | Delete legacy slot, restart, embedded, fallback, and compatibility lifecycle paths | Pending |
+
+T2 establishes these non-negotiable boundaries:
+
+- launchd/systemd arguments contain only the fixed Bootstrap path and Controller Home;
+- Bootstrap configuration does not persist a repository checkout or mutable source root;
+- ordinary Runtime publication cannot rewrite the fixed Bootstrap;
+- the immutable core release closure is exactly Supervisor, core CLI/Gateway host, Daemon, Worker, and Process Runner;
+- Browser/Desktop/plugin helper binaries and domain state are external-plugin lifecycle assets and are rejected if present in a core release;
+- after the fixed Bootstrap is installed, a clean immutable release remains publishable and cold-startable when its build checkout no longer exists.
 
 ## 1. Decision
 
