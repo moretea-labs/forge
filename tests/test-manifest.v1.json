@@ -432,6 +432,10 @@
       "module": "workflow",
       "resource": "controller-home-isolated"
     },
+    "tests/runtime/route-session-concurrency.test.ts": {
+      "module": "routing",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/runtime-source-isolation.test.ts": {
       "module": "process-runtime",
       "resource": "process-tree"
