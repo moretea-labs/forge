@@ -110,7 +110,7 @@ import { readActiveSlotAuthority, readSlotIdentity } from '../../../cli/controll
 import { resolveStableControllerHome } from '../../../cli/controller/stable-state/stable-home';
 import { redactMcpText } from '../../../cli/mcp/redaction';
 import { resolveLocalBridgeSurface, summarizeRecentJobs } from '../../shared/local-bridge-surface';
-import { controllerPluginRepository, executeAssistantPluginReadDirect, getAssistantPluginManifest, isDirectPluginReadAction, listAssistantPluginManifests, submitAssistantPluginAction } from '../../plugins/store';
+import { assistantPluginScope, controllerPluginRepository, executeAssistantPluginReadDirect, getAssistantPluginManifest, isDirectPluginReadAction, listAssistantPluginManifests, submitAssistantPluginAction } from '../../plugins/store';
 import {
   listWebTargets,
   mergeAllowedDomains,
@@ -1692,6 +1692,16 @@ function selected(ctx: MultiRepositoryMcpToolContext, args: Record<string, unkno
     controllerHome: ctx.controllerHome,
     allowSoleRepository: true,
   });
+}
+
+function pluginRepository(
+  ctx: MultiRepositoryMcpToolContext,
+  args: Record<string, unknown>,
+  pluginId: string,
+) {
+  return assistantPluginScope(pluginId) === 'controller'
+    ? controllerPluginRepository(ctx.controllerHome)
+    : selected(ctx, args);
 }
 
 const CAMPAIGN_AGENT_OPERATIONS = new Set(['dispatch_task', 'launch_issue', 'dispatch_ready_tasks', 'retry_task_run', 'quick_agent_session']);
@@ -5183,9 +5193,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
       }
       case 'get_plugin': {
         const pluginId = String(args.plugin_id ?? '').trim();
-        const repository = pluginId === 'local_system'
-          ? controllerPluginRepository(ctx.controllerHome)
-          : selected(ctx, args);
+        const repository = pluginRepository(ctx, args, pluginId);
         return result({
           scope: repository.repoId === '__controller__' ? 'controller' : 'repository',
           plugin: summarizePlugin(getAssistantPluginManifest(ctx.controllerHome, repository, pluginId)),
@@ -5346,9 +5354,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
       }
       case 'plugin_action_execute': {
         const pluginId = String(args.plugin_id ?? '').trim();
-        const repository = pluginId === 'local_system'
-          ? controllerPluginRepository(ctx.controllerHome)
-          : selected(ctx, args);
+        const repository = pluginRepository(ctx, args, pluginId);
         const actionId = String(args.action_id ?? '').trim();
         const requestId = String(args.request_id ?? '').trim();
         const actionArguments = args.arguments && typeof args.arguments === 'object' && !Array.isArray(args.arguments)
@@ -5420,9 +5426,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
       }
       case 'toolchain_plugin_summary': {
         const pluginId = String(args.plugin_id ?? '').trim();
-        const repository = pluginId === 'local_system'
-          ? controllerPluginRepository(ctx.controllerHome)
-          : selected(ctx, args);
+        const repository = pluginRepository(ctx, args, pluginId);
         const manifest = getAssistantPluginManifest(ctx.controllerHome, repository, pluginId);
         return result({
           plugin: summarizePluginForLowInterception(manifest),
