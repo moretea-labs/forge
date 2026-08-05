@@ -21,9 +21,8 @@ import {
   type SafeHandoffResult,
 } from '../../cli/controller/launch-agents';
 import { isProcessAlive } from '../shared/process-tree';
-import { initializeStandaloneRecovery, loadRecoveryConfig, createRecoveryConfig, type AgentRepairConfig, type PublicTunnelServiceConfig, type RecoveryConfig } from './core';
+import { initializeStandaloneRecovery, loadRecoveryConfig, type PublicTunnelServiceConfig, type RecoveryConfig } from './core';
 import {
-  RECOVERY_AGENT_PROMPT,
   RECOVERY_RELEASE_BINARIES,
   RECOVERY_RELEASE_ROLE_CANARY_ARG,
   publishRecoveryCompatibilityLinks,
@@ -53,7 +52,6 @@ const RECOVERY_RELEASE_SOURCE_PATHS = [
   'src/runtime/shared/json-files.ts',
   'scripts/install-standalone-recovery.ts',
   'scripts/load-standalone-recovery.sh',
-  'recovery/prompts/pi-recovery.md',
   'package.json',
   'bun.lock',
 ] as const;
@@ -192,20 +190,11 @@ export function stageRecoveryRelease(input: {
       copyFileSync(primary, destination);
       chmodSync(destination, 0o700);
     }
-    const promptSource = join(identity.sourceRoot, 'recovery', 'prompts', RECOVERY_AGENT_PROMPT);
-    const promptDestination = join(staging, RECOVERY_AGENT_PROMPT);
-    const resources: RecoveryReleaseManifest['resources'] = {};
-    if (existsSync(promptSource)) {
-      copyFileSync(promptSource, promptDestination);
-      chmodSync(promptDestination, 0o400);
-      resources[RECOVERY_AGENT_PROMPT] = { sha256: sha256(promptDestination) };
-    }
     writeRecoveryReleaseManifest(staging, {
       schemaVersion: 1,
       ...identity,
       builtAt: new Date(now()).toISOString(),
       artifacts: completeArtifacts(staging),
-      ...(Object.keys(resources).length > 0 ? { resources } : {}),
     });
     const runCanary = dependencies.runCanary ?? defaultRunCanary;
     const canaries: Array<{ label: string; binaryPath: string; role?: RecoveryRuntimeRole }> = [
@@ -531,7 +520,6 @@ function sameRecoveryReleasePayload(left: RecoveryReleaseDescriptor, right: Reco
   return left.releaseRevision === right.releaseRevision
     && left.sourceCommit === right.sourceCommit
     && left.cleanWorkspace === right.cleanWorkspace
-    && left.resources[RECOVERY_AGENT_PROMPT]?.sha256 === right.resources[RECOVERY_AGENT_PROMPT]?.sha256
     && RECOVERY_RELEASE_BINARIES.every((binary) => left.artifacts[binary].sha256 === right.artifacts[binary].sha256);
 }
 
@@ -600,25 +588,16 @@ export async function installStandaloneRecovery(input: {
   publicTunnelService?: PublicTunnelServiceConfig;
   recoveryPublicUrl?: string;
   recoveryTunnelService?: PublicTunnelServiceConfig;
-  agentRepair?: Omit<AgentRepairConfig, 'promptFile'>;
   stageOnly?: boolean;
 }, dependencies: RecoveryInstallerDependencies = {}): Promise<RecoveryInstallResult> {
   const controllerHome = resolve(input.controllerHome);
   const sourceRoot = resolve(input.sourceRoot ?? input.repoRoot);
-  let config = initializeStandaloneRecovery(controllerHome, input.port ?? 8787, input.publicTunnelService, {
+  const config = initializeStandaloneRecovery(controllerHome, input.port ?? 8787, input.publicTunnelService, {
     ...(input.publicMcpUrl ? { publicMcpUrl: input.publicMcpUrl } : {}),
     ...(input.recoveryPublicUrl ? { recoveryPublicUrl: input.recoveryPublicUrl } : {}),
     ...(input.recoveryTunnelService ? { recoveryTunnelService: input.recoveryTunnelService } : {}),
   });
   const staged = stageRecoveryRelease({ controllerHome, sourceRoot }, dependencies);
-  if (input.agentRepair) {
-    const promptFile = join(recoveryCurrentPath(controllerHome), RECOVERY_AGENT_PROMPT);
-    if (!staged.release.resources[RECOVERY_AGENT_PROMPT]) throw new Error('RECOVERY_AGENT_PROMPT_MISSING_FROM_RELEASE');
-    config = createRecoveryConfig(controllerHome, {
-      ...config,
-      agentRepair: { ...input.agentRepair, repoRoot: resolve(input.agentRepair.repoRoot), promptFile },
-    });
-  }
   if (input.stageOnly) return { controllerHome, staged, config };
   const activated = await activateRecoveryRelease({ controllerHome, config, candidate: staged.release }, dependencies);
   return { controllerHome, staged, activated, config };

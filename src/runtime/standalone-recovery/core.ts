@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { spawn, spawnSync } from 'child_process';
-import { accessSync, chmodSync, closeSync, constants, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { connect } from 'net';
 import { homedir } from 'os';
 import { dirname, isAbsolute, join, resolve, sep } from 'path';
@@ -20,17 +20,6 @@ export interface PublicTunnelServiceConfig {
   postRestartVerifyTimeoutMs?: number;
 }
 
-export interface AgentRepairConfig {
-  enabled: boolean;
-  command?: string;
-  promptFile: string;
-  repoRoot: string;
-  timeoutMs?: number;
-  cooldownMs?: number;
-  minimumFailures?: number;
-  minimumFailureDurationMs?: number;
-}
-
 export interface RecoveryConfig {
   schemaVersion: 1;
   controllerHome: string;
@@ -39,7 +28,6 @@ export interface RecoveryConfig {
   publicTunnelService?: PublicTunnelServiceConfig;
   recoveryPublicUrl?: string;
   recoveryTunnelService?: PublicTunnelServiceConfig;
-  agentRepair?: AgentRepairConfig;
   mainMcpTokenFile?: string;
   expectedToolFingerprint?: string;
   readOnlyTool?: { name: string; arguments?: Record<string, unknown> };
@@ -95,8 +83,7 @@ export type RecoveryMutationAction =
   | 'restart_gateway'
   | 'restart_recovery_gateway'
   | 'repair_public_tunnel'
-  | 'restart_supervisor'
-  | 'agent_repair';
+  | 'restart_supervisor';
 
 interface RecoveryLock {
   schemaVersion?: 1;
@@ -159,7 +146,7 @@ interface RestartSupervisorReceipt {
 }
 
 export interface WatchdogDecision {
-  action: 'healthy' | 'degraded' | 'repair_public_tunnel' | 'restart_recovery_gateway' | 'restart_gateway' | 'restart_supervisor' | 'rollback' | 'run_agent_repair';
+  action: 'healthy' | 'degraded' | 'repair_public_tunnel' | 'restart_recovery_gateway' | 'restart_gateway' | 'restart_supervisor' | 'rollback';
   reason: string;
 }
 
@@ -173,19 +160,8 @@ export interface WatchdogState {
   recoveryGatewayRestartUsed?: boolean;
   gatewayRestartUsed?: boolean;
   supervisorRestartUsed?: boolean;
-  agentRepairUsed?: boolean;
   lastDecision?: WatchdogDecision['action'];
   updatedAt?: string;
-}
-
-export interface AgentRepairResult {
-  ok: boolean;
-  attempted: boolean;
-  noOp?: boolean;
-  inProgress?: boolean;
-  detail: string;
-  status?: number | null;
-  outputSha256?: string;
 }
 
 export interface PublicTunnelRepairResult {
@@ -228,7 +204,6 @@ function auditPath(config: RecoveryConfig): string { return join(recoveryRoot(co
 function quarantinePath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'quarantine.json'); }
 function publicTunnelRepairStatePath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'public-tunnel-repair.json'); }
 function watchdogStatePath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'watchdog.json'); }
-function agentRepairStatePath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'agent-repair.json'); }
 export function loadWatchdogState(config: RecoveryConfig): WatchdogState {
   const state = json<WatchdogState>(watchdogStatePath(config));
   if (!state || !Number.isInteger(state.failures) || state.failures < 0 || typeof state.rollbackUsed !== 'boolean') {
@@ -276,7 +251,8 @@ export function recoveryConfigPath(controllerHome: string): string {
 }
 
 export function loadRecoveryConfig(controllerHome: string, explicit?: string): RecoveryConfig {
-  const loaded = json<Partial<RecoveryConfig>>(explicit ?? recoveryConfigPath(controllerHome)) ?? {};
+  const loaded = json<Partial<RecoveryConfig> & { agentRepair?: unknown }>(explicit ?? recoveryConfigPath(controllerHome)) ?? {};
+  delete loaded.agentRepair;
   const config: RecoveryConfig = {
     ...DEFAULT_CONFIG,
     ...loaded,
@@ -903,21 +879,12 @@ export function decideWatchdog(input: {
   publicTunnelRepairFailures?: number;
   publicTunnelMinimumFailures?: number;
   publicTunnelMinimumFailureDurationMs?: number;
-  agentRepairEnabled?: boolean;
-  agentRepairCooldownElapsed?: boolean;
-  agentRepairMinimumFailures?: number;
-  agentRepairMinimumFailureDurationMs?: number;
 }): WatchdogDecision {
-  const agentMinimumFailures = input.agentRepairMinimumFailures ?? 12;
-  const agentMinimumDuration = input.agentRepairMinimumFailureDurationMs ?? 120_000;
-  const agentSustained = input.firstFailureAt !== undefined && Date.now() - input.firstFailureAt >= agentMinimumDuration;
-  const agentEligible = input.agentRepairEnabled && input.agentRepairCooldownElapsed && input.failures >= agentMinimumFailures && agentSustained;
   if (input.publicTunnelConfigured && input.publicTunnelFailed) {
     const failures = input.publicTunnelFailures ?? 0;
     const minimumFailures = input.publicTunnelMinimumFailures ?? 2;
     const minimumDuration = input.publicTunnelMinimumFailureDurationMs ?? 5_000;
     const sustained = input.publicTunnelFirstFailureAt !== undefined && Date.now() - input.publicTunnelFirstFailureAt >= minimumDuration;
-    if (!input.operationInFlight && agentEligible && (input.publicTunnelRepairFailures ?? 0) >= 2) return { action: 'run_agent_repair', reason: 'dedicated Recovery tunnel repair failed repeatedly and the bounded agent fallback threshold was met' };
     if (!input.operationInFlight && failures >= minimumFailures && sustained) return { action: 'repair_public_tunnel', reason: 'local runtime and Recovery Gateway are healthy while the dedicated Recovery public endpoint is unavailable' };
     if (input.operationInFlight) return { action: 'degraded', reason: 'Recovery tunnel repair deferred while a Supervisor operation owns runtime changes' };
     return { action: 'degraded', reason: 'Recovery tunnel failure has not yet met the bounded repair threshold' };
@@ -934,8 +901,6 @@ export function decideWatchdog(input: {
   if (input.failures >= 6 && sustained && independentEvidence && !input.activeKnownGood && input.previousKnownGood && !input.operationInFlight && !input.rollbackUsed) {
     return { action: 'rollback', reason: 'restart paths were exhausted and six sustained failures have two independent evidence classes plus a verified previous release' };
   }
-  const conventionalExhausted = Boolean(input.recoveryGatewayRestartUsed || input.supervisorRestartUsed || input.gatewayRestartUsed || input.rollbackUsed || !input.previousKnownGood);
-  if (agentEligible && conventionalExhausted && !input.operationInFlight) return { action: 'run_agent_repair', reason: 'bounded restart and rollback paths are exhausted and the explicitly enabled agent fallback threshold was met' };
   return { action: 'degraded', reason: 'failure threshold, duration, recovery ordering, or independent-evidence quorum not met' };
 }
 
@@ -1300,73 +1265,6 @@ export async function restartRecoveryGateway(
   return locked.value;
 }
 
-function agentRepairCooldownElapsed(config: RecoveryConfig, now = Date.now()): boolean {
-  const cooldownMs = config.agentRepair?.cooldownMs ?? 60 * 60_000;
-  const prior = json<{ lastAttemptAt?: unknown }>(agentRepairStatePath(config));
-  return typeof prior?.lastAttemptAt !== 'number' || now - prior.lastAttemptAt >= cooldownMs;
-}
-
-export interface AgentRepairDependencies {
-  now?: () => number;
-  runCommand?: (commandName: string, args: string[], timeoutMs: number, cwd: string) => Promise<CommandResult>;
-}
-
-export async function runAgentRepair(
-  config: RecoveryConfig,
-  verified: VerifyResult,
-  dependencies: AgentRepairDependencies = {},
-): Promise<AgentRepairResult> {
-  const agent = config.agentRepair;
-  if (!agent?.enabled) return { ok: false, attempted: false, noOp: true, detail: 'agent repair is disabled' };
-  const now = dependencies.now ?? Date.now;
-  if (!agentRepairCooldownElapsed(config, now())) return { ok: false, attempted: false, noOp: true, detail: 'agent repair is in cooldown' };
-  let repoRoot: string;
-  let promptFile: string;
-  try {
-    if (!isAbsolute(agent.repoRoot) || !isAbsolute(agent.promptFile)) throw new Error('paths must be absolute');
-    repoRoot = realpathSync(agent.repoRoot);
-    promptFile = realpathSync(agent.promptFile);
-    const currentRelease = realpathSync(join(recoveryRoot(config), 'current'));
-    const expectedPrompt = join(currentRelease, 'pi-recovery.md');
-    if (promptFile !== expectedPrompt) throw new Error('prompt must come from the active immutable Recovery release');
-    const manifest = json<{ resources?: { 'pi-recovery.md'?: { sha256?: unknown } } }>(join(currentRelease, 'manifest.json'));
-    const expectedHash = manifest?.resources?.['pi-recovery.md']?.sha256;
-    const actualHash = createHash('sha256').update(readFileSync(promptFile)).digest('hex');
-    if (typeof expectedHash !== 'string' || expectedHash !== actualHash) throw new Error('prompt hash does not match the active Recovery manifest');
-  } catch (error) {
-    return { ok: false, attempted: false, noOp: true, detail: `agent repair configuration is invalid: ${error instanceof Error ? error.message : String(error)}` };
-  }
-  const commandName = agent.command?.trim() || 'pi';
-  if (isAbsolute(commandName)) {
-    try { accessSync(commandName, constants.X_OK); } catch {
-      return { ok: false, attempted: false, noOp: true, detail: 'agent repair command is not executable' };
-    }
-  } else if (!/^[A-Za-z0-9._-]{1,80}$/.test(commandName)) {
-    return { ok: false, attempted: false, noOp: true, detail: 'agent repair command is invalid' };
-  }
-  const locked = await withLock(config, { action: 'agent_repair' }, async () => {
-    if (!agentRepairCooldownElapsed(config, now())) return { ok: false, attempted: false, noOp: true, detail: 'agent repair entered cooldown before lock acquisition' } satisfies AgentRepairResult;
-    const startedAt = now();
-    writeJson(agentRepairStatePath(config), { lastAttemptAt: startedAt, status: 'running', pid: process.pid });
-    const summary = {
-      at: verified.at,
-      supervisor: verified.supervisor,
-      releases: { active: verified.releases.active?.revision, previous: verified.releases.previous?.revision, coherent: verified.releases.coherent },
-      failedProbes: Object.fromEntries(Object.entries(verified.probes).filter(([, value]) => !value.ok).map(([name, value]) => [name, value.detail.slice(0, 180)])),
-    };
-    const instruction = `Repo Harness standalone Recovery exhausted bounded restart/tunnel/rollback paths. Diagnose and repair only this repository, run focused checks, and restore the local Recovery Gateway/watchdog/tunnel without remote writes. Evidence: ${JSON.stringify(summary)}`;
-    const timeoutMs = Math.min(Math.max(agent.timeoutMs ?? 15 * 60_000, 30_000), 60 * 60_000);
-    const runner = dependencies.runCommand ?? ((name, args, timeout, cwd) => command(name, args, timeout, { cwd, maxOutputBytes: 128 * 1024 }));
-    const result = await runner(commandName, ['-p', `@${promptFile}`, instruction], timeoutMs, repoRoot);
-    const outputSha256 = createHash('sha256').update(result.stdout).update('\0').update(result.stderr).digest('hex');
-    writeJson(agentRepairStatePath(config), { lastAttemptAt: startedAt, completedAt: now(), status: result.ok ? 'succeeded' : 'failed', exitStatus: result.status, outputSha256 });
-    audit(config, result.ok ? 'agent_repair_succeeded' : 'agent_repair_failed', { command: isAbsolute(commandName) ? commandName : `PATH:${commandName}`, repoRoot, promptFile, status: result.status, outputSha256 });
-    return { ok: result.ok, attempted: true, detail: result.ok ? 'PI agent repair completed; subsequent watchdog verification will determine recovery' : `PI agent repair failed with status ${result.status ?? 'spawn_error'}`, status: result.status, outputSha256 } satisfies AgentRepairResult;
-  });
-  if (!locked.acquired) return { ok: false, attempted: false, noOp: true, inProgress: true, detail: recoveryBusyDetail(locked.owner) };
-  return locked.value;
-}
-
 function pidAlive(pid: number | undefined): boolean {
   if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return false;
   try { process.kill(pid, 0); return true; } catch { return false; }
@@ -1507,7 +1405,7 @@ export function initializeStandaloneRecovery(
   controllerHome: string,
   port = 8787,
   publicTunnelService?: PublicTunnelServiceConfig,
-  extensions: Partial<Pick<RecoveryConfig, 'publicMcpUrl' | 'recoveryPublicUrl' | 'recoveryTunnelService' | 'agentRepair'>> = {},
+  extensions: Partial<Pick<RecoveryConfig, 'publicMcpUrl' | 'recoveryPublicUrl' | 'recoveryTunnelService'>> = {},
 ): RecoveryConfig {
   const root = resolve(controllerHome);
   const tokenPath = join(root, 'recovery', 'config', 'gateway-token.json');
@@ -1528,12 +1426,12 @@ export function secureEqual(left: string, right: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState): Promise<{ state: WatchdogState; decision: WatchdogDecision; verify: VerifyResult; rollback?: RollbackResult; publicTunnelRepair?: PublicTunnelRepairResult; recoveryGatewayRestart?: RecoveryGatewayRestartResult; gatewayRestart?: Awaited<ReturnType<typeof restartGateway>>; supervisorRestart?: RestartSupervisorResult; agentRepair?: AgentRepairResult }> {
+export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState): Promise<{ state: WatchdogState; decision: WatchdogDecision; verify: VerifyResult; rollback?: RollbackResult; publicTunnelRepair?: PublicTunnelRepairResult; recoveryGatewayRestart?: RecoveryGatewayRestartResult; gatewayRestart?: Awaited<ReturnType<typeof restartGateway>>; supervisorRestart?: RestartSupervisorResult }> {
   const verified = await verifyStableRuntime(config);
   const recoveryHealthy = verified.probes.recovery_gateway?.ok !== false
     && verified.probes.recovery_external_http?.ok !== false;
   if (verified.ok && recoveryHealthy) {
-    const state = { failures: 0, rollbackUsed: false, publicTunnelFailures: 0, publicTunnelRepairFailures: 0, recoveryGatewayRestartUsed: false, gatewayRestartUsed: false, supervisorRestartUsed: false, agentRepairUsed: false, lastDecision: 'healthy' as const };
+    const state = { failures: 0, rollbackUsed: false, publicTunnelFailures: 0, publicTunnelRepairFailures: 0, recoveryGatewayRestartUsed: false, gatewayRestartUsed: false, supervisorRestartUsed: false, lastDecision: 'healthy' as const };
     return { state, decision: { action: 'healthy', reason: 'primary runtime and standalone Recovery verification passed' }, verify: verified };
   }
   const localVerify = configuredRecoveryTunnel(config) && configuredRecoveryPublicUrl(config) ? await verifyLocalRuntime(config) : undefined;
@@ -1573,10 +1471,6 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
     publicTunnelFailed,
     publicTunnelMinimumFailures: configuredRecoveryTunnel(config)?.minimumFailures,
     publicTunnelMinimumFailureDurationMs: configuredRecoveryTunnel(config)?.minimumFailureDurationMs,
-    agentRepairEnabled: config.agentRepair?.enabled === true,
-    agentRepairCooldownElapsed: agentRepairCooldownElapsed(config),
-    agentRepairMinimumFailures: config.agentRepair?.minimumFailures,
-    agentRepairMinimumFailureDurationMs: config.agentRepair?.minimumFailureDurationMs,
   });
   state.lastDecision = decision.action;
   if (decision.action === 'repair_public_tunnel') {
@@ -1601,10 +1495,6 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
   if (decision.action === 'rollback') {
     const rollback = await rollbackPrevious(config, 'watchdog sustained multi-signal failure after bounded restart paths');
     return { state: { ...state, rollbackUsed: true }, decision, verify: verified, rollback };
-  }
-  if (decision.action === 'run_agent_repair') {
-    const agentRepair = await runAgentRepair(config, verified);
-    return { state: { ...state, agentRepairUsed: agentRepair.attempted || state.agentRepairUsed }, decision, verify: verified, agentRepair };
   }
   return { state, decision, verify: verified };
 }

@@ -25,8 +25,6 @@ export const RECOVERY_RELEASE_ROLE_CANARY_ARG = '--repo-harness-release-role-can
 
 export type RecoveryReleaseBinary = (typeof RECOVERY_RELEASE_BINARIES)[number];
 export type RecoveryRuntimeRole = 'gateway' | 'watchdog';
-export const RECOVERY_AGENT_PROMPT = 'pi-recovery.md' as const;
-
 export interface RecoveryReleaseManifest {
   schemaVersion: 1;
   releaseRevision: string;
@@ -36,7 +34,6 @@ export interface RecoveryReleaseManifest {
   builtAt: string;
   legacy?: boolean;
   artifacts: Record<RecoveryReleaseBinary, { sha256: string }>;
-  resources?: Partial<Record<typeof RECOVERY_AGENT_PROMPT, { sha256: string }>>;
 }
 
 export interface RecoveryReleaseDescriptor {
@@ -47,7 +44,6 @@ export interface RecoveryReleaseDescriptor {
   cleanWorkspace: boolean;
   manifestSha256: string;
   artifacts: RecoveryReleaseManifest['artifacts'];
-  resources: NonNullable<RecoveryReleaseManifest['resources']>;
   legacy: boolean;
 }
 
@@ -121,13 +117,6 @@ export function readRecoveryRelease(path: string | undefined): RecoveryReleaseDe
       if (typeof expected !== 'string' || !existsSync(binaryPath) || fileSha256(binaryPath) !== expected) return undefined;
       artifacts[binary] = { sha256: expected };
     }
-    const resources: NonNullable<RecoveryReleaseManifest['resources']> = {};
-    const promptHash = parsed.resources?.[RECOVERY_AGENT_PROMPT]?.sha256;
-    if (promptHash !== undefined) {
-      const promptPath = join(releasePath, RECOVERY_AGENT_PROMPT);
-      if (typeof promptHash !== 'string' || !existsSync(promptPath) || fileSha256(promptPath) !== promptHash) return undefined;
-      resources[RECOVERY_AGENT_PROMPT] = { sha256: promptHash };
-    }
     return {
       releasePath,
       releaseRevision: parsed.releaseRevision,
@@ -136,7 +125,6 @@ export function readRecoveryRelease(path: string | undefined): RecoveryReleaseDe
       cleanWorkspace: parsed.cleanWorkspace,
       manifestSha256: createHash('sha256').update(bytes).digest('hex'),
       artifacts,
-      resources,
       legacy: parsed.legacy === true,
     };
   } catch {

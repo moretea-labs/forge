@@ -1,5 +1,4 @@
-import { accessSync, constants, existsSync, realpathSync, statSync } from 'fs';
-import { delimiter, isAbsolute, join, resolve } from 'path';
+import { isAbsolute, join, resolve } from 'path';
 import { installStandaloneRecovery } from '../src/runtime/standalone-recovery/installer';
 
 function option(name: string): string | undefined {
@@ -31,22 +30,6 @@ function launchdService(label: string | undefined, plistPath: string | undefined
   return { platform: 'launchd' as const, label, ...(plistPath ? { plistPath } : {}) };
 }
 
-function resolveExecutable(value: string): string {
-  const candidates = isAbsolute(value)
-    ? [value]
-    : (process.env.PATH ?? '').split(delimiter).filter(Boolean).map((directory) => join(directory, value));
-  for (const candidate of candidates) {
-    try {
-      accessSync(candidate, constants.X_OK);
-      // Preserve the invoked path. Version-manager shims (Volta, asdf, mise) may
-      // intentionally dispatch based on argv[0] and fail when their target is
-      // realpathed and executed directly.
-      if (statSync(candidate).isFile()) return resolve(candidate);
-    } catch { /* keep searching */ }
-  }
-  throw new Error('RECOVERY_PI_COMMAND_NOT_EXECUTABLE');
-}
-
 const controllerHomeRaw = option('--controller-home') ?? process.env.REPO_HARNESS_CONTROLLER_HOME ?? '';
 const controllerHome = resolve(controllerHomeRaw);
 if (!controllerHomeRaw || controllerHome === resolve('.')) throw new Error('RECOVERY_CONTROLLER_HOME_REQUIRED');
@@ -65,14 +48,6 @@ if (option('--recovery-tunnel-service-label') && legacyTunnelLabel && option('--
 const recoveryTunnelService = launchdService(recoveryTunnelLabel, recoveryTunnelPlist, 'RECOVERY_TUNNEL_SERVICE');
 if (Boolean(recoveryTunnelService) !== Boolean(recoveryPublicUrl)) throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
 
-const enablePiAgent = process.argv.includes('--enable-pi-agent');
-const piRepoRootRaw = option('--pi-repo-root');
-if (enablePiAgent && !piRepoRootRaw) throw new Error('RECOVERY_PI_REPO_ROOT_REQUIRED');
-const piRepoRootResolved = piRepoRootRaw ? resolve(piRepoRootRaw) : undefined;
-if (piRepoRootResolved && !existsSync(piRepoRootResolved)) throw new Error('RECOVERY_PI_REPO_ROOT_MISSING');
-const piRepoRoot = piRepoRootResolved ? realpathSync(piRepoRootResolved) : undefined;
-const piCommand = enablePiAgent ? resolveExecutable(option('--pi-command') ?? 'pi') : undefined;
-
 const result = await installStandaloneRecovery({
   controllerHome,
   repoRoot: process.cwd(),
@@ -82,17 +57,6 @@ const result = await installStandaloneRecovery({
   publicMcpUrl,
   recoveryPublicUrl,
   recoveryTunnelService,
-  agentRepair: enablePiAgent && piCommand && piRepoRoot
-    ? {
-      enabled: true,
-      command: piCommand,
-      repoRoot: piRepoRoot,
-      timeoutMs: integerOption('--pi-timeout-ms', 15 * 60_000, 30_000, 60 * 60_000),
-      cooldownMs: integerOption('--pi-cooldown-ms', 60 * 60_000, 60_000, 24 * 60 * 60_000),
-      minimumFailures: integerOption('--pi-minimum-failures', 12, 6, 10_000),
-      minimumFailureDurationMs: integerOption('--pi-minimum-failure-duration-ms', 120_000, 30_000, 24 * 60 * 60_000),
-    }
-    : undefined,
 });
 const config = result.config;
 console.log(JSON.stringify({
@@ -109,8 +73,5 @@ console.log(JSON.stringify({
     recoveryTunnelService: config.recoveryTunnelService
       ? { platform: config.recoveryTunnelService.platform, label: config.recoveryTunnelService.label, plistPath: config.recoveryTunnelService.plistPath }
       : undefined,
-    agentRepair: config.agentRepair
-      ? { enabled: config.agentRepair.enabled, command: config.agentRepair.command, repoRoot: config.agentRepair.repoRoot, promptFile: config.agentRepair.promptFile }
-      : { enabled: false },
   },
 }, null, 2));

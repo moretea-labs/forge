@@ -49,6 +49,7 @@ Deliver one mergeable vertical slice in which one `repo-harness-runtime` process
 | `src/cli/commands/supervisor.ts` | public registration removed; retained only as internal legacy implementation/test inventory | Phase 2 then Phase 7 |
 | MCP KeepAlive and daemon auto-start in legacy HTTP transport | legacy `mcp serve` compatibility | Phase 2 |
 | Controller Daemon/local bridge internal port | legacy tools not yet migrated | Phase 2 |
+| standalone Recovery autonomous PI/agent repair | removed; Recovery may not launch a coding agent or mutate a source checkout | Phase 2 complete for this authority |
 | Stable Ingress and blue/green runtime slots | legacy release activation | Phase 4 |
 | Component rollout/rollback and writer slot authority | compatibility until whole-release updater | Phase 5 then Phase 7 |
 | Legacy health/readiness combinations | compatibility output | Phase 3 |
