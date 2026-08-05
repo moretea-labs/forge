@@ -20,7 +20,6 @@ import {
   type McpHttpAuthMode,
 } from '../auth';
 import { createMcpOAuthProvider, McpOAuthTokenStore } from '../oauth';
-import { isExpectedLocalControllerHealth } from '../keepalive';
 import { resolveMcpRepoRoot } from '../repo';
 import { buildMcpToolDefinitions } from '../tools';
 import { resolveControllerHome } from '../../repositories/controller-home';
@@ -49,6 +48,17 @@ export interface McpHttpOptions extends McpServerOptions {
   port?: number;
   authToken?: string;
   auth?: string;
+}
+
+function localControllerDiagnosticMatchesRuntime(
+  payload: Record<string, unknown> | null,
+  generation?: string,
+): boolean {
+  return payload?.status === 'ok'
+    && payload.toolSurface === CONTROLLER_TOOL_SURFACE
+    && payload.schemaVersion === CONTROLLER_SCHEMA_VERSION
+    && payload.toolSurfaceVersion === CONTROLLER_TOOL_SURFACE_VERSION
+    && (generation === undefined || payload.generation === generation);
 }
 
 function bearerFromRequest(req: Request): string | null {
@@ -909,10 +919,8 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     const localBridgeHealth = localControllerConfig.enabled
       ? await jsonHealth(localControllerHealthUrl(localControllerConfig.host, localControllerConfig.port))
       : null;
-    const localBridgeReady = !localControllerConfig.enabled || isExpectedLocalControllerHealth(localBridgeHealth, {
-      repoRoot,
-      generation: runtimeGeneration?.generation,
-    });
+    const localBridgeReady = !localControllerConfig.enabled
+      || localControllerDiagnosticMatchesRuntime(localBridgeHealth, runtimeGeneration?.generation);
     const daemonReady = daemon.status === 'ready' && daemon.degraded !== true;
     const projectionReady = blockingStaleRepositories.length === 0;
     const publicConfigured = Boolean(runtimeState?.tunnel?.publicEndpoint);
