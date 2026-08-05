@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
@@ -88,7 +88,9 @@ process.exit(result.status ?? 1);
 `;
   for (const executable of executables) {
     const contents = executable === 'process-runner.js' ? processRunnerFixture : 'fixture';
-    writeFileSync(join(releasePath, executable), contents);
+    const executablePath = join(releasePath, executable);
+    writeFileSync(executablePath, contents);
+    chmodSync(executablePath, 0o700);
     const sha256 = createHash('sha256').update(contents).digest('hex');
     artifacts[executable] = { sha256 };
     aggregate.update(executable);
