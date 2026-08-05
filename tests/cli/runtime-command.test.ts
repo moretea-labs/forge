@@ -141,6 +141,15 @@ describe('runtime command surface', () => {
     expect(runtimeIdentityBlock).not.toContain('readActiveSlotAuthority');
     expect(runtimeIdentityBlock).not.toContain('previousSlot');
     expect(runtimeIdentityBlock).not.toContain('activeSlot:');
+    const localBridgeStart = runtimeTools.indexOf("case 'local_bridge_status':");
+    const localBridgeEnd = runtimeTools.indexOf("case 'get_local_job':", localBridgeStart);
+    const localBridgeBlock = runtimeTools.slice(localBridgeStart, localBridgeEnd);
+    expect(localBridgeBlock).toContain('ready: health.components.localBridge.ready');
+    expect(localBridgeBlock).not.toContain('readActiveSlotAuthority');
+    expect(localBridgeBlock).not.toContain('activeSlot');
+    expect(localBridgeBlock).not.toContain('generationMatches');
+    expect(localBridgeBlock).not.toContain('health: health.components.localBridge.state');
+    expect(localBridgeBlock).not.toContain('state: health.state');
     expect(runtimeTools).toContain('readControllerDaemonStatus');
     for (const legacy of [
       'controller_restart_verify',

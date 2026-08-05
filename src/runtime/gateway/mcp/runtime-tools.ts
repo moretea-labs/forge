@@ -3611,7 +3611,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           // Process scan is expensive; only for detail or missing runtime state.
           allowProcessScan: detailLevel === 'detail',
         });
-        const runtime = loadMcpRuntimeState(repository.canonicalRoot);
         const endpoint = surface.endpoint;
         const shouldProbe = surface.enabled
           && surface.endpointConfigured
@@ -3622,12 +3621,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const expectedSurface = shouldProbe
           ? localControllerDiagnosticMatchesRuntime(liveHealth, {
             repoRoot: repository.canonicalRoot,
-            generation: surface.generation ?? runtime?.generation,
           })
           : false;
-        const expectedActiveSlot = readActiveSlotAuthority(ctx.controllerHome).activeSlot;
-        const observedSlot = liveHealth?.slot === 'blue' || liveHealth?.slot === 'green' ? liveHealth.slot : undefined;
-        const activeSlot = observedSlot ? observedSlot === expectedActiveSlot : undefined;
         const processAlive = surface.processRunning;
         const projectionSnapshot = readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId);
         const daemon = readControllerDaemonStatus(ctx.controllerHome);
@@ -3661,12 +3656,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             // When endpoint is not configured (disabled/unknown), treat as non-issue.
             endpointReachable: shouldProbe ? endpointReachable : true,
             expectedSurface: shouldProbe ? expectedSurface : true,
-            activeSlot,
-            generationMatches: surface.generation && liveHealth?.generation
-              ? liveHealth.generation === surface.generation
-              : (runtime?.generation && liveHealth?.generation
-                ? liveHealth.generation === runtime.generation
-                : undefined),
             processAlive,
             runtimeStateFresh: surface.source === 'service-runtime' || surface.source === 'repo-runtime',
             error: surface.error,
@@ -3697,7 +3686,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             repoId: repository.repoId,
             running,
             ready: health.components.localBridge.ready,
-            health: health.components.localBridge.state,
             mode: surface.mode,
             endpoint: endpoint ?? null,
             endpointConfigured: surface.endpointConfigured,
@@ -3705,7 +3693,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             processRunning: processAlive ?? null,
             expectedSurface: surface.expectedSurface,
             requiredForReadiness: surface.requiredForReadiness,
-            ...(surface.activeSlot ? { activeSlot: surface.activeSlot } : {}),
             warnings: bridgeWarnings,
             activeJobCount,
             recentJobSummary,
@@ -3723,20 +3710,13 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             enabled: surface.enabled,
             requiredForReadiness: surface.requiredForReadiness,
             mode: surface.mode,
-            health: health.components.localBridge.state,
             ready: health.components.localBridge.ready,
             endpointReachable: shouldProbe ? endpointReachable : null,
             expectedSurface: shouldProbe ? expectedSurface : null,
-            activeSlot,
-            generationMatches: surface.generation && liveHealth?.generation
-              ? liveHealth.generation === surface.generation
-              : undefined,
             observedAt: new Date().toISOString(),
             owner: {
               kind: surface.ownerKind,
               ...(surface.pid ? { pid: surface.pid } : {}),
-              ...(surface.generation ? { generation: surface.generation } : {}),
-              ...(observedSlot ? { slot: observedSlot } : {}),
             },
             evidence: {
               endpointReachable: shouldProbe ? endpointReachable : null,
@@ -3747,7 +3727,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             },
           },
           health: {
-            state: health.state,
             ready: health.ready,
             // Do not elevate historical job failures into active blockers.
             activeBlockers: health.activeBlockers,
