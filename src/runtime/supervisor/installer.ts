@@ -50,6 +50,10 @@ function gitHead(root: string): string | undefined {
   return result.ok && result.stdout.trim() ? result.stdout.trim() : undefined;
 }
 
+function containmentPath(path: string): string {
+  try { return realpathSync(path); } catch { return resolve(path); }
+}
+
 interface RuntimeSourceReleaseIdentity {
   sourceCommit: string;
   releaseRevision: string;
