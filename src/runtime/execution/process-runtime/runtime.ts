@@ -589,8 +589,9 @@ export function resolveProcessRunnerRuntime(
 }
 
 function runnerInvocation(entry: string, descriptorPath: string): { command: string; args: string[] } {
-  let standalone = process.env.REPO_HARNESS_RUNTIME_EXECUTION === 'standalone-binary';
-  if (!standalone) {
+  const sourceEntry = entry.endsWith('.ts') || entry.endsWith('.tsx');
+  let standalone = !sourceEntry && process.env.REPO_HARNESS_RUNTIME_EXECUTION === 'standalone-binary';
+  if (!sourceEntry && !standalone) {
     try {
       const manifest = JSON.parse(readFileSync(join(dirname(entry), 'manifest.json'), 'utf8')) as { executionMode?: unknown };
       standalone = manifest.executionMode === 'standalone-binary';
