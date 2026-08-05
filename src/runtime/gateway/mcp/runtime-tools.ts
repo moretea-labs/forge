@@ -204,6 +204,7 @@ import {
   resumeControllerSession,
 } from '../../control-plane/facade';
 import { currentControllerInstanceId } from '../../control-plane/execution/session-store';
+import { observeRuntimeStatus } from '../../root/status';
 import { reconcileWorkValidation } from './work-validation-reconciler';
 import { launchSuperController } from '../../control-plane/launcher/thin-launcher';
 import {
@@ -1317,10 +1318,15 @@ function stringList(value: unknown): string[] {
 
 export interface RuntimeIdentitySnapshot {
   releaseId?: string;
+  artifactIdentity?: string;
   runtimeCommit?: string;
   buildCommit?: string;
   startedAt?: string;
+  runtimeInstanceId?: string;
   controllerInstanceId?: string;
+  endpoint?: string;
+  ready?: boolean;
+  reasonCodes?: string[];
   toolset?: string;
   profile?: string;
   activeSlot?: 'blue' | 'green';
@@ -1330,35 +1336,23 @@ export interface RuntimeIdentitySnapshot {
 }
 
 /**
- * Authoritative runtime identity for diagnostics and readiness. Reads only
- * stable state files (supervisor state, release pointers, slot authority,
- * runtime generation); never spawns processes.
+ * Read-only Runtime identity projection. A stored identity is accepted only
+ * while the live Runtime owner has the same Runtime instance and PID.
  */
 export function runtimeIdentitySnapshot(ctx: MultiRepositoryMcpToolContext): RuntimeIdentitySnapshot {
-  const stableHome = resolveStableControllerHome(ctx.controllerHome);
-  const supervisorState = readSupervisorState(stableHome);
-  const currentRelease = readCurrentSupervisorRelease(stableHome);
-  const previousRelease = readPreviousSupervisorRelease(stableHome);
-  const runtimeGeneration = readRuntimeGeneration(ctx.controllerHome);
-  const authority = readActiveSlotAuthority(stableHome);
-  const previousSlot = supervisorState?.previousSlot ?? authority.previousSlot;
-  const previousKnownGood = previousSlot
-    ? readSlotIdentity(stableHome, previousSlot)?.releaseRevision
-    : previousRelease?.releaseRevision;
+  const observation = observeRuntimeStatus(ctx.controllerHome);
+  const snapshot = observation.snapshot;
   return {
-    releaseId: currentRelease?.releasePath ? basename(currentRelease.releasePath) : currentRelease?.releaseRevision,
-    runtimeCommit: runtimeGeneration?.source?.commit ?? currentRelease?.sourceCommit,
-    buildCommit: supervisorState?.supervisor.releaseRevision ?? currentRelease?.releaseRevision,
-    startedAt: supervisorState?.supervisor.startedAt,
-    controllerInstanceId: supervisorState?.controllerDaemon?.instanceId ?? currentControllerInstanceId(),
+    releaseId: snapshot?.releaseId,
+    artifactIdentity: snapshot?.artifactIdentity,
+    startedAt: snapshot?.startedAt,
+    runtimeInstanceId: snapshot?.runtimeInstanceId,
+    controllerInstanceId: snapshot?.runtimeInstanceId,
+    endpoint: snapshot?.endpoint,
+    ready: observation.ready,
+    reasonCodes: observation.reasonCodes,
     toolset: ctx.toolset,
     profile: ctx.policy.profile,
-    activeSlot: supervisorState?.activeSlot ?? authority.activeSlot,
-    ...(previousKnownGood ? { previousKnownGood } : {}),
-    ...(currentRelease?.releasePath ? { releasePath: currentRelease.releasePath } : {}),
-    ...(supervisorState?.activeGeneration ?? runtimeGeneration?.generation
-      ? { generation: supervisorState?.activeGeneration ?? runtimeGeneration?.generation }
-      : {}),
   };
 }
 

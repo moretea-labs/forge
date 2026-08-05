@@ -131,6 +131,16 @@ describe('runtime command surface', () => {
     expect(contextHandlerBlock).toContain('await controllerReadiness(ctx, repository)');
     expect(contextHandlerBlock).not.toContain('await controllerReadinessEvidence(ctx, repository)');
     expect(contextHandlerBlock).not.toContain('operationalView: readiness.operationalView');
+    const runtimeIdentityStart = runtimeTools.indexOf('export function runtimeIdentitySnapshot');
+    const runtimeIdentityEnd = runtimeTools.indexOf('function controllerContextAssessment', runtimeIdentityStart);
+    const runtimeIdentityBlock = runtimeTools.slice(runtimeIdentityStart, runtimeIdentityEnd);
+    expect(runtimeIdentityBlock).toContain('observeRuntimeStatus(ctx.controllerHome)');
+    expect(runtimeIdentityBlock).toContain('runtimeInstanceId: snapshot?.runtimeInstanceId');
+    expect(runtimeIdentityBlock).not.toContain('readSupervisorState');
+    expect(runtimeIdentityBlock).not.toContain('readCurrentSupervisorRelease');
+    expect(runtimeIdentityBlock).not.toContain('readActiveSlotAuthority');
+    expect(runtimeIdentityBlock).not.toContain('previousSlot');
+    expect(runtimeIdentityBlock).not.toContain('activeSlot:');
     expect(runtimeTools).toContain('readControllerDaemonStatus');
     for (const legacy of [
       'controller_restart_verify',
