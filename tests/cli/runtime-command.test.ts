@@ -39,6 +39,22 @@ describe('runtime command surface', () => {
     }
   });
 
+  test('MCP command surface exposes no KeepAlive or restart lifecycle owner', () => {
+    const help = spawnSync('bun', [CLI, 'mcp', '--help'], { cwd: ROOT, encoding: 'utf-8' });
+    expect(help.status).toBe(0);
+    expect(help.stdout).toContain('serve');
+    expect(help.stdout).toContain('doctor');
+    expect(help.stdout).toContain('setup');
+    expect(help.stdout).not.toMatch(/^\s+keepalive\b/m);
+    expect(help.stdout).not.toMatch(/^\s+restart\b/m);
+
+    for (const legacy of ['keepalive', 'restart']) {
+      const result = spawnSync('bun', [CLI, 'mcp', legacy, '--help'], { cwd: ROOT, encoding: 'utf-8' });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('unknown command');
+    }
+  });
+
   test('requires an explicit Controller Home for Runtime status', () => {
     const result = spawnSync('bun', [CLI, 'runtime', 'status', '--json'], {
       cwd: ROOT,
