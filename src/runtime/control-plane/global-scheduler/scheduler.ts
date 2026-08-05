@@ -30,6 +30,7 @@ import { readJsonFile, writeJsonAtomic } from '../../shared/json-files';
 import { isProcessAlive, terminateProcessTree } from '../../shared/process-tree';
 import { readSchedulerWakeSignal, waitForSchedulerWakeSignal } from './wake-signal';
 import { cleanupControllerRuntimeState } from '../runtime-cleanup';
+import { schedulerDispatchAllowed } from '../facade/work-admission-policy';
 import { rebuildRepositoryProjection, refreshRepositoryProjectionForRepository } from '../../projections/materialized-view';
 import { readRepositoryGitStatusSample, sampleRepositoryGitStatusForRepositories } from '../../projections/git-status-sampler';
 import {
@@ -180,6 +181,8 @@ export interface SchedulerRuntimeBinding {
   runtimeSourceRoot?: string;
   workerEntrypoint?: string;
   ownerEpoch?: string;
+  /** Canonical Runtime treats a tick failure as a whole-Runtime failure. */
+  fatalOnTickError?: boolean;
 }
 
 export class GlobalScheduler {
@@ -192,6 +195,7 @@ export class GlobalScheduler {
   private readonly runtimeSourceRoot?: string;
   private readonly workerEntrypoint?: string;
   private readonly ownerEpoch?: string;
+  private readonly fatalOnTickError: boolean;
   private lastScheduleTick = 0;
   private lastPortfolioTick = 0;
   private lastCampaignTick = 0;
@@ -249,6 +253,7 @@ export class GlobalScheduler {
     this.runtimeSourceRoot = runtime.runtimeSourceRoot ? resolve(runtime.runtimeSourceRoot) : undefined;
     this.workerEntrypoint = runtime.workerEntrypoint ? resolve(runtime.workerEntrypoint) : undefined;
     this.ownerEpoch = runtime.ownerEpoch;
+    this.fatalOnTickError = runtime.fatalOnTickError === true;
     const state = readJsonFile<SchedulerState>(schedulerStatePath(controllerHome), { schemaVersion: 1, updatedAt: new Date().toISOString(), lastRepoDispatch: {} });
     this.lastSourceScanAt = state.lastSourceScanAt ? Date.parse(state.lastSourceScanAt) || 0 : 0;
     this.lastSourceScanRepoCount = state.lastSourceScanRepoCount ?? 0;
@@ -646,6 +651,14 @@ export class GlobalScheduler {
       // idle repositories fresh without re-running a full source scan per tick.
       this.sourceScansAvoided += repositories.length;
     }
+    // Phase 0 reuses one durable Work admission policy. Cleanup, stale-state
+    // reconciliation, and read-only source sampling above remain available, but
+    // ordinary schedule/workflow advancement and Worker dispatch stop here.
+    if (!schedulerDispatchAllowed(this.controllerHome)) {
+      this.lastHeartbeatAt = new Date().toISOString();
+      this.persistState(true);
+      return { activeJobs: activeJobSnapshot.length };
+    }
     // Scheduler observation ends admission and starts the independent queue
     // budget. This runs outside the global dispatch lock because each Job owns
     // its own atomic state transition.
@@ -881,6 +894,7 @@ export class GlobalScheduler {
           activeJobs = (await this.tick()).activeJobs;
           idleStreak = activeJobs === 0 ? idleStreak + 1 : 0;
         } catch (error) {
+          if (this.fatalOnTickError) throw error;
           idleStreak = 0;
           this.lastHeartbeatAt = new Date().toISOString();
           this.lastTickAt = this.lastHeartbeatAt;

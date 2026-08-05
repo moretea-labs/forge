@@ -11,6 +11,7 @@ import {
   withControlPlaneTransaction,
   writeControlPlaneRecordWithinTransaction,
 } from '../persistence/sqlite-store';
+import { assertWorkAdmissionAllowed } from './work-admission-policy';
 import {
   type EvidenceRef,
   type CompletionOutcome,
@@ -495,6 +496,9 @@ function defaultDriver(mode: WorkContract['mode']): WorkContract['driver'] {
 }
 
 export function createWorkContract(options: WorkContractStoreOptions, input: CreateWorkContractInput): WorkContract {
+  if (options.controllerHome) {
+    assertWorkAdmissionAllowed(options.controllerHome, { operation: 'create', workId: input.workId });
+  }
   if (input.status === 'completed' || input.completionReceipt || input.completionOutcome) {
     throw new Error('WORK_COMPLETION_REQUIRES_RECORD_API');
   }
@@ -903,6 +907,14 @@ function updateWorkContractInternal(
     if (index < 0) throw new Error(`work contract not found: ${sanitizedId}`);
     const at = nowIso(options);
     const current = store.contracts[index];
+    if (options.controllerHome) {
+      assertWorkAdmissionAllowed(options.controllerHome, {
+        operation: patch.status !== undefined && isTerminalWorkContractStatus(patch.status)
+          ? 'maintenance'
+          : 'continue',
+        workId: sanitizedId,
+      });
+    }
     const writesCompletionReceipt = Object.prototype.hasOwnProperty.call(patch, 'completionReceipt');
     const changesCompletionOutcome = patch.completionOutcome !== undefined && patch.completionOutcome !== current.completionOutcome;
     const writesPhase = Object.prototype.hasOwnProperty.call(patch, 'phase') || Object.prototype.hasOwnProperty.call(patch, 'phaseEvidence');

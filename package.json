@@ -71,7 +71,8 @@
     "matea": "bin/repo-harness.mjs",
     "matea-hook": "bin/repo-harness-hook.mjs",
     "repo-harness": "bin/repo-harness.mjs",
-    "repo-harness-hook": "bin/repo-harness-hook.mjs"
+    "repo-harness-hook": "bin/repo-harness-hook.mjs",
+    "repo-harness-runtime": "bin/repo-harness-runtime.mjs"
   },
   "engines": {
     "node": ">=20.10.0",
