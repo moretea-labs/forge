@@ -56,6 +56,14 @@ if [ -z "$BUN_BIN" ]; then
   exit 127
 fi
 
+# A byte-for-byte executable copy named activate-source-baseline.command is
+# intentionally launchable through macOS `open` without arbitrary shell access.
+# The source activator itself proves clean main + exact HEAD before replacing
+# the local Runtime, and never performs a blue/green rollout.
+if [ "$(basename "$0")" = "activate-source-baseline.command" ] && [ "$#" -eq 0 ]; then
+  exec "$BUN_BIN" "$ROOT/scripts/activate-source-baseline.ts" request --repo "$ROOT"
+fi
+
 if [ "$#" -eq 0 ]; then
   echo "Usage: scripts/controller-runtime.sh <start|stop|status|restart|logs|rollout|rollback> [args...]" >&2
   echo "Controller home: $REPO_HARNESS_CONTROLLER_HOME" >&2
