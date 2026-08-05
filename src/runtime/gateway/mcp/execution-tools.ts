@@ -691,7 +691,10 @@ async function reconcileTerminalCleanup(
 function invalidateActiveWork(ctx: MultiRepositoryMcpToolContext, session: ExecutionSessionContext, reason: string): void {
   if (!session.activeRepositoryId || !session.activeWorkId) return;
   const handle = readWorkHandle(ctx.controllerHome, session.activeRepositoryId, session.activeWorkId);
-  if (handle && handle.state !== 'cleaned') markWorkHandleFailed(ctx.controllerHome, handle, reason);
+  if (!handle || handle.state === 'cleaned') return;
+  const contract = contractFor(ctx, handle);
+  if (contract?.status === 'completed') return;
+  markWorkHandleFailed(ctx.controllerHome, handle, reason);
 }
 
 function bindSessionRepository(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Record<string, unknown> {
@@ -1910,10 +1913,14 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
         );
       }
     }
-    if (finalState === 'cleaned') {
-      releasePreparedWorkOwnership(ctx, current);
-      updateExecutionSession(ctx.controllerHome, identity, { activeWorkId: undefined, activeCheckoutId: current.sourceCheckoutId ?? session.activeCheckoutId });
-    }
+    // Successful WorkContract completion always ends controller ownership.
+    // Physical branch/worktree retention is represented by finalization stages
+    // and completion-receipt warnings; it must not keep a mutation owner live.
+    releasePreparedWorkOwnership(ctx, current);
+    updateExecutionSession(ctx.controllerHome, identity, {
+      activeWorkId: undefined,
+      activeCheckoutId: current.sourceCheckoutId ?? session.activeCheckoutId,
+    });
   }
   return { work: compactHandle(current), stages: current.finalization, completed: complete, idempotent: !wants.commit && !wants.merge && !wants.cleanup && current.finalization.validation === 'done' };
 }

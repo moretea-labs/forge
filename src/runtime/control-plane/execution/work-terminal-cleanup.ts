@@ -15,6 +15,7 @@ import {
   setRepositoryCheckoutLifecycle,
 } from '../../../cli/repositories/registry';
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
+import { getWorkContract } from '../facade/work-contract-store';
 import { cancelProcess, releaseProcessLeasesOnce } from '../../execution/process-runtime/runtime';
 import { getProcessRecord, listProcessRecords } from '../../execution/process-runtime/store';
 import {
@@ -253,13 +254,25 @@ async function settleProcesses(input: TerminalWorkCleanupInput, receipt: WorkCle
   receipt.ownership.processLeases = receipt.processes.allTerminal ? 'released' : 'partial';
 }
 
+function workHandleOwnsCheckout(controllerHome: string, handle: WorkHandleState): boolean {
+  if (handle.state === 'cleaned') return false;
+  const contract = getWorkContract(
+    { controllerHome, repoId: handle.repositoryId },
+    handle.workContractId ?? handle.workId,
+  );
+  // WorkContract completion is the authoritative ownership boundary. Older
+  // runtimes could persist a completed contract while leaving the handle in a
+  // non-terminal state; that historical handle must not remain a live owner.
+  return contract?.status !== 'completed';
+}
+
 function assertNoOtherLiveWork(input: TerminalWorkCleanupInput, receipt: WorkCleanupReceipt): void {
   const live = listWorkHandles(input.controllerHome, input.handle.repositoryId)
     .filter((handle) =>
       handle.workId !== input.handle.workId
       && handle.checkoutId === input.handle.checkoutId
       && resolve(handle.worktreePath) === resolve(input.handle.worktreePath)
-      && handle.state !== 'cleaned');
+      && workHandleOwnsCheckout(input.controllerHome, handle));
   for (const handle of live) addBlocker(receipt, `LIVE_WORK_OWNS_CHECKOUT: ${handle.workId} (${handle.state})`);
 }
 

@@ -5,6 +5,8 @@ import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { getRepository, registerRepository } from '../../src/cli/repositories/registry';
+import type { CompletionReceipt } from '../../src/cli/controller/types';
+import { createWorkContract, recordWorkCompletionReceipt } from '../../src/runtime/control-plane/facade/work-contract-store';
 import type { WorkContract } from '../../src/runtime/control-plane/facade/types';
 import {
   readWorkHandle,
@@ -258,6 +260,92 @@ describe('terminal Work cleanup', () => {
     expect(recovered.receipt.complete).toBe(true);
     expect(recovered.receipt.blockers).toEqual([]);
     expect(existsSync(fx.workspace.root!)).toBe(false);
+  });
+
+  test('does not treat a completed WorkContract with a stale prepared handle as a live checkout owner', async () => {
+    const fx = fixture('completed-owner');
+    const now = new Date().toISOString();
+    const otherWorkId = 'work-completed-stale-owner';
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId: otherWorkId,
+      repoId: fx.repository.repoId,
+      mode: 'direct_control',
+      objective: 'Retain the already integrated checkout without further mutation.',
+      acceptanceCriteria: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'running',
+      phase: 'cleanup',
+    });
+    const revision = fx.workspace.baseRevision!;
+    const receipt: CompletionReceipt = {
+      schemaVersion: 1,
+      receiptId: 'receipt-completed-stale-owner',
+      source: 'controller_work',
+      issueId: 'work',
+      taskId: otherWorkId,
+      workId: otherWorkId,
+      targetBranch: 'main',
+      targetRevision: revision,
+      sourceRevision: revision,
+      baseRevision: revision,
+      changedPaths: [],
+      delivery: {
+        kind: 'commit',
+        status: 'integrated',
+        strategy: 'already_integrated',
+        reachable: true,
+        recordedAt: now,
+      },
+      cleanup: {
+        status: 'maintenance_warning',
+        warnings: [{
+          code: 'cleanup_retained_by_request',
+          message: 'Checkout retained by request.',
+          resourceKind: 'worktree',
+          resourceId: fx.workspace.root!,
+          recordedAt: now,
+        }],
+        blockers: [],
+        recordedAt: now,
+      },
+      verifiedAt: now,
+      recordedAt: now,
+    };
+    recordWorkCompletionReceipt(
+      { controllerHome: fx.controllerHome, repoId: fx.repository.repoId },
+      otherWorkId,
+      receipt,
+      'completed_changed',
+      'repository_change',
+    );
+    writeWorkHandle(fx.controllerHome, {
+      ...fx.handle,
+      recordRevision: undefined,
+      workId: otherWorkId,
+      workContractId: otherWorkId,
+      sessionId: 'session-completed-stale-owner',
+      state: 'prepared',
+      failureReason: undefined,
+      cleanupReceipt: undefined,
+      finalization: {
+        validation: 'done',
+        commit: 'skipped',
+        merge: 'skipped',
+        branchCleanup: 'skipped',
+        worktreeCleanup: 'skipped',
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const result = await cleanup(fx);
+    expect(result.receipt.complete).toBe(true);
+    expect(result.receipt.blockers).toEqual([]);
+    expect(result.handle.state).toBe('cleaned');
   });
 
   test('cleanup-only and low-risk selection never defaults to package-wide checks', () => {
