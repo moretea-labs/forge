@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'fs';
-import { join, resolve } from 'path';
+import { join } from 'path';
 import { createHash } from 'crypto';
 import { runProcess } from '../../effects/process-runner';
 import { resolveMcpRepoRoot } from '../mcp/repo';
@@ -30,7 +30,6 @@ import {
   readActiveSlotAuthority,
   type RuntimeSlotId,
 } from './runtime-slots';
-import { controllerRollout } from './bluegreen-rollout';
 import { isStableSupervisorInstalled } from '../../runtime/supervisor/paths';
 
 function fileSha(repoRoot: string, relativePath: string): string | null {
@@ -478,106 +477,3 @@ async function formatRestartState(
   });
 }
 
-export interface ControllerFeatureVerifyInput {
-  repo?: string;
-  unitTestArgs?: string[];
-  lifecycleTestArgs?: string[];
-  skipLifecycle?: boolean;
-  timeoutMs?: number;
-}
-
-/**
- * Feature-branch gate: unit tests + isolated lifecycle suite + dirty check.
- * Does not push and does not touch the real controller home.
- */
-export function controllerFeatureVerify(input: ControllerFeatureVerifyInput = {}): CompositeToolResult {
-  const repoRoot = resolve(resolveMcpRepoRoot(input.repo ?? '.'));
-  const snapshot = gitSnapshot(repoRoot);
-  const evidenceRefs: string[] = [];
-  const timeoutMs = Math.max(30_000, input.timeoutMs ?? 180_000);
-
-  const unitArgs = input.unitTestArgs?.length
-    ? input.unitTestArgs
-    : [
-      'test',
-      'tests/cli/controller-lifecycle-authority.test.ts',
-      'tests/cli/runtime-slots.test.ts',
-      'tests/cli/composite-operations.test.ts',
-      'tests/cli/session-cache.test.ts',
-    ];
-  const unit = runProcess('bun', unitArgs, {
-    cwd: repoRoot,
-    timeoutMs,
-    maxOutputBytes: 512 * 1024,
-  });
-  if (!unit.ok) {
-    return compositeFailed({
-      phase: 'unit',
-      summary: 'unit tests failed; green rollout not allowed',
-      failedCheck: 'unit_tests',
-      exitCode: unit.status,
-      keyOutput: usefulTail(unit.stdout, unit.stderr || unit.error || ''),
-      retryable: false,
-      nextAction: 'fix Level 1 failures before lifecycle suite',
-      details: { branch: snapshot.branch, head: snapshot.head },
-    });
-  }
-
-  if (!input.skipLifecycle) {
-    const lifeArgs = input.lifecycleTestArgs?.length
-      ? input.lifecycleTestArgs
-      : ['test', 'tests/cli/controller-bluegreen-isolated.test.ts'];
-    const life = runProcess('bun', lifeArgs, {
-      cwd: repoRoot,
-      timeoutMs: Math.max(timeoutMs, 240_000),
-      maxOutputBytes: 512 * 1024,
-      env: {
-        ...process.env,
-        // Force isolation — never inherit real controller home.
-        REPO_HARNESS_CONTROLLER_HOME: '',
-        REPO_HARNESS_CONTROLLER_LIFECYCLE_OWNER: '',
-      },
-    });
-    if (!life.ok) {
-      return compositeFailed({
-        phase: 'lifecycle',
-        summary: 'isolated lifecycle suite failed; green rollout not allowed',
-        failedCheck: 'lifecycle_isolated',
-        exitCode: life.status,
-        keyOutput: usefulTail(life.stdout, life.stderr || life.error || ''),
-        retryable: false,
-        nextAction: 'fix Level 2 isolation failures; do not run real rollout',
-      });
-    }
-  }
-
-  const dirty = git(repoRoot, ['status', '--porcelain']);
-  const dirtyLines = dirty.stdout.split(/\n/).filter(Boolean);
-  // Feature verify allows dirty tree but reports it; green rollout decision is explicit.
-  const allowRollout = unit.ok;
-  return compositeSucceeded({
-    phase: 'feature-gate',
-    summary: allowRollout
-      ? 'feature branch passed unit/lifecycle gates; green rollout allowed'
-      : 'feature branch not ready for green rollout',
-    keyOutput: [
-      `branch=${snapshot.branch}`,
-      `head=${snapshot.head}`,
-      `dirty=${dirtyLines.length}`,
-      `allowGreenRollout=${allowRollout}`,
-      dirtyLines.length ? `dirtyFiles=${dirtyLines.slice(0, 20).join(' | ')}` : 'worktree clean',
-    ].join('\n'),
-    evidenceRefs,
-    nextAction: allowRollout
-      ? 'run controller rollout (green) when ready; do not push automatically'
-      : 'fix remaining failures',
-    details: {
-      branch: snapshot.branch,
-      head: snapshot.head,
-      dirtyFiles: dirtyLines,
-      allowGreenRollout: allowRollout,
-    },
-  });
-}
-
-export { controllerRollout };

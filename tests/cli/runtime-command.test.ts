@@ -89,7 +89,7 @@ describe('runtime command surface', () => {
     const supervisorSourceIdentity = readFileSync(join(ROOT, 'src/runtime/supervisor/source-identity.ts'), 'utf8');
     const supervisorReleaseCoherence = readFileSync(join(ROOT, 'src/runtime/supervisor/release-coherence.ts'), 'utf8');
     const restartCoordinator = readFileSync(join(ROOT, 'src/cli/controller/restart-coordinator.ts'), 'utf8');
-    const bluegreenRollout = readFileSync(join(ROOT, 'src/cli/controller/bluegreen-rollout.ts'), 'utf8');
+    const compositeOperations = readFileSync(join(ROOT, 'src/cli/controller/composite-operations.ts'), 'utf8');
     const supervisorTypes = readFileSync(join(ROOT, 'src/runtime/supervisor/types.ts'), 'utf8');
     const supervisorStateStore = readFileSync(join(ROOT, 'src/runtime/supervisor/state-store.ts'), 'utf8');
     const facadeActions = readFileSync(join(ROOT, 'src/runtime/control-plane/facade/suggested-actions.ts'), 'utf8');
@@ -192,7 +192,12 @@ describe('runtime command surface', () => {
     expect(supervisorSourceIdentity).toContain('export function sourceIdentityFor');
     expect(supervisorSourceIdentity).not.toContain('runtime-slots');
     expect(supervisorSourceIdentity).not.toContain('sendSupervisorCommand');
-    expect(bluegreenRollout).toContain("from '../../runtime/supervisor/source-identity'");
+    expect(existsSync(join(ROOT, 'src/cli/controller/bluegreen-rollout.ts'))).toBe(false);
+    expect(compositeOperations).not.toContain("from './bluegreen-rollout'");
+    expect(compositeOperations).not.toContain('controllerRollout');
+    expect(compositeOperations).not.toContain('controllerFeatureVerify');
+    expect(compositeOperations).not.toContain('controller-bluegreen-isolated.test.ts');
+    expect(compositeOperations).not.toContain('allowGreenRollout');
     expect(supervisorReleaseCoherence).toContain('ok: releaseCoherent');
     expect(supervisorReleaseCoherence).not.toContain('ActiveSlotAuthority');
     expect(supervisorReleaseCoherence).not.toContain('SlotIdentity');
