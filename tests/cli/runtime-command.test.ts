@@ -80,6 +80,7 @@ describe('runtime command surface', () => {
     const httpTransport = readFileSync(join(ROOT, 'src/cli/mcp/transports/http.ts'), 'utf8');
     const runtimeTools = readFileSync(join(ROOT, 'src/runtime/gateway/mcp/runtime-tools.ts'), 'utf8');
     const supervisorRuntime = readFileSync(join(ROOT, 'src/runtime/supervisor/supervisor-runtime.ts'), 'utf8');
+    const supervisorEntry = readFileSync(join(ROOT, 'src/runtime/supervisor/entry.ts'), 'utf8');
     const supervisorTypes = readFileSync(join(ROOT, 'src/runtime/supervisor/types.ts'), 'utf8');
     const supervisorStateStore = readFileSync(join(ROOT, 'src/runtime/supervisor/state-store.ts'), 'utf8');
     const facadeActions = readFileSync(join(ROOT, 'src/runtime/control-plane/facade/suggested-actions.ts'), 'utf8');
@@ -167,6 +168,10 @@ describe('runtime command surface', () => {
     const supervisorMonitorStart = supervisorRuntime.indexOf('private async monitorTick()');
     const supervisorMonitorEnd = supervisorRuntime.indexOf('private scheduleMonitorTick()', supervisorMonitorStart);
     const supervisorMonitorBlock = supervisorRuntime.slice(supervisorMonitorStart, supervisorMonitorEnd);
+    expect(existsSync(join(ROOT, 'src/runtime/supervisor/ingress-process.ts'))).toBe(false);
+    expect(supervisorEntry).not.toContain('--ingress-child');
+    expect(supervisorEntry).not.toContain('REPO_HARNESS_SUPERVISOR_INGRESS_CHILD');
+    expect(supervisorEntry).not.toContain('createStableIngressProcess');
     expect(supervisorRuntime).toContain('startCompatibilityIngressRouter');
     expect(supervisorRuntime).not.toContain('replaceIngressRouter');
     expect(supervisorMonitorBlock).not.toContain('createStableIngressRouter');
