@@ -277,18 +277,34 @@ describe('standalone disaster recovery core', () => {
       controllerHome: realpathSync(home),
       configRevision: 'config-test-1',
       ingress: { host: '127.0.0.1', port },
+      daemon: { port: 0, enabled: true, autoOpen: false },
+      gateway: { host: '127.0.0.1', port, auth: 'bearer' },
+      profile: 'controller',
+      toolset: 'advanced',
+      toolsetExplicit: true,
+      accessMode: 'private',
     }));
     writeFileSync(join(home, 'bootstrap', 'runtime-authority.json'), JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
+      status: 'committed',
       authorityTerm: 'term-test-1',
+      activationId: 'activation-test-1',
+      generation: 'generation-test-1',
       configRevision: 'config-test-1',
       configHash: createHash('sha256').update(readFileSync(join(home, 'bootstrap', 'runtime-config.json'))).digest('hex'),
-      activeSlot: 'blue',
+      fencingToken: 'runtime-fence-test-1',
       active: {
+        instanceId: 'runtime-test-1',
         releasePath: realpathSync(active),
         releaseRevision: 'release-active',
         manifestHash: createHash('sha256').update(readFileSync(join(active, 'manifest.json'))).digest('hex'),
+        publishedAt: new Date().toISOString(),
       },
+      ingress: { host: '127.0.0.1', port },
+      daemon: { port: 0 },
+      gateway: { host: '127.0.0.1', port },
+      legacySlot: 'blue',
+      committedAt: new Date().toISOString(),
     }));
     writeFileSync(join(home, 'bootstrap', 'writer-authority.json'), JSON.stringify({
       schemaVersion: 1,
@@ -296,12 +312,14 @@ describe('standalone disaster recovery core', () => {
       epoch: 'epoch-test-1',
       fencingToken: 'fencing-token-test-1',
     }));
-    const socket = createSocketServer((client) => client.on('data', () => client.end(`${JSON.stringify({ ok: true, state: { observedState: 'healthy', activeSlot: 'blue', previousSlot: 'green', ingress: { state: 'running', activeUpstreamPort: port }, gatewayHost: { releasePath: active, releaseRevision: 'release-active' }, controllerDaemon: { releasePath: active, releaseRevision: 'release-active' } } })}\n`)));
+    const socket = createSocketServer((client) => client.on('data', () => client.end(`${JSON.stringify({ ok: true, state: { observedState: 'healthy', gatewayHost: { releasePath: active, releaseRevision: 'release-active' }, controllerDaemon: { releasePath: active, releaseRevision: 'release-active' } } })}\n`)));
     socketServers.push(socket); mkdirSync(join(home, 'supervisor'), { recursive: true });
     await new Promise<void>((resolveListen, reject) => { socket.once('error', reject); socket.listen(join(home, 'supervisor', 'control.sock'), () => resolveListen()); });
-    const config = createRecoveryConfig(home, { stableIngressUrl: `http://127.0.0.1:${port}`, publicMcpUrl: `http://127.0.0.1:${port}/mcp` });
+    const config = createRecoveryConfig(home, { stableIngressUrl: 'http://127.0.0.1:9', publicMcpUrl: `http://127.0.0.1:${port}/mcp` });
     const verified = await verifyStableRuntime(config);
     expect(verified.ok).toBe(true);
+    expect(verified.probes.stable_ingress?.ok).toBe(false);
+    expect(verified.probes.active_gateway?.ok).toBe(true);
     expect(verified.probes.external_mcp_http).toEqual({ ok: true, detail: 'HTTP 401 OAuth challenge', status: 401 });
     expect(RECOVERY_CLI_COMMANDS).toContain('attest-known-good');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('attest_known_good');
@@ -328,18 +346,35 @@ describe('standalone disaster recovery core', () => {
       schemaVersion: 1,
       controllerHome: realpathSync(home),
       configRevision: 'config-deadlock-1',
+      ingress: { host: '127.0.0.1', port: 9 },
+      daemon: { port: 0, enabled: true, autoOpen: false },
+      gateway: { host: '127.0.0.1', port: 9, auth: 'bearer' },
+      profile: 'controller',
+      toolset: 'advanced',
+      toolsetExplicit: true,
+      accessMode: 'private',
     }));
     writeFileSync(join(home, 'bootstrap', 'runtime-authority.json'), JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
+      status: 'committed',
       authorityTerm: 'term-deadlock-1',
+      activationId: 'activation-deadlock-1',
+      generation: 'generation-deadlock-1',
       configRevision: 'config-deadlock-1',
       configHash: createHash('sha256').update(readFileSync(join(home, 'bootstrap', 'runtime-config.json'))).digest('hex'),
-      activeSlot: 'blue',
+      fencingToken: 'runtime-fence-deadlock-1',
       active: {
+        instanceId: 'runtime-deadlock-1',
         releasePath: realpathSync(active),
         releaseRevision: 'release-active',
         manifestHash: createHash('sha256').update(readFileSync(join(active, 'manifest.json'))).digest('hex'),
+        publishedAt: new Date().toISOString(),
       },
+      ingress: { host: '127.0.0.1', port: 9 },
+      daemon: { port: 0 },
+      gateway: { host: '127.0.0.1', port: 9 },
+      legacySlot: 'blue',
+      committedAt: new Date().toISOString(),
     }));
     writeFileSync(join(home, 'bootstrap', 'writer-authority.json'), JSON.stringify({
       schemaVersion: 1,

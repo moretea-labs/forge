@@ -40,7 +40,6 @@ interface SupervisorState {
   previousSlot?: string;
   currentOperationId?: string | null;
   supervisor?: { pid?: number; releasePath?: string; releaseRevision?: string };
-  ingress?: { activeUpstreamPort?: number; state?: string };
   gatewayHost?: { releasePath?: string; releaseRevision?: string; slot?: string };
   controllerDaemon?: { releasePath?: string; releaseRevision?: string; slot?: string };
   restartBudget?: Record<string, { component?: string; lockedOut?: boolean; attempts?: number; consecutiveFailures?: number }>;
@@ -53,8 +52,8 @@ interface ReleaseEvidence {
   controllerHome?: string;
   configRevision?: string;
   configHash?: string;
-  writerEpoch?: string;
-  writerFencingTokenSha256?: string;
+  runtimeGeneration?: string;
+  runtimeFencingTokenSha256?: string;
   attestedAt?: string;
 }
 
@@ -68,13 +67,14 @@ interface RuntimeBinding {
   controllerHome: string;
   configRevision: string;
   configHash: string;
-  activeSlot: string;
-  authorityTerm?: string;
+  runtimeGeneration: string;
+  authorityTerm: string;
   releaseRevision?: string;
   releasePath?: string;
   manifestHash?: string;
-  writerEpoch: string;
-  writerFencingTokenSha256: string;
+  gatewayHost: string;
+  gatewayPort: number;
+  runtimeFencingTokenSha256: string;
 }
 
 export type RecoveryMutationAction =
@@ -294,6 +294,7 @@ function runtimeBinding(config: RecoveryConfig): RuntimeBinding | undefined {
       controllerHome?: unknown;
       configRevision?: unknown;
       revision?: unknown;
+      gateway?: { host?: unknown; port?: unknown };
     };
     if (runtimeConfig.schemaVersion !== 1 || resolve(String(runtimeConfig.controllerHome ?? '')) !== home) return undefined;
     const configRevision = typeof runtimeConfig.configRevision === 'string'
@@ -302,43 +303,45 @@ function runtimeBinding(config: RecoveryConfig): RuntimeBinding | undefined {
     if (!configRevision) return undefined;
     const authority = json<{
       schemaVersion?: unknown;
+      status?: unknown;
       authorityTerm?: unknown;
+      generation?: unknown;
       configRevision?: unknown;
       configHash?: unknown;
-      active?: { releasePath?: unknown; releaseRevision?: unknown; manifestHash?: unknown };
-      activeSlot?: unknown;
-    }>(join(home, 'bootstrap', 'runtime-authority.json'));
-    const writer = json<{
-      schemaVersion?: unknown;
-      activeSlot?: unknown;
-      epoch?: unknown;
       fencingToken?: unknown;
-    }>(join(home, 'bootstrap', 'writer-authority.json'));
+      active?: { releasePath?: unknown; releaseRevision?: unknown; manifestHash?: unknown };
+      gateway?: { host?: unknown; port?: unknown };
+    }>(join(home, 'bootstrap', 'runtime-authority.json'));
     const configHash = createHash('sha256').update(configBytes).digest('hex');
-    const activeSlot = typeof authority?.activeSlot === 'string'
-      ? authority.activeSlot
-      : typeof writer?.activeSlot === 'string' ? writer.activeSlot : undefined;
+    const gatewayHost = typeof runtimeConfig.gateway?.host === 'string' ? runtimeConfig.gateway.host : undefined;
+    const gatewayPort = typeof runtimeConfig.gateway?.port === 'number' && Number.isInteger(runtimeConfig.gateway.port)
+      ? runtimeConfig.gateway.port
+      : undefined;
     if (
-      authority?.schemaVersion !== 1
+      authority?.schemaVersion !== 2
+      || authority.status !== 'committed'
       || authority.configRevision !== configRevision
       || authority.configHash !== configHash
-      || !activeSlot
-      || writer?.schemaVersion !== 1
-      || writer.activeSlot !== activeSlot
-      || typeof writer.epoch !== 'string'
-      || typeof writer.fencingToken !== 'string'
+      || typeof authority.authorityTerm !== 'string'
+      || typeof authority.generation !== 'string'
+      || typeof authority.fencingToken !== 'string'
+      || typeof gatewayHost !== 'string'
+      || gatewayPort === undefined
+      || authority.gateway?.host !== gatewayHost
+      || authority.gateway?.port !== gatewayPort
     ) return undefined;
     return {
       controllerHome: home,
       configRevision,
-      configHash: createHash('sha256').update(configBytes).digest('hex'),
-      activeSlot,
-      ...(typeof authority.authorityTerm === 'string' ? { authorityTerm: authority.authorityTerm } : {}),
+      configHash,
+      runtimeGeneration: authority.generation,
+      authorityTerm: authority.authorityTerm,
       ...(typeof authority.active?.releaseRevision === 'string' ? { releaseRevision: authority.active.releaseRevision } : {}),
       ...(typeof authority.active?.releasePath === 'string' ? { releasePath: realpathSync(authority.active.releasePath) } : {}),
       ...(typeof authority.active?.manifestHash === 'string' ? { manifestHash: authority.active.manifestHash } : {}),
-      writerEpoch: writer.epoch,
-      writerFencingTokenSha256: createHash('sha256').update(writer.fencingToken).digest('hex'),
+      gatewayHost,
+      gatewayPort,
+      runtimeFencingTokenSha256: createHash('sha256').update(authority.fencingToken).digest('hex'),
     };
   } catch {
     return undefined;
@@ -346,7 +349,7 @@ function runtimeBinding(config: RecoveryConfig): RuntimeBinding | undefined {
 }
 
 function knownGoodEvidence(config: RecoveryConfig, entry: ReleaseEvidence | undefined): ReleaseEvidence | undefined {
-  if (!entry || !entry.configRevision || !entry.configHash || !entry.writerEpoch || !entry.writerFencingTokenSha256 || !entry.attestedAt) return undefined;
+  if (!entry || !entry.configRevision || !entry.configHash || !entry.runtimeGeneration || !entry.runtimeFencingTokenSha256 || !entry.attestedAt) return undefined;
   const binding = runtimeBinding(config);
   if (!binding || typeof entry.controllerHome !== 'string' || entry.controllerHome !== binding.controllerHome) return undefined;
   const release = releaseEvidence(entry.path);
@@ -355,6 +358,8 @@ function knownGoodEvidence(config: RecoveryConfig, entry: ReleaseEvidence | unde
   if (!release.path.startsWith(`${releasesRoot}${sep}`)) return undefined;
   if (release.path !== entry.path || release.revision !== entry.revision || release.manifestSha256 !== entry.manifestSha256) return undefined;
   if (entry.configRevision !== binding.configRevision || entry.configHash !== binding.configHash) return undefined;
+  if (entry.runtimeGeneration !== binding.runtimeGeneration) return undefined;
+  if (entry.runtimeFencingTokenSha256 !== binding.runtimeFencingTokenSha256) return undefined;
   return entry;
 }
 
@@ -615,7 +620,10 @@ async function closeRecoveryMcpSession(transport: RecoveryHttpTransport, url: st
 }
 
 async function probeMcp(config: RecoveryConfig, transport: RecoveryHttpTransport): Promise<Record<string, { ok: boolean; detail: string; value?: unknown }>> {
-  const url = config.publicMcpUrl ?? `${config.stableIngressUrl.replace(/\/$/, '')}/mcp`;
+  const binding = runtimeBinding(config);
+  const url = config.publicMcpUrl
+    ?? (binding ? `http://${binding.gatewayHost}:${binding.gatewayPort}/mcp` : undefined);
+  if (!url) return { mcp_initialize: { ok: false, detail: 'canonical Runtime MCP binding is unavailable' } };
   const token = mainToken(config);
   if (!token) return { mcp_initialize: { ok: false, detail: 'main MCP probe credential is unavailable' } };
   const initialized = await mcpCall(transport, url, token, 1, 'initialize', {
@@ -675,18 +683,19 @@ export async function verifyStableRuntime(config: RecoveryConfig, transport = cr
     ?? currentSupervisorRelease(config);
   const previous = previousSupervisorRelease(config);
   const known = matchingKnownGood(config, active);
+  const binding = runtimeBinding(config);
   probes.stable_ingress = await probe(transport, `${config.stableIngressUrl.replace(/\/$/, '')}/health`);
-  if (state?.ingress?.activeUpstreamPort) probes.active_gateway = await probe(transport, `http://127.0.0.1:${state.ingress.activeUpstreamPort}/health`);
-  else probes.active_gateway = { ok: false, detail: 'active upstream port unavailable' };
+  if (binding) probes.active_gateway = await probe(transport, `http://${binding.gatewayHost}:${binding.gatewayPort}/health`);
+  else probes.active_gateway = { ok: false, detail: 'canonical Runtime Gateway binding unavailable' };
   if (config.publicMcpUrl) probes.external_mcp_http = await probeExternalMcp(transport, config.publicMcpUrl);
   if (config.gateway) probes.recovery_gateway = await probe(transport, `http://${config.gateway.host}:${config.gateway.port}/health`);
   const recoveryPublicUrl = configuredRecoveryPublicUrl(config);
   if (recoveryPublicUrl) probes.recovery_external_http = await probeExternalMcp(transport, recoveryPublicUrl);
   Object.assign(probes, await probeMcp(config, transport));
   const coreChecks = Object.entries(probes)
-    .filter(([name]) => !name.startsWith('recovery_'))
+    .filter(([name]) => !name.startsWith('recovery_') && name !== 'stable_ingress')
     .every(([, entry]) => entry.ok);
-  const supervisorHealthy = state?.observedState === 'healthy' && state?.ingress?.state === 'running';
+  const supervisorHealthy = state?.observedState === 'healthy';
   const coherent = Boolean(
     active
     && state?.gatewayHost?.releaseRevision === active.revision
@@ -706,13 +715,11 @@ export async function attestKnownGood(config: RecoveryConfig): Promise<ReleaseEv
   const locked = await withLock(config, { action: 'attest_known_good' }, async () => {
   const verified = await verifyStableRuntime(config);
   const binding = runtimeBinding(config);
-  const writer = binding && verified.supervisor.activeSlot === binding.activeSlot ? binding : undefined;
   const active = verified.releases.active;
   if (
     !verified.ok
     || !active
     || !binding
-    || !writer
     || binding.releaseRevision !== active.revision
     || binding.manifestHash !== active.manifestSha256
     || !binding.releasePath
@@ -725,8 +732,8 @@ export async function attestKnownGood(config: RecoveryConfig): Promise<ReleaseEv
     controllerHome: binding.controllerHome,
     configRevision: binding.configRevision,
     configHash: binding.configHash,
-    writerEpoch: binding.writerEpoch,
-    writerFencingTokenSha256: binding.writerFencingTokenSha256,
+    runtimeGeneration: binding.runtimeGeneration,
+    runtimeFencingTokenSha256: binding.runtimeFencingTokenSha256,
     attestedAt: new Date().toISOString(),
   };
   const store = knownGood(config);
@@ -737,7 +744,7 @@ export async function attestKnownGood(config: RecoveryConfig): Promise<ReleaseEv
     manifestSha256: active.manifestSha256,
     configRevision: binding.configRevision,
     configHash: binding.configHash,
-    writerEpoch: binding.writerEpoch,
+    runtimeGeneration: binding.runtimeGeneration,
   });
   return attested;
   });
@@ -848,9 +855,9 @@ export async function reconnectMain(config: RecoveryConfig): Promise<{ ok: boole
   // intentionally a bounded health/reconnect observation, never a rollout.
   const verified = await verifyStableRuntime(config);
   const publicProbe = verified.probes.external_mcp_http;
-  const ok = verified.probes.stable_ingress?.ok === true && (publicProbe?.ok === true || publicProbe?.status === 401);
+  const ok = verified.probes.active_gateway?.ok === true && (publicProbe?.ok === true || publicProbe?.status === 401);
   audit(config, 'reconnect_main', { ok, externalStatus: publicProbe?.status });
-  return { ok, detail: ok ? 'stable ingress and primary endpoint are reachable; client session may refresh' : 'primary endpoint remains unavailable; recovery channel remains independent', verify: verified };
+  return { ok, detail: ok ? 'canonical Runtime Gateway and primary endpoint are reachable; client session may refresh' : 'primary endpoint remains unavailable; recovery channel remains independent', verify: verified };
 }
 
 async function verifyLocalRuntime(config: RecoveryConfig): Promise<VerifyResult> {

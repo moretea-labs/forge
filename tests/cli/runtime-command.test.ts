@@ -281,6 +281,18 @@ describe('runtime command surface', () => {
     expect(standaloneRecovery).not.toContain('function slotRelease');
     expect(standaloneRecovery).toContain('function activeAuthorityRelease');
     expect(standaloneRecovery).toContain('function previousSupervisorRelease');
+    expect(standaloneRecovery).toContain("authority?.schemaVersion !== 2");
+    expect(standaloneRecovery).toContain("authority.status !== 'committed'");
+    expect(standaloneRecovery).not.toContain("writer-authority.json");
+    expect(standaloneRecovery).not.toContain('writerEpoch');
+    expect(standaloneRecovery).not.toContain('writerFencingTokenSha256');
+    expect(standaloneRecovery).toContain("name !== 'stable_ingress'");
+    expect(standaloneRecovery).not.toContain("state?.ingress?.state === 'running'");
+    expect(standaloneRecovery).not.toContain('activeUpstreamPort');
+    expect(standaloneRecovery).not.toContain('ingress?: { activeUpstreamPort');
+    expect(standaloneRecovery).toContain("name !== 'stable_ingress'");
+    expect(standaloneRecovery).toContain('binding.gatewayHost');
+    expect(standaloneRecovery).toContain('binding.gatewayPort');
     expect(supervisorReleaseCoherence).toContain('ok: releaseCoherent');
     expect(supervisorReleaseCoherence).not.toContain('ActiveSlotAuthority');
     expect(supervisorReleaseCoherence).not.toContain('SlotIdentity');
