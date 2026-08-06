@@ -88,7 +88,7 @@ describe('runtime command surface', () => {
     const supervisorCommand = readFileSync(join(ROOT, 'src/cli/commands/supervisor.ts'), 'utf8');
     const supervisorSourceIdentity = readFileSync(join(ROOT, 'src/runtime/supervisor/source-identity.ts'), 'utf8');
     const supervisorReleaseCoherence = readFileSync(join(ROOT, 'src/runtime/supervisor/release-coherence.ts'), 'utf8');
-    const restartCoordinator = readFileSync(join(ROOT, 'src/cli/controller/restart-coordinator.ts'), 'utf8');
+    const restartCoordinatorEntry = readFileSync(join(ROOT, 'src/cli/controller/restart-coordinator-entry.ts'), 'utf8');
     const compositeOperations = readFileSync(join(ROOT, 'src/cli/controller/composite-operations.ts'), 'utf8');
     const controllerPostcondition = readFileSync(join(ROOT, 'src/cli/controller/postcondition.ts'), 'utf8');
     const localBridgeServer = readFileSync(join(ROOT, 'src/cli/local-bridge/server.ts'), 'utf8');
@@ -232,10 +232,12 @@ describe('runtime command surface', () => {
     expect(supervisorReleaseCoherence).not.toContain('slotCoherent');
     expect(supervisorReleaseCoherence).not.toContain('input.authority');
     expect(supervisorReleaseCoherence).not.toContain('input.slotIdentity');
-    expect(restartCoordinator).not.toContain('readActiveSlotAuthority');
-    expect(restartCoordinator).not.toContain('readSlotIdentity');
-    expect(restartCoordinator).not.toContain('generationCoherent');
-    expect(restartCoordinator).not.toContain('slotCoherent');
+    expect(existsSync(join(ROOT, 'src/cli/controller/restart-coordinator.ts'))).toBe(false);
+    expect(restartCoordinatorEntry).toContain('RUNTIME_LIFECYCLE_ACTION_RETIRED');
+    expect(restartCoordinatorEntry).toContain('process.exitCode = 2');
+    expect(restartCoordinatorEntry).not.toContain("from './restart-coordinator'");
+    expect(restartCoordinatorEntry).not.toContain("from './lifecycle'");
+    expect(restartCoordinatorEntry).not.toContain('spawn');
     expect(runtimeTools).not.toContain('activeSlotRevision');
     expect(runtimeTools).not.toContain('generationCoherent');
     expect(runtimeTools).not.toContain('slotCoherent');
