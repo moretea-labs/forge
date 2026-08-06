@@ -13,7 +13,7 @@ import { currentSupervisorBootstrapCommand } from '../../src/runtime/bootstrap/e
 import { createStableIngressRouter } from '../../src/runtime/supervisor/ingress-router';
 import { controllerDaemonMaxLifetimeMs, controllerDaemonPassiveMode, publishReadyAfterStartupRecovery, resolveControllerDaemonShutdownReason, runtimeSourceIdentityNeedsRefresh } from '../../src/runtime/control-plane/daemon-entry';
 import { createSupervisorOperation, readSupervisorOperation, updateSupervisorOperation } from '../../src/runtime/supervisor/operation-store';
-import { StableSupervisorRuntime, SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_MONITOR_FAILURE_THRESHOLD, automaticRecoveryRequestId, combinedRolloutRollbackFailure, managedProcessNeedsReleaseRefresh, observeCutoverCandidateWithSingleRecovery, observeCutoverReadinessWindow, sampleCutoverReadiness, probeAuthenticatedMcpReadiness, probeSupervisorGatewayHealth, reconcileActiveManagedGenerations, reconcilePendingSupervisorActivations, reconcileSupervisorStateWithAuthority, recoverableCutoverObservationFailure, recoverableWriterClaimRefreshFailure, refreshWriterClaimWithSingleRetry, resumableInterruptedRollout, supervisorGatewayHealthDecision, supervisorGatewayOperational, supervisorGatewayRuntimeReady, supervisorIngressHealthDecision, supervisorManagedDaemonReady, supervisorManagedGatewayReady, supervisorMonitorFailureDecision, supervisorOperationRecoverySuppressed, terminalizeInterruptedSupervisorOperations } from '../../src/runtime/supervisor/supervisor-runtime';
+import { StableSupervisorRuntime, SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_MONITOR_FAILURE_THRESHOLD, automaticRecoveryRequestId, combinedRolloutRollbackFailure, managedProcessNeedsReleaseRefresh, observeCutoverCandidateWithSingleRecovery, observeCutoverReadinessWindow, sampleCutoverReadiness, probeAuthenticatedMcpReadiness, probeSupervisorGatewayHealth, reconcileActiveManagedGenerations, reconcilePendingSupervisorActivations, reconcileSupervisorStateWithAuthority, recoverableCutoverObservationFailure, recoverableWriterClaimRefreshFailure, refreshWriterClaimWithSingleRetry, resumableInterruptedRollout, supervisorGatewayHealthDecision, supervisorGatewayOperational, supervisorGatewayRuntimeReady, supervisorManagedDaemonReady, supervisorManagedGatewayReady, supervisorMonitorFailureDecision, supervisorOperationRecoverySuppressed, terminalizeInterruptedSupervisorOperations } from '../../src/runtime/supervisor/supervisor-runtime';
 import { decideRestart, newRestartBudgetRecord, recordFailure, recordRestart, recordStable } from '../../src/runtime/supervisor/restart-policy';
 import { SupervisorProcessManager, runtimeWriterEnvironment, supervisorProcessStopAuditPath } from '../../src/runtime/supervisor/process-manager';
 import { ensureMcpControllerHomeBearerToken, writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
@@ -737,21 +737,6 @@ describe('Stable Supervisor production hardening', () => {
       consecutiveFailures: 0,
       shouldRecover: false,
     });
-    expect(SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD).toBe(SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD);
-    expect(supervisorIngressHealthDecision(SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD - 2, false)).toEqual({
-      consecutiveFailures: SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD - 1,
-      shouldReplace: false,
-    });
-    expect(supervisorIngressHealthDecision(SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD - 1, false)).toEqual({
-      consecutiveFailures: SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD,
-      shouldReplace: true,
-    });
-    expect(supervisorIngressHealthDecision(SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD - 1, false, true)).toEqual({
-      consecutiveFailures: SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD,
-      shouldReplace: false,
-    });
-    expect(supervisorIngressHealthDecision(7, true)).toEqual({ consecutiveFailures: 0, shouldReplace: false });
-
     // Single HTTP failures only accumulate; success resets the counter.
     let probeFailures = 0;
     const first = supervisorGatewayHealthDecision(probeFailures, false);

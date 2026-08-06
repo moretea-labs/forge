@@ -89,22 +89,6 @@ export function supervisorGatewayHealthDecision(
   };
 }
 
-export const SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD = SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD;
-
-export function supervisorIngressHealthDecision(
-  previousFailures: number,
-  healthy: boolean,
-  recoverySuppressed = false,
-): { consecutiveFailures: number; shouldReplace: boolean } {
-  const consecutiveFailures = healthy ? 0 : Math.max(0, previousFailures) + 1;
-  return {
-    consecutiveFailures,
-    shouldReplace: !recoverySuppressed
-      && !healthy
-      && consecutiveFailures >= SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD,
-  };
-}
-
 const SUPERVISOR_CUTOVER_OBSERVATION_MS = Math.max(
   1_000,
   Number(process.env.REPO_HARNESS_SUPERVISOR_CUTOVER_OBSERVATION_MS ?? 5_000) || 5_000,

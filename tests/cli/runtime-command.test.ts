@@ -170,7 +170,8 @@ describe('runtime command surface', () => {
     expect(supervisorRuntime).toContain('startCompatibilityIngressRouter');
     expect(supervisorRuntime).not.toContain('replaceIngressRouter');
     expect(supervisorMonitorBlock).not.toContain('createStableIngressRouter');
-    expect(supervisorMonitorBlock).not.toContain('supervisorIngressHealthDecision');
+    expect(supervisorRuntime).not.toContain('supervisorIngressHealthDecision');
+    expect(supervisorRuntime).not.toContain('SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD');
     expect(supervisorMonitorBlock).not.toContain('inline stable ingress router recovery');
     expect(supervisorMonitorBlock).not.toContain('router replacement');
     expect(supervisorMonitorBlock).not.toContain('requestSupervisorSelfRestart');
