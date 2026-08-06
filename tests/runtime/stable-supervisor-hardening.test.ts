@@ -6,7 +6,7 @@ import { join, resolve } from 'path';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import { bootstrapLaunchAgentWithRetry } from '../../src/cli/controller/launch-agents';
-import { selectSupervisorRollbackRelease, serviceActivationStatePath, supervisorActivationMatchesRelease, waitForServiceActivation } from '../../src/cli/commands/supervisor';
+import { readServiceActivationState, selectSupervisorRollbackRelease, serviceActivationStatePath, supervisorActivationMatchesRelease, waitForServiceActivation } from '../../src/cli/commands/supervisor';
 import { browserNodeBridgeReleaseCapabilities, installSupervisorRelease, publishSupervisorRelease, renderLaunchdSupervisorPlist, renderSystemdSupervisorUnit, resolveSupervisorBuildRuntime, stageSupervisorRelease, supervisorServiceLabel, supervisorSystemdUnitName, verifySupervisorBrowserNodeBridgeHost, verifySupervisorSourceIdentity } from '../../src/runtime/supervisor/installer';
 import { stableSupervisorActivatesPublishedRelease, stableSupervisorExitCode } from '../../src/runtime/supervisor/entry';
 import { currentSupervisorBootstrapCommand } from '../../src/runtime/bootstrap/entry';
@@ -1438,6 +1438,28 @@ describe('Stable Supervisor production hardening', () => {
       current: { releasePath: '/tmp/releases/current', releaseRevision: 'current-revision' },
     });
     expect(selected).toEqual({ releasePath: '/tmp/releases/running', releaseRevision: 'running-revision' });
+  });
+
+  test('legacy stable-endpoint activation phases normalize to Runtime readiness', () => {
+    const home = mkdtempSync(join(tmpdir(), 'repo-harness-legacy-activation-phase-'));
+    try {
+      mkdirSync(join(home, 'supervisor'), { recursive: true });
+      writeFileSync(serviceActivationStatePath(home), `${JSON.stringify({
+        schemaVersion: 2,
+        activationId: 'legacy-stable-endpoint',
+        phase: 'waiting_stable_endpoint',
+        repoRoot: process.cwd(),
+        startedAt: '2026-07-21T00:00:00.000Z',
+        updatedAt: '2026-07-21T00:01:00.000Z',
+        phases: [{ phase: 'waiting_stable_endpoint', timestamp: '2026-07-21T00:01:00.000Z' }],
+      })}\n`);
+      expect(readServiceActivationState(home)?.phase).toBe('waiting_runtime_ready');
+      expect(readServiceActivationState(home)?.phases).toEqual([
+        { phase: 'waiting_runtime_ready', timestamp: '2026-07-21T00:01:00.000Z' },
+      ]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test('Supervisor state reader strips legacy Ingress route and health telemetry', () => {

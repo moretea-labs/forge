@@ -117,10 +117,10 @@ export function scheduleServiceActivation(
 }
 
 /**
- * Verify the full readiness chain: ingress → active Gateway → public endpoint.
- * Only returns true when the complete path is healthy.
+ * Verify that the activated service owns the expected immutable release and
+ * reports the complete Runtime healthy through the Supervisor control plane.
  */
-async function verifyFullReadiness(
+async function verifyRuntimeReadiness(
   home: string,
   expectedReleaseRevision: string,
   deadline: number,
@@ -144,8 +144,8 @@ async function verifyFullReadiness(
 }
 
 /**
- * Verify that a detached Supervisor process is actually alive AND serving
- * the stable endpoint — not just that a PID was returned.
+ * Verify that a detached Supervisor process is alive and reports the expected
+ * Runtime release through its control plane — not just that a PID was returned.
  */
 async function verifyDetachedSupervisorHealth(
   home: string,
@@ -336,15 +336,15 @@ async function activateInstalledService(
       newPid: undefined, // will be discovered via control socket
     });
 
-    // Phase: waiting_stable_endpoint — verify the full chain
-    transitionPhase(home, activationId, 'waiting_stable_endpoint');
+    // Phase: waiting_runtime_ready — verify the selected immutable Runtime.
+    transitionPhase(home, activationId, 'waiting_runtime_ready');
     const verifyDeadline = Date.now() + 90_000;
-    const verifyResult = await verifyFullReadiness(home, expectedReleaseRevision, verifyDeadline);
+    const verifyResult = await verifyRuntimeReadiness(home, expectedReleaseRevision, verifyDeadline);
 
     if (!verifyResult.healthy) {
       throw new Error(
         `SUPERVISOR_ACTIVATION_VERIFY_TIMEOUT: expected releaseRevision=${expectedReleaseRevision}; ` +
-        `${verifyResult.error ?? 'endpoint not healthy'}`,
+        `${verifyResult.error ?? 'Runtime not ready'}`,
       );
     }
 

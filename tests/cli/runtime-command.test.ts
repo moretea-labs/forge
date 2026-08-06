@@ -81,6 +81,8 @@ describe('runtime command surface', () => {
     const runtimeTools = readFileSync(join(ROOT, 'src/runtime/gateway/mcp/runtime-tools.ts'), 'utf8');
     const supervisorRuntime = readFileSync(join(ROOT, 'src/runtime/supervisor/supervisor-runtime.ts'), 'utf8');
     const supervisorEntry = readFileSync(join(ROOT, 'src/runtime/supervisor/entry.ts'), 'utf8');
+    const supervisorActivation = readFileSync(join(ROOT, 'src/runtime/supervisor/activation-state-machine.ts'), 'utf8');
+    const supervisorCommand = readFileSync(join(ROOT, 'src/cli/commands/supervisor.ts'), 'utf8');
     const supervisorTypes = readFileSync(join(ROOT, 'src/runtime/supervisor/types.ts'), 'utf8');
     const supervisorStateStore = readFileSync(join(ROOT, 'src/runtime/supervisor/state-store.ts'), 'utf8');
     const facadeActions = readFileSync(join(ROOT, 'src/runtime/control-plane/facade/suggested-actions.ts'), 'utf8');
@@ -172,6 +174,12 @@ describe('runtime command surface', () => {
     expect(supervisorEntry).not.toContain('--ingress-child');
     expect(supervisorEntry).not.toContain('REPO_HARNESS_SUPERVISOR_INGRESS_CHILD');
     expect(supervisorEntry).not.toContain('createStableIngressProcess');
+    expect(supervisorActivation).toContain("| 'waiting_runtime_ready'");
+    expect(supervisorActivation).not.toContain("| 'waiting_stable_endpoint'");
+    expect(supervisorActivation).toContain("value === 'waiting_stable_endpoint'");
+    expect(supervisorCommand).toContain("transitionPhase(home, activationId, 'waiting_runtime_ready')");
+    expect(supervisorCommand).not.toContain("transitionPhase(home, activationId, 'waiting_stable_endpoint')");
+    expect(supervisorCommand).not.toContain('Verify the full readiness chain: ingress');
     expect(supervisorRuntime).toContain('startCompatibilityIngressRouter');
     expect(supervisorRuntime).not.toContain('replaceIngressRouter');
     expect(supervisorMonitorBlock).not.toContain('createStableIngressRouter');

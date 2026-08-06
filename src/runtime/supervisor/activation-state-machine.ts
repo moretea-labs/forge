@@ -11,7 +11,7 @@ export type ActivationPhase =
   | 'bootstrapping'
   | 'waiting_service_registration'
   | 'waiting_supervisor_ready'
-  | 'waiting_stable_endpoint'
+  | 'waiting_runtime_ready'
   | 'succeeded'
   | 'rolling_back'
   | 'failed';
@@ -24,9 +24,26 @@ export const ACTIVATION_PHASE_ORDER: ActivationPhase[] = [
   'bootstrapping',
   'waiting_service_registration',
   'waiting_supervisor_ready',
-  'waiting_stable_endpoint',
+  'waiting_runtime_ready',
   'succeeded',
 ];
+
+function normalizeActivationPhase(value: string): ActivationPhase {
+  return value === 'waiting_stable_endpoint'
+    ? 'waiting_runtime_ready'
+    : value as ActivationPhase;
+}
+
+function normalizePhaseRecords(value: unknown): PhaseRecord[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((record) => {
+    if (!record || typeof record !== 'object' || typeof (record as { phase?: unknown }).phase !== 'string') return [];
+    return [{
+      ...(record as PhaseRecord),
+      phase: normalizeActivationPhase((record as { phase: string }).phase),
+    }];
+  });
+}
 
 export interface PhaseRecord {
   phase: ActivationPhase;
@@ -80,7 +97,11 @@ export function readActivationState(home: string): ActivationStateRecord | undef
   try {
     const parsed = JSON.parse(readFileSync(activationStatePath(home), 'utf8'));
     if (parsed?.schemaVersion === 2 && typeof parsed.activationId === 'string' && typeof parsed.phase === 'string') {
-      return parsed as ActivationStateRecord;
+      return {
+        ...parsed,
+        phase: normalizeActivationPhase(parsed.phase),
+        phases: normalizePhaseRecords(parsed.phases),
+      } as ActivationStateRecord;
     }
     // Migrate schema v1 → v2
     if (parsed?.schemaVersion === 1 && typeof parsed.activationId === 'string' && typeof parsed.phase === 'string') {
@@ -93,7 +114,7 @@ export function readActivationState(home: string): ActivationStateRecord | undef
 }
 
 function migrateV1State(v1: Record<string, unknown>): ActivationStateRecord {
-  const phase = (v1.phase as string) as ActivationPhase;
+  const phase = normalizeActivationPhase(v1.phase as string);
   const legacyReleaseRevision = typeof v1.releaseRevision === 'string' ? v1.releaseRevision : undefined;
   const legacyReleasePath = typeof v1.releasePath === 'string' ? v1.releasePath : undefined;
   const expectedReleaseRevision = typeof v1.expectedReleaseRevision === 'string'

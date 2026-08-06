@@ -241,8 +241,8 @@ function readText(path: string): string | undefined {
 /**
  * Compare the published `current` release, generated service definition,
  * system-installed service definition, and live Supervisor process. A current
- * Daemon can still be owned by a stale lifecycle Supervisor and leave the
- * stable ingress at 502, so slot coherence alone is not sufficient.
+ * Daemon can still be owned by a stale lifecycle Supervisor, so component
+ * identity alone is not sufficient.
  */
 export function readSupervisorServiceReleaseCoherence(
   controllerHome: string,
