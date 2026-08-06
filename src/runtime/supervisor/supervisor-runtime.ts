@@ -17,7 +17,7 @@ import {
 import { readControllerDaemonStatus, type ControllerDaemonStatus } from '../control-plane/daemon-client';
 import { readRuntimeGeneration } from '../control-plane/runtime-generation';
 import { createSupervisorControlServer, type SupervisorControlServerHandle, type SupervisorControlHandlers } from './control-server';
-import { createStableIngressRouter, type StableIngressRouterHandle } from './ingress-router';
+import { createStableIngressRouter, DEFAULT_COMPATIBILITY_ROUTER_HOST, DEFAULT_COMPATIBILITY_ROUTER_PORT, type StableIngressRouterHandle } from './ingress-router';
 import { createSupervisorOperation, listSupervisorOperations, readSupervisorOperation, updateSupervisorOperation } from './operation-store';
 import { DEFAULT_RESTART_POLICY, decideRestart, lockout, newRestartBudgetRecord, recordFailure, recordRestart, recordStable } from './restart-policy';
 import { SupervisorProcessManager, type SpawnedSupervisorProcess, type SupervisorProcessManagerOptions } from './process-manager';
@@ -1052,8 +1052,8 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     if (this.ingressRouter) return this.ingressRouter;
     if (!this.control) throw new Error('SUPERVISOR_INGRESS_CONTEXT_MISSING');
     this.ingressRouter = await createStableIngressRouter({
-      host: this.options.stableIngressHost ?? '127.0.0.1',
-      port: this.options.stableIngressPort ?? 8765,
+      host: DEFAULT_COMPATIBILITY_ROUTER_HOST,
+      port: DEFAULT_COMPATIBILITY_ROUTER_PORT,
       rescueHost: this.control.host,
       rescuePort: this.control.port,
       sessionStorePath: stableIngressSessionStorePath(this.options.controllerHome),

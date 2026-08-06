@@ -48,6 +48,9 @@ interface BufferedResponse {
   body: Buffer;
 }
 
+export const DEFAULT_COMPATIBILITY_ROUTER_HOST = '127.0.0.1';
+export const DEFAULT_COMPATIBILITY_ROUTER_PORT = 8765;
+
 const DEFAULT_MAX_MCP_BODY_BYTES = 1024 * 1024;
 const INTERNAL_REQUEST_TIMEOUT_MS = 15_000;
 

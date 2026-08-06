@@ -14,6 +14,8 @@ import {
 } from './release-identity';
 import type { ProcessIdentity, SupervisorComponentName } from './types';
 
+export const DEFAULT_SUPERVISOR_GATEWAY_BASE_PORT = 8785;
+
 export interface SupervisorProcessManagerOptions {
   repoRoot: string;
   controllerHome: string;
@@ -25,8 +27,12 @@ export interface SupervisorProcessManagerOptions {
   releaseRevision?: string;
   runtimeExecution?: 'standalone-binary' | 'script';
   logPath: string;
+  gatewayBasePort?: number;
+  /** @deprecated Ignored; the compatibility router has a fixed internal host. */
   stableIngressHost?: string;
+  /** @deprecated Read only during migration to gatewayBasePort. */
   stableIngressPort?: number;
+  /** @deprecated Read only during migration to gatewayBasePort. */
   gatewayPortOffset?: number;
   slot?: RuntimeSlotId;
   identityProbe?: ProcessIdentityProbe;
@@ -201,12 +207,29 @@ export function runtimeWriterEnvironment(controllerHome: string, slot: RuntimeSl
   };
 }
 
+export function resolveSupervisorGatewayBasePort(
+  options: Pick<SupervisorProcessManagerOptions, 'gatewayBasePort' | 'stableIngressPort' | 'gatewayPortOffset'>,
+): number {
+  if (typeof options.gatewayBasePort === 'number' && Number.isInteger(options.gatewayBasePort)) {
+    return options.gatewayBasePort;
+  }
+  if (options.stableIngressPort !== undefined || options.gatewayPortOffset !== undefined) {
+    return (options.stableIngressPort ?? 8765) + (options.gatewayPortOffset ?? 20);
+  }
+  return DEFAULT_SUPERVISOR_GATEWAY_BASE_PORT;
+}
+
 export class SupervisorProcessManager {
   readonly options: SupervisorProcessManagerOptions;
   private readonly probe: ProcessIdentityProbe;
 
   constructor(options: SupervisorProcessManagerOptions) {
-    this.options = { ...options, repoRoot: resolve(options.repoRoot), controllerHome: resolve(options.controllerHome) };
+    this.options = {
+      ...options,
+      repoRoot: resolve(options.repoRoot),
+      controllerHome: resolve(options.controllerHome),
+      gatewayBasePort: resolveSupervisorGatewayBasePort(options),
+    };
     this.probe = options.identityProbe ?? defaultProcessIdentityProbe;
   }
 
@@ -219,13 +242,12 @@ export class SupervisorProcessManager {
   }
 
   gatewayBinding(slot = this.options.slot ?? readActiveSlotAuthority(this.options.controllerHome).activeSlot): { host: string; port: number } {
-    const stablePort = this.options.stableIngressPort ?? 8765;
-    const offset = this.options.gatewayPortOffset ?? 20;
+    const basePort = this.options.gatewayBasePort ?? DEFAULT_SUPERVISOR_GATEWAY_BASE_PORT;
     return {
-      // Slot backends are never public listeners. Stable ingress is the only
-      // binding that may follow the configured LAN/public host.
+      // Slot backends are private listeners with an address domain independent
+      // from the transitional compatibility router.
       host: '127.0.0.1',
-      port: stablePort + offset + (slot === 'green' ? 10 : 0),
+      port: basePort + (slot === 'green' ? 10 : 0),
     };
   }
 

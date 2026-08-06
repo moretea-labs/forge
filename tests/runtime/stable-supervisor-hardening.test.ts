@@ -10,12 +10,12 @@ import { readServiceActivationState, selectSupervisorRollbackRelease, serviceAct
 import { browserNodeBridgeReleaseCapabilities, installSupervisorRelease, publishSupervisorRelease, renderLaunchdSupervisorPlist, renderSystemdSupervisorUnit, resolveSupervisorBuildRuntime, stageSupervisorRelease, supervisorServiceLabel, supervisorSystemdUnitName, verifySupervisorBrowserNodeBridgeHost, verifySupervisorSourceIdentity } from '../../src/runtime/supervisor/installer';
 import { stableSupervisorActivatesPublishedRelease, stableSupervisorExitCode } from '../../src/runtime/supervisor/entry';
 import { currentSupervisorBootstrapCommand } from '../../src/runtime/bootstrap/entry';
-import { createStableIngressRouter } from '../../src/runtime/supervisor/ingress-router';
+import { createStableIngressRouter, DEFAULT_COMPATIBILITY_ROUTER_HOST, DEFAULT_COMPATIBILITY_ROUTER_PORT } from '../../src/runtime/supervisor/ingress-router';
 import { controllerDaemonMaxLifetimeMs, controllerDaemonPassiveMode, publishReadyAfterStartupRecovery, resolveControllerDaemonShutdownReason, runtimeSourceIdentityNeedsRefresh } from '../../src/runtime/control-plane/daemon-entry';
 import { createSupervisorOperation, readSupervisorOperation, updateSupervisorOperation } from '../../src/runtime/supervisor/operation-store';
 import { StableSupervisorRuntime, SUPERVISOR_GATEWAY_HEALTH_FAILURE_THRESHOLD, SUPERVISOR_MONITOR_FAILURE_THRESHOLD, automaticRecoveryRequestId, combinedRolloutRollbackFailure, managedProcessNeedsReleaseRefresh, observeCutoverCandidateWithSingleRecovery, observeCutoverReadinessWindow, sampleCutoverReadiness, probeAuthenticatedMcpReadiness, probeSupervisorGatewayHealth, reconcileActiveManagedGenerations, reconcilePendingSupervisorActivations, reconcileSupervisorStateWithAuthority, recoverableCutoverObservationFailure, recoverableWriterClaimRefreshFailure, refreshWriterClaimWithSingleRetry, resumableInterruptedRollout, supervisorGatewayHealthDecision, supervisorGatewayOperational, supervisorGatewayRuntimeReady, supervisorManagedDaemonReady, supervisorManagedGatewayReady, supervisorMonitorFailureDecision, supervisorOperationRecoverySuppressed, terminalizeInterruptedSupervisorOperations } from '../../src/runtime/supervisor/supervisor-runtime';
 import { decideRestart, newRestartBudgetRecord, recordFailure, recordRestart, recordStable } from '../../src/runtime/supervisor/restart-policy';
-import { SupervisorProcessManager, runtimeWriterEnvironment, supervisorProcessStopAuditPath } from '../../src/runtime/supervisor/process-manager';
+import { DEFAULT_SUPERVISOR_GATEWAY_BASE_PORT, SupervisorProcessManager, resolveSupervisorGatewayBasePort, runtimeWriterEnvironment, supervisorProcessStopAuditPath } from '../../src/runtime/supervisor/process-manager';
 import { ensureMcpControllerHomeBearerToken, writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
 import { writeActiveSlotAuthority } from '../../src/cli/controller/runtime-slots';
 import { publishWriterAuthority } from '../../src/cli/controller/stable-state/writer-authority';
@@ -133,6 +133,15 @@ function managedProcess(slot: 'blue' | 'green', pid: number, generation: string)
 }
 
 describe('Stable Supervisor production hardening', () => {
+  test('compatibility router and private Gateway use independent address domains', () => {
+    expect(DEFAULT_COMPATIBILITY_ROUTER_HOST).toBe('127.0.0.1');
+    expect(DEFAULT_COMPATIBILITY_ROUTER_PORT).toBe(8765);
+    expect(DEFAULT_SUPERVISOR_GATEWAY_BASE_PORT).toBe(8785);
+    expect(resolveSupervisorGatewayBasePort({})).toBe(8785);
+    expect(resolveSupervisorGatewayBasePort({ gatewayBasePort: 19000 })).toBe(19000);
+    expect(resolveSupervisorGatewayBasePort({ stableIngressPort: 9000, gatewayPortOffset: 25 })).toBe(9025);
+  });
+
   test('compiled Supervisor release builds use Bun rather than re-executing the Supervisor binary', () => {
     expect(resolveSupervisorBuildRuntime('/opt/repo-harness/releases/supervisor.js', {})).toBe('bun');
     expect(resolveSupervisorBuildRuntime('/Users/test/.bun/bin/bun', {})).toBe('/Users/test/.bun/bin/bun');

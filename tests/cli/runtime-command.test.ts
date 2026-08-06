@@ -80,6 +80,8 @@ describe('runtime command surface', () => {
     const httpTransport = readFileSync(join(ROOT, 'src/cli/mcp/transports/http.ts'), 'utf8');
     const runtimeTools = readFileSync(join(ROOT, 'src/runtime/gateway/mcp/runtime-tools.ts'), 'utf8');
     const supervisorRuntime = readFileSync(join(ROOT, 'src/runtime/supervisor/supervisor-runtime.ts'), 'utf8');
+    const supervisorProcessManager = readFileSync(join(ROOT, 'src/runtime/supervisor/process-manager.ts'), 'utf8');
+    const supervisorIngressRouter = readFileSync(join(ROOT, 'src/runtime/supervisor/ingress-router.ts'), 'utf8');
     const supervisorEntry = readFileSync(join(ROOT, 'src/runtime/supervisor/entry.ts'), 'utf8');
     const supervisorActivation = readFileSync(join(ROOT, 'src/runtime/supervisor/activation-state-machine.ts'), 'utf8');
     const supervisorControl = readFileSync(join(ROOT, 'src/runtime/supervisor/control-server.ts'), 'utf8');
@@ -185,6 +187,16 @@ describe('runtime command surface', () => {
     expect(supervisorEntry).toContain("numberOption('--control-port', DEFAULT_SUPERVISOR_CONTROL_PORT)");
     expect(supervisorCommand).toContain('port: DEFAULT_SUPERVISOR_CONTROL_PORT');
     expect(supervisorCommand).not.toContain('port: 8765');
+    expect(supervisorIngressRouter).toContain('DEFAULT_COMPATIBILITY_ROUTER_PORT = 8765');
+    expect(supervisorRuntime).toContain('port: DEFAULT_COMPATIBILITY_ROUTER_PORT');
+    expect(supervisorRuntime).not.toContain('this.options.stableIngressPort');
+    expect(supervisorRuntime).not.toContain('this.options.stableIngressHost');
+    const gatewayBindingStart = supervisorProcessManager.indexOf('gatewayBinding(');
+    const gatewayBindingEnd = supervisorProcessManager.indexOf('localControllerBinding(', gatewayBindingStart);
+    const gatewayBindingBlock = supervisorProcessManager.slice(gatewayBindingStart, gatewayBindingEnd);
+    expect(gatewayBindingBlock).toContain('DEFAULT_SUPERVISOR_GATEWAY_BASE_PORT');
+    expect(gatewayBindingBlock).not.toContain('stableIngressPort');
+    expect(gatewayBindingBlock).not.toContain('gatewayPortOffset');
     expect(supervisorRuntime).toContain('startCompatibilityIngressRouter');
     expect(supervisorRuntime).not.toContain('replaceIngressRouter');
     expect(supervisorMonitorBlock).not.toContain('createStableIngressRouter');
