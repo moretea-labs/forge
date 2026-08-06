@@ -220,6 +220,13 @@ describe('runtime command surface', () => {
     expect(readinessEvidenceBlock).not.toContain('activeSlot:');
     expect(readinessEvidenceBlock).not.toContain('generationMatches');
     expect(runtimeTools).not.toContain("from '../../../cli/controller/runtime-slots'");
+    expect(runtimeTools).not.toContain("from '../../supervisor/");
+    expect(runtimeTools).not.toContain('buildControllerReadyRevisionView');
+    expect(runtimeTools).not.toContain('stableSupervisorRevision');
+    expect(runtimeTools).not.toContain('activeRuntimeRevision');
+    expect(runtimeTools).not.toContain('stableIngress: fullPayload.stableIngress');
+    expect(runtimeTools).not.toContain('activeSlot: identity.activeSlot');
+    expect(runtimeTools).not.toContain('generation: identity.generation');
     expect(runtimeTools).not.toContain("from '../../../cli/controller/stable-state/stable-home'");
     const supervisorMonitorStart = supervisorRuntime.indexOf('private async monitorTick()');
     const supervisorMonitorEnd = supervisorRuntime.indexOf('private scheduleMonitorTick()', supervisorMonitorStart);

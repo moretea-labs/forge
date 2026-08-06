@@ -62,9 +62,6 @@ import {
 } from '../../workflow/campaigns/normalize';
 import { ensureRepositoryRuntimeStorage } from '../../../cli/repositories/runtime-storage';
 import { assessWorkMode } from '../../../cli/controller/work-mode';
-import { readSupervisorState } from '../../supervisor/state-store';
-import { isStableSupervisorInstalled, readCurrentSupervisorRelease, readPreviousSupervisorRelease, supervisorReleaseClosureMissing } from '../../supervisor/paths';
-import { readSupervisorServiceReleaseCoherence } from '../../supervisor/release-coherence';
 import { projectBoard } from '../../../cli/controller/issue-store';
 import {
   buildControllerTaskLedgerProjection,
@@ -983,70 +980,6 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
   }, ['finding_id'], false),
 ];
 
-export interface ControllerReadyRevisionView {
-  stableSupervisorRevision?: string;
-  activeRuntimeRevision?: string;
-  gatewayRevision?: string;
-  sourceRevision?: string;
-  expectedRevision?: string;
-  coherence: {
-    ok: boolean;
-    service: { ok: boolean; failures: string[] };
-    runtime: {
-      ok: boolean;
-      legacyReleaseMetadata: boolean;
-      releasePathCoherent: boolean;
-      releaseRevisionCoherent: boolean;
-      releaseCoherent: boolean;
-      failures: string[];
-    };
-  };
-}
-
-export function buildControllerReadyRevisionView(input: {
-  currentRelease?: { releaseRevision?: string; sourceCommit?: string };
-  supervisorState?: {
-    supervisor: { releaseRevision?: string };
-    controllerDaemon?: { releaseRevision?: string };
-    gatewayHost?: { releaseRevision?: string };
-  } | null;
-  serviceCoherence: {
-    ok: boolean;
-    expected?: { releaseRevision?: string };
-    failures: string[];
-  };
-  runtimeCoherence: {
-    ok: boolean;
-    legacyReleaseMetadata: boolean;
-    releasePathCoherent: boolean;
-    releaseRevisionCoherent: boolean;
-    releaseCoherent: boolean;
-    failures: string[];
-  };
-}): ControllerReadyRevisionView {
-  const service = input.serviceCoherence;
-  const runtime = input.runtimeCoherence;
-  return {
-    stableSupervisorRevision: input.supervisorState?.supervisor.releaseRevision,
-    activeRuntimeRevision: input.supervisorState?.controllerDaemon?.releaseRevision,
-    gatewayRevision: input.supervisorState?.gatewayHost?.releaseRevision,
-    sourceRevision: input.currentRelease?.sourceCommit,
-    expectedRevision: service.expected?.releaseRevision ?? input.currentRelease?.releaseRevision,
-    coherence: {
-      ok: service.ok && runtime.ok,
-      service: { ok: service.ok, failures: [...service.failures] },
-      runtime: {
-        ok: runtime.ok,
-        legacyReleaseMetadata: runtime.legacyReleaseMetadata,
-        releasePathCoherent: runtime.releasePathCoherent,
-        releaseRevisionCoherent: runtime.releaseRevisionCoherent,
-        releaseCoherent: runtime.releaseCoherent,
-        failures: [...runtime.failures],
-      },
-    },
-  };
-}
-
 const RH_CONTEXT_CURRENT_WINDOW_MS = 24 * 60 * 60 * 1_000;
 
 function timestampIsCurrent(value: string | undefined, cutoffMs: number): boolean {
@@ -1070,7 +1003,6 @@ export function summarizeControllerReadyPayload(fullPayload: Record<string, unkn
   const durableScheduler = (fullPayload.durableScheduler ?? {}) as Record<string, unknown>;
   const localBridge = (fullPayload.localBridge ?? {}) as Record<string, unknown>;
   const localBridgeHealth = (localBridge.health ?? {}) as Record<string, unknown>;
-  const stableSupervisor = (fullPayload.stableSupervisor ?? {}) as Record<string, unknown>;
   const toolSurface = (fullPayload.toolSurface ?? {}) as Record<string, unknown>;
   const routeBehavior = (fullPayload.routeBehavior ?? {}) as Record<string, unknown>;
   const expectedTools = Array.isArray(toolSurface.expectedTools) ? toolSurface.expectedTools : [];
@@ -1101,16 +1033,7 @@ export function summarizeControllerReadyPayload(fullPayload: Record<string, unkn
       schedulerHeartbeatAgeMs: durableScheduler.heartbeatAgeMs,
       localBridgeReady: localBridgeHealth.ready ?? localBridge.running,
     },
-    stableSupervisor: fullPayload.stableSupervisor,
-    stableIngress: fullPayload.stableIngress,
-    releaseClosure: fullPayload.releaseClosure,
     externalEndpoint: fullPayload.externalEndpoint,
-    stableSupervisorRevision: fullPayload.stableSupervisorRevision,
-    activeRuntimeRevision: fullPayload.activeRuntimeRevision,
-    gatewayRevision: fullPayload.gatewayRevision,
-    sourceRevision: fullPayload.sourceRevision,
-    expectedRevision: fullPayload.expectedRevision,
-    coherence: fullPayload.coherence,
     runtimeIdentity: (() => {
       const identity = fullPayload.runtimeIdentity && typeof fullPayload.runtimeIdentity === 'object'
         ? fullPayload.runtimeIdentity as Record<string, unknown>
@@ -1122,11 +1045,11 @@ export function summarizeControllerReadyPayload(fullPayload: Record<string, unkn
         buildCommit: identity.buildCommit,
         startedAt: identity.startedAt,
         controllerInstanceId: identity.controllerInstanceId,
+        endpoint: identity.endpoint,
+        ready: identity.ready,
+        reasonCodes: identity.reasonCodes,
         toolset: identity.toolset,
         profile: identity.profile,
-        activeSlot: identity.activeSlot,
-        previousKnownGood: identity.previousKnownGood,
-        generation: identity.generation,
       };
     })(),
     routeBehavior: {
@@ -1317,10 +1240,6 @@ export interface RuntimeIdentitySnapshot {
   reasonCodes?: string[];
   toolset?: string;
   profile?: string;
-  activeSlot?: 'blue' | 'green';
-  previousKnownGood?: string;
-  releasePath?: string;
-  generation?: string;
 }
 
 /**
