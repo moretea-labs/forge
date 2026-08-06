@@ -132,6 +132,10 @@ describe('runtime command surface', () => {
     expect(runtimeSlots).not.toContain('resolveLifecycleControllerHome');
     expect(runtimeSlots).not.toContain('slotPortDefaults');
     expect(runtimeSlots).not.toContain('slotsShareRuntimeState');
+    expect(runtimeSlots).not.toContain('controllerAuthorityHome');
+    expect(runtimeSlots).not.toContain('activeSlotAuthorityPath');
+    expect(runtimeSlots).not.toContain('runtimeSlotForHome');
+    expect(runtimeSlots).toContain('RUNTIME_SLOT_ROOT_REQUIRED');
     expect(httpTransport).not.toContain('ensureControllerDaemon');
     expect(httpTransport).toContain('readControllerDaemonStatus');
     expect(runtimeTools).not.toContain('ensureControllerDaemon');

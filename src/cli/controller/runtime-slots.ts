@@ -64,17 +64,17 @@ function readJson<T>(path: string): T | null {
   }
 }
 
-export function controllerAuthorityHome(controllerHome: string): string {
+function requireRootControllerHome(controllerHome: string): string {
   const home = ensureControllerHome(controllerHome);
-  return runtimeSlotForHome(home) ? dirname(dirname(home)) : home;
-}
-
-export function activeSlotAuthorityPath(controllerHome: string): string {
-  return join(controllerAuthorityHome(controllerHome), 'active-slot.json');
+  const normalized = resolve(home).replace(/\\/g, '/');
+  if (/\/runtime-slots\/(blue|green)$/.test(normalized)) {
+    throw new Error(`RUNTIME_SLOT_ROOT_REQUIRED: ${home}`);
+  }
+  return home;
 }
 
 export function runtimeSlotsRoot(controllerHome: string): string {
-  return join(controllerAuthorityHome(controllerHome), 'runtime-slots');
+  return join(requireRootControllerHome(controllerHome), 'runtime-slots');
 }
 
 export function slotHomePath(controllerHome: string, slot: RuntimeSlotId): string {
@@ -93,15 +93,8 @@ export function oppositeSlot(slot: RuntimeSlotId): RuntimeSlotId {
   return slot === 'blue' ? 'green' : 'blue';
 }
 
-/** Returns the slot encoded by a dedicated slot home without reading or writing state. */
-export function runtimeSlotForHome(controllerHome: string): RuntimeSlotId | undefined {
-  const normalized = resolve(controllerHome).replace(/\\/g, '/');
-  const match = normalized.match(/\/runtime-slots\/(blue|green)$/);
-  return match?.[1] === 'blue' || match?.[1] === 'green' ? match[1] : undefined;
-}
-
 export function readActiveSlotAuthority(controllerHome: string): ActiveSlotAuthority {
-  const home = controllerAuthorityHome(controllerHome);
+  const home = requireRootControllerHome(controllerHome);
   let primary = readRuntimeAuthority(home);
   if (!primary && hasLegacyRuntimeAuthorityState(home)) primary = migrateRuntimeAuthority(home);
   if (primary) {
@@ -127,10 +120,11 @@ export function writeActiveSlotAuthority(
   controllerHome: string,
   patch: Omit<ActiveSlotAuthority, 'schemaVersion' | 'updatedAt'> & { updatedAt?: string },
 ): ActiveSlotAuthority {
-  const current = readRuntimeAuthority(controllerAuthorityHome(controllerHome));
+  const home = requireRootControllerHome(controllerHome);
+  const current = readRuntimeAuthority(home);
   const previousSlot = patch.previousSlot ?? current?.legacySlot;
   const generation = patch.generation ?? current?.generation;
-  const activated = atomicActivateRuntime(controllerHome, {
+  const activated = atomicActivateRuntime(home, {
     activeSlot: patch.activeSlot,
     ...(previousSlot ? { previousSlot } : {}),
     ...(generation ? { generation } : {}),
@@ -194,14 +188,15 @@ export function markCutoverAuthority(
   rollbackWindowMs = DEFAULT_ROLLBACK_WINDOW_MS,
   release?: { releaseRevision?: string; releasePath?: string },
 ): ActiveSlotAuthority {
-  const current = readActiveSlotAuthority(controllerHome);
+  const home = requireRootControllerHome(controllerHome);
+  const current = readActiveSlotAuthority(home);
   const idempotent = current.activeSlot === nextActive;
   const rollbackUntil = idempotent
     ? current.rollbackUntil
     : new Date(Date.now() + Math.max(0, rollbackWindowMs)).toISOString();
   const nextGeneration = generation ?? current.generation;
   const previousSlot = idempotent ? current.previousSlot : current.activeSlot;
-  const activated = atomicActivateRuntime(controllerHome, {
+  const activated = atomicActivateRuntime(home, {
     activeSlot: nextActive,
     ...(nextGeneration ? { generation: nextGeneration } : {}),
     ...(release?.releaseRevision ? { releaseRevision: release.releaseRevision } : {}),
@@ -227,9 +222,10 @@ export function markRollbackAuthority(
   generation: string | undefined,
   release?: { releaseRevision?: string; releasePath?: string },
 ): ActiveSlotAuthority {
-  const current = readActiveSlotAuthority(controllerHome);
+  const home = requireRootControllerHome(controllerHome);
+  const current = readActiveSlotAuthority(home);
   const previous = current.previousSlot ?? oppositeSlot(current.activeSlot);
-  const activated = atomicActivateRuntime(controllerHome, {
+  const activated = atomicActivateRuntime(home, {
     activeSlot: previous,
     previousSlot: current.activeSlot,
     ...(generation ? { generation } : {}),

@@ -3,7 +3,6 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
-  activeSlotAuthorityPath,
   ensureSlotHome,
   isRollbackWindowOpen,
   markCutoverAuthority,
@@ -11,7 +10,6 @@ import {
   oppositeSlot,
   readActiveSlotAuthority,
   readSlotIdentity,
-  runtimeSlotForHome,
   writeActiveSlotAuthority,
   writeSlotIdentity,
 } from '../../src/cli/controller/runtime-slots';
@@ -29,7 +27,7 @@ function temp(prefix: string): string {
 }
 
 describe('runtime slot authority (level 1)', () => {
-  test('slot homes resolve active-slot authority from the controller root', () => {
+  test('slot authority requires an explicit root Controller Home', () => {
     const home = temp('repo-harness-slot-authority-root-');
     writeActiveSlotAuthority(home, {
       activeSlot: 'green',
@@ -39,13 +37,13 @@ describe('runtime slot authority (level 1)', () => {
     });
     const greenHome = ensureSlotHome(home, 'green');
 
-    expect(activeSlotAuthorityPath(greenHome)).toBe(join(home, 'active-slot.json'));
-    expect(readActiveSlotAuthority(greenHome)).toMatchObject({
+    expect(readActiveSlotAuthority(home)).toMatchObject({
       activeSlot: 'green',
       previousSlot: 'blue',
       generation: 'generation-green',
     });
-    expect(ensureSlotHome(greenHome, 'blue')).toBe(join(home, 'runtime-slots', 'blue'));
+    expect(() => readActiveSlotAuthority(greenHome)).toThrow('RUNTIME_SLOT_ROOT_REQUIRED');
+    expect(() => ensureSlotHome(greenHome, 'blue')).toThrow('RUNTIME_SLOT_ROOT_REQUIRED');
   });
 
   test('defaults to blue and keeps distinct slot homes', () => {
@@ -57,9 +55,6 @@ describe('runtime slot authority (level 1)', () => {
     expect(blue).not.toBe(green);
     expect(blue).toContain('/runtime-slots/blue');
     expect(green).toContain('/runtime-slots/green');
-    expect(runtimeSlotForHome(blue)).toBe('blue');
-    expect(runtimeSlotForHome(green)).toBe('green');
-    expect(runtimeSlotForHome(home)).toBeUndefined();
   });
 
   test('cutover flips active authority and enables rollback window', () => {
