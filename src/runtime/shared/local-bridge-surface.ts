@@ -1,13 +1,8 @@
 /**
  * Authoritative Local Bridge / Local Controller surface resolution.
  *
- * Port mapping (blue/green):
- * - Root template default: 8766
- * - Inactive slot offsets by +10 (e.g. green inactive often → 8776)
- * - Active slot keeps base ports unless slot-local config overrides
- *
- * Never hardcode "8776 is correct"; prefer active-slot runtime state and
- * slot-local config under controller-home/runtime-slots/<slot>/mcp/.
+ * The caller-provided Controller Home is authoritative. Surface resolution
+ * never selects a runtime slot or follows a separate traffic authority.
  */
 
 import {
@@ -18,11 +13,6 @@ import {
   type McpLocalConfig,
   type McpRuntimeState,
 } from '../../cli/mcp/auth';
-import {
-  readActiveSlotAuthority,
-  runtimeSlotForHome,
-  slotHomePath,
-} from '../../cli/controller/runtime-slots';
 import { inferLocalControllerProcess } from '../diagnostics/performance';
 import type { LocalBridgeMode } from '../health/evaluator';
 
@@ -46,8 +36,6 @@ export interface LocalBridgeSurface {
   /** Where endpoint/mode were resolved from. */
   source: 'service-runtime' | 'repo-runtime' | 'service-config' | 'repo-config' | 'process-scan' | 'none';
   ownerKind: 'mcp-keepalive' | 'controller-service' | 'external' | 'unknown' | 'none';
-  /** Active runtime slot when resolved from blue/green homes. */
-  activeSlot?: 'blue' | 'green';
 }
 
 function normalizeEndpoint(host: string, port: number): string {
@@ -64,30 +52,8 @@ function modeFromRuntime(runtime: McpRuntimeState | null | undefined): LocalBrid
   return undefined;
 }
 
-/**
- * Prefer the active blue/green slot home when the caller passes root controller-home.
- * Slot homes already contain their own mcp/ tree; do not re-nest.
- */
-function resolveAuthoritativeMcpHomes(controllerHome: string | undefined): {
-  homes: string[];
-  activeSlot?: 'blue' | 'green';
-} {
-  if (!controllerHome) return { homes: [] };
-  const existingSlot = runtimeSlotForHome(controllerHome);
-  if (existingSlot) {
-    return { homes: [controllerHome], activeSlot: existingSlot };
-  }
-  try {
-    const authority = readActiveSlotAuthority(controllerHome);
-    const activeHome = slotHomePath(controllerHome, authority.activeSlot);
-    // Prefer active slot, then root controller-home as fallback template.
-    return {
-      homes: [activeHome, controllerHome],
-      activeSlot: authority.activeSlot,
-    };
-  } catch {
-    return { homes: [controllerHome] };
-  }
+function resolveAuthoritativeMcpHomes(controllerHome: string | undefined): string[] {
+  return controllerHome ? [controllerHome] : [];
 }
 
 function firstServiceRuntime(homes: string[]): {
@@ -125,8 +91,8 @@ function firstServiceConfig(homes: string[]): {
 }
 
 /**
- * Resolve Local Bridge capability from controller-home (authoritative) then repo-local fallbacks.
- * When blue/green is active, the active slot's mcp.runtime.json / mcp.local.json win over root.
+ * Resolve Local Bridge capability from Controller Home, then repo-local fallbacks.
+ * Controller Home selection belongs to the canonical Runtime owner, not this resolver.
  */
 export function resolveLocalBridgeSurface(input: {
   controllerHome?: string;
@@ -135,7 +101,7 @@ export function resolveLocalBridgeSurface(input: {
   allowProcessScan?: boolean;
 }): LocalBridgeSurface {
   const allowProcessScan = input.allowProcessScan !== false;
-  const { homes, activeSlot } = resolveAuthoritativeMcpHomes(input.controllerHome);
+  const homes = resolveAuthoritativeMcpHomes(input.controllerHome);
 
   const { runtime: serviceRuntime } = firstServiceRuntime(homes);
   const repoRuntime = loadMcpRuntimeState(input.repoRoot);
@@ -191,7 +157,6 @@ export function resolveLocalBridgeSurface(input: {
       error: runtimeLc.error,
       source: runtimeSource === 'none' ? 'service-runtime' : runtimeSource,
       ownerKind,
-      ...(activeSlot ? { activeSlot } : {}),
     };
   }
 
@@ -205,7 +170,6 @@ export function resolveLocalBridgeSurface(input: {
       expectedSurface: 'none',
       source: configSource === 'none' ? 'service-config' : configSource,
       ownerKind: 'none',
-      ...(activeSlot ? { activeSlot } : {}),
     };
   }
 
@@ -220,7 +184,6 @@ export function resolveLocalBridgeSurface(input: {
       expectedSurface: 'local-controller',
       source: configSource === 'none' ? 'service-config' : configSource,
       ownerKind: mode === 'embedded' ? 'mcp-keepalive' : mode === 'standalone' ? 'controller-service' : 'unknown',
-      ...(activeSlot ? { activeSlot } : {}),
     };
   }
 
@@ -238,7 +201,6 @@ export function resolveLocalBridgeSurface(input: {
         pid: inferred.pid,
         source: 'process-scan',
         ownerKind: 'controller-service',
-        ...(activeSlot ? { activeSlot } : {}),
       };
     }
   }
@@ -252,7 +214,6 @@ export function resolveLocalBridgeSurface(input: {
     expectedSurface: 'none',
     source: 'none',
     ownerKind: 'none',
-    ...(activeSlot ? { activeSlot } : {}),
   };
 }
 

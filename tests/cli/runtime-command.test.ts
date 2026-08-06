@@ -96,6 +96,7 @@ describe('runtime command surface', () => {
     const localBridgeServer = readFileSync(join(ROOT, 'src/cli/local-bridge/server.ts'), 'utf8');
     const repoActor = readFileSync(join(ROOT, 'src/runtime/control-plane/repo-actor/actor.ts'), 'utf8');
     const executionWorker = readFileSync(join(ROOT, 'src/runtime/execution/workers/executor.ts'), 'utf8');
+    const localBridgeSurface = readFileSync(join(ROOT, 'src/runtime/shared/local-bridge-surface.ts'), 'utf8');
     const supervisorTypes = readFileSync(join(ROOT, 'src/runtime/supervisor/types.ts'), 'utf8');
     const supervisorStateStore = readFileSync(join(ROOT, 'src/runtime/supervisor/state-store.ts'), 'utf8');
     const facadeActions = readFileSync(join(ROOT, 'src/runtime/control-plane/facade/suggested-actions.ts'), 'utf8');
@@ -234,6 +235,12 @@ describe('runtime command surface', () => {
     expect(executionWorker).not.toContain('jobs/restart-resume');
     expect(executionWorker).toContain('const toolArguments = { ...(job.payload.arguments ?? {}) }');
     expect(executionWorker).not.toContain('controller_restart_verify');
+    expect(localBridgeSurface).not.toContain("from '../../cli/controller/runtime-slots'");
+    expect(localBridgeSurface).not.toContain('readActiveSlotAuthority');
+    expect(localBridgeSurface).not.toContain('runtimeSlotForHome');
+    expect(localBridgeSurface).not.toContain('slotHomePath');
+    expect(localBridgeSurface).not.toContain('activeSlot?:');
+    expect(localBridgeSurface).toContain('return controllerHome ? [controllerHome] : []');
     expect(supervisorReleaseCoherence).toContain('ok: releaseCoherent');
     expect(supervisorReleaseCoherence).not.toContain('ActiveSlotAuthority');
     expect(supervisorReleaseCoherence).not.toContain('SlotIdentity');
