@@ -42,14 +42,6 @@ export interface SlotIdentity {
   resources?: ManagedResource[];
 }
 
-export interface SlotPortAllocation {
-  mcpPort: number;
-  localControllerPort: number;
-}
-
-const DEFAULT_MCP_PORT = 8765;
-const DEFAULT_LOCAL_PORT = 8766;
-const SLOT_PORT_STRIDE = 10;
 const DEFAULT_ROLLBACK_WINDOW_MS = 15 * 60_000;
 
 function nowIso(): string {
@@ -195,101 +187,6 @@ export function writeSlotIdentity(controllerHome: string, identity: SlotIdentity
   return next;
 }
 
-const MIN_RUNTIME_PORT = 1;
-const MAX_RUNTIME_PORT = 65_535;
-
-function validatedRuntimePort(value: number, label: keyof SlotPortAllocation): number {
-  if (!Number.isInteger(value) || value < MIN_RUNTIME_PORT || value > MAX_RUNTIME_PORT) {
-    throw new Error(`RUNTIME_SLOT_PORT_INVALID: ${label}=${String(value)} must be an integer in ${MIN_RUNTIME_PORT}..${MAX_RUNTIME_PORT}`);
-  }
-  return value;
-}
-
-export function validateSlotPorts(ports: SlotPortAllocation): SlotPortAllocation {
-  const validated = {
-    mcpPort: validatedRuntimePort(ports.mcpPort, 'mcpPort'),
-    localControllerPort: validatedRuntimePort(ports.localControllerPort, 'localControllerPort'),
-  };
-  if (validated.mcpPort === validated.localControllerPort) {
-    throw new Error(`RUNTIME_SLOT_PORT_COLLISION: mcpPort and localControllerPort both use ${validated.mcpPort}`);
-  }
-  return validated;
-}
-
-function offsetRuntimePort(basePort: number, offset: number, label: keyof SlotPortAllocation): number {
-  const value = basePort + offset;
-  if (value > MAX_RUNTIME_PORT) {
-    throw new Error(`RUNTIME_SLOT_PORT_OVERFLOW: ${label} base=${basePort} offset=${offset} result=${value}`);
-  }
-  return value;
-}
-
-/**
- * Allocate ports for a slot. Active (or sole) slot keeps base ports.
- * Inactive slot offsets by SLOT_PORT_STRIDE unless overrides are provided.
- */
-export function allocateSlotPorts(
-  slot: RuntimeSlotId,
-  activeSlot: RuntimeSlotId,
-  base: SlotPortAllocation = { mcpPort: DEFAULT_MCP_PORT, localControllerPort: DEFAULT_LOCAL_PORT },
-  overrides?: Partial<SlotPortAllocation>,
-): SlotPortAllocation {
-  const validatedBase = validateSlotPorts(base);
-  const offset = slot === activeSlot ? 0 : SLOT_PORT_STRIDE;
-  return validateSlotPorts({
-    mcpPort: overrides?.mcpPort
-      ?? offsetRuntimePort(validatedBase.mcpPort, offset, 'mcpPort'),
-    localControllerPort: overrides?.localControllerPort
-      ?? offsetRuntimePort(validatedBase.localControllerPort, offset, 'localControllerPort'),
-  });
-}
-
-export function resolveSlotControllerHome(
-  controllerHome: string,
-  slot?: RuntimeSlotId,
-): { authority: ActiveSlotAuthority; slot: RuntimeSlotId; slotHome: string } {
-  const home = ensureControllerHome(controllerHome);
-  const authority = readActiveSlotAuthority(home);
-  const resolved = slot ?? authority.activeSlot;
-  return {
-    authority,
-    slot: resolved,
-    slotHome: ensureSlotHome(home, resolved),
-  };
-}
-
-/**
- * Public lifecycle still receives a single controllerHome. When slots are enabled,
- * managed processes run under the active slot home while authority stays at the root.
- */
-export function resolveLifecycleControllerHome(
-  controllerHome: string,
-  options: { slot?: RuntimeSlotId; useSlots?: boolean } = {},
-): {
-  rootHome: string;
-  slot: RuntimeSlotId;
-  slotHome: string;
-  authority: ActiveSlotAuthority;
-} {
-  const rootHome = ensureControllerHome(controllerHome);
-  if (options.useSlots === false) {
-    const authority = readActiveSlotAuthority(rootHome);
-    return {
-      rootHome,
-      slot: options.slot ?? authority.activeSlot,
-      slotHome: rootHome,
-      authority,
-    };
-  }
-  const resolved = resolveSlotControllerHome(rootHome, options.slot);
-  return {
-    rootHome,
-    slot: resolved.slot,
-    slotHome: resolved.slotHome,
-    authority: resolved.authority,
-  };
-}
-
 export function markCutoverAuthority(
   controllerHome: string,
   nextActive: RuntimeSlotId,
@@ -357,10 +254,3 @@ export function isRollbackWindowOpen(authority: ActiveSlotAuthority, now = Date.
   return Number.isFinite(until) && until >= now;
 }
 
-export function slotPortDefaults(): SlotPortAllocation {
-  return { mcpPort: DEFAULT_MCP_PORT, localControllerPort: DEFAULT_LOCAL_PORT };
-}
-
-export function slotsShareRuntimeState(leftHome: string, rightHome: string): boolean {
-  return resolve(leftHome) === resolve(rightHome);
-}

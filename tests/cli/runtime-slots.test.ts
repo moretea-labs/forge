@@ -4,7 +4,6 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   activeSlotAuthorityPath,
-  allocateSlotPorts,
   ensureSlotHome,
   isRollbackWindowOpen,
   markCutoverAuthority,
@@ -13,7 +12,6 @@ import {
   readActiveSlotAuthority,
   readSlotIdentity,
   runtimeSlotForHome,
-  slotsShareRuntimeState,
   writeActiveSlotAuthority,
   writeSlotIdentity,
 } from '../../src/cli/controller/runtime-slots';
@@ -50,48 +48,18 @@ describe('runtime slot authority (level 1)', () => {
     expect(ensureSlotHome(greenHome, 'blue')).toBe(join(home, 'runtime-slots', 'blue'));
   });
 
-  test('defaults to blue and never shares slot homes', () => {
+  test('defaults to blue and keeps distinct slot homes', () => {
     const home = temp('repo-harness-slots-');
     const authority = readActiveSlotAuthority(home);
     expect(authority.activeSlot).toBe('blue');
     const blue = ensureSlotHome(home, 'blue');
     const green = ensureSlotHome(home, 'green');
-    expect(slotsShareRuntimeState(blue, green)).toBe(false);
+    expect(blue).not.toBe(green);
     expect(blue).toContain('/runtime-slots/blue');
     expect(green).toContain('/runtime-slots/green');
     expect(runtimeSlotForHome(blue)).toBe('blue');
     expect(runtimeSlotForHome(green)).toBe('green');
     expect(runtimeSlotForHome(home)).toBeUndefined();
-  });
-
-  test('inactive slot ports are offset from active base ports and partial overrides remain deterministic', () => {
-    const activePorts = allocateSlotPorts('blue', 'blue', { mcpPort: 8765, localControllerPort: 8766 });
-    const inactivePorts = allocateSlotPorts('green', 'blue', { mcpPort: 8765, localControllerPort: 8766 });
-    const partialOverride = allocateSlotPorts(
-      'green',
-      'blue',
-      { mcpPort: 8765, localControllerPort: 8766 },
-      { mcpPort: 9100 },
-    );
-    expect(activePorts.mcpPort).toBe(8765);
-    expect(inactivePorts.mcpPort).toBe(8775);
-    expect(inactivePorts.localControllerPort).toBe(8776);
-    expect(partialOverride).toEqual({ mcpPort: 9100, localControllerPort: 8776 });
-  });
-
-  test('slot port allocation fails closed on invalid ranges, collisions, and inactive overflow', () => {
-    expect(() => allocateSlotPorts('blue', 'blue', { mcpPort: 0, localControllerPort: 8766 }))
-      .toThrow(/RUNTIME_SLOT_PORT_INVALID/);
-    expect(() => allocateSlotPorts('blue', 'blue', { mcpPort: 8765.5, localControllerPort: 8766 }))
-      .toThrow(/RUNTIME_SLOT_PORT_INVALID/);
-    expect(() => allocateSlotPorts('blue', 'blue', { mcpPort: 8765, localControllerPort: 65_536 }))
-      .toThrow(/RUNTIME_SLOT_PORT_INVALID/);
-    expect(() => allocateSlotPorts('blue', 'blue', { mcpPort: 8765, localControllerPort: 8766 }, { localControllerPort: 8765 }))
-      .toThrow(/RUNTIME_SLOT_PORT_COLLISION/);
-    expect(() => allocateSlotPorts('green', 'blue', { mcpPort: 65_530, localControllerPort: 60_000 }))
-      .toThrow(/RUNTIME_SLOT_PORT_OVERFLOW/);
-    expect(() => allocateSlotPorts('green', 'blue', { mcpPort: 60_000, localControllerPort: 65_530 }))
-      .toThrow(/RUNTIME_SLOT_PORT_OVERFLOW/);
   });
 
   test('cutover flips active authority and enables rollback window', () => {

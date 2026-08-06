@@ -80,6 +80,7 @@ describe('runtime command surface', () => {
     const controllerLifecycle = readFileSync(join(ROOT, 'src/cli/controller/lifecycle.ts'), 'utf8');
     const mcpAuth = readFileSync(join(ROOT, 'src/cli/mcp/auth.ts'), 'utf8');
     const runtimeAuthority = readFileSync(join(ROOT, 'src/runtime/bootstrap/runtime-authority.ts'), 'utf8');
+    const runtimeSlots = readFileSync(join(ROOT, 'src/cli/controller/runtime-slots.ts'), 'utf8');
     const httpTransport = readFileSync(join(ROOT, 'src/cli/mcp/transports/http.ts'), 'utf8');
     const runtimeTools = readFileSync(join(ROOT, 'src/runtime/gateway/mcp/runtime-tools.ts'), 'utf8');
     const toolsetNames = readFileSync(join(ROOT, 'src/cli/mcp/toolset-names.ts'), 'utf8');
@@ -124,6 +125,13 @@ describe('runtime command surface', () => {
     const requireConfigStart = runtimeAuthority.indexOf('export function requireRuntimeConfig');
     const requireConfigBlock = runtimeAuthority.slice(requireConfigStart);
     expect(requireConfigBlock).not.toContain('runtime-slots');
+    expect(runtimeSlots).not.toContain('allocateSlotPorts');
+    expect(runtimeSlots).not.toContain('validateSlotPorts');
+    expect(runtimeSlots).not.toContain('SlotPortAllocation');
+    expect(runtimeSlots).not.toContain('resolveSlotControllerHome');
+    expect(runtimeSlots).not.toContain('resolveLifecycleControllerHome');
+    expect(runtimeSlots).not.toContain('slotPortDefaults');
+    expect(runtimeSlots).not.toContain('slotsShareRuntimeState');
     expect(httpTransport).not.toContain('ensureControllerDaemon');
     expect(httpTransport).toContain('readControllerDaemonStatus');
     expect(runtimeTools).not.toContain('ensureControllerDaemon');
