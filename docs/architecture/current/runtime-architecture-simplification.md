@@ -55,13 +55,13 @@ No core module may create a KeepAlive loop, detached restart coordinator, second
 
 | Phase | Required result | Current source assessment |
 | --- | --- | --- |
-| 1. Establish Canonical Single Runtime | MCP Transport, Gateway Adapter, Controller Services, Scheduler, SQLite, and Worker Manager are started by one Runtime Root | Partial: the vertical slice exists, but it remains parallel to the legacy installed lifecycle |
-| 2. Converge lifecycle ownership | Runtime Root is the only core start/stop/failure/recovery owner | In progress: `repo-harness-runtime` is the sole canonical start entry; `runtime` is observation-only; public `controller`/Supervisor/MCP lifecycle commands, autonomous Recovery agent repair, MCP/Gateway Daemon auto-start, Gateway component restart/rollout/rollback tools, Supervisor facade operations, and repair-triggered detached restart are removed; the independent legacy Daemon entry, Supervisor process, and bounded recovery callers still require deletion |
-| 3. Simplify readiness | Public Runtime readiness is only `ready: true/false`; module observations are diagnostic evidence | In progress: Canonical Runtime and public `controller_ready` use the binary contract; detailed component observations remain internal evidence for legacy status/recovery paths and require further deletion |
-| 4. Remove ingress and Runtime slots | No Stable Ingress, fixed blue/green ports, runtime slots, mixed generation, adoption, or component cutover | Not complete |
-| 5. Whole-Runtime publish and rollback | Code, configuration, entrypoint, manifest, SQLite schema/backup, and Worker protocol move as one compatible set | Canonical store implemented in `src/runtime/root/release-store.ts`; remaining work is deletion of the legacy Supervisor/slot publisher |
-| 6. Complete Worker isolation and fencing | Workers are bounded Runtime-owned children; stale Workers cannot commit control-plane side effects | Existing fencing primitives are reusable; ownership must be bound to the Canonical Runtime instance/release |
-| 7. Delete legacy architecture | Supervisor, Ingress, KeepAlive, slots, component rollout/rollback, and old authority are removed | Not complete |
+| 1. Establish Canonical Single Runtime | MCP Transport, Gateway Adapter, Controller Services, Scheduler, SQLite, and Worker Manager are started by one Runtime Root | Implemented in the source architecture: `repo-harness-runtime` starts the complete core application in one process |
+| 2. Converge lifecycle ownership | Runtime Root is the only core start/stop/failure/recovery owner | Implemented for core lifecycle: public lifecycle commands, Supervisor, independent Daemon, KeepAlive, component restart owners, and detached recovery paths are deleted; standalone Recovery can repair only itself/tunnel or perform offline whole-Runtime rollback |
+| 3. Simplify readiness | Public Runtime readiness is only `ready: true/false`; module observations are diagnostic evidence | Implemented: Canonical Runtime, status projection, Recovery verification, and public `controller_ready` use one binary Runtime decision |
+| 4. Remove ingress and Runtime slots | No Stable Ingress, fixed blue/green ports, runtime slots, mixed generation, adoption, or component cutover | Supervisor and Stable Ingress process island deleted; remaining work is removal of bootstrap/runtime-slot compatibility state |
+| 5. Whole-Runtime publish and rollback | Code, configuration, entrypoint, manifest, SQLite schema/backup, and Worker protocol move as one compatible set | Canonical active/previous release store, local SQLite backup/restore, startup binding, and offline Recovery rollback are implemented; final work is removing old bootstrap/slot authority |
+| 6. Complete Worker isolation and fencing | Workers are bounded Runtime-owned children; stale Workers cannot commit control-plane side effects | Existing Job/attempt/Lease fencing remains; ownership still must be bound explicitly to Canonical Runtime instance, release identity, artifact identity, and Worker protocol |
+| 7. Delete legacy architecture | Supervisor, Ingress, KeepAlive, slots, component rollout/rollback, and old authority are removed | Supervisor, Stable Ingress, component rollout operations, independent Daemon, KeepAlive, and public lifecycle commands are deleted; slot/bootstrap compatibility authority remains |
 
 A change that cannot be assigned to one phase, or that does not reduce core processes, lifecycle owners, readiness authorities, release units, or compatibility paths, is presumed scope drift and must stop for review.
 
@@ -147,20 +147,20 @@ The following paths are legacy implementation inventory, not target building blo
 
 | Legacy area | Required disposition |
 | --- | --- |
-| `src/runtime/supervisor/**` | delete after Canonical Runtime launch/release/rollback replacement is verified |
-| `src/runtime/supervisor/ingress-router.ts` and ingress session/process state | delete in phase 4 |
+| `src/runtime/supervisor/**` | deleted; architecture checks require the directory to remain absent |
+| Stable Ingress router and ingress session/process state | deleted in phase 4; one Runtime endpoint is configured directly |
 | MCP KeepAlive/restart commands and implementations | public/hidden entrypoints, the 911-line restart implementation, and the 1,136-line KeepAlive process/tunnel/restart owner are deleted in phase 2; reusable HTTP/stdio transports remain module code only |
 | MCP transport and Gateway tool Daemon auto-start | removed in phase 2; readiness and tool responses may observe daemon status but cannot create or recover Controller Services |
 | independent Controller Daemon entry and `ensureControllerDaemon()` service API | deleted; the remaining daemon status name is a read-only compatibility projection over Canonical Runtime observation |
 | `src/cli/controller/runtime-slots.ts` and slot homes | delete in phase 4 |
-| `src/cli/controller/bluegreen-rollout.ts` | delete in phases 4/7 |
-| public `controller` lifecycle/blue-green commands and public `supervisor` command | removed from the supported CLI surface in phase 2; implementation modules remain deletion inventory |
-| detached restart coordinator and component restart bridges | no longer reachable through the canonical/public lifecycle CLI; delete remaining internal callers |
+| `src/cli/controller/bluegreen-rollout.ts` | deleted; must not return |
+| public `controller` lifecycle/blue-green commands and public `supervisor` command | deleted from the supported CLI surface and implementation tree |
+| detached restart coordinator and component restart bridges | component owners are deleted; the remaining coordinator entry is a fail-closed retired-command stub pending final compatibility cleanup |
 | standalone Recovery PI/agent repair and repository-write authority | removed in phase 2; Recovery code must never launch an agent in, generate scripts in, move files from, or otherwise mutate a source checkout |
 | stable ingress ports and private blue/green ports | delete; one Runtime endpoint is configured directly |
 | component generation and mixed-generation coherence | delete; one Runtime instance/release identity remains |
 | Gateway/MCP component restart, rollout, rollback, green-gate and Supervisor facade operations | removed from direct tools and `rh_status`/`rh_work` in phase 2; no compatibility facade may trigger lifecycle changes |
-| component rollout/rollback operation stores | no longer reachable through MCP facades; delete internal stores with the remaining Supervisor implementation |
+| component rollout/rollback operation stores | deleted with the Supervisor implementation; only whole-Runtime release authority remains |
 | compatibility authority projections | migrate once, then delete; no permanent dual-read or dual-write |
 
 Legacy code may receive only deletion-enabling or safety-fencing changes. New features, new states, new rollback protocols, or new recovery automation must not be added to it. Recovery diagnostics may read source identity, but must never write a source checkout. Recovery state, evidence, and configuration remain below Controller Home; temporary OS service metadata is legacy deletion inventory, not a new authority. Autonomous code repair is not an allowed Runtime recovery mechanism.

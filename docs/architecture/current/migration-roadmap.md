@@ -10,15 +10,16 @@ The execution-plane phases below remain completed. The lifecycle itself is now a
 
 Active target:
 
-- fixed launchd bootstrap starts an immutable Supervisor release;
-- exactly five OS services exist: Supervisor, Recovery Gateway, Recovery Watchdog, primary tunnel, and Recovery tunnel;
-- Supervisor children are only stable ingress, Controller Daemon, and Gateway;
-- one `bootstrap/runtime-authority.json` and one `bootstrap/runtime-config.json` own primary lifecycle truth;
-- candidate/previous release activation preserves last-known-good ingress;
-- Recovery has an independent immutable release, state boundary, and tunnel;
-- legacy blue/green, nested KeepAlive, detached restart, and root/slot fallback paths are deleted after verified cutover.
+- one `repo-harness-runtime` process owns MCP Transport, Gateway Adapter, Controller Services, Scheduler, SQLite, and Worker Manager;
+- one Runtime Root owns core startup, shutdown, fatal failure, ownership, and binary readiness;
+- MCP binds directly to one configured Runtime endpoint; no Stable Ingress or alternate serving slot exists;
+- `runtime/releases/authority.json` owns one atomic active/previous whole-release selection;
+- SQLite contents and backups remain local Controller Home execution state and are never distributed in source, packages, releases, or manifests;
+- Workers are bounded Runtime-owned children and every state mutation is fenced by Runtime/release/Job/attempt/Lease identity;
+- standalone Recovery remains independently installable for diagnostics, self/tunnel repair, and offline whole-Runtime rollback, but owns no primary component lifecycle;
+- old bootstrap slot/writer compatibility state is removed after consumers migrate to Canonical Runtime fencing.
 
-The implementation authority and deletion receipts are tracked by `ISS-20260802-539E7F`; the Recovery delivery line is tracked by `ISS-20260802-27931A`. The migration is one-way and fail-closed: unsupported legacy state reports `MIGRATION_REQUIRED` rather than selecting a fallback.
+The convergence is one-way and fail-closed. Unsupported legacy authority must report migration/fencing errors rather than selecting a slot, component pointer, or fallback process owner.
 
 ## P0 — Stabilize and Remove Request-Lifetime Execution
 

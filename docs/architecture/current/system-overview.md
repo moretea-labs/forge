@@ -27,7 +27,7 @@ Client
 
 The durable execution model continues to use atomic state, bounded Worker processes, Leases, and fencing. The core application lifecycle is converging separately: Gateway Adapter, Controller Services, Scheduler, SQLite, and MCP Transport run inside one Canonical Runtime process, while Workers remain bounded child execution units.
 
-Supervisor, independent Daemon/Gateway services, Stable Ingress, runtime slots, component generations, and component rollout/rollback are deprecated transition code. They are not the final lifecycle graph and must not receive new lifecycle features.
+Supervisor, independent Daemon/Gateway services, Stable Ingress, and component rollout/rollback have been deleted from the source architecture. Runtime-slot and bootstrap authority files remain temporary compatibility state only and are the next deletion target; they are not a supported lifecycle graph.
 
 The approved target is [`runtime-architecture-simplification.md`](runtime-architecture-simplification.md): one local MCP application, one active Runtime, one root lifecycle owner, one binary readiness result, and one whole-Runtime release/rollback unit.
 

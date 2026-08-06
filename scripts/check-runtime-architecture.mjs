@@ -81,6 +81,11 @@ requireMissing('src/runtime/control-plane/daemon-entry.ts');
 requireMissing('scripts/smoke-runtime-control-plane.ts');
 requireMissing('src/cli/controller/lifecycle.ts');
 requireMissing('src/cli/commands/supervisor.ts');
+requireMissing('src/runtime/supervisor');
+requireMissing('docs/architecture/current/stable-external-runtime-supervisor.md');
+requireMissing('docs/architecture/modules/controller-runtime/stable-supervisor.md');
+requireMissing('docs/operations/stable-external-runtime-supervisor.md');
+requireMissing('docs/operations/stable-state-and-process-runtime.md');
 
 requireText('docs/architecture/current/runtime-architecture-simplification.md', 'one local MCP application');
 requireText('docs/architecture/current/runtime-architecture-simplification.md', 'one active Runtime');

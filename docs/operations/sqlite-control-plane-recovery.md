@@ -10,10 +10,11 @@ repository Issue/Task JSON, Markdown, project-state, task-ledger output or an
 offline export into an existing control-plane database. Those files are frozen
 compatibility material and may be stale.
 
-Stable Supervisor bootstrap and standalone Recovery retain their minimum
+Canonical Runtime bootstrap and standalone Recovery retain their minimum
 capability without consulting legacy Issue/Task files. If the database is
-unavailable, Recovery may diagnose, stop unsafe writers, inspect backups and
-restore a verified database; it must not synthesize authority from Git JSON.
+unavailable, Recovery may diagnose, require the Runtime to be stopped, inspect
+local backups and restore a verified database; it must not synthesize authority
+from Git JSON.
 
 ## Backup
 
@@ -28,6 +29,10 @@ restore a verified database; it must not synthesize authority from Git JSON.
 
 A backup is not restorable merely because it is a readable file. It must pass
 the same supported-schema and audit-continuity validation as the live database.
+The database and every backup are local project-execution data below Controller
+Home. They are never committed, packaged, embedded in a Runtime release, listed
+as manifest payload, or sent to another user; only schema compatibility metadata
+belongs to the distributed release contract.
 
 ## Restore
 

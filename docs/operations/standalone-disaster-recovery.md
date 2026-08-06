@@ -1,119 +1,93 @@
 # Standalone disaster recovery
 
-`repo-harness-recovery` is a compiled, fixed-command recovery service family installed as immutable releases below the stable Controller Home. It communicates only with the Stable Supervisor control socket and stores its own lock, known-good evidence, quarantine, audit, release authority, and role runtime identity below `controller-home/recovery/`.
+`repo-harness-recovery` is an independent, fixed-command recovery service family. It is not a second primary Runtime owner and it does not start, stop, restart, repair, or roll out individual core components.
 
-It never accepts a release path or arbitrary command. `rollback-previous` proceeds only when the active release is not already known-good and the Supervisor-registered previous slot exactly matches an independently attested manifest hash. A request against an already known-good active release succeeds as a no-op.
+## Authority boundaries
 
-The independent gateway listens only on `127.0.0.1`, exposes a seven-tool MCP surface, requires a separate scoped bearer credential, has bounded mutation rate limiting, and does not use the primary gateway or its ingress proxy. The credential file is mode `0600` and must never be copied into logs or source control. The gateway accepts both `/mcp` and `/recovery/mcp` so a path-scoped Tailscale Funnel can expose recovery without replacing the primary ingress path.
+The primary application has three relevant records under Controller Home:
 
-External HTTPS verification uses the platform's trusted system `curl` transport rather than the Recovery binary's Bun TLS stack. On macOS this is fixed to `/usr/bin/curl`; Windows accepts only the verified System32 `curl.exe` path. A missing trusted binary fails closed. TLS and hostname verification remain enabled. Authorization headers, JSON-RPC payloads, and MCP session IDs are written only to short-lived `controller-home/recovery/tmp` files (directory mode `0700`, file mode `0600`) and are removed after every request path, including timeout and cancellation. They are never supplied in process arguments or recovery audit output. Loopback HTTP probes retain the in-process fetch transport.
+```text
+runtime/active-runtime-owner.json       live Canonical Runtime ownership
+runtime/status.json                     read-only Runtime status projection
+runtime/releases/authority.json         atomic active/previous whole-release authority
+runtime/releases/backups/*.sqlite       local pre-upgrade database backups
+```
 
-Build and activate the immutable local Recovery release with:
+Recovery reads those records and probes the configured Runtime MCP endpoint. It does not connect to a Supervisor socket, select a blue/green slot, submit component operations, or infer authority from a source checkout.
+
+SQLite rows are local project-execution state. Database files and backups remain below Controller Home and are never included in source control, a package, an immutable release, a release manifest, or data distributed to another user. The release manifest carries only SQLite schema compatibility metadata.
+
+## Recovery service state
+
+Recovery-owned configuration, evidence, locks and audit records remain below:
+
+```text
+controller-home/recovery/
+├── config/
+├── releases/
+├── state/
+├── locks/
+├── audit/
+├── tmp/
+└── launchd/
+```
+
+Recovery release binaries may be installed independently so diagnostics remain available when the primary Runtime is down. That independent installation does not grant primary Runtime lifecycle authority.
+
+## Fixed recovery surface
+
+The CLI and Recovery MCP surface expose bounded operations:
+
+```text
+runtime_status
+verify_stable_runtime
+verify_external_runtime
+list_releases
+attest_known_good
+rollback_previous
+restart_public_tunnel
+reconnect_primary_connector
+```
+
+`runtime_status` reads canonical Runtime observation. `list_releases` reads the whole-release authority. `attest_known_good` succeeds only after Runtime status, release identity, authenticated MCP initialization, tools/list, and the configured read-only MCP call pass together.
+
+The Recovery Gateway listens on loopback, uses a separate scoped credential, bounds request/output size, and stores no primary MCP credential in logs. External HTTPS verification uses the trusted system curl transport; temporary headers, MCP payloads and session identifiers are written only to bounded mode-0600 files below `recovery/tmp` and are removed after each request.
+
+## Whole-Runtime rollback
+
+Rollback is deliberately offline:
+
+1. verify that the primary Runtime is stopped;
+2. acquire the Recovery mutation lock;
+3. require an attested previous whole release with a verified local SQLite backup;
+4. back up the current local SQLite database;
+5. restore the previous local backup;
+6. atomically switch active/previous whole-release authority;
+7. leave startup of the selected Runtime to the single supported Runtime launcher;
+8. verify the restarted Runtime before attesting it as known-good.
+
+Recovery never rolls back Gateway, Controller Services, Scheduler, MCP Transport, Worker code, configuration, or database independently. They move as one release compatibility set. If the authority commit fails after database restoration, the rollback implementation restores the just-created current backup.
+
+## Watchdog rules
+
+One watchdog tick performs at most one mutation under the cross-process Recovery lock.
+
+Allowed self-repair is narrow:
+
+1. restart the standalone Recovery Gateway when only its own loopback health fails;
+2. restart the explicitly configured Recovery public tunnel when local Runtime and Recovery health are good but that external endpoint fails;
+3. request offline whole-Runtime rollback only after a sustained multi-signal failure, an unattested active release, and an attested previous release are proven.
+
+The watchdog cannot restart the primary Runtime, launch an Agent, edit a source checkout, generate repair scripts, or mutate repository files. A brief outage remains diagnostic/degraded evidence and does not trigger rollback.
+
+## Installation
+
+Build the immutable Recovery release with:
 
 ```sh
 bun scripts/install-standalone-recovery.ts --controller-home /absolute/controller-home
 ```
 
-The installer requires an exact clean Git revision for the Recovery source paths. It compiles into `recovery/releases/.staging-*`, verifies a harmless status canary, writes a manifest with exact source and binary hashes, then atomically renames the complete directory. On the first migration it captures the existing flat binaries as an exact hash-addressed legacy release before changing service authority.
+A public Recovery endpoint is optional. When configured, its service owner and URL must both be explicit. Direct reload scripts are not a second mutation path; publication and activation remain installer-owned.
 
-```text
-controller-home/recovery/
-├── releases/<timestamp>-<revision>/
-├── current -> releases/<active>
-├── previous -> releases/<rollback>
-├── bin/* -> ../current/*
-├── state/gateway-runtime.json
-├── state/watchdog-runtime.json
-├── state/watchdog.json
-├── state/agent-repair.json
-├── current/pi-recovery.md
-└── launchd/*.plist
-```
-
-`current` changes only while holding the global Recovery mutation lock. The installer performs a bounded two-service launchd handoff, requires exact runtime identity from the new Gateway and Watchdog, verifies the Recovery health endpoint, and restores and verifies the exact `previous` release on failure. It never overwrites a running executable in place.
-
-To stage and inspect a candidate without changing services:
-
-```sh
-bun scripts/install-standalone-recovery.ts --controller-home /absolute/controller-home --stage-only
-```
-
-Configure the primary MCP endpoint and the dedicated Recovery endpoint as separate failure domains. The Recovery tunnel service and public URL must be supplied together:
-
-```sh
-bun scripts/install-standalone-recovery.ts \
-  --controller-home /absolute/controller-home \
-  --public-mcp-url https://primary.example.test/mcp \
-  --recovery-public-url https://recovery.example.test/recovery/mcp \
-  --recovery-tunnel-service-label com.moretea.repo-harness-recovery-tunnel \
-  --recovery-tunnel-service-plist "$HOME/Library/LaunchAgents/com.moretea.repo-harness-recovery-tunnel.plist"
-```
-
-The old `--public-tunnel-service-label` and `--public-tunnel-service-plist` flags remain compatibility aliases for the dedicated Recovery tunnel only. New automation must use the explicit `--recovery-*` names. The installer rejects a Recovery URL without a service owner, or a service owner without a URL, because an unowned endpoint cannot be repaired safely.
-
-The watchdog evaluates four independent surfaces: Stable Supervisor control, the primary stable ingress/Gateway/MCP lifecycle, the local standalone Recovery Gateway, and the dedicated public Recovery endpoint. A public Recovery outage can restart only its configured tunnel service. A hung local Recovery Gateway can restart only `com.moretea.repo-harness-recovery-gateway`. Neither case is allowed to roll back the primary runtime. Failure counters, first-failure timestamps, prior restart decisions, tunnel-repair failures, rollback use, and the last decision persist across watchdog process restarts.
-
-The installer writes launchd plists that start through `/usr/bin/env -i` with a minimal `PATH`, so the Recovery Gateway and Watchdog do not inherit unrelated session credentials. The installer itself owns user LaunchAgent registration and activation. `scripts/load-standalone-recovery.sh` intentionally refuses direct reloads so no second service-mutation path can bypass publication, identity verification, or rollback.
-
-When Tailscale Funnel is available, expose the recovery gateway under a path that is independent from the primary root mapping:
-
-```sh
-tailscale funnel --bg --yes --https=443 --set-path /recovery http://127.0.0.1:8787
-```
-
-The resulting ChatGPT Recovery Connector endpoint is:
-
-```text
-https://<tailscale-host>.<tailnet>.ts.net/recovery/mcp
-```
-
-A ChatGPT Recovery Connector remains a separate provisioning step because creating the Connector may require interactive browser OAuth/MFA and stores a persistent external credential.
-
-## Bounded recovery order
-
-One watchdog tick performs at most one mutation under the global cross-process Recovery lock. The order is deliberately narrow:
-
-1. restart the standalone Recovery Gateway when only its local health endpoint is down;
-2. repair the explicitly configured dedicated Recovery tunnel when local Recovery remains healthy;
-3. restart the primary Gateway or Stable Supervisor only for their own sustained local failures;
-4. roll back only after six sustained observations over at least thirty seconds, two independent primary-runtime evidence classes, no active Supervisor operation, an un-attested active release, and an attested previous release;
-5. invoke the optional PI repair agent only after ordinary recovery paths have been attempted or are unavailable and the longer PI threshold and cooldown are satisfied.
-
-A short outage remains `degraded`. The watchdog never runs two recovery mutations in one pass and never resets its failure window merely because the watchdog process restarted.
-
-## Optional PI repair fallback
-
-PI execution is disabled unless `--enable-pi-agent` is provided. Enabling it also requires a resolvable executable and an explicit repository directory. The repository directory should be a dedicated clean clone or disposable worktree, not a developer's active dirty checkout:
-
-```sh
-bun scripts/install-standalone-recovery.ts \
-  --controller-home /absolute/controller-home \
-  --recovery-public-url https://recovery.example.test/recovery/mcp \
-  --recovery-tunnel-service-label com.moretea.repo-harness-recovery-tunnel \
-  --recovery-tunnel-service-plist "$HOME/Library/LaunchAgents/com.moretea.repo-harness-recovery-tunnel.plist" \
-  --enable-pi-agent \
-  --pi-command /absolute/path/to/pi \
-  --pi-repo-root /absolute/path/to/dedicated-recovery-worktree
-```
-
-The prompt is copied into the immutable Recovery release as `pi-recovery.md`, hashed in `manifest.json`, and resolved through the active `recovery/current` authority. Runtime execution fails closed if the prompt path or hash no longer matches the active release. PI runs with a fixed prompt, a bounded evidence appendix, the configured repository as its working directory, a maximum runtime, bounded output, a one-hour default cooldown, the same global mutation lock, and audit records containing hashes rather than model output. It cannot be enabled by a transient watchdog state change. Missing PI, prompt tampering, timeout, non-zero exit, or lock contention is recorded once and does not create a retry storm.
-
-## Local PI enablement helper
-
-`scripts/enable-standalone-recovery-pi.sh` configures the existing immutable Recovery Watchdog; it does not create a second outage detector or service-mutation loop. The helper creates an owned clean local clone outside the developer checkout, installs a minimal launchd-owned Tailscale transport for `/recovery` and `/.well-known`, preserves the primary MCP URL without taking ownership of its tunnel, and invokes `install-standalone-recovery.ts` with the manifest-bound PI prompt.
-
-The default PI threshold is twelve failed observations over at least five minutes, followed by a one-hour cooldown. Ordinary Gateway, tunnel, Supervisor, and verified rollback paths remain ahead of PI in the single Recovery mutation order.
-
-```sh
-REPO_HARNESS_CONTROLLER_HOME=/absolute/controller-home \
-REPO_HARNESS_RECOVERY_PUBLIC_URL=https://host.tailnet.ts.net/recovery/mcp \
-  scripts/enable-standalone-recovery-pi.sh --install
-```
-
-The helper fails closed if the dedicated PI clone is dirty or has an ownership mismatch; it never resets recovery evidence. `--print-plan`, `--prepare-workspace`, and `--verify` provide non-overlapping inspection and maintenance modes. The obsolete `repo-harness-pi-recovery-watchdog` LaunchAgent and copied executable are removed during installation so standalone Recovery remains the only recovery authority.
-
-Run wrapper regression coverage with:
-
-```sh
-bash scripts/test-enable-standalone-recovery-pi.sh
-```
+No rollout or live service restart is implied by source changes. Activating a new primary Runtime release requires separate explicit authorization and exact release evidence.

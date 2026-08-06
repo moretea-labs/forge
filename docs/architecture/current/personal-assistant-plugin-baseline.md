@@ -176,7 +176,7 @@ managed native providers without introducing a plugin marketplace:
 
 - Core Controller authority remains compiled into Repo Harness: admission,
   authorization, resource claims, receipts, audit events, Work, Process, Git,
-  Supervisor, recovery, and plugin discovery are not replaceable plugins.
+  Runtime Root, recovery, and plugin discovery are not replaceable plugins.
 - First-party domain capabilities remain bundled with the Repo Harness package
   and are registered through `src/runtime/plugins/first-party-registry.ts`.
 - Desktop is the first bundled capability whose domain implementation executes

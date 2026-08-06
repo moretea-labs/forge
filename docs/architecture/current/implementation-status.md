@@ -39,7 +39,7 @@ The migration preserves the existing Issue, Task, Run, Edit Session, Local Job, 
 | Global fair scheduler | Implemented | priority aging, persisted repository fairness, global/repository quotas |
 | Provider and host budgets | Implemented | Worker, Agent provider, Heavy Check, memory and CPU-load admission limits |
 | Durable reconciliation | Implemented | heartbeat, deadline, Operation Receipt recovery, safe retry and ambiguous-mutation stop |
-| Startup recovery before readiness | Implemented | `starting` is persisted; ExecutionJob indexes, Jobs, Local Jobs, Leases and projections reconcile before `ready`; repository/phase failures publish degraded state |
+| Startup recovery before readiness | Implemented in Canonical Runtime | SQLite, Controller Services and in-process Scheduler initialize before MCP end-to-end probe; any fatal core failure makes the one Runtime readiness false and stops the complete Runtime |
 | Canonical repository command input | Implemented | typed argv is validated and direct-spawned without shell reparsing; legacy strings use one explicit compatibility shell boundary |
 | Active/recent/request indexes | Implemented | Execution Job, Agent Run, Task-to-Run, pending integration, Local Job, Occurrence, Portfolio and Finding indexes |
 | Schedule, Trigger, Decision and Occurrence | Implemented | interval/manual/UTC cron/calendar/condition/event/dependency triggers, bounded Occurrence and persisted Decision |
@@ -54,7 +54,7 @@ The migration preserves the existing Issue, Task, Run, Edit Session, Local Job, 
 | Whole-Runtime readiness | Implemented in the Canonical Runtime source path | Public readiness is one `ready: boolean`; database, Scheduler, release coherence, MCP transport and repository checks are diagnostic evidence rather than independent lifecycle states |
 | Legacy compatibility | Implemented | stable MCP facade, unchanged compatibility fingerprint, Local Job projection into Execution Job |
 | Work-only execution contract convergence | Implemented for Work-backed Tasks | `WorkContract` owns objective/scope/check/risk/status/phase and completion receipt; linked Task fields are read projections, PlanStep retains `workId`, and receipt/revision/cleanup gates fail closed |
-| Node/Bun process portability | Implemented | project TypeScript Loader for Daemon/Worker/Gateway smoke execution; Bun remains the supported package/test runtime |
+| Node/Bun process portability | Implemented | project TypeScript Loader and bounded Worker/child process execution; Bun remains the supported package/test runtime |
 
 ## Public Contract and Tool Surface
 

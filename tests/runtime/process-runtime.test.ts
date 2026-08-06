@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { delimiter, join } from 'path';
 import { spawnSync } from 'child_process';
@@ -49,7 +49,6 @@ import {
 } from '../../src/cli/controller/stable-state/runtime-writer-context';
 import { publishWriterAuthority } from '../../src/cli/controller/stable-state/writer-authority';
 import { defaultProcessIdentityProbe, executableFingerprint } from '../../src/runtime/shared/process-identity';
-import { stageSupervisorRelease } from '../../src/runtime/supervisor/installer';
 import { ensureRepositoryRuntimeStorage } from '../../src/cli/repositories/runtime-storage';
 import { callProcessTool, processToolDefinitions } from '../../src/runtime/gateway/mcp/process-tools';
 import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repository';
@@ -1329,68 +1328,6 @@ describe('Process Runner exactly-once semantics', () => {
     // Claim already held → must not re-exec.
     await expect(runProcessRunnerFromDescriptor(descriptor)).rejects.toThrow(/PROCESS_RUNNER_ALREADY_STARTED/);
     expect(existsSync(marker)).toBe(false);
-  });
-});
-
-describe('installed release Process Runner smoke', () => {
-  test('stageSupervisorRelease builds process-runner.js and runs without source .ts', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'process-runner-release-'));
-    roots.push(root);
-    const controllerHome = join(root, 'controller');
-    mkdirSync(controllerHome, { recursive: true });
-    // Source root is this worktree / repo package root.
-    const sourceRoot = process.cwd();
-    const staged = stageSupervisorRelease({
-      controllerHome,
-      repoRoot: sourceRoot,
-      sourceRoot,
-      allowDirtyRuntimeSourceForTests: true,
-    });
-    expect(existsSync(join(staged.releasePath, 'process-runner.js'))).toBe(true);
-    const manifest = JSON.parse(readFileSync(join(staged.releasePath, 'manifest.json'), 'utf8')) as {
-      processRunnerEntrypoint?: string;
-      capabilities?: string[];
-    };
-    expect(manifest.processRunnerEntrypoint).toBe('process-runner.js');
-    expect(manifest.capabilities).toContain('independent_process_runner');
-    try {
-      chmodSync(join(staged.releasePath, 'process-runner.js'), 0o700);
-    } catch {
-      /* windows */
-    }
-
-    // Use installed process-runner.js without source entry available via env override.
-    const runnerJs = join(staged.releasePath, 'process-runner.js');
-    const prev = process.env.REPO_HARNESS_PROCESS_RUNNER_ENTRY;
-    process.env.REPO_HARNESS_PROCESS_RUNNER_ENTRY = runnerJs;
-    try {
-      const fx = fixture();
-      const handle = await spawnManagedProcess({
-        controllerHome: fx.controllerHome,
-        repoId: fx.repository.repoId,
-      executionIdentity: executionIdentityForRepository(fx.repository),
-        command: {
-          kind: 'argv',
-          executable: 'node',
-          args: ['-e', 'process.stdout.write("from-release"); process.exit(0)'],
-          cwd: fx.repoRoot,
-        },
-        interactiveWaitMs: 8_000,
-        timeoutMs: 20_000,
-      });
-      expect(handle.completed).toBe(true);
-      expect(handle.ok).toBe(true);
-      expect(handle.stdout).toContain('from-release');
-      const record = getProcessRecord(fx.controllerHome, fx.repository.repoId, handle.processId);
-      expect(record?.exitReceiptPath && existsSync(record.exitReceiptPath)).toBe(true);
-      if (record?.exitReceiptPath) {
-        const receipt = JSON.parse(readFileSync(record.exitReceiptPath, 'utf8')) as { commandExecutedOnce?: boolean };
-        expect(receipt.commandExecutedOnce).toBe(true);
-      }
-    } finally {
-      if (prev === undefined) delete process.env.REPO_HARNESS_PROCESS_RUNNER_ENTRY;
-      else process.env.REPO_HARNESS_PROCESS_RUNNER_ENTRY = prev;
-    }
   });
 });
 

@@ -30,7 +30,7 @@ A failure in one domain must not automatically terminate or corrupt another doma
 
 ## 3. Client and Transport Failure
 
-An installed Controller Home has an external Stable Runtime Supervisor as the lifecycle owner. Accepted runtime operations are persisted under `supervisor/operations/` before Gateway or Daemon shutdown. The recovery Connector is loopback-only Rescue MCP; public Connector continuity uses the stable Gateway domain and durable identifiers.
+An installed Controller Home has one Canonical Runtime Root as the core lifecycle owner. Accepted repository work is persisted before execution and is independent of the MCP request lifetime. Runtime status is a read-only owner-bound projection, while standalone Recovery reads that projection and the atomic whole-release authority; there is no Supervisor socket or component operation queue.
 
 Examples:
 
@@ -66,21 +66,24 @@ A 502 may describe Gateway or proxy availability. It must not be used as evidenc
 
 The Gateway is stateless except for transport/session caches and bounded projections.
 
-After restart it must:
+After a whole-Runtime restart it must:
 
-1. reload authentication and tool-surface configuration;
-2. reconnect to Controller Daemon or Controller Home;
-3. expose the same stable repository and Job identities;
-4. reject or redirect stale MCP sessions cleanly;
-5. avoid resubmitting accepted work without idempotency lookup.
+1. acquire the single Controller Home Runtime ownership claim;
+2. validate the selected whole-release manifest and local schema compatibility;
+3. initialize SQLite, Controller Services and repository identities;
+4. recover scheduling, Leases, projections and bounded Worker ownership;
+5. start the in-process Scheduler and MCP Transport;
+6. reject stale MCP sessions cleanly;
+7. avoid resubmitting accepted work without idempotency lookup;
+8. publish `ready: true` only after the authenticated MCP end-to-end probe succeeds.
 
-Gateway restart must not cancel Workers.
+A fatal MCP Transport, Controller Services, SQLite, or Scheduler failure makes the complete Runtime not ready and stops the one core process. No module restarts itself as an independently authoritative service.
 
-## 5. Controller Daemon Failure
+## 5. Runtime core recovery
 
-The Controller Daemon owns scheduling decisions, Repo Actors, reconciliation, Schedule delivery, and Lease management.
+The Runtime Root owns scheduling initialization, reconciliation, Schedule delivery, Lease management and core failure propagation.
 
-After restart it must persist `starting`, run bounded synchronous recovery, and publish `ready` only after that recovery returns:
+After restart it runs bounded recovery before publishing ready:
 
 ```text
 load enabled repository registry
@@ -89,7 +92,7 @@ reconcile running/active ExecutionJobs and dead workers
 reconcile Local Bridge compatibility Jobs
 remove or classify expired Leases
 rebuild every repository materialized projection from durable truth
-publish ready, including degraded state and structured recovery errors
+publish the one binary Runtime readiness result with structured diagnostic reason codes
 resume fair scheduling and normal asynchronous observation
 ```
 
@@ -410,7 +413,7 @@ Required test scenarios include:
 
 ## 23. Current Implementation
 
-Gateway, Controller Daemon and Worker are separate process roles. Accepted Jobs are persisted before Worker spawn. Job heartbeat, deadline, attempt, PID, Lease and fencing state are durable. Active and request indexes reconstruct scheduling after restart.
+MCP Transport, Gateway Adapter, Controller Services, Scheduler and SQLite run in one Canonical Runtime process. Workers remain bounded child process roles. Accepted Jobs are persisted before Worker spawn. Job heartbeat, deadline, attempt, PID, Lease and fencing state are durable, and active/request indexes reconstruct scheduling after a whole-Runtime restart.
 
 Before an operation runs, the Worker writes an Operation Receipt. A completed receipt lets Reconciliation close a Job after a crash between side-effect completion and terminal-state persistence. A started-but-incomplete mutating receipt is treated as an uncertain side effect and becomes `human_attention_required`; it is not replayed. Safe read-only work may be requeued within attempt budget.
 
@@ -420,8 +423,8 @@ The Gateway does not infer execution failure from a disconnected request. Caller
 
 ## 24. Recovery Invariants
 
-- a restarted Gateway never owns Worker lifetime;
-- a restarted Daemon schedules from active indexes;
+- MCP transport sessions never own Worker lifetime;
+- the restarted Canonical Runtime schedules from durable active indexes;
 - a stale Worker cannot write through an expired or replaced fencing token;
 - external effects are reconciled rather than blindly retried;
 - repository A recovery does not require locking repository B;

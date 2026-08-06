@@ -74,8 +74,8 @@ The final cutover tests prove:
    legacy writer call;
 3. no reverse export importer or stale-projection replay path exists;
 4. late legacy writes leave SQLite-derived views unchanged;
-5. Supervisor and standalone Recovery minimum bootstrap do not depend on legacy
-   Issue/Task files.
+5. Canonical Runtime and standalone Recovery minimum bootstrap do not depend on
+   legacy Issue/Task files.
 
 Any later non-critical compatibility residue is recorded as a
 MaintenanceFinding. It does not reopen a completed Requirement unless the user

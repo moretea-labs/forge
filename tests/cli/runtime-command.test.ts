@@ -83,14 +83,6 @@ describe('runtime command surface', () => {
     const httpTransport = readFileSync(join(ROOT, 'src/cli/mcp/transports/http.ts'), 'utf8');
     const runtimeTools = readFileSync(join(ROOT, 'src/runtime/gateway/mcp/runtime-tools.ts'), 'utf8');
     const toolsetNames = readFileSync(join(ROOT, 'src/cli/mcp/toolset-names.ts'), 'utf8');
-    const supervisorRuntime = readFileSync(join(ROOT, 'src/runtime/supervisor/supervisor-runtime.ts'), 'utf8');
-    const supervisorProcessManager = readFileSync(join(ROOT, 'src/runtime/supervisor/process-manager.ts'), 'utf8');
-    const supervisorIngressRouter = readFileSync(join(ROOT, 'src/runtime/supervisor/ingress-router.ts'), 'utf8');
-    const supervisorEntry = readFileSync(join(ROOT, 'src/runtime/supervisor/entry.ts'), 'utf8');
-    const supervisorActivation = readFileSync(join(ROOT, 'src/runtime/supervisor/activation-state-machine.ts'), 'utf8');
-    const supervisorControl = readFileSync(join(ROOT, 'src/runtime/supervisor/control-server.ts'), 'utf8');
-    const supervisorSourceIdentity = readFileSync(join(ROOT, 'src/runtime/supervisor/source-identity.ts'), 'utf8');
-    const supervisorReleaseCoherence = readFileSync(join(ROOT, 'src/runtime/supervisor/release-coherence.ts'), 'utf8');
     const restartCoordinatorEntry = readFileSync(join(ROOT, 'src/cli/controller/restart-coordinator-entry.ts'), 'utf8');
     const compositeOperations = readFileSync(join(ROOT, 'src/cli/controller/composite-operations.ts'), 'utf8');
     const controllerPostcondition = readFileSync(join(ROOT, 'src/cli/controller/postcondition.ts'), 'utf8');
@@ -104,8 +96,6 @@ describe('runtime command surface', () => {
     const localBridgeSurface = readFileSync(join(ROOT, 'src/runtime/shared/local-bridge-surface.ts'), 'utf8');
     const localBridgeFacade = readFileSync(join(ROOT, 'src/cli/local-bridge/facade-api.ts'), 'utf8');
     const standaloneRecovery = readFileSync(join(ROOT, 'src/runtime/standalone-recovery/core.ts'), 'utf8');
-    const supervisorTypes = readFileSync(join(ROOT, 'src/runtime/supervisor/types.ts'), 'utf8');
-    const supervisorStateStore = readFileSync(join(ROOT, 'src/runtime/supervisor/state-store.ts'), 'utf8');
     const facadeActions = readFileSync(join(ROOT, 'src/runtime/control-plane/facade/suggested-actions.ts'), 'utf8');
     const capabilityRegistry = readFileSync(join(ROOT, 'src/runtime/control-plane/facade/capability-registry.ts'), 'utf8');
     expect(mcpCommand).toContain('bindInheritedRuntimeWriterClaimFromEnvironment');
@@ -144,7 +134,6 @@ describe('runtime command surface', () => {
     expect(runtimeSlots).not.toContain('localControllerPort: number');
     expect(runtimeSlots).not.toContain('processGroupLeader?: number');
     expect(runtimeSlots).not.toContain('logDir: string');
-    expect(supervisorRuntime).not.toContain('logDir: dirname(this.options.logPath)');
     expect(httpTransport).not.toContain('ensureControllerDaemon');
     expect(httpTransport).toContain('readControllerDaemonStatus');
     expect(runtimeTools).not.toContain('ensureControllerDaemon');
@@ -229,19 +218,16 @@ describe('runtime command surface', () => {
     expect(runtimeTools).not.toContain('activeSlot: identity.activeSlot');
     expect(runtimeTools).not.toContain('generation: identity.generation');
     expect(runtimeTools).not.toContain("from '../../../cli/controller/stable-state/stable-home'");
-    const supervisorMonitorStart = supervisorRuntime.indexOf('private async monitorTick()');
-    const supervisorMonitorEnd = supervisorRuntime.indexOf('private scheduleMonitorTick()', supervisorMonitorStart);
-    const supervisorMonitorBlock = supervisorRuntime.slice(supervisorMonitorStart, supervisorMonitorEnd);
-    expect(existsSync(join(ROOT, 'src/runtime/supervisor/ingress-process.ts'))).toBe(false);
-    expect(supervisorEntry).not.toContain('--ingress-child');
-    expect(supervisorEntry).not.toContain('REPO_HARNESS_SUPERVISOR_INGRESS_CHILD');
-    expect(supervisorEntry).not.toContain('createStableIngressProcess');
-    expect(supervisorActivation).toContain("| 'waiting_runtime_ready'");
-    expect(supervisorActivation).not.toContain("| 'waiting_stable_endpoint'");
-    expect(supervisorActivation).toContain("value === 'waiting_stable_endpoint'");
-    expect(supervisorSourceIdentity).toContain('export function sourceIdentityFor');
-    expect(supervisorSourceIdentity).not.toContain('runtime-slots');
-    expect(supervisorSourceIdentity).not.toContain('sendSupervisorCommand');
+    expect(existsSync(join(ROOT, 'src/runtime/supervisor'))).toBe(false);
+    for (const legacyPath of [
+      'src/runtime/supervisor/entry.ts',
+      'src/runtime/supervisor/supervisor-runtime.ts',
+      'src/runtime/supervisor/ingress-router.ts',
+      'src/runtime/supervisor/ingress-session-store.ts',
+      'src/runtime/supervisor/installer.ts',
+      'src/runtime/supervisor/operation-store.ts',
+      'src/runtime/supervisor/state-store.ts',
+    ]) expect(existsSync(join(ROOT, legacyPath))).toBe(false);
     expect(existsSync(join(ROOT, 'src/cli/controller/bluegreen-rollout.ts'))).toBe(false);
     expect(compositeOperations).not.toContain("from './bluegreen-rollout'");
     expect(compositeOperations).not.toContain('controllerRollout');
@@ -335,13 +321,6 @@ describe('runtime command surface', () => {
     expect(standaloneRecovery).not.toContain('export async function restartSupervisor');
     expect(standaloneRecovery).not.toContain('RestartSupervisorReceipt');
     expect(standaloneRecovery).not.toContain('supervisorActivationPath');
-    expect(supervisorReleaseCoherence).toContain('ok: releaseCoherent');
-    expect(supervisorReleaseCoherence).not.toContain('ActiveSlotAuthority');
-    expect(supervisorReleaseCoherence).not.toContain('SlotIdentity');
-    expect(supervisorReleaseCoherence).not.toContain('generationCoherent');
-    expect(supervisorReleaseCoherence).not.toContain('slotCoherent');
-    expect(supervisorReleaseCoherence).not.toContain('input.authority');
-    expect(supervisorReleaseCoherence).not.toContain('input.slotIdentity');
     expect(existsSync(join(ROOT, 'src/cli/controller/restart-coordinator.ts'))).toBe(false);
     expect(restartCoordinatorEntry).toContain('RUNTIME_LIFECYCLE_ACTION_RETIRED');
     expect(restartCoordinatorEntry).toContain('process.exitCode = 2');
@@ -351,69 +330,8 @@ describe('runtime command surface', () => {
     expect(runtimeTools).not.toContain('activeSlotRevision');
     expect(runtimeTools).not.toContain('generationCoherent');
     expect(runtimeTools).not.toContain('slotCoherent');
-    expect(supervisorControl).toContain('DEFAULT_SUPERVISOR_CONTROL_PORT = 8770');
-    expect(supervisorEntry).toContain("numberOption('--control-port', DEFAULT_SUPERVISOR_CONTROL_PORT)");
-    expect(supervisorCommand).toContain('port: DEFAULT_SUPERVISOR_CONTROL_PORT');
-    expect(supervisorCommand).not.toContain('port: 8765');
-    expect(supervisorIngressRouter).toContain('DEFAULT_COMPATIBILITY_ROUTER_PORT = 8765');
-    expect(supervisorRuntime).toContain('port: DEFAULT_COMPATIBILITY_ROUTER_PORT');
-    expect(supervisorRuntime).not.toContain('this.options.stableIngressPort');
-    expect(supervisorRuntime).not.toContain('this.options.stableIngressHost');
-    const gatewayBindingStart = supervisorProcessManager.indexOf('gatewayBinding(');
-    const gatewayBindingEnd = supervisorProcessManager.indexOf('localControllerBinding(', gatewayBindingStart);
-    const gatewayBindingBlock = supervisorProcessManager.slice(gatewayBindingStart, gatewayBindingEnd);
-    expect(gatewayBindingBlock).toContain('DEFAULT_SUPERVISOR_GATEWAY_BASE_PORT');
-    expect(gatewayBindingBlock).not.toContain('stableIngressPort');
-    expect(gatewayBindingBlock).not.toContain('gatewayPortOffset');
-    expect(supervisorRuntime).toContain('startCompatibilityIngressRouter');
-    expect(supervisorRuntime).not.toContain('replaceIngressRouter');
-    expect(supervisorMonitorBlock).not.toContain('createStableIngressRouter');
-    expect(supervisorRuntime).not.toContain('supervisorIngressHealthDecision');
-    expect(supervisorRuntime).not.toContain('SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD');
-    expect(supervisorMonitorBlock).not.toContain('inline stable ingress router recovery');
-    expect(supervisorMonitorBlock).not.toContain('router replacement');
-    expect(supervisorMonitorBlock).not.toContain('requestSupervisorSelfRestart');
-    expect(supervisorMonitorBlock).toContain('Public endpoint observations are diagnostics only');
-    expect(supervisorRuntime).toContain('verifyAuthoritySelectedGateway');
-    expect(supervisorRuntime).toContain('SUPERVISOR_ACTIVE_GATEWAY_VERIFY_FAILED');
-    expect(supervisorRuntime).not.toContain('verifyStableIngress');
-    expect(supervisorRuntime).not.toContain('SUPERVISOR_STABLE_INGRESS_VERIFY_FAILED');
-    const cutoverVerificationStart = supervisorRuntime.indexOf('private async verifyAuthoritySelectedGateway');
-    const cutoverVerificationEnd = supervisorRuntime.indexOf('private async observeActivatedSlot', cutoverVerificationStart);
-    const cutoverVerificationBlock = supervisorRuntime.slice(cutoverVerificationStart, cutoverVerificationEnd);
-    expect(cutoverVerificationBlock).toContain("gatewayBinding(input.slot)");
-    expect(cutoverVerificationBlock).toContain("/ready");
-    expect(cutoverVerificationBlock).not.toContain('stableIngressHost');
-    expect(cutoverVerificationBlock).not.toContain('stableIngressPort');
-    const legacyIngressSlotAssignments = [...supervisorRuntime.matchAll(/activeUpstreamSlot:\s*([^,\n]+)/g)]
-      .map((match) => match[1].trim());
-    const legacyIngressPortAssignments = [...supervisorRuntime.matchAll(/activeUpstreamPort:\s*([^,\n]+)/g)]
-      .map((match) => match[1].trim());
-    expect(legacyIngressSlotAssignments).toEqual([]);
-    expect(legacyIngressPortAssignments).toEqual([]);
-    expect(supervisorRuntime).not.toContain('this.state.ingress.activeUpstreamSlot');
-    expect(supervisorRuntime).not.toContain('this.state.ingress.activeUpstreamPort');
-    expect(supervisorTypes).not.toContain('activeUpstreamSlot');
-    expect(supervisorTypes).not.toContain('activeUpstreamPort');
-    expect(supervisorTypes).not.toContain('  ingress: {');
-    expect(supervisorRuntime).not.toContain('this.state.ingress');
-    expect(supervisorStateStore).toContain('ingress: _legacyIngress');
-    expect(supervisorStateStore).not.toContain('_legacyActiveUpstreamSlot');
-    expect(supervisorStateStore).not.toContain('_legacyActiveUpstreamPort');
-    expect(supervisorRuntime).toContain("phase: 'activating_runtime'");
-    expect(supervisorRuntime).not.toContain("phase: 'switching_ingress'");
-    expect(supervisorTypes).toContain("| 'activating_runtime'");
-    expect(supervisorStateStore).not.toContain('switching_ingress');
-    const supervisorOperationStore = readFileSync(join(ROOT, 'src/runtime/supervisor/operation-store.ts'), 'utf8');
-    expect(supervisorOperationStore).toContain("value.phase === 'switching_ingress'");
-    expect(supervisorOperationStore).toContain("phase: 'activating_runtime'");
-    const stableStateTests = readFileSync(join(ROOT, 'tests/runtime/stable-state-and-bootstrap.test.ts'), 'utf8');
-    expect(stableStateTests).not.toContain('slotIdentity: identity as any');
-    expect(stableStateTests).not.toContain('authority: authority as any');
     expect(existsSync(join(ROOT, 'tests/runtime/stable-supervisor-hardening.test.ts'))).toBe(false);
     expect(existsSync(join(ROOT, 'tests/runtime/stable-supervisor-integration.test.ts'))).toBe(false);
-    expect(stableStateTests).not.toContain('activeUpstreamSlot');
-    expect(stableStateTests).not.toContain('activeUpstreamPort');
     expect(runtimeTools).toContain('readControllerDaemonStatus');
     for (const legacy of [
       'controller_restart_verify',

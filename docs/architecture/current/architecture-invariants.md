@@ -312,7 +312,7 @@ MUST NOT:
 - Treat Runtime Source root differing from the selected execution repository as an error.
 - Hardcode a clone directory name or user absolute path as the Runtime Source.
 
-Primary implementation: `src/runtime/control-plane/runtime-generation.ts`, with shared consumers in MCP `rh_status`, CLI `controllerServiceStatus`, Local Bridge access state, keepalive, and daemon start.
+Primary implementation is the Canonical Runtime owner/status/release identity under `src/runtime/root/`, with shared read-only consumers in MCP `rh_status`, Runtime CLI status, Local Bridge access state, Recovery verification, and Worker fencing. KeepAlive and independent Daemon start are deleted lifecycle owners.
 
 ## Invariant 27 — Transport Connectivity Is Not Execution Ownership
 

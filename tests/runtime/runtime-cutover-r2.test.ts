@@ -76,7 +76,14 @@ import { ensureControllerHome, repositoryControllerRoot } from '../../src/cli/re
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { markRepositoryProjectionDirty, readRepositoryProjectionDirty } from '../../src/runtime/projections/invalidation';
 import { transitionExecutionJob, getExecutionJob } from '../../src/runtime/execution/jobs/store';
-import type { ProcessIdentity } from '../../src/runtime/supervisor/types';
+interface ProcessIdentity {
+  pid: number;
+  instanceId: string;
+  processStartTime: string;
+  executableFingerprint: string;
+  controllerHome: string;
+  ownerEpoch: number;
+}
 
 const roots: string[] = [];
 
@@ -123,7 +130,8 @@ function fakeIdentity(pid = process.pid): ProcessIdentity {
     executableFingerprint: 'fp-test',
     instanceId: `inst-${pid}`,
     controllerHome: '/tmp',
-    ownerEpoch: 1};
+    ownerEpoch: 1,
+  };
 }
 
 describe('resource claim real conflicts', () => {

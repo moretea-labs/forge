@@ -323,11 +323,6 @@
       "module": "release",
       "resource": "temp-isolated"
     },
-    "tests/runtime/activation-state-machine.test.ts": {
-      "module": "process-runtime",
-      "resource": "temp-isolated",
-      "smoke": true
-    },
     "tests/runtime/browser-plugin.test.ts": {
       "module": "browser",
       "resource": "fixed-port"
@@ -407,10 +402,6 @@
     "tests/runtime/process-runtime.test.ts": {
       "module": "process-runtime",
       "resource": "process-tree"
-    },
-    "tests/runtime/release-identity-binding.test.ts": {
-      "module": "release",
-      "resource": "git-worktree"
     },
     "tests/runtime/process-tree-reclamation.test.ts": {
       "module": "process-runtime",

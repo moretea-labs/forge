@@ -42,7 +42,6 @@ import {
   writeRuntimeAuthority,
   writeRuntimeConfig,
 } from '../../src/runtime/bootstrap/runtime-authority';
-import { evaluateRuntimeReleaseCoherence } from '../../src/runtime/supervisor/release-coherence';
 import {
   bindRuntimeWriterClaim,
   clearRuntimeWriterClaimForTests,
@@ -457,54 +456,3 @@ describe('activation authority generation coherence', () => {
   });
 });
 
-describe('release coherence transplant', () => {
-  test('evaluateRuntimeReleaseCoherence detects path mismatch', () => {
-    const releasePath = '/tmp/releases/revision-a';
-    const daemon = {
-      pid: 1,
-      instanceId: 'd',
-      processStartTime: 's',
-      executableFingerprint: 'f',
-      controllerHome: '/tmp',
-      ownerEpoch: 1,
-      slot: 'green' as const,
-      generation: 'generation-a',
-      releasePath,
-      releaseRevision: 'revision-a',
-    };
-    const state = {
-      schemaVersion: 1 as const,
-      supervisor: {
-        pid: 500,
-        instanceId: 'supervisor-500',
-        processStartTime: 'start-500',
-        executableFingerprint: 'fingerprint-500',
-        controllerHome: '/tmp/controller-home',
-        ownerEpoch: 1,
-        epoch: 1,
-        startedAt: '2026-07-21T00:00:00.000Z',
-        releasePath,
-        releaseRevision: 'revision-a',
-      },
-      desiredState: 'running' as const,
-      observedState: 'healthy' as const,
-      activeSlot: 'green' as const,
-      activeGeneration: 'generation-a',
-      controllerDaemon: daemon as any,
-      gatewayHost: { ...daemon, pid: 2 } as any,
-      restartBudget: {},
-      updatedAt: '2026-07-21T00:00:00.000Z',
-    };
-    const mismatched = evaluateRuntimeReleaseCoherence({
-      supervisorState: {
-        ...state,
-        gatewayHost: {
-          ...state.gatewayHost,
-          releasePath: '/tmp/releases/revision-b',
-        },
-      } as any,
-    });
-    expect(mismatched.ok).toBe(false);
-    expect(mismatched.releasePathCoherent).toBe(false);
-  });
-});
