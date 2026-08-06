@@ -100,6 +100,7 @@ describe('runtime command surface', () => {
     const repoActor = readFileSync(join(ROOT, 'src/runtime/control-plane/repo-actor/actor.ts'), 'utf8');
     const executionWorker = readFileSync(join(ROOT, 'src/runtime/execution/workers/executor.ts'), 'utf8');
     const localBridgeSurface = readFileSync(join(ROOT, 'src/runtime/shared/local-bridge-surface.ts'), 'utf8');
+    const localBridgeFacade = readFileSync(join(ROOT, 'src/cli/local-bridge/facade-api.ts'), 'utf8');
     const standaloneRecovery = readFileSync(join(ROOT, 'src/runtime/standalone-recovery/core.ts'), 'utf8');
     const supervisorTypes = readFileSync(join(ROOT, 'src/runtime/supervisor/types.ts'), 'utf8');
     const supervisorStateStore = readFileSync(join(ROOT, 'src/runtime/supervisor/state-store.ts'), 'utf8');
@@ -277,6 +278,10 @@ describe('runtime command surface', () => {
     expect(localBridgeSurface).not.toContain('slotHomePath');
     expect(localBridgeSurface).not.toContain('activeSlot?:');
     expect(localBridgeSurface).toContain('return controllerHome ? [controllerHome] : []');
+    expect(localBridgeFacade).toContain("observeRuntimeStatus(ctx.controllerHome)");
+    expect(localBridgeFacade).not.toContain("from '../controller/lifecycle'");
+    expect(localBridgeFacade).not.toContain('readControllerDaemonStatus');
+    expect(localBridgeFacade).not.toContain('buildRuntimeOperationalView');
     expect(standaloneRecovery).not.toContain("join(config.controllerHome, 'runtime-slots'");
     expect(standaloneRecovery).not.toContain('function slotRelease');
     expect(standaloneRecovery).toContain('function activeAuthorityRelease');
