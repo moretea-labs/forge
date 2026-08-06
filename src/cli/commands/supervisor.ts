@@ -3,7 +3,7 @@ import { dirname, join, resolve } from 'path';
 import { Command } from 'commander';
 import { ensureControllerHome, resolveRepoPreferredControllerHome } from '../repositories/controller-home';
 import { listRepositories } from '../repositories/registry';
-import { sourceIdentityFor } from '../controller/bluegreen-rollout';
+import { sourceIdentityFor } from '../../runtime/supervisor/source-identity';
 import { installLaunchAgent, launchAgentPath, restoreLaunchAgent, snapshotLaunchAgent, safeLaunchdHandoff, type LaunchAgentFileSnapshot, type LaunchdServiceProbe, type LaunchctlCommandRunner } from '../controller/launch-agents';
 import { launchStableSupervisor } from '../../runtime/supervisor/bridge';
 import { DEFAULT_SUPERVISOR_CONTROL_PORT, sendSupervisorCommand } from '../../runtime/supervisor/control-server';

@@ -86,6 +86,8 @@ describe('runtime command surface', () => {
     const supervisorActivation = readFileSync(join(ROOT, 'src/runtime/supervisor/activation-state-machine.ts'), 'utf8');
     const supervisorControl = readFileSync(join(ROOT, 'src/runtime/supervisor/control-server.ts'), 'utf8');
     const supervisorCommand = readFileSync(join(ROOT, 'src/cli/commands/supervisor.ts'), 'utf8');
+    const supervisorSourceIdentity = readFileSync(join(ROOT, 'src/runtime/supervisor/source-identity.ts'), 'utf8');
+    const bluegreenRollout = readFileSync(join(ROOT, 'src/cli/controller/bluegreen-rollout.ts'), 'utf8');
     const supervisorTypes = readFileSync(join(ROOT, 'src/runtime/supervisor/types.ts'), 'utf8');
     const supervisorStateStore = readFileSync(join(ROOT, 'src/runtime/supervisor/state-store.ts'), 'utf8');
     const facadeActions = readFileSync(join(ROOT, 'src/runtime/control-plane/facade/suggested-actions.ts'), 'utf8');
@@ -183,6 +185,12 @@ describe('runtime command surface', () => {
     expect(supervisorCommand).toContain("transitionPhase(home, activationId, 'waiting_runtime_ready')");
     expect(supervisorCommand).not.toContain("transitionPhase(home, activationId, 'waiting_stable_endpoint')");
     expect(supervisorCommand).not.toContain('Verify the full readiness chain: ingress');
+    expect(supervisorCommand).toContain("from '../../runtime/supervisor/source-identity'");
+    expect(supervisorCommand).not.toContain("from '../controller/bluegreen-rollout'");
+    expect(supervisorSourceIdentity).toContain('export function sourceIdentityFor');
+    expect(supervisorSourceIdentity).not.toContain('runtime-slots');
+    expect(supervisorSourceIdentity).not.toContain('sendSupervisorCommand');
+    expect(bluegreenRollout).toContain("from '../../runtime/supervisor/source-identity'");
     expect(supervisorControl).toContain('DEFAULT_SUPERVISOR_CONTROL_PORT = 8770');
     expect(supervisorEntry).toContain("numberOption('--control-port', DEFAULT_SUPERVISOR_CONTROL_PORT)");
     expect(supervisorCommand).toContain('port: DEFAULT_SUPERVISOR_CONTROL_PORT');

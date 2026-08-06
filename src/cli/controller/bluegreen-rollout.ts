@@ -3,7 +3,6 @@ import { join, resolve } from 'path';
 import { loadMcpServiceLocalConfig, syncMcpControllerHomeBearerToken, writeMcpServiceLocalConfig, type McpLocalConfig } from '../mcp/auth';
 import { resolveMcpRepoRoot } from '../mcp/repo';
 import { resolveRepoPreferredControllerHome } from '../repositories/controller-home';
-import { listRepositories } from '../repositories/registry';
 import {
   controllerServiceStatus,
   startControllerService,
@@ -45,7 +44,9 @@ import {
 } from '../../runtime/supervisor/service-activation';
 import { readStableSupervisorState } from '../../runtime/supervisor/bridge';
 import { restartRequestNeedsDetachedCoordinator } from './restart-coordinator';
-import type { SupervisorSourceIdentity } from '../../runtime/supervisor/types';
+import { sourceIdentityFor } from '../../runtime/supervisor/source-identity';
+
+export { sourceIdentityFor };
 
 export interface BlueGreenRolloutOptions {
   repo?: string;
@@ -86,25 +87,6 @@ function endpointHost(value: string | undefined): string {
   } catch {
     return '127.0.0.1';
   }
-}
-
-export function sourceIdentityFor(
-  repoRoot: string,
-  rootHome: string,
-  staged: { sourceRoot: string; sourceCommit?: string; releaseRevision: string },
-): SupervisorSourceIdentity {
-  const selected = resolve(repoRoot);
-  const matched = listRepositories(rootHome, { includeRemoved: true })
-    .flatMap((repository) => repository.checkouts.map((checkout) => ({ repository, checkout })))
-    .filter(({ checkout }) => checkout.lifecycle !== 'removed')
-    .find(({ checkout }) => resolve(checkout.canonicalRoot) === selected);
-  if (!staged.sourceCommit) throw new Error('SUPERVISOR_SOURCE_COMMIT_MISSING');
-  return {
-    ...(matched ? { repoId: matched.repository.repoId, checkoutId: matched.checkout.checkoutId } : {}),
-    sourcePath: staged.sourceRoot,
-    expectedHead: staged.sourceCommit,
-    expectedRevision: staged.releaseRevision,
-  };
 }
 
 function operationTimeoutMs(opts: BlueGreenRolloutOptions): number {
