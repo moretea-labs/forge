@@ -93,6 +93,7 @@ describe('runtime command surface', () => {
     const controllerPostcondition = readFileSync(join(ROOT, 'src/cli/controller/postcondition.ts'), 'utf8');
     const localBridgeServer = readFileSync(join(ROOT, 'src/cli/local-bridge/server.ts'), 'utf8');
     const repoActor = readFileSync(join(ROOT, 'src/runtime/control-plane/repo-actor/actor.ts'), 'utf8');
+    const executionWorker = readFileSync(join(ROOT, 'src/runtime/execution/workers/executor.ts'), 'utf8');
     const supervisorTypes = readFileSync(join(ROOT, 'src/runtime/supervisor/types.ts'), 'utf8');
     const supervisorStateStore = readFileSync(join(ROOT, 'src/runtime/supervisor/state-store.ts'), 'utf8');
     const facadeActions = readFileSync(join(ROOT, 'src/runtime/control-plane/facade/suggested-actions.ts'), 'utf8');
@@ -219,6 +220,11 @@ describe('runtime command surface', () => {
     expect(repoActor).not.toContain('controller_restart_verify');
     expect(repoActor).not.toContain('shouldDeferControllerRestartRetry');
     expect(repoActor).not.toContain('restartStateReader');
+    expect(existsSync(join(ROOT, 'src/runtime/execution/jobs/restart-resume.ts'))).toBe(false);
+    expect(executionWorker).not.toContain('runtimeToolArgumentsForExecutionJob');
+    expect(executionWorker).not.toContain('jobs/restart-resume');
+    expect(executionWorker).toContain('const toolArguments = { ...(job.payload.arguments ?? {}) }');
+    expect(executionWorker).not.toContain('controller_restart_verify');
     expect(supervisorReleaseCoherence).toContain('ok: releaseCoherent');
     expect(supervisorReleaseCoherence).not.toContain('ActiveSlotAuthority');
     expect(supervisorReleaseCoherence).not.toContain('SlotIdentity');

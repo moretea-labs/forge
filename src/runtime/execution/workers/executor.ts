@@ -9,7 +9,6 @@ import { evaluateReleaseGate } from '../../release/release-gate';
 import { executeLocalBridgeJobInline, getLocalBridgeJob } from '../../../cli/local-bridge/job-store';
 import type { LocalBridgeJob } from '../../../cli/local-bridge/types';
 import { settleScheduledExecution } from '../../workflow/schedules/settlement';
-import { runtimeToolArgumentsForExecutionJob } from '../jobs/restart-resume';
 import type { ExecutionJob, ExecutionJobOutcome } from '../jobs/types';
 import {
   buildDelegatedExecutionResult,
@@ -570,7 +569,7 @@ export async function executeExecutionJob(controllerHome: string, job: Execution
     // Load the Work implementation only for Work Jobs. A static import here
     // creates an initialization cycle through repository command and Local Bridge
     // modules, changing unrelated execution behavior.
-    const toolArguments = runtimeToolArgumentsForExecutionJob(job);
+    const toolArguments = { ...(job.payload.arguments ?? {}) };
     const executionResult = durableWorkOperation
       ? await import('../../gateway/mcp/execution-tools').then(({ callExecutionTool }) =>
         callExecutionTool(runtimeContext, job.payload.operation, {
