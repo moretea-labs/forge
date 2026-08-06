@@ -77,6 +77,7 @@ describe('runtime command surface', () => {
     expect(existsSync(join(ROOT, 'src/cli/mcp/restart.ts'))).toBe(false);
     const mcpCommand = readFileSync(join(ROOT, 'src/cli/commands/mcp.ts'), 'utf8');
     const lifecycleAuthority = readFileSync(join(ROOT, 'src/cli/controller/lifecycle-authority.ts'), 'utf8');
+    const controllerLifecycle = readFileSync(join(ROOT, 'src/cli/controller/lifecycle.ts'), 'utf8');
     const httpTransport = readFileSync(join(ROOT, 'src/cli/mcp/transports/http.ts'), 'utf8');
     const runtimeTools = readFileSync(join(ROOT, 'src/runtime/gateway/mcp/runtime-tools.ts'), 'utf8');
     const toolsetNames = readFileSync(join(ROOT, 'src/cli/mcp/toolset-names.ts'), 'utf8');
@@ -102,6 +103,13 @@ describe('runtime command surface', () => {
     expect(mcpCommand).toContain('bindInheritedRuntimeWriterClaimFromEnvironment');
     expect(lifecycleAuthority).toContain('repo-harness-runtime');
     expect(lifecycleAuthority).not.toContain('controller start|stop|restart');
+    expect(controllerLifecycle).not.toContain("from './runtime-slots'");
+    expect(controllerLifecycle).not.toContain('readActiveSlotAuthority');
+    expect(controllerLifecycle).not.toContain('ensureSlotHome');
+    expect(controllerLifecycle).not.toContain('slotLocalConfig');
+    expect(controllerLifecycle).not.toContain('slotRuntime');
+    expect(controllerLifecycle).toContain('observedEndpointBinding(runtime?.server.endpoint)');
+    expect(controllerLifecycle).toContain('observedEndpointBinding(runtime?.localController?.endpoint)');
     expect(httpTransport).not.toContain('ensureControllerDaemon');
     expect(httpTransport).toContain('readControllerDaemonStatus');
     expect(runtimeTools).not.toContain('ensureControllerDaemon');

@@ -5,7 +5,6 @@ import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { listAgentJobs, reconcileAgentJobs } from "../agent-jobs/job-manager";
 import { bootoutRepoLaunchAgents, findRepoLaunchAgents } from "./launch-agents";
-import { ensureSlotHome, readActiveSlotAuthority } from "./runtime-slots";
 import { CONTROLLER_LIFECYCLE_OWNER_ENV } from "./lifecycle-authority";
 import { defaultLocalAgentRunners } from "./runtime-config";
 import { listLocalBridgeJobs, loadLocalBridgeConfig, reconcileLocalBridgeJobs } from "../local-bridge/job-store";
@@ -545,28 +544,11 @@ function resolveServiceConfig(
 } {
   const controllerHome = resolveRepoPreferredControllerHome(repoRoot, explicitControllerHome);
   const useSlotLocalLifecycle = slotLocalLifecycle || isRuntimeSlotHome(controllerHome);
-  // Prefer active blue/green slot mcp config when present so status probes the
-  // live Local Controller / MCP ports (e.g. green slot 8776) instead of the
-  // root template default (8766).
-  let slotHome: string | undefined;
-  if (!useSlotLocalLifecycle) {
-    try {
-      slotHome = ensureSlotHome(controllerHome, readActiveSlotAuthority(controllerHome).activeSlot);
-    } catch {
-      slotHome = undefined;
-    }
-  }
-  const slotLocalConfig = slotHome ? loadMcpServiceLocalConfig(slotHome) : null;
   const rootLocalConfig = loadMcpServiceLocalConfig(controllerHome, useSlotLocalLifecycle ? undefined : repoRoot);
-  const localConfig = (slotLocalConfig?.localController || slotLocalConfig?.server
-    ? slotLocalConfig
-    : null)
-    ?? rootLocalConfig
+  const localConfig = rootLocalConfig
     ?? (useSlotLocalLifecycle ? null : loadMcpLocalConfig(repoRoot));
   const localBridgeConfig = useSlotLocalLifecycle ? { version: 1 as const } : loadLocalBridgeConfig(repoRoot);
-  const slotRuntime = slotHome ? loadMcpServiceRuntimeState(slotHome) : null;
-  const runtime = (slotRuntime?.localController || slotRuntime?.server ? slotRuntime : null)
-    ?? loadMcpServiceRuntimeState(controllerHome, useSlotLocalLifecycle ? undefined : repoRoot)
+  const runtime = loadMcpServiceRuntimeState(controllerHome, useSlotLocalLifecycle ? undefined : repoRoot)
     ?? (useSlotLocalLifecycle ? null : loadMcpRuntimeState(repoRoot));
   // Runtime-observed endpoint/port is authoritative when present; config is fallback.
   const runtimeLocalEndpoint = runtime?.localController?.endpoint?.trim();
@@ -663,6 +645,18 @@ async function healthSummary(
   };
 }
 
+function observedEndpointBinding(endpoint?: string): { host: string; port: number } | undefined {
+  if (!endpoint?.trim()) return undefined;
+  try {
+    const url = new URL(endpoint);
+    const port = Number(url.port);
+    if (!url.hostname || !Number.isInteger(port) || port <= 0 || port > 65_535) return undefined;
+    return { host: url.hostname, port };
+  } catch {
+    return undefined;
+  }
+}
+
 function adoptedRepo(repoRoot: string): boolean {
   return existsSync(join(repoRoot, ".ai", "harness", "policy.json")) || existsSync(join(repoRoot, "tasks", "current.md"));
 }
@@ -715,13 +709,13 @@ export async function controllerServiceStatus(opts: ControllerServiceOptions = {
   const state = loadControllerServiceState(repoRoot, config.controllerHome);
   const stableInstalled = !opts.slotLocalLifecycle && isStableSupervisorInstalled(config.controllerHome);
   const stableState = stableInstalled ? readStableSupervisorState(config.controllerHome) : null;
-  // Stable Supervisor is controller-scoped, but its live Daemon/Gateway state is
-  // slot-local. Status must follow the managed active component home instead of
-  // reading stale or absent runtime files from the root Controller Home.
+  // Follow only a component home proven by the Supervisor state. When no such
+  // identity exists, fall back to Controller Home rather than selecting or
+  // creating a runtime slot from a second authority.
   const runtimeHome = stableInstalled
     ? stableState?.controllerDaemon?.controllerHome
       ?? stableState?.gatewayHost?.controllerHome
-      ?? ensureSlotHome(config.controllerHome, readActiveSlotAuthority(config.controllerHome).activeSlot)
+      ?? config.controllerHome
     : config.controllerHome;
   // Never fall back to shared repo-local MCP runtime when a dedicated controllerHome
   // is in use — blue/green slots would otherwise claim each other's PIDs/health.
@@ -744,12 +738,14 @@ export async function controllerServiceStatus(opts: ControllerServiceOptions = {
     ? stableSupervisorIsAlive(config.controllerHome, stableState)
     : isPidAlive(supervisorPid);
   const daemon = readControllerDaemonStatus(runtimeHome);
+  const observedMcp = observedEndpointBinding(runtime?.server.endpoint);
+  const observedLocalController = observedEndpointBinding(runtime?.localController?.endpoint);
   const ports = await healthSummary(
     repoRoot,
-    config.mcpHost,
-    config.mcpPort,
-    config.localControllerHost,
-    config.localControllerPort,
+    observedMcp?.host ?? config.mcpHost,
+    observedMcp?.port ?? config.mcpPort,
+    observedLocalController?.host ?? config.localControllerHost,
+    observedLocalController?.port ?? config.localControllerPort,
     runtimeGeneration?.generation,
   );
   const repositories = listRepositories(runtimeHome)
