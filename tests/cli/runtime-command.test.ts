@@ -173,6 +173,17 @@ describe('runtime command surface', () => {
     expect(supervisorMonitorBlock).not.toContain('router replacement');
     expect(supervisorMonitorBlock).not.toContain('requestSupervisorSelfRestart');
     expect(supervisorMonitorBlock).toContain('Public endpoint observations are diagnostics only');
+    expect(supervisorRuntime).toContain('verifyAuthoritySelectedGateway');
+    expect(supervisorRuntime).toContain('SUPERVISOR_ACTIVE_GATEWAY_VERIFY_FAILED');
+    expect(supervisorRuntime).not.toContain('verifyStableIngress');
+    expect(supervisorRuntime).not.toContain('SUPERVISOR_STABLE_INGRESS_VERIFY_FAILED');
+    const cutoverVerificationStart = supervisorRuntime.indexOf('private async verifyAuthoritySelectedGateway');
+    const cutoverVerificationEnd = supervisorRuntime.indexOf('private async observeActivatedSlot', cutoverVerificationStart);
+    const cutoverVerificationBlock = supervisorRuntime.slice(cutoverVerificationStart, cutoverVerificationEnd);
+    expect(cutoverVerificationBlock).toContain("gatewayBinding(input.slot)");
+    expect(cutoverVerificationBlock).toContain("/ready");
+    expect(cutoverVerificationBlock).not.toContain('stableIngressHost');
+    expect(cutoverVerificationBlock).not.toContain('stableIngressPort');
     expect(runtimeTools).toContain('readControllerDaemonStatus');
     for (const legacy of [
       'controller_restart_verify',

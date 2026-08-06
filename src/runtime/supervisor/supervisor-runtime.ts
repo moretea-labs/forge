@@ -1181,7 +1181,13 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
         throw new Error('SUPERVISOR_INTERRUPTED_ROLLOUT_RELEASE_MISMATCH');
       }
       const generation = this.synchronizeActiveRuntimeGeneration(true) ?? recovery.candidateGeneration;
-      await this.verifyStableIngress(generation, daemon.controllerHome);
+      const activeSlot = gateway.slot ?? this.state.activeSlot;
+      await this.verifyAuthoritySelectedGateway({
+        manager: this.managerForManaged(gateway, activeSlot),
+        slot: activeSlot,
+        expectedGeneration: generation,
+        controllerHome: daemon.controllerHome,
+      });
       const activeIdentity = readSlotIdentity(this.options.controllerHome, this.state.activeSlot);
       if (activeIdentity) {
         writeSlotIdentity(this.options.controllerHome, {
@@ -1551,45 +1557,39 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     }
   }
 
-  private async verifyStableIngress(expectedGeneration?: string, activeControllerHome?: string): Promise<void> {
-    const configuredHost = this.options.stableIngressHost ?? '127.0.0.1';
-    const host = configuredHost === '0.0.0.0' || configuredHost === '::' ? '127.0.0.1' : configuredHost;
-    const port = this.options.stableIngressPort ?? 8765;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5_000);
+  private async verifyAuthoritySelectedGateway(input: {
+    manager: SupervisorProcessManager;
+    slot: RuntimeSlotId;
+    expectedGeneration?: string;
+    controllerHome?: string;
+  }): Promise<void> {
+    const binding = input.manager.gatewayBinding(input.slot);
     try {
-      const response = await fetch(`http://${host}:${port}/health`, { signal: controller.signal, headers: { accept: 'application/json' } });
-      if (!response.ok) throw new Error(`status=${response.status}`);
-      const payload = await response.json() as { status?: string; generation?: string };
-      if (payload.status !== 'ok') throw new Error(`health=${String(payload.status)}`);
-      if (expectedGeneration && payload.generation !== expectedGeneration) {
-        throw new Error(`generation=${String(payload.generation)} expected=${expectedGeneration}`);
+      const health = await probeSupervisorGatewayHealth(`http://${binding.host}:${binding.port}/ready`, 5_000);
+      if (!health.healthy || health.ready === false) throw new Error(health.detail);
+      const runtime = loadMcpServiceRuntimeState(input.controllerHome ?? this.options.controllerHome, this.options.repoRoot);
+      if (input.expectedGeneration
+        && (runtime?.generation !== input.expectedGeneration || runtime?.server.generation !== input.expectedGeneration)) {
+        throw new Error(
+          `generation=${runtime?.generation ?? 'missing'} serverGeneration=${runtime?.server.generation ?? 'missing'} expected=${input.expectedGeneration}`,
+        );
       }
-      const token = readMcpServiceBearerToken(activeControllerHome ?? this.options.controllerHome, this.options.repoRoot);
+      const token = readMcpServiceBearerToken(input.controllerHome ?? this.options.controllerHome, this.options.repoRoot);
       if (!token) throw new Error('authenticated MCP probe token is unavailable');
-      let mcp = await probeAuthenticatedMcpReadiness({ baseUrl: `http://${host}:${port}`, token });
+      let mcp = await probeAuthenticatedMcpReadiness({
+        baseUrl: `http://${binding.host}:${binding.port}`,
+        token,
+      });
       for (let attempt = 0; attempt < 10 && !mcp.healthy; attempt += 1) {
         await sleep(250);
-        mcp = await probeAuthenticatedMcpReadiness({ baseUrl: `http://${host}:${port}`, token });
+        mcp = await probeAuthenticatedMcpReadiness({
+          baseUrl: `http://${binding.host}:${binding.port}`,
+          token,
+        });
       }
       if (!mcp.healthy) throw new Error(mcp.detail);
-      this.persist({
-        ingress: {
-          ...this.state.ingress,
-          state: 'running',
-          activeUpstreamSlot: this.state.activeSlot,
-          activeUpstreamPort: this.manager.gatewayBinding(this.state.activeSlot).port,
-          pid: process.pid,
-          consecutiveFailures: 0,
-          lastHealthyAt: new Date().toISOString(),
-          lastFailureAt: undefined,
-          lastFailureDetail: undefined,
-        },
-      });
     } catch (error) {
-      throw new Error(`SUPERVISOR_STABLE_INGRESS_VERIFY_FAILED: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      clearTimeout(timeout);
+      throw new Error(`SUPERVISOR_ACTIVE_GATEWAY_VERIFY_FAILED: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -1870,7 +1870,12 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
           activeUpstreamPort: activatedCandidate.manager.gatewayBinding(candidateSlot).port,
         },
       });
-      await this.verifyStableIngress(activatedCandidate.generation, activatedCandidate.controllerDaemon.controllerHome);
+      await this.verifyAuthoritySelectedGateway({
+        manager: activatedCandidate.manager,
+        slot: activatedCandidate.slot,
+        expectedGeneration: activatedCandidate.generation,
+        controllerHome: activatedCandidate.controllerDaemon.controllerHome,
+      });
       if (operation.sourceIdentity && candidateRelease) {
         verifySupervisorSourceIdentity(operation.sourceIdentity, candidateRelease);
       }
@@ -1906,7 +1911,12 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
               activeUpstreamPort: refreshed.manager.gatewayBinding(candidateSlot).port,
             },
           });
-          await this.verifyStableIngress(refreshed.generation, refreshed.controllerDaemon.controllerHome);
+          await this.verifyAuthoritySelectedGateway({
+            manager: refreshed.manager,
+            slot: refreshed.slot,
+            expectedGeneration: refreshed.generation,
+            controllerHome: refreshed.controllerDaemon.controllerHome,
+          });
           return refreshed;
         },
       );
@@ -2120,7 +2130,12 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
           activeUpstreamPort: activatedTarget.manager.gatewayBinding(targetSlot).port,
         },
       });
-      await this.verifyStableIngress(activatedTarget.generation, activatedTarget.controllerDaemon.controllerHome);
+      await this.verifyAuthoritySelectedGateway({
+        manager: activatedTarget.manager,
+        slot: activatedTarget.slot,
+        expectedGeneration: activatedTarget.generation,
+        controllerHome: activatedTarget.controllerDaemon.controllerHome,
+      });
       await this.observeActivatedSlot(activatedTarget);
     } catch (error) {
       let restoredDaemon = failedDaemon;
