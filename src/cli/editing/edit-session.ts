@@ -610,6 +610,8 @@ interface PatchItem {
   after: string;
   beforeExists: boolean;
   afterExists: boolean;
+  beforeMode?: number;
+  afterMode?: number;
 }
 
 interface PreparedEditOperation {
@@ -621,6 +623,8 @@ interface PreparedEditOperation {
   after: string;
   beforeExists: boolean;
   afterExists: boolean;
+  beforeMode?: number;
+  afterMode?: number;
 }
 
 function normalizeNoIndexPatch(raw: string, item: PatchItem): string {
@@ -636,8 +640,9 @@ function normalizeNoIndexPatch(raw: string, item: PatchItem): string {
   const newHeader = normalized.findIndex((line) => line.startsWith('+++ '));
   if (oldHeader >= 0) normalized[oldHeader] = `--- ${oldPath}`;
   if (newHeader >= 0) normalized[newHeader] = `+++ ${newPath}`;
+  const gitMode = (mode: number | undefined) => `100${(mode ?? 0o644).toString(8).padStart(3, '0')}`;
   if (header >= 0 && !item.beforeExists && !normalized.some((line) => line.startsWith('new file mode '))) {
-    normalized.splice(header + 1, 0, 'new file mode 100644');
+    normalized.splice(header + 1, 0, `new file mode ${gitMode(item.afterMode)}`);
   }
   if (header >= 0 && !item.afterExists && !normalized.some((line) => line.startsWith('deleted file mode '))) {
     normalized.splice(header + 1, 0, 'deleted file mode 100644');
