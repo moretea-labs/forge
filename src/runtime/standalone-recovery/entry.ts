@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { basename, resolve } from 'path';
 import { pathToFileURL } from 'url';
 import { readMcpServiceOAuthPassphrase } from '../../cli/mcp/auth';
+import { FORGE_VERSION } from '../../version';
 import {
   attestKnownGood,
   diagnose,
@@ -444,6 +445,7 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
       json(response, 200, {
         status: 'ok',
         service: 'forge-standalone-recovery',
+        version: FORGE_VERSION,
         ...(runtimeIdentity ? {
           releasePath: runtimeIdentity.releasePath,
           releaseRevision: runtimeIdentity.releaseRevision,
@@ -579,7 +581,7 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
     let message: { id?: unknown; method?: unknown; params?: { name?: unknown; arguments?: unknown } };
     try { message = JSON.parse(await readBody(request)) as typeof message; } catch { json(response, 400, rpcError(null, -32700, 'Invalid JSON.')); return; }
     const id = message.id ?? null;
-    if (message.method === 'initialize') { json(response, 200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'forge-standalone-recovery', version: '1.0.0' } } }); return; }
+    if (message.method === 'initialize') { json(response, 200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'forge-standalone-recovery', version: FORGE_VERSION } } }); return; }
     if (message.method === 'notifications/initialized') { response.statusCode = 202; response.end(); return; }
     if (message.method === 'tools/list') {
       const tools = RECOVERY_TOOLS.map((tool) => ({

@@ -5,6 +5,8 @@ import { fileURLToPath } from 'url';
 export const FORGE_PRODUCT_ID = 'forge';
 
 function readForgeVersion(): string {
+  const buildVersion = process.env.FORGE_BUILD_VERSION?.trim();
+  if (buildVersion) return buildVersion;
   const packagePath = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'package.json');
   try {
     const parsed = JSON.parse(readFileSync(packagePath, 'utf8')) as { version?: unknown };

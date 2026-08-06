@@ -23,6 +23,7 @@ import {
   type SafeHandoffResult,
 } from '../../cli/controller/launch-agents';
 import { isProcessAlive } from '../shared/process-tree';
+import { FORGE_VERSION } from '../../version';
 import { initializeStandaloneRecovery, loadRecoveryConfig, type PrimaryRuntimeServiceConfig, type PublicTunnelServiceConfig, type RecoveryConfig } from './core';
 import {
   RECOVERY_RELEASE_BINARIES,
@@ -101,6 +102,7 @@ const RECOVERY_RELEASE_SOURCE_PATHS = [
   'src/effects/process-runner.ts',
   'src/runtime/shared/process-tree.ts',
   'src/runtime/shared/json-files.ts',
+  'src/version.ts',
   'scripts/install-standalone-recovery.ts',
   'scripts/load-standalone-recovery.sh',
   'package.json',
@@ -208,7 +210,7 @@ function defaultRunCanary(input: { binaryPath: string; controllerHome: string; r
   return runProcess(input.binaryPath, args, {
     timeoutMs: 30_000,
     maxOutputBytes: 128 * 1024,
-    env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
+    env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', FORGE_BUILD_VERSION: FORGE_VERSION },
     replaceEnv: true,
   });
 }
@@ -339,7 +341,7 @@ function recoveryPlist(input: {
 }): string {
   const xml = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const argumentsList = [
-    '/usr/bin/env', '-i', 'PATH=/usr/bin:/bin:/usr/sbin:/sbin',
+    '/usr/bin/env', '-i', 'PATH=/usr/bin:/bin:/usr/sbin:/sbin', `FORGE_BUILD_VERSION=${FORGE_VERSION}`,
     input.executable, input.command, '--controller-home', input.controllerHome,
   ];
   return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>${xml(input.label)}</string><key>ProgramArguments</key><array>${argumentsList.map((argument) => `<string>${xml(argument)}</string>`).join('')}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>5</integer><key>StandardOutPath</key><string>${xml(input.logPath)}</string><key>StandardErrorPath</key><string>${xml(input.logPath)}</string></dict></plist>\n`;
@@ -350,14 +352,17 @@ function launchctlText(args: string[]): string {
   return result.ok ? result.stdout : '';
 }
 
-export function recoveryLaunchdPid(role: RecoveryRuntimeRole): number | undefined {
+export function recoveryLaunchdServicePid(label: string): number | undefined {
   if (process.platform !== 'darwin') return undefined;
   const uid = typeof process.getuid === 'function' ? process.getuid() : Number.NaN;
-  const label = role === 'gateway' ? RECOVERY_GATEWAY_LABEL : RECOVERY_WATCHDOG_LABEL;
   const output = Number.isInteger(uid) ? launchctlText(['print', `gui/${uid}/${label}`]) : '';
   const match = output.match(/\bpid\s*=\s*(\d+)/);
   const pid = match ? Number(match[1]) : undefined;
   return pid && isProcessAlive(pid) ? pid : undefined;
+}
+
+export function recoveryLaunchdPid(role: RecoveryRuntimeRole): number | undefined {
+  return recoveryLaunchdServicePid(role === 'gateway' ? RECOVERY_GATEWAY_LABEL : RECOVERY_WATCHDOG_LABEL);
 }
 
 function defaultCurrentPid(controllerHome: string, role: RecoveryRuntimeRole): number | undefined {

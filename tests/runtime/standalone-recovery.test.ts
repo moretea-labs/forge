@@ -436,6 +436,7 @@ describe('standalone recovery on canonical Runtime', () => {
     const descriptor = recoveryConnectorDescriptor(home, {
       pathExists: () => false,
       launchdPid: () => undefined,
+      tunnelLaunchdPid: () => undefined,
       processAlive: () => false,
     });
     expect(descriptor).toMatchObject({
@@ -462,6 +463,12 @@ describe('standalone recovery on canonical Runtime', () => {
           plistInstalled: false,
           running: false,
         },
+        tunnel: {
+          configured: true,
+          label: 'com.moretea.forge-recovery-tunnel',
+          plistInstalled: false,
+          running: false,
+        },
       },
     });
     expect(descriptor.tools).toContain('recover_primary_runtime');
@@ -469,6 +476,7 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(descriptor.warnings).toContain('No current immutable Forge Recovery release is installed. Run forge recovery install.');
     expect(descriptor.warnings).toContain('Forge Recovery launchd services are not fully installed. Run forge recovery install.');
     expect(descriptor.warnings).toContain('Forge Recovery Gateway or Watchdog is not running on the current Recovery release.');
+    expect(descriptor.warnings).toContain('The dedicated Forge Recovery tunnel plist is not installed.');
     const serialized = JSON.stringify(descriptor);
     expect(serialized).not.toContain(credential.passphrase);
     expect(serialized).not.toContain('bearerToken');
@@ -481,6 +489,7 @@ describe('standalone recovery on canonical Runtime', () => {
     const descriptor = recoveryConnectorDescriptor(home, {
       pathExists: () => false,
       launchdPid: () => undefined,
+      tunnelLaunchdPid: () => undefined,
       processAlive: () => false,
     });
     expect(descriptor.url).toBe('http://127.0.0.1:8787/recovery/mcp');
