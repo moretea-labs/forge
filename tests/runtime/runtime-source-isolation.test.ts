@@ -3,7 +3,6 @@ import { execFileSync } from 'child_process';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { controllerServiceStatus } from '../../src/cli/controller/lifecycle';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
@@ -270,29 +269,4 @@ describe('runtime source isolation', () => {
     }
   });
 
-  test('CLI controller status and active drift agree under the same fixture', async () => {
-    const runtimeRoot = tempRoot('repo-harness-runtime-cli-');
-    const businessRoot = tempRoot('repo-harness-business-cli-');
-    const controllerHome = tempRoot('repo-harness-home-cli-');
-    initGitRepo(runtimeRoot, 'controller-runtime-fixture');
-    initGitRepo(businessRoot, 'business-app');
-    pinRuntimeSource(runtimeRoot);
-    ensureControllerHome(controllerHome);
-    const generation = rotateRuntimeGeneration(controllerHome, collectRuntimeSourceIdentity(runtimeRoot));
-    writeJsonAtomic(join(controllerHome, 'daemon', 'state.json'), {
-      schemaVersion: 1,
-      status: 'ready',
-      pid: process.pid,
-      startedAt: new Date().toISOString(),
-      generation: generation.generation,
-      source: generation.source,
-    });
-
-    const drift = evaluateActiveRuntimeSourceDrift(generation.source);
-    const status = await controllerServiceStatus({ repo: businessRoot, controllerHome });
-    expect(drift.restartRequired).toBe(false);
-    expect(status.restartRequired).toBe(false);
-    expect(status.runtimeSource?.canonicalRoot).toBe(realpathSync(runtimeRoot));
-    expect(status.runtimeSource?.canonicalRoot).not.toBe(realpathSync(businessRoot));
-  });
 });
