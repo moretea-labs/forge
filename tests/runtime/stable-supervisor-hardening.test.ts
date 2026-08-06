@@ -750,7 +750,7 @@ describe('Stable Supervisor production hardening', () => {
       shouldRecover: false,
     });
     // The monitor aggregation must also keep a live Gateway operational below
-    // the recovery threshold; otherwise one transient failure still degrades Ingress.
+    // the recovery threshold; otherwise one transient failure still degrades Runtime health.
     expect(supervisorGatewayOperational(true, 'running', 1)).toBe(true);
     expect(supervisorGatewayOperational(
       true,
@@ -971,14 +971,14 @@ describe('Stable Supervisor production hardening', () => {
       const internal = runtime as unknown as {
         start: () => Promise<void>;
         ensureRuntime: () => Promise<void>;
-        replaceIngressRouter: () => Promise<{ host: string; port: number; close: () => Promise<void> }>;
+        startCompatibilityIngressRouter: () => Promise<{ host: string; port: number; close: () => Promise<void> }>;
         stop: () => Promise<void>;
         monitorTimer?: ReturnType<typeof setInterval>;
       };
       internal.ensureRuntime = async () => {
         throw new Error('SUPERVISOR_CONTROLLERDAEMON_READINESS_TIMEOUT');
       };
-      internal.replaceIngressRouter = async () => ({
+      internal.startCompatibilityIngressRouter = async () => ({
         host: '127.0.0.1',
         port: 8765,
         close: async () => undefined,
@@ -999,7 +999,7 @@ describe('Stable Supervisor production hardening', () => {
     }
   });
 
-  test('Supervisor serializes monitor ticks so ingress recovery cannot overlap', async () => {
+  test('Supervisor serializes monitor ticks so recovery work cannot overlap', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-monitor-serialization-'));
     try {
       const runtime = new StableSupervisorRuntime({
@@ -1060,7 +1060,7 @@ describe('Stable Supervisor production hardening', () => {
         scheduleMonitorTick: () => void;
         monitorPromise?: Promise<void>;
       };
-      internal.monitorTick = async () => { throw new Error('fixture ingress recovery failed'); };
+      internal.monitorTick = async () => { throw new Error('fixture monitor recovery failed'); };
 
       for (let attempt = 1; attempt <= SUPERVISOR_MONITOR_FAILURE_THRESHOLD; attempt += 1) {
         internal.scheduleMonitorTick();
@@ -1464,7 +1464,7 @@ describe('Stable Supervisor production hardening', () => {
       activeGeneration: 'generation-a',
       controllerDaemon: daemon,
       gatewayHost: gateway,
-      ingress: { state: 'running', activeUpstreamSlot: 'green' },
+      ingress: { state: 'running' },
       restartBudget: {},
       updatedAt: '2026-07-21T00:00:00.000Z',
     } as SupervisorState;
@@ -1692,7 +1692,7 @@ describe('Stable Supervisor production hardening', () => {
       controllerDaemon: greenDaemon,
       gatewayHost: greenGateway,
       standby: { slot: 'blue', generation: 'generation-blue', controllerDaemon: blueDaemon, gatewayHost: blueGateway },
-      ingress: { state: 'running', activeUpstreamSlot: 'green', activeUpstreamPort: 8795 },
+      ingress: { state: 'running' },
       restartBudget: {},
       currentOperationId: 'rollout-operation',
       lastIncident: null,
@@ -1708,7 +1708,7 @@ describe('Stable Supervisor production hardening', () => {
     expect(reconciled.controllerDaemon?.pid).toBe(101);
     expect(reconciled.gatewayHost?.pid).toBe(102);
     expect(reconciled.standby?.slot).toBe('green');
-    expect(reconciled.ingress.activeUpstreamSlot).toBe('blue');
+    expect(reconciled.ingress).toEqual({ state: 'running' });
   });
 
   test('a committed rollout authority is resumable after Supervisor restart without blind replay', () => {
@@ -1763,7 +1763,7 @@ describe('Stable Supervisor production hardening', () => {
         controllerDaemon: greenDaemon,
         gatewayHost: greenGateway,
         standby: { slot: 'blue', generation: 'generation-blue', controllerDaemon: blueDaemon, gatewayHost: blueGateway },
-        ingress: { state: 'running', activeUpstreamSlot: 'green', activeUpstreamPort: 8795 },
+        ingress: { state: 'running' },
         restartBudget: {},
         currentOperationId: created.operation.operationId,
         lastIncident: null,
@@ -1785,7 +1785,7 @@ describe('Stable Supervisor production hardening', () => {
         candidateGeneration: 'generation-green',
       });
       expect(terminalizeInterruptedSupervisorOperations(home, new Set([created.operation.operationId]))).toBe(0);
-      expect(readSupervisorOperation(home, created.operation.operationId)?.phase).toBe('switching_ingress');
+      expect(readSupervisorOperation(home, created.operation.operationId)?.phase).toBe('activating_runtime');
       expect(resumableInterruptedRollout(state, { ...authority, activeSlot: 'blue' }, [readSupervisorOperation(home, created.operation.operationId)!])).toBeUndefined();
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -2049,7 +2049,7 @@ describe('Stable Supervisor production hardening', () => {
       activeGeneration: 'generation-old',
       controllerDaemon: daemon,
       gatewayHost: gateway,
-      ingress: { state: 'running', activeUpstreamSlot: 'blue', activeUpstreamPort: 8785 },
+      ingress: { state: 'running' },
       restartBudget: {},
       currentOperationId: null,
       lastIncident: null,
@@ -2294,7 +2294,7 @@ describe('Stable Supervisor production hardening', () => {
     }
   });
 
-  test('T4 core hierarchy has one Supervisor lifecycle owner for Gateway, Daemon, and stable ingress', () => {
+  test('T4 core hierarchy has one Supervisor lifecycle owner while ingress remains a compatibility router', () => {
     const home = mkdtempSync(join(tmpdir(), 'repo-harness-t4-core-hierarchy-'));
     try {
       const manager = new SupervisorProcessManager({
