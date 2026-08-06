@@ -267,10 +267,8 @@ describe('standalone disaster recovery core', () => {
         response.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { content: [] } }));
       });
     });
-    mkdirSync(join(home, 'runtime-slots', 'blue'), { recursive: true });
-    mkdirSync(join(home, 'runtime-slots', 'green'), { recursive: true });
-    writeFileSync(join(home, 'runtime-slots', 'blue', 'slot.json'), JSON.stringify({ releasePath: active }));
-    writeFileSync(join(home, 'runtime-slots', 'green', 'slot.json'), JSON.stringify({ releasePath: previous }));
+    mkdirSync(join(home, 'supervisor'), { recursive: true });
+    symlinkSync(previous, join(home, 'supervisor', 'previous'), 'dir');
     mkdirSync(join(home, 'mcp'), { recursive: true });
     writeFileSync(join(home, 'mcp', 'mcp.tokens.json'), JSON.stringify({ bearerToken: 'a'.repeat(32) }));
     mkdirSync(join(home, 'bootstrap'), { recursive: true });
@@ -634,8 +632,6 @@ describe('standalone disaster recovery core', () => {
       response.end(JSON.stringify({ status: 'ok' }));
     });
     let operationSubmits = 0;
-    mkdirSync(join(home, 'runtime-slots', 'blue'), { recursive: true });
-    writeFileSync(join(home, 'runtime-slots', 'blue', 'slot.json'), JSON.stringify({ releasePath: active }));
     const socket = createSocketServer((client) => client.on('data', (chunk) => {
       const rpc = JSON.parse(String(chunk)) as { command?: string };
       if (rpc.command === 'operation_submit') operationSubmits += 1;
@@ -670,8 +666,6 @@ describe('standalone disaster recovery core', () => {
       response.end(JSON.stringify({ status: 'ok' }));
     });
     let operationSubmits = 0;
-    mkdirSync(join(home, 'runtime-slots', 'blue'), { recursive: true });
-    writeFileSync(join(home, 'runtime-slots', 'blue', 'slot.json'), JSON.stringify({ releasePath: active }));
     const socket = createSocketServer((client) => client.on('data', (chunk) => {
       const rpc = JSON.parse(String(chunk)) as { command?: string };
       if (rpc.command === 'operation_submit') operationSubmits += 1;
@@ -700,8 +694,6 @@ describe('standalone disaster recovery core', () => {
     const home = mkdtempSync(join(tmpdir(), 'standalone-recovery-singleflight-'));
     const active = release(home, 'active', 'release-active');
     const port = await http((_request, response) => { response.end(JSON.stringify({ status: 'ok' })); });
-    mkdirSync(join(home, 'runtime-slots', 'blue'), { recursive: true });
-    writeFileSync(join(home, 'runtime-slots', 'blue', 'slot.json'), JSON.stringify({ releasePath: active }));
     const socket = createSocketServer((client) => client.on('data', () => client.end(`${JSON.stringify({ ok: true, state: { observedState: 'healthy', activeSlot: 'blue', ingress: { state: 'running', activeUpstreamPort: port }, gatewayHost: { releasePath: active, releaseRevision: 'release-active' }, controllerDaemon: { releasePath: active, releaseRevision: 'release-active' }, supervisor: { pid: process.pid, releasePath: active, releaseRevision: 'release-active' } } })}\n`)));
     socketServers.push(socket); mkdirSync(join(home, 'supervisor'), { recursive: true });
     await new Promise<void>((resolveListen, reject) => { socket.once('error', reject); socket.listen(join(home, 'supervisor', 'control.sock'), () => resolveListen()); });
@@ -822,8 +814,6 @@ describe('standalone disaster recovery core', () => {
     const home = mkdtempSync(join(tmpdir(), 'standalone-recovery-curl-lifecycle-'));
     const active = release(home, 'active', 'release-active');
     const port = await http((_request, response) => { response.end(JSON.stringify({ status: 'ok' })); });
-    mkdirSync(join(home, 'runtime-slots', 'blue'), { recursive: true });
-    writeFileSync(join(home, 'runtime-slots', 'blue', 'slot.json'), JSON.stringify({ releasePath: active }));
     mkdirSync(join(home, 'mcp'), { recursive: true });
     const token = 't'.repeat(32);
     writeFileSync(join(home, 'mcp', 'mcp.tokens.json'), JSON.stringify({ bearerToken: token }));

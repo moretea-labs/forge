@@ -371,14 +371,21 @@ function currentSupervisorRelease(config: RecoveryConfig): ReleaseEvidence | und
   return releaseEvidence(join(resolve(config.controllerHome), 'supervisor', 'current'));
 }
 
-function readSupervisorStateFile(config: RecoveryConfig): SupervisorState | undefined {
-  return json<SupervisorState>(supervisorStateFilePath(config));
+function previousSupervisorRelease(config: RecoveryConfig): ReleaseEvidence | undefined {
+  return releaseEvidence(join(resolve(config.controllerHome), 'supervisor', 'previous'));
 }
 
-function slotRelease(config: RecoveryConfig, slot: string | undefined): ReleaseEvidence | undefined {
-  if (slot !== 'blue' && slot !== 'green') return undefined;
-  const slotState = json<{ releasePath?: unknown }>(join(config.controllerHome, 'runtime-slots', slot, 'slot.json'));
-  return releaseEvidence(typeof slotState?.releasePath === 'string' ? slotState.releasePath : undefined);
+function activeAuthorityRelease(config: RecoveryConfig): ReleaseEvidence | undefined {
+  const binding = runtimeBinding(config);
+  const release = releaseEvidence(binding?.releasePath);
+  if (!binding || !release) return undefined;
+  if (binding.releaseRevision && release.revision !== binding.releaseRevision) return undefined;
+  if (binding.manifestHash && release.manifestSha256 !== binding.manifestHash) return undefined;
+  return release;
+}
+
+function readSupervisorStateFile(config: RecoveryConfig): SupervisorState | undefined {
+  return json<SupervisorState>(supervisorStateFilePath(config));
 }
 
 function knownGood(config: RecoveryConfig): KnownGoodStore {
@@ -662,12 +669,11 @@ export async function verifyStableRuntime(config: RecoveryConfig, transport = cr
   const probes: VerifyResult['probes'] = {};
   try { state = await supervisorStatus(config); probes.supervisor_socket = { ok: true, detail: 'status received' }; }
   catch (error) { probes.supervisor_socket = { ok: false, detail: error instanceof Error ? error.message : 'status failed' }; }
-  const active = releaseEvidence(state?.gatewayHost?.releasePath)
+  const active = activeAuthorityRelease(config)
+    ?? releaseEvidence(state?.gatewayHost?.releasePath)
     ?? releaseEvidence(state?.controllerDaemon?.releasePath)
-    ?? slotRelease(config, state?.activeSlot)
     ?? currentSupervisorRelease(config);
-  const previous = slotRelease(config, state?.previousSlot)
-    ?? releaseEvidence(join(resolve(config.controllerHome), 'supervisor', 'previous'));
+  const previous = previousSupervisorRelease(config);
   const known = matchingKnownGood(config, active);
   probes.stable_ingress = await probe(transport, `${config.stableIngressUrl.replace(/\/$/, '')}/health`);
   if (state?.ingress?.activeUpstreamPort) probes.active_gateway = await probe(transport, `http://127.0.0.1:${state.ingress.activeUpstreamPort}/health`);
@@ -918,8 +924,8 @@ export async function listSlots(config: RecoveryConfig): Promise<Record<string, 
     controlAvailable,
     activeSlot: state?.activeSlot,
     previousSlot: state?.previousSlot,
-    active: slotRelease(config, state?.activeSlot) ?? currentSupervisorRelease(config),
-    previous: slotRelease(config, state?.previousSlot),
+    active: activeAuthorityRelease(config) ?? currentSupervisorRelease(config),
+    previous: previousSupervisorRelease(config),
     knownGood: knownGood(config).releases,
   };
 }

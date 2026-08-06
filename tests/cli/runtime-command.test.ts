@@ -100,6 +100,7 @@ describe('runtime command surface', () => {
     const repoActor = readFileSync(join(ROOT, 'src/runtime/control-plane/repo-actor/actor.ts'), 'utf8');
     const executionWorker = readFileSync(join(ROOT, 'src/runtime/execution/workers/executor.ts'), 'utf8');
     const localBridgeSurface = readFileSync(join(ROOT, 'src/runtime/shared/local-bridge-surface.ts'), 'utf8');
+    const standaloneRecovery = readFileSync(join(ROOT, 'src/runtime/standalone-recovery/core.ts'), 'utf8');
     const supervisorTypes = readFileSync(join(ROOT, 'src/runtime/supervisor/types.ts'), 'utf8');
     const supervisorStateStore = readFileSync(join(ROOT, 'src/runtime/supervisor/state-store.ts'), 'utf8');
     const facadeActions = readFileSync(join(ROOT, 'src/runtime/control-plane/facade/suggested-actions.ts'), 'utf8');
@@ -276,6 +277,10 @@ describe('runtime command surface', () => {
     expect(localBridgeSurface).not.toContain('slotHomePath');
     expect(localBridgeSurface).not.toContain('activeSlot?:');
     expect(localBridgeSurface).toContain('return controllerHome ? [controllerHome] : []');
+    expect(standaloneRecovery).not.toContain("join(config.controllerHome, 'runtime-slots'");
+    expect(standaloneRecovery).not.toContain('function slotRelease');
+    expect(standaloneRecovery).toContain('function activeAuthorityRelease');
+    expect(standaloneRecovery).toContain('function previousSupervisorRelease');
     expect(supervisorReleaseCoherence).toContain('ok: releaseCoherent');
     expect(supervisorReleaseCoherence).not.toContain('ActiveSlotAuthority');
     expect(supervisorReleaseCoherence).not.toContain('SlotIdentity');
