@@ -46,7 +46,7 @@ function aliasesFor(availableIds: readonly string[]): Map<string, string> {
     ['test', ['package:test', 'package:test:bun']],
     ['tests', ['package:test', 'package:test:bun']],
     ['lint', ['package:lint', 'package:check:lint']],
-    ['controller-v8', ['package:check:controller-v8']],
+    ['forge-runtime', ['package:check:forge-runtime']],
     ['docs', ['package:check:docs', 'check:docs']],
   ];
   for (const [alias, candidates] of preferred) {

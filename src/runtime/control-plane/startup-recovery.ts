@@ -16,7 +16,6 @@ import { rebuildRepositoryProjection } from '../projections/materialized-view';
 import { readRepositoryProjectionDirty } from '../projections/invalidation';
 import { CONTROLLER_SCOPE_REPO_ID } from '../../cli/repositories/controller-home';
 import { reconcileStaleWorkContracts } from './facade/work-contract-store';
-import { recoverActivationTransaction } from '../bootstrap/activation-transaction';
 import { recoverManagedProcesses } from '../execution/process-runtime/runtime';
 
 export interface ControllerRecoveryError {
@@ -88,12 +87,6 @@ export function reconcileControllerStartup(controllerHome: string): ControllerSt
       code: errorCode(error),
       message: error instanceof Error ? error.message : String(error),
     });
-  }
-  // Recover activation authority projections before durable reconciliation.
-  try {
-    recoverActivationTransaction(controllerHome);
-  } catch {
-    /* non-fatal for pure unit fixtures without bootstrap layout */
   }
   // Recover process leases / terminal receipts for every repository.
   try {

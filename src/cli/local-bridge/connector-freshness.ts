@@ -10,10 +10,10 @@
  */
 
 import {
-  CONTROLLER_SCHEMA_VERSION,
-  CONTROLLER_TOOL_SURFACE,
-  CONTROLLER_TOOL_SURFACE_VERSION,
-  controllerToolSurfaceFingerprint,
+  FORGE_MCP_SCHEMA_VERSION,
+  FORGE_TOOL_SURFACE,
+  FORGE_VERSION,
+  forgeToolSurfaceFingerprint,
 } from '../controller/runtime-config';
 import {
   loadMcpLocalConfig,
@@ -61,7 +61,7 @@ export interface ConnectorRuntimeObservation {
   healthy?: boolean;
   toolSurface?: string;
   schemaVersion?: number;
-  toolSurfaceVersion?: number;
+  forgeVersion?: string;
   toolSurfaceFingerprint?: string;
   toolCount?: number;
   /** Where this observation came from. Live health is preferred over runtime file. */
@@ -77,7 +77,7 @@ export interface EvaluateConnectorFreshnessInput {
   optionalDevelopmentTools?: readonly string[];
   toolSurface?: string;
   schemaVersion?: number;
-  toolSurfaceVersion?: number;
+  forgeVersion?: string;
   /** Expected fingerprint for the local tool surface (from expectedTools). */
   toolSurfaceFingerprint?: string;
   /** Observed running MCP process surface, if available. */
@@ -107,7 +107,7 @@ export interface ConnectorFreshnessReport {
   };
   toolSurface: string;
   schemaVersion: number;
-  toolSurfaceVersion: number;
+  forgeVersion: string;
   toolSurfaceFingerprint: string;
   runtimeFingerprint?: string;
   runtimeHealthy?: boolean;
@@ -154,7 +154,7 @@ function runtimeFingerprintMatches(
   expected: {
     toolSurface: string;
     schemaVersion: number;
-    toolSurfaceVersion: number;
+    forgeVersion: string;
     toolSurfaceFingerprint: string;
   },
 ): boolean | null {
@@ -165,7 +165,7 @@ function runtimeFingerprintMatches(
   if (
     runtime.toolSurface === undefined
     && runtime.schemaVersion === undefined
-    && runtime.toolSurfaceVersion === undefined
+    && runtime.forgeVersion === undefined
     && runtime.toolSurfaceFingerprint === undefined
   ) {
     return null;
@@ -173,7 +173,7 @@ function runtimeFingerprintMatches(
   return (
     runtime.toolSurface === expected.toolSurface
     && runtime.schemaVersion === expected.schemaVersion
-    && runtime.toolSurfaceVersion === expected.toolSurfaceVersion
+    && runtime.forgeVersion === expected.forgeVersion
     && runtime.toolSurfaceFingerprint === expected.toolSurfaceFingerprint
   );
 }
@@ -225,7 +225,7 @@ export async function observeLocalMcpRuntime(
         healthy: true,
         toolSurface: typeof live.toolSurface === 'string' ? live.toolSurface : undefined,
         schemaVersion: typeof live.schemaVersion === 'number' ? live.schemaVersion : undefined,
-        toolSurfaceVersion: typeof live.toolSurfaceVersion === 'number' ? live.toolSurfaceVersion : undefined,
+        forgeVersion: typeof live.version === 'string' ? live.version : undefined,
         toolSurfaceFingerprint: typeof live.toolSurfaceFingerprint === 'string' ? live.toolSurfaceFingerprint : undefined,
         toolCount: typeof live.toolCount === 'number' ? live.toolCount : undefined,
         source: 'live_health',
@@ -249,7 +249,7 @@ export async function observeLocalMcpRuntime(
     healthy: true,
     toolSurface: file.server.toolSurface,
     schemaVersion: file.server.schemaVersion,
-    toolSurfaceVersion: file.server.toolSurfaceVersion,
+    forgeVersion: file.server.forgeVersion,
     toolSurfaceFingerprint: file.server.toolSurfaceFingerprint,
     toolCount: file.server.toolCount,
     source: 'runtime_file',
@@ -277,7 +277,7 @@ function refreshRuntimeFileFromLive(
       profile: typeof live.profile === 'string' ? live.profile : existing.server.profile,
       toolSurface: observation.toolSurface ?? existing.server.toolSurface,
       schemaVersion: observation.schemaVersion ?? existing.server.schemaVersion,
-      toolSurfaceVersion: observation.toolSurfaceVersion ?? existing.server.toolSurfaceVersion,
+      forgeVersion: observation.forgeVersion ?? existing.server.forgeVersion,
       toolSurfaceFingerprint: observation.toolSurfaceFingerprint ?? existing.server.toolSurfaceFingerprint,
       runtimeToolSurfaceFingerprint:
         typeof live.runtimeToolSurfaceFingerprint === 'string'
@@ -312,16 +312,16 @@ export function evaluateConnectorFreshness(input: EvaluateConnectorFreshnessInpu
     ? uniqueSorted(input.connectorToolNames ?? [])
     : undefined;
 
-  const toolSurface = input.toolSurface ?? CONTROLLER_TOOL_SURFACE;
-  const schemaVersion = input.schemaVersion ?? CONTROLLER_SCHEMA_VERSION;
-  const toolSurfaceVersion = input.toolSurfaceVersion ?? CONTROLLER_TOOL_SURFACE_VERSION;
+  const toolSurface = input.toolSurface ?? FORGE_TOOL_SURFACE;
+  const schemaVersion = input.schemaVersion ?? FORGE_MCP_SCHEMA_VERSION;
+  const forgeVersion = input.forgeVersion ?? FORGE_VERSION;
   const toolSurfaceFingerprint = input.toolSurfaceFingerprint
-    ?? controllerToolSurfaceFingerprint(observedLocalTools);
+    ?? forgeToolSurfaceFingerprint(observedLocalTools);
   const runtime = input.runtime ?? null;
   const fingerprintMatches = runtimeFingerprintMatches(runtime, {
     toolSurface,
     schemaVersion,
-    toolSurfaceVersion,
+    forgeVersion,
     toolSurfaceFingerprint,
   });
 
@@ -349,7 +349,7 @@ export function evaluateConnectorFreshness(input: EvaluateConnectorFreshnessInpu
     },
     toolSurface,
     schemaVersion,
-    toolSurfaceVersion,
+    forgeVersion,
     toolSurfaceFingerprint,
     runtimeFingerprint: runtime?.toolSurfaceFingerprint,
     runtimeHealthy: runtime?.healthy,
@@ -569,15 +569,15 @@ export function buildLocalConnectorStatus(input: {
   callabilityProbe?: EvaluateConnectorFreshnessInput['callabilityProbe'];
 }): ConnectorFreshnessReport {
   const expectedTools = uniqueSorted(input.expectedTools);
-  const fingerprint = controllerToolSurfaceFingerprint(expectedTools);
+  const fingerprint = forgeToolSurfaceFingerprint(expectedTools);
   return evaluateConnectorFreshness({
     localToolNames: expectedTools,
     connectorToolNames: input.connectorToolNames,
     expectedFacadeTools: EXPECTED_FACADE_TOOLS,
     optionalDevelopmentTools: OPTIONAL_INTERACTIVE_DEVELOPMENT_TOOLS,
-    toolSurface: CONTROLLER_TOOL_SURFACE,
-    schemaVersion: CONTROLLER_SCHEMA_VERSION,
-    toolSurfaceVersion: CONTROLLER_TOOL_SURFACE_VERSION,
+    toolSurface: FORGE_TOOL_SURFACE,
+    schemaVersion: FORGE_MCP_SCHEMA_VERSION,
+    forgeVersion: FORGE_VERSION,
     toolSurfaceFingerprint: fingerprint,
     runtime: input.runtime,
     callabilityProbe: input.callabilityProbe,

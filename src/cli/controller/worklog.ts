@@ -177,7 +177,7 @@ export function exportControllerWorklog(
     const lines = [
       "---",
       `generated_at: ${JSON.stringify(new Date().toISOString())}`,
-      'source: "forge-controller-v8"',
+      'source: "forge"',
       `event_count: ${events.length}`,
       "---",
       "",

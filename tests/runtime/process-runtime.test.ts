@@ -1069,7 +1069,7 @@ describe('Process Runtime real lease contention', () => {
       runtimeInstanceId: 'runtime-stale',
       ownerPid: activeRuntime.owner.record.pid,
       releaseAuthorityRevision: activeRuntime.authority.revision,
-      fencingToken: authority.fencingToken,
+      fencingToken: activeRuntime.authority.fencingToken,
       releaseId: activeRuntime.authority.active.releaseId,
       artifactIdentity: activeRuntime.authority.active.artifactIdentity,
       workerProtocolVersion: activeRuntime.authority.active.workerProtocolVersion,
@@ -1224,7 +1224,7 @@ describe('Process Runtime real lease contention', () => {
       controllerHome: fx.controllerHome,
       owner: activeRuntime.owner.record,
       authority: activeRuntime.authority,
-      fencingToken: authority.fencingToken,
+      fencingToken: activeRuntime.authority.fencingToken,
     });
     await cancelProcess(fx.controllerHome, fx.repository.repoId, handle.processId);
   });
@@ -1389,18 +1389,14 @@ describe('Process Runner exactly-once semantics', () => {
   });
 });
 
-describe('stable-root live storage for processes', () => {
-  test('process records land under stable repositories root even from slot home path', async () => {
+describe('canonical Forge process storage', () => {
+  test('process records land under the single Controller Home repositories root', async () => {
     const fx = fixture();
-    const slotHome = join(fx.controllerHome, 'runtime-slots', 'green');
-    mkdirSync(slotHome, { recursive: true });
-    // Durable writes must resolve to stable root when caller passes slot home.
-    const rootFromSlot = repositoryControllerRoot(slotHome, fx.repository.repoId);
-    expect(rootFromSlot.replace(/\\/g, '/')).toContain(`/repositories/${fx.repository.repoId}`);
-    expect(rootFromSlot.replace(/\\/g, '/')).not.toMatch(/\/runtime-slots\/green\/repositories\//);
+    const repositoryRoot = repositoryControllerRoot(fx.controllerHome, fx.repository.repoId);
+    expect(repositoryRoot.replace(/\\/g, '/')).toContain(`/repositories/${fx.repository.repoId}`);
 
     const handle = await spawnManagedProcess({
-      controllerHome: slotHome,
+      controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
       executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
@@ -1413,12 +1409,10 @@ describe('stable-root live storage for processes', () => {
       timeoutMs: 10_000,
     });
     expect(handle.completed).toBe(true);
-    // Record is under stable root.
-    const stablePath = join(fx.controllerHome, 'repositories', fx.repository.repoId, 'processes', `${handle.processId}.json`);
-    expect(existsSync(stablePath)).toBe(true);
+    expect(existsSync(join(repositoryRoot, 'processes', `${handle.processId}.json`))).toBe(true);
     const storage = ensureRepositoryRuntimeStorage(fx.repository, fx.controllerHome);
     expect(storage.usesStableRoot).toBe(true);
-    expect(storage.controllerRoot.replace(/\\/g, '/')).toContain(`/repositories/${fx.repository.repoId}`);
+    expect(storage.controllerRoot).toBe(repositoryRoot);
   });
 });
 

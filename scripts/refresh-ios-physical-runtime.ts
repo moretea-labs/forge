@@ -2,6 +2,7 @@ import { spawnSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { buildIosPluginManifest, executeIosPluginAction } from '../src/runtime/plugins/ios-adapter';
+import { resolveRepoPreferredControllerHome } from '../src/cli/repositories/controller-home';
 
 interface AgentDeviceEntry {
   platform?: unknown;
@@ -39,11 +40,7 @@ function parseAgentDeviceJson(stdout: string): Record<string, unknown> {
 
 const repoRoot = resolve(option('--repo-root') ?? process.cwd());
 const repoId = option('--repo-id') ?? fail('--repo-id is required.');
-const controllerHome = resolve(
-  option('--controller-home')
-    ?? process.env.FORGE_CONTROLLER_HOME
-    ?? join(repoRoot, '_ops/controller-home/runtime-slots/blue'),
-);
+const controllerHome = resolveRepoPreferredControllerHome(repoRoot, option('--controller-home'));
 const deviceSelector = option('--device');
 const doctorApp = option('--doctor-app');
 const teamId = option('--team-id');

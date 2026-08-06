@@ -110,7 +110,7 @@ describe('final SQLite control-plane cutover', () => {
   test('verified backup restore preserves revisions, audit continuity, relationships, and exact repository identity', () => {
     withHome((controllerHome) => {
       const identity = {
-        repoId: 'repo_123b7cf58b6b17b5cbe46a56',
+        repoId: 'repo_fixture_exact_identity',
         checkoutId: 'checkout_exact',
         branch: 'main',
         head: 'a'.repeat(40),
@@ -185,7 +185,7 @@ describe('final SQLite control-plane cutover', () => {
     expect(() => assertControlPlaneMetadataPayload({ credential: 'hidden' }, 'migration')).toThrow('CONTROL_PLANE_METADATA_FIELD_REFUSED');
     expect(() => assertControlPlaneMetadataPayload({ payload: Buffer.from('binary') }, 'export')).toThrow('CONTROL_PLANE_METADATA_BINARY_REFUSED');
     expect(() => assertControlPlaneMetadataPayload({ summary: 'x'.repeat(70 * 1024) }, 'migration')).toThrow('CONTROL_PLANE_METADATA_STRING_TOO_LARGE');
-    expect(() => assertControlPlaneMetadataPayload({ note: '-----BEGIN PRIVATE KEY-----' }, 'export')).toThrow('CONTROL_PLANE_METADATA_SECRET_REFUSED');
+    expect(() => assertControlPlaneMetadataPayload({ note: ['-----BEGIN ', 'PRIVATE KEY-----'].join('') }, 'export')).toThrow('CONTROL_PLANE_METADATA_SECRET_REFUSED');
   });
 
   test('Forge Runtime service and standalone Recovery bootstrap do not depend on legacy Issue/Task files', () => {

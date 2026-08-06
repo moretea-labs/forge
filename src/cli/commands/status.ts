@@ -9,25 +9,14 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { fileURLToPath } from 'url';
 import { ALL_TARGETS } from '../installer/targets/registry';
 import { ROUTES } from '../hook/route-registry';
 import { isManagedEntry, type HooksByEvent } from '../installer/managed-entries';
 import { readJsonOrEmpty } from '../installer/shared';
 import type { Location } from '../installer/types';
+import { FORGE_VERSION } from '../../version';
 
-function packageVersion(): string {
-  const packagePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'package.json');
-  try {
-    const parsed = JSON.parse(fs.readFileSync(packagePath, 'utf-8')) as { version?: unknown };
-    if (typeof parsed.version === 'string' && parsed.version.trim()) return parsed.version;
-  } catch {
-    // Keep --version usable even when package metadata is unavailable in a partial install.
-  }
-  return '0.0.0-unknown';
-}
-
-export const CLI_VERSION = packageVersion();
+export const CLI_VERSION = FORGE_VERSION;
 
 const OPT_IN_MARKER = '.ai/harness/workflow-contract.json';
 

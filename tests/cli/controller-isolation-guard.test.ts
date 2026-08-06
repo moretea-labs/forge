@@ -7,7 +7,6 @@ import {
   destroyAllIsolatedControllerFixtures,
   isolatedControllerEnv,
 } from '../fixtures/isolated-controller-home';
-import { assertNotRealControllerHome } from '../../src/cli/controller/bluegreen-rollout';
 
 afterEach(async () => {
   await destroyAllIsolatedControllerFixtures();
@@ -26,8 +25,8 @@ describe('controller isolation guards (level 1)', () => {
     expect(env.FORGE_CONTROLLER_EXTERNAL_TUNNEL).toBe('none');
   });
 
-  test('assertNotRealControllerHome rejects user global home', () => {
+  test('assertIsolatedControllerEnv rejects user global home', () => {
     const real = join(homedir(), '.forge', 'controller');
-    expect(() => assertNotRealControllerHome(real, [real])).toThrow(/TEST_GUARD/);
+    expect(() => assertIsolatedControllerEnv(real)).toThrow(/TEST_GUARD/);
   });
 });

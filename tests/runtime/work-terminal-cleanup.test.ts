@@ -267,7 +267,7 @@ describe('terminal Work cleanup', () => {
       maxOutputBytes: 1_024,
       startedAt: now,
       updatedAt: now,
-      terminalFenceToken:[REDACTED],
+      terminalFenceToken: 1
     } satisfies ManagedProcessRecord);
 
     const result = await cleanup(fx, merged);

@@ -35,10 +35,10 @@ import { buildControllerTaskLedgerProjection } from '../../controller/task-ledge
 import { legacyIssueAuthorityRetired } from '../../controller/legacy-issue-cutover';
 import { reconcileReadinessProjectionSource } from '../readiness-projection';
 import {
-  CONTROLLER_SCHEMA_VERSION,
-  CONTROLLER_TOOL_SURFACE,
-  CONTROLLER_TOOL_SURFACE_VERSION,
-  controllerToolSurfaceFingerprint,
+  FORGE_MCP_SCHEMA_VERSION,
+  FORGE_TOOL_SURFACE,
+  FORGE_VERSION,
+  forgeToolSurfaceFingerprint,
   repositoryIdentity,
 } from '../../controller/runtime-config';
 import { McpSessionRegistry, type McpSessionRoute } from './session-registry';
@@ -55,9 +55,9 @@ function localControllerDiagnosticMatchesRuntime(
   generation?: string,
 ): boolean {
   return payload?.status === 'ok'
-    && payload.toolSurface === CONTROLLER_TOOL_SURFACE
-    && payload.schemaVersion === CONTROLLER_SCHEMA_VERSION
-    && payload.toolSurfaceVersion === CONTROLLER_TOOL_SURFACE_VERSION
+    && payload.toolSurface === FORGE_TOOL_SURFACE
+    && payload.schemaVersion === FORGE_MCP_SCHEMA_VERSION
+    && payload.version === FORGE_VERSION
     && (generation === undefined || payload.generation === generation);
 }
 
@@ -790,9 +790,9 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     port: serviceConfig?.localController?.port ?? 8766,
   };
   const compatibilityToolDefinitions = buildMcpToolDefinitions(toolContext.policy, { enableChatgptBrowser: opts.enableChatgptBrowser === true });
-  const toolSurface = toolContext.policy.profile === 'controller' ? CONTROLLER_TOOL_SURFACE : `${toolContext.policy.profile}-legacy-v1`;
-  const toolSurfaceSchemaVersion = toolContext.policy.profile === 'controller' ? CONTROLLER_SCHEMA_VERSION : 1;
-  const toolSurfaceVersion = toolContext.policy.profile === 'controller' ? CONTROLLER_TOOL_SURFACE_VERSION : 1;
+  const toolSurface = toolContext.policy.profile === 'controller' ? FORGE_TOOL_SURFACE : `${toolContext.policy.profile}-legacy-v1`;
+  const toolSurfaceSchemaVersion = toolContext.policy.profile === 'controller' ? FORGE_MCP_SCHEMA_VERSION : 1;
+  const forgeVersion = FORGE_VERSION;
   const repoId = toolContext.policy.profile === 'controller' ? undefined : repositoryIdentity(repoRoot);
   const startedAt = new Date().toISOString();
   const localOrigin = `http://${host === '::' || host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`;
@@ -803,7 +803,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   const controllerHealth = () => {
     if (!('controllerHome' in toolContext)) return null;
     const exposure = controllerExposureSnapshot(toolContext);
-    const fingerprint = controllerToolSurfaceFingerprint(exposure.toolNames);
+    const fingerprint = forgeToolSurfaceFingerprint(exposure.toolNames);
     return {
       configuredAccessMode: exposure.access.configuredAccessMode,
       effectiveAccessMode: exposure.access.effectiveAccessMode,
@@ -824,7 +824,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   app.get('/health', (_req, res) => {
     const health = controllerHealth();
     res.setHeader('x-forge-tool-surface', toolSurface);
-    res.setHeader('x-forge-tool-surface-version', String(toolSurfaceVersion));
+    res.setHeader('x-forge-version', String(forgeVersion));
     res.setHeader('x-forge-schema-version', String(toolSurfaceSchemaVersion));
     if (health?.toolset) res.setHeader('x-forge-toolset', health.toolset);
     if (health?.runtimeToolSurfaceFingerprint) res.setHeader('x-forge-runtime-tool-surface-fingerprint', health.runtimeToolSurfaceFingerprint);
@@ -836,11 +836,10 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
       ...(process.env.FORGE_MCP_INSTANCE_ID
         ? { instanceId: process.env.FORGE_MCP_INSTANCE_ID }
         : {}),
-      version: '1.4.0',
+      version: forgeVersion,
       profile: toolContext.policy.profile,
       toolSurface,
       schemaVersion: toolSurfaceSchemaVersion,
-      toolSurfaceVersion,
       toolSurfaceFingerprint: health?.toolSurfaceFingerprint,
       runtimeToolSurfaceFingerprint: health?.runtimeToolSurfaceFingerprint,
       generation: health?.generation,
@@ -1045,7 +1044,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   const setMcpResponseHeaders = (_req: Request, res: Response, next: NextFunction): void => {
     const health = controllerHealth();
     res.setHeader('x-forge-tool-surface', toolSurface);
-    res.setHeader('x-forge-tool-surface-version', String(toolSurfaceVersion));
+    res.setHeader('x-forge-version', String(forgeVersion));
     res.setHeader('x-forge-schema-version', String(toolSurfaceSchemaVersion));
     if (health?.toolset) res.setHeader('x-forge-toolset', health.toolset);
     if (health?.runtimeToolSurfaceFingerprint) res.setHeader('x-forge-runtime-tool-surface-fingerprint', health.runtimeToolSurfaceFingerprint);

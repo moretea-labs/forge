@@ -1,22 +1,22 @@
-# Controller Runtime Implementation Status
+# Forge Runtime Implementation Status
 
 > Status: **Runtime Authority**  
-> Baseline: **Target Architecture Runtime — 2026-06-25**
+> Baseline: **Canonical Forge Runtime — 2026-08-06**
 
 ## Completion Statement
 
-The approved runtime topology is implemented in executable code:
+The **Canonical Single Runtime vertical slice** is implemented in executable code:
 
 ```text
-Thin MCP Gateway
-  -> Global Scheduler
-     -> Per-Repository Actor
-        -> Durable Execution Job
-           -> isolated Worker process
-              -> Evidence / Artifact / Projection planes
+forge-runtime
+  -> MCP Transport
+  -> Controller Services
+  -> Scheduler and Repository Actors
+  -> Process Runtime and Workers
+  -> Evidence, Artifact, and Projection planes
 ```
 
-The migration preserves the existing Issue, Task, Run, Edit Session, Local Job, repository and MCP contracts. Compatibility entities remain readable and operational; they no longer own long-work scheduling in the Controller profile.
+One Runtime Root owns lifecycle, readiness, scheduling, process fencing, and the active whole-release identity. Standalone Recovery owns independent observation, bounded restart, and active/previous whole-release rollback. Supervisor, runtime slots, independent Daemon authority, component rollout, KeepAlive commands, and compatibility configuration authority are deleted.
 
 ## Capability Matrix
 

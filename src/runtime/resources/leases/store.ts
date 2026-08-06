@@ -327,7 +327,7 @@ export function releaseExecutionLeases(
   // Writer fencing: passive / fenced runtimes must not release leases belonging
   // to (or managed by) the active runtime, even if they still hold matching lease tokens.
   try {
-    assertThisRuntimeMayWriteOrThrow('release_lease', controllerHome);
+    assertRuntimeMayWriteOrThrow('release_lease', controllerHome);
   } catch (error) {
     if (error instanceof Error && error.message.startsWith('WRITER_FENCED:')) throw error;
     /* unbound legacy */
@@ -382,7 +382,7 @@ export function releaseExactExecutionLeases(
   options?: Pick<LeaseAcquisitionOptions, 'visibility' | 'notifyScheduler' | 'invalidateProjection' | 'emitRuntimeEvent'>,
 ): number {
   try {
-    assertThisRuntimeMayWriteOrThrow('release_lease', controllerHome);
+    assertRuntimeMayWriteOrThrow('release_lease', controllerHome);
   } catch (error) {
     if (error instanceof Error && error.message.startsWith('WRITER_FENCED:')) throw error;
     /* unbound legacy */

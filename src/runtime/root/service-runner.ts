@@ -17,9 +17,9 @@ export function resolveForgeRuntimeServiceCommand(controllerHome: string, config
   if (config.controllerHome !== home) throw new Error('FORGE_RUNTIME_SERVICE_HOME_MISMATCH');
   const authority = readRuntimeReleaseAuthority(home);
   if (!authority) throw new Error('FORGE_RUNTIME_RELEASE_AUTHORITY_UNAVAILABLE');
-  const manifest = loadRuntimeReleaseManifest(authority.active.manifestPath, home);
+  const activeRuntimeReleaseManifest = loadRuntimeReleaseManifest(authority.active.manifestPath, home);
   const releaseRoot = dirname(resolve(authority.active.manifestPath));
-  const executable = join(releaseRoot, manifest.entrypoint);
+  const executable = join(releaseRoot, activeRuntimeReleaseManifest.entrypoint);
   if (!existsSync(executable)) throw new Error(`FORGE_RUNTIME_RELEASE_ENTRYPOINT_MISSING: ${executable}`);
   return {
     executable,
@@ -30,7 +30,7 @@ export function resolveForgeRuntimeServiceCommand(controllerHome: string, config
       '--host', config.host,
       '--port', String(config.port),
       '--auth-token-file', config.authTokenFile,
-      ...manifest.arguments,
+      ...activeRuntimeReleaseManifest.arguments,
       ...(config.exclusiveWorkId ? ['--exclusive-work-id', config.exclusiveWorkId] : []),
     ],
     env: {

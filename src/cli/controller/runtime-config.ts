@@ -1,17 +1,20 @@
 import { createHash } from 'crypto';
 import { realpathSync } from 'fs';
+import { FORGE_PRODUCT_ID, FORGE_VERSION } from '../../version';
+export { FORGE_VERSION } from '../../version';
 
-export const CONTROLLER_TOOL_SURFACE = 'controller-chatgpt-bridge-v8';
-export const CONTROLLER_SCHEMA_VERSION = 10;
-export const CONTROLLER_TOOL_SURFACE_VERSION = 8;
+/** Product identity exposed by every Forge runtime surface. */
+export const FORGE_TOOL_SURFACE = FORGE_PRODUCT_ID;
+/** Payload schema for MCP health/config records; this is not a product/component version. */
+export const FORGE_MCP_SCHEMA_VERSION = 10;
 
-export function controllerToolSurfaceFingerprint(toolNames: string[] = []): string {
+export function forgeToolSurfaceFingerprint(toolNames: string[] = []): string {
   const normalizedNames = [...new Set(toolNames.map((name) => name.trim()).filter(Boolean))].sort();
   return createHash('sha256')
     .update(JSON.stringify({
-      toolSurface: CONTROLLER_TOOL_SURFACE,
-      schemaVersion: CONTROLLER_SCHEMA_VERSION,
-      toolSurfaceVersion: CONTROLLER_TOOL_SURFACE_VERSION,
+      product: FORGE_PRODUCT_ID,
+      version: FORGE_VERSION,
+      schemaVersion: FORGE_MCP_SCHEMA_VERSION,
       toolNames: normalizedNames,
     }))
     .digest('hex')

@@ -42,11 +42,20 @@ function fail(message) {
 
 function requireReleaseScript(name, channel) {
   const script = pkg.scripts?.[name];
-  const gate = `node scripts/check-release-version.mjs --channel ${channel} --require-tag`;
-  if (typeof script !== "string") fail(`${name} script is missing`);
-  if (!script.startsWith(`${gate} && `)) fail(`${name} must run the release-version gate first`);
-  if (!script.includes(`npm publish --tag ${channel} --access public`)) {
-    fail(`${name} must publish explicitly to ${channel}`);
+  const expected = `bash scripts/publish-release-tarball.sh ${channel}`;
+  if (script !== expected) fail(`${name} must delegate to the reusable tarball publisher for ${channel}`);
+}
+
+function requireReusableTarballPublisher() {
+  const path = resolve(root, "scripts/publish-release-tarball.sh");
+  if (!existsSync(path)) fail("reusable tarball publisher is missing");
+  const script = readFileSync(path, "utf8");
+  for (const required of [
+    "node scripts/check-release-version.mjs --channel \"$CHANNEL\" --require-tag",
+    "bash scripts/check-npm-release.sh",
+    "npm publish \"$TARBALL_PATH\" --tag \"$CHANNEL\" --access public",
+  ]) {
+    if (!script.includes(required)) fail(`reusable tarball publisher missing: ${required}`);
   }
 }
 
@@ -87,6 +96,7 @@ if (pkg.scripts?.["check:release-version"] !== "node scripts/check-release-versi
 }
 requireReleaseScript("release:rc", "next");
 requireReleaseScript("release:stable", "latest");
+requireReusableTarballPublisher();
 
 const files = new Set(pkg.files ?? []);
 for (const required of requiredFiles) {

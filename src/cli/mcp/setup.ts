@@ -16,7 +16,7 @@ import {
 } from "./auth";
 import { resolveMcpRepoRoot } from "./repo";
 import {
-  CONTROLLER_TOOL_SURFACE,
+  FORGE_TOOL_SURFACE,
   DEFAULT_AGENT_TIMEOUT_MS,
   defaultLocalAgentRunners,
   MAX_AGENT_TIMEOUT_MS,
@@ -44,7 +44,7 @@ const REQUIRED_CODEX_TOOLS = [
 
 const CHATGPT_MCP_ENDPOINT_PLACEHOLDER = "<https-tunnel-url>/mcp";
 const CHATGPT_NAMED_TUNNEL_HOST_PLACEHOLDER = "<named-tunnel-host>";
-const DEFAULT_CHATGPT_MCP_SERVER_NAME = "forge-controller-v8";
+const DEFAULT_CHATGPT_MCP_SERVER_NAME = "forge";
 const LEGACY_DEFAULT_SERVER_NAMES = new Set([
   "forge",
   "forge-controller-v1",
@@ -728,7 +728,7 @@ export function runMcpDoctor(opts: {
       ...(configuredServerName ? { serverName: configuredServerName } : {}),
       serverNameConfigured: Boolean(configuredServerName),
       defaultServerName: DEFAULT_CHATGPT_MCP_SERVER_NAME,
-      expectedToolSurface: CONTROLLER_TOOL_SURFACE,
+      expectedToolSurface: FORGE_TOOL_SURFACE,
       localEndpoint: `http://${host}:${port}/mcp`,
       localController: `http://${localConfig?.localController?.host ?? "127.0.0.1"}:${localConfig?.localController?.port ?? 8766}/`,
       publicEndpoint: localConfig?.chatgpt?.endpoint,

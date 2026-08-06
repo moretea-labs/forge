@@ -1,4 +1,4 @@
-import { CONTROLLER_TOOL_SURFACE, controllerToolSurfaceFingerprint } from '../src/cli/controller/runtime-config';
+import { FORGE_TOOL_SURFACE, FORGE_VERSION, forgeToolSurfaceFingerprint } from '../src/cli/controller/runtime-config';
 import { runtimePolicy } from '../src/cli/mcp/multi-repository';
 import { buildMcpToolDefinitions } from '../src/cli/mcp/tools';
 import { accessToolDefinitions } from '../src/cli/mcp/access-tools';
@@ -13,10 +13,9 @@ import {
   STABLE_CONTROLLER_TOOL_NAMES,
 } from '../src/cli/mcp/toolset';
 
-// Versioned v8 stable surface. Update deliberately when the exported contract changes.
-// The stable Controller surface currently publishes 128 unique tools. Keep the
-// exact count and upper budget aligned so accidental additions remain visible.
-const EXPECTED_STABLE_TOOL_COUNT = 128;
+// The stable Forge surface is defined by the authoritative tool-name registry.
+// Keep an upper schema budget so accidental additions remain visible without
+// coupling compatibility to an obsolete component version or exact tool count.
 const MAX_STABLE_TOOL_COUNT = 128;
 
 const policy = runtimePolicy(process.cwd(), {
@@ -38,8 +37,8 @@ const stableNames: string[] = [...STABLE_CONTROLLER_TOOL_NAMES];
 const defaultNames: string[] = [...DEFAULT_CONTROLLER_TOOL_NAMES];
 const advancedNames: string[] = [...ADVANCED_CONTROLLER_TOOL_NAMES];
 const preferredNames: string[] = [...PREFERRED_FACADE_TOOL_NAMES];
-const stableFingerprint = controllerToolSurfaceFingerprint(stableNames);
-const fullFingerprint = controllerToolSurfaceFingerprint(fullNames);
+const stableFingerprint = forgeToolSurfaceFingerprint(stableNames);
+const fullFingerprint = forgeToolSurfaceFingerprint(fullNames);
 const duplicateStable = stableNames.filter((name, index) => stableNames.indexOf(name) !== index);
 const missingStable = stableNames.filter((name) => !fullNames.includes(name));
 const sourceCollisions = Object.entries(sourceGroups).flatMap(([group, names], groupIndex, entries) =>
@@ -47,19 +46,16 @@ const sourceCollisions = Object.entries(sourceGroups).flatMap(([group, names], g
     .map((name) => `${group}:${name}`));
 
 const failures: string[] = [];
-if (stableNames.length !== EXPECTED_STABLE_TOOL_COUNT) {
-  failures.push(`stable Controller tool count changed: expected ${EXPECTED_STABLE_TOOL_COUNT}, got ${stableNames.length}`);
-}
 if (stableNames.length > MAX_STABLE_TOOL_COUNT) {
-  failures.push(`stable Controller tools/list exceeds the schema budget: ${stableNames.length} > ${MAX_STABLE_TOOL_COUNT}`);
+  failures.push(`stable Forge tools/list exceeds the schema budget: ${stableNames.length} > ${MAX_STABLE_TOOL_COUNT}`);
 }
 if (duplicateStable.length) failures.push(`stable duplicate names: ${[...new Set(duplicateStable)].join(', ')}`);
 if (missingStable.length) failures.push(`stable tools missing from registered definitions: ${missingStable.join(', ')}`);
 if (defaultNames.join('\n') !== stableNames.join('\n')) {
-  failures.push('default/core surface must alias the stable Controller surface');
+  failures.push('default/core surface must alias the stable Forge surface');
 }
 if (advancedNames.join('\n') !== stableNames.join('\n')) {
-  failures.push('advanced surface must alias the stable Controller surface');
+  failures.push('advanced surface must alias the stable Forge surface');
 }
 for (const name of ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work']) {
   if (!preferredNames.includes(name)) failures.push(`preferred facade surface missing: ${name}`);
@@ -77,7 +73,8 @@ if (failures.length) {
 
 console.log(JSON.stringify({
   status: 'ok',
-  toolSurface: CONTROLLER_TOOL_SURFACE,
+  toolSurface: FORGE_TOOL_SURFACE,
+  version: FORGE_VERSION,
   stableToolCount: stableNames.length,
   stableFingerprint,
   fullCompatibilityToolCount: fullNames.length,

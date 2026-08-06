@@ -12,10 +12,9 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'fs';
-import { dirname, join, resolve } from 'path';
-import { ensureRepositoryControllerLayout } from './controller-home';
+import { dirname, join, resolve, sep } from 'path';
+import { ensureRepositoryControllerLayout, resolveControllerHome } from './controller-home';
 import type { RepositoryRecord } from './types';
-import { resolveStableControllerHome } from '../controller/stable-state/stable-home';
 
 export type RuntimeStorageBindingStatus =
   | 'linked'
@@ -392,10 +391,11 @@ export function ensureRepositoryRuntimeStorage(
     .filter((binding) => binding.status === 'legacy-active' || binding.status === 'conflict')
     .map((binding) => `${binding.name}: ${binding.message ?? binding.status}`);
 
-  const stableHome = resolveStableControllerHome(controllerHome ?? '');
-  const normalizedRoot = resolve(controllerRoot).replace(/\\/g, '/');
-  const usesStableRoot = !/\/runtime-slots\/(blue|green)\//.test(normalizedRoot)
-    && normalizedRoot.includes('/repositories/');
+  const stableHome = resolveControllerHome(controllerHome ?? '');
+  const stableRepositoriesRoot = join(stableHome, 'repositories');
+  const normalizedRoot = resolve(controllerRoot);
+  const usesStableRoot = normalizedRoot === stableRepositoriesRoot
+    || normalizedRoot.startsWith(`${stableRepositoriesRoot}${sep}`);
 
   return {
     repoId: repository.repoId,

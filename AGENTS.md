@@ -2,7 +2,7 @@
 
 This repository self-hosts the Forge contract. Retired project-skill and project-initializer staging paths are not supported or cleaned up by current tooling. Claude and Codex should follow the same repo-local workflow surface.
 
-## Controller V8 execution bridge
+## Forge execution runtime
 
 Treat ChatGPT as the controller and Forge as its repository execution layer. ChatGPT chooses how to inspect, plan, edit, verify, or delegate. Forge provides deterministic repository tools and does not impose an Agent-first workflow.
 

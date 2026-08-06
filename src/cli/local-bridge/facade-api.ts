@@ -14,6 +14,7 @@ import { listControllerChecks, runControllerCheck } from '../controller/check-ru
 import { createMcpToolContext, type MultiRepositoryMcpToolContext } from '../mcp/multi-repository';
 import { readSchedulerHealthSnapshot } from '../../runtime/control-plane/global-scheduler/scheduler';
 import { observeRuntimeStatus } from '../../runtime/root/status';
+import { readForgeRuntimeStatus } from '../../runtime/control-plane/runtime-status-client';
 import { evaluateActiveRuntimeSourceDrift, readRuntimeGeneration } from '../../runtime/control-plane/runtime-generation';
 import {
   getAssistantPluginManifest,

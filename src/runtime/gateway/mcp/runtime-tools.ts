@@ -95,9 +95,9 @@ import {
 } from '../../projections/controller-context';
 import { loadMcpRuntimeState } from '../../../cli/mcp/auth';
 import {
-  CONTROLLER_SCHEMA_VERSION,
-  CONTROLLER_TOOL_SURFACE,
-  CONTROLLER_TOOL_SURFACE_VERSION,
+  FORGE_MCP_SCHEMA_VERSION,
+  FORGE_TOOL_SURFACE,
+  FORGE_VERSION,
 } from '../../../cli/controller/runtime-config';
 import { redactMcpText } from '../../../cli/mcp/redaction';
 import { resolveLocalBridgeSurface, summarizeRecentJobs } from '../../shared/local-bridge-surface';
@@ -980,6 +980,9 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
   }, ['finding_id'], false),
 ];
 
+export const connectorExposedTools = runtimeToolDefinitions.map((tool) => tool.name);
+export const currentCallableTools = new Set(connectorExposedTools);
+
 const RH_CONTEXT_CURRENT_WINDOW_MS = 24 * 60 * 60 * 1_000;
 
 function timestampIsCurrent(value: string | undefined, cutoffMs: number): boolean {
@@ -1672,9 +1675,9 @@ function localControllerDiagnosticMatchesRuntime(
   expected: { repoRoot?: string; generation?: string } = {},
 ): boolean {
   return payload?.status === 'ok'
-    && payload.toolSurface === CONTROLLER_TOOL_SURFACE
-    && payload.schemaVersion === CONTROLLER_SCHEMA_VERSION
-    && payload.toolSurfaceVersion === CONTROLLER_TOOL_SURFACE_VERSION
+    && payload.toolSurface === FORGE_TOOL_SURFACE
+    && payload.schemaVersion === FORGE_MCP_SCHEMA_VERSION
+    && payload.version === FORGE_VERSION
     && (expected.repoRoot === undefined || payload.repoRoot === expected.repoRoot)
     && (expected.generation === undefined || payload.generation === expected.generation);
 }
@@ -1837,16 +1840,12 @@ export async function controllerReadiness(
   signals: ControllerReadinessSignals = {},
 ) {
   const evidence = await controllerReadinessEvidence(ctx, repository, signals);
-  const runtimeSource = runtimeSourceSnapshotStatus(evidence.daemon.source);
   const reasonCodes = new Set(evidence.reasons.map((item) => item.code));
-  if (runtimeSource.restartRequired) {
-    reasonCodes.add(runtimeSource.code ?? 'RUNTIME_SOURCE_SNAPSHOT_STALE');
-  }
   const controllerServicesReady = evidence.daemon.status === 'ready' && evidence.daemon.degraded !== true;
   const schedulerReady = evidence.durableScheduler.status === 'ready';
   const workersReady = evidence.workerLoop.consuming;
-  const databaseReady = evidence.projectionSnapshot?.persisted !== false;
-  const releaseCoherenceReady = !runtimeSource.restartRequired;
+  const databaseReady = evidence.health.components.projection.ready;
+  const releaseCoherenceReady = evidence.daemon.status === 'ready' && evidence.daemon.degraded !== true;
   const ready = evidence.ready
     && controllerServicesReady
     && schedulerReady
@@ -1895,7 +1894,11 @@ export async function controllerReadiness(
       },
       releaseCoherence: {
         ready: releaseCoherenceReady,
-        evidence: runtimeSource,
+        evidence: {
+          status: evidence.daemon.status,
+          degraded: evidence.daemon.degraded,
+          error: evidence.daemon.error,
+        },
       },
       mcpEndToEnd: {
         ready: evidence.ready,

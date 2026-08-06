@@ -19,6 +19,9 @@ import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { createMcpToolContext as createMultiRepositoryContext } from '../../src/cli/mcp/multi-repository';
 import { createForgeMcpServer } from '../../src/cli/mcp/server';
 import { writeJsonAtomic } from '../../src/runtime/shared/json-files';
+import { acquireRuntimeOwnership, type RuntimeOwnershipHandle } from '../../src/runtime/root/ownership';
+import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
+import { STABLE_CONTROLLER_TOOL_NAMES } from '../../src/cli/mcp/toolset-names';
 import {
   PROCESS_RUNNER_RELEASE_CANARY_CHILD_ARG,
   processRunnerReleaseCanaryChildCommand,
@@ -112,32 +115,12 @@ function ledgerWithRunningTask(): TaskLedgerProjection {
   };
 }
 
-async function withEnvironment(
-  values: Record<string, string | undefined>,
-  fn: () => Promise<void>,
-): Promise<void> {
-  const previous = new Map(Object.keys(values).map((key) => [key, process.env[key]]));
-  for (const [key, value] of Object.entries(values)) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
-  try {
-    await fn();
-  } finally {
-    for (const [key, value] of previous) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  }
-}
-
 /**
- * Local-dev controller home: a live-PID daemon record (test process) and a
- * registered repository, so `controller_ready` evaluates readiness without a
- * real Canonical Forge Runtime process. Scheduler/projection files are intentionally
- * absent: the evaluator degrades those to warnings, not blockers.
+ * Local-dev Forge home with one canonical Runtime owner/status projection and a
+ * registered repository. The fixture exercises the same ownership contract as
+ * the production Runtime instead of writing the retired daemon status shape.
  */
-function controllerFixture(): { controllerHome: string; repoRoot: string } {
+function controllerFixture(): { controllerHome: string; repoRoot: string; ownership: RuntimeOwnershipHandle } {
   const controllerHome = mkdtempSync(join(tmpdir(), 'forge-obs-ch-'));
   const repoRoot = mkdtempSync(join(tmpdir(), 'forge-obs-repo-'));
   mkdirSync(join(repoRoot, 'src'), { recursive: true });
@@ -145,17 +128,29 @@ function controllerFixture(): { controllerHome: string; repoRoot: string } {
   writeFileSync(join(repoRoot, 'src/example.ts'), 'export const value = 1;\n');
   writeFileSync(join(repoRoot, 'tasks/current.md'), '# Current\n');
   spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });
-  mkdirSync(join(controllerHome, 'daemon'), { recursive: true });
   const now = new Date().toISOString();
-  writeJsonAtomic(join(controllerHome, 'daemon', 'state.json'), {
+  const runtimeInstanceId = 'runtime-observability';
+  const ownership = acquireRuntimeOwnership(controllerHome, runtimeInstanceId);
+  writeRuntimeStatusSnapshot(controllerHome, {
     schemaVersion: 1,
-    status: 'ready',
+    runtimeInstanceId,
     pid: process.pid,
+    releaseId: 'release-observability',
+    artifactIdentity: 'artifact-observability',
     startedAt: now,
+    updatedAt: now,
+    readiness: {
+      ready: true,
+      reasonCodes: [],
+      diagnostics: {
+        database: { outcome: 'pass' },
+        scheduler: { outcome: 'pass' },
+        releaseCoherence: { outcome: 'pass' },
+        mcpEndToEnd: { outcome: 'pass' },
+      },
+      observedAt: now,
+    },
   });
-  writeFileSync(join(controllerHome, 'daemon', 'controller.pid'), `${process.pid}\n`);
-  // A fresh Scheduler heartbeat keeps the live daemon record `ready` instead of
-  // falling into the startup-grace window with a stale heartbeat.
   mkdirSync(join(controllerHome, 'scheduler'), { recursive: true });
   writeJsonAtomic(join(controllerHome, 'scheduler', 'state.json'), {
     schemaVersion: 1,
@@ -166,7 +161,7 @@ function controllerFixture(): { controllerHome: string; repoRoot: string } {
     lastDispatchAt: now,
     lastRepoDispatch: {},
   });
-  return { controllerHome, repoRoot };
+  return { controllerHome, repoRoot, ownership };
 }
 
 describe('runtime observability', () => {
@@ -189,24 +184,19 @@ describe('runtime observability', () => {
     expect(health.activeBlockers.map((item) => item.code)).toContain('EXTERNAL_ENDPOINT_UNHEALTHY');
   });
 
-  test('controller_ready with no public endpoint env keeps local development ready and unknown', async () => {
-    const { controllerHome, repoRoot } = controllerFixture();
+  test('controller_ready remains ready without a configured public endpoint', async () => {
+    const { controllerHome, repoRoot, ownership } = controllerFixture();
     try {
-      await withEnvironment({ FORGE_SUPERVISOR_PUBLIC_HEALTH_ENDPOINT: undefined }, async () => {
-        const ctx = createMultiRepositoryContext({ repo: repoRoot, profile: 'controller', toolset: 'full', controllerHome });
-        const result = await callRuntimeTool(ctx, 'controller_ready', {});
-        expect(result).toBeTruthy();
-        const payload = JSON.parse(result!.content[0].text) as Record<string, unknown>;
+      const ctx = createMultiRepositoryContext({ repo: repoRoot, profile: 'controller', toolset: 'full', controllerHome });
+      const result = await callRuntimeTool(ctx, 'controller_ready', {});
+      expect(result).toBeTruthy();
+      const payload = JSON.parse(result!.content[0].text) as Record<string, unknown>;
 
-        expect(payload.ready).toBe(true);
-        expect(payload.externalEndpoint).toMatchObject({ status: 'unknown' });
-        const externalReachability = (payload.health as { components: Record<string, unknown> }).components
-          .externalReachability as { state: string; ready: boolean };
-        expect(externalReachability).toMatchObject({ state: 'warning', ready: true });
-        const reasons = payload.reasons as Array<{ code: string }>;
-        expect(reasons.map((item) => item.code)).not.toContain('PUBLIC_STABLE_ENDPOINT_UNHEALTHY');
-      });
+      expect(payload.ready).toBe(true);
+      const reasonCodes = payload.reasonCodes as string[];
+      expect(reasonCodes).not.toContain('PUBLIC_STABLE_ENDPOINT_UNHEALTHY');
     } finally {
+      ownership.release();
       rmSync(controllerHome, { recursive: true, force: true });
       rmSync(repoRoot, { recursive: true, force: true });
     }
@@ -350,19 +340,17 @@ describe('runtime observability', () => {
     };
     try {
       const defaultNames = await listNames();
-      expect(defaultNames.length).toBe(128);
+      expect(defaultNames).toEqual([...STABLE_CONTROLLER_TOOL_NAMES]);
       expect(defaultNames).toEqual(expect.arrayContaining(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work']));
       expect(defaultNames).toContain('repository_command_execute');
-      expect(defaultNames).toContain('controller_rollout');
 
       const coreNames = await listNames('core');
       expect(coreNames).toEqual(defaultNames);
 
       const advancedNames = await listNames('advanced');
       expect(advancedNames).toEqual(defaultNames);
-      expect(advancedNames.length).toBe(128);
+      expect(advancedNames).toEqual([...STABLE_CONTROLLER_TOOL_NAMES]);
       expect(advancedNames).toContain('repository_command_execute');
-      expect(advancedNames).toContain('controller_rollout');
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }

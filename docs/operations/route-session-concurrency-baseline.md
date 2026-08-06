@@ -72,7 +72,7 @@ bun test tests/runtime/thin-harness-gateway-routing.test.ts
 bun run benchmark:route-session-concurrency --iterations 7
 bun run check:type
 bun run check:runtime-architecture
-bun run check:controller-v8
+bun run check:forge-runtime
 bun run test
 ```
 

@@ -87,10 +87,10 @@ import { buildControllerTaskLedgerProjection } from "../controller/task-ledger";
 import { buildControllerContextPack } from "../controller/context-pack";
 import { loadControllerProjectState, saveControllerProjectState } from "../controller/project-state";
 import {
-  CONTROLLER_SCHEMA_VERSION,
-  CONTROLLER_TOOL_SURFACE,
-  CONTROLLER_TOOL_SURFACE_VERSION,
-  controllerToolSurfaceFingerprint,
+  FORGE_MCP_SCHEMA_VERSION,
+  FORGE_TOOL_SURFACE,
+  FORGE_VERSION,
+  forgeToolSurfaceFingerprint,
   MIN_AGENT_TIMEOUT_MS,
   formatDurationMs,
   normalizeAgentTimeoutMs,
@@ -3009,7 +3009,7 @@ export async function callMcpTool(
             profile: ctx.policy.profile,
             toolSurface:
               ctx.policy.profile === "controller"
-                ? CONTROLLER_TOOL_SURFACE
+                ? FORGE_TOOL_SURFACE
                 : `${ctx.policy.profile}-legacy-v1`,
             toolCount: buildMcpToolDefinitions(ctx.policy, {
               enableChatgptBrowser: ctx.enableChatgptBrowser === true,
@@ -3063,10 +3063,10 @@ export async function callMcpTool(
         const missingFacadeTools = connectorFreshness.missingConnectorTools;
         const staleConnector = connectorFreshness.status === "chatgpt_snapshot_missing_facade";
         const payload = {
-          schemaVersion: CONTROLLER_SCHEMA_VERSION,
-          toolSurface: CONTROLLER_TOOL_SURFACE,
-          toolSurfaceVersion: CONTROLLER_TOOL_SURFACE_VERSION,
-          toolSurfaceFingerprint: controllerToolSurfaceFingerprint(expectedTools),
+          schemaVersion: FORGE_MCP_SCHEMA_VERSION,
+          toolSurface: FORGE_TOOL_SURFACE,
+          version: FORGE_VERSION,
+          toolSurfaceFingerprint: forgeToolSurfaceFingerprint(expectedTools),
           executionModel: "chatgpt-controller-execution-bridge",
           profile: ctx.policy.profile,
           capabilities: {
@@ -3186,7 +3186,7 @@ export async function callMcpTool(
                 ? `Local MCP process fingerprint/version may be stale. Restart controller/MCP, then reconnect ChatGPT if rh_* are still missing.`
                 : connectorFreshness.status === "local_mcp_missing_facade"
                   ? `Local MCP tool surface is missing facade tools: ${connectorFreshness.missingLocalTools.join(", ")}. Restart controller/MCP.`
-                  : `Connector clients must match ${CONTROLLER_TOOL_SURFACE} schema ${CONTROLLER_SCHEMA_VERSION}. Prefer rh_status/rh_inbox/rh_context/rh_work. Pass connector_tool_names to detect a stale ChatGPT tool snapshot precisely.`,
+                  : `Connector clients must match ${FORGE_TOOL_SURFACE} version ${FORGE_VERSION} / schema ${FORGE_MCP_SCHEMA_VERSION}. Prefer rh_status/rh_inbox/rh_context/rh_work. Pass connector_tool_names to detect a stale ChatGPT tool snapshot precisely.`,
         };
         audit(ctx, name, "ok", args);
         return textResult(payload);
@@ -3608,15 +3608,6 @@ export async function callMcpTool(
         // Prefer Unified Process Runtime for ordinary checks. Multi-phase and
         // release checks require an explicit external Controller instead.
         const checkId = String(args.check_id ?? "").trim();
-        // Self-hosting controller-v8 nests Local Jobs and must not be scheduled
-        // through outer Heavy Check / durable exclusive claims (deadlock risk).
-        if (/(?:^|:)(?:check:controller-v8|package:check:controller-v8|controller-v8)(?:$|:)/i.test(checkId)) {
-          audit(ctx, name, "blocked", args);
-          return errorResult(
-            "SELF_HOSTING_CHECK_UNSUPPORTED_VIA_RUN_CHECK",
-            `Check ${checkId} is a self-hosting suite. Run it directly with \`bun run check:controller-v8\` or \`bash scripts/verify-controller-v8.sh\` instead of run_check/Local Job. Nested durable scheduling would wait forever on heavy-check.`,
-          );
-        }
         const forceDurable = args.force_durable === true
           || args.apply_mode === "async"
           || args.mode === "durable";

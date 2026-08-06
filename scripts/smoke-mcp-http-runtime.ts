@@ -5,7 +5,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { registerRepository } from '../src/cli/repositories/registry';
 import { readForgeRuntimeStatus } from '../src/runtime/control-plane/runtime-status-client';
-import { CONTROLLER_TOOL_SURFACE, controllerToolSurfaceFingerprint } from '../src/cli/controller/runtime-config';
+import { FORGE_TOOL_SURFACE, forgeToolSurfaceFingerprint } from '../src/cli/controller/runtime-config';
 import { CORE_CONTROLLER_TOOL_NAMES } from '../src/cli/mcp/toolset';
 import { writeMcpServiceLocalConfig } from '../src/cli/mcp/auth';
 import { buildMcpToolDefinitions } from '../src/cli/mcp/tools';
@@ -102,8 +102,8 @@ try {
   // Unmarked Controller startup intentionally preserves the Advanced compatibility label.
   const expectedToolset = resolveControllerToolsetSelection(null).toolset;
   if (health.body.toolset !== expectedToolset) throw new Error(`TOOLSET_CHANGED: ${String(health.body.toolset)}`);
-  if (health.body.toolSurface !== CONTROLLER_TOOL_SURFACE) throw new Error(`TOOL_SURFACE_CHANGED: ${String(health.body.toolSurface)}`);
-  const expectedCoreFingerprint = controllerToolSurfaceFingerprint([...CORE_CONTROLLER_TOOL_NAMES]);
+  if (health.body.toolSurface !== FORGE_TOOL_SURFACE) throw new Error(`TOOL_SURFACE_CHANGED: ${String(health.body.toolSurface)}`);
+  const expectedCoreFingerprint = forgeToolSurfaceFingerprint([...CORE_CONTROLLER_TOOL_NAMES]);
   const expectedCompatibilityToolCount = buildMcpToolDefinitions(expectedPolicy).length;
   if (health.body.toolCount !== CORE_CONTROLLER_TOOL_NAMES.length) throw new Error(`TOOL_COUNT_CHANGED: ${String(health.body.toolCount)}`);
   if (health.body.compatibilityToolCount !== expectedCompatibilityToolCount) throw new Error(`LEGACY_MCP_TOOL_COUNT_CHANGED: ${String(health.body.compatibilityToolCount)}`);

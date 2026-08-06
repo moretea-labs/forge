@@ -3,6 +3,7 @@ import { dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { createMobileIntentDevice } from '../src/cli/local-bridge/mobile-intents';
 import { startLocalBridgeServer } from '../src/cli/local-bridge/server';
+import { resolveRepoPreferredControllerHome } from '../src/cli/repositories/controller-home';
 
 interface StoredMonitorCredential {
   deviceId: string;
@@ -17,8 +18,7 @@ function requiredEnvironment(name: string): string {
 
 const scriptRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = resolve(process.env.FORGE_REPO_ROOT?.trim() || scriptRoot);
-const controllerHome = resolve(process.env.FORGE_CONTROLLER_HOME?.trim()
-  || resolve(repoRoot, '_ops/controller-home/runtime-slots/green'));
+const controllerHome = resolveRepoPreferredControllerHome(repoRoot);
 const runtimeDir = resolve(process.env.FORGE_MONITOR_RUNTIME?.trim()
   || resolve(repoRoot, '.forge/mobile-monitor-runtime'));
 const host = process.env.FORGE_MONITOR_HOST?.trim() || '0.0.0.0';

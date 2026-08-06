@@ -14,7 +14,7 @@ export interface ForgeRuntimeServiceConfig {
   repositoryRoot: string;
   host: string;
   port: number;
-  authTokenFile:[REDACTED]
+  authTokenFile: string;
   exclusiveWorkId?: string;
 }
 

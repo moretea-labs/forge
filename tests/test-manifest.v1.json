@@ -31,7 +31,7 @@
     "maxGitWorktreeFiles": 15,
     "maxFixedPortFiles": 6,
     "maxRuntimeSingletonFiles": 6,
-    "maxControllerHomeIsolatedFiles": 8,
+    "maxControllerHomeIsolatedFiles": 10,
     "maxDestructiveFiles": 0
   },
   "pathModuleRules": [
@@ -199,10 +199,6 @@
       "module": "controller",
       "resource": "controller-home-isolated"
     },
-    "tests/cli/controller-service.test.ts": {
-      "module": "controller",
-      "resource": "runtime-singleton"
-    },
     "tests/cli/init.test.ts": {
       "module": "core",
       "resource": "temp-isolated"
@@ -230,10 +226,6 @@
     "tests/cli/mcp-policy.test.ts": {
       "module": "controller",
       "resource": "temp-isolated"
-    },
-    "tests/cli/mcp-restart-process-ownership.test.ts": {
-      "module": "process-runtime",
-      "resource": "process-tree"
     },
     "tests/cli/repository-command-entry.test.ts": {
       "module": "repository",

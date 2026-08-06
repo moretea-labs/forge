@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 required=(
-  README.md README.en.md README.zh-CN.md README.es.md README.fr.md README.ja.md
+  README.md README.en.md README.zh-CN.md
   CHANGELOG.md CONTRIBUTING.md SECURITY.md SUPPORT.md CODE_OF_CONDUCT.md
   .github/PULL_REQUEST_TEMPLATE.md
   .github/ISSUE_TEMPLATE/config.yml
@@ -49,7 +49,7 @@ for path in README.md README.zh-CN.md; do
   for link in SUPPORT.md SECURITY.md CONTRIBUTING.md CHANGELOG.md docs/wiki/Home.md; do
     grep -q "$link" "$path" || { echo "[public-docs] missing $link link: $path" >&2; exit 1; }
   done
-  if grep -qE '^```mermaid|Repo Actor|Global Scheduler|Evidence Plane|Controller Home|controller-chatgpt-bridge-v8|schema `10`|WorkContract|Process Record|resource claims' "$path"; then
+  if grep -qE '^```mermaid|Repo Actor|Global Scheduler|Evidence Plane|Controller Home|schema `10`|WorkContract|Process Record|resource claims' "$path"; then
     echo "[public-docs] architecture internals belong in docs/Wiki, not $path" >&2
     exit 1
   fi
@@ -59,10 +59,7 @@ grep -q 'docs/tutorials/01-install-and-start.md' README.md || { echo "[public-do
 grep -q 'docs/tutorials/01-install-and-start.zh-CN.md' README.zh-CN.md || { echo "[public-docs] Chinese README missing tutorial link" >&2; exit 1; }
 grep -q 'not public yet' README.md || { echo "[public-docs] English README must state npm availability honestly" >&2; exit 1; }
 grep -q '尚未公开' README.zh-CN.md || { echo "[public-docs] Chinese README must state npm availability honestly" >&2; exit 1; }
-grep -q 'maintained English README is \[README.md\]' README.en.md || { echo "[public-docs] README.en.md must remain a compatibility pointer" >&2; exit 1; }
-grep -q 'no se mantiene' README.es.md || { echo "[public-docs] Spanish translation must be marked unmaintained" >&2; exit 1; }
-grep -q 'n’est pas maintenue' README.fr.md || { echo "[public-docs] French translation must be marked unmaintained" >&2; exit 1; }
-grep -q '保守されていません' README.ja.md || { echo "[public-docs] Japanese translation must be marked unmaintained" >&2; exit 1; }
+grep -q 'See \[README.md\](README.md)' README.en.md || { echo "[public-docs] README.en.md must point to the maintained English README" >&2; exit 1; }
 
 for path in docs/tutorials/01-install-and-start.md docs/tutorials/01-install-and-start.zh-CN.md; do
   grep -q 'Node.js 20.10' "$path" || { echo "[public-docs] missing Node baseline: $path" >&2; exit 1; }

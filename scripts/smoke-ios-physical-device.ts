@@ -1,6 +1,7 @@
 import { existsSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { executeIosPluginAction } from '../src/runtime/plugins/ios-adapter';
+import { resolveRepoPreferredControllerHome } from '../src/cli/repositories/controller-home';
 
 const repoRoot = process.cwd();
 
@@ -14,8 +15,7 @@ function option(name: string): string | undefined {
 const repoId = option('--repo-id') ?? process.env.FORGE_IOS_DEVICE_SMOKE_REPO_ID?.trim();
 const deviceSelector = option('--device') ?? process.env.FORGE_IOS_DEVICE_SMOKE_DEVICE?.trim();
 const bundleId = option('--bundle-id') ?? process.env.FORGE_IOS_DEVICE_SMOKE_BUNDLE_ID?.trim();
-const controllerHome = option('--controller-home') ?? process.env.FORGE_CONTROLLER_HOME?.trim()
-  ?? `${repoRoot}/_ops/controller-home/runtime-slots/blue`;
+const controllerHome = resolveRepoPreferredControllerHome(repoRoot, option('--controller-home'));
 
 if (!repoId || !deviceSelector || !bundleId) {
   throw new Error('Pass --repo-id, --device, and --bundle-id, or set the corresponding FORGE_IOS_DEVICE_SMOKE_* environment variables.');

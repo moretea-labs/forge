@@ -32,11 +32,10 @@ import {
   controllerExpectedToolNames,
   type McpToolContext} from "../../src/cli/mcp/tools";
 import {
-  CONTROLLER_SCHEMA_VERSION,
-  CONTROLLER_TOOL_SURFACE,
-  CONTROLLER_TOOL_SURFACE_VERSION,
-  controllerToolSurfaceFingerprint} from "../../src/cli/controller/runtime-config";
-import { ensureSlotHome, writeActiveSlotAuthority } from "../../src/cli/controller/runtime-slots";
+  FORGE_MCP_SCHEMA_VERSION,
+  FORGE_TOOL_SURFACE,
+  FORGE_VERSION,
+  forgeToolSurfaceFingerprint} from "../../src/cli/controller/runtime-config";
 import { writeMcpServiceLocalConfig, writeMcpServiceRuntimeState } from "../../src/cli/mcp/auth";
 import { persistControllerAccessMode } from "../../src/cli/mcp/access-mode";
 import {
@@ -216,20 +215,21 @@ function writeStoredPluginManifest(
     ...overrides});
 }
 
-test("uses the active slot service runtime for aggregate Local Bridge health", async () => {
+test("uses the configured Forge service runtime for aggregate Local Bridge health", async () => {
   await withController(async (repoRoot, ctx) => {
     const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
-    const generation = "runtime-active-green";
+    const repository = registerRepository({ path: repoRoot, controllerHome });
+    const generation = "runtime-forge-service";
     const server = createHttpServer((_request, response) => {
       response.setHeader("content-type", "application/json");
       response.end(JSON.stringify({
         status: "ok",
         localOnly: true,
         mode: "embedded",
-        slot: "green",
-        toolSurface: CONTROLLER_TOOL_SURFACE,
-        schemaVersion: CONTROLLER_SCHEMA_VERSION,
-        toolSurfaceVersion: CONTROLLER_TOOL_SURFACE_VERSION,
+        toolSurface: FORGE_TOOL_SURFACE,
+        schemaVersion: FORGE_MCP_SCHEMA_VERSION,
+        version: FORGE_VERSION,
+        repoRoot: repository.canonicalRoot,
         generation}));
     });
     await new Promise<void>((resolvePromise, reject) => {
@@ -239,14 +239,8 @@ test("uses the active slot service runtime for aggregate Local Bridge health", a
     try {
       const address = server.address();
       if (!address || typeof address === "string") throw new Error("local bridge test server did not bind");
-      writeActiveSlotAuthority(controllerHome, {
-        activeSlot: "green",
-        previousSlot: "blue",
-        generation,
-        reason: "test-active-slot"});
-      const greenHome = ensureSlotHome(controllerHome, "green");
       const now = new Date().toISOString();
-      writeMcpServiceRuntimeState(greenHome, {
+      writeMcpServiceRuntimeState(controllerHome, {
         version: 1,
         repo: repoRoot,
         startedAt: now,
@@ -261,9 +255,9 @@ test("uses the active slot service runtime for aggregate Local Bridge health", a
           healthy: true,
           restartCount: 0,
           profile: "controller",
-          toolSurface: CONTROLLER_TOOL_SURFACE,
-          schemaVersion: CONTROLLER_SCHEMA_VERSION,
-          toolSurfaceVersion: CONTROLLER_TOOL_SURFACE_VERSION,
+          toolSurface: FORGE_TOOL_SURFACE,
+          schemaVersion: FORGE_MCP_SCHEMA_VERSION,
+          forgeVersion: FORGE_VERSION,
           toolset: "advanced"},
         localController: {
           endpoint: `http://127.0.0.1:${address.port}/`,
@@ -273,7 +267,6 @@ test("uses the active slot service runtime for aggregate Local Bridge health", a
           generation},
         tunnel: { running: false, healthy: true, restartCount: 0 }});
 
-      const repository = registerRepository({ path: repoRoot, controllerHome });
       const multi = createMultiRepositoryContext({
         repo: repoRoot,
         profile: "controller",
@@ -473,7 +466,7 @@ describe("MCP controller profile", () => {
         "controller_capabilities",
       );
       expect(capabilities.value.toolSurface).toBe(
-        "controller-chatgpt-bridge-v8",
+        "forge",
       );
       expect(capabilities.value.expectedTools).toContain("launch_issue");
       expect(capabilities.value.expectedTools).toContain("work_submit");
@@ -486,7 +479,7 @@ describe("MCP controller profile", () => {
         controllerExpectedToolNames(overridden),
       );
       expect(capabilities.value.toolSurfaceFingerprint).toBe(
-        controllerToolSurfaceFingerprint(controllerExpectedToolNames(overridden)),
+        forgeToolSurfaceFingerprint(controllerExpectedToolNames(overridden)),
       );
       expect(capabilities.value.capabilities.directEditFirstRouting).toBe(true);
       expect(capabilities.value.capabilities.controllerContextAggregation).toBe(true);
@@ -817,17 +810,16 @@ describe("MCP controller profile", () => {
       expect(parseMcpToolset(undefined, 'controller')).toBe('advanced');
       expect(defaultContext.toolset).toBe('advanced');
       expect(defaultNames).toEqual(coreNames);
-      expect(coreNames.length).toBe(128);
+      expect(coreNames).toEqual([...STABLE_CONTROLLER_TOOL_NAMES]);
       expect(coreNames).toEqual(expect.arrayContaining(["rh_access", "rh_status", "rh_inbox", "rh_context", "rh_work", "repository_list"]));
       // Core is a compatibility label for the same bounded stable surface.
       expect(coreNames).toContain("create_campaign");
       expect(coreNames).toContain("process_get");
       expect(coreNames).toContain("repository_command_execute");
-      expect(coreNames).toContain("controller_rollout");
       const advancedNames = exposedControllerToolDefinitions(advanced).map((tool) => tool.name);
       const fullNames = exposedControllerToolDefinitions(full).map((tool) => tool.name);
       // Core and Advanced share the bounded 128-tool stable schema.
-      expect(advancedNames.length).toBe(128);
+      expect(advancedNames).toEqual([...STABLE_CONTROLLER_TOOL_NAMES]);
       expect(advancedNames).toEqual(expect.arrayContaining([
         'process_get',
         'process_wait',
@@ -1388,7 +1380,7 @@ describe("MCP controller profile", () => {
       const legacy = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", controllerHome });
       const legacyNames = exposedControllerToolDefinitions(legacy).map((tool) => tool.name);
       expect(legacy.toolset).toBe("advanced");
-      expect(legacyNames.length).toBe(128);
+      expect(legacyNames).toEqual([...STABLE_CONTROLLER_TOOL_NAMES]);
 
       persistControllerAccessMode(controllerHome, "request", repoRoot);
       const requestMode = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", controllerHome });

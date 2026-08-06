@@ -76,8 +76,6 @@ export interface LocalBridgeObservation {
   endpoint?: string;
   endpointReachable: boolean;
   expectedSurface: boolean;
-  activeSlot?: boolean;
-  generationMatches?: boolean;
   processAlive?: boolean;
   runtimeStateFresh?: boolean;
   error?: string;
@@ -323,14 +321,6 @@ function evaluateLocalBridge(observation: LocalBridgeObservation): ComponentHeal
     }));
   } else if (!observation.expectedSurface) {
     issue(reason('localBridge', 'LOCAL_BRIDGE_SURFACE_MISMATCH', 'Expected endpoint responded, but it is not the Local Controller health surface.', {
-      endpoint: observation.endpoint,
-    }));
-  } else if (observation.activeSlot === false) {
-    issue(reason('localBridge', 'LOCAL_BRIDGE_INACTIVE_SLOT', 'Endpoint belongs to an inactive blue/green runtime slot.', {
-      endpoint: observation.endpoint,
-    }));
-  } else if (observation.generationMatches === false) {
-    issue(reason('localBridge', 'LOCAL_BRIDGE_GENERATION_MISMATCH', 'Local Controller generation does not match the active runtime generation.', {
       endpoint: observation.endpoint,
     }));
   }

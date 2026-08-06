@@ -125,7 +125,7 @@ describe('control-plane hardening', () => {
       workerPid: 20,
       workerLifecycle: lifecycle,
       leaseRefs: [],
-    } as ExecutionJob;
+    } as unknown as ExecutionJob;
     const receipt: OperationReceipt = {
       schemaVersion: 1,
       repoId: 'repo-a',

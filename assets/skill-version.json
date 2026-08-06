@@ -178,7 +178,7 @@
     },
     {
       "version": "1.4.0",
-      "description": "Prepares the public release surface for Controller V8 by syncing package metadata, preserving MIT attribution, trimming packaged audit manifests, and removing hard-coded personal fallback paths from packaged helpers."
+      "description": "Prepares the public release surface for Forge by syncing package metadata, preserving MIT attribution, trimming packaged audit manifests, and removing hard-coded personal fallback paths from packaged helpers."
     }
   ],
   "generatedProjectStamp": {

@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.4.0 — Controller V8 ChatGPT execution bridge
+## 1.4.0 — Unified Forge Runtime
 
 - Made Direct Edit a multi-revision transaction with savepoints and partial rollback.
 - Removed ordinary local risk approval gates and the new-work approval queue.

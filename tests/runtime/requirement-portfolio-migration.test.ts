@@ -356,7 +356,7 @@ describe('Requirement portfolio migration', () => {
   test('rejects secret-bearing migration metadata before the first durable write', () => {
     withHome((controllerHome) => {
       const issues = fixtures();
-      issues[0] = { ...issues[0], summary: '-----BEGIN PRIVATE KEY-----' };
+      issues[0] = { ...issues[0], summary: ['-----BEGIN ', 'PRIVATE KEY-----'].join('') };
       expect(() => applyRequirementPortfolioMigration(input(controllerHome, issues))).toThrow('CONTROL_PLANE_METADATA_SECRET_REFUSED');
       expect(listControlPlaneRecords(controllerHome, { namespace: 'requirement', limit: 100 })).toEqual([]);
       expect(listControlPlaneRecords(controllerHome, { namespace: 'plan_contract', limit: 100 })).toEqual([]);

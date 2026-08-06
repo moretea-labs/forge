@@ -113,7 +113,7 @@ function claimNetwork(repoId: string, mode: 'read' | 'write'): ResourceClaimSpec
 function staticAnalysisCheckId(checkId: string): boolean {
   const normalized = checkId.trim().toLowerCase();
   if (!normalized.startsWith('package:')) return false;
-  return /(?:^|:)(?:type|typecheck|lint|format:check|runtime-architecture|mcp-compatibility|controller-v8)$/.test(
+  return /(?:^|:)(?:type|typecheck|lint|format:check|runtime-architecture|mcp-compatibility|forge-runtime)$/.test(
     normalized.slice('package:'.length),
   );
 }
@@ -238,11 +238,7 @@ export function claimsForCheck(
   checkoutId?: string,
   effects?: ControllerCheckEffects,
 ): ResourceClaimSpec[] {
-  // Self-hosting controller-v8 spawns nested jobs; exclusive heavy-check would deadlock.
-  if (/(?:^|:)(?:check:controller-v8|package:check:controller-v8|controller-v8)(?:$|:)/i.test(checkId)) {
-    return [claimWorkspaceRead(checkoutId), claimBuildCacheWrite(repoId)];
-  }
-  const heavy = /(?:^|:)(?:test(?::coverage)?|check:(?:ci|public-export|release(?:-[a-z0-9-]+)?))$/.test(checkId)
+  const heavy = /(?:^|:)(?:test(?::coverage)?|check:(?:ci|forge-runtime|public-export|release(?:-[a-z0-9-]+)?))$/.test(checkId)
     || /release|migration|integrate/i.test(checkId);
   if (heavy) return [claimHeavyCheck(repoId)];
   if (effects) return claimsForDeclaredCheckEffects(checkId, effects, repoId, checkoutId);

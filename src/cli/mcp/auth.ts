@@ -2,17 +2,8 @@ import { randomBytes } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { resolveControllerHome } from '../repositories/controller-home';
-import { resolveStableControllerHome } from '../controller/stable-state/stable-home';
 import type { AccessMode } from '../../runtime/control-plane/governance/access-policy';
 import type { McpToolset } from './types';
-import {
-  commitRuntimeConfig,
-  migrateRuntimeConfig,
-  readRuntimeConfig,
-  runtimeConfigFromLegacyMcp,
-  runtimeConfigPath,
-  runtimeConfigToLegacyMcp,
-} from '../../runtime/bootstrap/runtime-authority';
 
 export interface McpLocalConfig {
   version?: number;
@@ -92,7 +83,7 @@ export interface McpRuntimeState {
     profile?: string;
     toolSurface?: string;
     schemaVersion?: number;
-    toolSurfaceVersion?: number;
+    forgeVersion?: string;
     toolSurfaceFingerprint?: string;
     runtimeToolSurfaceFingerprint?: string;
     toolset?: 'core' | 'advanced' | 'full';
@@ -181,22 +172,11 @@ export function mcpControllerHomeOAuthTokenStorePath(controllerHome: string): st
 }
 
 export function mcpServiceOAuthTokenStorePath(controllerHome: string): string {
-  return mcpControllerHomeOAuthTokenStorePath(resolveStableControllerHome(controllerHome));
+  return mcpControllerHomeOAuthTokenStorePath(resolveControllerHome(controllerHome));
 }
 
-export function mcpServiceOAuthTokenStoreFallbackPaths(controllerHome: string, legacyRepoRoot?: string): string[] {
-  const stableHome = resolveStableControllerHome(controllerHome);
-  const primary = mcpControllerHomeOAuthTokenStorePath(stableHome);
-  const candidates = [
-    mcpControllerHomeOAuthTokenStorePath(controllerHome),
-    ...(legacyRepoRoot ? [mcpOAuthTokenStorePath(legacyRepoRoot)] : []),
-  ];
-  const seen = new Set<string>([primary]);
-  return candidates.filter((candidate) => {
-    if (seen.has(candidate)) return false;
-    seen.add(candidate);
-    return existsSync(candidate);
-  });
+export function mcpServiceOAuthTokenStoreFallbackPaths(_controllerHome: string, _legacyRepoRoot?: string): string[] {
+  return [];
 }
 
 export function mcpControllerHomeRuntimeStatePath(controllerHome: string): string {
@@ -205,7 +185,7 @@ export function mcpControllerHomeRuntimeStatePath(controllerHome: string): strin
 
 function controllerHomeMcpPaths(controllerHome: string): string[] {
   return [
-    runtimeConfigPath(controllerHome),
+    mcpControllerHomeLocalConfigPath(controllerHome),
     mcpControllerHomeLocalConfigPath(controllerHome),
     mcpControllerHomeTokenPath(controllerHome),
     mcpControllerHomeOAuthPath(controllerHome),
@@ -231,22 +211,19 @@ export function resolveMcpRuntimeAuthority(
   legacyRepoRoot: string | undefined,
   kind: 'local-config' | 'runtime-state',
 ): McpRuntimeAuthority {
-  const home = resolveStableControllerHome(controllerHome);
+  const home = resolveControllerHome(controllerHome);
   const legacyPath = kind === 'local-config'
     ? (legacyRepoRoot ? mcpLocalConfigPath(legacyRepoRoot) : undefined)
     : (legacyRepoRoot ? mcpRuntimeStatePath(legacyRepoRoot) : undefined);
   const legacyPresent = Boolean(legacyPath && existsSync(legacyPath));
-  if (kind === 'local-config' && !readRuntimeConfig(home)) {
-    migrateRuntimeConfig(home, { legacyRepoRoots: legacyRepoRoot ? [legacyRepoRoot] : [] });
-  }
   const controllerHomePresent = controllerHomeHasAuthoritativeMcpState(home);
   return {
     authority: 'controller-home',
-    path: kind === 'local-config' ? runtimeConfigPath(home) : mcpControllerHomeRuntimeStatePath(home),
+    path: kind === 'local-config' ? mcpControllerHomeLocalConfigPath(home) : mcpControllerHomeRuntimeStatePath(home),
     controllerHomePresent,
     legacyPresent,
     warning: legacyPresent
-      ? 'Primary runtime-config.json is authoritative; legacy MCP config is a migration input/projection only.'
+      ? 'Repository-local MCP state is ignored; Controller Home is authoritative.'
       : undefined,
   };
 }
@@ -286,17 +263,12 @@ export function loadMcpRuntimeState(repoRoot: string): McpRuntimeState | null {
   }
 }
 
-export function loadMcpServiceLocalConfig(controllerHome: string, legacyRepoRoot?: string): McpLocalConfig | null {
-  const home = resolveStableControllerHome(controllerHome);
-  const config = migrateRuntimeConfig(home, { legacyRepoRoots: legacyRepoRoot ? [legacyRepoRoot] : [] });
-  return runtimeConfigToLegacyMcp(config) as McpLocalConfig;
+export function loadMcpServiceLocalConfig(controllerHome: string, _legacyRepoRoot?: string): McpLocalConfig | null {
+  return readJsonFile<McpLocalConfig>(mcpControllerHomeLocalConfigPath(resolveControllerHome(controllerHome)));
 }
 
-export function loadMcpServiceRuntimeState(controllerHome: string, legacyRepoRoot?: string): McpRuntimeState | null {
-  const controllerValue = readJsonFile<McpRuntimeState>(mcpControllerHomeRuntimeStatePath(controllerHome));
-  if (controllerValue) return controllerValue;
-  if (controllerHomeHasAuthoritativeMcpState(controllerHome)) return null;
-  return legacyRepoRoot ? loadMcpRuntimeState(legacyRepoRoot) : null;
+export function loadMcpServiceRuntimeState(controllerHome: string, _legacyRepoRoot?: string): McpRuntimeState | null {
+  return readJsonFile<McpRuntimeState>(mcpControllerHomeRuntimeStatePath(resolveControllerHome(controllerHome)));
 }
 
 export function writeMcpLocalConfig(repoRoot: string, config: McpLocalConfig): string {
@@ -304,12 +276,7 @@ export function writeMcpLocalConfig(repoRoot: string, config: McpLocalConfig): s
 }
 
 export function writeMcpServiceLocalConfig(controllerHome: string, config: McpLocalConfig): string {
-  const home = resolveStableControllerHome(controllerHome);
-  const primary = runtimeConfigFromLegacyMcp(home, config);
-  commitRuntimeConfig(home, primary);
-  // Compatibility projection only; all service reads use runtime-config.json.
-  writeJsonFile(mcpControllerHomeLocalConfigPath(home), runtimeConfigToLegacyMcp(primary));
-  return runtimeConfigPath(home);
+  return writeJsonFile(mcpControllerHomeLocalConfigPath(resolveControllerHome(controllerHome)), config);
 }
 
 export function writeMcpRuntimeState(repoRoot: string, state: McpRuntimeState): string {
@@ -346,11 +313,11 @@ export function ensureMcpBearerToken(repoRoot: string): { token: string; path: s
   return { token, path, changed: true };
 }
 
-export function readMcpServiceBearerToken(controllerHome: string, legacyRepoRoot?: string): string | null {
+export function readMcpServiceBearerToken(controllerHome: string, _legacyRepoRoot?: string): string | null {
   if (process.env.FORGE_MCP_TOKEN?.trim()) return process.env.FORGE_MCP_TOKEN.trim();
   const parsed = readJsonFile<{ bearerToken?: unknown }>(mcpControllerHomeTokenPath(controllerHome));
   if (typeof parsed?.bearerToken === 'string' && parsed.bearerToken.trim().length > 0) return parsed.bearerToken.trim();
-  return legacyRepoRoot ? readMcpBearerToken(legacyRepoRoot) : null;
+  return null;
 }
 
 export function ensureMcpControllerHomeBearerToken(controllerHome: string): { token: string; path: string; changed: boolean } {
@@ -374,9 +341,9 @@ export function writeMcpControllerHomeBearerToken(controllerHome: string, token:
 export function syncMcpControllerHomeBearerToken(
   targetControllerHome: string,
   sourceControllerHome: string,
-  legacyRepoRoot?: string,
+  _legacyRepoRoot?: string,
 ): { path: string; changed: boolean } {
-  const source = readMcpServiceBearerToken(sourceControllerHome, legacyRepoRoot)
+  const source = readMcpServiceBearerToken(sourceControllerHome)
     ?? ensureMcpControllerHomeBearerToken(sourceControllerHome).token;
   const targetPath = mcpControllerHomeTokenPath(targetControllerHome);
   const target = readMcpServiceBearerToken(targetControllerHome);
@@ -416,22 +383,16 @@ export function ensureMcpOAuthPassphrase(repoRoot: string): { passphrase: string
   return { passphrase, path, changed: true };
 }
 
-export function readMcpServiceOAuthPassphrase(controllerHome: string, legacyRepoRoot?: string): string | null {
+export function readMcpServiceOAuthPassphrase(controllerHome: string, _legacyRepoRoot?: string): string | null {
   if (process.env.FORGE_MCP_OAUTH_PASSPHRASE?.trim()) {
     return process.env.FORGE_MCP_OAUTH_PASSPHRASE.trim();
   }
-  const stableHome = resolveStableControllerHome(controllerHome);
-  const parsed = readJsonFile<{ passphrase?: unknown }>(mcpControllerHomeOAuthPath(stableHome));
-  if (typeof parsed?.passphrase === 'string' && parsed.passphrase.trim().length > 0) return parsed.passphrase.trim();
-  if (resolveControllerHome(controllerHome) !== stableHome) {
-    const slotParsed = readJsonFile<{ passphrase?: unknown }>(mcpControllerHomeOAuthPath(controllerHome));
-    if (typeof slotParsed?.passphrase === 'string' && slotParsed.passphrase.trim().length > 0) return slotParsed.passphrase.trim();
-  }
-  return legacyRepoRoot ? readMcpOAuthPassphrase(legacyRepoRoot) : null;
+  const parsed = readJsonFile<{ passphrase?: unknown }>(mcpControllerHomeOAuthPath(resolveControllerHome(controllerHome)));
+  return typeof parsed?.passphrase === 'string' && parsed.passphrase.trim().length > 0 ? parsed.passphrase.trim() : null;
 }
 
 export function ensureMcpControllerHomeOAuthPassphrase(controllerHome: string): { passphrase: string; path: string; changed: boolean } {
-  const path = mcpControllerHomeOAuthPath(resolveStableControllerHome(controllerHome));
+  const path = mcpControllerHomeOAuthPath(resolveControllerHome(controllerHome));
   const existing = readMcpServiceOAuthPassphrase(controllerHome);
   if (existing) return { passphrase: existing, path, changed: false };
 

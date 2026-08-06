@@ -25,6 +25,7 @@ import { readRepositoryGitStatusSample } from './git-status-sampler';
 import { listCampaigns } from '../workflow/campaigns/store';
 import { listAssistantPluginManifests } from '../plugins/store';
 import type { ProjectionObservation, ProjectionSourceReconciliation } from '../health';
+import { RUNTIME_HEALTH_THRESHOLDS } from '../health/evaluator';
 import { isProcessAlive } from '../shared/process-tree';
 import type { TaskLedgerProjection } from '../../cli/controller/task-ledger';
 

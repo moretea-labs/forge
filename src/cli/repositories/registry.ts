@@ -184,18 +184,8 @@ function registryPath(controllerHome?: string): string {
   return join(registryHome(controllerHome), REGISTRY_FILE);
 }
 
-function legacyRegistryPaths(controllerHome?: string): string[] {
-  const home = registryHome(controllerHome);
-  return ['blue', 'green'].map((slot) => join(home, 'runtime-slots', slot, REGISTRY_FILE));
-}
-
 function focusPath(controllerHome?: string): string {
   return join(registryHome(controllerHome), FOCUS_FILE);
-}
-
-function legacyFocusPaths(controllerHome?: string): string[] {
-  const home = registryHome(controllerHome);
-  return ['blue', 'green'].map((slot) => join(home, 'runtime-slots', slot, FOCUS_FILE));
 }
 
 function atomicJson(path: string, value: unknown): void {
@@ -290,7 +280,7 @@ function mergeRepositorySources(
 export function loadRepositoryRegistry(controllerHome?: string): RepositoryRegistry {
   // Normal reads must use only the stable Controller Home authority. Slot-local
   // files are migration inputs, not live replicas; continuously merging them
-  // can resurrect stale checkouts after a blue/green cutover.
+  // can resurrect stale checkouts after a whole-Runtime replacement.
   return readRegistryFile(registryPath(controllerHome), true) ?? defaultRegistry();
 }
 
@@ -302,14 +292,7 @@ export function saveRepositoryRegistry(registry: RepositoryRegistry, controllerH
 }
 
 export function consolidateRepositoryRegistry(controllerHome?: string): RepositoryRegistry {
-  const persisted = readRegistryFile(registryPath(controllerHome), true) ?? defaultRegistry();
-  const supplements = legacyRegistryPaths(controllerHome)
-    .map((path) => readRegistryFile(path, false))
-    .filter((registry): registry is RepositoryRegistry => Boolean(registry));
-  const merged = mergeRepositorySources(persisted, supplements);
-  const persistedShape = JSON.stringify({ schemaVersion: 1, repositories: persisted.repositories });
-  const mergedShape = JSON.stringify({ schemaVersion: 1, repositories: merged.repositories });
-  return persistedShape === mergedShape ? merged : saveRepositoryRegistry(merged, controllerHome);
+  return readRegistryFile(registryPath(controllerHome), true) ?? defaultRegistry();
 }
 
 function resolveGitRoot(inputPath: string): string {
@@ -935,18 +918,7 @@ export function getRepositoryFocus(controllerHome?: string): { repoId?: string; 
       return {};
     }
   }
-  const candidates = legacyFocusPaths(controllerHome)
-    .map((path) => {
-      if (!existsSync(path)) return undefined;
-      try {
-        return JSON.parse(readFileSync(path, 'utf-8')) as { repoId?: string; updatedAt?: string };
-      } catch {
-        return undefined;
-      }
-    })
-    .filter((value): value is { repoId?: string; updatedAt?: string } => Boolean(value))
-    .sort((left, right) => timestampValue(right.updatedAt) - timestampValue(left.updatedAt));
-  return candidates[0] ?? {};
+  return {};
 }
 
 export function resolveRepositorySelection(input: {

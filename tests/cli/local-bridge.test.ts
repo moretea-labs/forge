@@ -21,7 +21,7 @@ import {
   releaseControllerCheckSubscription,
   runControllerCheckAsync,
 } from "../../src/cli/controller/check-runner";
-import { CONTROLLER_TOOL_SURFACE } from "../../src/cli/controller/runtime-config";
+import { FORGE_TOOL_SURFACE } from "../../src/cli/controller/runtime-config";
 import { createIssue, getIssue, updateTask } from "../../src/cli/controller/issue-store";
 import { beginEditSession, applyEditOperations } from "../../src/cli/editing/edit-session";
 import { getMcpPolicy } from "../../src/cli/mcp/policy";
@@ -236,8 +236,8 @@ describe("Local Execution Bridge", () => {
 
   test("classifies full repository gates as heavy while leaving focused checks concurrent", () => {
     expect(controllerCheckConcurrencyClass("package:test")).toBe("heavy");
-    // Self-hosting controller-v8 nests Local Jobs; exclusive heavy-check would deadlock.
-    expect(controllerCheckConcurrencyClass("package:check:controller-v8")).toBe("light");
+    // The unified Forge Runtime suite is an ordinary heavy repository gate.
+    expect(controllerCheckConcurrencyClass("package:check:forge-runtime")).toBe("heavy");
     expect(controllerCheckConcurrencyClass("package:check:release-surface")).toBe("heavy");
     expect(controllerCheckConcurrencyClass("focused")).toBe("light");
     expect(controllerCheckConcurrencyClass("package:check:type")).toBe("light");
@@ -1034,7 +1034,7 @@ describe("Local Execution Bridge", () => {
     }).then((response) => response.json());
     expect(snapshot.repoRoot).toBe(realpathSync(root));
     expect(snapshot.board).toBeDefined();
-    expect(snapshot.toolSurface).toBe(CONTROLLER_TOOL_SURFACE);
+    expect(snapshot.toolSurface).toBe(FORGE_TOOL_SURFACE);
     expect(snapshot.timeoutPolicy).toEqual({
       defaultTimeoutMs: 10_000,
       maxTimeoutMs: 43_200_000,

@@ -126,10 +126,10 @@ import {
   verifyConsoleWork,
 } from "./facade-api";
 import {
-  CONTROLLER_SCHEMA_VERSION,
-  CONTROLLER_TOOL_SURFACE,
-  CONTROLLER_TOOL_SURFACE_VERSION,
-  controllerToolSurfaceFingerprint,
+  FORGE_MCP_SCHEMA_VERSION,
+  FORGE_TOOL_SURFACE,
+  FORGE_VERSION,
+  forgeToolSurfaceFingerprint,
   defaultLocalAgentRunners,
 } from "../controller/runtime-config";
 import { taskExecutionPolicy, taskWriteScopesConflict } from "../controller/execution-policy";
@@ -476,18 +476,18 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
   const expectedToolNames = exposure.toolNames;
   const runtimeSurface = mcpRuntime?.server?.toolSurface;
   const runtimeSchemaVersion = mcpRuntime?.server?.schemaVersion;
-  const runtimeSurfaceVersion = mcpRuntime?.server?.toolSurfaceVersion;
+  const runtimeForgeVersion = mcpRuntime?.server?.forgeVersion;
   const runtimeFingerprint = mcpRuntime?.server?.toolSurfaceFingerprint;
   const runtimeToolset = mcpRuntime?.server?.toolset;
   const runtimeToolFingerprint = mcpRuntime?.server?.runtimeToolSurfaceFingerprint;
-  const expectedFingerprint = controllerToolSurfaceFingerprint(expectedToolNames);
+  const expectedFingerprint = forgeToolSurfaceFingerprint(expectedToolNames);
   const expectedRuntimeFingerprint = expectedFingerprint;
   const runtimeProfile = mcpRuntime?.server?.profile;
   const connectorHealthy =
     mcpRuntime?.server?.healthy === true &&
-    runtimeSurface === CONTROLLER_TOOL_SURFACE &&
-    runtimeSchemaVersion === CONTROLLER_SCHEMA_VERSION &&
-    runtimeSurfaceVersion === CONTROLLER_TOOL_SURFACE_VERSION &&
+    runtimeSurface === FORGE_TOOL_SURFACE &&
+    runtimeSchemaVersion === FORGE_MCP_SCHEMA_VERSION &&
+    runtimeForgeVersion === FORGE_VERSION &&
     runtimeFingerprint === expectedFingerprint &&
     runtimeToolFingerprint === expectedRuntimeFingerprint &&
     runtimeToolset === exposure.access.effectiveToolset &&
@@ -533,9 +533,9 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
   return {
     generatedAt: new Date().toISOString(),
     repoRoot,
-    toolSurface: CONTROLLER_TOOL_SURFACE,
-    schemaVersion: CONTROLLER_SCHEMA_VERSION,
-    toolSurfaceVersion: CONTROLLER_TOOL_SURFACE_VERSION,
+    toolSurface: FORGE_TOOL_SURFACE,
+    schemaVersion: FORGE_MCP_SCHEMA_VERSION,
+    version: FORGE_VERSION,
     toolSurfaceFingerprint: expectedFingerprint,
     connector: {
       configuredServerName: mcpConfig?.chatgpt?.serverName,
@@ -545,7 +545,7 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
       runtimeProfile,
       runtimeSurface,
       runtimeSchemaVersion,
-      runtimeSurfaceVersion,
+      runtimeForgeVersion,
       runtimeFingerprint,
       expectedFingerprint,
       runtimeToolset,
@@ -561,7 +561,7 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
       mismatch:
         mcpRuntime?.server?.healthMismatch ??
         (mcpRuntime && !connectorHealthy
-          ? `expected controller / ${CONTROLLER_TOOL_SURFACE} / schema ${CONTROLLER_SCHEMA_VERSION} / surface ${CONTROLLER_TOOL_SURFACE_VERSION} / ${exposure.access.effectiveToolset} / ${expectedRuntimeFingerprint}`
+          ? `expected controller / ${FORGE_TOOL_SURFACE} / schema ${FORGE_MCP_SCHEMA_VERSION} / version ${FORGE_VERSION} / ${exposure.access.effectiveToolset} / ${expectedRuntimeFingerprint}`
           : undefined),
     },
     timeoutPolicy: localBridgeTimeoutPolicy(repoRoot),
@@ -1015,16 +1015,16 @@ export async function startLocalBridgeServer(
   });
   app.get("/health", (_request, response) => {
     const exposure = controllerExposureSnapshot(mcpExposureContext);
-    const fingerprint = controllerToolSurfaceFingerprint(exposure.toolNames);
+    const fingerprint = forgeToolSurfaceFingerprint(exposure.toolNames);
     const runtime = readRuntimeGeneration(controllerHome);
     response.json({
       status: "ok",
       localOnly: true,
       mode: options.mode ?? "standalone",
       ...(options.slot ? { slot: options.slot } : {}),
-      toolSurface: CONTROLLER_TOOL_SURFACE,
-      schemaVersion: CONTROLLER_SCHEMA_VERSION,
-      toolSurfaceVersion: CONTROLLER_TOOL_SURFACE_VERSION,
+      toolSurface: FORGE_TOOL_SURFACE,
+      schemaVersion: FORGE_MCP_SCHEMA_VERSION,
+      version: FORGE_VERSION,
       toolSurfaceFingerprint: fingerprint,
       runtimeToolSurfaceFingerprint: fingerprint,
       generation: runtime?.generation,

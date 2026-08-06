@@ -24,7 +24,7 @@ The skill should not carry the whole workflow contract in prose. It should:
 3. choose the correct path
 4. rely on the repo contract, migration scripts, and tests for enforcement
 
-## Controller V8 execution bridge
+## Forge execution runtime
 
 Treat ChatGPT as the controller and Forge as its repository execution layer. ChatGPT chooses how to inspect, plan, edit, verify, or delegate. Forge provides deterministic repository tools and does not impose an Agent-first workflow.
 

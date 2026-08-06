@@ -429,7 +429,7 @@ describe('standalone recovery on canonical Runtime', () => {
       recoveryTunnelService: {
         platform: 'launchd',
         label: 'com.moretea.forge-recovery-tunnel',
-        plistPath: '/Users/test/Library/LaunchAgents/com.moretea.forge-recovery-tunnel.plist',
+        plistPath: '/tmp/forge-test-home/Library/LaunchAgents/com.moretea.forge-recovery-tunnel.plist',
       },
     });
 
