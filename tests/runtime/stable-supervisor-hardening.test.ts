@@ -1511,7 +1511,7 @@ describe('Stable Supervisor production hardening', () => {
     }
   });
 
-  test('release coherence requires exact path, revision, generation, and active slot agreement', () => {
+  test('release coherence requires one immutable release across Supervisor, Daemon, and Gateway', () => {
     const releasePath = '/tmp/releases/revision-a';
     const daemon = { ...managedProcess('green', 501, 'generation-a'), releasePath, releaseRevision: 'revision-a' };
     const gateway = { ...managedProcess('green', 502, 'generation-a'), releasePath, releaseRevision: 'revision-a' };
@@ -1538,32 +1538,16 @@ describe('Stable Supervisor production hardening', () => {
       restartBudget: {},
       updatedAt: '2026-07-21T00:00:00.000Z',
     } as SupervisorState;
-    const authority = { schemaVersion: 1, activeSlot: 'green', generation: 'generation-a', reason: 'test', updatedAt: '2026-07-21T00:00:00.000Z' } as any;
-    const identity = {
-      schemaVersion: 1,
-      slot: 'green',
-      role: 'active',
-      controllerHome: '/tmp/controller-home',
-      slotHome: '/tmp/controller-home/runtime-slots/green',
-      mcpPort: 8795,
-      localControllerPort: 8776,
-      generation: 'generation-a',
-      releasePath,
-      releaseRevision: 'revision-a',
-      startedAt: '2026-07-21T00:00:00.000Z',
-      updatedAt: '2026-07-21T00:00:00.000Z',
-      logDir: '/tmp/logs',
-    } as any;
 
-    const coherent = evaluateRuntimeReleaseCoherence({ supervisorState: state, authority, slotIdentity: identity });
+    const coherent = evaluateRuntimeReleaseCoherence({ supervisorState: state });
     expect(coherent.ok).toBe(true);
     expect(coherent.releaseCoherent).toBe(true);
-    expect(coherent.generationCoherent).toBe(true);
 
     const mismatched = evaluateRuntimeReleaseCoherence({
-      supervisorState: state,
-      authority,
-      slotIdentity: { ...identity, releasePath: '/tmp/releases/revision-b' },
+      supervisorState: {
+        ...state,
+        gatewayHost: { ...gateway, releasePath: '/tmp/releases/revision-b' },
+      },
     });
     expect(mismatched.ok).toBe(false);
     expect(mismatched.releasePathCoherent).toBe(false);

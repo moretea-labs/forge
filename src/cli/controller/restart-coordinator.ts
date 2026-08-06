@@ -32,7 +32,6 @@ import {
   type ControllerServiceOptions,
   type ControllerServiceStatus,
 } from "./lifecycle";
-import { readActiveSlotAuthority, readSlotIdentity } from "./runtime-slots";
 
 export type ControllerRestartPhase =
   | "scheduled"
@@ -54,8 +53,6 @@ export interface ControllerRestartVerification {
   runtimeGenerationPresent: boolean;
   runtimeGenerationChanged: boolean;
   releaseCoherent: boolean;
-  generationCoherent: boolean;
-  slotCoherent: boolean;
   legacyReleaseMetadata: boolean;
   coherenceFailures: string[];
   connectorHealthy: boolean;
@@ -553,12 +550,8 @@ export async function verifyControllerRestart(
   const runtimeGenerationChanged = !state.previousGeneration || (
     Boolean(status.runtimeGeneration) && status.runtimeGeneration !== state.previousGeneration
   );
-  const authority = readActiveSlotAuthority(status.controllerHome);
-  const slotIdentity = readSlotIdentity(status.controllerHome, authority.activeSlot);
   const coherence = evaluateRuntimeReleaseCoherence({
     supervisorState: readStableSupervisorState(status.controllerHome),
-    authority,
-    slotIdentity: slotIdentity ?? undefined,
   });
   const connectorHealthy = status.readiness.connector && status.mcpRuntime?.tunnel?.connectorNeedsReconnect !== true;
   const publicEndpoint = status.mcpRuntime?.tunnel?.publicEndpoint;
@@ -581,9 +574,7 @@ export async function verifyControllerRestart(
   if (!runtimeSourceCurrent) failures.push(`runtime source requires restart: ${status.restartReasons.join("; ")}`);
   if (!runtimeGenerationPresent) failures.push("runtime generation is missing");
   if (!runtimeGenerationChanged) failures.push("runtime generation did not change after restart");
-  if (!coherence.releaseCoherent) failures.push("active runtime release metadata is incoherent");
-  if (!coherence.generationCoherent) failures.push("active runtime generation metadata is incoherent");
-  if (!coherence.slotCoherent) failures.push("active runtime slot metadata is incoherent");
+  if (!coherence.releaseCoherent) failures.push("Runtime release metadata is incoherent");
   failures.push(...coherence.failures.map((failure) => `runtime coherence: ${failure}`));
   if (!connectorHealthy) failures.push("connector is unhealthy or requires reconnect");
   if (!publicHealth) failures.push("configured public health endpoint is unavailable");
@@ -599,8 +590,6 @@ export async function verifyControllerRestart(
     runtimeGenerationPresent,
     runtimeGenerationChanged,
     releaseCoherent: coherence.releaseCoherent,
-    generationCoherent: coherence.generationCoherent,
-    slotCoherent: coherence.slotCoherent,
     legacyReleaseMetadata: coherence.legacyReleaseMetadata,
     coherenceFailures: coherence.failures,
     connectorHealthy,

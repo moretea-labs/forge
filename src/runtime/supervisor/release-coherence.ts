@@ -1,7 +1,6 @@
 import { readFileSync, realpathSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join, resolve } from 'path';
-import type { ActiveSlotAuthority, SlotIdentity } from '../../cli/controller/runtime-slots';
 import { launchAgentPath } from '../../cli/controller/launch-agents';
 import { supervisorServiceLabel, supervisorSystemdUnitName } from './installer';
 import { readCurrentSupervisorRelease, supervisorRoot, type SupervisorReleaseDescriptor } from './paths';
@@ -13,8 +12,6 @@ export interface RuntimeReleaseCoherence {
   releasePathCoherent: boolean;
   releaseRevisionCoherent: boolean;
   releaseCoherent: boolean;
-  generationCoherent: boolean;
-  slotCoherent: boolean;
   failures: string[];
 }
 
@@ -49,14 +46,13 @@ function compareRequiredValues(
 }
 
 /**
- * Evaluate the exact immutable release and runtime generation owned by the
- * active Stable Supervisor slot. Legacy runtimes are accepted only when every
- * release metadata field is absent; partially populated metadata fails closed.
+ * Evaluate the one immutable release owned by the complete Runtime. Supervisor,
+ * Daemon, and Gateway must agree on release path and revision. Legacy runtimes
+ * are accepted only when every release metadata field is absent; partially
+ * populated metadata fails closed.
  */
 export function evaluateRuntimeReleaseCoherence(input: {
   supervisorState: SupervisorState | null | undefined;
-  authority: ActiveSlotAuthority;
-  slotIdentity?: SlotIdentity;
 }): RuntimeReleaseCoherence {
   const state = input.supervisorState;
   if (!state) {
@@ -66,8 +62,6 @@ export function evaluateRuntimeReleaseCoherence(input: {
       releasePathCoherent: true,
       releaseRevisionCoherent: true,
       releaseCoherent: true,
-      generationCoherent: true,
-      slotCoherent: true,
       failures: [],
     };
   }
@@ -77,28 +71,12 @@ export function evaluateRuntimeReleaseCoherence(input: {
     { name: 'supervisor', value: normalizedPath(state.supervisor.releasePath) },
     { name: 'daemon', value: normalizedPath(state.controllerDaemon?.releasePath) },
     { name: 'gateway', value: normalizedPath(state.gatewayHost?.releasePath) },
-    { name: 'slot', value: normalizedPath(input.slotIdentity?.releasePath) },
   ], failures, { allowAllMissing: true });
   const releaseRevisions = compareRequiredValues('release revision', [
     { name: 'supervisor', value: state.supervisor.releaseRevision },
     { name: 'daemon', value: state.controllerDaemon?.releaseRevision },
     { name: 'gateway', value: state.gatewayHost?.releaseRevision },
-    { name: 'slot', value: input.slotIdentity?.releaseRevision },
   ], failures, { allowAllMissing: true });
-  const generations = compareRequiredValues('runtime generation', [
-    { name: 'supervisor-state', value: state.activeGeneration },
-    { name: 'daemon', value: state.controllerDaemon?.generation },
-    { name: 'gateway', value: state.gatewayHost?.generation },
-    { name: 'authority', value: input.authority.generation },
-    { name: 'slot', value: input.slotIdentity?.generation },
-  ], failures);
-  const slots = compareRequiredValues('active slot', [
-    { name: 'supervisor-state', value: state.activeSlot },
-    { name: 'daemon', value: state.controllerDaemon?.slot },
-    { name: 'gateway', value: state.gatewayHost?.slot },
-    { name: 'authority', value: input.authority.activeSlot },
-    { name: 'slot-identity', value: input.slotIdentity?.slot },
-  ], failures);
 
   const legacyReleaseMetadata = releasePaths.allMissing && releaseRevisions.allMissing;
   if (releasePaths.allMissing !== releaseRevisions.allMissing) {
@@ -109,17 +87,13 @@ export function evaluateRuntimeReleaseCoherence(input: {
   const releaseCoherent = releasePathCoherent
     && releaseRevisionCoherent
     && releasePaths.allMissing === releaseRevisions.allMissing;
-  const generationCoherent = generations.coherent;
-  const slotCoherent = slots.coherent;
 
   return {
-    ok: releaseCoherent && generationCoherent && slotCoherent,
+    ok: releaseCoherent,
     legacyReleaseMetadata,
     releasePathCoherent,
     releaseRevisionCoherent,
     releaseCoherent,
-    generationCoherent,
-    slotCoherent,
     failures,
   };
 }

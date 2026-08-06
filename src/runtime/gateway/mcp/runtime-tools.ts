@@ -64,7 +64,7 @@ import { ensureRepositoryRuntimeStorage } from '../../../cli/repositories/runtim
 import { assessWorkMode } from '../../../cli/controller/work-mode';
 import { readSupervisorState } from '../../supervisor/state-store';
 import { isStableSupervisorInstalled, readCurrentSupervisorRelease, readPreviousSupervisorRelease, supervisorReleaseClosureMissing } from '../../supervisor/paths';
-import { evaluateRuntimeReleaseCoherence, readSupervisorServiceReleaseCoherence } from '../../supervisor/release-coherence';
+import { readSupervisorServiceReleaseCoherence } from '../../supervisor/release-coherence';
 import { projectBoard } from '../../../cli/controller/issue-store';
 import {
   buildControllerTaskLedgerProjection,
@@ -986,7 +986,6 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
 export interface ControllerReadyRevisionView {
   stableSupervisorRevision?: string;
   activeRuntimeRevision?: string;
-  activeSlotRevision?: string;
   gatewayRevision?: string;
   sourceRevision?: string;
   expectedRevision?: string;
@@ -999,8 +998,6 @@ export interface ControllerReadyRevisionView {
       releasePathCoherent: boolean;
       releaseRevisionCoherent: boolean;
       releaseCoherent: boolean;
-      generationCoherent: boolean;
-      slotCoherent: boolean;
       failures: string[];
     };
   };
@@ -1013,7 +1010,6 @@ export function buildControllerReadyRevisionView(input: {
     controllerDaemon?: { releaseRevision?: string };
     gatewayHost?: { releaseRevision?: string };
   } | null;
-  activeSlotIdentity?: { releaseRevision?: string; sourceCommit?: string } | null;
   serviceCoherence: {
     ok: boolean;
     expected?: { releaseRevision?: string };
@@ -1025,8 +1021,6 @@ export function buildControllerReadyRevisionView(input: {
     releasePathCoherent: boolean;
     releaseRevisionCoherent: boolean;
     releaseCoherent: boolean;
-    generationCoherent: boolean;
-    slotCoherent: boolean;
     failures: string[];
   };
 }): ControllerReadyRevisionView {
@@ -1035,9 +1029,8 @@ export function buildControllerReadyRevisionView(input: {
   return {
     stableSupervisorRevision: input.supervisorState?.supervisor.releaseRevision,
     activeRuntimeRevision: input.supervisorState?.controllerDaemon?.releaseRevision,
-    activeSlotRevision: input.activeSlotIdentity?.releaseRevision,
     gatewayRevision: input.supervisorState?.gatewayHost?.releaseRevision,
-    sourceRevision: input.currentRelease?.sourceCommit ?? input.activeSlotIdentity?.sourceCommit,
+    sourceRevision: input.currentRelease?.sourceCommit,
     expectedRevision: service.expected?.releaseRevision ?? input.currentRelease?.releaseRevision,
     coherence: {
       ok: service.ok && runtime.ok,
@@ -1048,8 +1041,6 @@ export function buildControllerReadyRevisionView(input: {
         releasePathCoherent: runtime.releasePathCoherent,
         releaseRevisionCoherent: runtime.releaseRevisionCoherent,
         releaseCoherent: runtime.releaseCoherent,
-        generationCoherent: runtime.generationCoherent,
-        slotCoherent: runtime.slotCoherent,
         failures: [...runtime.failures],
       },
     },
@@ -1116,7 +1107,6 @@ export function summarizeControllerReadyPayload(fullPayload: Record<string, unkn
     externalEndpoint: fullPayload.externalEndpoint,
     stableSupervisorRevision: fullPayload.stableSupervisorRevision,
     activeRuntimeRevision: fullPayload.activeRuntimeRevision,
-    activeSlotRevision: fullPayload.activeSlotRevision,
     gatewayRevision: fullPayload.gatewayRevision,
     sourceRevision: fullPayload.sourceRevision,
     expectedRevision: fullPayload.expectedRevision,
