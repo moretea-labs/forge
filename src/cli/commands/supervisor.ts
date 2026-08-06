@@ -6,7 +6,7 @@ import { listRepositories } from '../repositories/registry';
 import { sourceIdentityFor } from '../controller/bluegreen-rollout';
 import { installLaunchAgent, launchAgentPath, restoreLaunchAgent, snapshotLaunchAgent, safeLaunchdHandoff, type LaunchAgentFileSnapshot, type LaunchdServiceProbe, type LaunchctlCommandRunner } from '../controller/launch-agents';
 import { launchStableSupervisor } from '../../runtime/supervisor/bridge';
-import { sendSupervisorCommand } from '../../runtime/supervisor/control-server';
+import { DEFAULT_SUPERVISOR_CONTROL_PORT, sendSupervisorCommand } from '../../runtime/supervisor/control-server';
 import { publishSupervisorRelease, stageSupervisorRelease, startRegisteredSupervisorService, supervisorServiceLabel, supervisorSystemdUnitName } from '../../runtime/supervisor/installer';
 import { isStableSupervisorInstalled, publishCurrentRelease, readCurrentRelease, readCurrentSupervisorRelease, supervisorLogPath, supervisorRoot } from '../../runtime/supervisor/paths';
 import { extractSupervisorServiceRelease, readSupervisorServiceReleaseCoherence, type SupervisorServiceReleaseCoherence, type SupervisorServiceReleaseDescriptor } from '../../runtime/supervisor/release-coherence';
@@ -305,7 +305,9 @@ async function activateInstalledService(
       plistPath: installed.path,
       domain: `gui/${uid}`,
       oldPid: runningState?.supervisor.pid,
-      port: 8765,
+      // The Control listener is the Supervisor's exclusive lifecycle socket.
+      // Compatibility MCP routing must not gate service replacement.
+      port: DEFAULT_SUPERVISOR_CONTROL_PORT,
       maxBootoutWaitMs: 15_000,
       maxBootstrapRetry: 3,
       bootstrapRetryDelayMs: 500,

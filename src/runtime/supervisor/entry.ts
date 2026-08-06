@@ -8,6 +8,7 @@ import { resolveControllerRuntimeSourceRoot } from '../control-plane/runtime-gen
 import { acquireSupervisorLock } from './lock';
 import { supervisorLogPath, readCurrentRelease, readSupervisorRelease } from './paths';
 import { readSupervisorState } from './state-store';
+import { DEFAULT_SUPERVISOR_CONTROL_PORT } from './control-server';
 import { StableSupervisorRuntime } from './supervisor-runtime';
 
 function option(name: string): string | undefined {
@@ -84,7 +85,7 @@ export async function runStableSupervisor(): Promise<void> {
     ...(standalone ? { runtimeExecution: 'standalone-binary' as const } : {}),
     logPath: supervisorLogPath(controllerHome),
     controlHost: option('--control-host') ?? '127.0.0.1',
-    controlPort: numberOption('--control-port', 8770),
+    controlPort: numberOption('--control-port', DEFAULT_SUPERVISOR_CONTROL_PORT),
     releaseRevision: option('--release-revision') ?? release?.releaseRevision,
     activatePublishedRelease: stableSupervisorActivatesPublishedRelease(),
     // A runtime-owned stop is unexpected at the top-level service boundary.
