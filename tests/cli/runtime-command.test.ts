@@ -100,6 +100,7 @@ describe('runtime command surface', () => {
     const processRuntime = readFileSync(join(ROOT, 'src/runtime/execution/process-runtime/runtime.ts'), 'utf8');
     const daemonClient = readFileSync(join(ROOT, 'src/runtime/control-plane/daemon-client.ts'), 'utf8');
     const stableBootstrap = readFileSync(join(ROOT, 'src/runtime/bootstrap/stable-bootstrap.ts'), 'utf8');
+    const releaseStore = readFileSync(join(ROOT, 'src/runtime/root/release-store.ts'), 'utf8');
     const localBridgeSurface = readFileSync(join(ROOT, 'src/runtime/shared/local-bridge-surface.ts'), 'utf8');
     const localBridgeFacade = readFileSync(join(ROOT, 'src/cli/local-bridge/facade-api.ts'), 'utf8');
     const standaloneRecovery = readFileSync(join(ROOT, 'src/runtime/standalone-recovery/core.ts'), 'utf8');
@@ -282,6 +283,13 @@ describe('runtime command surface', () => {
     expect(stableBootstrap).toContain("from '../shared/process-identity'");
     expect(stableBootstrap).not.toContain("from '../supervisor/identity'");
     expect(stableBootstrap).not.toContain("from '../supervisor/types'");
+    expect(releaseStore).toContain('publishRuntimeRelease');
+    expect(releaseStore).toContain('rollbackRuntimeRelease');
+    expect(releaseStore).toContain('backupControlPlaneDatabase');
+    expect(releaseStore).toContain('restoreControlPlaneDatabase');
+    expect(releaseStore).not.toContain('slot');
+    expect(releaseStore).not.toContain('ingress');
+    expect(releaseStore).not.toContain('component');
     expect(localBridgeSurface).not.toContain("from '../../cli/controller/runtime-slots'");
     expect(localBridgeSurface).not.toContain('readActiveSlotAuthority');
     expect(localBridgeSurface).not.toContain('runtimeSlotForHome');

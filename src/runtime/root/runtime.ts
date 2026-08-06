@@ -11,6 +11,7 @@ import { startRuntimeMcpTransport, type RuntimeMcpTransportHandle } from './mcp-
 import { acquireRuntimeOwnership, type RuntimeOwnershipHandle } from './ownership';
 import { RuntimeReadinessState } from './readiness';
 import { loadRuntimeReleaseManifest } from './release-manifest';
+import { ensureActiveRuntimeRelease } from './release-store';
 import { startInProcessScheduler, type RuntimeSchedulerHandle } from './scheduler';
 import { removeRuntimeStatusSnapshot, writeRuntimeStatusSnapshot } from './status';
 import type {
@@ -22,6 +23,7 @@ import type {
 
 export interface CanonicalRuntimeDependencies {
   loadReleaseManifest(path: string, controllerHome: string): RuntimeReleaseManifest;
+  ensureReleaseAuthority(controllerHome: string, manifestPath: string): unknown;
   acquireOwnership(controllerHome: string, runtimeInstanceId: string): RuntimeOwnershipHandle;
   inspectDatabase(controllerHome: string): ControlPlaneDatabaseInspection;
   startScheduler(controllerHome: string, timeoutMs?: number): RuntimeSchedulerHandle;
@@ -52,6 +54,7 @@ async function defaultMcpProbe(endpoint: string, authToken: string): Promise<voi
 
 const DEFAULT_DEPENDENCIES: CanonicalRuntimeDependencies = {
   loadReleaseManifest: loadRuntimeReleaseManifest,
+  ensureReleaseAuthority: ensureActiveRuntimeRelease,
   acquireOwnership: acquireRuntimeOwnership,
   inspectDatabase: inspectControlPlaneDatabase,
   startScheduler: startInProcessScheduler,
@@ -131,10 +134,13 @@ export class CanonicalRepoHarnessRuntime {
     let stage: 'release' | 'ownership' | 'database' | 'scheduler' | 'transport' | 'probe' = 'release';
     try {
       this.release = this.dependencies.loadReleaseManifest(this.config.releaseManifestPath, this.config.controllerHome);
-      this.readinessState.setDiagnostic('releaseCoherence', 'pass');
 
       stage = 'ownership';
       this.ownership = this.dependencies.acquireOwnership(this.config.controllerHome, this.runtimeInstanceId);
+
+      stage = 'release';
+      this.dependencies.ensureReleaseAuthority(this.config.controllerHome, this.config.releaseManifestPath);
+      this.readinessState.setDiagnostic('releaseCoherence', 'pass');
       this.publishStatus();
 
       stage = 'database';

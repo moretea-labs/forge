@@ -59,7 +59,7 @@ No core module may create a KeepAlive loop, detached restart coordinator, second
 | 2. Converge lifecycle ownership | Runtime Root is the only core start/stop/failure/recovery owner | In progress: `repo-harness-runtime` is the sole canonical start entry; `runtime` is observation-only; public `controller`/Supervisor/MCP lifecycle commands, autonomous Recovery agent repair, MCP/Gateway Daemon auto-start, Gateway component restart/rollout/rollback tools, Supervisor facade operations, and repair-triggered detached restart are removed; the independent legacy Daemon entry, Supervisor process, and bounded recovery callers still require deletion |
 | 3. Simplify readiness | Public Runtime readiness is only `ready: true/false`; module observations are diagnostic evidence | In progress: Canonical Runtime and public `controller_ready` use the binary contract; detailed component observations remain internal evidence for legacy status/recovery paths and require further deletion |
 | 4. Remove ingress and Runtime slots | No Stable Ingress, fixed blue/green ports, runtime slots, mixed generation, adoption, or component cutover | Not complete |
-| 5. Whole-Runtime publish and rollback | Code, configuration, entrypoint, manifest, SQLite schema/backup, and Worker protocol move as one compatible set | Partial manifest model exists; legacy component and slot rollout remains |
+| 5. Whole-Runtime publish and rollback | Code, configuration, entrypoint, manifest, SQLite schema/backup, and Worker protocol move as one compatible set | Canonical store implemented in `src/runtime/root/release-store.ts`; remaining work is deletion of the legacy Supervisor/slot publisher |
 | 6. Complete Worker isolation and fencing | Workers are bounded Runtime-owned children; stale Workers cannot commit control-plane side effects | Existing fencing primitives are reusable; ownership must be bound to the Canonical Runtime instance/release |
 | 7. Delete legacy architecture | Supervisor, Ingress, KeepAlive, slots, component rollout/rollback, and old authority are removed | Not complete |
 
@@ -109,7 +109,7 @@ Worker protocol version
 migration and rollback metadata
 ```
 
-Release validation is offline and does not require a second serving Runtime, traffic router, fixed alternate port, or persistent slot identity.
+Release validation is offline and does not require a second serving Runtime, traffic router, fixed alternate port, or persistent slot identity. `src/runtime/root/release-store.ts` records one atomic active/previous authority and binds each previous release to its verified SQLite backup.
 
 Activation is a whole-Runtime restart:
 

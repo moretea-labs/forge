@@ -259,6 +259,10 @@
       "module": "process-runtime",
       "resource": "temp-isolated"
     },
+    "tests/runtime/runtime-release-store.test.ts": {
+      "module": "release",
+      "resource": "controller-home-isolated"
+    },
     "tests/cli/runtime-slots.test.ts": {
       "module": "process-runtime",
       "resource": "temp-isolated"
