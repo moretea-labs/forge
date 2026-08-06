@@ -2,9 +2,6 @@ import { existsSync, lstatSync, readFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { createHash } from 'crypto';
 import { runProcess } from '../../effects/process-runner';
-import type { ControllerRestartState } from './restart-coordinator';
-import type { ControllerServiceStatus } from './lifecycle';
-import { isProcessAlive } from '../../runtime/shared/process-tree';
 
 export interface PostconditionResult {
   ok: boolean;
@@ -61,59 +58,6 @@ export function validateMergeSuccess(repoRoot: string, opts: {
     ok: failures.length === 0,
     code: failures.length === 0 ? 'MERGE_OK' : 'MERGE_POSTCONDITION_FAILED',
     failures,
-  };
-}
-
-/**
- * Restart success is more than process exit: durable state, old PIDs gone, health + generation.
- */
-export function validateRestartSuccess(input: {
-  state: ControllerRestartState;
-  status: ControllerServiceStatus;
-  oldManagedPids?: number[];
-  expectedSourceCommit?: string;
-  expectedToolFingerprint?: string;
-}): PostconditionResult {
-  const failures: string[] = [];
-  if (input.state.phase !== 'succeeded') {
-    failures.push(`restart state phase=${input.state.phase}`);
-  }
-  for (const pid of input.oldManagedPids ?? []) {
-    if (isProcessAlive(pid)) failures.push(`old managed pid still alive: ${pid}`);
-  }
-  if (!input.status.ready) failures.push('controller stack is not ready');
-  if (!input.status.health.mcp) failures.push('gateway health failed');
-  if (!input.status.health.localController) failures.push('local controller health failed');
-  if (input.status.daemon.status !== 'ready') failures.push(`daemon status=${input.status.daemon.status}`);
-  if (!input.status.runtimeGeneration) failures.push('runtime generation missing');
-  if (
-    input.state.previousGeneration
-    && input.status.runtimeGeneration
-    && input.status.runtimeGeneration === input.state.previousGeneration
-  ) {
-    failures.push('runtime generation did not change');
-  }
-  if (input.expectedSourceCommit && input.status.runtimeSource?.commit
-    && input.status.runtimeSource.commit !== input.expectedSourceCommit) {
-    failures.push(
-      `source commit ${input.status.runtimeSource.commit} != expected ${input.expectedSourceCommit}`,
-    );
-  }
-  const actualFingerprint = input.status.mcpRuntime?.server.toolSurfaceFingerprint
-    ?? input.status.mcpRuntime?.server.runtimeToolSurfaceFingerprint;
-  if (input.expectedToolFingerprint && actualFingerprint
-    && actualFingerprint !== input.expectedToolFingerprint) {
-    failures.push(`tool fingerprint mismatch: ${actualFingerprint} != ${input.expectedToolFingerprint}`);
-  }
-  return {
-    ok: failures.length === 0,
-    code: failures.length === 0 ? 'RESTART_OK' : 'RESTART_POSTCONDITION_FAILED',
-    failures,
-    details: {
-      phase: input.state.phase,
-      generation: input.status.runtimeGeneration,
-      sourceCommit: input.status.runtimeSource?.commit,
-    },
   };
 }
 

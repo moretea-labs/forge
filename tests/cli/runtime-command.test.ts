@@ -90,6 +90,7 @@ describe('runtime command surface', () => {
     const supervisorReleaseCoherence = readFileSync(join(ROOT, 'src/runtime/supervisor/release-coherence.ts'), 'utf8');
     const restartCoordinator = readFileSync(join(ROOT, 'src/cli/controller/restart-coordinator.ts'), 'utf8');
     const compositeOperations = readFileSync(join(ROOT, 'src/cli/controller/composite-operations.ts'), 'utf8');
+    const controllerPostcondition = readFileSync(join(ROOT, 'src/cli/controller/postcondition.ts'), 'utf8');
     const localBridgeServer = readFileSync(join(ROOT, 'src/cli/local-bridge/server.ts'), 'utf8');
     const repoActor = readFileSync(join(ROOT, 'src/runtime/control-plane/repo-actor/actor.ts'), 'utf8');
     const supervisorTypes = readFileSync(join(ROOT, 'src/runtime/supervisor/types.ts'), 'utf8');
@@ -206,6 +207,11 @@ describe('runtime command surface', () => {
     expect(compositeOperations).not.toContain('readControllerRestartState');
     expect(compositeOperations).not.toContain('requestControllerServiceRestart');
     expect(compositeOperations).not.toContain('runtimeGeneration');
+    expect(controllerPostcondition).not.toContain('validateRestartSuccess');
+    expect(controllerPostcondition).not.toContain('ControllerRestartState');
+    expect(controllerPostcondition).not.toContain('ControllerServiceStatus');
+    expect(controllerPostcondition).not.toContain('runtimeGeneration');
+    expect(controllerPostcondition).not.toContain('isProcessAlive');
     expect(localBridgeServer).not.toContain('scheduleControllerServiceRestart');
     expect(localBridgeServer).toContain('RUNTIME_LIFECYCLE_ACTION_RETIRED');
     expect(localBridgeServer).not.toContain('detached coordinator owns the full stack restart');
