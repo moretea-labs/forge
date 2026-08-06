@@ -19,7 +19,7 @@ import { SupervisorProcessManager, runtimeWriterEnvironment, supervisorProcessSt
 import { ensureMcpControllerHomeBearerToken, writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
 import { writeActiveSlotAuthority } from '../../src/cli/controller/runtime-slots';
 import { publishWriterAuthority } from '../../src/cli/controller/stable-state/writer-authority';
-import { readCurrentRelease, readCurrentSupervisorRelease, readSupervisorRelease, supervisorBootstrapConfigPath, supervisorBootstrapManifestPath, supervisorReleasesRoot, SUPERVISOR_EXTERNAL_PLUGIN_ENTRYPOINTS, SUPERVISOR_RELEASE_ENTRYPOINTS, supervisorReleaseClosureMissing, supervisorReleaseExternalPluginArtifacts } from '../../src/runtime/supervisor/paths';
+import { readCurrentRelease, readCurrentSupervisorRelease, readSupervisorRelease, supervisorBootstrapConfigPath, supervisorBootstrapManifestPath, supervisorReleasesRoot, supervisorStatePath, SUPERVISOR_EXTERNAL_PLUGIN_ENTRYPOINTS, SUPERVISOR_RELEASE_ENTRYPOINTS, supervisorReleaseClosureMissing, supervisorReleaseExternalPluginArtifacts } from '../../src/runtime/supervisor/paths';
 import { createSupervisorControlServer, sendSupervisorCommand } from '../../src/runtime/supervisor/control-server';
 import type { ProcessIdentityProbe } from '../../src/runtime/supervisor/identity';
 import type { SupervisorManagedProcess, SupervisorOperation, SupervisorState } from '../../src/runtime/supervisor/types';
@@ -1438,6 +1438,44 @@ describe('Stable Supervisor production hardening', () => {
       current: { releasePath: '/tmp/releases/current', releaseRevision: 'current-revision' },
     });
     expect(selected).toEqual({ releasePath: '/tmp/releases/running', releaseRevision: 'running-revision' });
+  });
+
+  test('Supervisor state reader strips legacy Ingress route and health telemetry', () => {
+    const home = mkdtempSync(join(tmpdir(), 'repo-harness-legacy-ingress-state-'));
+    try {
+      mkdirSync(join(home, 'supervisor'), { recursive: true });
+      writeFileSync(supervisorStatePath(home), `${JSON.stringify({
+        schemaVersion: 1,
+        supervisor: {
+          pid: process.pid,
+          instanceId: 'legacy-ingress-state',
+          processStartTime: 'start',
+          executableFingerprint: 'fingerprint',
+          controllerHome: home,
+          ownerEpoch: 1,
+          epoch: 1,
+          startedAt: '2026-07-21T00:00:00.000Z',
+        },
+        desiredState: 'running',
+        observedState: 'healthy',
+        activeSlot: 'green',
+        ingress: {
+          state: 'running',
+          pid: 1234,
+          activeUpstreamSlot: 'green',
+          activeUpstreamPort: 8795,
+          consecutiveFailures: 7,
+          lastHealthyAt: '2026-07-21T00:00:00.000Z',
+          lastFailureAt: '2026-07-21T00:01:00.000Z',
+          lastFailureDetail: 'legacy failure',
+        },
+        restartBudget: {},
+        updatedAt: '2026-07-21T00:00:00.000Z',
+      })}\n`);
+      expect(readSupervisorState(home)?.ingress).toEqual({ state: 'running', pid: 1234 });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test('release coherence requires exact path, revision, generation, and active slot agreement', () => {

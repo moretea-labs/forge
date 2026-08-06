@@ -1093,7 +1093,6 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
         ...this.state.ingress,
         state: 'running',
         pid: process.pid,
-        lastHealthyAt: new Date().toISOString(),
       },
       control: {
         host: this.control.host,

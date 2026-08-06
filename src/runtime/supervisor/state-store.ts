@@ -12,15 +12,12 @@ export function readSupervisorState(controllerHome: string): SupervisorState | n
   try {
     const value = JSON.parse(readFileSync(path, 'utf8')) as SupervisorState;
     if (value?.schemaVersion !== 1 || !value.supervisor || !value.ingress || !value.restartBudget) return null;
-    const legacyIngress = value.ingress as SupervisorState['ingress'] & {
-      activeUpstreamSlot?: unknown;
-      activeUpstreamPort?: unknown;
+    const legacyIngress = value.ingress as SupervisorState['ingress'] & Record<string, unknown>;
+    if (!['running', 'degraded', 'stopped'].includes(legacyIngress.state)) return null;
+    const ingress: SupervisorState['ingress'] = {
+      state: legacyIngress.state,
+      ...(typeof legacyIngress.pid === 'number' ? { pid: legacyIngress.pid } : {}),
     };
-    const {
-      activeUpstreamSlot: _legacyActiveUpstreamSlot,
-      activeUpstreamPort: _legacyActiveUpstreamPort,
-      ...ingress
-    } = legacyIngress;
     return { ...value, ingress };
   } catch {
     return null;

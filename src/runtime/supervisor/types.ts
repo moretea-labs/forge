@@ -97,10 +97,6 @@ export interface SupervisorState {
   ingress: {
     state: 'running' | 'degraded' | 'stopped';
     pid?: number;
-    consecutiveFailures?: number;
-    lastHealthyAt?: string;
-    lastFailureAt?: string;
-    lastFailureDetail?: string;
   };
   control?: {
     host: string;
