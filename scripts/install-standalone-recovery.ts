@@ -38,14 +38,11 @@ const stageOnly = process.argv.includes('--stage-only');
 const publicMcpUrl = endpointOption('--public-mcp-url');
 const recoveryPublicUrl = endpointOption('--recovery-public-url');
 
-const legacyTunnelLabel = option('--public-tunnel-service-label');
-const legacyTunnelPlist = option('--public-tunnel-service-plist');
-const recoveryTunnelLabel = option('--recovery-tunnel-service-label') ?? legacyTunnelLabel;
-const recoveryTunnelPlist = option('--recovery-tunnel-service-plist') ?? legacyTunnelPlist;
-if (option('--recovery-tunnel-service-label') && legacyTunnelLabel && option('--recovery-tunnel-service-label') !== legacyTunnelLabel) {
-  throw new Error('RECOVERY_TUNNEL_SERVICE_LABEL_CONFLICT');
-}
-const recoveryTunnelService = launchdService(recoveryTunnelLabel, recoveryTunnelPlist, 'RECOVERY_TUNNEL_SERVICE');
+const recoveryTunnelService = launchdService(
+  option('--recovery-tunnel-service-label'),
+  option('--recovery-tunnel-service-plist'),
+  'RECOVERY_TUNNEL_SERVICE',
+);
 if (Boolean(recoveryTunnelService) !== Boolean(recoveryPublicUrl)) throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
 
 const result = await installStandaloneRecovery({

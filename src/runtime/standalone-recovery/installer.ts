@@ -8,6 +8,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -18,6 +19,7 @@ import {
   installLaunchAgent,
   launchAgentPath,
   safeLaunchdHandoff,
+  type LaunchctlCommandRunner,
   type SafeHandoffResult,
 } from '../../cli/controller/launch-agents';
 import { isProcessAlive } from '../shared/process-tree';
@@ -43,6 +45,53 @@ import {
 
 export const RECOVERY_GATEWAY_LABEL = 'com.moretea.forge-recovery-gateway';
 export const RECOVERY_WATCHDOG_LABEL = 'com.moretea.forge-recovery-watchdog';
+
+function defaultRecoveryLaunchctl(args: string[]): ReturnType<LaunchctlCommandRunner> {
+  const result = runProcess('launchctl', args, { timeoutMs: 10_000, maxOutputBytes: 64 * 1024 });
+  return { ok: result.ok, stdout: result.stdout, stderr: result.stderr, exitCode: result.status ?? 0 };
+}
+
+function recoveryLaunchAgentLabel(path: string): string | undefined {
+  try {
+    const content = readFileSync(path, 'utf8');
+    return content.match(/<key>\s*Label\s*<\/key>\s*<string>([^<]+)<\/string>/i)?.[1]?.trim();
+  } catch {
+    return undefined;
+  }
+}
+
+function bootoutAlreadyGone(detail: string): boolean {
+  return /not found|no such process|could not be found|could not find service|service is not loaded/i.test(detail);
+}
+
+export function retireStaleRecoveryLaunchAgents(
+  controllerHome: string,
+  uid: number,
+  runner: LaunchctlCommandRunner = defaultRecoveryLaunchctl,
+): string[] {
+  const generatedRoot = join(recoveryRoot(controllerHome), 'launchd');
+  if (!existsSync(generatedRoot)) return [];
+  const activeLabels = new Set([RECOVERY_GATEWAY_LABEL, RECOVERY_WATCHDOG_LABEL]);
+  const retired: string[] = [];
+  for (const name of readdirSync(generatedRoot)) {
+    if (!name.endsWith('.plist')) continue;
+    const generatedPath = join(generatedRoot, name);
+    const label = recoveryLaunchAgentLabel(generatedPath);
+    if (!label || activeLabels.has(label) || !/^com\.moretea\..*recovery/i.test(label)) continue;
+    const target = `gui/${uid}/${label}`;
+    const observed = runner(['print', target]);
+    if (observed.ok) {
+      const bootout = runner(['bootout', target]);
+      if (!bootout.ok && !bootoutAlreadyGone(`${bootout.stderr}\n${bootout.stdout}`)) {
+        throw new Error(`RECOVERY_STALE_SERVICE_BOOTOUT_FAILED: ${label}`);
+      }
+    }
+    rmSync(generatedPath, { force: true });
+    rmSync(launchAgentPath(label), { force: true });
+    retired.push(label);
+  }
+  return retired.sort();
+}
 
 const RECOVERY_RELEASE_SOURCE_PATHS = [
   'src/runtime/standalone-recovery',
@@ -117,6 +166,7 @@ export interface RecoveryInstallerDependencies {
   }) => Promise<RecoveryActivationVerification>;
   currentPid?: (controllerHome: string, role: RecoveryRuntimeRole) => number | undefined;
   servicePid?: (controllerHome: string, role: RecoveryRuntimeRole) => number | undefined;
+  launchctlRunner?: LaunchctlCommandRunner;
   uid?: () => number;
 }
 
@@ -300,7 +350,7 @@ function launchctlText(args: string[]): string {
   return result.ok ? result.stdout : '';
 }
 
-function launchdCurrentPid(role: RecoveryRuntimeRole): number | undefined {
+export function recoveryLaunchdPid(role: RecoveryRuntimeRole): number | undefined {
   if (process.platform !== 'darwin') return undefined;
   const uid = typeof process.getuid === 'function' ? process.getuid() : Number.NaN;
   const label = role === 'gateway' ? RECOVERY_GATEWAY_LABEL : RECOVERY_WATCHDOG_LABEL;
@@ -313,7 +363,7 @@ function launchdCurrentPid(role: RecoveryRuntimeRole): number | undefined {
 function defaultCurrentPid(controllerHome: string, role: RecoveryRuntimeRole): number | undefined {
   const identity = readRecoveryRuntimeIdentity(controllerHome, role);
   if (identity && isProcessAlive(identity.pid)) return identity.pid;
-  return launchdCurrentPid(role);
+  return recoveryLaunchdPid(role);
 }
 
 export async function verifyRecoveryReleaseActivation(input: {
@@ -337,7 +387,7 @@ export async function verifyRecoveryReleaseActivation(input: {
     const gateway = readRecoveryRuntimeIdentity(input.controllerHome, 'gateway');
     const watchdog = readRecoveryRuntimeIdentity(input.controllerHome, 'watchdog');
     const observedPids: Partial<Record<RecoveryRuntimeRole, number>> = {};
-    const servicePid = dependencies.servicePid ?? ((_controllerHome: string, role: RecoveryRuntimeRole) => launchdCurrentPid(role));
+    const servicePid = dependencies.servicePid ?? ((_controllerHome: string, role: RecoveryRuntimeRole) => recoveryLaunchdPid(role));
     for (const [role, identity] of [['gateway', gateway], ['watchdog', watchdog]] as const) {
       const managedPid = servicePid(input.controllerHome, role);
       if (!managedPid) failures.push(`${role} launchd PID is unavailable`);
@@ -469,6 +519,7 @@ async function handoffRecoveryServices(input: {
   const uid = (input.dependencies.uid ?? (() => typeof process.getuid === 'function' ? process.getuid() : Number.NaN))();
   if (!Number.isInteger(uid)) throw new Error('RECOVERY_LAUNCHD_UID_UNAVAILABLE');
   const domain = `gui/${uid}`;
+  retireStaleRecoveryLaunchAgents(input.controllerHome, uid, input.dependencies.launchctlRunner);
   const installAgent = input.dependencies.installAgent ?? installLaunchAgent;
   const generated = (() => {
     const root = recoveryRoot(input.controllerHome);
@@ -587,7 +638,6 @@ export async function installStandaloneRecovery(input: {
   sourceRoot?: string;
   port?: number;
   publicMcpUrl?: string;
-  publicTunnelService?: PublicTunnelServiceConfig;
   recoveryPublicUrl?: string;
   recoveryTunnelService?: PublicTunnelServiceConfig;
   primaryRuntimeService?: PrimaryRuntimeServiceConfig;
@@ -595,7 +645,7 @@ export async function installStandaloneRecovery(input: {
 }, dependencies: RecoveryInstallerDependencies = {}): Promise<RecoveryInstallResult> {
   const controllerHome = resolve(input.controllerHome);
   const sourceRoot = resolve(input.sourceRoot ?? input.repoRoot);
-  const config = initializeStandaloneRecovery(controllerHome, input.port ?? 8787, input.publicTunnelService, {
+  const config = initializeStandaloneRecovery(controllerHome, input.port ?? 8787, {
     ...(input.publicMcpUrl ? { publicMcpUrl: input.publicMcpUrl } : {}),
     ...(input.recoveryPublicUrl ? { recoveryPublicUrl: input.recoveryPublicUrl } : {}),
     ...(input.recoveryTunnelService ? { recoveryTunnelService: input.recoveryTunnelService } : {}),

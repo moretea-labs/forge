@@ -38,7 +38,6 @@ export interface RecoveryConfig {
   schemaVersion: 1;
   controllerHome: string;
   publicMcpUrl?: string;
-  publicTunnelService?: PublicTunnelServiceConfig;
   recoveryPublicUrl?: string;
   recoveryTunnelService?: PublicTunnelServiceConfig;
   primaryRuntimeService?: PrimaryRuntimeServiceConfig;
@@ -201,12 +200,11 @@ export function saveWatchdogState(config: RecoveryConfig, state: WatchdogState):
 }
 
 function configuredRecoveryTunnel(config: RecoveryConfig): PublicTunnelServiceConfig | undefined {
-  return config.recoveryTunnelService ?? config.publicTunnelService;
+  return config.recoveryTunnelService;
 }
 
 function configuredRecoveryPublicUrl(config: RecoveryConfig): string | undefined {
-  if (config.recoveryPublicUrl) return config.recoveryPublicUrl;
-  return config.recoveryTunnelService ? undefined : config.publicTunnelService ? config.publicMcpUrl : undefined;
+  return config.recoveryPublicUrl;
 }
 
 export const STANDALONE_RECOVERY_REQUIRED_RELEASE_FILES = [
@@ -219,14 +217,19 @@ export function recoveryConfigPath(controllerHome: string): string {
 }
 
 export function loadRecoveryConfig(controllerHome: string, explicit?: string): RecoveryConfig {
-  const loaded = json<Partial<RecoveryConfig> & { agentRepair?: unknown }>(explicit ?? recoveryConfigPath(controllerHome)) ?? {};
-  delete loaded.agentRepair;
+  const loaded = json<Partial<RecoveryConfig> & Record<string, unknown>>(explicit ?? recoveryConfigPath(controllerHome)) ?? {};
   const config: RecoveryConfig = {
     ...DEFAULT_CONFIG,
-    ...loaded,
     schemaVersion: 1,
-    controllerHome: resolve(loaded.controllerHome ?? controllerHome),
-    gateway: loaded.gateway,
+    controllerHome: resolve(typeof loaded.controllerHome === 'string' ? loaded.controllerHome : controllerHome),
+    ...(typeof loaded.publicMcpUrl === 'string' ? { publicMcpUrl: loaded.publicMcpUrl } : {}),
+    ...(typeof loaded.recoveryPublicUrl === 'string' ? { recoveryPublicUrl: loaded.recoveryPublicUrl } : {}),
+    ...(loaded.recoveryTunnelService ? { recoveryTunnelService: loaded.recoveryTunnelService } : {}),
+    ...(loaded.primaryRuntimeService ? { primaryRuntimeService: loaded.primaryRuntimeService } : {}),
+    ...(typeof loaded.mainMcpTokenFile === 'string' ? { mainMcpTokenFile: loaded.mainMcpTokenFile } : {}),
+    ...(typeof loaded.expectedToolFingerprint === 'string' ? { expectedToolFingerprint: loaded.expectedToolFingerprint } : {}),
+    ...(loaded.readOnlyTool ? { readOnlyTool: loaded.readOnlyTool } : {}),
+    ...(loaded.gateway ? { gateway: loaded.gateway } : {}),
   };
   if (!config.controllerHome) throw new Error('RECOVERY_CONTROLLER_HOME_REQUIRED');
   return config;
@@ -1076,7 +1079,7 @@ export async function recoverPrimaryRuntime(
   return locked.value;
 }
 
-function publicTunnelService(config: RecoveryConfig, uid: number): LaunchdService | undefined {
+function recoveryTunnelService(config: RecoveryConfig, uid: number): LaunchdService | undefined {
   const configured = configuredRecoveryTunnel(config);
   if (!configured || configured.platform !== 'launchd') return undefined;
   if (!/^com\.[A-Za-z0-9._-]{1,180}$/.test(configured.label)) return undefined;
@@ -1113,7 +1116,7 @@ export async function repairPublicTunnel(config: RecoveryConfig, dependencies: P
     return { ok: false, attempted: false, noOp: true, detail: 'public tunnel repair is only supported for explicitly configured launchd services', verify: initial, localVerify };
   }
   const uid = await (dependencies.currentUid ?? currentUid)();
-  const service = uid === undefined ? undefined : publicTunnelService(config, uid);
+  const service = uid === undefined ? undefined : recoveryTunnelService(config, uid);
   if (!service) return { ok: false, attempted: false, noOp: true, detail: 'public tunnel launchd configuration is invalid or unavailable', verify: initial, localVerify };
   if (!tunnelRepairAllowed(config, now())) {
     return { ok: false, attempted: false, noOp: true, detail: 'public tunnel repair is in cooldown', serviceLabel: service.label, serviceTarget: service.target, verify: initial, localVerify };
@@ -1244,7 +1247,6 @@ export function gatewayToken(config: RecoveryConfig): string | undefined {
 export function initializeStandaloneRecovery(
   controllerHome: string,
   port = 8787,
-  publicTunnelService?: PublicTunnelServiceConfig,
   extensions: Partial<Pick<RecoveryConfig, 'publicMcpUrl' | 'recoveryPublicUrl' | 'recoveryTunnelService' | 'primaryRuntimeService'>> = {},
 ): RecoveryConfig {
   const root = resolve(controllerHome);
@@ -1256,7 +1258,6 @@ export function initializeStandaloneRecovery(
   }
   return createRecoveryConfig(root, {
     gateway: { host: '127.0.0.1', port, bearerTokenFile: tokenPath },
-    ...(publicTunnelService ? { publicTunnelService } : {}),
     ...extensions,
   });
 }

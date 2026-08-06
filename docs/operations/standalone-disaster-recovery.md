@@ -90,13 +90,26 @@ The watchdog cannot launch an Agent, edit a source checkout, generate repair scr
 
 ## Installation
 
-Build the immutable Recovery release with:
+Build, canary, and activate the immutable Recovery release with the public CLI:
 
 ```sh
-bun scripts/install-standalone-recovery.ts --controller-home /absolute/controller-home
+forge recovery install \
+  --controller-home /absolute/controller-home \
+  --public-mcp-url https://mcp.example.com/mcp \
+  --recovery-public-url https://recovery.example.com/recovery/mcp \
+  --recovery-tunnel-service-label com.example.forge-recovery-tunnel \
+  --recovery-tunnel-service-plist /absolute/path/com.example.forge-recovery-tunnel.plist
 ```
 
-A public Recovery endpoint is optional. When configured, its service owner and URL must both be explicit. Direct reload scripts are not a second mutation path; publication and activation remain installer-owned.
+Use `--stage-only` to build and canary without activating Gateway or Watchdog services. The source-level `bun scripts/install-standalone-recovery.ts` entry remains an internal packaging primitive, not a second operator surface.
+
+A public Recovery endpoint is optional for local-only operations. A ChatGPT Recovery Connector requires an explicit HTTPS Recovery URL and its dedicated tunnel service owner. Print the exact non-secret connector descriptor with:
+
+```sh
+forge recovery connector --controller-home /absolute/controller-home
+```
+
+The installer owns publication and activation. Before registering `com.moretea.forge-recovery-gateway` and `com.moretea.forge-recovery-watchdog`, it exits and removes stale Recovery services discovered under the Recovery-owned launchd directory. Configuration is rewritten from the current schema and does not preserve retired ingress, agent-repair, or legacy tunnel fields. Direct reload scripts are not a second mutation path.
 
 Forge deliberately has no blue-green Runtime topology. There is one active whole-release authority and one canonical service. Candidate validation happens before activation; activation stops the complete Runtime, switches the atomic active release, starts one Runtime, and gates on whole-Runtime readiness. Failure restores the previous whole release and its bound SQLite backup.
 
