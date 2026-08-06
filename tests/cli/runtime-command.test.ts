@@ -79,6 +79,7 @@ describe('runtime command surface', () => {
     const lifecycleAuthority = readFileSync(join(ROOT, 'src/cli/controller/lifecycle-authority.ts'), 'utf8');
     const httpTransport = readFileSync(join(ROOT, 'src/cli/mcp/transports/http.ts'), 'utf8');
     const runtimeTools = readFileSync(join(ROOT, 'src/runtime/gateway/mcp/runtime-tools.ts'), 'utf8');
+    const supervisorRuntime = readFileSync(join(ROOT, 'src/runtime/supervisor/supervisor-runtime.ts'), 'utf8');
     const facadeActions = readFileSync(join(ROOT, 'src/runtime/control-plane/facade/suggested-actions.ts'), 'utf8');
     const capabilityRegistry = readFileSync(join(ROOT, 'src/runtime/control-plane/facade/capability-registry.ts'), 'utf8');
     expect(mcpCommand).toContain('bindInheritedRuntimeWriterClaimFromEnvironment');
@@ -161,6 +162,17 @@ describe('runtime command surface', () => {
     expect(readinessEvidenceBlock).not.toContain('generationMatches');
     expect(runtimeTools).not.toContain("from '../../../cli/controller/runtime-slots'");
     expect(runtimeTools).not.toContain("from '../../../cli/controller/stable-state/stable-home'");
+    const supervisorMonitorStart = supervisorRuntime.indexOf('private async monitorTick()');
+    const supervisorMonitorEnd = supervisorRuntime.indexOf('private scheduleMonitorTick()', supervisorMonitorStart);
+    const supervisorMonitorBlock = supervisorRuntime.slice(supervisorMonitorStart, supervisorMonitorEnd);
+    expect(supervisorRuntime).toContain('startCompatibilityIngressRouter');
+    expect(supervisorRuntime).not.toContain('replaceIngressRouter');
+    expect(supervisorMonitorBlock).not.toContain('createStableIngressRouter');
+    expect(supervisorMonitorBlock).not.toContain('supervisorIngressHealthDecision');
+    expect(supervisorMonitorBlock).not.toContain('inline stable ingress router recovery');
+    expect(supervisorMonitorBlock).not.toContain('router replacement');
+    expect(supervisorMonitorBlock).not.toContain('requestSupervisorSelfRestart');
+    expect(supervisorMonitorBlock).toContain('Public endpoint observations are diagnostics only');
     expect(runtimeTools).toContain('readControllerDaemonStatus');
     for (const legacy of [
       'controller_restart_verify',

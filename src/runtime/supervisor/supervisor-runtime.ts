@@ -1063,8 +1063,13 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     if (decision.shouldRestart) this.requestSupervisorSelfRestart(reason);
   }
 
-  private async replaceIngressRouter(): Promise<StableIngressRouterHandle> {
-    await this.ingressRouter?.close();
+  /**
+   * Transitional compatibility only. The router is started once with the
+   * Supervisor and is not recreated, replaced, or promoted into an independent
+   * health/recovery owner by the monitor loop.
+   */
+  private async startCompatibilityIngressRouter(): Promise<StableIngressRouterHandle> {
+    if (this.ingressRouter) return this.ingressRouter;
     if (!this.control) throw new Error('SUPERVISOR_INGRESS_CONTEXT_MISSING');
     this.ingressRouter = await createStableIngressRouter({
       host: this.options.stableIngressHost ?? '127.0.0.1',
@@ -1102,7 +1107,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       onHandoff: this.options.onHandoff,
       onStopped: this.options.onStopped,
     });
-    this.ingressRouter = await this.replaceIngressRouter();
+    this.ingressRouter = await this.startCompatibilityIngressRouter();
     this.state = this.persist({
       ingress: {
         ...this.state.ingress,
@@ -2488,40 +2493,6 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     if (this.stopping || this.selfRestartRequested || this.state.desiredState !== 'running') return;
     reconcilePendingSupervisorActivations(this.options.controllerHome);
     let degraded = !this.synchronizeActiveRuntimeGeneration(false);
-    let ingressDegraded = this.ingressRouter === undefined;
-    if (!this.ingressRouter) {
-      const now = new Date().toISOString();
-      try {
-        this.ingressRouter = await this.replaceIngressRouter();
-        this.persist({
-          ingress: {
-            ...this.state.ingress,
-            state: 'degraded',
-            pid: process.pid,
-            consecutiveFailures: 0,
-            lastFailureAt: now,
-            lastFailureDetail: 'inline stable ingress router was missing and was recreated; awaiting full-path verification',
-          },
-        });
-        ingressDegraded = false;
-      } catch (error) {
-        const detail = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').slice(0, 200);
-        this.persist({
-          ingress: {
-            ...this.state.ingress,
-            state: 'degraded',
-            pid: process.pid,
-            lastFailureAt: now,
-            lastFailureDetail: detail,
-          },
-          lastIncident: {
-            at: now,
-            reason: `inline stable ingress router recovery failed: ${detail}`,
-          },
-        });
-        this.recordMonitorFailure(`inline stable ingress router recovery failed: ${detail}`);
-      }
-    }
     for (const component of ['controllerDaemon', 'gatewayHost'] as const) {
       const managed = this.componentState(component);
       const observation = this.manager.observe(managed);
@@ -2588,120 +2559,21 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
         this.state.gatewayHost?.consecutiveFailures ?? 0,
       );
       const operationActive = Boolean(this.state.currentOperationId);
-      let ingressPathHealthy = false;
-      if (gatewayHealthy && this.ingressRouter) {
-        if (operationActive) {
-          ingressPathHealthy = this.state.ingress.state === 'running'
-            && (this.state.ingress.consecutiveFailures ?? 0) === 0;
-        } else {
-          const ingressEndpoint = `http://${this.ingressRouter.host}:${this.ingressRouter.port}/ready`;
-          const health = await probeSupervisorGatewayHealth(ingressEndpoint);
-          const decision = supervisorIngressHealthDecision(
-            this.state.ingress.consecutiveFailures ?? 0,
-            health.healthy,
-          );
-          if (health.healthy) {
-            ingressPathHealthy = true;
-            ingressDegraded = false;
-            this.persist({
-              ingress: {
-                ...this.state.ingress,
-                state: 'running',
-                activeUpstreamSlot: this.state.activeSlot,
-                activeUpstreamPort: this.manager.gatewayBinding(this.state.activeSlot).port,
-                pid: process.pid,
-                consecutiveFailures: 0,
-                lastHealthyAt: new Date().toISOString(),
-              },
-            });
-          } else {
-            ingressDegraded = decision.shouldReplace;
-            ingressPathHealthy = !decision.shouldReplace;
-            const now = new Date().toISOString();
-            const failureReason = `inline stable ingress full-path probe failed ${decision.consecutiveFailures}/${SUPERVISOR_INGRESS_HEALTH_FAILURE_THRESHOLD} slot=${this.state.activeSlot} targetPort=${this.manager.gatewayBinding(this.state.activeSlot).port}: ${health.detail}`;
-            if (decision.shouldReplace) {
-              try {
-                this.ingressRouter = await this.replaceIngressRouter();
-                const replacementHealth = await probeSupervisorGatewayHealth(
-                  `http://${this.ingressRouter.host}:${this.ingressRouter.port}/ready`,
-                );
-                if (replacementHealth.healthy) {
-                  ingressPathHealthy = true;
-                  ingressDegraded = false;
-                  this.persist({
-                    ingress: {
-                      ...this.state.ingress,
-                      state: 'running',
-                      activeUpstreamSlot: this.state.activeSlot,
-                      activeUpstreamPort: this.manager.gatewayBinding(this.state.activeSlot).port,
-                      pid: process.pid,
-                      consecutiveFailures: 0,
-                      lastHealthyAt: new Date().toISOString(),
-                    },
-                    lastIncident: {
-                      at: now,
-                      reason: `inline stable ingress false-health recovered by router replacement ownerPid=${process.pid}`,
-                    },
-                  });
-                } else {
-                  const replacementDetail = `inline router replacement full-path probe failed: ${replacementHealth.detail}`;
-                  this.persist({
-                    ingress: {
-                      ...this.state.ingress,
-                      state: 'degraded',
-                      pid: process.pid,
-                      consecutiveFailures: 1,
-                      lastFailureAt: now,
-                      lastFailureDetail: replacementDetail,
-                    },
-                    lastIncident: { at: now, reason: replacementDetail },
-                  });
-                  this.requestSupervisorSelfRestart(replacementDetail);
-                }
-              } catch (error) {
-                const detail = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').slice(0, 200);
-                this.persist({
-                  ingress: {
-                    ...this.state.ingress,
-                    state: 'degraded',
-                    pid: process.pid,
-                    consecutiveFailures: decision.consecutiveFailures,
-                    lastFailureAt: now,
-                    lastFailureDetail: detail,
-                  },
-                  lastIncident: { at: now, reason: `inline stable ingress router replacement failed: ${detail}` },
-                });
-                this.requestSupervisorSelfRestart(`inline stable ingress router replacement failed: ${detail}`);
-              }
-            } else {
-              this.persist({
-                ingress: {
-                  ...this.state.ingress,
-                  state: 'running',
-                  pid: process.pid,
-                  consecutiveFailures: decision.consecutiveFailures,
-                  lastFailureAt: now,
-                  lastFailureDetail: health.detail,
-                },
-                lastIncident: { at: now, reason: failureReason },
-              });
-            }
-          }
-        }
-      } else {
-        ingressDegraded = true;
-      }
-      const stableIngressHealthy = gatewayHealthy && ingressPathHealthy && !ingressDegraded;
-      if (stableIngressHealthy) this.resetMonitorFailures();
+      const runtimeHealthy = gatewayHealthy && !degraded && !operationActive;
+      if (runtimeHealthy) this.resetMonitorFailures();
       this.persist({
-        observedState: degraded || ingressDegraded || operationActive ? 'degraded' : 'healthy',
+        observedState: runtimeHealthy ? 'healthy' : 'degraded',
         ingress: {
           ...this.state.ingress,
-          state: stableIngressHealthy ? 'running' : 'degraded',
+          // Compatibility projection only. Ingress presence is no longer part of
+          // Supervisor lifecycle health and the monitor never recreates it.
+          state: this.ingressRouter ? 'running' : 'stopped',
+          pid: this.ingressRouter ? process.pid : undefined,
         },
       });
-      // External / public endpoint probe: verify the full path that ChatGPT
-      // actually uses, not just localhost.  Unconfigured → 'unknown'.
+
+      // Public endpoint observations are diagnostics only. They cannot degrade,
+      // restart, or otherwise control the Supervisor lifecycle.
       const externalEndpoint = process.env.REPO_HARNESS_SUPERVISOR_PUBLIC_HEALTH_ENDPOINT?.trim();
       if (externalEndpoint) {
         try {
@@ -2711,23 +2583,12 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
             externalEndpointLastCheckedAt: new Date().toISOString(),
             externalEndpointLastDetail: externalHealth.detail,
           });
-          if (!externalHealth.healthy) {
-            degraded = true;
-            this.persist({
-              observedState: 'degraded',
-              lastIncident: {
-                at: new Date().toISOString(),
-                reason: `PUBLIC_STABLE_ENDPOINT_UNHEALTHY: ${externalHealth.detail}`,
-              },
-            });
-          }
         } catch {
           this.persist({
             externalEndpointHealthy: false,
             externalEndpointLastCheckedAt: new Date().toISOString(),
             externalEndpointLastDetail: 'external endpoint probe failed',
           });
-          degraded = true;
         }
       }
     }
