@@ -88,6 +88,8 @@
     "test:coverage": "bun test --coverage",
     "check:type": "bun x tsc --noEmit",
     "check:runtime-architecture": "node scripts/check-runtime-architecture.mjs",
+    "check:executable-modes": "bun scripts/repair-executable-modes.ts --check",
+    "repair:executable-modes": "bun scripts/repair-executable-modes.ts",
     "check:test-governance": "bun scripts/test-governance.ts validate",
     "check:mcp-compatibility": "node --loader ./src/runtime/shared/node-ts-loader.mjs scripts/check-mcp-compatibility.ts",
     "smoke:runtime-recovery": "node --loader ./src/runtime/shared/node-ts-loader.mjs scripts/smoke-runtime-recovery.ts",

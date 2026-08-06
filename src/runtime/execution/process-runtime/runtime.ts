@@ -40,9 +40,7 @@ import {
   releaseTerminalProcessLeases,
   renewExecutionLeases,
 } from '../../resources/leases/store';
-import { assertThisRuntimeMayWrite, assertThisRuntimeMayWriteOrThrow, getRuntimeWriterClaim } from '../../../cli/controller/stable-state/runtime-writer-context';
-import { readWriterAuthority } from '../../../cli/controller/stable-state/writer-authority';
-import { resolveStableControllerHome } from '../../../cli/controller/stable-state/stable-home';
+import { assertRuntimeMayWrite, assertRuntimeMayWriteOrThrow, getRuntimeWriteClaim } from '../../root/write-fence';
 import { defaultProcessIdentityProbe, executableFingerprint } from '../../shared/process-identity';
 import {
   claimProcessRequest,
@@ -344,18 +342,22 @@ function toResourceClaimSpecs(claims: ProcessResourceClaim[]): ResourceClaimSpec
   }));
 }
 
-function processWriterIdentityMatches(record: ManagedProcessRecord): boolean {
+function processRuntimeIdentityMatches(record: ManagedProcessRecord): boolean {
   const expected = {
-    epoch: record.writerAuthorityEpoch,
-    generation: record.writerAuthorityGeneration,
-    instanceId: record.writerAuthorityInstanceId,
+    runtimeInstanceId: record.runtimeInstanceId,
+    releaseAuthorityRevision: record.releaseAuthorityRevision,
+    releaseId: record.releaseId,
+    artifactIdentity: record.artifactIdentity,
+    workerProtocolVersion: record.workerProtocolVersion,
   };
-  if (!expected.epoch && !expected.generation && !expected.instanceId) return true;
-  const claim = getRuntimeWriterClaim();
+  if (Object.values(expected).every((value) => value === undefined)) return true;
+  const claim = getRuntimeWriteClaim();
   if (!claim) return false;
-  if (expected.epoch && expected.epoch !== claim.epoch) return false;
-  if (expected.generation && expected.generation !== claim.generation) return false;
-  if (expected.instanceId && expected.instanceId !== claim.instanceId) return false;
+  if (expected.runtimeInstanceId && expected.runtimeInstanceId !== claim.runtimeInstanceId) return false;
+  if (expected.releaseAuthorityRevision !== undefined && expected.releaseAuthorityRevision !== claim.releaseAuthorityRevision) return false;
+  if (expected.releaseId && expected.releaseId !== claim.releaseId) return false;
+  if (expected.artifactIdentity && expected.artifactIdentity !== claim.artifactIdentity) return false;
+  if (expected.workerProtocolVersion !== undefined && expected.workerProtocolVersion !== claim.workerProtocolVersion) return false;
   return true;
 }
 
@@ -471,19 +473,7 @@ export function completeProcessFromEvidence(
   let mayWriteTerminal = options.authority === 'durable_exit_receipt'
     || options.authority === 'durable_pre_spawn_abandonment';
   if (!mayWriteTerminal) {
-    mayWriteTerminal = true;
-    try {
-      const fence = assertThisRuntimeMayWrite('write_process_terminal', controllerHome);
-      if (!fence.allowed) mayWriteTerminal = false;
-    } catch {
-      // Unbound: only allow when no stable authority exists (legacy single-runtime).
-      try {
-        const authority = readWriterAuthority(resolveStableControllerHome(controllerHome));
-        if (authority) mayWriteTerminal = false;
-      } catch {
-        /* legacy allow */
-      }
-    }
+    mayWriteTerminal = assertRuntimeMayWrite('write_process_terminal', controllerHome).allowed;
   }
 
   if (!mayWriteTerminal) {
@@ -1026,6 +1016,7 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     input.workId,
   ));
 
+  const runtimeClaim = getRuntimeWriteClaim();
   const record: ManagedProcessRecord = {
     schemaVersion: 1,
     processId,
@@ -1045,9 +1036,11 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     startedAt,
     updatedAt: startedAt,
     terminalFenceToken: fenceToken,
-    writerAuthorityEpoch: input.writerAuthorityEpoch ?? getRuntimeWriterClaim()?.epoch,
-    writerAuthorityGeneration: input.writerAuthorityGeneration ?? getRuntimeWriterClaim()?.generation,
-    writerAuthorityInstanceId: input.writerAuthorityInstanceId ?? getRuntimeWriterClaim()?.instanceId,
+    runtimeInstanceId: input.runtimeInstanceId ?? runtimeClaim?.runtimeInstanceId,
+    releaseAuthorityRevision: input.releaseAuthorityRevision ?? runtimeClaim?.releaseAuthorityRevision,
+    releaseId: input.releaseId ?? runtimeClaim?.releaseId,
+    artifactIdentity: input.artifactIdentity ?? runtimeClaim?.artifactIdentity,
+    workerProtocolVersion: input.workerProtocolVersion ?? runtimeClaim?.workerProtocolVersion,
     origin: input.origin,
     exitReceiptPath,
     stdoutPath,
@@ -1396,21 +1389,7 @@ export async function cancelProcess(
 
   // Process control is itself a writer mutation. Fence BEFORE sending any
   // signal so a passive/stale runtime cannot kill the active runtime's work.
-  try {
-    assertThisRuntimeMayWriteOrThrow('cancel_process', controllerHome);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    // Always rethrow fencing denials. Legacy unbound is only allowed when no authority file exists.
-    if (message.startsWith('WRITER_FENCED:')) throw error;
-    if (message.includes('WRITER_CLAIM_UNBOUND') || message.includes('writer_claim_unbound')) {
-      if (readWriterAuthority(resolveStableControllerHome(controllerHome))) {
-        throw new Error(`WRITER_FENCED:cancel_process:writer_claim_unbound_while_authority_present`);
-      }
-      // no authority → single-runtime legacy allow
-    } else {
-      throw error;
-    }
-  }
+  assertRuntimeMayWriteOrThrow('cancel_process', controllerHome);
 
   const monitor = liveMonitors.get(processId);
   if (monitor) {
@@ -1567,7 +1546,7 @@ export function recoverManagedProcesses(
       continue;
     }
 
-    if (identityStillMatches(record.identity, record.identityUntrusted) && !processWriterIdentityMatches(record)) {
+    if (identityStillMatches(record.identity, record.identityUntrusted) && !processRuntimeIdentityMatches(record)) {
       // The PID may still be alive, but it belongs to a different runtime
       // generation/instance. Do not renew or release its leases from here.
       continue;

@@ -20,8 +20,8 @@ The MCP HTTP runtime now uses:
 - `429`/`503` overload responses with `Retry-After`;
 - a 1 MB MCP request-body limit;
 - 65-second keep-alive and 70-second header timeout;
-- periodic transport cleanup during runtime and full cleanup on shutdown.
-- an isolated stable-ingress child process so long-lived proxy sockets do not share the Supervisor control event loop.
+- periodic transport cleanup during runtime and full cleanup on shutdown;
+- one in-process Gateway/MCP transport owned by the canonical Forge Runtime, with no Stable Ingress child or component lifecycle supervisor.
 
 These limits prevent reconnect storms and long-running clients from causing unbounded memory, file scanning or open-transport growth.
 
@@ -39,7 +39,7 @@ Call `GET /health` on the local MCP endpoint. The response includes:
 
 A growing `rejectedOverload` value with no matching capacity-eviction or close activity means clients are submitting protected work faster than the Controller can accept it. A pool full of stream-only sessions should now self-recover. Retrying with backoff is preferable to increasing every limit.
 
-Call `GET /ready` separately. A 503 from `/ready` with `/health` still returning 200 means the process is live but cannot safely admit another initialize. `sessionCapacity.recoveryRecommended=false` preserves active work and waits; `true` allows the Supervisor's bounded recovery policy after the configured stall limit.
+Call `GET /ready` separately. A 503 from `/ready` with `/health` still returning 200 means the Runtime is live but cannot safely admit another initialize. `sessionCapacity.recoveryRecommended=false` preserves active work and waits; `true` is evidence for standalone Recovery's bounded whole-Runtime restart policy after the configured stall limit.
 
 ## Diagnostic Order
 
@@ -72,16 +72,13 @@ controller / repository / runtime dumps:
 Pass `detail_level=detail` (or `detail=true`) when full routing, process
 metadata, recentJobs, or owner evidence is required.
 
-### Local Bridge ports (8766 / 8776)
+### Local Bridge endpoint
 
-Do not assume `8776` is always correct:
+Do not infer a Local Bridge endpoint from retired slot conventions:
 
 - Root template default Local Controller port is **8766**.
-- Blue/green inactive slot offsets by **+10**, so a green inactive slot
-  often serves Local Controller on **8776**.
-- Authoritative endpoint comes from controller-home / slot-local
-  `mcp.local.json` and `runtime-state` (`localController.endpoint` /
-  `port`), not from hardcoding.
+- Forge has no blue/green inactive slot or `+10` alternate Runtime port.
+- The authoritative endpoint comes from Controller Home configuration and the current Runtime projection (`localController.endpoint` / `port`), not from hardcoding.
 
 Status model fields:
 

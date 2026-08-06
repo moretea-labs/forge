@@ -3,7 +3,7 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync
 import { basename, dirname, join, relative, resolve } from 'path';
 import { tmpdir } from 'os';
 import type { CleanupCycleSummary } from '../control-plane/runtime-cleanup';
-import { assertThisRuntimeMayWrite } from '../../cli/controller/stable-state/runtime-writer-context';
+import { assertRuntimeMayWrite } from '../root/write-fence';
 
 export interface RuntimeCleanupCandidate {
   kind: 'temp_dir' | 'local_job' | 'legacy_run' | 'attention_marker';
@@ -323,7 +323,7 @@ export function applyRuntimeCleanup(repoRoot: string, options: RuntimeCleanupOpt
   try {
     const controllerHome = process.env.FORGE_CONTROLLER_HOME?.trim();
     if (controllerHome) {
-      const fence = assertThisRuntimeMayWrite('cleanup', controllerHome);
+      const fence = assertRuntimeMayWrite('cleanup', controllerHome);
       if (!fence.allowed) {
         const generatedAt = now();
         return {

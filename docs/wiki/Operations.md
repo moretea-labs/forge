@@ -12,9 +12,9 @@ Use this page to choose the right operational path. Avoid replaying writes merel
 
 ## Runtime incidents
 
-- Primary MCP unavailable but recovery reachable: use the independent recovery channel to verify Supervisor, ingress, Gateway, and MCP separately.
-- External 502/503: distinguish tunnel transport, stable ingress, Gateway, and MCP failures before restarting anything.
-- Release drift: stop rollout and compare source commit, immutable manifest, service definition, active slot, and running process revision.
+- Primary MCP unavailable but Recovery reachable: use the independent Recovery channel to verify the Forge Runtime service, local endpoint, authenticated MCP flow, and external tunnel separately.
+- External 502/503: distinguish tunnel transport, local Runtime health, and authenticated MCP failures before restarting anything.
+- Release drift: stop activation and compare source commit, immutable whole-release manifest, service definition, release authority, SQLite backup binding, and running Runtime revision.
 - Stuck work: use watchdog and maintenance diagnostics before deleting state or killing processes.
 
 ## Detailed runbooks

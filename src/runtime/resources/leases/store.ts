@@ -161,23 +161,19 @@ export function acquireExecutionLeases(
   claims: ResourceClaimSpec[],
   ttlMsOrOptions: number | LeaseAcquisitionOptions = 30_000,
 ): LeaseAcquisitionResult {
-  // Writer fencing: passive / fenced runtimes must not acquire leases.
-  try {
-    const fence = assertRuntimeMayWrite('renew_lease', controllerHome);
-    if (!fence.allowed) {
-      return {
-        acquired: false,
-        leases: [],
-        blockers: [{
-          resourceKey: 'writer-authority',
-          ownerJobId: 'writer-fence',
-          leaseId: fence.reason ?? 'writer_fenced',
-          mode: 'exclusive',
-        }],
-      };
-    }
-  } catch {
-    /* unbound claim + missing authority → legacy single-runtime allow */
+  // Canonical Runtime fencing: passive or stale runtimes must not acquire leases.
+  const fence = assertRuntimeMayWrite('renew_lease', controllerHome);
+  if (!fence.allowed) {
+    return {
+      acquired: false,
+      leases: [],
+      blockers: [{
+        resourceKey: 'runtime-authority',
+        ownerJobId: 'runtime-fence',
+        leaseId: fence.reason ?? 'runtime_fenced',
+        mode: 'exclusive',
+      }],
+    };
   }
 
   validateClaimScopes(repoId, claims);

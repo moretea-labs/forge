@@ -13,7 +13,7 @@ A release candidate must pass the repository's release-readiness check on the ex
 
 ## Stable runtime evidence
 
-Before publication, build an immutable release from a clean canonical source tree, activate it, verify the complete MCP path, cold-restart the OS-managed Supervisor, and confirm the active revision still equals the intended commit. Record the fully verified release as known-good.
+Before publication, build an immutable whole-Runtime release from a clean canonical source tree, activate it through the single Forge Runtime service, verify the complete authenticated MCP path, cold-restart that service, and confirm the active release authority still equals the intended commit. Record the fully verified release as known-good.
 
 ## Upgrade principles
 

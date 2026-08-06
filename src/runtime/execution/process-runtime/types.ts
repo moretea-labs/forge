@@ -189,12 +189,14 @@ export interface ManagedProcessRecord {
   /** Fencing token — only the owner with this token may write terminal status. */
   terminalFenceToken: number;
   terminalWritten?: boolean;
-  /** Owner controller generation / authority epoch when known. */
-  writerAuthorityEpoch?: string;
-  /** Immutable runtime generation captured when this process was spawned. */
-  writerAuthorityGeneration?: string;
-  /** Immutable daemon/controller instance captured when this process was spawned. */
-  writerAuthorityInstanceId?: string;
+  /** Canonical Runtime instance captured when this process was spawned. */
+  runtimeInstanceId?: string;
+  /** Atomic whole-release authority revision captured at spawn. */
+  releaseAuthorityRevision?: number;
+  /** Immutable whole-release identity captured at spawn. */
+  releaseId?: string;
+  artifactIdentity?: string;
+  workerProtocolVersion?: number;
   /** Optional correlation for MCP / check / command tools. */
   origin?: {
     surface: 'mcp' | 'check' | 'command' | 'system';
@@ -243,9 +245,11 @@ export interface SpawnManagedProcessInput {
   maxOutputBytes?: number;
   resourceClaims?: ProcessResourceClaim[];
   origin?: ManagedProcessRecord['origin'];
-  writerAuthorityEpoch?: string;
-  writerAuthorityGeneration?: string;
-  writerAuthorityInstanceId?: string;
+  runtimeInstanceId?: string;
+  releaseAuthorityRevision?: number;
+  releaseId?: string;
+  artifactIdentity?: string;
+  workerProtocolVersion?: number;
   signal?: AbortSignal;
   /** When true, never block the caller waiting for completion. */
   returnHandleImmediately?: boolean;

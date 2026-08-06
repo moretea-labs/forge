@@ -922,12 +922,7 @@ export async function executeRepositoryCommandAsync(
 
   const asyncRisk = base.classification?.risk;
   if (asyncRisk === 'remote_write' || asyncRisk === 'destructive') {
-    try {
-      assertThisRuntimeMayWriteOrThrow('remote_side_effect', controllerHome);
-    } catch (error) {
-      if (error instanceof Error && error.message.startsWith('WRITER_FENCED:')) throw error;
-      /* unbound legacy */
-    }
+    assertRuntimeMayWriteOrThrow('remote_side_effect', controllerHome);
   }
 
   if (signal?.aborted) {

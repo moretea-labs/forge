@@ -912,6 +912,29 @@ describe("Local Execution Bridge", () => {
     expect(dashboard).toContain("/api/repositories/");
   });
 
+  test("preserves executable mode when an Edit Session replaces a shebang file", () => {
+    const root = repo();
+    const executablePath = join(root, "src/executable.ts");
+    writeFileSync(executablePath, "#!/usr/bin/env bun\nexport const value = 1;\n");
+    chmodSync(executablePath, 0o755);
+    const session = beginEditSession(root, {
+      purpose: "Update executable source",
+      allowedPaths: ["src/**"],
+      maxFiles: 1,
+      maxChangedLines: 5,
+    });
+    const current = readFileSync(executablePath, "utf8");
+    const hash = new Bun.CryptoHasher("sha256").update(current).digest("hex");
+    applyEditOperations(root, getMcpPolicy("controller", { repoRoot: root }), session.sessionId, [{
+      type: "replace",
+      path: "src/executable.ts",
+      expectedSha256: hash,
+      replacements: [{ oldText: "value = 1", newText: "value = 2" }],
+    }]);
+    expect(lstatSync(executablePath).mode & 0o111).toBe(0o111);
+    expect(readFileSync(executablePath, "utf8")).toContain("value = 2");
+  });
+
   test("registers and soft-removes repositories through the local-bridge API", async () => {
     const root = repo();
     const otherRoot = mkdtempSync(join(tmpdir(), "forge-local-bridge-other-"));

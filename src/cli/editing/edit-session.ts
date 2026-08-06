@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { dirname, join, relative } from 'path';
 import { atomicWriteFile } from '../../effects/fs-transaction';
 import { runProcess } from '../../effects/process-runner';
@@ -31,6 +31,8 @@ export interface EditSessionOperationRecord {
   afterSha256?: string;
   backupPath?: string;
   changedLines: number;
+  beforeMode?: number;
+  afterMode?: number;
 }
 
 export interface EditSessionRevision {
@@ -1165,13 +1167,20 @@ export function applyEditOperations(repoRoot: string, policy: McpPolicy, session
   let appliedOperationCount = 0;
   try {
     prepared.forEach((item, index) => {
+      const beforeMode = item.beforeExists ? statSync(item.absolutePath).mode & 0o777 : undefined;
+      const afterMode = item.afterExists
+        ? beforeMode ?? (item.after.startsWith('#!') ? 0o755 : undefined)
+        : undefined;
       const backupRelative = `${SESSION_ROOT}/${session.sessionId}/backups/r${String(revision).padStart(4, '0')}-${String(index + 1).padStart(4, '0')}-${item.relativePath.replace(/[^a-zA-Z0-9._-]+/g, '__')}.bak`;
       if (item.beforeExists) {
         mkdirSync(dirname(join(repoRoot, backupRelative)), { recursive: true });
         writeFileSync(join(repoRoot, backupRelative), item.before, 'utf-8');
       }
       if (item.operation.type === 'delete') rmSync(item.absolutePath);
-      else atomicWriteFile(repoRoot, item.relativePath, item.after, { backupRoot: `${SESSION_ROOT}/${session.sessionId}/atomic-backups/r${revision}` });
+      else atomicWriteFile(repoRoot, item.relativePath, item.after, {
+        backupRoot: `${SESSION_ROOT}/${session.sessionId}/atomic-backups/r${revision}`,
+        ...(afterMode === undefined ? {} : { mode: afterMode }),
+      });
       records.push({
         revision,
         operationIndex: item.operationIndex,
@@ -1181,6 +1190,8 @@ export function applyEditOperations(repoRoot: string, policy: McpPolicy, session
         afterSha256: item.afterExists ? hash(item.after) : undefined,
         backupPath: item.beforeExists ? backupRelative : undefined,
         changedLines: changedLinesFor(item),
+        beforeMode,
+        afterMode,
       });
       appliedOperationCount += 1;
     });
@@ -1188,7 +1199,12 @@ export function applyEditOperations(repoRoot: string, policy: McpPolicy, session
     for (const record of [...records].reverse()) {
       const absolute = join(repoRoot, record.path);
       if (record.type === 'create') rmSync(absolute, { force: true });
-      else if (record.backupPath && existsSync(join(repoRoot, record.backupPath))) atomicWriteFile(repoRoot, record.path, readFileSync(join(repoRoot, record.backupPath), 'utf-8'));
+      else if (record.backupPath && existsSync(join(repoRoot, record.backupPath))) atomicWriteFile(
+        repoRoot,
+        record.path,
+        readFileSync(join(repoRoot, record.backupPath), 'utf-8'),
+        record.beforeMode === undefined ? {} : { mode: record.beforeMode },
+      );
     }
     const message = error instanceof Error ? error.message : String(error);
     throw patchError(
@@ -1350,7 +1366,12 @@ function restoreOperation(repoRoot: string, operation: EditSessionOperationRecor
   } else {
     throw new Error(`cannot rollback missing edited file: ${operation.path}`);
   }
-  atomicWriteFile(repoRoot, operation.path, readFileSync(join(repoRoot, operation.backupPath), 'utf-8'));
+  atomicWriteFile(
+    repoRoot,
+    operation.path,
+    readFileSync(join(repoRoot, operation.backupPath), 'utf-8'),
+    operation.beforeMode === undefined ? {} : { mode: operation.beforeMode },
+  );
 }
 
 export function rollbackEditSession(repoRoot: string, sessionId: string, input: {

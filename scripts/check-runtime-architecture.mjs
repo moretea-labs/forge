@@ -264,6 +264,14 @@ requireText('src/cli/commands/init-hook.ts', "['open', 'next']");
 requireText('src/cli/commands/init-hook.ts', "command(name)");
 requireText('src/cli/commands/init-hook.ts', "command('close')");
 requireText('src/cli/commands/init-hook.ts', "'.forge'");
+requireText('src/cli/editing/edit-session.ts', 'beforeMode');
+requireText('src/cli/editing/edit-session.ts', 'afterMode');
+requireText('src/cli/editing/edit-session.ts', '{ mode: record.beforeMode }');
+requireText('src/cli/editing/executable-modes.ts', "mode | 0o111");
+requireText('scripts/repair-executable-modes.ts', "process.argv.includes('--check')");
+requireText('package.json', 'check:executable-modes');
+requireText('package.json', 'repair:executable-modes');
+forbid('src/cli/index.ts', /forge-mode-repair-request|repairExecutableModes/, 'keep executable-mode repair explicit instead of hiding it in normal CLI startup');
 
 forbid(
   'scripts/smoke-runtime-recovery.ts',

@@ -43,11 +43,12 @@ import { ensureControllerHome, repositoryControllerRoot } from '../../src/cli/re
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { routeExecution } from '../../src/runtime/execution/thin-harness';
 import { listActiveLeases, acquireExecutionLeases } from '../../src/runtime/resources/leases/store';
+import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
+import { ensureActiveRuntimeRelease, publishRuntimeRelease } from '../../src/runtime/root/release-store';
 import {
-  bindRuntimeWriterClaim,
-  clearRuntimeWriterClaimForTests,
-} from '../../src/cli/controller/stable-state/runtime-writer-context';
-import { publishWriterAuthority } from '../../src/cli/controller/stable-state/writer-authority';
+  bindRuntimeWriteClaim,
+  clearRuntimeWriteClaimForTests,
+} from '../../src/runtime/root/write-fence';
 import { defaultProcessIdentityProbe, executableFingerprint } from '../../src/runtime/shared/process-identity';
 import { ensureRepositoryRuntimeStorage } from '../../src/cli/repositories/runtime-storage';
 import { callProcessTool, processToolDefinitions } from '../../src/runtime/gateway/mcp/process-tools';
@@ -58,7 +59,7 @@ const roots: string[] = [];
 
 afterEach(() => {
   __resetLiveMonitorsForTests();
-  clearRuntimeWriterClaimForTests();
+  clearRuntimeWriteClaimForTests();
   while (roots.length > 0) {
     try {
       rmSync(roots.pop()!, { recursive: true, force: true });
@@ -67,6 +68,48 @@ afterEach(() => {
     }
   }
 });
+
+function runtimeManifest(controllerHome: string, releaseId: string, artifactIdentity: string, workerProtocolVersion = 1): string {
+  const path = join(controllerHome, `${releaseId}.manifest.json`);
+  writeFileSync(path, JSON.stringify({
+    schemaVersion: 1,
+    releaseId,
+    artifactIdentity,
+    entrypoint: 'forge-runtime',
+    arguments: [],
+    configurationSchemaVersion: 1,
+    controllerHome,
+    databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+    workerProtocolVersion,
+    createdAt: new Date().toISOString(),
+  }));
+  return path;
+}
+
+function bindCanonicalRuntime(
+  controllerHome: string,
+  runtimeInstanceId = 'runtime-test',
+  releaseId = 'release-test',
+  artifactIdentity = 'artifact-test',
+) {
+  const owner = acquireRuntimeOwnership(controllerHome, runtimeInstanceId);
+  const authority = ensureActiveRuntimeRelease(
+    controllerHome,
+    runtimeManifest(controllerHome, releaseId, artifactIdentity),
+  );
+  const claim = bindRuntimeWriteClaim({ controllerHome, owner: owner.record, authority });
+  return { owner, authority, claim };
+}
+
+function bindTestRuntimeClaim(
+  input: Parameters<typeof bindRuntimeWriteClaim>[0] & { fencingToken?: string },
+) {
+  const { fencingToken, ...canonical } = input;
+  return bindRuntimeWriteClaim({
+    ...canonical,
+    ...(fencingToken ? { releaseFencingToken: fencingToken } : {}),
+  });
+}
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'process-runtime-'));
@@ -647,7 +690,7 @@ describe('getProcessHandle after completion', () => {
 
 describe('Process Runtime real lease contention', () => {
   afterEach(() => {
-    clearRuntimeWriterClaimForTests();
+    clearRuntimeWriteClaimForTests();
   });
 
   test('write claim blocks concurrent write; multiple reads may run', async () => {
@@ -829,23 +872,16 @@ describe('Process Runtime real lease contention', () => {
     expect(listActiveLeases(fx.controllerHome, fx.repository.repoId).some((lease) => lease.ownerJobId === `process:${processId}`)).toBe(false);
   });
 
-  test('terminal recovery releases exact leases after writer generation changes', () => {
+  test('terminal recovery releases exact leases after the whole release changes', () => {
     const fx = fixture();
-    const processId = 'proc_terminal_old_generation';
+    const processId = 'proc_terminal_old_release';
     const resourceKey = `workspace:${fx.repository.activeCheckoutId}`;
-    const oldAuthority = publishWriterAuthority(fx.controllerHome, {
-      activeSlot: 'green',
-      generation: 'old-generation',
-      reason: 'terminal-old-generation',
-    });
-    bindRuntimeWriterClaim({
-      controllerHome: fx.controllerHome,
-      slot: 'green',
-      epoch: oldAuthority.epoch,
-      fencingToken: oldAuthority.fencingToken,
-      generation: 'old-generation',
-      instanceId: 'old-instance',
-    });
+    const oldRuntime = bindCanonicalRuntime(
+      fx.controllerHome,
+      'runtime-old',
+      'release-old',
+      'artifact-old',
+    );
     const acquired = acquireExecutionLeases(
       fx.controllerHome,
       fx.repository.repoId,
@@ -885,9 +921,11 @@ describe('Process Runtime real lease contention', () => {
       startedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       terminalFenceToken: 41,
-      writerAuthorityEpoch: oldAuthority.epoch,
-      writerAuthorityGeneration: 'old-generation',
-      writerAuthorityInstanceId: 'old-instance',
+      runtimeInstanceId: oldRuntime.claim.runtimeInstanceId,
+      releaseAuthorityRevision: oldRuntime.claim.releaseAuthorityRevision,
+      releaseId: oldRuntime.claim.releaseId,
+      artifactIdentity: oldRuntime.claim.artifactIdentity,
+      workerProtocolVersion: oldRuntime.claim.workerProtocolVersion,
     });
     const completed = tryCompleteProcessRecord(fx.controllerHome, fx.repository.repoId, processId, 41, {
       status: 'succeeded',
@@ -896,12 +934,13 @@ describe('Process Runtime real lease contention', () => {
     });
     expect(completed.record?.leaseReleaseState).toBe('pending');
 
-    publishWriterAuthority(fx.controllerHome, {
-      activeSlot: 'green',
-      generation: 'new-generation',
-      reason: 'terminal-new-generation',
-    });
-    clearRuntimeWriterClaimForTests();
+    const newAuthority = publishRuntimeRelease(
+      fx.controllerHome,
+      runtimeManifest(fx.controllerHome, 'release-new', 'artifact-new', 2),
+      'terminal-new-release',
+    );
+    clearRuntimeWriteClaimForTests();
+    bindRuntimeWriteClaim({ controllerHome: fx.controllerHome, owner: oldRuntime.owner.record, authority: newAuthority });
 
     const recovery = recoverManagedProcesses(fx.controllerHome, fx.repository.repoId);
     expect(recovery.leasesReleased).toContain(processId);
@@ -975,15 +1014,12 @@ describe('Process Runtime real lease contention', () => {
     const command = defaultProcessIdentityProbe.command(process.pid);
     const processStartTime = defaultProcessIdentityProbe.startTime(process.pid);
     expect(command && processStartTime).toBeTruthy();
-    const authority = publishWriterAuthority(fx.controllerHome, { activeSlot: 'green', generation: 'new-generation', reason: 'identity-test' });
-    bindRuntimeWriterClaim({
-      controllerHome: fx.controllerHome,
-      slot: 'green',
-      epoch: authority.epoch,
-      fencingToken: authority.fencingToken,
-      generation: 'new-generation',
-      instanceId: 'new-instance',
-    });
+    const activeRuntime = bindCanonicalRuntime(
+      fx.controllerHome,
+      'runtime-new',
+      'release-new',
+      'artifact-new',
+    );
     createProcessRecord({
       schemaVersion: 1,
       processId,
@@ -1006,9 +1042,11 @@ describe('Process Runtime real lease contention', () => {
       startedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       terminalFenceToken: 1,
-      writerAuthorityEpoch: authority.epoch,
-      writerAuthorityGeneration: 'old-generation',
-      writerAuthorityInstanceId: 'old-instance',
+      runtimeInstanceId: 'runtime-old',
+      releaseAuthorityRevision: activeRuntime.claim.releaseAuthorityRevision,
+      releaseId: activeRuntime.claim.releaseId,
+      artifactIdentity: activeRuntime.claim.artifactIdentity,
+      workerProtocolVersion: activeRuntime.claim.workerProtocolVersion,
     });
     const recovery = recoverManagedProcesses(fx.controllerHome, fx.repository.repoId);
     expect(recovery.recovered).not.toContain(processId);
@@ -1019,14 +1057,22 @@ describe('Process Runtime real lease contention', () => {
   test('validated Runner receipt performs monotonic terminal CAS while runtime writer is fenced', () => {
     const fx = fixture();
     const processId = 'proc_receipt_terminal_while_fenced';
-    const authority = publishWriterAuthority(fx.controllerHome, { activeSlot: 'green', reason: 'receipt-terminal-test' });
-    bindRuntimeWriterClaim({
+    const activeRuntime = bindCanonicalRuntime(
+      fx.controllerHome,
+      'runtime-active',
+      'release-active',
+      'artifact-active',
+    );
+    clearRuntimeWriteClaimForTests();
+    bindTestRuntimeClaim({
       controllerHome: fx.controllerHome,
-      slot: 'blue',
-      epoch: 'stale-receipt-epoch',
+      runtimeInstanceId: 'runtime-stale',
+      ownerPid: activeRuntime.owner.record.pid,
+      releaseAuthorityRevision: activeRuntime.authority.revision,
       fencingToken: authority.fencingToken,
-      generation: authority.generation,
-      instanceId: 'stale-receipt-instance',
+      releaseId: activeRuntime.authority.active.releaseId,
+      artifactIdentity: activeRuntime.authority.active.artifactIdentity,
+      workerProtocolVersion: activeRuntime.authority.active.workerProtocolVersion,
     });
     const exitReceiptPath = join(processLogDir(fx.controllerHome, fx.repository.repoId), `${processId}.exit.json`);
     createProcessRecord({
@@ -1070,8 +1116,13 @@ describe('Process Runtime real lease contention', () => {
     const fx = fixture();
     const processId = 'proc_stale_pre_spawn_abandonment';
     const startedAt = new Date('2026-08-05T09:00:00.000Z').toISOString();
-    publishWriterAuthority(fx.controllerHome, { activeSlot: 'green', reason: 'pre-spawn-abandonment-test' });
-    clearRuntimeWriterClaimForTests();
+    bindCanonicalRuntime(
+      fx.controllerHome,
+      'runtime-pre-spawn',
+      'release-pre-spawn',
+      'artifact-pre-spawn',
+    );
+    clearRuntimeWriteClaimForTests();
     createProcessRecord({
       schemaVersion: 1,
       processId,
@@ -1114,13 +1165,22 @@ describe('Process Runtime real lease contention', () => {
 
   test('passive runtime cannot acquire process leases', () => {
     const fx = fixture();
-    const auth = publishWriterAuthority(fx.controllerHome, { activeSlot: 'green', reason: 'active' });
-    bindRuntimeWriterClaim({
+    const activeRuntime = bindCanonicalRuntime(
+      fx.controllerHome,
+      'runtime-active',
+      'release-active',
+      'artifact-active',
+    );
+    clearRuntimeWriteClaimForTests();
+    bindTestRuntimeClaim({
       controllerHome: fx.controllerHome,
-      slot: 'blue',
-      epoch: 'stale-epoch',
+      runtimeInstanceId: 'runtime-stale',
+      ownerPid: activeRuntime.owner.record.pid,
+      releaseAuthorityRevision: activeRuntime.authority.revision,
       fencingToken: 'stale-token',
-      generation: auth.generation,
+      releaseId: activeRuntime.authority.active.releaseId,
+      artifactIdentity: activeRuntime.authority.active.artifactIdentity,
+      workerProtocolVersion: activeRuntime.authority.active.workerProtocolVersion,
     });
     const result = acquireExecutionLeases(
       fx.controllerHome,
@@ -1132,10 +1192,15 @@ describe('Process Runtime real lease contention', () => {
     expect(result.acquired).toBe(false);
   });
 
-  test('cancel fences before signal when writer authority present and claim unbound', async () => {
+  test('cancel fences before signal when Runtime authority is present and claim is unbound', async () => {
     const fx = fixture();
-    publishWriterAuthority(fx.controllerHome, { activeSlot: 'green', reason: 'fence-test' });
-    clearRuntimeWriterClaimForTests();
+    const activeRuntime = bindCanonicalRuntime(
+      fx.controllerHome,
+      'runtime-cancel',
+      'release-cancel',
+      'artifact-cancel',
+    );
+    clearRuntimeWriteClaimForTests();
     const handle = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
@@ -1154,21 +1219,14 @@ describe('Process Runtime real lease contention', () => {
     // With authority present and no claim, cancel must refuse before signal.
     await expect(cancelProcess(fx.controllerHome, fx.repository.repoId, handle.processId))
       .rejects.toThrow(/WRITER_FENCED:cancel_process/);
-    // Clean up: bind active claim and cancel.
-    const authority = publishWriterAuthority(fx.controllerHome, { activeSlot: 'green', reason: 'cleanup' });
-    // Authority rotated — bind matching claim for cleanup only if process still running.
-    bindRuntimeWriterClaim({
+    // Clean up: bind the active canonical Runtime claim and cancel.
+    bindTestRuntimeClaim({
       controllerHome: fx.controllerHome,
-      slot: 'green',
-      epoch: authority.epoch,
+      owner: activeRuntime.owner.record,
+      authority: activeRuntime.authority,
       fencingToken: authority.fencingToken,
-      adoptCurrentAuthority: true,
     });
-    try {
-      await cancelProcess(fx.controllerHome, fx.repository.repoId, handle.processId);
-    } catch {
-      /* may already be fenced by epoch rotate from second publish */
-    }
+    await cancelProcess(fx.controllerHome, fx.repository.repoId, handle.processId);
   });
 });
 
