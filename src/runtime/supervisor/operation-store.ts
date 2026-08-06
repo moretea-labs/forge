@@ -58,7 +58,10 @@ function boundedResult(value: Record<string, unknown> | undefined): Record<strin
 function readOperationPath(path: string): SupervisorOperation | null {
   try {
     const value = JSON.parse(readFileSync(path, 'utf8')) as SupervisorOperation;
-    return value?.schemaVersion === 1 && typeof value.operationId === 'string' ? value : null;
+    if (value?.schemaVersion !== 1 || typeof value.operationId !== 'string') return null;
+    return value.phase === 'switching_ingress'
+      ? { ...value, phase: 'activating_runtime' }
+      : value;
   } catch {
     return null;
   }

@@ -21,6 +21,8 @@ export type SupervisorOperationPhase =
   | 'stopping'
   | 'starting'
   | 'verifying'
+  | 'activating_runtime'
+  /** Deprecated persisted value normalized to activating_runtime on read. */
   | 'switching_ingress'
   | 'cutover'
   | 'rolling_back'

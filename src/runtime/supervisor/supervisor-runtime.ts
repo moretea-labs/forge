@@ -1799,7 +1799,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
         gatewayHost: previousGateway,
       },
     });
-    updateSupervisorOperation(this.options.controllerHome, operationId, { phase: 'switching_ingress' });
+    updateSupervisorOperation(this.options.controllerHome, operationId, { phase: 'activating_runtime' });
 
     let activatedCandidate = candidate;
     let authorityCommitted = false;
@@ -1809,7 +1809,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       if (candidateRelease?.releasePath) {
         const latest = readSupervisorOperation(this.options.controllerHome, operationId) ?? operation;
         updateSupervisorOperation(this.options.controllerHome, operationId, {
-          phase: 'switching_ingress',
+          phase: 'activating_runtime',
           result: resultWithRolloutCheckpoint(latest, {
             stage: 'authority_committed',
             candidateSlot,
@@ -2053,7 +2053,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     // A live standby is not automatically a safe rollback target: it may have
     // been started from an older incomplete release. Validate the exact release
     // behind either the retained standby or the newly started target before
-    // committing rollback authority or switching ingress.
+    // committing rollback authority or activating the selected Runtime.
     const rollbackRelease = readSupervisorRelease(target.controllerDaemon.releasePath);
     if (!rollbackRelease) {
       throw new Error('SUPERVISOR_ROLLBACK_RELEASE_UNAVAILABLE');

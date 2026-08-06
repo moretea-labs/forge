@@ -198,6 +198,13 @@ describe('runtime command surface', () => {
     expect(supervisorTypes).not.toContain('activeUpstreamPort');
     expect(supervisorStateStore).toContain('_legacyActiveUpstreamSlot');
     expect(supervisorStateStore).toContain('_legacyActiveUpstreamPort');
+    expect(supervisorRuntime).toContain("phase: 'activating_runtime'");
+    expect(supervisorRuntime).not.toContain("phase: 'switching_ingress'");
+    expect(supervisorTypes).toContain("| 'activating_runtime'");
+    expect(supervisorStateStore).not.toContain('switching_ingress');
+    const supervisorOperationStore = readFileSync(join(ROOT, 'src/runtime/supervisor/operation-store.ts'), 'utf8');
+    expect(supervisorOperationStore).toContain("value.phase === 'switching_ingress'");
+    expect(supervisorOperationStore).toContain("phase: 'activating_runtime'");
     expect(runtimeTools).toContain('readControllerDaemonStatus');
     for (const legacy of [
       'controller_restart_verify',
