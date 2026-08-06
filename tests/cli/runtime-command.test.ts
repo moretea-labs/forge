@@ -79,6 +79,7 @@ describe('runtime command surface', () => {
     const lifecycleAuthority = readFileSync(join(ROOT, 'src/cli/controller/lifecycle-authority.ts'), 'utf8');
     const httpTransport = readFileSync(join(ROOT, 'src/cli/mcp/transports/http.ts'), 'utf8');
     const runtimeTools = readFileSync(join(ROOT, 'src/runtime/gateway/mcp/runtime-tools.ts'), 'utf8');
+    const toolsetNames = readFileSync(join(ROOT, 'src/cli/mcp/toolset-names.ts'), 'utf8');
     const supervisorRuntime = readFileSync(join(ROOT, 'src/runtime/supervisor/supervisor-runtime.ts'), 'utf8');
     const supervisorProcessManager = readFileSync(join(ROOT, 'src/runtime/supervisor/process-manager.ts'), 'utf8');
     const supervisorIngressRouter = readFileSync(join(ROOT, 'src/runtime/supervisor/ingress-router.ts'), 'utf8');
@@ -324,6 +325,7 @@ describe('runtime command surface', () => {
     ]) {
       expect(runtimeTools).not.toContain(legacy);
       expect(facadeActions).not.toContain(legacy);
+      expect(toolsetNames).not.toContain(`'${legacy}'`);
     }
     expect(capabilityRegistry).not.toContain('controller.stable_supervisor');
 

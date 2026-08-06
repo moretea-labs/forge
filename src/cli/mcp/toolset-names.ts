@@ -97,10 +97,6 @@ export const STABLE_CONTROLLER_TOOL_NAMES = [
   'get_job',
   'get_artifact',
   'repository_change_verify',
-  'controller_restart_verify',
-  'controller_feature_verify',
-  'controller_rollout',
-  'controller_rollback',
 
   // Issue/task execution and direct local agents.
   'list_issues',
