@@ -326,8 +326,8 @@ function preserveDirtyWorktree(
     const staged = git(current.worktreePath, ['add', '-A']);
     const committed = staged.ok
       ? git(current.worktreePath, [
-          '-c', 'user.name=repo-harness',
-          '-c', 'user.email=repo-harness@local.invalid',
+          '-c', 'user.name=forge',
+          '-c', 'user.email=forge@local.invalid',
           'commit', '-m', CHECKPOINT_MESSAGE,
         ], 60_000)
       : { ok: false, stdout: '', stderr: staged.stderr };
@@ -377,6 +377,7 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
   const targetBranch = input.targetBranch?.trim() || repository.defaultBranch || 'main';
   const deleteBranch = input.deleteBranch !== false;
   let current = input.handle;
+  const landed = current.state === 'merged' || current.finalization.merge === 'done';
   const preservedFailure = (input.failureReason ?? current.failureReason ?? current.finalization.lastError ?? 'terminal work cleanup').slice(0, 1_000);
   const receipt = current.cleanupReceipt ?? newReceipt(current, targetBranch, input.terminalOutcome);
 
@@ -405,20 +406,32 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
     receipt.worktree.reason = 'Work did not create a managed worktree.';
   }
 
-  if (current.state !== 'failed_terminal_cleanup') {
+  const cleanupFinalization = {
+    ...current.finalization,
+    validation: input.terminalOutcome === 'validation_failed' || input.terminalOutcome === 'infrastructure_failed'
+      ? 'failed' as const
+      : current.finalization.validation,
+    commit: current.finalization.commit === 'pending' ? 'skipped' as const : current.finalization.commit,
+    merge: landed ? 'done' as const : current.finalization.merge === 'pending' ? 'skipped' as const : current.finalization.merge,
+    lastError: preservedFailure,
+  };
+  if (landed) {
+    // Cleanup is a follow-up transaction. Once the target branch contains the
+    // result, a process/lease/worktree blocker must not downgrade delivery.
+    current = writeWorkHandle(input.controllerHome, {
+      ...current,
+      state: 'merged',
+      failureReason: undefined,
+      cleanupReceipt: receipt,
+      validationRun: undefined,
+      finalization: cleanupFinalization,
+    });
+  } else if (current.state !== 'failed_terminal_cleanup') {
     current = transitionWorkHandle(input.controllerHome, current, 'failed_terminal_cleanup', {
       failureReason: preservedFailure,
       cleanupReceipt: receipt,
       validationRun: undefined,
-      finalization: {
-        ...current.finalization,
-        validation: input.terminalOutcome === 'validation_failed' || input.terminalOutcome === 'infrastructure_failed'
-          ? 'failed'
-          : current.finalization.validation,
-        commit: current.finalization.commit === 'pending' ? 'skipped' : current.finalization.commit,
-        merge: current.finalization.merge === 'pending' ? 'skipped' : current.finalization.merge,
-        lastError: preservedFailure,
-      },
+      finalization: cleanupFinalization,
     });
   } else {
     current = persist(input.controllerHome, current, receipt);
@@ -599,14 +612,14 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
 
   current = receipt.complete
     ? transitionWorkHandle(input.controllerHome, current, 'cleaned', {
-        failureReason: preservedFailure,
+        failureReason: landed ? undefined : preservedFailure,
         cleanupReceipt: receipt,
         finalization,
       })
     : writeWorkHandle(input.controllerHome, {
         ...current,
-        state: 'failed_terminal_cleanup',
-        failureReason: preservedFailure,
+        state: landed ? 'merged' : 'failed_terminal_cleanup',
+        failureReason: landed ? undefined : preservedFailure,
         cleanupReceipt: receipt,
         finalization,
       });

@@ -7,7 +7,7 @@ import { redirectUriMatches } from '@modelcontextprotocol/sdk/server/auth/handle
 import { InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
 import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { buildMultiRepositoryToolDefinitions, createMcpToolContext, createRepoHarnessMcpServerFromContext, type McpServerOptions } from '../server';
+import { buildMultiRepositoryToolDefinitions, createMcpToolContext, createForgeMcpServerFromContext, type McpServerOptions } from '../server';
 import {
   loadMcpServiceLocalConfig,
   loadMcpServiceRuntimeState,
@@ -26,7 +26,7 @@ import { resolveControllerHome } from '../../repositories/controller-home';
 import {
   controllerExposureSnapshot,
 } from '../toolset';
-import { readControllerDaemonStatus } from '../../../runtime/control-plane/daemon-client';
+import { readForgeRuntimeStatus } from '../../../runtime/control-plane/runtime-status-client';
 import { runtimeIdentitySnapshot } from '../../../runtime/gateway/mcp/runtime-tools';
 import { projectionBlocksReadiness, readRepositoryProjectionSnapshot } from '../../../runtime/projections/materialized-view';
 import { readRuntimeGeneration } from '../../../runtime/control-plane/runtime-generation';
@@ -141,7 +141,7 @@ export function sendMcpSessionLookupError(res: Response, sessionId: string | und
   const response = mcpSessionLookupError(sessionId);
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Mcp-Session-Reset', 'reinitialize');
-  res.setHeader('x-repo-harness-session-reset', 'reinitialize');
+  res.setHeader('x-forge-session-reset', 'reinitialize');
   res.status(response.status).json(response.body);
 }
 
@@ -169,12 +169,12 @@ export function mcpRequestError(error: unknown) {
 export function sendMcpRequestError(res: Response, error: unknown): void {
   const response = mcpRequestError(error);
   res.setHeader('Cache-Control', 'no-store');
-  res.setHeader('x-repo-harness-session-preserved', 'true');
+  res.setHeader('x-forge-session-preserved', 'true');
   res.status(response.status).json(response.body);
 }
 
 function getConfiguredPublicOrigin(config: McpLocalConfig | null): string | undefined {
-  const configured = process.env.REPO_HARNESS_MCP_PUBLIC_ORIGIN?.trim();
+  const configured = process.env.FORGE_MCP_PUBLIC_ORIGIN?.trim();
   if (configured) {
     try {
       return new URL(configured).origin;
@@ -278,7 +278,7 @@ async function getOrRegisterPublicOAuthClient(
   return provider.clientsStore.registerClient({
     client_id: clientId,
     client_id_issued_at: Math.floor(Date.now() / 1000),
-    client_name: 'repo-harness OAuth fallback client',
+    client_name: 'forge OAuth fallback client',
     redirect_uris: [redirectUri],
     token_endpoint_auth_method: 'none',
     grant_types: ['authorization_code', 'refresh_token'],
@@ -303,7 +303,7 @@ function renderPassphrasePage(params: URLSearchParams): string {
 
   return `<!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>Authorize repo-harness</title>
+<head><meta charset="utf-8"><title>Authorize forge</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f6f6f3;color:#1f2328}
@@ -313,7 +313,7 @@ input{width:100%;box-sizing:border-box;border:1px solid #bfc4c9;border-radius:8p
 button{width:100%;margin-top:14px;border:0;border-radius:8px;padding:12px;background:#1f2328;color:#fff;font-size:16px;font-weight:600}
 </style></head>
 <body><main class="card">
-<h1>Authorize repo-harness</h1>
+<h1>Authorize forge</h1>
 <p>Enter the local MCP passphrase to let this MCP client use this workflow-scoped connector.</p>
 <form method="POST" action="/authorize">
 ${hiddenFields}
@@ -362,12 +362,12 @@ function incompleteOAuthAuthorizeResponseBody(): {
       'OAuth authorization request is incomplete. Required: client_id, response_type, code_challenge, and a usable redirect context (redirect_uri or a registered client).',
     message:
       'This endpoint expects a complete OAuth authorization request (PKCE). Non-OAuth MCP clients should use /mcp-bearer with Authorization: Bearer <token> instead of /authorize.',
-    hint: 'Use POST/GET /mcp-bearer with a repo-harness bearer token for clients that cannot complete OAuth dynamic registration and PKCE.',
+    hint: 'Use POST/GET /mcp-bearer with a forge bearer token for clients that cannot complete OAuth dynamic registration and PKCE.',
   };
 }
 
 function isOAuthDebugTraceEnabled(): boolean {
-  return process.env.REPO_HARNESS_MCP_OAUTH_TRACE === '1' || process.env.REPO_HARNESS_MCP_OAUTH_TRACE === 'true';
+  return process.env.FORGE_MCP_OAUTH_TRACE === '1' || process.env.FORGE_MCP_OAUTH_TRACE === 'true';
 }
 
 const SENSITIVE_OAUTH_FIELDS = new Set([
@@ -408,7 +408,7 @@ function oauthTrace(req: Request, event: string, extra: Record<string, unknown> 
     userAgent,
     ...extra,
   };
-  console.error(`[repo-harness:mcp-oauth] ${JSON.stringify(safe)}`);
+  console.error(`[forge:mcp-oauth] ${JSON.stringify(safe)}`);
 }
 
 function oauthTraceMiddleware(event: string): (req: Request, res: Response, next: NextFunction) => void {
@@ -511,7 +511,7 @@ function oauthAuthorizationHandler(provider: ReturnType<typeof createMcpOAuthPro
 }
 
 function sendBearerUnauthorized(res: Response, description: string, hasConfiguredToken: boolean): void {
-  res.setHeader('www-authenticate', 'Bearer realm="repo-harness-mcp"');
+  res.setHeader('www-authenticate', 'Bearer realm="forge-mcp"');
   res.status(hasConfiguredToken ? 401 : 503).json({
     error: hasConfiguredToken ? 'unauthorized' : 'auth_not_configured',
     message: description,
@@ -586,15 +586,15 @@ function positiveIntegerEnv(name: string, fallback: number): number {
   return Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
-const MAX_MCP_SESSIONS = positiveIntegerEnv('REPO_HARNESS_MCP_MAX_SESSIONS', 64);
-const MAX_MCP_SESSIONS_PER_PRINCIPAL = positiveIntegerEnv('REPO_HARNESS_MCP_MAX_SESSIONS_PER_PRINCIPAL', 8);
-const MAX_INITIALIZING_SESSIONS = positiveIntegerEnv('REPO_HARNESS_MCP_MAX_INITIALIZING_SESSIONS', 8);
-const MAX_POSTS_PER_SESSION = positiveIntegerEnv('REPO_HARNESS_MCP_MAX_POSTS_PER_SESSION', 4);
-const MAX_ACTIVE_POSTS = positiveIntegerEnv('REPO_HARNESS_MCP_MAX_ACTIVE_POSTS', 32);
-const MCP_SESSION_IDLE_TTL_MS = positiveIntegerEnv('REPO_HARNESS_MCP_SESSION_IDLE_TTL_MS', 15 * 60_000);
-const MCP_STREAM_LEASE_MS = positiveIntegerEnv('REPO_HARNESS_MCP_STREAM_LEASE_MS', 30 * 60_000);
-const MCP_SESSION_ABSOLUTE_LIFETIME_MS = positiveIntegerEnv('REPO_HARNESS_MCP_SESSION_ABSOLUTE_LIFETIME_MS', 2 * 60 * 60_000);
-const MCP_ACTIVE_POST_STALL_MS = positiveIntegerEnv('REPO_HARNESS_MCP_ACTIVE_POST_STALL_MS', 10 * 60_000);
+const MAX_MCP_SESSIONS = positiveIntegerEnv('FORGE_MCP_MAX_SESSIONS', 64);
+const MAX_MCP_SESSIONS_PER_PRINCIPAL = positiveIntegerEnv('FORGE_MCP_MAX_SESSIONS_PER_PRINCIPAL', 8);
+const MAX_INITIALIZING_SESSIONS = positiveIntegerEnv('FORGE_MCP_MAX_INITIALIZING_SESSIONS', 8);
+const MAX_POSTS_PER_SESSION = positiveIntegerEnv('FORGE_MCP_MAX_POSTS_PER_SESSION', 4);
+const MAX_ACTIVE_POSTS = positiveIntegerEnv('FORGE_MCP_MAX_ACTIVE_POSTS', 32);
+const MCP_SESSION_IDLE_TTL_MS = positiveIntegerEnv('FORGE_MCP_SESSION_IDLE_TTL_MS', 15 * 60_000);
+const MCP_STREAM_LEASE_MS = positiveIntegerEnv('FORGE_MCP_STREAM_LEASE_MS', 30 * 60_000);
+const MCP_SESSION_ABSOLUTE_LIFETIME_MS = positiveIntegerEnv('FORGE_MCP_SESSION_ABSOLUTE_LIFETIME_MS', 2 * 60 * 60_000);
+const MCP_ACTIVE_POST_STALL_MS = positiveIntegerEnv('FORGE_MCP_ACTIVE_POST_STALL_MS', 10 * 60_000);
 
 type McpToolContext = ReturnType<typeof createMcpToolContext>;
 type HttpSessionRegistry = McpSessionRegistry<StreamableHTTPServerTransport, McpToolContext>;
@@ -618,7 +618,7 @@ async function handleMcpPost(
   if (isInitializeRequest(body)) {
     if (sessionId) {
       res.setHeader('Mcp-Session-Reset', 'reinitialized');
-      res.setHeader('x-repo-harness-session-reset', 'reinitialized');
+      res.setHeader('x-forge-session-reset', 'reinitialized');
     }
     if (stats.initializing >= MAX_INITIALIZING_SESSIONS || stats.activePosts >= MAX_ACTIVE_POSTS) {
       stats.rejectedOverload += 1;
@@ -668,7 +668,7 @@ async function handleMcpPost(
       transport.onclose = () => {
         if (transport?.sessionId) registry.detach(transport.sessionId);
       };
-      const server = createRepoHarnessMcpServerFromContext(sessionContext);
+      const server = createForgeMcpServerFromContext(sessionContext);
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
     } finally {
@@ -823,18 +823,18 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
 
   app.get('/health', (_req, res) => {
     const health = controllerHealth();
-    res.setHeader('x-repo-harness-tool-surface', toolSurface);
-    res.setHeader('x-repo-harness-tool-surface-version', String(toolSurfaceVersion));
-    res.setHeader('x-repo-harness-schema-version', String(toolSurfaceSchemaVersion));
-    if (health?.toolset) res.setHeader('x-repo-harness-toolset', health.toolset);
-    if (health?.runtimeToolSurfaceFingerprint) res.setHeader('x-repo-harness-runtime-tool-surface-fingerprint', health.runtimeToolSurfaceFingerprint);
-    if (health?.toolSurfaceFingerprint) res.setHeader('x-repo-harness-tool-surface-fingerprint', health.toolSurfaceFingerprint);
+    res.setHeader('x-forge-tool-surface', toolSurface);
+    res.setHeader('x-forge-tool-surface-version', String(toolSurfaceVersion));
+    res.setHeader('x-forge-schema-version', String(toolSurfaceSchemaVersion));
+    if (health?.toolset) res.setHeader('x-forge-toolset', health.toolset);
+    if (health?.runtimeToolSurfaceFingerprint) res.setHeader('x-forge-runtime-tool-surface-fingerprint', health.runtimeToolSurfaceFingerprint);
+    if (health?.toolSurfaceFingerprint) res.setHeader('x-forge-tool-surface-fingerprint', health.toolSurfaceFingerprint);
     const sessionSnapshot = sessionRegistry.snapshot();
     res.json({
       status: 'ok',
-      server: 'repo-harness-mcp',
-      ...(process.env.REPO_HARNESS_MCP_INSTANCE_ID
-        ? { instanceId: process.env.REPO_HARNESS_MCP_INSTANCE_ID }
+      server: 'forge-mcp',
+      ...(process.env.FORGE_MCP_INSTANCE_ID
+        ? { instanceId: process.env.FORGE_MCP_INSTANCE_ID }
         : {}),
       version: '1.4.0',
       profile: toolContext.policy.profile,
@@ -893,7 +893,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
       });
       return;
     }
-    const daemon = readControllerDaemonStatus(runtimeControllerHome);
+    const daemon = readForgeRuntimeStatus(runtimeControllerHome);
     const runtimeState = loadMcpServiceRuntimeState(runtimeControllerHome, repoRoot);
     const repositories = listRepositories(runtimeControllerHome).filter((repository) => repository.enabled && !repository.removedAt);
     const projectionSnapshots = repositories.map((repository) => {
@@ -1011,7 +1011,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
         grant_types_supported: ['authorization_code', 'refresh_token'],
         code_challenge_methods_supported: ['S256'],
         token_endpoint_auth_methods_supported: ['client_secret_post', 'none'],
-        scopes_supported: ['repo-harness'],
+        scopes_supported: ['forge'],
       });
     });
     app.get('/.well-known/openid-configuration', (req, res) => {
@@ -1025,7 +1025,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
         grant_types_supported: ['authorization_code', 'refresh_token'],
         code_challenge_methods_supported: ['S256'],
         token_endpoint_auth_methods_supported: ['client_secret_post', 'none'],
-        scopes_supported: ['repo-harness'],
+        scopes_supported: ['forge'],
       });
     });
     const protectedResourceMetadata = (resourcePath: '/mcp' | '/mcp-grok' | '/mcp-bearer') => (req: Request, res: Response): void => {
@@ -1033,7 +1033,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
       res.json({
         resource: `${origin}${resourcePath}`,
         authorization_servers: [origin],
-        scopes_supported: ['repo-harness'],
+        scopes_supported: ['forge'],
         bearer_methods_supported: ['header'],
       });
     };
@@ -1044,12 +1044,12 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
 
   const setMcpResponseHeaders = (_req: Request, res: Response, next: NextFunction): void => {
     const health = controllerHealth();
-    res.setHeader('x-repo-harness-tool-surface', toolSurface);
-    res.setHeader('x-repo-harness-tool-surface-version', String(toolSurfaceVersion));
-    res.setHeader('x-repo-harness-schema-version', String(toolSurfaceSchemaVersion));
-    if (health?.toolset) res.setHeader('x-repo-harness-toolset', health.toolset);
-    if (health?.runtimeToolSurfaceFingerprint) res.setHeader('x-repo-harness-runtime-tool-surface-fingerprint', health.runtimeToolSurfaceFingerprint);
-    if (health?.toolSurfaceFingerprint) res.setHeader('x-repo-harness-tool-surface-fingerprint', health.toolSurfaceFingerprint);
+    res.setHeader('x-forge-tool-surface', toolSurface);
+    res.setHeader('x-forge-tool-surface-version', String(toolSurfaceVersion));
+    res.setHeader('x-forge-schema-version', String(toolSurfaceSchemaVersion));
+    if (health?.toolset) res.setHeader('x-forge-toolset', health.toolset);
+    if (health?.runtimeToolSurfaceFingerprint) res.setHeader('x-forge-runtime-tool-surface-fingerprint', health.runtimeToolSurfaceFingerprint);
+    if (health?.toolSurfaceFingerprint) res.setHeader('x-forge-tool-surface-fingerprint', health.toolSurfaceFingerprint);
     next();
   };
 
@@ -1129,7 +1129,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   });
   const authLabel = authMode === 'oauth' ? (oauthPassphrase ? 'oauth' : 'oauth-missing') : (authToken ? 'bearer' : 'missing');
   console.error(
-    `repo-harness mcp http listening on http://${host}:${port}/mcp (auth: ${authLabel}), http://${host}:${port}/mcp-grok (auth: ${authLabel}), and http://${host}:${port}/mcp-bearer (auth: bearer)`,
+    `forge mcp http listening on http://${host}:${port}/mcp (auth: ${authLabel}), http://${host}:${port}/mcp-grok (auth: ${authLabel}), and http://${host}:${port}/mcp-bearer (auth: bearer)`,
   );
 
   const shutdown = () => {

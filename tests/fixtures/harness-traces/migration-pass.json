@@ -1,5 +1,5 @@
 {
-  "schema": "repo-harness-run-trace.v1",
+  "schema": "forge-run-trace.v1",
   "status": "pass",
   "source": "verify-sprint",
   "command": "bash scripts/verify-sprint.sh",
@@ -23,7 +23,7 @@
       "rollback": "revert fixture migration branch"
     }
   },
-  "worktree": "/tmp/repo-harness-fixture",
+  "worktree": "/tmp/forge-fixture",
   "branch": "codex/fixture",
   "commands": [
     {"name": "migrate-dry-run", "command": "bash scripts/migrate-project-template.sh --repo . --dry-run", "status": "pass", "exit_code": 0}

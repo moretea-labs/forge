@@ -10,7 +10,7 @@ const CLI = join(ROOT, "src/cli/index.ts");
 
 describe("run command", () => {
   test("passes unknown options through to the selected helper", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "repo-harness-run-cli-"));
+    const tmp = mkdtempSync(join(tmpdir(), "forge-run-cli-"));
     const helpers = join(tmp, "helpers");
     const logFile = join(tmp, "args.log");
     try {
@@ -24,7 +24,7 @@ describe("run command", () => {
         encoding: "utf-8",
         env: {
           ...process.env,
-          REPO_HARNESS_HELPER_SOURCE: helpers,
+          FORGE_HELPER_SOURCE: helpers,
         },
       });
 
@@ -36,7 +36,7 @@ describe("run command", () => {
   });
 
   test("resolves bundled helpers from the package by default", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "repo-harness-run-package-"));
+    const tmp = mkdtempSync(join(tmpdir(), "forge-run-package-"));
     try {
       const resolved = resolveHelper("check-task-workflow", tmp);
 
@@ -49,7 +49,7 @@ describe("run command", () => {
   });
 
   test("prefers repo helper runtime when helper_source is repo pinned", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "repo-harness-run-repo-pin-"));
+    const tmp = mkdtempSync(join(tmpdir(), "forge-run-repo-pin-"));
     try {
       mkdirSync(join(tmp, ".ai/harness/scripts"), { recursive: true });
       writeFileSync(join(tmp, ".ai/harness/policy.json"), JSON.stringify({ harness: { helper_source: "repo" } }, null, 2));
@@ -65,7 +65,7 @@ describe("run command", () => {
   });
 
   test("runHelper pipe mode redacts common secrets from helper output", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "repo-harness-run-redact-"));
+    const tmp = mkdtempSync(join(tmpdir(), "forge-run-redact-"));
     const helpers = join(tmp, "helpers");
     try {
       mkdirSync(helpers, { recursive: true });
@@ -76,7 +76,7 @@ describe("run command", () => {
       const res = runHelper({
         helper: "leaky",
         cwd: tmp,
-        env: { REPO_HARNESS_HELPER_SOURCE: helpers },
+        env: { FORGE_HELPER_SOURCE: helpers },
         stdio: "pipe",
       });
 
@@ -91,7 +91,7 @@ describe("run command", () => {
   });
 
   test("runHelper pipe mode caps helper output with a marker", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "repo-harness-run-cap-"));
+    const tmp = mkdtempSync(join(tmpdir(), "forge-run-cap-"));
     const helpers = join(tmp, "helpers");
     try {
       mkdirSync(helpers, { recursive: true });
@@ -102,7 +102,7 @@ describe("run command", () => {
       const res = runHelper({
         helper: "chatty",
         cwd: tmp,
-        env: { REPO_HARNESS_HELPER_SOURCE: helpers },
+        env: { FORGE_HELPER_SOURCE: helpers },
         stdio: "pipe",
         maxOutputBytes: 5,
       });
@@ -115,7 +115,7 @@ describe("run command", () => {
   });
 
   test("runHelper reports timed out helpers distinctly", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "repo-harness-run-timeout-"));
+    const tmp = mkdtempSync(join(tmpdir(), "forge-run-timeout-"));
     const helpers = join(tmp, "helpers");
     try {
       mkdirSync(helpers, { recursive: true });
@@ -129,7 +129,7 @@ describe("run command", () => {
       const res = runHelper({
         helper: "sleepy",
         cwd: tmp,
-        env: { REPO_HARNESS_HELPER_SOURCE: helpers },
+        env: { FORGE_HELPER_SOURCE: helpers },
         stdio: "pipe",
         timeoutMs: 20,
       });

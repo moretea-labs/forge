@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Matea CLI entry with repo-harness compatibility aliases.
+ * Forge CLI entry with forge compatibility aliases.
  *
  * Wires commander.js to the global runtime bootstrap, repo-local update,
  * hook adapter, status, doctor, migrate, security, and tool command bodies.
@@ -81,7 +81,7 @@ interface GlobalRuntimeCommandOptions {
 function runGlobalRuntimeBootstrap(commandName: 'init' | 'install', rawOpts: GlobalRuntimeCommandOptions): never {
   if (!VALID_TARGETS.includes(rawOpts.target as InstallTargetSpec)) {
     console.error(
-      `matea ${commandName}: invalid --target "${rawOpts.target}" (expected: ${VALID_TARGETS.join(', ')})`,
+      `forge ${commandName}: invalid --target "${rawOpts.target}" (expected: ${VALID_TARGETS.join(', ')})`,
     );
     process.exit(2);
   }
@@ -105,21 +105,21 @@ function runGlobalRuntimeBootstrap(commandName: 'init' | 'install', rawOpts: Glo
 export function buildProgram(): Command {
   const program = new Command();
   program
-    .name('matea')
+    .name('forge')
     .description('Local-first action assistant for durable, reviewable software work')
     .addHelpText('after', '\nGlobal shortcuts:\n  -V, --version  output the version number')
     .exitOverride();
 
   program
     .command('init')
-    .description('Install the Matea CLI, global hook adapters, and required runtime dependencies')
+    .description('Install the Forge CLI, global hook adapters, and required runtime dependencies')
     .option('--target <target>', `Host target for adapters and runtime skills: ${VALID_TARGETS.join('|')}`, 'both')
-    .option('--no-cli', 'Skip installing the Matea CLI globally')
-    .option('--no-sync-skill', 'Skip refreshing legacy repo-harness skill aliases under host skill roots')
+    .option('--no-cli', 'Skip installing the Forge CLI globally')
+    .option('--no-sync-skill', 'Skip refreshing legacy forge skill aliases under host skill roots')
     .option('--no-hooks', 'Skip global hook adapter installation')
     .option('--no-external-skills', 'Skip Waza, Mermaid, and cross-review (codex-review/claude-review) skill bootstrap')
     .option('--no-codegraph', 'Skip CodeGraph CLI/MCP configuration')
-    .option('--brain-root <path>', 'Brain vault root to persist for Matea brain commands')
+    .option('--brain-root <path>', 'Brain vault root to persist for Forge brain commands')
     .option('--refresh', 'Compatibility no-op; init already refreshes the idempotent user-level runtime')
     .option('--json', 'Output JSON instead of human-readable text')
     .action((rawOpts: GlobalRuntimeCommandOptions & { refresh?: boolean }) => {
@@ -128,24 +128,24 @@ export function buildProgram(): Command {
 
   program
     .command('update')
-    .description('Update the global Matea CLI and user-level managed runtime')
+    .description('Update the global Forge CLI and user-level managed runtime')
     .option('--target <target>', `Host target for adapters and runtime skills: ${VALID_TARGETS.join('|')}`, 'both')
-    .option('--version <version>', 'Install a specific Matea package version')
+    .option('--version <version>', 'Install a specific Forge package version')
     .option('--channel <channel>', 'Install package channel: latest|next')
     .option('--check', 'Run the read-only setup check without refreshing runtime')
     .option('--check-updates', 'Include network-backed version update advisories in setup check output')
     .option('--no-runtime-refresh', 'Skip runtime refresh and run the read-only setup check only')
-    .option('--no-cli', 'Skip installing the Matea CLI globally')
-    .option('--no-sync-skill', 'Skip refreshing legacy repo-harness skill aliases under host skill roots')
+    .option('--no-cli', 'Skip installing the Forge CLI globally')
+    .option('--no-sync-skill', 'Skip refreshing legacy forge skill aliases under host skill roots')
     .option('--no-hooks', 'Skip global hook adapter installation')
     .option('--with-external-skills', 'Also bootstrap third-party Waza, Mermaid, and cross-review skills')
     .option('--no-external-skills', 'Compatibility no-op; update no longer bootstraps third-party skills by default')
     .option('--configure-codegraph', 'Also configure CodeGraph CLI/MCP during runtime refresh')
     .option('--no-codegraph', 'Compatibility no-op; update no longer configures CodeGraph by default')
     .option('--brain-root <path>', 'Brain vault root for manifest sync')
-    .option('--repo <path>', 'Deprecated: use matea adopt --repo <path>')
-    .option('--dry-run', 'Deprecated: use matea adopt --dry-run for repo-level planning')
-    .option('--interactive', 'Deprecated: use matea adopt --interactive for repo-level planning')
+    .option('--repo <path>', 'Deprecated: use forge adopt --repo <path>')
+    .option('--dry-run', 'Deprecated: use forge adopt --dry-run for repo-level planning')
+    .option('--interactive', 'Deprecated: use forge adopt --interactive for repo-level planning')
     .option('--json', 'Output JSON instead of human-readable text')
     .action((rawOpts: {
       repo?: string;
@@ -169,17 +169,17 @@ export function buildProgram(): Command {
     }) => {
       if (!VALID_TARGETS.includes(rawOpts.target as InstallTargetSpec)) {
         console.error(
-          `matea update: invalid --target "${rawOpts.target}" (expected: ${VALID_TARGETS.join(', ')})`,
+          `forge update: invalid --target "${rawOpts.target}" (expected: ${VALID_TARGETS.join(', ')})`,
         );
         process.exit(2);
       }
       if (rawOpts.channel !== undefined && !['latest', 'next'].includes(rawOpts.channel)) {
-        console.error('matea update: invalid --channel (expected: latest, next)');
+        console.error('forge update: invalid --channel (expected: latest, next)');
         process.exit(2);
       }
       if (rawOpts.repo || rawOpts.dryRun || rawOpts.interactive) {
         console.error(
-          'matea update no longer refreshes repositories. For repo-level refresh, run: matea adopt --repo <path>',
+          'forge update no longer refreshes repositories. For repo-level refresh, run: forge adopt --repo <path>',
         );
         process.exit(2);
       }
@@ -192,10 +192,10 @@ export function buildProgram(): Command {
         process.exit(report.status === 'blocked' ? 1 : 0);
       }
       const installSpec = rawOpts.version
-        ? `@moretea-labs/matea@${rawOpts.version}`
+        ? `@moretea-labs/forge@${rawOpts.version}`
         : rawOpts.channel
-          ? `@moretea-labs/matea@${rawOpts.channel}`
-          : '@moretea-labs/matea@latest';
+          ? `@moretea-labs/forge@${rawOpts.channel}`
+          : '@moretea-labs/forge@latest';
       const result = runGlobalRuntimeSetup({
         target: rawOpts.target as InstallTargetSpec,
         installCli: rawOpts.cli !== false,
@@ -231,9 +231,9 @@ export function buildProgram(): Command {
     .option('--reclaim-runtime', 'Reclaim generated repo-local hook/helper runtime copies after replacement paths verify')
     .option('--compact', 'Compact repo surface; includes --reclaim-runtime plus package script rewrite')
     .option('--mode <mode>', 'Adoption mode: minimal|standard|self-host', 'standard')
-    .option('--configure-codegraph', 'Deprecated: user-level MCP config belongs to Matea update/setup')
+    .option('--configure-codegraph', 'Deprecated: user-level MCP config belongs to Forge update/setup')
     .option('--sync-codegraph', 'Sync the CodeGraph index after ensure')
-    .option('--brain-root <path>', 'Deprecated: user-level brain config belongs to Matea update/setup')
+    .option('--brain-root <path>', 'Deprecated: user-level brain config belongs to Forge update/setup')
     .option('--brain-mode <mode>', 'Deprecated: adopt does not perform user-level brain sync', 'skip')
     .option('--interactive', 'Run the numbered interactive install planner')
     .option('--experimental-ts-apply', 'Apply the current TypeScript safe-subset adoption plan instead of the shell migrator')
@@ -262,7 +262,7 @@ export function buildProgram(): Command {
     }) => {
       if (action) {
         if (action !== 'rollback') {
-          console.error(`matea adopt: unknown action "${action}"`);
+          console.error(`forge adopt: unknown action "${action}"`);
           process.exit(2);
         }
         if (rawOpts.transaction) {
@@ -280,7 +280,7 @@ export function buildProgram(): Command {
           process.exit(rollback.ok ? 0 : 1);
         }
         if (!rawOpts.archive) {
-          console.error('matea adopt rollback: --archive or --transaction is required');
+          console.error('forge adopt rollback: --archive or --transaction is required');
           process.exit(2);
         }
         const rollback = runRuntimeRollback({ repo: rawOpts.repo, archive: rawOpts.archive });
@@ -295,24 +295,24 @@ export function buildProgram(): Command {
       }
       if (!VALID_TARGETS.includes(rawOpts.target as InstallTargetSpec)) {
         console.error(
-          `matea adopt: invalid --target "${rawOpts.target}" (expected: ${VALID_TARGETS.join(', ')})`,
+          `forge adopt: invalid --target "${rawOpts.target}" (expected: ${VALID_TARGETS.join(', ')})`,
         );
         process.exit(2);
       }
       if (!['skip', 'manifest-only', 'install-gbrain-cli'].includes(rawOpts.brainMode ?? 'skip')) {
-        console.error('matea adopt: invalid --brain-mode (expected: skip, manifest-only, install-gbrain-cli)');
+        console.error('forge adopt: invalid --brain-mode (expected: skip, manifest-only, install-gbrain-cli)');
         process.exit(2);
       }
       if (!['minimal', 'standard', 'self-host'].includes(rawOpts.mode ?? 'standard')) {
-        console.error('matea adopt: invalid --mode (expected: minimal, standard, self-host)');
+        console.error('forge adopt: invalid --mode (expected: minimal, standard, self-host)');
         process.exit(2);
       }
       if (rawOpts.configureCodegraph === true) {
-        console.error('matea adopt: --configure-codegraph writes user-level MCP config; run matea update instead');
+        console.error('forge adopt: --configure-codegraph writes user-level MCP config; run forge update instead');
         process.exit(2);
       }
       if (rawOpts.brainRoot || rawOpts.brainMode !== 'skip') {
-        console.error('matea adopt: brain configuration writes user-level state; run matea update instead');
+        console.error('forge adopt: brain configuration writes user-level state; run forge update instead');
         process.exit(2);
       }
       const mode = (rawOpts.mode ?? 'standard') as AdoptionMode;
@@ -326,7 +326,7 @@ export function buildProgram(): Command {
         rawOpts.experimentalTsApply !== true
       ) {
         console.error(
-          `matea adopt: --mode ${mode} is only supported with ordinary --dry-run or --experimental-ts-apply; default apply still uses the shell migrator`,
+          `forge adopt: --mode ${mode} is only supported with ordinary --dry-run or --experimental-ts-apply; default apply still uses the shell migrator`,
         );
         process.exit(2);
       }
@@ -343,7 +343,7 @@ export function buildProgram(): Command {
       if (rawOpts.experimentalTsApply === true) {
         if (rawOpts.interactive === true || rawOpts.reclaimRuntime === true || rawOpts.compact === true) {
           console.error(
-            'matea adopt: --experimental-ts-apply cannot be combined with --interactive, --reclaim-runtime, or --compact',
+            'forge adopt: --experimental-ts-apply cannot be combined with --interactive, --reclaim-runtime, or --compact',
           );
           process.exit(2);
         }
@@ -401,20 +401,20 @@ export function buildProgram(): Command {
 
   program
     .command('install')
-    .description('Install the Matea global runtime; with --location, install only hook adapters')
+    .description('Install the Forge global runtime; with --location, install only hook adapters')
     .option('--target <target>', `Target host: ${VALID_TARGETS.join('|')}`, 'both')
     .option('--location <location>', `Adapter-only install location: ${VALID_LOCATIONS.join('|')}`)
-    .option('--no-cli', 'Skip installing the Matea CLI globally')
-    .option('--no-sync-skill', 'Skip refreshing legacy repo-harness skill aliases under host skill roots')
+    .option('--no-cli', 'Skip installing the Forge CLI globally')
+    .option('--no-sync-skill', 'Skip refreshing legacy forge skill aliases under host skill roots')
     .option('--no-hooks', 'Skip global hook adapter installation during full runtime install')
     .option('--no-external-skills', 'Skip Waza, Mermaid, and cross-review (codex-review/claude-review) skill bootstrap')
     .option('--no-codegraph', 'Skip CodeGraph CLI/MCP configuration')
-    .option('--brain-root <path>', 'Brain vault root to persist for Matea brain commands')
+    .option('--brain-root <path>', 'Brain vault root to persist for Forge brain commands')
     .option('--json', 'Output JSON instead of human-readable text')
     .action((rawOpts: GlobalRuntimeCommandOptions & { location?: string }) => {
       if (!VALID_TARGETS.includes(rawOpts.target as InstallTargetSpec)) {
         console.error(
-          `matea install: invalid --target "${rawOpts.target}" (expected: ${VALID_TARGETS.join(', ')})`,
+          `forge install: invalid --target "${rawOpts.target}" (expected: ${VALID_TARGETS.join(', ')})`,
         );
         process.exit(2);
       }
@@ -423,7 +423,7 @@ export function buildProgram(): Command {
       }
       if (!VALID_LOCATIONS.includes(rawOpts.location as Location)) {
         console.error(
-          `matea install: invalid --location "${rawOpts.location}" (expected: ${VALID_LOCATIONS.join(', ')})`,
+          `forge install: invalid --location "${rawOpts.location}" (expected: ${VALID_LOCATIONS.join(', ')})`,
         );
         process.exit(2);
       }
@@ -437,19 +437,19 @@ export function buildProgram(): Command {
 
   program
     .command('uninstall')
-    .description('Remove Matea-managed hook adapters from Codex and/or Claude host config')
+    .description('Remove Forge-managed hook adapters from Codex and/or Claude host config')
     .option('--target <target>', `Target host: ${VALID_TARGETS.join('|')}`, 'both')
     .option('--location <location>', `Install location: ${VALID_LOCATIONS.join('|')}`, 'global')
     .action((rawOpts: { target: string; location: string }) => {
       if (!VALID_TARGETS.includes(rawOpts.target as InstallTargetSpec)) {
         console.error(
-          `matea uninstall: invalid --target "${rawOpts.target}" (expected: ${VALID_TARGETS.join(', ')})`,
+          `forge uninstall: invalid --target "${rawOpts.target}" (expected: ${VALID_TARGETS.join(', ')})`,
         );
         process.exit(2);
       }
       if (!VALID_LOCATIONS.includes(rawOpts.location as Location)) {
         console.error(
-          `matea uninstall: invalid --location "${rawOpts.location}" (expected: ${VALID_LOCATIONS.join(', ')})`,
+          `forge uninstall: invalid --location "${rawOpts.location}" (expected: ${VALID_LOCATIONS.join(', ')})`,
         );
         process.exit(2);
       }

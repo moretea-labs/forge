@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Lightweight SessionStart sentinel. It checks a fixed set of high-value config
 # files only when their content fingerprint changes, then emits a short
-# SessionStart context reminder if repo-harness security scan finds anything.
+# SessionStart context reminder if forge security scan finds anything.
 
 REPO_ROOT="${HOOK_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 SECURITY_DIR="$REPO_ROOT/.ai/harness/security"
@@ -40,13 +40,13 @@ fingerprint_files() {
 }
 
 security_scan() {
-  if [[ -n "${REPO_HARNESS_CLI:-}" && -f "${REPO_HARNESS_CLI:-}" ]] && command -v bun >/dev/null 2>&1; then
-    bun "$REPO_HARNESS_CLI" security scan --json
+  if [[ -n "${FORGE_CLI:-}" && -f "${FORGE_CLI:-}" ]] && command -v bun >/dev/null 2>&1; then
+    bun "$FORGE_CLI" security scan --json
     return $?
   fi
 
-  if command -v repo-harness >/dev/null 2>&1; then
-    repo-harness security scan --json
+  if command -v forge >/dev/null 2>&1; then
+    forge security scan --json
     return $?
   fi
 
@@ -69,7 +69,7 @@ const fail = report.findings.filter((finding) => finding.severity === "fail").le
 const warn = report.findings.filter((finding) => finding.severity === "warn").length;
 const first = report.findings[0];
 const bits = [`${report.findings.length} finding(s)`, `${high} high`, `${warn} warn`, `${fail} fail`];
-console.log(`[SecurityConfig] ${bits.join(", ")}. First: ${first.ruleId} at ${first.filePath}. Run repo-harness security scan --json.`);
+console.log(`[SecurityConfig] ${bits.join(", ")}. First: ${first.ruleId} at ${first.filePath}. Run forge security scan --json.`);
 '
   if command -v node >/dev/null 2>&1; then
     node -e "$js" "$report_file"
@@ -88,7 +88,7 @@ if [[ "$current_fingerprint" == "$previous_fingerprint" ]]; then
   exit 0
 fi
 
-tmp_report="$(mktemp "${TMPDIR:-/tmp}/repo-harness-security.XXXXXX")"
+tmp_report="$(mktemp "${TMPDIR:-/tmp}/forge-security.XXXXXX")"
 if security_scan >"$tmp_report" 2>/dev/null; then
   cp "$tmp_report" "$LATEST_FILE"
   printf '%s\n' "$current_fingerprint" >"$STATE_FILE"

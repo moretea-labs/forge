@@ -82,12 +82,12 @@ function normalizedOwnerIdentity(
     branch: provided?.branch?.trim() || 'unknown',
     principalId: provided?.principalId?.trim() || `owner:${ownerJobId}`,
     controllerInstanceId: provided?.controllerInstanceId?.trim()
-      || process.env.REPO_HARNESS_WRITER_INSTANCE_ID?.trim()
-      || process.env.REPO_HARNESS_DAEMON_INSTANCE_ID?.trim()
+      || process.env.FORGE_WRITER_INSTANCE_ID?.trim()
+      || process.env.FORGE_DAEMON_INSTANCE_ID?.trim()
       || `process:${process.pid}`,
     controllerGeneration: provided?.controllerGeneration?.trim()
-      || process.env.REPO_HARNESS_WRITER_GENERATION?.trim()
-      || process.env.REPO_HARNESS_ACTIVE_RUNTIME_REVISION?.trim()
+      || process.env.FORGE_WRITER_GENERATION?.trim()
+      || process.env.FORGE_ACTIVE_RUNTIME_REVISION?.trim()
       || 'unbound',
   };
 }

@@ -99,7 +99,7 @@ function setupExample(envVars: string[]): string {
     `export ${primary}=...`,
     `# Option B — configure URL / API key / model in GUI: 模型与工具 → provider card`,
     `# Stored keys live only under controllerHome/global/provider-secrets.json`,
-    `export REPO_HARNESS_ENABLE_LIVE_MODEL_PROVIDERS=1`,
+    `export FORGE_ENABLE_LIVE_MODEL_PROVIDERS=1`,
   ].join('\n');
 }
 
@@ -173,8 +173,8 @@ function toProviderCard(
     handoffOnly,
     capabilities: provider.capabilities,
     safety: {
-      canMutateFilesDirectly: provider.safety.mayMutateFiles === true && !provider.safety.requiresApplyByRepoHarness,
-      requiresRepoHarnessApply: provider.safety.requiresApplyByRepoHarness,
+      canMutateFilesDirectly: provider.safety.mayMutateFiles === true && !provider.safety.requiresApplyByForge,
+      requiresForgeApply: provider.safety.requiresApplyByForge,
       externalSideEffects: provider.safety.requiresApprovalForExternalEffects ? 'approval_required' : 'never',
     },
     credential: {
@@ -204,7 +204,7 @@ function toProviderCard(
     lastHealthCheckAt: healthAt,
     lastErrorSummary: provider.lastErrorCode,
     explanation: handoffOnly
-      ? 'repo-harness can create continuation packets for ChatGPT, but cannot automatically invoke this current ChatGPT session.'
+      ? 'forge can create continuation packets for ChatGPT, but cannot automatically invoke this current ChatGPT session.'
       : provider.summary,
     canEnableDirectDispatch: !handoffOnly,
     summary: provider.summary,
@@ -250,10 +250,10 @@ export function buildAutomationSettingsView(ctx: ConfigFacadeContext): Automatio
 
   const warnings: string[] = [];
   if (!liveEffective && cards.some((c) => c.kind === 'remote_api' && c.credential.authPresent)) {
-    warnings.push('Remote API credentials are present, but live model calls are not effective until REPO_HARNESS_ENABLE_LIVE_MODEL_PROVIDERS=1 and the GUI preference is enabled.');
+    warnings.push('Remote API credentials are present, but live model calls are not effective until FORGE_ENABLE_LIVE_MODEL_PROVIDERS=1 and the GUI preference is enabled.');
   }
   if (overview.directProvidersReady === 0) {
-    warnings.push('No direct providers are ready; repo-harness will create a continuation packet instead of dispatching.');
+    warnings.push('No direct providers are ready; forge will create a continuation packet instead of dispatching.');
   }
 
   return {
@@ -663,11 +663,11 @@ export function executorRoutePreviewWithConfig(
     routingKey: intentToRoutingKey(intent),
     order: routing.orders[intentToRoutingKey(intent)],
     explanation: decision.handoffOnly
-      ? 'repo-harness will create a continuation packet instead of dispatching.'
+      ? 'forge will create a continuation packet instead of dispatching.'
       : `Would dispatch to ${decision.selectedProviderId}.`,
     whyThisProvider: decision.reason,
     whatHappensNext: decision.directDispatch
-      ? 'repo-harness will request a structured proposal, apply patches itself, and verify.'
+      ? 'forge will request a structured proposal, apply patches itself, and verify.'
       : 'No direct dispatch; open handoff packet or configure credentials/live mode.',
     whatIsBlocked: decision.waitForUser
       ? decision.reason

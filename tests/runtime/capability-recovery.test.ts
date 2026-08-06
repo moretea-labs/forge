@@ -150,7 +150,7 @@ describe('capability recovery probe', () => {
       schedulerStatus: 'ready',
       localBridgeRunning: true,
       connectorHealthy: true,
-      pluginStates: [{ pluginId: 'gmail', enabled: true, healthState: 'error', ready: false, errors: ['Set one of REPO_HARNESS_GMAIL_ACCESS_TOKEN before invoking gmail Google Workspace actions.'] }],
+      pluginStates: [{ pluginId: 'gmail', enabled: true, healthState: 'error', ready: false, errors: ['Set one of FORGE_GMAIL_ACCESS_TOKEN before invoking gmail Google Workspace actions.'] }],
     });
 
     expect(snapshot.recommendedActions.map((action) => action.id)).toContain('recovery.workspace_auth_login_prepare');
@@ -200,7 +200,7 @@ describe('authorized recovery actions', () => {
 
 describe('runtime maintenance executor', () => {
   function tempRepo() {
-    const root = mkdtempSync(join(tmpdir(), 'repo-harness-maintenance-test-'));
+    const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-test-'));
     temporaryRoots.push(root);
     const controllerHome = join(root, '_controller_home');
     const localJobs = join(root, '.ai/harness/local-jobs');
@@ -250,14 +250,14 @@ describe('runtime maintenance executor', () => {
     expect(legacyApplied || typedApplied).toBe(true);
   });
 
-  it('removes only stale direct repo-harness temp entries during full maintenance', () => {
+  it('removes only stale direct forge temp entries during full maintenance', () => {
     const { root, controllerHome, repository } = tempRepo();
     const runtimeTempRoot = join(root, 'system-temp');
     mkdirSync(runtimeTempRoot, { recursive: true });
-    const staleEntry = join(runtimeTempRoot, 'repo-harness-old-entry');
-    const recentEntry = join(runtimeTempRoot, 'repo-harness-recent-entry');
+    const staleEntry = join(runtimeTempRoot, 'forge-old-entry');
+    const recentEntry = join(runtimeTempRoot, 'forge-recent-entry');
     const target = join(runtimeTempRoot, 'target.txt');
-    const symbolicLink = join(runtimeTempRoot, 'repo-harness-symlink');
+    const symbolicLink = join(runtimeTempRoot, 'forge-symlink');
     mkdirSync(staleEntry, { recursive: true });
     mkdirSync(recentEntry, { recursive: true });
     writeFileSync(target, 'preserve');
@@ -321,13 +321,13 @@ describe('auth and external filesystem handoffs', () => {
     expect((status.actionRequired as unknown[]).length).toBe(1);
     expect(JSON.stringify(status)).not.toContain('secret');
     const login = prepareWorkspaceAuthLogin({ service: 'gmail' }) as { tokenEnvironmentVariables: string[]; safety: { credentialMaterialPersisted: boolean } };
-    expect(login.tokenEnvironmentVariables).toContain('REPO_HARNESS_GMAIL_ACCESS_TOKEN');
+    expect(login.tokenEnvironmentVariables).toContain('FORGE_GMAIL_ACCESS_TOKEN');
     expect(login.safety.credentialMaterialPersisted).toBe(false);
   });
 
   it('previews, applies, and reads bounded external filesystem targets', () => {
-    const repoRoot = mkdtempSync(join(tmpdir(), 'repo-harness-external-fs-repo-'));
-    const externalRoot = mkdtempSync(join(tmpdir(), 'repo-harness-external-fs-target-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-external-fs-repo-'));
+    const externalRoot = mkdtempSync(join(tmpdir(), 'forge-external-fs-target-'));
     temporaryRoots.push(repoRoot, externalRoot);
     writeFileSync(join(externalRoot, 'note.txt'), 'hello external');
     const preview = previewExternalFilesystemGrant(repoRoot, {

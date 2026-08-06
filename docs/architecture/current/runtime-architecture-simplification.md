@@ -24,7 +24,7 @@ Gateway Adapter, Controller Services, Scheduler, SQLite, MCP Transport, and Work
 The only supported core process topology is:
 
 ```text
-repo-harness-runtime
+forge-runtime
   ├─ MCP Transport                 in process
   ├─ Gateway Adapter               in process
   ├─ Controller Services           in process
@@ -37,7 +37,7 @@ External tunnels are optional transports. They may connect to the Runtime endpoi
 
 ## 2. Target Runtime
 
-`CanonicalRepoHarnessRuntime` is the sole root lifecycle owner. It performs one ordered startup, one ordered shutdown, and one fatal-failure path for the complete application.
+`CanonicalForgeRuntime` is the sole root lifecycle owner. It performs one ordered startup, one ordered shutdown, and one fatal-failure path for the complete application.
 
 It alone may:
 
@@ -49,17 +49,17 @@ It alone may:
 - publish the single Runtime readiness result;
 - stop the complete Runtime after a fatal core-module failure.
 
-No core module may create a KeepAlive loop, detached restart coordinator, secondary generation, child lifecycle supervisor, component release pointer, or component rollback operation. The canonical `runtime` CLI is observation-only; it cannot start, stop, restart, or recover the application.
+No core module may create a KeepAlive loop, detached restart coordinator, secondary generation, child lifecycle supervisor, component release pointer, or component rollback operation. The canonical `runtime` inspection surface does not own module lifecycle. The OS service manager owns one `forge-runtime` root service, while standalone Recovery may restart that complete service or perform an offline previous whole-release recovery under one cross-process lock.
 
 ## 3. Seven phases
 
 | Phase | Required result | Current source assessment |
 | --- | --- | --- |
-| 1. Establish Canonical Single Runtime | MCP Transport, Gateway Adapter, Controller Services, Scheduler, SQLite, and Worker Manager are started by one Runtime Root | Implemented in the source architecture: `repo-harness-runtime` starts the complete core application in one process |
-| 2. Converge lifecycle ownership | Runtime Root is the only core start/stop/failure/recovery owner | Implemented for core lifecycle: public lifecycle commands, Supervisor, independent Daemon, KeepAlive, component restart owners, and detached recovery paths are deleted; standalone Recovery can repair only itself/tunnel or perform offline whole-Runtime rollback |
+| 1. Establish Canonical Single Runtime | MCP Transport, Gateway Adapter, Controller Services, Scheduler, SQLite, and Worker Manager are started by one Runtime Root | Implemented in the source architecture: `forge-runtime` starts the complete core application in one process |
+| 2. Converge lifecycle ownership | Runtime Root is the only in-process core owner; one OS service and one standalone Recovery owner operate only on the complete Runtime | Implemented: public component lifecycle commands, Supervisor, independent Daemon, KeepAlive wrappers, component restart owners, and detached recovery paths are deleted; the Forge service starts one Runtime Root, and standalone Recovery can restart that complete service or perform previous whole-release recovery |
 | 3. Simplify readiness | Public Runtime readiness is only `ready: true/false`; module observations are diagnostic evidence | Implemented: Canonical Runtime, status projection, Recovery verification, and public `controller_ready` use one binary Runtime decision |
 | 4. Remove ingress and Runtime slots | No Stable Ingress, fixed blue/green ports, runtime slots, mixed generation, adoption, or component cutover | Implemented: Stable Ingress, blue/green slots, slot homes, activation transactions, writer authority, and slot fallback readers are deleted |
-| 5. Whole-Runtime publish and rollback | Code, configuration, entrypoint, manifest, SQLite schema/backup, and Worker protocol move as one compatible set | Implemented: one active/previous whole-release authority, local SQLite backup/restore, startup binding, and offline Recovery rollback; old bootstrap/slot authority is deleted |
+| 5. Whole-Runtime publish and rollback | Code, configuration, entrypoint, manifest, SQLite schema/backup, and Worker protocol move as one compatible set | Implemented: one active/previous whole-release authority, local SQLite backup/restore, service startup binding, bounded whole-Runtime restart, and automatic previous-release recovery after restart exhaustion; old bootstrap/slot authority is deleted |
 | 6. Complete Worker isolation and fencing | Workers are bounded Runtime-owned children; stale Workers cannot commit control-plane side effects | Implemented: Workers inherit Runtime instance, owner PID, release authority revision/token, release ID, artifact identity, and Worker protocol; write paths import the Canonical Runtime fence directly; durable OperationReceipt recovery matches non-secret Runtime/release identity plus Job/attempt/PID/Lease evidence |
 | 7. Delete legacy architecture | Supervisor, Ingress, KeepAlive, slots, component rollout/rollback, and old authority are removed | Implemented in source: Supervisor, Stable Ingress, independent Daemon, KeepAlive, component rollout, slots, activation transactions, writer authority, and public lifecycle commands are deleted |
 
@@ -151,7 +151,7 @@ The following paths are legacy implementation inventory, not target building blo
 | Stable Ingress router and ingress session/process state | deleted in phase 4; one Runtime endpoint is configured directly |
 | MCP KeepAlive/restart commands and implementations | public/hidden entrypoints, the 911-line restart implementation, and the 1,136-line KeepAlive process/tunnel/restart owner are deleted in phase 2; reusable HTTP/stdio transports remain module code only |
 | MCP transport and Gateway tool Daemon auto-start | removed in phase 2; readiness and tool responses may observe daemon status but cannot create or recover Controller Services |
-| independent Controller Daemon entry and `ensureControllerDaemon()` service API | deleted; the remaining daemon status name is a read-only compatibility projection over Canonical Runtime observation |
+| independent daemon entry and component service API | deleted; `runtime-status-client.ts` is read-only observation over Canonical Forge Runtime state |
 | `src/cli/controller/runtime-slots.ts` and slot homes | deleted in phase 4; architecture checks require them to remain absent |
 | `src/cli/controller/bluegreen-rollout.ts` | deleted; must not return |
 | public `controller` lifecycle/blue-green commands and public `supervisor` command | deleted from the supported CLI surface and implementation tree |
@@ -194,13 +194,14 @@ Every Runtime refactor review answers:
 
 ## 10. Completed source convergence order
 
-1. `repo-harness-runtime` became the only supported core startup entry.
+1. `forge-runtime` became the only supported core startup entry.
 2. Controller startup and Worker Manager ownership moved into Runtime Root.
 3. Public readiness converged to one whole-Runtime boolean decision.
 4. Stable Ingress was removed and MCP Transport binds directly to the configured Runtime endpoint.
 5. Runtime slots, fixed alternate ports, mixed generations, and component cutover were removed.
 6. Whole-Runtime release, database backup, and rollback authority was established.
 7. Worker commits were bound to Runtime instance, release identity, Job attempt, and Lease fencing.
-8. Supervisor, KeepAlive, independent Daemon entry, restart coordinator, component rollout/rollback, and compatibility authority were deleted.
+8. Supervisor, KeepAlive wrappers, independent Daemon entry, restart coordinator, component rollout/rollback, and compatibility authority were deleted.
+9. One stable Forge Runtime service and standalone Recovery watchdog were added without slots: sustained failure triggers bounded whole-Runtime restart, then attested previous-release rollback and verification.
 
-No rollout, service restart, or live cutover is implied by source implementation work. Live activation requires separate explicit authorization and exact release evidence.
+Forge has no blue-green Runtime pair. Candidate canaries execute before an explicitly authorized stop/switch/start activation, and failed activation or later sustained failure uses the single previous whole-release authority. No rollout, service installation, service restart, or live cutover is implied by source implementation work.

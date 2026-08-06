@@ -27,7 +27,7 @@ function runFixture(
   publishConfig: Record<string, unknown> = { access: "public", provenance: true },
   env: Record<string, string> = {},
 ) {
-  const dir = mkdtempSync(join(tmpdir(), "repo-harness-release-version-"));
+  const dir = mkdtempSync(join(tmpdir(), "forge-release-version-"));
   const packagePath = join(dir, "package.json");
   writeFileSync(packagePath, JSON.stringify({ name: "fixture", version, publishConfig }));
   try {

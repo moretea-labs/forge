@@ -43,13 +43,13 @@ function fixture() {
   const repoRoot = join(root, 'repo');
   mkdirSync(controllerHome, { recursive: true });
   mkdirSync(join(repoRoot, 'src'), { recursive: true });
-  mkdirSync(join(repoRoot, '.repo-harness'), { recursive: true });
+  mkdirSync(join(repoRoot, '.forge'), { recursive: true });
   git(repoRoot, ['init', '-b', 'main']);
   git(repoRoot, ['config', 'user.name', 'Test']);
   git(repoRoot, ['config', 'user.email', 'test@example.com']);
   writeFileSync(join(repoRoot, 'README.md'), 'gateway routing fixture\n');
   writeFileSync(join(repoRoot, 'src', 'lib.ts'), 'export const n = 1;\n');
-  writeFileSync(join(repoRoot, '.repo-harness', 'checks.json'), JSON.stringify({
+  writeFileSync(join(repoRoot, '.forge', 'checks.json'), JSON.stringify({
     version: 1,
     checks: {
       slow: {
@@ -575,7 +575,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
   test('run_check Process status and persisted failure Artifact agree', async () => {
     const fx = fixture();
     roots.push(fx.root);
-    writeFileSync(join(fx.repoRoot, '.repo-harness', 'checks.json'), JSON.stringify({
+    writeFileSync(join(fx.repoRoot, '.forge', 'checks.json'), JSON.stringify({
       version: 1,
       checks: {
         failing: {
@@ -612,7 +612,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
   test('verify_edit_session consumes persisted Process receipts without Local Jobs', async () => {
     const fx = fixture();
     roots.push(fx.root);
-    writeFileSync(join(fx.repoRoot, '.repo-harness', 'checks.json'), JSON.stringify({
+    writeFileSync(join(fx.repoRoot, '.forge', 'checks.json'), JSON.stringify({
       version: 1,
       checks: {
         verify: {
@@ -707,7 +707,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
   test('run_check preserves Process Runtime request conflicts instead of masking them', async () => {
     const fx = fixture();
     roots.push(fx.root);
-    const checksPath = join(fx.repoRoot, '.repo-harness', 'checks.json');
+    const checksPath = join(fx.repoRoot, '.forge', 'checks.json');
     const localBefore = listLocalBridgeJobSnapshots(fx.repoRoot).length;
     writeFileSync(checksPath, JSON.stringify({
       version: 1,

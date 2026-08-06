@@ -60,7 +60,7 @@ function formatList(entries: RuntimeDocEntry[], asJson = false): string {
 }
 
 export function buildDocsCommand(): Command {
-  const docs = new Command('docs').description('Resolve bundled repo-harness runtime documentation');
+  const docs = new Command('docs').description('Resolve bundled forge runtime documentation');
 
   docs
     .command('list')
@@ -78,7 +78,7 @@ export function buildDocsCommand(): Command {
     .action((docId: string) => {
       const entry = resolveRuntimeDoc(docId);
       if (!entry) {
-        console.error(`repo-harness docs path: unknown doc "${docId}"`);
+        console.error(`forge docs path: unknown doc "${docId}"`);
         process.exit(2);
       }
       console.log(entry.path);
@@ -92,7 +92,7 @@ export function buildDocsCommand(): Command {
     .action((docId: string) => {
       const entry = resolveRuntimeDoc(docId);
       if (!entry) {
-        console.error(`repo-harness docs show: unknown doc "${docId}"`);
+        console.error(`forge docs show: unknown doc "${docId}"`);
         process.exit(2);
       }
       console.log(readFileSync(entry.path, 'utf-8').trimEnd());

@@ -1,16 +1,16 @@
 # Runtime Architecture Guardrails
 
-This document is normative for changes to the repo-harness runtime, deployment, recovery, health, and status models.
+This document is normative for changes to the forge runtime, deployment, recovery, health, and status models.
 
 ## Product constraints
 
-Repo-harness is a local MCP application. A bounded interruption during restart or upgrade is acceptable. The primary objective is deterministic whole-system recovery, not zero-downtime continuity for each internal process.
+Forge is a local MCP application. A bounded interruption during restart or upgrade is acceptable. The primary objective is deterministic whole-system recovery, not zero-downtime continuity for each internal process.
 
 The default deployment model is:
 
 ```text
 launchd
-  └── repo-harness-runtime
+  └── forge-runtime
        ├── MCP transport and gateway modules
        ├── controller and scheduler modules
        ├── SQLite control plane

@@ -1,10 +1,10 @@
-# Brand Assets
+# Forge Brand Assets
 
-These files are the public-safe, first-party branding assets for **Matea**.
+These files are the maintained, public-safe, first-party branding assets for **Forge**.
 
-- `docs/images/matea-banner.svg`: maintained English README and social-share banner.
-- `docs/images/matea-banner-cn.svg`: maintained Chinese README and social-share banner.
-- `docs/images/repo-harness-controller-flow.svg`: compatibility-named controller architecture diagram; the runtime component still uses repo-harness identifiers internally.
-- `repo-harness-controller-flow.mmd`: editable Mermaid source for the controller architecture diagram.
+- `docs/images/forge-banner.svg`: English README and social-share banner.
+- `docs/images/forge-banner-cn.svg`: Simplified Chinese README and social-share banner.
+- `docs/images/forge-controller-flow.svg`: current Forge controller and Runtime architecture diagram.
+- `forge-controller-flow.mmd`: editable Mermaid source for the architecture diagram.
 
-Use Matea as the public product name. Preserve repo-harness names only for compatibility commands, state directories, protocol identifiers, or historical records. Do not introduce third-party logos, trademarks, or stock illustrations.
+Use **Forge** in prose and lowercase `forge` only for commands, package paths, protocol identifiers, state paths, filenames, or code symbols. Do not add previous-product branding, compatibility messaging, third-party logos, trademarks, or stock illustrations.

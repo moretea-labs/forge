@@ -173,13 +173,13 @@ export function buildRepositoryCommand(): Command {
       output(initializeRepository(repository, opts.controllerHome), opts.json === true);
     });
 
-  common(command.command('rollout').description('Apply the latest repo-harness workflow to registered repositories and restart configured MCP controllers')
+  common(command.command('rollout').description('Apply the latest forge workflow to registered repositories and restart configured MCP controllers')
     .option('--repo-id <repo-id>', 'Restrict rollout to one repository', (value, previous: string[]) => [...previous, value], [])
     .option('--all', 'Include disabled repositories')
     .option('--dry-run', 'Show the repositories that would be updated without applying changes')
     .option('--skip-adopt', 'Skip repo-local harness refresh')
     .option('--skip-restart', 'Skip MCP/controller restart')
-    .option('--skip-codex-setup', 'Skip repo-harness mcp setup codex during restart')
+    .option('--skip-codex-setup', 'Skip forge mcp setup codex during restart')
     .option('--skip-public-check', 'Skip public endpoint verification during restart')
     .option('--skip-tools-smoke', 'Skip authenticated MCP tools smoke check during restart')
     .option('--skip-github-plugin', 'Skip GitHub plugin refresh during restart'))

@@ -1,5 +1,5 @@
 /**
- * `matea init-hook` -- read-only Agent bootstrap checklist.
+ * `forge init-hook` -- read-only Agent bootstrap checklist.
  *
  * This command intentionally does not install hooks, write user-owned markdown,
  * or mutate repo-local runtime files. It gathers the existing readiness probes
@@ -8,7 +8,8 @@
  */
 
 import { spawnSync } from 'child_process';
-import { existsSync, readFileSync } from 'fs';
+import { randomUUID } from 'crypto';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import * as os from 'os';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
@@ -105,8 +106,8 @@ export interface InitHookOptions {
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, '..', '..', '..');
-const UPDATE_CHECK_ENV = 'REPO_HARNESS_CHECK_UPDATES';
-const GLOBAL_RULES_BEGIN = '<!-- BEGIN: repo-harness global-working-rules -->';
+const UPDATE_CHECK_ENV = 'FORGE_CHECK_UPDATES';
+const GLOBAL_RULES_BEGIN = '<!-- BEGIN: forge global-working-rules -->';
 const VALID_TARGETS: readonly InitHookTarget[] = ['codex', 'claude', 'both'];
 
 function withProcessEnv<T>(env: NodeJS.ProcessEnv | undefined, fn: () => T): T {
@@ -141,7 +142,7 @@ function homeDir(env?: NodeJS.ProcessEnv): string {
 }
 
 function verificationCommand(target: InitHookTarget, checkUpdates: boolean): string {
-  return `matea setup check --target ${target}${checkUpdates ? ' --check-updates' : ''} --json`;
+  return `forge setup check --target ${target}${checkUpdates ? ' --check-updates' : ''} --json`;
 }
 
 function addAction(actions: InitHookAction[], action: InitHookAction): void {
@@ -211,7 +212,7 @@ function statusChecks(
         reason: `${targetLabel(id)} user-level adapter is missing or does not match the route registry.`,
         requires_agent: true,
         risk: 'Writes user-level host hook config; preserve unmanaged user entries and re-check managed count.',
-        command: `matea install --target ${id} --location global`,
+        command: `forge install --target ${id} --location global`,
         targets: entry.configPath ? [entry.configPath] : undefined,
         verification: verificationCommand(target, checkUpdates),
       });
@@ -247,7 +248,7 @@ function doctorChecks(
         addAction(actions, {
           id: 'cli.update',
           status: 'needs_agent',
-          reason: 'The installed Matea CLI is older than the latest package version.',
+          reason: 'The installed Forge CLI is older than the latest package version.',
           requires_agent: true,
           risk: 'Updates global CLI/runtime; Agent should verify adapters and current repo status after install.',
           command,
@@ -262,8 +263,8 @@ function doctorChecks(
         reason: 'Security scan found unmanaged or risky local automation surfaces.',
         requires_agent: true,
         risk: 'Do not blindly delete user-owned config; inspect the reported file and preserve intentional entries.',
-        command: 'matea security scan --json',
-        verification: 'matea security scan --json',
+        command: 'forge security scan --json',
+        verification: 'forge security scan --json',
       });
     } else if (
       (entry.id === 'repo-hook-scripts' || entry.id.startsWith('codegraph-')) &&
@@ -424,7 +425,7 @@ function commandForToolGap(toolName: string, tool: ToolingTool, target: InitHook
     return normalizeToolCommand(tool.install_command, target);
   }
   if (toolName === 'codex_automation_profile') {
-    return 'matea init --target codex --no-cli --no-hooks --no-codegraph';
+    return 'forge init --target codex --no-cli --no-hooks --no-codegraph';
   }
   return normalizeToolCommand(
     tool.sync_command ?? tool.ensure_command ?? tool.mcp_install_command ?? tool.install_command ?? tool.upgrade_command,
@@ -555,7 +556,7 @@ function legacyChecks(cwd: string, target: InitHookTarget, checkUpdates: boolean
       reason: 'Repo-local host adapter configs are retired; user-level adapters should own runtime routing.',
       requires_agent: true,
       risk: 'These files may contain user-owned historical config; review or migrate before removal.',
-      command: 'matea migrate --apply',
+      command: 'forge migrate --apply',
       targets: present,
       verification: verificationCommand(target, checkUpdates),
     });
@@ -613,7 +614,7 @@ export function runInitHook(opts: InitHookOptions = {}): InitHookReport {
 export function formatInitHook(report: InitHookReport, asJson = false): string {
   if (asJson) return JSON.stringify(report, null, 2);
   const lines: string[] = [];
-  lines.push(`matea setup check: ${report.status}`);
+  lines.push(`forge setup check: ${report.status}`);
   lines.push(`target=${report.target}; check-updates=${report.checkUpdates ? 'on' : 'off'}`);
   lines.push(
     `summary: ${report.summary.ok} ok, ${report.summary.warn} warn, ${report.summary.fail} fail, ${report.summary.na} n/a, ${report.summary.needs_agent} needs-agent`,
@@ -642,14 +643,14 @@ export function formatInitHook(report: InitHookReport, asJson = false): string {
 export function buildInitHookCommand(): Command {
   const command = new Command('init-hook');
   command
-    .description('Run a read-only Agent bootstrap checklist for user-level Matea readiness')
+    .description('Run a read-only Agent bootstrap checklist for user-level Forge readiness')
     .option('--target <target>', `Host target to inspect: ${VALID_TARGETS.join('|')}`, 'both')
     .option('--check-updates', 'Include network-backed version update advisories')
     .option('--json', 'Output JSON instead of human-readable text')
     .action((rawOpts: { target: string; checkUpdates?: boolean; json?: boolean }) => {
       if (!VALID_TARGETS.includes(rawOpts.target as InitHookTarget)) {
         console.error(
-          `matea init-hook: invalid --target "${rawOpts.target}" (expected: ${VALID_TARGETS.join(', ')})`,
+          `forge init-hook: invalid --target "${rawOpts.target}" (expected: ${VALID_TARGETS.join(', ')})`,
         );
         process.exit(2);
       }
@@ -663,29 +664,206 @@ export function buildInitHookCommand(): Command {
   return command;
 }
 
+export type SetupSessionStatus = 'open' | 'blocked' | 'ready' | 'closed';
+
+export interface SetupSession {
+  schemaVersion: 1;
+  sessionId: string;
+  status: SetupSessionStatus;
+  target: InitHookTarget;
+  checkUpdates: boolean;
+  createdAt: string;
+  updatedAt: string;
+  closedAt?: string;
+  lastReport: InitHookReport;
+  nextAction?: InitHookAction;
+}
+
+export interface SetupSessionOptions extends InitHookOptions {
+  setupRoot?: string;
+  report?: InitHookReport;
+  now?: () => Date;
+  uuid?: () => string;
+}
+
+export function setupSessionPath(options: Pick<SetupSessionOptions, 'setupRoot' | 'env'> = {}): string {
+  const root = options.setupRoot
+    ? resolve(options.setupRoot)
+    : resolve(options.env?.FORGE_SETUP_HOME ?? join(homeDir(options.env), '.forge'));
+  return join(root, 'setup', 'session.json');
+}
+
+function readSetupSessionAt(path: string): SetupSession | undefined {
+  try {
+    const value = JSON.parse(readFileSync(path, 'utf8')) as SetupSession;
+    return value.schemaVersion === 1 && typeof value.sessionId === 'string' ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeSetupSessionAt(path: string, session: SetupSession): SetupSession {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(session, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  renameSync(temporary, path);
+  return session;
+}
+
+export function readSetupSession(options: Pick<SetupSessionOptions, 'setupRoot' | 'env'> = {}): SetupSession | undefined {
+  return readSetupSessionAt(setupSessionPath(options));
+}
+
+function setupStatus(report: InitHookReport): SetupSessionStatus {
+  if (report.status === 'blocked') return 'blocked';
+  if (report.status === 'ok' && report.agent_actions.length === 0) return 'ready';
+  return 'open';
+}
+
+export function openSetupSession(options: SetupSessionOptions = {}): SetupSession {
+  const path = setupSessionPath(options);
+  const previous = readSetupSessionAt(path);
+  const report = options.report ?? runInitHook(options);
+  const now = (options.now ?? (() => new Date()))().toISOString();
+  const reuse = previous && previous.status !== 'closed';
+  return writeSetupSessionAt(path, {
+    schemaVersion: 1,
+    sessionId: reuse ? previous.sessionId : (options.uuid ?? randomUUID)(),
+    status: setupStatus(report),
+    target: report.target,
+    checkUpdates: report.checkUpdates,
+    createdAt: reuse ? previous.createdAt : now,
+    updatedAt: now,
+    lastReport: report,
+    ...(report.agent_actions[0] ? { nextAction: report.agent_actions[0] } : {}),
+  });
+}
+
+export function closeSetupSession(options: SetupSessionOptions & { force?: boolean } = {}): SetupSession {
+  const current = openSetupSession(options);
+  if (current.status !== 'ready' && options.force !== true) return current;
+  const now = (options.now ?? (() => new Date()))().toISOString();
+  return writeSetupSessionAt(setupSessionPath(options), {
+    ...current,
+    status: 'closed',
+    updatedAt: now,
+    closedAt: now,
+    nextAction: undefined,
+  });
+}
+
+export function formatSetupSession(session: SetupSession, asJson = false): string {
+  if (asJson) return JSON.stringify(session, null, 2);
+  const lines = [
+    `forge setup: ${session.status}`,
+    `session=${session.sessionId}; target=${session.target}; updated=${session.updatedAt}`,
+    `summary: ${session.lastReport.summary.ok} ok, ${session.lastReport.summary.warn} warn, ${session.lastReport.summary.fail} fail, ${session.lastReport.summary.needs_agent} needs-agent`,
+  ];
+  if (session.nextAction) {
+    lines.push('', `Next: ${session.nextAction.reason}`);
+    if (session.nextAction.command) lines.push(`command: ${session.nextAction.command}`);
+    lines.push(`risk: ${session.nextAction.risk}`, `verify: ${session.nextAction.verification}`, 'After completing it, run: forge setup next');
+  } else if (session.status === 'ready') {
+    lines.push('', 'All checks are ready. Close the setup session with: forge setup close');
+  } else if (session.status === 'closed') {
+    lines.push('', 'Setup session is closed. Run forge setup open to start a new verified setup cycle.');
+  }
+  return lines.join('\n');
+}
+
+function setupTarget(value: string, surface: string): InitHookTarget {
+  if (!VALID_TARGETS.includes(value as InitHookTarget)) {
+    throw new Error(`${surface}: invalid --target "${value}" (expected: ${VALID_TARGETS.join(', ')})`);
+  }
+  return value as InitHookTarget;
+}
+
+function setupCycle(rawOpts: { target: string; checkUpdates?: boolean; json?: boolean }, surface: string): void {
+  try {
+    const session = openSetupSession({
+      target: setupTarget(rawOpts.target, surface),
+      checkUpdates: rawOpts.checkUpdates === true,
+    });
+    console.log(formatSetupSession(session, rawOpts.json === true));
+    process.exitCode = session.status === 'blocked' ? 1 : 0;
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 2;
+  }
+}
+
 export function buildSetupCommand(): Command {
   const command = new Command('setup');
-  command.description('User-level Matea setup utilities');
+  command
+    .description('Open or continue one resumable Forge setup session')
+    .option('--target <target>', `Host target to configure: ${VALID_TARGETS.join('|')}`, 'both')
+    .option('--check-updates', 'Include network-backed version update advisories')
+    .option('--json', 'Output JSON instead of human-readable text')
+    .action((rawOpts: { target: string; checkUpdates?: boolean; json?: boolean }) => setupCycle(rawOpts, 'forge setup'));
+
+  for (const name of ['open', 'next'] as const) {
+    command
+      .command(name)
+      .description(name === 'open' ? 'Start or resume the verified setup session' : 'Re-check configuration and advance to the next action')
+      .option('--target <target>', `Host target to configure: ${VALID_TARGETS.join('|')}`, 'both')
+      .option('--check-updates', 'Include network-backed version update advisories')
+      .option('--json', 'Output JSON instead of human-readable text')
+      .action((rawOpts: { target: string; checkUpdates?: boolean; json?: boolean }) => setupCycle(rawOpts, `forge setup ${name}`));
+  }
+
+  command
+    .command('status')
+    .description('Read the persisted setup session without changing host configuration')
+    .option('--json', 'Output JSON instead of human-readable text')
+    .action((rawOpts: { json?: boolean }) => {
+      const session = readSetupSession();
+      if (!session) {
+        console.log(rawOpts.json ? JSON.stringify({ status: 'not_started' }) : 'forge setup: not started\nRun: forge setup open');
+        return;
+      }
+      console.log(formatSetupSession(session, rawOpts.json === true));
+    });
+
+  command
+    .command('close')
+    .description('Close setup after all checks pass')
+    .option('--target <target>', `Host target to verify: ${VALID_TARGETS.join('|')}`, 'both')
+    .option('--check-updates', 'Include network-backed version update advisories')
+    .option('--force', 'Close even when checks still need attention')
+    .option('--json', 'Output JSON instead of human-readable text')
+    .action((rawOpts: { target: string; checkUpdates?: boolean; force?: boolean; json?: boolean }) => {
+      try {
+        const session = closeSetupSession({
+          target: setupTarget(rawOpts.target, 'forge setup close'),
+          checkUpdates: rawOpts.checkUpdates === true,
+          force: rawOpts.force === true,
+        });
+        console.log(formatSetupSession(session, rawOpts.json === true));
+        process.exitCode = session.status === 'closed' ? 0 : 1;
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : String(error));
+        process.exitCode = 2;
+      }
+    });
 
   command
     .command('check')
-    .description('Run a read-only Agent bootstrap checklist for user-level Matea readiness')
+    .description('Run the complete read-only setup checklist without opening a session')
     .option('--target <target>', `Host target to inspect: ${VALID_TARGETS.join('|')}`, 'both')
     .option('--check-updates', 'Include network-backed version update advisories')
     .option('--json', 'Output JSON instead of human-readable text')
     .action((rawOpts: { target: string; checkUpdates?: boolean; json?: boolean }) => {
-      if (!VALID_TARGETS.includes(rawOpts.target as InitHookTarget)) {
-        console.error(
-          `matea setup check: invalid --target "${rawOpts.target}" (expected: ${VALID_TARGETS.join(', ')})`,
-        );
-        process.exit(2);
+      try {
+        const report = runInitHook({
+          target: setupTarget(rawOpts.target, 'forge setup check'),
+          checkUpdates: rawOpts.checkUpdates === true,
+        });
+        console.log(formatInitHook(report, rawOpts.json === true));
+        process.exitCode = report.status === 'blocked' ? 1 : 0;
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : String(error));
+        process.exitCode = 2;
       }
-      const report = runInitHook({
-        target: rawOpts.target as InitHookTarget,
-        checkUpdates: rawOpts.checkUpdates === true,
-      });
-      console.log(formatInitHook(report, rawOpts.json === true));
-      process.exit(report.status === 'blocked' ? 1 : 0);
     });
 
   return command;

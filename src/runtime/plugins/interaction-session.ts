@@ -60,7 +60,7 @@ export interface InteractionCommand {
 }
 
 function providerRoot(repoRoot: string, provider: InteractionProvider): string {
-  return join(repoRoot, '.repo-harness', 'interactions', sanitizeFileComponent(provider));
+  return join(repoRoot, '.forge', 'interactions', sanitizeFileComponent(provider));
 }
 
 export function interactionSessionPath(repoRoot: string, provider: InteractionProvider, interactionId: string): string {

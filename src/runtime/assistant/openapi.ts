@@ -12,7 +12,7 @@ export function assistantOpenApiSchema(baseUrl = 'http://127.0.0.1:8766'): Recor
         localControllerToken: {
           type: 'apiKey',
           in: 'header',
-          name: 'x-repo-harness-local-token',
+          name: 'x-forge-local-token',
         },
       },
     },
@@ -203,7 +203,7 @@ export function assistantOpenApiSchema(baseUrl = 'http://127.0.0.1:8766'): Recor
       '/api/assistant/maintenance/cleanup-preview': {
         post: {
           operationId: 'previewRuntimeCleanup',
-          summary: 'Preview stale repo-harness temp, terminal local job, and historical attention cleanup candidates.',
+          summary: 'Preview stale forge temp, terminal local job, and historical attention cleanup candidates.',
           responses: { '200': { description: 'Cleanup preview; non-destructive.' } },
         },
       },

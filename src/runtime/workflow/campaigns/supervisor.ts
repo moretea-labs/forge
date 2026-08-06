@@ -61,7 +61,7 @@ export class OperationCampaignSupervisorAdapter implements CampaignSupervisorAda
 
 function workspaceAgentPrompt(campaign: Campaign, checkpoint: CampaignCheckpoint): string {
   return [
-    'Review one repo-harness Campaign checkpoint and write the decision back through the connected repo-harness MCP tools.',
+    'Review one forge Campaign checkpoint and write the decision back through the connected forge MCP tools.',
     '',
     `Repository id: ${campaign.repoId}`,
     `Campaign id: ${campaign.campaignId}`,
@@ -92,7 +92,7 @@ export class WorkspaceAgentCampaignSupervisorAdapter implements CampaignSupervis
         agent_id: agentId,
         input: workspaceAgentPrompt(campaign, checkpoint),
         conversation_key: campaign.supervisor.conversationKey?.trim()
-          || `repo-harness:${campaign.repoId}:${campaign.campaignId}`,
+          || `forge:${campaign.repoId}:${campaign.campaignId}`,
         idempotency_key: `${checkpoint.checkpointId}:${checkpoint.triggerAttempts + 1}`,
       },
       priority: campaign.supervisor.priority ?? 'P1',

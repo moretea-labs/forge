@@ -17,7 +17,7 @@ const roots: string[] = [];
 const originalPath = process.env.PATH;
 
 test('Agent process env preserves or derives Volta authority from the original HOME', () => {
-  const home = join(tmpdir(), 'repo-harness-agent-home');
+  const home = join(tmpdir(), 'forge-agent-home');
   expect(agentProcessEnv({ HOME: home, VOLTA_HOME: '/opt/volta' }).VOLTA_HOME).toBe('/opt/volta');
   expect(agentProcessEnv({ HOME: home }).VOLTA_HOME).toBe(join(home, '.volta'));
   expect(agentProcessEnv({}).VOLTA_HOME).toBeUndefined();
@@ -29,7 +29,7 @@ afterEach(() => {
 });
 
 function fakeCodex(options: { authenticated?: boolean } = {}): { root: string; executable: string } {
-  const root = mkdtempSync(join(tmpdir(), 'repo-harness-agent-executable-'));
+  const root = mkdtempSync(join(tmpdir(), 'forge-agent-executable-'));
   roots.push(root);
   const executable = join(root, 'codex');
   writeFileSync(executable, `#!/bin/sh
@@ -63,7 +63,7 @@ describe('local Agent executable resolver', () => {
 
   test('writes and reads a controller-scoped readiness snapshot atomically', () => {
     const fake = fakeCodex();
-    const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-agent-readiness-home-'));
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-agent-readiness-home-'));
     roots.push(controllerHome);
     process.env.PATH = fake.root;
 
@@ -81,12 +81,12 @@ describe('local Agent executable resolver', () => {
     const fake = fakeCodex();
     expect(() => resolveAgentExecutable('codex', {
       PATH: fake.root,
-      REPO_HARNESS_CODEX_EXECUTABLE: join(fake.root, 'missing-codex'),
+      FORGE_CODEX_EXECUTABLE: join(fake.root, 'missing-codex'),
     })).toThrow(AgentExecutableError);
     try {
       resolveAgentExecutable('codex', {
         PATH: fake.root,
-        REPO_HARNESS_CODEX_EXECUTABLE: join(fake.root, 'missing-codex'),
+        FORGE_CODEX_EXECUTABLE: join(fake.root, 'missing-codex'),
       });
     } catch (error) {
       expect((error as AgentExecutableError).code).toBe('AGENT_EXECUTABLE_NOT_EXECUTABLE');

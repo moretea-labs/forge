@@ -11,7 +11,7 @@ export class RepoActorRegistry {
     let actor = this.actors.get(repoId);
     if (!actor) {
       actor = new RepoActor(this.controllerHome, repoId, {
-        maxConcurrentWorkers: Number(process.env.REPO_HARNESS_PER_REPO_WORKERS ?? 2),
+        maxConcurrentWorkers: Number(process.env.FORGE_PER_REPO_WORKERS ?? 2),
       });
       this.actors.set(repoId, actor);
     }

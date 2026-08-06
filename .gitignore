@@ -20,7 +20,7 @@ bun.lockb
 .sisyphus/notepads/
 
 # Local Claude overrides/state
-# BEGIN: claude-runtime-temp (managed by repo-harness)
+# BEGIN: claude-runtime-temp (managed by forge)
 .claude/settings.local.json
 .claude/.atomic_pending
 .claude/.session-id
@@ -58,8 +58,8 @@ tasks/.current.md.tmp.*
 .ai/harness/chatgpt/sessions/
 .ai/harness/triage/*
 !.ai/harness/triage/.gitkeep
-.repo-harness/chatgpt-browser.local.json
-.repo-harness/chatgpt-browser.tokens.json
+.forge/chatgpt-browser.local.json
+.forge/chatgpt-browser.tokens.json
 .codex/*
 .claude/.active-plan
 .claude/.plan-state/
@@ -71,10 +71,10 @@ autoresearch/
 *.tgz
 _ref/
 _ops/
-.repo-harness/mcp.local.json
-.repo-harness/mcp.tokens.json
-.repo-harness/chatgpt-browser.local.json
-.repo-harness/chatgpt-browser.tokens.json
+.forge/mcp.local.json
+.forge/mcp.tokens.json
+.forge/chatgpt-browser.local.json
+.forge/chatgpt-browser.tokens.json
 .codegraph/
 .understand-anything/
 # Environment
@@ -86,14 +86,14 @@ _ops/
 # Operations
 # Local operations state
 .claude/worktrees/
-.repo-harness/mcp.oauth.json
-.repo-harness/mcp.oauth-tokens.json
-.repo-harness/mcp.runtime.json
+.forge/mcp.oauth.json
+.forge/mcp.oauth-tokens.json
+.forge/mcp.runtime.json
 .ai/harness/local-jobs/
 .ai/harness/mcp/audit.log
 .ai/harness/controller
 
-# repo-harness controller runtime state (local-only)
+# forge controller runtime state (local-only)
 .ai/local/
 .ai/harness/jobs
 .ai/harness/worktrees
@@ -108,24 +108,24 @@ _ops/
 *.log
 .ai/harness/controller/
 
-# repo-harness plugin runtime state
-.repo-harness/plugins/*.json
-.repo-harness/external-filesystem-grants.json
-.repo-harness/**/*grants*.json
-.repo-harness/**/*.local.json
-.repo-harness/**/*.tokens.json
-.repo-harness/**/*.oauth*.json
-.repo-harness/**/*.runtime.json
+# forge plugin runtime state
+.forge/plugins/*.json
+.forge/external-filesystem-grants.json
+.forge/**/*grants*.json
+.forge/**/*.local.json
+.forge/**/*.tokens.json
+.forge/**/*.oauth*.json
+.forge/**/*.runtime.json
 .ai/*
 !.ai/context/
 .ai/context/*
 !.ai/context/capabilities.json
 
-# repo-harness local browser/runtime scratch
-.repo-harness/browser/
-.repo-harness/repair-backups/
+# forge local browser/runtime scratch
+.forge/browser/
+.forge/repair-backups/
 
-# repo-harness hardening: runtime scratch, temp, review artifacts, watchdog state
+# forge hardening: runtime scratch, temp, review artifacts, watchdog state
 .ai/harness/tmp/
 .ai/harness/cache/
 .ai/harness/locks/*.stale
@@ -135,20 +135,20 @@ _ops/
 .ai/harness/runtime-diagnostics/
 .ai/harness/self-healing/
 .ai/harness/secrets-audit/
-.repo-harness/tmp/
-.repo-harness/cache/
-.repo-harness/ios/
-.repo-harness/review-artifacts/
-.repo-harness/watchdog/
-.repo-harness/runtime-diagnostics/
-.repo-harness/secrets-audit/
-.repo-harness/*.local.*
-.repo-harness/*.tokens.*
-.repo-harness/*.secret.*
-.repo-harness/**/*.tmp
-.repo-harness/**/*.log
-.repo-harness/**/*.bak
-.repo-harness/**/*.backup
+.forge/tmp/
+.forge/cache/
+.forge/ios/
+.forge/review-artifacts/
+.forge/watchdog/
+.forge/runtime-diagnostics/
+.forge/secrets-audit/
+.forge/*.local.*
+.forge/*.tokens.*
+.forge/*.secret.*
+.forge/**/*.tmp
+.forge/**/*.log
+.forge/**/*.bak
+.forge/**/*.backup
 *.pem
 *.key
 *.p12

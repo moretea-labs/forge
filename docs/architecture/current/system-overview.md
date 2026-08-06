@@ -4,13 +4,13 @@
 
 ## 1. System Definition
 
-repo-harness Controller Runtime is an Agent Engineering Control Plane for one or more local Git repositories. ChatGPT, Local UI, CLI and optional GitHub integrations submit decisions and commands. The runtime persists accepted work, schedules it under repository-owned conflict rules, executes it outside the Gateway process and records evidence for recovery, acceptance and release.
+forge Controller Runtime is an Agent Engineering Control Plane for one or more local Git repositories. ChatGPT, Local UI, CLI and optional GitHub integrations submit decisions and commands. The runtime persists accepted work, schedules it under repository-owned conflict rules, executes it outside the Gateway process and records evidence for recovery, acceptance and release.
 
 ## 2. Canonical Runtime Topology
 
 ```text
 Client
-  -> repo-harness-runtime (one local MCP application)
+  -> forge-runtime (one local MCP application)
        MCP Transport
        Gateway Adapter
        Controller Services
@@ -18,7 +18,7 @@ Client
        Global Scheduler + Per-Repository Actors
        Evidence Plane + Materialized Projections
        |
-       +-> repo-harness-worker (bounded Runtime-owned child)
+       +-> forge-worker (bounded Runtime-owned child)
              command / check / Agent dispatch / integration / release gate
              |
              v

@@ -16,12 +16,12 @@ import { dirname, join, relative, resolve, sep } from 'path';
 import { writeJsonAtomic } from '../shared/json-files';
 
 export const RECOVERY_RELEASE_BINARIES = [
-  'repo-harness-recovery',
-  'repo-harness-recovery-gateway',
-  'repo-harness-recovery-watchdog',
+  'forge-recovery',
+  'forge-recovery-gateway',
+  'forge-recovery-watchdog',
 ] as const;
 
-export const RECOVERY_RELEASE_ROLE_CANARY_ARG = '--repo-harness-release-role-canary';
+export const RECOVERY_RELEASE_ROLE_CANARY_ARG = '--forge-release-role-canary';
 
 export type RecoveryReleaseBinary = (typeof RECOVERY_RELEASE_BINARIES)[number];
 export type RecoveryRuntimeRole = 'gateway' | 'watchdog';

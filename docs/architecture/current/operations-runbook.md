@@ -5,7 +5,7 @@
 ## Health
 
 - `GET /health`: Gateway event loop, session pressure and tool surface. Must stay fast.
-- `GET /ready`: Controller Daemon readiness and process separation.
+- `GET /ready`: binary whole-Runtime readiness for the Canonical Forge Runtime.
 - `GET /repos/<repoId>/health`: repository projection, queue and Lease state.
 - MCP `controller_ready`: equivalent structured readiness.
 
@@ -23,7 +23,7 @@ Key waiting states are not failures:
 
 ## Recovery
 
-The Daemon reconciles running Jobs every five seconds. Operation Receipts distinguish a completed side effect from an uncertain mutation window. A completed receipt closes the Job after restart; an uncertain mutating operation becomes `human_attention_required` and is never replayed blindly. Safe read-only work may be retried while attempts remain. Cancellation terminates the owned Worker when present and releases only the exact Lease/fencing set for that attempt. Stale Workers cannot renew, release or publish against a replacement attempt.
+The Canonical Forge Runtime reconciles running Jobs every five seconds. Operation Receipts distinguish a completed side effect from an uncertain mutation window. A completed receipt closes the Job after restart; an uncertain mutating operation becomes `human_attention_required` and is never replayed blindly. Safe read-only work may be retried while attempts remain. Cancellation terminates the owned Worker when present and releases only the exact Lease/fencing set for that attempt. Stale Workers cannot renew, release or publish against a replacement attempt.
 
 ## 502 Diagnosis
 

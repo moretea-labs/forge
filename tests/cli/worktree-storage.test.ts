@@ -53,7 +53,7 @@ function repository(root: string, checkouts: RepositoryCheckout[]): RepositoryRe
     createdAt: '2026-08-03T00:00:00.000Z',
     updatedAt: '2026-08-03T00:00:00.000Z',
     lastSeenAt: '2026-08-03T00:00:00.000Z',
-    configurationPath: join(root, '.repo-harness', 'config.json'),
+    configurationPath: join(root, '.forge', 'config.json'),
     stateStorageStrategy: 'controller-home',
   };
 }
@@ -64,9 +64,9 @@ function explicitEnv(base: string): NodeJS.ProcessEnv {
 
 describe('managed worktree storage ownership', () => {
   test('keeps the managed root usable after it contains an active worktree checkout', () => {
-    const repositoryRoot = tempRoot('repo-harness-source-');
-    const controllerHome = tempRoot('repo-harness-controller-');
-    const storageBase = tempRoot('repo-harness-worktrees-');
+    const repositoryRoot = tempRoot('forge-source-');
+    const controllerHome = tempRoot('forge-controller-');
+    const storageBase = tempRoot('forge-worktrees-');
     const mainCheckout = checkout('checkout-main', repositoryRoot, false);
     const record = repository(repositoryRoot, [mainCheckout]);
 
@@ -86,9 +86,9 @@ describe('managed worktree storage ownership', () => {
   });
 
   test('still rejects a non-worktree checkout inside the proposed managed root', () => {
-    const repositoryRoot = tempRoot('repo-harness-source-');
-    const controllerHome = tempRoot('repo-harness-controller-');
-    const storageBase = tempRoot('repo-harness-worktrees-');
+    const repositoryRoot = tempRoot('forge-source-');
+    const controllerHome = tempRoot('forge-controller-');
+    const storageBase = tempRoot('forge-worktrees-');
     const mainCheckout = checkout('checkout-main', repositoryRoot, false);
     const record = repository(repositoryRoot, [mainCheckout]);
 
@@ -111,9 +111,9 @@ describe('managed worktree storage ownership', () => {
   });
 
   test('still rejects an independently registered repository beneath the proposed root', () => {
-    const repositoryRoot = tempRoot('repo-harness-source-');
-    const controllerHome = tempRoot('repo-harness-controller-');
-    const storageBase = tempRoot('repo-harness-worktrees-');
+    const repositoryRoot = tempRoot('forge-source-');
+    const controllerHome = tempRoot('forge-controller-');
+    const storageBase = tempRoot('forge-worktrees-');
     const record = repository(repositoryRoot, [checkout('checkout-main', repositoryRoot, false)]);
 
     const managedRoot = managedWorktreeStorageRoot(

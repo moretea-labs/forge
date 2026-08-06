@@ -13,7 +13,7 @@ import { createServer as createHttpServer } from "http";
 import { join } from "path";
 import { writeJsonAtomic } from "../../src/runtime/shared/json-files";
 import { appendControllerWorklogEvent } from "../../src/cli/controller/worklog";
-import { readControllerDaemonStatus } from "../../src/runtime/control-plane/daemon-client";
+import { readForgeRuntimeStatus } from "../../src/runtime/control-plane/runtime-status-client";
 import { readWorkHandle, writeWorkHandle } from "../../src/runtime/control-plane/execution/work-handle-store";
 import { claimControllerSession, getControllerSession, releaseControllerSession } from "../../src/runtime/control-plane/facade/controller-session-store";
 import { getWorkContract, updateWorkContract } from "../../src/runtime/control-plane/facade/work-contract-store";
@@ -149,16 +149,16 @@ ${body}
 async function withController<T>(
   fn: (repoRoot: string, ctx: McpToolContext) => Promise<T>,
 ): Promise<T> {
-  const repoRoot = mkdtempSync(join(tmpdir(), "repo-harness-controller-"));
-  const controllerHome = mkdtempSync(join(tmpdir(), "repo-harness-controller-home-"));
-  const previousControllerHome = process.env.REPO_HARNESS_CONTROLLER_HOME;
+  const repoRoot = mkdtempSync(join(tmpdir(), "forge-controller-"));
+  const controllerHome = mkdtempSync(join(tmpdir(), "forge-controller-home-"));
+  const previousControllerHome = process.env.FORGE_CONTROLLER_HOME;
   try {
-    process.env.REPO_HARNESS_CONTROLLER_HOME = controllerHome;
+    process.env.FORGE_CONTROLLER_HOME = controllerHome;
     mkdirSync(join(repoRoot, "src"), { recursive: true });
     mkdirSync(join(repoRoot, "tasks"), { recursive: true });
     mkdirSync(join(repoRoot, ".ai/harness"), { recursive: true });
-    mkdirSync(join(repoRoot, ".repo-harness"), { recursive: true });
-    writeFileSync(join(repoRoot, ".repo-harness/checks.json"), JSON.stringify({
+    mkdirSync(join(repoRoot, ".forge"), { recursive: true });
+    writeFileSync(join(repoRoot, ".forge/checks.json"), JSON.stringify({
       version: 1,
       checks: Object.fromEntries(["focused", "manual-review", "typecheck"].map((id) => [id, {
         description: `Test check ${id}`,
@@ -174,8 +174,8 @@ async function withController<T>(
       repoRoot,
       policy: getMcpPolicy("controller", { repoRoot })});
   } finally {
-    if (previousControllerHome === undefined) delete process.env.REPO_HARNESS_CONTROLLER_HOME;
-    else process.env.REPO_HARNESS_CONTROLLER_HOME = previousControllerHome;
+    if (previousControllerHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
+    else process.env.FORGE_CONTROLLER_HOME = previousControllerHome;
     rmSync(repoRoot, { recursive: true, force: true });
     rmSync(controllerHome, { recursive: true, force: true });
   }
@@ -218,7 +218,7 @@ function writeStoredPluginManifest(
 
 test("uses the active slot service runtime for aggregate Local Bridge health", async () => {
   await withController(async (repoRoot, ctx) => {
-    const controllerHome = process.env.REPO_HARNESS_CONTROLLER_HOME!;
+    const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
     const generation = "runtime-active-green";
     const server = createHttpServer((_request, response) => {
       response.setHeader("content-type", "application/json");
@@ -425,9 +425,9 @@ function seedLargeControllerIssue(
 describe("MCP controller profile", () => {
   test("exposes controller tools and preserves immutable secret denies", async () => {
     await withController(async (repoRoot, ctx) => {
-      mkdirSync(join(repoRoot, ".repo-harness"), { recursive: true });
+      mkdirSync(join(repoRoot, ".forge"), { recursive: true });
       writeFileSync(
-        join(repoRoot, ".repo-harness/mcp.policy.json"),
+        join(repoRoot, ".forge/mcp.policy.json"),
         JSON.stringify({ profiles: { controller: { denyGlobs: [] } } }),
       );
       const overridden = getMcpPolicy("controller", { repoRoot });
@@ -557,7 +557,7 @@ describe("MCP controller profile", () => {
 
   test("lists plugin manifests and routes typed plugin actions through durable execution", async () => {
     await withController(async (repoRoot) => {
-      const controllerHome = String(process.env.REPO_HARNESS_CONTROLLER_HOME);
+      const controllerHome = String(process.env.FORGE_CONTROLLER_HOME);
       const runtimeCtx = createMultiRepositoryContext({
         repo: repoRoot,
         controllerHome,
@@ -842,7 +842,7 @@ describe("MCP controller profile", () => {
       expect(advancedNames).toContain("plugin_action_execute");
       expect(fullNames.length).toBeGreaterThan(coreNames.length);
 
-      let daemonPid: number | undefined;
+      let runtimePid: number | undefined;
       try {
         const first = await callRuntimeTool(advanced, "work_submit", {
           repo_id: repository.repoId,
@@ -913,10 +913,10 @@ describe("MCP controller profile", () => {
         const handleWaitValue = JSON.parse(handleWait!.content[0].text);
         expect(handleWaitValue.work.kind).toBe("work_handle");
         expect(handleWaitValue.timedOut).toBe(true);
-        daemonPid = readControllerDaemonStatus(controllerHome).pid;
+        runtimePid = readForgeRuntimeStatus(controllerHome).pid;
       } finally {
-        if (daemonPid && daemonPid !== process.pid) {
-          await terminateProcessTree(daemonPid, { gracePeriodMs: 200, killAfterMs: 1_500 });
+        if (runtimePid && runtimePid !== process.pid) {
+          await terminateProcessTree(runtimePid, { gracePeriodMs: 200, killAfterMs: 1_500 });
         }
       }
     });
@@ -924,9 +924,9 @@ describe("MCP controller profile", () => {
 
   test("adopts only an exact clean in-scope successor HEAD and preserves historical evidence", async () => {
     await withController(async (repoRoot, _ctx) => {
-      const controllerHome = process.env.REPO_HARNESS_CONTROLLER_HOME!;
+      const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
       spawnSync("git", ["config", "user.name", "Repo Harness Test"], { cwd: repoRoot, stdio: "ignore" });
-      spawnSync("git", ["config", "user.email", "repo-harness@example.test"], { cwd: repoRoot, stdio: "ignore" });
+      spawnSync("git", ["config", "user.email", "forge@example.test"], { cwd: repoRoot, stdio: "ignore" });
       writeFileSync(join(repoRoot, "seed.txt"), "seed\n");
       spawnSync("git", ["add", "."], { cwd: repoRoot, stdio: "ignore" });
       expect(spawnSync("git", ["commit", "-m", "fixture"], { cwd: repoRoot, stdio: "ignore" }).status).toBe(0);
@@ -1065,9 +1065,9 @@ describe("MCP controller profile", () => {
 
   test("rejects non-descendant and out-of-scope successor HEAD adoption", async () => {
     await withController(async (repoRoot, _ctx) => {
-      const controllerHome = process.env.REPO_HARNESS_CONTROLLER_HOME!;
+      const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
       spawnSync("git", ["config", "user.name", "Repo Harness Test"], { cwd: repoRoot, stdio: "ignore" });
-      spawnSync("git", ["config", "user.email", "repo-harness@example.test"], { cwd: repoRoot, stdio: "ignore" });
+      spawnSync("git", ["config", "user.email", "forge@example.test"], { cwd: repoRoot, stdio: "ignore" });
       writeFileSync(join(repoRoot, "seed.txt"), "seed\n");
       spawnSync("git", ["add", "."], { cwd: repoRoot, stdio: "ignore" });
       expect(spawnSync("git", ["commit", "-m", "fixture"], { cwd: repoRoot, stdio: "ignore" }).status).toBe(0);
@@ -1131,8 +1131,8 @@ describe("MCP controller profile", () => {
 
   test("work_validate polling preserves the Process binding until an exact check receipt is recorded", async () => {
     await withController(async (repoRoot, _ctx) => {
-      const controllerHome = process.env.REPO_HARNESS_CONTROLLER_HOME!;
-      writeFileSync(join(repoRoot, ".repo-harness/checks.json"), JSON.stringify({
+      const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
+      writeFileSync(join(repoRoot, ".forge/checks.json"), JSON.stringify({
         version: 1,
         checks: {
           "validation-pass": {
@@ -1143,7 +1143,7 @@ describe("MCP controller profile", () => {
         },
       }));
       spawnSync("git", ["config", "user.name", "Repo Harness Test"], { cwd: repoRoot, stdio: "ignore" });
-      spawnSync("git", ["config", "user.email", "repo-harness@example.test"], { cwd: repoRoot, stdio: "ignore" });
+      spawnSync("git", ["config", "user.email", "forge@example.test"], { cwd: repoRoot, stdio: "ignore" });
       spawnSync("git", ["add", "."], { cwd: repoRoot, stdio: "ignore" });
       expect(spawnSync("git", ["commit", "-m", "fixture"], { cwd: repoRoot, stdio: "ignore" }).status).toBe(0);
       const repository = registerRepository({ path: repoRoot, controllerHome });
@@ -1205,8 +1205,8 @@ describe("MCP controller profile", () => {
 
   test("automatically cleans validation-failed managed Work while preserving failure and releasing ownership", async () => {
     await withController(async (repoRoot, _ctx) => {
-      const controllerHome = process.env.REPO_HARNESS_CONTROLLER_HOME!;
-      writeFileSync(join(repoRoot, ".repo-harness/checks.json"), JSON.stringify({
+      const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
+      writeFileSync(join(repoRoot, ".forge/checks.json"), JSON.stringify({
         version: 1,
         checks: {
           "validation-fail": {
@@ -1217,7 +1217,7 @@ describe("MCP controller profile", () => {
         },
       }));
       spawnSync("git", ["config", "user.name", "Repo Harness Test"], { cwd: repoRoot, stdio: "ignore" });
-      spawnSync("git", ["config", "user.email", "repo-harness@example.test"], { cwd: repoRoot, stdio: "ignore" });
+      spawnSync("git", ["config", "user.email", "forge@example.test"], { cwd: repoRoot, stdio: "ignore" });
       spawnSync("git", ["add", "."], { cwd: repoRoot, stdio: "ignore" });
       expect(spawnSync("git", ["commit", "-m", "fixture"], { cwd: repoRoot, stdio: "ignore" }).status).toBe(0);
       const repository = registerRepository({ path: repoRoot, controllerHome });
@@ -1307,9 +1307,9 @@ describe("MCP controller profile", () => {
 
   test("failed Work cleanup checkpoints dirty content despite unrelated check failure", async () => {
     await withController(async (repoRoot, _ctx) => {
-      const controllerHome = process.env.REPO_HARNESS_CONTROLLER_HOME!;
+      const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
       spawnSync("git", ["config", "user.name", "Repo Harness Test"], { cwd: repoRoot, stdio: "ignore" });
-      spawnSync("git", ["config", "user.email", "repo-harness@example.test"], { cwd: repoRoot, stdio: "ignore" });
+      spawnSync("git", ["config", "user.email", "forge@example.test"], { cwd: repoRoot, stdio: "ignore" });
       spawnSync("git", ["add", "."], { cwd: repoRoot, stdio: "ignore" });
       expect(spawnSync("git", ["commit", "-m", "fixture"], { cwd: repoRoot, stdio: "ignore" }).status).toBe(0);
       const repository = registerRepository({ path: repoRoot, controllerHome });
@@ -1440,8 +1440,8 @@ describe("MCP controller profile", () => {
     await withController(async (repoRoot, _ctx) => {
       const controllerHome = join(repoRoot, ".controller-home");
       const firstRepository = registerRepository({ path: repoRoot, controllerHome });
-      const secondRoot = mkdtempSync(join(tmpdir(), "repo-harness-controller-second-"));
-      let daemonPid: number | undefined;
+      const secondRoot = mkdtempSync(join(tmpdir(), "forge-controller-second-"));
+      let runtimePid: number | undefined;
       try {
         mkdirSync(join(secondRoot, "src"), { recursive: true });
         writeFileSync(join(secondRoot, "src/example.ts"), "export const second = true;\n");
@@ -1462,10 +1462,10 @@ describe("MCP controller profile", () => {
         const conflictValue = JSON.parse(conflict!.content[0].text);
         expect(conflict?.isError).toBe(true);
         expect(conflictValue.error.code).toBe("REQUEST_ID_REPO_CONFLICT");
-        daemonPid = readControllerDaemonStatus(controllerHome).pid;
+        runtimePid = readForgeRuntimeStatus(controllerHome).pid;
       } finally {
-        if (daemonPid && daemonPid !== process.pid) {
-          await terminateProcessTree(daemonPid, { gracePeriodMs: 200, killAfterMs: 1_500 });
+        if (runtimePid && runtimePid !== process.pid) {
+          await terminateProcessTree(runtimePid, { gracePeriodMs: 200, killAfterMs: 1_500 });
         }
         rmSync(secondRoot, { recursive: true, force: true });
       }
@@ -1768,7 +1768,7 @@ describe("MCP controller profile", () => {
 
   test("get_project_board defaults to a bounded Requirement Board with explicit execution diagnostics", async () => {
     await withController(async (_repoRoot, ctx) => {
-      const controllerHome = process.env.REPO_HARNESS_CONTROLLER_HOME!;
+      const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
       for (let index = 0; index < 10; index += 1) {
         createRequirement({ controllerHome }, {
           requirementId: `REQ-FILLER-${index}`,
@@ -1949,7 +1949,7 @@ describe("MCP controller profile", () => {
   test("verify_task defers repository lease conflicts without recording failed verification and retries with a fresh request", async () => {
     await withController(async (repoRoot, ctx) => {
       writeFileSync(
-        join(repoRoot, ".repo-harness/checks.json"),
+        join(repoRoot, ".forge/checks.json"),
         JSON.stringify({
           version: 1,
           checks: {
@@ -2101,9 +2101,9 @@ describe("MCP controller profile", () => {
 
   test("runs only named focused checks from repository configuration", async () => {
     await withController(async (repoRoot, ctx) => {
-      mkdirSync(join(repoRoot, ".repo-harness"), { recursive: true });
+      mkdirSync(join(repoRoot, ".forge"), { recursive: true });
       writeFileSync(
-        join(repoRoot, ".repo-harness/checks.json"),
+        join(repoRoot, ".forge/checks.json"),
         JSON.stringify({
           version: 1,
           checks: {
@@ -2165,7 +2165,7 @@ describe("MCP controller profile", () => {
   test("keeps short controller reads responsive while a long check is running", async () => {
     await withController(async (repoRoot, ctx) => {
       writeFileSync(
-        join(repoRoot, ".repo-harness/checks.json"),
+        join(repoRoot, ".forge/checks.json"),
         JSON.stringify({
           version: 1,
           checks: {
@@ -2179,7 +2179,7 @@ describe("MCP controller profile", () => {
       expect(spawnSync("git", ["config", "user.name", "Test"], { cwd: repoRoot }).status).toBe(0);
       expect(spawnSync("git", ["add", "."], { cwd: repoRoot }).status).toBe(0);
       expect(spawnSync("git", ["commit", "-m", "initial"], { cwd: repoRoot }).status).toBe(0);
-      const controllerHome = join(repoRoot, ".repo-harness-controller-home");
+      const controllerHome = join(repoRoot, ".forge-controller-home");
       const repository = registerRepository({ path: repoRoot, controllerHome });
       const started = await jsonTool(ctx, "run_check", { check_id: "focused" });
       // Accept Process Runtime handle or legacy Local Job — both must not block short reads.
@@ -2212,7 +2212,7 @@ describe("MCP controller profile", () => {
         jobId: "JOB-output",
         action: "repository-command",
         payload: {
-          controllerHome: join(repoRoot, ".repo-harness-controller-home"),
+          controllerHome: join(repoRoot, ".forge-controller-home"),
           repoId: "repo-test",
           command: "printf 'hello\\n'"},
         requestedBy: "test",

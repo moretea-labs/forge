@@ -43,7 +43,7 @@ import { terminateProcessesByCommand, waitForNoProcessesByCommand } from "../run
 const roots: string[] = [];
 const repoRoots: string[] = [];
 const servers: LocalBridgeServerHandle[] = [];
-const originalControllerHome = process.env.REPO_HARNESS_CONTROLLER_HOME;
+const originalControllerHome = process.env.FORGE_CONTROLLER_HOME;
 
 afterEach(async () => {
   for (const server of servers.splice(0)) await server.close();
@@ -64,21 +64,21 @@ afterEach(async () => {
   await terminateProcessesByCommand(cleanupPaths);
   await waitForNoProcessesByCommand(cleanupPaths);
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-  if (originalControllerHome === undefined) delete process.env.REPO_HARNESS_CONTROLLER_HOME;
-  else process.env.REPO_HARNESS_CONTROLLER_HOME = originalControllerHome;
+  if (originalControllerHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
+  else process.env.FORGE_CONTROLLER_HOME = originalControllerHome;
 });
 
 function repo(): string {
-  const root = mkdtempSync(join(tmpdir(), "repo-harness-local-bridge-"));
-  const controllerHome = mkdtempSync(join(tmpdir(), "repo-harness-local-bridge-controller-"));
+  const root = mkdtempSync(join(tmpdir(), "forge-local-bridge-"));
+  const controllerHome = mkdtempSync(join(tmpdir(), "forge-local-bridge-controller-"));
   roots.push(root);
   roots.push(controllerHome);
   repoRoots.push(root);
   mkdirSync(join(root, "src"), { recursive: true });
   mkdirSync(join(root, "tasks"), { recursive: true });
   mkdirSync(join(root, ".ai/harness"), { recursive: true });
-  mkdirSync(join(root, ".repo-harness"), { recursive: true });
-  writeFileSync(join(root, ".repo-harness/mcp.local.json"), `${JSON.stringify({
+  mkdirSync(join(root, ".forge"), { recursive: true });
+  writeFileSync(join(root, ".forge/mcp.local.json"), `${JSON.stringify({
     version: 1,
     devMode: {
       agentRunner: true,
@@ -89,12 +89,12 @@ function repo(): string {
   writeFileSync(join(root, "src/example.ts"), "export const value = 1;\n");
   writeFileSync(join(root, "tasks/current.md"), "# Current\n");
   expect(spawnSync("git", ["init", "-b", "main"], { cwd: root }).status).toBe(0);
-  process.env.REPO_HARNESS_CONTROLLER_HOME = controllerHome;
+  process.env.FORGE_CONTROLLER_HOME = controllerHome;
   return root;
 }
 
 function fakeCodex(): { binRoot: string; restore(): void } {
-  const binRoot = mkdtempSync(join(tmpdir(), "repo-harness-local-bridge-bin-"));
+  const binRoot = mkdtempSync(join(tmpdir(), "forge-local-bridge-bin-"));
   roots.push(binRoot);
   const originalPath = process.env.PATH;
   const executable = join(binRoot, "codex");
@@ -160,7 +160,7 @@ describe("Local Execution Bridge", () => {
     for (const path of ['/api/jobs', '/api/tasks/launch-ready', '/api/issues/ISS-test/launch', '/api/issues/ISS-test/tasks/T1/launch']) {
       const response = await fetch(new URL(path, handle.url), {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-repo-harness-local-token': handle.token },
+        headers: { 'content-type': 'application/json', 'x-forge-local-token': handle.token },
         body: '{}',
       });
       expect(response.status).toBe(410);
@@ -188,7 +188,7 @@ describe("Local Execution Bridge", () => {
     servers.push(handle);
 
     const repository = JSON.parse(readFileSync(join(root, ".ai/harness/repository.json"), "utf-8")) as { repoId: string };
-    const controllerHome = process.env.REPO_HARNESS_CONTROLLER_HOME!;
+    const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
     const controllerLocalJobs = join(controllerHome, "repositories", repository.repoId, "local-jobs");
     expect(realpathSync(localJobsPath)).toBe(realpathSync(controllerLocalJobs));
     expect((await fetch(new URL("/health", handle.url))).status).toBe(200);
@@ -245,9 +245,9 @@ describe("Local Execution Bridge", () => {
 
   test("waits for a repository heavy-check lock held by another Controller", async () => {
     const root = repo();
-    mkdirSync(join(root, ".repo-harness"), { recursive: true });
+    mkdirSync(join(root, ".forge"), { recursive: true });
     mkdirSync(join(root, ".ai/harness/controller"), { recursive: true });
-    writeFileSync(join(root, ".repo-harness/checks.json"), JSON.stringify({
+    writeFileSync(join(root, ".forge/checks.json"), JSON.stringify({
       version: 1,
       checks: {
         "check:release": {
@@ -277,8 +277,8 @@ describe("Local Execution Bridge", () => {
 
   test("notifies every subscriber when a deduplicated check spawns", async () => {
     const root = repo();
-    mkdirSync(join(root, ".repo-harness"), { recursive: true });
-    writeFileSync(join(root, ".repo-harness/checks.json"), JSON.stringify({
+    mkdirSync(join(root, ".forge"), { recursive: true });
+    writeFileSync(join(root, ".forge/checks.json"), JSON.stringify({
       version: 1,
       checks: {
         shared: {
@@ -305,9 +305,9 @@ describe("Local Execution Bridge", () => {
 
   test("fails a check when the command exits but leaves a child process tree behind", async () => {
     const root = repo();
-    mkdirSync(join(root, ".repo-harness"), { recursive: true });
+    mkdirSync(join(root, ".forge"), { recursive: true });
     const childPidPath = join(root, "leaky-check-child.pid");
-    writeFileSync(join(root, ".repo-harness/checks.json"), JSON.stringify({
+    writeFileSync(join(root, ".forge/checks.json"), JSON.stringify({
       version: 1,
       checks: {
         leaky: {
@@ -342,8 +342,8 @@ describe("Local Execution Bridge", () => {
 
   test("releasing one shared-check subscriber does not terminate the remaining subscriber", async () => {
     const root = repo();
-    mkdirSync(join(root, ".repo-harness"), { recursive: true });
-    writeFileSync(join(root, ".repo-harness/checks.json"), JSON.stringify({
+    mkdirSync(join(root, ".forge"), { recursive: true });
+    writeFileSync(join(root, ".forge/checks.json"), JSON.stringify({
       version: 1,
       checks: {
         shared: {
@@ -570,8 +570,8 @@ describe("Local Execution Bridge", () => {
         risk: "low",
       }],
     });
-    mkdirSync(join(root, ".repo-harness"), { recursive: true });
-    writeFileSync(join(root, ".repo-harness/checks.json"), JSON.stringify({
+    mkdirSync(join(root, ".forge"), { recursive: true });
+    writeFileSync(join(root, ".forge/checks.json"), JSON.stringify({
       version: 1,
       checks: { focused: { command: [process.execPath, "-e", "process.exit(0)"], timeoutMs: 10_000 } },
     }));
@@ -586,7 +586,7 @@ describe("Local Execution Bridge", () => {
     updateTask(root, issue.id, "T1", { status: "review", runId, note: "Ready for verification." });
     const handle = await startLocalBridgeServer({ repoRoot: root, port: 0, openBrowser: false });
     servers.push(handle);
-    const headers = { "x-repo-harness-local-token": handle.token };
+    const headers = { "x-forge-local-token": handle.token };
 
     const progress = await fetch(new URL("/api/progress", handle.url), { headers }).then((response) => response.json());
     expect(progress.issueCount).toBe(1);
@@ -646,7 +646,7 @@ describe("Local Execution Bridge", () => {
     const root = repo();
     const handle = await startLocalBridgeServer({ repoRoot: root, port: 0, openBrowser: false });
     servers.push(handle);
-    const headers = { "x-repo-harness-local-token": handle.token };
+    const headers = { "x-forge-local-token": handle.token };
 
     const listed = await fetch(new URL("/api/plugins", handle.url), { headers }).then((response) => response.json());
     expect(listed.plugins.map((plugin: { pluginId: string }) => plugin.pluginId)).toContain("github");
@@ -675,7 +675,7 @@ describe("Local Execution Bridge", () => {
     const root = repo();
     const handle = await startLocalBridgeServer({ repoRoot: root, port: 0, openBrowser: false });
     servers.push(handle);
-    const headers = { "x-repo-harness-local-token": handle.token, "content-type": "application/json" };
+    const headers = { "x-forge-local-token": handle.token, "content-type": "application/json" };
 
     const plannedRoutine = await fetch(new URL("/api/assistant/intent", handle.url), {
       method: "POST",
@@ -749,7 +749,7 @@ describe("Local Execution Bridge", () => {
     const root = repo();
     const handle = await startLocalBridgeServer({ repoRoot: root, port: 0, openBrowser: false });
     servers.push(handle);
-    const localHeaders = { "x-repo-harness-local-token": handle.token, "content-type": "application/json" };
+    const localHeaders = { "x-forge-local-token": handle.token, "content-type": "application/json" };
 
     const created = await fetch(new URL("/api/mobile/devices", handle.url), {
       method: "POST",
@@ -762,7 +762,7 @@ describe("Local Execution Bridge", () => {
     }).then((response) => response.json());
     expect(created.device.deviceId).toBe("greyson-iphone");
     expect(created.token).toStartWith("rhmi_");
-    expect(readFileSync(join(root, ".repo-harness/mobile-intents.json"), "utf-8")).not.toContain(created.token);
+    expect(readFileSync(join(root, ".forge/mobile-intents.json"), "utf-8")).not.toContain(created.token);
 
     function signedHeaders(body: string, nonce: string) {
       const timestamp = new Date().toISOString();
@@ -770,10 +770,10 @@ describe("Local Execution Bridge", () => {
       return {
         "content-type": "application/json",
         authorization: `Bearer ${created.token}`,
-        "x-repo-harness-device-id": created.device.deviceId,
-        "x-repo-harness-timestamp": timestamp,
-        "x-repo-harness-nonce": nonce,
-        "x-repo-harness-signature": signature,
+        "x-forge-device-id": created.device.deviceId,
+        "x-forge-timestamp": timestamp,
+        "x-forge-nonce": nonce,
+        "x-forge-signature": signature,
       };
     }
 
@@ -788,7 +788,7 @@ describe("Local Execution Bridge", () => {
     expect(listed.plugins.map((plugin: { pluginId: string }) => plugin.pluginId)).toContain("gmail");
 
     const invalidSignatureHeaders = signedHeaders(listBody, "nonce-bad-signature-0001");
-    invalidSignatureHeaders["x-repo-harness-signature"] = "bad-signature";
+    invalidSignatureHeaders["x-forge-signature"] = "bad-signature";
     const invalidSignature = await fetch(new URL("/mobile/intent", handle.url), {
       method: "POST",
       headers: invalidSignatureHeaders,
@@ -881,7 +881,7 @@ describe("Local Execution Bridge", () => {
     }]);
     const handle = await startLocalBridgeServer({ repoRoot: root, port: 0, openBrowser: false });
     servers.push(handle);
-    const headers = { "x-repo-harness-local-token": handle.token };
+    const headers = { "x-forge-local-token": handle.token };
     const snapshot = await fetch(new URL("/api/snapshot", handle.url), { headers }).then((response) => response.json());
     expect(snapshot.editSessions[0]).toMatchObject({ sessionId: session.sessionId, status: "dirty", changedFiles: 1 });
     const diff = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/diff`, handle.url), { headers }).then((response) => response.json());
@@ -914,7 +914,7 @@ describe("Local Execution Bridge", () => {
 
   test("registers and soft-removes repositories through the local-bridge API", async () => {
     const root = repo();
-    const otherRoot = mkdtempSync(join(tmpdir(), "repo-harness-local-bridge-other-"));
+    const otherRoot = mkdtempSync(join(tmpdir(), "forge-local-bridge-other-"));
     roots.push(otherRoot);
     expect(spawnSync("git", ["init", "-b", "main"], { cwd: otherRoot }).status).toBe(0);
     writeFileSync(join(otherRoot, "README.md"), "# other\n");
@@ -925,7 +925,7 @@ describe("Local Execution Bridge", () => {
       openBrowser: false,
     });
     servers.push(handle);
-    const headers = { "x-repo-harness-local-token": handle.token, "content-type": "application/json" };
+    const headers = { "x-forge-local-token": handle.token, "content-type": "application/json" };
 
     const registered = await fetch(new URL("/api/repositories/register", handle.url), {
       method: "POST",
@@ -998,13 +998,13 @@ describe("Local Execution Bridge", () => {
     const rejectedOrigin = await fetch(new URL("/api/snapshot", handle.url), {
       headers: {
         origin: "https://malicious.example",
-        "x-repo-harness-local-token": handle.token,
+        "x-forge-local-token": handle.token,
       },
     });
     expect(rejectedOrigin.status).toBe(403);
 
     const snapshot = await fetch(new URL("/api/snapshot", handle.url), {
-      headers: { "x-repo-harness-local-token": handle.token },
+      headers: { "x-forge-local-token": handle.token },
     }).then((response) => response.json());
     expect(snapshot.repoRoot).toBe(realpathSync(root));
     expect(snapshot.board).toBeDefined();
@@ -1034,7 +1034,7 @@ describe("Local Execution Bridge", () => {
     const dashboard = await dashboardResponse.text();
     expect(dashboard).not.toContain(handle.token);
     expect(dashboard).not.toContain("?token=");
-    expect(dashboard).toContain("repo-harness · 执行助手控制台");
+    expect(dashboard).toContain("forge · 执行助手控制台");
     expect(dashboard).toContain("指挥中心");
     expect(dashboard).toContain("能力 / 插件");
     expect(dashboard).toContain("/api/console/plugins");
@@ -1049,7 +1049,7 @@ describe("Local Execution Bridge", () => {
     expect(dashboard).toContain("删除注册");
 
     const plugins = await fetch(new URL("/api/console/plugins", handle.url), {
-      headers: { "x-repo-harness-local-token": handle.token },
+      headers: { "x-forge-local-token": handle.token },
     }).then((response) => response.json());
     expect(Array.isArray(plugins.plugins)).toBe(true);
     expect(plugins.summary).toBeTruthy();

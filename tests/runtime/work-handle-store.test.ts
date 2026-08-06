@@ -15,7 +15,7 @@ afterEach(() => {
 });
 
 function fixture(): { controllerHome: string; handle: WorkHandleState } {
-  const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-work-handle-'));
+  const controllerHome = mkdtempSync(join(tmpdir(), 'forge-work-handle-'));
   roots.push(controllerHome);
   const now = new Date().toISOString();
   return {

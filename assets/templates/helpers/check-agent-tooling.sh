@@ -77,11 +77,11 @@ const WAZA_MANAGED_SKILLS = ["think", "hunt", "check", "health"];
 const WAZA_SHARED_RULES = ["anti-patterns.md", "chinese.md", "durable-context.md", "english.md"];
 const CODEX_AUTOMATION_SKILLS = ["health", "check", "mermaid"];
 const CODEGRAPH_PACKAGE = "@colbymchenry/codegraph";
-const CODEGRAPH_GLOBAL_INSTALL_COMMAND = `bun add -g ${CODEGRAPH_PACKAGE} && repo-harness tools configure codegraph --target codex --location global`;
+const CODEGRAPH_GLOBAL_INSTALL_COMMAND = `bun add -g ${CODEGRAPH_PACKAGE} && forge tools configure codegraph --target codex --location global`;
 const GBRAIN_INSTALL_COMMAND = "bun install -g github:garrytan/gbrain";
 const GBRAIN_INSTALL_NOTE =
   "Install from GitHub; npm registry package gbrain is an unrelated GPU library and does not ship this CLI.";
-const CODEGRAPH_MCP_CONFIGURE_COMMAND = "repo-harness tools configure codegraph --target <codex|claude|both> --location global";
+const CODEGRAPH_MCP_CONFIGURE_COMMAND = "forge tools configure codegraph --target <codex|claude|both> --location global";
 const CODEGRAPH_LOCAL_INSTALL_COMMAND = "bun install";
 const CODEGRAPH_ENSURE_COMMAND = [
   ".ai/harness/scripts/ensure-codegraph.sh",
@@ -155,7 +155,7 @@ function commandCapability(command, requiredFor, owner, required = false) {
 }
 
 function detectSymlinkCapability() {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "repo-harness-symlink-check-"));
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "forge-symlink-check-"));
   const source = path.join(tmpDir, "source");
   const link = path.join(tmpDir, "link");
   try {
@@ -847,13 +847,13 @@ function detectRuntimeCapabilities(waza) {
   return {
     bun: commandCapability(
       "bun",
-      "repo-harness-owned global installs, local package dependency install, and test/runtime execution",
-      "repo-harness",
+      "forge-owned global installs, local package dependency install, and test/runtime execution",
+      "forge",
       true
     ),
     npm: commandCapability(
       "npm",
-      "npm registry readbacks, publish gates, and opt-in update checks; not used for repo-harness-owned global install repair",
+      "npm registry readbacks, publish gates, and opt-in update checks; not used for forge-owned global install repair",
       "npm-registry",
       false
     ),
@@ -869,13 +869,13 @@ function detectRuntimeCapabilities(waza) {
       path: null,
       owner: "external-skills-cli",
       required: false,
-      required_for: "Waza/Mermaid external skill bootstrap; repo-harness reports this as an explicit exception boundary",
+      required_for: "Waza/Mermaid external skill bootstrap; forge reports this as an explicit exception boundary",
       command: "skills ls -g --json",
     },
     bash: commandCapability(
       "bash",
-      "repo-harness helper scripts, migration, setup checks, and contract verification wrappers",
-      "repo-harness",
+      "forge helper scripts, migration, setup checks, and contract verification wrappers",
+      "forge",
       true
     ),
     rsync: commandCapability(

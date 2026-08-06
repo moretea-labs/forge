@@ -102,7 +102,7 @@ function googleCapability(
       capabilityId,
       state: 'mock',
       summary: `${displayName} is ready in mock mode; this validates the execution path without touching real Google data.`,
-      recommendedNextActions: [`Switch ${plugin.pluginId} to google-workspace and provide the matching REPO_HARNESS_*_ACCESS_TOKEN for live testing.`],
+      recommendedNextActions: [`Switch ${plugin.pluginId} to google-workspace and provide the matching FORGE_*_ACCESS_TOKEN for live testing.`],
     };
   }
   if (plugin.health.ready) {
@@ -119,7 +119,7 @@ function googleCapability(
       state: 'needs_configuration',
       summary: `${displayName} live token is missing; mock mode remains available for dry runs.`,
       recommendedNextActions: [
-        `Set the matching REPO_HARNESS_*_ACCESS_TOKEN, or switch ${plugin.pluginId} provider to mock.`,
+        `Set the matching FORGE_*_ACCESS_TOKEN, or switch ${plugin.pluginId} provider to mock.`,
       ],
     };
   }

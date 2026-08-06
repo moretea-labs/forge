@@ -3,7 +3,7 @@ import { listHelperIds, runHelper } from '../runtime/helper-runner';
 
 export function buildRunCommand(): Command {
   const run = new Command('run')
-    .description('Run a bundled repo-harness workflow helper')
+    .description('Run a bundled forge workflow helper')
     .allowUnknownOption(true);
 
   run

@@ -203,7 +203,7 @@ function threeWayMergeText(input: {
   incoming: string;
   path: string;
 }): { ok: boolean; output: string; stderr: string } {
-  const dir = mkdtempSync(join(tmpdir(), "repo-harness-merge-"));
+  const dir = mkdtempSync(join(tmpdir(), "forge-merge-"));
   try {
     const currentPath = join(dir, "current");
     const basePath = join(dir, "base");
@@ -459,7 +459,7 @@ function finalizeAlreadyIntegratedSession(
     maxChangedLines: 1,
   });
   return finalizeEditSession(repoRoot, session.sessionId, {
-    reviewer: "repo-harness-controller",
+    reviewer: "forge-controller",
     note: `Equivalent Task Run changes were already present in the main workspace for ${run.runId}.`,
   });
 }
@@ -504,7 +504,7 @@ export function integrateAgentJob(
   // Active-writer fencing before any integration mutation (workspace, git index,
   // task/run state, worktree, branch). Preview/diff paths do not call this.
   try {
-    const controllerHome = process.env.REPO_HARNESS_CONTROLLER_HOME
+    const controllerHome = process.env.FORGE_CONTROLLER_HOME
       ?? process.env.CONTROLLER_HOME
       ?? undefined;
     assertRuntimeMayWriteOrThrow('integrate_worktree', controllerHome);

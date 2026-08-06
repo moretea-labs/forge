@@ -7,12 +7,12 @@ import { ensureControllerHome, resolveControllerHome } from '../../cli/repositor
 import { repositoryIdentity } from '../../cli/controller/runtime-config';
 import { stableCheckoutId } from '../../cli/repositories/identity';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
-import { resolveManagedRuntimeSourceIdentity } from '../supervisor/release-identity';
+import { resolveManagedRuntimeSourceIdentity } from '../release/identity';
 
 /** Explicit override for the Controller Runtime Source root (not an execution repository). */
-export const CONTROLLER_RUNTIME_SOURCE_ROOT_ENV = 'REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT';
-/** Compatibility alias used by some launchers and docs. */
-export const CONTROLLER_RUNTIME_SOURCE_ROOT_ENV_ALIAS = 'REPO_HARNESS_SOURCE_ROOT';
+export const CONTROLLER_RUNTIME_SOURCE_ROOT_ENV = 'FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT';
+/** Optional concise Forge source-root override. */
+export const CONTROLLER_RUNTIME_SOURCE_ROOT_ENV_ALIAS = 'FORGE_SOURCE_ROOT';
 
 export interface RuntimeSourceIdentity {
   repoId: string;
@@ -178,7 +178,7 @@ function readPackageName(root: string): string | undefined {
 export function looksLikeControllerRuntimePackage(root: string): boolean {
   if (!root || !existsSync(root)) return false;
   const name = readPackageName(root);
-  if (name === '@moretea-labs/matea' || name === '@moretea-labs/repo-harness-controller') return true;
+  if (name === '@moretea-labs/forge') return true;
   // Source checkout / worktree without install: canonical Runtime entry + package markers.
   return existsSync(join(root, 'src', 'runtime', 'root', 'entry.ts'))
     && existsSync(join(root, 'package.json'));
@@ -189,7 +189,7 @@ export function looksLikeControllerRuntimePackage(root: string): boolean {
  *
  * Authority order:
  * 1. explicit canonical Runtime root
- * 2. REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT / REPO_HARNESS_SOURCE_ROOT
+ * 2. FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT / FORGE_SOURCE_ROOT
  * 3. package root derived from this module (source checkout, global install, worktree)
  * 4. process.cwd() only when it itself looks like the controller package
  *
@@ -249,8 +249,8 @@ export function clearRuntimeSourceIdentityCacheForTest(): void {
 }
 
 export function collectRuntimeSourceIdentity(repoRoot: string): RuntimeSourceIdentity {
-  // Prefer Supervisor-injected release binding before any Git walk-up. Managed
-  // children must not follow ambient parent HEAD when the active release is frozen.
+  // Prefer Runtime-injected immutable release binding before any Git walk-up.
+  // Managed children must not follow ambient parent HEAD when the active release is frozen.
   const bound = resolveManagedRuntimeSourceIdentity({ runtimeRoot: repoRoot });
   if (bound) return bound;
 

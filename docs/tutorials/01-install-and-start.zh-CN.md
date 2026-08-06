@@ -20,11 +20,11 @@ npm --version
 
 ## 2. 当前安装方式
 
-npm 包 `@moretea-labs/matea` 目前尚未公开，请从经过审查的源码 checkout 安装：
+npm 包 `@moretea-labs/forge` 目前尚未公开，请从经过审查的源码 checkout 安装：
 
 ```bash
-git clone https://github.com/moretea-labs/matea.git
-cd matea
+git clone https://github.com/moretea-labs/forge.git
+cd forge
 npm ci --ignore-scripts --no-audit --no-fund
 npm install -g . --omit=optional --no-audit --no-fund
 ```
@@ -39,37 +39,48 @@ bun add -g .
 RC 发布后，registry 安装命令会是：
 
 ```bash
-npm install -g @moretea-labs/matea@next
+npm install -g @moretea-labs/forge@next
 # 或
-bun add -g @moretea-labs/matea@next
+bun add -g @moretea-labs/forge@next
 ```
 
-该 package 以 `matea` 与 `matea-hook` 为主命令，并保留 `repo-harness` 与 `repo-harness-hook` 兼容别名。不要用未加 scope 的同名包替代。
+该 package 只提供 `forge`、`forge-hook` 与 `forge-runtime`。不再发布此前产品的命令别名，也不要使用未加 scope 的替代包。
 
-## 3. 初始化用户级运行时
+## 3. 打开引导式配置会话
 
 ```bash
-matea --version
-matea init --target both
-matea doctor
+forge --version
+forge setup open --target both
 ```
 
-只使用一个 host 时可改为 `--target codex` 或 `--target claude`。其他可选集成见 `matea init --help`。
+`forge setup open` 会在 `~/.forge/setup/` 下创建或恢复同一个用户级配置会话，执行就绪检查，并且每次只给出一个下一步配置动作。完成该动作后继续执行：
+
+```bash
+forge setup next
+```
+
+反复执行 `forge setup next`，直到状态变成 `ready`，然后关闭会话：
+
+```bash
+forge setup close
+```
+
+可使用 `forge setup status` 查看持久化进度，使用 `forge setup check` 获取一次性只读报告。只使用一个 host 时可改为 `--target codex` 或 `--target claude`。配置会话不会静默执行远程写入、读取秘密、破坏性操作或服务安装。
 
 ## 4. 接入或注册仓库
 
 macOS、Linux、WSL2 先预览再执行完整接入：
 
 ```bash
-matea adopt --repo /path/to/your-project --dry-run
-matea adopt --repo /path/to/your-project
+forge adopt --repo /path/to/your-project --dry-run
+forge adopt --repo /path/to/your-project
 ```
 
 所有平台均可显式注册：
 
 ```bash
-matea repo register /path/to/your-project --name my-project --json
-matea repo list --json
+forge repo register /path/to/your-project --name my-project --json
+forge repo list --json
 ```
 
 保存返回的 `repoId`，它是 ChatGPT 和 Controller 使用的稳定仓库身份。
@@ -77,9 +88,10 @@ matea repo list --json
 ## 5. 确认环境就绪
 
 ```bash
-matea doctor
-matea status --json
-matea repo list --json
+forge setup status
+forge doctor
+forge status --json
+forge repo list --json
 ```
 
 运行态应保存在 Controller Home 和被忽略的仓库链接中，不应进入公开源码。不要提交 token、MCP runtime 文件、Local Job、日志或 worktree。

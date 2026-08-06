@@ -45,7 +45,7 @@
 - Treat `deploy/` as the trackable deployment and operations surface for runbooks, submission materials, release checklists, helper scripts, ordered SQL files under `deploy/sql/`, and env examples.
 - Treat `_ops/` as ignored local operations state for secrets, real env files, provider state, artifacts, logs, and scratch files; do not commit or agent-edit `_ops/*`.
 - Treat contract-level execution as worktree-first: `.ai/harness/scripts/plan-to-todo.sh --plan <approved-plan>` starts a linked `codex/<slug>` worktree when policy enables it, and `.ai/harness/scripts/contract-worktree.sh finish` merges back only after Waza `/check` and sprint verification pass.
-- Capture decision-complete Codex Plan mode, Waza `/think`, or `repo-harness-plan` outputs with `.ai/harness/scripts/capture-plan.sh --slug <slug> --title <title>` so planning becomes a `plans/` artifact before implementation.
+- Capture decision-complete Codex Plan mode, Waza `/think`, or `forge-plan` outputs with `.ai/harness/scripts/capture-plan.sh --slug <slug> --title <title>` so planning becomes a `plans/` artifact before implementation.
 - Route product discovery to gstack `office-hours`, complex engineering plans to gstack `plan-eng-review`, design plans to gstack `plan-design-review`, and daily small/medium planning, bug hunts, and checks to Waza `/think`, `/hunt`, and `/check`.
 - Route knowledge sync and handoff retrieval to `gbrain`.
 - Register valuable repo-authored docs in `.ai/harness/brain-manifest.json` with `sync.direction=repo-to-brain`; `.ai/harness/scripts/sync-brain-docs.sh` and the PostEdit hook mirror only those explicit entries into the default brain vault.

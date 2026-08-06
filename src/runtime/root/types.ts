@@ -32,7 +32,7 @@ export interface RuntimeReleaseManifest {
   schemaVersion: 1;
   releaseId: string;
   artifactIdentity: string;
-  entrypoint: 'repo-harness-runtime';
+  entrypoint: 'forge-runtime';
   arguments: string[];
   configurationSchemaVersion: 1;
   controllerHome: string;

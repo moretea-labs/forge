@@ -4,7 +4,7 @@
 
 ### Source installation
 
-This is the verified path while `@moretea-labs/matea` remains unpublished:
+This is the verified path while `@moretea-labs/forge` remains unpublished:
 
 ```bash
 npm ci --ignore-scripts --no-audit --no-fund
@@ -16,13 +16,13 @@ npm install -g . --omit=optional --no-audit --no-fund
 After the package is visibly published to npm:
 
 ```bash
-npm install -g @moretea-labs/matea@next
+npm install -g @moretea-labs/forge@next
 ```
 
 Bun installs the same npm artifact:
 
 ```bash
-bun add -g @moretea-labs/matea@next
+bun add -g @moretea-labs/forge@next
 ```
 
 Do not infer npm publication from a GitHub tag or prerelease alone.
@@ -33,18 +33,18 @@ Do not infer npm publication from a GitHub tag or prerelease alone.
 - WSL2 is the recommended Windows host for the complete controller runtime.
 - Native Windows supports the documented CLI and command-shim surface; check the current matrix before relying on host-specific integrations.
 
-See [Platform Support](https://github.com/moretea-labs/matea/blob/main/docs/operations/platform-support.md).
+See [Platform Support](https://github.com/moretea-labs/forge/blob/main/docs/operations/platform-support.md).
 
 ## Command compatibility
 
-`matea` and `matea-hook` are the primary names. `repo-harness` and `repo-harness-hook` remain 1.x compatibility aliases, and existing `.repo-harness` state is intentionally preserved.
+Forge exposes only `forge`, `forge-hook`, and `forge-runtime`. State directories, environment variables, protocol identifiers, and release artifacts use the Forge namespace.
 
 ## Verify installation
 
 ```bash
-matea --version
-matea doctor
-matea repo list --json
+forge --version
+forge doctor
+forge repo list --json
 ```
 
 A successful CLI launch is not enough to prove the MCP runtime is healthy; verify the connector separately when using ChatGPT.

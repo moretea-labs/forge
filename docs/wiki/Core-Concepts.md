@@ -2,7 +2,7 @@
 
 ## Local-first controller
 
-Matea keeps execution and durable state on the operator-controlled machine. ChatGPT sends authenticated requests and receives bounded results; it does not become the process owner of the local runtime.
+Forge keeps execution and durable state on the operator-controlled machine. ChatGPT sends authenticated requests and receives bounded results; it does not become the process owner of the local runtime.
 
 ## Explicit repository scope
 
@@ -22,6 +22,6 @@ A task is complete only when the relevant diff, checks, integrated revision, and
 
 ## Immutable runtime releases
 
-Stable Supervisor releases are built from a clean canonical source tree. Source commit, manifest, service registration, active slot, and running processes must agree exactly.
+Forge Runtime releases are built from a clean canonical source tree. Source commit, immutable manifest, service registration, active whole-release authority, database compatibility, Worker protocol, and the running Runtime identity must agree exactly.
 
 Continue with [Work Lifecycle](Work-Lifecycle), [Security Model](Security-Model), and [Runtime Architecture](Runtime-Architecture).

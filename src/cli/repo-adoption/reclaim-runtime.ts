@@ -164,17 +164,17 @@ function classifyHelperRuntime(repo: string, fileName: string, helperSourceRepo:
       category: 'helper-runtime',
       classification: 'known-generated',
       action: 'remove-after-wrapper-and-verify',
-      replacement: `repo-harness run ${helperId(fileName)}`,
+      replacement: `forge run ${helperId(fileName)}`,
     };
   }
 
-  if (current?.match(/repo-harness|\.ai\/harness|Workflow Contract|Task Contract/)) {
+  if (current?.match(/forge|\.ai\/harness|Workflow Contract|Task Contract/)) {
     return {
       path: rel(repo, path),
       category: 'helper-runtime',
       classification: 'managed-modified',
       action: 'requires-user-review',
-      replacement: `repo-harness run ${helperId(fileName)}`,
+      replacement: `forge run ${helperId(fileName)}`,
       reason: 'managed-looking helper differs from packaged source',
     };
   }
@@ -235,10 +235,10 @@ function managedCommand(command: unknown): boolean {
   return (
     typeof command === 'string' &&
     (
-      command.includes('repo-harness hook') ||
-      command.includes('repo-harness-hook') ||
+      command.includes('forge hook') ||
+      command.includes('forge-hook') ||
       command.includes('.ai/hooks/run-hook.sh') ||
-      command.includes('/.repo-harness/')
+      command.includes('/.forge/')
     )
   );
 }
@@ -322,7 +322,7 @@ function packageScriptRewritePlan(repo: string): RuntimeReclaimFile | null {
           category: 'package-script',
           classification: 'managed-entry',
           action: 'rewrite-known-helper-command',
-          replacement: 'repo-harness run <helper>',
+          replacement: 'forge run <helper>',
           reason: 'package.json contains known helper script commands',
         };
       }
@@ -384,17 +384,17 @@ function shellWrapper(helper: string): string {
   return `#!/bin/bash
 set -euo pipefail
 
-if [[ -n "\${REPO_HARNESS_SOURCE_ROOT:-}" && -f "\${REPO_HARNESS_SOURCE_ROOT}/src/cli/index.ts" ]]; then
+if [[ -n "\${FORGE_SOURCE_ROOT:-}" && -f "\${FORGE_SOURCE_ROOT}/src/cli/index.ts" ]]; then
   if command -v bun >/dev/null 2>&1; then
-    exec bun "\${REPO_HARNESS_SOURCE_ROOT}/src/cli/index.ts" run ${id} "$@"
+    exec bun "\${FORGE_SOURCE_ROOT}/src/cli/index.ts" run ${id} "$@"
   fi
 fi
 
-if command -v repo-harness >/dev/null 2>&1; then
-  exec repo-harness run ${id} "$@"
+if command -v forge >/dev/null 2>&1; then
+  exec forge run ${id} "$@"
 fi
 
-echo "Missing repo-harness CLI for helper ${id}" >&2
+echo "Missing forge CLI for helper ${id}" >&2
 exit 1
 `;
 }
@@ -406,17 +406,17 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-const sourceRoot = process.env.REPO_HARNESS_SOURCE_ROOT;
+const sourceRoot = process.env.FORGE_SOURCE_ROOT;
 const command = sourceRoot && existsSync(join(sourceRoot, "src", "cli", "index.ts"))
   ? ["bun", join(sourceRoot, "src", "cli", "index.ts"), "run", "${id}"]
-  : ["repo-harness", "run", "${id}"];
+  : ["forge", "run", "${id}"];
 const result = spawnSync(command[0], [...command.slice(1), ...process.argv.slice(2)], {
   cwd: process.cwd(),
   env: process.env,
   stdio: "inherit",
 });
 if (result.error) {
-  console.error(\`Missing repo-harness CLI for helper ${id}: \${result.error.message}\`);
+  console.error(\`Missing forge CLI for helper ${id}: \${result.error.message}\`);
   process.exit(1);
 }
 process.exit(result.status ?? 1);
@@ -427,7 +427,7 @@ function isAppOwnedScript(path: string, packagedHelper: string): boolean {
   if (!existsSync(path)) return false;
   const current = readFileSync(path, 'utf-8');
   if (current === packagedHelper) return false;
-  return !current.match(/repo-harness|\.ai\/harness|Workflow Contract|Task Contract/);
+  return !current.match(/forge|\.ai\/harness|Workflow Contract|Task Contract/);
 }
 
 function writeWrappers(repo: string): Array<{ path: string; sha256: string }> {
@@ -437,7 +437,7 @@ function writeWrappers(repo: string): Array<{ path: string; sha256: string }> {
     const asset = readIfFile(join(HELPER_ASSETS_DIR, helper)) ?? '';
     const preferred = join(repo, 'scripts', helper);
     const output = isAppOwnedScript(preferred, asset)
-      ? join(repo, 'scripts', 'repo-harness', helper)
+      ? join(repo, 'scripts', 'forge', helper)
       : preferred;
     mkdirSync(dirname(output), { recursive: true });
     const content = helper.endsWith('.ts') ? tsWrapper(helper) : shellWrapper(helper);
@@ -468,7 +468,7 @@ function rewritePackageScripts(repo: string, archive?: string): RuntimeReclaimFi
     if (!match) continue;
     const helperFile = match[1];
     if (!helperFiles.has(helperFile)) continue;
-    pkg.scripts[scriptName] = `repo-harness run ${helperIds.get(helperFile)}${match[2] ?? ''}`;
+    pkg.scripts[scriptName] = `forge run ${helperIds.get(helperFile)}${match[2] ?? ''}`;
     rewritten += 1;
   }
   if (rewritten === 0) return [];
@@ -483,7 +483,7 @@ function rewritePackageScripts(repo: string, archive?: string): RuntimeReclaimFi
     category: 'package-script',
     classification: 'managed-entry',
     action: 'rewrite-known-helper-command',
-    replacement: 'repo-harness run <helper>',
+    replacement: 'forge run <helper>',
     reason: `rewrote ${rewritten} known helper script${rewritten === 1 ? '' : 's'}`,
   }];
 }
@@ -564,7 +564,7 @@ function writeArchiveManifest(repo: string, archive: string, actions: RuntimeRec
         replacement: entry.replacement,
       })),
       rollback: {
-        command: `repo-harness adopt rollback --archive ${rel(repo, archive)}`,
+        command: `forge adopt rollback --archive ${rel(repo, archive)}`,
       },
     }),
   );
@@ -590,13 +590,13 @@ export function runRuntimeReclaim(opts: RuntimeReclaimOptions = {}): RuntimeRecl
       helper: 'check-task-workflow',
       args: ['--strict'],
       cwd: repo,
-      env: { ...env, REPO_HARNESS_HELPER_SOURCE: 'package' },
+      env: { ...env, FORGE_HELPER_SOURCE: 'package' },
       stdio: 'pipe',
     });
     if (verification.exitCode !== 0) {
       result.status = 'blocked';
       result.runtime_reclaim.blocked.push(
-        `replacement verify failed: repo-harness run check-task-workflow --strict exited ${verification.exitCode}`,
+        `replacement verify failed: forge run check-task-workflow --strict exited ${verification.exitCode}`,
       );
       if (archive && archivedActions.length > 0) {
         writeArchiveManifest(repo, archive, archivedActions);

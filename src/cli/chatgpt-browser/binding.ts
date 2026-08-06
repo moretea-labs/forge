@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { basename, dirname, join, resolve } from 'path';
 import type { NativeBrowserChannel } from './types';
 
-export const CHATGPT_BROWSER_BINDING_RELATIVE_PATH = '.repo-harness/chatgpt-browser.local.json';
+export const CHATGPT_BROWSER_BINDING_RELATIVE_PATH = '.forge/chatgpt-browser.local.json';
 export const DEFAULT_CHATGPT_URL = 'https://chatgpt.com/';
 
 export interface ChatgptBrowserBinding {

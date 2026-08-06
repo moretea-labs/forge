@@ -77,8 +77,8 @@
       "source": "user-level-runtime-docs",
       "repoStubDirectory": "docs/reference-configs",
       "packageDirectory": "assets/reference-configs",
-      "resolverCommand": "repo-harness docs path <doc-id>",
-      "stubMarker": "<!-- repo-harness: reference-config-stub v1 -->"
+      "resolverCommand": "forge docs path <doc-id>",
+      "stubMarker": "<!-- forge: reference-config-stub v1 -->"
     }
   },
   "helpers": {
@@ -323,10 +323,10 @@
         "lines": [
           "# Current Status Snapshot",
           "",
-          "<!-- generated-by: repo-harness refresh-current-status v1 -->",
+          "<!-- generated-by: forge refresh-current-status v1 -->",
           "",
           "> **Status**: Idle",
-          "> **Reason**: repo-harness adoption bootstrap",
+          "> **Reason**: forge adoption bootstrap",
           "",
           "This file is a tracked mainline snapshot derived from repo artifacts. It is not a live lock, not a kanban board, and not an implementation gate.",
           ""
@@ -548,7 +548,7 @@
             "scripts/workflow-contract.ts",
             "scripts/workstream-sync.sh"
           ],
-          "summary": "Remove legacy repo-harness helper scripts from root scripts/ only when file content is identifiable as generated repo-harness runtime; preserve ambiguous app-owned scripts."
+          "summary": "Remove legacy forge helper scripts from root scripts/ only when file content is identifiable as generated forge runtime; preserve ambiguous app-owned scripts."
         },
         {
           "id": "legacy-skill-factory-generated-assets",

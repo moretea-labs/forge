@@ -633,7 +633,7 @@ export async function callRepositoryTool(
             sampled: false,
             observedAt: null,
             staleAgeMs: null,
-            message: 'Git status has not been sampled by the Controller daemon yet. Retry after scheduler heartbeat or call with refresh=true for an explicit live refresh.',
+            message: 'Git status has not been sampled by the Forge Runtime yet. Retry after scheduler heartbeat or call with refresh=true for an explicit live refresh.',
           },
         });
       }
@@ -874,7 +874,7 @@ export async function callRepositoryTool(
           } catch (error) {
             // Process Runtime is authoritative. Falling through could spawn the
             // same command again through the legacy Fast/Local Job path.
-            if (process.env.REPO_HARNESS_DEBUG_PROCESS_RUNTIME === '1') {
+            if (process.env.FORGE_DEBUG_PROCESS_RUNTIME === '1') {
               console.error('[repository_command_execute] process runtime error', error);
             }
             return failure(error);
@@ -1010,7 +1010,7 @@ export async function callRepositoryTool(
               }
             }
           } catch (error) {
-            if (process.env.REPO_HARNESS_DEBUG_PROCESS_RUNTIME === '1') {
+            if (process.env.FORGE_DEBUG_PROCESS_RUNTIME === '1') {
               console.error('[repository_command_execute] durable worker inline process runtime error', error);
             }
           }

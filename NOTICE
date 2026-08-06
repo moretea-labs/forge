@@ -1,9 +1,9 @@
-Matea
+Forge
 
 Copyright (c) 2026 Moretea Labs contributors
 
-Matea began as a derivative of AncientTwo/repo-harness, Copyright (c) 2026 AncientTwo. The initial independent repository snapshot retained substantial portions of that MIT-licensed work.
+Forge began as a derivative of AncientTwo/repo-harness, Copyright (c) 2026 AncientTwo. The initial independent repository snapshot retained substantial portions of that MIT-licensed work. The upstream repository name is preserved here solely as factual legal attribution and is not a supported Forge product or command identity.
 
-Matea has since diverged through substantial modifications to its ChatGPT integration, durable runtime, repository registry, execution and recovery model, plugin system, review workflow, governance, and release tooling. It is independently maintained by Moretea Labs and is not endorsed by the upstream project.
+Forge has since diverged through substantial modifications to its ChatGPT integration, durable Runtime, repository registry, execution and recovery model, plugin system, review workflow, governance, and release tooling. It is independently maintained by Moretea Labs and is not endorsed by the upstream project.
 
 The upstream copyright and MIT permission notice are preserved in LICENSE as required for copies or substantial portions of the original software.

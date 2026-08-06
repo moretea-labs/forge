@@ -139,14 +139,14 @@ function base64Url(value: Buffer): string {
 }
 
 function clientId(): string | undefined {
-  return process.env.REPO_HARNESS_GOOGLE_WORKSPACE_CLIENT_ID?.trim()
-    || process.env.REPO_HARNESS_GOOGLE_CLIENT_ID?.trim()
+  return process.env.FORGE_GOOGLE_WORKSPACE_CLIENT_ID?.trim()
+    || process.env.FORGE_GOOGLE_CLIENT_ID?.trim()
     || process.env.GOOGLE_CLIENT_ID?.trim();
 }
 
 function clientSecret(): string | undefined {
-  return process.env.REPO_HARNESS_GOOGLE_WORKSPACE_CLIENT_SECRET?.trim()
-    || process.env.REPO_HARNESS_GOOGLE_CLIENT_SECRET?.trim()
+  return process.env.FORGE_GOOGLE_WORKSPACE_CLIENT_SECRET?.trim()
+    || process.env.FORGE_GOOGLE_CLIENT_SECRET?.trim()
     || process.env.GOOGLE_CLIENT_SECRET?.trim();
 }
 
@@ -164,7 +164,7 @@ export function prepareGoogleOAuthLogin(
       provider: 'google-workspace',
       service: input.service,
       readyToOpenBrowser: false,
-      missingConfiguration: ['Set REPO_HARNESS_GOOGLE_CLIENT_ID or REPO_HARNESS_GOOGLE_WORKSPACE_CLIENT_ID.'],
+      missingConfiguration: ['Set FORGE_GOOGLE_CLIENT_ID or FORGE_GOOGLE_WORKSPACE_CLIENT_ID.'],
       credentialStore: googleCredentialStoreStatus(),
     };
   }

@@ -36,7 +36,7 @@ repo="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$repo"
 
 if [[ -f "scripts/prepare-handoff.sh" ]]; then
-  REPO_HARNESS_SKIP_RESUME_REFRESH=1 bash scripts/prepare-handoff.sh "$reason"
+  FORGE_SKIP_RESUME_REFRESH=1 bash scripts/prepare-handoff.sh "$reason"
 fi
 
 resume_args=(scripts/codex-handoff-resume.sh --cwd "$repo" --reason "$reason")

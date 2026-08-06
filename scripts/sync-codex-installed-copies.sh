@@ -120,7 +120,7 @@ sync_claude_alias_links() {
   fi
 
   mkdir -p "$CLAUDE_SKILLS_ROOT"
-  local alias_dest="$CLAUDE_SKILLS_ROOT/repo-harness"
+  local alias_dest="$CLAUDE_SKILLS_ROOT/forge"
   remove_managed_dest "$alias_dest"
   create_symlink_or_explain "$SOURCE_ROOT" "$alias_dest"
   echo "[sync-installed] Claude skill alias: $alias_dest -> $SOURCE_ROOT"
@@ -132,23 +132,23 @@ sync_claude_alias_copies() {
   fi
 
   mkdir -p "$CLAUDE_SKILLS_ROOT"
-  local alias_dest="$CLAUDE_SKILLS_ROOT/repo-harness"
+  local alias_dest="$CLAUDE_SKILLS_ROOT/forge"
   sync_copy "$alias_dest"
   echo "[sync-installed] Claude skill copy: $alias_dest"
 }
 
 # The host skill surface is intentionally canonical-only. CLI subcommands remain
-# available through the single repo-harness router instead of being installed as
+# available through the single forge router instead of being installed as
 # separate, overlapping skills. Clean historical managed facade installs so an
 # upgrade does not leave stale skills discoverable.
 legacy_facades=(
-  repo-harness-architecture repo-harness-autoplan repo-harness-capability
-  repo-harness-check repo-harness-deploy repo-harness-goal
-  repo-harness-gptpro repo-harness-gptpro-setup repo-harness-handoff
-  repo-harness-init repo-harness-migrate repo-harness-plan repo-harness-prd
-  repo-harness-repair repo-harness-review repo-harness-scaffold
-  repo-harness-ship repo-harness-sprint repo-harness-upgrade
-  repo-harness-chatgpt-bridge repo-harness-chatgpt-browser
+  forge-architecture forge-autoplan forge-capability
+  forge-check forge-deploy forge-goal
+  forge-gptpro forge-gptpro-setup forge-handoff
+  forge-init forge-migrate forge-plan forge-prd
+  forge-repair forge-review forge-scaffold
+  forge-ship forge-sprint forge-upgrade
+  forge-chatgpt-bridge forge-chatgpt-browser
 )
 
 cleanup_legacy_facades() {
@@ -160,7 +160,7 @@ cleanup_legacy_facades() {
   done
 }
 
-canonical_dest="$CODEX_SKILLS_ROOT/repo-harness"
+canonical_dest="$CODEX_SKILLS_ROOT/forge"
 if [[ "$LINK_INSTALLED_COPIES" == "1" ]]; then
   mkdir -p "$CODEX_SKILLS_ROOT"
   remove_managed_dest "$canonical_dest"

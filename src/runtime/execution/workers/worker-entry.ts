@@ -31,7 +31,7 @@ const controllerHome = ensureControllerHome(option('--controller-home'));
 try {
   bindInheritedRuntimeWriteClaimFromEnvironment(process.env, controllerHome);
 } catch (error) {
-  console.error('[repo-harness worker] Runtime write claim bind failed:', error instanceof Error ? error.message : error);
+  console.error('[forge worker] Runtime write claim bind failed:', error instanceof Error ? error.message : error);
   process.exit(78);
 }
 

@@ -412,7 +412,7 @@ function scanRuntimeTempCandidates(
           ? 'Symbolic links are never eligible for automatic cleanup.'
           : entry.occupiedByPid
             ? `Temp entry is referenced by live process ${entry.occupiedByPid}.`
-            : `Repo-harness temp entry is unoccupied, not a symbolic link, and ${entry.ageMinutes} minute(s) old.`,
+            : `Forge temp entry is unoccupied, not a symbolic link, and ${entry.ageMinutes} minute(s) old.`,
       ageMinutes: entry.ageMinutes,
       suggestedAction: 'full_maintenance_pass',
       ownershipStatus,
@@ -485,10 +485,10 @@ function advancedRepairPlan(input: { recentErrors?: string[]; platformBlocked?: 
     preferredProducer,
     reason: sourceDefect
       ? 'Source defect is suspected; generate a patch in an isolated worktree after local maintenance is exhausted.'
-      : 'Primary controller may be blocked; prepare a bounded handoff rather than bypassing repo-harness policy.',
+      : 'Primary controller may be blocked; prepare a bounded handoff rather than bypassing forge policy.',
     escalationOrder: ['chatgpt_supervised', 'local_codex_cli', 'deepseek_backup_controller', 'human_operator'],
     guardrails: [
-      'Model repair agents produce plans or patches only; repo-harness remains the policy, approval, lease, and audit authority.',
+      'Model repair agents produce plans or patches only; forge remains the policy, approval, lease, and audit authority.',
       'Use isolated worktrees for source repair and keep runtime metadata maintenance separate from code changes.',
       'Require checks and human approval before merging or pushing model-produced source changes.',
     ],
@@ -551,9 +551,9 @@ export function buildRuntimeMaintenanceStatus(
     },
     advancedRepair: advancedRepairPlan({ recentErrors: options.recentErrors }),
     warnings: [
-      'Runtime maintenance only edits repo-harness metadata under .ai/harness and controller-home for the selected repository.',
+      'Runtime maintenance only edits forge metadata under .ai/harness and controller-home for the selected repository.',
       'Pending approvals are not cancelled unless cancel_pending_approvals is explicitly enabled.',
-      'System temp cleanup only removes direct repo-harness-prefixed children of approved temp roots after a 24-hour retention period and a fresh process-occupancy check.',
+      'System temp cleanup only removes direct forge-prefixed children of approved temp roots after a 24-hour retention period and a fresh process-occupancy check.',
       'Source repair should be delegated to ChatGPT/Codex/DeepSeek only after local maintenance and restart fallbacks fail.',
     ],
   };
@@ -680,7 +680,7 @@ function terminalizeLocalJob(candidate: RuntimeMaintenanceCandidate, status: 'or
     status,
     updatedAt: now(),
     finishedAt: now(),
-    error: job.error ?? `Terminalized by repo-harness runtime maintenance: ${candidate.reason}`,
+    error: job.error ?? `Terminalized by forge runtime maintenance: ${candidate.reason}`,
     outcome: job.outcome ?? { infrastructureError: { code: 'MAINTENANCE_TERMINALIZED', message: candidate.reason } },
   };
   writeJsonAtomic(jobPath, updated);
@@ -799,7 +799,7 @@ export function applyRuntimeMaintenance(
 
 export function buildSelfHealingLoopPlan(input: SelfHealingLoopPlanInput = {}): SelfHealingLoopPlan {
   const generatedAt = now();
-  const objective = input.objective?.trim() || 'Restore repo-harness execution and continue the blocked user task safely.';
+  const objective = input.objective?.trim() || 'Restore forge execution and continue the blocked user task safely.';
   const classes = (input.recentErrors ?? []).map(classifyFailure);
   const failureClass = input.platformBlocked === true
     ? 'platform_blocked'
@@ -822,7 +822,7 @@ export function buildSelfHealingLoopPlan(input: SelfHealingLoopPlanInput = {}): 
     phases: [
       {
         id: 'observe',
-        owner: 'repo-harness supervisor',
+        owner: 'forge supervisor',
         action: 'Collect capability, runtime storage, local-job, scheduler, bridge, plugin, and recent-error evidence using read-only probes.',
         exitCriteria: 'Failure class and first safe recovery action are deterministic.',
       },
@@ -843,7 +843,7 @@ export function buildSelfHealingLoopPlan(input: SelfHealingLoopPlanInput = {}): 
       {
         id: 'restart-fallback',
         owner: 'local supervisor or user',
-        action: 'Restart only repo-harness controller services after local maintenance or capability grant resolution is exhausted.',
+        action: 'Restart only forge controller services after local maintenance or capability grant resolution is exhausted.',
         exitCriteria: 'Daemon, bridge, scheduler, plugin health, and projection become ready.',
         fallback: 'Escalate to model-assisted source repair if the same failure repeats after restart.',
       },
@@ -852,11 +852,11 @@ export function buildSelfHealingLoopPlan(input: SelfHealingLoopPlanInput = {}): 
         owner: producer.preferredProducer,
         action: 'Generate a bounded source repair plan or patch in an isolated worktree when evidence points to a source defect.',
         exitCriteria: 'Patch passes configured checks and is reviewed by a human or supervising controller.',
-        fallback: 'Use the next producer in the escalation order without bypassing repo-harness policy.',
+        fallback: 'Use the next producer in the escalation order without bypassing forge policy.',
       },
       {
         id: 'continuation',
-        owner: 'repo-harness scheduler',
+        owner: 'forge scheduler',
         action: 'Retry the original blocked operation from its durable intent or ask for confirmation when the operation has external effects.',
         exitCriteria: 'Original task completes, is safely paused, or is escalated with evidence.',
       },
@@ -866,7 +866,7 @@ export function buildSelfHealingLoopPlan(input: SelfHealingLoopPlanInput = {}): 
       'State-only recovery must not modify source files.',
       'Model-generated source repair must not directly mutate runtime metadata.',
       'Auth, browser, and external filesystem blockers must be resolved through typed grant/login handoff tools before model repair.',
-      'All destructive or external effects remain behind repo-harness approval and audit.',
+      'All destructive or external effects remain behind forge approval and audit.',
       'Every recovery pass must be idempotent and bounded to one registered repository.',
     ],
   };

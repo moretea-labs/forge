@@ -23,9 +23,9 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 94,
-    "maxTestLines": 40300,
-    "maxPureFiles": 30,
+    "maxTestFiles": 95,
+    "maxTestLines": 40500,
+    "maxPureFiles": 31,
     "maxTempIsolatedFiles": 41,
     "maxProcessTreeFiles": 17,
     "maxGitWorktreeFiles": 15,
@@ -323,6 +323,10 @@
       "module": "release",
       "resource": "temp-isolated"
     },
+    "tests/cli/setup-session.test.ts": {
+      "module": "core",
+      "resource": "pure"
+    },
     "tests/runtime/browser-plugin.test.ts": {
       "module": "browser",
       "resource": "fixed-port"
@@ -351,7 +355,11 @@
       "module": "workflow",
       "resource": "controller-home-isolated"
     },
-    "tests/runtime/controller-daemon-ownership.test.ts": {
+    "tests/runtime/forge-runtime-service.test.ts": {
+      "module": "release",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/forge-runtime-ownership.test.ts": {
       "module": "process-runtime",
       "resource": "runtime-singleton"
     },

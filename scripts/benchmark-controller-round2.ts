@@ -40,7 +40,7 @@ function percentile(values: number[], p: number): number {
 async function main(): Promise<void> {
   const repoRoot = arg('--repo') ?? process.cwd();
   const suppliedHome = arg('--controller-home');
-  const generatedHome = suppliedHome ? undefined : mkdtempSync(join(tmpdir(), 'repo-harness-benchmark-round2-'));
+  const generatedHome = suppliedHome ? undefined : mkdtempSync(join(tmpdir(), 'forge-benchmark-round2-'));
   const controllerHome = suppliedHome ?? generatedHome!;
   mkdirSync(controllerHome, { recursive: true });
   const repository = registerRepository({ path: repoRoot, controllerHome });
@@ -70,9 +70,9 @@ async function main(): Promise<void> {
     });
     const cold = await call(context, 'controller_context', { repo_id: repository.repoId });
     const fresh = await call(context, 'controller_context', { repo_id: repository.repoId });
-    writeFileSync(join(repoRoot, '.repo-harness-benchmark-round2-touch'), `${Date.now()}\n`);
+    writeFileSync(join(repoRoot, '.forge-benchmark-round2-touch'), `${Date.now()}\n`);
     const stale = await call(context, 'controller_context', { repo_id: repository.repoId });
-    rmSync(join(repoRoot, '.repo-harness-benchmark-round2-touch'), { force: true });
+    rmSync(join(repoRoot, '.forge-benchmark-round2-touch'), { force: true });
     const detail = await call(context, 'controller_context', { repo_id: repository.repoId, detail_level: 'detail' });
     const concurrent = await Promise.all(Array.from({ length: 30 }, () => call(context, 'controller_context', { repo_id: repository.repoId })));
     const timings = concurrent.map((item) => item.elapsedMs);

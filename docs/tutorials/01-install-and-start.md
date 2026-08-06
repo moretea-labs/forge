@@ -20,11 +20,11 @@ See [Platform Support](../operations/platform-support.md) for the exact matrix.
 
 ## 2. Install the CLI today
 
-The npm package `@moretea-labs/matea` is not public yet. Install from a reviewed source checkout:
+The npm package `@moretea-labs/forge` is not public yet. Install from a reviewed source checkout:
 
 ```bash
-git clone https://github.com/moretea-labs/matea.git
-cd matea
+git clone https://github.com/moretea-labs/forge.git
+cd forge
 npm ci --ignore-scripts --no-audit --no-fund
 npm install -g . --omit=optional --no-audit --no-fund
 ```
@@ -39,37 +39,48 @@ bun add -g .
 After the RC is published, the registry commands will be:
 
 ```bash
-npm install -g @moretea-labs/matea@next
+npm install -g @moretea-labs/forge@next
 # or
-bun add -g @moretea-labs/matea@next
+bun add -g @moretea-labs/forge@next
 ```
 
-The package installs `matea` and `matea-hook` as the primary commands, with `repo-harness` and `repo-harness-hook` as compatibility aliases. Do not install an unscoped package as a substitute.
+The package exposes exactly `forge`, `forge-hook`, and `forge-runtime`. Previous product aliases are not published; do not install an unscoped substitute.
 
-## 3. Initialize the user runtime
+## 3. Open the guided setup session
 
 ```bash
-matea --version
-matea init --target both
-matea doctor
+forge --version
+forge setup open --target both
 ```
 
-Use `--target codex` or `--target claude` when only one host is needed. `matea init --help` lists optional integrations that can be skipped.
+`forge setup open` creates or resumes one user-level setup session below `~/.forge/setup/`. It runs the readiness checks and prints exactly one next configuration action. Complete that action, then continue with the same command loop:
+
+```bash
+forge setup next
+```
+
+Repeat `forge setup next` until the session reports `ready`, then close it:
+
+```bash
+forge setup close
+```
+
+Use `forge setup status` to inspect the persisted session and `forge setup check` for a one-shot read-only report. `--target codex` or `--target claude` limits host-specific configuration. The setup session never silently performs remote, secret-bearing, destructive, or service-installing actions.
 
 ## 4. Adopt or register a repository
 
 For macOS, Linux, or WSL2, preview adoption first:
 
 ```bash
-matea adopt --repo /path/to/your-project --dry-run
-matea adopt --repo /path/to/your-project
+forge adopt --repo /path/to/your-project --dry-run
+forge adopt --repo /path/to/your-project
 ```
 
 All platforms can register explicitly:
 
 ```bash
-matea repo register /path/to/your-project --name my-project --json
-matea repo list --json
+forge repo register /path/to/your-project --name my-project --json
+forge repo list --json
 ```
 
 Keep the returned `repoId`; it is the stable repository identity used by ChatGPT and the Controller.
@@ -77,9 +88,10 @@ Keep the returned `repoId`; it is the stable repository identity used by ChatGPT
 ## 5. Confirm readiness
 
 ```bash
-matea doctor
-matea status --json
-matea repo list --json
+forge setup status
+forge doctor
+forge status --json
+forge repo list --json
 ```
 
 Runtime state belongs in Controller Home and ignored repository links, not in public source control. Never commit tokens, MCP runtime files, local jobs, logs, or generated worktrees.

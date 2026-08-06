@@ -11,7 +11,7 @@ const MAX_RESPONSE_BYTES = 1_048_576;
 const MAX_STDERR_CHARS = 8_000;
 const MIN_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 180_000;
-const HOST_FLAG = 'REPO_HARNESS_BROWSER_NODE_BRIDGE_HOST';
+const HOST_FLAG = 'FORGE_BROWSER_NODE_BRIDGE_HOST';
 
 const LOCAL_ACTIONS = new Set([
   'configure',
@@ -54,7 +54,7 @@ function isExecutable(path: string): boolean {
 
 function pathCandidates(env: NodeJS.ProcessEnv): string[] {
   const candidates = [
-    env.REPO_HARNESS_NODE_EXECUTABLE,
+    env.FORGE_NODE_EXECUTABLE,
     env.VOLTA_HOME ? join(env.VOLTA_HOME, 'bin', 'node') : undefined,
     '/opt/homebrew/bin/node',
     '/usr/local/bin/node',
@@ -67,10 +67,10 @@ function pathCandidates(env: NodeJS.ProcessEnv): string[] {
 }
 
 export function resolveBrowserBridgeNodeExecutable(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.REPO_HARNESS_NODE_EXECUTABLE) {
-    const configured = isAbsolute(env.REPO_HARNESS_NODE_EXECUTABLE)
-      ? env.REPO_HARNESS_NODE_EXECUTABLE
-      : resolve(env.REPO_HARNESS_NODE_EXECUTABLE);
+  if (env.FORGE_NODE_EXECUTABLE) {
+    const configured = isAbsolute(env.FORGE_NODE_EXECUTABLE)
+      ? env.FORGE_NODE_EXECUTABLE
+      : resolve(env.FORGE_NODE_EXECUTABLE);
     if (isExecutable(configured)) return configured;
     throw new AssistantPluginError('PLUGIN_BROWSER_NODE_UNAVAILABLE', 'The configured Browser bridge Node executable is not executable.', {
       retryable: false,

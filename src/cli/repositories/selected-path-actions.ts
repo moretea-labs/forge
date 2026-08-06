@@ -157,7 +157,7 @@ function writePatchHandoffArtifact(repository: RepositoryRecord, handoffDir: str
     diff: [diff, stagedDiff].filter(Boolean).join('\n'),
     touchedPaths,
     checks: [],
-    actor: 'repo-harness',
+    actor: 'forge',
     source: `fallback-handoff:${reason}`,
     notes: [
       'Integration must use selected-path review gates.',

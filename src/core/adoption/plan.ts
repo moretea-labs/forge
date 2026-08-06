@@ -114,7 +114,7 @@ export function planAdoption(opts: PlanAdoptionOptions): AdoptionPlan {
       id: makeOperationId("mkdir", path),
       kind: "mkdir" as const,
       path,
-      reason: "Ensure repo-harness workflow surface directory exists",
+      reason: "Ensure forge workflow surface directory exists",
       risk: "low" as const,
       status: repoDirStatus(repoRoot, path),
     })),

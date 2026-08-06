@@ -19,9 +19,9 @@ Each plugin is discoverable through:
 
 The runtime stores only non-secret plugin configuration under:
 
-- `.repo-harness/plugins/gmail.json`
-- `.repo-harness/plugins/google-calendar.json`
-- `.repo-harness/plugins/google-tasks.json`
+- `.forge/plugins/gmail.json`
+- `.forge/plugins/google-calendar.json`
+- `.forge/plugins/google-tasks.json`
 
 Credentials are never written to repository files, Controller Home state, or
 plugin manifests.
@@ -31,20 +31,20 @@ plugin manifests.
 Live Google Workspace provider mode reads bearer tokens only from process
 environment variables:
 
-- Gmail: `REPO_HARNESS_GMAIL_ACCESS_TOKEN`, `REPO_HARNESS_GOOGLE_WORKSPACE_ACCESS_TOKEN`, `REPO_HARNESS_GOOGLE_ACCESS_TOKEN`
-- Calendar: `REPO_HARNESS_GOOGLE_CALENDAR_ACCESS_TOKEN`, `REPO_HARNESS_GOOGLE_WORKSPACE_ACCESS_TOKEN`, `REPO_HARNESS_GOOGLE_ACCESS_TOKEN`
-- Tasks: `REPO_HARNESS_GOOGLE_TASKS_ACCESS_TOKEN`, `REPO_HARNESS_GOOGLE_WORKSPACE_ACCESS_TOKEN`, `REPO_HARNESS_GOOGLE_ACCESS_TOKEN`
+- Gmail: `FORGE_GMAIL_ACCESS_TOKEN`, `FORGE_GOOGLE_WORKSPACE_ACCESS_TOKEN`, `FORGE_GOOGLE_ACCESS_TOKEN`
+- Calendar: `FORGE_GOOGLE_CALENDAR_ACCESS_TOKEN`, `FORGE_GOOGLE_WORKSPACE_ACCESS_TOKEN`, `FORGE_GOOGLE_ACCESS_TOKEN`
+- Tasks: `FORGE_GOOGLE_TASKS_ACCESS_TOKEN`, `FORGE_GOOGLE_WORKSPACE_ACCESS_TOKEN`, `FORGE_GOOGLE_ACCESS_TOKEN`
 
-To avoid depending on shell/window startup environment injection, repo-harness
+To avoid depending on shell/window startup environment injection, forge
 also bootstraps these variables into `process.env` from ignored local files when
 they are present and the same variable is not already exported by the parent
 process:
 
-- `_ops/secrets/repo-harness.env`
+- `_ops/secrets/forge.env`
 - `_ops/secrets/controller.env`
 - `_ops/env/.env.local`
 
-Only repo-harness and Google-related variable names are imported from those
+Only forge and Google-related variable names are imported from those
 files, and an explicit parent-process environment variable still takes
 precedence.
 

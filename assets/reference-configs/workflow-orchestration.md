@@ -4,7 +4,7 @@
 
 ## Default Brain
 
-- File vault: `brain/repo-harness/patterns/pattern-agentic-workflow-orchestration.md`
+- File vault: `brain/forge/patterns/pattern-agentic-workflow-orchestration.md`
 - gbrain slug: `patterns/pattern-agentic-workflow-orchestration`
 
 ## Repo Role

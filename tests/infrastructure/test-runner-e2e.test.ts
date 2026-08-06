@@ -20,7 +20,7 @@ function processExists(pid: number): boolean {
 
 describe('test runner infrastructure', () => {
   test('keeps a source assertion failure distinct from infrastructure failure', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'repo-harness-test-runner-source-'));
+    const dir = mkdtempSync(join(tmpdir(), 'forge-test-runner-source-'));
     const testFile = join(dir, 'fails.test.ts');
     writeFileSync(
       testFile,
@@ -50,7 +50,7 @@ describe('test runner infrastructure', () => {
     });
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('expected TCP address');
-    const dir = mkdtempSync(join(tmpdir(), 'repo-harness-test-runner-port-'));
+    const dir = mkdtempSync(join(tmpdir(), 'forge-test-runner-port-'));
     const testFile = join(dir, 'port-conflict.test.ts');
     writeFileSync(
       testFile,
@@ -73,7 +73,7 @@ describe('test runner infrastructure', () => {
   }, 15_000);
 
   test('forwards termination and exits with the conventional signal code', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'repo-harness-test-runner-signal-'));
+    const dir = mkdtempSync(join(tmpdir(), 'forge-test-runner-signal-'));
     const ready = join(dir, 'ready');
     const testFile = join(dir, 'signal.test.ts');
     writeFileSync(
@@ -98,7 +98,7 @@ describe('test runner infrastructure', () => {
   }, 15_000);
 
   test('rejects a passing test that mutates the tracked tree', async () => {
-    const repo = mkdtempSync(join(tmpdir(), 'repo-harness-test-runner-mutation-'));
+    const repo = mkdtempSync(join(tmpdir(), 'forge-test-runner-mutation-'));
     const testPath = 'tests/infrastructure/mutates-tree.test.ts';
     mkdirSync(join(repo, 'tests/infrastructure'), { recursive: true });
     writeFileSync(join(repo, 'tracked.txt'), 'original\n');
@@ -131,7 +131,7 @@ describe('test runner infrastructure', () => {
   }, 15_000);
 
   test('retries infrastructure once but never retries a source assertion', async () => {
-    const repo = mkdtempSync(join(tmpdir(), 'repo-harness-test-runner-retry-'));
+    const repo = mkdtempSync(join(tmpdir(), 'forge-test-runner-retry-'));
     mkdirSync(join(repo, 'tests'), { recursive: true });
     const infraPath = 'tests/infra-retry.test.ts';
     const sourcePath = 'tests/source-no-retry.test.ts';
@@ -175,7 +175,7 @@ describe('test runner infrastructure', () => {
   }, 15_000);
 
   test('enforces a file wall timeout and reports infrastructure failure', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'repo-harness-test-runner-timeout-'));
+    const dir = mkdtempSync(join(tmpdir(), 'forge-test-runner-timeout-'));
     const testFile = join(dir, 'hangs.test.ts');
     writeFileSync(
       testFile,
@@ -203,7 +203,7 @@ describe('test runner infrastructure', () => {
   }, 15_000);
 
   test('reaps a descendant after the test file closes', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'repo-harness-test-runner-residual-'));
+    const dir = mkdtempSync(join(tmpdir(), 'forge-test-runner-residual-'));
     const pidFile = join(dir, 'child.pid');
     const testFile = join(dir, 'leaky.test.ts');
     try {

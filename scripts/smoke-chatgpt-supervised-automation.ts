@@ -13,9 +13,9 @@ import { getRepository, registerRepository, selectRepositoryCheckout } from '../
 import { ensureCampaignWorkspace } from '../src/runtime/workflow/campaigns/workspace';
 import { executeExecutionJob } from '../src/runtime/execution/workers/executor';
 
-const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-supervised-smoke-'));
+const controllerHome = mkdtempSync(join(tmpdir(), 'forge-supervised-smoke-'));
 const repoId = 'smoke-repo';
-const workspaceFixtureRoot = mkdtempSync(join(tmpdir(), 'repo-harness-supervised-workspace-smoke-'));
+const workspaceFixtureRoot = mkdtempSync(join(tmpdir(), 'forge-supervised-workspace-smoke-'));
 
 function forceReconcile(campaignId: string) {
   const current = getCampaign(controllerHome, repoId, campaignId);

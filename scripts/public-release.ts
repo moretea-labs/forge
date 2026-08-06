@@ -15,8 +15,8 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const manifest = process.env.REPO_HARNESS_PUBLIC_MANIFEST
-  ? resolve(process.env.REPO_HARNESS_PUBLIC_MANIFEST)
+const manifest = process.env.FORGE_PUBLIC_MANIFEST
+  ? resolve(process.env.FORGE_PUBLIC_MANIFEST)
   : join(root, "scripts/public-release-files.txt");
 
 function fail(message: string): never {
@@ -39,7 +39,7 @@ function forbidden(path: string): boolean {
     ".ai",
     ".claude",
     ".codex",
-    ".repo-harness",
+    ".forge",
     "tasks",
     "coverage",
     "artifacts",
@@ -48,7 +48,7 @@ function forbidden(path: string): boolean {
   ];
   return (
     roots.some((entry) => value === entry || value.startsWith(`${entry}/`)) ||
-    /^docs\/repo-harness-.*-file-manifest\.sha256$/.test(value) ||
+    /^docs\/forge-.*-file-manifest\.sha256$/.test(value) ||
     /\.(?:log|tgz|tar\.gz|pem|key)$/.test(value)
   );
 }
@@ -125,7 +125,7 @@ function scan(output: string): void {
   for (const required of ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "package.json", "package-lock.json", "README.md", "README.en.md", "src", "scripts"]) {
     if (!existsSync(join(output, required))) fail(`required public file missing: ${required}`);
   }
-  for (const blocked of [".git", ".ai", ".claude", ".codex", ".repo-harness", "tasks", "coverage", "artifacts", "autoresearch"]) {
+  for (const blocked of [".git", ".ai", ".claude", ".codex", ".forge", "tasks", "coverage", "artifacts", "autoresearch"]) {
     if (existsSync(join(output, blocked))) fail(`runtime/internal path leaked: ${blocked}`);
   }
 
@@ -161,7 +161,7 @@ function scan(output: string): void {
 const requestedOutput = process.argv[2];
 const output = requestedOutput
   ? resolve(requestedOutput)
-  : mkdtempSync(join(tmpdir(), "repo-harness-public-"));
+  : mkdtempSync(join(tmpdir(), "forge-public-"));
 if (requestedOutput) {
   if (existsSync(output)) fail(`output already exists: ${output}`);
   mkdirSync(output, { recursive: true });

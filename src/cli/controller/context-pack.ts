@@ -16,7 +16,7 @@ const DEFAULT_MAX_CHARS_PER_SNIPPET = 8000;
 const DEFAULT_SEARCH_EXCLUDE_GLOBS = [
   ".git/**",
   "_ops/**",
-  ".repo-harness/**",
+  ".forge/**",
   ".ai/harness/**",
   "node_modules/**",
   "dist/**",

@@ -118,7 +118,7 @@ function safeArtifactDir(
 ): string {
   const root = overrideRoot
     ? resolve(overrideRoot, leaf)
-    : resolve(repository.canonicalRoot, '.repo-harness', 'ios', leaf);
+    : resolve(repository.canonicalRoot, '.forge', 'ios', leaf);
   mkdirSync(root, { recursive: true });
   return root;
 }
@@ -213,7 +213,7 @@ function findFiles(root: string, suffix: string, maxDepth = 3): string[] {
     try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const entry of entries) {
       const entryName = String(entry.name);
-      if (entryName === 'node_modules' || entryName === '.git' || entryName === '.repo-harness' || entryName === '.ai') continue;
+      if (entryName === 'node_modules' || entryName === '.git' || entryName === '.forge' || entryName === '.ai') continue;
       const path = join(dir, entryName);
       if (entry.isDirectory() && entryName.endsWith(suffix)) results.push(path);
       else if (entry.isDirectory()) visit(path, depth + 1);
@@ -439,9 +439,9 @@ function chooseSimulatorUdid(input: { udid?: string; simulatorName?: string }): 
 
 function assertRepoBoundedAppPath(repository: RepositoryRecord, appPath: string): string {
   const resolved = resolve(repository.canonicalRoot, appPath);
-  const allowedRoot = resolve(repository.canonicalRoot, '.repo-harness', 'ios', 'DerivedData');
+  const allowedRoot = resolve(repository.canonicalRoot, '.forge', 'ios', 'DerivedData');
   const rel = relative(allowedRoot, resolved);
-  if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`)) throw new Error('IOS_APP_PATH_NOT_BOUNDED: app_path must be under .repo-harness/ios/DerivedData');
+  if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`)) throw new Error('IOS_APP_PATH_NOT_BOUNDED: app_path must be under .forge/ios/DerivedData');
   if (!resolved.endsWith('.app')) throw new Error('IOS_APP_PATH_INVALID: app_path must end with .app');
   return resolved;
 }
@@ -788,7 +788,7 @@ export function iosSmokeReview(repository: RepositoryRecord, input: IosSmokeRevi
       blockedStage = 'build';
       stages.push(stageFailed(
         'build',
-        'Build completed without producing a .app under .repo-harness/ios/DerivedData.',
+        'Build completed without producing a .app under .forge/ios/DerivedData.',
         'Confirm the scheme builds an iOS app target and DerivedData path is writable.',
         { evidence: buildResult as unknown as Record<string, unknown> },
       ));
@@ -867,7 +867,7 @@ export function iosSmokeReview(repository: RepositoryRecord, input: IosSmokeRevi
     stages.push(stageFailed(
       'install',
       ('error' in install && install.error ? String((install.error as { message?: string }).message) : 'Install failed'),
-      'Confirm the .app path is under .repo-harness/ios/DerivedData and matches the simulator architecture.',
+      'Confirm the .app path is under .forge/ios/DerivedData and matches the simulator architecture.',
       { evidence: install as unknown as Record<string, unknown> },
     ));
     failRemaining(5, 'Skipped because install failed.');

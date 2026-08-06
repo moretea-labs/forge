@@ -1,5 +1,5 @@
 /**
- * `matea security scan` -- read-only checks for high-value local
+ * `forge security scan` -- read-only checks for high-value local
  * config injection surfaces. It reports findings only; it never mutates host
  * or repo config.
  */
@@ -193,7 +193,7 @@ function reviewedExceptionEntries(raw: unknown): unknown[] {
 function loadReviewedExceptions(repoRoot: string, home: string): LoadedSecurityReviewedException[] {
   const sources: Array<{ filePath: string; source: SecurityReviewedExceptionSource }> = [
     { filePath: path.join(repoRoot, '.ai', 'harness', 'policy.json'), source: 'repo-policy' },
-    { filePath: path.join(home, '.repo-harness', 'config.json'), source: 'user-config' },
+    { filePath: path.join(home, '.forge', 'config.json'), source: 'user-config' },
   ];
   const exceptions: LoadedSecurityReviewedException[] = [];
   for (const source of sources) {
@@ -264,7 +264,7 @@ function scanHookConfig(
       ruleId: 'legacy-project-hook-adapter',
       severity: 'warn',
       summary: `${hostLabel} project-level hook config still contains ${commands.length} hook command(s)`,
-      recommendation: 'Prefer user-level repo-harness adapters and keep repo-local hooks under .ai/hooks.',
+      recommendation: 'Prefer user-level forge adapters and keep repo-local hooks under .ai/hooks.',
     });
   }
 
@@ -279,7 +279,7 @@ function scanHookConfig(
       severity: suspicious ? 'high' : 'warn',
       summary: suspicious
         ? `${hostLabel} ${event} hook looks risky: ${suspicious.summary}`
-        : `${hostLabel} ${event} hook is not managed by repo-harness`,
+        : `${hostLabel} ${event} hook is not managed by forge`,
       recommendation: `Review this command before trusting it: ${commandSnippet(command)}`,
       command,
     });

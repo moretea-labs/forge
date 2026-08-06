@@ -4,7 +4,7 @@ This repo uses a shared long-running harness. The durable workflow lives in repo
 
 ## Adoption Model
 
-Use this file as the first onboarding map after `repo-harness adopt` installs
+Use this file as the first onboarding map after `forge adopt` installs
 or refreshes a repo. The harness gives agents three durable surfaces:
 
 - **Shared standards**: `docs/spec.md`, `docs/reference-configs/`, root
@@ -62,7 +62,7 @@ with the project.
 - Externalized reference docs are indexed by `.ai/harness/brain-manifest.json` and checked by `.ai/harness/scripts/check-brain-manifest.sh`. Valuable repo docs can opt into default-brain mirroring with `sync.direction=repo-to-brain`; `post-edit-guard.sh` then calls `.ai/harness/scripts/sync-brain-docs.sh --changed <path>` for that specific file.
 - Contract-level execution should run in an isolated `codex/<task-slug>` worktree. Merge back only after the contract is fulfilled, `tasks/reviews/<plan-stem>.review.md` recommends pass, and the target worktree is clean.
 - Architecture-sensitive work also runs `scripts/check-architecture-sync.sh`: the check keeps the request index derived from `docs/architecture/requests/` and, when policy is strict, blocks finish if the current diff touches a capability with a pending architecture request at or above `architecture.gate_min_severity`.
-- Migration cleans legacy root `scripts/<repo-harness-helper>` files only when content is identifiable as generated repo-harness runtime; ambiguous app-owned root scripts are reported and preserved.
+- Migration cleans legacy root `scripts/<forge-helper>` files only when content is identifiable as generated forge runtime; ambiguous app-owned root scripts are reported and preserved.
 
 ## Documentation Profile
 
@@ -83,7 +83,7 @@ with the project.
 
 ## Trace Evidence
 
-`scripts/verify-sprint.sh` writes `.ai/harness/checks/latest.json` and an immutable `.ai/harness/runs/*.json` snapshot using `schema: repo-harness-run-trace.v1`. The trace is local evidence for workflow grading, not a cloud tracing dependency.
+`scripts/verify-sprint.sh` writes `.ai/harness/checks/latest.json` and an immutable `.ai/harness/runs/*.json` snapshot using `schema: forge-run-trace.v1`. The trace is local evidence for workflow grading, not a cloud tracing dependency.
 
 Required v1 fields:
 
@@ -98,13 +98,13 @@ Required v1 fields:
 
 - Do not infer agent context boundaries from physical layout globs such as `apps/*`, `packages/*`, or `services/*`.
 - Declare capabilities in `.ai/context/capabilities.json`; each capability owns prefixes, paired contract files, an architecture module, a workstream directory, and local verification hints.
-- Add selected capabilities with `repo-harness-capability` or `bun .ai/harness/scripts/capability-config.ts add --prefix <path>` when the harness already exists and a full init/migrate/upgrade pass would be too broad.
+- Add selected capabilities with `forge-capability` or `bun .ai/harness/scripts/capability-config.ts add --prefix <path>` when the harness already exists and a full init/migrate/upgrade pass would be too broad.
 - Resolve edited paths through `.ai/harness/scripts/capability-resolver.ts match --path <path>`; longest prefix wins and equal-length ambiguity fails.
-- Treat `.ai/context/agent-context-blocks.txt`, `REPO_HARNESS_CONTEXT_BLOCKS`, and existing nested `CLAUDE.md`/`AGENTS.md` files as migration inputs or compatibility fallbacks only.
+- Treat `.ai/context/agent-context-blocks.txt`, `FORGE_CONTEXT_BLOCKS`, and existing nested `CLAUDE.md`/`AGENTS.md` files as migration inputs or compatibility fallbacks only.
 - Selected capabilities receive paired `CLAUDE.md` and `AGENTS.md` files so Claude Code and Codex share the same local contract.
-- Use `repo-harness capability-context status|request|sync` to keep paired local context files aligned with the registry. The command writes only the controlled `CAPABILITY CONTEXT` block and preserves hand-authored content plus the separate architecture contract block.
+- Use `forge capability-context status|request|sync` to keep paired local context files aligned with the registry. The command writes only the controlled `CAPABILITY CONTEXT` block and preserves hand-authored content plus the separate architecture contract block.
 - `.ai/context/capability-source-map.json` is the optional human-edited source-map manifest for capability positioning and source pointers. Missing entries fall back to registry/architecture/workstream metadata; `--auto-fill-positioning` writes deterministic draft entries explicitly, not from hooks.
-- `.ai/harness/capability-context/` is ignored runtime queue state. Post-edit hooks may enqueue requests, and `SessionStart` only reminds the current agent to run `repo-harness capability-context sync --pending --apply`.
+- `.ai/harness/capability-context/` is ignored runtime queue state. Post-edit hooks may enqueue requests, and `SessionStart` only reminds the current agent to run `forge capability-context sync --pending --apply`.
 - `SessionStart` also summarizes pending architecture request cards so a resumed agent can see drift debt before claiming finish.
 
 ## Initializer and Runtime Model
@@ -119,6 +119,6 @@ Maintainer-facing detail on how the initializer and runtime defaults are wired.
 - Generated repos default to the repo-local harness flow: `docs/spec.md -> plans/ -> tasks/contracts/ -> tasks/reviews/ -> .ai/context/context-map.json -> .ai/harness/*`.
 - Generated and self-hosted repos install `.ai/harness/workflow-contract.json` and `.ai/harness/policy.json`.
 - Generated and migrated repos default `external_tooling` to: `complex -> gstack`; `simple -> Waza` with Codex-first runtime copies in `~/.codex/skills`; `knowledge -> gbrain`.
-- `repo-harness install` bootstraps the Codex/Claude runtime pieces for the default workflow: refreshes `repo-harness` skill aliases, installs global Codex/Claude hook adapters, installs Waza skills (`think`, `hunt`, `check`, `health`) and Mermaid through the skills CLI, persists the brain root in `~/.repo-harness/config.json`, and configures CodeGraph MCP for selected host agents. `repo-harness init` remains a compatibility alias for existing automation.
+- `forge install` bootstraps the Codex/Claude runtime pieces for the default workflow: refreshes `forge` skill aliases, installs global Codex/Claude hook adapters, installs Waza skills (`think`, `hunt`, `check`, `health`) and Mermaid through the skills CLI, persists the brain root in `~/.forge/config.json`, and configures CodeGraph MCP for selected host agents. `forge init` remains the explicit legacy bootstrap command for existing Forge automation; `forge setup open/next/close` is the preferred first-run workflow.
 - Other external tooling stays advisory-only: `bash scripts/check-agent-tooling.sh --host both --check-updates`; Waza update checks compare upstream `tw93/Waza` `SKILL.md` hashes without running `npx skills check`; no automatic gstack, gbrain MCP, CodeGraph daemon, or provider setup.
 - Manual distillation stays repo-local: repeated corrections -> `tasks/lessons.md`; deep findings and hidden contracts -> topic-scoped `docs/researches/*.md`; sprint verification evidence -> `tasks/reviews/*.review.md`; durable capability progress -> `tasks/workstreams/`; release history -> `docs/CHANGELOG.md`.

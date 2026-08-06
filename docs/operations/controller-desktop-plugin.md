@@ -14,7 +14,7 @@ ChatGPT / CLI / Local UI
         -> Desktop adapter (Controller process)
            -> one-shot managed child process
               -> JSON-lines stdio handshake and action
-                 -> bundled repo-harness-desktop-helper.mjs
+                 -> bundled forge-desktop-helper.mjs
 ```
 
 The Controller starts the helper on demand for one action. The child performs a
@@ -109,4 +109,4 @@ A helper failure is surfaced as a structured `PLUGIN_MANAGED_PROCESS_*` or
 
 ## Immutable release packaging
 
-Whole-Runtime releases include `repo-harness-desktop-helper.mjs` as a required, hashed sibling artifact. The Desktop adapter resolves it from the validated active Runtime release identity, then uses argv/source candidates only as development compatibility fallbacks. It launches the helper with the same trusted Node resolver used by the bounded Node bridge path; it does not execute the compiled Repo Harness binary as a JavaScript interpreter. Release validation fails closed when the helper is missing or empty, and plugin health reports helper and trusted-runtime availability without returning either local path.
+Whole-Runtime releases include `forge-desktop-helper.mjs` as a required, hashed sibling artifact. The Desktop adapter resolves it from the validated active Runtime release identity, then uses argv/source candidates only as development compatibility fallbacks. It launches the helper with the same trusted Node resolver used by the bounded Node bridge path; it does not execute the compiled Repo Harness binary as a JavaScript interpreter. Release validation fails closed when the helper is missing or empty, and plugin health reports helper and trusted-runtime availability without returning either local path.

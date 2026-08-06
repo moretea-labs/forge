@@ -136,8 +136,8 @@ export function prepareProcessInvocation(
 
   const comspec = envValue(env, "ComSpec", platform) ?? envValue(env, "COMSPEC", platform) ?? "cmd.exe";
   const variableNames = [
-    "MATEA_PROCESS_RUNNER_COMMAND",
-    ...args.map((_, index) => `MATEA_PROCESS_RUNNER_ARG_${index}`),
+    "FORGE_PROCESS_RUNNER_COMMAND",
+    ...args.map((_, index) => `FORGE_PROCESS_RUNNER_ARG_${index}`),
   ];
   const invocationEnv = { ...env };
   [resolvedCommand, ...args].forEach((value, index) => {

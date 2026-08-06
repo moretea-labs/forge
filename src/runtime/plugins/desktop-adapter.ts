@@ -3,7 +3,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { controllerSystemRoot } from '../../cli/repositories/controller-home';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
-import { readReleaseIdentityBindingFromEnv } from '../supervisor/release-identity';
+import { readReleaseIdentityBindingFromEnv } from '../release/identity';
 import { AssistantPluginError } from './errors';
 import { resolveBrowserBridgeNodeExecutable } from './browser-node-bridge';
 import { executeManagedPluginProcess, type ManagedPluginProcessRequest, type ManagedPluginProcessSpec } from './managed-process-adapter';
@@ -94,18 +94,18 @@ export function resolveDesktopHelperPath(options: {
   const argvEntry = options.argvEntry ?? process.argv[1];
   const runtimeExecutable = options.runtimeExecutable ?? process.execPath;
   const sourceHelperPath = options.sourceHelperPath
-    ?? fileURLToPath(new URL('../../../bin/repo-harness-desktop-helper.mjs', import.meta.url));
+    ?? fileURLToPath(new URL('../../../bin/forge-desktop-helper.mjs', import.meta.url));
   const pathExists = options.pathExists ?? existsSync;
   const candidates = [
-    releasePath ? join(releasePath, 'repo-harness-desktop-helper.mjs') : undefined,
-    argvEntry ? join(dirname(argvEntry), 'repo-harness-desktop-helper.mjs') : undefined,
-    runtimeExecutable ? join(dirname(runtimeExecutable), 'repo-harness-desktop-helper.mjs') : undefined,
+    releasePath ? join(releasePath, 'forge-desktop-helper.mjs') : undefined,
+    argvEntry ? join(dirname(argvEntry), 'forge-desktop-helper.mjs') : undefined,
+    runtimeExecutable ? join(dirname(runtimeExecutable), 'forge-desktop-helper.mjs') : undefined,
     sourceHelperPath,
   ].filter((entry): entry is string => Boolean(entry));
   for (const candidate of candidates) {
     if (pathExists(candidate)) return candidate;
   }
-  throw new AssistantPluginError('PLUGIN_DESKTOP_HELPER_UNAVAILABLE', 'The bundled Desktop helper is missing from the active Repo Harness installation.', {
+  throw new AssistantPluginError('PLUGIN_DESKTOP_HELPER_UNAVAILABLE', 'The bundled Desktop helper is missing from the active Forge installation.', {
     retryable: false,
   });
 }
@@ -297,7 +297,7 @@ export function buildDesktopPluginManifest(previousRevision = 0, previousUpdated
     authority: {
       strategy: 'derived',
       duplicateStateAllowed: false,
-      sourceOfTruth: ['controllerHome:system/desktop/config.json', 'package:bin/repo-harness-desktop-helper.mjs'],
+      sourceOfTruth: ['controllerHome:system/desktop/config.json', 'package:bin/forge-desktop-helper.mjs'],
     },
     enabled: config.enabled,
     lifecycle: {

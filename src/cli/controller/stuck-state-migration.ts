@@ -340,7 +340,7 @@ export function applyStuckStateMigration(repoRoot: string, options: ApplyStuckSt
   }
   const report = inspectStuckControllerStates(repoRoot, { limit: options.limit ?? 100 });
   const dryRun = options.dryRun !== false;
-  const reviewer = options.reviewer?.trim() || 'repo-harness-stuck-state-migration';
+  const reviewer = options.reviewer?.trim() || 'forge-stuck-state-migration';
   const selected = report.findings.filter((finding) => ['note_only', 'reconcile', 'reopen'].includes(finding.safeAutomaticAction));
   let applied = 0;
   let skipped = 0;

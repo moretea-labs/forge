@@ -37,8 +37,8 @@ function run(cmd: string, args: string[], cwd: string, env?: Record<string, stri
 }
 
 const LOCK_TEST_ENV = {
-  REPO_HARNESS_BACKLOG_LOCK_ATTEMPTS: "5",
-  REPO_HARNESS_BACKLOG_LOCK_SLEEP_SECONDS: "0.02",
+  FORGE_BACKLOG_LOCK_ATTEMPTS: "5",
+  FORGE_BACKLOG_LOCK_SLEEP_SECONDS: "0.02",
 };
 
 function copySprintHelpers(cwd: string, files: string[]) {
@@ -300,7 +300,7 @@ describe("sprint-backlog helper", () => {
 
       const plan = readFileSync(join(cwd, planPath), "utf-8");
       expect(plan).toContain("> **Status**: Approved");
-      expect(plan).toContain("> **Planning Source**: repo-harness-sprint");
+      expect(plan).toContain("> **Planning Source**: forge-sprint");
       expect(plan).toContain(`> **Source Ref**: sprint:${sprintPath}#task-a`);
       expect(plan).toContain("use `$think` to expand this sprint row");
       expect(plan).toContain("Run `$think` for backlog task `task-a`");

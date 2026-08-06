@@ -9,6 +9,8 @@ import {
   decideWatchdog,
   initializeStandaloneRecovery,
   listReleases,
+  recoverPrimaryRuntime,
+  restartPrimaryRuntime,
   restartRecoveryGateway,
   rollbackPrevious,
   runtimeStatus,
@@ -28,6 +30,7 @@ import {
   readRuntimeReleaseAuthority,
 } from '../../src/runtime/root/release-store';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
+import { forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -53,7 +56,7 @@ function manifest(home: string, releaseId: string, artifactIdentity: string, wor
     schemaVersion: 1,
     releaseId,
     artifactIdentity,
-    entrypoint: 'repo-harness-runtime',
+    entrypoint: 'forge-runtime',
     arguments: [],
     configurationSchemaVersion: 1,
     controllerHome: resolve(home),
@@ -212,8 +215,12 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(await runtimeStatus(config)).toMatchObject({ running: true, ready: true });
     expect(await dispatchRecoveryTool(config, 'runtime_status', {})).toMatchObject({ running: true, ready: true });
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('runtime_status');
+    expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('restart_primary_runtime');
+    expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('recover_primary_runtime');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).not.toContain('supervisor_status');
     expect(RECOVERY_CLI_COMMANDS).toContain('list-releases');
+    expect(RECOVERY_CLI_COMMANDS).toContain('restart-primary-runtime');
+    expect(RECOVERY_CLI_COMMANDS).toContain('recover-primary-runtime');
   });
 
   test('restores only the attested previous whole-Runtime release while Runtime is stopped', async () => {
@@ -259,29 +266,136 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(result.detail).toContain('stop the complete Canonical Runtime');
   });
 
-  test('requires sustained independent evidence before whole-Runtime rollback', () => {
+  test('restarts the primary Runtime before allowing previous-release rollback', () => {
+    const now = Date.now();
     expect(decideWatchdog({
-      failures: 5,
-      firstFailureAt: Date.now() - 60_000,
+      failures: 2,
+      firstFailureAt: now - 6_000,
       evidenceClasses: ['runtime', 'mcp'],
       activeKnownGood: false,
       previousKnownGood: true,
       rollbackUsed: false,
-    }).action).toBe('degraded');
+      primaryRuntimeFailed: true,
+      runtimeRestartAttempts: 0,
+      runtimeMaximumRestartAttempts: 3,
+      nowMs: now,
+    }).action).toBe('restart_primary_runtime');
     expect(decideWatchdog({
       failures: 6,
-      firstFailureAt: Date.now() - 31_000,
+      firstFailureAt: now - 31_000,
       evidenceClasses: ['runtime', 'mcp'],
       activeKnownGood: false,
       previousKnownGood: true,
       rollbackUsed: false,
+      primaryRuntimeFailed: true,
+      runtimeRestartAttempts: 3,
+      runtimeMaximumRestartAttempts: 3,
+      runtimeRecoveryLastAttemptAt: now - 61_000,
+      runtimeRecoveryCooldownMs: 60_000,
+      nowMs: now,
     }).action).toBe('rollback');
+    expect(decideWatchdog({
+      failures: 6,
+      firstFailureAt: now - 31_000,
+      evidenceClasses: ['runtime', 'mcp'],
+      activeKnownGood: false,
+      previousKnownGood: true,
+      rollbackUsed: false,
+      primaryRuntimeFailed: true,
+      runtimeRestartAttempts: 3,
+      runtimeMaximumRestartAttempts: 3,
+      runtimeRecoveryLastAttemptAt: now - 1_000,
+      runtimeRecoveryCooldownMs: 60_000,
+      nowMs: now,
+    }).action).toBe('degraded');
+  });
+
+  test('restarts the installed primary Forge Runtime service and requires whole-Runtime verification', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const paths = forgeRuntimeServicePaths(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+      const config = createRecoveryConfig(home, {
+        primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
+      });
+      let probes = 0;
+      const commands: string[][] = [];
+      const result = await restartPrimaryRuntime(config, {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (_command, args) => {
+          commands.push(args);
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        verifyLocal: async () => ++probes >= 3
+          ? healthyVerify()
+          : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
+        now: (() => { let value = 0; return () => value += 1_000; })(),
+        sleep: async () => undefined,
+      });
+      expect(result).toMatchObject({ ok: true, attempted: true });
+      expect(commands.some((args) => args.includes('kickstart'))).toBe(true);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('stops, rolls back, restarts, and verifies the previous whole-Runtime release after restart exhaustion', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const first = manifest(home, 'release-a', 'artifact-a');
+      const second = manifest(home, 'release-b', 'artifact-b', 2);
+      ensureActiveRuntimeRelease(home, first);
+      const runtime = await runtimeServer();
+      writeMainToken(home);
+      const ownership = startObservedRuntime(home, runtime.endpoint, 'release-a', 'artifact-a');
+      const config = createRecoveryConfig(home, {
+        publicMcpUrl: runtime.endpoint,
+        primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
+      });
+      await attestKnownGood(config);
+      removeOwnership(ownership);
+      publishRuntimeRelease(home, second, 'publish-release-b');
+      const paths = forgeRuntimeServicePaths(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+
+      let localProbes = 0;
+      const commands: string[][] = [];
+      const result = await recoverPrimaryRuntime(config, 'test exhausted restarts', {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (_command, args) => {
+          commands.push(args);
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        runtimeRunning: () => false,
+        verifyLocal: async () => ++localProbes >= 3
+          ? healthyVerify()
+          : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
+        now: (() => { let value = 0; return () => value += 1_000; })(),
+        sleep: async () => undefined,
+      });
+      expect(result).toMatchObject({ ok: true, attempted: true, rollback: { ok: true } });
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
+      expect(commands.some((args) => args.includes('bootout'))).toBe(true);
+      expect(commands.some((args) => args.includes('kickstart'))).toBe(true);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
   });
 
   test('restarts only the independent Recovery Gateway through its own bounded lock', async () => {
     const home = controllerHome();
     const config = initializeStandaloneRecovery(home, 8787);
-    const plist = join(home, 'recovery', 'launchd', 'com.moretea.repo-harness-recovery-gateway.plist');
+    const plist = join(home, 'recovery', 'launchd', 'com.moretea.forge-recovery-gateway.plist');
     mkdirSync(dirname(plist), { recursive: true });
     writeFileSync(plist, '<plist/>');
     let probes = 0;

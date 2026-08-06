@@ -271,7 +271,7 @@ export function classifyConnectivityAttribution(input: ConnectivityAttributionIn
       'controller',
       hasHardFailure(controller) || hasHardFailure(scheduler) ? 'failed' : 'degraded',
       hasHardFailure(controller) || hasHardFailure(scheduler) ? 'high' : 'medium',
-      'Controller daemon 或调度器存在异常，优先定位控制平面与调度心跳。',
+      'Forge Runtime 或调度器存在异常，优先定位根进程与调度心跳。',
       [...issueEvidence(controller), ...issueEvidence(scheduler)],
     );
   }

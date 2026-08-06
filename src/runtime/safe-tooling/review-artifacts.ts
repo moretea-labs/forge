@@ -53,11 +53,11 @@ function repoRel(repository: RepositoryRecord, absolute: string): string {
 function roots(repository: RepositoryRecord): Array<{ path: string; kind: ReviewArtifactEntry['kind'] }> {
   const root = repository.canonicalRoot;
   return [
-    { path: join(root, '.repo-harness/browser/screenshots'), kind: 'browser_screenshot' },
-    { path: join(root, '.repo-harness/ios/screenshots'), kind: 'ios_screenshot' },
-    { path: join(root, '.repo-harness/ios/logs'), kind: 'log' },
-    { path: join(root, '.repo-harness/ios/build-reports'), kind: 'report' },
-    { path: join(root, '.repo-harness/review-artifacts'), kind: 'other' },
+    { path: join(root, '.forge/browser/screenshots'), kind: 'browser_screenshot' },
+    { path: join(root, '.forge/ios/screenshots'), kind: 'ios_screenshot' },
+    { path: join(root, '.forge/ios/logs'), kind: 'log' },
+    { path: join(root, '.forge/ios/build-reports'), kind: 'report' },
+    { path: join(root, '.forge/review-artifacts'), kind: 'other' },
   ];
 }
 
@@ -105,7 +105,7 @@ export function prepareBrowserReviewPacket(repository: RepositoryRecord, input: 
     ready: artifacts.length > 0,
     next: artifacts.length > 0
       ? ['Review the most recent browser screenshot with its source URL/title from the browser plugin action output.']
-      : ['Run the browser plugin screenshot/open_page action first; screenshots are indexed from .repo-harness/browser/screenshots.'],
+      : ['Run the browser plugin screenshot/open_page action first; screenshots are indexed from .forge/browser/screenshots.'],
   };
 }
 

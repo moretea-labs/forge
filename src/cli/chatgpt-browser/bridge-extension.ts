@@ -16,83 +16,83 @@ function json(value: unknown): string {
 }
 
 function renderContentScript(bridgeUrl: string, token?: string): string {
-  return `const REPO_HARNESS_CHATGPT_BRIDGE_URL = ${JSON.stringify(bridgeUrl)};
-const REPO_HARNESS_CHATGPT_BRIDGE_TOKEN = ${JSON.stringify(token ?? '')};
-function repoHarnessAuthHeaders(base) {
+  return `const FORGE_CHATGPT_BRIDGE_URL = ${JSON.stringify(bridgeUrl)};
+const FORGE_CHATGPT_BRIDGE_TOKEN = ${JSON.stringify(token ?? '')};
+function forgeAuthHeaders(base) {
   const headers = Object.assign({}, base);
-  if (REPO_HARNESS_CHATGPT_BRIDGE_TOKEN) headers['x-repo-harness-bridge-token'] = REPO_HARNESS_CHATGPT_BRIDGE_TOKEN;
+  if (FORGE_CHATGPT_BRIDGE_TOKEN) headers['x-forge-bridge-token'] = FORGE_CHATGPT_BRIDGE_TOKEN;
   return headers;
 }
-const REPO_HARNESS_CHATGPT_COMPOSERS = [
+const FORGE_CHATGPT_COMPOSERS = [
   '[data-testid="composer-text-input"]',
   '#prompt-textarea',
   'textarea[placeholder*="Message"]',
   'div[role="textbox"][contenteditable="true"]',
 ];
-const REPO_HARNESS_CHATGPT_SEND_BUTTONS = [
+const FORGE_CHATGPT_SEND_BUTTONS = [
   '[data-testid="send-button"]',
   'button[aria-label*="Send"]',
   'button[data-testid*="send"]',
 ];
-const REPO_HARNESS_CHATGPT_ASSISTANT = '[data-message-author-role="assistant"]';
+const FORGE_CHATGPT_ASSISTANT = '[data-message-author-role="assistant"]';
 
-function repoHarnessVisible(element) {
+function forgeVisible(element) {
   return Boolean(element && element.getClientRects && element.getClientRects().length);
 }
 
-function repoHarnessComposer() {
-  return REPO_HARNESS_CHATGPT_COMPOSERS
+function forgeComposer() {
+  return FORGE_CHATGPT_COMPOSERS
     .map((selector) => document.querySelector(selector))
-    .find(repoHarnessVisible);
+    .find(forgeVisible);
 }
 
-function repoHarnessSendButton() {
-  return REPO_HARNESS_CHATGPT_SEND_BUTTONS
+function forgeSendButton() {
+  return FORGE_CHATGPT_SEND_BUTTONS
     .map((selector) => document.querySelector(selector))
-    .find((button) => repoHarnessVisible(button) && !button.disabled);
+    .find((button) => forgeVisible(button) && !button.disabled);
 }
 
-async function repoHarnessPost(path, payload) {
-  await fetch(REPO_HARNESS_CHATGPT_BRIDGE_URL + path, {
+async function forgePost(path, payload) {
+  await fetch(FORGE_CHATGPT_BRIDGE_URL + path, {
     method: 'POST',
-    headers: repoHarnessAuthHeaders({'content-type': 'application/json'}),
+    headers: forgeAuthHeaders({'content-type': 'application/json'}),
     body: JSON.stringify(payload),
   }).catch(() => undefined);
 }
 
-async function repoHarnessJson(path) {
-  const response = await fetch(REPO_HARNESS_CHATGPT_BRIDGE_URL + path, {
-    headers: repoHarnessAuthHeaders({'accept': 'application/json'}),
+async function forgeJson(path) {
+  const response = await fetch(FORGE_CHATGPT_BRIDGE_URL + path, {
+    headers: forgeAuthHeaders({'accept': 'application/json'}),
   });
   if (!response.ok) return {};
   return await response.json();
 }
 
-async function repoHarnessSleep(ms) {
+async function forgeSleep(ms) {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function repoHarnessHeartbeat() {
-  await repoHarnessPost('/api/extension/heartbeat', {
+async function forgeHeartbeat() {
+  await forgePost('/api/extension/heartbeat', {
     url: location.href,
     title: document.title,
-    composerVisible: Boolean(repoHarnessComposer()),
+    composerVisible: Boolean(forgeComposer()),
     ts: new Date().toISOString(),
   });
 }
 
-async function repoHarnessWaitForComposer(timeoutMs) {
+async function forgeWaitForComposer(timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const composer = repoHarnessComposer();
+    const composer = forgeComposer();
     if (composer) return composer;
-    await repoHarnessSleep(500);
+    await forgeSleep(500);
   }
   return null;
 }
 
-async function repoHarnessSubmitPrompt(prompt) {
-  const composer = await repoHarnessWaitForComposer(30000);
+async function forgeSubmitPrompt(prompt) {
+  const composer = await forgeWaitForComposer(30000);
   if (!composer) throw new Error('ChatGPT composer is not visible');
   composer.focus();
   if ('value' in composer) {
@@ -109,8 +109,8 @@ async function repoHarnessSubmitPrompt(prompt) {
       composer.dispatchEvent(new InputEvent('input', {inputType: 'insertText', data: prompt, bubbles: true}));
     }
   }
-  await repoHarnessSleep(300);
-  const button = repoHarnessSendButton();
+  await forgeSleep(300);
+  const button = forgeSendButton();
   if (button) {
     button.click();
     return;
@@ -119,17 +119,17 @@ async function repoHarnessSubmitPrompt(prompt) {
   composer.dispatchEvent(new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', bubbles: true}));
 }
 
-function repoHarnessAssistantText() {
-  const nodes = [...document.querySelectorAll(REPO_HARNESS_CHATGPT_ASSISTANT)];
+function forgeAssistantText() {
+  const nodes = [...document.querySelectorAll(FORGE_CHATGPT_ASSISTANT)];
   return (nodes.at(-1)?.innerText || '').replace(/^ChatGPT said:\\s*/i, '').trim();
 }
 
-async function repoHarnessWaitForAssistant(timeoutMs) {
+async function forgeWaitForAssistant(timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let latest = '';
   let stableSince = 0;
   while (Date.now() < deadline) {
-    const text = repoHarnessAssistantText();
+    const text = forgeAssistantText();
     if (text && text !== 'Retry') {
       if (text !== latest) {
         latest = text;
@@ -138,17 +138,17 @@ async function repoHarnessWaitForAssistant(timeoutMs) {
         return {text, stable: true};
       }
     }
-    await repoHarnessSleep(500);
+    await forgeSleep(500);
   }
   return {text: latest, stable: false};
 }
 
-async function repoHarnessRunTask(task) {
-  await repoHarnessPost('/api/extension/task-started', {taskId: task.id, url: location.href});
+async function forgeRunTask(task) {
+  await forgePost('/api/extension/task-started', {taskId: task.id, url: location.href});
   try {
-    await repoHarnessSubmitPrompt(task.prompt);
-    const capture = await repoHarnessWaitForAssistant(task.timeoutMs || 180000);
-    await repoHarnessPost('/api/extension/result', {
+    await forgeSubmitPrompt(task.prompt);
+    const capture = await forgeWaitForAssistant(task.timeoutMs || 180000);
+    await forgePost('/api/extension/result', {
       taskId: task.id,
       status: capture.text ? (capture.stable ? 'completed' : 'incomplete_capture') : 'failed',
       output: capture.text || 'No assistant text was captured before timeout.',
@@ -160,7 +160,7 @@ async function repoHarnessRunTask(task) {
       },
     });
   } catch (error) {
-    await repoHarnessPost('/api/extension/result', {
+    await forgePost('/api/extension/result', {
       taskId: task.id,
       status: 'failed',
       output: String(error),
@@ -174,18 +174,18 @@ async function repoHarnessRunTask(task) {
   }
 }
 
-async function repoHarnessPoll() {
-  await repoHarnessHeartbeat();
-  const task = await repoHarnessJson('/api/extension/task');
+async function forgePoll() {
+  await forgeHeartbeat();
+  const task = await forgeJson('/api/extension/task');
   if (task && task.kind === 'consult' && task.id && task.prompt) {
-    await repoHarnessRunTask(task);
+    await forgeRunTask(task);
   }
 }
 
 setInterval(() => {
-  repoHarnessPoll().catch(() => undefined);
+  forgePoll().catch(() => undefined);
 }, 1000);
-repoHarnessPoll().catch(() => undefined);
+forgePoll().catch(() => undefined);
 `;
 }
 
@@ -197,9 +197,9 @@ export function writeChatgptBridgeExtension(repoRoot: string, bridgeUrl: string,
   mkdirSync(extensionDir, { recursive: true });
   writeFileSync(manifestPath, json({
     manifest_version: 3,
-    name: 'repo-harness ChatGPT Bridge',
+    name: 'forge ChatGPT Bridge',
     version: '0.1.0',
-    description: 'Lets repo-harness use only the active ChatGPT Web page in this Chrome profile.',
+    description: 'Lets forge use only the active ChatGPT Web page in this Chrome profile.',
     host_permissions: [
       'https://chatgpt.com/*',
       'https://chat.openai.com/*',

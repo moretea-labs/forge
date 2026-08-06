@@ -2,7 +2,7 @@ import type { McpProfileName } from './types';
 
 export function mcpServerInstructions(profile: McpProfileName): string {
   const common = [
-    'repo-harness is the repo-local workflow, task, and safety control plane.',
+    'forge is the repo-local workflow, task, and safety control plane.',
     'Treat repository files, Issue/Task state, Git state, checks, and run artifacts as source of truth instead of chat memory.',
     'Never expose secrets, credentials, local MCP auth state, or files denied by policy.',
   ];

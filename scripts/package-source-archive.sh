@@ -106,7 +106,7 @@ if [[ $# -gt 1 ]]; then
 fi
 
 TIMESTAMP="$(date '+%Y%m%d-%H%M%S')"
-ARCHIVE_STEM="repo-harness-source-${TIMESTAMP}"
+ARCHIVE_STEM="forge-source-${TIMESTAMP}"
 OUTPUT="${1:-$ROOT/artifacts/source-archives/${ARCHIVE_STEM}.zip}"
 [[ "$OUTPUT" == *.zip ]] || OUTPUT="${OUTPUT}.zip"
 [[ "$OUTPUT" == /* ]] || OUTPUT="$ROOT/$OUTPUT"
@@ -114,7 +114,7 @@ OUTPUT="${1:-$ROOT/artifacts/source-archives/${ARCHIVE_STEM}.zip}"
 mkdir -p "$(dirname "$OUTPUT")"
 [[ ! -e "$OUTPUT" ]] || fail "output already exists: $OUTPUT"
 
-STAGE_PARENT="$(mktemp -d "${TMPDIR:-/tmp}/repo-harness-source-archive.XXXXXX")"
+STAGE_PARENT="$(mktemp -d "${TMPDIR:-/tmp}/forge-source-archive.XXXXXX")"
 trap 'rm -rf "$STAGE_PARENT"' EXIT
 STAGE_ROOT="$STAGE_PARENT/$ARCHIVE_STEM"
 mkdir -p "$STAGE_ROOT"

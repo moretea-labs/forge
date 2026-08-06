@@ -3,7 +3,7 @@
 > Status: **Runtime Authority**
 
 This document defines the concrete baseline for the "personal assistant plugin"
-surface inside the current repo-harness Controller Runtime. It exists to stop
+surface inside the current Forge Controller Runtime. It exists to stop
 "assistant", "plugin", "Gmail", and "Calendar" from being treated as one
 undifferentiated feature set.
 
@@ -11,7 +11,7 @@ undifferentiated feature set.
 
 Current implementation:
 
-- repo-harness already implements a durable Controller Runtime, not a generic
+- Forge already implements a durable Controller Runtime, not a generic
   personal-app plugin host.
 - First-class persisted plugins in source are the optional GitHub plugin under
   `src/cli/github/plugin.ts` plus Gmail, Google Calendar, and Google Tasks
@@ -61,13 +61,13 @@ operations on top of that runtime, not as a second orchestrator.
 
 | Capability | Source of truth | Persistence and boundary | External side effect | Status |
 | --- | --- | --- | --- | --- |
-| GitHub Issue/Project sync | `src/cli/github/plugin.ts`, `src/cli/commands/controller.ts`, `src/cli/local-bridge/server.ts` | `.repo-harness/plugins/github.json` plus repository registry mapping | GitHub issue/project mutation | Implemented |
+| GitHub Issue/Project sync | `src/cli/github/plugin.ts`, `src/cli/commands/controller.ts`, `src/cli/local-bridge/server.ts` | `.Forge/plugins/github.json` plus repository registry mapping | GitHub issue/project mutation | Implemented |
 | Durable assistant work submission | `src/runtime/gateway/mcp/runtime-tools.ts`, `src/runtime/execution/jobs/` | Controller Home `execution-jobs/`, events, artifacts, projections | Repository-local work and approved provider actions | Implemented |
 | ChatGPT-supervised campaigns | `src/runtime/workflow/campaigns/`, `src/cli/chatgpt-browser/` | Campaign records, review packets, workspaces, evidence | Browser-visible ChatGPT session or delegated local work | Implemented and opt-in |
 | Calendar time-based triggering | `src/runtime/workflow/schedules/store.ts`, `engine.ts` | Schedule, Decision, Occurrence records | Launches bounded runtime Jobs only | Implemented |
-| Calendar account read/write | `src/runtime/plugins/google-calendar-adapter.ts` | `.repo-harness/plugins/google-calendar.json`, derived manifest/index, env-only credentials | Google Calendar event read/write | Implemented |
-| Gmail mailbox read/write | `src/runtime/plugins/gmail-adapter.ts` | `.repo-harness/plugins/gmail.json`, derived manifest/index, env-only credentials | Gmail read/send/trash | Implemented |
-| Google Tasks/reminder read/write | `src/runtime/plugins/google-tasks-adapter.ts` | `.repo-harness/plugins/google-tasks.json`, derived manifest/index, env-only credentials | Google Tasks list/task mutation | Implemented |
+| Calendar account read/write | `src/runtime/plugins/google-calendar-adapter.ts` | `.Forge/plugins/google-calendar.json`, derived manifest/index, env-only credentials | Google Calendar event read/write | Implemented |
+| Gmail mailbox read/write | `src/runtime/plugins/gmail-adapter.ts` | `.Forge/plugins/gmail.json`, derived manifest/index, env-only credentials | Gmail read/send/trash | Implemented |
+| Google Tasks/reminder read/write | `src/runtime/plugins/google-tasks-adapter.ts` | `.Forge/plugins/google-tasks.json`, derived manifest/index, env-only credentials | Google Tasks list/task mutation | Implemented |
 | Generic plugin manifest/registry for personal apps | `src/runtime/plugins/`, `src/runtime/gateway/mcp/runtime-tools.ts`, `src/cli/local-bridge/server.ts` | Controller Home `plugins/` manifest/index projections derived from existing authority | Typed plugin action dispatch into durable Jobs | Implemented |
 
 ## 4. Packaging baseline
@@ -122,7 +122,7 @@ Current implementation:
   action dispatch, cancellation/timeout support through `ExecutionJob`, and
   plugin audit events in the runtime ledger.
 - The first adapter is GitHub. Its configuration authority remains the existing
-  repository registry plus `.repo-harness/plugins/github.json`; the generic
+  repository registry plus `.Forge/plugins/github.json`; the generic
   manifest is a derived projection, not a second source of truth.
 
 - Introduce one provider contract for personal-app adapters with capability id,

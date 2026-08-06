@@ -93,7 +93,7 @@ function parseStringArray(value: unknown): string[] | undefined {
 
 function loadMcpPolicyOverrides(repoRoot?: string): McpPolicyOverrideFile | undefined {
   if (!repoRoot) return undefined;
-  const path = join(repoRoot, '.repo-harness', 'mcp.policy.json');
+  const path = join(repoRoot, '.forge', 'mcp.policy.json');
   if (!existsSync(path)) return undefined;
   const raw = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
   const profilesRaw = raw.profiles;
@@ -181,7 +181,7 @@ export function getMcpPolicy(profile: McpProfileName, opts: McpPolicyOptions = {
       writeGlobs: ['**'],
       denyGlobs: [
         ...COMMON_DENY_GLOBS,
-        '.repo-harness/**',
+        '.forge/**',
         '.ai/harness/security/**',
         '.codex/**',
         '.claude/**',

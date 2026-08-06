@@ -1,5 +1,5 @@
 {
-  "name": "@moretea-labs/matea",
+  "name": "@moretea-labs/forge",
   "version": "1.4.0-rc.6",
   "description": "Local-first action assistant for software work with resumable execution, bounded tools, and reviewable evidence",
   "license": "MIT",
@@ -15,13 +15,13 @@
     "code-review",
     "local-first"
   ],
-  "homepage": "https://github.com/moretea-labs/matea#readme",
+  "homepage": "https://github.com/moretea-labs/forge#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/moretea-labs/matea.git"
+    "url": "git+https://github.com/moretea-labs/forge.git"
   },
   "bugs": {
-    "url": "https://github.com/moretea-labs/matea/issues"
+    "url": "https://github.com/moretea-labs/forge/issues"
   },
   "type": "module",
   "publishConfig": {
@@ -48,13 +48,13 @@
     "docs/wiki/",
     "docs/public-usage-guide.md",
     "docs/public-usage-guide.zh-CN.md",
-    "docs/repo-harness-chatgpt-browser-engine.md",
-    "docs/repo-harness-chatgpt-supervised-automation.md",
-    "docs/repo-harness-chatgpt-mcp-setup.md",
-    "docs/repo-harness-github-issue-launcher.md",
-    "docs/repo-harness-runtime-self-healing-loop.md",
-    "docs/repo-harness-autonomous-goal-loop.md",
-    "docs/repo-harness-provider-configuration.md",
+    "docs/forge-chatgpt-browser-engine.md",
+    "docs/forge-chatgpt-supervised-automation.md",
+    "docs/forge-chatgpt-mcp-setup.md",
+    "docs/forge-github-issue-launcher.md",
+    "docs/forge-runtime-self-healing-loop.md",
+    "docs/forge-autonomous-goal-loop.md",
+    "docs/forge-provider-configuration.md",
     "README.en.md",
     "README.zh-CN.md",
     "install.sh",
@@ -68,11 +68,9 @@
     "README.md"
   ],
   "bin": {
-    "matea": "bin/repo-harness.mjs",
-    "matea-hook": "bin/repo-harness-hook.mjs",
-    "repo-harness": "bin/repo-harness.mjs",
-    "repo-harness-hook": "bin/repo-harness-hook.mjs",
-    "repo-harness-runtime": "bin/repo-harness-runtime.mjs"
+    "forge": "bin/forge.mjs",
+    "forge-hook": "bin/forge-hook.mjs",
+    "forge-runtime": "bin/forge-runtime.mjs"
   },
   "engines": {
     "node": ">=20.10.0",
@@ -115,14 +113,14 @@
     "release:dry-run": "node scripts/check-release-version.mjs && bun run check:release",
     "release:rc": "bash scripts/publish-release-tarball.sh next",
     "release:stable": "bash scripts/publish-release-tarball.sh latest",
-    "check:brain-manifest": "repo-harness run check-brain-manifest",
-    "check:context-files": "repo-harness run check-context-files",
-    "check:deploy-sql": "repo-harness run check-deploy-sql-order",
-    "check:architecture-sync": "repo-harness run check-architecture-sync",
-    "check:task-sync": "node bin/repo-harness.mjs run check-task-sync",
+    "check:brain-manifest": "forge run check-brain-manifest",
+    "check:context-files": "forge run check-context-files",
+    "check:deploy-sql": "forge run check-deploy-sql-order",
+    "check:architecture-sync": "forge run check-architecture-sync",
+    "check:task-sync": "node bin/forge.mjs run check-task-sync",
     "check:task-workflow": "bash scripts/check-task-workflow.sh --strict",
     "runtime:activate-source-baseline": "bun scripts/activate-source-baseline.ts request",
-    "sync:brain-docs": "repo-harness run sync-brain-docs --all",
+    "sync:brain-docs": "forge run sync-brain-docs --all",
     "sync:codex-installed": "bash scripts/sync-codex-installed-copies.sh",
     "check:controller-v8": "bash scripts/verify-controller-v8.sh",
     "repo:registry": "bun src/cli/v81-entry.ts repo",
@@ -131,7 +129,7 @@
     "check:env": "node scripts/check-runtime-env.mjs",
     "test:bun": "bun -e 'console.error(\"[tests] test:bun is deprecated; running explicit test:full\")' && bun run test:full",
     "test:node-smoke": "node --test tests/node/*.test.mjs",
-    "check:ci:portable": "REPO_HARNESS_ALLOW_NODE_ONLY=1 bash scripts/check-ci.sh"
+    "check:ci:portable": "FORGE_ALLOW_NODE_ONLY=1 bash scripts/check-ci.sh"
   },
   "devDependencies": {
     "@colbymchenry/codegraph": "1.0.1",

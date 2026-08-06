@@ -75,6 +75,11 @@ const required = [
   'src/runtime/root/types.ts',
   'src/runtime/root/status.ts',
   'src/runtime/root/release-manifest.ts',
+  'src/runtime/root/service.ts',
+  'src/runtime/root/service-runner.ts',
+  'src/runtime/standalone-recovery/core.ts',
+  'src/runtime/standalone-recovery/entry.ts',
+  'src/cli/commands/init-hook.ts',
   'src/cli/commands/runtime.ts',
   'src/cli/commands/controller.ts',
   'src/cli/index.ts',
@@ -93,7 +98,7 @@ requireMissing('src/cli/commands/supervisor.ts');
 requireMissing('src/cli/controller/restart-coordinator-entry.ts');
 requireMissing('scripts/controller-runtime.sh');
 requireMissing('scripts/activate-source-baseline.command');
-requireMissing('scripts/restart-repo-harness.sh');
+requireMissing('scripts/restart-forge.sh');
 requireMissing('src/cli/controller/stable-state');
 requireMissing('src/cli/controller/runtime-slots.ts');
 requireMissing('src/runtime/bootstrap/runtime-authority.ts');
@@ -104,6 +109,22 @@ requireMissing('docs/architecture/current/stable-external-runtime-supervisor.md'
 requireMissing('docs/architecture/modules/controller-runtime/stable-supervisor.md');
 requireMissing('docs/operations/stable-external-runtime-supervisor.md');
 requireMissing('docs/operations/stable-state-and-process-runtime.md');
+requireMissing('ARCHITECTURE_MIGRATION_REPORT.md');
+requireMissing('OPTIMIZATION_REPORT.md');
+requireMissing('docs/architecture/RELIABILITY-PROGRAM.md');
+requireMissing('docs/architecture/p0-canonical-single-runtime-plan.md');
+requireMissing('docs/architecture/transactional-adoption-planner.md');
+requireMissing('docs/operations/20260802-requirement-portfolio-migration.md');
+requireMissing('docs/runbooks/RELIABILITY-SESSION-PROTOCOL.md');
+requireMissing('docs/architecture/decisions/20260718-mcp-session-lifecycle-and-ingress-isolation.md');
+requireMissing('docs/architecture/decisions/20260802-requirement-centered-control-plane.md');
+requireMissing('docs/researches/20260801-control-plane-state-store-inventory.md');
+requireMissing('docs/architecture/snapshots/2026-05-25-agentic-dev-plugin-review.md');
+requireMissing('bin/repo-harness.mjs');
+requireMissing('bin/repo-harness-hook.mjs');
+requireMissing('bin/repo-harness-runtime.mjs');
+requireMissing('src/runtime/control-plane/daemon-client.ts');
+requireMissing('src/runtime/control-plane/daemon-ownership.ts');
 for (const path of sourceFiles('src')) {
   const source = text(path);
   for (const retiredAuthority of [
@@ -175,8 +196,8 @@ forbidBetween(
   /Stable Supervisor|Stable Ingress|blue\/green|candidate\/current\/previous/i,
   'define the target Runtime without Supervisor, ingress, slots, or component rollback',
 );
-requireText('src/runtime/root/runtime.ts', 'export class CanonicalRepoHarnessRuntime');
-forbid('src/runtime/control-plane/daemon-client.ts', /ensureControllerDaemon|child_process|daemon-entry|isStableSupervisorInstalled/, 'keep daemon compatibility read-only and bound to canonical Runtime observation');
+requireText('src/runtime/root/runtime.ts', 'export class CanonicalForgeRuntime');
+forbid('src/runtime/control-plane/runtime-status-client.ts', /ensureControllerDaemon|child_process|daemon-entry|StableSupervisor|ownerEpoch|slot\?:/, 'keep Forge Runtime status observation read-only and free of legacy lifecycle authority');
 requireText('src/runtime/root/runtime.ts', "startInProcessScheduler");
 requireText('src/runtime/root/runtime.ts', 'startRuntimeMcpTransport');
 forbid(
@@ -203,8 +224,8 @@ requireText('src/runtime/root/runtime.ts', 'writeRuntimeStatusSnapshot');
 requireText('src/runtime/root/runtime.ts', 'removeRuntimeStatusSnapshot');
 forbid(
   'src/cli/commands/runtime.ts',
-  /controller\/lifecycle|restart-coordinator|daemon-client|CanonicalRepoHarnessRuntime|ensureControllerHome|\.command\(['"](?:start|stop|restart|doctor)['"]\)|rebuildRepositoryProjection/,
-  'runtime CLI must remain a read-only observer; repo-harness-runtime is the sole canonical lifecycle entrypoint',
+  /controller\/lifecycle|restart-coordinator|daemon-client|CanonicalForgeRuntime|ensureControllerHome|\.command\(['"](?:start|stop|restart|doctor)['"]\)|rebuildRepositoryProjection/,
+  'runtime CLI must remain a read-only observer; forge-runtime is the sole canonical lifecycle entrypoint',
 );
 requireText('src/cli/commands/runtime.ts', 'observeRuntimeStatus');
 requireText('src/cli/commands/runtime.ts', 'readRepositoryProjection');
@@ -219,9 +240,30 @@ forbid(
   'the public controller CLI must not expose component lifecycle, restart, blue-green rollout, rollback, or green-gate commands',
 );
 requireText('src/cli/commands/controller.ts', 'repositoryChangeVerify');
-requireText('src/runtime/root/release-manifest.ts', "entrypoint must be repo-harness-runtime");
+requireText('src/runtime/root/release-manifest.ts', "entrypoint must be forge-runtime");
 requireText('src/runtime/root/release-manifest.ts', 'databaseSchemaCompatibility');
 requireText('src/runtime/root/release-manifest.ts', 'workerProtocolVersion');
+requireText('src/runtime/root/service.ts', 'RunAtLoad');
+requireText('src/runtime/root/service.ts', 'SuccessfulExit');
+requireText('src/runtime/root/service.ts', 'ThrottleInterval');
+requireText('src/runtime/root/service-runner.ts', 'activeRuntimeReleaseManifest');
+requireText('src/runtime/standalone-recovery/core.ts', 'restartPrimaryRuntime');
+requireText('src/runtime/standalone-recovery/core.ts', 'recoverPrimaryRuntime');
+requireText('src/runtime/standalone-recovery/core.ts', "action: 'restart_primary_runtime'");
+requireText('src/runtime/standalone-recovery/core.ts', 'restartAttempts >= maximumRestartAttempts');
+requireText('src/runtime/standalone-recovery/core.ts', 'rollbackPreviousLocked');
+requireText('src/runtime/standalone-recovery/entry.ts', "'restart_primary_runtime'");
+requireText('src/runtime/standalone-recovery/entry.ts', "'recover_primary_runtime'");
+forbid(
+  'src/runtime/standalone-recovery/core.ts',
+  /runtime-slots|active-slot|blue\/green|StableSupervisor|component rollback/i,
+  'recover only the canonical whole Runtime through one active/previous release authority',
+);
+requireText('src/cli/commands/init-hook.ts', "new Command('setup')");
+requireText('src/cli/commands/init-hook.ts', "['open', 'next']");
+requireText('src/cli/commands/init-hook.ts', "command(name)");
+requireText('src/cli/commands/init-hook.ts', "command('close')");
+requireText('src/cli/commands/init-hook.ts', "'.forge'");
 
 forbid(
   'scripts/smoke-runtime-recovery.ts',

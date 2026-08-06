@@ -367,7 +367,7 @@ Check results and revision-aware caches prevent unnecessary duplication without 
 
 Verification evidence is bound to Job, repository and exact Git revision with an environment fingerprint. Revision changes invalidate reusable evidence. Oversized result bodies are stored as Artifacts and only bounded previews are returned through Job status.
 
-Release readiness is implemented as a durable `release-gate` Job holding an exclusive `release:<repoId>` Lease. The Gate checks Workspace cleanliness, active Execution Jobs, Agent Runs, Local compatibility Jobs, pending Worktree integration, unfinished Edit Sessions, other Leases, active-Issue Tasks, exact-revision verification, repository remote identity, GitHub mapping, Controller Daemon readiness and package metadata.
+Release readiness is implemented as a durable `release-gate` Job holding an exclusive `release:<repoId>` Lease. The Gate checks Workspace cleanliness, active Execution Jobs, Agent Runs, Local compatibility Jobs, pending Worktree integration, unfinished Edit Sessions, other Leases, active-Issue Tasks, exact-revision verification, repository remote identity, GitHub mapping, Canonical Forge Runtime readiness and package metadata.
 
 A successful Gate returns a release manifest for the exact current revision. Push, merge, publish, deploy and destructive external operations still require a separate explicit user authorization.
 

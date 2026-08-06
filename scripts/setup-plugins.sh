@@ -31,13 +31,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if command -v repo-harness >/dev/null 2>&1; then
-  exec repo-harness init "${args[@]}"
+if command -v forge >/dev/null 2>&1; then
+  exec forge init "${args[@]}"
 fi
 
 if command -v bun >/dev/null 2>&1; then
   exec bun "$ROOT_DIR/src/cli/index.ts" init "${args[@]}"
 fi
 
-echo "[setup-plugins] repo-harness or bun is required to run the modern init path." >&2
+echo "[setup-plugins] forge or bun is required to run the modern init path." >&2
 exit 1

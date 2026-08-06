@@ -113,7 +113,7 @@ function projectedExecutionControllerHome(job: LocalBridgeJob, fallbackControlle
 }
 
 function shouldInspectJobDir(entryName: string): boolean {
-  return entryName !== '.repo-harness-owner.json' && entryName !== 'active-index.json';
+  return entryName !== '.forge-owner.json' && entryName !== 'active-index.json';
 }
 
 function buildCandidateId(rootKind: 'repository' | 'controller', jobId: string, kind: RuntimeStorageRepairCandidateKind): string {

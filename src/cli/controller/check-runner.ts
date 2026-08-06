@@ -50,7 +50,7 @@ interface CheckConfig {
   }>;
 }
 
-const CHECK_CONFIG = '.repo-harness/checks.json';
+const CHECK_CONFIG = '.forge/checks.json';
 const CHECK_EVIDENCE_ROOT = '.ai/harness/checks/controller';
 const HEAVY_CHECK_LOCK = '.ai/harness/controller/heavy-check.lock';
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -85,11 +85,11 @@ function syncSupervisorBridgePath(repoRoot: string): string {
   return candidates[0];
 }
 
-const CHECK_BRIDGE_RUNTIME_ENV = 'REPO_HARNESS_BUN_EXECUTABLE';
+const CHECK_BRIDGE_RUNTIME_ENV = 'FORGE_BUN_EXECUTABLE';
 
 /**
  * A compiled Bun executable reports itself through process.execPath. In a
- * Supervisor release that path is repo-harness.js, not a JavaScript runtime,
+ * Supervisor release that path is forge.js, not a JavaScript runtime,
  * so passing the TypeScript bridge as argv would be parsed as a CLI command.
  */
 export function resolveSyncSupervisorBridgeRuntime(
@@ -461,7 +461,7 @@ export function runControllerCheck(repoRoot: string, id: string, requestedTimeou
     const bridgeRuntime = resolveSyncSupervisorBridgeRuntime();
     const childEnvironment = repositoryChildProcessEnvironment();
     delete childEnvironment[CHECK_BRIDGE_RUNTIME_ENV];
-    childEnvironment.REPO_HARNESS_SUPERVISED_REQUEST = Buffer.from(JSON.stringify({
+    childEnvironment.FORGE_SUPERVISED_REQUEST = Buffer.from(JSON.stringify({
       command: check.command[0],
       args: check.command.slice(1),
       cwd: resolve(repoRoot, check.cwd),

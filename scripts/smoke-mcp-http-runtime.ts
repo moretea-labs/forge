@@ -4,7 +4,7 @@ import { createServer } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { registerRepository } from '../src/cli/repositories/registry';
-import { readControllerDaemonStatus } from '../src/runtime/control-plane/daemon-client';
+import { readForgeRuntimeStatus } from '../src/runtime/control-plane/runtime-status-client';
 import { CONTROLLER_TOOL_SURFACE, controllerToolSurfaceFingerprint } from '../src/cli/controller/runtime-config';
 import { CORE_CONTROLLER_TOOL_NAMES } from '../src/cli/mcp/toolset';
 import { writeMcpServiceLocalConfig } from '../src/cli/mcp/auth';
@@ -12,11 +12,11 @@ import { buildMcpToolDefinitions } from '../src/cli/mcp/tools';
 import { runtimePolicy } from '../src/cli/mcp/multi-repository';
 import { resolveControllerToolsetSelection } from '../src/cli/mcp/toolset-selection';
 
-const root = mkdtempSync(join(tmpdir(), 'repo-harness-mcp-http-smoke-'));
+const root = mkdtempSync(join(tmpdir(), 'forge-mcp-http-smoke-'));
 const repoRoot = join(root, 'repo');
 const controllerHome = join(root, 'controller');
 let serverPid: number | undefined;
-let daemonPid: number | undefined;
+let runtimePid: number | undefined;
 
 function git(...args: string[]): void { execFileSync('git', ['-C', repoRoot, ...args], { stdio: 'ignore' }); }
 function sleep(ms: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, ms)); }
@@ -77,9 +77,9 @@ try {
   ], {
     env: {
       ...process.env,
-      REPO_HARNESS_CONTROLLER_HOME: controllerHome,
-      REPO_HARNESS_CONTROLLER_LIFECYCLE_OWNER: '1',
-      REPO_HARNESS_DAEMON_MAX_LIFETIME_MS: '60000',
+      FORGE_CONTROLLER_HOME: controllerHome,
+      FORGE_CONTROLLER_LIFECYCLE_OWNER: '1',
+      FORGE_RUNTIME_MAX_LIFETIME_MS: '60000',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -118,7 +118,7 @@ try {
   if (ready.status !== 200 || ready.body.ready !== true) throw new Error(`READINESS_FAILED: ${JSON.stringify(ready)} ${stderr}`);
   const repoHealth = await waitJson(`http://127.0.0.1:${port}/repos/${repository.repoId}/health`, 10_000);
   if (repoHealth.status !== 200 || repoHealth.body.status !== 'ok') throw new Error(`REPOSITORY_HEALTH_FAILED: ${JSON.stringify(repoHealth)}`);
-  daemonPid = readControllerDaemonStatus(controllerHome).pid;
+  runtimePid = readForgeRuntimeStatus(controllerHome).pid;
 
   console.log(JSON.stringify({
     status: 'ok', port, repoId: repository.repoId,
@@ -131,17 +131,17 @@ try {
     repositoryHealth: repoHealth.body.status,
   }, null, 2));
 } finally {
-  if (!daemonPid) daemonPid = readControllerDaemonStatus(controllerHome).pid;
+  if (!runtimePid) runtimePid = readForgeRuntimeStatus(controllerHome).pid;
   if (serverPid) { try { process.kill(serverPid, 'SIGTERM'); } catch { /* stopped */ } }
-  if (daemonPid) { try { process.kill(daemonPid, 'SIGTERM'); } catch { /* stopped */ } }
+  if (runtimePid) { try { process.kill(runtimePid, 'SIGTERM'); } catch { /* stopped */ } }
   const deadline = Date.now() + 2_000;
   while (Date.now() < deadline) {
     const serverAlive = serverPid ? (() => { try { process.kill(serverPid, 0); return true; } catch { return false; } })() : false;
-    const daemonAlive = daemonPid ? (() => { try { process.kill(daemonPid, 0); return true; } catch { return false; } })() : false;
+    const daemonAlive = runtimePid ? (() => { try { process.kill(runtimePid, 0); return true; } catch { return false; } })() : false;
     if (!serverAlive && !daemonAlive) break;
     await sleep(50);
   }
   if (serverPid) { try { process.kill(serverPid, 'SIGKILL'); } catch { /* stopped */ } }
-  if (daemonPid) { try { process.kill(daemonPid, 'SIGKILL'); } catch { /* stopped */ } }
+  if (runtimePid) { try { process.kill(runtimePid, 'SIGKILL'); } catch { /* stopped */ } }
   rmSync(root, { recursive: true, force: true });
 }

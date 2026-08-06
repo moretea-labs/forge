@@ -123,18 +123,18 @@ export function runtimePolicy(repoRoot: string, opts: McpServerOptions) {
   const config = profile === 'controller' && opts.controllerHome
     ? loadMcpServiceLocalConfig(opts.controllerHome, repoRoot)
     : loadMcpLocalConfig(repoRoot);
-  const envDevRunner = parseBooleanSetting(process.env.REPO_HARNESS_MCP_DEV_RUNNER);
+  const envDevRunner = parseBooleanSetting(process.env.FORGE_MCP_DEV_RUNNER);
   const configuredDevRunner = envDevRunner ?? config?.devMode?.agentRunner === true;
   const devAgentRunner = opts.enableDevRunner === true || configuredDevRunner;
   const allowedAgents = parseAgentList(
-    opts.devRunnerAgents ?? process.env.REPO_HARNESS_MCP_DEV_RUNNER_AGENTS ?? config?.devMode?.allowedAgents,
+    opts.devRunnerAgents ?? process.env.FORGE_MCP_DEV_RUNNER_AGENTS ?? config?.devMode?.allowedAgents,
   );
   const runnerMaxTimeoutMs = normalizeAgentTimeoutMs(
-    opts.devRunnerMaxTimeoutMs ?? process.env.REPO_HARNESS_MCP_DEV_RUNNER_MAX_TIMEOUT_MS ?? config?.devMode?.maxTimeoutMs,
+    opts.devRunnerMaxTimeoutMs ?? process.env.FORGE_MCP_DEV_RUNNER_MAX_TIMEOUT_MS ?? config?.devMode?.maxTimeoutMs,
     { defaultMs: MAX_AGENT_TIMEOUT_MS, maxMs: MAX_AGENT_TIMEOUT_MS, label: 'dev runner max timeout' },
   );
   const runnerTimeoutMs = normalizeAgentTimeoutMs(
-    opts.devRunnerTimeoutMs ?? process.env.REPO_HARNESS_MCP_DEV_RUNNER_TIMEOUT_MS ?? config?.devMode?.timeoutMs,
+    opts.devRunnerTimeoutMs ?? process.env.FORGE_MCP_DEV_RUNNER_TIMEOUT_MS ?? config?.devMode?.timeoutMs,
     { defaultMs: DEFAULT_AGENT_TIMEOUT_MS, maxMs: runnerMaxTimeoutMs, label: 'dev runner timeout' },
   );
   return getMcpPolicy(profile, {
@@ -331,7 +331,7 @@ export function createMcpToolContext(opts: McpServerOptions): MultiRepositoryMcp
   const config = policy.profile === 'controller'
     ? loadMcpServiceLocalConfig(controllerHome, explicitRepository?.canonicalRoot)
     : loadMcpLocalConfig(policyRoot);
-  const toolsetOverride = opts.toolset ?? process.env.REPO_HARNESS_MCP_TOOLSET;
+  const toolsetOverride = opts.toolset ?? process.env.FORGE_MCP_TOOLSET;
   const configuredToolset = policy.profile === 'controller'
     ? configuredControllerToolset(config)
     : config?.toolset;

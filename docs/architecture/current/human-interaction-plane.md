@@ -19,7 +19,7 @@ bounded plugin action
 The host is not a Controller, scheduler, Gateway, or MCP server. It owns one browser profile and survives the bounded Worker that requested the handoff.
 Browser CDP attach mode is not a human handoff owner; handoff still launches and fences the managed profile path for the saved session, then releases it only through the terminal handoff state.
 
-Records live below `.repo-harness/interactions/<provider>/` as atomic session, launch, and command files. They contain provider/session identity, Work ownership, host PID/heartbeat, expiry, bounded URL/title results, and capability-local errors. They never copy cookies, passwords, verification codes, or user-entered form values.
+Records live below `.forge/interactions/<provider>/` as atomic session, launch, and command files. They contain provider/session identity, Work ownership, host PID/heartbeat, expiry, bounded URL/title results, and capability-local errors. They never copy cookies, passwords, verification codes, or user-entered form values.
 
 ## State and Ownership
 

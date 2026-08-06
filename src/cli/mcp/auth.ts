@@ -141,23 +141,23 @@ export interface McpRuntimeState {
 export type McpHttpAuthMode = 'oauth' | 'bearer';
 
 export function mcpLocalConfigPath(repoRoot: string): string {
-  return join(repoRoot, '.repo-harness', 'mcp.local.json');
+  return join(repoRoot, '.forge', 'mcp.local.json');
 }
 
 export function mcpTokenPath(repoRoot: string): string {
-  return join(repoRoot, '.repo-harness', 'mcp.tokens.json');
+  return join(repoRoot, '.forge', 'mcp.tokens.json');
 }
 
 export function mcpOAuthPath(repoRoot: string): string {
-  return join(repoRoot, '.repo-harness', 'mcp.oauth.json');
+  return join(repoRoot, '.forge', 'mcp.oauth.json');
 }
 
 export function mcpOAuthTokenStorePath(repoRoot: string): string {
-  return join(repoRoot, '.repo-harness', 'mcp.oauth-tokens.json');
+  return join(repoRoot, '.forge', 'mcp.oauth-tokens.json');
 }
 
 export function mcpRuntimeStatePath(repoRoot: string): string {
-  return join(repoRoot, '.repo-harness', 'mcp.runtime.json');
+  return join(repoRoot, '.forge', 'mcp.runtime.json');
 }
 
 function mcpControllerHomePath(controllerHome: string, filename: string): string {
@@ -324,7 +324,7 @@ export function writeMcpServiceRuntimeState(controllerHome: string, state: McpRu
 }
 
 export function readMcpBearerToken(repoRoot: string): string | null {
-  if (process.env.REPO_HARNESS_MCP_TOKEN?.trim()) return process.env.REPO_HARNESS_MCP_TOKEN.trim();
+  if (process.env.FORGE_MCP_TOKEN?.trim()) return process.env.FORGE_MCP_TOKEN.trim();
   const path = mcpTokenPath(repoRoot);
   if (!existsSync(path)) return null;
   try {
@@ -347,7 +347,7 @@ export function ensureMcpBearerToken(repoRoot: string): { token: string; path: s
 }
 
 export function readMcpServiceBearerToken(controllerHome: string, legacyRepoRoot?: string): string | null {
-  if (process.env.REPO_HARNESS_MCP_TOKEN?.trim()) return process.env.REPO_HARNESS_MCP_TOKEN.trim();
+  if (process.env.FORGE_MCP_TOKEN?.trim()) return process.env.FORGE_MCP_TOKEN.trim();
   const parsed = readJsonFile<{ bearerToken?: unknown }>(mcpControllerHomeTokenPath(controllerHome));
   if (typeof parsed?.bearerToken === 'string' && parsed.bearerToken.trim().length > 0) return parsed.bearerToken.trim();
   return legacyRepoRoot ? readMcpBearerToken(legacyRepoRoot) : null;
@@ -392,8 +392,8 @@ export function parseMcpHttpAuthMode(value: string | undefined): McpHttpAuthMode
 }
 
 export function readMcpOAuthPassphrase(repoRoot: string): string | null {
-  if (process.env.REPO_HARNESS_MCP_OAUTH_PASSPHRASE?.trim()) {
-    return process.env.REPO_HARNESS_MCP_OAUTH_PASSPHRASE.trim();
+  if (process.env.FORGE_MCP_OAUTH_PASSPHRASE?.trim()) {
+    return process.env.FORGE_MCP_OAUTH_PASSPHRASE.trim();
   }
   const path = mcpOAuthPath(repoRoot);
   if (!existsSync(path)) return null;
@@ -417,8 +417,8 @@ export function ensureMcpOAuthPassphrase(repoRoot: string): { passphrase: string
 }
 
 export function readMcpServiceOAuthPassphrase(controllerHome: string, legacyRepoRoot?: string): string | null {
-  if (process.env.REPO_HARNESS_MCP_OAUTH_PASSPHRASE?.trim()) {
-    return process.env.REPO_HARNESS_MCP_OAUTH_PASSPHRASE.trim();
+  if (process.env.FORGE_MCP_OAUTH_PASSPHRASE?.trim()) {
+    return process.env.FORGE_MCP_OAUTH_PASSPHRASE.trim();
   }
   const stableHome = resolveStableControllerHome(controllerHome);
   const parsed = readJsonFile<{ passphrase?: unknown }>(mcpControllerHomeOAuthPath(stableHome));

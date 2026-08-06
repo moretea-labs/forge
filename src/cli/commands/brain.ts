@@ -1,5 +1,5 @@
 /**
- * `agentic-dev brain` / `repo-harness brain` — explicit external knowledge
+ * `agentic-dev brain` / `forge brain` — explicit external knowledge
  * sync and archive promotion surface.
  *
  * Hooks only emit [BrainPromote] advisories. This command owns the deliberate

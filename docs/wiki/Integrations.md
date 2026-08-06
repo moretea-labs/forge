@@ -1,6 +1,6 @@
 # Integrations
 
-Integrations extend Matea without changing the core repository-safety model. Each integration has its own authorization and readiness checks.
+Integrations extend Forge without changing the core repository-safety model. Each integration has its own authorization and readiness checks.
 
 ## ChatGPT MCP
 
@@ -26,4 +26,4 @@ Gmail, Calendar, Contacts, and related assistant routines remain connector-speci
 
 Simulator and App Store Connect workflows use dedicated capabilities and authorization. They are distinct from generic shell or repository execution.
 
-See the [documentation hub](https://github.com/moretea-labs/matea/blob/main/docs/README.md) for maintained integration guides.
+See the [documentation hub](https://github.com/moretea-labs/forge/blob/main/docs/README.md) for maintained integration guides.

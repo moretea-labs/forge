@@ -2,15 +2,15 @@
 set -euo pipefail
 
 REPO_ROOT="${1:-$PWD}"
-REPO_ID="${REPO_HARNESS_REPO_ID:-}"
-MIN_AGE_MINUTES="${REPO_HARNESS_RECOVERY_MIN_AGE_MINUTES:-0}"
-CANCEL_PENDING="${REPO_HARNESS_RECOVERY_CANCEL_PENDING_APPROVALS:-false}"
-CONTROLLER_HOME="${REPO_HARNESS_CONTROLLER_HOME:-$REPO_ROOT/_ops/controller-home}"
+REPO_ID="${FORGE_REPO_ID:-}"
+MIN_AGE_MINUTES="${FORGE_RECOVERY_MIN_AGE_MINUTES:-0}"
+CANCEL_PENDING="${FORGE_RECOVERY_CANCEL_PENDING_APPROVALS:-false}"
+CONTROLLER_HOME="${FORGE_CONTROLLER_HOME:-$REPO_ROOT/_ops/controller-home}"
 
 cd "$REPO_ROOT"
 
 if [[ -z "$REPO_ID" ]]; then
-  echo "bootstrap-runtime-maintenance-recovery: set REPO_HARNESS_REPO_ID to the target repository id (no default id is shipped)." >&2
+  echo "bootstrap-runtime-maintenance-recovery: set FORGE_REPO_ID to the target repository id (no default id is shipped)." >&2
   exit 2
 fi
 
@@ -99,7 +99,7 @@ def rebuild_active_index(root: Path) -> list[str]:
     job_ids: list[str] = []
     if root.exists():
         for entry in sorted(root.iterdir()):
-            if not entry.is_dir() or entry.name in {'.repo-harness-owner.json', 'active-index.json'}:
+            if not entry.is_dir() or entry.name in {'.forge-owner.json', 'active-index.json'}:
                 continue
             job_path = entry / 'job.json'
             if not job_path.exists():
@@ -123,7 +123,7 @@ for root_kind, root in roots:
     if not root.exists():
         continue
     for entry in sorted(root.iterdir()):
-        if entry.name in {'.repo-harness-owner.json', 'active-index.json'}:
+        if entry.name in {'.forge-owner.json', 'active-index.json'}:
             continue
         if not entry.is_dir():
             target = quarantine(root_kind, root, entry, 'unexpected local-jobs entry')

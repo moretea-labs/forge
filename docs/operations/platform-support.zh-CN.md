@@ -16,7 +16,7 @@
 所有安装方式都需要：
 
 - Git 已加入 `PATH`；
-- Node.js 20.10 或更高版本，因为发布后的 `repo-harness` 启动器由 Node 执行；
+- Node.js 20.10 或更高版本，因为发布后的 `forge` 启动器由 Node 执行；
 - npm（随 Node.js 安装）或 Bun 1.0+，用于安装 package；
 - 可写的用户主目录。
 
@@ -36,7 +36,7 @@ Bun 是开发和完整测试的推荐执行器，但不再是唯一安装器。
 Windows PowerShell 路径当前发布验证覆盖：
 
 - 前置环境检查和 CLI 安装；
-- `matea --version`、命令加载与 `matea doctor`；
+- `forge --version`、命令加载与 `forge doctor`；
 - 仓库注册表；
 - 可移植测试覆盖的 Windows 路径、进程、junction 和命令处理；
 - 不依赖 Bash helper 的默认 MCP facade 与有边界仓库操作。

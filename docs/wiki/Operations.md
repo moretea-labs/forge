@@ -19,9 +19,8 @@ Use this page to choose the right operational path. Avoid replaying writes merel
 
 ## Detailed runbooks
 
-- [Controller reliability](https://github.com/moretea-labs/matea/blob/main/docs/operations/controller-reliability-runbook.md)
-- [Stable Supervisor](https://github.com/moretea-labs/matea/blob/main/docs/operations/stable-external-runtime-supervisor.md)
-- [Standalone recovery](https://github.com/moretea-labs/matea/blob/main/docs/operations/standalone-disaster-recovery.md)
-- [502 and performance](https://github.com/moretea-labs/matea/blob/main/docs/operations/controller-performance-and-502.md)
+- [Controller reliability](https://github.com/moretea-labs/forge/blob/main/docs/operations/controller-reliability-runbook.md)
+- [Standalone recovery](https://github.com/moretea-labs/forge/blob/main/docs/operations/standalone-disaster-recovery.md)
+- [502 and performance](https://github.com/moretea-labs/forge/blob/main/docs/operations/controller-performance-and-502.md)
 - [Troubleshooting](Troubleshooting)
 - [Release process](Releases-and-Upgrades)

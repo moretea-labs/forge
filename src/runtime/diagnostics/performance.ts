@@ -11,7 +11,7 @@ export interface RuntimeProcessSample {
   cpu: number;
   mem: number;
   command: string;
-  kind: 'runtime' | 'worker' | 'local-controller' | 'mcp-server' | 'mcp-keepalive' | 'tunnel' | 'repo-harness' | 'other';
+  kind: 'runtime' | 'worker' | 'local-controller' | 'mcp-server' | 'mcp-keepalive' | 'tunnel' | 'forge' | 'other';
   repoRoot?: string;
   jobId?: string;
   orphan: boolean;
@@ -36,11 +36,11 @@ export interface RuntimePerformanceDiagnostics {
   summary: string;
   controller: { queueDepth: number; runningWorkers: number; activeLeases: number; activeJobs: string[] };
   processSummary: {
-    totalRepoHarnessProcesses: number;
+    totalForgeProcesses: number;
     workerProcesses: number;
     orphanWorkers: number;
     highCpuProcesses: number;
-    totalRepoHarnessCpu: number;
+    totalForgeCpu: number;
     localControllerRunning: boolean;
     localControllerPid?: number;
   };
@@ -79,7 +79,7 @@ const MAX_DIAGNOSTIC_PROCESSES = 80;
 const MAX_DIAGNOSTIC_TEMP_ENTRIES = 80;
 const MAX_DIAGNOSTIC_CLEANUP_PREVIEW = 50;
 export const RUNTIME_TEMP_RETENTION_MINUTES = 24 * 60;
-const RUNTIME_TEMP_NAME = /^repo-harness(?:[-_.]|$)/;
+const RUNTIME_TEMP_NAME = /^forge(?:[-_.]|$)/;
 
 function parseNumber(value: string | undefined): number {
   const parsed = Number(value);
@@ -96,7 +96,7 @@ export function buildRuntimeDiagnosticSummary(
   findings: RuntimePerformanceDiagnostics['findings'],
 ): { summary: string; truncated: boolean } {
   const message = status === 'normal'
-    ? 'No orphan workers or abnormal repo-harness CPU pattern detected.'
+    ? 'No orphan workers or abnormal forge CPU pattern detected.'
     : findings.map((finding) => finding.message.trim()).filter(Boolean).join(' ');
   const bounded = boundedText(message, MAX_DIAGNOSTIC_SUMMARY_CHARS);
   return { summary: bounded.text, truncated: bounded.truncated };
@@ -133,27 +133,27 @@ export function isStaleCanonicalRuntimeProcess(sample: RuntimeProcessSample, rep
   if (!controllerHome || !currentRoot) return false;
   const currentControllerHome = currentRoot + '/_ops/controller-home';
   if (controllerHome === currentControllerHome || controllerHome.startsWith(currentControllerHome + '/')) return false;
-  return controllerHome.includes('/.ai/local/controller-home') || controllerHome.includes('/repo-harness-controller-home-');
+  return controllerHome.includes('/.ai/local/controller-home') || controllerHome.includes('/forge-controller-home-');
 }
 
 function extractRepoRoot(command: string): string | undefined {
   const explicitRepo = extractFlag(command, '--repo');
   if (explicitRepo) return normalizePath(explicitRepo);
-  const sourceMatch = command.match(/(\/[^\s]*repo-harness[^\s]*)\/src\//);
+  const sourceMatch = command.match(/(\/[^\s]*forge[^\s]*)\/src\//);
   if (sourceMatch) return normalizePath(sourceMatch[1]);
-  const worktreeMatch = command.match(/(\/[^\s]*repo-harness[^\s]*)\/\.ai\//);
+  const worktreeMatch = command.match(/(\/[^\s]*forge[^\s]*)\/\.ai\//);
   if (worktreeMatch) return normalizePath(worktreeMatch[1]);
   return undefined;
 }
 
 function classify(command: string): RuntimeProcessSample['kind'] {
-  if (command.includes('repo-harness-runtime') || command.includes('/runtime/root/entry.ts')) return 'runtime';
+  if (command.includes('forge-runtime') || command.includes('/runtime/root/entry.ts')) return 'runtime';
   if (command.includes('worker-entry.ts') || command.includes('job-worker.ts') || command.includes('/runtime/execution/workers/')) return 'worker';
   if (command.includes(' controller ui ') || command.includes('src/cli/index.ts controller ui')) return 'local-controller';
   if (command.includes(' mcp serve ') || command.includes('src/cli/index.ts mcp serve')) return 'mcp-server';
   if (command.includes(' mcp keepalive ') || command.includes('src/cli/index.ts mcp keepalive')) return 'mcp-keepalive';
   if (command.includes('ngrok') || command.includes('controller-ngrok-rotation')) return 'tunnel';
-  if (command.includes('repo-harness')) return 'repo-harness';
+  if (command.includes('forge')) return 'forge';
   return 'other';
 }
 
@@ -306,12 +306,12 @@ export function collectRuntimePerformanceDiagnostics(input: DiagnosticsInput): R
   const processes = input.includeProcesses === false ? [] : collectRuntimeProcesses(activeJobIds);
   const repoRoot = normalizePath(input.repoRoot) ?? input.repoRoot;
   const peerMcpProcesses = processes.filter((process) => isHighCpuPeerMcpProcess(process, repoRoot));
-  const staleControllerDaemons = processes.filter((process) => isStaleCanonicalRuntimeProcess(process, repoRoot));
+  const staleForgeRuntimes = processes.filter((process) => isStaleCanonicalRuntimeProcess(process, repoRoot));
   const repoProcesses = processes.filter((process) =>
     normalizePath(process.repoRoot) === repoRoot
     || process.command.includes(input.repoRoot)
     || peerMcpProcesses.some((peer) => peer.pid === process.pid)
-    || staleControllerDaemons.some((daemon) => daemon.pid === process.pid),
+    || staleForgeRuntimes.some((daemon) => daemon.pid === process.pid),
   );
   const workers = repoProcesses.filter((process) => process.kind === 'worker');
   const orphanWorkers = workers.filter((process) => process.orphan);
@@ -325,14 +325,14 @@ export function collectRuntimePerformanceDiagnostics(input: DiagnosticsInput): R
   const findings: RuntimePerformanceDiagnostics['findings'] = [];
   if (orphanWorkers.length > 0) findings.push({ severity: orphanWorkers.length >= 3 ? 'critical' : 'warning', code: 'ORPHAN_WORKERS', message: 'Detected ' + orphanWorkers.length + ' orphan worker process(es).' });
   const totalCpu = Math.round(repoProcesses.reduce((sum, process) => sum + process.cpu, 0) * 10) / 10;
-  if (totalCpu >= 100 || highCpu.length >= 3) findings.push({ severity: 'warning', code: 'HIGH_REPO_HARNESS_CPU', message: 'Repo-harness related CPU is ' + totalCpu + '%.' });
+  if (totalCpu >= 100 || highCpu.length >= 3) findings.push({ severity: 'warning', code: 'HIGH_FORGE_CPU', message: 'Forge-related CPU is ' + totalCpu + '%.' });
   if (highCpuPeerMcp.length > 0) findings.push({ severity: 'warning', code: 'HIGH_CPU_PEER_MCP', message: 'Detected ' + highCpuPeerMcp.length + ' high-CPU MCP process(es) owned by another repository.' });
-  if (staleControllerDaemons.length > 0) findings.push({ severity: 'warning', code: 'STALE_CONTROLLER_DAEMONS', message: 'Detected ' + staleControllerDaemons.length + ' detached stale controller daemon(s).' });
+  if (staleForgeRuntimes.length > 0) findings.push({ severity: 'warning', code: 'STALE_FORGE_RUNTIMES', message: 'Detected ' + staleForgeRuntimes.length + ' detached stale Forge Runtime process(es).' });
   if ((input.queueDepth ?? 0) === 0 && (input.runningWorkers ?? 0) === 0 && orphanWorkers.length > 0) findings.push({ severity: 'critical', code: 'CONTROL_PLANE_IDLE_HOST_BUSY', message: 'Controller queue is idle but host still has orphan worker process(es).' });
   const tempCleanupCandidates = temp.entries.filter((entry) => entry.cleanupCandidate);
-  if (tempCleanupCandidates.length >= 100) findings.push({ severity: 'warning', code: 'TEMP_DIR_ACCUMULATION', message: 'Detected ' + tempCleanupCandidates.length + ' stale repo-harness temp entries.' });
+  if (tempCleanupCandidates.length >= 100) findings.push({ severity: 'warning', code: 'TEMP_DIR_ACCUMULATION', message: 'Detected ' + tempCleanupCandidates.length + ' stale forge temp entries.' });
   if (!localController && input.localControllerRunning !== true) findings.push({ severity: 'info', code: 'LOCAL_CONTROLLER_NOT_IN_PROCESS_LIST', message: 'No Local Controller process was found for this repository.' });
-  const cleanupProcessCandidates = [...orphanWorkers, ...highCpuPeerMcp, ...staleControllerDaemons]
+  const cleanupProcessCandidates = [...orphanWorkers, ...highCpuPeerMcp, ...staleForgeRuntimes]
     .filter((sample, index, samples) => samples.findIndex((candidate) => candidate.pid === sample.pid) === index);
   const rawCleanupProcesses = cleanupProcessCandidates.slice(0, MAX_DIAGNOSTIC_CLEANUP_PREVIEW);
   const status: RuntimePerformanceDiagnostics['status'] = findings.some((finding) => finding.severity === 'critical') ? 'critical' : findings.some((finding) => finding.severity === 'warning') ? 'warning' : 'normal';
@@ -350,7 +350,7 @@ export function collectRuntimePerformanceDiagnostics(input: DiagnosticsInput): R
     status,
     summary: summary.summary,
     controller: { queueDepth: input.queueDepth ?? 0, runningWorkers: input.runningWorkers ?? 0, activeLeases: input.activeLeases ?? 0, activeJobs: activeJobIds },
-    processSummary: { totalRepoHarnessProcesses: repoProcesses.length, workerProcesses: workers.length, orphanWorkers: orphanWorkers.length, highCpuProcesses: highCpu.length, totalRepoHarnessCpu: totalCpu, localControllerRunning, localControllerPid: localController?.pid ?? input.localControllerPid },
+    processSummary: { totalForgeProcesses: repoProcesses.length, workerProcesses: workers.length, orphanWorkers: orphanWorkers.length, highCpuProcesses: highCpu.length, totalForgeCpu: totalCpu, localControllerRunning, localControllerPid: localController?.pid ?? input.localControllerPid },
     processes: repoProcesses.slice(0, MAX_DIAGNOSTIC_PROCESSES),
     temp: {
       scannedRoots: temp.roots,

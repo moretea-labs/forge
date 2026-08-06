@@ -1,7 +1,7 @@
 #!/bin/bash
-# Shared install helpers for repo-harness scaffolding scripts.
+# Shared install helpers for forge scaffolding scripts.
 
-PI_RUNTIME_BLOCK_BEGIN="# BEGIN: claude-runtime-temp (managed by repo-harness)"
+PI_RUNTIME_BLOCK_BEGIN="# BEGIN: claude-runtime-temp (managed by forge)"
 PI_RUNTIME_BLOCK_END="# END: claude-runtime-temp"
 PI_DEFAULT_GITIGNORE_CONTENT=$(cat <<'EOF_GITIGNORE'
 # Dependencies
@@ -67,8 +67,8 @@ tasks/.current.md.tmp.*
 .ai/harness/chatgpt/sessions/
 .ai/harness/triage/*
 !.ai/harness/triage/.gitkeep
-.repo-harness/chatgpt-browser.local.json
-.repo-harness/chatgpt-browser.tokens.json
+.forge/chatgpt-browser.local.json
+.forge/chatgpt-browser.tokens.json
 .codex/*
 .claude/.active-plan
 .claude/.plan-state/
@@ -443,7 +443,7 @@ PI_DOCUMENTATION_PROFILE_DEFAULT="minimal-agentic"
 PI_DEFAULT_LSP_PROFILE="typescript-lsp"
 PI_MINIMAL_REFERENCE_CONFIGS="harness-overview.md agentic-development-flow.md external-tooling.md sprint-contracts.md heartbeat-triage.md handoff-protocol.md document-generation.md global-working-rules.md"
 PI_FULL_REFERENCE_CONFIGS="agentic-development-flow.md ai-workflows.md changelog-versioning.md coding-standards.md development-protocol.md document-generation.md evaluator-rubric.md external-tooling.md git-strategy.md global-working-rules.md heartbeat-triage.md handoff-protocol.md harness-overview.md hook-operations.md release-deploy.md spa-day-protocol.md sprint-contracts.md workflow-orchestration.md"
-PI_REFERENCE_CONFIG_STUB_MARKER="<!-- repo-harness: reference-config-stub v1 -->"
+PI_REFERENCE_CONFIG_STUB_MARKER="<!-- forge: reference-config-stub v1 -->"
 
 pi_write_file_if_apply() {
   local mode="${1:-apply}"
@@ -532,7 +532,7 @@ if (!Object.prototype.hasOwnProperty.call(data, "hooks")) {
   process.exit(0);
 }
 
-const backup = `${path}.repo-harness-migrate-backup`;
+const backup = `${path}.forge-migrate-backup`;
 if (!fs.existsSync(backup)) fs.copyFileSync(path, backup);
 delete data.hooks;
 
@@ -545,14 +545,14 @@ NODE_EOF
 }
 
 pi_print_codex_hook_trust_notice() {
-  echo "Host hook adapters are user-level: run repo-harness install --target both --location global, then trust ~/.codex/hooks.json in Codex Settings."
+  echo "Host hook adapters are user-level: run forge install --target both --location global, then trust ~/.codex/hooks.json in Codex Settings."
 }
 
 pi_repo_pins_hook_source() {
   local repo="$1"
   local policy_file="$repo/.ai/harness/policy.json"
 
-  if [[ "${REPO_HARNESS_HOOK_SOURCE:-}" == "repo" ]]; then
+  if [[ "${FORGE_HOOK_SOURCE:-}" == "repo" ]]; then
     return 0
   fi
 
@@ -564,7 +564,7 @@ pi_repo_pins_helper_source() {
   local repo="$1"
   local policy_file="$repo/.ai/harness/policy.json"
 
-  if [[ "${REPO_HARNESS_HELPER_SOURCE:-}" == "repo" ]]; then
+  if [[ "${FORGE_HELPER_SOURCE:-}" == "repo" ]]; then
     return 0
   fi
 
@@ -589,8 +589,8 @@ pi_write_hook_runtime_readme() {
 This repo does not pin `"hook_source": "repo"`, so active hook execution is
 user-level and central-first:
 
-`~/.codex/hooks.json` / `~/.claude/settings.json` -> `repo-harness-hook` ->
-packaged hooks from the installed repo-harness runtime.
+`~/.codex/hooks.json` / `~/.claude/settings.json` -> `forge-hook` ->
+packaged hooks from the installed forge runtime.
 
 The files under `.ai/hooks/lib/` are kept only for repo workflow helper scripts
 that source shared shell utilities. Full hook runtime scripts are not vendored
@@ -632,7 +632,7 @@ pi_install_hook_assets() {
 
   if [[ ! -d "$hooks_assets_dir" ]]; then
     echo "[project-init] Warning: hook assets not found at $hooks_assets_dir" >&2
-    echo "[project-init] User-level host adapters dispatch through repo-harness-hook packaged hooks." >&2
+    echo "[project-init] User-level host adapters dispatch through forge-hook packaged hooks." >&2
     return 0
   fi
 
@@ -743,9 +743,9 @@ pi_helper_wrapper_gitignore_entries() {
   paths="$(pi_helper_wrapper_paths "$workflow_contract")"
   [[ -n "$paths" ]] || return 0
 
-  printf '%s\n' "# repo-harness generated helper wrappers"
+  printf '%s\n' "# forge generated helper wrappers"
   printf '%s\n' "$paths"
-  printf '%s\n' "scripts/repo-harness/"
+  printf '%s\n' "scripts/forge/"
 }
 
 pi_is_runtime_block_begin() {
@@ -1085,7 +1085,7 @@ pi_install_helpers() {
     if [[ "$source_repo_target" -eq 1 || "$(pi_repo_pins_helper_source "$target_dir" && printf yes || true)" == "yes" ]]; then
       echo "[dry-run] install source helpers into $scripts_dir"
     else
-      echo "[dry-run] install helper compatibility wrappers in $scripts_dir; package runtime dispatches through repo-harness run"
+      echo "[dry-run] install helper compatibility wrappers in $scripts_dir; package runtime dispatches through forge run"
     fi
     return 0
   fi
@@ -1121,13 +1121,13 @@ pi_install_helpers() {
           if ! pi_preserve_existing_app_script "$scripts_dir/$helper_name" "$helpers_dir/$helper_name"; then
             pi_write_helper_wrapper "$scripts_dir/$helper_name" "$helper_name"
           else
-            mkdir -p "$scripts_dir/repo-harness"
-            pi_write_helper_wrapper "$scripts_dir/repo-harness/$helper_name" "$helper_name"
+            mkdir -p "$scripts_dir/forge"
+            pi_write_helper_wrapper "$scripts_dir/forge/$helper_name" "$helper_name"
           fi
         fi
       fi
     done
-    pi_ensure_executable_if_apply "$mode" "$runtime_dir"/*.sh "$runtime_dir"/*.ts "$scripts_dir"/*.sh "$scripts_dir"/*.ts "$scripts_dir/repo-harness"/*.sh "$scripts_dir/repo-harness"/*.ts
+    pi_ensure_executable_if_apply "$mode" "$runtime_dir"/*.sh "$runtime_dir"/*.ts "$scripts_dir"/*.sh "$scripts_dir"/*.ts "$scripts_dir/forge"/*.sh "$scripts_dir/forge"/*.ts
     return 0
   fi
 
@@ -1147,7 +1147,7 @@ pi_preserve_existing_app_script() {
     return 1
   fi
 
-  if grep -Eiq '(repo-harness|claude-runtime-temp|Task Contract|Task Review|Deferred Goal Ledger|Workflow Contract|ContractWorktree|SprintBacklog|ArchitectureSync|ArchitectureDrift|BrainSync|CurrentStatus|\.ai/harness|\.claude/templates|tasks/contracts|tasks/reviews)' "$output_file"; then
+  if grep -Eiq '(forge|claude-runtime-temp|Task Contract|Task Review|Deferred Goal Ledger|Workflow Contract|ContractWorktree|SprintBacklog|ArchitectureSync|ArchitectureDrift|BrainSync|CurrentStatus|\.ai/harness|\.claude/templates|tasks/contracts|tasks/reviews)' "$output_file"; then
     return 1
   fi
 
@@ -1167,12 +1167,12 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 const sourceRoot =
-  process.env.REPO_HARNESS_SOURCE_ROOT ||
+  process.env.FORGE_SOURCE_ROOT ||
   process.env.AGENTIC_DEV_ROOT ||
   process.env.AGENTIC_DEV_SKILL_ROOT;
 const command = sourceRoot && existsSync(join(sourceRoot, "src", "cli", "index.ts"))
   ? ["bun", join(sourceRoot, "src", "cli", "index.ts"), "run", "$(basename "$helper_name" .ts)"]
-  : ["repo-harness", "run", "$(basename "$helper_name" .ts)"];
+  : ["forge", "run", "$(basename "$helper_name" .ts)"];
 
 const result = spawnSync(command[0], [...command.slice(1), ...process.argv.slice(2)], {
   cwd: process.cwd(),
@@ -1181,7 +1181,7 @@ const result = spawnSync(command[0], [...command.slice(1), ...process.argv.slice
 });
 
 if (result.error) {
-  console.error(\`Missing repo-harness CLI for helper $(basename "$helper_name" .ts): \${result.error.message}\`);
+  console.error(\`Missing forge CLI for helper $(basename "$helper_name" .ts): \${result.error.message}\`);
   process.exit(1);
 }
 
@@ -1194,7 +1194,7 @@ EOF_WRAPPER_TS
 #!/bin/bash
 set -euo pipefail
 
-SOURCE_ROOT="\${REPO_HARNESS_SOURCE_ROOT:-\${AGENTIC_DEV_ROOT:-\${AGENTIC_DEV_SKILL_ROOT:-}}}"
+SOURCE_ROOT="\${FORGE_SOURCE_ROOT:-\${AGENTIC_DEV_ROOT:-\${AGENTIC_DEV_SKILL_ROOT:-}}}"
 
 if [[ -n "\$SOURCE_ROOT" && -f "\$SOURCE_ROOT/src/cli/index.ts" ]]; then
   if command -v bun >/dev/null 2>&1; then
@@ -1202,11 +1202,11 @@ if [[ -n "\$SOURCE_ROOT" && -f "\$SOURCE_ROOT/src/cli/index.ts" ]]; then
   fi
 fi
 
-if command -v repo-harness >/dev/null 2>&1; then
-  exec repo-harness run $helper_id "\$@"
+if command -v forge >/dev/null 2>&1; then
+  exec forge run $helper_id "\$@"
 fi
 
-echo "Missing repo-harness CLI for helper $helper_id" >&2
+echo "Missing forge CLI for helper $helper_id" >&2
 exit 1
 EOF_WRAPPER_SH
       ;;
@@ -1254,39 +1254,39 @@ pi_env_value() {
 
 pi_plan_type() {
   local default_value="${1:-}"
-  pi_env_value "REPO_HARNESS_PLAN_TYPE" "$default_value"
+  pi_env_value "FORGE_PLAN_TYPE" "$default_value"
 }
 
 pi_context_profile() {
-  pi_env_value "REPO_HARNESS_CONTEXT_PROFILE" "$PI_CONTEXT_PROFILE_DEFAULT"
+  pi_env_value "FORGE_CONTEXT_PROFILE" "$PI_CONTEXT_PROFILE_DEFAULT"
 }
 
 pi_recovery_profile() {
-  pi_env_value "REPO_HARNESS_RECOVERY_PROFILE" "$PI_RECOVERY_PROFILE_DEFAULT"
+  pi_env_value "FORGE_RECOVERY_PROFILE" "$PI_RECOVERY_PROFILE_DEFAULT"
 }
 
 pi_state_profile() {
-  pi_env_value "REPO_HARNESS_STATE_PROFILE" "$PI_STATE_PROFILE_DEFAULT"
+  pi_env_value "FORGE_STATE_PROFILE" "$PI_STATE_PROFILE_DEFAULT"
 }
 
 pi_orchestration_profile() {
-  pi_env_value "REPO_HARNESS_ORCHESTRATION_PROFILE" "$PI_ORCHESTRATION_PROFILE_DEFAULT"
+  pi_env_value "FORGE_ORCHESTRATION_PROFILE" "$PI_ORCHESTRATION_PROFILE_DEFAULT"
 }
 
 pi_evaluation_profile() {
-  pi_env_value "REPO_HARNESS_EVALUATION_PROFILE" "$PI_EVALUATION_PROFILE_DEFAULT"
+  pi_env_value "FORGE_EVALUATION_PROFILE" "$PI_EVALUATION_PROFILE_DEFAULT"
 }
 
 pi_handoff_profile() {
-  pi_env_value "REPO_HARNESS_HANDOFF_PROFILE" "$PI_HANDOFF_PROFILE_DEFAULT"
+  pi_env_value "FORGE_HANDOFF_PROFILE" "$PI_HANDOFF_PROFILE_DEFAULT"
 }
 
 pi_documentation_profile() {
-  pi_env_value "REPO_HARNESS_DOCUMENTATION_PROFILE" "$PI_DOCUMENTATION_PROFILE_DEFAULT"
+  pi_env_value "FORGE_DOCUMENTATION_PROFILE" "$PI_DOCUMENTATION_PROFILE_DEFAULT"
 }
 
 pi_lsp_profile() {
-  pi_env_value "REPO_HARNESS_LSP_PROFILE" "$PI_DEFAULT_LSP_PROFILE"
+  pi_env_value "FORGE_LSP_PROFILE" "$PI_DEFAULT_LSP_PROFILE"
 }
 
 pi_should_generate_full_docs() {
@@ -1301,11 +1301,11 @@ pi_should_generate_full_docs() {
 }
 
 pi_external_tooling_hosts_json() {
-  pi_env_value "REPO_HARNESS_EXTERNAL_TOOLING_HOSTS_JSON" "$PI_EXTERNAL_TOOLING_HOSTS_DEFAULT"
+  pi_env_value "FORGE_EXTERNAL_TOOLING_HOSTS_JSON" "$PI_EXTERNAL_TOOLING_HOSTS_DEFAULT"
 }
 
 pi_external_tooling_gbrain_mcp() {
-  pi_env_value "REPO_HARNESS_EXTERNAL_TOOLING_GBRAIN_MCP" "candidate-disabled"
+  pi_env_value "FORGE_EXTERNAL_TOOLING_GBRAIN_MCP" "candidate-disabled"
 }
 
 pi_external_tooling_defaults_summary() {
@@ -1363,7 +1363,7 @@ pi_print_external_tooling_report() {
   fi
 
   local detector_args=(--host both)
-  local check_tooling_updates="${REPO_HARNESS_CHECK_TOOLING_UPDATES:-${AGENTIC_DEV_CHECK_TOOLING_UPDATES:-0}}"
+  local check_tooling_updates="${FORGE_CHECK_TOOLING_UPDATES:-${AGENTIC_DEV_CHECK_TOOLING_UPDATES:-0}}"
   if [[ "$check_tooling_updates" == "1" ]]; then
     detector_args+=(--check-updates)
   fi
@@ -1437,7 +1437,7 @@ pi_install_reference_configs() {
     fi
 
     if pi_should_preserve_reference_config "$ref_dir/$name" "$ref_assets_dir/$name"; then
-      echo "[repo-harness] preserved user-authored reference config: docs/reference-configs/$name"
+      echo "[forge] preserved user-authored reference config: docs/reference-configs/$name"
       continue
     fi
 
@@ -1450,7 +1450,7 @@ pi_reference_config_doc_id() {
   printf '%s\n' "${name%.md}"
 }
 
-pi_repo_harness_version_for_refs() {
+pi_forge_version_for_refs() {
   local ref_assets_dir="$1"
   local root_dir
   root_dir="$(cd "$ref_assets_dir/../.." 2>/dev/null && pwd || true)"
@@ -1503,27 +1503,27 @@ pi_write_reference_config_stub() {
   local version
 
   doc_id="$(pi_reference_config_doc_id "$name")"
-  version="$(pi_repo_harness_version_for_refs "$ref_assets_dir")"
+  version="$(pi_forge_version_for_refs "$ref_assets_dir")"
 
   cat > "$output_file" <<EOF_REFERENCE_STUB
 $PI_REFERENCE_CONFIG_STUB_MARKER
-# repo-harness Reference: $doc_id
+# forge Reference: $doc_id
 
-> **Runtime Docs**: user-level repo-harness reference
+> **Runtime Docs**: user-level forge reference
 > **Doc ID**: $doc_id
 > **Version**: $version
-> **Source Command**: \`repo-harness docs path $doc_id\`
+> **Source Command**: \`forge docs path $doc_id\`
 
 This repo keeps workflow facts and runtime artifacts locally under \`.ai/\`.
-The full generic runtime guide is supplied by the installed repo-harness
+The full generic runtime guide is supplied by the installed forge
 package/user-level runtime so each repository does not need to refresh a full
 copy of shared documentation.
 
 Use:
 
 \`\`\`bash
-repo-harness docs path $doc_id
-repo-harness docs show $doc_id
+forge docs path $doc_id
+forge docs show $doc_id
 \`\`\`
 EOF_REFERENCE_STUB
 }
@@ -1553,7 +1553,7 @@ pi_json_string_array_from_lines() {
 
 pi_context_block_config_file() {
   local target_dir="$1"
-  pi_env_value "REPO_HARNESS_CONTEXT_BLOCKS_FILE" "$target_dir/.ai/context/agent-context-blocks.txt"
+  pi_env_value "FORGE_CONTEXT_BLOCKS_FILE" "$target_dir/.ai/context/agent-context-blocks.txt"
 }
 
 pi_capability_registry_file() {
@@ -1573,7 +1573,7 @@ pi_legacy_context_block_candidates() {
   local config_file
 
   local env_blocks
-  env_blocks="$(pi_env_value "REPO_HARNESS_CONTEXT_BLOCKS")"
+  env_blocks="$(pi_env_value "FORGE_CONTEXT_BLOCKS")"
   if [[ -n "$env_blocks" ]]; then
     printf '%s\n' "$env_blocks" | tr ',:' '\n'
     return 0
@@ -1626,7 +1626,7 @@ JS_EOF
     fi
   fi
 
-  selector="$(pi_env_value "REPO_HARNESS_CONTEXT_BLOCK_SELECTOR")"
+  selector="$(pi_env_value "FORGE_CONTEXT_BLOCK_SELECTOR")"
   if [[ -n "$selector" && -x "$selector" ]]; then
     (cd "$target_dir" && "$selector" "$target_dir")
     return 0
@@ -1928,7 +1928,7 @@ pi_write_harness_policy() {
     "functional_block_selector": {
       "script": "scripts/select-agent-context-blocks.sh",
       "config_file": ".ai/context/agent-context-blocks.txt",
-      "env": "REPO_HARNESS_CONTEXT_BLOCKS",
+      "env": "FORGE_CONTEXT_BLOCKS",
       "rule": "compatibility selector; capability registry is the source of truth"
     }
   },
@@ -2009,7 +2009,7 @@ pi_write_harness_policy() {
   },
   "plan_capture": {
     "script": "scripts/capture-plan.sh",
-    "sources": ["codex-plan-mode", "waza-think", "repo-harness-plan", "repo-harness-sprint"],
+    "sources": ["codex-plan-mode", "waza-think", "forge-plan", "forge-sprint"],
     "rule": "Codex Plan mode and Waza think planning should capture decision-complete plans into plans/plan-*.md; implementation approval then projects the active approved plan through scripts/plan-to-todo.sh; sprint backlog rows are long-task waypoints and should be expanded with \$think before capture/execution"
   },
   "planning": {
@@ -2033,11 +2033,11 @@ pi_write_harness_policy() {
     "profile": "$(pi_documentation_profile)",
     "reference_source": "user-level-runtime-docs",
     "reference_stub_marker": "$PI_REFERENCE_CONFIG_STUB_MARKER",
-    "reference_resolver": "repo-harness docs path <doc-id>",
+    "reference_resolver": "forge docs path <doc-id>",
     "required": ["docs/spec.md", "docs/architecture/index.md"],
     "on_demand": ["docs/brief.md", "docs/tech-stack.md", "docs/decisions.md", "docs/architecture.md", "docs/packages.md"],
     "reference_configs": [$(pi_policy_reference_config_names | pi_json_string_array_from_lines)],
-    "rule": "create optional docs only when the agent has concrete repo evidence or the user asks; docs/reference-configs contains repo-local pointer stubs while full generic runtime docs live in the user-level/package repo-harness install"
+    "rule": "create optional docs only when the agent has concrete repo evidence or the user asks; docs/reference-configs contains repo-local pointer stubs while full generic runtime docs live in the user-level/package forge install"
   },
   "lsp_profiles": {
     "default": "$(pi_lsp_profile)",
@@ -2105,7 +2105,7 @@ pi_write_harness_policy() {
     "hosts": $(pi_external_tooling_hosts_json),
     "mode": "agent-readiness-required",
     "detection": "init-migrate",
-    "readiness_gate": "repo-harness run check-agent-tooling --host codex --strict-readiness",
+    "readiness_gate": "forge run check-agent-tooling --host codex --strict-readiness",
     "waza": {
       "source_repo": "tw93/Waza",
       "source_url": "https://github.com/tw93/Waza.git",
@@ -2147,7 +2147,7 @@ pi_write_harness_policy() {
       "index_dir": ".codegraph",
       "readiness": "required-for-agent-code-navigation",
       "hook_policy": "do-not-block-hooks",
-      "install_command": "bun add -g @colbymchenry/codegraph && repo-harness tools configure codegraph --target codex --location global",
+      "install_command": "bun add -g @colbymchenry/codegraph && forge tools configure codegraph --target codex --location global",
       "project_init_command": "codegraph init -i .",
       "sync_command": "codegraph sync .",
       "vendoring_policy": "do-not-add-package-dependency"
@@ -2243,7 +2243,7 @@ pi_write_context_map() {
   "functional_block_selector": {
       "script": "scripts/select-agent-context-blocks.sh",
     "config_file": ".ai/context/agent-context-blocks.txt",
-    "env": "REPO_HARNESS_CONTEXT_BLOCKS",
+    "env": "FORGE_CONTEXT_BLOCKS",
     "rule": "compatibility selector; capability registry is the source of truth"
   },
   "lsp_profiles": {
@@ -2447,7 +2447,7 @@ RESEARCH_README_EOF
     cat > "$target_dir/tasks/current.md" <<'CURRENT_STATUS_EOF'
 # Current Status Snapshot
 
-<!-- generated-by: repo-harness refresh-current-status v1 -->
+<!-- generated-by: forge refresh-current-status v1 -->
 <!-- updated_at: bootstrap -->
 <!-- stale_after: 24h -->
 
@@ -2659,14 +2659,14 @@ pi_ensure_task_sync() {
   "name": "$project_name",
   "private": true,
   "scripts": {
-    "check:brain-manifest": "repo-harness run check-brain-manifest",
-    "check:context-files": "repo-harness run check-context-files",
-    "check:deploy-sql": "repo-harness run check-deploy-sql-order",
-    "check:architecture-sync": "repo-harness run check-architecture-sync",
+    "check:brain-manifest": "forge run check-brain-manifest",
+    "check:context-files": "forge run check-context-files",
+    "check:deploy-sql": "forge run check-deploy-sql-order",
+    "check:architecture-sync": "forge run check-architecture-sync",
     "check:task": "bash scripts/check-task-workflow.sh --strict",
-    "check:task-sync": "repo-harness run check-task-sync",
-    "check:task-workflow": "repo-harness run check-task-workflow --strict",
-    "sync:brain-docs": "repo-harness run sync-brain-docs --all"
+    "check:task-sync": "forge run check-task-sync",
+    "check:task-workflow": "forge run check-task-workflow --strict",
+    "sync:brain-docs": "forge run sync-brain-docs --all"
   }
 }
 EOF_PACKAGE
@@ -2685,14 +2685,14 @@ const file = process.argv[1];
 const pkg = JSON.parse(fs.readFileSync(file, "utf8"));
 pkg.private ??= true;
 pkg.scripts ??= {};
-pkg.scripts["check:brain-manifest"] = "repo-harness run check-brain-manifest";
-pkg.scripts["check:context-files"] = "repo-harness run check-context-files";
-pkg.scripts["check:deploy-sql"] = "repo-harness run check-deploy-sql-order";
-pkg.scripts["check:architecture-sync"] = "repo-harness run check-architecture-sync";
+pkg.scripts["check:brain-manifest"] = "forge run check-brain-manifest";
+pkg.scripts["check:context-files"] = "forge run check-context-files";
+pkg.scripts["check:deploy-sql"] = "forge run check-deploy-sql-order";
+pkg.scripts["check:architecture-sync"] = "forge run check-architecture-sync";
 pkg.scripts["check:task"] = "bash scripts/check-task-workflow.sh --strict";
-pkg.scripts["check:task-sync"] = "repo-harness run check-task-sync";
-pkg.scripts["check:task-workflow"] = "repo-harness run check-task-workflow --strict";
-pkg.scripts["sync:brain-docs"] = "repo-harness run sync-brain-docs --all";
+pkg.scripts["check:task-sync"] = "forge run check-task-sync";
+pkg.scripts["check:task-workflow"] = "forge run check-task-workflow --strict";
+pkg.scripts["sync:brain-docs"] = "forge run sync-brain-docs --all";
 fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + "\n");
 ' "$package_file"
 }
@@ -2704,7 +2704,7 @@ pi_factor_factory_gitignore_entries() {
 pi_should_enable_factor_factory() {
   local plan_type="${1:-$(pi_plan_type)}"
   local explicit
-  explicit="$(pi_env_value "REPO_HARNESS_FACTOR_FACTORY" "0")"
+  explicit="$(pi_env_value "FORGE_FACTOR_FACTORY" "0")"
 
   case "$explicit" in
     1|true|TRUE|yes|YES) return 0 ;;

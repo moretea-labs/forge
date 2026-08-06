@@ -210,6 +210,18 @@ export async function safeLaunchdHandoff(
     await wait(pollIntervalMs);
   }
 
+  if (!serviceGone) {
+    return {
+      bootstrapAttempts: 0,
+      bootoutClean: false,
+      pidWaitClean: true,
+      portWaitClean: true,
+      plistInstalled: false,
+      serviceRegistered: false,
+      diagnostics,
+    };
+  }
+
   // Step 3: Wait for old PID to exit
   let pidWaitClean = true;
   if (options.oldPid) {
@@ -322,92 +334,77 @@ export async function safeLaunchdHandoff(
   };
 }
 
-/**
- * Backward-compatible wrapper that preserves the old API signature.
- */
-export async function bootstrapLaunchAgentWithRetry(
-  input: { label: string; plistPath: string; domain: string; maxAttempts?: number; retryDelayMs?: number },
-  dependencies: { run?: LaunchctlCommandRunner; wait?: (ms: number) => Promise<void> } = {},
-): Promise<number> {
+export interface LaunchAgentLifecycleResult {
+  ok: boolean;
+  attempts: number;
+  serviceTarget: string;
+  diagnostics: string[];
+}
+
+export function currentUserLaunchdDomain(): string {
+  const uid = typeof process.getuid === 'function'
+    ? process.getuid()
+    : Number(runProcess('id', ['-u'], { timeoutMs: 2_000, maxOutputBytes: 1_024 }).stdout.trim());
+  if (!Number.isInteger(uid) || uid < 0) throw new Error('LAUNCHD_USER_DOMAIN_UNAVAILABLE');
+  return `gui/${uid}`;
+}
+
+export async function bootstrapLaunchAgentWithRetryV2(
+  input: { label: string; plistPath: string; domain?: string; maxAttempts?: number; retryDelayMs?: number },
+  dependencies: { run?: LaunchctlCommandRunner; probe?: LaunchdServiceProbe; wait?: (ms: number) => Promise<void> } = {},
+): Promise<LaunchAgentLifecycleResult> {
+  const domain = input.domain ?? currentUserLaunchdDomain();
   const result = await safeLaunchdHandoff(
     {
       label: input.label,
       plistPath: input.plistPath,
-      domain: input.domain,
+      domain,
       maxBootstrapRetry: input.maxAttempts ?? 3,
       bootstrapRetryDelayMs: input.retryDelayMs ?? 250,
     },
     dependencies,
   );
-  if (!result.serviceRegistered) {
-    const lastBootstrap = result.diagnostics.bootstrapResults[result.diagnostics.bootstrapResults.length - 1];
-    const detail = lastBootstrap ? (lastBootstrap.stderr || lastBootstrap.stdout).trim() : 'unknown error';
-    throw new Error(`launchctl bootstrap failed for ${input.label}: ${detail}`);
-  }
-  return result.bootstrapAttempts;
+  const diagnostics = result.diagnostics.bootstrapResults.map((entry, index) =>
+    `bootstrap-${index + 1}: ${(entry.stderr || entry.stdout || `exit=${entry.exitCode}`).trim()}`,
+  );
+  return {
+    ok: result.bootoutClean && result.pidWaitClean && result.portWaitClean && result.serviceRegistered,
+    attempts: result.bootstrapAttempts,
+    serviceTarget: `${domain}/${input.label}`,
+    diagnostics,
+  };
 }
 
-export function findRepoLaunchAgents(repoRoot: string): { label: string; plistPath: string }[] {
-  const home = process.env.HOME?.trim();
-  if (!home) return [];
-  const launchAgentsDir = join(home, 'Library', 'LaunchAgents');
-  if (!existsSync(launchAgentsDir)) return [];
+export async function bootoutLaunchAgentWithRetryV2(
+  input: { label: string; plistPath: string; domain?: string; maxAttempts?: number; retryDelayMs?: number },
+  dependencies: { run?: LaunchctlCommandRunner; probe?: LaunchdServiceProbe; wait?: (ms: number) => Promise<void> } = {},
+): Promise<LaunchAgentLifecycleResult> {
+  const run = dependencies.run ?? defaultRunner;
+  const probe = dependencies.probe ?? defaultProbe;
+  const wait = dependencies.wait ?? sleep;
+  const domain = input.domain ?? currentUserLaunchdDomain();
+  const target = `${domain}/${input.label}`;
+  const maxAttempts = Math.max(1, Math.min(input.maxAttempts ?? 3, 5));
+  const retryDelayMs = Math.max(50, input.retryDelayMs ?? 250);
+  const diagnostics: string[] = [];
 
-  const agents: { label: string; plistPath: string }[] = [];
-  const entries = runProcess('ls', ['-1', launchAgentsDir], { timeoutMs: 5_000, maxOutputBytes: 64 * 1024 });
-  if (!entries.ok) return agents;
-  for (const entry of entries.stdout.split('\n').filter((line) => line.endsWith('.plist'))) {
-    const plistPath = join(launchAgentsDir, entry);
-    let plistText = '';
-    try {
-      plistText = readFileSync(plistPath, 'utf-8');
-    } catch {
-      continue;
-    }
-    if (!plistText.includes(repoRoot)) continue;
-    if (!plistText.includes('repo-harness-mcp-launch.sh') && !(plistText.includes('repo-harness') && plistText.includes('keepalive'))) continue;
-    const label = /<key>\s*Label\s*<\/key>\s*<string>([^<]+)<\/string>/i.exec(plistText)?.[1]?.trim();
-    if (!label) continue;
-    agents.push({ label, plistPath });
-  }
-  return agents;
-}
-
-export function bootoutRepoLaunchAgents(agents: { label: string; plistPath: string }[]): void {
-  if (agents.length === 0) return;
-  const uid = typeof process.getuid === 'function'
-    ? process.getuid()
-    : Number(runProcess('id', ['-u'], { timeoutMs: 2_000, maxOutputBytes: 1024 }).stdout.trim());
-  const domain = `gui/${uid}`;
-  for (const agent of agents) {
-    const result = runLaunchctl(['bootout', domain, agent.plistPath]);
-    if (!result.ok) {
-      const detail = (result.stderr || result.stdout).trim();
-      if (!/not loaded|no such process|service could not be found|could not find service|input\/output error/i.test(detail)) {
-        throw new Error(`launchctl bootout failed for ${agent.label}: ${detail || 'unknown error'}`);
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const result = run(['bootout', target]);
+    diagnostics.push(`bootout-${attempt}: ${(result.stderr || result.stdout || `exit=${result.exitCode}`).trim()}`);
+    if (!result.ok && !isBootoutAlreadyGone(result)) {
+      if (attempt < maxAttempts) {
+        await wait(retryDelayMs * attempt);
+        continue;
       }
+      return { ok: false, attempts: attempt, serviceTarget: target, diagnostics };
     }
-  }
-}
-
-export function bootstrapRepoLaunchAgents(agents: { label: string; plistPath: string }[]): void {
-  if (agents.length === 0) return;
-  const uid = typeof process.getuid === 'function'
-    ? process.getuid()
-    : Number(runProcess('id', ['-u'], { timeoutMs: 2_000, maxOutputBytes: 1024 }).stdout.trim());
-  const domain = `gui/${uid}`;
-  for (const agent of agents) {
-    const bootstrap = runLaunchctl(['bootstrap', domain, agent.plistPath]);
-    if (!bootstrap.ok) {
-      const detail = (bootstrap.stderr || bootstrap.stdout).trim();
-      throw new Error(`launchctl bootstrap failed for ${agent.label}: ${detail || 'unknown error'}`);
-    }
-    const kickstart = runLaunchctl(['kickstart', '-k', `${domain}/${agent.label}`]);
-    if (!kickstart.ok) {
-      const detail = (kickstart.stderr || kickstart.stdout).trim();
-      if (!/timed out|service could not be found|could not find service|no such process|operation now in progress/i.test(detail)) {
-        throw new Error(`launchctl kickstart failed for ${agent.label}: ${detail || 'unknown error'}`);
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      if (!probe.isServiceRegistered(domain, input.label)) {
+        return { ok: true, attempts: attempt, serviceTarget: target, diagnostics };
       }
+      await wait(retryDelayMs);
     }
   }
+  return { ok: false, attempts: maxAttempts, serviceTarget: target, diagnostics };
 }

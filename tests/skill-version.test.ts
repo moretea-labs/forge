@@ -25,11 +25,11 @@ describe("Skill Version Consistency", () => {
     expect(frontmatterMatch?.[1]).not.toContain("version:");
   });
 
-  test("SKILL.md retires the repo-harness-skill and project-initializer triggers", () => {
+  test("SKILL.md retires the forge-skill and project-initializer triggers", () => {
     const skill = readFileSync(join(REPO_ROOT, "SKILL.md"), "utf-8");
     const frontmatterMatch = skill.match(/^---\n([\s\S]*?)\n---/);
-    expect(frontmatterMatch?.[1]).toContain("name: repo-harness");
-    expect(frontmatterMatch?.[1]).not.toContain("repo-harness-skill");
+    expect(frontmatterMatch?.[1]).toContain("name: forge");
+    expect(frontmatterMatch?.[1]).not.toContain("forge-skill");
     expect(frontmatterMatch?.[1]).not.toContain("project-initializer");
   });
 
@@ -104,7 +104,7 @@ describe("Assembled Output Contains Version Info", () => {
 
   test("output contains SKILL_VERSION value", () => {
     const sv = loadSkillVersion();
-    expect(output).toContain(`repo-harness@${sv.version}`);
+    expect(output).toContain(`forge@${sv.version}`);
   });
 
   test("output contains TEMPLATE_VERSION value", () => {

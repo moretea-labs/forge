@@ -44,7 +44,7 @@ export interface AgentDeviceReadProvider {
 }
 
 export function configuredAgentDeviceBackendMode(
-  value = process.env.REPO_HARNESS_AGENT_DEVICE_BACKEND,
+  value = process.env.FORGE_AGENT_DEVICE_BACKEND,
 ): AgentDeviceBackendMode {
   const normalized = value?.trim().toLowerCase();
   if (!normalized || normalized === 'auto') return 'auto';

@@ -149,7 +149,7 @@ import { loadMcpRuntimeState } from "./auth";
 import { resolveLocalBridgeSurface, summarizeRecentJobs } from "../../runtime/shared/local-bridge-surface";
 import { resolveRepoPreferredControllerHome } from "../repositories/controller-home";
 import { normalizeMcpRelativePath, resolveMcpPath } from "./paths";
-import { currentGitBranch, isRepoHarnessAdopted } from "./repo";
+import { currentGitBranch, isForgeAdopted } from "./repo";
 import { repositoryToolNames } from "./repository-tools";
 import { redactMcpText } from "./redaction";
 import type { McpPolicy } from "./types";
@@ -876,7 +876,7 @@ function frontmatter(title: string, kind: string): string {
     `title: ${JSON.stringify(title)}`,
     `kind: ${JSON.stringify(kind)}`,
     `created_at: ${JSON.stringify(new Date().toISOString())}`,
-    `source: "repo-harness-mcp"`,
+    `source: "forge-mcp"`,
     "---",
     "",
   ].join("\n");
@@ -1096,7 +1096,7 @@ function renderPrdFromIdeaBody(args: Record<string, unknown>): string {
     "",
     ...(goals.length > 0
       ? goals.map((entry) => `- ${entry}`)
-      : ["- Turn the idea into a reviewable repo-harness PRD."]),
+      : ["- Turn the idea into a reviewable forge PRD."]),
     "",
     "## Non-goals",
     "",
@@ -1120,7 +1120,7 @@ function renderPrdFromIdeaBody(args: Record<string, unknown>): string {
     "",
     "## Handoff Notes",
     "",
-    notes || "- Generated from an idea through repo-harness MCP.",
+    notes || "- Generated from an idea through forge MCP.",
   ].join("\n");
 }
 
@@ -1228,7 +1228,7 @@ function renderCodexGoalFromSprint(args: Record<string, unknown>): {
     "",
     "## Role",
     "",
-    "Codex is the executor. ChatGPT/repo-harness may prepare planning artifacts, but implementation ownership stays in the local Codex session.",
+    "Codex is the executor. ChatGPT/forge may prepare planning artifacts, but implementation ownership stays in the local Codex session.",
     "",
     "## Scope",
     "",
@@ -1425,7 +1425,7 @@ export function buildMcpToolDefinitions(
   const tools: McpToolDefinition[] = [
     {
       name: "harness_status",
-      description: "Return repo-harness adoption and workflow status.",
+      description: "Return forge adoption and workflow status.",
       inputSchema: EMPTY_SCHEMA,
       annotations: readOnly,
     },
@@ -1450,13 +1450,13 @@ export function buildMcpToolDefinitions(
     },
     {
       name: "latest_handoff",
-      description: "Return latest repo-harness handoff artifacts.",
+      description: "Return latest forge handoff artifacts.",
       inputSchema: EMPTY_SCHEMA,
       annotations: readOnly,
     },
     {
       name: "latest_checks",
-      description: "Return latest repo-harness check artifacts.",
+      description: "Return latest forge check artifacts.",
       inputSchema: EMPTY_SCHEMA,
       annotations: readOnly,
     },
@@ -1473,7 +1473,7 @@ export function buildMcpToolDefinitions(
       annotations: readOnly,
     },
     {
-      name: "summarize_repo_harness_state",
+      name: "summarize_forge_state",
       description: "Return a compact planning state summary.",
       inputSchema: EMPTY_SCHEMA,
       annotations: readOnly,
@@ -1817,7 +1817,7 @@ export function buildMcpToolDefinitions(
       {
         name: "list_checks",
         description:
-          "List focused repository checks from safe package scripts and .repo-harness/checks.json.",
+          "List focused repository checks from safe package scripts and .forge/checks.json.",
         inputSchema: EMPTY_SCHEMA,
         annotations: readOnly,
       },
@@ -2856,7 +2856,7 @@ export function buildMcpToolDefinitions(
   if (policy.execution.fixedWorkflowCheck) {
     tools.push({
       name: "run_workflow_check",
-      description: "Run the fixed repo-harness strict workflow check.",
+      description: "Run the fixed forge strict workflow check.",
       inputSchema: EMPTY_SCHEMA,
       annotations: write,
     });
@@ -2866,7 +2866,7 @@ export function buildMcpToolDefinitions(
       {
         name: "run_chatgpt_browser_consult",
         description:
-          "Run a local ChatGPT Web browser consult through repo-harness. This may create a real ChatGPT Web conversation unless dryRun is true.",
+          "Run a local ChatGPT Web browser consult through forge. This may create a real ChatGPT Web conversation unless dryRun is true.",
         inputSchema: browserRunSchema,
         annotations: {
           readOnlyHint: false,
@@ -2877,14 +2877,14 @@ export function buildMcpToolDefinitions(
       {
         name: "read_chatgpt_browser_session",
         description:
-          "Read a saved repo-harness ChatGPT browser consult session.",
+          "Read a saved forge ChatGPT browser consult session.",
         inputSchema: browserSessionSchema,
         annotations: readOnly,
       },
       {
         name: "list_chatgpt_browser_sessions",
         description:
-          "List saved repo-harness ChatGPT browser consult sessions.",
+          "List saved forge ChatGPT browser consult sessions.",
         inputSchema: {
           type: "object",
           properties: { limit: { type: "number" } },
@@ -2980,7 +2980,7 @@ export async function callMcpTool(
         audit(ctx, name, "ok", args);
         return textResult({
           repoRoot: ctx.repoRoot,
-          adopted: isRepoHarnessAdopted(ctx.repoRoot),
+          adopted: isForgeAdopted(ctx.repoRoot),
           profile: ctx.policy.profile,
           branch: currentGitBranch(ctx.repoRoot),
           workflowRoots: roots.map((path) => ({
@@ -2991,14 +2991,14 @@ export async function callMcpTool(
       }
       case "harness_doctor": {
         const localConfig = existsSync(
-          join(ctx.repoRoot, ".repo-harness", "mcp.local.json"),
+          join(ctx.repoRoot, ".forge", "mcp.local.json"),
         );
         const codexConfig = existsSync(
           join(ctx.repoRoot, ".codex", "config.toml"),
         );
         audit(ctx, name, "ok", args);
         return textResult({
-          status: isRepoHarnessAdopted(ctx.repoRoot)
+          status: isForgeAdopted(ctx.repoRoot)
             ? "ready_local"
             : "not_adopted",
           repo: ctx.repoRoot,
@@ -3029,12 +3029,12 @@ export async function callMcpTool(
             configured: codexConfig,
             fix: codexConfig
               ? null
-              : "repo-harness mcp setup codex --repo . --scope project",
+              : "forge mcp setup codex --repo . --scope project",
           },
           chatgpt: {
             localEndpoint: "http://127.0.0.1:8765/mcp",
             manualStepsRequired: true,
-            guide: "docs/repo-harness-chatgpt-mcp-setup.md",
+            guide: "docs/forge-chatgpt-mcp-setup.md",
           },
         });
       }
@@ -3175,8 +3175,8 @@ export async function callMcpTool(
             "docs/architecture/current/README.md",
             "docs/architecture/history.md",
             "docs/operations/controller-reliability-runbook.md",
-            "docs/repo-harness-github-issue-launcher.md",
-            "docs/repo-harness-chatgpt-mcp-setup.md",
+            "docs/forge-github-issue-launcher.md",
+            "docs/forge-chatgpt-mcp-setup.md",
           ],
           staleConnectorHint: staleConnector
             ? `Stale ChatGPT connector tool snapshot is missing facade tools: ${missingFacadeTools.join(", ")}. Refresh/reconnect MCP so tools/list reloads rh_status, rh_inbox, rh_context, and rh_work.`
@@ -3863,7 +3863,7 @@ export async function callMcpTool(
           projectOwner: args.clear_project === true ? "" : typeof args.project_owner === "string" ? args.project_owner : undefined,
           projectNumber: args.clear_project === true ? null : typeof args.project_number === "number" ? args.project_number : undefined,
         });
-        audit(ctx, name, "ok", args, ".repo-harness/plugins/github.json");
+        audit(ctx, name, "ok", args, ".forge/plugins/github.json");
         return textResult(config);
       }
       case "get_issue": {
@@ -5002,7 +5002,7 @@ export async function callMcpTool(
             .filter(Boolean),
         });
       }
-      case "summarize_repo_harness_state": {
+      case "summarize_forge_state": {
         const current = existsSync(join(ctx.repoRoot, "tasks/current.md"))
           ? readFileSync(join(ctx.repoRoot, "tasks/current.md"), "utf-8")
               .split(/\r?\n/)
@@ -5012,7 +5012,7 @@ export async function callMcpTool(
         audit(ctx, name, "ok", args);
         return textResult({
           status: {
-            adopted: isRepoHarnessAdopted(ctx.repoRoot),
+            adopted: isForgeAdopted(ctx.repoRoot),
             branch: currentGitBranch(ctx.repoRoot),
             profile: ctx.policy.profile,
           },
@@ -5274,7 +5274,7 @@ export async function callMcpTool(
         if (ctx.enableChatgptBrowser !== true)
           return errorResult(
             "TOOL_DISABLED",
-            "ChatGPT browser tools require repo-harness mcp serve --enable-chatgpt-browser",
+            "ChatGPT browser tools require forge mcp serve --enable-chatgpt-browser",
           );
         const result = await runBrowserConsult({
           repoRoot: ctx.repoRoot,
@@ -5320,7 +5320,7 @@ export async function callMcpTool(
         if (ctx.enableChatgptBrowser !== true)
           return errorResult(
             "TOOL_DISABLED",
-            "ChatGPT browser tools require repo-harness mcp serve --enable-chatgpt-browser",
+            "ChatGPT browser tools require forge mcp serve --enable-chatgpt-browser",
           );
         const sessionId = String(args.sessionId ?? "").trim();
         const session = readSession(ctx.repoRoot, sessionId);
@@ -5335,7 +5335,7 @@ export async function callMcpTool(
         if (ctx.enableChatgptBrowser !== true)
           return errorResult(
             "TOOL_DISABLED",
-            "ChatGPT browser tools require repo-harness mcp serve --enable-chatgpt-browser",
+            "ChatGPT browser tools require forge mcp serve --enable-chatgpt-browser",
           );
         const limit =
           typeof args.limit === "number" &&
@@ -5351,7 +5351,7 @@ export async function callMcpTool(
         if (ctx.enableChatgptBrowser !== true)
           return errorResult(
             "TOOL_DISABLED",
-            "ChatGPT browser tools require repo-harness mcp serve --enable-chatgpt-browser",
+            "ChatGPT browser tools require forge mcp serve --enable-chatgpt-browser",
           );
         const sessionId = String(args.sessionId ?? "").trim();
         const result = openSession(ctx.repoRoot, sessionId, false);
@@ -5362,7 +5362,7 @@ export async function callMcpTool(
         if (ctx.enableChatgptBrowser !== true)
           return errorResult(
             "TOOL_DISABLED",
-            "ChatGPT browser tools require repo-harness mcp serve --enable-chatgpt-browser",
+            "ChatGPT browser tools require forge mcp serve --enable-chatgpt-browser",
           );
         const sessionId = String(args.sessionId ?? "").trim();
         const prompt = String(args.prompt ?? "").trim();

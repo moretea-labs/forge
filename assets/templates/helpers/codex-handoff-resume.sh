@@ -214,7 +214,7 @@ mkdir -p "$(dirname "$resume_file")"
 
 cat > "$resume_file" <<EOF_RESUME
 # Codex Resume Packet
-<!-- generated-by: repo-harness codex-handoff-resume v1 -->
+<!-- generated-by: forge codex-handoff-resume v1 -->
 
 > **Generated**: $(date '+%Y-%m-%d %H:%M:%S')
 > **Reason**: ${reason}

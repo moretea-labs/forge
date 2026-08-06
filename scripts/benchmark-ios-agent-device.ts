@@ -302,7 +302,7 @@ function usage(): string {
     '  --profile <fresh|warm|both> Profiles to measure, default both',
     '  --runs <3..20>              Measured runs per profile after one warmup, default 3',
     '  --timeout-ms <ms>           Absolute timeout per action, default 60000',
-    '  --controller-home <path>    Defaults to REPO_HARNESS_CONTROLLER_HOME or _ops/controller-home',
+    '  --controller-home <path>    Defaults to FORGE_CONTROLLER_HOME or _ops/controller-home',
     '  --repo-root <path>          Defaults to current working directory',
     '  --relaunch                  Relaunch JD for each fresh run and the warm-profile setup open',
     '  --json                      Emit machine-readable JSON',
@@ -430,7 +430,7 @@ export async function runBenchmark(): Promise<Record<string, unknown>> {
   const repoRoot = resolve(option('repo-root') ?? process.cwd());
   const controllerHome = resolve(
     option('controller-home')
-      ?? process.env.REPO_HARNESS_CONTROLLER_HOME
+      ?? process.env.FORGE_CONTROLLER_HOME
       ?? resolve(repoRoot, '_ops/controller-home'),
   );
   const baseArgs: Record<string, unknown> = { device, query, snapshot_depth: snapshotDepth };

@@ -1,12 +1,12 @@
 # Current Controller Runtime Architecture
 
-> **Runtime Authority** — this directory is the approved architecture source for repo-harness Controller Runtime.
+> **Runtime Authority** — this directory is the approved architecture source for Forge Controller Runtime.
 
 ## Purpose
 
 This directory defines the architecture that implementation work must converge toward. It exists to prevent runtime behavior from being inferred from whichever V5, V6, V7, V8, plan, research report, or Issue happens to be read first.
 
-repo-harness is designed as an **Agent Engineering Control Plane**:
+Forge is designed as an **Agent Engineering Control Plane**:
 
 ```text
 Thin Gateway
@@ -72,7 +72,7 @@ Read the architecture in this order:
 17. `governance.md` — ownership, ADR, drift, and maintenance rules.
 18. `session-aware-execution-and-authorization.md` — Session Context, Work Handle, Goal delegation, and resumable approval boundaries.
 19. `runtime-health-and-resource-lifecycle.md` — shared health evaluation, projection freshness, capability status, attention/history, and bounded ownership-aware cleanup.
-20. `stable-external-runtime-supervisor.md` — current immutable lifecycle implementation and transition notes.
+20. `runtime-architecture-simplification.md` — canonical single Runtime lifecycle, release and recovery boundary.
 21. `human-interaction-plane.md` — foreground provider sessions, durable human handoff, profile fencing, and safe resumption.
 
 
@@ -151,7 +151,7 @@ The architecture baseline is complete only when:
 See [Architecture Governance Contract](governance.md).
 
 
-- [Repo Harness + ChatGPT current comprehensive architecture (zh-CN)](chatgpt-repo-harness-current-architecture.zh-CN.md)
+- [Repo Harness + ChatGPT current comprehensive architecture (zh-CN)](chatgpt-Forge-current-architecture.zh-CN.md)
 - [Approved target architecture (zh-CN)](approved-target-architecture.zh-CN.md)
 - [Personal assistant/plugin baseline](personal-assistant-plugin-baseline.md)
 - [Target requirements traceability](target-requirements-traceability.md)

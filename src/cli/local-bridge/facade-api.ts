@@ -1427,7 +1427,7 @@ export function repairConsole(
       warnings: ['维护状态读取失败，按环境问题处理，不记作任务验收失败。'],
     };
   }
-  const daemon = readControllerDaemonStatus(ctx.controllerHome);
+  const daemon = readForgeRuntimeStatus(ctx.controllerHome);
   return runSelfHealingLoop(
     { repoId: ctx.repository.repoId, handoffStore: store(ctx) },
     {
@@ -1612,34 +1612,34 @@ export function normalizeRequestedChecks(ctx: ConsoleFacadeContext, requested: s
 const ADVANCED_SCHEDULER_STALE_MS = 10_000;
 
 function controllerObservation(ctx: ConsoleFacadeContext): ConnectivityComponentObservation {
-  const daemon = readControllerDaemonStatus(ctx.controllerHome);
+  const daemon = readForgeRuntimeStatus(ctx.controllerHome);
   if (daemon.status === 'ready' && daemon.degraded !== true) {
     return createConnectivityObservation(
       'controller_daemon',
-      'Controller daemon',
+      'Forge Runtime',
       'ready',
-      'Controller daemon 处于 ready 状态。',
+      'Forge Runtime 处于 ready 状态。',
       daemon.pid ? [`pid=${daemon.pid}`] : [],
     );
   }
   if (daemon.status === 'ready' || daemon.status === 'starting') {
     return createConnectivityObservation(
       'controller_daemon',
-      'Controller daemon',
+      'Forge Runtime',
       'degraded',
       daemon.error
-        ? `Controller daemon ${daemon.status}，并带有降级信号：${daemon.error}`
-        : `Controller daemon 当前为 ${daemon.status}。`,
+        ? `Forge Runtime ${daemon.status}，并带有降级信号：${daemon.error}`
+        : `Forge Runtime 当前为 ${daemon.status}。`,
       [daemon.error ? `daemon=${daemon.error}` : `status=${daemon.status}`],
     );
   }
   return createConnectivityObservation(
     'controller_daemon',
-    'Controller daemon',
+    'Forge Runtime',
     'failed',
     daemon.error
-      ? `Controller daemon 不可用：${daemon.error}`
-      : `Controller daemon 当前为 ${daemon.status}。`,
+      ? `Forge Runtime 不可用：${daemon.error}`
+      : `Forge Runtime 当前为 ${daemon.status}。`,
     [daemon.error ? `daemon=${daemon.error}` : `status=${daemon.status}`],
   );
 }

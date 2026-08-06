@@ -2,7 +2,7 @@ import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { pathToFileURL } from 'url';
 import { Command } from 'commander';
-import { CanonicalRepoHarnessRuntime } from './runtime';
+import { CanonicalForgeRuntime } from './runtime';
 
 interface CliOptions {
   controllerHome: string;
@@ -21,7 +21,7 @@ function readAuthToken(path: string): string {
 }
 
 export async function runCanonicalRuntimeCli(argv = process.argv): Promise<void> {
-  const command = new Command('repo-harness-runtime')
+  const command = new Command('forge-runtime')
     .description('Run the canonical single Repo Harness Runtime root process')
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
     .requiredOption('--repo <path>', 'Explicit repository root')
@@ -34,7 +34,7 @@ export async function runCanonicalRuntimeCli(argv = process.argv): Promise<void>
   const options = command.opts<CliOptions>();
   const port = Number(options.port);
   if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error('RUNTIME_CONFIG_INVALID: port');
-  const runtime = new CanonicalRepoHarnessRuntime({
+  const runtime = new CanonicalForgeRuntime({
     controllerHome: resolve(options.controllerHome),
     repositoryRoot: resolve(options.repo),
     releaseManifestPath: resolve(options.releaseManifest),
@@ -45,7 +45,7 @@ export async function runCanonicalRuntimeCli(argv = process.argv): Promise<void>
   });
   await runtime.start();
   process.stderr.write(`${JSON.stringify({
-    event: 'repo_harness_runtime_started',
+    event: 'forge_runtime_started',
     runtimeInstanceId: runtime.runtimeInstanceId,
     endpoint: runtime.endpoint(),
     readiness: runtime.readiness(),

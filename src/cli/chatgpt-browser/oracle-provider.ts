@@ -24,7 +24,7 @@ export interface OracleResolution {
   /** Absolute path to the resolved oracle binary, or undefined when none is found. */
   binary?: string;
   /** Which source in the fixed resolution order provided the binary. */
-  source?: '--oracle-bin' | 'REPO_HARNESS_ORACLE_BIN' | 'node_modules/.bin' | 'PATH' | 'missing';
+  source?: '--oracle-bin' | 'FORGE_ORACLE_BIN' | 'node_modules/.bin' | 'PATH' | 'missing';
   error?: {
     code: string;
     message: string;
@@ -83,16 +83,16 @@ export function resolveOracleBin(input: Pick<BrowserConsultInput, 'repoRoot' | '
       },
     };
   }
-  const fromEnv = process.env.REPO_HARNESS_ORACLE_BIN;
+  const fromEnv = process.env.FORGE_ORACLE_BIN;
   if (fromEnv) {
     const binary = resolveConfiguredOracleBin(fromEnv, input.repoRoot);
-    if (binary) return { binary, source: 'REPO_HARNESS_ORACLE_BIN' };
+    if (binary) return { binary, source: 'FORGE_ORACLE_BIN' };
     return {
-      source: 'REPO_HARNESS_ORACLE_BIN',
+      source: 'FORGE_ORACLE_BIN',
       error: {
         code: 'ORACLE_NOT_INSTALLED',
-        message: `oracle binary was not found at REPO_HARNESS_ORACLE_BIN=${fromEnv}`,
-        recovery: 'Fix REPO_HARNESS_ORACLE_BIN, install oracle locally, or unset it to use the configured fallback order.',
+        message: `oracle binary was not found at FORGE_ORACLE_BIN=${fromEnv}`,
+        recovery: 'Fix FORGE_ORACLE_BIN, install oracle locally, or unset it to use the configured fallback order.',
       },
     };
   }
@@ -104,8 +104,8 @@ export function resolveOracleBin(input: Pick<BrowserConsultInput, 'repoRoot' | '
     source: 'missing',
     error: {
       code: 'ORACLE_NOT_INSTALLED',
-      message: 'oracle CLI could not be resolved via --oracle-bin, REPO_HARNESS_ORACLE_BIN, node_modules/.bin, or PATH',
-      recovery: 'Install oracle (pin the version; do not auto-download), pass --oracle-bin, set REPO_HARNESS_ORACLE_BIN, or rerun with --dry-run.',
+      message: 'oracle CLI could not be resolved via --oracle-bin, FORGE_ORACLE_BIN, node_modules/.bin, or PATH',
+      recovery: 'Install oracle (pin the version; do not auto-download), pass --oracle-bin, set FORGE_ORACLE_BIN, or rerun with --dry-run.',
     },
   };
 }
@@ -153,7 +153,7 @@ export function probeOracle(binary: string): OracleProbe {
 }
 
 function probeBrowserThinkingTime(binary: string): boolean {
-  const probeDir = mkdtempSync(join(tmpdir(), 'repo-harness-oracle-probe-'));
+  const probeDir = mkdtempSync(join(tmpdir(), 'forge-oracle-probe-'));
   try {
     const result = spawnSync(binary, [
       '--engine',
@@ -163,7 +163,7 @@ function probeBrowserThinkingTime(binary: string): boolean {
       '--dry-run',
       'json',
       '--prompt',
-      'repo-harness parser probe',
+      'forge parser probe',
     ], {
       cwd: probeDir,
       env: buildOracleEnv(probeDir),
@@ -325,12 +325,12 @@ export async function runOracleProvider(input: BrowserConsultInput, _bundle: Pro
   if (!resolution.binary) {
     return {
       status: 'failed',
-      output: resolution.error?.message ?? 'Oracle CLI is not installed or not visible to repo-harness.',
-      command: [input.oracleBin ?? process.env.REPO_HARNESS_ORACLE_BIN ?? 'oracle', ...buildOracleCommand(input)],
+      output: resolution.error?.message ?? 'Oracle CLI is not installed or not visible to forge.',
+      command: [input.oracleBin ?? process.env.FORGE_ORACLE_BIN ?? 'oracle', ...buildOracleCommand(input)],
       error: {
         code: resolution.error?.code ?? 'ORACLE_NOT_INSTALLED',
-        message: resolution.error?.message ?? 'oracle CLI could not be resolved via --oracle-bin, REPO_HARNESS_ORACLE_BIN, node_modules/.bin, or PATH',
-        recovery: resolution.error?.recovery ?? 'Install oracle (pin the version; do not auto-download), or pass --oracle-bin / set REPO_HARNESS_ORACLE_BIN, or rerun with --dry-run.',
+        message: resolution.error?.message ?? 'oracle CLI could not be resolved via --oracle-bin, FORGE_ORACLE_BIN, node_modules/.bin, or PATH',
+        recovery: resolution.error?.recovery ?? 'Install oracle (pin the version; do not auto-download), or pass --oracle-bin / set FORGE_ORACLE_BIN, or rerun with --dry-run.',
       },
     };
   }
@@ -350,8 +350,8 @@ export async function runOracleProvider(input: BrowserConsultInput, _bundle: Pro
       },
     };
   }
-  const answerDir = mkdtempSync(join(tmpdir(), 'repo-harness-oracle-answer-'));
-  const runCwd = mkdtempSync(join(tmpdir(), 'repo-harness-oracle-cwd-'));
+  const answerDir = mkdtempSync(join(tmpdir(), 'forge-oracle-answer-'));
+  const runCwd = mkdtempSync(join(tmpdir(), 'forge-oracle-cwd-'));
   const oracleHomeDir = resolveOracleHomeDir(input);
   mkdirSync(oracleHomeDir, { recursive: true });
   const answerPath = join(answerDir, 'answer.md');

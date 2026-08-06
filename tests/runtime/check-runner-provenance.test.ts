@@ -20,12 +20,12 @@ afterEach(() => {
 });
 
 function fixture(checks: Record<string, { command: string[]; effects?: unknown }>) {
-  const repoRoot = mkdtempSync(join(tmpdir(), 'repo-harness-check-provenance-repo-'));
+  const repoRoot = mkdtempSync(join(tmpdir(), 'forge-check-provenance-repo-'));
   roots.push(repoRoot);
   spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });
   writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({ name: 'check-provenance-fixture' }));
-  mkdirSync(join(repoRoot, '.repo-harness'), { recursive: true });
-  writeFileSync(join(repoRoot, '.repo-harness/checks.json'), JSON.stringify({ version: 1, checks }));
+  mkdirSync(join(repoRoot, '.forge'), { recursive: true });
+  writeFileSync(join(repoRoot, '.forge/checks.json'), JSON.stringify({ version: 1, checks }));
   spawnSync('git', ['add', 'package.json'], { cwd: repoRoot, stdio: 'ignore' });
   spawnSync('git', ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'init'], {
     cwd: repoRoot,
@@ -79,7 +79,7 @@ describe('controller check provenance and failure classification', () => {
   });
 
   test('exposes cache provenance, validated revision, and original execution time', async () => {
-    const marker = join(mkdtempSync(join(tmpdir(), 'repo-harness-check-marker-')), 'runs');
+    const marker = join(mkdtempSync(join(tmpdir(), 'forge-check-marker-')), 'runs');
     roots.push(marker.replace(/\/runs$/, ''));
     const command = [process.execPath, '-e', `require('fs').appendFileSync(${JSON.stringify(marker)}, 'x')`];
     const repoRoot = fixture({ cached: { command } });
@@ -106,7 +106,7 @@ describe('controller check provenance and failure classification', () => {
   });
 
   test('reuses same-content history across commit identity and unrelated task documents', async () => {
-    const markerRoot = mkdtempSync(join(tmpdir(), 'repo-harness-check-history-marker-'));
+    const markerRoot = mkdtempSync(join(tmpdir(), 'forge-check-history-marker-'));
     roots.push(markerRoot);
     const marker = join(markerRoot, 'runs');
     const command = [process.execPath, '-e', `require('fs').appendFileSync(${JSON.stringify(marker)}, 'x')`];
@@ -134,14 +134,14 @@ describe('controller check provenance and failure classification', () => {
 
   test('strips Controller writer and Supervisor authority from sync and async check children', async () => {
     const authorityKeys = [
-      'REPO_HARNESS_WRITER_SLOT',
-      'REPO_HARNESS_WRITER_EPOCH',
-      'REPO_HARNESS_WRITER_FENCING_TOKEN',
-      'REPO_HARNESS_WRITER_GENERATION',
-      'REPO_HARNESS_SUPERVISOR_CHILD',
-      'REPO_HARNESS_SUPERVISOR_EPOCH',
-      'REPO_HARNESS_CONTROLLER_LIFECYCLE_OWNER',
-      'REPO_HARNESS_DAEMON_INSTANCE_ID',
+      'FORGE_WRITER_SLOT',
+      'FORGE_WRITER_EPOCH',
+      'FORGE_WRITER_FENCING_TOKEN',
+      'FORGE_WRITER_GENERATION',
+      'FORGE_SUPERVISOR_CHILD',
+      'FORGE_SUPERVISOR_EPOCH',
+      'FORGE_CONTROLLER_LIFECYCLE_OWNER',
+      'FORGE_DAEMON_INSTANCE_ID',
     ];
     const probe = `const keys=${JSON.stringify(authorityKeys)}; const leaked=keys.filter((key)=>process.env[key]); if (leaked.length) { console.error(leaked.join(',')); process.exit(9); }`;
     const repoRoot = fixture({
@@ -162,39 +162,39 @@ describe('controller check provenance and failure classification', () => {
   });
 
   test('uses Bun rather than a compiled CLI executable for the synchronous bridge', () => {
-    expect(resolveSyncSupervisorBridgeRuntime('/opt/releases/repo-harness.js', {})).toBe('bun');
+    expect(resolveSyncSupervisorBridgeRuntime('/opt/releases/forge.js', {})).toBe('bun');
     expect(resolveSyncSupervisorBridgeRuntime('/opt/bun/bin/bun', {})).toBe('/opt/bun/bin/bun');
-    expect(resolveSyncSupervisorBridgeRuntime('/opt/releases/repo-harness.js', {
-      REPO_HARNESS_BUN_EXECUTABLE: '/custom/bun',
+    expect(resolveSyncSupervisorBridgeRuntime('/opt/releases/forge.js', {
+      FORGE_BUN_EXECUTABLE: '/custom/bun',
     })).toBe('/custom/bun');
   });
 
   test('launches persisted checks directly from standalone Bun releases', () => {
     const args = ['controller', 'run-check-process', '--check-id', 'package:check:type'];
-    expect(resolvePersistedCheckCliInvocation('/$bunfs/root/repo-harness.js', args, {
-      runtimeExecutable: '/opt/releases/repo-harness.js',
+    expect(resolvePersistedCheckCliInvocation('/$bunfs/root/forge.js', args, {
+      runtimeExecutable: '/opt/releases/forge.js',
       env: {},
-    })).toEqual({ executable: '/opt/releases/repo-harness.js', args });
-    expect(resolvePersistedCheckCliInvocation('/repo/bin/repo-harness.mjs', args, {
+    })).toEqual({ executable: '/opt/releases/forge.js', args });
+    expect(resolvePersistedCheckCliInvocation('/repo/bin/forge.mjs', args, {
       runtimeExecutable: '/opt/bun/bin/bun',
       env: {},
     })).toEqual({
       executable: '/opt/bun/bin/bun',
-      args: ['/repo/bin/repo-harness.mjs', ...args],
+      args: ['/repo/bin/forge.mjs', ...args],
     });
   });
 
   test('keeps a synchronous bridge launch defect out of acceptance evidence', () => {
     const command = [process.execPath, '-e', 'process.exit(0)'];
     const repoRoot = fixture({ bridge_failure: { command } });
-    const fakeRuntimeRoot = mkdtempSync(join(tmpdir(), 'repo-harness-check-bridge-runtime-'));
+    const fakeRuntimeRoot = mkdtempSync(join(tmpdir(), 'forge-check-bridge-runtime-'));
     roots.push(fakeRuntimeRoot);
     const fakeRuntime = join(fakeRuntimeRoot, 'fake-bun');
     writeFileSync(fakeRuntime, '#!/bin/sh\necho bridge-runtime-broken >&2\nexit 17\n');
     chmodSync(fakeRuntime, 0o755);
-    const previousRuntime = process.env.REPO_HARNESS_BUN_EXECUTABLE;
+    const previousRuntime = process.env.FORGE_BUN_EXECUTABLE;
     try {
-      process.env.REPO_HARNESS_BUN_EXECUTABLE = fakeRuntime;
+      process.env.FORGE_BUN_EXECUTABLE = fakeRuntime;
       const result = runControllerCheck(repoRoot, 'bridge_failure');
       expect(result.ok).toBe(false);
       expect(result.status).toBe(17);
@@ -203,15 +203,15 @@ describe('controller check provenance and failure classification', () => {
       expect(result.stderr).toContain('bridge-runtime-broken');
       expect(result.stderr).toContain('CHECK_SUPERVISOR_BRIDGE_FAILED');
     } finally {
-      if (previousRuntime === undefined) delete process.env.REPO_HARNESS_BUN_EXECUTABLE;
-      else process.env.REPO_HARNESS_BUN_EXECUTABLE = previousRuntime;
+      if (previousRuntime === undefined) delete process.env.FORGE_BUN_EXECUTABLE;
+      else process.env.FORGE_BUN_EXECUTABLE = previousRuntime;
     }
   });
 
   test('classifies a named nonzero check as acceptance and a missing runtime as infrastructure', async () => {
     const repoRoot = fixture({
       assertion: { command: [process.execPath, '-e', 'console.error("expected value mismatch"); process.exit(3)'] },
-      missing: { command: ['repo-harness-runtime-that-does-not-exist', '--check'] },
+      missing: { command: ['forge-runtime-that-does-not-exist', '--check'] },
     });
 
     const assertion = await runControllerCheckAsync(repoRoot, 'assertion');
@@ -223,6 +223,6 @@ describe('controller check provenance and failure classification', () => {
     expect(missing.ok).toBe(false);
     expect(missing.failureClass).toBe('infrastructure_failure');
     expect(missing.timedOut).toBe(false);
-    expect(missing.stderr).toContain('repo-harness-runtime-that-does-not-exist');
+    expect(missing.stderr).toContain('forge-runtime-that-does-not-exist');
   });
 });

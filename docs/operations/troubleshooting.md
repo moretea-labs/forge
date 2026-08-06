@@ -1,6 +1,6 @@
 # Installation and Connection Troubleshooting
 
-## `matea` is not found after installation
+## `forge` is not found after installation
 
 Reopen the terminal first. With npm, inspect the global prefix with `npm config get prefix`; its executable directory must be on `PATH`. With Bun, ensure the Bun bin directory is on `PATH`.
 
@@ -10,7 +10,7 @@ Verify the runtimes:
 node --version
 npm --version
 bun --version   # optional
-matea --version
+forge --version
 ```
 
 ## Doctor reports missing Git or Node
@@ -23,7 +23,7 @@ Use WSL2 for repository adoption, Bash hooks, source release checks, or shell li
 
 ## MCP works locally but ChatGPT cannot connect
 
-`http://127.0.0.1:8765/mcp` is local-only. ChatGPT needs a stable public HTTPS URL ending in `/mcp`. Check the tunnel, the exact path, and `matea mcp doctor`. Do not expose the local Controller UI port publicly.
+`http://127.0.0.1:8765/mcp` is local-only. ChatGPT needs a stable public HTTPS URL ending in `/mcp`. Check the tunnel, the exact path, and `forge mcp doctor`. Do not expose the local Controller UI port publicly.
 
 ## MCP config seems to be in the wrong place
 
@@ -35,7 +35,7 @@ Current service-level MCP config lives under Controller Home, not as the primary
 - `controllerHome/mcp/mcp.oauth-tokens.json`
 - `controllerHome/mcp/mcp.runtime.json`
 
-Repo-local `.repo-harness/mcp.local.json`, `.repo-harness/mcp.tokens.json`, `.repo-harness/mcp.oauth.json`, `.repo-harness/mcp.oauth-tokens.json`, and `.repo-harness/mcp.runtime.json` are legacy compatibility fallbacks. Repository-scoped `.repo-harness/mcp.policy.json` remains the access policy. If setup appears split between both locations, rerun `matea mcp setup chatgpt --repo /path/to/your-project`, then restart the MCP service and verify the active endpoint and server name from Controller Home first.
+Controller Home is the sole authority for service-level MCP configuration. Repository-scoped `.forge/mcp.policy.json` remains the repository access policy; repository-local service configuration is unsupported. Rerun `forge mcp setup chatgpt --repo /path/to/your-project`, then verify the active endpoint and server name from Controller Home.
 
 ## Only some tools appear in ChatGPT
 
@@ -43,18 +43,18 @@ The default controller uses a stable repair-capable schema (normally 100–128 t
 
 ## Runtime storage is not ready or the Local UI looks stale
 
-Do not delete `.ai/harness`, `.repo-harness`, or Controller Home state as a first response. Start with bounded diagnostics:
+Do not delete `.ai/harness`, `.forge`, or Controller Home state as a first response. Start with bounded diagnostics:
 
 ```bash
-matea mcp doctor --repo /path/to/your-project
-matea repo list --json
+forge mcp doctor --repo /path/to/your-project
+forge repo list --json
 ```
 
 If you are using the operator surfaces, inspect the runtime-maintenance path before restarting or replaying writes. The self-healing and reliability docs describe the safe recovery flow:
 
 - `runtime_maintenance_status`
 - `runtime_maintenance_apply`
-- [Self-healing loop](../repo-harness-runtime-self-healing-loop.md)
+- [Self-healing loop](../forge-runtime-self-healing-loop.md)
 - [Controller reliability runbook](controller-reliability-runbook.md)
 
 A `502`, reconnect, or truncated response does not prove a durable write failed. Confirm the Job, Run, or evidence summary before retrying the mutation.
@@ -65,7 +65,7 @@ Core Direct Edit and repository workflows still work. Install and authenticate C
 
 ## Repository paths behave differently between Windows and WSL2
 
-Do not share one active checkout between native Windows and WSL2. Clone inside the environment that runs Matea and register that path. This avoids file-mode, line-ending, symlink, and performance problems.
+Do not share one active checkout between native Windows and WSL2. Clone inside the environment that runs Forge and register that path. This avoids file-mode, line-ending, symlink, and performance problems.
 
 ## Release checks fail on personal paths or logs
 

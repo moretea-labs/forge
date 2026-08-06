@@ -18,30 +18,30 @@ const diagnosticArgs = ['runtime', 'diagnostic-read', '--tool', 'workflow_watchd
 describe('typed CLI child invocation', () => {
   test('executes a Bun standalone release directly without its virtual bunfs entry', () => {
     const expected = {
-      executable: '/opt/releases/repo-harness.js',
+      executable: '/opt/releases/forge.js',
       args: diagnosticArgs,
     };
-    expect(resolveCliChildInvocation('/$bunfs/root/repo-harness.js', diagnosticArgs, {
-      runtimeExecutable: '/opt/releases/repo-harness.js',
+    expect(resolveCliChildInvocation('/$bunfs/root/forge.js', diagnosticArgs, {
+      runtimeExecutable: '/opt/releases/forge.js',
       env: {},
     })).toEqual(expected);
-    expect(resolveDiagnosticCliInvocation('/$bunfs/root/repo-harness.js', diagnosticArgs, {
-      runtimeExecutable: '/opt/releases/repo-harness.js',
+    expect(resolveDiagnosticCliInvocation('/$bunfs/root/forge.js', diagnosticArgs, {
+      runtimeExecutable: '/opt/releases/forge.js',
       env: {},
     })).toEqual(expected);
-    expect(resolvePersistedCheckCliInvocation('/$bunfs/root/repo-harness.js', diagnosticArgs, {
-      runtimeExecutable: '/opt/releases/repo-harness.js',
+    expect(resolvePersistedCheckCliInvocation('/$bunfs/root/forge.js', diagnosticArgs, {
+      runtimeExecutable: '/opt/releases/forge.js',
       env: {},
     })).toEqual(expected);
-    expect(expected.args).not.toContain('/$bunfs/root/repo-harness.js');
+    expect(expected.args).not.toContain('/$bunfs/root/forge.js');
   });
 
   test('honors explicit standalone runtime identity even when argv entry is physical', () => {
-    expect(resolveDiagnosticCliInvocation('/opt/releases/repo-harness.js', diagnosticArgs, {
-      runtimeExecutable: '/opt/releases/repo-harness.js',
-      env: { REPO_HARNESS_RUNTIME_EXECUTION: 'standalone-binary' },
+    expect(resolveDiagnosticCliInvocation('/opt/releases/forge.js', diagnosticArgs, {
+      runtimeExecutable: '/opt/releases/forge.js',
+      env: { FORGE_RUNTIME_EXECUTION: 'standalone-binary' },
     })).toEqual({
-      executable: '/opt/releases/repo-harness.js',
+      executable: '/opt/releases/forge.js',
       args: diagnosticArgs,
     });
   });
@@ -54,18 +54,18 @@ describe('typed CLI child invocation', () => {
       executable: '/opt/bun/bin/bun',
       args: ['/repo/src/cli/index.ts', ...diagnosticArgs],
     });
-    expect(resolveDiagnosticCliInvocation('/repo/bin/repo-harness.mjs', diagnosticArgs, {
+    expect(resolveDiagnosticCliInvocation('/repo/bin/forge.mjs', diagnosticArgs, {
       runtimeExecutable: '/usr/bin/node',
       env: {},
     })).toEqual({
       executable: '/usr/bin/node',
-      args: ['/repo/bin/repo-harness.mjs', ...diagnosticArgs],
+      args: ['/repo/bin/forge.mjs', ...diagnosticArgs],
     });
   });
 
   test('returns typed runtime identity and source revision in source and compiled modes', () => {
-    const compiled = resolveCliChildInvocation('/$bunfs/root/repo-harness.js', diagnosticArgs, {
-      runtimeExecutable: '/Applications/Repo Harness/repo-harness',
+    const compiled = resolveCliChildInvocation('/$bunfs/root/forge.js', diagnosticArgs, {
+      runtimeExecutable: '/Applications/Repo Harness/forge',
       sourceRevision: 'release-abc',
       env: {},
     });
@@ -87,7 +87,7 @@ describe('typed CLI child invocation', () => {
   });
 
   test('uses explicit package launcher identity for shims and paths containing spaces', () => {
-    const launcher = '/Applications/Repo Harness/bin/repo-harness shim';
+    const launcher = '/Applications/Repo Harness/bin/forge shim';
     const invocation = resolveCliChildInvocation('/ignored', diagnosticArgs, {
       runtimeExecutable: '/Applications/Node Runtime/bin/node',
       runtimeKind: 'package_launcher',
@@ -104,7 +104,7 @@ describe('typed CLI child invocation', () => {
   test('locates explicit source, compiled release, and package targets without extension guessing', () => {
     const existing = new Set([
       '/repo with spaces/src/cli/index.ts',
-      '/Applications/Repo Harness/lib/repo-harness.js',
+      '/Applications/Repo Harness/lib/forge.js',
     ]);
     const source = currentCliRuntimeTarget({
       argv: [],
@@ -118,9 +118,9 @@ describe('typed CLI child invocation', () => {
     expect(source.entry).toBe('/repo with spaces/src/cli/index.ts');
 
     const compiled = currentCliRuntimeTarget({
-      argv: ['/Applications/Repo Harness/repo-harness', '/$bunfs/root/repo-harness.js'],
-      env: { REPO_HARNESS_RUNTIME_EXECUTION: 'standalone-binary' },
-      runtimeExecutable: '/Applications/Repo Harness/repo-harness',
+      argv: ['/Applications/Repo Harness/forge', '/$bunfs/root/forge.js'],
+      env: { FORGE_RUNTIME_EXECUTION: 'standalone-binary' },
+      runtimeExecutable: '/Applications/Repo Harness/forge',
       sourceRevision: 'compiled-1',
       entryExists: () => false,
     });
@@ -136,7 +136,7 @@ describe('typed CLI child invocation', () => {
       entryExists: (path) => existing.has(path),
     });
     expect(installed.runtimeKind).toBe('package_launcher');
-    expect(installed.entry).toBe('/Applications/Repo Harness/lib/repo-harness.js');
+    expect(installed.entry).toBe('/Applications/Repo Harness/lib/forge.js');
   });
 
   test('fails closed when runtime identity cannot be resolved', () => {

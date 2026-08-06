@@ -10,7 +10,7 @@ const pkg = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
 const lock = JSON.parse(readFileSync(resolve(root, "package-lock.json"), "utf8"));
 const skill = JSON.parse(readFileSync(resolve(root, "assets/skill-version.json"), "utf8"));
 
-const expectedName = "@moretea-labs/matea";
+const expectedName = "@moretea-labs/forge";
 const requiredFiles = [
   "LICENSE",
   "CHANGELOG.md",
@@ -62,15 +62,25 @@ if (pkg.publishConfig?.provenance !== true) fail("publishConfig.provenance must 
 if (pkg.publishConfig?.tag !== undefined) fail("publishConfig.tag must be omitted");
 if (pkg.private !== undefined) fail("package must not declare private");
 if (pkg.author !== "Moretea Labs contributors") fail(`unexpected package author: ${pkg.author}`);
-if (!String(pkg.repository?.url ?? "").includes("moretea-labs/matea")) {
-  fail("repository URL must target the organization repository");
+if (!String(pkg.repository?.url ?? "").includes("moretea-labs/forge")) {
+  fail("repository URL must target the canonical Forge repository");
 }
 
 const bin = pkg.bin ?? {};
-if (bin["matea"] !== "bin/repo-harness.mjs") fail("matea bin mapping changed");
-if (bin["matea-hook"] !== "bin/repo-harness-hook.mjs") fail("matea-hook bin mapping changed");
-if (bin["repo-harness"] !== "bin/repo-harness.mjs") fail("legacy repo-harness bin mapping changed");
-if (bin["repo-harness-hook"] !== "bin/repo-harness-hook.mjs") fail("legacy repo-harness-hook bin mapping changed");
+const expectedBins = {
+  forge: "bin/forge.mjs",
+  "forge-hook": "bin/forge-hook.mjs",
+  "forge-runtime": "bin/forge-runtime.mjs",
+};
+if (JSON.stringify(Object.keys(bin).sort()) !== JSON.stringify(Object.keys(expectedBins).sort())) {
+  fail(`package bin surface must be Forge-only: ${Object.keys(bin).sort().join(", ")}`);
+}
+for (const [name, target] of Object.entries(expectedBins)) {
+  if (bin[name] !== target) fail(`${name} bin mapping changed`);
+}
+for (const forbidden of ["matea", "matea-hook", "repo-harness", "repo-harness-hook", "repo-harness-runtime"]) {
+  if (Object.prototype.hasOwnProperty.call(bin, forbidden)) fail(`forbidden compatibility bin remains: ${forbidden}`);
+}
 if (pkg.scripts?.prepublishOnly !== "bash scripts/check-npm-release.sh") fail("prepublishOnly gate changed");
 if (pkg.scripts?.["check:release-version"] !== "node scripts/check-release-version.mjs") {
   fail("release version check changed");

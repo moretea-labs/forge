@@ -24,7 +24,7 @@ interface BindingStore {
 }
 
 function now(): string { return new Date().toISOString(); }
-function bindingPath(repoRoot: string): string { return join(repoRoot, '.repo-harness', 'assistant', 'routine-schedules.json'); }
+function bindingPath(repoRoot: string): string { return join(repoRoot, '.forge', 'assistant', 'routine-schedules.json'); }
 
 function readBindings(repoRoot: string): BindingStore {
   const path = bindingPath(repoRoot);

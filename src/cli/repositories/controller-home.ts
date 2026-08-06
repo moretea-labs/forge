@@ -4,10 +4,10 @@ import { join, resolve } from 'path';
 
 export function resolveControllerHome(explicit?: string): string {
   const configured = explicit?.trim()
-    || process.env.REPO_HARNESS_CONTROLLER_HOME?.trim()
+    || process.env.FORGE_CONTROLLER_HOME?.trim()
     || (process.env.XDG_STATE_HOME?.trim()
-      ? join(process.env.XDG_STATE_HOME.trim(), 'repo-harness', 'controller')
-      : join(homedir(), '.repo-harness', 'controller'));
+      ? join(process.env.XDG_STATE_HOME.trim(), 'forge', 'controller')
+      : join(homedir(), '.forge', 'controller'));
   return resolve(configured);
 }
 
@@ -18,7 +18,7 @@ export function resolveControllerHome(explicit?: string): string {
 export function resolveRepoPreferredControllerHome(repoRoot?: string, explicit?: string): string {
   const trimmedExplicit = explicit?.trim();
   if (trimmedExplicit) return resolveControllerHome(trimmedExplicit);
-  const configured = process.env.REPO_HARNESS_CONTROLLER_HOME?.trim();
+  const configured = process.env.FORGE_CONTROLLER_HOME?.trim();
   if (configured) return resolveControllerHome(configured);
   if (repoRoot?.trim()) {
     const opsHome = join(resolve(repoRoot.trim()), '_ops', 'controller-home');

@@ -1,6 +1,6 @@
-# 发布 Matea
+# 发布 Forge
 
-公开 npm 包名为 `@moretea-labs/matea`，以 `matea` 与 `matea-hook` 为主命令，并在 1.x 迁移期保留 `repo-harness` 与 `repo-harness-hook` 兼容别名。
+公开 npm 包名为 `@moretea-labs/forge`，只发布 `forge`、`forge-hook` 与 `forge-runtime`，不再发布此前产品的命令别名。
 
 ## 当前状态
 
@@ -28,8 +28,8 @@ bun run check:release
 同时验证两种启动路径：
 
 ```bash
-node bin/repo-harness.mjs --help
-bun bin/repo-harness.mjs --help
+node bin/forge.mjs --help
+bun bin/forge.mjs --help
 ```
 
 main 门禁复用 focused task receipt，不执行全量测试。release 门禁复用该 receipt，检查 package 身份、公开文档、许可证与 notices、tracked 文件卫生和公开导出内容，然后只在 `.ai/harness/artifacts/release/` 生成一个 tarball；隔离安装与发布都复用这个 tarball。`test:full` 仅作为人工诊断命令。
@@ -44,7 +44,7 @@ npm whoami
 npm access ls-packages @moretea-labs
 
 # 先创建并检查本地 tag，发布成功前不要 push。
-git tag -a v1.4.0-rc.6 -m "Matea 1.4.0-rc.6"
+git tag -a v1.4.0-rc.6 -m "Forge 1.4.0-rc.6"
 RELEASE_TAG=v1.4.0-rc.6 npm run release:rc
 ```
 
@@ -62,7 +62,7 @@ npm run check:release-published
 
 首个 package 存在后：
 
-1. 在 npm 中为 `moretea-labs/matea` 与 `.github/workflows/release.yml` 配置 Trusted Publishing。
+1. 在 npm 中为 `moretea-labs/forge` 与 `.github/workflows/release.yml` 配置 Trusted Publishing。
 2. 创建 GitHub environment `npm-publish`，设置 maintainer 审批。
 3. 保护 `main` 与 release tags。
 4. 只有完整门禁通过后，才 push 精确的 `v<package-version>` tag。
@@ -74,7 +74,7 @@ Tag workflow 使用 GitHub OIDC，不需要 `NODE_AUTH_TOKEN` 或仓库内 npm t
 发布 `1.4.0` 前：
 
 - 在 macOS、Linux、WSL2 和已声明的 Windows 路径安装精确 packed artifact；
-- 验证 `matea init`、`matea doctor`、仓库注册/接入和 ChatGPT MCP 连接；
+- 验证 `forge init`、`forge doctor`、仓库注册/接入和 ChatGPT MCP 连接；
 - 确认稳定文档中没有 RC 专属警告或不稳定安装命令；
 - 把 `package.json` 改为 `1.4.0`，package identity gate 会要求 `latest`；
 - 从受保护环境发布 tag `v1.4.0`；

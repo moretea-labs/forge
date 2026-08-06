@@ -1,9 +1,9 @@
 #!/bin/bash
-# Delegate workflow migrations to the canonical upstream repo-harness.
+# Delegate workflow migrations to the canonical upstream forge.
 #
 # Generated projects keep installed workflow runtime state under .ai/. The
 # template source lives in AGENTIC_DEV_ROOT, AGENTIC_DEV_SKILL_ROOT, or
-# ~/Projects/repo-harness. Retired legacy install paths are not
+# ~/Projects/forge. Retired legacy install paths are not
 # searched.
 
 set -euo pipefail
@@ -21,10 +21,10 @@ resolve_agentic_dev_root() {
 
   if [[ -n "${HOME:-}" ]]; then
     local roots=(
-      "$HOME/Projects/repo-harness"
-      "$HOME/.codex/skills/repo-harness"
-      "$HOME/.claude/skills/repo-harness"
-      "$HOME/.agents/skills/repo-harness"
+      "$HOME/Projects/forge"
+      "$HOME/.codex/skills/forge"
+      "$HOME/.claude/skills/forge"
+      "$HOME/.agents/skills/forge"
     )
 
     local root
@@ -39,14 +39,14 @@ resolve_agentic_dev_root() {
     return 0
   fi
 
-  printf '%s\n' ".repo-harness/skills/repo-harness"
+  printf '%s\n' ".forge/skills/forge"
 }
 
 UPSTREAM_ROOT="$(resolve_agentic_dev_root)"
 UPSTREAM_SCRIPT="$UPSTREAM_ROOT/scripts/migrate-project-template.sh"
 
 if [[ ! -f "$UPSTREAM_SCRIPT" ]]; then
-  echo "[migrate] Upstream repo-harness migration script not found: $UPSTREAM_SCRIPT" >&2
+  echo "[migrate] Upstream forge migration script not found: $UPSTREAM_SCRIPT" >&2
   echo "[migrate] Set AGENTIC_DEV_ROOT or AGENTIC_DEV_SKILL_ROOT to the skill root." >&2
   exit 1
 fi

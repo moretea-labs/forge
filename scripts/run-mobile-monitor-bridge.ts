@@ -16,14 +16,14 @@ function requiredEnvironment(name: string): string {
 }
 
 const scriptRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const repoRoot = resolve(process.env.REPO_HARNESS_REPO_ROOT?.trim() || scriptRoot);
-const controllerHome = resolve(process.env.REPO_HARNESS_CONTROLLER_HOME?.trim()
+const repoRoot = resolve(process.env.FORGE_REPO_ROOT?.trim() || scriptRoot);
+const controllerHome = resolve(process.env.FORGE_CONTROLLER_HOME?.trim()
   || resolve(repoRoot, '_ops/controller-home/runtime-slots/green'));
-const runtimeDir = resolve(process.env.REPO_HARNESS_MONITOR_RUNTIME?.trim()
-  || resolve(repoRoot, '.repo-harness/mobile-monitor-runtime'));
-const host = process.env.REPO_HARNESS_MONITOR_HOST?.trim() || '0.0.0.0';
-const port = Number(process.env.REPO_HARNESS_MONITOR_PORT?.trim() || '8766');
-const defaultRepoId = process.env.REPO_HARNESS_MONITOR_REPO_ID?.trim() || '';
+const runtimeDir = resolve(process.env.FORGE_MONITOR_RUNTIME?.trim()
+  || resolve(repoRoot, '.forge/mobile-monitor-runtime'));
+const host = process.env.FORGE_MONITOR_HOST?.trim() || '0.0.0.0';
+const port = Number(process.env.FORGE_MONITOR_PORT?.trim() || '8766');
+const defaultRepoId = process.env.FORGE_MONITOR_REPO_ID?.trim() || '';
 const credentialPath = resolve(runtimeDir, 'device.json');
 
 mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });

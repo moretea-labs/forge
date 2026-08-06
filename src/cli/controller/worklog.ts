@@ -80,7 +80,7 @@ export function appendControllerWorklogEvent(
     schemaVersion: 1,
     id: eventId(),
     at: event.at ?? new Date().toISOString(),
-    actor: event.actor?.trim() || "repo-harness-controller",
+    actor: event.actor?.trim() || "forge-controller",
     category: event.category,
     action: event.action,
     summary: event.summary,
@@ -177,7 +177,7 @@ export function exportControllerWorklog(
     const lines = [
       "---",
       `generated_at: ${JSON.stringify(new Date().toISOString())}`,
-      'source: "repo-harness-controller-v8"',
+      'source: "forge-controller-v8"',
       `event_count: ${events.length}`,
       "---",
       "",

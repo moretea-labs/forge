@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 
-repo_harness_default_controller_home() {
+forge_default_controller_home() {
   local repo_root="${1:?repo root is required}"
   printf '%s\n' "$repo_root/_ops/controller-home"
 }
 
-repo_harness_use_local_controller_home() {
+forge_use_local_controller_home() {
   local repo_root="${1:?repo root is required}"
-  if [[ -z "${REPO_HARNESS_CONTROLLER_HOME:-}" ]]; then
-    export REPO_HARNESS_CONTROLLER_HOME
-    REPO_HARNESS_CONTROLLER_HOME="$(repo_harness_default_controller_home "$repo_root")"
+  if [[ -z "${FORGE_CONTROLLER_HOME:-}" ]]; then
+    export FORGE_CONTROLLER_HOME
+    FORGE_CONTROLLER_HOME="$(forge_default_controller_home "$repo_root")"
   fi
-  mkdir -p "$REPO_HARNESS_CONTROLLER_HOME"
+  mkdir -p "$FORGE_CONTROLLER_HOME"
 }
 
-repo_harness_prepare_runtime_path() {
+forge_prepare_runtime_path() {
   local merged="${PATH:-}"
   local candidate
 
@@ -41,11 +41,11 @@ repo_harness_prepare_runtime_path() {
   export PATH="$merged"
 }
 
-repo_harness_resolve_bun() {
+forge_resolve_bun() {
   local candidate
 
-  if [[ -n "${REPO_HARNESS_BUN_BIN:-}" && -x "$REPO_HARNESS_BUN_BIN" ]]; then
-    printf '%s\n' "$REPO_HARNESS_BUN_BIN"
+  if [[ -n "${FORGE_BUN_BIN:-}" && -x "$FORGE_BUN_BIN" ]]; then
+    printf '%s\n' "$FORGE_BUN_BIN"
     return 0
   fi
 

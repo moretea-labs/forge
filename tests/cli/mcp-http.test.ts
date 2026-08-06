@@ -36,7 +36,7 @@ async function waitForHealth(port: number): Promise<void> {
   throw new Error('MCP HTTP server did not become healthy');
 }
 
-function initializeBody(clientName = 'repo-harness-test'): string {
+function initializeBody(clientName = 'forge-test'): string {
   return JSON.stringify({
     jsonrpc: '2.0',
     id: 1,
@@ -50,14 +50,14 @@ function initializeBody(clientName = 'repo-harness-test'): string {
 }
 
 async function withTestControllerHome<T>(repoRoot: string, fn: (controllerHome: string) => Promise<T>): Promise<T> {
-  const previous = process.env.REPO_HARNESS_CONTROLLER_HOME;
+  const previous = process.env.FORGE_CONTROLLER_HOME;
   const controllerHome = join(repoRoot, '.controller-home');
-  process.env.REPO_HARNESS_CONTROLLER_HOME = controllerHome;
+  process.env.FORGE_CONTROLLER_HOME = controllerHome;
   try {
     return await fn(controllerHome);
   } finally {
-    if (previous === undefined) delete process.env.REPO_HARNESS_CONTROLLER_HOME;
-    else process.env.REPO_HARNESS_CONTROLLER_HOME = previous;
+    if (previous === undefined) delete process.env.FORGE_CONTROLLER_HOME;
+    else process.env.FORGE_CONTROLLER_HOME = previous;
   }
 }
 
@@ -73,22 +73,22 @@ function isolatedMcpProcessEnv(
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of [
-    'REPO_HARNESS_MCP_PUBLIC_ORIGIN',
-    'REPO_HARNESS_MCP_INSTANCE_ID',
-    'REPO_HARNESS_SUPERVISOR_PUBLIC_HEALTH_ENDPOINT',
-    'REPO_HARNESS_SUPERVISOR_CHILD',
-    'REPO_HARNESS_CONTROLLER_LIFECYCLE_OWNER',
-    'REPO_HARNESS_CONTROLLER_INSTANCE_ID',
-    'REPO_HARNESS_DAEMON_INSTANCE_ID',
-    'REPO_HARNESS_RUNTIME_SLOT',
-    'REPO_HARNESS_WRITER_SLOT',
-    'REPO_HARNESS_WRITER_GENERATION',
+    'FORGE_MCP_PUBLIC_ORIGIN',
+    'FORGE_MCP_INSTANCE_ID',
+    'FORGE_SUPERVISOR_PUBLIC_HEALTH_ENDPOINT',
+    'FORGE_SUPERVISOR_CHILD',
+    'FORGE_CONTROLLER_LIFECYCLE_OWNER',
+    'FORGE_CONTROLLER_INSTANCE_ID',
+    'FORGE_DAEMON_INSTANCE_ID',
+    'FORGE_RUNTIME_SLOT',
+    'FORGE_WRITER_SLOT',
+    'FORGE_WRITER_GENERATION',
   ]) {
     delete env[key];
   }
   return {
     ...env,
-    REPO_HARNESS_CONTROLLER_HOME: controllerHome,
+    FORGE_CONTROLLER_HOME: controllerHome,
     ...overrides,
   };
 }
@@ -107,7 +107,7 @@ describe('mcp http transport', () => {
   });
 
   test('requires bearer auth and accepts authenticated initialize requests', async () => {
-    const repoRoot = mkdtempSync(join(tmpdir(), 'repo-harness-mcp-http-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-http-'));
     const port = await freePort();
     let proc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
     try {
@@ -182,7 +182,7 @@ describe('mcp http transport', () => {
         expect(initialized.status).toBe(200);
         const sessionId = initialized.headers.get('mcp-session-id');
         expect(sessionId).toBeTruthy();
-        expect(await initialized.text()).toContain('repo-harness-mcp');
+        expect(await initialized.text()).toContain('forge-mcp');
 
         const streamController = new AbortController();
         const stream = await fetch(`http://127.0.0.1:${port}/mcp`, {
@@ -228,7 +228,7 @@ describe('mcp http transport', () => {
   });
 
   test('bounds 500 real reconnect cycles without applying the OAuth principal quota to shared bearer clients', async () => {
-    const repoRoot = mkdtempSync(join(tmpdir(), 'repo-harness-mcp-reconnect-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-reconnect-'));
     const port = await freePort();
     let proc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
     try {
@@ -245,9 +245,9 @@ describe('mcp http transport', () => {
             stdout: 'ignore',
             stderr: 'pipe',
             env: isolatedMcpProcessEnv(controllerHome, {
-              REPO_HARNESS_MCP_MAX_SESSIONS: '16',
-              REPO_HARNESS_MCP_MAX_SESSIONS_PER_PRINCIPAL: '2',
-              REPO_HARNESS_MCP_MAX_INITIALIZING_SESSIONS: '32',
+              FORGE_MCP_MAX_SESSIONS: '16',
+              FORGE_MCP_MAX_SESSIONS_PER_PRINCIPAL: '2',
+              FORGE_MCP_MAX_INITIALIZING_SESSIONS: '32',
             }),
           },
         );
@@ -326,7 +326,7 @@ describe('mcp http transport', () => {
   }, 60_000);
 
   test('shares capacity across all MCP routes and evicts a stale session instead of rejecting reconnect', async () => {
-    const repoRoot = mkdtempSync(join(tmpdir(), 'repo-harness-mcp-capacity-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-capacity-'));
     const port = await freePort();
     let proc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
     try {
@@ -360,8 +360,8 @@ describe('mcp http transport', () => {
             stdout: 'ignore',
             stderr: 'pipe',
             env: isolatedMcpProcessEnv(controllerHome, {
-              REPO_HARNESS_MCP_MAX_SESSIONS: '2',
-              REPO_HARNESS_MCP_MAX_SESSIONS_PER_PRINCIPAL: '2',
+              FORGE_MCP_MAX_SESSIONS: '2',
+              FORGE_MCP_MAX_SESSIONS_PER_PRINCIPAL: '2',
             }),
           },
         );
@@ -416,7 +416,7 @@ describe('mcp http transport', () => {
   });
 
   test('supports ChatGPT-compatible OAuth authorization flow', async () => {
-    const repoRoot = mkdtempSync(join(tmpdir(), 'repo-harness-mcp-oauth-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-oauth-'));
     const port = await freePort();
     let proc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
     try {
@@ -485,7 +485,7 @@ describe('mcp http transport', () => {
             token_endpoint_auth_method: 'none',
             grant_types: ['authorization_code', 'refresh_token'],
             response_types: ['code'],
-            client_name: 'repo-harness-test',
+            client_name: 'forge-test',
           }),
         });
         expect(registered.status).toBe(201);
@@ -555,7 +555,7 @@ describe('mcp http transport', () => {
         });
         expect(bearerNoAuth.status).toBe(401);
         const bearerWwwAuth = bearerNoAuth.headers.get('www-authenticate') ?? '';
-        expect(bearerWwwAuth).toContain('Bearer realm="repo-harness-mcp"');
+        expect(bearerWwwAuth).toContain('Bearer realm="forge-mcp"');
         expect(bearerWwwAuth).not.toContain('resource_metadata');
         expect(await bearerNoAuth.json()).toMatchObject({ error: 'unauthorized' });
 
@@ -569,7 +569,7 @@ describe('mcp http transport', () => {
           body: initializeBody(),
         });
         expect(bearerAuthed.status).toBe(200);
-        expect(await bearerAuthed.text()).toContain('repo-harness-mcp');
+        expect(await bearerAuthed.text()).toContain('forge-mcp');
 
         // Incomplete OAuth authorize must not render the passphrase form.
         const incompleteAuthorize = await fetch(`http://127.0.0.1:${port}/authorize`);
@@ -599,7 +599,7 @@ describe('mcp http transport', () => {
         const formHtml = await authorizeForm.text();
         expect(formHtml).toContain('type="password"');
         expect(formHtml).toContain('name="passphrase"');
-        expect(formHtml).toContain('Authorize repo-harness');
+        expect(formHtml).toContain('Authorize forge');
         expect(formHtml).toContain('name="resource"');
         expect(formHtml).toContain(encodeURI(`http://127.0.0.1:${port}/mcp-grok`).replace(/&/g, '&amp;'));
 
@@ -613,7 +613,7 @@ describe('mcp http transport', () => {
           body: initializeBody(),
         });
         expect(initializedGrokWithOAuth.status).toBe(200);
-        expect(await initializedGrokWithOAuth.text()).toContain('repo-harness-mcp');
+        expect(await initializedGrokWithOAuth.text()).toContain('forge-mcp');
 
         const fallbackVerifier = randomBytes(32).toString('base64url');
         const fallbackChallenge = createHash('sha256').update(fallbackVerifier).digest('base64url');
@@ -670,7 +670,7 @@ describe('mcp http transport', () => {
           body: initializeBody(),
         });
         expect(fallbackInitializedGrok.status).toBe(200);
-        expect(await fallbackInitializedGrok.text()).toContain('repo-harness-mcp');
+        expect(await fallbackInitializedGrok.text()).toContain('forge-mcp');
 
         const initializedWithStaticBearer = await fetch(`http://127.0.0.1:${port}/mcp`, {
           method: 'POST',
@@ -682,7 +682,7 @@ describe('mcp http transport', () => {
           body: initializeBody(),
         });
         expect(initializedWithStaticBearer.status).toBe(200);
-        expect(await initializedWithStaticBearer.text()).toContain('repo-harness-mcp');
+        expect(await initializedWithStaticBearer.text()).toContain('forge-mcp');
 
         const initialized = await fetch(`http://127.0.0.1:${port}/mcp`, {
           method: 'POST',
@@ -694,7 +694,7 @@ describe('mcp http transport', () => {
           body: initializeBody(),
         });
         expect(initialized.status).toBe(200);
-        expect(await initialized.text()).toContain('repo-harness-mcp');
+        expect(await initialized.text()).toContain('forge-mcp');
       });
     } finally {
       await stopMcpServerProcess(proc);

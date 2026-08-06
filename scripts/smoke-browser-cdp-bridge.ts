@@ -9,8 +9,8 @@ interface CdpTarget {
 }
 
 function endpointFromArgs(): string {
-  const endpoint = process.argv[2] ?? process.env.REPO_HARNESS_BROWSER_CDP_ENDPOINT;
-  if (!endpoint) throw new Error('Pass a loopback CDP endpoint as argv[2] or REPO_HARNESS_BROWSER_CDP_ENDPOINT.');
+  const endpoint = process.argv[2] ?? process.env.FORGE_BROWSER_CDP_ENDPOINT;
+  if (!endpoint) throw new Error('Pass a loopback CDP endpoint as argv[2] or FORGE_BROWSER_CDP_ENDPOINT.');
   const parsed = new URL(endpoint);
   if (!['127.0.0.1', 'localhost', '::1', '[::1]'].includes(parsed.hostname)) {
     throw new Error('Live Browser CDP smoke accepts loopback endpoints only.');
@@ -30,10 +30,10 @@ async function main(): Promise<void> {
   const target = before.find((entry) => entry.type === 'page' && typeof entry.url === 'string' && /^https?:\/\//.test(entry.url));
   if (!target?.url) throw new Error('No existing HTTP(S) page target is available for reuse proof.');
   const hostname = new URL(target.url).hostname;
-  const repoRoot = mkdtempSync(join(tmpdir(), 'matea-browser-cdp-smoke-'));
+  const repoRoot = mkdtempSync(join(tmpdir(), 'forge-browser-cdp-smoke-'));
   try {
-    mkdirSync(join(repoRoot, '.repo-harness/plugins'), { recursive: true });
-    writeFileSync(join(repoRoot, '.repo-harness/plugins/browser.json'), `${JSON.stringify({
+    mkdirSync(join(repoRoot, '.forge/plugins'), { recursive: true });
+    writeFileSync(join(repoRoot, '.forge/plugins/browser.json'), `${JSON.stringify({
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',

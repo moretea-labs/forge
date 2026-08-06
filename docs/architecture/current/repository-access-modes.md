@@ -1,6 +1,6 @@
 # Repository access modes
 
-repo-harness keeps two user-selectable execution policies:
+Forge keeps two user-selectable execution policies:
 
 - `full_access` — the default for a personal local controller. Normal work inside the selected repository can read, edit, run bounded local commands and checks, and perform local Git operations without repeated approval prompts.
 - `request` — keeps the same MCP tool schema, but asks before elevated local side effects.

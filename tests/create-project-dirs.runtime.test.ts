@@ -5,15 +5,15 @@ import { join } from "path";
 import { spawnSync } from "child_process";
 
 const ROOT = join(import.meta.dir, "..");
-const REFERENCE_STUB_MARKER = "<!-- repo-harness: reference-config-stub v1 -->";
+const REFERENCE_STUB_MARKER = "<!-- forge: reference-config-stub v1 -->";
 const RUNTIME_SMOKE_TIMEOUT_MS = 15000;
 
 function expectReferenceConfigStub(cwd: string, docId: string): void {
   const content = readFileSync(join(cwd, "docs/reference-configs", `${docId}.md`), "utf-8");
   expect(content).toContain(REFERENCE_STUB_MARKER);
   expect(content).toContain(`> **Doc ID**: ${docId}`);
-  expect(content).toContain(`repo-harness docs path ${docId}`);
-  expect(content).toContain(`repo-harness docs show ${docId}`);
+  expect(content).toContain(`forge docs path ${docId}`);
+  expect(content).toContain(`forge docs show ${docId}`);
 }
 
 describe("create-project-dirs runtime smoke", () => {
@@ -86,11 +86,11 @@ describe("create-project-dirs runtime smoke", () => {
       expect(gitignore).toContain("tasks/.current.md.tmp.*");
       expect(gitignore).toContain(".claude/.plan-state/");
       expect(gitignore).toContain(".ai/harness/chatgpt/bridge-extension/");
-      expect(gitignore).toContain(".repo-harness/chatgpt-browser.local.json");
-      expect(gitignore).toContain("# repo-harness generated helper wrappers");
+      expect(gitignore).toContain(".forge/chatgpt-browser.local.json");
+      expect(gitignore).toContain("# forge generated helper wrappers");
       expect(gitignore).toContain("scripts/check-task-workflow.sh");
       expect(gitignore).toContain("scripts/prepare-codex-handoff.sh");
-      expect(gitignore).toContain("scripts/repo-harness/");
+      expect(gitignore).toContain("scripts/forge/");
       expect(gitignore).not.toContain("tasks/notes");
       expect(gitignore).not.toContain("docs/researches");
       expect(existsSync(join(cwd, ".ai/context/context-map.json"))).toBe(true);
@@ -147,7 +147,7 @@ describe("create-project-dirs runtime smoke", () => {
       expect(existsSync(join(cwd, "scripts/architecture-drift.sh"))).toBe(false);
       expect(existsSync(join(cwd, "scripts/architecture-drift.sh"))).toBe(false);
       expect(readFileSync(join(cwd, "scripts/sprint-backlog.sh"), "utf-8")).toContain(
-        "repo-harness run sprint-backlog"
+        "forge run sprint-backlog"
       );
       expect(existsSync(join(cwd, ".claude/templates/sprint.template.md"))).toBe(true);
       expect(existsSync(join(cwd, "scripts/context-budget.ts"))).toBe(false);
@@ -194,7 +194,7 @@ describe("create-project-dirs runtime smoke", () => {
       expect(workflowContract.helpers.compatibilityDirectory).toBe("scripts");
       expect(workflowContract.documentation.referenceConfigs.source).toBe("user-level-runtime-docs");
       expect(workflowContract.documentation.referenceConfigs.repoStubDirectory).toBe("docs/reference-configs");
-      expect(workflowContract.documentation.referenceConfigs.resolverCommand).toBe("repo-harness docs path <doc-id>");
+      expect(workflowContract.documentation.referenceConfigs.resolverCommand).toBe("forge docs path <doc-id>");
       expect(workflowContract.documentation.referenceConfigs.stubMarker).toBe(REFERENCE_STUB_MARKER);
       expect(workflowContract.helpers.scripts).toContain("check-agent-tooling.sh");
       expect(workflowContract.helpers.scripts).toContain("check-brain-manifest.sh");
@@ -275,7 +275,7 @@ describe("create-project-dirs runtime smoke", () => {
       });
       expect(policy.external_tooling.hosts).toEqual(["claude-code", "codex"]);
       expect(policy.external_tooling.mode).toBe("agent-readiness-required");
-      expect(policy.external_tooling.readiness_gate).toBe("repo-harness run check-agent-tooling --host codex --strict-readiness");
+      expect(policy.external_tooling.readiness_gate).toBe("forge run check-agent-tooling --host codex --strict-readiness");
       expect(policy.external_tooling.waza.primary_host).toBe("codex");
       expect(policy.external_tooling.waza.managed_skills).toEqual(["think", "hunt", "check", "health"]);
       expect(policy.external_tooling.waza.codex_primary_path).toBe("~/.codex/skills");
@@ -330,7 +330,7 @@ describe("create-project-dirs runtime smoke", () => {
       expect(policy.documentation.profile).toBe("minimal-agentic");
       expect(policy.documentation.reference_source).toBe("user-level-runtime-docs");
       expect(policy.documentation.reference_stub_marker).toBe(REFERENCE_STUB_MARKER);
-      expect(policy.documentation.reference_resolver).toBe("repo-harness docs path <doc-id>");
+      expect(policy.documentation.reference_resolver).toBe("forge docs path <doc-id>");
       expect(policy.documentation.required).toContain("docs/architecture/index.md");
       expect(policy.architecture.diagram_skill).toBe("mermaid");
       expect(policy.architecture.vendoring_policy).toBe("do-not-vendor-diagram-skill-assets");
@@ -366,12 +366,12 @@ describe("create-project-dirs runtime smoke", () => {
       expect(policy.upgrade.cleanup.remove_only_ownership).toBe("known_generated");
 
       const pkg = JSON.parse(readFileSync(join(cwd, "package.json"), "utf-8"));
-      expect(pkg.scripts["check:context-files"]).toBe("repo-harness run check-context-files");
-      expect(pkg.scripts["check:deploy-sql"]).toBe("repo-harness run check-deploy-sql-order");
-      expect(pkg.scripts["check:architecture-sync"]).toBe("repo-harness run check-architecture-sync");
-      expect(pkg.scripts["check:task-sync"]).toBe("repo-harness run check-task-sync");
-      expect(pkg.scripts["check:task-workflow"]).toBe("repo-harness run check-task-workflow --strict");
-      expect(pkg.scripts["sync:brain-docs"]).toBe("repo-harness run sync-brain-docs --all");
+      expect(pkg.scripts["check:context-files"]).toBe("forge run check-context-files");
+      expect(pkg.scripts["check:deploy-sql"]).toBe("forge run check-deploy-sql-order");
+      expect(pkg.scripts["check:architecture-sync"]).toBe("forge run check-architecture-sync");
+      expect(pkg.scripts["check:task-sync"]).toBe("forge run check-task-sync");
+      expect(pkg.scripts["check:task-workflow"]).toBe("forge run check-task-workflow --strict");
+      expect(pkg.scripts["sync:brain-docs"]).toBe("forge run sync-brain-docs --all");
       expect(existsSync(join(cwd, "scripts/contract-worktree.sh"))).toBe(true);
       expect(existsSync(join(cwd, "scripts/ship-worktrees.sh"))).toBe(true);
     } finally {
@@ -397,7 +397,7 @@ describe("create-project-dirs runtime smoke", () => {
           "-lc",
           [
             `source '${libPath}'`,
-            "REPO_HARNESS_PLAN_TYPE=K",
+            "FORGE_PLAN_TYPE=K",
             'pi_ensure_harness_state_surface "$PWD" apply',
           ].join("\n"),
         ],
@@ -453,7 +453,7 @@ describe("create-project-dirs runtime smoke", () => {
           "-lc",
           [
             `source '${libPath}'`,
-            "REPO_HARNESS_PLAN_TYPE=K",
+            "FORGE_PLAN_TYPE=K",
             'pi_ensure_harness_state_surface "$PWD" apply',
           ].join("\n"),
         ],
@@ -489,7 +489,7 @@ describe("create-project-dirs runtime smoke", () => {
           "-lc",
           [
             `source '${libPath}'`,
-            "REPO_HARNESS_PLAN_TYPE=K",
+            "FORGE_PLAN_TYPE=K",
             'pi_ensure_harness_state_surface "$PWD" apply',
           ].join("\n"),
         ],
@@ -522,7 +522,7 @@ describe("create-project-dirs runtime smoke", () => {
           "-lc",
           [
             `source '${libPath}'`,
-            "REPO_HARNESS_PLAN_TYPE=K",
+            "FORGE_PLAN_TYPE=K",
             'pi_ensure_harness_state_surface "$PWD" apply',
           ].join("\n"),
         ],
@@ -606,7 +606,7 @@ describe("create-project-dirs runtime smoke", () => {
           "-lc",
           [
             `source '${libPath}'`,
-            "REPO_HARNESS_PLAN_TYPE=K",
+            "FORGE_PLAN_TYPE=K",
             'pi_ensure_harness_state_surface "$PWD" apply',
           ].join("\n"),
         ],
@@ -635,7 +635,7 @@ describe("create-project-dirs runtime smoke", () => {
         encoding: "utf-8",
         env: {
           ...process.env,
-          REPO_HARNESS_DOCUMENTATION_PROFILE: "full",
+          FORGE_DOCUMENTATION_PROFILE: "full",
         },
       });
       expect(res.status).toBe(0);

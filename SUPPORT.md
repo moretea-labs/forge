@@ -1,19 +1,20 @@
 # Support
 
-Matea is currently a release candidate. Support is best-effort and focused on reproducible installation, repository safety, ChatGPT connectivity, runtime recovery, and release-blocking defects.
+Forge is currently in release-candidate hardening. Support is best-effort and focused on reproducible installation, first-run setup, repository safety, ChatGPT connectivity, Runtime recovery, and release-blocking defects.
 
 ## Before asking for help
 
 Run:
 
 ```bash
-matea --version
-matea doctor
-matea status --json
-matea repo list --json
+forge --version
+forge setup status
+forge doctor
+forge status --json
+forge repo list --json
 ```
 
-The legacy `repo-harness` command is still accepted during the 1.x compatibility period. Redact tokens, OAuth material, private repository names, absolute home paths, email addresses, and proprietary source before sharing output.
+Forge does not provide previous-product command aliases. Redact tokens, OAuth material, private repository names, absolute home paths, email addresses, and proprietary source before sharing output.
 
 ## Where to ask
 
@@ -27,4 +28,4 @@ Issues should remain actionable and tied to a reproducible problem or a concrete
 
 ## Useful details
 
-Include the operating system, Node and Bun versions, installation method, exact command, expected result, actual result, and the smallest redacted log excerpt that demonstrates the problem. For runtime incidents, also say whether the local health endpoint, public MCP endpoint, and independent recovery path were reachable.
+Include the operating system, Node and Bun versions, installation method, exact command, expected result, actual result, and the smallest redacted log excerpt that demonstrates the problem. For Runtime incidents, also include local Forge Runtime readiness, standalone Recovery status, restart-attempt and rollback evidence, the public MCP result, and whether the external tunnel was reachable.

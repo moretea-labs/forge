@@ -1,6 +1,6 @@
-# Matea Wiki
+# Forge Wiki
 
-Matea is a local-first action assistant for software work. It connects ChatGPT to a durable local controller, keeps actions scoped to explicit repositories, and records enough evidence to review, resume, and recover work safely.
+Forge is a local-first action assistant for software work. It connects ChatGPT to a durable local controller, keeps actions scoped to explicit repositories, and records enough evidence to review, resume, and recover work safely.
 
 ## Start here
 
@@ -17,12 +17,12 @@ Matea is a local-first action assistant for software work. It connects ChatGPT t
 
 ## What belongs where
 
-The Wiki explains stable concepts and common operator decisions. Exact commands, compatibility matrices, tests, and incident procedures remain versioned in the [repository documentation](https://github.com/moretea-labs/matea/tree/main/docs). When Wiki content and repository source disagree, the versioned repository source is authoritative.
+The Wiki explains stable concepts and common operator decisions. Exact commands, compatibility matrices, tests, and incident procedures remain versioned in the [repository documentation](https://github.com/moretea-labs/forge/tree/main/docs). When Wiki content and repository source disagree, the versioned repository source is authoritative.
 
 ## Project links
 
-- [Repository](https://github.com/moretea-labs/matea)
-- [Documentation hub](https://github.com/moretea-labs/matea/blob/main/docs/README.md)
-- [Issues](https://github.com/moretea-labs/matea/issues)
-- [Support](https://github.com/moretea-labs/matea/blob/main/SUPPORT.md)
-- [Security policy](https://github.com/moretea-labs/matea/blob/main/SECURITY.md)
+- [Repository](https://github.com/moretea-labs/forge)
+- [Documentation hub](https://github.com/moretea-labs/forge/blob/main/docs/README.md)
+- [Issues](https://github.com/moretea-labs/forge/issues)
+- [Support](https://github.com/moretea-labs/forge/blob/main/SUPPORT.md)
+- [Security policy](https://github.com/moretea-labs/forge/blob/main/SECURITY.md)

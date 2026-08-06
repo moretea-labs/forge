@@ -13,7 +13,7 @@ import type {
 } from './types';
 
 function now(): string { return new Date().toISOString(); }
-function assistantRoot(repoRoot: string): string { return join(repoRoot, '.repo-harness', 'assistant'); }
+function assistantRoot(repoRoot: string): string { return join(repoRoot, '.forge', 'assistant'); }
 function routinesPath(repoRoot: string): string { return join(assistantRoot(repoRoot), 'routines.json'); }
 function inboxPath(repoRoot: string): string { return join(assistantRoot(repoRoot), 'inbox.json'); }
 function memoryPath(repoRoot: string): string { return join(assistantRoot(repoRoot), 'memory.json'); }

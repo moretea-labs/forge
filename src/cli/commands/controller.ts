@@ -32,7 +32,7 @@ function repoRoot(value?: string): string {
 }
 
 function formatBoard(board: ReturnType<typeof projectBoard>): string {
-  const lines = ['repo-harness Controller board', ''];
+  const lines = ['forge Controller board', ''];
   const counts = Object.entries(board.counts).sort(([a], [b]) => a.localeCompare(b));
   lines.push(`Tasks: ${counts.length ? counts.map(([status, count]) => `${status}=${count}`).join('  ') : 'none'}`);
   lines.push('');
@@ -60,7 +60,7 @@ function formatRuns(runs: ReturnType<typeof listAgentJobs>): string {
 
 
 function formatCompletionBacklog(report: CompletionBacklogReport): string {
-  const lines = ['repo-harness Completion backlog', ''];
+  const lines = ['forge Completion backlog', ''];
   lines.push(`Scanned: ${report.scannedAt}`);
   lines.push(`Counts: ${Object.entries(report.counts).map(([key, count]) => `${key}=${count}`).join('  ')}`);
   if (report.recommendations.length) {
@@ -109,7 +109,7 @@ async function watchRun(root: string, runId: string, intervalSeconds: number, in
               console.log('\n--- Live Run log ---');
               logHeaderPrinted = true;
             } else if (!currentLog.startsWith(previousLog)) {
-              console.log('\n[repo-harness] log window reset; showing current retained output');
+              console.log('\n[forge] log window reset; showing current retained output');
             }
             process.stdout.write(addition.endsWith('\n') ? addition : `${addition}\n`);
           }
@@ -133,7 +133,7 @@ async function watchRun(root: string, runId: string, intervalSeconds: number, in
 }
 
 export function buildControllerCommand(): Command {
-  const command = new Command('controller').description('Inspect repo-harness Issues, Tasks, local Runs, and GitHub cloud sessions');
+  const command = new Command('controller').description('Inspect forge Issues, Tasks, local Runs, and GitHub cloud sessions');
 
   command.command('board')
     .description('Show the durable Issue and Task board')
@@ -319,7 +319,7 @@ export function buildControllerCommand(): Command {
     .option('--limit <count>', 'Maximum auto-finish Runs', '25')
     .option('--keep-worktree', 'Do not remove isolated worktrees after integration')
     .option('--no-commit', 'Do not create selected-path Git commits after successful finishes')
-    .option('--reviewer <name>', 'Reviewer identity', 'repo-harness-completion-backlog')
+    .option('--reviewer <name>', 'Reviewer identity', 'forge-completion-backlog')
     .option('--json', 'Output JSON')
     .action((opts: { repo?: string; apply?: boolean; limit?: string; keepWorktree?: boolean; commit?: boolean; reviewer?: string; json?: boolean }) => {
       const finished = finishCompletionBacklog(repoRoot(opts.repo), {
@@ -356,7 +356,7 @@ export function buildControllerCommand(): Command {
     .option('--run-id <runId>', 'Run ID for run decisions')
     .option('--issue-id <issueId>', 'Issue ID for task decisions')
     .option('--task-id <taskId>', 'Task ID for task decisions')
-    .option('--reviewer <name>', 'Reviewer identity', 'repo-harness-completion-decision')
+    .option('--reviewer <name>', 'Reviewer identity', 'forge-completion-decision')
     .option('--note <text>', 'Decision note')
     .option('--keep-worktree', 'Do not remove isolated worktrees after integration')
     .option('--no-commit', 'Do not create the required selected-path Git commit after finish')
@@ -394,7 +394,7 @@ export function buildControllerCommand(): Command {
     .option('--limit <count>', 'Maximum findings', '100')
     .option('--mark-retry-required', 'Move retry-required findings to changes_requested')
     .option('--mark-no-run-evidence', 'Move stale review/running without run evidence to changes_requested')
-    .option('--reviewer <name>', 'Reviewer identity', 'repo-harness-stuck-state-migration')
+    .option('--reviewer <name>', 'Reviewer identity', 'forge-stuck-state-migration')
     .option('--json', 'Output JSON')
     .action((opts: { repo?: string; apply?: boolean; limit?: string; markRetryRequired?: boolean; markNoRunEvidence?: boolean; reviewer?: string; json?: boolean }) => {
       output(applyStuckStateMigration(repoRoot(opts.repo), {

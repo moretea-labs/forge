@@ -26,7 +26,7 @@ function fixture() {
       schemaVersion: 1,
       releaseId,
       artifactIdentity,
-      entrypoint: 'repo-harness-runtime',
+      entrypoint: 'forge-runtime',
       arguments: [],
       configurationSchemaVersion: 1,
       controllerHome: resolve(controllerHome),

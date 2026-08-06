@@ -11,20 +11,20 @@ function option(name: string): string | undefined {
     : undefined;
 }
 
-const repoId = option('--repo-id') ?? process.env.REPO_HARNESS_IOS_DEVICE_SMOKE_REPO_ID?.trim();
-const deviceSelector = option('--device') ?? process.env.REPO_HARNESS_IOS_DEVICE_SMOKE_DEVICE?.trim();
-const bundleId = option('--bundle-id') ?? process.env.REPO_HARNESS_IOS_DEVICE_SMOKE_BUNDLE_ID?.trim();
-const controllerHome = option('--controller-home') ?? process.env.REPO_HARNESS_CONTROLLER_HOME?.trim()
+const repoId = option('--repo-id') ?? process.env.FORGE_IOS_DEVICE_SMOKE_REPO_ID?.trim();
+const deviceSelector = option('--device') ?? process.env.FORGE_IOS_DEVICE_SMOKE_DEVICE?.trim();
+const bundleId = option('--bundle-id') ?? process.env.FORGE_IOS_DEVICE_SMOKE_BUNDLE_ID?.trim();
+const controllerHome = option('--controller-home') ?? process.env.FORGE_CONTROLLER_HOME?.trim()
   ?? `${repoRoot}/_ops/controller-home/runtime-slots/blue`;
 
 if (!repoId || !deviceSelector || !bundleId) {
-  throw new Error('Pass --repo-id, --device, and --bundle-id, or set the corresponding REPO_HARNESS_IOS_DEVICE_SMOKE_* environment variables.');
+  throw new Error('Pass --repo-id, --device, and --bundle-id, or set the corresponding FORGE_IOS_DEVICE_SMOKE_* environment variables.');
 }
 if (!/^[A-Za-z0-9][A-Za-z0-9.-]+$/.test(bundleId) || !bundleId.includes('.') || bundleId.includes('://')) {
-  throw new Error('REPO_HARNESS_IOS_DEVICE_SMOKE_BUNDLE_ID must be an exact bundle identifier, not a URL or deep link.');
+  throw new Error('FORGE_IOS_DEVICE_SMOKE_BUNDLE_ID must be an exact bundle identifier, not a URL or deep link.');
 }
 
-delete process.env.REPO_HARNESS_IOS_DEVICE_RUNNER_URL;
+delete process.env.FORGE_IOS_DEVICE_RUNNER_URL;
 
 const common = {
   controllerHome,

@@ -19,17 +19,17 @@ export const REMOTE_API_DEFAULTS: Record<string, { baseUrl: string; model: strin
   grok_api: {
     baseUrl: 'https://api.x.ai/v1',
     model: 'grok-3',
-    envVars: ['XAI_API_KEY', 'REPO_HARNESS_XAI_API_KEY', 'GROK_API_KEY'],
+    envVars: ['XAI_API_KEY', 'FORGE_XAI_API_KEY', 'GROK_API_KEY'],
   },
   openai_api: {
     baseUrl: 'https://api.openai.com/v1',
     model: 'gpt-4o',
-    envVars: ['OPENAI_API_KEY', 'REPO_HARNESS_OPENAI_API_KEY'],
+    envVars: ['OPENAI_API_KEY', 'FORGE_OPENAI_API_KEY'],
   },
   deepseek_api: {
     baseUrl: 'https://api.deepseek.com',
     model: 'deepseek-chat',
-    envVars: ['DEEPSEEK_API_KEY', 'REPO_HARNESS_DEEPSEEK_API_KEY'],
+    envVars: ['DEEPSEEK_API_KEY', 'FORGE_DEEPSEEK_API_KEY'],
   },
 };
 
@@ -559,12 +559,12 @@ export function isLiveModelProvidersEffective(
   config: ProviderConfigFile,
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
-  const envEnabled = env.REPO_HARNESS_ENABLE_LIVE_MODEL_PROVIDERS === '1'
-    || env.REPO_HARNESS_ENABLE_LIVE_MODEL_PROVIDERS === 'true';
+  const envEnabled = env.FORGE_ENABLE_LIVE_MODEL_PROVIDERS === '1'
+    || env.FORGE_ENABLE_LIVE_MODEL_PROVIDERS === 'true';
   return envEnabled && config.preferLiveModelProviders === true;
 }
 
 export function liveModelProvidersEnvEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.REPO_HARNESS_ENABLE_LIVE_MODEL_PROVIDERS === '1'
-    || env.REPO_HARNESS_ENABLE_LIVE_MODEL_PROVIDERS === 'true';
+  return env.FORGE_ENABLE_LIVE_MODEL_PROVIDERS === '1'
+    || env.FORGE_ENABLE_LIVE_MODEL_PROVIDERS === 'true';
 }

@@ -1,5 +1,5 @@
 /**
- * `matea doctor` — read-only readiness diagnostics.
+ * `forge doctor` — read-only readiness diagnostics.
  *
  * Built-in checks: PATH resolution, CLI version, per-host install detection,
  * Codex user-level trust state count, and target-aware CodeGraph readiness.
@@ -18,9 +18,9 @@ import { isOptIn, resolveHooksDir, resolveRepoRoot } from '../hook/runtime';
 import { ROUTES } from '../hook/route-registry';
 
 const TRUST_STATE_LINE = /^\[hooks\.state\."[^"]+\/\.codex\/hooks\.json:/;
-const PACKAGE_NAME = '@moretea-labs/matea';
-const UPDATE_CHECK_ENV = 'REPO_HARNESS_CHECK_UPDATES';
-const LATEST_VERSION_ENV = 'REPO_HARNESS_LATEST_VERSION';
+const PACKAGE_NAME = '@moretea-labs/forge';
+const UPDATE_CHECK_ENV = 'FORGE_CHECK_UPDATES';
+const LATEST_VERSION_ENV = 'FORGE_LATEST_VERSION';
 
 export type CheckStatus = 'ok' | 'warn' | 'fail' | 'na';
 
@@ -82,8 +82,8 @@ function findCommandOnPath(command: string): string | null {
 
 function checkPath(): DoctorCheckResult {
   const id = 'cli-on-path';
-  const describe = 'Matea resolvable via PATH';
-  const resolved = findCommandOnPath('matea') ?? findCommandOnPath('repo-harness');
+  const describe = 'Forge resolvable via PATH';
+  const resolved = findCommandOnPath('forge') ?? findCommandOnPath('forge');
   if (resolved) {
     return { id, describe, status: 'ok', detail: resolved };
   }
@@ -91,12 +91,12 @@ function checkPath(): DoctorCheckResult {
     id,
     describe,
     status: 'warn',
-    detail: 'Matea not on PATH (the legacy repo-harness alias is also accepted)',
+    detail: 'Forge not on PATH (the legacy forge alias is also accepted)',
   };
 }
 
 function checkVersion(): DoctorCheckResult {
-  return { id: 'cli-version', describe: 'Matea CLI version', status: 'ok', detail: CLI_VERSION };
+  return { id: 'cli-version', describe: 'Forge CLI version', status: 'ok', detail: CLI_VERSION };
 }
 
 function parseVersion(value: string): number[] | null {
@@ -138,13 +138,13 @@ function readLatestPackageVersion(): { version?: string; error?: string } {
 
 function checkCliUpdate(): DoctorCheckResult {
   const id = 'cli-update';
-  const describe = 'Matea latest version advisory';
+  const describe = 'Forge latest version advisory';
   if (process.env[UPDATE_CHECK_ENV] !== '1') {
     return {
       id,
       describe,
       status: 'na',
-      detail: `disabled; Agent can run ${UPDATE_CHECK_ENV}=1 matea doctor --json before updating`,
+      detail: `disabled; Agent can run ${UPDATE_CHECK_ENV}=1 forge doctor --json before updating`,
     };
   }
 
@@ -162,7 +162,7 @@ function checkCliUpdate(): DoctorCheckResult {
       id,
       describe,
       status: 'warn',
-      detail: `current=${CLI_VERSION}; latest=${latest.version}; agent_action=bun add -g ${PACKAGE_NAME}@latest && matea init`,
+      detail: `current=${CLI_VERSION}; latest=${latest.version}; agent_action=bun add -g ${PACKAGE_NAME}@latest && forge init`,
     };
   }
   return { id, describe, status: 'ok', detail: `current=${CLI_VERSION}; latest=${latest.version}` };
@@ -185,7 +185,7 @@ function checkTargetInstall(target: (typeof ALL_TARGETS)[number]): DoctorCheckRe
       id,
       describe,
       status: 'warn',
-      detail: `host detected but Matea not installed (run: matea install --target ${target.id} --location global)`,
+      detail: `host detected but Forge not installed (run: forge install --target ${target.id} --location global)`,
     };
   }
   return { id, describe, status: 'ok', detail: `installed at ${det.configPath}` };
@@ -259,7 +259,7 @@ function codegraphRemediation(result: CodegraphCheckResult): string | null {
     return String(raw.install_command ?? 'bun install');
   }
   if (raw.mcp_hosts?.codex?.status !== 'configured' || raw.mcp_hosts?.claude?.status !== 'configured') {
-    return String(raw.mcp_install_command ?? 'matea tools configure codegraph --target both --location global');
+    return String(raw.mcp_install_command ?? 'forge tools configure codegraph --target both --location global');
   }
   if (raw.project_index?.status === 'not-initialized') {
     return String(raw.init_command ?? 'bash scripts/ensure-codegraph.sh --init');
@@ -323,7 +323,7 @@ function checkCodegraphMcpHost(probe: CodegraphProbe, host: 'codex' | 'claude'):
     id,
     describe,
     status: 'warn',
-    detail: `${entry?.reason ?? 'missing'}; remediation=matea tools configure codegraph --target ${host} --location global`,
+    detail: `${entry?.reason ?? 'missing'}; remediation=forge tools configure codegraph --target ${host} --location global`,
   };
 }
 
@@ -423,8 +423,8 @@ function checkHookScriptDrift(cwd: string): DoctorCheckResult {
 
   const remediation =
     resolved.source === 'packaged'
-      ? 'bun add -g @moretea-labs/matea@latest'
-      : `matea adopt --repo ${repoRoot}`;
+      ? 'bun add -g @moretea-labs/forge@latest'
+      : `forge adopt --repo ${repoRoot}`;
   return {
     id,
     describe,

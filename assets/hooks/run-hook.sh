@@ -2,7 +2,7 @@
 # Shared hook dispatcher that resolves the repo root once before invoking a hook.
 # Hooks are resolved relative to this script's own directory so the same
 # dispatcher works vendored at <repo>/.ai/hooks AND installed centrally at
-# ~/.repo-harness/hooks (the shim exports HOOK_REPO_ROOT either way).
+# ~/.forge/hooks (the shim exports HOOK_REPO_ROOT either way).
 
 set -euo pipefail
 

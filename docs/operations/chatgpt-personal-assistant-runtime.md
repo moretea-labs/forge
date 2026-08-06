@@ -1,6 +1,6 @@
 # ChatGPT-first Personal Assistant Runtime
 
-This runtime is designed for a local-first personal assistant where ChatGPT is the primary natural-language controller and repo-harness is the guarded local execution layer.
+This runtime is designed for a local-first personal assistant where ChatGPT is the primary natural-language controller and Forge is the guarded local execution layer.
 
 ## Product boundary
 
@@ -36,7 +36,7 @@ The preferred ChatGPT flow is:
 1. ChatGPT understands the user request.
 2. ChatGPT asks for missing information or confirmation when needed.
 3. ChatGPT calls `/api/assistant/intent` with either the natural-language utterance or an explicit `plan`.
-4. repo-harness validates policy, creates durable Execution Jobs, stores an Assistant Inbox item, and returns display text.
+4. Forge validates policy, creates durable Execution Jobs, stores an Assistant Inbox item, and returns display text.
 
 ## Routine model
 

@@ -2,7 +2,7 @@
 
 > Status: **Runtime Authority**
 
-These invariants are the architectural constitution of repo-harness Controller Runtime. Implementation Tasks may improve how they are enforced, but may not weaken them without an accepted ADR.
+These invariants are the architectural constitution of Forge Controller Runtime. Implementation Tasks may improve how they are enforced, but may not weaken them without an accepted ADR.
 
 ## Invariant 1 — MCP Requests Do Not Own Long Work
 
@@ -300,7 +300,7 @@ Controller Runtime Source Identity is controller-scoped state. It is not session
 MUST:
 
 - Persist Runtime Source Identity only under `controllerHome` (`system/runtime-generation.json` and daemon `state.json` source snapshot).
-- Resolve the current Runtime Source from one authority: explicit handoff, `REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT` / `REPO_HARNESS_SOURCE_ROOT`, package/source entrypoint root, or cwd only when that cwd itself is the controller package.
+- Resolve the current Runtime Source from one authority: explicit handoff, `FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT` / `FORGE_SOURCE_ROOT`, package/source entrypoint root, or cwd only when that cwd itself is the controller package.
 - Compare drift only between the startup Runtime Source snapshot and the current Controller Runtime Source.
 - Treat a missing startup snapshot as fail-closed (`RUNTIME_SOURCE_SNAPSHOT_MISSING`) rather than silent pass.
 - Keep execution repository git state (`canonicalRoot`, branch, head, dirty) in repository status fields only.

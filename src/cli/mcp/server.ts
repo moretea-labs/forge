@@ -140,9 +140,9 @@ export function createMcpToolContext(opts: McpServerOptions): ServerToolContext 
   return createMultiRepositoryToolContext({ ...opts, repo });
 }
 
-export function createRepoHarnessMcpServerFromContext(baseContext: ServerToolContext): Server {
+export function createForgeMcpServerFromContext(baseContext: ServerToolContext): Server {
   const server = new Server(
-    { name: 'repo-harness-mcp', version: '1.4.0' },
+    { name: 'forge-mcp', version: '1.4.0' },
     { capabilities: { tools: {} }, instructions: mcpServerInstructions(baseContext.policy.profile) },
   );
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -161,7 +161,7 @@ export function createRepoHarnessMcpServerFromContext(baseContext: ServerToolCon
           const value = {
             error: {
               code: 'TOOL_NOT_FOUND',
-              message: `${name} is not registered by this repo-harness build. Tool availability is independent of Request vs Full Access.`,
+              message: `${name} is not registered by this forge build. Tool availability is independent of Request vs Full Access.`,
             },
           };
           return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }], structuredContent: value, isError: true };
@@ -190,6 +190,6 @@ export function createRepoHarnessMcpServerFromContext(baseContext: ServerToolCon
   return server;
 }
 
-export function createRepoHarnessMcpServer(opts: McpServerOptions): Server {
-  return createRepoHarnessMcpServerFromContext(createMcpToolContext(opts));
+export function createForgeMcpServer(opts: McpServerOptions): Server {
+  return createForgeMcpServerFromContext(createMcpToolContext(opts));
 }

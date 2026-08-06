@@ -16,7 +16,7 @@ export type RunHookEntryOptions = RunHookOptions;
 export type RunHookEntryResult = RunHookResult;
 
 export function runHookEntry(opts: RunHookEntryOptions): RunHookEntryResult {
-  return runHookRuntime({ ...opts, commandName: 'repo-harness-hook' });
+  return runHookRuntime({ ...opts, commandName: 'forge-hook' });
 }
 
 function parseCliArgs(argv: readonly string[]): { event: HookEvent; routeId: RouteId } | null {
@@ -43,7 +43,7 @@ if (import.meta.main) {
 
   const parsed = parseCliArgs(argv);
   if (!parsed) {
-    process.stderr.write('repo-harness-hook: usage: repo-harness-hook <event> --route <route>\n');
+    process.stderr.write('forge-hook: usage: forge-hook <event> --route <route>\n');
     process.exit(2);
   }
   const result = runHookEntry(parsed);

@@ -54,7 +54,7 @@ All notable changes to this skill are documented here.
 - `create_issue` is documented and instructed as the complex-work path for investigation, dependencies, broad scope, parallelism, long checks, or high risk.
 - Direct edits now require persisted patch evidence and verification before finalization; failed verification can be rerun or rolled back without losing history.
 - Unified worklog and Controller snapshots now include edit-session events and summaries alongside Issue/Task/Run evidence.
-- Versioned the Controller fingerprint as `controller-direct-change-v6`, the default Connector identity as `repo-harness-controller-v6`, the Controller schema as `8`, and the package/template line as `1.2.0`.
+- Versioned the Controller fingerprint as `controller-direct-change-v6`, the default Connector identity as `forge-controller-v6`, the Controller schema as `8`, and the package/template line as `1.2.0`.
 
 ## [1.1.0] - 2026-06-21
 
@@ -73,7 +73,7 @@ All notable changes to this skill are documented here.
 - Project-wide ready-task dispatch now requires an explicit or current Issue and no longer traverses every active Issue by default.
 - Readiness scoring can no longer report 100 when no Task is dispatchable.
 - `projectBoard.readyTasks` is scoped to the current execution Issue; archived Task counts are separated.
-- Versioned the Controller fingerprint as `controller-execution-closure-v5`, the default Connector identity as `repo-harness-controller-v5`, the Controller schema as `7`, and the package/template line as `1.1.0`.
+- Versioned the Controller fingerprint as `controller-execution-closure-v5`, the default Connector identity as `forge-controller-v5`, the Controller schema as `7`, and the package/template line as `1.1.0`.
 
 ## [1.0.0] - 2026-06-21
 
@@ -88,7 +88,7 @@ All notable changes to this skill are documented here.
 
 ### Changed
 
-- Versioned the Controller fingerprint as `controller-progress-ledger-v4`, the default Connector identity as `repo-harness-controller-v4`, the controller schema as `6`, and the package line as `1.0.0`.
+- Versioned the Controller fingerprint as `controller-progress-ledger-v4`, the default Connector identity as `forge-controller-v4`, the controller schema as `6`, and the package line as `1.0.0`.
 - Task progress now uses effective status derived from durable Task state plus the latest associated Run, preventing stale Task labels from hiding active or failed execution.
 - GitHub integration is disabled by default and exposed as a plugin so local execution and evidence remain usable without GitHub.
 
@@ -106,7 +106,7 @@ All notable changes to this skill are documented here.
 
 - Made omitted `isolate` mean automatic placement instead of forced worktree isolation. Explicit `false` now refuses to start when another local Run is active.
 - Kept Verification Gate mandatory after direct changes or automatic integration; worktree usage is now an execution-safety detail rather than an extra normal user step.
-- Versioned the Controller fingerprint as `controller-live-workspace-v3`, the default Connector identity as `repo-harness-controller-v3`, and the package line as `0.9.0`.
+- Versioned the Controller fingerprint as `controller-live-workspace-v3`, the default Connector identity as `forge-controller-v3`, and the package line as `0.9.0`.
 
 ## [0.8.0] - 2026-06-20
 
@@ -115,7 +115,7 @@ All notable changes to this skill are documented here.
 - Added GitHub Issue/Project publication for controller Issues, including optional Task sub-issues and explicit remote links stored in local durable state.
 - Added GitHub Copilot coding-agent cloud Sessions as a visible Task execution provider alongside local Codex and Claude Runs.
 - Added Issue Launcher readiness previews, dynamic Task append/split/supersede/dependency operations, structured Run events/logs, and a mandatory Verification Gate.
-- Added `repo-harness controller board|runs|watch|github-status` for local visibility into task execution and GitHub integration readiness.
+- Added `forge controller board|runs|watch|github-status` for local visibility into task execution and GitHub integration readiness.
 - Added live local Codex/Claude log streaming and `controller_capabilities` tool-surface diagnostics for stale ChatGPT Connector detection.
 - Added a localhost-only visual controller for Issue/Task boards, Local Job approvals, live Run logs/events, named checks, cancellation, and retry.
 - Added explicit Run timeout metadata, deadline progress, 30-second heartbeat events, process-group termination, and persisted retry history.
@@ -124,7 +124,7 @@ All notable changes to this skill are documented here.
 
 - Made `controller` the documented default ChatGPT MCP workflow and retained planner/orchestrator as compatibility profiles.
 - Raised the default local Agent timeout from 120 seconds to 60 minutes, added a 12-hour configurable ceiling, and reject invalid values instead of silently downgrading them.
-- Versioned the default ChatGPT Connector identity as `repo-harness-controller-v2` and added runtime fingerprints to detect stale tool snapshots or wrong processes on the MCP port.
+- Versioned the default ChatGPT Connector identity as `forge-controller-v2` and added runtime fingerprints to detect stale tool snapshots or wrong processes on the MCP port.
 - Task acceptance now requires recorded named-check and criterion-level evidence; isolated local Runs must also be integrated first.
 
 ## [0.7.2] - 2026-06-19
@@ -147,7 +147,7 @@ All notable changes to this skill are documented here.
   directory, because Chrome 136+ blocks remote debugging there; doctor now
   reports `blocked_default_profile` instead of opening Chrome and timing out.
 - Removed the static `file://` ChatGPT bind page path. Product-session binding
-  now goes through `repo-harness chatgpt browser-bind`, whose **Bind ChatGPT**
+  now goes through `forge chatgpt browser-bind`, whose **Bind ChatGPT**
   action calls a local authorization endpoint instead of linking directly to
   ChatGPT.
 - Added the ChatGPT bridge provider for existing signed-in Chrome profiles. It
@@ -164,10 +164,10 @@ All notable changes to this skill are documented here.
   real Connector URLs only in ignored local config while public docs remain
   placeholder-only.
 - Preserved existing ChatGPT MCP endpoint, auth, transport, profile, and dev-mode
-  settings when rerunning `repo-harness mcp setup chatgpt --server-name`.
-- Made `repo-harness mcp doctor --profile chatgpt` report whether the ChatGPT
+  settings when rerunning `forge mcp setup chatgpt --server-name`.
+- Made `forge mcp doctor --profile chatgpt` report whether the ChatGPT
   server name is actually configured instead of masking missing local state with
-  the default `repo-harness` name.
+  the default `forge` name.
 - Made Oracle doctor repair actions source-aware, so explicit `--oracle-bin`,
   `REPO_HARNESS_ORACLE_BIN`, and repo-local Oracle installs get actionable repair
   guidance instead of a generic global install suggestion.
@@ -177,17 +177,17 @@ All notable changes to this skill are documented here.
 
 ### Release Notes
 
-- Prepared the `repo-harness@0.7.2` patch line for npm publish, registry
+- Prepared the `forge@0.7.2` patch line for npm publish, registry
   readback, clean-room install smoke, Git tag, and GitHub release creation.
 
 ## [0.7.1] - 2026-06-18
 
 ### Added
 
-- Added `repo-harness-gptpro-setup` / `repo-harness:gptpro_setup` to guide
+- Added `forge-gptpro-setup` / `forge:gptpro_setup` to guide
   local `gptpro_browser` browser/session setup and `gptpro_mcp` ChatGPT
   Connector MCP setup without treating ChatGPT Pro as API quota.
-- Added `repo-harness-gptpro` / `repo-harness:gptpro` as the local consult
+- Added `forge-gptpro` / `forge:gptpro` as the local consult
   skill for GPT Pro browser-session assistance, using `gptpro
 consult/read/continue/open` language over the existing ChatGPT Web browser
   session engine.
@@ -195,60 +195,60 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 ### Fixed
 
 - Preserved `.ai/harness/checks/latest.json` for authoritative
-  `repo-harness-run-trace.v1` evidence by writing PostBash advisory metadata to
+  `forge-run-trace.v1` evidence by writing PostBash advisory metadata to
   `.ai/harness/checks/post-bash-latest.json`.
 
 ### Release Notes
 
-- Prepared the `repo-harness@0.7.1` patch line for npm publish, registry
+- Prepared the `forge@0.7.1` patch line for npm publish, registry
   readback, clean-room `npx` smoke, Git tag, and GitHub release creation.
 
 ## [0.7.0] - 2026-06-18
 
 ### Added
 
-- Added `repo-harness chatgpt browser-*`, a policy-checked ChatGPT Web browser
+- Added `forge chatgpt browser-*`, a policy-checked ChatGPT Web browser
   session engine with dry-run prompt assembly, repo-local session records,
   linked follow-ups, output copying, session read/list/open, and dry-run-first
   cleanup.
 - Added optional MCP ChatGPT browser tools behind
-  `repo-harness mcp serve --enable-chatgpt-browser`, keeping browser consults
+  `forge mcp serve --enable-chatgpt-browser`, keeping browser consults
   out of the default MCP surface.
 - Added an Oracle provider wrapper for `oracle --engine browser` and a native
   installed-Google-Chrome CDP provider spike for logged-in ChatGPT Web sessions.
-- Added a bundled `repo-harness-chatgpt-browser` skill and user guide at
-  `docs/repo-harness-chatgpt-browser-engine.md`.
+- Added a bundled `forge-chatgpt-browser` skill and user guide at
+  `docs/forge-chatgpt-browser-engine.md`.
 - Added a hosted GitHub CI gate for pull requests and pushes to `main` /
   `codex/**`.
 - Added the Harness Engineering Optimization sprint closeout surface, including
   task profiles, Human Review Card enforcement, trace/eval evidence grading,
   handoff UX, delegation contract roles, and compressed spec/onboarding paths.
-- Added `repo-harness uninstall` to remove repo-harness managed Codex/Claude
+- Added `forge uninstall` to remove forge managed Codex/Claude
   hook adapters while preserving sibling user hooks and Codex trust-state
   residue.
-- Added fs-transaction manifests for `repo-harness adopt --experimental-ts-apply`
-  and `repo-harness adopt rollback --transaction <manifest>` so the safe
+- Added fs-transaction manifests for `forge adopt --experimental-ts-apply`
+  and `forge adopt rollback --transaction <manifest>` so the safe
   TypeScript applicator has an executable recovery path.
 - Added `scripts/check-release-published.sh` for post-publish npm registry,
   dist-tag, tarball integrity, Git tag, and local version readback.
 - Added `scripts/check-tarball-install-smoke.sh` and wired it into the CI gate
   so release checks install the packed tarball in a temporary project and start
-  the packaged `repo-harness` and `repo-harness-hook` bins.
+  the packaged `forge` and `forge-hook` bins.
 
 ### Changed
 
-- Made `repo-harness install` the primary first-run global runtime bootstrap
-  command, while preserving `repo-harness init` as a compatibility alias and
-  keeping `repo-harness install --target <host> --location <scope>` as the
+- Made `forge install` the primary first-run global runtime bootstrap
+  command, while preserving `forge init` as a compatibility alias and
+  keeping `forge install --target <host> --location <scope>` as the
   adapter-only path.
 
 ### Fixed
 
-- Made generated ChatGPT Connector `/goal` prompts and `repo-harness-goal`
+- Made generated ChatGPT Connector `/goal` prompts and `forge-goal`
   reporting guidance language-neutral, so installed skills and MCP goal handoff
   output follow the user's language or repo-local instructions instead of
   hard-coding Chinese prompt lines.
-- Made non-standard `repo-harness adopt --mode minimal|self-host` fail closed
+- Made non-standard `forge adopt --mode minimal|self-host` fail closed
   unless it routes to ordinary TypeScript `--dry-run` or
   `--experimental-ts-apply`,
   avoiding a mismatch where dry-run showed a TypeScript mode plan but apply
@@ -264,12 +264,12 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 - Preserved CRLF `.gitignore` managed blocks without duplicate insertion and
   added planned/skipped/failed summary counts to adoption plan output.
 - Added a bounded CLI process runner for init/adopt/global-runtime, CodeGraph
-  setup, and `repo-harness run` helper dispatch, with default timeout, output
+  setup, and `forge run` helper dispatch, with default timeout, output
   cap, and common secret redaction.
 
 ### Release Notes
 
-- Prepared the `repo-harness@0.7.0` minor release line for npm publish,
+- Prepared the `forge@0.7.0` minor release line for npm publish,
   registry readback, clean-room `npx` smoke, Git tag, and GitHub release
   creation.
 
@@ -278,7 +278,7 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 ### Added
 
 - Added the Transactional Adoption Planner foundation for
-  `repo-harness adopt --dry-run --json`, including protocol v1 operation plans,
+  `forge adopt --dry-run --json`, including protocol v1 operation plans,
   redacted JSON rendering, fixture-backed planner tests, and a safe applicator
   subset for `mkdir`, `writeFile ifMissing`, and managed `.gitignore` blocks.
 - Added workflow-contract manifest planning to the TypeScript adoption plan so
@@ -292,10 +292,10 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
   wrappers from the workflow contract helper manifest.
 - Added an atomic safe-applicator writer with target locks, temp-file fsync,
   parent-directory fsync, and backup metadata for existing targets.
-- Routed human-readable `repo-harness adopt --dry-run` output through the
+- Routed human-readable `forge adopt --dry-run` output through the
   TypeScript adoption planner text renderer, matching the JSON dry-run source of
   truth without writing repo files.
-- Added `repo-harness adopt --experimental-ts-apply` as an opt-in TypeScript
+- Added `forge adopt --experimental-ts-apply` as an opt-in TypeScript
   safe-applicator path, with preflight rejection for plans containing
   unsupported operations.
 - Added rollback metadata to adoption operation plans so dry-run JSON and
@@ -308,7 +308,7 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 
 ### Release Notes
 
-- Prepared the `repo-harness@0.6.0` minor release line for npm publish,
+- Prepared the `forge@0.6.0` minor release line for npm publish,
   registry readback, clean-room `npx` smoke, Git tag, and GitHub release
   creation.
 
@@ -316,15 +316,15 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 
 ### Fixed
 
-- Fixed `repo-harness update --version <version>` so the update subcommand can
-  install an explicit `repo-harness@<version>` package. The top-level
-  `repo-harness --version` / `repo-harness -V` shortcut still prints the CLI
+- Fixed `forge update --version <version>` so the update subcommand can
+  install an explicit `forge@<version>` package. The top-level
+  `forge --version` / `forge -V` shortcut still prints the CLI
   version, but it no longer intercepts the update command's package-version
   option.
 
 ### Release Notes
 
-- Prepared the `repo-harness@0.5.3` patch line for npm publish, registry
+- Prepared the `forge@0.5.3` patch line for npm publish, registry
   readback, clean-room `npx` smoke, Git tag, and GitHub release creation.
 
 ## [0.5.2] - 2026-06-15
@@ -334,7 +334,7 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 - Added a weekly timestamp cache for SessionStart tooling-update advisories so
   Waza and CodeGraph update checks run at most once per week by default unless
   `REPO_HARNESS_TOOLING_ADVISORY_TTL_SECONDS` overrides the TTL.
-- Added reviewed security exceptions to `repo-harness security scan` so
+- Added reviewed security exceptions to `forge security scan` so
   user-level warning-only hook findings can be accepted through exact
   `filePath` + `ruleId` + `command` matches while high/fail findings stay
   active.
@@ -352,14 +352,14 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 
 ### Fixed
 
-- `repo-harness setup check --target codex --check-updates --json` now reports
+- `forge setup check --target codex --check-updates --json` now reports
   a fully green setup on this machine after Waza and CodeGraph are up to date,
   reviewed user-level safety hooks are recorded, and gbrain fast-mode DB checks
   are treated as intentionally skipped.
 
 ### Release Notes
 
-- Prepared the `repo-harness@0.5.2` package line for npm publish, registry
+- Prepared the `forge@0.5.2` package line for npm publish, registry
   readback, clean-room `npx` smoke, Git tag, and GitHub release creation.
 
 ## [0.5.1] - 2026-06-14
@@ -373,7 +373,7 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 
 ### Release Notes
 
-- Prepared the `repo-harness@0.5.1` package line for publish; npm publish,
+- Prepared the `forge@0.5.1` package line for publish; npm publish,
   registry readback, and GitHub release creation remain explicit release
   actions.
 
@@ -391,14 +391,14 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 
 ### Changed
 
-- Breaking: `repo-harness update` now owns CLI/user-level runtime refresh only;
-  use `repo-harness adopt` for repo-local workflow install, refresh, and
+- Breaking: `forge update` now owns CLI/user-level runtime refresh only;
+  use `forge adopt` for repo-local workflow install, refresh, and
   migration.
-- `repo-harness update --check` / `--no-runtime-refresh` now route to the
+- `forge update --check` / `--no-runtime-refresh` now route to the
   read-only setup checklist, and third-party skill/CodeGraph refreshes require
   explicit opt-in.
-- Added `repo-harness setup check` as the productized read-only readiness
-  command while keeping `repo-harness init-hook` as a compatibility alias.
+- Added `forge setup check` as the productized read-only readiness
+  command while keeping `forge init-hook` as a compatibility alias.
 
 ### Fixed
 
@@ -408,7 +408,7 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 
 ### Release Notes
 
-- Prepared the `repo-harness@0.5.0` package line for publish; npm publish,
+- Prepared the `forge@0.5.0` package line for publish; npm publish,
   registry readback, and GitHub release creation remain explicit release
   actions.
 
@@ -416,9 +416,9 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 
 ### Added
 
-- Added `repo-harness docs list|path|show` so bundled runtime/reference docs
+- Added `forge docs list|path|show` so bundled runtime/reference docs
   resolve from the user-level/package install instead of copied repo prose.
-- Added `repo-harness init-hook --json` bootstrap audit guidance for working
+- Added `forge init-hook --json` bootstrap audit guidance for working
   rules, adapter drift, stale CLI installs, and tooling readiness.
 - Added first-principles edit guard coverage to the managed hook route set as
   advisory anti-overengineering guidance.
@@ -442,7 +442,7 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 
 ### Release Notes
 
-- Prepared the `repo-harness@0.4.3` package line for publish; npm publish,
+- Prepared the `forge@0.4.3` package line for publish; npm publish,
   registry readback, and GitHub release creation remain explicit release
   actions.
 
@@ -450,7 +450,7 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 
 ### Added
 
-- Added the `repo-harness-prd` command facade, PRD template, and PRD eval
+- Added the `forge-prd` command facade, PRD template, and PRD eval
   fixtures for generating upper-layer PRDs under `plans/prds/`.
 - Added a subagent return-channel guard to the managed Claude/Codex hook routes
   so delegated runs are nudged back through the parent session instead of
@@ -459,18 +459,18 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 ### Changed
 
 - Split upper-layer PRDs from Sprint backlogs: PRDs stay in `plans/prds/`,
-  Sprint backlogs move to `plans/sprints/*.sprint.md`, and `repo-harness-sprint`
+  Sprint backlogs move to `plans/sprints/*.sprint.md`, and `forge-sprint`
   now supports PRD-to-Sprint planning without re-deciding product intent.
 - Isolated generated-project helper implementations under `.ai/harness/scripts/`
   while keeping `scripts/*` as compatibility command wrappers.
 - Updated skill eval 24 and added evals for PRD generation and PRD-to-Sprint
   backlog creation so the public command surface covers the new hierarchy.
-- Aligned the `repo-harness-prd` command guidance with the installed
+- Aligned the `forge-prd` command guidance with the installed
   `.ai/harness/scripts/check-task-workflow.sh` runtime path.
 
 ### Release Notes
 
-- Prepared the `repo-harness@0.4.2` package line for publish; npm publish,
+- Prepared the `forge@0.4.2` package line for publish; npm publish,
   registry readback, and GitHub release creation remain explicit release
   actions.
 
@@ -503,7 +503,7 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 
 ### Release Notes
 
-- Prepared the `repo-harness@0.4.1` package line for publish; npm publish,
+- Prepared the `forge@0.4.1` package line for publish; npm publish,
   registry readback, and GitHub release creation remain explicit release
   actions.
 
@@ -511,7 +511,7 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 
 ### Added
 
-- Added a loop-engine evidence surface: `repo-harness-hook state-snapshot
+- Added a loop-engine evidence surface: `forge-hook state-snapshot
 --json`, an NL decision-table reference, route NL-vs-TS benchmark fixtures,
   and a cutover gate that keeps TypeScript routing authoritative unless
   measured evidence passes.
@@ -535,7 +535,7 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
   account for archived sprint plans, archived notes, contract delegation fields,
   and the completed loop-engine sprint.
 - Retired the separate generated workflow compatibility `5.x` line; package,
-  skill, and template stamps now share the `repo-harness@0.4.0` release line.
+  skill, and template stamps now share the `forge@0.4.0` release line.
 - Added `check:architecture-sync` to the npm scripts and release verification
   surface.
 
@@ -550,7 +550,7 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 ### Added
 
 - Added the sprint program layer: `plans/sprints/`, sprint templates,
-  `scripts/sprint-backlog.sh`, the `repo-harness-sprint` command facade, active
+  `scripts/sprint-backlog.sh`, the `forge-sprint` command facade, active
   sprint markers, current-status projection, session-start projection, workflow
   validation, and generated-repo parity copies.
 - Added `src/cli/hook/prompt-intents.ts`: every prompt-text intent classifier
@@ -571,7 +571,7 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 ### Changed
 
 - Hook runtime resolution is now central-first: user-level adapters dispatch
-  into `repo-harness-hook`, central packaged hooks are the default runtime, and
+  into `forge-hook`, central packaged hooks are the default runtime, and
   repo policy can pin self-host development back to the repo copy without
   changing downstream user adapters.
 - Prompt-layer plan/spec/contract gates became advisory routing; hard
@@ -597,7 +597,7 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 - Removed the orphan `scripts/check-versions.ts` and its test, and the
   hidden `prompt-guard-decision` CLI alias (use `prompt-guard-decide`).
 - Retired the `project-initializer` legacy name, `PROJECT_INITIALIZER_*`
-  environment fallbacks, and the `repo-harness-skill` compatibility alias;
+  environment fallbacks, and the `forge-skill` compatibility alias;
   installed-copy sync now deletes both retired skill directories.
 
 ## [0.2.4] - 2026-06-07
@@ -641,8 +641,8 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 
 ### Changed
 
-- Replaced the public `repo-harness init` path with a typed global bootstrap
-  that installs the current package as the global CLI, refreshes repo-harness
+- Replaced the public `forge init` path with a typed global bootstrap
+  that installs the current package as the global CLI, refreshes forge
   skill aliases, installs user-level hook adapters, configures Waza
   `think`/`hunt`/`check`/`health`, persists the brain root, and configures
   CodeGraph MCP without applying repo-local workflow files to the current
@@ -651,25 +651,25 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 ### Removed
 
 - Removed the Superpowers Claude marketplace installer path entirely from the
-  active `repo-harness init` flow and from `scripts/setup-plugins.sh`.
+  active `forge init` flow and from `scripts/setup-plugins.sh`.
 
 ## [0.2.2] - 2026-06-04
 
 ### Fixed
 
-- Streamed `repo-harness init` setup output directly to the terminal so the
-  first-run `npx -y repo-harness init` path no longer looks hung while
+- Streamed `forge init` setup output directly to the terminal so the
+  first-run `npx -y forge init` path no longer looks hung while
   `setup-plugins.sh` clones skills or runs Claude plugin setup.
 - Made the Superpowers Claude marketplace plugin opt-in via
-  `repo-harness init --with-superpowers` instead of installing it by default.
+  `forge init --with-superpowers` instead of installing it by default.
 
 ## [0.2.1] - 2026-06-02
 
 ### Added
 
-- Added `repo-harness init` as a thin npm CLI wrapper around
+- Added `forge init` as a thin npm CLI wrapper around
   `scripts/setup-plugins.sh`, so users can run
-  `npx -y repo-harness init` for first-run global Claude plugin and hook-profile
+  `npx -y forge init` for first-run global Claude plugin and hook-profile
   bootstrap without cloning the source repository.
 - Added a prompt-guard CodeGraph self-heal path: before emitting the first
   structural code-navigation hint in a session, a missing `.codegraph` index is
@@ -679,7 +679,7 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 ### Changed
 
 - Moved the existing repo-local harness install/refresh CLI surface to
-  `repo-harness update`, keeping `repo-harness init` focused on global runtime
+  `forge update`, keeping `forge init` focused on global runtime
   initialization.
 - Updated the English, Chinese, Japanese, French, and Spanish READMEs for the
   `0.2.1` npm release line and the split `init` / `update` lifecycle.
@@ -694,14 +694,14 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 
 ### Added
 
-- Added a read-only config security scan (`repo-harness security scan [--json]`) that checks high-value hook and editor-task config (`~/.claude/settings.json`, `~/.codex/hooks.json`, repo-local `.vscode/tasks.json`, and legacy project-level `.claude`/`.codex` adapters) for suspicious command patterns — remote-shell pipes, base64-decode-to-exec, `osascript`, `launchctl`/`crontab` persistence, netcat, and inline interpreter execution — plus unmanaged hook commands and auto-run `folderOpen` tasks. It reports findings only and never mutates config.
+- Added a read-only config security scan (`forge security scan [--json]`) that checks high-value hook and editor-task config (`~/.claude/settings.json`, `~/.codex/hooks.json`, repo-local `.vscode/tasks.json`, and legacy project-level `.claude`/`.codex` adapters) for suspicious command patterns — remote-shell pipes, base64-decode-to-exec, `osascript`, `launchctl`/`crontab` persistence, netcat, and inline interpreter execution — plus unmanaged hook commands and auto-run `folderOpen` tasks. It reports findings only and never mutates config.
 - Added a low-frequency `SessionStart` sentinel (`.ai/hooks/security-sentinel.sh`, wired into the `SessionStart.default` route) that fingerprints the config set and re-scans only when a fingerprint changes, surfacing a one-line `[SecurityConfig]` reminder when findings appear.
-- Added a `security-config` check to `repo-harness doctor` backed by the same read-only scan.
+- Added a `security-config` check to `forge doctor` backed by the same read-only scan.
 
 ### Changed
 
-- Bumped the npm package release line from `0.1.5` to `0.2.0`; generated workflow compatibility stays on the `5.2.3` model line, and `repo-harness --version` / `repo-harness status` now report `0.2.0`.
-- Added `Why repo-harness` and `What's New in 0.2.0` sections to the English, Chinese, Japanese, French, and Spanish READMEs, promoting file-backed cross-session coordination, CodeGraph-plus-progressive-context token savings, the `scripts/setup-plugins.sh` installer, the config security sentinel, and the Claude/Codex draft-plan lifecycle.
+- Bumped the npm package release line from `0.1.5` to `0.2.0`; generated workflow compatibility stays on the `5.2.3` model line, and `forge --version` / `forge status` now report `0.2.0`.
+- Added `Why forge` and `What's New in 0.2.0` sections to the English, Chinese, Japanese, French, and Spanish READMEs, promoting file-backed cross-session coordination, CodeGraph-plus-progressive-context token savings, the `scripts/setup-plugins.sh` installer, the config security sentinel, and the Claude/Codex draft-plan lifecycle.
 - Added the README hero image to the npm package allowlist so package consumers get the same visual surface as the source checkout.
 - Fixed the Chinese README, which still referenced `0.1.4`, to track the current release version.
 
@@ -710,7 +710,7 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 ### Changed
 
 - Added `REPO_HARNESS_*` environment variable aliases for scaffold, migration, context-block selection, external-tooling checks, and contract-worktree controls while preserving `PROJECT_INITIALIZER_*` as legacy fallbacks.
-- Switched new runtime `.gitignore` and Codex resume generated markers to `repo-harness` while keeping dual-read compatibility for legacy `project-initializer` markers.
+- Switched new runtime `.gitignore` and Codex resume generated markers to `forge` while keeping dual-read compatibility for legacy `project-initializer` markers.
 - Added a dirty merged linked-worktree closeout guard to `ship-worktrees.sh --cleanup-merged`, requiring useful deltas to be committed, picked, or applied before cleanup and allowing only explicit scaffold-only discard.
 - Made `prepare-codex-handoff.sh` prefer Node for global handoff file updates, with Python retained as a fallback, so release verification does not depend on the local `python3 -` execution path.
 
@@ -730,15 +730,15 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 
 - Added AI-native scaffold profiles as overlays on the existing A-K plan catalog, including runtime-console, product-copilot, and sidecar-kernel project structures without introducing new public plan codes.
 - Added AI-native template variables so selected profiles can project focused project structures, runtime-console defaults, and tech-stack guidance while ordinary A-K scaffolds stay unchanged.
-- Added a typed prompt-guard decision engine behind `repo-harness-hook prompt-guard-decide`, keeping host adapters stable while making `intent x plan state` routing table-driven and testable.
+- Added a typed prompt-guard decision engine behind `forge-hook prompt-guard-decide`, keeping host adapters stable while making `intent x plan state` routing table-driven and testable.
 - Added CLI and route-level regression coverage for the internal prompt-guard decision command, the lightweight hook entrypoint, and the public `UserPromptSubmit --route default` path through real hook assets.
 - Added an optional deploy SQL invariant coverage check: when `tests/sql/control_plane_invariants.sql` exists, `check-deploy-sql-order.sh` now verifies every `deploy/sql/*.sql` migration is referenced by full path or basename.
-- Added a dated release filing under `deploy/release-checklists/260531-repo-harness-0.1.3.md` and documented the `YYMMDD-<package>-<version>.md` filing rule.
+- Added a dated release filing under `deploy/release-checklists/260531-forge-0.1.3.md` and documented the `YYMMDD-<package>-<version>.md` filing rule.
 
 ### Changed
 
 - Split prompt-guard responsibilities so shell continues to parse hook JSON, read workflow files, perform capture side effects, and render host-safe output while TypeScript owns the explicit decision table.
-- Documented the 0.1.x release surface as `repo-harness@0.1.3`, still separate from the generated workflow compatibility line (`5.2.3`).
+- Documented the 0.1.x release surface as `forge@0.1.3`, still separate from the generated workflow compatibility line (`5.2.3`).
 - Expanded the English and Chinese README plus the hook operations reference to show the current host adapter -> CLI route registry -> shell hook -> TypeScript decision table architecture.
 
 ### Fixed
@@ -748,25 +748,25 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 - Treated copied worktree status, retrospective completion reports, and next-slice planning summaries as passive context so they do not start implementation gates merely because they quote implementation vocabulary.
 - Ensured linked contract worktrees include `.ai/harness/planning/` before pending orchestration cleanup, preserving strict workflow verification in generated worktrees.
 - Filtered `tasks/.current.md.tmp.*` refresh scratch files out of generated `tasks/current.md` snapshots, including generated repo helper parity.
-- Aligned `repo-harness --version` and `repo-harness status` with the `package.json` release version for `0.1.3`.
+- Aligned `forge --version` and `forge status` with the `package.json` release version for `0.1.3`.
 
 ## [0.1.2] - 2026-05-30
 
 ### Added
 
-- Added `repo-harness init` as a one-shot existing-repo bootstrap that defaults `--repo` to the current working directory, refreshes host adapters, applies the harness, installs Waza runtime skills, syncs `diagram-design`, and verifies the repo-local workflow.
-- Added `repo-harness init --no-codegraph` and `--configure-codegraph` so existing-repo bootstrap can either skip CodeGraph readiness or explicitly register CodeGraph MCP after building the index.
+- Added `forge init` as a one-shot existing-repo bootstrap that defaults `--repo` to the current working directory, refreshes host adapters, applies the harness, installs Waza runtime skills, syncs `diagram-design`, and verifies the repo-local workflow.
+- Added `forge init --no-codegraph` and `--configure-codegraph` so existing-repo bootstrap can either skip CodeGraph readiness or explicitly register CodeGraph MCP after building the index.
 - Added `check:release` / `prepublishOnly` npm release gates that check the official npm registry and reject already-published package versions before running tests, workflow checks, migration dry-run, and pack dry-run.
 - Added a GitHub-facing bilingual README path with `README.zh-CN.md` and a Mermaid task workflow from plan to contract worktree checkout, guarded implementation, verification, review, external acceptance, finish, merge, and cleanup.
 
 ### Changed
 
 - Retired `project-initializer` as a Codex/Claude installed skill path and upstream resolver fallback; installed-copy sync now removes those directories instead of maintaining them.
-- Switched generated footer stamps to `repo-harness@...` while keeping `.claude/.skill-version` semantic version fields stable.
-- Prepared npm publishing under the unscoped `repo-harness` package name, made `repo-harness` the primary installed command, and kept `repo-harness-skill` as a compatibility alias.
+- Switched generated footer stamps to `forge@...` while keeping `.claude/.skill-version` semantic version fields stable.
+- Prepared npm publishing under the unscoped `forge` package name, made `forge` the primary installed command, and kept `forge-skill` as a compatibility alias.
 - Split the npm/CLI package release line (`0.1.x`) from the generated workflow compatibility line (`5.2.3`).
-- Updated GitHub repository metadata and source checkout docs for the `Ancienttwo/repo-harness` rename.
-- Forced copy-based installed-skill sync when `repo-harness init` runs from an npm `_npx` cache source, avoiding symlinks to temporary npx cache directories.
+- Updated GitHub repository metadata and source checkout docs for the `Ancienttwo/forge` rename.
+- Forced copy-based installed-skill sync when `forge init` runs from an npm `_npx` cache source, avoiding symlinks to temporary npx cache directories.
 - Clarified the product boundary, three-layer operating model, and task lifecycle on the README landing page.
 
 ### Fixed
@@ -797,7 +797,7 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 
 ### Changed
 
-- Added passive plan capture so Codex Plan mode, Waza `/think`, and `repo-harness-plan` outputs can become file-backed `plans/plan-*.md` artifacts through `scripts/capture-plan.sh`, with approved captures able to project directly through `plan-to-todo.sh`.
+- Added passive plan capture so Codex Plan mode, Waza `/think`, and `forge-plan` outputs can become file-backed `plans/plan-*.md` artifacts through `scripts/capture-plan.sh`, with approved captures able to project directly through `plan-to-todo.sh`.
 - Added opt-in default-brain document mirroring through `scripts/sync-brain-docs.sh`, manifest `sync.direction=repo-to-brain` entries, and PostEdit hook integration for registered valuable docs.
 - Promoted CodeGraph from advisory setup guidance to required Codex agent readiness for code navigation, with read-only detector support, strict readiness checks, generated repo `.codegraph/` ignores, and non-vendored host install guidance.
 
@@ -812,7 +812,7 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 
 ### Fixed
 
-- Refreshed stale `references/` docs for the current `repo-harness` hook, migration, eval, plugin, and minimal-documentation contracts.
+- Refreshed stale `references/` docs for the current `forge` hook, migration, eval, plugin, and minimal-documentation contracts.
 - Updated public-surface spec and architecture docs to reflect the full 13-command `agentic-dev-*` facade inventory.
 - Removed empty optional doc placeholders so generated/self-hosted docs match the `minimal-agentic` profile.
 
@@ -837,7 +837,7 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 
 ### Added
 
-- Added the repo-harness plugin architecture map, domain/module docs, and capability-indexed local context contracts for Claude and Codex.
+- Added the forge plugin architecture map, domain/module docs, and capability-indexed local context contracts for Claude and Codex.
 
 ### Fixed
 
@@ -857,10 +857,10 @@ consult/read/continue/open` language over the existing ChatGPT Web browser
 - Split deployable operations assets into tracked `deploy/` while keeping `_ops/` fully ignored for local private operations state and secrets.
 - Externalized long-form optional reference configs into the default brain file vault while keeping repo-local runtime contracts, hooks, scripts, and required minimal docs authoritative.
 - Added a repo-local brain manifest and workflow check for default brain pointers without making hooks depend on gbrain or iCloud.
-- Renamed the skill/package/repo display surface to `repo-harness` while keeping `repo-harness-skill` and `project-initializer` as legacy aliases, install paths, and generated stamp compatibility surfaces.
+- Renamed the skill/package/repo display surface to `forge` while keeping `forge-skill` and `project-initializer` as legacy aliases, install paths, and generated stamp compatibility surfaces.
 - Added action-style `agentic-dev-*` command skill facades for plan, review, autoplan, init, scaffold, migrate, upgrade, repair, and check while keeping hooks/docs initialization internal.
-- Added advisory prompt-hook route hints for reusable-workflow packaging, with `repo-harness-autoplan` handling evidence-first plans only after user authorization.
-- Added a Codex installed-copy sync helper that keeps command facades only in the canonical `repo-harness` copy while legacy directories remain runtime fallback bundles.
+- Added advisory prompt-hook route hints for reusable-workflow packaging, with `forge-autoplan` handling evidence-first plans only after user authorization.
+- Added a Codex installed-copy sync helper that keeps command facades only in the canonical `forge` copy while legacy directories remain runtime fallback bundles.
 
 ## [4.0.2] - 2026-05-20
 

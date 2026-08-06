@@ -172,7 +172,7 @@ export function createMcpOAuthProvider(store: McpOAuthTokenStore): OAuthServerPr
       store.setAccessToken(accessToken, {
         token: accessToken,
         clientId: client.client_id,
-        scopes: ['repo-harness'],
+        scopes: ['forge'],
         expiresAt,
       });
       store.setRefreshToken(refreshToken, accessToken);
@@ -181,7 +181,7 @@ export function createMcpOAuthProvider(store: McpOAuthTokenStore): OAuthServerPr
         token_type: 'Bearer',
         expires_in: expiresIn,
         refresh_token: refreshToken,
-        scope: 'repo-harness',
+        scope: 'forge',
       };
     },
 

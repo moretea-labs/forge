@@ -682,7 +682,7 @@ export async function routeDurableMcpCall(
       rejectCode: 'TOOL_NOT_FOUND',
       error: {
         code: 'TOOL_NOT_FOUND',
-        message: `${name} is not registered by this repo-harness build.`,
+        message: `${name} is not registered by this forge build.`,
       },
     }, true);
   }
@@ -712,7 +712,7 @@ export async function routeDurableMcpCall(
       rejectCode: 'TOOL_NOT_FOUND',
       error: {
         code: 'TOOL_NOT_FOUND',
-        message: `${name} is not registered by this repo-harness build.`,
+        message: `${name} is not registered by this forge build.`,
       },
     }, true);
   }

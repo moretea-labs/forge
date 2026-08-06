@@ -1,30 +1,30 @@
 # Mobile Intent and iPhone Shortcuts Entry Point
 
-repo-harness exposes a narrowly-scoped mobile intent endpoint for local voice/text automation, including iPhone Shortcuts and Siri phrases.
+forge exposes a narrowly-scoped mobile intent endpoint for local voice/text automation, including iPhone Shortcuts and Siri phrases.
 
 ## Server Mode
 
 The normal Controller UI remains loopback-only:
 
 ```bash
-repo-harness controller ui --repo .
+forge controller ui --repo .
 ```
 
 To allow a phone on the same trusted LAN to reach only the mobile intent endpoint, bind the server to a wildcard address and explicitly enable the LAN gate:
 
 ```bash
-repo-harness controller ui --repo . --host 0.0.0.0 --mobile-lan
+forge controller ui --repo . --host 0.0.0.0 --mobile-lan
 ```
 
 When `--mobile-lan` is enabled, non-loopback requests are still rejected for `/`, `/api/*`, and the visual dashboard. Only `/mobile/intent` may be called from a non-loopback host, and every request must pass device-token authentication plus replay checks.
 
 ## Device Enrollment
 
-Create device tokens from the local UI API. The returned token is shown once; repo-harness stores only its SHA-256 hash in `.repo-harness/mobile-intents.json`.
+Create device tokens from the local UI API. The returned token is shown once; forge stores only its SHA-256 hash in `.forge/mobile-intents.json`.
 
 ```bash
 curl -sS \
-  -H "x-repo-harness-local-token: <local-ui-token>" \
+  -H "x-forge-local-token: <local-ui-token>" \
   -H "content-type: application/json" \
   -d '{
     "name": "Greyson iPhone",
@@ -46,7 +46,7 @@ Revoke a device immediately when a phone or Shortcut is no longer trusted:
 ```bash
 curl -sS \
   -X POST \
-  -H "x-repo-harness-local-token: <local-ui-token>" \
+  -H "x-forge-local-token: <local-ui-token>" \
   http://127.0.0.1:8766/api/mobile/devices/<device-id>/revoke
 ```
 
@@ -56,10 +56,10 @@ Every `/mobile/intent` request must include these headers:
 
 ```text
 Authorization: Bearer <one-time-returned-device-token>
-x-repo-harness-device-id: <device-id>
-x-repo-harness-timestamp: <ISO-8601 timestamp>
-x-repo-harness-nonce: <unique random nonce, 8-128 safe characters>
-x-repo-harness-signature: <optional HMAC-SHA256>
+x-forge-device-id: <device-id>
+x-forge-timestamp: <ISO-8601 timestamp>
+x-forge-nonce: <unique random nonce, 8-128 safe characters>
+x-forge-signature: <optional HMAC-SHA256>
 ```
 
 The timestamp must be within five minutes of the Controller clock. Each nonce may be used once within the ten-minute nonce window. The optional signature is computed over:

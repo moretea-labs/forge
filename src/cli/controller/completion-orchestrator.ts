@@ -158,7 +158,7 @@ function taskForRun(issue: ControllerIssue, taskId: string): ControllerTask {
 
 function commandEvidenceForRun(run: AgentJobMeta): TaskCommandEvidence[] {
   return [{
-    command: ['repo-harness', 'agent-run', run.runId],
+    command: ['forge', 'agent-run', run.runId],
     cwd: run.executionMode === 'worktree' ? run.worktree : run.repoRoot,
     ok: true,
     exitCode: run.exitCode ?? 0,
@@ -308,7 +308,7 @@ function directEditAcceptanceResults(task: ControllerTask, decision: TaskReviewD
 
 function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionOptions): FinishEditSessionResult {
   const decision = options.decision ?? 'auto';
-  const reviewer = options.reviewer?.trim() || (decision === 'auto' ? 'repo-harness-direct-edit-completion' : 'controller-review');
+  const reviewer = options.reviewer?.trim() || (decision === 'auto' ? 'forge-direct-edit-completion' : 'controller-review');
   const shouldCommit = options.commit !== false;
   const initialSession = getEditSession(repoRoot, options.sessionId);
   if (!initialSession.issueId || !initialSession.taskId) {
@@ -488,7 +488,7 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
           reviewer,
           checkResults: standaloneCheckResults,
           commandEvidence: [{
-            command: ['repo-harness', 'controller', 'finish-edit', session.sessionId],
+            command: ['forge', 'controller', 'finish-edit', session.sessionId],
             cwd: repoRoot,
             ok: false,
             reportedBy: reviewer,
@@ -537,7 +537,7 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
               summary: result.summary,
             })),
             commandEvidence: [{
-              command: ['repo-harness', 'controller', 'finish-edit', session.sessionId],
+              command: ['forge', 'controller', 'finish-edit', session.sessionId],
               cwd: repoRoot,
               ok: false,
               reportedBy: reviewer,
@@ -753,7 +753,7 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
       summary: result.summary,
     })),
     commandEvidence: [{
-      command: ['repo-harness', 'controller', 'finish-edit', session.sessionId],
+      command: ['forge', 'controller', 'finish-edit', session.sessionId],
       cwd: repoRoot,
       ok: true,
       reportedBy: reviewer,
@@ -1106,7 +1106,7 @@ function migrateHistoricalInertRun(
 
 function finishTaskRunUnlocked(repoRoot: string, options: FinishTaskRunOptions): FinishTaskRunResult {
   const decision = options.decision ?? 'auto';
-  const reviewer = options.reviewer?.trim() || (decision === 'auto' ? 'repo-harness-completion-orchestrator' : 'controller-review');
+  const reviewer = options.reviewer?.trim() || (decision === 'auto' ? 'forge-completion-orchestrator' : 'controller-review');
   const cleanup = options.cleanup !== false;
   const shouldCommit = options.commit !== false;
   const run = getAgentJob(repoRoot, options.runId);

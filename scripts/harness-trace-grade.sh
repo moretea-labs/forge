@@ -78,8 +78,8 @@ commands_count="$(jq '.commands | if type == "array" then length else 0 end' "$r
 outside_count="$(jq '.allowed_paths_check.outside | if type == "array" then length else 0 end' "$run_file")"
 allowed_status="$(trace_get '.allowed_paths_check.status')"
 
-if [[ "$schema" == "repo-harness-run-trace.v1" ]]; then
-  record "schema.v1" true "trace schema is repo-harness-run-trace.v1"
+if [[ "$schema" == "forge-run-trace.v1" ]]; then
+  record "schema.v1" true "trace schema is forge-run-trace.v1"
 else
   record "schema.v1" false "trace schema is ${schema:-missing}"
 fi

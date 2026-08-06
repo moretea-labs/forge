@@ -2,7 +2,7 @@
 
 ## Trust boundaries
 
-Matea distinguishes ChatGPT, the public MCP ingress, the local Controller, repository workspaces, external services, optional plugins, and the independent recovery channel. A successful connection at one boundary does not authorize effects at another.
+Forge distinguishes ChatGPT, the public MCP ingress, the local Controller, repository workspaces, external services, optional plugins, and the independent recovery channel. A successful connection at one boundary does not authorize effects at another.
 
 ## Repository scope
 
@@ -28,4 +28,4 @@ Stable releases are immutable and identified by full Git revision plus manifest 
 
 ## Reporting vulnerabilities
 
-Use GitHub private vulnerability reporting. See the repository [Security Policy](https://github.com/moretea-labs/matea/blob/main/SECURITY.md).
+Use GitHub private vulnerability reporting. See the repository [Security Policy](https://github.com/moretea-labs/forge/blob/main/SECURITY.md).

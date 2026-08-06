@@ -9,7 +9,7 @@ import { evaluateSchedule } from '../src/runtime/workflow/schedules/engine';
 import { recordCandidateFinding } from '../src/runtime/workflow/findings/store';
 import { createSchedule, getSchedule, getScheduleDecision } from '../src/runtime/workflow/schedules/store';
 
-const root = mkdtempSync(join(tmpdir(), 'repo-harness-schedule-smoke-'));
+const root = mkdtempSync(join(tmpdir(), 'forge-schedule-smoke-'));
 const repoRoot = join(root, 'repo');
 const controllerHome = join(root, 'controller');
 const localJobsRoot = join(repoRoot, '.ai/harness/local-jobs');

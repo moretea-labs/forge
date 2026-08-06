@@ -67,8 +67,8 @@ export interface RepositoryGoalRunResult {
   registry: RepositoryGoalRegistry;
 }
 
-const REGISTRY_PATH = '.repo-harness/goals.json';
-const RUNS_ROOT = '.repo-harness/goal-runs';
+const REGISTRY_PATH = '.forge/goals.json';
+const RUNS_ROOT = '.forge/goal-runs';
 const MAX_RUNS = 100;
 
 function now(): string {
@@ -151,7 +151,7 @@ export function diagnoseRepositoryStuckState(repository: RepositoryRecord): Repo
   const checks = availableCheckIds(repository);
   for (const goal of activeGoals) {
     const missing = goal.checks.filter((check) => !checks.has(check));
-    if (missing.length > 0) blockers.push({ code: 'MISSING_GOAL_CHECKS', severity: 'warning', message: `Goal ${goal.id} references missing check(s): ${missing.join(', ')}`, next: 'Update the goal checks or add them to .repo-harness/checks.json/package scripts.', evidence: { goalId: goal.id, missing } });
+    if (missing.length > 0) blockers.push({ code: 'MISSING_GOAL_CHECKS', severity: 'warning', message: `Goal ${goal.id} references missing check(s): ${missing.join(', ')}`, next: 'Update the goal checks or add them to .forge/checks.json/package scripts.', evidence: { goalId: goal.id, missing } });
   }
   return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, generatedAt, git, activeGoals, likelyBlocked: blockers.some((blocker) => blocker.severity !== 'info'), blockers };
 }

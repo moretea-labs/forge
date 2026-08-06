@@ -61,8 +61,8 @@ describe('runtime command surface', () => {
     ]) {
       expect(scripts).not.toHaveProperty(legacy);
     }
-    expect(Object.values(scripts).join('\n')).not.toMatch(/controller-runtime\.sh|restart-repo-harness\.sh|rollout-all-registered-repos\.sh/);
-    expect(pkg.bin?.['repo-harness-runtime']).toBe('bin/repo-harness-runtime.mjs');
+    expect(Object.values(scripts).join('\n')).not.toMatch(/controller-runtime\.sh|restart-forge\.sh|rollout-all-registered-repos\.sh/);
+    expect(pkg.bin?.['forge-runtime']).toBe('bin/forge-runtime.mjs');
   });
 
   test('MCP command surface exposes no KeepAlive or restart lifecycle owner', () => {
@@ -94,7 +94,7 @@ describe('runtime command surface', () => {
     const executionWorker = readFileSync(join(ROOT, 'src/runtime/execution/workers/executor.ts'), 'utf8');
     const globalScheduler = readFileSync(join(ROOT, 'src/runtime/control-plane/global-scheduler/scheduler.ts'), 'utf8');
     const processRuntime = readFileSync(join(ROOT, 'src/runtime/execution/process-runtime/runtime.ts'), 'utf8');
-    const daemonClient = readFileSync(join(ROOT, 'src/runtime/control-plane/daemon-client.ts'), 'utf8');
+    const daemonClient = readFileSync(join(ROOT, 'src/runtime/control-plane/runtime-status-client.ts'), 'utf8');
     const releaseStore = readFileSync(join(ROOT, 'src/runtime/root/release-store.ts'), 'utf8');
     const writeFence = readFileSync(join(ROOT, 'src/runtime/root/write-fence.ts'), 'utf8');
     const operationReceiptStore = readFileSync(join(ROOT, 'src/runtime/execution/jobs/receipt-store.ts'), 'utf8');
@@ -106,7 +106,7 @@ describe('runtime command surface', () => {
     expect(mcpCommand).toContain('bindInheritedRuntimeWriteClaimFromEnvironment');
     expect(mcpCommand).toContain("from '../../runtime/root/write-fence'");
     expect(mcpCommand).not.toContain('stable-state/runtime-writer-context');
-    expect(lifecycleAuthority).toContain('repo-harness-runtime');
+    expect(lifecycleAuthority).toContain('forge-runtime');
     expect(lifecycleAuthority).not.toContain('controller start|stop|restart');
     expect(existsSync(join(ROOT, 'src/cli/controller/lifecycle.ts'))).toBe(false);
     expect(existsSync(join(ROOT, 'src/cli/commands/supervisor.ts'))).toBe(false);
@@ -124,10 +124,10 @@ describe('runtime command surface', () => {
       'src/runtime/bootstrap/stable-bootstrap.ts',
       'scripts/controller-runtime.sh',
       'scripts/activate-source-baseline.command',
-      'scripts/restart-repo-harness.sh',
+      'scripts/restart-forge.sh',
     ]) expect(existsSync(join(ROOT, legacyAuthorityPath))).toBe(false);
     expect(httpTransport).not.toContain('ensureControllerDaemon');
-    expect(httpTransport).toContain('readControllerDaemonStatus');
+    expect(httpTransport).toContain('readForgeRuntimeStatus');
     expect(runtimeTools).not.toContain('ensureControllerDaemon');
     expect(runtimeTools).not.toContain('cli/mcp/keepalive');
     const readinessStart = runtimeTools.indexOf('const readinessWithToolSurface = {');
@@ -279,8 +279,8 @@ describe('runtime command surface', () => {
     expect(processGc).not.toContain('assertThisRuntimeMayWrite');
     expect(workerOwnership).toContain('from "../../root/write-fence"');
     expect(workerOwnership).toContain("assertRuntimeMayWrite('renew_lease'");
-    expect(workerOwnership).not.toContain('readControllerDaemonStatus');
-    expect(workerOwnership).not.toContain('daemon-client');
+    expect(workerOwnership).not.toContain('readForgeRuntimeStatus');
+    expect(workerOwnership).not.toContain('runtime-status-client');
     expect(workerOwnership).not.toContain('CONTROLLER_EPOCH_STALE');
     expect(workerOwnership).not.toContain('controllerStartedAt');
     expect(workerEntry).not.toContain('--controller-started-at');
@@ -299,7 +299,7 @@ describe('runtime command surface', () => {
     const persistedWorkerEnvironmentStart = globalScheduler.indexOf('const WORKER_ENVIRONMENT_KEYS = [');
     const persistedWorkerEnvironmentEnd = globalScheduler.indexOf('] as const;', persistedWorkerEnvironmentStart);
     const persistedWorkerEnvironment = globalScheduler.slice(persistedWorkerEnvironmentStart, persistedWorkerEnvironmentEnd);
-    expect(persistedWorkerEnvironment).not.toContain('REPO_HARNESS_RELEASE_FENCING_TOKEN');
+    expect(persistedWorkerEnvironment).not.toContain('FORGE_RELEASE_FENCING_TOKEN');
     expect(globalScheduler).toContain('...writeClaimEnvironment');
     expect(operationReceiptStore).toContain('runtimeInstanceId?: string');
     expect(operationReceiptStore).toContain('releaseAuthorityRevision?: number');
@@ -316,7 +316,7 @@ describe('runtime command surface', () => {
     expect(localBridgeSurface).toContain('return controllerHome ? [controllerHome] : []');
     expect(localBridgeFacade).toContain("observeRuntimeStatus(ctx.controllerHome)");
     expect(localBridgeFacade).not.toContain("from '../controller/lifecycle'");
-    expect(localBridgeFacade).not.toContain('readControllerDaemonStatus');
+    expect(localBridgeFacade).not.toContain('readForgeRuntimeStatus');
     expect(localBridgeFacade).not.toContain('buildRuntimeOperationalView');
     expect(standaloneRecovery).not.toContain('runtime-slots');
     expect(standaloneRecovery).not.toContain('stableIngressUrl');
@@ -355,13 +355,13 @@ describe('runtime command surface', () => {
     expect(existsSync(join(ROOT, 'src/cli/controller/restart-coordinator-entry.ts'))).toBe(false);
     expect(existsSync(join(ROOT, 'scripts/controller-runtime.sh'))).toBe(false);
     expect(existsSync(join(ROOT, 'scripts/activate-source-baseline.command'))).toBe(false);
-    expect(existsSync(join(ROOT, 'scripts/restart-repo-harness.sh'))).toBe(false);
+    expect(existsSync(join(ROOT, 'scripts/restart-forge.sh'))).toBe(false);
     expect(runtimeTools).not.toContain('activeSlotRevision');
     expect(runtimeTools).not.toContain('generationCoherent');
     expect(runtimeTools).not.toContain('slotCoherent');
     expect(existsSync(join(ROOT, 'tests/runtime/stable-supervisor-hardening.test.ts'))).toBe(false);
     expect(existsSync(join(ROOT, 'tests/runtime/stable-supervisor-integration.test.ts'))).toBe(false);
-    expect(runtimeTools).toContain('readControllerDaemonStatus');
+    expect(runtimeTools).toContain('readForgeRuntimeStatus');
     for (const legacy of [
       'controller_restart_verify',
       'controller_feature_verify',

@@ -1,0 +1,8 @@
+flowchart LR
+  Client[ChatGPT / CLI / Local UI] --> Runtime[forge-runtime]
+  Runtime --> Gateway[MCP Gateway Adapter]
+  Runtime --> Scheduler[Global Scheduler]
+  Scheduler --> Actor[Per-Repository Actor]
+  Actor --> Process[Process Runtime / bounded Worker]
+  Process --> Evidence[Evidence and Receipts]
+  Runtime --> Recovery[Standalone Recovery diagnostics]

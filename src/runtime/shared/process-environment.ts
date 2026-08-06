@@ -9,18 +9,18 @@ import { delimiter, isAbsolute, join } from 'path';
  */
 
 const RUNTIME_PRIVATE_ENV_PREFIXES = [
-  'REPO_HARNESS_CONTROLLER_',
-  'REPO_HARNESS_DAEMON_',
-  'REPO_HARNESS_PROCESS_RUNNER',
-  'REPO_HARNESS_RUNTIME_',
-  'REPO_HARNESS_SUPERVISOR_',
-  'REPO_HARNESS_WRITER_',
+  'FORGE_CONTROLLER_',
+  'FORGE_DAEMON_',
+  'FORGE_PROCESS_RUNNER',
+  'FORGE_RUNTIME_',
+  'FORGE_SUPERVISOR_',
+  'FORGE_WRITER_',
 ] as const;
 
 const RUNTIME_PRIVATE_ENV_KEYS = new Set([
-  'REPO_HARNESS_MCP_INSTANCE_ID',
-  'REPO_HARNESS_MCP_PUBLIC_ORIGIN',
-  'REPO_HARNESS_STABLE_SUPERVISOR',
+  'FORGE_MCP_INSTANCE_ID',
+  'FORGE_MCP_PUBLIC_ORIGIN',
+  'FORGE_STABLE_SUPERVISOR',
 ]);
 
 function appendExecutableDirectory(pathEntries: string[], candidate: string | undefined): void {

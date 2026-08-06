@@ -7,7 +7,7 @@ export function summarizeOperations(operations: readonly AdoptionOperation[]): A
   const byStatus: Record<string, number> = {};
   let userOwnedFilesTouched = 0;
   let generatedFiles = 0;
-  let repoHarnessOwnedFiles = 0;
+  let forgeOwnedFiles = 0;
   let requiresVerification = false;
 
   for (const operation of operations) {
@@ -21,7 +21,7 @@ export function summarizeOperations(operations: readonly AdoptionOperation[]): A
       generatedFiles += 1;
     }
     if (operation.path?.startsWith(".ai/")) {
-      repoHarnessOwnedFiles += 1;
+      forgeOwnedFiles += 1;
     }
     if (operation.kind === "runCheck" || operation.risk !== "low") {
       requiresVerification = true;
@@ -37,7 +37,7 @@ export function summarizeOperations(operations: readonly AdoptionOperation[]): A
     failedTotal: byStatus.failed ?? 0,
     userOwnedFilesTouched,
     generatedFiles,
-    repoHarnessOwnedFiles,
+    forgeOwnedFiles,
     requiresVerification,
   };
 }

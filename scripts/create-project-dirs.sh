@@ -134,7 +134,7 @@ TASK_TODO_EOF
 cat > tasks/current.md << 'TASK_CURRENT_EOF'
 # Current Status Snapshot
 
-<!-- generated-by: repo-harness refresh-current-status v1 -->
+<!-- generated-by: forge refresh-current-status v1 -->
 <!-- updated_at: bootstrap -->
 <!-- stale_after: 24h -->
 

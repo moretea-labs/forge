@@ -72,7 +72,7 @@ export function loadControllerProjectState(repoRoot: string): ControllerProjectS
 export function saveControllerProjectState(
   repoRoot: string,
   patch: Partial<Pick<ControllerProjectState, "currentIssueId" | "issueCreationMode" | "showArchivedByDefault">>,
-  actor = "repo-harness-controller",
+  actor = "forge-controller",
 ): ControllerProjectState {
   if (legacyIssueAuthorityRetired(repoRoot)) {
     if (Object.prototype.hasOwnProperty.call(patch, "currentIssueId")) assertLegacyCurrentIssueWriteAllowed(repoRoot);
@@ -136,7 +136,7 @@ export function clearCurrentIssue(repoRoot: string, actor?: string): ControllerP
     category: "system",
     action: "project_focus_cleared",
     summary: "Cleared the current execution focus.",
-    actor: actor ?? "repo-harness-controller",
+    actor: actor ?? "forge-controller",
     issueId: previous.currentIssueId,
   });
   return next;

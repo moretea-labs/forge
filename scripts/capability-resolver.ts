@@ -160,7 +160,7 @@ function defaultCapabilityForPrefix(prefix: string): Capability {
 function legacyBlocks(repo: string): string[] {
   const configFile = resolve(repo, ".ai/context/agent-context-blocks.txt");
   const envBlocks =
-    process.env.REPO_HARNESS_CONTEXT_BLOCKS || "";
+    process.env.FORGE_CONTEXT_BLOCKS || "";
   const rawBlocks = envBlocks
     ? envBlocks.split(/[,:]/)
     : existsSync(configFile)

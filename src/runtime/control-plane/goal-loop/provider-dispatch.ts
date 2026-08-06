@@ -16,7 +16,7 @@ export interface ProviderDispatchResult {
   ok: boolean;
   providerId: string;
   directDispatch: boolean;
-  appliedByRepoHarness: boolean;
+  appliedByForge: boolean;
   output?: StructuredProviderOutput;
   rejectionReason?: string;
   summary: string;
@@ -85,7 +85,7 @@ export function dispatchProvider(request: ProviderDispatchRequest): ProviderDisp
     ok: false,
     providerId: request.providerId,
     directDispatch: false,
-    appliedByRepoHarness: false,
+    appliedByForge: false,
     rejectionReason: 'PROVIDER_DISPATCH_RETIRED',
     summary: 'Kernel Provider dispatch is retired. Create a HandoffItem and let an external SuperController claim the Work.',
     liveCallAttempted: false,

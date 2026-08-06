@@ -30,7 +30,7 @@ function manifest(home: string, releaseId: string, artifactIdentity: string, wor
     schemaVersion: 1,
     releaseId,
     artifactIdentity,
-    entrypoint: 'repo-harness-runtime',
+    entrypoint: 'forge-runtime',
     arguments: [],
     configurationSchemaVersion: 1,
     controllerHome: home,
@@ -103,7 +103,7 @@ describe('Canonical Runtime write fence', () => {
 
   test('clearing a canonical claim restores caller-owned environment values', () => {
     const fx = fixture();
-    const key = 'REPO_HARNESS_CONTROLLER_HOME';
+    const key = 'FORGE_CONTROLLER_HOME';
     const previous = process.env[key];
     process.env[key] = 'caller-owned-controller-home';
     try {

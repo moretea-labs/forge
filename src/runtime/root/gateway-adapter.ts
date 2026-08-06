@@ -20,7 +20,7 @@ export function createRuntimeGatewayServer(
   principalId: string,
 ): Server {
   const server = new Server(
-    { name: 'repo-harness-runtime', version: '1.0.0' },
+    { name: 'forge-runtime', version: '1.0.0' },
     { capabilities: { tools: {} } },
   );
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [CONTROLLER_READY_TOOL] }));

@@ -343,8 +343,8 @@ function sliceNumberedContent(
 
 /** Process-wide session caches keyed by session + repo identity. */
 const globalSessions = new Map<string, RepositorySessionCache>();
-const SESSION_CACHE_MAX_ENTRIES = Math.max(8, Number(process.env.REPO_HARNESS_SESSION_CACHE_MAX_ENTRIES ?? 64));
-const SESSION_CACHE_TTL_MS = Math.max(60_000, Number(process.env.REPO_HARNESS_SESSION_CACHE_TTL_MS ?? 15 * 60_000));
+const SESSION_CACHE_MAX_ENTRIES = Math.max(8, Number(process.env.FORGE_SESSION_CACHE_MAX_ENTRIES ?? 64));
+const SESSION_CACHE_TTL_MS = Math.max(60_000, Number(process.env.FORGE_SESSION_CACHE_TTL_MS ?? 15 * 60_000));
 let sessionCacheEvictions = 0;
 
 export function sessionCacheKey(sessionId: string, identity: SessionIdentity): string {

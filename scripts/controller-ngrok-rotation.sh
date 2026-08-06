@@ -5,17 +5,17 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=./lib/controller-home-env.sh
 source "$ROOT/scripts/lib/controller-home-env.sh"
 
-repo_harness_use_local_controller_home "$ROOT"
+forge_use_local_controller_home "$ROOT"
 
 REPO_ROOT="$ROOT"
-LOCAL_CLI="$ROOT/scripts/repo-harness-local.sh"
+LOCAL_CLI="$ROOT/scripts/forge-local.sh"
 CONFIG_FILE_DEFAULT="$ROOT/_ops/secrets/controller-ngrok-rotation.env"
 STATE_DIR_DEFAULT="$ROOT/_ops/state"
 LOG_DIR_DEFAULT="$ROOT/_ops/logs"
 
-CONFIG_FILE="${REPO_HARNESS_NGROK_ROTATION_CONFIG:-$CONFIG_FILE_DEFAULT}"
-STATE_DIR="${REPO_HARNESS_NGROK_ROTATION_STATE_DIR:-$STATE_DIR_DEFAULT}"
-LOG_DIR="${REPO_HARNESS_NGROK_ROTATION_LOG_DIR:-$LOG_DIR_DEFAULT}"
+CONFIG_FILE="${FORGE_NGROK_ROTATION_CONFIG:-$CONFIG_FILE_DEFAULT}"
+STATE_DIR="${FORGE_NGROK_ROTATION_STATE_DIR:-$STATE_DIR_DEFAULT}"
+LOG_DIR="${FORGE_NGROK_ROTATION_LOG_DIR:-$LOG_DIR_DEFAULT}"
 
 PID_FILE="$STATE_DIR/controller-ngrok-rotation.pid"
 STATE_FILE="$STATE_DIR/controller-ngrok-rotation.state"
@@ -144,12 +144,12 @@ current_server_name() {
 from pathlib import Path
 import json
 
-p = Path(".repo-harness/mcp.local.json")
+p = Path(".forge/mcp.local.json")
 if not p.exists():
-    print("repo-harness-controller-runtime")
+    print("forge-controller-runtime")
 else:
     data = json.loads(p.read_text())
-    print(data.get("chatgpt", {}).get("serverName", "repo-harness-controller-runtime"))
+    print(data.get("chatgpt", {}).get("serverName", "forge-controller-runtime"))
 PY
 }
 
@@ -158,7 +158,7 @@ current_chatgpt_endpoint() {
 from pathlib import Path
 import json
 
-p = Path(".repo-harness/mcp.local.json")
+p = Path(".forge/mcp.local.json")
 if not p.exists():
     print("")
 else:

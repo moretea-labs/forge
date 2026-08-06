@@ -26,7 +26,7 @@ The migration preserves the existing Issue, Task, Run, Edit Session, Local Job, 
 | Thin Harness V1 Fast Path | Implemented | `src/runtime/execution/thin-harness/` router, fast executor, receipts, typed batch, lightweight lanes; eligible short repository commands skip Local Job / ExecutionJob; docs in `thin-harness-v1.md` |
 | Deterministic MCP transport lifecycle | Implemented | global `McpSessionRegistry`, three-path DELETE support, stream leases, active-POST protection, capacity-aware `/ready`, and reconnect regression coverage |
 | Persist-before-execute durable commands | Implemented | `src/runtime/execution/jobs/store.ts`, global request index and semantic conflict detection |
-| Independent Controller Daemon lifecycle | Deleted | The remaining daemon-named status adapter is read-only observation over Canonical Runtime state and cannot start, replace, recover, or fence Workers |
+| Independent daemon lifecycle | Deleted | `runtime-status-client.ts` is read-only observation over Canonical Forge Runtime state and cannot start, replace, recover, or fence Workers |
 | Canonical Single Runtime | Implemented in source; live activation separately authorized | `src/runtime/root/` starts Controller Services, SQLite, Scheduler, Gateway Adapter, and MCP Transport under one lifecycle owner |
 | Legacy Supervisor/Ingress/slot lifecycle | Deleted | Supervisor, Stable Ingress, slots, bootstrap authority, restart coordinator, component rollout/rollback, and repository lifecycle scripts are absent and guarded against reintroduction |
 | Isolated Worker processes | Implemented | `src/runtime/execution/workers/worker-entry.ts`, Scheduler process spawning |

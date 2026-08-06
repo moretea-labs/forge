@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { readControllerDaemonStatus, schedulerHeartbeatSnapshotHealthy } from '../../src/runtime/control-plane/daemon-client';
+import { readForgeRuntimeStatus, schedulerHeartbeatSnapshotHealthy } from '../../src/runtime/control-plane/runtime-status-client';
 import { createExecutionJob } from '../../src/runtime/execution/jobs/store';
 import { operationReceiptMatchesJobOwnership, type OperationReceipt } from '../../src/runtime/execution/jobs/receipt-store';
 import { TERMINAL_JOB_STATUSES, type ExecutionJob } from '../../src/runtime/execution/jobs/types';
@@ -32,7 +32,7 @@ function passingDiagnostics() {
 
 describe('control-plane hardening', () => {
   test('projects canonical Runtime ownership through the transitional daemon status shape', () => {
-    const controllerHome = temp('repo-harness-runtime-status-');
+    const controllerHome = temp('forge-runtime-status-');
     const ownership = acquireRuntimeOwnership(controllerHome, 'runtime-test');
     const startedAt = new Date(Date.now() - 1_000).toISOString();
     try {
@@ -53,7 +53,7 @@ describe('control-plane hardening', () => {
         },
       });
 
-      expect(readControllerDaemonStatus(controllerHome)).toMatchObject({
+      expect(readForgeRuntimeStatus(controllerHome)).toMatchObject({
         status: 'ready',
         pid: process.pid,
         startedAt,
@@ -69,8 +69,8 @@ describe('control-plane hardening', () => {
   });
 
   test('reports unavailable instead of creating a Controller process', () => {
-    const controllerHome = temp('repo-harness-runtime-unavailable-');
-    expect(readControllerDaemonStatus(controllerHome)).toMatchObject({
+    const controllerHome = temp('forge-runtime-unavailable-');
+    expect(readForgeRuntimeStatus(controllerHome)).toMatchObject({
       status: 'unavailable',
       restartRequired: false,
     });
@@ -180,7 +180,7 @@ describe('control-plane hardening', () => {
   });
 
   test('refuses new ExecutionJobs for approval-wait and controller-scope recovery paths', () => {
-    const controllerHome = temp('repo-harness-job-retired-');
+    const controllerHome = temp('forge-job-retired-');
     expect(() => createExecutionJob(controllerHome, {
       repoId: 'repo-test',
       checkoutId: 'checkout-test',

@@ -46,7 +46,7 @@ function worktreeCount(root: string): number {
 }
 
 function fixture(label: string) {
-  const root = mkdtempSync(join(tmpdir(), `repo-harness-terminal-cleanup-${label}-`));
+  const root = mkdtempSync(join(tmpdir(), `forge-terminal-cleanup-${label}-`));
   roots.push(root);
   const controllerHome = join(root, 'controller');
   const repositoryRoot = join(root, 'repository');
@@ -235,6 +235,47 @@ describe('terminal Work cleanup', () => {
     expect(result.receipt.blockers.join('\n')).toContain('unbound process');
     expect(existsSync(fx.workspace.root!)).toBe(true);
     expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(true);
+  });
+
+  test('preserves merged delivery state when cleanup is blocked by another live process', async () => {
+    const fx = fixture('merged-process-owner');
+    const now = new Date().toISOString();
+    const merged = writeWorkHandle(fx.controllerHome, {
+      ...fx.handle,
+      state: 'merged',
+      finalization: {
+        ...fx.handle.finalization,
+        validation: 'done',
+        commit: 'done',
+        merge: 'done',
+      },
+    });
+    createProcessRecord({
+      schemaVersion: 1,
+      processId: 'proc-other-live-after-merge',
+      repoId: fx.repository.repoId,
+      checkoutId: fx.workspace.checkoutId,
+      workId: undefined,
+      controllerHome: fx.controllerHome,
+      status: 'running',
+      route: 'managed',
+      commandId: 'other-live-after-merge',
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'setTimeout(() => {}, 1000)'], cwd: fx.workspace.root! },
+      resourceClaims: [],
+      interactiveWaitMs: 0,
+      timeoutMs: 30_000,
+      maxOutputBytes: 1_024,
+      startedAt: now,
+      updatedAt: now,
+      terminalFenceToken:[REDACTED],
+    } satisfies ManagedProcessRecord);
+
+    const result = await cleanup(fx, merged);
+    expect(result.handle.state).toBe('merged');
+    expect(result.handle.failureReason).toBeUndefined();
+    expect(result.handle.finalization.merge).toBe('done');
+    expect(result.receipt.complete).toBe(false);
+    expect(result.receipt.blockers.join('\n')).toContain('ACTIVE_PROCESS_OTHER_WORK');
   });
 
   test('reconciles a stale process proven abandoned before OS spawn', async () => {

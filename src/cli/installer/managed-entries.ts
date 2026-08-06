@@ -5,19 +5,19 @@
  *   { matcher?: string, hooks: [{ type: 'command', command: string }] }
  *
  * The `MANAGED_TAG` substring inside each command string identifies entries
- * the repo-harness installer wrote, so install can be idempotent and uninstall
+ * the forge installer wrote, so install can be idempotent and uninstall
  * can remove only its own entries (leaving sibling user hooks intact —
  * verified for Claude in Phase 0: `~/.claude/settings.json` already had a
- * non-repo-harness `rtk hook claude` entry that must survive install).
+ * non-forge `rtk hook claude` entry that must survive install).
  *
- * Command shape includes the `command -v repo-harness || exit 0` shim
+ * Command shape includes the `command -v forge || exit 0` shim
  * (Codex consult constraint #5: CLI-missing fallback — adapter must not
  * fail when CLI is uninstalled or not on PATH).
  */
 
 import { ROUTES, type Route } from '../hook/route-registry';
 
-export const MANAGED_TAG = 'repo-harness hook';
+export const MANAGED_TAG = 'forge hook';
 
 export interface HookCommand {
   type: 'command';
@@ -34,7 +34,7 @@ export type HooksByEvent = Record<string, HookEntry[]>;
 export type HookHost = 'claude' | 'codex';
 
 export function buildHookCommand(route: Route, host: HookHost): string {
-  return `if command -v repo-harness-hook >/dev/null 2>&1; then HOOK_HOST=${host} repo-harness-hook ${route.event} --route ${route.routeId} && exit 0; fi; command -v repo-harness >/dev/null 2>&1 || exit 0; HOOK_HOST=${host} exec repo-harness hook ${route.event} --route ${route.routeId}`;
+  return `if command -v forge-hook >/dev/null 2>&1; then HOOK_HOST=${host} forge-hook ${route.event} --route ${route.routeId} && exit 0; fi; command -v forge >/dev/null 2>&1 || exit 0; HOOK_HOST=${host} exec forge hook ${route.event} --route ${route.routeId}`;
 }
 
 export function buildHookEntry(route: Route, host: HookHost): HookEntry {

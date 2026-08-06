@@ -1,6 +1,6 @@
 import { statfsSync } from 'fs';
 import { cpus, freemem, hostname, loadavg, totalmem, uptime } from 'os';
-import { readControllerDaemonStatus } from '../../runtime/control-plane/daemon-client';
+import { readForgeRuntimeStatus } from '../../runtime/control-plane/runtime-status-client';
 import { listExecutionJobs } from '../../runtime/execution/jobs/store';
 import type { ExecutionJob } from '../../runtime/execution/jobs/types';
 import { readRepositoryProjectionSnapshot } from '../../runtime/projections/materialized-view';
@@ -120,7 +120,7 @@ export function buildMobileMonitorSnapshot(input: {
   repositoryName: string;
 }): MobileMonitorSnapshot {
   const generatedAt = new Date().toISOString();
-  const daemon = readControllerDaemonStatus(input.controllerHome);
+  const daemon = readForgeRuntimeStatus(input.controllerHome);
   const projectionSnapshot = readRepositoryProjectionSnapshot(input.controllerHome, input.repoId);
   const projection = projectionSnapshot.projection;
   const jobs = listExecutionJobs(input.controllerHome, input.repoId, 80);

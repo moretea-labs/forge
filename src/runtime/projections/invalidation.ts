@@ -47,7 +47,7 @@ export const PROJECTION_REFRESH_RETRY_BASE_MS = 1_000;
 export const PROJECTION_REFRESH_RETRY_MAX_MS = 30_000;
 export const PROJECTION_REFRESH_STALE_OWNER_MS = Math.max(
   5_000,
-  Number(process.env.REPO_HARNESS_PROJECTION_REFRESH_STALE_OWNER_MS ?? 60_000),
+  Number(process.env.FORGE_PROJECTION_REFRESH_STALE_OWNER_MS ?? 60_000),
 );
 
 export function repositoryProjectionDirtyPath(controllerHome: string, repoId: string): string {

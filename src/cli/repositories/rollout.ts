@@ -61,7 +61,7 @@ function canonicalPath(path: string): string {
 }
 
 function getRestartReadiness(repoRoot: string): RestartReadiness {
-  if (!existsSync(join(repoRoot, '.repo-harness', 'mcp.local.json'))) {
+  if (!existsSync(join(repoRoot, '.forge', 'mcp.local.json'))) {
     return { ready: false, reason: 'no MCP config' };
   }
   const configuredRepo = loadMcpLocalConfig(repoRoot)?.repo?.trim();

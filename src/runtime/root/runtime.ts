@@ -37,7 +37,7 @@ async function defaultMcpProbe(endpoint: string, authToken: string): Promise<voi
   const transport = new StreamableHTTPClientTransport(new URL(endpoint), {
     requestInit: { headers: { Authorization: `Bearer ${authToken}` } },
   });
-  const client = new Client({ name: 'repo-harness-runtime-probe', version: '1.0.0' });
+  const client = new Client({ name: 'forge-runtime-probe', version: '1.0.0' });
   try {
     await client.connect(transport);
     const tools = await client.listTools();
@@ -65,7 +65,7 @@ const DEFAULT_DEPENDENCIES: CanonicalRuntimeDependencies = {
   runMcpProbe: defaultMcpProbe,
 };
 
-export class CanonicalRepoHarnessRuntime {
+export class CanonicalForgeRuntime {
   readonly runtimeInstanceId: string;
   private readonly readinessState = new RuntimeReadinessState();
   private readonly dependencies: CanonicalRuntimeDependencies;

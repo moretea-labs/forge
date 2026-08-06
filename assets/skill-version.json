@@ -1,7 +1,7 @@
 {
   "version": "1.4.0",
   "templateVersion": "1.4.0",
-  "skillName": "repo-harness",
+  "skillName": "forge",
   "contractId": "tasks-first-harness-v1",
   "compatibility": {
     "minClaudeCodeVersion": "1.0.0",
@@ -66,7 +66,7 @@
     },
     {
       "version": "5.0.0",
-      "description": "Renamed the public skill surface to repo-harness, added action-style command facades, externalized optional long docs to the default brain, and kept reusable-workflow packaging behind advisory hooks plus user-approved autoplan"
+      "description": "Renamed the public skill surface to forge, added action-style command facades, externalized optional long docs to the default brain, and kept reusable-workflow packaging behind advisory hooks plus user-approved autoplan"
     },
     {
       "version": "5.0.1",
@@ -82,7 +82,7 @@
     },
     {
       "version": "5.1.1",
-      "description": "Refreshes stale reference and architecture docs for the current repo-harness command, hook, migration, eval, plugin, and minimal-documentation contracts"
+      "description": "Refreshes stale reference and architecture docs for the current forge command, hook, migration, eval, plugin, and minimal-documentation contracts"
     },
     {
       "version": "5.1.2",
@@ -106,7 +106,7 @@
     },
     {
       "version": "0.4.0",
-      "description": "Retires the separate 5.x generated workflow compatibility line; package, skill, and template stamps now share the repo-harness npm release version"
+      "description": "Retires the separate 5.x generated workflow compatibility line; package, skill, and template stamps now share the forge npm release version"
     },
     {
       "version": "0.4.1",
@@ -134,7 +134,7 @@
     },
     {
       "version": "0.5.3",
-      "description": "Fixes repo-harness update --version so the update command can install a pinned package version without being intercepted by the top-level CLI version flag"
+      "description": "Fixes forge update --version so the update command can install a pinned package version without being intercepted by the top-level CLI version flag"
     },
     {
       "version": "0.6.0",
@@ -182,8 +182,8 @@
     }
   ],
   "generatedProjectStamp": {
-    "format": "repo-harness@{version}+template@{templateVersion}",
-    "displayName": "repo-harness",
+    "format": "forge@{version}+template@{templateVersion}",
+    "displayName": "forge",
     "location": ".claude/.skill-version"
   }
 }

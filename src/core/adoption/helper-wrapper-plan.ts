@@ -15,7 +15,7 @@ interface WorkflowContractForHelperWrappers {
 }
 
 function repoPinsHelperSource(repoRoot: string): boolean {
-  if (process.env.REPO_HARNESS_HELPER_SOURCE === "repo") return true;
+  if (process.env.FORGE_HELPER_SOURCE === "repo") return true;
   const policyPath = resolve(repoRoot, ".ai/harness/policy.json");
   if (!existsSync(policyPath)) return false;
   try {
@@ -48,7 +48,7 @@ function shellWrapper(helperName: string): string {
     "#!/bin/bash",
     "set -euo pipefail",
     "",
-    'SOURCE_ROOT="${REPO_HARNESS_SOURCE_ROOT:-${AGENTIC_DEV_ROOT:-${AGENTIC_DEV_SKILL_ROOT:-}}}"',
+    'SOURCE_ROOT="${FORGE_SOURCE_ROOT:-${AGENTIC_DEV_ROOT:-${AGENTIC_DEV_SKILL_ROOT:-}}}"',
     "",
     'if [[ -n "$SOURCE_ROOT" && -f "$SOURCE_ROOT/src/cli/index.ts" ]]; then',
     "  if command -v bun >/dev/null 2>&1; then",
@@ -56,11 +56,11 @@ function shellWrapper(helperName: string): string {
     "  fi",
     "fi",
     "",
-    "if command -v repo-harness >/dev/null 2>&1; then",
-    `  exec repo-harness run ${id} "$@"`,
+    "if command -v forge >/dev/null 2>&1; then",
+    `  exec forge run ${id} "$@"`,
     "fi",
     "",
-    `echo "Missing repo-harness CLI for helper ${id}" >&2`,
+    `echo "Missing forge CLI for helper ${id}" >&2`,
     "exit 1",
     "",
   ].join("\n");
@@ -77,7 +77,7 @@ function typescriptWrapper(helperName: string): string {
     `const helperId = "${id}";`,
     "const DEFAULT_TIMEOUT_MS = 120_000;",
     "const configuredTimeoutMs = Number.parseInt(",
-    '  process.env.REPO_HARNESS_HELPER_TIMEOUT_MS ?? String(DEFAULT_TIMEOUT_MS),',
+    '  process.env.FORGE_HELPER_TIMEOUT_MS ?? String(DEFAULT_TIMEOUT_MS),',
     "  10,",
     ");",
     "const timeoutMs = Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0",
@@ -85,12 +85,12 @@ function typescriptWrapper(helperName: string): string {
     "  : DEFAULT_TIMEOUT_MS;",
     "",
     "const sourceRoot =",
-    "  process.env.REPO_HARNESS_SOURCE_ROOT ||",
+    "  process.env.FORGE_SOURCE_ROOT ||",
     "  process.env.AGENTIC_DEV_ROOT ||",
     "  process.env.AGENTIC_DEV_SKILL_ROOT;",
     'const command = sourceRoot && existsSync(join(sourceRoot, "src", "cli", "index.ts"))',
     `  ? ["bun", join(sourceRoot, "src", "cli", "index.ts"), "run", "${id}"]`,
-    `  : ["repo-harness", "run", "${id}"];`,
+    `  : ["forge", "run", "${id}"];`,
     "",
     "const result = spawnSync(command[0], [...command.slice(1), ...process.argv.slice(2)], {",
     "  cwd: process.cwd(),",
@@ -102,8 +102,8 @@ function typescriptWrapper(helperName: string): string {
     "if (result.error) {",
     '  const code = "code" in result.error ? String(result.error.code ?? "") : "";',
     '  const prefix = code === "ETIMEDOUT"',
-    "    ? `repo-harness helper ${helperId} timed out after ${timeoutMs}ms`",
-    "    : `Missing repo-harness CLI for helper ${helperId}`;",
+    "    ? `forge helper ${helperId} timed out after ${timeoutMs}ms`",
+    "    : `Missing forge CLI for helper ${helperId}`;",
     "  console.error(`${prefix}: ${result.error.message}`);",
     "  process.exit(1);",
     "}",
@@ -134,7 +134,7 @@ export function helperWrapperGitignoreContent(repoRoot: string, mode: AdoptionMo
     assertHelperName(helperName);
     return `${directory}/${helperName}`;
   });
-  return ["# repo-harness generated helper wrappers", ...paths, `${directory}/repo-harness/`].join("\n");
+  return ["# forge generated helper wrappers", ...paths, `${directory}/forge/`].join("\n");
 }
 
 export function helperWrapperOperations(repoRoot: string, mode: AdoptionMode): WriteFileOperation[] {
@@ -151,7 +151,7 @@ export function helperWrapperOperations(repoRoot: string, mode: AdoptionMode): W
       content: helperWrapperContent(helperName),
       ifMissing: true,
       mode: EXECUTABLE_MODE,
-      reason: "Install repo-harness helper compatibility wrapper",
+      reason: "Install forge helper compatibility wrapper",
       risk: "low",
       status: helperWrapperStatus(repoRoot, path),
     };

@@ -90,8 +90,8 @@ describe("workflow contract manifest", () => {
     expect(contract.documentation?.referenceConfigs?.source).toBe("user-level-runtime-docs");
     expect(contract.documentation?.referenceConfigs?.repoStubDirectory).toBe("docs/reference-configs");
     expect(contract.documentation?.referenceConfigs?.packageDirectory).toBe("assets/reference-configs");
-    expect(contract.documentation?.referenceConfigs?.resolverCommand).toBe("repo-harness docs path <doc-id>");
-    expect(contract.documentation?.referenceConfigs?.stubMarker).toBe("<!-- repo-harness: reference-config-stub v1 -->");
+    expect(contract.documentation?.referenceConfigs?.resolverCommand).toBe("forge docs path <doc-id>");
+    expect(contract.documentation?.referenceConfigs?.stubMarker).toBe("<!-- forge: reference-config-stub v1 -->");
     expect(contract.agenticDevelopment?.routing.complexEngineeringPlan).toBe("gstack:plan-eng-review");
     expect(contract.agenticDevelopment?.routing.bugOrRegression).toBe("waza:hunt");
     expect(contract.agenticDevelopment?.dueDiligence.levels).toContain("P2_DATA_FLOW_TRACE");
@@ -176,14 +176,14 @@ describe("workflow contract manifest", () => {
       encoding: "utf-8",
       env: {
         ...process.env,
-        AGENTIC_DEV_ROOT: "/tmp/repo-harness-root",
+        AGENTIC_DEV_ROOT: "/tmp/forge-root",
         AGENTIC_DEV_SKILL_ROOT: "/tmp/agentic-dev-skill-root",
       },
     });
     expect(preferred.status).toBe(0);
     expect(preferred.stdout.trim().split("\n")).toEqual([
-      "/tmp/repo-harness-root",
-      "/tmp/repo-harness-root",
+      "/tmp/forge-root",
+      "/tmp/forge-root",
     ]);
 
     const skillRootOnly = spawnSync("bun", ["-e", code], {
@@ -215,7 +215,7 @@ describe("workflow contract manifest", () => {
     expect(retiredLegacy.stdout).not.toContain("/tmp/project-initializer-root");
 
     const resolverSource = readFileSync(join(ROOT, "scripts/workflow-contract.ts"), "utf-8");
-    expect(resolverSource).not.toContain("repo-harness-skill");
+    expect(resolverSource).not.toContain("forge-skill");
     expect(resolverSource).not.toContain("resolveProjectInitializerRoot");
   });
 
@@ -257,7 +257,7 @@ describe("workflow contract manifest", () => {
     expect(gitignore).toContain("!.ai/harness/planning/.gitkeep");
     expect(gitignore).toContain(".ai/harness/worktrees/");
     expect(gitignore).toContain(".ai/harness/chatgpt/bridge-extension/");
-    expect(gitignore).toContain(".repo-harness/chatgpt-browser.local.json");
+    expect(gitignore).toContain(".forge/chatgpt-browser.local.json");
     expect(gitignore).toContain(".ai/harness/triage/*");
     expect(gitignore).toContain("!.ai/harness/triage/.gitkeep");
   });

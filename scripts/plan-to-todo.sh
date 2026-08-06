@@ -212,8 +212,8 @@ plan_requests_contract_worktree() {
 maybe_start_contract_worktree() {
   local file="$1"
 
-  [[ "${REPO_HARNESS_CONTRACT_WORKTREE:-}" != "1" ]] || return 0
-  [[ "${REPO_HARNESS_DISABLE_CONTRACT_WORKTREE:-}" != "1" ]] || return 0
+  [[ "${FORGE_CONTRACT_WORKTREE:-}" != "1" ]] || return 0
+  [[ "${FORGE_DISABLE_CONTRACT_WORKTREE:-}" != "1" ]] || return 0
   [[ -x "scripts/contract-worktree.sh" ]] || return 0
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
   ! is_linked_worktree || return 0

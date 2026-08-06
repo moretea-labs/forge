@@ -2,20 +2,20 @@
 
 ## Purpose
 
-This design keeps ChatGPT as the strong interactive controller while making repo-harness a safer, smaller, and more useful repository control plane.
+This design keeps ChatGPT as the strong interactive controller while making Forge a safer, smaller, and more useful repository control plane.
 
 The architecture addresses two current bottlenecks:
 
-1. repo-harness can execute work but cannot proactively return pending decisions to the ChatGPT control conversation.
+1. Forge can execute work but cannot proactively return pending decisions to the ChatGPT control conversation.
 2. ChatGPT sees too many narrow MCP tools, making tool selection harder as new repository and plugin capabilities are added.
 
-The solution is not to make repo-harness a replacement LLM agent. The solution is to expose a small ChatGPT-facing facade, route concrete work through internal capabilities, and record pending decisions in a durable Handoff Inbox.
+The solution is not to make Forge a replacement LLM agent. The solution is to expose a small ChatGPT-facing facade, route concrete work through internal capabilities, and record pending decisions in a durable Handoff Inbox.
 
 ## Design principles
 
 - ChatGPT remains the strong主控 for ambiguous design, product, architecture, and high-risk decisions.
-- repo-harness owns deterministic control-plane work: repository state, worktrees, task lifecycle, evidence, verification, policy, and cleanup.
-- Codex or another coding agent may be used as a worker, but repo-harness remains the scheduler, verifier, and policy gate.
+- Forge owns deterministic control-plane work: repository state, worktrees, task lifecycle, evidence, verification, policy, and cleanup.
+- Codex or another coding agent may be used as a worker, but Forge remains the scheduler, verifier, and policy gate.
 - Internal capabilities may grow, but the ChatGPT-facing tool surface should stay small and stable.
 - New features should register internal capabilities instead of adding one visible MCP tool per feature.
 - All ChatGPT-facing responses should be bounded summaries by default, with explicit detail/ref follow-up.
@@ -23,7 +23,7 @@ The solution is not to make repo-harness a replacement LLM agent. The solution i
 
 ## Capability domains
 
-repo-harness has at least two peer capability domains. They should be modeled in parallel, not nested under each other.
+Forge has at least two peer capability domains. They should be modeled in parallel, not nested under each other.
 
 ### Repository capabilities
 
@@ -129,13 +129,13 @@ FacadeResult
   raw_available: whether a more detailed view exists
 ```
 
-`suggested_next_actions` is important because it turns repo-harness into a guided workflow. ChatGPT should not have to choose from many tools after every result. The controller should return a small set of next safe actions.
+`suggested_next_actions` is important because it turns Forge into a guided workflow. ChatGPT should not have to choose from many tools after every result. The controller should return a small set of next safe actions.
 
 ## Handoff Inbox
 
 The Handoff Inbox is the durable bridge from background work back to the ChatGPT主控.
 
-repo-harness should create a handoff when it reaches a state where a strong controller should decide the next step.
+Forge should create a handoff when it reaches a state where a strong controller should decide the next step.
 
 Typical triggers:
 
@@ -144,7 +144,7 @@ Typical triggers:
 - an operation was blocked by policy
 - a background task discovered a new candidate issue
 - a plugin capability needs configuration or user authorization
-- a coding agent completed work but repo-harness cannot safely finalize
+- a coding agent completed work but Forge cannot safely finalize
 
 ### Handoff item contract
 
@@ -232,16 +232,16 @@ run_agent({ prompt: "do anything needed" })
 Execution should be staged:
 
 1. ChatGPT submits a high-level intent through a facade.
-2. repo-harness returns a preview, policy classification, and suggested next actions.
-3. repo-harness creates a controller-owned worktree or direct-edit session internally.
+2. Forge returns a preview, policy classification, and suggested next actions.
+3. Forge creates a controller-owned worktree or direct-edit session internally.
 4. Risky execution requests become approval requests with bounded previews.
 5. Raw logs, large stdout/stderr, local paths, and secrets are not returned by default.
 
-This design reduces the chance that ChatGPT triggers safety systems with a broad local-execution request. It also gives repo-harness a stronger audit trail.
+This design reduces the chance that ChatGPT triggers safety systems with a broad local-execution request. It also gives Forge a stronger audit trail.
 
 ## Execution mode selection
 
-The facade should not force every request into the Goal Workloop. repo-harness needs a lightweight router that preserves the existing fast path while upgrading only the work that benefits from recovery, isolation, worker execution, approval, plugin authorization, or background continuation.
+The facade should not force every request into the Goal Workloop. Forge needs a lightweight router that preserves the existing fast path while upgrading only the work that benefits from recovery, isolation, worker execution, approval, plugin authorization, or background continuation.
 
 ### Direct Control
 
@@ -275,7 +275,7 @@ The Goal Workloop can internally choose direct edit, isolated worktree, worker e
 
 ### Handoff-only
 
-Use Handoff-only when repo-harness should not execute yet.
+Use Handoff-only when Forge should not execute yet.
 
 Typical conditions:
 
@@ -312,14 +312,14 @@ ChatGPT request
   -> rh_status / rh_context to inspect readiness
   -> rh_work start or continue with bounded constraints
   -> policy gate decides allowed / approval_required / denied
-  -> repo-harness creates worktree or edit session
+  -> Forge creates worktree or edit session
   -> internal capability executes work
   -> evidence is captured as bounded references
   -> rh_work returns summary and suggested_next_actions
   -> if blocked or review-needed, Handoff Inbox item is created
 ```
 
-For low-risk documentation or contract work, repo-harness may use a bounded direct-edit session. For isolated code changes, repo-harness should prefer a controller-owned worktree. ChatGPT should not need to choose the low-level mechanism unless the user explicitly asks.
+For low-risk documentation or contract work, Forge may use a bounded direct-edit session. For isolated code changes, Forge should prefer a controller-owned worktree. ChatGPT should not need to choose the low-level mechanism unless the user explicitly asks.
 
 ## Capability registry
 
@@ -386,8 +386,8 @@ This prevents new feature work from expanding ChatGPT's tool menu.
 
 - Let `rh_work` schedule Codex or another worker only after policy classification.
 - Keep Codex as a worker, not the owner of task lifecycle.
-- repo-harness remains responsible for verification, evidence, finalization, and handoff.
+- Forge remains responsible for verification, evidence, finalization, and handoff.
 
 ## Acceptance for this architecture
 
-The design is successful if ChatGPT can operate repo-harness primarily through four stable entry points, if background work can leave a resumable handoff, and if new repository or plugin capabilities can be added internally without growing the public tool list.
+The design is successful if ChatGPT can operate Forge primarily through four stable entry points, if background work can leave a resumable handoff, and if new repository or plugin capabilities can be added internally without growing the public tool list.

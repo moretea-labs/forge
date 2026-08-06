@@ -290,7 +290,7 @@ write_json_snapshot() {
   {
     echo "{"
     printf '  "version": 1,\n'
-    printf '  "kind": "repo-harness-heartbeat-triage",\n'
+    printf '  "kind": "forge-heartbeat-triage",\n'
     printf '  "run_id": "%s",\n' "$(json_escape "$run_id")"
     printf '  "source": "%s",\n' "$(json_escape "$run_source")"
     printf '  "generated_at": "%s",\n' "$(json_escape "$timestamp")"

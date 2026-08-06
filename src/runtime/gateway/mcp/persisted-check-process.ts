@@ -38,8 +38,8 @@ export function resolveRuntimeCliTarget(controllerHome?: string): CliRuntimeTarg
   const sourceMode = Boolean(source.root && existsSync(resolve(source.root, 'src', 'cli', 'index.ts')));
   const runtimeEnv = { ...process.env };
   if (sourceMode) {
-    delete runtimeEnv.REPO_HARNESS_RUNTIME_EXECUTION;
-    delete runtimeEnv.REPO_HARNESS_RUNTIME_CLI_ENTRY;
+    delete runtimeEnv.FORGE_RUNTIME_EXECUTION;
+    delete runtimeEnv.FORGE_RUNTIME_CLI_ENTRY;
   }
   const generation = controllerHome ? readRuntimeGeneration(controllerHome) : undefined;
   return currentCliRuntimeTarget({
@@ -50,7 +50,7 @@ export function resolveRuntimeCliTarget(controllerHome?: string): CliRuntimeTarg
     cwd: source.root ?? moduleSourceRoot,
     sourceRevision: generation?.source.releaseRevision
       ?? generation?.source.commit
-      ?? process.env.REPO_HARNESS_ACTIVE_RUNTIME_REVISION,
+      ?? process.env.FORGE_ACTIVE_RUNTIME_REVISION,
   });
 }
 
@@ -61,7 +61,7 @@ export function resolveRuntimeCliEntry(controllerHome?: string): string {
 /**
  * Run a registered check through Process Runtime while keeping check-runner
  * evidence authoritative. The managed OS process invokes the same immutable
- * repo-harness CLI bundle with a hidden internal subcommand; that subcommand
+ * forge CLI bundle with a hidden internal subcommand; that subcommand
  * executes runControllerCheck, writes the Artifact atomically, mirrors bounded
  * stdout/stderr, and exits with the exact check status.
  */

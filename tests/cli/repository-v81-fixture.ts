@@ -47,7 +47,7 @@ function record(root: string, repoId: string, name: string): RepositoryRecord {
 }
 
 export function repositoryFixture(): RepositoryFixture {
-  const root = mkdtempSync(join(tmpdir(), 'repo-harness-v81-'));
+  const root = mkdtempSync(join(tmpdir(), 'forge-v81-'));
   const controllerHome = join(root, 'controller-home');
   mkdirSync(controllerHome, { recursive: true });
   const repoA = record(root, 'repo_a', 'repo-a');

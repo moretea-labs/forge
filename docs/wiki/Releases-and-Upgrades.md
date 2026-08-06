@@ -17,7 +17,7 @@ Before publication, build an immutable release from a clean canonical source tre
 
 ## Upgrade principles
 
-- Preserve compatibility aliases and existing `.repo-harness` state during Matea 1.x.
+- Keep the Forge-only command, state, environment, protocol, and release identity consistent across upgrades.
 - Read release notes before changing runtime or connector configuration.
 - Do not overwrite a healthy active release with a stale rollout operation.
 - Keep a verified rollback path before changing production runtime state.
@@ -31,4 +31,4 @@ Before publication, build an immutable release from a clean canonical source tre
 5. Create the exact `v`-prefixed tag and GitHub prerelease.
 6. Verify npm separately; never claim publication without registry evidence.
 
-See the maintained [release process](https://github.com/moretea-labs/matea/blob/main/docs/operations/releasing.md).
+See the maintained [release process](https://github.com/moretea-labs/forge/blob/main/docs/operations/releasing.md).

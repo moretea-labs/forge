@@ -48,14 +48,14 @@ export interface RuntimeWriteFenceCheck {
 }
 
 export const RUNTIME_WRITE_CLAIM_ENV = {
-  controllerHome: 'REPO_HARNESS_CONTROLLER_HOME',
-  runtimeInstanceId: 'REPO_HARNESS_RUNTIME_INSTANCE_ID',
-  ownerPid: 'REPO_HARNESS_RUNTIME_OWNER_PID',
-  releaseAuthorityRevision: 'REPO_HARNESS_RELEASE_AUTHORITY_REVISION',
-  releaseFencingToken: 'REPO_HARNESS_RELEASE_FENCING_TOKEN',
-  releaseId: 'REPO_HARNESS_RELEASE_ID',
-  artifactIdentity: 'REPO_HARNESS_ARTIFACT_IDENTITY',
-  workerProtocolVersion: 'REPO_HARNESS_WORKER_PROTOCOL_VERSION',
+  controllerHome: 'FORGE_CONTROLLER_HOME',
+  runtimeInstanceId: 'FORGE_RUNTIME_INSTANCE_ID',
+  ownerPid: 'FORGE_RUNTIME_OWNER_PID',
+  releaseAuthorityRevision: 'FORGE_RELEASE_AUTHORITY_REVISION',
+  releaseFencingToken: 'FORGE_RELEASE_FENCING_TOKEN',
+  releaseId: 'FORGE_RELEASE_ID',
+  artifactIdentity: 'FORGE_ARTIFACT_IDENTITY',
+  workerProtocolVersion: 'FORGE_WORKER_PROTOCOL_VERSION',
 } as const;
 
 let processClaim: RuntimeWriteClaim | undefined;

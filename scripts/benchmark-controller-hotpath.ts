@@ -87,7 +87,7 @@ function duration(result: { structuredContent?: unknown; content?: Array<{ text?
 }
 
 async function benchmarkScale(scale: number): Promise<Record<string, unknown>> {
-  const workspace = mkdtempSync(join(tmpdir(), 'repo-harness-hotpath-'));
+  const workspace = mkdtempSync(join(tmpdir(), 'forge-hotpath-'));
   try {
     const controllerHome = join(workspace, 'controller-home');
     const repoRoot = join(workspace, 'repo');
@@ -138,7 +138,7 @@ async function benchmarkScale(scale: number): Promise<Record<string, unknown>> {
 }
 
 function benchmarkGitSampling(): Record<string, unknown> {
-  const workspace = mkdtempSync(join(tmpdir(), 'repo-harness-git-sampling-'));
+  const workspace = mkdtempSync(join(tmpdir(), 'forge-git-sampling-'));
   try {
     gitInit(workspace);
     const coldSamples: number[] = [];
@@ -179,7 +179,7 @@ async function main(): Promise<void> {
   const scaleResults = [];
   for (const scale of SCALES) scaleResults.push(await benchmarkScale(scale));
   const gitSampling = benchmarkGitSampling();
-  const profileRepo = mkdtempSync(join(tmpdir(), 'repo-harness-tool-profile-'));
+  const profileRepo = mkdtempSync(join(tmpdir(), 'forge-tool-profile-'));
   try {
     const controllerHome = join(profileRepo, 'controller-home');
     const repoRoot = join(profileRepo, 'repo');

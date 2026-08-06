@@ -67,7 +67,7 @@ export interface MobileIntentVerification {
   signatureVerified: boolean;
 }
 
-const CONFIG_PATH = ".repo-harness/mobile-intents.json";
+const CONFIG_PATH = ".forge/mobile-intents.json";
 const NONCE_TTL_MS = 10 * 60_000;
 const TIMESTAMP_SKEW_MS = 5 * 60_000;
 const DEFAULT_RATE_LIMIT = 60;
@@ -185,7 +185,7 @@ function safeEqual(left: string, right: string): boolean {
 
 function tokenFromRequest(request: Request): string | undefined {
   const bearer = request.header("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
-  return bearer || request.header("x-repo-harness-mobile-token")?.trim();
+  return bearer || request.header("x-forge-mobile-token")?.trim();
 }
 
 function rawBodyFromRequest(request: Request): Buffer {
@@ -201,7 +201,7 @@ function pruneNonces(device: MobileIntentDevice, referenceTime = Date.now()): vo
 }
 
 function assertFreshTimestamp(timestamp: string | undefined): void {
-  if (!timestamp) throw new Error("MOBILE_INTENT_TIMESTAMP_REQUIRED: set x-repo-harness-timestamp");
+  if (!timestamp) throw new Error("MOBILE_INTENT_TIMESTAMP_REQUIRED: set x-forge-timestamp");
   const parsed = Date.parse(timestamp);
   if (!Number.isFinite(parsed)) throw new Error("MOBILE_INTENT_TIMESTAMP_INVALID: timestamp must be ISO-8601");
   if (Math.abs(Date.now() - parsed) > TIMESTAMP_SKEW_MS) {
@@ -210,7 +210,7 @@ function assertFreshTimestamp(timestamp: string | undefined): void {
 }
 
 function assertNonce(device: MobileIntentDevice, nonce: string | undefined): void {
-  if (!nonce) throw new Error("MOBILE_INTENT_NONCE_REQUIRED: set x-repo-harness-nonce");
+  if (!nonce) throw new Error("MOBILE_INTENT_NONCE_REQUIRED: set x-forge-nonce");
   if (!/^[A-Za-z0-9_.:-]{8,128}$/.test(nonce)) throw new Error("MOBILE_INTENT_NONCE_INVALID: nonce must be 8-128 safe characters");
   pruneNonces(device);
   if (device.nonces[nonce]) throw new Error("MOBILE_INTENT_REPLAY_DETECTED: nonce was already used");
@@ -231,10 +231,10 @@ function assertRateLimit(device: MobileIntentDevice): void {
 }
 
 function verifySignature(request: Request, token: string): { provided: boolean; verified: boolean } {
-  const signature = request.header("x-repo-harness-signature")?.trim();
+  const signature = request.header("x-forge-signature")?.trim();
   if (!signature) return { provided: false, verified: false };
-  const timestamp = request.header("x-repo-harness-timestamp")?.trim() ?? "";
-  const nonce = request.header("x-repo-harness-nonce")?.trim() ?? "";
+  const timestamp = request.header("x-forge-timestamp")?.trim() ?? "";
+  const nonce = request.header("x-forge-nonce")?.trim() ?? "";
   const raw = rawBodyFromRequest(request).toString("utf-8");
   const payload = `${timestamp}.${nonce}.${raw}`;
   const hex = createHmac("sha256", token).update(payload).digest("hex");
@@ -282,10 +282,10 @@ export function createMobileIntentDevice(
     instructions: {
       headers: {
         authorization: `Bearer ${token}`,
-        "x-repo-harness-device-id": deviceId,
-        "x-repo-harness-timestamp": "<ISO-8601 timestamp>",
-        "x-repo-harness-nonce": "<unique random nonce>",
-        "x-repo-harness-signature": "<optional HMAC-SHA256 hex or base64url>",
+        "x-forge-device-id": deviceId,
+        "x-forge-timestamp": "<ISO-8601 timestamp>",
+        "x-forge-nonce": "<unique random nonce>",
+        "x-forge-signature": "<optional HMAC-SHA256 hex or base64url>",
       },
       endpointPath: "/mobile/intent",
       timestampSkewSeconds: Math.trunc(TIMESTAMP_SKEW_MS / 1000),
@@ -306,11 +306,11 @@ export function revokeMobileIntentDevice(repoRoot: string, deviceId: string): { 
 }
 
 export function verifyMobileIntentRequest(repoRoot: string, request: Request): MobileIntentVerification {
-  const deviceId = request.header("x-repo-harness-device-id")?.trim();
-  if (!deviceId) throw new Error("MOBILE_INTENT_DEVICE_REQUIRED: set x-repo-harness-device-id");
+  const deviceId = request.header("x-forge-device-id")?.trim();
+  if (!deviceId) throw new Error("MOBILE_INTENT_DEVICE_REQUIRED: set x-forge-device-id");
   const token = tokenFromRequest(request);
-  if (!token) throw new Error("MOBILE_INTENT_TOKEN_REQUIRED: provide a bearer token or x-repo-harness-mobile-token");
-  assertFreshTimestamp(request.header("x-repo-harness-timestamp")?.trim());
+  if (!token) throw new Error("MOBILE_INTENT_TOKEN_REQUIRED: provide a bearer token or x-forge-mobile-token");
+  assertFreshTimestamp(request.header("x-forge-timestamp")?.trim());
 
   const store = readStore(repoRoot);
   const device = store.devices.find((entry) => entry.deviceId === deviceId);
@@ -318,10 +318,10 @@ export function verifyMobileIntentRequest(repoRoot: string, request: Request): M
   if (device.revokedAt) throw new Error(`MOBILE_INTENT_DEVICE_REVOKED: ${deviceId}`);
   if (!safeEqual(device.tokenHash, tokenHash(token))) throw new Error("MOBILE_INTENT_TOKEN_INVALID: token does not match device");
 
-  assertNonce(device, request.header("x-repo-harness-nonce")?.trim());
+  assertNonce(device, request.header("x-forge-nonce")?.trim());
   assertRateLimit(device);
   const signature = verifySignature(request, token);
-  if (signature.provided && !signature.verified) throw new Error("MOBILE_INTENT_SIGNATURE_INVALID: x-repo-harness-signature did not match request body");
+  if (signature.provided && !signature.verified) throw new Error("MOBILE_INTENT_SIGNATURE_INVALID: x-forge-signature did not match request body");
   device.lastSeenAt = now();
   device.updatedAt = now();
   writeStore(repoRoot, store);

@@ -3,11 +3,11 @@
 ## Start with layer separation
 
 1. Is the repository and checkout correct?
-2. Is the Controller healthy?
-3. Is the stable ingress healthy?
-4. Is the active Gateway healthy?
-5. Does MCP initialize and list tools?
-6. Is the external tunnel reachable?
+2. Is the canonical Forge Runtime running and ready?
+3. Does the in-process Gateway and MCP transport answer locally?
+4. Does MCP initialize and list tools with the expected release identity?
+5. Is the optional external tunnel reachable?
+6. What does standalone Recovery report for restart attempts and release coherence?
 
 A single 502 does not identify which layer failed.
 
@@ -17,22 +17,22 @@ Check the durable Work, Job, Run, or managed process before retrying. Replaying 
 
 ## External 502 or 503
 
-Compare local ingress health with external MCP health. A tunnel process can remain alive after all data-plane connections are lost. Confirm the active transport and registered HA connections, then verify the authenticated MCP flow.
+Compare the local Forge Runtime MCP endpoint with external MCP health. A tunnel process can remain alive after all data-plane connections are lost. Confirm local authenticated MCP first, then inspect the configured tunnel and its registered connections.
 
-## Gateway repeatedly restarts
+## Runtime repeatedly restarts
 
-Inspect immutable release contents, entrypoints, process liveness, and revision coherence. Do not keep restarting a release that cannot cold-start; preserve evidence and switch only through the Supervisor's bounded rollout or rollback path.
+Inspect the immutable active release, service runner, Runtime ownership, release authority, database compatibility, Worker protocol, and Recovery audit. The watchdog performs only bounded whole-Runtime restart attempts. After exhaustion it may restore an independently attested previous release; it never loops indefinitely or restarts individual components.
 
 ## Release mismatch
 
-Compare the canonical source commit, manifest revision, active slot, installed service definition, Supervisor, Controller Daemon, and Gateway. Short hashes are not sufficient release identity.
+Compare the canonical source commit, manifest hash, active whole-release authority, installed Forge service definition, Runtime instance, database schema compatibility, Worker protocol, and authenticated MCP tool fingerprint. Short hashes are not sufficient release identity.
 
 ## Recovery cannot roll back
 
-A previous release must have exact path, revision, and manifest evidence recorded as known-good. Never weaken matching merely to force a rollback.
+A previous release must have exact path, release ID, artifact identity, manifest hash, Worker protocol, bound SQLite backup, and independent known-good attestation. Automatic recovery must also prove the current Runtime stopped before restoration. Never weaken matching merely to force a rollback.
 
 Detailed guides:
 
-- [General troubleshooting](https://github.com/moretea-labs/matea/blob/main/docs/operations/troubleshooting.md)
-- [Controller reliability](https://github.com/moretea-labs/matea/blob/main/docs/operations/controller-reliability-runbook.md)
-- [502 and performance](https://github.com/moretea-labs/matea/blob/main/docs/operations/controller-performance-and-502.md)
+- [General troubleshooting](https://github.com/moretea-labs/forge/blob/main/docs/operations/troubleshooting.md)
+- [Controller reliability](https://github.com/moretea-labs/forge/blob/main/docs/operations/controller-reliability-runbook.md)
+- [502 and performance](https://github.com/moretea-labs/forge/blob/main/docs/operations/controller-performance-and-502.md)

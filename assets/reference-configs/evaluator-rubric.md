@@ -4,7 +4,7 @@
 
 ## Default Brain
 
-- File vault: `brain/repo-harness/references/evaluator-rubric-reference.md`
+- File vault: `brain/forge/references/evaluator-rubric-reference.md`
 - gbrain slug: `references/evaluator-rubric-reference`
 
 ## Repo Role

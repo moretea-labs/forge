@@ -1,8 +1,8 @@
 /**
  * Existing-repo harness bootstrap/update implementation.
  *
- * This backs the public `repo-harness adopt` command and the legacy
- * `repo-harness-init` skill facade: default the target repo to cwd,
+ * This backs the public `forge adopt` command and the legacy
+ * `forge-init` skill facade: default the target repo to cwd,
  * install/refresh the machine runtime pieces, apply the repo-local workflow
  * migration, then verify the installed harness.
  */
@@ -36,8 +36,8 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "..", "..", "..");
 const WAZA_SKILLS = ["think", "hunt", "check", "health"];
 const GBRAIN_INSTALL_ARGS = ["install", "-g", "github:garrytan/gbrain"] as const;
-const GLOBAL_RULES_BEGIN = "<!-- BEGIN: repo-harness global-working-rules -->";
-const GLOBAL_RULES_END = "<!-- END: repo-harness global-working-rules -->";
+const GLOBAL_RULES_BEGIN = "<!-- BEGIN: forge global-working-rules -->";
+const GLOBAL_RULES_END = "<!-- END: forge global-working-rules -->";
 
 export type InitBrainMode = "manifest-only" | "install-gbrain-cli" | "skip";
 export type ReportingLanguagePreset = "follow" | "zh-CN" | "en" | "custom";
@@ -190,7 +190,7 @@ export function validateRepoAdoptionTarget(
       step: "validate repo target",
       status: "failed",
       detail:
-        `refusing to apply repo harness to HOME (${repoRoot}); run repo-harness adopt --repo <git-repo> from an intended project`,
+        `refusing to apply repo harness to HOME (${repoRoot}); run forge adopt --repo <git-repo> from an intended project`,
     };
   }
 
@@ -391,7 +391,7 @@ export function runInit(opts: InitCommandOptions = {}): InitCommandResult {
   const steps: InitStep[] = [];
 
   if (opts.brainRoot) {
-    commandEnv = { ...(commandEnv ?? {}), REPO_HARNESS_BRAIN_ROOT: opts.brainRoot };
+    commandEnv = { ...(commandEnv ?? {}), FORGE_BRAIN_ROOT: opts.brainRoot };
   }
 
   const targetError = validateRepoAdoptionTarget(repoRoot, opts.repo !== undefined, commandEnv);
@@ -407,10 +407,10 @@ export function runInit(opts: InitCommandOptions = {}): InitCommandResult {
 
   if (syncSkill && apply) {
     const step = runProcess("bash", [join(sourceRoot, "scripts", "sync-codex-installed-copies.sh")], sourceRoot, commandEnv);
-    steps.push(withStepName(step, "sync repo-harness skills", `target=${target}`));
+    steps.push(withStepName(step, "sync forge skills", `target=${target}`));
   } else {
     steps.push({
-      step: "sync repo-harness skills",
+      step: "sync forge skills",
       status: "skipped",
       detail: syncSkill ? "dry-run" : "disabled",
     });
@@ -485,7 +485,7 @@ export function runInit(opts: InitCommandOptions = {}): InitCommandResult {
         status: cg.actions.length === 0 ? "skipped" : cgFailed ? "failed" : "ok",
         detail:
           cg.resolution.source === "missing"
-            ? "codegraph CLI not found; skipped (install via: repo-harness tools ensure codegraph)"
+            ? "codegraph CLI not found; skipped (install via: forge tools ensure codegraph)"
             : cg.actions.length > 0
               ? cg.actions.map((entry) => `${entry.action}:${entry.status}`).join(", ")
               : `index ${cg.status}`,
@@ -510,7 +510,7 @@ export function runInit(opts: InitCommandOptions = {}): InitCommandResult {
             step: "codegraph mcp",
             status: "skipped",
             detail:
-              "not registered; run: matea tools configure codegraph --target both --location global",
+              "not registered; run: forge tools configure codegraph --target both --location global",
           });
         }
       }
@@ -531,7 +531,7 @@ export function runInit(opts: InitCommandOptions = {}): InitCommandResult {
   }
 
   if (brainMode !== "skip" && apply && migrate.status === "ok") {
-    const root = opts.brainRoot ?? commandEnv?.REPO_HARNESS_BRAIN_ROOT;
+    const root = opts.brainRoot ?? commandEnv?.FORGE_BRAIN_ROOT;
     if (root) {
       mkdirSync(root, { recursive: true });
       steps.push({ step: "ensure brain root", status: "ok", detail: root });
@@ -564,12 +564,12 @@ export function runInit(opts: InitCommandOptions = {}): InitCommandResult {
   }
 
   if (apply && verify) {
-    const verifyEnv = { ...(commandEnv ?? {}), REPO_HARNESS_SOURCE_ROOT: sourceRoot };
+    const verifyEnv = { ...(commandEnv ?? {}), FORGE_SOURCE_ROOT: sourceRoot };
     if (migrate.status === "ok") {
       if (existsSync(join(repoRoot, "scripts", "prepare-codex-handoff.sh"))) {
         const handoff = runProcess(
           "bash",
-          ["scripts/prepare-codex-handoff.sh", "--reason", "repo-harness-adopt-verify"],
+          ["scripts/prepare-codex-handoff.sh", "--reason", "forge-adopt-verify"],
           repoRoot,
           verifyEnv,
         );
@@ -577,7 +577,7 @@ export function runInit(opts: InitCommandOptions = {}): InitCommandResult {
           withStepName(
             handoff,
             "refresh handoff packet",
-            "scripts/prepare-codex-handoff.sh --reason repo-harness-adopt-verify",
+            "scripts/prepare-codex-handoff.sh --reason forge-adopt-verify",
           ),
         );
       } else {

@@ -33,8 +33,8 @@ Runtime evidence: `root/runtime.ts`, `root/entry.ts`, `router.ts`, `scheduler.ts
 Implemented as one canonical application process plus isolated execution Workers:
 
 ```text
-repo-harness-runtime (Runtime Root + Controller Services + Scheduler + Gateway/MCP)
-repo-harness isolated Worker
+forge-runtime (Runtime Root + Controller Services + Scheduler + Gateway/MCP)
+forge isolated Worker
 ```
 
 One Runtime process owns the complete local application. One Worker process executes one bounded Job and is fenced by Runtime/Job/lease identity; Worker failure does not create another Runtime owner.

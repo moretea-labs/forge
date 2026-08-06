@@ -217,6 +217,6 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error) => {
-  console.error('[repo-harness browser handoff]', error);
+  console.error('[forge browser handoff]', error);
   process.exitCode = 1;
 });

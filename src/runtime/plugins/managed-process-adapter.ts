@@ -85,8 +85,8 @@ function minimalEnvironment(runtimeExecutable: string): NodeJS.ProcessEnv {
     TMP: process.env.TMP,
     LANG: process.env.LANG,
     LC_ALL: process.env.LC_ALL,
-    REPO_HARNESS_MANAGED_PLUGIN: '1',
-    REPO_HARNESS_MANAGED_PLUGIN_RUNTIME_DIR: dirname(runtimeExecutable),
+    FORGE_MANAGED_PLUGIN: '1',
+    FORGE_MANAGED_PLUGIN_RUNTIME_DIR: dirname(runtimeExecutable),
   };
   return Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
 }

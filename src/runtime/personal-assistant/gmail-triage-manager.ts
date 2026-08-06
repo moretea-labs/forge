@@ -62,7 +62,7 @@ export interface GmailTriageRuleUpsertResult {
   store: GmailTriageRuleStore;
 }
 
-const RULE_PATH = '.repo-harness/assistant/gmail-triage-rules.json';
+const RULE_PATH = '.forge/assistant/gmail-triage-rules.json';
 
 function now(): string {
   return new Date().toISOString();

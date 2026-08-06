@@ -486,14 +486,14 @@ check_required_file() {
 check_reference_config_stub() {
   local path="$1"
   [[ -f "$path" ]] || return 0
-  grep -Fq "<!-- repo-harness: reference-config-stub v1 -->" "$path" || return 0
+  grep -Fq "<!-- forge: reference-config-stub v1 -->" "$path" || return 0
 
   local name="${path##*/}"
   local doc_id="${name%.md}"
   if ! grep -Fq "> **Doc ID**: $doc_id" "$path"; then
     report_issue "Reference config stub has wrong or missing Doc ID: $path"
   fi
-  if ! grep -Fq "repo-harness docs path $doc_id" "$path"; then
+  if ! grep -Fq "forge docs path $doc_id" "$path"; then
     report_issue "Reference config stub is missing resolver command: $path"
   fi
 }
@@ -565,8 +565,8 @@ except Exception as exc:
     sys.exit(1)
 
 errors = []
-if data.get("schema") != "repo-harness-run-trace.v1":
-    errors.append("schema must be repo-harness-run-trace.v1")
+if data.get("schema") != "forge-run-trace.v1":
+    errors.append("schema must be forge-run-trace.v1")
 for key in ["run_id", "task_profile", "active_plan", "worktree", "branch", "failure_class", "next_step"]:
     if key not in data:
         errors.append(f"missing field: {key}")
@@ -601,7 +601,7 @@ try {
   process.exit(1);
 }
 const errors = [];
-if (data.schema !== "repo-harness-run-trace.v1") errors.push("schema must be repo-harness-run-trace.v1");
+if (data.schema !== "forge-run-trace.v1") errors.push("schema must be forge-run-trace.v1");
 for (const key of ["run_id", "task_profile", "active_plan", "worktree", "branch", "failure_class", "next_step"]) {
   if (!(key in data)) errors.push(`missing field: ${key}`);
 }
@@ -803,7 +803,7 @@ fi
 check_reference_config_stubs
 check_generation_surface_terminology
 if [[ -f "$checks_file" ]] && ! trace_error="$(trace_schema_error "$checks_file")"; then
-  report_issue "Latest checks trace is not repo-harness-run-trace.v1 compatible: ${trace_error//$'\n'/; }"
+  report_issue "Latest checks trace is not forge-run-trace.v1 compatible: ${trace_error//$'\n'/; }"
 fi
 
 if [[ -f "docs/plan.md" ]]; then

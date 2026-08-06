@@ -22,7 +22,7 @@ node scripts/check-platform-support.mjs
 bash scripts/check-open-source-tracked-surface.sh
 bun run check:public-export
 
-ARTIFACT_DIR="${REPO_HARNESS_RELEASE_ARTIFACT_DIR:-$ROOT/.ai/harness/artifacts/release}"
+ARTIFACT_DIR="${FORGE_RELEASE_ARTIFACT_DIR:-$ROOT/.ai/harness/artifacts/release}"
 mkdir -p "$ARTIFACT_DIR"
 PACK_JSON="$ARTIFACT_DIR/pack.json"
 echo "[release-readiness] create one reusable tarball"

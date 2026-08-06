@@ -12,7 +12,9 @@ import {
   loadWatchdogState,
   saveWatchdogState,
   reconnectMain,
+  recoverPrimaryRuntime,
   repairPublicTunnel,
+  restartPrimaryRuntime,
   rollbackPrevious,
   secureEqual,
   runtimeStatus,
@@ -34,7 +36,7 @@ function option(name: string): string | undefined {
 }
 
 function controllerHome(): string {
-  const home = option('--controller-home') ?? process.env.REPO_HARNESS_CONTROLLER_HOME;
+  const home = option('--controller-home') ?? process.env.FORGE_CONTROLLER_HOME;
   if (!home) throw new Error('RECOVERY_CONTROLLER_HOME_REQUIRED');
   return resolve(home);
 }
@@ -48,6 +50,8 @@ export const RECOVERY_CLI_COMMANDS = [
   'list-releases',
   'attest-known-good',
   'rollback-previous',
+  'restart-primary-runtime',
+  'recover-primary-runtime',
   'restart-public-tunnel',
   'diagnose',
   'reconnect-main',
@@ -59,8 +63,8 @@ function usage(): never {
 
 export function recoveryRuntimeRoleFromExecutable(executable = process.execPath): RecoveryRuntimeRole | undefined {
   const name = basename(executable);
-  if (name === 'repo-harness-recovery-gateway') return 'gateway';
-  if (name === 'repo-harness-recovery-watchdog') return 'watchdog';
+  if (name === 'forge-recovery-gateway') return 'gateway';
+  if (name === 'forge-recovery-watchdog') return 'watchdog';
   return undefined;
 }
 
@@ -91,6 +95,8 @@ async function cli(): Promise<void> {
     case 'list-releases': output(await listReleases(config)); return;
     case 'attest-known-good': output(await attestKnownGood(config)); return;
     case 'rollback-previous': output(await rollbackPrevious(config)); return;
+    case 'restart-primary-runtime': output(await restartPrimaryRuntime(config)); return;
+    case 'recover-primary-runtime': output(await recoverPrimaryRuntime(config)); return;
     case 'restart-public-tunnel': output(await repairPublicTunnel(config)); return;
     case 'diagnose': output(await diagnose(config)); return;
     case 'reconnect-main': output(await reconnectMain(config)); return;
@@ -112,6 +118,11 @@ async function startWatchdog(config: RecoveryConfig): Promise<void> {
         reason: result.decision.reason,
         failures: state.failures,
         publicTunnelFailures: state.publicTunnelFailures ?? 0,
+        runtimeRestartAttempts: state.runtimeRestartAttempts ?? 0,
+        runtimeRestartFailures: state.runtimeRestartFailures ?? 0,
+        primaryRuntimeRestartDetail: result.primaryRuntimeRestart?.detail,
+        primaryRuntimeRecoveryDetail: result.primaryRuntimeRecovery?.detail,
+        rollbackDetail: result.rollback?.detail,
         publicTunnelDetail: result.publicTunnelRepair?.detail,
       }) + '\n');
     } catch (error) {
@@ -168,11 +179,13 @@ export const RECOVERY_TOOLS = [
   { name: 'verify_external_runtime', description: 'Verify the external primary MCP endpoint.', inputSchema: { type: 'object', additionalProperties: false } },
   { name: 'attest_known_good', description: 'Record the active release as known-good only after full independent verification succeeds.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'rollback_previous', description: 'While Canonical Runtime is stopped, atomically restore its attested previous whole-Runtime release and SQLite backup.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
+  { name: 'restart_primary_runtime', description: 'Restart the installed canonical Forge Runtime service and require whole-Runtime verification.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
+  { name: 'recover_primary_runtime', description: 'Stop the canonical Runtime, restore the attested previous whole release and SQLite backup, restart it, and require verification.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'restart_public_tunnel', description: 'Restart the explicitly configured public tunnel only after local runtime verification succeeds and the external endpoint is unavailable.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'reconnect_primary_connector', description: 'Check canonical Runtime Gateway and primary MCP reconnection readiness without publishing a release.', inputSchema: { type: 'object', additionalProperties: false } },
 ] as const;
 
-const RECOVERY_OAUTH_SCOPE = 'repo-harness';
+const RECOVERY_OAUTH_SCOPE = 'forge';
 const RECOVERY_ACCESS_TOKEN_EXPIRES_IN_SECONDS = 10 * 365 * 24 * 60 * 60;
 const TOOL_SECURITY_SCHEMES = [{ type: 'oauth2', scopes: [RECOVERY_OAUTH_SCOPE] }] as const;
 const SUPPORTED_TOKEN_AUTH_METHODS = ['client_secret_basic', 'client_secret_post', 'none'] as const;
@@ -258,7 +271,7 @@ function recoveryProtectedResourceMetadata(request: IncomingMessage): Record<str
 
 function recoveryWwwAuthenticate(request: IncomingMessage): string {
   const metadata = `${publicOrigin(request)}/.well-known/oauth-protected-resource${resourcePathFromRequest(request)}`;
-  return `Bearer realm="repo-harness-recovery", resource_metadata="${metadata}", scope="${RECOVERY_OAUTH_SCOPE}"`;
+  return `Bearer realm="forge-recovery", resource_metadata="${metadata}", scope="${RECOVERY_OAUTH_SCOPE}"`;
 }
 
 function parseUrlEncoded(input: string): URLSearchParams {
@@ -312,7 +325,7 @@ function renderAuthorizeForm(params: URLSearchParams, error?: string): string {
     .join('\n');
   return `<!doctype html>
 <meta charset="utf-8">
-<title>Authorize Repo Harness Recovery</title>
+<title>Authorize Forge Recovery</title>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 3rem auto; max-width: 38rem; line-height: 1.45; color: #111827; }
   label, input, button { display: block; width: 100%; box-sizing: border-box; }
@@ -321,7 +334,7 @@ function renderAuthorizeForm(params: URLSearchParams, error?: string): string {
   .error { color: #b91c1c; }
   .hint { color: #4b5563; }
 </style>
-<h1>Authorize Repo Harness Recovery</h1>
+<h1>Authorize Forge Recovery</h1>
 <p class="hint">Enter the local MCP passphrase to let ChatGPT use the recovery-only MCP connector.</p>
 ${error ? `<p class="error">${escapeHtml(error)}</p>` : ''}
 <form method="post">
@@ -394,6 +407,14 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       return rollbackPrevious(config, `recovery-gateway:${args.request_id}`);
     }
+    case 'restart_primary_runtime': {
+      if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
+      return restartPrimaryRuntime(config);
+    }
+    case 'recover_primary_runtime': {
+      if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
+      return recoverPrimaryRuntime(config, `recovery-gateway:${args.request_id}`);
+    }
     case 'restart_public_tunnel': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       return repairPublicTunnel(config);
@@ -422,7 +443,7 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
     if (request.method === 'GET' && matchesAnyPath(request.url, ['/health', '/recovery/health'])) {
       json(response, 200, {
         status: 'ok',
-        service: 'repo-harness-standalone-recovery',
+        service: 'forge-standalone-recovery',
         ...(runtimeIdentity ? {
           releasePath: runtimeIdentity.releasePath,
           releaseRevision: runtimeIdentity.releaseRevision,
@@ -525,7 +546,7 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
       const registeredClient = oauthClients.get(clientId);
       if (registeredClient?.clientSecret && !secureEqual(clientSecret, registeredClient.clientSecret)) {
         auditGateway({ oauth: 'token', outcome: 'invalid_client', token_endpoint_auth_method: registeredClient.tokenEndpointAuthMethod });
-        response.setHeader('www-authenticate', 'Basic realm="repo-harness-recovery-oauth"');
+        response.setHeader('www-authenticate', 'Basic realm="forge-recovery-oauth"');
         json(response, 401, { error: 'invalid_client' });
         return;
       }
@@ -558,7 +579,7 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
     let message: { id?: unknown; method?: unknown; params?: { name?: unknown; arguments?: unknown } };
     try { message = JSON.parse(await readBody(request)) as typeof message; } catch { json(response, 400, rpcError(null, -32700, 'Invalid JSON.')); return; }
     const id = message.id ?? null;
-    if (message.method === 'initialize') { json(response, 200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'repo-harness-standalone-recovery', version: '1.0.0' } } }); return; }
+    if (message.method === 'initialize') { json(response, 200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'forge-standalone-recovery', version: '1.0.0' } } }); return; }
     if (message.method === 'notifications/initialized') { response.statusCode = 202; response.end(); return; }
     if (message.method === 'tools/list') {
       const tools = RECOVERY_TOOLS.map((tool) => ({
@@ -572,7 +593,7 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
     if (message.method !== 'tools/call' || typeof message.params?.name !== 'string') { json(response, 200, rpcError(id, -32601, 'Unsupported MCP method.')); return; }
     const name = message.params.name;
     const args = message.params.arguments && typeof message.params.arguments === 'object' && !Array.isArray(message.params.arguments) ? message.params.arguments as Record<string, unknown> : {};
-    if (name === 'attest_known_good' || name === 'rollback_previous' || name === 'restart_gateway' || name === 'restart_stable_supervisor' || name === 'restart_public_tunnel') {
+    if (name === 'attest_known_good' || name === 'rollback_previous' || name === 'restart_primary_runtime' || name === 'recover_primary_runtime' || name === 'restart_public_tunnel') {
       const address = request.socket.remoteAddress ?? 'unknown'; const now = Date.now();
       const window = (recentMutations.get(address) ?? []).filter((at) => now - at < 60_000);
       if (window.length >= 3) { json(response, 429, rpcError(id, -32029, 'Recovery mutation rate limit exceeded.')); return; }

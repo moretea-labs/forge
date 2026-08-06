@@ -136,7 +136,7 @@ function browserTellScript(browser: MacOsBrowserDefinition, body: string): strin
 
 function metadataScript(browser: MacOsBrowserDefinition): string {
   return browserTellScript(browser, `
-if (count of windows) is 0 then error "REPO_HARNESS_NO_BROWSER_WINDOW"
+if (count of windows) is 0 then error "FORGE_NO_BROWSER_WINDOW"
 set targetWindow to front window
 set targetTab to active tab of targetWindow
 set windowBounds to bounds of targetWindow
@@ -149,7 +149,7 @@ function executeJavaScriptScript(browser: MacOsBrowserDefinition): string {
   return `on run argv
 set javascriptSource to item 1 of argv
 ${browserTellScript(browser, `
-if (count of windows) is 0 then error "REPO_HARNESS_NO_BROWSER_WINDOW"
+if (count of windows) is 0 then error "FORGE_NO_BROWSER_WINDOW"
 return execute active tab of front window javascript javascriptSource
 `)}
 end run`;
@@ -159,7 +159,7 @@ function navigateScript(browser: MacOsBrowserDefinition): string {
   return `on run argv
 set targetUrl to item 1 of argv
 ${browserTellScript(browser, `
-if (count of windows) is 0 then error "REPO_HARNESS_NO_BROWSER_WINDOW"
+if (count of windows) is 0 then error "FORGE_NO_BROWSER_WINDOW"
 activate
 set URL of active tab of front window to targetUrl
 return targetUrl
@@ -169,7 +169,7 @@ end run`;
 
 function reloadScript(browser: MacOsBrowserDefinition): string {
   return browserTellScript(browser, `
-if (count of windows) is 0 then error "REPO_HARNESS_NO_BROWSER_WINDOW"
+if (count of windows) is 0 then error "FORGE_NO_BROWSER_WINDOW"
 activate
 reload active tab of front window
 `);
@@ -275,7 +275,7 @@ function serializeEvaluation(expression: string | ((...args: unknown[]) => unkno
   return `(() => {
     try {
       const value = (${source});
-      return JSON.stringify({ ok: true, value: value === undefined ? { __repoHarnessUndefined: true } : value });
+      return JSON.stringify({ ok: true, value: value === undefined ? { __forgeUndefined: true } : value });
     } catch (error) {
       return JSON.stringify({ ok: false, error: String(error && (error.stack || error.message) || error) });
     }
@@ -401,7 +401,7 @@ export class MacOsAppleEventsPage {
       });
     }
     if (!parsed.ok) throw new Error(parsed.error || 'Browser JavaScript evaluation failed.');
-    if (parsed.value && typeof parsed.value === 'object' && (parsed.value as { __repoHarnessUndefined?: unknown }).__repoHarnessUndefined === true) {
+    if (parsed.value && typeof parsed.value === 'object' && (parsed.value as { __forgeUndefined?: unknown }).__forgeUndefined === true) {
       return undefined as T;
     }
     return parsed.value as T;

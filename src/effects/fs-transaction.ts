@@ -26,7 +26,7 @@ import { resolveInsideRepo, resolveParentInsideRepo } from "./path-safety";
 import { upsertManagedBlock } from "./managed-block";
 
 const BACKUP_ROOT = ".ai/harness/backups/fs-transaction";
-const LOCK_SUFFIX = ".repo-harness.lock";
+const LOCK_SUFFIX = ".forge.lock";
 let atomicWriteSequence = 0;
 let transactionSequence = 0;
 
@@ -333,7 +333,7 @@ function writeTransactionManifest(plan: AdoptionPlan, transactionDir: string, re
       };
     }),
     rollback: {
-      command: `repo-harness adopt rollback --transaction ${manifestPath}`,
+      command: `forge adopt rollback --transaction ${manifestPath}`,
     },
   };
   atomicWriteFile(plan.repoRoot, manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });

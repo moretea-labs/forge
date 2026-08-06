@@ -44,15 +44,15 @@ const REQUIRED_CODEX_TOOLS = [
 
 const CHATGPT_MCP_ENDPOINT_PLACEHOLDER = "<https-tunnel-url>/mcp";
 const CHATGPT_NAMED_TUNNEL_HOST_PLACEHOLDER = "<named-tunnel-host>";
-const DEFAULT_CHATGPT_MCP_SERVER_NAME = "repo-harness-controller-v8";
+const DEFAULT_CHATGPT_MCP_SERVER_NAME = "forge-controller-v8";
 const LEGACY_DEFAULT_SERVER_NAMES = new Set([
-  "repo-harness",
-  "repo-harness-controller-v1",
-  "repo-harness-controller-v2",
-  "repo-harness-controller-v3",
-  "repo-harness-controller-v4",
-  "repo-harness-controller-v5",
-  "repo-harness-controller-v6",
+  "forge",
+  "forge-controller-v1",
+  "forge-controller-v2",
+  "forge-controller-v3",
+  "forge-controller-v4",
+  "forge-controller-v5",
+  "forge-controller-v6",
 ]);
 const ENDPOINT_ERROR =
   "expected a public HTTPS URL exactly ending in /mcp with no username, password, query, or fragment";
@@ -184,7 +184,7 @@ function normalizeChatgptMcpServerName(value: string | undefined): string {
 export function chatgptGuideMarkdown(
   endpoint = CHATGPT_MCP_ENDPOINT_PLACEHOLDER,
 ): string {
-  return `# repo-harness ChatGPT Controller Setup
+  return `# forge ChatGPT Controller Setup
 
 ## Purpose
 
@@ -192,20 +192,20 @@ The \`controller\` profile makes ChatGPT the project control plane. ChatGPT can 
 
 ## Prerequisites
 
-- A repo-harness adopted repository.
-- Bun and the \`repo-harness\` CLI on PATH.
+- A forge adopted repository.
+- Bun and the \`forge\` CLI on PATH.
 - Codex and/or Claude CLI installed for delegated local execution.
 - GitHub CLI \`gh\` authenticated when GitHub Issues, Projects, or Copilot cloud sessions are used.
 - ChatGPT workspace access to Developer Mode and custom MCP Connectors.
 - A public HTTPS \`/mcp\` endpoint for ChatGPT.
 
-For a shared editable installation, keep the repo-harness checkout at a stable path such as \`~/DevProjects/repo-harness\`, run \`bun install\`, and reinstall the CLI after pulling updates.
+For a shared editable installation, keep the forge checkout at a stable path such as \`~/DevProjects/forge\`, run \`bun install\`, and reinstall the CLI after pulling updates.
 
 ## One-time setup
 
 \`\`\`bash
-repo-harness mcp setup chatgpt --repo .
-repo-harness mcp keepalive --repo . --profile controller --toolset core --enable-dev-runner --dev-runner-agents codex,claude --tunnel quick
+forge mcp setup chatgpt --repo .
+forge mcp keepalive --repo . --profile controller --toolset core --enable-dev-runner --dev-runner-agents codex,claude --tunnel quick
 \`\`\`
 
 The \`controller\` profile starts a localhost-only visual controller at \`http://127.0.0.1:8766/\` by default. It is separate from the public MCP tunnel. Use it to launch ready Tasks, create small Codex/Claude sessions, approve local Jobs, inspect live logs, and run named checks. Add \`--open-local-ui\` to open it automatically, or \`--no-local-ui\` to disable it.
@@ -214,7 +214,7 @@ Health check:
 
 \`\`\`bash
 curl http://127.0.0.1:8765/health
-repo-harness mcp doctor --repo .
+forge mcp doctor --repo .
 \`\`\`
 
 For a fixed Cloudflare domain, verify both local and public discovery without leaking tokens:
@@ -228,9 +228,9 @@ HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= curl -v https://${CHATGPT_NAMED_TUNNEL_HOST_
 
 If a local HTTP proxy interferes with endpoint checks, add the fixed domain, \`*.trycloudflare.com\`, \`*.ts.net\`, and \`100.64.0.0/10\` to \`NO_PROXY\` instead of disabling proxies globally.
 
-The controller profile stores service-level MCP config under \`controllerHome/mcp/mcp.local.json\`, including allowed local agents, timeout, endpoint, and \`chatgpt.serverName\`. OAuth credentials live in \`controllerHome/mcp/mcp.oauth.json\`; the bearer fallback lives in \`controllerHome/mcp/mcp.tokens.json\`. Existing repo-local \`.repo-harness/mcp.*\` files remain a legacy fallback.
+The controller profile stores service-level MCP config under \`controllerHome/mcp/mcp.local.json\`, including allowed local agents, timeout, endpoint, and \`chatgpt.serverName\`. OAuth credentials live in \`controllerHome/mcp/mcp.oauth.json\`; the bearer fallback lives in \`controllerHome/mcp/mcp.tokens.json\`. Existing repo-local \`.forge/mcp.*\` files remain a legacy fallback.
 
-Repository-specific MCP access rules may be added in \`.repo-harness/mcp.policy.json\`. Repository policy can narrow access, but immutable secret, credential, Git-internal, and build-output denies remain enforced.
+Repository-specific MCP access rules may be added in \`.forge/mcp.policy.json\`. Repository policy can narrow access, but immutable secret, credential, Git-internal, and build-output denies remain enforced.
 
 ## Stable endpoint
 
@@ -240,26 +240,26 @@ Use this Connector URL:
 ${endpoint}
 \`\`\`
 
-Quick tunnels are useful for one-off smoke tests, but their URL may change. For routine use, prefer a fixed Cloudflare domain. If repo-harness should start the Cloudflare tunnel process, use a named tunnel:
+Quick tunnels are useful for one-off smoke tests, but their URL may change. For routine use, prefer a fixed Cloudflare domain. If forge should start the Cloudflare tunnel process, use a named tunnel:
 
 \`\`\`bash
 cloudflared tunnel login
-cloudflared tunnel create repo-harness-mcp
-cloudflared tunnel route dns repo-harness-mcp ${CHATGPT_NAMED_TUNNEL_HOST_PLACEHOLDER}
-repo-harness mcp keepalive --repo . --profile controller --toolset core --enable-dev-runner --dev-runner-agents codex,claude --tunnel named --cloudflare-tunnel-name repo-harness-mcp --public-endpoint https://${CHATGPT_NAMED_TUNNEL_HOST_PLACEHOLDER}/mcp
+cloudflared tunnel create forge-mcp
+cloudflared tunnel route dns forge-mcp ${CHATGPT_NAMED_TUNNEL_HOST_PLACEHOLDER}
+forge mcp keepalive --repo . --profile controller --toolset core --enable-dev-runner --dev-runner-agents codex,claude --tunnel named --cloudflare-tunnel-name forge-mcp --public-endpoint https://${CHATGPT_NAMED_TUNNEL_HOST_PLACEHOLDER}/mcp
 \`\`\`
 
-If Cloudflare is managed outside repo-harness, keep repo-harness on the fixed public origin without owning the tunnel process:
+If Cloudflare is managed outside forge, keep forge on the fixed public origin without owning the tunnel process:
 
 \`\`\`bash
-repo-harness mcp setup chatgpt --repo . --endpoint https://${CHATGPT_NAMED_TUNNEL_HOST_PLACEHOLDER}/mcp
-repo-harness mcp keepalive --repo . --profile controller --toolset core --enable-dev-runner --dev-runner-agents codex,claude --tunnel none --public-endpoint https://${CHATGPT_NAMED_TUNNEL_HOST_PLACEHOLDER}/mcp
+forge mcp setup chatgpt --repo . --endpoint https://${CHATGPT_NAMED_TUNNEL_HOST_PLACEHOLDER}/mcp
+forge mcp keepalive --repo . --profile controller --toolset core --enable-dev-runner --dev-runner-agents codex,claude --tunnel none --public-endpoint https://${CHATGPT_NAMED_TUNNEL_HOST_PLACEHOLDER}/mcp
 \`\`\`
 
 Regenerate this guide with the stable endpoint:
 
 \`\`\`bash
-repo-harness mcp setup chatgpt --repo . --endpoint <https-url>/mcp
+forge mcp setup chatgpt --repo . --endpoint <https-url>/mcp
 \`\`\`
 
 The real endpoint stays in ignored local config; the tracked guide stays placeholder-only. The OAuth discovery endpoint includes \`oauth-protected-resource\` metadata.
@@ -272,7 +272,7 @@ The real endpoint stays in ignored local config; the tracked guide stays placeho
 4. Configure Connector authentication as OAuth. ChatGPT must use the \`/mcp\` OAuth URL; do not point ChatGPT at \`/mcp-bearer\`.
 5. Scan tools and authorize with the passphrase from \`controllerHome/mcp/mcp.oauth.json\`.
 6. Keep write confirmations enabled.
-7. Re-scan tools after updating repo-harness tool schemas.
+7. Re-scan tools after updating forge tool schemas.
 
 ### Grok and other OAuth MCP clients
 
@@ -282,7 +282,7 @@ Current Grok custom connectors support OAuth dynamic client registration + PKCE.
 <https-tunnel-url>/mcp
 \`\`\`
 
-Do not use the legacy \/mcp-grok route for new connectors. Grok's current OAuth callback is \/connectors-oauth-exchange-code\/ on grok.com; repo-harness accepts that callback through dynamic registration or its public-client fallback.
+Do not use the legacy \/mcp-grok route for new connectors. Grok's current OAuth callback is \/connectors-oauth-exchange-code\/ on grok.com; forge accepts that callback through dynamic registration or its public-client fallback.
 
 ### Non-OAuth MCP clients
 
@@ -292,7 +292,7 @@ Clients that cannot complete OAuth dynamic client registration + PKCE should use
 <https-tunnel-url>/mcp-bearer
 \`\`\`
 
-Authenticate with \`Authorization: Bearer <token>\` using the token stored under \`controllerHome/mcp/mcp.tokens.json\` (or \`REPO_HARNESS_MCP_TOKEN\`). Do not paste the raw token into chat or docs. \`/health\` advertises both \`mcpEndpoint\` and \`bearerEndpoint\`. Incomplete OAuth hits on \`/authorize\` return HTTP 400 and point clients to \`/mcp-bearer\`.
+Authenticate with \`Authorization: Bearer <token>\` using the token stored under \`controllerHome/mcp/mcp.tokens.json\` (or \`FORGE_MCP_TOKEN\`). Do not paste the raw token into chat or docs. \`/health\` advertises both \`mcpEndpoint\` and \`bearerEndpoint\`. Incomplete OAuth hits on \`/authorize\` return HTTP 400 and point clients to \`/mcp-bearer\`.
 
 ## Verify the loaded tool surface
 
@@ -303,23 +303,23 @@ Default \`--toolset core\` exposes the five-tool ChatGPT facade (\`rh_access\`, 
 For the current repository only, prefer a bounded local restart:
 
 \`\`\`bash
-repo-harness mcp restart --repo .
+forge mcp restart --repo .
 \`\`\`
 
 If this repository is already registered with the global Controller and also needs a local harness refresh, use a repo-scoped rollout instead of an unscoped rollout:
 
 \`\`\`bash
-repo-harness repo rollout --repo-id <current-repo-id>
+forge repo rollout --repo-id <current-repo-id>
 \`\`\`
 
-After either command, rescan or recreate the ChatGPT Connector, then call \`controller_capabilities\` again and verify \`expectedTools\` still includes \`repository_latest_source_diagnose\` and \`repository_bootstrap_local_project\`. Do not run an unscoped \`repo-harness repo rollout\` unless you intentionally want to refresh every registered repository.
+After either command, rescan or recreate the ChatGPT Connector, then call \`controller_capabilities\` again and verify \`expectedTools\` still includes \`repository_latest_source_diagnose\` and \`repository_bootstrap_local_project\`. Do not run an unscoped \`forge repo rollout\` unless you intentionally want to refresh every registered repository.
 
 ## Daily workflow
 
 Start a new ChatGPT conversation with:
 
 \`\`\`text
-Use repo-harness as the project controller. Read project_snapshot, current Issues, active Runs, and relevant code before deciding the next action. Keep work in small dependency-aware Tasks. Do not dispatch one large Issue as one agent run.
+Use forge as the project controller. Read project_snapshot, current Issues, active Runs, and relevant code before deciding the next action. Keep work in small dependency-aware Tasks. Do not dispatch one large Issue as one agent run.
 \`\`\`
 
 Typical requests:
@@ -375,7 +375,7 @@ SuperController session.
 Local Agent execution is opt-in. GitHub cloud sessions use authenticated \`gh\` and do not require the local dev runner:
 
 \`\`\`bash
-repo-harness mcp serve --repo . --transport http --host 127.0.0.1 --port 8765 --profile controller --enable-dev-runner --dev-runner-agents codex,claude
+forge mcp serve --repo . --transport http --host 127.0.0.1 --port 8765 --profile controller --enable-dev-runner --dev-runner-agents codex,claude
 \`\`\`
 
 The runner defaults to 60 minutes per local Task and supports explicit values up to 12 hours. Requested values are validated and persisted unchanged; an invalid value fails instead of silently falling back to 120 seconds.
@@ -392,20 +392,20 @@ The runner:
 Watch local or GitHub execution from a terminal:
 
 \`\`\`bash
-repo-harness controller runs --repo .
-repo-harness controller watch <RUN-ID> --repo . --log
+forge controller runs --repo .
+forge controller watch <RUN-ID> --repo . --log
 \`\`\`
 
 The \`--log\` view streams local Codex/Claude output while the process is running and polls GitHub cloud-session logs when available.
 
-Use \`repo-harness mcp keepalive\` when the local server and tunnel should be supervised together.
+Use \`forge mcp keepalive\` when the local server and tunnel should be supervised together.
 
 ## Local Codex MCP
 
-Configure Codex to read repo-harness state:
+Configure Codex to read forge state:
 
 \`\`\`bash
-repo-harness mcp setup codex --repo . --scope project
+forge mcp setup codex --repo . --scope project
 \`\`\`
 
 The executor profile remains read-oriented. Controller-dispatched Codex work is scoped by the generated Task prompt and worktree.
@@ -423,9 +423,9 @@ The executor profile remains read-oriented. Controller-dispatched Codex work is 
 - ChatGPT cannot connect: verify the HTTPS tunnel ends in \`/mcp\` and local \`/health\` responds.
 - Grok cannot connect: recreate it with the canonical \`…/mcp\` URL. The legacy \`…/mcp-grok\` URL is compatibility-only.
 - A genuinely non-OAuth client loops on \`/authorize\`: use \`…/mcp-bearer\` with a bearer token from \`controllerHome/mcp/mcp.tokens.json\`.
-- ChatGPT auth loops: retry authorization and inspect \`controllerHome/mcp/mcp.oauth.json\` first, then legacy \`.repo-harness/mcp.oauth.json\` only when using fallback; do not paste the passphrase into chat.
-- Tool scan misses tools: run \`repo-harness mcp restart --repo .\`, then rescan or recreate the versioned Connector and verify \`controller_capabilities.expectedTools\` includes \`repository_latest_source_diagnose\` and \`repository_bootstrap_local_project\`.
-- Codex cannot see the MCP server: rerun \`repo-harness mcp setup codex --repo . --scope project\`.
+- ChatGPT auth loops: retry authorization and inspect \`controllerHome/mcp/mcp.oauth.json\` first, then legacy \`.forge/mcp.oauth.json\` only when using fallback; do not paste the passphrase into chat.
+- Tool scan misses tools: run \`forge mcp restart --repo .\`, then rescan or recreate the versioned Connector and verify \`controller_capabilities.expectedTools\` includes \`repository_latest_source_diagnose\` and \`repository_bootstrap_local_project\`.
+- Codex cannot see the MCP server: rerun \`forge mcp setup codex --repo . --scope project\`.
 - A quick tunnel URL changed: update the Connector URL or switch to a named tunnel.
 - A Task is blocked: inspect \`get_task_run\`, shrink or re-plan the Task, then retry that Task rather than redispatching the full Issue.
 `;
@@ -456,7 +456,7 @@ export function runMcpSetupChatgpt(opts: {
     opts.endpoint ?? existingConfig?.chatgpt?.endpoint,
   );
   const configPath = mcpControllerHomeLocalConfigPath(controllerHome);
-  const guidePath = join(repoRoot, "docs", "repo-harness-chatgpt-mcp-setup.md");
+  const guidePath = join(repoRoot, "docs", "forge-chatgpt-mcp-setup.md");
   const token = ensureMcpControllerHomeBearerToken(controllerHome);
   const oauth = ensureMcpControllerHomeOAuthPassphrase(controllerHome);
   if (token.changed) changed.push(token.path);
@@ -517,11 +517,11 @@ export function runMcpSetupChatgpt(opts: {
   ensureGitignoreEntries(
     repoRoot,
     [
-      ".repo-harness/mcp.local.json",
-      ".repo-harness/mcp.tokens.json",
-      ".repo-harness/mcp.oauth.json",
-      ".repo-harness/mcp.oauth-tokens.json",
-      ".repo-harness/mcp.runtime.json",
+      ".forge/mcp.local.json",
+      ".forge/mcp.tokens.json",
+      ".forge/mcp.oauth.json",
+      ".forge/mcp.oauth-tokens.json",
+      ".forge/mcp.runtime.json",
       ".ai/harness/mcp/audit.log",
       ".ai/harness/local-jobs/",
       ".ai/harness/controller/",
@@ -534,28 +534,28 @@ export function runMcpSetupChatgpt(opts: {
     repoRoot,
     changed,
     lines: [
-      `[repo-harness mcp] Repo: ${repoRoot}`,
-      "[repo-harness mcp] Profile: controller",
-      `[repo-harness mcp] Toolset: ${config.toolset}`,
-      `[repo-harness mcp] ChatGPT MCP server name: ${serverName}`,
-      `[repo-harness mcp] Local endpoint: http://${host}:${port}/mcp`,
-      `[repo-harness mcp] Local Controller: http://${config.localController.host}:${config.localController.port}/`,
-      `[repo-harness mcp] Local agent timeout: ${config.devMode.timeoutMs}ms (max ${config.devMode.maxTimeoutMs}ms)`,
+      `[forge mcp] Repo: ${repoRoot}`,
+      "[forge mcp] Profile: controller",
+      `[forge mcp] Toolset: ${config.toolset}`,
+      `[forge mcp] ChatGPT MCP server name: ${serverName}`,
+      `[forge mcp] Local endpoint: http://${host}:${port}/mcp`,
+      `[forge mcp] Local Controller: http://${config.localController.host}:${config.localController.port}/`,
+      `[forge mcp] Local agent timeout: ${config.devMode.timeoutMs}ms (max ${config.devMode.maxTimeoutMs}ms)`,
       endpoint
-        ? `[repo-harness mcp] ChatGPT endpoint: ${endpoint}`
-        : "[repo-harness mcp] ChatGPT endpoint: requires stable HTTPS tunnel",
-      `[repo-harness mcp] Auth: OAuth passphrase (${relative(repoRoot, oauth.path)})`,
-      `[repo-harness mcp] Bearer fallback token: ${relative(repoRoot, token.path)}`,
-      `[repo-harness mcp] Config: ${relative(repoRoot, configPath)}`,
-      `[repo-harness mcp] Guide: ${relative(repoRoot, guidePath)} (generic; endpoint stays in ignored local config)`,
-      `[repo-harness mcp] Runtime state: ${relative(repoRoot, mcpControllerHomeRuntimeStatePath(controllerHome))}`,
-      `Next: repo-harness mcp keepalive --repo . --host ${host} --port ${port} --profile controller --toolset ${config.toolset} --enable-dev-runner --dev-runner-agents codex --tunnel quick`,
+        ? `[forge mcp] ChatGPT endpoint: ${endpoint}`
+        : "[forge mcp] ChatGPT endpoint: requires stable HTTPS tunnel",
+      `[forge mcp] Auth: OAuth passphrase (${relative(repoRoot, oauth.path)})`,
+      `[forge mcp] Bearer fallback token: ${relative(repoRoot, token.path)}`,
+      `[forge mcp] Config: ${relative(repoRoot, configPath)}`,
+      `[forge mcp] Guide: ${relative(repoRoot, guidePath)} (generic; endpoint stays in ignored local config)`,
+      `[forge mcp] Runtime state: ${relative(repoRoot, mcpControllerHomeRuntimeStatePath(controllerHome))}`,
+      `Next: forge mcp keepalive --repo . --host ${host} --port ${port} --profile controller --toolset ${config.toolset} --enable-dev-runner --dev-runner-agents codex --tunnel quick`,
     ],
   };
 }
 
-const CODEX_MCP_BLOCK = `[mcp_servers.repo_harness]
-command = "repo-harness"
+const CODEX_MCP_BLOCK = `[mcp_servers.forge]
+command = "forge"
 args = [
   "mcp",
   "serve",
@@ -580,7 +580,7 @@ default_tools_approval_mode = "prompt"
 
 export function patchCodexConfigToml(current: string): string {
   const normalized = current.trimEnd();
-  const blockPattern = /\n?\[mcp_servers\.repo_harness\][\s\S]*?(?=\n\[|$)/;
+  const blockPattern = /\n?\[mcp_servers\.forge\][\s\S]*?(?=\n\[|$)/;
   const prefix = normalized.length > 0 ? `${normalized}\n\n` : "";
   if (!blockPattern.test(normalized)) return `${prefix}${CODEX_MCP_BLOCK}`;
   return `${normalized.replace(blockPattern, `\n${CODEX_MCP_BLOCK}`.trimEnd())}\n`;
@@ -593,7 +593,7 @@ export function runMcpSetupCodex(opts: {
 }): McpSetupResult {
   if ((opts.scope ?? "project") !== "project") {
     throw new Error(
-      "repo-harness mcp setup codex currently supports --scope project only",
+      "forge mcp setup codex currently supports --scope project only",
     );
   }
   const repoRoot = resolveMcpRepoRoot(opts.repo ?? ".");
@@ -609,7 +609,7 @@ export function runMcpSetupCodex(opts: {
       repoRoot,
       changed: [],
       lines: [
-        `[repo-harness mcp] Dry run: would patch ${relative(repoRoot, configPath)}`,
+        `[forge mcp] Dry run: would patch ${relative(repoRoot, configPath)}`,
         next,
       ],
     };
@@ -624,9 +624,9 @@ export function runMcpSetupCodex(opts: {
     repoRoot,
     changed,
     lines: [
-      `[repo-harness mcp] Codex config: ${relative(repoRoot, configPath)}`,
-      "[repo-harness mcp] Server: repo_harness",
-      "[repo-harness mcp] Transport: stdio",
+      `[forge mcp] Codex config: ${relative(repoRoot, configPath)}`,
+      "[forge mcp] Server: forge",
+      "[forge mcp] Transport: stdio",
     ],
   };
 }
@@ -644,7 +644,7 @@ export function runMcpPrintGuide(opts: {
   );
   if (opts.write === true) {
     writeFileIfChanged(
-      join(repoRoot, "docs", "repo-harness-chatgpt-mcp-setup.md"),
+      join(repoRoot, "docs", "forge-chatgpt-mcp-setup.md"),
       chatgptGuideMarkdown(),
       changed,
     );
@@ -658,7 +658,7 @@ export function runMcpPrintGuide(opts: {
       ...(opts.write === true && endpoint
         ? [
             "",
-            `[repo-harness mcp] ChatGPT endpoint for this session: ${endpoint}`,
+            `[forge mcp] ChatGPT endpoint for this session: ${endpoint}`,
           ]
         : []),
     ],
@@ -681,7 +681,7 @@ export function runMcpDoctor(opts: {
   const codexConfig = existsSync(codexConfigPath)
     ? readFileSync(codexConfigPath, "utf-8")
     : "";
-  const codexHasServer = codexConfig.includes("[mcp_servers.repo_harness]");
+  const codexHasServer = codexConfig.includes("[mcp_servers.forge]");
   const missingTools = REQUIRED_CODEX_TOOLS.filter(
     (tool) => !codexConfig.includes(`"${tool}"`),
   );
@@ -694,10 +694,10 @@ export function runMcpDoctor(opts: {
     mcp: {
       toolset: migrateControllerToolsetConfig(localConfig).toolset,
       localConfig: existsSync(mcpControllerHomeLocalConfigPath(controllerHome)) || existsSync(
-        join(repoRoot, ".repo-harness", "mcp.local.json"),
+        join(repoRoot, ".forge", "mcp.local.json"),
       ),
       guide: existsSync(
-        join(repoRoot, "docs", "repo-harness-chatgpt-mcp-setup.md"),
+        join(repoRoot, "docs", "forge-chatgpt-mcp-setup.md"),
       ),
       authConfigured:
         (authMode === "oauth" && (existsSync(mcpControllerHomeOAuthPath(controllerHome)) || existsSync(mcpOAuthPath(repoRoot)))) ||
@@ -722,7 +722,7 @@ export function runMcpDoctor(opts: {
       configPath: ".codex/config.toml",
       hasServer: codexHasServer,
       missingTools,
-      fix: "repo-harness mcp setup codex --repo . --scope project",
+      fix: "forge mcp setup codex --repo . --scope project",
     },
     chatgpt: {
       ...(configuredServerName ? { serverName: configuredServerName } : {}),
@@ -734,7 +734,7 @@ export function runMcpDoctor(opts: {
       publicEndpoint: localConfig?.chatgpt?.endpoint,
       authMode,
       manualStepsRequired: true,
-      setup: "repo-harness mcp setup chatgpt --repo .",
+      setup: "forge mcp setup chatgpt --repo .",
     },
     runtime: runtimeState
       ? {
@@ -761,17 +761,17 @@ export function runMcpDoctor(opts: {
       opts.json === true
         ? [JSON.stringify(report, null, 2)]
         : [
-            `[repo-harness mcp] Repo: ${repoRoot}`,
-            `[repo-harness mcp] Status: ${report.status}`,
-            `[repo-harness mcp] ChatGPT MCP server name: ${
+            `[forge mcp] Repo: ${repoRoot}`,
+            `[forge mcp] Status: ${report.status}`,
+            `[forge mcp] ChatGPT MCP server name: ${
               configuredServerName ??
               `missing (run setup; default is ${DEFAULT_CHATGPT_MCP_SERVER_NAME})`
             }`,
-            `[repo-harness mcp] ChatGPT guide: ${report.mcp.guide ? "present" : "missing"}`,
-            `[repo-harness mcp] Toolset: ${report.mcp.toolset}`,
-            `[repo-harness mcp] Local Controller: ${report.mcp.localController.enabled ? report.chatgpt.localController : "disabled"}`,
-            `[repo-harness mcp] ChatGPT auth: ${report.mcp.authConfigured ? `${authMode} present` : "missing"}`,
-            `[repo-harness mcp] Runtime: ${
+            `[forge mcp] ChatGPT guide: ${report.mcp.guide ? "present" : "missing"}`,
+            `[forge mcp] Toolset: ${report.mcp.toolset}`,
+            `[forge mcp] Local Controller: ${report.mcp.localController.enabled ? report.chatgpt.localController : "disabled"}`,
+            `[forge mcp] ChatGPT auth: ${report.mcp.authConfigured ? `${authMode} present` : "missing"}`,
+            `[forge mcp] Runtime: ${
               report.runtime
                 ? `${report.runtime.status} (local=${report.runtime.localHealthy ? "ok" : "down"}${
                     report.runtime.tunnelMode !== "none"
@@ -782,13 +782,13 @@ export function runMcpDoctor(opts: {
             }`,
             ...(report.runtime?.connectorNeedsReconnect === true
               ? [
-                  "[repo-harness mcp] Runtime note: public quick tunnel URL changed; update the ChatGPT connector or switch to a named tunnel",
+                  "[forge mcp] Runtime note: public quick tunnel URL changed; update the ChatGPT connector or switch to a named tunnel",
                 ]
               : []),
-            `[repo-harness mcp] Dev runner: ${report.mcp.devMode.agentRunner ? `enabled (${report.mcp.devMode.allowedAgents.join(",")})` : "disabled"}`,
-            `[repo-harness mcp] Codex config: ${report.codex.configured ? "present" : "missing"}`,
-            `[repo-harness mcp] Codex CLI: ${report.codex.cliAvailable ? "present" : "missing"}`,
-            `[repo-harness mcp] Next ChatGPT setup: ${report.chatgpt.setup}`,
+            `[forge mcp] Dev runner: ${report.mcp.devMode.agentRunner ? `enabled (${report.mcp.devMode.allowedAgents.join(",")})` : "disabled"}`,
+            `[forge mcp] Codex config: ${report.codex.configured ? "present" : "missing"}`,
+            `[forge mcp] Codex CLI: ${report.codex.cliAvailable ? "present" : "missing"}`,
+            `[forge mcp] Next ChatGPT setup: ${report.chatgpt.setup}`,
           ],
   };
 }

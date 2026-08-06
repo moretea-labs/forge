@@ -10,7 +10,7 @@ The execution-plane phases below remain completed. The seven-phase lifecycle sou
 
 Active target:
 
-- one `repo-harness-runtime` process owns MCP Transport, Gateway Adapter, Controller Services, Scheduler, SQLite, and Worker Manager;
+- one `forge-runtime` process owns MCP Transport, Gateway Adapter, Controller Services, Scheduler, SQLite, and Worker Manager;
 - one Runtime Root owns core startup, shutdown, fatal failure, ownership, and binary readiness;
 - MCP binds directly to one configured Runtime endpoint; no Stable Ingress or alternate serving slot exists;
 - `runtime/releases/authority.json` owns one atomic active/previous whole-release selection;

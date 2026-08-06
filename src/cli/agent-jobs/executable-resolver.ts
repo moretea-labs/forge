@@ -41,8 +41,8 @@ function executableName(agent: LocalAgent): string {
 
 function configuredExecutable(agent: LocalAgent, env: NodeJS.ProcessEnv): string | undefined {
   const key = agent === 'codex'
-    ? 'REPO_HARNESS_CODEX_EXECUTABLE'
-    : 'REPO_HARNESS_CLAUDE_EXECUTABLE';
+    ? 'FORGE_CODEX_EXECUTABLE'
+    : 'FORGE_CLAUDE_EXECUTABLE';
   const value = env[key]?.trim();
   if (!value) return undefined;
   return isAbsolute(value) ? value : resolve(value);

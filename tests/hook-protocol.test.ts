@@ -57,8 +57,8 @@ function runHook(
     encoding: "utf-8",
     env: {
       ...process.env,
-      REPO_HARNESS_CLI: join(ROOT, "src/cli/index.ts"),
-      REPO_HARNESS_HOOK_CLI: join(ROOT, "src/cli/hook-entry.ts"),
+      FORGE_CLI: join(ROOT, "src/cli/index.ts"),
+      FORGE_HOOK_CLI: join(ROOT, "src/cli/hook-entry.ts"),
       ...(options?.env ?? {}),
     },
   });
@@ -238,7 +238,7 @@ describe("Claude Code hook protocol compliance", () => {
 
       const res = runHook("pre-edit-guard.sh", cwd, {
         stdin: JSON.stringify({ tool_input: { file_path: "src/app.ts" } }),
-        env: { REPO_HARNESS_EDIT_PLAN_GATE: "enforce" },
+        env: { FORGE_EDIT_PLAN_GATE: "enforce" },
       });
       expect(res.status).toBe(2);
       expect(res.stderr).toContain("[PlanStatusGuard]");

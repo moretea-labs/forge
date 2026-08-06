@@ -7,7 +7,7 @@ This layer sits above the generic triage runtime. It answers two practical quest
 
 ## Current delivery model
 
-The safest report sink is `chatgpt`: the assistant summarizes in the current ChatGPT scheduled task and performs no writes. This is already useful for a daily brief, but it is not a repo-harness-native delivery channel.
+The safest report sink is `chatgpt`: the assistant summarizes in the current ChatGPT scheduled task and performs no writes. This is already useful for a daily brief, but it is not a Forge-native delivery channel.
 
 The runtime therefore defines explicit report sinks:
 
@@ -15,8 +15,8 @@ The runtime therefore defines explicit report sinks:
 - `gmail_draft` — creates a reviewable draft, never sends automatically.
 - `notion_page` — writes a daily journal page after authorization.
 - `github_issue` — appends or updates an issue for engineering workflows.
-- `local_file` — writes a local markdown report in the repo-harness workspace.
-- `repo_harness_worklog` — appends to the controller worklog.
+- `local_file` — writes a local markdown report in the Forge workspace.
+- `forge_worklog` — appends to the controller worklog.
 
 Every sink declares risk and confirmation requirements. Remote-write sinks must remain disabled until the user explicitly enables and authorizes them.
 

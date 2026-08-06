@@ -28,7 +28,7 @@ function git(repoRoot: string, args: string[]): string {
 }
 
 function fixture(options: { changed?: boolean; equivalentHistoricalWork?: boolean } = {}) {
-  const repoRoot = mkdtempSync(join(tmpdir(), 'repo-harness-work-receipt-'));
+  const repoRoot = mkdtempSync(join(tmpdir(), 'forge-work-receipt-'));
   roots.push(repoRoot);
   git(repoRoot, ['init', '-b', 'main']);
   writeFileSync(join(repoRoot, 'package.json'), '{"name":"work-receipt-fixture"}\n');

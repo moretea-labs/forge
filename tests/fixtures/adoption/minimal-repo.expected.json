@@ -91,11 +91,11 @@
       "path": ".ai/harness/workflow-contract.json"
     },
     {
-      "id": "appendManagedBlock:.gitignore:repo-harness-generated-runtime",
+      "id": "appendManagedBlock:.gitignore:forge-generated-runtime",
       "kind": "appendManagedBlock",
       "status": "planned",
       "path": ".gitignore",
-      "marker": "repo-harness generated-runtime"
+      "marker": "forge generated-runtime"
     }
   ],
   "summary": {
@@ -113,7 +113,7 @@
     "failedTotal": 0,
     "userOwnedFilesTouched": 1,
     "generatedFiles": 6,
-    "repoHarnessOwnedFiles": 3,
+    "forgeOwnedFiles": 3,
     "requiresVerification": false
   },
   "warnings": []

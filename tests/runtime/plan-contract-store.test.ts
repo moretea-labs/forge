@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 test('persists facade Plan contracts as independently revisioned SQLite records', () => {
-  const home = mkdtempSync(join('/tmp', 'repo-harness-plan-store-'));
+  const home = mkdtempSync(join('/tmp', 'forge-plan-store-'));
   homes.push(home);
   const options = { controllerHome: home, repoId: 'repo-1', now: () => '2026-08-02T00:00:00.000Z' };
   const plan = createPlanContract(options, {
@@ -45,7 +45,7 @@ test('persists facade Plan contracts as independently revisioned SQLite records'
 });
 
 test('rejects a second create and stale writer without changing the authoritative row', () => {
-  const home = mkdtempSync(join('/tmp', 'repo-harness-plan-store-'));
+  const home = mkdtempSync(join('/tmp', 'forge-plan-store-'));
   homes.push(home);
   const options = { controllerHome: home };
   const value = { planId: 'plan-1', repoId: 'repo-1', scopeKey: 'runtime', sourceRevision: 'abc', goal: 'goal', nonGoals: [], assumptions: [], resolvedDecisions: [], stopConditions: [], replanConditions: [], status: 'draft' as const, steps: [], evidenceRefs: [], createdAt: 'now', updatedAt: 'now', schemaVersion: 1 as const };
@@ -57,7 +57,7 @@ test('rejects a second create and stale writer without changing the authoritativ
 });
 
 test('keeps PlanStep materialization as a Work reference', () => {
-  const home = mkdtempSync(join('/tmp', 'repo-harness-plan-store-'));
+  const home = mkdtempSync(join('/tmp', 'forge-plan-store-'));
   homes.push(home);
   const options = { controllerHome: home, repoId: 'repo-1' };
   const plan = createPlanContract(options, {
@@ -86,7 +86,7 @@ function claimedPlan(options: { controllerHome: string; repoId: string; now: () 
 }
 
 test('rejects nonterminal Work and replans from failed Work', () => {
-  const home = mkdtempSync(join('/tmp', 'repo-harness-plan-store-'));
+  const home = mkdtempSync(join('/tmp', 'forge-plan-store-'));
   homes.push(home);
   const options = { controllerHome: home, repoId: 'repo-1', now: () => '2026-08-03T00:00:00.000Z' };
   claimedPlan(options, 'plan-work-terminal', 'work-terminal');
@@ -104,7 +104,7 @@ test('rejects nonterminal Work and replans from failed Work', () => {
 });
 
 test('completes a PlanStep only from the exact terminal Work receipt', () => {
-  const home = mkdtempSync(join('/tmp', 'repo-harness-plan-store-'));
+  const home = mkdtempSync(join('/tmp', 'forge-plan-store-'));
   homes.push(home);
   const options = { controllerHome: home, repoId: 'repo-1', now: () => '2026-08-03T00:00:00.000Z' };
   claimedPlan(options, 'plan-work-receipt', 'work-receipt');

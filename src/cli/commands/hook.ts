@@ -1,5 +1,5 @@
 /**
- * `repo-harness hook <event> --route <route-id>` dispatcher.
+ * `forge hook <event> --route <route-id>` dispatcher.
  *
  * Replaces the per-script scripts/hook-shim.sh by routing through a single
  * registry-defined contract (event, route-id, matcher) → ordered scripts.
@@ -27,7 +27,7 @@ import {
 } from '../hook/runtime';
 
 export function runHook(opts: RunHookOptions): RunHookResult {
-  return runHookRuntime({ ...opts, commandName: 'repo-harness hook' });
+  return runHookRuntime({ ...opts, commandName: 'forge hook' });
 }
 
 export { isOptIn, resolveRepoRoot };

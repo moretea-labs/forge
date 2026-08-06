@@ -1,5 +1,5 @@
 {
-  "schema": "repo-harness-run-trace.v1",
+  "schema": "forge-run-trace.v1",
   "status": "pass",
   "source": "verify-sprint",
   "command": "bash scripts/verify-sprint.sh",
@@ -23,7 +23,7 @@
       "rollback": "revert fixture ledger-closeout branch"
     }
   },
-  "worktree": "/tmp/repo-harness-fixture",
+  "worktree": "/tmp/forge-fixture",
   "branch": "codex/fixture",
   "commands": [
     {"name": "check-task-workflow", "command": "bash scripts/check-task-workflow.sh --strict", "status": "pass", "exit_code": 0}

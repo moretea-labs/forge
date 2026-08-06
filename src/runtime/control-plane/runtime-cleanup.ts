@@ -18,22 +18,22 @@ function numericSetting(value: string | undefined, fallback: number, minimum: nu
 }
 
 const ORPHAN_WORKTREE_TTL_MS = numericSetting(
-  process.env.REPO_HARNESS_ORPHAN_WORKTREE_TTL_MS,
+  process.env.FORGE_ORPHAN_WORKTREE_TTL_MS,
   6 * 60 * 60_000,
   60_000,
 );
 const TEMP_STATE_TTL_MS = numericSetting(
-  process.env.REPO_HARNESS_TEMP_STATE_TTL_MS,
+  process.env.FORGE_TEMP_STATE_TTL_MS,
   15 * 60_000,
   60_000,
 );
 const DEFAULT_SCAN_BUDGET = numericSetting(
-  process.env.REPO_HARNESS_RUNTIME_CLEANUP_SCAN_BUDGET,
+  process.env.FORGE_RUNTIME_CLEANUP_SCAN_BUDGET,
   2_000,
   1,
 );
 const TEMP_SCAN_MAX_DEPTH = numericSetting(
-  process.env.REPO_HARNESS_RUNTIME_CLEANUP_MAX_DEPTH,
+  process.env.FORGE_RUNTIME_CLEANUP_MAX_DEPTH,
   10,
   1,
 );

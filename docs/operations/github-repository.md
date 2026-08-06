@@ -5,7 +5,7 @@ This document records the intended public repository configuration. It is review
 ## Recommended repository metadata
 
 - Description: `Local-first action assistant for durable, reviewable software work.`
-- Homepage: `https://github.com/moretea-labs/matea/wiki`
+- Homepage: `https://github.com/moretea-labs/forge/wiki`
 - Topics: `ai-assistant`, `chatgpt`, `mcp`, `local-first`, `developer-tools`, `automation`, `code-review`, `agentic-workflow`
 - Features: Issues, Wiki, Discussions, and private vulnerability reporting enabled.
 

@@ -516,7 +516,7 @@ export function bootstrapLocalProject(input: {
     } : undefined,
     next: mode === 'init_git_only'
       ? 'Repository metadata was not registered; run bootstrap again in init_git_and_register mode to register it.'
-      : 'Repository is ready for normal repo-harness workflows.',
+      : 'Repository is ready for normal forge workflows.',
   };
 
   if (mode === 'init_git_only') return result;

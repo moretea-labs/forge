@@ -413,7 +413,7 @@ function buildRun(opts: Options) {
 
   const manifest = {
     version: 1,
-    kind: "repo-harness-contract-run",
+    kind: "forge-contract-run",
     status,
     failure_class: failureClass || null,
     repo,

@@ -145,7 +145,7 @@ import { loadMcpLocalConfig, loadMcpServiceLocalConfig, loadMcpServiceRuntimeSta
 import { loadRepositoryRegistry, registerRepository, removeRepository, resolveRepositorySelection } from "../repositories/registry";
 import { resolveControllerHome, resolveRepoPreferredControllerHome } from "../repositories/controller-home";
 import { ensureRepositoryRuntimeStorage } from "../repositories/runtime-storage";
-import { readControllerDaemonStatus } from "../../runtime/control-plane/daemon-client";
+import { readForgeRuntimeStatus } from "../../runtime/control-plane/runtime-status-client";
 import { readRuntimeGeneration } from "../../runtime/control-plane/runtime-generation";
 import { findExecutionJob, listExecutionJobs } from "../../runtime/execution/jobs/store";
 import { rebuildRepositoryProjection, readRepositoryProjectionSnapshot } from "../../runtime/projections/materialized-view";
@@ -335,12 +335,12 @@ function runtimeControllerSnapshot(repoRoot: string) {
   const controllerHome = resolveControllerHome();
   const normalizedRoot = repoRoot.replace(/\\/g, '/');
   const repository = loadRepositoryRegistry(controllerHome).repositories.find((entry) => entry.canonicalRoot.replace(/\\/g, '/') === normalizedRoot);
-  if (!repository) return { registered: false, daemon: readControllerDaemonStatus(controllerHome) };
+  if (!repository) return { registered: false, daemon: readForgeRuntimeStatus(controllerHome) };
   return {
     registered: true,
     repoId: repository.repoId,
     checkoutId: repository.activeCheckoutId,
-    daemon: readControllerDaemonStatus(controllerHome),
+    daemon: readForgeRuntimeStatus(controllerHome),
     projection: readRepositoryProjectionSnapshot(controllerHome, repository.repoId).projection,
     executionJobs: listExecutionJobs(controllerHome, repository.repoId, 30),
   };
@@ -952,7 +952,7 @@ export async function startLocalBridgeServer(
     }
   }, 2_000);
   streamInterval.unref();
-  const cookieName = "repo_harness_local_token";
+  const cookieName = "forge_local_token";
   app.disable("x-powered-by");
   app.use((request, response, next) => {
     const requestHost = parsedRequestHost(request.headers.host);
@@ -993,7 +993,7 @@ export async function startLocalBridgeServer(
     next: NextFunction,
   ): void => {
     const supplied =
-      request.header("x-repo-harness-local-token") ?? cookieValue(request, cookieName);
+      request.header("x-forge-local-token") ?? cookieValue(request, cookieName);
     if (supplied !== token) {
       response.status(403).json({ error: "invalid local controller token" });
       return;
@@ -2896,13 +2896,13 @@ export async function startLocalBridgeServer(
     }
   });
   app.get("/api/toolchain/model-clients", (_request, response) => {
-    response.json({ clients: buildModelClientSummary(), policyOwner: "repo-harness" });
+    response.json({ clients: buildModelClientSummary(), policyOwner: "forge" });
   });
   app.get("/api/toolchain/model-control-plane", (_request, response) => {
     response.json({ controlPlane: buildModelControlPlaneSummary(), transportEncryption: "not-configured-by-this-tool" });
   });
   app.get("/api/toolchain/deepseek/tools", (_request, response) => {
-    response.json({ provider: "deepseek", tools: deepSeekFunctionToolManifest(), policyOwner: "repo-harness" });
+    response.json({ provider: "deepseek", tools: deepSeekFunctionToolManifest(), policyOwner: "forge" });
   });
   app.get("/api/toolchain/deepseek/controller-manifest", (_request, response) => {
     response.json({ manifest: deepSeekControllerManifest() });

@@ -124,14 +124,14 @@ function commandAvailable(command: string, cwd: string, env?: NodeJS.ProcessEnv)
 }
 
 function installCli(sourceRoot: string, cwd: string, env?: NodeJS.ProcessEnv, installSpec?: string): GlobalRuntimeStep {
-  const spec = installSpec ?? (existsSync(join(sourceRoot, "package.json")) ? sourceRoot : "repo-harness");
+  const spec = installSpec ?? (existsSync(join(sourceRoot, "package.json")) ? sourceRoot : "forge");
   const step = commandAvailable("bun", cwd, env)
     ? runProcess("bun", ["add", "-g", spec], cwd, env)
     : runProcess("npm", ["install", "-g", spec, "--omit=optional", "--no-audit", "--no-fund"], cwd, env);
   const version = packageVersion(sourceRoot);
   return withStepName(
     step,
-    "install repo-harness CLI",
+    "install forge CLI",
     installSpec ? `spec=${installSpec}` : version ? `version=${version}` : undefined,
   );
 }
@@ -140,21 +140,21 @@ function syncRuntimeSkill(sourceRoot: string, env?: NodeJS.ProcessEnv, platform:
   const script = join(sourceRoot, "scripts", "sync-codex-installed-copies.sh");
   if (!existsSync(script)) {
     return {
-      step: "sync repo-harness skill runtime",
+      step: "sync forge skill runtime",
       status: "skipped",
       detail: `script not found: ${script}`,
     };
   }
   if (platform === "win32") {
     return {
-      step: "sync repo-harness skill runtime",
+      step: "sync forge skill runtime",
       status: "skipped",
       detail: "native Windows skips the Bash-owned skill sync; use WSL2 for the complete shell workflow",
     };
   }
   return withStepName(
     runProcess("bash", [script], sourceRoot, env),
-    "sync repo-harness skill runtime",
+    "sync forge skill runtime",
   );
 }
 
@@ -274,10 +274,10 @@ export function runGlobalRuntimeSetup(opts: GlobalRuntimeOptions = {}): GlobalRu
   const steps: GlobalRuntimeStep[] = [];
 
   if (opts.installCli !== false) steps.push(installCli(sourceRoot, cwd, env, opts.installSpec));
-  else steps.push({ step: "install repo-harness CLI", status: "skipped", detail: "disabled" });
+  else steps.push({ step: "install forge CLI", status: "skipped", detail: "disabled" });
 
   if (opts.syncSkill !== false) steps.push(syncRuntimeSkill(sourceRoot, env, platform));
-  else steps.push({ step: "sync repo-harness skill runtime", status: "skipped", detail: "disabled" });
+  else steps.push({ step: "sync forge skill runtime", status: "skipped", detail: "disabled" });
 
   if (opts.hostAdapters !== false) steps.push(installHostAdapters(target, env));
   else steps.push({ step: "install host adapters", status: "skipped", detail: "disabled" });

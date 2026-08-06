@@ -2,7 +2,7 @@
 
 ## 背景
 
-repo-harness 已经具备 Repository Registry、`repoId`、`checkoutId` 和 controller home 运行态目录，但历史启动入口仍然以 `--repo` 为中心。这会让 MCP Gateway、Local Bridge 和具体仓库之间的边界变得模糊：服务看起来像是“从某个仓库启动并代表该仓库”，而不是“全局 controller 服务管理多个仓库”。
+forge 已经具备 Repository Registry、`repoId`、`checkoutId` 和 controller home 运行态目录，但历史启动入口仍然以 `--repo` 为中心。这会让 MCP Gateway、Local Bridge 和具体仓库之间的边界变得模糊：服务看起来像是“从某个仓库启动并代表该仓库”，而不是“全局 controller 服务管理多个仓库”。
 
 目标架构应改为：
 
@@ -81,14 +81,14 @@ controllerHome/repositories/<repoId>/controller-state
 仓库目录可继续保留 repo policy、兼容 symlink / projection，以及 MCP 旧版本 fallback：
 
 ```text
-.repo-harness/mcp.policy.json
-.repo-harness/mcp.local.json              # legacy service config fallback
-.repo-harness/mcp.tokens.json             # legacy bearer fallback
-.repo-harness/mcp.oauth.json              # legacy OAuth passphrase fallback
-.repo-harness/mcp.oauth-tokens.json       # legacy OAuth token-store fallback
-.repo-harness/mcp.runtime.json            # legacy runtime fallback
-.repo-harness/plugins/*.json
-.repo-harness/external-filesystem-grants.json
+.forge/mcp.policy.json
+.forge/mcp.local.json              # legacy service config fallback
+.forge/mcp.tokens.json             # legacy bearer fallback
+.forge/mcp.oauth.json              # legacy OAuth passphrase fallback
+.forge/mcp.oauth-tokens.json       # legacy OAuth token-store fallback
+.forge/mcp.runtime.json            # legacy runtime fallback
+.forge/plugins/*.json
+.forge/external-filesystem-grants.json
 .ai/harness/*  # compatibility/projection only
 ```
 
@@ -97,7 +97,7 @@ controllerHome/repositories/<repoId>/controller-state
 - 多仓库启用时，MCP 工具和 Local Bridge 写操作必须显式携带 `repoId`，不能靠启动目录猜测。
 - 单仓库启用时可以保留 sole repository fallback。
 - `--repo` 在迁移完成前继续可用，但不应被描述为服务身份。
-- MCP service-level 配置读取顺序为 controllerHome 优先、repo-local `.repo-harness/mcp.*` legacy fallback 其次；新 controller profile setup/restart/keepalive 写入 controllerHome。
+- MCP service-level 配置读取顺序为 controllerHome 优先、repo-local `.forge/mcp.*` legacy fallback 其次；新 controller profile setup/restart/keepalive 写入 controllerHome。
 
 ## 当前完成状态
 
@@ -106,7 +106,7 @@ controllerHome/repositories/<repoId>/controller-state
 - 已新增 repoId-scoped snapshot 和 user-snapshot endpoints。
 - 已将主要 Local Bridge 业务 API 改为 request-scoped repo selection，包括 completion、progress、governance、assistant、recovery、project-state、issue/task、timeline、worklog、edit-session、plugin、GitHub、toolchain、local jobs 和 runs。
 - 已将 README 的启动说明改为 registry-first / compatibility `--repo` 语义。
-- MCP HTTP service-level 配置、auth token、OAuth passphrase/token store、public origin 和 runtime state 已迁移到 controllerHome-backed storage，并保留 `.repo-harness/mcp.*` legacy fallback。
+- MCP HTTP service-level 配置、auth token、OAuth passphrase/token store、public origin 和 runtime state 已迁移到 controllerHome-backed storage，并保留 `.forge/mcp.*` legacy fallback。
 - 当前剩余的 `options.repoRoot` 用法集中在启动默认仓库 fallback、启动时 reconcile、stream signature、runtime policy/mobile intent 兼容入口、仓库列表默认选择和 server close/cache cleanup。
 
 ## 仍未完成的架构收口
@@ -129,7 +129,7 @@ durable router 和 runtime gateway 主路径均已完成补充复核：
 
 ### 2. 服务级运行态迁移
 
-MCP Gateway 的 service-level runtime/config 已迁移到 `controllerHome/mcp/mcp.*`，并将 repo-local `.repo-harness/mcp.*` 降级为 legacy fallback。Local Bridge 仍保留 `options.repoRoot` 用于启动级 reconcile、stream signature、runtime policy 和缓存清理。短期允许作为 compatibility default；长期应迁移为 controller-home/global runtime state，并让 `repoRoot` 只出现在 repository registration 和 repository-scoped execution 层。
+MCP Gateway 的 service-level runtime/config 已迁移到 `controllerHome/mcp/mcp.*`，并将 repo-local `.forge/mcp.*` 降级为 legacy fallback。Local Bridge 仍保留 `options.repoRoot` 用于启动级 reconcile、stream signature、runtime policy 和缓存清理。短期允许作为 compatibility default；长期应迁移为 controller-home/global runtime state，并让 `repoRoot` 只出现在 repository registration 和 repository-scoped execution 层。
 
 ### 3. 最小多仓库验收
 
@@ -145,4 +145,4 @@ MCP Gateway 的 service-level runtime/config 已迁移到 `controllerHome/mcp/mc
 - GUI 切换仓库后，请求应带 `repoId`，而不是依赖启动目录。
 - 多仓库注册时，Local Bridge 首页应能显示所有仓库，并正确标记当前选择。
 - MCP Gateway 启动和 ChatGPT Connector 配置应逐步不再要求用户位于某个仓库目录。
-- repo-local `.repo-harness/mcp.*` 文件只作为 legacy fallback；后续可在迁移窗口结束后进一步降级提示或清理。
+- repo-local `.forge/mcp.*` 文件只作为 legacy fallback；后续可在迁移窗口结束后进一步降级提示或清理。

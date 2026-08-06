@@ -305,7 +305,7 @@ start_worktree() {
     cd "$worktree_path"
     write_start_metadata "$slug" "$plan_file" "$branch_name" "$worktree_path" "$base_branch"
     if [[ "$run_plan_to_todo" -eq 1 && -f "scripts/plan-to-todo.sh" ]]; then
-      REPO_HARNESS_CONTRACT_WORKTREE=1 bash "scripts/plan-to-todo.sh" --plan "$plan_file"
+      FORGE_CONTRACT_WORKTREE=1 bash "scripts/plan-to-todo.sh" --plan "$plan_file"
     fi
   )
 

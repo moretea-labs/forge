@@ -409,7 +409,7 @@ export async function runProcessRunnerFromDescriptor(
 
 async function main(): Promise<void> {
   if (process.argv.includes(PROCESS_RUNNER_RELEASE_CANARY_CHILD_ARG)) {
-    process.stdout.write('repo-harness process-runner release canary\n');
+    process.stdout.write('forge process-runner release canary\n');
     return;
   }
 

@@ -139,13 +139,13 @@ async function runChatgptAction(action: () => void | Promise<void>): Promise<voi
   try {
     await action();
   } catch (error) {
-    console.error(`repo-harness chatgpt: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`forge chatgpt: ${error instanceof Error ? error.message : String(error)}`);
     process.exit(2);
   }
 }
 
 export function buildChatgptCommand(): Command {
-  const chatgpt = new Command('chatgpt').description('Use a local ChatGPT Web browser session for repo-harness planning and review workflows');
+  const chatgpt = new Command('chatgpt').description('Use a local ChatGPT Web browser session for forge planning and review workflows');
 
   chatgpt
     .command('browser-setup')
@@ -208,7 +208,7 @@ export function buildChatgptCommand(): Command {
     .option('--timeout-ms <ms>', 'Native session validation timeout in milliseconds')
     .option('--keep-browser', 'Leave the validation browser open')
     .option('--headless', 'Run native validation headless')
-    .option('--oracle-bin <path>', 'Explicit oracle binary path (overrides REPO_HARNESS_ORACLE_BIN / node_modules / PATH)')
+    .option('--oracle-bin <path>', 'Explicit oracle binary path (overrides FORGE_ORACLE_BIN / node_modules / PATH)')
     .option('--json', 'Output JSON instead of human-readable text')
     .action((rawOpts: BrowserDoctorOptions) => {
       void runChatgptAction(async () => {
@@ -251,7 +251,7 @@ export function buildChatgptCommand(): Command {
     .option('--browser-channel <channel>', 'Native provider Chrome channel: chrome|chrome-beta|chrome-dev|chrome-canary')
     .option('--keep-browser', 'Native provider leaves the browser open after the run')
     .option('--headless', 'Native provider runs the selected Chrome channel headless')
-    .option('--oracle-bin <path>', 'Explicit oracle binary path (overrides REPO_HARNESS_ORACLE_BIN / node_modules / PATH)')
+    .option('--oracle-bin <path>', 'Explicit oracle binary path (overrides FORGE_ORACLE_BIN / node_modules / PATH)')
     .option('--dry-run', 'Resolve prompt/files and save a dry-run session without opening a browser')
     .action((rawOpts: BrowserConsultOptions) => {
       void runChatgptAction(async () => {
@@ -325,7 +325,7 @@ export function buildChatgptCommand(): Command {
     .option('--browser-channel <channel>', 'Native provider Chrome channel: chrome|chrome-beta|chrome-dev|chrome-canary')
     .option('--keep-browser', 'Native provider leaves the browser open after the run')
     .option('--headless', 'Native provider runs the selected Chrome channel headless')
-    .option('--oracle-bin <path>', 'Explicit oracle binary path (overrides REPO_HARNESS_ORACLE_BIN / node_modules / PATH)')
+    .option('--oracle-bin <path>', 'Explicit oracle binary path (overrides FORGE_ORACLE_BIN / node_modules / PATH)')
     .option('--dry-run', 'Resolve prompt/session and save a dry-run follow-up without opening a browser')
     .action((rawOpts: BrowserFollowupOptions) => {
       void runChatgptAction(async () => {
@@ -414,8 +414,8 @@ export function buildChatgptCommand(): Command {
           console.log(JSON.stringify(result, null, 2));
           return;
         }
-        console.log(`[repo-harness chatgpt] dryRun=${result.dryRun}`);
-        console.log(`[repo-harness chatgpt] candidates=${result.candidates.length}`);
+        console.log(`[forge chatgpt] dryRun=${result.dryRun}`);
+        console.log(`[forge chatgpt] candidates=${result.candidates.length}`);
         for (const sessionId of result.dryRun ? result.candidates : result.removed) console.log(sessionId);
       });
     });

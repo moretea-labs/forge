@@ -305,7 +305,7 @@ pr_title_for_branch() {
 pr_body_for_branch() {
   local branch="$1"
   cat <<EOF_BODY
-Automated repo-harness ship for \`${branch}\`.
+Automated forge ship for \`${branch}\`.
 
 Checks:
 - Waza /check review artifact recommends pass.
@@ -326,7 +326,7 @@ create_or_report_pr() {
   local branch="$1"
   local gh_bin existing title body output status
   local args=()
-  gh_bin="${REPO_HARNESS_GH_BIN:-gh}"
+  gh_bin="${FORGE_GH_BIN:-gh}"
   command -v "$gh_bin" >/dev/null 2>&1 || fail "gh is required for default PR ship mode"
 
   existing="$("$gh_bin" pr list --base "$TARGET_BRANCH" --head "$branch" --json url --jq '.[0].url // ""' 2>/dev/null || true)"

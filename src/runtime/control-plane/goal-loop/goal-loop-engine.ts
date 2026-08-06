@@ -450,7 +450,7 @@ export function goalTickOnce(ctx: GoalLoopContext, goalId: string, options: Goal
     }
     case 'running': {
       // Model work completed (or simulated): move to verification owned by harness.
-      const updated = transitionGoalStatus(storeOpts(ctx), goalId, 'verifying', 'Provider work complete; verifying via repo-harness', {
+      const updated = transitionGoalStatus(storeOpts(ctx), goalId, 'verifying', 'Provider work complete; verifying via forge', {
         currentStep: 'verifying',
         nextSafeAction: 'Run registered checks and record evidence',
       });
@@ -517,7 +517,7 @@ export function goalTickOnce(ctx: GoalLoopContext, goalId: string, options: Goal
         from,
         to: from,
         transitioned: false,
-        reason: 'Awaiting verification evidence (run checks via repo-harness).',
+        reason: 'Awaiting verification evidence (run checks via forge).',
         nextSafeAction: 'Record verification results',
       };
     }

@@ -21,7 +21,7 @@ import {
   type SafeHandoffResult,
 } from '../../cli/controller/launch-agents';
 import { isProcessAlive } from '../shared/process-tree';
-import { initializeStandaloneRecovery, loadRecoveryConfig, type PublicTunnelServiceConfig, type RecoveryConfig } from './core';
+import { initializeStandaloneRecovery, loadRecoveryConfig, type PrimaryRuntimeServiceConfig, type PublicTunnelServiceConfig, type RecoveryConfig } from './core';
 import {
   RECOVERY_RELEASE_BINARIES,
   RECOVERY_RELEASE_ROLE_CANARY_ARG,
@@ -41,12 +41,14 @@ import {
   type RecoveryRuntimeRole,
 } from './release';
 
-export const RECOVERY_GATEWAY_LABEL = 'com.moretea.repo-harness-recovery-gateway';
-export const RECOVERY_WATCHDOG_LABEL = 'com.moretea.repo-harness-recovery-watchdog';
+export const RECOVERY_GATEWAY_LABEL = 'com.moretea.forge-recovery-gateway';
+export const RECOVERY_WATCHDOG_LABEL = 'com.moretea.forge-recovery-watchdog';
 
 const RECOVERY_RELEASE_SOURCE_PATHS = [
   'src/runtime/standalone-recovery',
+  'src/runtime/root',
   'src/cli/controller/launch-agents.ts',
+  'src/cli/repositories/controller-home.ts',
   'src/effects/process-runner.ts',
   'src/runtime/shared/process-tree.ts',
   'src/runtime/shared/json-files.ts',
@@ -138,7 +140,7 @@ export function recoverySourceIdentity(sourceRoot: string): RecoverySourceIdenti
 }
 
 function defaultCompileBinary(input: { sourceRoot: string; outputPath: string }): ProcessRunResult {
-  const configured = process.env.REPO_HARNESS_BUN_BIN?.trim();
+  const configured = process.env.FORGE_BUN_BIN?.trim();
   const bun = configured || (process.versions.bun && /(?:^|\/)bun(?:$|-)/.test(process.execPath) ? process.execPath : 'bun');
   return runProcess(bun, [
     'build',
@@ -199,8 +201,8 @@ export function stageRecoveryRelease(input: {
     const runCanary = dependencies.runCanary ?? defaultRunCanary;
     const canaries: Array<{ label: string; binaryPath: string; role?: RecoveryRuntimeRole }> = [
       { label: 'primary', binaryPath: primary },
-      { label: 'gateway', binaryPath: join(staging, 'repo-harness-recovery-gateway'), role: 'gateway' },
-      { label: 'watchdog', binaryPath: join(staging, 'repo-harness-recovery-watchdog'), role: 'watchdog' },
+      { label: 'gateway', binaryPath: join(staging, 'forge-recovery-gateway'), role: 'gateway' },
+      { label: 'watchdog', binaryPath: join(staging, 'forge-recovery-watchdog'), role: 'watchdog' },
     ];
     const canaryDetails: string[] = [];
     for (const canary of canaries) {
@@ -476,8 +478,8 @@ async function handoffRecoveryServices(input: {
     mkdirSync(auditRoot, { recursive: true, mode: 0o700 });
     const gatewayPath = join(generatedRoot, `${RECOVERY_GATEWAY_LABEL}.plist`);
     const watchdogPath = join(generatedRoot, `${RECOVERY_WATCHDOG_LABEL}.plist`);
-    writeFileSync(gatewayPath, recoveryPlist({ label: RECOVERY_GATEWAY_LABEL, executable: join(recoveryCurrentPath(input.controllerHome), 'repo-harness-recovery-gateway'), command: 'gateway', controllerHome: resolve(input.controllerHome), logPath: join(auditRoot, 'gateway.log') }), { mode: 0o600 });
-    writeFileSync(watchdogPath, recoveryPlist({ label: RECOVERY_WATCHDOG_LABEL, executable: join(recoveryCurrentPath(input.controllerHome), 'repo-harness-recovery-watchdog'), command: 'watchdog', controllerHome: resolve(input.controllerHome), logPath: join(auditRoot, 'watchdog.log') }), { mode: 0o600 });
+    writeFileSync(gatewayPath, recoveryPlist({ label: RECOVERY_GATEWAY_LABEL, executable: join(recoveryCurrentPath(input.controllerHome), 'forge-recovery-gateway'), command: 'gateway', controllerHome: resolve(input.controllerHome), logPath: join(auditRoot, 'gateway.log') }), { mode: 0o600 });
+    writeFileSync(watchdogPath, recoveryPlist({ label: RECOVERY_WATCHDOG_LABEL, executable: join(recoveryCurrentPath(input.controllerHome), 'forge-recovery-watchdog'), command: 'watchdog', controllerHome: resolve(input.controllerHome), logPath: join(auditRoot, 'watchdog.log') }), { mode: 0o600 });
     return {
       gateway: installAgent(gatewayPath, RECOVERY_GATEWAY_LABEL).path,
       watchdog: installAgent(watchdogPath, RECOVERY_WATCHDOG_LABEL).path,
@@ -588,6 +590,7 @@ export async function installStandaloneRecovery(input: {
   publicTunnelService?: PublicTunnelServiceConfig;
   recoveryPublicUrl?: string;
   recoveryTunnelService?: PublicTunnelServiceConfig;
+  primaryRuntimeService?: PrimaryRuntimeServiceConfig;
   stageOnly?: boolean;
 }, dependencies: RecoveryInstallerDependencies = {}): Promise<RecoveryInstallResult> {
   const controllerHome = resolve(input.controllerHome);
@@ -596,6 +599,7 @@ export async function installStandaloneRecovery(input: {
     ...(input.publicMcpUrl ? { publicMcpUrl: input.publicMcpUrl } : {}),
     ...(input.recoveryPublicUrl ? { recoveryPublicUrl: input.recoveryPublicUrl } : {}),
     ...(input.recoveryTunnelService ? { recoveryTunnelService: input.recoveryTunnelService } : {}),
+    ...(input.primaryRuntimeService ? { primaryRuntimeService: input.primaryRuntimeService } : {}),
   });
   const staged = stageRecoveryRelease({ controllerHome, sourceRoot }, dependencies);
   if (input.stageOnly) return { controllerHome, staged, config };

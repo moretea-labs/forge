@@ -16,7 +16,7 @@ This document defines what the project currently supports. It is intentionally n
 All installations require:
 
 - Git available on `PATH`;
-- Node.js 20.10 or newer, because the published `repo-harness` launcher is a Node executable;
+- Node.js 20.10 or newer, because the published `forge` launcher is a Node executable;
 - either npm, which ships with Node.js, or Bun 1.0 or newer as the package installer;
 - a writable user home directory.
 
@@ -36,8 +36,8 @@ The following dependencies are optional and enable additional capabilities:
 The native PowerShell path is release-tested for:
 
 - prerequisite checks and CLI package installation;
-- `matea --version` and command loading;
-- `matea doctor`;
+- `forge --version` and command loading;
+- `forge doctor`;
 - repository registry operations;
 - Windows path, process, junction, and command handling covered by the portable test suite;
 - the default MCP facade and bounded repository operations that do not depend on Bash helpers.

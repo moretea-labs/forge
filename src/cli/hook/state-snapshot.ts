@@ -18,7 +18,7 @@ export type SnapshotPlanState =
 
 export interface StateSnapshot {
   readonly protocol: 1;
-  readonly kind: 'repo-harness-state-snapshot';
+  readonly kind: 'forge-state-snapshot';
   readonly states: {
     readonly spec: 'present' | 'missing';
     readonly plan: SnapshotPlanState;
@@ -343,7 +343,7 @@ export function buildStateSnapshot(
 
   return {
     protocol: 1,
-    kind: 'repo-harness-state-snapshot',
+    kind: 'forge-state-snapshot',
     states: {
       spec: fileExists(cwd, 'docs/spec.md') ? 'present' : 'missing',
       plan,
@@ -377,7 +377,7 @@ export function runStateSnapshotCli(
     return {
       exitCode: 2,
       stdout: '',
-      stderr: 'repo-harness-hook state-snapshot: usage: repo-harness-hook state-snapshot --json\n',
+      stderr: 'forge-hook state-snapshot: usage: forge-hook state-snapshot --json\n',
     };
   }
   return {

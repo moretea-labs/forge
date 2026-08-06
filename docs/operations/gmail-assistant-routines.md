@@ -22,10 +22,10 @@ http://127.0.0.1:8766/oauth/google/callback
 
 Expose the client configuration only through the managed secret environment:
 
-- `REPO_HARNESS_GOOGLE_CLIENT_ID`
-- `REPO_HARNESS_GOOGLE_CLIENT_SECRET`
+- `FORGE_GOOGLE_CLIENT_ID`
+- `FORGE_GOOGLE_CLIENT_SECRET`
 
-The `REPO_HARNESS_GOOGLE_WORKSPACE_CLIENT_ID` and `REPO_HARNESS_GOOGLE_WORKSPACE_CLIENT_SECRET` aliases are also supported.
+The `FORGE_GOOGLE_WORKSPACE_CLIENT_ID` and `FORGE_GOOGLE_WORKSPACE_CLIENT_SECRET` aliases are also supported.
 
 Call `workspace_auth_login_prepare` for `gmail` or `google-workspace`, then open the returned authorization URL. The request uses OAuth Authorization Code flow with PKCE, a random one-time state, a ten-minute expiry, and a loopback-only callback. Redirect URIs outside `127.0.0.1` or `localhost`, unexpected callback paths, and scopes outside the Gmail/Calendar/Tasks allowlist are rejected.
 
@@ -41,14 +41,14 @@ After OAuth setup, Controller restarts can reload the refresh token from Keychai
 
 Managed environment credentials remain compatible:
 
-- `REPO_HARNESS_GMAIL_ACCESS_TOKEN`
-- `REPO_HARNESS_GMAIL_REFRESH_TOKEN`
-- `REPO_HARNESS_GMAIL_CLIENT_ID`
-- `REPO_HARNESS_GMAIL_CLIENT_SECRET`
-- `REPO_HARNESS_GOOGLE_WORKSPACE_ACCESS_TOKEN`
-- `REPO_HARNESS_GOOGLE_WORKSPACE_REFRESH_TOKEN`
-- `REPO_HARNESS_GOOGLE_WORKSPACE_CLIENT_ID`
-- `REPO_HARNESS_GOOGLE_WORKSPACE_CLIENT_SECRET`
+- `FORGE_GMAIL_ACCESS_TOKEN`
+- `FORGE_GMAIL_REFRESH_TOKEN`
+- `FORGE_GMAIL_CLIENT_ID`
+- `FORGE_GMAIL_CLIENT_SECRET`
+- `FORGE_GOOGLE_WORKSPACE_ACCESS_TOKEN`
+- `FORGE_GOOGLE_WORKSPACE_REFRESH_TOKEN`
+- `FORGE_GOOGLE_WORKSPACE_CLIENT_ID`
+- `FORGE_GOOGLE_WORKSPACE_CLIENT_SECRET`
 
 ## Scheduling semantics
 
@@ -62,7 +62,7 @@ The normalized Schedule preserves the IANA timezone, so daylight-saving transiti
 
 ## Gmail History cursor
 
-Each Routine stores an independent cursor under `.repo-harness/assistant/gmail-cursors.json`:
+Each Routine stores an independent cursor under `.forge/assistant/gmail-cursors.json`:
 
 - last successful collection time
 - bounded processed-message ID set
@@ -77,24 +77,24 @@ The model layer is optional. When it is disabled, unavailable, times out, or ret
 
 Configure an OpenAI-compatible endpoint with:
 
-- `REPO_HARNESS_ASSISTANT_MODEL_PROVIDER=openai-compatible`
-- `REPO_HARNESS_ASSISTANT_MODEL_ENDPOINT`
-- `REPO_HARNESS_ASSISTANT_MODEL`
-- `REPO_HARNESS_ASSISTANT_MODEL_API_KEY`
+- `FORGE_ASSISTANT_MODEL_PROVIDER=openai-compatible`
+- `FORGE_ASSISTANT_MODEL_ENDPOINT`
+- `FORGE_ASSISTANT_MODEL`
+- `FORGE_ASSISTANT_MODEL_API_KEY`
 
 For the exact official hosts, provider-specific keys are also supported:
 
 - `api.openai.com` may use `OPENAI_API_KEY`
-- `api.deepseek.com` may use `REPO_HARNESS_DEEPSEEK_API_KEY` or `DEEPSEEK_API_KEY`
+- `api.deepseek.com` may use `FORGE_DEEPSEEK_API_KEY` or `DEEPSEEK_API_KEY`
 
-A custom endpoint never receives `OPENAI_API_KEY` or a DeepSeek key. It must use the dedicated `REPO_HARNESS_ASSISTANT_MODEL_API_KEY`. Endpoints must use HTTPS, except loopback HTTP used for a local model.
+A custom endpoint never receives `OPENAI_API_KEY` or a DeepSeek key. It must use the dedicated `FORGE_ASSISTANT_MODEL_API_KEY`. Endpoints must use HTTPS, except loopback HTTP used for a local model.
 
 Optional budgets:
 
-- `REPO_HARNESS_ASSISTANT_MODEL_TIMEOUT_MS`
-- `REPO_HARNESS_ASSISTANT_MODEL_MAX_MESSAGES`
-- `REPO_HARNESS_ASSISTANT_MODEL_MAX_INPUT_CHARS`
-- `REPO_HARNESS_ASSISTANT_MODEL_MAX_OUTPUT_TOKENS`
+- `FORGE_ASSISTANT_MODEL_TIMEOUT_MS`
+- `FORGE_ASSISTANT_MODEL_MAX_MESSAGES`
+- `FORGE_ASSISTANT_MODEL_MAX_INPUT_CHARS`
+- `FORGE_ASSISTANT_MODEL_MAX_OUTPUT_TOKENS`
 
 The provider requests strict structured JSON, validates the result locally, and maps only these proposal types:
 
@@ -109,7 +109,7 @@ Use `assistant_model_readiness` or `GET /api/assistant/model` to inspect the red
 
 ## Action proposals and approval
 
-Routine analysis persists structured proposals under `.repo-harness/assistant/action-proposals.json`. Each proposal records:
+Routine analysis persists structured proposals under `.forge/assistant/action-proposals.json`. Each proposal records:
 
 - Routine and Run identity
 - target plugin/action and bounded arguments

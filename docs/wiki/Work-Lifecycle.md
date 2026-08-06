@@ -28,4 +28,4 @@ Commit explicit paths, merge through the intended strategy, and record the integ
 
 Update task evidence, delete merged branches and temporary worktrees, and verify the target branch is clean. Blocked or failed states remain recoverable; they are not treated as immutable terminal truth.
 
-For detailed lifecycle contracts, see [Job and Run Lifecycle](https://github.com/moretea-labs/matea/blob/main/docs/architecture/current/job-and-run-lifecycle.md).
+For detailed lifecycle contracts, see [Job and Run Lifecycle](https://github.com/moretea-labs/forge/blob/main/docs/architecture/current/job-and-run-lifecycle.md).

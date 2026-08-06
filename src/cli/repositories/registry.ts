@@ -39,7 +39,7 @@ import type {
 const REGISTRY_FILE = 'repositories.json';
 const FOCUS_FILE = 'focus.json';
 const LOCAL_CONFIG = '.ai/harness/repository.json';
-const LEGACY_GITHUB_PLUGIN_CONFIG = '.repo-harness/plugins/github.json';
+const LEGACY_GITHUB_PLUGIN_CONFIG = '.forge/plugins/github.json';
 
 interface RegisterRepositoryInput {
   path: string;
@@ -370,7 +370,7 @@ function ensureHarnessRuntimeIgnored(canonicalRoot: string): void {
   if (existing.split(/\r?\n/).some((line) => line.trim() === '.ai/harness/')) return;
   mkdirSync(dirname(path), { recursive: true });
   const prefix = existing.length > 0 && !existing.endsWith('\n') ? '\n' : '';
-  appendFileSync(path, `${prefix}# repo-harness runtime metadata (controller-owned, never source)\n.ai/harness/\n`, 'utf-8');
+  appendFileSync(path, `${prefix}# forge runtime metadata (controller-owned, never source)\n.ai/harness/\n`, 'utf-8');
 }
 
 function writeLocalIdentity(record: RepositoryRecord): void {

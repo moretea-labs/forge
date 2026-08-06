@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "Canonical stack-family mapping for repo-harness. A-F are core stack families. G-J are sidecar/runtime presets. K is fully custom.",
+  "$comment": "Canonical stack-family mapping for forge. A-F are core stack families. G-J are sidecar/runtime presets. K is fully custom.",
   "planTiers": {
     "core": ["A", "B", "C", "D", "E", "F"],
     "presets": ["G", "H", "I", "J"],

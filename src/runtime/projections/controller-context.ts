@@ -96,7 +96,7 @@ export interface ControllerContextProjectionRefreshResult {
 
 const CONTROLLER_CONTEXT_REFRESH_STALE_OWNER_MS = Math.max(
   5_000,
-  Number(process.env.REPO_HARNESS_CONTEXT_PROJECTION_STALE_OWNER_MS ?? 60_000),
+  Number(process.env.FORGE_CONTEXT_PROJECTION_STALE_OWNER_MS ?? 60_000),
 );
 
 /** Hard ceiling for the in-memory refresh generation ledger. */

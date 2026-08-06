@@ -54,7 +54,7 @@ function parseBody(body: unknown): unknown {
 function authMiddleware(token: string) {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (!authorized(req, token)) {
-      res.setHeader('www-authenticate', 'Bearer realm="repo-harness-runtime"');
+      res.setHeader('www-authenticate', 'Bearer realm="forge-runtime"');
       res.status(401).json({ error: 'unauthorized' });
       return;
     }
@@ -122,7 +122,7 @@ export async function startRuntimeMcpTransport(
       await managed.transport.handleRequest(req, res, body);
     })().catch((error: unknown) => {
       if (!res.headersSent) res.status(500).json({ error: 'mcp_request_failed' });
-      console.error('[repo-harness-runtime mcp] request failed:', error);
+      console.error('[forge-runtime mcp] request failed:', error);
     });
   });
   app.get('/mcp', requireAuth, (req, res) => {
@@ -137,7 +137,7 @@ export async function startRuntimeMcpTransport(
       await managed.transport.handleRequest(req, res);
     })().catch((error: unknown) => {
       if (!res.headersSent) res.status(500).json({ error: 'mcp_request_failed' });
-      console.error('[repo-harness-runtime mcp] stream request failed:', error);
+      console.error('[forge-runtime mcp] stream request failed:', error);
     });
   });
   app.delete('/mcp', requireAuth, (req, res) => {
@@ -154,7 +154,7 @@ export async function startRuntimeMcpTransport(
       sessions.delete(sessionId!);
     })().catch((error: unknown) => {
       if (!res.headersSent) res.status(500).json({ error: 'mcp_request_failed' });
-      console.error('[repo-harness-runtime mcp] delete request failed:', error);
+      console.error('[forge-runtime mcp] delete request failed:', error);
     });
   });
 

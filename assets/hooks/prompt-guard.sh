@@ -192,13 +192,13 @@ prompt_guard_decision_command() {
   source_cli="$(cd "$SCRIPT_DIR/../.." 2>/dev/null && pwd)/src/cli/index.ts"
   source_hook_cli="$(cd "$SCRIPT_DIR/../.." 2>/dev/null && pwd)/src/cli/hook-entry.ts"
 
-  if [[ -n "${REPO_HARNESS_HOOK_CLI:-}" && -f "${REPO_HARNESS_HOOK_CLI:-}" ]] && command -v bun >/dev/null 2>&1; then
-    bun "$REPO_HARNESS_HOOK_CLI" prompt-guard-decide
+  if [[ -n "${FORGE_HOOK_CLI:-}" && -f "${FORGE_HOOK_CLI:-}" ]] && command -v bun >/dev/null 2>&1; then
+    bun "$FORGE_HOOK_CLI" prompt-guard-decide
     return $?
   fi
 
-  if [[ -n "${REPO_HARNESS_CLI:-}" && -f "${REPO_HARNESS_CLI:-}" ]] && command -v bun >/dev/null 2>&1; then
-    bun "$REPO_HARNESS_CLI" prompt-guard-decide
+  if [[ -n "${FORGE_CLI:-}" && -f "${FORGE_CLI:-}" ]] && command -v bun >/dev/null 2>&1; then
+    bun "$FORGE_CLI" prompt-guard-decide
     return $?
   fi
 
@@ -212,13 +212,13 @@ prompt_guard_decision_command() {
     return $?
   fi
 
-  if command -v repo-harness-hook >/dev/null 2>&1; then
-    repo-harness-hook prompt-guard-decide
+  if command -v forge-hook >/dev/null 2>&1; then
+    forge-hook prompt-guard-decide
     return $?
   fi
 
-  if command -v repo-harness >/dev/null 2>&1; then
-    repo-harness prompt-guard-decide
+  if command -v forge >/dev/null 2>&1; then
+    forge prompt-guard-decide
     return $?
   fi
 
@@ -372,7 +372,7 @@ prompt_guard_engine_call() {
     hook_structured_error \
       "PromptGuard" \
       "Prompt guard decision engine failed." \
-      "Install repo-harness or run from the source checkout so the TypeScript decision engine is available." \
+      "Install forge or run from the source checkout so the TypeScript decision engine is available." \
       "missing_artifact"
     exit 2
   fi
@@ -437,7 +437,7 @@ maybe_start_plan_workflow() {
   slug="${PG_PLAN_START_SLUG:-think-plan-$(date +%H%M%S)}"
   title="${PG_PLAN_START_TITLE:-Planning Session}"
   before_latest="$(get_latest_plan || true)"
-  kind="${PG_PENDING_KIND:-repo-harness-plan}"
+  kind="${PG_PENDING_KIND:-forge-plan}"
   source_ref="$title"
   echo "[PlanStartGate] Think/plan intent detected. Starting independent file-backed Draft plan workflow."
   if ! start_output="$(bash "scripts/ensure-task-workflow.sh" --new-plan --slug "$slug" --title "$title" 2>&1)"; then
@@ -552,7 +552,7 @@ maybe_capture_embedded_approved_plan() {
 emit_agentic_packaging_hint() {
   if pg_fact AGENTIC_PACKAGING; then
     echo "[AgenticDevRoute] Reusable workflow packaging intent detected."
-    echo "[AgenticDevRoute] Suggested route: repo-harness-autoplan after user authorization; hook will not plan or create assets."
+    echo "[AgenticDevRoute] Suggested route: forge-autoplan after user authorization; hook will not plan or create assets."
   fi
 }
 
@@ -869,11 +869,11 @@ prompt_guard_engine_call
 
 if [[ "$PG_ENGINE_STATE" != "ok" ]]; then
   if [[ "$PG_ENGINE_STATE" == "legacy" ]]; then
-    echo "[PromptGuard] Advisory: the installed repo-harness CLI predates the prompt-verdict protocol; prompt intent gates are degraded to advisory for this prompt."
-    echo "[PromptGuard] Refresh the CLI with: bun add -g repo-harness@latest && repo-harness install. Fallback: npx -y repo-harness install."
+    echo "[PromptGuard] Advisory: the installed forge CLI predates the prompt-verdict protocol; prompt intent gates are degraded to advisory for this prompt."
+    echo "[PromptGuard] Refresh the CLI with: bun add -g forge@latest && forge install. Fallback: npx -y forge install."
   else
-    echo "[PromptGuard] Advisory: prompt-guard decision engine is unavailable (repo-harness CLI or bun not found); prompt intent gates are degraded to advisory for this prompt."
-    echo "[PromptGuard] Edit-layer plan guidance remains advisory; path, conflict, destructive, remote, and evidence guards remain authoritative. Install the repo-harness CLI to restore richer prompt decisions."
+    echo "[PromptGuard] Advisory: prompt-guard decision engine is unavailable (forge CLI or bun not found); prompt intent gates are degraded to advisory for this prompt."
+    echo "[PromptGuard] Edit-layer plan guidance remains advisory; path, conflict, destructive, remote, and evidence guards remain authoritative. Install the forge CLI to restore richer prompt decisions."
   fi
   emit_workflow_file_guards
   exit 0

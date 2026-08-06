@@ -2,7 +2,7 @@
 .ai/
 .claude/
 .codex/
-.repo-harness/
+.forge/
 tasks/
 plans/
 coverage/
@@ -11,7 +11,7 @@ autoresearch/
 _ops/
 _ref/
 docs/researches/
-docs/repo-harness-*-file-manifest.sha256
+docs/forge-*-file-manifest.sha256
 evals/
 *.log
 *.tgz

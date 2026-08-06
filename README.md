@@ -1,16 +1,16 @@
-# Matea
+# Forge
 
 <p align="center">
-  <img src="docs/images/matea-banner.svg" alt="Matea — local-first action assistant" width="1280">
+  <img src="docs/images/forge-banner.svg" alt="Forge — local-first action assistant" width="1280">
 </p>
 
 <p align="center"><strong>Your local-first action assistant for software work.</strong></p>
 
 <p align="center"><a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a></p>
 
-Matea gives ChatGPT a durable local workspace for understanding projects, carrying out bounded actions, and returning reviewable evidence. It focuses on software repositories today and is designed to extend into connected tools, services, devices, and personal workflows without giving up local control.
+Forge gives ChatGPT a durable local workspace for understanding projects, carrying out bounded actions, and returning reviewable evidence. It focuses on software repositories today and is designed to extend into connected tools, services, devices, and personal workflows without giving up local control.
 
-## Why Matea
+## Why Forge
 
 - **Context that survives the chat** — repository registration, plans, work state, handoffs, and verification evidence remain available across sessions.
 - **Actions with clear boundaries** — normal local work can flow quickly, while remote writes, destructive effects, and secret access remain explicitly gated.
@@ -20,29 +20,32 @@ Matea gives ChatGPT a durable local workspace for understanding projects, carryi
 
 ## Release status
 
-`1.4.0-rc.6` is the current GitHub release candidate for Matea. The npm package `@moretea-labs/matea` is **not public yet**, so source installation remains the currently verified package path. A GitHub prerelease and an npm publication are separate facts.
+`1.4.0-rc.6` is the current GitHub release candidate for Forge. The npm package `@moretea-labs/forge` is **not public yet**, so source installation remains the currently verified package path. A GitHub prerelease and an npm publication are separate facts.
 
 ## Quick start
 
 Requirements: Git, Node.js 20.10 or newer, npm, and a writable home directory. Bun 1.0+ is optional and recommended for source development and the complete test suite.
 
 ```bash
-git clone https://github.com/moretea-labs/matea.git
-cd matea
+git clone https://github.com/moretea-labs/forge.git
+cd forge
 npm ci --ignore-scripts --no-audit --no-fund
 npm install -g . --omit=optional --no-audit --no-fund
 
-matea --version
-matea init --target both
-matea doctor
+forge --version
+forge setup open --target both
+# complete the printed action, then repeat:
+forge setup next
+forge setup close
+forge doctor
 ```
 
 Register or adopt a repository:
 
 ```bash
-matea adopt --repo /path/to/your-project --dry-run
-matea adopt --repo /path/to/your-project
-matea repo list --json
+forge adopt --repo /path/to/your-project --dry-run
+forge adopt --repo /path/to/your-project
+forge repo list --json
 ```
 
 Then follow the maintained path:
@@ -54,25 +57,25 @@ Then follow the maintained path:
 When the npm RC is published:
 
 ```bash
-npm install -g @moretea-labs/matea@next
+npm install -g @moretea-labs/forge@next
 # or, from the same npm package:
-bun add -g @moretea-labs/matea@next
+bun add -g @moretea-labs/forge@next
 ```
 
 Bun consumes the same npm package; it does not have a separate publication or version line.
 
 ## Safety model
 
-Matea separates reading, local repository changes, remote effects, destructive actions, and secret access. It keeps work scoped to a registered repository, records durable evidence, and fails closed when release identity or runtime ownership is ambiguous. See [Core Concepts](docs/wiki/Core-Concepts.md), [Work Lifecycle](docs/wiki/Work-Lifecycle.md), and [Security Model](docs/wiki/Security-Model.md).
+Forge separates reading, local repository changes, remote effects, destructive actions, and secret access. It keeps work scoped to a registered repository, records durable evidence, and fails closed when release identity or runtime ownership is ambiguous. See [Core Concepts](docs/wiki/Core-Concepts.md), [Work Lifecycle](docs/wiki/Work-Lifecycle.md), and [Security Model](docs/wiki/Security-Model.md).
 
-## Compatibility
+## Product identity
 
-The `repo-harness` and `repo-harness-hook` commands remain compatibility aliases during the Matea 1.x migration. Existing `.repo-harness` runtime directories and protocol identifiers are intentionally preserved so the product rename does not invalidate local state or integrations.
+Forge exposes only the `forge`, `forge-hook`, and `forge-runtime` command surface. Runtime state, environment variables, protocol identifiers, release artifacts, and documentation use the Forge namespace; previous product aliases are not supported.
 
 ## Documentation
 
 - [Documentation hub](docs/README.md)
-- [Wiki Home](docs/wiki/Home.md) and [GitHub Wiki](https://github.com/moretea-labs/matea/wiki)
+- [Wiki Home](docs/wiki/Home.md) and [GitHub Wiki](https://github.com/moretea-labs/forge/wiki)
 - [Public usage guide](docs/public-usage-guide.md)
 - [Platform support](docs/operations/platform-support.md)
 - [Troubleshooting](docs/operations/troubleshooting.md)
@@ -82,9 +85,9 @@ The README stays focused on first use. Architecture, lifecycle, integrations, re
 
 ## Project status and support
 
-Matea remains in release-candidate hardening. Interfaces may change before `1.4.0`, and releases are created only from an immutable revision that passes the published release gate.
+Forge remains in release-candidate hardening. Interfaces may change before `1.4.0`, and releases are created only from an immutable revision that passes the published release gate.
 
-- Bugs and documentation: [GitHub Issues](https://github.com/moretea-labs/matea/issues)
+- Bugs and documentation: [GitHub Issues](https://github.com/moretea-labs/forge/issues)
 - Usage questions: [SUPPORT.md](SUPPORT.md)
 - Security reports: [SECURITY.md](SECURITY.md)
 - Contributions: [CONTRIBUTING.md](CONTRIBUTING.md)
@@ -92,4 +95,4 @@ Matea remains in release-candidate hardening. Interfaces may change before `1.4.
 
 ## License and attribution
 
-Licensed under the [MIT License](LICENSE). Matea began as a derivative of `AncientTwo/repo-harness` and has since developed into a substantially modified, independently maintained product. The upstream copyright and permission notice remain part of the distribution; see [NOTICE](NOTICE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Licensed under the [MIT License](LICENSE). Upstream copyright and permission notices remain part of the distribution; see [NOTICE](NOTICE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -1,6 +1,6 @@
-# Contributing to Matea
+# Contributing to Forge
 
-Thanks for helping make Matea safer and easier to use. The project values small, reviewable changes backed by exact checks more than broad rewrites or unverified claims.
+Thanks for helping make Forge safer and easier to use. The project values small, reviewable changes backed by exact checks more than broad rewrites or unverified claims.
 
 ## Before opening a change
 
@@ -19,14 +19,14 @@ Requirements:
 - Bun 1.0 or newer for the complete test suite.
 
 ```bash
-git clone https://github.com/moretea-labs/matea.git
-cd matea
+git clone https://github.com/moretea-labs/forge.git
+cd forge
 npm ci --ignore-scripts --no-audit --no-fund
-node bin/matea.mjs --help
-bun bin/matea.mjs --help
+node bin/forge.mjs --help
+bun bin/forge.mjs --help
 ```
 
-The `repo-harness` command remains a compatibility alias, but new documentation and examples should use `matea` unless the compatibility behavior itself is under test.
+Forge has no previous-product command aliases. New documentation, tests, fixtures, and examples must use the Forge package, command, state, and protocol names unless they are explicitly asserting that a retired surface is absent.
 
 Run focused tests while working. Before requesting review, run the checks relevant to the change; public and release-facing changes should normally include:
 

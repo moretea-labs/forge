@@ -11,7 +11,7 @@ interface BrowserConfigLike {
   profileDir?: string;
 }
 
-const CONFIG_RELATIVE_PATH = '.repo-harness/plugins/browser.json';
+const CONFIG_RELATIVE_PATH = '.forge/plugins/browser.json';
 const DOMAIN_KEY_MAX_LENGTH = 48;
 const DOMAIN_GRANT_TTL_MS = 15 * 60_000;
 

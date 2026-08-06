@@ -139,8 +139,8 @@ release_backlog_lock() {
 
 acquire_backlog_lock() {
   local attempts=0
-  local max_attempts="${REPO_HARNESS_BACKLOG_LOCK_ATTEMPTS:-100}"
-  local sleep_seconds="${REPO_HARNESS_BACKLOG_LOCK_SLEEP_SECONDS:-0.1}"
+  local max_attempts="${FORGE_BACKLOG_LOCK_ATTEMPTS:-100}"
+  local sleep_seconds="${FORGE_BACKLOG_LOCK_SLEEP_SECONDS:-0.1}"
   case "$max_attempts" in
     ''|*[!0-9]*) max_attempts=100 ;;
   esac
@@ -754,7 +754,7 @@ BODY_EOF
     --slug "$target_task"
     --title "Sprint task: ${target_task}"
     --status Approved
-    --source repo-harness-sprint
+    --source forge-sprint
     --orchestration-kind sprint-task
     --source-ref "sprint:${sprint_file}#${target_task}"
     --body-file "$body_file"
@@ -766,7 +766,7 @@ BODY_EOF
   # Inline-mode rows execute in the primary tree: suppress the automatic
   # contract worktree for them.
   if [[ "$target_mode" == "inline" ]]; then
-    capture_output="$(REPO_HARNESS_DISABLE_CONTRACT_WORKTREE=1 bash scripts/capture-plan.sh "${capture_args[@]}" 2>&1)" || {
+    capture_output="$(FORGE_DISABLE_CONTRACT_WORKTREE=1 bash scripts/capture-plan.sh "${capture_args[@]}" 2>&1)" || {
       printf '%s\n' "$capture_output" >&2
       rm -f "$body_file"
       clear_in_flight "$target_task"

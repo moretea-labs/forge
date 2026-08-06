@@ -6,7 +6,7 @@ import { listIssues } from '../../cli/controller/issue-store';
 import { listEditSessions } from '../../cli/editing/edit-session';
 import { listLocalBridgeJobs } from '../../cli/local-bridge/job-store';
 import { validateRepository } from '../../cli/repositories/registry';
-import { readControllerDaemonStatus } from '../control-plane/daemon-client';
+import { readForgeRuntimeStatus } from '../control-plane/runtime-status-client';
 import { listActiveExecutionJobs } from '../execution/jobs/store';
 import type { ExecutionJob } from '../execution/jobs/types';
 import { listActiveLeases } from '../resources/leases/store';
@@ -64,7 +64,7 @@ export function evaluateReleaseGate(controllerHome: string, repoRoot: string, jo
   const editSessions = listEditSessions(repoRoot, 500).filter((entry) => !['finalized', 'rolled_back'].includes(entry.status));
   const leases = listActiveLeases(controllerHome, job.repoId).filter((entry) => entry.ownerJobId !== job.jobId);
   const repositoryValidation = validateRepository(job.repoId, controllerHome);
-  const daemon = readControllerDaemonStatus(controllerHome);
+  const daemon = readForgeRuntimeStatus(controllerHome);
   const pkg = packageMetadata(repoRoot);
   const issues = listIssues(repoRoot, { includeEphemeral: false });
   const releaseRelevantIssues = issues.filter((issue) => ['planned', 'launch_blocked', 'in_progress', 'review'].includes(issue.status));
@@ -98,7 +98,7 @@ export function evaluateReleaseGate(controllerHome: string, repoRoot: string, jo
   }
   if (repositoryValidation.githubMappingMatches === false) blockers.push({ code: 'GITHUB_MAPPING_DRIFT', message: 'GitHub mapping differs from Git origin.' });
   for (const warning of repositoryValidation.warnings) warnings.push({ code: 'REPOSITORY_WARNING', message: warning });
-  if (daemon.status !== 'ready') blockers.push({ code: 'CONTROLLER_DAEMON_NOT_READY', message: `Controller daemon is ${daemon.status}.` });
+  if (daemon.status !== 'ready') blockers.push({ code: 'FORGE_RUNTIME_NOT_READY', message: `Forge Runtime is ${daemon.status}.` });
   if (!pkg.valid) blockers.push({ code: 'PACKAGE_METADATA_INVALID', message: 'package.json must contain a valid name, semantic version, and bin export.' });
 
   const checks = {

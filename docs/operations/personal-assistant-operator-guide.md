@@ -42,9 +42,9 @@ Use cleanup apply only after reviewing the preview:
 - `runtime_cleanup_apply` with `confirm_cleanup=true`
 - `POST /api/assistant/maintenance/cleanup-apply` with `confirmCleanup=true`
 
-Cleanup is limited to explicit repo-harness candidates:
+Cleanup is limited to explicit Forge candidates:
 
-- old `repo-harness-*` temp directories that are not referenced by running processes
+- old `Forge-*` temp directories that are not referenced by running processes
 - terminal local jobs, when explicitly included
 - historical attention acknowledgements, when explicitly included
 

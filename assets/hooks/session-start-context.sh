@@ -35,7 +35,7 @@ helper_script_path() {
 
 resume_available() {
   [[ -f "$resume_file" ]] || return 1
-  grep -Fq "<!-- generated-by: repo-harness codex-handoff-resume v1 -->" "$resume_file" || return 1
+  grep -Fq "<!-- generated-by: forge codex-handoff-resume v1 -->" "$resume_file" || return 1
   grep -Fq "## Resume Prompt" "$resume_file"
 }
 
@@ -109,16 +109,16 @@ tooling_update_target() {
   esac
 }
 
-repo_harness_setup_check() {
+forge_setup_check() {
   local target="$1"
 
-  if [[ -n "${REPO_HARNESS_CLI:-}" && -f "${REPO_HARNESS_CLI:-}" ]] && command -v bun >/dev/null 2>&1; then
-    bun "$REPO_HARNESS_CLI" setup check --target "$target" --check-updates --json
+  if [[ -n "${FORGE_CLI:-}" && -f "${FORGE_CLI:-}" ]] && command -v bun >/dev/null 2>&1; then
+    bun "$FORGE_CLI" setup check --target "$target" --check-updates --json
     return $?
   fi
 
-  if command -v repo-harness >/dev/null 2>&1; then
-    repo-harness setup check --target "$target" --check-updates --json
+  if command -v forge >/dev/null 2>&1; then
+    forge setup check --target "$target" --check-updates --json
     return $?
   fi
 
@@ -127,13 +127,13 @@ repo_harness_setup_check() {
 
 tooling_update_cache_is_fresh() {
   local report_file="$1"
-  local ttl="${REPO_HARNESS_TOOLING_ADVISORY_TTL_SECONDS:-604800}"
+  local ttl="${FORGE_TOOLING_ADVISORY_TTL_SECONDS:-604800}"
   local now mtime age
 
   [[ -f "$report_file" ]] || return 1
   [[ "$ttl" =~ ^[0-9]+$ ]] || ttl="86400"
   [[ "$ttl" -gt 0 ]] || return 1
-  [[ "${REPO_HARNESS_TOOLING_ADVISORY_FORCE:-}" != "1" ]] || return 1
+  [[ "${FORGE_TOOLING_ADVISORY_FORCE:-}" != "1" ]] || return 1
 
   now="$(date '+%s' 2>/dev/null || true)"
   mtime="$(file_mtime "$report_file" 2>/dev/null || true)"
@@ -156,7 +156,7 @@ const updateActions = actions.filter((action) => {
 if (updateActions.length === 0) process.exit(0);
 console.log("# Tooling Update Advisory");
 console.log("");
-console.log("repo-harness setup check found version updates. Agent should run the bounded update command(s), then verify.");
+console.log("forge setup check found version updates. Agent should run the bounded update command(s), then verify.");
 for (const action of updateActions.slice(0, 5)) {
   const id = action.id ?? "unknown";
   const reason = action.reason ?? "update available";
@@ -165,7 +165,7 @@ for (const action of updateActions.slice(0, 5)) {
   if (action.verification) console.log(`  verify: \`${action.verification}\``);
 }
 if (updateActions.length > 5) {
-  console.log(`- ${updateActions.length - 5} more update action(s): run \`repo-harness setup check --check-updates --json\`.`);
+  console.log(`- ${updateActions.length - 5} more update action(s): run \`forge setup check --check-updates --json\`.`);
 }
 '
 
@@ -210,7 +210,7 @@ tooling_update_advisory_context() {
   local target state_dir report_file marker_file lock_dir tmp_report
 
   [[ -f ".ai/harness/workflow-contract.json" ]] || return 1
-  [[ "${REPO_HARNESS_TOOLING_ADVISORY:-1}" != "0" ]] || return 1
+  [[ "${FORGE_TOOLING_ADVISORY:-1}" != "0" ]] || return 1
 
   target="$(tooling_update_target)"
   state_dir=".ai/harness/security"
@@ -224,9 +224,9 @@ tooling_update_advisory_context() {
   fi
 
   mkdir -p "$state_dir"
-  if [[ "${REPO_HARNESS_TOOLING_ADVISORY_SYNC:-}" == "1" ]]; then
-    tmp_report="$(mktemp "${TMPDIR:-/tmp}/repo-harness-tooling-update.XXXXXX")"
-    if repo_harness_setup_check "$target" >"$tmp_report" 2>/dev/null; then
+  if [[ "${FORGE_TOOLING_ADVISORY_SYNC:-}" == "1" ]]; then
+    tmp_report="$(mktemp "${TMPDIR:-/tmp}/forge-tooling-update.XXXXXX")"
+    if forge_setup_check "$target" >"$tmp_report" 2>/dev/null; then
       cp "$tmp_report" "$report_file"
       render_tooling_update_context_once "$report_file" "$marker_file" || true
     fi
@@ -236,8 +236,8 @@ tooling_update_advisory_context() {
 
   if mkdir "$lock_dir" 2>/dev/null; then
     (
-      tmp_report="$(mktemp "${TMPDIR:-/tmp}/repo-harness-tooling-update.XXXXXX")"
-      if repo_harness_setup_check "$target" >"$tmp_report" 2>/dev/null; then
+      tmp_report="$(mktemp "${TMPDIR:-/tmp}/forge-tooling-update.XXXXXX")"
+      if forge_setup_check "$target" >"$tmp_report" 2>/dev/null; then
         cp "$tmp_report" "$report_file"
       fi
       rm -f "$tmp_report"
@@ -291,7 +291,7 @@ capability_context_pending() {
 Pending capability context requests detected (${pending_count}). Run:
 
 \`\`\`bash
-repo-harness capability-context sync --pending --apply
+forge capability-context sync --pending --apply
 \`\`\`
 
 Queued capabilities:

@@ -156,7 +156,7 @@ function renderIssueMarkdown(issue: ControllerIssue): string {
     `status: ${JSON.stringify(issue.status)}`,
     `updated_at: ${JSON.stringify(issue.updatedAt)}`,
     ...(issue.archivedAt ? [`archived_at: ${JSON.stringify(issue.archivedAt)}`] : []),
-    'source: "repo-harness-controller-v8"',
+    'source: "forge-controller-v8"',
     '---',
     '',
     `# ${issue.title}`,

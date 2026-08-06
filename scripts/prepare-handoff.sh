@@ -52,7 +52,7 @@ if [[ -f ".ai/hooks/lib/workflow-state.sh" ]]; then
   fi
   workflow_write_handoff "$reason"
   echo "Updated $(workflow_handoff_file)"
-  if [[ "${REPO_HARNESS_SKIP_RESUME_REFRESH:-0}" != "1" && -f "scripts/codex-handoff-resume.sh" ]]; then
+  if [[ "${FORGE_SKIP_RESUME_REFRESH:-0}" != "1" && -f "scripts/codex-handoff-resume.sh" ]]; then
     bash scripts/codex-handoff-resume.sh --cwd "$(pwd -P)" --reason "$reason" >/dev/null
   fi
   exit 0
@@ -76,6 +76,6 @@ cat > .ai/harness/handoff/current.md <<EOF_HANDOFF
 > **Reason**: ${reason}
 EOF_HANDOFF
 echo "Updated .ai/harness/handoff/current.md"
-if [[ "${REPO_HARNESS_SKIP_RESUME_REFRESH:-0}" != "1" && -f "scripts/codex-handoff-resume.sh" ]]; then
+if [[ "${FORGE_SKIP_RESUME_REFRESH:-0}" != "1" && -f "scripts/codex-handoff-resume.sh" ]]; then
   bash scripts/codex-handoff-resume.sh --cwd "$(pwd -P)" --reason "$reason" >/dev/null
 fi

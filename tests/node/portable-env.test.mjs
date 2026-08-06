@@ -4,10 +4,10 @@ import { test } from 'node:test';
 
 test('portable launcher files are executable package entrypoints', () => {
   const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
-  assert.equal(pkg.bin['repo-harness'], 'bin/repo-harness.mjs');
-  assert.equal(pkg.bin['repo-harness-hook'], 'bin/repo-harness-hook.mjs');
-  accessSync('bin/repo-harness.mjs', constants.X_OK);
-  accessSync('bin/repo-harness-hook.mjs', constants.X_OK);
+  assert.equal(pkg.bin['forge'], 'bin/forge.mjs');
+  assert.equal(pkg.bin['forge-hook'], 'bin/forge-hook.mjs');
+  accessSync('bin/forge.mjs', constants.X_OK);
+  accessSync('bin/forge-hook.mjs', constants.X_OK);
 });
 
 test('Node runtime is a first-class supported engine', () => {
@@ -23,9 +23,9 @@ test('managed gitignore covers runtime, backup, review, and secret-prone local f
     '.ai/harness/backups/',
     '.ai/harness/tmp/',
     '.ai/harness/watchdog/',
-    '.repo-harness/ios/',
-    '.repo-harness/review-artifacts/',
-    '.repo-harness/watchdog/',
+    '.forge/ios/',
+    '.forge/review-artifacts/',
+    '.forge/watchdog/',
     '*.pem',
     '*.key',
     '*.p12',
@@ -37,7 +37,7 @@ test('managed gitignore covers runtime, backup, review, and secret-prone local f
 
 test('install script supports explicit Node fallback without forcing Bun install', () => {
   const install = readFileSync('install.sh', 'utf8');
-  assert.match(install, /REPO_HARNESS_INSTALL_RUNTIME/);
+  assert.match(install, /FORGE_INSTALL_RUNTIME/);
   assert.match(install, /npm install -g/);
   assert.match(install, /Node\.js 20\.10 or newer/);
 });

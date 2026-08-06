@@ -109,12 +109,12 @@ export function normalizeMutationOwnerIdentity(input: {
     branch: supplied?.branch?.trim() || 'unknown',
     principalId: supplied?.principalId?.trim() || `owner:${input.owner}`,
     controllerInstanceId: supplied?.controllerInstanceId?.trim()
-      || process.env.REPO_HARNESS_WRITER_INSTANCE_ID?.trim()
-      || process.env.REPO_HARNESS_DAEMON_INSTANCE_ID?.trim()
+      || process.env.FORGE_WRITER_INSTANCE_ID?.trim()
+      || process.env.FORGE_DAEMON_INSTANCE_ID?.trim()
       || `process:${process.pid}`,
     controllerGeneration: supplied?.controllerGeneration?.trim()
-      || process.env.REPO_HARNESS_WRITER_GENERATION?.trim()
-      || process.env.REPO_HARNESS_ACTIVE_RUNTIME_REVISION?.trim()
+      || process.env.FORGE_WRITER_GENERATION?.trim()
+      || process.env.FORGE_ACTIVE_RUNTIME_REVISION?.trim()
       || 'unbound',
   };
 }

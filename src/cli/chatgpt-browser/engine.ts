@@ -114,7 +114,7 @@ function buildOracleAgentActions(input: {
   oracleSource?: string;
 }): BrowserDoctorAgentAction[] {
   if (input.provider !== 'oracle') return [];
-  const verification = 'repo-harness chatgpt browser-doctor --repo <repo> --provider oracle --json';
+  const verification = 'forge chatgpt browser-doctor --repo <repo> --provider oracle --json';
   const configuredSourceAction = (reason: string): BrowserDoctorAgentAction => ({
     id: 'chatgpt-oracle-fix-configured-source',
     status: 'needs_agent',
@@ -122,11 +122,11 @@ function buildOracleAgentActions(input: {
     reason,
     risk: 'Changes the explicit Oracle binary selection used for GPT Pro browser consults; verify the selected binary before any real run.',
     command: input.oracleSource === '--oracle-bin'
-      ? 'repo-harness chatgpt browser-doctor --repo <repo> --provider oracle --oracle-bin <path-to-pinned-oracle> --json'
-      : 'REPO_HARNESS_ORACLE_BIN=<path-to-pinned-oracle> repo-harness chatgpt browser-doctor --repo <repo> --provider oracle --json',
+      ? 'forge chatgpt browser-doctor --repo <repo> --provider oracle --oracle-bin <path-to-pinned-oracle> --json'
+      : 'FORGE_ORACLE_BIN=<path-to-pinned-oracle> forge chatgpt browser-doctor --repo <repo> --provider oracle --json',
     alternatives: [
       'Pass a valid --oracle-bin path for the command.',
-      'Set REPO_HARNESS_ORACLE_BIN to a valid pinned oracle binary.',
+      'Set FORGE_ORACLE_BIN to a valid pinned oracle binary.',
       'Unset the explicit source only if you intentionally want repo-local or PATH resolution.',
     ],
     verification,
@@ -134,11 +134,11 @@ function buildOracleAgentActions(input: {
   });
   const alternatives = [
     'Pass --oracle-bin <path-to-oracle> for this command.',
-    'Set REPO_HARNESS_ORACLE_BIN=<path-to-oracle> for the host runtime.',
+    'Set FORGE_ORACLE_BIN=<path-to-oracle> for the host runtime.',
     'Install a repo-local node_modules/.bin/oracle in a Node >=24 toolchain.',
   ];
   if (!input.oraclePresent) {
-    if (input.oracleSource === '--oracle-bin' || input.oracleSource === 'REPO_HARNESS_ORACLE_BIN') {
+    if (input.oracleSource === '--oracle-bin' || input.oracleSource === 'FORGE_ORACLE_BIN') {
       return [configuredSourceAction(
         `Configured Oracle source ${input.oracleSource} did not resolve; installing Oracle globally will not fix the same doctor command until the explicit source points at a valid binary or is removed.`,
       )];
@@ -147,10 +147,10 @@ function buildOracleAgentActions(input: {
       id: 'chatgpt-oracle-install-pinned',
       status: 'needs_agent',
       requires_agent: true,
-      reason: input.oracleSource === '--oracle-bin' || input.oracleSource === 'REPO_HARNESS_ORACLE_BIN'
+      reason: input.oracleSource === '--oracle-bin' || input.oracleSource === 'FORGE_ORACLE_BIN'
         ? `Configured Oracle source ${input.oracleSource} did not resolve; GPT Pro browser consults require a pinned oracle CLI.`
         : 'Oracle CLI is not installed or not visible; GPT Pro browser consults require a pinned oracle CLI.',
-      risk: 'Installs an optional external CLI with its own Node >=24 runtime boundary; do not run from default repo-harness install.',
+      risk: 'Installs an optional external CLI with its own Node >=24 runtime boundary; do not run from default forge install.',
       command: PINNED_ORACLE_INSTALL,
       alternatives,
       verification,
@@ -158,7 +158,7 @@ function buildOracleAgentActions(input: {
     }];
   }
   if (!input.oracleCapabilitiesReady) {
-    if (input.oracleSource === '--oracle-bin' || input.oracleSource === 'REPO_HARNESS_ORACLE_BIN') {
+    if (input.oracleSource === '--oracle-bin' || input.oracleSource === 'FORGE_ORACLE_BIN') {
       return [configuredSourceAction(
         `Configured Oracle source ${input.oracleSource} resolved but is missing required browser-mode capabilities: ${input.missingOracleCapabilities.join(', ') || 'nodeCompatible'}.`,
       )];
@@ -185,8 +185,8 @@ export function runBrowserSetup(repoRoot: string, opts: BrowserSetupOptions = {}
   const sessionRoot = ensureBrowserSessionRoot(repoRoot);
   const gitignorePath = join(repoRoot, '.gitignore');
   const ignoreLines = [
-    '.repo-harness/chatgpt-browser.local.json',
-    '.repo-harness/chatgpt-browser.tokens.json',
+    '.forge/chatgpt-browser.local.json',
+    '.forge/chatgpt-browser.tokens.json',
     '.ai/harness/chatgpt/browser-lock.json',
     '.ai/harness/chatgpt/bridge-extension/',
     '.ai/harness/chatgpt/sessions/',
@@ -199,11 +199,11 @@ export function runBrowserSetup(repoRoot: string, opts: BrowserSetupOptions = {}
     void current;
   }
   const lines = [
-    `[repo-harness chatgpt] Session root: ${sessionRoot}`,
-    '[repo-harness chatgpt] Local browser config remains uncommitted.',
-    '[repo-harness chatgpt] Recommended .gitignore entries:',
+    `[forge chatgpt] Session root: ${sessionRoot}`,
+    '[forge chatgpt] Local browser config remains uncommitted.',
+    '[forge chatgpt] Recommended .gitignore entries:',
     ...ignoreLines.map((line) => `  ${line}`),
-    updated ? '[repo-harness chatgpt] .gitignore updated' : '[repo-harness chatgpt] .gitignore not modified by MVP setup',
+    updated ? '[forge chatgpt] .gitignore updated' : '[forge chatgpt] .gitignore not modified by MVP setup',
   ];
 
   if (opts.profileDir) {
@@ -213,32 +213,32 @@ export function runBrowserSetup(repoRoot: string, opts: BrowserSetupOptions = {}
       browserChannel: opts.browserChannel ?? 'chrome',
       chatgptUrl: opts.chatgptUrl ?? DEFAULT_CHATGPT_URL,
     });
-    lines.push(`[repo-harness chatgpt] ChatGPT profile binding: ${binding.profileDir}`);
-    if (binding.profileDirectory) lines.push(`[repo-harness chatgpt] Chrome profile: ${binding.profileDirectory}`);
-    if (binding.selectedProfilePath) lines.push(`[repo-harness chatgpt] Selected profile path: ${binding.selectedProfilePath}`);
-    lines.push(`[repo-harness chatgpt] Browser channel: ${binding.browserChannel}`);
+    lines.push(`[forge chatgpt] ChatGPT profile binding: ${binding.profileDir}`);
+    if (binding.profileDirectory) lines.push(`[forge chatgpt] Chrome profile: ${binding.profileDirectory}`);
+    if (binding.selectedProfilePath) lines.push(`[forge chatgpt] Selected profile path: ${binding.selectedProfilePath}`);
+    lines.push(`[forge chatgpt] Browser channel: ${binding.browserChannel}`);
     if (nativeDebuggingBlockedByDefaultProfile(binding.profileDir, binding.browserChannel)) {
-      lines.push('[repo-harness chatgpt] Warning: this is the default Chrome data directory. Chrome 136+ blocks native CDP validation for this profile; use a separate automation profile or a session import/bridge path.');
+      lines.push('[forge chatgpt] Warning: this is the default Chrome data directory. Chrome 136+ blocks native CDP validation for this profile; use a separate automation profile or a session import/bridge path.');
     } else {
-      lines.push('[repo-harness chatgpt] Next: run repo-harness chatgpt browser-bind --open, click Bind ChatGPT, then run browser-doctor --provider native --validate-session.');
+      lines.push('[forge chatgpt] Next: run forge chatgpt browser-bind --open, click Bind ChatGPT, then run browser-doctor --provider native --validate-session.');
     }
     return { lines };
   }
 
   const existing = readBrowserBinding(repoRoot);
   if (existing.binding) {
-    lines.push(`[repo-harness chatgpt] Existing ChatGPT profile binding: ${existing.binding.profileDir}`);
-    if (existing.binding.profileDirectory) lines.push(`[repo-harness chatgpt] Chrome profile: ${existing.binding.profileDirectory}`);
-    if (existing.binding.selectedProfilePath) lines.push(`[repo-harness chatgpt] Selected profile path: ${existing.binding.selectedProfilePath}`);
-    lines.push(`[repo-harness chatgpt] Browser channel: ${existing.binding.browserChannel}`);
+    lines.push(`[forge chatgpt] Existing ChatGPT profile binding: ${existing.binding.profileDir}`);
+    if (existing.binding.profileDirectory) lines.push(`[forge chatgpt] Chrome profile: ${existing.binding.profileDirectory}`);
+    if (existing.binding.selectedProfilePath) lines.push(`[forge chatgpt] Selected profile path: ${existing.binding.selectedProfilePath}`);
+    lines.push(`[forge chatgpt] Browser channel: ${existing.binding.browserChannel}`);
     if (nativeDebuggingBlockedByDefaultProfile(existing.binding.profileDir, existing.binding.browserChannel)) {
-      lines.push('[repo-harness chatgpt] Warning: this is the default Chrome data directory. Chrome 136+ blocks native CDP validation for this profile; use a separate automation profile or a session import/bridge path.');
+      lines.push('[forge chatgpt] Warning: this is the default Chrome data directory. Chrome 136+ blocks native CDP validation for this profile; use a separate automation profile or a session import/bridge path.');
     } else {
-      lines.push('[repo-harness chatgpt] Next: run repo-harness chatgpt browser-bind --open, click Bind ChatGPT, then run browser-doctor --provider native --validate-session.');
+      lines.push('[forge chatgpt] Next: run forge chatgpt browser-bind --open, click Bind ChatGPT, then run browser-doctor --provider native --validate-session.');
     }
   } else {
-    lines.push('[repo-harness chatgpt] No ChatGPT profile binding configured.');
-    lines.push('[repo-harness chatgpt] Next: repo-harness chatgpt browser-setup --profile-dir <non-default-automation-user-data-dir>, then repo-harness chatgpt browser-bind --open');
+    lines.push('[forge chatgpt] No ChatGPT profile binding configured.');
+    lines.push('[forge chatgpt] Next: forge chatgpt browser-setup --profile-dir <non-default-automation-user-data-dir>, then forge chatgpt browser-bind --open');
   }
   return {
     lines,
@@ -250,13 +250,13 @@ export async function runBrowserBind(repoRoot: string, opts: BrowserBindOptions 
   return {
     stop: server.stop,
     lines: [
-      `[repo-harness chatgpt] Local authorization URL: ${server.url}`,
-      `[repo-harness chatgpt] profileDir=${server.profileDir}`,
-      ...(server.profileDirectory ? [`[repo-harness chatgpt] profileDirectory=${server.profileDirectory}`] : []),
-      `[repo-harness chatgpt] browserChannel=${server.browserChannel}`,
-      `[repo-harness chatgpt] bridgeExtension=${server.extensionDir}`,
-      '[repo-harness chatgpt] Keep this command running while you click Bind ChatGPT in the browser.',
-      '[repo-harness chatgpt] After authorization succeeds, stop this command before running browser-consult --provider bridge.',
+      `[forge chatgpt] Local authorization URL: ${server.url}`,
+      `[forge chatgpt] profileDir=${server.profileDir}`,
+      ...(server.profileDirectory ? [`[forge chatgpt] profileDirectory=${server.profileDirectory}`] : []),
+      `[forge chatgpt] browserChannel=${server.browserChannel}`,
+      `[forge chatgpt] bridgeExtension=${server.extensionDir}`,
+      '[forge chatgpt] Keep this command running while you click Bind ChatGPT in the browser.',
+      '[forge chatgpt] After authorization succeeds, stop this command before running browser-consult --provider bridge.',
     ],
   };
 }
@@ -333,39 +333,39 @@ export async function browserDoctor(
       ? 'deprecated'
       : 'experimental';
   const next = [
-    'repo-harness chatgpt browser-consult --dry-run --prompt "Reply exactly OK"',
+    'forge chatgpt browser-consult --dry-run --prompt "Reply exactly OK"',
   ];
   if (provider === 'oracle') {
     if (!oraclePresent) {
-      next.push('Install oracle (pin the version) or pass --oracle-bin / set REPO_HARNESS_ORACLE_BIN before non-dry-run execution.');
+      next.push('Install oracle (pin the version) or pass --oracle-bin / set FORGE_ORACLE_BIN before non-dry-run execution.');
     } else if (!oracleCapabilitiesReady) {
       next.push('Resolved oracle binary did not report the required browser-mode flags; upgrade oracle or check `oracle --help`.');
     } else {
-      next.push('repo-harness chatgpt browser-consult --provider oracle --prompt "Reply exactly OK"');
+      next.push('forge chatgpt browser-consult --provider oracle --prompt "Reply exactly OK"');
     }
   } else if (provider === 'native') {
     next.push('The native CDP provider is deprecated; use --provider oracle. Native remains only for short-term diagnostics.');
     if (!nativePresent) {
       next.push('Install Google Chrome before native provider execution.');
     } else if (!profileDir) {
-      next.push('repo-harness chatgpt browser-setup --profile-dir <non-default-automation-user-data-dir>');
-      next.push('repo-harness chatgpt browser-bind --open');
+      next.push('forge chatgpt browser-setup --profile-dir <non-default-automation-user-data-dir>');
+      next.push('forge chatgpt browser-bind --open');
     } else if (defaultProfileBlocked) {
       next.push('Chrome 136+ blocks native CDP against the default Chrome profile. Use a separate automation user-data-dir or a domain-scoped ChatGPT session import/bridge path.');
     } else if (opts.validateSession !== true) {
-      next.push('repo-harness chatgpt browser-doctor --provider native --validate-session');
+      next.push('forge chatgpt browser-doctor --provider native --validate-session');
     } else if (validation?.status !== 'ready') {
       next.push(validation?.error?.recovery ?? 'Run browser-bind --open, sign in from the local authorization page if needed, then validate again.');
     } else {
-      next.push('repo-harness chatgpt browser-consult --provider native --prompt "Reply exactly OK"');
+      next.push('forge chatgpt browser-consult --provider native --prompt "Reply exactly OK"');
     }
   } else if (provider === 'bridge') {
     if (!profileDir) {
-      next.push('repo-harness chatgpt browser-setup --profile-dir <user-selected-chrome-profile-dir>');
-      next.push('repo-harness chatgpt browser-bind --open');
+      next.push('forge chatgpt browser-setup --profile-dir <user-selected-chrome-profile-dir>');
+      next.push('forge chatgpt browser-bind --open');
     } else {
-      next.push('repo-harness chatgpt browser-bind --open');
-      next.push('repo-harness chatgpt browser-consult --provider bridge --prompt "Reply exactly OK"');
+      next.push('forge chatgpt browser-bind --open');
+      next.push('forge chatgpt browser-consult --provider bridge --prompt "Reply exactly OK"');
     }
   }
   const oracleCode = provider === 'oracle'
@@ -375,7 +375,7 @@ export async function browserDoctor(
     ? oracleResolution.error ?? (!oracleCapabilitiesReady && oraclePresent ? {
       code: 'ORACLE_INCOMPATIBLE',
       message: `oracle binary did not report required browser-mode capabilities: ${missingOracleCapabilities.join(', ')}`,
-      recovery: 'Upgrade oracle or check `oracle --help`; repo-harness requires every flag it may send at runtime.',
+      recovery: 'Upgrade oracle or check `oracle --help`; forge requires every flag it may send at runtime.',
     } : undefined)
     : undefined;
   const agentActions = buildOracleAgentActions({
@@ -442,19 +442,19 @@ export async function browserDoctor(
     status,
     json,
     lines: [
-      `[repo-harness chatgpt] status=${status}`,
-      `[repo-harness chatgpt] provider=${provider}`,
-      `[repo-harness chatgpt] sessionRoot=${sessionRoot}`,
-      `[repo-harness chatgpt] oracle=${oracleResolution.binary ?? 'missing'}${oracleProbe?.version ? ` (v${oracleProbe.version})` : ''}`,
-      `[repo-harness chatgpt] native=${nativePresent ? 'chrome-cdp (deprecated)' : 'missing'}`,
-      `[repo-harness chatgpt] chatgptSession=${productSessionStatus}`,
-      ...(profileDir ? [`[repo-harness chatgpt] profileDir=${profileDir}`] : []),
-      ...(profileDirectory ? [`[repo-harness chatgpt] profileDirectory=${profileDirectory}`] : []),
-      ...(defaultProfileBlocked ? ['[repo-harness chatgpt] defaultProfileCdpBlocked=true'] : []),
-      ...(profileDir ? ['[repo-harness chatgpt] bindCommand=repo-harness chatgpt browser-bind --open'] : []),
-      ...agentActions.map((action) => `[repo-harness chatgpt] agentAction=${action.id} command=${action.command}`),
-      ...(bindingResult.error ? [`[repo-harness chatgpt] bindingError=${bindingResult.error}`] : []),
-      ...(validation?.error ? [`[repo-harness chatgpt] validationError=${validation.error.message}`] : []),
+      `[forge chatgpt] status=${status}`,
+      `[forge chatgpt] provider=${provider}`,
+      `[forge chatgpt] sessionRoot=${sessionRoot}`,
+      `[forge chatgpt] oracle=${oracleResolution.binary ?? 'missing'}${oracleProbe?.version ? ` (v${oracleProbe.version})` : ''}`,
+      `[forge chatgpt] native=${nativePresent ? 'chrome-cdp (deprecated)' : 'missing'}`,
+      `[forge chatgpt] chatgptSession=${productSessionStatus}`,
+      ...(profileDir ? [`[forge chatgpt] profileDir=${profileDir}`] : []),
+      ...(profileDirectory ? [`[forge chatgpt] profileDirectory=${profileDirectory}`] : []),
+      ...(defaultProfileBlocked ? ['[forge chatgpt] defaultProfileCdpBlocked=true'] : []),
+      ...(profileDir ? ['[forge chatgpt] bindCommand=forge chatgpt browser-bind --open'] : []),
+      ...agentActions.map((action) => `[forge chatgpt] agentAction=${action.id} command=${action.command}`),
+      ...(bindingResult.error ? [`[forge chatgpt] bindingError=${bindingResult.error}`] : []),
+      ...(validation?.error ? [`[forge chatgpt] validationError=${validation.error.message}`] : []),
     ],
   };
 }

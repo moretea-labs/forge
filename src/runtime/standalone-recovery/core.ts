@@ -4,6 +4,7 @@ import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, re
 import { homedir } from 'os';
 import { dirname, isAbsolute, join, resolve } from 'path';
 import { observeRuntimeStatus } from '../root/status';
+import { forgeRuntimeServicePaths } from '../root/service';
 import {
   readRuntimeReleaseAuthority,
   rollbackRuntimeRelease,
@@ -23,6 +24,16 @@ export interface PublicTunnelServiceConfig {
   postRestartVerifyTimeoutMs?: number;
 }
 
+export interface PrimaryRuntimeServiceConfig {
+  platform: 'launchd';
+  minimumFailures?: number;
+  minimumFailureDurationMs?: number;
+  restartCooldownMs?: number;
+  maximumRestartAttempts?: number;
+  recoveryCooldownMs?: number;
+  postRestartVerifyTimeoutMs?: number;
+}
+
 export interface RecoveryConfig {
   schemaVersion: 1;
   controllerHome: string;
@@ -30,6 +41,7 @@ export interface RecoveryConfig {
   publicTunnelService?: PublicTunnelServiceConfig;
   recoveryPublicUrl?: string;
   recoveryTunnelService?: PublicTunnelServiceConfig;
+  primaryRuntimeService?: PrimaryRuntimeServiceConfig;
   mainMcpTokenFile?: string;
   expectedToolFingerprint?: string;
   readOnlyTool?: { name: string; arguments?: Record<string, unknown> };
@@ -57,6 +69,8 @@ interface KnownGoodStore {
 export type RecoveryMutationAction =
   | 'attest_known_good'
   | 'rollback_previous'
+  | 'restart_primary_runtime'
+  | 'recover_primary_runtime'
   | 'restart_recovery_gateway'
   | 'repair_public_tunnel';
 
@@ -96,7 +110,7 @@ export interface RollbackResult {
 }
 
 export interface WatchdogDecision {
-  action: 'healthy' | 'degraded' | 'repair_public_tunnel' | 'restart_recovery_gateway' | 'rollback';
+  action: 'healthy' | 'degraded' | 'repair_public_tunnel' | 'restart_recovery_gateway' | 'restart_primary_runtime' | 'rollback';
   reason: string;
 }
 
@@ -104,6 +118,11 @@ export interface WatchdogState {
   failures: number;
   firstFailureAt?: number;
   rollbackUsed: boolean;
+  runtimeRestartAttempts?: number;
+  runtimeRestartFailures?: number;
+  runtimeRestartLastAttemptAt?: number;
+  runtimeRecoveryFailures?: number;
+  runtimeRecoveryLastAttemptAt?: number;
   publicTunnelFailures?: number;
   publicTunnelFirstFailureAt?: number;
   publicTunnelRepairFailures?: number;
@@ -123,9 +142,29 @@ export interface PublicTunnelRepairResult {
   localVerify?: VerifyResult;
 }
 
+export interface PrimaryRuntimeRestartResult {
+  ok: boolean;
+  attempted: boolean;
+  noOp?: boolean;
+  detail: string;
+  serviceTarget?: string;
+  verify: VerifyResult;
+}
+
+export interface PrimaryRuntimeRecoveryResult {
+  ok: boolean;
+  attempted: boolean;
+  noOp?: boolean;
+  detail: string;
+  serviceTarget?: string;
+  rollback?: RollbackResult;
+  verify: VerifyResult;
+}
+
 const DEFAULT_CONFIG: Omit<RecoveryConfig, 'controllerHome'> = {
   schemaVersion: 1,
   readOnlyTool: { name: 'controller_context' },
+  primaryRuntimeService: { platform: 'launchd' },
 };
 
 function json<T>(path: string): T | undefined {
@@ -172,7 +211,7 @@ function configuredRecoveryPublicUrl(config: RecoveryConfig): string | undefined
 
 export const STANDALONE_RECOVERY_REQUIRED_RELEASE_FILES = [
   'manifest.json',
-  'repo-harness-runtime.mjs',
+  'forge-runtime.mjs',
 ] as const;
 
 export function recoveryConfigPath(controllerHome: string): string {
@@ -615,60 +654,62 @@ function quarantine(config: RecoveryConfig, release: ReleaseEvidence | undefined
   writeJson(quarantinePath(config), { schemaVersion: 1, releases });
 }
 
+async function rollbackPreviousLocked(config: RecoveryConfig, reason: string): Promise<RollbackResult> {
+  const before = await verifyStableRuntime(config);
+  const active = before.releases.active;
+  if (matchingKnownGood(config, active)) {
+    return { ok: true, noOp: true, detail: 'active whole-Runtime release is already independently attested known-good', verify: before };
+  }
+  if (before.runtime.running) {
+    return {
+      ok: false,
+      noOp: true,
+      detail: 'rollback refused: stop the complete Canonical Runtime before restoring its release and SQLite backup',
+      verify: before,
+    };
+  }
+  const target = matchingKnownGood(config, before.releases.previous);
+  if (!active || !target) {
+    audit(config, 'rollback_refused', {
+      reason: 'the atomic previous whole-Runtime release is not independently attested known-good',
+      activeRevision: active?.revision,
+    });
+    return {
+      ok: false,
+      detail: 'rollback refused: no attested previous whole-Runtime release with a bound SQLite backup is available',
+      verify: before,
+    };
+  }
+  const operationId = `recovery-rollback-${Date.now()}-${randomUUID().slice(0, 8)}`;
+  try {
+    const committed = rollbackRuntimeRelease(config.controllerHome, operationId);
+    if (
+      committed.active.releaseId !== target.revision
+      || committed.active.artifactIdentity !== target.artifactIdentity
+      || committed.active.manifestSha256 !== target.manifestSha256
+    ) throw new Error('RECOVERY_ROLLBACK_AUTHORITY_MISMATCH');
+    quarantine(config, active, 'whole-Runtime rollback completed');
+    audit(config, 'rollback_succeeded', {
+      operationId,
+      reason: reason.slice(0, 500),
+      activeRevision: active.revision,
+      restoredRevision: target.revision,
+      restoredManifestSha256: target.manifestSha256,
+    });
+    return {
+      ok: true,
+      operationId,
+      detail: 'whole-Runtime release and SQLite backup restored; Canonical Runtime remains stopped until its sole launcher starts it',
+    };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'whole-Runtime rollback failed';
+    audit(config, 'rollback_failed', { operationId, activeRevision: active.revision, targetRevision: target.revision, detail });
+    return { ok: false, operationId, detail };
+  }
+}
+
 export async function rollbackPrevious(config: RecoveryConfig, reason = 'standalone recovery'): Promise<RollbackResult> {
-  const locked = await withLock(config, { action: 'rollback_previous' }, async () => {
-    const before = await verifyStableRuntime(config);
-    const active = before.releases.active;
-    if (matchingKnownGood(config, active)) {
-      return { ok: true, noOp: true, detail: 'active whole-Runtime release is already independently attested known-good', verify: before };
-    }
-    if (before.runtime.running) {
-      return {
-        ok: false,
-        noOp: true,
-        detail: 'rollback refused: stop the complete Canonical Runtime before restoring its release and SQLite backup',
-        verify: before,
-      };
-    }
-    const target = matchingKnownGood(config, before.releases.previous);
-    if (!active || !target) {
-      audit(config, 'rollback_refused', {
-        reason: 'the atomic previous whole-Runtime release is not independently attested known-good',
-        activeRevision: active?.revision,
-      });
-      return {
-        ok: false,
-        detail: 'rollback refused: no attested previous whole-Runtime release with a bound SQLite backup is available',
-        verify: before,
-      };
-    }
-    const operationId = `recovery-rollback-${Date.now()}-${randomUUID().slice(0, 8)}`;
-    try {
-      const committed = rollbackRuntimeRelease(config.controllerHome, operationId);
-      if (
-        committed.active.releaseId !== target.revision
-        || committed.active.artifactIdentity !== target.artifactIdentity
-        || committed.active.manifestSha256 !== target.manifestSha256
-      ) throw new Error('RECOVERY_ROLLBACK_AUTHORITY_MISMATCH');
-      quarantine(config, active, 'whole-Runtime rollback completed');
-      audit(config, 'rollback_succeeded', {
-        operationId,
-        reason: reason.slice(0, 500),
-        activeRevision: active.revision,
-        restoredRevision: target.revision,
-        restoredManifestSha256: target.manifestSha256,
-      });
-      return {
-        ok: true,
-        operationId,
-        detail: 'whole-Runtime release and SQLite backup restored; Canonical Runtime remains stopped until its sole launcher starts it',
-      };
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : 'whole-Runtime rollback failed';
-      audit(config, 'rollback_failed', { operationId, activeRevision: active.revision, targetRevision: target.revision, detail });
-      return { ok: false, operationId, detail };
-    }
-  });
+  const locked = await withLock(config, { action: 'rollback_previous' }, () => rollbackPreviousLocked(config, reason));
   if (!locked.acquired) return { ok: false, noOp: true, detail: recoveryBusyDetail(locked.owner), verify: await verifyStableRuntime(config) };
   return locked.value;
 }
@@ -703,6 +744,15 @@ export function decideWatchdog(input: {
   rollbackUsed: boolean;
   recoveryGatewayFailed?: boolean;
   recoveryGatewayRestartUsed?: boolean;
+  primaryRuntimeFailed?: boolean;
+  runtimeRestartAttempts?: number;
+  runtimeMaximumRestartAttempts?: number;
+  runtimeRestartLastAttemptAt?: number;
+  runtimeRestartCooldownMs?: number;
+  runtimeMinimumFailures?: number;
+  runtimeMinimumFailureDurationMs?: number;
+  runtimeRecoveryLastAttemptAt?: number;
+  runtimeRecoveryCooldownMs?: number;
   publicTunnelConfigured?: boolean;
   publicTunnelFailed?: boolean;
   publicTunnelFailures?: number;
@@ -710,26 +760,58 @@ export function decideWatchdog(input: {
   publicTunnelRepairFailures?: number;
   publicTunnelMinimumFailures?: number;
   publicTunnelMinimumFailureDurationMs?: number;
+  nowMs?: number;
 }): WatchdogDecision {
+  const now = input.nowMs ?? Date.now();
   if (input.publicTunnelConfigured && input.publicTunnelFailed) {
     const failures = input.publicTunnelFailures ?? 0;
     const minimumFailures = input.publicTunnelMinimumFailures ?? 2;
     const minimumDuration = input.publicTunnelMinimumFailureDurationMs ?? 5_000;
-    const sustained = input.publicTunnelFirstFailureAt !== undefined && Date.now() - input.publicTunnelFirstFailureAt >= minimumDuration;
+    const sustained = input.publicTunnelFirstFailureAt !== undefined && now - input.publicTunnelFirstFailureAt >= minimumDuration;
     if (failures >= minimumFailures && sustained) return { action: 'repair_public_tunnel', reason: 'local runtime and Recovery Gateway are healthy while the dedicated Recovery public endpoint is unavailable' };
     return { action: 'degraded', reason: 'Recovery tunnel failure has not yet met the bounded repair threshold' };
   }
   if (input.failures === 0) return { action: 'healthy', reason: 'all recovery probes healthy' };
-  const restartSustained = input.firstFailureAt !== undefined && Date.now() - input.firstFailureAt >= 5_000;
-  if (input.failures >= 2 && restartSustained) {
-    if (input.recoveryGatewayFailed && !input.recoveryGatewayRestartUsed) return { action: 'restart_recovery_gateway', reason: 'the independent Recovery Gateway health endpoint failed after a sustained bounded failure window' };
+  const recoveryRestartSustained = input.firstFailureAt !== undefined && now - input.firstFailureAt >= 5_000;
+  if (input.failures >= 2 && recoveryRestartSustained && input.recoveryGatewayFailed && !input.recoveryGatewayRestartUsed) {
+    return { action: 'restart_recovery_gateway', reason: 'the independent Recovery Gateway health endpoint failed after a sustained bounded failure window' };
   }
-  const sustained = input.firstFailureAt !== undefined && Date.now() - input.firstFailureAt >= 30_000;
+
+  const restartAttempts = input.runtimeRestartAttempts ?? 0;
+  const maximumRestartAttempts = Math.max(1, input.runtimeMaximumRestartAttempts ?? 3);
+  const restartMinimumFailures = Math.max(1, input.runtimeMinimumFailures ?? 2);
+  const restartMinimumDurationMs = Math.max(0, input.runtimeMinimumFailureDurationMs ?? 5_000);
+  const restartSustained = input.firstFailureAt !== undefined && now - input.firstFailureAt >= restartMinimumDurationMs;
+  const restartCooldownMs = Math.max(0, input.runtimeRestartCooldownMs ?? 10_000);
+  const restartCooldownElapsed = input.runtimeRestartLastAttemptAt === undefined || now - input.runtimeRestartLastAttemptAt >= restartCooldownMs;
+  if (
+    input.primaryRuntimeFailed
+    && input.failures >= restartMinimumFailures
+    && restartSustained
+    && restartAttempts < maximumRestartAttempts
+    && restartCooldownElapsed
+  ) {
+    return { action: 'restart_primary_runtime', reason: `canonical Runtime failed sustained verification; attempt bounded whole-Runtime restart ${restartAttempts + 1}/${maximumRestartAttempts}` };
+  }
+
+  const rollbackSustained = input.firstFailureAt !== undefined && now - input.firstFailureAt >= 30_000;
+  const recoveryCooldownMs = Math.max(0, input.runtimeRecoveryCooldownMs ?? 60_000);
+  const recoveryCooldownElapsed = input.runtimeRecoveryLastAttemptAt === undefined || now - input.runtimeRecoveryLastAttemptAt >= recoveryCooldownMs;
   const independentEvidence = new Set(input.evidenceClasses).size >= 2;
-  if (input.failures >= 6 && sustained && independentEvidence && !input.activeKnownGood && input.previousKnownGood && !input.rollbackUsed) {
-    return { action: 'rollback', reason: 'six sustained failures have two independent evidence classes plus a verified previous whole-Runtime release' };
+  if (
+    input.primaryRuntimeFailed
+    && restartAttempts >= maximumRestartAttempts
+    && input.failures >= 6
+    && rollbackSustained
+    && independentEvidence
+    && !input.activeKnownGood
+    && input.previousKnownGood
+    && !input.rollbackUsed
+    && recoveryCooldownElapsed
+  ) {
+    return { action: 'rollback', reason: 'bounded primary Runtime restarts were exhausted and sustained multi-signal evidence permits previous whole-release recovery' };
   }
-  return { action: 'degraded', reason: 'failure threshold, duration, or independent-evidence quorum not met' };
+  return { action: 'degraded', reason: 'restart or rollback threshold, duration, cooldown, or independent-evidence quorum not met' };
 }
 
 export async function diagnose(config: RecoveryConfig): Promise<Record<string, unknown>> {
@@ -825,6 +907,175 @@ async function ensureLaunchdServiceStarted(service: LaunchdService, runCommand: 
   return { ok: true, detail: service.target };
 }
 
+export interface PrimaryRuntimeRecoveryDependencies {
+  platform?: NodeJS.Platform;
+  currentUid?: () => Promise<number | undefined>;
+  runCommand?: CommandRunner;
+  verifyLocal?: (config: RecoveryConfig) => Promise<VerifyResult>;
+  runtimeRunning?: (config: RecoveryConfig) => boolean;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+function configuredPrimaryRuntimeService(config: RecoveryConfig): PrimaryRuntimeServiceConfig {
+  return config.primaryRuntimeService ?? { platform: 'launchd' };
+}
+
+function primaryRuntimeLaunchdService(config: RecoveryConfig, uid: number): LaunchdService | undefined {
+  const configured = configuredPrimaryRuntimeService(config);
+  if (configured.platform !== 'launchd') return undefined;
+  const paths = forgeRuntimeServicePaths(config.controllerHome);
+  if (!existsSync(paths.installedPlistPath)) return undefined;
+  const domain = `gui/${uid}`;
+  return {
+    uid,
+    domain,
+    target: `${domain}/${paths.label}`,
+    label: paths.label,
+    plistPath: paths.installedPlistPath,
+  };
+}
+
+async function waitForPrimaryRuntimeState(input: {
+  config: RecoveryConfig;
+  expectedRunning: boolean;
+  timeoutMs: number;
+  now: () => number;
+  wait: (ms: number) => Promise<void>;
+  runtimeRunning: (config: RecoveryConfig) => boolean;
+}): Promise<boolean> {
+  const deadline = input.now() + input.timeoutMs;
+  while (input.now() < deadline) {
+    if (input.runtimeRunning(input.config) === input.expectedRunning) return true;
+    await input.wait(500);
+  }
+  return input.runtimeRunning(input.config) === input.expectedRunning;
+}
+
+async function verifyPrimaryRuntimeAfterStart(input: {
+  config: RecoveryConfig;
+  timeoutMs: number;
+  now: () => number;
+  wait: (ms: number) => Promise<void>;
+  verifyLocal: (config: RecoveryConfig) => Promise<VerifyResult>;
+}): Promise<VerifyResult> {
+  const deadline = input.now() + input.timeoutMs;
+  let observed = await input.verifyLocal(input.config);
+  while (!observed.ok && input.now() < deadline) {
+    await input.wait(1_000);
+    observed = await input.verifyLocal(input.config);
+  }
+  return observed;
+}
+
+export async function restartPrimaryRuntime(
+  config: RecoveryConfig,
+  dependencies: PrimaryRuntimeRecoveryDependencies = {},
+): Promise<PrimaryRuntimeRestartResult> {
+  const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
+  const initial = await verifyLocal(config);
+  if (initial.ok) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime is already healthy', verify: initial };
+  if ((dependencies.platform ?? process.platform) !== 'darwin') {
+    return { ok: false, attempted: false, noOp: true, detail: 'primary Runtime automatic restart currently requires the configured macOS launchd service', verify: initial };
+  }
+  const uid = await (dependencies.currentUid ?? currentUid)();
+  const service = uid === undefined ? undefined : primaryRuntimeLaunchdService(config, uid);
+  if (!service) return { ok: false, attempted: false, noOp: true, detail: 'primary Forge Runtime launchd service is not installed', verify: initial };
+  const now = dependencies.now ?? Date.now;
+  const wait = dependencies.sleep ?? sleep;
+  const locked = await withLock(config, { action: 'restart_primary_runtime' }, async () => {
+    const before = await verifyLocal(config);
+    if (before.ok) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime recovered before restart', serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRestartResult;
+    const started = await ensureLaunchdServiceStarted(service, dependencies.runCommand ?? command);
+    if (!started.ok) {
+      audit(config, 'primary_runtime_restart_failed', { serviceTarget: service.target, detail: started.detail });
+      return { ok: false, attempted: true, detail: started.detail, serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRestartResult;
+    }
+    const after = await verifyPrimaryRuntimeAfterStart({
+      config,
+      timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 30_000,
+      now,
+      wait,
+      verifyLocal,
+    });
+    if (after.ok) {
+      audit(config, 'primary_runtime_restart_succeeded', { serviceTarget: service.target, release: after.releases.active?.revision });
+      return { ok: true, attempted: true, detail: 'Canonical Forge Runtime restarted and passed whole-Runtime verification', serviceTarget: service.target, verify: after } satisfies PrimaryRuntimeRestartResult;
+    }
+    audit(config, 'primary_runtime_restart_unverified', { serviceTarget: service.target, reasonCodes: after.runtime.reasonCodes });
+    return { ok: false, attempted: true, detail: 'Canonical Forge Runtime restarted but did not pass whole-Runtime verification before timeout', serviceTarget: service.target, verify: after } satisfies PrimaryRuntimeRestartResult;
+  });
+  if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner), serviceTarget: service.target, verify: initial };
+  return locked.value;
+}
+
+export async function recoverPrimaryRuntime(
+  config: RecoveryConfig,
+  reason = 'watchdog exhausted bounded primary Runtime restarts',
+  dependencies: PrimaryRuntimeRecoveryDependencies = {},
+): Promise<PrimaryRuntimeRecoveryResult> {
+  const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
+  const initial = await verifyLocal(config);
+  if (initial.ok) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime recovered before rollback', verify: initial };
+  if ((dependencies.platform ?? process.platform) !== 'darwin') {
+    return { ok: false, attempted: false, noOp: true, detail: 'automatic whole-Runtime recovery currently requires the configured macOS launchd service', verify: initial };
+  }
+  const uid = await (dependencies.currentUid ?? currentUid)();
+  const service = uid === undefined ? undefined : primaryRuntimeLaunchdService(config, uid);
+  if (!service) return { ok: false, attempted: false, noOp: true, detail: 'primary Forge Runtime launchd service is not installed', verify: initial };
+  const runCommand = dependencies.runCommand ?? command;
+  const now = dependencies.now ?? Date.now;
+  const wait = dependencies.sleep ?? sleep;
+  const runtimeRunning = dependencies.runtimeRunning ?? ((value: RecoveryConfig) => observeRuntimeStatus(value.controllerHome).running);
+  const locked = await withLock(config, { action: 'recover_primary_runtime' }, async () => {
+    const before = await verifyLocal(config);
+    if (before.ok) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime recovered before rollback', serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRecoveryResult;
+
+    const stopped = await runCommand('launchctl', ['bootout', service.target], 15_000);
+    const stoppedCleanly = stopped.ok || /not found|no such process|could not find service|service is not loaded/i.test(`${stopped.stderr}\n${stopped.stdout}`);
+    if (!stoppedCleanly) {
+      const detail = `primary Runtime bootout failed: ${stopped.stderr || stopped.stdout || stopped.status}`;
+      audit(config, 'primary_runtime_recovery_stop_failed', { serviceTarget: service.target, detail });
+      return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRecoveryResult;
+    }
+    const runtimeStopped = await waitForPrimaryRuntimeState({ config, expectedRunning: false, timeoutMs: 20_000, now, wait, runtimeRunning });
+    if (!runtimeStopped) {
+      const detail = 'primary Runtime owner remained live after bounded launchd bootout';
+      audit(config, 'primary_runtime_recovery_stop_unverified', { serviceTarget: service.target });
+      return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: await verifyLocal(config) } satisfies PrimaryRuntimeRecoveryResult;
+    }
+
+    const rollback = await rollbackPreviousLocked(config, reason);
+    if (!rollback.ok) {
+      audit(config, 'primary_runtime_recovery_rollback_failed', { serviceTarget: service.target, detail: rollback.detail });
+      return { ok: false, attempted: true, detail: rollback.detail, serviceTarget: service.target, rollback, verify: rollback.verify ?? await verifyLocal(config) } satisfies PrimaryRuntimeRecoveryResult;
+    }
+
+    const started = await ensureLaunchdServiceStarted(service, runCommand);
+    if (!started.ok) {
+      audit(config, 'primary_runtime_recovery_start_failed', { serviceTarget: service.target, detail: started.detail, rollbackOperationId: rollback.operationId });
+      return { ok: false, attempted: true, detail: started.detail, serviceTarget: service.target, rollback, verify: await verifyLocal(config) } satisfies PrimaryRuntimeRecoveryResult;
+    }
+    const after = await verifyPrimaryRuntimeAfterStart({
+      config,
+      timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 45_000,
+      now,
+      wait,
+      verifyLocal,
+    });
+    if (after.ok) {
+      audit(config, 'primary_runtime_recovery_succeeded', { serviceTarget: service.target, rollbackOperationId: rollback.operationId, restoredRelease: after.releases.active?.revision });
+      return { ok: true, attempted: true, detail: 'previous whole-Runtime release and SQLite backup restored, restarted, and verified', serviceTarget: service.target, rollback, verify: after } satisfies PrimaryRuntimeRecoveryResult;
+    }
+
+    await runCommand('launchctl', ['bootout', service.target], 15_000);
+    audit(config, 'primary_runtime_recovery_unverified', { serviceTarget: service.target, rollbackOperationId: rollback.operationId, reasonCodes: after.runtime.reasonCodes });
+    return { ok: false, attempted: true, detail: 'previous whole-Runtime release started but failed verification; service was stopped to prevent a restart loop', serviceTarget: service.target, rollback, verify: after } satisfies PrimaryRuntimeRecoveryResult;
+  });
+  if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner), serviceTarget: service.target, verify: initial };
+  return locked.value;
+}
+
 function publicTunnelService(config: RecoveryConfig, uid: number): LaunchdService | undefined {
   const configured = configuredRecoveryTunnel(config);
   if (!configured || configured.platform !== 'launchd') return undefined;
@@ -917,7 +1168,7 @@ export interface RecoveryGatewayRestartDependencies {
 }
 
 function recoveryGatewayLaunchdService(config: RecoveryConfig, uid: number): LaunchdService {
-  const label = 'com.moretea.repo-harness-recovery-gateway';
+  const label = 'com.moretea.forge-recovery-gateway';
   const generated = join(recoveryRoot(config), 'launchd', `${label}.plist`);
   const installed = join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
   return {
@@ -994,7 +1245,7 @@ export function initializeStandaloneRecovery(
   controllerHome: string,
   port = 8787,
   publicTunnelService?: PublicTunnelServiceConfig,
-  extensions: Partial<Pick<RecoveryConfig, 'publicMcpUrl' | 'recoveryPublicUrl' | 'recoveryTunnelService'>> = {},
+  extensions: Partial<Pick<RecoveryConfig, 'publicMcpUrl' | 'recoveryPublicUrl' | 'recoveryTunnelService' | 'primaryRuntimeService'>> = {},
 ): RecoveryConfig {
   const root = resolve(controllerHome);
   const tokenPath = join(root, 'recovery', 'config', 'gateway-token.json');
@@ -1015,41 +1266,73 @@ export function secureEqual(left: string, right: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState): Promise<{ state: WatchdogState; decision: WatchdogDecision; verify: VerifyResult; rollback?: RollbackResult; publicTunnelRepair?: PublicTunnelRepairResult; recoveryGatewayRestart?: RecoveryGatewayRestartResult }> {
+export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState): Promise<{
+  state: WatchdogState;
+  decision: WatchdogDecision;
+  verify: VerifyResult;
+  rollback?: RollbackResult;
+  publicTunnelRepair?: PublicTunnelRepairResult;
+  recoveryGatewayRestart?: RecoveryGatewayRestartResult;
+  primaryRuntimeRestart?: PrimaryRuntimeRestartResult;
+  primaryRuntimeRecovery?: PrimaryRuntimeRecoveryResult;
+}> {
   const verified = await verifyStableRuntime(config);
+  const localVerify = await verifyLocalRuntime(config);
   const recoveryHealthy = verified.probes.recovery_gateway?.ok !== false
     && verified.probes.recovery_external_http?.ok !== false;
-  if (verified.ok && recoveryHealthy) {
-    const state = { failures: 0, rollbackUsed: false, publicTunnelFailures: 0, publicTunnelRepairFailures: 0, recoveryGatewayRestartUsed: false, lastDecision: 'healthy' as const };
+  if (verified.ok && localVerify.ok && recoveryHealthy) {
+    const state: WatchdogState = {
+      failures: 0,
+      rollbackUsed: false,
+      runtimeRestartAttempts: 0,
+      runtimeRestartFailures: 0,
+      runtimeRestartLastAttemptAt: undefined,
+      runtimeRecoveryFailures: 0,
+      runtimeRecoveryLastAttemptAt: undefined,
+      publicTunnelFailures: 0,
+      publicTunnelRepairFailures: 0,
+      recoveryGatewayRestartUsed: false,
+      lastDecision: 'healthy',
+    };
     return { state, decision: { action: 'healthy', reason: 'primary runtime and standalone Recovery verification passed' }, verify: verified };
   }
-  const localVerify = configuredRecoveryTunnel(config) && configuredRecoveryPublicUrl(config) ? await verifyLocalRuntime(config) : undefined;
-  const publicTunnelFailed = localVerify ? isExternalTunnelFailure(config, verified, localVerify) : false;
-  const evidenceClasses = Object.entries(verified.probes)
+  const now = Date.now();
+  const publicTunnelFailed = isExternalTunnelFailure(config, verified, localVerify);
+  const evidenceClasses = Object.entries(localVerify.probes)
     .filter(([name, value]) => !name.startsWith('recovery_') && !value.ok)
-    .map(([name]) => name.startsWith('external') ? 'external' : name.startsWith('mcp') ? 'mcp' : name.startsWith('active') ? 'gateway' : name);
+    .map(([name]) => name.startsWith('mcp') ? 'mcp' : name.startsWith('active') ? 'gateway' : name);
+  if (!localVerify.runtime.ok) evidenceClasses.push('runtime');
   const activeKnownGood = Boolean(matchingKnownGood(config, verified.releases.active));
   const previousKnownGood = Boolean(matchingKnownGood(config, verified.releases.previous));
   const state: WatchdogState = publicTunnelFailed
     ? {
       ...prior,
       failures: prior.failures + 1,
-      firstFailureAt: prior.firstFailureAt ?? Date.now(),
+      firstFailureAt: prior.firstFailureAt ?? now,
       publicTunnelFailures: (prior.publicTunnelFailures ?? 0) + 1,
-      publicTunnelFirstFailureAt: prior.publicTunnelFirstFailureAt ?? Date.now(),
+      publicTunnelFirstFailureAt: prior.publicTunnelFirstFailureAt ?? now,
     }
     : {
       ...prior,
       failures: prior.failures + 1,
-      firstFailureAt: prior.firstFailureAt ?? Date.now(),
+      firstFailureAt: prior.firstFailureAt ?? now,
       publicTunnelFailures: 0,
       publicTunnelFirstFailureAt: undefined,
     };
+  const primaryConfig = configuredPrimaryRuntimeService(config);
   const decision = decideWatchdog({
     ...state,
+    nowMs: now,
     evidenceClasses,
     activeKnownGood,
     previousKnownGood,
+    primaryRuntimeFailed: !localVerify.ok,
+    runtimeMaximumRestartAttempts: primaryConfig.maximumRestartAttempts,
+    runtimeRestartCooldownMs: primaryConfig.restartCooldownMs,
+    runtimeMinimumFailures: primaryConfig.minimumFailures,
+    runtimeMinimumFailureDurationMs: primaryConfig.minimumFailureDurationMs,
+    runtimeRecoveryLastAttemptAt: state.runtimeRecoveryLastAttemptAt,
+    runtimeRecoveryCooldownMs: primaryConfig.recoveryCooldownMs,
     recoveryGatewayFailed: verified.probes.recovery_gateway?.ok === false,
     publicTunnelConfigured: Boolean(configuredRecoveryTunnel(config)),
     publicTunnelFailed,
@@ -1068,9 +1351,44 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
     const recoveryGatewayRestart = await restartRecoveryGateway(config);
     return { state: { ...state, recoveryGatewayRestartUsed: true }, decision, verify: verified, recoveryGatewayRestart };
   }
+  if (decision.action === 'restart_primary_runtime') {
+    const primaryRuntimeRestart = await restartPrimaryRuntime(config);
+    const attempts = (state.runtimeRestartAttempts ?? 0) + (primaryRuntimeRestart.attempted ? 1 : 0);
+    const nextState: WatchdogState = primaryRuntimeRestart.ok
+      ? {
+        ...state,
+        failures: 0,
+        firstFailureAt: undefined,
+        runtimeRestartAttempts: 0,
+        runtimeRestartFailures: 0,
+        runtimeRestartLastAttemptAt: now,
+      }
+      : {
+        ...state,
+        runtimeRestartAttempts: attempts,
+        runtimeRestartFailures: (state.runtimeRestartFailures ?? 0) + 1,
+        runtimeRestartLastAttemptAt: now,
+      };
+    return { state: nextState, decision, verify: verified, primaryRuntimeRestart };
+  }
   if (decision.action === 'rollback') {
-    const rollback = await rollbackPrevious(config, 'watchdog sustained multi-signal failure with a verified previous whole-Runtime release');
-    return { state: { ...state, rollbackUsed: true }, decision, verify: verified, rollback };
+    const primaryRuntimeRecovery = await recoverPrimaryRuntime(config, 'watchdog exhausted bounded primary Runtime restarts with sustained multi-signal failure');
+    const rollbackCommitted = primaryRuntimeRecovery.rollback?.ok === true && primaryRuntimeRecovery.rollback.noOp !== true;
+    return {
+      state: {
+        ...state,
+        rollbackUsed: state.rollbackUsed || rollbackCommitted,
+        runtimeRestartAttempts: rollbackCommitted ? 0 : state.runtimeRestartAttempts,
+        runtimeRestartFailures: rollbackCommitted ? 0 : state.runtimeRestartFailures,
+        runtimeRestartLastAttemptAt: rollbackCommitted ? undefined : state.runtimeRestartLastAttemptAt,
+        runtimeRecoveryFailures: primaryRuntimeRecovery.ok ? 0 : (state.runtimeRecoveryFailures ?? 0) + 1,
+        runtimeRecoveryLastAttemptAt: now,
+      },
+      decision,
+      verify: verified,
+      primaryRuntimeRecovery,
+      ...(primaryRuntimeRecovery.rollback ? { rollback: primaryRuntimeRecovery.rollback } : {}),
+    };
   }
   return { state, decision, verify: verified };
 }

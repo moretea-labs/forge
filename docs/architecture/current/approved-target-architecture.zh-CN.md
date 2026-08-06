@@ -1,13 +1,13 @@
-# 已批准的 repo-harness 目标架构
+# 已批准的 Forge 目标架构
 
 > 状态：**Approved Architecture Input**  
 > 日期：2026-06-25  
 > 本文保留本轮重构所依据的用户目标架构原文；运行时落实情况见 [`target-requirements-traceability.md`](target-requirements-traceability.md)。
 
-repo-harness 目标架构清单
+Forge 目标架构清单
 一、总体判断
 
-现在的 repo-harness 已经不是一个简单的 MCP 工具集，也不只是一个“让 ChatGPT 调 Codex”的桥。
+现在的 Forge 已经不是一个简单的 MCP 工具集，也不只是一个“让 ChatGPT 调 Codex”的桥。
 
 它实际上正在演化成一个：
 
@@ -1134,16 +1134,16 @@ Controller 重启后会丢失订阅和队列信息。
 
 至少拆为三个进程：
 
-repo-harness-gateway
-repo-harness-controller-daemon
-repo-harness-worker
+Forge-gateway
+Forge-controller-daemon
+Forge-worker
 Gateway
 MCP/HTTP
 鉴权
 快速读取 Materialized View
 接受 Command
 返回 Job ID
-Controller Daemon
+Canonical Forge Runtime
 Scheduler
 Repo Actors
 Lease
@@ -1170,7 +1170,7 @@ Gateway 重启不能取消已经接受的 Job。
 
 检查：
 
-Controller Daemon
+Canonical Forge Runtime
 State Store
 Worker Pool
 Repository Registry
@@ -1367,7 +1367,7 @@ schema
 
 docs/architecture/index.md
 
-仍写着 repo-harness 不是 MCP Server，但当前产品已经包含完整 MCP Controller Runtime。
+仍写着 Forge 不是 MCP Server，但当前产品已经包含完整 MCP Controller Runtime。
 
 另外 V5、V6、V7、V8 文档中存在：
 

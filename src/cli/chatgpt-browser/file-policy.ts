@@ -35,7 +35,7 @@ const READ_DENY_GLOBS = [
   'credentials/**',
   'private/**',
   '_ops/**',
-  '.repo-harness/**/*.json',
+  '.forge/**/*.json',
   '.ai/harness/chatgpt/bridge-extension/**',
 ];
 

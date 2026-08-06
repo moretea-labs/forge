@@ -1,11 +1,11 @@
 # Product Spec
 
 > **Status**: Approved
-> **Owner**: repo-harness maintainers
+> **Owner**: Forge maintainers
 
 ## Product Outcome
 
-`repo-harness` makes long-running AI engineering work reviewable and resumable
+Forge makes long-running AI engineering work reviewable and resumable
 inside the repository. A maintainer should be able to hand Claude, Codex, or a
 future agent an approved plan or sprint, let it work in an isolated branch or
 worktree, and review completion from files: plan, contract, notes, checks,
@@ -21,7 +21,7 @@ trace, review, and handoff.
 
 ## Non-Goals
 
-- `repo-harness` is not a hosted agent platform, product runtime, or database service. Its local MCP controller is a bounded control surface over repository-backed state, not an unrestricted remote shell.
+- Forge is not a hosted agent platform, product runtime, or database service. Its local MCP controller is a bounded control surface over repository-backed state, not an unrestricted remote shell.
 - It does not replace the target repository's build, test, deploy, or release
   authority.
 - It does not treat chat history, SQLite state, or hosted agent threads as the

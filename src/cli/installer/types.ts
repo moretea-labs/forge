@@ -1,5 +1,5 @@
 /**
- * Target abstraction for the repo-harness hook-runtime installer.
+ * Target abstraction for the forge hook-runtime installer.
  *
  * Each host (Codex CLI, Claude Code) implements AgentTarget so the
  * installer orchestrator can write the right hook config without

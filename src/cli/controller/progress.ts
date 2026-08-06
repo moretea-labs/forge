@@ -542,11 +542,11 @@ export function getControllerTimeline(
   const issues = listIssues(repoRoot);
   for (const issue of issues) {
     if (filter.issueId && issue.id !== filter.issueId) continue;
-    synthetic.push({ id: `${issue.id}:created`, at: issue.createdAt, category: "issue", action: "issue_created", summary: issue.title, actor: "repo-harness-controller", issueId: issue.id });
-    if (issue.archivedAt) synthetic.push({ id: `${issue.id}:archived`, at: issue.archivedAt, category: "issue", action: "issue_archived", summary: issue.title, actor: "repo-harness-controller", issueId: issue.id });
+    synthetic.push({ id: `${issue.id}:created`, at: issue.createdAt, category: "issue", action: "issue_created", summary: issue.title, actor: "forge-controller", issueId: issue.id });
+    if (issue.archivedAt) synthetic.push({ id: `${issue.id}:archived`, at: issue.archivedAt, category: "issue", action: "issue_archived", summary: issue.title, actor: "forge-controller", issueId: issue.id });
     for (const task of issue.tasks) {
       if (filter.taskId && task.id !== filter.taskId) continue;
-      synthetic.push({ id: `${issue.id}:${task.id}:created`, at: task.createdAt, category: "task", action: "task_created", summary: task.title, actor: "repo-harness-controller", issueId: issue.id, taskId: task.id });
+      synthetic.push({ id: `${issue.id}:${task.id}:created`, at: task.createdAt, category: "task", action: "task_created", summary: task.title, actor: "forge-controller", issueId: issue.id, taskId: task.id });
       if (task.verification) synthetic.push({ id: `${issue.id}:${task.id}:verified:${task.verification.verifiedAt}`, at: task.verification.verifiedAt, category: "verification", action: task.status === "verified" ? "verification_passed" : "verification_recorded", summary: `${task.title}: ${task.status}`, actor: task.verification.reviewer, issueId: issue.id, taskId: task.id, runId: task.verification.runId });
     }
   }

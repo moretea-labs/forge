@@ -52,13 +52,13 @@ function relativePath(repoRoot: string, absolute: string): string {
 }
 
 export function buildCodexContinuationPrompt(packet: CodexContinuationPacket): string {
-  return `# repo-harness Codex continuation
+  return `# forge Codex continuation
 
 ## Objective
 ${packet.objective}
 
 ## Role
-You are the local Codex controller for this trusted repository. Use repo-harness commands as the execution boundary. Do not add external API-key based model clients. Do not perform destructive Git operations unless explicitly requested.
+You are the local Codex controller for this trusted repository. Use forge commands as the execution boundary. Do not add external API-key based model clients. Do not perform destructive Git operations unless explicitly requested.
 
 ## Current completion backlog
 - auto-finishable runs: ${packet.backlog.finishableRunIds.length}
@@ -79,8 +79,8 @@ ${packet.allowedActions.map((action) => `- ${action}`).join('\n')}
 ${packet.stopConditions.map((condition) => `- ${condition}`).join('\n')}
 
 ## Instructions
-1. Prefer \`repo-harness controller completion-backlog --json\` before starting new work.
-2. Run \`repo-harness controller finish-ready-runs --apply --json\` only for low/medium auto-finishable runs.
+1. Prefer \`forge controller completion-backlog --json\` before starting new work.
+2. Run \`forge controller finish-ready-runs --apply --json\` only for low/medium auto-finishable runs.
 3. For high/destructive work, prepare a concise review summary instead of auto-approving it.
 4. If a command fails because of tool/platform limitations, write a small patch or a continuation note rather than retrying the same blocked path repeatedly.
 5. Finish with checks, a short status summary, and explicit remaining blockers.
@@ -91,7 +91,7 @@ export function prepareCodexContinuation(repoRoot: string, options: CodexContinu
   const backlog = inspectCompletionBacklog(repoRoot, { limit: options.maxItems ?? 100 });
   const stuckStates = inspectStuckControllerStates(repoRoot, { limit: options.maxItems ?? 100 });
   const id = `CONT-${timestampId()}`;
-  const objective = options.objective?.trim() || 'Close repo-harness completion backlog using local Codex and repo-harness safety gates.';
+  const objective = options.objective?.trim() || 'Close forge completion backlog using local Codex and forge safety gates.';
   const packet: CodexContinuationPacket = {
     schemaVersion: 1,
     packetId: id,
@@ -101,7 +101,7 @@ export function prepareCodexContinuation(repoRoot: string, options: CodexContinu
     controller: 'codex-cli',
     allowedActions: [
       'inspect compact backlog and stuck-state reports',
-      'finish low/medium successful runs using repo-harness controller finish-ready-runs',
+      'finish low/medium successful runs using forge controller finish-ready-runs',
       'prepare patches for remaining blocker classes',
       'run declared checks and summarize failures',
     ],
@@ -123,9 +123,9 @@ export function prepareCodexContinuation(repoRoot: string, options: CodexContinu
       recommendations: stuckStates.recommendations,
     },
     nextCommands: [
-      'repo-harness controller completion-backlog --json',
-      'repo-harness controller stuck-states --json',
-      ...(backlog.finishableRunIds.length ? ['repo-harness controller finish-ready-runs --apply --json'] : []),
+      'forge controller completion-backlog --json',
+      'forge controller stuck-states --json',
+      ...(backlog.finishableRunIds.length ? ['forge controller finish-ready-runs --apply --json'] : []),
       'npm run check:type',
       'npm run check:mcp-compatibility',
     ],

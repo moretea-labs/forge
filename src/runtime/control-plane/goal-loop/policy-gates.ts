@@ -163,7 +163,7 @@ export function evaluateGoalPolicyGate(input: GoalPolicyGateInput): GoalPolicyGa
       };
     }
     // Autonomous/supervised goal loop may perform bounded workspace writes without per-step approval
-    // when not destructive/external. Callers still apply patches via repo-harness.
+    // when not destructive/external. Callers still apply patches via forge.
     return {
       approvalState: 'approval_not_required',
       allowed: true,

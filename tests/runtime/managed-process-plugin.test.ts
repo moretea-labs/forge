@@ -12,7 +12,7 @@ afterEach(() => {
 });
 
 function helper(source: string): string {
-  const root = mkdtempSync(join(tmpdir(), 'repo-harness-managed-plugin-'));
+  const root = mkdtempSync(join(tmpdir(), 'forge-managed-plugin-'));
   roots.push(root);
   const path = join(root, 'helper.mjs');
   writeFileSync(path, source, 'utf8');

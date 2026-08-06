@@ -24,8 +24,8 @@ export function loadRuntimeReleaseManifest(
   const value = parsed as Record<string, unknown>;
   if (value.schemaVersion !== 1) throw new Error('RELEASE_MANIFEST_INVALID: schemaVersion must be 1');
   const entrypoint = requireString(value.entrypoint, 'entrypoint');
-  if (entrypoint !== 'repo-harness-runtime') {
-    throw new Error(`RELEASE_MANIFEST_INVALID: entrypoint must be repo-harness-runtime, got ${entrypoint}`);
+  if (entrypoint !== 'forge-runtime') {
+    throw new Error(`RELEASE_MANIFEST_INVALID: entrypoint must be forge-runtime, got ${entrypoint}`);
   }
   if (value.configurationSchemaVersion !== 1) {
     throw new Error('RELEASE_MANIFEST_INVALID: configurationSchemaVersion must be 1');
@@ -60,7 +60,7 @@ export function loadRuntimeReleaseManifest(
     schemaVersion: 1,
     releaseId: requireString(value.releaseId, 'releaseId'),
     artifactIdentity: requireString(value.artifactIdentity, 'artifactIdentity'),
-    entrypoint: 'repo-harness-runtime',
+    entrypoint: 'forge-runtime',
     arguments: argumentsValue as string[],
     configurationSchemaVersion: 1,
     controllerHome,

@@ -2,26 +2,26 @@
 
 ## Request path
 
-The stable ingress accepts the public MCP connection and routes ordinary traffic to the active Gateway. The Gateway authenticates, validates, and returns bounded responses.
+The canonical Forge Runtime exposes the authenticated MCP endpoint directly through its in-process transport and Gateway adapter. Requests are authenticated, validated, and bounded before entering repository-scoped control logic.
 
 ## Durable control path
 
-The Controller Daemon owns repository registration, scheduling, durable jobs, recovery, and process coordination. Long work continues outside the short HTTP request lifecycle.
+The same Runtime Root initializes Controller services, SQLite, the Scheduler, projections, and Worker management. Durable Work and evidence continue outside the short HTTP request lifecycle without a second Daemon owner.
 
 ## Execution path
 
-Repository commands, checks, agents, and isolated tasks run through managed execution with explicit repository scope. Worktrees are used when concurrency or isolation requires them, not by default for every read.
+Repository commands, checks, Agents, and isolated tasks run through managed execution with explicit repository scope and Runtime/release fencing. Worktrees are used when concurrency or isolation requires them.
 
-## Stable runtime path
+## Runtime service and releases
 
-The Stable Supervisor owns immutable releases and blue/green runtime slots. A rollout succeeds only when the release manifest, service definition, slot metadata, Controller Daemon, Gateway, and ingress are coherent.
+One OS-managed Forge Runtime service reads the atomic active whole-release authority and starts exactly one Runtime Root. Forge has no blue-green slots, alternate active port, mixed generation, or component rollout. Candidate canaries run before an explicitly authorized stop/switch/start activation.
 
 ## Recovery path
 
-Independent recovery is separate from the primary Gateway. It can inspect Supervisor and slot state, verify the full MCP path, attest a fully verified release as known-good, and perform bounded recovery without trusting a failed primary connector.
+Standalone Recovery is independent from the primary MCP endpoint. It verifies local Runtime ownership, release coherence, authenticated MCP behavior, and optional external reachability. Sustained local failure triggers bounded whole-Runtime restart attempts; after they are exhausted, an independently attested previous whole release and its SQLite backup may be restored, restarted, and verified under one Recovery lock.
 
 ## External tunnel
 
-Cloudflare or Tailscale terminates outside the Gateway and points at the stable ingress, never directly at a slot backend. Tunnel health and local runtime health must be diagnosed separately.
+Cloudflare or Tailscale terminates outside the Runtime and points at its configured loopback endpoint. Tunnel health and local Runtime health remain separate evidence classes; a tunnel outage cannot authorize a Runtime rollback.
 
-Detailed contracts: [Architecture](Architecture) and the [current architecture set](https://github.com/moretea-labs/matea/tree/main/docs/architecture/current).
+Detailed contracts: [Architecture](Architecture) and the [current architecture set](https://github.com/moretea-labs/forge/tree/main/docs/architecture/current).

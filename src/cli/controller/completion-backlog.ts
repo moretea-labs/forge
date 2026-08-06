@@ -262,7 +262,7 @@ export function finishCompletionBacklog(repoRoot: string, options: FinishComplet
         results.push(finishTaskRun(repoRoot, {
           runId: item.runId!,
           decision: 'auto',
-          reviewer: options.reviewer ?? 'repo-harness-completion-backlog',
+          reviewer: options.reviewer ?? 'forge-completion-backlog',
           cleanup: options.cleanup !== false,
           commit: options.commit !== false,
         }));
@@ -353,7 +353,7 @@ export function applyCompletionDecision(repoRoot: string, options: ApplyCompleti
   if (legacyIssueAuthorityRetired(repoRoot)) {
     throw new Error('LEGACY_COMPLETION_DECISION_RETIRED: legacy Run/Task decisions cannot mutate PlanStep or completion state after SQLite cutover.');
   }
-  const reviewer = options.reviewer?.trim() || 'repo-harness-completion-decision';
+  const reviewer = options.reviewer?.trim() || 'forge-completion-decision';
   if (options.action === 'finish' || options.action === 'approve_and_finish' || options.action === 'request_changes' || options.action === 'discard') {
     if (!options.runId) throw new Error(`${options.action} requires runId`);
     const decision = options.action === 'finish' ? 'auto' : options.action;

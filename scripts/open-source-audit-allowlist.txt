@@ -9,8 +9,8 @@ README.zh-CN.md
 README.es.md
 README.fr.md
 README.ja.md
-docs/repo-harness-chatgpt-mcp-setup.md
-docs/repo-harness-app-store-connect-api.md
+docs/forge-chatgpt-mcp-setup.md
+docs/forge-app-store-connect-api.md
 docs/operations/controller-browser-plugin.md
 src/cli/mcp/setup.ts
 tests/readme-dx.test.ts

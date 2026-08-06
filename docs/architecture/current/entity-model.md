@@ -4,7 +4,7 @@
 
 ## 1. Modeling Principle
 
-repo-harness separates four kinds of truth:
+Forge separates four kinds of truth:
 
 1. **intent** — what should be achieved;
 2. **execution** — what the system attempted;
@@ -590,7 +590,7 @@ A Campaign is a durable project-level objective that coordinates existing Tasks,
 
 Campaign records are repository-scoped. Execution remains delegated to the existing durable Job and Agent Run models.
 
-A Campaign owns an immutable `workspace` binding containing mode, checkout id, branch, root, original base revision, and whether repo-harness manages the worktree. ExecutionJob workers must resolve `job.checkoutId`; falling back to the active checkout is an identity violation.
+A Campaign owns an immutable `workspace` binding containing mode, checkout id, branch, root, original base revision, and whether Forge manages the worktree. ExecutionJob workers must resolve `job.checkoutId`; falling back to the active checkout is an identity violation.
 
 ## 22. Structured Execution Outcome
 

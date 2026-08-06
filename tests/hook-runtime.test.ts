@@ -175,8 +175,8 @@ function runHook(
     maxBuffer: HOOK_RUNTIME_SPAWN_BUFFER_BYTES,
     env: {
       ...process.env,
-      REPO_HARNESS_CLI: join(ROOT, "src/cli/index.ts"),
-      REPO_HARNESS_HOOK_CLI: join(ROOT, "src/cli/hook-entry.ts"),
+      FORGE_CLI: join(ROOT, "src/cli/index.ts"),
+      FORGE_HOOK_CLI: join(ROOT, "src/cli/hook-entry.ts"),
       ...(TEST_NODE_PATH ? { NODE_PATH: TEST_NODE_PATH } : {}),
       ...(options?.env ?? {}),
     },
@@ -590,7 +590,7 @@ describe("Hook runtime behavior", () => {
     }
   });
 
-  test("prompt-guard: suggests repo-harness-autoplan for reusable workflow packaging only after authorization", () => {
+  test("prompt-guard: suggests forge-autoplan for reusable workflow packaging only after authorization", () => {
     const cwd = tmpWorkspace("agentic-packaging-route-hint");
     try {
       installHooks(cwd);
@@ -600,7 +600,7 @@ describe("Hook runtime behavior", () => {
       });
       expect(packagingRes.status).toBe(0);
       expect(packagingRes.stdout).toContain("[AgenticDevRoute] Reusable workflow packaging intent detected");
-      expect(packagingRes.stdout).toContain("repo-harness-autoplan after user authorization");
+      expect(packagingRes.stdout).toContain("forge-autoplan after user authorization");
       expect(packagingRes.stdout).toContain("hook will not plan or create assets");
       expect(packagingRes.stdout).not.toContain("[WazaRoute]");
 
@@ -609,7 +609,7 @@ describe("Hook runtime behavior", () => {
       });
       expect(hookTriggerRes.status).toBe(0);
       expect(hookTriggerRes.stdout).toContain("[AgenticDevRoute]");
-      expect(hookTriggerRes.stdout).toContain("repo-harness-autoplan");
+      expect(hookTriggerRes.stdout).toContain("forge-autoplan");
       expect(hookTriggerRes.stdout).not.toContain("[WazaRoute]");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
@@ -660,7 +660,7 @@ describe("Hook runtime behavior", () => {
       expect(spawnRes.status).toBe(0);
       const spawnOutput = JSON.parse(spawnRes.stdout);
       expect(spawnOutput.hookSpecificOutput.permissionDecision).toBe("allow");
-      expect(spawnOutput.hookSpecificOutput.updatedInput.prompt).toContain("[repo-harness:return-channel]");
+      expect(spawnOutput.hookSpecificOutput.updatedInput.prompt).toContain("[forge:return-channel]");
       expect(spawnOutput.hookSpecificOutput.updatedInput.prompt).toContain("final text");
       expect(spawnOutput.hookSpecificOutput.updatedInput.description).toBe("Explore repo");
 
@@ -844,8 +844,8 @@ describe("Hook runtime behavior", () => {
       writeFileSync(join(cwd, "apps/web/AGENTS.md"), "# Existing Web Contract\n\n- Keep manual rule.\n");
       const fakeBin = join(cwd, "bin");
       mkdirSync(fakeBin, { recursive: true });
-      writeFileSync(join(fakeBin, "repo-harness"), `#!/bin/bash\nexec bun "${join(ROOT, "src/cli/index.ts")}" "$@"\n`);
-      expect(run("chmod", ["+x", join(fakeBin, "repo-harness")], cwd).status).toBe(0);
+      writeFileSync(join(fakeBin, "forge"), `#!/bin/bash\nexec bun "${join(ROOT, "src/cli/index.ts")}" "$@"\n`);
+      expect(run("chmod", ["+x", join(fakeBin, "forge")], cwd).status).toBe(0);
 
       const res = runHook("post-edit-guard.sh", cwd, {
         stdin: JSON.stringify({ tool_input: { file_path: "apps/web/src/routes/account.tsx" } }),
@@ -1205,7 +1205,7 @@ describe("Hook runtime behavior", () => {
         join(cwd, ".ai/harness/handoff/resume.md"),
         [
           "# Codex Resume Packet",
-          "<!-- generated-by: repo-harness codex-handoff-resume v1 -->",
+          "<!-- generated-by: forge codex-handoff-resume v1 -->",
           "",
           "> **Reason**: acceptance-complete",
           "",
@@ -1268,7 +1268,7 @@ describe("Hook runtime behavior", () => {
         join(cwd, ".ai/harness/handoff/resume.md"),
         [
           "# Codex Resume Packet",
-          "<!-- generated-by: repo-harness codex-handoff-resume v1 -->",
+          "<!-- generated-by: forge codex-handoff-resume v1 -->",
           "",
           "> **Reason**: manual",
           "",
@@ -1342,7 +1342,7 @@ describe("Hook runtime behavior", () => {
       expect(res.status).toBe(0);
       expect(res.stdout).toContain("SessionStart");
       expect(res.stdout).toContain("Capability Context Queue");
-      expect(res.stdout).toContain("repo-harness capability-context sync --pending --apply");
+      expect(res.stdout).toContain("forge capability-context sync --pending --apply");
       expect(res.stdout).toContain("apps-web");
       expect(res.stdout).not.toContain("[CrossReview]");
 
@@ -1475,7 +1475,7 @@ describe("Hook runtime behavior", () => {
       const logFile = join(cwd, "tooling-check.log");
       mkdirSync(fakeBin, { recursive: true });
       writeFileSync(
-        join(fakeBin, "repo-harness"),
+        join(fakeBin, "forge"),
         [
           "#!/bin/bash",
           `printf '%s\\n' "$*" >> '${logFile}'`,
@@ -1492,7 +1492,7 @@ describe("Hook runtime behavior", () => {
                   status: "needs_agent",
                   reason: "codegraph reports update-available.",
                   command: "bun update @colbymchenry/codegraph && bash scripts/ensure-codegraph.sh --sync",
-                  verification: "matea setup check --target codex --check-updates --json",
+                  verification: "forge setup check --target codex --check-updates --json",
                 },
               ],
             },
@@ -1507,15 +1507,15 @@ describe("Hook runtime behavior", () => {
       const env = {
         HOOK_HOST: "codex",
         PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
-        REPO_HARNESS_CLI: "",
-        REPO_HARNESS_TOOLING_ADVISORY_SYNC: "1",
+        FORGE_CLI: "",
+        FORGE_TOOLING_ADVISORY_SYNC: "1",
       };
       const first = runHook("session-start-context.sh", cwd, { env });
       expect(first.status).toBe(0);
       expect(first.stdout).toContain("Tooling Update Advisory");
       expect(first.stdout).toContain("tooling.codegraph.update");
       expect(first.stdout).toContain("bun update @colbymchenry/codegraph");
-      expect(first.stdout).toContain("matea setup check --target codex --check-updates --json");
+      expect(first.stdout).toContain("forge setup check --target codex --check-updates --json");
       expect(readFileSync(logFile, "utf-8").trim().split("\n")).toEqual([
         "setup check --target codex --check-updates --json",
       ]);
@@ -1654,7 +1654,7 @@ describe("Hook runtime behavior", () => {
           ...process.env,
           HOOK_HOST: "codex",
           HOOK_REPO_ROOT: cwd,
-          REPO_HARNESS_EDIT_PLAN_GATE: "enforce",
+          FORGE_EDIT_PLAN_GATE: "enforce",
         },
       });
 
@@ -1716,7 +1716,7 @@ describe("Hook runtime behavior", () => {
           HOME: process.env.HOME ?? "",
           HOOK_REPO_ROOT: cwd,
           PATH: "/bin:/usr/bin:/usr/sbin",
-          REPO_HARNESS_EDIT_PLAN_GATE: "enforce",
+          FORGE_EDIT_PLAN_GATE: "enforce",
         },
       });
       expect(editRes.status).toBe(2);
@@ -3655,14 +3655,14 @@ describe("Hook runtime behavior", () => {
 
       const assetRes = runHook("pre-edit-guard.sh", cwd, {
         stdin: JSON.stringify({ tool_input: { file_path: "interfaces/types.ts" } }),
-        env: { REPO_HARNESS_EDIT_PLAN_GATE: "off" },
+        env: { FORGE_EDIT_PLAN_GATE: "off" },
       });
       expect(assetRes.status).toBe(0);
       expect(assetRes.stdout).toContain("[AssetLayer]");
 
       const tddRes = runHook("pre-edit-guard.sh", cwd, {
         stdin: JSON.stringify({ tool_input: { file_path: "src/widget.ts" } }),
-        env: { REPO_HARNESS_EDIT_PLAN_GATE: "off" },
+        env: { FORGE_EDIT_PLAN_GATE: "off" },
       });
       expect(tddRes.status).toBe(0);
       expect(tddRes.stdout).toContain("[TDD Guard]");
@@ -3733,7 +3733,7 @@ describe("Hook runtime behavior", () => {
       // Repositories may still explicitly opt into enforcement.
       const enforceRes = runHook("pre-edit-guard.sh", cwd, {
         stdin: JSON.stringify({ tool_input: { file_path: "src/app.ts" } }),
-        env: { REPO_HARNESS_EDIT_PLAN_GATE: "enforce" },
+        env: { FORGE_EDIT_PLAN_GATE: "enforce" },
       });
       expect(enforceRes.status).toBe(2);
       expect(enforceRes.stderr).toContain("[PlanStatusGuard]");
@@ -3749,14 +3749,14 @@ describe("Hook runtime behavior", () => {
       expect(draftAdvice.stdout).toContain("[PlanStatusGuard] Advisory");
       const draftEnforced = runHook("pre-edit-guard.sh", cwd, {
         stdin: JSON.stringify({ tool_input: { file_path: "src/app.ts" } }),
-        env: { REPO_HARNESS_EDIT_PLAN_GATE: "enforce" },
+        env: { FORGE_EDIT_PLAN_GATE: "enforce" },
       });
       expect(draftEnforced.status).toBe(2);
 
       writeFileSync(join(cwd, planPath), "# Plan: gate\n\n> **Status**: Approved\n");
       const approvedRes = runHook("pre-edit-guard.sh", cwd, {
         stdin: JSON.stringify({ tool_input: { file_path: "src/app.ts" } }),
-        env: { REPO_HARNESS_EDIT_PLAN_GATE: "enforce" },
+        env: { FORGE_EDIT_PLAN_GATE: "enforce" },
       });
       expect(approvedRes.status).toBe(0);
     } finally {
@@ -3878,7 +3878,7 @@ describe("Hook runtime behavior", () => {
 
       const res = runHook("post-edit-guard.sh", cwd, {
         stdin: JSON.stringify({ tool_input: { file_path: "docs/valuable.md" } }),
-        env: { REPO_HARNESS_BRAIN_ROOT: brainRoot },
+        env: { FORGE_BRAIN_ROOT: brainRoot },
       });
 
       expect(res.status).toBe(0);

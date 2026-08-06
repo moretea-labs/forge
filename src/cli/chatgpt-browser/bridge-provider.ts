@@ -42,7 +42,7 @@ function corsHeaders(): HeadersInit {
   return {
     'access-control-allow-origin': '*',
     'access-control-allow-methods': 'GET,POST,OPTIONS',
-    'access-control-allow-headers': 'content-type,accept,x-repo-harness-bridge-token',
+    'access-control-allow-headers': 'content-type,accept,x-forge-bridge-token',
     'access-control-allow-private-network': 'true',
     'cache-control': 'no-store',
   };
@@ -84,7 +84,7 @@ function isStatusOnlyOutput(output: string): boolean {
 }
 
 function bridgePort(): number {
-  const raw = process.env.REPO_HARNESS_CHATGPT_BRIDGE_PORT;
+  const raw = process.env.FORGE_CHATGPT_BRIDGE_PORT;
   if (!raw) return CHATGPT_BRIDGE_DEFAULT_PORT;
   const parsed = Number(raw);
   return Number.isInteger(parsed) && parsed > 0 && parsed <= 65535 ? parsed : CHATGPT_BRIDGE_DEFAULT_PORT;
@@ -138,7 +138,7 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
         // Capability-token gate: only the extension we generated knows the token,
         // so any other local process/page is rejected before it can read the
         // queued prompt or submit a forged result.
-        if (request.headers.get('x-repo-harness-bridge-token') !== token) {
+        if (request.headers.get('x-forge-bridge-token') !== token) {
           return jsonResponse({ error: { code: 'CHATGPT_BRIDGE_UNAUTHORIZED', message: 'missing or invalid bridge token' } }, 401);
         }
         const url = new URL(request.url);
@@ -209,7 +209,7 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
       error: {
         code: 'CHATGPT_BRIDGE_PORT_UNAVAILABLE',
         message: `ChatGPT bridge could not listen on ${bridgeUrl}`,
-        recovery: `Stop any other repo-harness ChatGPT bridge using ${bridgeUrl}, then retry.`,
+        recovery: `Stop any other forge ChatGPT bridge using ${bridgeUrl}, then retry.`,
       },
     };
   }

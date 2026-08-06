@@ -57,7 +57,7 @@ interface RuntimeStorageSpec {
 
 const ACTIVE_RUN_STATUSES = new Set(['queued', 'starting', 'running', 'waiting_for_user']);
 const ACTIVE_LOCAL_JOB_STATUSES = new Set(['pending_approval', 'approved', 'dispatched', 'running']);
-const OWNER_MARKER = '.repo-harness-owner.json';
+const OWNER_MARKER = '.forge-owner.json';
 
 const RUNTIME_STORAGE_SPECS: RuntimeStorageSpec[] = [
   { name: 'runs', sourceName: 'jobs', controllerName: 'runs', detectActiveRuns: true },
@@ -82,7 +82,7 @@ function writeOwnerMarker(path: string, repoId: string, binding: string): void {
     schemaVersion: 1,
     repoId,
     binding,
-    managedBy: 'repo-harness',
+    managedBy: 'forge',
     updatedAt: new Date().toISOString(),
   }, null, 2)}\n`, 'utf-8');
 }

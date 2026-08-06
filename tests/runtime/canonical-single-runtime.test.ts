@@ -23,7 +23,7 @@ import {
 } from '../../src/runtime/root/write-fence';
 import { observeRuntimeStatus, writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import {
-  CanonicalRepoHarnessRuntime,
+  CanonicalForgeRuntime,
   type CanonicalRuntimeDependencies,
 } from '../../src/runtime/root/runtime';
 import type { CanonicalRuntimeConfig } from '../../src/runtime/root/types';
@@ -43,7 +43,7 @@ afterEach(async () => {
 });
 
 function createFixture(overrides: Partial<CanonicalRuntimeConfig> = {}): Fixture {
-  const root = mkdtempSync(join(tmpdir(), 'repo-harness-single-runtime-'));
+  const root = mkdtempSync(join(tmpdir(), 'forge-single-runtime-'));
   const controllerHome = join(root, 'controller');
   const repositoryRoot = join(root, 'repository');
   mkdirSync(repositoryRoot, { recursive: true });
@@ -52,7 +52,7 @@ function createFixture(overrides: Partial<CanonicalRuntimeConfig> = {}): Fixture
     schemaVersion: 1,
     releaseId: 'release-test-1',
     artifactIdentity: 'sha256:test-artifact',
-    entrypoint: 'repo-harness-runtime',
+    entrypoint: 'forge-runtime',
     arguments: [],
     configurationSchemaVersion: 1,
     controllerHome: resolve(controllerHome),
@@ -141,7 +141,7 @@ describe('canonical single Runtime', () => {
 
   test('one process serves authenticated initialize, tools/list, Controller call, and SQLite read', async () => {
     const fixture = createFixture({ exclusiveWorkId: 'WORK-P0' });
-    const runtime = new CanonicalRepoHarnessRuntime(fixture.config);
+    const runtime = new CanonicalForgeRuntime(fixture.config);
     cleanups.push(() => runtime.stop('TEST_CLEANUP'));
     await runtime.start();
 
@@ -170,7 +170,7 @@ describe('canonical single Runtime', () => {
 
   test('Runtime Root publishes one instance-bound status projection and removes it on exit', async () => {
     const fixture = createFixture({ runtimeInstanceId: 'runtime-status-test' });
-    const runtime = new CanonicalRepoHarnessRuntime(fixture.config, {
+    const runtime = new CanonicalForgeRuntime(fixture.config, {
       startScheduler: () => inertScheduler(),
       startTransport: async () => ({
         endpoint: 'http://127.0.0.1:9876/mcp',
@@ -317,9 +317,9 @@ describe('canonical single Runtime', () => {
 
   test('missing explicit Runtime parameters fail closed', async () => {
     const fixture = createFixture();
-    expect(() => new CanonicalRepoHarnessRuntime({ ...fixture.config, authToken: '' }))
+    expect(() => new CanonicalForgeRuntime({ ...fixture.config, authToken: '' }))
       .toThrow('RUNTIME_CONFIG_REQUIRED: authToken');
-    expect(() => new CanonicalRepoHarnessRuntime({
+    expect(() => new CanonicalForgeRuntime({
       ...fixture.config,
       repositoryRoot: join(fixture.root, 'missing-repository'),
     })).toThrow('RUNTIME_CONFIG_INVALID: repositoryRoot');
@@ -327,7 +327,7 @@ describe('canonical single Runtime', () => {
       schemaVersion: 1,
       releaseId: 'bad',
       artifactIdentity: 'sha256:bad',
-      entrypoint: 'repo-harness-runtime',
+      entrypoint: 'forge-runtime',
       arguments: [],
       configurationSchemaVersion: 1,
       controllerHome: join(fixture.root, 'other-home'),
@@ -335,13 +335,13 @@ describe('canonical single Runtime', () => {
       workerProtocolVersion: 1,
       createdAt: '2026-08-05T00:00:00.000Z',
     }), 'utf8');
-    const runtime = new CanonicalRepoHarnessRuntime(fixture.config);
+    const runtime = new CanonicalForgeRuntime(fixture.config);
     await expect(runtime.start()).rejects.toThrow('RELEASE_MANIFEST_CONTROLLER_HOME_MISMATCH');
   });
 
   test('SQLite initialization failure stops the whole Runtime', async () => {
     const fixture = createFixture();
-    const runtime = new CanonicalRepoHarnessRuntime(fixture.config, {
+    const runtime = new CanonicalForgeRuntime(fixture.config, {
       inspectDatabase: () => { throw new Error('injected sqlite open failure'); },
     });
     await expect(runtime.start()).rejects.toThrow('injected sqlite open failure');
@@ -354,7 +354,7 @@ describe('canonical single Runtime', () => {
 
   test('Scheduler initialization failure stops the whole Runtime', async () => {
     const fixture = createFixture();
-    const runtime = new CanonicalRepoHarnessRuntime(fixture.config, {
+    const runtime = new CanonicalForgeRuntime(fixture.config, {
       startScheduler: () => ({
         ready: Promise.reject(new Error('injected scheduler failure')),
         done: new Promise<void>(() => undefined),
@@ -372,7 +372,7 @@ describe('canonical single Runtime', () => {
   test('MCP listener failure stops Scheduler and the complete Runtime', async () => {
     const fixture = createFixture();
     let schedulerStopped = false;
-    const runtime = new CanonicalRepoHarnessRuntime(fixture.config, {
+    const runtime = new CanonicalForgeRuntime(fixture.config, {
       startScheduler: () => ({
         ...inertScheduler(),
         stop: async () => { schedulerStopped = true; },
@@ -404,7 +404,7 @@ describe('canonical single Runtime', () => {
       }),
       runMcpProbe: async () => undefined,
     };
-    const runtime = new CanonicalRepoHarnessRuntime(fixture.config, overrides);
+    const runtime = new CanonicalForgeRuntime(fixture.config, overrides);
     await runtime.start();
     rejectScheduler(new Error('injected scheduler stall'));
     await Promise.race([
@@ -423,7 +423,7 @@ describe('canonical single Runtime', () => {
     const fixture = createFixture();
     const stopped: string[] = [];
     const scheduler = inertScheduler();
-    const runtime = new CanonicalRepoHarnessRuntime(fixture.config, {
+    const runtime = new CanonicalForgeRuntime(fixture.config, {
       startScheduler: () => ({
         ...scheduler,
         stop: async () => {

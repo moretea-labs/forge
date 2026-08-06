@@ -30,7 +30,7 @@ function launchdService(label: string | undefined, plistPath: string | undefined
   return { platform: 'launchd' as const, label, ...(plistPath ? { plistPath } : {}) };
 }
 
-const controllerHomeRaw = option('--controller-home') ?? process.env.REPO_HARNESS_CONTROLLER_HOME ?? '';
+const controllerHomeRaw = option('--controller-home') ?? process.env.FORGE_CONTROLLER_HOME ?? '';
 const controllerHome = resolve(controllerHomeRaw);
 if (!controllerHomeRaw || controllerHome === resolve('.')) throw new Error('RECOVERY_CONTROLLER_HOME_REQUIRED');
 const port = integerOption('--port', 8787, 1024, 65535);
@@ -64,7 +64,7 @@ console.log(JSON.stringify({
   controllerHome,
   stagedRelease: result.staged.release,
   activation: result.activated,
-  binary: join(controllerHome, 'recovery', 'bin', 'repo-harness-recovery'),
+  binary: join(controllerHome, 'recovery', 'bin', 'forge-recovery'),
   config: {
     controllerHome: config.controllerHome,
     gateway: { host: config.gateway?.host, port: config.gateway?.port },

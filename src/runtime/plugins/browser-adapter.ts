@@ -30,8 +30,8 @@ import {
 } from './browser-handoff';
 
 const BROWSER_PLUGIN_ID = 'browser';
-const CONFIG_ROOT = '.repo-harness/plugins';
-const STATE_ROOT = '.repo-harness/browser';
+const CONFIG_ROOT = '.forge/plugins';
+const STATE_ROOT = '.forge/browser';
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_TEXT_CHARS = 20_000;
 const DEFAULT_POST_ACTION_WAIT_MS = 750;
@@ -1917,9 +1917,9 @@ function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPlugin
     humanHandoffSupported: true,
     artifactsAvailable: true,
     artifactRoots: {
-      screenshots: '.repo-harness/browser/screenshots',
-      downloads: '.repo-harness/browser/downloads',
-      diagnostics: '.repo-harness/browser/diagnostics',
+      screenshots: '.forge/browser/screenshots',
+      downloads: '.forge/browser/downloads',
+      diagnostics: '.forge/browser/diagnostics',
     },
   };
   if (!config.enabled) {
@@ -1994,7 +1994,7 @@ export function buildBrowserPluginManifest(previousRevision = 0, previousUpdated
     authority: {
       strategy: 'derived',
       duplicateStateAllowed: false,
-      sourceOfTruth: ['repo-local:.repo-harness/plugins/browser.json', 'repo-local:.repo-harness/browser/'],
+      sourceOfTruth: ['repo-local:.forge/plugins/browser.json', 'repo-local:.forge/browser/'],
     },
     enabled: config.enabled,
     lifecycle: {

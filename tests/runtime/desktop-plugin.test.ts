@@ -29,7 +29,7 @@ afterEach(() => {
 });
 
 function fixture() {
-  const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-desktop-plugin-'));
+  const controllerHome = mkdtempSync(join(tmpdir(), 'forge-desktop-plugin-'));
   roots.push(controllerHome);
   return {
     controllerHome,
@@ -74,9 +74,9 @@ describe('bundled Desktop plugin', () => {
   });
 
   test('resolves the helper from the validated Supervisor release identity before development fallbacks', () => {
-    const releasePath = mkdtempSync(join(tmpdir(), 'repo-harness-desktop-release-'));
+    const releasePath = mkdtempSync(join(tmpdir(), 'forge-desktop-release-'));
     roots.push(releasePath);
-    const helperPath = join(releasePath, 'repo-harness-desktop-helper.mjs');
+    const helperPath = join(releasePath, 'forge-desktop-helper.mjs');
     writeFileSync(helperPath, 'export {};\n');
     writeFileSync(join(releasePath, 'manifest.json'), `${JSON.stringify({
       schemaVersion: 3,
@@ -86,11 +86,11 @@ describe('bundled Desktop plugin', () => {
 
     expect(resolveDesktopHelperPath({
       env: {
-        REPO_HARNESS_RELEASE_PATH: releasePath,
-        REPO_HARNESS_RELEASE_REVISION: 'desktop-release-test',
-        REPO_HARNESS_RELEASE_SOURCE_COMMIT: 'desktop-source-test',
+        FORGE_RELEASE_PATH: releasePath,
+        FORGE_RELEASE_REVISION: 'desktop-release-test',
+        FORGE_RELEASE_SOURCE_COMMIT: 'desktop-source-test',
       },
-      argvEntry: '/missing/repo-harness.js',
+      argvEntry: '/missing/forge.js',
       runtimeExecutable: '/missing/runtime',
       sourceHelperPath: '/missing/source-helper.mjs',
     })).toBe(realpathSync(helperPath));
@@ -164,7 +164,7 @@ describe('bundled Desktop plugin', () => {
   });
 
   test('the bundled helper completes an asynchronous observation request', async () => {
-    const helperPath = fileURLToPath(new URL('../../bin/repo-harness-desktop-helper.mjs', import.meta.url));
+    const helperPath = fileURLToPath(new URL('../../bin/forge-desktop-helper.mjs', import.meta.url));
     const result = await executeManagedPluginProcess({
       pluginId: 'desktop',
       helperPath,

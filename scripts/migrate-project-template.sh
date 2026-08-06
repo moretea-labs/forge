@@ -1,5 +1,5 @@
 #!/bin/bash
-# Migrate an existing project to the repo-harness tasks-first harness model.
+# Migrate an existing project to the forge tasks-first harness model.
 # - Shared hook source of truth: .ai/hooks/
 # - User-level host adapters: ~/.claude/settings.json and ~/.codex/hooks.json
 # - Stable product truth: docs/spec.md
@@ -31,7 +31,7 @@ TEMPLATE_ASSETS_DIR="$SKILL_ROOT/assets/templates"
 HELPER_ASSETS_DIR="$TEMPLATE_ASSETS_DIR/helpers"
 FACTOR_FACTORY_ASSETS_DIR="$TEMPLATE_ASSETS_DIR/factor-factory"
 WORKFLOW_CONTRACT_ASSET="$SKILL_ROOT/assets/workflow-contract.v1.json"
-JQ_BIN="${REPO_HARNESS_JQ_BIN:-jq}"
+JQ_BIN="${FORGE_JQ_BIN:-jq}"
 
 MODE="dry-run"
 TARGET_REPO=""
@@ -218,13 +218,13 @@ file_matches_any_source() {
   return 1
 }
 
-file_has_repo_harness_marker() {
+file_has_forge_marker() {
   local file_path="$1"
 
   [[ -f "$file_path" ]] || return 1
 
   grep -Eiq \
-    '(repo-harness|claude-runtime-temp|Task Contract|Sprint Review|Deferred Goal Ledger|Workflow Contract|ContractWorktree|SprintBacklog|ArchitectureSync|ArchitectureDrift|BrainSync|CurrentStatus|\.ai/harness|\.claude/templates|tasks/contracts|tasks/reviews)' \
+    '(forge|claude-runtime-temp|Task Contract|Sprint Review|Deferred Goal Ledger|Workflow Contract|ContractWorktree|SprintBacklog|ArchitectureSync|ArchitectureDrift|BrainSync|CurrentStatus|\.ai/harness|\.claude/templates|tasks/contracts|tasks/reviews)' \
     "$file_path"
 }
 
@@ -253,12 +253,12 @@ is_generated_root_helper() {
 
   case "$helper_name" in
     skill-factory-create.sh|skill-factory-check.sh|architecture-drift.sh)
-      file_has_repo_harness_marker "$path"
+      file_has_forge_marker "$path"
       return $?
       ;;
   esac
 
-  file_has_repo_harness_marker "$path"
+  file_has_forge_marker "$path"
 }
 
 remove_generated_helper_if_owned() {
@@ -279,7 +279,7 @@ remove_generated_helper_if_owned() {
   fi
 
   if [[ "$MODE" != "apply" ]]; then
-    echo "[dry-run] remove generated helper \"$path\" if repo-harness ownership is identifiable"
+    echo "[dry-run] remove generated helper \"$path\" if forge ownership is identifiable"
     return 0
   fi
 
@@ -289,7 +289,7 @@ remove_generated_helper_if_owned() {
     rm -f "$path"
     log "Removed generated legacy root helper: $display_path"
   else
-    log "Preserved possible app-owned script: $display_path (not identifiable as repo-harness generated helper)"
+    log "Preserved possible app-owned script: $display_path (not identifiable as forge generated helper)"
   fi
 }
 
@@ -381,7 +381,7 @@ generated_helper_wrapper_paths() {
   while IFS= read -r helper_name; do
     [[ -z "$helper_name" ]] && continue
     printf '%s\n' "$helper_name"
-    printf '%s\n' "scripts/repo-harness/${helper_name#scripts/}"
+    printf '%s\n' "scripts/forge/${helper_name#scripts/}"
   done < <(pi_helper_wrapper_paths "$WORKFLOW_CONTRACT_ASSET")
 }
 
@@ -394,7 +394,7 @@ untrack_generated_helper_wrappers() {
   fi
 
   if [[ "$MODE" != "apply" ]]; then
-    echo "[dry-run] untrack repo-harness generated helper wrappers from git index when tracked"
+    echo "[dry-run] untrack forge generated helper wrappers from git index when tracked"
     return 0
   fi
 
@@ -407,7 +407,7 @@ untrack_generated_helper_wrappers() {
     if ! git -C "$repo" ls-files --error-unmatch -- "$rel_path" >/dev/null 2>&1; then
       continue
     fi
-    if [[ "$rel_path" == scripts/repo-harness/* ]] || is_generated_root_helper "$repo" "$rel_path"; then
+    if [[ "$rel_path" == scripts/forge/* ]] || is_generated_root_helper "$repo" "$rel_path"; then
       git -C "$repo" rm --cached --force --quiet -- "$rel_path"
       log "Untracked generated helper wrapper: $rel_path"
     else
@@ -704,7 +704,7 @@ TODO_EOF
     cat > "$repo/tasks/current.md" <<'CURRENT_STATUS_EOF'
 # Current Status Snapshot
 
-<!-- generated-by: repo-harness refresh-current-status v1 -->
+<!-- generated-by: forge refresh-current-status v1 -->
 <!-- updated_at: bootstrap -->
 <!-- stale_after: 24h -->
 
@@ -952,7 +952,7 @@ require_repo() {
 
   if [[ -n "$home_physical" && "$target_physical" == "$home_physical" ]]; then
     echo "Refusing to migrate HOME as a repo target: $target_physical" >&2
-    echo "Run repo-harness adopt --repo <git-repo> from an intended project." >&2
+    echo "Run forge adopt --repo <git-repo> from an intended project." >&2
     exit 2
   fi
 }
@@ -1057,7 +1057,7 @@ verify_migration_contract() {
 
   if [[ "$MODE" != "apply" ]]; then
     echo "[dry-run] refresh Codex handoff before workflow verify"
-    echo "[dry-run] verify migrated workflow with repo-harness run check-task-workflow --strict"
+    echo "[dry-run] verify migrated workflow with forge run check-task-workflow --strict"
     return 0
   fi
 
@@ -1067,11 +1067,11 @@ verify_migration_contract() {
   fi
 
   if [[ -f "$handoff_script" ]]; then
-    (cd "$repo" && REPO_HARNESS_SOURCE_ROOT="$SKILL_ROOT" bash "scripts/prepare-codex-handoff.sh" --reason "repo-harness-migration-verify" >/dev/null)
+    (cd "$repo" && FORGE_SOURCE_ROOT="$SKILL_ROOT" bash "scripts/prepare-codex-handoff.sh" --reason "forge-migration-verify" >/dev/null)
     log "Refreshed Codex handoff before workflow verify"
   fi
 
-  (cd "$repo" && REPO_HARNESS_SOURCE_ROOT="$SKILL_ROOT" bash "scripts/check-task-workflow.sh" --strict)
+  (cd "$repo" && FORGE_SOURCE_ROOT="$SKILL_ROOT" bash "scripts/check-task-workflow.sh" --strict)
 }
 
 print_report() {
@@ -1090,7 +1090,7 @@ print_report() {
   echo "- Legacy docs/TODO.md / docs/plan.md / docs/PROGRESS.md: migrated by scripts/migrate-workflow-docs.ts"
   echo "- Workflow migration: docs/spec.md + plans/ + tasks/contracts + tasks/reviews + .ai/context/context-map.json + .ai/harness/*"
   echo "- Workflow contract manifest installed at: .ai/harness/workflow-contract.json"
-  echo "- Helper runtime: package-dispatched through repo-harness run with scripts/* compatibility wrappers"
+  echo "- Helper runtime: package-dispatched through forge run with scripts/* compatibility wrappers"
   echo "- Upgrade/reconfigure/cleanup plan: generated from workflow contract migrations.upgrade"
   echo "- Existing external_tooling overrides are preserved; missing defaults are merged into .ai/harness/policy.json"
   echo "- Runtime temporary ignore block synced to .gitignore"

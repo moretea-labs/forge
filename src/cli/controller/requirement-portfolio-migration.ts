@@ -123,8 +123,8 @@ export const CANONICAL_REQUIREMENTS: readonly CanonicalRequirementDefinition[] =
   },
   {
     requirementId: 'REQ-RC6-RELEASE',
-    title: '完成 Matea RC6 发布',
-    outcomeStatement: 'Matea RC6已完成发布并保留精确版本、文档和验证证据。',
+    title: '完成 Forge RC6 发布',
+    outcomeStatement: 'Forge RC6已完成发布并保留精确版本、文档和验证证据。',
     state: 'done',
   },
 ] as const;

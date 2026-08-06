@@ -59,7 +59,7 @@ export interface ExternalFilesystemSnapshot {
   };
 }
 
-const CONFIG_PATH = '.repo-harness/external-filesystem-grants.json';
+const CONFIG_PATH = '.forge/external-filesystem-grants.json';
 const DEFAULT_MAX_CHARS = 16_000;
 const MAX_CHARS = 128_000;
 

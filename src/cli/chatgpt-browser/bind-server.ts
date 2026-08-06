@@ -72,7 +72,7 @@ function profileStateFileCandidates(profileDir: string, profileDirectory?: strin
 function isBridgeExtensionSetting(setting: any, extensionDir: string): boolean {
   const name = setting?.manifest?.name;
   const rawPath = setting?.path ?? setting?.path_safe ?? setting?.location_path;
-  if (name === 'repo-harness ChatGPT Bridge') return true;
+  if (name === 'forge ChatGPT Bridge') return true;
   if (typeof rawPath !== 'string') return false;
   const normalizedRaw = normalizeComparablePath(rawPath);
   const normalizedExtension = normalizeComparablePath(extensionDir);
@@ -152,7 +152,7 @@ export function renderBrowserAuthorizePage(input: {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>repo-harness ChatGPT Authorization</title>
+  <title>forge ChatGPT Authorization</title>
   <style>
     :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #111827; color: #e5e7eb; }
@@ -179,7 +179,7 @@ export function renderBrowserAuthorizePage(input: {
 <body>
   <main>
     <h1>Authorize ChatGPT Web Session</h1>
-    <p>This page binds only the ChatGPT Web product session for repo-harness. It does not ask for passwords, copy browser storage, or expose all Chrome sessions.</p>
+    <p>This page binds only the ChatGPT Web product session for forge. It does not ask for passwords, copy browser storage, or expose all Chrome sessions.</p>
     <div class="meta">
       <div><strong>Product:</strong> ChatGPT Web</div>
       <div><strong>User data dir:</strong> <code>${profileDir}</code></div>
@@ -231,7 +231,7 @@ export function renderBrowserAuthorizePage(input: {
         return ['Bridge extension is not loaded in this Chrome profile yet.\\n1. Click Open Chrome Extensions.\\n2. Turn on Developer mode.\\n3. Click Load unpacked and select:\\n' + extensionDir + '\\n4. Open or refresh ChatGPT, then click Bind ChatGPT again.', 'warn'];
       }
       if (result.status === 'extension_disabled') {
-        return ['Bridge extension is installed but disabled. Enable repo-harness ChatGPT Bridge in Chrome Extensions, then open ChatGPT and bind again.', 'warn'];
+        return ['Bridge extension is installed but disabled. Enable forge ChatGPT Bridge in Chrome Extensions, then open ChatGPT and bind again.', 'warn'];
       }
       if (result.status === 'login_required') {
         return ['ChatGPT is not logged in or the composer is not visible. Click Open ChatGPT Login, sign in, then bind again.\\n' + (result.error?.recovery || ''), 'warn'];
@@ -252,7 +252,7 @@ export function renderBrowserAuthorizePage(input: {
         return;
       }
       if (result.install?.status === 'disabled') {
-        setStatus('Bridge extension is installed but disabled. Enable repo-harness ChatGPT Bridge in Chrome Extensions, then open ChatGPT and bind again.', 'warn');
+        setStatus('Bridge extension is installed but disabled. Enable forge ChatGPT Bridge in Chrome Extensions, then open ChatGPT and bind again.', 'warn');
         return;
       }
       if (result.install?.status === 'installed') {
@@ -449,7 +449,7 @@ export async function startBrowserBindServer(repoRoot: string, opts: BrowserBind
               error: {
                 code: 'CHATGPT_BRIDGE_EXTENSION_DISABLED',
                 message: 'ChatGPT bridge extension is installed but disabled in this Chrome profile.',
-                recovery: 'Enable repo-harness ChatGPT Bridge in Chrome Extensions, open ChatGPT, then click Bind ChatGPT again.',
+                recovery: 'Enable forge ChatGPT Bridge in Chrome Extensions, open ChatGPT, then click Bind ChatGPT again.',
               },
             });
           }

@@ -9,14 +9,14 @@ export interface ModelClientSummary {
   configured: boolean;
   role: string;
   allowedToolPrefixes: string[];
-  safetyBoundary: 'repo-harness-policy';
+  safetyBoundary: 'forge-policy';
   controllerModes?: ModelControllerMode[];
   canInitiateTurns?: boolean;
   canExecuteToolsDirectly?: false;
 }
 
 export interface ModelControlPlaneSummary {
-  policyOwner: 'repo-harness';
+  policyOwner: 'forge';
   primaryController: string;
   backupControllers: string[];
   activeController?: string;
@@ -41,7 +41,7 @@ export interface DeepSeekPreparedToolCall {
   reason?: string;
   safety: {
     executesLocally: false;
-    requiresRepoHarnessPolicy: true;
+    requiresForgePolicy: true;
     opaquePayloadAccepted: false;
   };
 }
@@ -66,9 +66,9 @@ export interface DeepSeekControllerHandoffPacket {
   currentController: string;
   safety: {
     executesToolsDirectly: false;
-    requiresRepoHarnessPolicy: true;
-    approvalOwner: 'repo-harness';
-    leasesOwner: 'repo-harness';
+    requiresForgePolicy: true;
+    approvalOwner: 'forge';
+    leasesOwner: 'forge';
     rawRepositoryContentIncluded: false;
     opaquePayloadAccepted: false;
   };

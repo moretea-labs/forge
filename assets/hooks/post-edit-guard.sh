@@ -53,15 +53,15 @@ run_architecture_queue_sync() {
         echo "[SyncChain] WARN: context-contract-sync failed after $FILE_PATH (exit $status)"
       fi
     fi
-    if [[ -n "${REPO_HARNESS_CLI:-}" && -f "$REPO_HARNESS_CLI" ]] && command -v bun >/dev/null 2>&1; then
-      if bun "$REPO_HARNESS_CLI" capability-context request --from-latest-architecture-event; then
+    if [[ -n "${FORGE_CLI:-}" && -f "$FORGE_CLI" ]] && command -v bun >/dev/null 2>&1; then
+      if bun "$FORGE_CLI" capability-context request --from-latest-architecture-event; then
         :
       else
         status=$?
         echo "[SyncChain] WARN: capability-context request failed after $FILE_PATH (exit $status)"
       fi
-    elif command -v repo-harness >/dev/null 2>&1; then
-      if repo-harness capability-context request --from-latest-architecture-event; then
+    elif command -v forge >/dev/null 2>&1; then
+      if forge capability-context request --from-latest-architecture-event; then
         :
       else
         status=$?

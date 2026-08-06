@@ -24,7 +24,7 @@
 - Plan archive: `plans/archive/`.
 - Todo archive: `tasks/archive/`.
 - Shared automation layer: `.ai/hooks/`.
-- Host adapters: user-level `~/.claude/settings.json` and `~/.codex/hooks.json` call `repo-harness-hook`, falling back to `repo-harness hook`, which dispatches into opted-in repos.
+- Host adapters: user-level `~/.claude/settings.json` and `~/.codex/hooks.json` call `forge-hook`, falling back to `forge hook`, which dispatches into opted-in repos.
 - External reference cache: `_ref/` is an occasional ignored external checkout cache, read/refresh-only comparison material, and must stay out of commits; decisions based on it must cite repo+commit/tag+path in notes or research.
 - Deployment operations workspace: `deploy/` is commit-ready for runbooks, submission materials, release checklists, helper scripts, ordered SQL files under `deploy/sql/`, and env examples.
 - Local operations state: `_ops/` is ignored and private for secrets, real env files, provider state, artifacts, logs, and scratch files; do not commit or agent-edit `_ops/*`.
@@ -38,7 +38,7 @@
 - After substantive repo changes, run `bash .ai/harness/scripts/check-task-sync.sh` and `bash .ai/harness/scripts/check-task-workflow.sh --strict`.
 - Primary worktree warns by default; enforce via `.claude/.require-worktree`.
 - Contract-level execution is worktree-first: `.ai/harness/scripts/plan-to-todo.sh --plan <approved-plan>` starts a linked `codex/<slug>` worktree when policy enables it, and `.ai/harness/scripts/contract-worktree.sh finish` merges back only after Waza `/check` and sprint verification pass.
-- After Codex Plan mode, Waza `/think`, or `repo-harness-plan` produces a decision-complete plan, capture it with `.ai/harness/scripts/capture-plan.sh --slug <slug> --title <title>`; if implementation is already approved, capture with `--status Approved --execute` or run `.ai/harness/scripts/plan-to-todo.sh --plan <active-plan>`.
+- After Codex Plan mode, Waza `/think`, or `forge-plan` produces a decision-complete plan, capture it with `.ai/harness/scripts/capture-plan.sh --slug <slug> --title <title>`; if implementation is already approved, capture with `--status Approved --execute` or run `.ai/harness/scripts/plan-to-todo.sh --plan <active-plan>`.
 - If repo state conflicts with the task, use an isolated `codex/<task-slug>` worktree, validate with Waza `/check`, and merge back to `main` without unrelated dirty changes.
 
 ---

@@ -7,8 +7,8 @@
 
 The public surface turns user intent into one of the supported CLI+hooks harness
 actions without duplicating engine policy in prose. It includes the root skill
-compatibility router, README, root agent docs, the `repo-harness` CLI, and thin
-`repo-harness-*` command facades.
+compatibility router, README, root agent docs, the `forge` CLI, and thin
+`forge-*` command facades.
 
 ## Capabilities
 
@@ -20,7 +20,7 @@ compatibility router, README, root agent docs, the `repo-harness` CLI, and thin
 - Root `SKILL.md` stays short and router-oriented.
 - Root `AGENTS.md` and `CLAUDE.md` stay concise; detailed operating rules live in `docs/reference-configs/`.
 - Public commands are CLI-backed facades. Internal steps such as `hooks-init`, `docs-init`, and `create-project-dirs` stay behind `init`, `scaffold`, `migrate`, and `upgrade`.
-- `repo-harness-skill` remains a compatibility trigger, not the canonical name.
+- `forge-skill` remains a compatibility trigger, not the canonical name.
 - The former `project-initializer` install paths have been fully removed; no tooling recognizes, syncs, or cleans them up.
 
 ## Verification Surface

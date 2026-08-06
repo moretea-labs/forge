@@ -655,7 +655,7 @@ export function buildGmailPluginManifest(previousRevision = 0, previousUpdatedAt
     authority: {
       strategy: 'derived',
       duplicateStateAllowed: false,
-      sourceOfTruth: [`repo-local:${gmailPluginConfigPath()}`, 'env:REPO_HARNESS_*_ACCESS_TOKEN'],
+      sourceOfTruth: [`repo-local:${gmailPluginConfigPath()}`, 'env:FORGE_*_ACCESS_TOKEN'],
     },
     enabled: config.enabled,
     lifecycle: {

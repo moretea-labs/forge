@@ -4,7 +4,9 @@
 
 ```text
 src/runtime/
-  supervisor/                  Immutable-release lifecycle owner, fencing, recovery MCP, and restart policy
+  root/                        Canonical Runtime root lifecycle, readiness and write fencing
+  release/                     Whole-release identity, active/previous selection and rollback metadata
+  standalone-recovery/         Independent diagnostics, service repair and offline whole-Runtime rollback
   gateway/mcp/                 Thin command admission, policy and runtime tools
   control-plane/
     global-scheduler/          Global fairness, quotas, process dispatch and reconciliation
@@ -28,21 +30,15 @@ src/runtime/
   shared/                      Atomic file and portable Node TypeScript-loader utilities
 ```
 
-Legacy code remains under `src/cli/` for public compatibility:
-
-- `src/cli/mcp/tools.ts` is a stable export facade;
-- `src/cli/mcp/legacy-tool-service.ts` contains the preserved operation implementation;
-- Gateway handlers use schemas and compact reads;
-- isolated Workers invoke compatibility implementations after durable admission;
-- Local Jobs project into `ExecutionJob` while retaining their original IDs and UI contract.
+`src/cli/` contains the Forge CLI, MCP adapter surface and bounded internal operation implementations. It is not a second lifecycle owner. Gateway handlers admit and route work; the Runtime Root, Process Runtime and bounded Workers own execution.
 
 New scheduling ownership must be added under `src/runtime/`, never inside MCP transport handlers.
 
 ## Runtime Storage Ownership and Quarantine
 
-Each bound directory under Controller Home contains `.repo-harness-owner.json` with `repoId`, binding name, and management identity. Repository-local `.ai/harness/<binding>` paths are links to these owned directories.
+Each bound directory under Controller Home contains `.forge-owner.json` with `repoId`, binding name, and management identity. Repository-local `.ai/harness/<binding>` paths are links to these owned directories.
 
-When legacy and Controller Home directories both contain data, non-conflicting entries are merged. Conflicting source entries are preserved under:
+Migration tooling may quarantine pre-cutover state for offline inspection under:
 
 ```text
 <controller-home>/repositories/<repoId>/quarantine/runtime-storage/<binding>/

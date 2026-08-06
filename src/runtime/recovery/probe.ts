@@ -124,7 +124,7 @@ export function buildCapabilityRecoverySnapshot(input: CapabilityRecoveryInput):
   const sharedHealth = input.runtimeHealth;
   if (sharedHealth) {
     capabilities.push(
-      capabilityFromSharedHealth(at, 'controller.daemon', 'Controller daemon', sharedHealth.components.daemon, 'local_recoverable', [RECOVERY_ACTIONS.restartController]),
+      capabilityFromSharedHealth(at, 'forge.runtime', 'Forge Runtime', sharedHealth.components.daemon, 'local_recoverable', [RECOVERY_ACTIONS.restartController]),
       capabilityFromSharedHealth(at, 'durable.scheduler', 'Durable scheduler', sharedHealth.components.scheduler, 'stale_runtime_state', [RECOVERY_ACTIONS.reconcileJobs, RECOVERY_ACTIONS.restartController]),
       capabilityFromSharedHealth(at, 'worker.loop', 'Worker loop', sharedHealth.components.workers, 'stale_runtime_state', [RECOVERY_ACTIONS.reconcileJobs]),
       capabilityFromSharedHealth(at, 'local.bridge', 'Local bridge', sharedHealth.components.localBridge, 'local_recoverable', [RECOVERY_ACTIONS.restartLocalBridge]),
@@ -134,8 +134,8 @@ export function buildCapabilityRecoverySnapshot(input: CapabilityRecoveryInput):
   } else {
     const daemonReady = input.daemonStatus === undefined || input.daemonStatus === 'ready';
     capabilities.push(daemonReady
-      ? capability(at, 'controller.daemon', 'Controller daemon', 'ready', 'unknown', 'Controller daemon is ready.', [], { status: input.daemonStatus ?? 'unknown' })
-      : capability(at, 'controller.daemon', 'Controller daemon', 'unavailable', 'local_recoverable', `Controller daemon is ${input.daemonStatus ?? 'unknown'}.`, [RECOVERY_ACTIONS.restartController], { status: input.daemonStatus, error: input.daemonError }));
+      ? capability(at, 'forge.runtime', 'Forge Runtime', 'ready', 'unknown', 'Forge Runtime is ready.', [], { status: input.daemonStatus ?? 'unknown' })
+      : capability(at, 'forge.runtime', 'Forge Runtime', 'unavailable', 'local_recoverable', `Forge Runtime is ${input.daemonStatus ?? 'unknown'}.`, [RECOVERY_ACTIONS.restartController], { status: input.daemonStatus, error: input.daemonError }));
 
     const schedulerAge = input.schedulerHeartbeatAgeMs;
     const schedulerStale = typeof schedulerAge === 'number' && schedulerAge > SCHEDULER_STALE_MS;
@@ -195,9 +195,9 @@ export function buildCapabilityRecoverySnapshot(input: CapabilityRecoveryInput):
       'blocked',
       recentClass === 'platform_blocked' ? 'platform_blocked' : recentClass === 'unknown' ? 'policy_denied' : recentClass,
       recentClass === 'platform_blocked'
-        ? 'Command execute appears blocked before reaching repo-harness. Do not restart-loop local services.'
+        ? 'Command execute appears blocked before reaching forge. Do not restart-loop local services.'
         : ['runtime_storage_not_ready', 'local_jobs_legacy_active', 'local_jobs_unreadable', 'local_jobs_reconciliation_required'].includes(recentClass)
-          ? 'Command execute is blocked by repo-harness runtime storage; use the maintenance executor instead of repository_command_execute.'
+          ? 'Command execute is blocked by forge runtime storage; use the maintenance executor instead of repository_command_execute.'
           : 'Command execute is blocked, denied, or unavailable.',
       commandExecuteActions(recentClass),
     )
@@ -266,7 +266,7 @@ export function buildCapabilityRecoverySnapshot(input: CapabilityRecoveryInput):
       nextBestAction: recommendedActions[0],
     },
     notes: platformBlocked
-      ? ['One or more calls appear blocked before reaching repo-harness. Avoid local restart loops; use patch handoff or narrower typed tools.']
+      ? ['One or more calls appear blocked before reaching forge. Avoid local restart loops; use patch handoff or narrower typed tools.']
       : (input.runtimeStorageReady === false ? ['Runtime storage is not ready. Use runtime_maintenance_status/runtime_maintenance_apply; do not try to repair repository_command_execute with repository_command_execute.'] : []),
     runtimeHealth: sharedHealth,
     runtimeOperationalView: input.runtimeOperationalView,

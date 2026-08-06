@@ -1,7 +1,7 @@
 /**
  * Shared, side-effect-free runtime health semantics.
  *
- * Callers are responsible for collecting observations from the daemon,
+ * Callers are responsible for collecting observations from the Canonical Forge Runtime,
  * scheduler, projections, endpoints, and storage. This module only classifies
  * those observations so lifecycle, MCP, recovery, and UI surfaces cannot drift
  * into separate threshold implementations.
@@ -183,12 +183,12 @@ function evaluateDaemon(observation: DaemonObservation): ComponentHealth {
   const warnings: HealthReason[] = [];
   const status = observation.status?.trim().toLowerCase();
   if (status && status !== 'ready') {
-    blockers.push(reason('daemon', 'DAEMON_NOT_READY', `Controller daemon is ${observation.status}.`, {
+    blockers.push(reason('daemon', 'RUNTIME_NOT_READY', `Forge Runtime is ${observation.status}.`, {
       status: observation.status,
       error: observation.error,
     }));
   } else if (observation.heartbeatAgeMs === undefined) {
-    warnings.push(reason('daemon', 'DAEMON_HEARTBEAT_UNKNOWN', 'Controller daemon heartbeat is not available.'));
+    warnings.push(reason('daemon', 'RUNTIME_HEARTBEAT_UNKNOWN', 'Forge Runtime heartbeat is not available.'));
   }
   return classifyComponent(blockers, warnings);
 }

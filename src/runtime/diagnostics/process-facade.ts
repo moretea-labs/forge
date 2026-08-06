@@ -40,10 +40,10 @@ function runtimeCliTarget(controllerHome: string): CliRuntimeTarget {
   const generation = readRuntimeGeneration(controllerHome);
   const sourceRevision = generation?.source.releaseRevision
     ?? generation?.source.commit
-    ?? process.env.REPO_HARNESS_ACTIVE_RUNTIME_REVISION;
+    ?? process.env.FORGE_ACTIVE_RUNTIME_REVISION;
   return currentCliRuntimeTarget({
     env: process.env,
-    argv: process.env.REPO_HARNESS_RUNTIME_EXECUTION === 'standalone-binary' ? process.argv : [],
+    argv: process.env.FORGE_RUNTIME_EXECUTION === 'standalone-binary' ? process.argv : [],
     moduleUrl: import.meta.url,
     sourceRoot: source.root,
     cwd: source.root ?? moduleSourceRoot,
@@ -224,7 +224,7 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
             }
             : input.cliInvocation?.options,
         )),
-      // The executable entry may live in the repo-harness runtime source tree,
+      // The executable entry may live in the forge runtime source tree,
       // but execution ownership belongs to the selected repository checkout.
       // Keeping cwd inside that checkout preserves fail-closed route identity.
       cwd: input.repository.canonicalRoot,

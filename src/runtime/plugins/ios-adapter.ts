@@ -39,7 +39,7 @@ import {
 } from './ios-physical-device';
 
 const IOS_PLUGIN_ID = 'ios';
-const CONFIG_ROOT = '.repo-harness/plugins';
+const CONFIG_ROOT = '.forge/plugins';
 
 function now(): string {
   return new Date().toISOString();
@@ -123,7 +123,7 @@ function health(repoRoot: string): AssistantPluginHealth {
       agentDevice: iosAgentDeviceStatus(),
       physicalDevice: iosPhysicalDeviceStatus(),
       artifactRoots: {
-        repoLocal: '.repo-harness/ios/',
+        repoLocal: '.forge/ios/',
         controller: 'controller-home/repositories/<repoId>/artifacts/ios/',
       },
     },
@@ -367,7 +367,7 @@ export function buildIosPluginManifest(previousRevision = 0, previousUpdatedAt?:
     authority: {
       strategy: 'derived',
       duplicateStateAllowed: false,
-      sourceOfTruth: ['local:xcodebuild', 'local:simctl', 'local:devicectl', 'local:agent-device-capability-contract', 'process-env:DEVELOPER_DIR', 'process-env:AGENT_DEVICE_IOS_TEAM_ID', 'process-env:AGENT_DEVICE_IOS_BUNDLE_ID', 'process-env:REPO_HARNESS_IOS_DEVICE_RUNNER_URL', `repo-local:${CONFIG_ROOT}/ios.json`],
+      sourceOfTruth: ['local:xcodebuild', 'local:simctl', 'local:devicectl', 'local:agent-device-capability-contract', 'process-env:DEVELOPER_DIR', 'process-env:AGENT_DEVICE_IOS_TEAM_ID', 'process-env:AGENT_DEVICE_IOS_BUNDLE_ID', 'process-env:FORGE_IOS_DEVICE_RUNNER_URL', `repo-local:${CONFIG_ROOT}/ios.json`],
     },
     enabled,
     lifecycle: {

@@ -1,4 +1,4 @@
-export const CONTROLLER_LIFECYCLE_OWNER_ENV = 'REPO_HARNESS_CONTROLLER_LIFECYCLE_OWNER';
+export const CONTROLLER_LIFECYCLE_OWNER_ENV = 'FORGE_CONTROLLER_LIFECYCLE_OWNER';
 
 export function isControllerLifecycleOwnerEnvironment(
   env: NodeJS.ProcessEnv = process.env,
@@ -10,7 +10,7 @@ export function assertControllerLifecycleOwner(component: string): void {
   if (isControllerLifecycleOwnerEnvironment()) return;
   throw new Error(
     `${component} is an internal Runtime module. `
-    + 'Start the complete application through `repo-harness-runtime`; '
+    + 'Start the complete application through `forge-runtime`; '
     + 'Gateway, Controller Services, Scheduler and MCP Transport share one Runtime lifecycle owner.',
   );
 }

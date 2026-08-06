@@ -9,7 +9,7 @@ const ROOT = path.join(import.meta.dir, '..', '..');
 const CLI = path.join(ROOT, 'src/cli/index.ts');
 
 function withTempHome(fn: (home: string) => void): void {
-  const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'repo-harness-install-')));
+  const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-install-')));
   const prev = process.env.HOME;
   process.env.HOME = tmp;
   try {
@@ -72,12 +72,12 @@ describe('install command (Phase 1B)', () => {
         for (const entry of entries) {
           const hook = entry.hooks[0];
           const cmd = hook.command;
-          expect(cmd).toContain('command -v repo-harness-hook');
-          expect(cmd).toContain('repo-harness-hook ');
+          expect(cmd).toContain('command -v forge-hook');
+          expect(cmd).toContain('forge-hook ');
           expect(cmd).toContain('&& exit 0');
-          expect(cmd).toContain('command -v repo-harness');
+          expect(cmd).toContain('command -v forge');
           expect(cmd).toContain('HOOK_HOST=codex');
-          expect(cmd).toContain('exec repo-harness hook ');
+          expect(cmd).toContain('exec forge hook ');
           expect(hook.timeout).toBe(30);
         }
       }
@@ -156,8 +156,8 @@ describe('install command (Phase 1B)', () => {
       // 1 sibling + 2 managed
       expect(pre.length).toBe(3);
       expect(pre[0].hooks[0].command).toBe('rtk hook claude');
-      expect(pre[1].hooks[0].command).toContain('repo-harness hook PreToolUse');
-      expect(pre[2].hooks[0].command).toContain('repo-harness hook PreToolUse');
+      expect(pre[1].hooks[0].command).toContain('forge hook PreToolUse');
+      expect(pre[2].hooks[0].command).toContain('forge hook PreToolUse');
     });
   });
 

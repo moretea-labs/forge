@@ -75,7 +75,7 @@ const ELIGIBLE_ACTIONS = new Set([
 ]);
 
 function now(): string { return new Date().toISOString(); }
-function storePath(repoRoot: string): string { return join(repoRoot, '.repo-harness', 'assistant', 'standing-grants.json'); }
+function storePath(repoRoot: string): string { return join(repoRoot, '.forge', 'assistant', 'standing-grants.json'); }
 
 function uniqueStrings(value: unknown, max = 100): string[] {
   if (!Array.isArray(value)) return [];

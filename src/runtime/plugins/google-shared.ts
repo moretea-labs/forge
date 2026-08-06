@@ -59,8 +59,8 @@ export interface GoogleApiRequestOptions {
   timeoutMs?: number;
 }
 
-const CONFIG_ROOT = '.repo-harness/plugins';
-const REFRESH_REQUIRED_ACCESS_TOKEN = '__repo_harness_refresh_required__';
+const CONFIG_ROOT = '.forge/plugins';
+const REFRESH_REQUIRED_ACCESS_TOKEN = '__forge_refresh_required__';
 
 interface CachedGoogleCredential {
   accessToken: string;
@@ -96,30 +96,30 @@ function firstEnv(names: string[]): { name: string; value: string } | undefined 
 
 function refreshTokenEnvNames(service: GoogleService): string[] {
   return [
-    `REPO_HARNESS_${service.toUpperCase()}_REFRESH_TOKEN`,
-    service === 'gmail' ? 'REPO_HARNESS_GMAIL_REFRESH_TOKEN' : '',
-    service === 'calendar' ? 'REPO_HARNESS_GOOGLE_CALENDAR_REFRESH_TOKEN' : '',
-    service === 'tasks' ? 'REPO_HARNESS_GOOGLE_TASKS_REFRESH_TOKEN' : '',
-    'REPO_HARNESS_GOOGLE_WORKSPACE_REFRESH_TOKEN',
-    'REPO_HARNESS_GOOGLE_REFRESH_TOKEN',
+    `FORGE_${service.toUpperCase()}_REFRESH_TOKEN`,
+    service === 'gmail' ? 'FORGE_GMAIL_REFRESH_TOKEN' : '',
+    service === 'calendar' ? 'FORGE_GOOGLE_CALENDAR_REFRESH_TOKEN' : '',
+    service === 'tasks' ? 'FORGE_GOOGLE_TASKS_REFRESH_TOKEN' : '',
+    'FORGE_GOOGLE_WORKSPACE_REFRESH_TOKEN',
+    'FORGE_GOOGLE_REFRESH_TOKEN',
   ].filter(Boolean);
 }
 
 function clientIdEnvNames(service: GoogleService): string[] {
   return [
-    `REPO_HARNESS_${service.toUpperCase()}_CLIENT_ID`,
-    service === 'calendar' ? 'REPO_HARNESS_GOOGLE_CALENDAR_CLIENT_ID' : '',
-    service === 'tasks' ? 'REPO_HARNESS_GOOGLE_TASKS_CLIENT_ID' : '',
-    'REPO_HARNESS_GOOGLE_WORKSPACE_CLIENT_ID', 'REPO_HARNESS_GOOGLE_CLIENT_ID',
+    `FORGE_${service.toUpperCase()}_CLIENT_ID`,
+    service === 'calendar' ? 'FORGE_GOOGLE_CALENDAR_CLIENT_ID' : '',
+    service === 'tasks' ? 'FORGE_GOOGLE_TASKS_CLIENT_ID' : '',
+    'FORGE_GOOGLE_WORKSPACE_CLIENT_ID', 'FORGE_GOOGLE_CLIENT_ID',
   ].filter(Boolean);
 }
 
 function clientSecretEnvNames(service: GoogleService): string[] {
   return [
-    `REPO_HARNESS_${service.toUpperCase()}_CLIENT_SECRET`,
-    service === 'calendar' ? 'REPO_HARNESS_GOOGLE_CALENDAR_CLIENT_SECRET' : '',
-    service === 'tasks' ? 'REPO_HARNESS_GOOGLE_TASKS_CLIENT_SECRET' : '',
-    'REPO_HARNESS_GOOGLE_WORKSPACE_CLIENT_SECRET', 'REPO_HARNESS_GOOGLE_CLIENT_SECRET',
+    `FORGE_${service.toUpperCase()}_CLIENT_SECRET`,
+    service === 'calendar' ? 'FORGE_GOOGLE_CALENDAR_CLIENT_SECRET' : '',
+    service === 'tasks' ? 'FORGE_GOOGLE_TASKS_CLIENT_SECRET' : '',
+    'FORGE_GOOGLE_WORKSPACE_CLIENT_SECRET', 'FORGE_GOOGLE_CLIENT_SECRET',
   ].filter(Boolean);
 }
 
@@ -293,11 +293,11 @@ export function saveGoogleTasksPluginConfig(
 function tokenEnvNames(service: GoogleService): string[] {
   switch (service) {
     case 'gmail':
-      return ['REPO_HARNESS_GMAIL_ACCESS_TOKEN', 'REPO_HARNESS_GOOGLE_WORKSPACE_ACCESS_TOKEN', 'REPO_HARNESS_GOOGLE_ACCESS_TOKEN'];
+      return ['FORGE_GMAIL_ACCESS_TOKEN', 'FORGE_GOOGLE_WORKSPACE_ACCESS_TOKEN', 'FORGE_GOOGLE_ACCESS_TOKEN'];
     case 'calendar':
-      return ['REPO_HARNESS_GOOGLE_CALENDAR_ACCESS_TOKEN', 'REPO_HARNESS_GOOGLE_WORKSPACE_ACCESS_TOKEN', 'REPO_HARNESS_GOOGLE_ACCESS_TOKEN'];
+      return ['FORGE_GOOGLE_CALENDAR_ACCESS_TOKEN', 'FORGE_GOOGLE_WORKSPACE_ACCESS_TOKEN', 'FORGE_GOOGLE_ACCESS_TOKEN'];
     case 'tasks':
-      return ['REPO_HARNESS_GOOGLE_TASKS_ACCESS_TOKEN', 'REPO_HARNESS_GOOGLE_WORKSPACE_ACCESS_TOKEN', 'REPO_HARNESS_GOOGLE_ACCESS_TOKEN'];
+      return ['FORGE_GOOGLE_TASKS_ACCESS_TOKEN', 'FORGE_GOOGLE_WORKSPACE_ACCESS_TOKEN', 'FORGE_GOOGLE_ACCESS_TOKEN'];
   }
 }
 

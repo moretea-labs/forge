@@ -1,26 +1,21 @@
 ---
-name: repo-harness
-description: Single canonical skill for operating repo-harness CLI, controller, hooks, planning, repair, verification, and delivery workflows
-when_to_use: "repo-harness, initialize repo-local agentic development harness, scaffold new project with repo-harness, migrate repo-local agentic development harness, audit repo-local agentic development harness, repair repo-local agentic development harness"
+name: forge
+description: Single canonical skill for operating forge CLI, controller, hooks, planning, repair, verification, and delivery workflows
+when_to_use: "forge, initialize repo-local agentic development harness, scaffold new project with forge, migrate repo-local agentic development harness, audit repo-local agentic development harness, repair repo-local agentic development harness"
 ---
 
-# repo-harness
+# Forge
 
-`repo-harness` is the CLI and hook automation plugin for repo-local agentic
-development. The skill entrypoint is a compatibility router over the versioned
-workflow engine and CLI commands.
+Forge is the CLI, Runtime, and hook automation product for repo-local agentic development. This skill is the single host-discoverable router for the versioned workflow engine and CLI commands.
 
-Compatibility boundary:
+Product boundary:
 
 - internal engine: CLI plus hook-backed tasks-first harness
 - contract ID: tasks-first-harness-v1
-- canonical skill, CLI, and package name: `repo-harness`
-- new-project creation surface: `repo-harness scaffold`
+- canonical skill, CLI, and package name: `forge`
+- new-project creation surface: `forge scaffold`
 
-The former `repo-harness-skill` and `project-initializer` aliases have been
-fully removed. They are no longer recognized, synced, or cleaned up by any
-tooling. Historical markers left behind in long-migrated repos are inert
-evidence and are not handled.
+Retired project-skill and project-initializer staging paths are not recognized, synchronized, or cleaned up by current tooling. Historical markers in long-migrated repositories are inert evidence.
 
 The skill should not carry the whole workflow contract in prose. It should:
 
@@ -31,7 +26,7 @@ The skill should not carry the whole workflow contract in prose. It should:
 
 ## Controller V8 execution bridge
 
-Treat ChatGPT as the controller and repo-harness as its repository execution layer. ChatGPT chooses how to inspect, plan, edit, verify, or delegate. repo-harness provides deterministic repository tools and does not impose an Agent-first workflow.
+Treat ChatGPT as the controller and Forge as its repository execution layer. ChatGPT chooses how to inspect, plan, edit, verify, or delegate. Forge provides deterministic repository tools and does not impose an Agent-first workflow.
 
 - Direct Edit is the default for understood work. One session may accept many patch batches, keep revision history, create savepoints, run checks, roll back selected revisions, and finalize one aggregate localized diff.
 - Tasks describe objectives, scope, checks, and acceptance criteria. They do not permanently bind Codex, Claude, or GitHub Copilot. The executor is selected when each Run starts.
@@ -87,7 +82,7 @@ sync, hook routing, handoff, context, policy, or helper surfaces use repair.
 
 1. **Scaffold**
    - use only when creating a new project, app, or module skeleton
-   - use `repo-harness scaffold`
+   - use `forge scaffold`
    - choose the A-K project catalog entry, then optional `ai_native_profile`
    - attach the harness after the project structure exists
    - do not use this path for existing-repo adoption
@@ -133,7 +128,7 @@ The main engine entrypoints are:
 
 ## CLI Workflow Surface
 
-`repo-harness` is the only host-discoverable skill. Planning, review, execution,
+`forge` is the only host-discoverable skill. Planning, review, execution,
 maintenance, verification, delivery, browser consultation, and setup remain CLI
 commands or controller capabilities selected by this router. Do not install one
 skill per command.
@@ -202,7 +197,7 @@ surface, not the mandatory agent execution environment.
 
 ## AI-native scaffold overlay
 
-`repo-harness scaffold` keeps A-K as the stack-family catalog and uses
+`forge scaffold` keeps A-K as the stack-family catalog and uses
 `ai_native_profile` as a separate overlay axis. The default profile is `none`,
 so generated output stays on the selected family unless the user asks for agentic
 runtime behavior. Use an overlay only when the generated app needs agent UI,
@@ -261,8 +256,8 @@ specific model providers, vector DBs, workflow engines, tracing vendors, or
 sidecar languages mandatory defaults.
 
 Scaffold is not an existing-repo adoption path. If the target already has a
-product tree, use `repo-harness init`, `repo-harness migrate`,
-`repo-harness upgrade`, or `repo-harness repair` and preserve the existing app
+product tree, use `forge init`, `forge migrate`,
+`forge upgrade`, or `forge repair` and preserve the existing app
 shape. `create-project-dirs`, `hooks-init`, and `docs-init` remain internal
 steps behind public commands, not standalone user-facing scaffold aliases.
 
@@ -296,8 +291,8 @@ Migration defaults:
 - distill repeated corrections into `tasks/lessons.md`
 - merge missing `external_tooling` defaults into `.ai/harness/policy.json` without overwriting explicit user values
 - keep gstack/gbrain/CodeGraph detection advisory-only; do not auto-install, auto-upgrade, auto-sync, or auto-enable MCP
-- let `repo-harness init` bootstrap the required global runtime in one pass:
-  CLI install, repo-harness runtime alias sync, user-level hook adapters, Waza
+- let `forge init` bootstrap the required global runtime in one pass:
+  CLI install, forge runtime alias sync, user-level hook adapters, Waza
   (`think`, `hunt`, `check`, `health`), Mermaid, brain root persistence, and
   CodeGraph CLI/MCP configuration
 - treat Waza as Codex-first: `~/.codex/skills` is the Codex runtime source, `~/.agents/skills` is only skills CLI staging/cache, and updates require stage -> copy to Codex -> `cmp` verification
@@ -326,11 +321,10 @@ automation, treat it as a runtime-harness slice, not a generic config edit.
 Map the route first:
 
 1. `assets/hooks/` is the installable source.
-2. The active runtime resolves central-first through `repo-harness-hook`; `.ai/hooks/`
+2. The active runtime resolves central-first through `forge-hook`; `.ai/hooks/`
    is a full repo-local implementation only when `"hook_source": "repo"` is pinned.
 3. User-level `~/.claude/settings.json` and `~/.codex/hooks.json` are adapters
-   that dispatch to `repo-harness-hook` or the compatibility `repo-harness hook`
-   route.
+   that dispatch to the packaged `forge-hook` entry or the equivalent `forge hook` CLI route.
 4. Codex also requires the user-level hook config to be trusted in Codex Settings before it
    executes.
 5. Generated `.claude/hooks/`, repo-local `.claude/settings.json`, and repo-local
@@ -339,17 +333,17 @@ Map the route first:
 
 Trace one real event before changing behavior, for example:
 
-`UserPromptSubmit -> adapter -> repo-harness-hook -> prompt-guard.sh -> plan
+`UserPromptSubmit -> adapter -> forge-hook -> prompt-guard.sh -> plan
 or advisory output`
 
 or:
 
-`PostToolUse(Edit|Write) -> adapter -> repo-harness-hook ->
+`PostToolUse(Edit|Write) -> adapter -> forge-hook ->
 post-edit-guard.sh -> architecture drift, brain sync, contract verification,
 task handoff`
 
 For Codex hook failures, debug in this order: user-level `~/.codex/hooks.json`,
-Codex Settings trust, `repo-harness-hook` resolution, the active target hook
+Codex Settings trust, `forge-hook` resolution, the active target hook
 script, then `.ai/harness/events.jsonl` or `.claude/.trace.jsonl` evidence.
 
 Hooks are accelerators and guards. They do not replace `plans/`, `tasks/`,

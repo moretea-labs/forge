@@ -6,8 +6,8 @@ This tutorial starts the local MCP service, publishes only its MCP endpoint thro
 
 You need:
 
-- a repository already registered with `matea repo register`;
-- a healthy `matea doctor` result;
+- a repository already registered with `forge repo register`;
+- a healthy `forge doctor` result;
 - a stable public HTTPS address ending in `/mcp`;
 - ChatGPT access to Developer Mode and custom MCP connectors.
 
@@ -18,7 +18,7 @@ Windows users should run the Controller and tunnel inside WSL2 for the full supp
 ## 2. Generate the MCP configuration
 
 ```bash
-matea mcp setup chatgpt --repo /path/to/your-project
+forge mcp setup chatgpt --repo /path/to/your-project
 ```
 
 The local endpoint is loopback-only:
@@ -29,31 +29,22 @@ http://127.0.0.1:8765/mcp
 
 Do not expose the local Controller UI at port 8766.
 
-## 3. Start the core toolset
+## 3. Verify the canonical Runtime service
 
-Start without coding agents first:
-
-```bash
-repo-harness mcp keepalive --repo /path/to/your-project \
-  --profile controller \
-  --toolset core \
-  --tunnel tailscale \
-  --public-endpoint https://mcp.example.com/mcp
-```
-
-Cloudflare named tunnels are also suitable. Temporary tunnel URLs are useful for testing but are poor long-lived Connector identities.
-
-Enable delegated agents only after their CLIs are installed and authenticated:
+`forge mcp setup chatgpt` installs or updates the configuration consumed by the single `forge-runtime`. Install the macOS service owner with `forge runtime service install`; launchd then owns startup and unexpected-exit restart of that one root process. There is no MCP KeepAlive wrapper or component-level lifecycle command.
 
 ```bash
-repo-harness mcp keepalive --repo /path/to/your-project \
-  --profile controller \
-  --toolset core \
-  --enable-dev-runner \
-  --dev-runner-agents codex,claude \
-  --tunnel tailscale \
-  --public-endpoint https://mcp.example.com/mcp
+forge runtime service install \
+  --controller-home /path/to/controller-home \
+  --repo /path/to/forge-source-or-runtime-root \
+  --host 127.0.0.1 \
+  --port 8765 \
+  --auth-token-file /path/to/controller-home/mcp/runtime-token
+forge runtime status --controller-home /path/to/controller-home --json
+forge mcp doctor --repo /path/to/your-project
 ```
+
+Publish only the configured loopback MCP endpoint through a stable Tailscale or Cloudflare HTTPS tunnel. Temporary tunnel URLs are suitable for testing but are poor long-lived Connector identities. Enable Codex or Claude only after their CLIs are installed and authenticated; provider availability does not change the Runtime process topology.
 
 ## 4. Add the Connector in ChatGPT
 
@@ -77,7 +68,7 @@ It also exposes a few repository bootstrap and selection tools. Do not switch to
 Test in this order:
 
 ```text
-Use repo-harness. Check system readiness with rh_status. Then load bounded context for my registered repository with rh_context. Do not make changes yet.
+Use Forge. Check system readiness with rh_status. Then load bounded context for my registered repository with rh_context. Do not make changes yet.
 ```
 
 ## 6. Security checks

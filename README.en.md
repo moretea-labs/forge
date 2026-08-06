@@ -1,5 +1,5 @@
-# repo-harness documentation moved
+# Forge
 
-The maintained English README is [README.md](README.md).
+Forge is a local-first action runtime for bounded, resumable and reviewable software work.
 
-This compatibility file remains so existing package and external links do not break. Product overview, verified installation, release status, support, and contribution guidance are maintained only in the primary README.
+See [README.md](README.md) for installation, product identity, architecture entry points and operating guidance.

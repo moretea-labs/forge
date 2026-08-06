@@ -2,7 +2,7 @@
 /**
  * Thin Harness — real MCP Gateway dispatch path benchmark.
  *
- * Measures the same order as createRepoHarnessMcpServerFromContext:
+ * Measures the same order as createForgeMcpServerFromContext:
  *   routeDurableMcpCall → (if undefined) callRepositoryTool
  *
  * Phase breakdown:

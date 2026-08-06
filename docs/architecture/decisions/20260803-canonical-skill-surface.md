@@ -4,7 +4,7 @@ Status: accepted
 
 ## Decision
 
-Repo Harness exposes one host-discoverable skill: `repo-harness`. CLI commands,
+Repo Harness exposes one host-discoverable skill: `forge`. CLI commands,
 controller actions, and workflow modes are routed by that canonical skill and are
 not installed as standalone skills.
 

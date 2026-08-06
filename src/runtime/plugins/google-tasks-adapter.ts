@@ -470,7 +470,7 @@ export function buildGoogleTasksPluginManifest(previousRevision = 0, previousUpd
     authority: {
       strategy: 'derived',
       duplicateStateAllowed: false,
-      sourceOfTruth: [`repo-local:${googleTasksPluginConfigPath()}`, 'env:REPO_HARNESS_*_ACCESS_TOKEN'],
+      sourceOfTruth: [`repo-local:${googleTasksPluginConfigPath()}`, 'env:FORGE_*_ACCESS_TOKEN'],
     },
     enabled: config.enabled,
     lifecycle: {

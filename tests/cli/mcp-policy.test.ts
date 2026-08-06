@@ -23,7 +23,7 @@ describe('mcp policy and paths', () => {
     ]);
   });
 
-  test('matches repo-harness workflow globs without matching sibling paths', () => {
+  test('matches forge workflow globs without matching sibling paths', () => {
     expect(globMatches('plans/**', 'plans/prds/example.prd.md')).toBe(true);
     expect(globMatches('plans/plan-*.md', 'plans/plan-test.md')).toBe(true);
     expect(globMatches('plans/plan-*.md', 'plans/archive/plan-test.md')).toBe(false);
@@ -45,7 +45,7 @@ describe('mcp policy and paths', () => {
   });
 
   test('planner profile permits workflow reads and blocks denied or source writes', () => {
-    const tmp = mkdtempSync(join(tmpdir(), 'repo-harness-mcp-policy-'));
+    const tmp = mkdtempSync(join(tmpdir(), 'forge-mcp-policy-'));
     try {
       mkdirSync(join(tmp, 'plans/prds'), { recursive: true });
       mkdirSync(join(tmp, 'src'), { recursive: true });
@@ -77,24 +77,24 @@ describe('mcp policy and paths', () => {
   });
 
   test('planner profile honors repo-local policy overrides for multi-repo MCP setups', () => {
-    const tmp = mkdtempSync(join(tmpdir(), 'repo-harness-mcp-policy-override-'));
+    const tmp = mkdtempSync(join(tmpdir(), 'forge-mcp-policy-override-'));
     try {
-      mkdirSync(join(tmp, '.repo-harness'), { recursive: true });
+      mkdirSync(join(tmp, '.forge'), { recursive: true });
       mkdirSync(join(tmp, 'ios', 'Domain'), { recursive: true });
       mkdirSync(join(tmp, '.ai', 'harness', 'security'), { recursive: true });
-      writeFileSync(join(tmp, '.repo-harness', 'mcp.policy.json'), `${JSON.stringify({
+      writeFileSync(join(tmp, '.forge', 'mcp.policy.json'), `${JSON.stringify({
         profiles: {
           planner: {
             readGlobs: ['**'],
             appendDenyGlobs: [
-              '.repo-harness/**',
+              '.forge/**',
               '.ai/harness/security/**',
             ],
           },
         },
       }, null, 2)}\n`);
       writeFileSync(join(tmp, 'ios', 'Domain', 'MedicationPlanRuntimeCoordinator.swift'), 'struct RuntimeCoordinator {}\n');
-      writeFileSync(join(tmp, '.repo-harness', 'mcp.oauth.json'), '{"passphrase":"secret"}\n');
+      writeFileSync(join(tmp, '.forge', 'mcp.oauth.json'), '{"passphrase":"secret"}\n');
       writeFileSync(join(tmp, '.ai', 'harness', 'security', 'token.txt'), 'secret\n');
 
       const policy = getMcpPolicy('planner', { repoRoot: tmp });
@@ -102,7 +102,7 @@ describe('mcp policy and paths', () => {
         ok: true,
         relativePath: 'ios/Domain/MedicationPlanRuntimeCoordinator.swift',
       });
-      expect(resolveMcpPath(tmp, '.repo-harness/mcp.oauth.json', policy, 'read')).toMatchObject({ ok: false });
+      expect(resolveMcpPath(tmp, '.forge/mcp.oauth.json', policy, 'read')).toMatchObject({ ok: false });
       expect(resolveMcpPath(tmp, '.ai/harness/security/token.txt', policy, 'read')).toMatchObject({ ok: false });
     } finally {
       rmSync(tmp, { recursive: true, force: true });
@@ -110,8 +110,8 @@ describe('mcp policy and paths', () => {
   });
 
   test('blocks symlink escapes from allowed workflow roots', () => {
-    const tmp = mkdtempSync(join(tmpdir(), 'repo-harness-mcp-symlink-'));
-    const outside = mkdtempSync(join(tmpdir(), 'repo-harness-mcp-outside-'));
+    const tmp = mkdtempSync(join(tmpdir(), 'forge-mcp-symlink-'));
+    const outside = mkdtempSync(join(tmpdir(), 'forge-mcp-outside-'));
     try {
       mkdirSync(join(tmp, 'plans'), { recursive: true });
       writeFileSync(join(outside, 'secret.md'), '# outside\n');
@@ -128,7 +128,7 @@ describe('mcp policy and paths', () => {
   });
 
   test('orchestrator dev runner is opt-in and reads only the fixed goal handoff', () => {
-    const tmp = mkdtempSync(join(tmpdir(), 'repo-harness-mcp-orchestrator-'));
+    const tmp = mkdtempSync(join(tmpdir(), 'forge-mcp-orchestrator-'));
     try {
       mkdirSync(join(tmp, '.ai/harness/handoff'), { recursive: true });
       mkdirSync(join(tmp, 'src'), { recursive: true });
@@ -193,7 +193,7 @@ describe('mcp redaction and audit', () => {
   });
 
   test('audit log stores input hash and redacted errors', () => {
-    const tmp = mkdtempSync(join(tmpdir(), 'repo-harness-mcp-audit-'));
+    const tmp = mkdtempSync(join(tmpdir(), 'forge-mcp-audit-'));
     try {
       const inputHash = hashMcpInput({ body: 'secret body' });
       writeMcpAuditEntry(tmp, {

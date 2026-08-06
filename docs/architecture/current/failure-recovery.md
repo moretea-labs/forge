@@ -15,7 +15,7 @@ The target runtime has distinct failure domains:
 ```text
 Client / MCP session
 Gateway
-Controller Daemon
+Canonical Forge Runtime
 Repo Actor
 Worker
 Agent or command process tree

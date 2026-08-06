@@ -26,17 +26,17 @@ Interactions that can mutate remote state still require `confirm_authorization=t
 
 - `plugin_id` stays `browser`
 - the provider is local browser automation: configured loopback CDP, macOS Apple Events for an already-running Chrome/Vivaldi tab, or a Playwright persistent context
-- the default profile mode is `repo_local`, with profile data under `.repo-harness/browser/profiles/`
+- the default profile mode is `repo_local`, with profile data under `.forge/browser/profiles/`
 - `profileMode=custom` is explicit-only and uses the configured Chromium-family profile path directly when launching a managed context
-- saved sessions live under `.repo-harness/browser/sessions/`
-- screenshots live under `.repo-harness/browser/screenshots/`
-- downloads live under `.repo-harness/browser/downloads/`
+- saved sessions live under `.forge/browser/sessions/`
+- screenshots live under `.forge/browser/screenshots/`
+- downloads live under `.forge/browser/downloads/`
 
 The browser mode is explicit:
 
 - `managed_persistent` is the default and preserves the previous behavior: each action launches a visible persistent Playwright context, restores the target URL, performs one bounded operation, persists session metadata, then closes the context.
 - `attach_preferred` uses a strict order: configured loopback CDP endpoints; then the active tab of an already-running, scriptable macOS Vivaldi or Google Chrome instance; then `cdpAttachFallback`. CDP inventory reuses the best URL/title match. Apple Events reuses only the front browser's active tab and never closes the user's browser.
-- `isolated` launches a visible persistent context with a per-session repo-local profile under `.repo-harness/browser/profiles/isolated/<session_id>`. It does not share the default plugin profile or a configured custom profile.
+- `isolated` launches a visible persistent context with a per-session repo-local profile under `.forge/browser/profiles/isolated/<session_id>`. It does not share the default plugin profile or a configured custom profile.
 
 Session metadata is reusable across actions via `session_id`. Transient navigation failures can retry with `retries` (1–3).
 
@@ -45,14 +45,14 @@ Session metadata is reusable across actions via `session_id`. Transient navigati
 - Domain allowlist is checked before navigation and after interactive URL changes.
 - Selector failures include repair hints (`repairHint`) when possible.
 - Console errors and failed requests are captured for Playwright/CDP cycles. Apple Events attachment reports empty console/network diagnostics because those streams are not exposed by the browser scripting dictionary.
-- Artifacts stay under `.repo-harness/browser/**` (not arbitrary local paths).
+- Artifacts stay under `.forge/browser/**` (not arbitrary local paths).
 - CDP attach is bounded to configured loopback endpoints only; the plugin does not scan arbitrary ports or remote hosts. Native discovery checks only the configured Chrome/Vivaldi candidates and does not launch them.
 - CDP browsers are disconnected after the action; Apple Events leaves the active browser/tab open; managed contexts are closed after the action.
 - Health `userFacingStatus` reports `ready`, `domain restricted`, `session active`, or setup states.
 
 ## Configuration
 
-The source of truth is `.repo-harness/plugins/browser.json`.
+The source of truth is `.forge/plugins/browser.json`.
 
 Example:
 
@@ -79,9 +79,9 @@ Additional browser/profile fields:
 - `browserMode`
   - `managed_persistent` keeps the existing persistent-context lifecycle.
   - `attach_preferred` tries configured CDP endpoints, then macOS Apple Events when enabled, then follows `cdpAttachFallback`.
-  - `isolated` uses a per-session repo-local profile under `.repo-harness/browser/profiles/isolated/`.
+  - `isolated` uses a per-session repo-local profile under `.forge/browser/profiles/isolated/`.
 - `profileMode`
-  - `repo_local` keeps the plugin on the repo-owned Playwright profile under `.repo-harness/browser/profiles/default`.
+  - `repo_local` keeps the plugin on the repo-owned Playwright profile under `.forge/browser/profiles/default`.
   - `custom` is the explicit opt-in path for an existing Chrome/Chromium profile.
 - `profileDir`
   - required when `profileMode=custom`
@@ -247,7 +247,7 @@ Example response shape:
     "title": "Example"
   },
   "screenshot": {
-    "path": ".repo-harness/browser/screenshots/..."
+    "path": ".forge/browser/screenshots/..."
   }
 }
 ```
@@ -267,7 +267,7 @@ The Controller Gateway remains Bun-hosted. For `browserMode=attach_preferred`, p
 
 The child is started directly without a shell. The CDP endpoint remains loopback-only, request and response payloads are bounded, execution has a bounded timeout, and credentials are never placed in argv. Cookies, storage state, authorization headers, and page secrets are not returned by the bridge protocol. The child disconnects from CDP or releases the Apple Events operation without closing the user's Chrome or Vivaldi instance.
 
-`managed_persistent` and `isolated` continue to run directly in the Controller runtime. Configuration, session listing and cleanup, and human-handoff lifecycle actions also remain local. Set `REPO_HARNESS_NODE_EXECUTABLE` only to an explicitly trusted executable; an invalid configured path fails closed.
+`managed_persistent` and `isolated` continue to run directly in the Controller runtime. Configuration, session listing and cleanup, and human-handoff lifecycle actions also remain local. Set `FORGE_NODE_EXECUTABLE` only to an explicitly trusted executable; an invalid configured path fails closed.
 
 A safe live proof against an already running loopback Chrome instance is available with:
 

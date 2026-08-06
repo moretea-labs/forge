@@ -37,20 +37,20 @@ afterEach(() => {
   resetMacOsBrowserRuntimeHooksForTest();
   clearAssistantPluginManifestCacheForTest();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-  delete process.env.REPO_HARNESS_CONTROLLER_HOME;
-  delete process.env.REPO_HARNESS_BROWSER_NODE_BRIDGE_HOST;
-  delete process.env.REPO_HARNESS_NODE_EXECUTABLE;
+  delete process.env.FORGE_CONTROLLER_HOME;
+  delete process.env.FORGE_BROWSER_NODE_BRIDGE_HOST;
+  delete process.env.FORGE_NODE_EXECUTABLE;
 });
 
 function repoFixture() {
-  const repoRoot = mkdtempSync(join(tmpdir(), 'repo-harness-browser-plugin-'));
-  const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-browser-plugin-controller-'));
+  const repoRoot = mkdtempSync(join(tmpdir(), 'forge-browser-plugin-'));
+  const controllerHome = mkdtempSync(join(tmpdir(), 'forge-browser-plugin-controller-'));
   roots.push(repoRoot, controllerHome);
-  process.env.REPO_HARNESS_CONTROLLER_HOME = controllerHome;
+  process.env.FORGE_CONTROLLER_HOME = controllerHome;
   mkdirSync(join(repoRoot, 'src'), { recursive: true });
   mkdirSync(join(repoRoot, 'tasks'), { recursive: true });
   mkdirSync(join(repoRoot, '.ai/harness'), { recursive: true });
-  mkdirSync(join(repoRoot, '.repo-harness/plugins'), { recursive: true });
+  mkdirSync(join(repoRoot, '.forge/plugins'), { recursive: true });
   writeFileSync(join(repoRoot, 'src/example.ts'), 'export const value = 1;\n');
   writeFileSync(join(repoRoot, 'tasks/current.md'), '# Current\n');
   spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });
@@ -59,7 +59,7 @@ function repoFixture() {
 }
 
 function writeBrowserConfig(repoRoot: string, value: Record<string, unknown>) {
-  writeFileSync(join(repoRoot, '.repo-harness/plugins/browser.json'), `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
+  writeFileSync(join(repoRoot, '.forge/plugins/browser.json'), `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
 }
 
 function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?: string } = {}) {
@@ -749,7 +749,7 @@ describe('browser plugin', () => {
     });
     const sessionId = String((opened.session as Record<string, unknown>).sessionId);
     expect(sessionId).toBe('explicit-session-id');
-    const saved = JSON.parse(readFileSync(join(repoRoot, '.repo-harness/browser/sessions', `${sessionId}.json`), 'utf8')) as Record<string, any>;
+    const saved = JSON.parse(readFileSync(join(repoRoot, '.forge/browser/sessions', `${sessionId}.json`), 'utf8')) as Record<string, any>;
 
     expect(firstRuntime.events.newPages).toBe(0);
     expect(firstRuntime.events.gotos).toEqual([]);
@@ -837,8 +837,8 @@ describe('browser plugin', () => {
       provider: 'playwright',
       allowedDomains: ['example.com'],
     });
-    mkdirSync(join(repoRoot, '.repo-harness/browser/sessions'), { recursive: true });
-    writeFileSync(join(repoRoot, '.repo-harness/browser/sessions/browser_saved.json'), JSON.stringify({
+    mkdirSync(join(repoRoot, '.forge/browser/sessions'), { recursive: true });
+    writeFileSync(join(repoRoot, '.forge/browser/sessions/browser_saved.json'), JSON.stringify({
       schemaVersion: 1,
       sessionId: 'browser_saved',
       url: 'https://example.com/',
@@ -1118,7 +1118,7 @@ describe('browser plugin', () => {
     expect(listBrowserHandoffs(repoRoot).at(-1)?.status).toBe('failed');
   });
 
-  const liveSmokeMarker = join(process.cwd(), '.repo-harness', 'run-browser-handoff-live-smoke');
+  const liveSmokeMarker = join(process.cwd(), '.forge', 'run-browser-handoff-live-smoke');
   const liveSmokeEnabled = existsSync(liveSmokeMarker) && (statSync(liveSmokeMarker).mode & 0o111) !== 0;
   if (liveSmokeEnabled) {
     test('live foreground handoff survives the requesting action and releases its profile after resume', async () => {
@@ -1208,51 +1208,51 @@ describe('browser plugin', () => {
   }
 
   test('selects the Node bridge only for Bun-hosted attached page actions', () => {
-    delete process.env.REPO_HARNESS_BROWSER_NODE_BRIDGE_HOST;
+    delete process.env.FORGE_BROWSER_NODE_BRIDGE_HOST;
     expect(shouldUseBrowserNodeBridge('open_page', 'attach_preferred', false)).toBe(true);
     expect(shouldUseBrowserNodeBridge('list_sessions', 'attach_preferred', false)).toBe(false);
     expect(shouldUseBrowserNodeBridge('open_page', 'managed_persistent', false)).toBe(false);
     expect(shouldUseBrowserNodeBridge('open_page', 'attach_preferred', true)).toBe(false);
-    process.env.REPO_HARNESS_BROWSER_NODE_BRIDGE_HOST = '1';
+    process.env.FORGE_BROWSER_NODE_BRIDGE_HOST = '1';
     expect(shouldUseBrowserNodeBridge('open_page', 'attach_preferred', false)).toBe(false);
   });
 
   test('uses an explicitly configured executable for the Browser Node bridge and fails closed when invalid', () => {
-    const root = mkdtempSync(join(tmpdir(), 'repo-harness-browser-node-'));
+    const root = mkdtempSync(join(tmpdir(), 'forge-browser-node-'));
     roots.push(root);
     const executable = join(root, 'node');
     writeFileSync(executable, '#!/bin/sh\nexit 0\n', 'utf8');
     chmodSync(executable, 0o700);
-    expect(resolveBrowserBridgeNodeExecutable({ REPO_HARNESS_NODE_EXECUTABLE: executable })).toBe(executable);
-    expect(() => resolveBrowserBridgeNodeExecutable({ REPO_HARNESS_NODE_EXECUTABLE: join(root, 'missing') }))
+    expect(resolveBrowserBridgeNodeExecutable({ FORGE_NODE_EXECUTABLE: executable })).toBe(executable);
+    expect(() => resolveBrowserBridgeNodeExecutable({ FORGE_NODE_EXECUTABLE: join(root, 'missing') }))
       .toThrow('PLUGIN_BROWSER_NODE_UNAVAILABLE');
   });
 
   test('resolves the Browser Node bridge host from the immutable compiled release before virtual bunfs source', () => {
-    const root = mkdtempSync(join(tmpdir(), 'repo-harness-browser-node-release-'));
+    const root = mkdtempSync(join(tmpdir(), 'forge-browser-node-release-'));
     roots.push(root);
-    const runtimeExecutable = join(root, 'repo-harness.js');
+    const runtimeExecutable = join(root, 'forge.js');
     const releaseHost = join(root, 'browser-node-bridge-host.js');
     writeFileSync(runtimeExecutable, 'runtime', 'utf8');
     writeFileSync(releaseHost, 'host', 'utf8');
     expect(resolveBrowserNodeBridgeHostPath({
       runtimeExecutable,
-      argvEntry: '/$bunfs/root/repo-harness.js',
+      argvEntry: '/$bunfs/root/forge.js',
       sourceHostPath: '/$bunfs/root/src/runtime/plugins/browser-node-bridge-host.ts',
     })).toBe(releaseHost);
   });
 
   test('fails closed when a compiled release omits the Browser Node bridge host', () => {
     expect(() => resolveBrowserNodeBridgeHostPath({
-      runtimeExecutable: '/tmp/missing-release/repo-harness.js',
-      argvEntry: '/$bunfs/root/repo-harness.js',
+      runtimeExecutable: '/tmp/missing-release/forge.js',
+      argvEntry: '/$bunfs/root/forge.js',
       sourceHostPath: '/$bunfs/root/src/runtime/plugins/browser-node-bridge-host.ts',
       pathExists: () => false,
     })).toThrow('PLUGIN_BROWSER_NODE_HOST_UNAVAILABLE');
   });
 
   test('keeps the source Browser Node bridge host for non-compiled development runtimes', () => {
-    const root = mkdtempSync(join(tmpdir(), 'repo-harness-browser-node-source-'));
+    const root = mkdtempSync(join(tmpdir(), 'forge-browser-node-source-'));
     roots.push(root);
     const sourceHost = join(root, 'browser-node-bridge-host.ts');
     writeFileSync(sourceHost, 'host', 'utf8');

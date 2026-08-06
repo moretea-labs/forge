@@ -68,7 +68,7 @@ This patch only proposes remote write actions; it does not execute them. Executi
 A Gmail-only rule engine would quickly become too narrow. The same triage machinery is needed for:
 
 - security alerts from email and browser pages;
-- repository/CI failures from GitHub and repo-harness;
+- repository/CI failures from GitHub and Forge;
 - scheduled lessons from Gmail and Calendar;
 - API quota or billing warnings from email and dashboards;
 - Slack/Notion work items.

@@ -7,7 +7,7 @@ import { resolveRepoPreferredControllerHome } from "../repositories/controller-h
 import { listRepositories, updateRepository } from "../repositories/registry";
 import type { RepositoryRecord } from "../repositories/types";
 
-const CONFIG_PATH = ".repo-harness/plugins/github.json";
+const CONFIG_PATH = ".forge/plugins/github.json";
 const STATUS_CACHE_TTL_MS = 30_000;
 const CONFIG_STATUS_CACHE_TTL_MS = 5_000;
 const statusCache = new Map<string, { at: number; fingerprint: string; status: GitHubPluginStatus }>();

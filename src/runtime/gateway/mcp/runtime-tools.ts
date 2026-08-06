@@ -17,7 +17,7 @@ import { readWorkHandle, type WorkHandleState } from '../../control-plane/execut
 import { readJobEvents } from '../../evidence/event-ledger';
 import { readExecutionArtifact } from '../../evidence/artifact-store';
 import { readExecutionEvidence } from '../../evidence/evidence-store';
-import { readControllerDaemonStatus } from '../../control-plane/daemon-client';
+import { readForgeRuntimeStatus } from '../../control-plane/runtime-status-client';
 import { readSchedulerHealthSnapshot } from '../../control-plane/global-scheduler/scheduler';
 import {
   evaluateActiveRuntimeSourceDrift,
@@ -421,10 +421,10 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     dry_run: { type: 'boolean', description: 'When true, only returns the proposed changes.' },
     confirm_authorization: { type: 'boolean', description: 'Must be true unless dry_run is true.' },
   }, ['repo_id']),
-  definition('runtime_performance_diagnostics', 'Diagnose repo-harness host performance, orphan workers, Local Controller presence, and cleanup candidates.', {
+  definition('runtime_performance_diagnostics', 'Diagnose forge host performance, orphan workers, Local Controller presence, and cleanup candidates.', {
     repo_id: repoId,
-    include_processes: { type: 'boolean', description: 'Include bounded repo-harness related process samples. Defaults to true.' },
-    include_temp_dirs: { type: 'boolean', description: 'Include bounded repo-harness temporary directory scan. Defaults to true.' },
+    include_processes: { type: 'boolean', description: 'Include bounded forge related process samples. Defaults to true.' },
+    include_temp_dirs: { type: 'boolean', description: 'Include bounded forge temporary directory scan. Defaults to true.' },
     cleanup_preview: { type: 'boolean', description: 'Return a no-side-effect cleanup plan for orphan workers and stale temp entries.' },
   }),
   definition('capability_recovery_probe', 'Read-only Runtime diagnostic evidence. This tool never starts, stops, restarts, repairs, or replaces Runtime modules.', {
@@ -562,7 +562,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     risk: { type: 'string', enum: ['readonly', 'local_repo_write', 'workspace_write', 'remote_write', 'destructive', 'raw_secret_config'] },
     objective: { type: 'string' },
   }),
-  definition('executor_dispatch', 'Policy-gated dispatch to an invokable provider; repo-harness applies/verifies patches (no raw shell exposure).', {
+  definition('executor_dispatch', 'Policy-gated dispatch to an invokable provider; forge applies/verifies patches (no raw shell exposure).', {
     repo_id: repoId,
     goal_id: { type: 'string' },
     provider_id: { type: 'string' },
@@ -728,16 +728,16 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     repo_id: repoId,
     work_ref: { type: 'string' },
   }, ['work_ref']),
-  definition('model_clients_summary', 'List enabled model clients and DeepSeek adapter configuration state. Policy remains enforced by repo-harness.', {
+  definition('model_clients_summary', 'List enabled model clients and DeepSeek adapter configuration state. Policy remains enforced by forge.', {
     repo_id: repoId,
   }),
   definition('model_control_plane_summary', 'Summarize primary and backup model controllers, handoff modes, and concurrency policy.', {
     repo_id: repoId,
   }),
-  definition('deepseek_tool_manifest', 'Return DeepSeek function-calling tool manifests for the low-interception repo-harness surface.', {
+  definition('deepseek_tool_manifest', 'Return DeepSeek function-calling tool manifests for the low-interception forge surface.', {
     repo_id: repoId,
   }),
-  definition('deepseek_tool_call_prepare', 'Translate one DeepSeek function call into a repo-harness operation without executing it.', {
+  definition('deepseek_tool_call_prepare', 'Translate one DeepSeek function call into a forge operation without executing it.', {
     repo_id: repoId,
     function_name: { type: 'string' },
     function_arguments: { type: 'object' },
@@ -814,7 +814,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     confirm_authorization: { type: 'boolean' },
     timeout_ms: { type: 'number' },
   }, ['udid', 'confirm_authorization'], false),
-  definition('ios_app_build', 'Build an iOS app into .repo-harness/ios/DerivedData using xcodebuild structured arguments.', {
+  definition('ios_app_build', 'Build an iOS app into .forge/ios/DerivedData using xcodebuild structured arguments.', {
     repo_id: repoId,
     scheme: { type: 'string' },
     udid: { type: 'string' },
@@ -823,7 +823,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     configuration: { type: 'string' },
     timeout_ms: { type: 'number' },
   }, ['scheme'], false),
-  definition('ios_app_install', 'Install a bounded .app product from .repo-harness/ios/DerivedData into a booted simulator. Requires authorization.', {
+  definition('ios_app_install', 'Install a bounded .app product from .forge/ios/DerivedData into a booted simulator. Requires authorization.', {
     repo_id: repoId,
     udid: { type: 'string' },
     app_path: { type: 'string' },
@@ -836,12 +836,12 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     arguments: { type: 'array', items: { type: 'string' } },
     confirm_authorization: { type: 'boolean' },
   }, ['udid', 'bundle_id', 'confirm_authorization'], false),
-  definition('ios_simulator_screenshot', 'Capture a simulator screenshot to .repo-harness/ios/screenshots as a bounded artifact.', {
+  definition('ios_simulator_screenshot', 'Capture a simulator screenshot to .forge/ios/screenshots as a bounded artifact.', {
     repo_id: repoId,
     udid: { type: 'string' },
     label: { type: 'string' },
   }, ['udid'], false),
-  definition('ios_simulator_log_tail', 'Collect a bounded recent simulator log tail into .repo-harness/ios/logs.', {
+  definition('ios_simulator_log_tail', 'Collect a bounded recent simulator log tail into .forge/ios/logs.', {
     repo_id: repoId,
     udid: { type: 'string' },
     process: { type: 'string' },
@@ -860,7 +860,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     screenshot_label: { type: 'string' },
     confirm_authorization: { type: 'boolean' },
   }, ['udid', 'scheme', 'bundle_id', 'confirm_authorization'], false),
-  definition('runtime_cleanup_preview', 'Preview stale repo-harness temp directories, terminal local jobs, and historical attention cleanup candidates.', {
+  definition('runtime_cleanup_preview', 'Preview stale forge temp directories, terminal local jobs, and historical attention cleanup candidates.', {
     repo_id: repoId,
     min_age_minutes: { type: 'number' },
     include_temp_dirs: { type: 'boolean' },
@@ -869,7 +869,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     include_historical_attention: { type: 'boolean' },
     max_candidates: { type: 'number' },
   }),
-  definition('runtime_cleanup_apply', 'Apply safe cleanup candidates. Requires confirm_cleanup=true and remains limited to explicit repo-harness candidates.', {
+  definition('runtime_cleanup_apply', 'Apply safe cleanup candidates. Requires confirm_cleanup=true and remains limited to explicit forge candidates.', {
     repo_id: repoId,
     min_age_minutes: { type: 'number' },
     include_temp_dirs: { type: 'boolean' },
@@ -1636,11 +1636,11 @@ function expectedRevision(args: Record<string, unknown>, key = 'expected_revisio
  */
 const CONTROLLER_CONTEXT_PROJECTION_REFRESH_MS = Math.max(
   5_000,
-  Number(process.env.REPO_HARNESS_CONTEXT_PROJECTION_REFRESH_MS ?? 300_000),
+  Number(process.env.FORGE_CONTEXT_PROJECTION_REFRESH_MS ?? 300_000),
 );
 
 /** Git identity sampling TTL: one bounded subprocess burst, then cheap reads. */
-const GIT_IDENTITY_SAMPLE_TTL_MS = Math.max(1_000, Number(process.env.REPO_HARNESS_GIT_IDENTITY_SAMPLE_TTL_MS ?? 3_000));
+const GIT_IDENTITY_SAMPLE_TTL_MS = Math.max(1_000, Number(process.env.FORGE_GIT_IDENTITY_SAMPLE_TTL_MS ?? 3_000));
 
 function ageMs(value: string | undefined): number | undefined {
   if (!value) return undefined;
@@ -1690,7 +1690,7 @@ export async function controllerReadinessEvidence(
   repository = ctx.explicitRepository,
   signals: ControllerReadinessSignals = {},
 ) {
-  const daemon = readControllerDaemonStatus(ctx.controllerHome);
+  const daemon = readForgeRuntimeStatus(ctx.controllerHome);
   const scheduler = readSchedulerHealthSnapshot(ctx.controllerHome);
   const projectionSnapshot = repository ? readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId) : undefined;
   const projection = projectionSnapshot?.projection;
@@ -1741,7 +1741,7 @@ export async function controllerReadinessEvidence(
     daemon: {
       status: daemon.status,
       error: daemon.error,
-      // Scheduler ticks are emitted by the Controller Daemon process and provide
+      // Scheduler ticks are emitted by the Canonical Forge Runtime process and provide
       // its continuously refreshed heartbeat without introducing a second timer.
       heartbeatAgeMs: schedulerHeartbeatAgeMs,
     },
@@ -2324,7 +2324,7 @@ async function runFacadeRepair(
     performanceSummary = undefined;
   }
 
-  const daemon = readControllerDaemonStatus(ctx.controllerHome);
+  const daemon = readForgeRuntimeStatus(ctx.controllerHome);
   const readiness = await controllerReadinessEvidence(ctx, repository);
   const facade = runSelfHealingLoop(
     { repoId: repository.repoId, handoffStore: store },
@@ -3521,7 +3521,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           : false;
         const processAlive = surface.processRunning;
         const projectionSnapshot = readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId);
-        const daemon = readControllerDaemonStatus(ctx.controllerHome);
+        const daemon = readForgeRuntimeStatus(ctx.controllerHome);
         const scheduler = readSchedulerHealthSnapshot(ctx.controllerHome);
         const schedulerHeartbeatAgeMs = ageMs(scheduler.lastTickAt);
         const schedulerDispatchHeartbeatAgeMs = ageMs(scheduler.lastDispatchAt);
@@ -4348,7 +4348,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             externalFilesystemTargetCount: Array.isArray(externalFilesystem) ? externalFilesystem.length : 0,
           },
           observedAt: new Date().toISOString(),
-          summary: 'Autonomous self-healing is retired. Diagnostics are evidence only; Runtime lifecycle remains owned by repo-harness-runtime.',
+          summary: 'Autonomous self-healing is retired. Diagnostics are evidence only; Runtime lifecycle remains owned by forge-runtime.',
           replacements: ['runtime_maintenance_status', 'rh_context', 'rh_inbox'],
           safety: {
             mutatesState: false,
@@ -4466,7 +4466,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             return result({ packet });
           }
           case 'provider_list':
-            return result({ providers: providerListAction(goalCtx), policyOwner: 'repo-harness' });
+            return result({ providers: providerListAction(goalCtx), policyOwner: 'forge' });
           case 'provider_health':
             return result({
               health: providerHealthAction(goalCtx, typeof args.provider_id === 'string' ? args.provider_id : undefined),
@@ -4684,10 +4684,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             return result({
               error: {
                 code: 'RUNTIME_LIFECYCLE_ACTION_RETIRED',
-                message: 'Component restart recovery is retired. Runtime lifecycle is owned only by repo-harness-runtime.',
+                message: 'Component restart recovery is retired. Runtime lifecycle is owned only by forge-runtime.',
               },
               retired: true,
-              replacement: 'repo-harness-runtime',
+              replacement: 'forge-runtime',
             }, true);
           case 'recovery.create_patch_handoff':
             payload = prepareFallbackHandoffArtifacts(repository, { reason }) as unknown as Record<string, unknown>;
@@ -4777,7 +4777,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
 
       case 'gmail_triage_rules': {
         const repository = selected(ctx, args);
-        return result({ repoId: repository.repoId, checkoutId: repository.activeCheckoutId, path: '.repo-harness/assistant/gmail-triage-rules.json', ...readGmailTriageRules(repository) });
+        return result({ repoId: repository.repoId, checkoutId: repository.activeCheckoutId, path: '.forge/assistant/gmail-triage-rules.json', ...readGmailTriageRules(repository) });
       }
       case 'gmail_triage_rule_upsert': {
         const repository = selected(ctx, args);
@@ -5142,13 +5142,13 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         }, digest.phase === 'failed' || digest.phase === 'timed_out');
       }
       case 'model_clients_summary': {
-        return result({ clients: buildModelClientSummary(), policyOwner: 'repo-harness', transportEncryption: 'not-configured-by-this-tool' });
+        return result({ clients: buildModelClientSummary(), policyOwner: 'forge', transportEncryption: 'not-configured-by-this-tool' });
       }
       case 'model_control_plane_summary': {
         return result({ controlPlane: buildModelControlPlaneSummary(), transportEncryption: 'not-configured-by-this-tool' });
       }
       case 'deepseek_tool_manifest': {
-        return result({ provider: 'deepseek', tools: deepSeekFunctionToolManifest(), policyOwner: 'repo-harness' });
+        return result({ provider: 'deepseek', tools: deepSeekFunctionToolManifest(), policyOwner: 'forge' });
       }
       case 'deepseek_tool_call_prepare': {
         const functionArguments = args.function_arguments && typeof args.function_arguments === 'object' && !Array.isArray(args.function_arguments)

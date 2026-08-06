@@ -56,16 +56,16 @@ const ignoredState = [
   '.ai/harness/backups',
   '.ai/harness/edit-sessions',
   '.ai/harness/tmp',
-  '.repo-harness/browser',
-  '.repo-harness/ios',
-  '.repo-harness/watchdog',
+  '.forge/browser',
+  '.forge/ios',
+  '.forge/watchdog',
 ];
 check('runtime-ignore-surface', 'ok', `tracked local-only runtime paths: ${ignoredState.join(', ')}`);
 
 const riskyTemp = [
-  '/tmp/repo-harness',
+  '/tmp/forge',
   join(root, '.ai', 'harness', 'tmp'),
-  join(root, '.repo-harness', 'tmp'),
+  join(root, '.forge', 'tmp'),
 ].filter((entry) => existsSync(entry));
 check('temp-surface', riskyTemp.length === 0 ? 'ok' : 'warn', riskyTemp.length === 0 ? 'no known temp roots currently exist' : riskyTemp.map((entry) => `${entry}:${sizeOf(entry)}B`).join(', '), 'Run runtime cleanup preview before deleting temp state.');
 

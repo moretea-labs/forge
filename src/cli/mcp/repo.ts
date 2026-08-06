@@ -11,7 +11,7 @@ export function resolveMcpRepoRoot(repo = '.'): string {
   return result.status === 0 && result.stdout.trim() ? result.stdout.trim() : candidate;
 }
 
-export function isRepoHarnessAdopted(repoRoot: string): boolean {
+export function isForgeAdopted(repoRoot: string): boolean {
   return existsSync(join(repoRoot, '.ai', 'harness', 'policy.json')) || existsSync(join(repoRoot, 'tasks', 'current.md'));
 }
 

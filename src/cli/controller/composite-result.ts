@@ -25,7 +25,7 @@ const SENSITIVE = [
   /Bearer\s+[A-Za-z0-9._~+/=-]+/gi,
   /token["']?\s*[:=]\s*["']?[A-Za-z0-9._~+/=-]{12,}/gi,
   /passphrase["']?\s*[:=]\s*["']?[^\s"']+/gi,
-  /REPO_HARNESS_[A-Z0-9_]*TOKEN[A-Z0-9_]*\s*=\s*\S+/gi,
+  /FORGE_[A-Z0-9_]*TOKEN[A-Z0-9_]*\s*=\s*\S+/gi,
   /sk-[A-Za-z0-9]{20,}/g,
 ];
 

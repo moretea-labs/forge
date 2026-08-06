@@ -37,12 +37,12 @@ cd "$APP_DIR"
 bun init -y >/dev/null
 bun add "$TARBALL_PATH" >/dev/null
 
-CLI="$APP_DIR/node_modules/.bin/repo-harness"
-HOOK="$APP_DIR/node_modules/.bin/repo-harness-hook"
+CLI="$APP_DIR/node_modules/.bin/forge"
+HOOK="$APP_DIR/node_modules/.bin/forge-hook"
 
 VERSION="$("$CLI" --version)"
 if [[ "$VERSION" != "$PACKAGE_VERSION" ]]; then
-  echo "[tarball-smoke] ERROR: repo-harness --version returned $VERSION, expected $PACKAGE_VERSION" >&2
+  echo "[tarball-smoke] ERROR: forge --version returned $VERSION, expected $PACKAGE_VERSION" >&2
   exit 1
 fi
 
@@ -58,7 +58,7 @@ if (plan.protocol !== 1 || plan.command !== "adopt" || plan.apply !== false) {
 JS_EOF
 
 if ! "$CLI" run check-task-workflow --help >/dev/null; then
-  echo "[tarball-smoke] ERROR: packaged 'repo-harness run check-task-workflow --help' failed (run dispatcher / helper lookup / bin startup broken)" >&2
+  echo "[tarball-smoke] ERROR: packaged 'forge run check-task-workflow --help' failed (run dispatcher / helper lookup / bin startup broken)" >&2
   exit 1
 fi
 printf '{"prompt":"review release readiness"}\n' | "$HOOK" prompt-guard-decide >/dev/null

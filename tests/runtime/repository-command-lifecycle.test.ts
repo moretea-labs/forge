@@ -45,7 +45,7 @@ function seedRepo(controllerHome: string, repoRoot: string) {
   mkdirSync(repoRoot, { recursive: true });
   git(repoRoot, ['init', '-b', 'main']);
   git(repoRoot, ['config', 'user.name', 'Repo Harness Test']);
-  git(repoRoot, ['config', 'user.email', 'repo-harness-test@example.com']);
+  git(repoRoot, ['config', 'user.email', 'forge-test@example.com']);
   writeFileSync(join(repoRoot, 'README.md'), 'hello\n');
   git(repoRoot, ['add', 'README.md']);
   git(repoRoot, ['commit', '-m', 'init']);
@@ -69,8 +69,8 @@ afterEach(async () => {
 
 describe('repository command execution lifecycle', () => {
   test('accepts explicit long timeouts up to the shared agent maximum and rejects above it', () => {
-    const controllerHome = tempRoot('repo-harness-cmd-timeout-home-');
-    const repoRoot = tempRoot('repo-harness-cmd-timeout-repo-');
+    const controllerHome = tempRoot('forge-cmd-timeout-home-');
+    const repoRoot = tempRoot('forge-cmd-timeout-repo-');
     const repository = seedRepo(controllerHome, repoRoot);
 
     expect(REPOSITORY_COMMAND_MAX_TIMEOUT_MS).toBe(MAX_AGENT_TIMEOUT_MS);

@@ -51,7 +51,7 @@ describe('test governance', () => {
   });
 
   test('collects staged, unstaged, untracked, and merge-base changes', () => {
-    const repo = mkdtempSync(join(tmpdir(), 'repo-harness-selector-'));
+    const repo = mkdtempSync(join(tmpdir(), 'forge-selector-'));
     try {
       git(repo, 'init', '-q');
       git(repo, 'config', 'user.email', 'tests@example.com');
@@ -76,7 +76,7 @@ describe('test governance', () => {
   });
 
   test('content evidence ignores commit identity while tracked-tree evidence sees mutations', () => {
-    const repo = mkdtempSync(join(tmpdir(), 'repo-harness-content-digest-'));
+    const repo = mkdtempSync(join(tmpdir(), 'forge-content-digest-'));
     try {
       git(repo, 'init', '-q');
       git(repo, 'config', 'user.email', 'tests@example.com');

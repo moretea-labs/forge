@@ -20,7 +20,7 @@ export function workflowContractInstallOperation(repoRoot: string): WriteFileOpe
     kind: "writeFile",
     path: WORKFLOW_CONTRACT_RUNTIME_PATH,
     content,
-    reason: "Install canonical repo-harness workflow contract manifest",
+    reason: "Install canonical forge workflow contract manifest",
     risk: "low",
     status: workflowContractStatus(repoRoot, content),
   };

@@ -5,7 +5,7 @@
  * GoalContract owns objective-level durable loop state.
  *
  * Models are workers/reviewers/planners/handoff recipients.
- * Policy, audit, state, approval, verification, and finalization stay in repo-harness.
+ * Policy, audit, state, approval, verification, and finalization stay in forge.
  */
 
 export const GOAL_MODES = ['manual', 'supervised', 'autonomous'] as const;
@@ -140,8 +140,8 @@ export interface ProviderLimits {
 export interface ProviderSafety {
   mayMutateFiles: boolean;
   mayRunCommands: boolean;
-  /** When true, model output is applied by repo-harness, never by the model itself. */
-  requiresApplyByRepoHarness: boolean;
+  /** When true, model output is applied by forge, never by the model itself. */
+  requiresApplyByForge: boolean;
   requiresApprovalForExternalEffects: boolean;
 }
 

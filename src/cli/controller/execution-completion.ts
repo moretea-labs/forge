@@ -109,7 +109,7 @@ export function continueTaskAfterSuccessfulRun(
     : [];
 
   const commandEvidence: TaskCommandEvidence[] = [{
-    command: ['repo-harness', 'agent-run', run.runId],
+    command: ['forge', 'agent-run', run.runId],
     cwd: run.executionMode === 'worktree' ? run.worktree : repoRoot,
     ok: true,
     exitCode: run.exitCode ?? 0,
@@ -129,7 +129,7 @@ export function continueTaskAfterSuccessfulRun(
     runId: run.runId,
     integratedRevision: run.integrationEvidence?.targetRevision,
     reviewedDiffHash: diffHash(repoRoot, run),
-    reviewer: 'repo-harness-controller',
+    reviewer: 'forge-controller',
     checkResults,
     commandEvidence,
     acceptanceResults,

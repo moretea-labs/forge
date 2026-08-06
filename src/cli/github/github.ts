@@ -95,7 +95,7 @@ export function getGitHubStatus(repoRoot: string, explicitRepo?: string): GitHub
 
 function issueBody(repoRoot: string, issue: ControllerIssue): string {
   return [
-    `<!-- repo-harness:${issue.id} -->`,
+    `<!-- forge:${issue.id} -->`,
     issue.summary || 'No summary provided.',
     '',
     '## Goals',
@@ -123,7 +123,7 @@ function issueBody(repoRoot: string, issue: ControllerIssue): string {
 
 function taskBody(issue: ControllerIssue, task: ControllerTask, parentUrl: string): string {
   return [
-    `<!-- repo-harness:${issue.id}/${task.id} -->`,
+    `<!-- forge:${issue.id}/${task.id} -->`,
     `Parent controller issue: ${parentUrl}`,
     '',
     task.objective,
@@ -206,7 +206,7 @@ function updateGitHubIssue(repoRoot: string, repo: GitHubRepositoryInfo, link: G
 export function publishIssueToGitHub(repoRoot: string, issueId: string, options: PublishIssueOptions = {}): ControllerIssue {
   let issue = getIssue(repoRoot, issueId);
   const repository = resolveGitHubRepository(repoRoot, options.repo ?? (issue.github ? `${issue.github.owner}/${issue.github.repo}` : undefined));
-  const labels = Array.from(new Set(['repo-harness', issue.kind, ...(options.labels ?? [])].filter(Boolean)));
+  const labels = Array.from(new Set(['forge', issue.kind, ...(options.labels ?? [])].filter(Boolean)));
   const parentBody = bodyFile(repoRoot, `${issue.id}-parent`, issueBody(repoRoot, issue));
   try {
     let parent = issue.github
@@ -221,7 +221,7 @@ export function publishIssueToGitHub(repoRoot: string, issueId: string, options:
         try {
           let taskLink = task.github
             ? updateGitHubIssue(repoRoot, repository, task.github, `${task.id}: ${task.title}`, taskFile)
-            : createGitHubIssue(repoRoot, repository, `${task.id}: ${task.title}`, taskFile, ['repo-harness-task'], parent.number);
+            : createGitHubIssue(repoRoot, repository, `${task.id}: ${task.title}`, taskFile, ['forge-task'], parent.number);
           taskLink = addProjectItem(repoRoot, taskLink, options.projectOwner, options.projectNumber);
           issue = updateTask(repoRoot, issue.id, task.id, { github: taskLink, note: `Synced to GitHub: ${taskLink.url}` });
         } finally {

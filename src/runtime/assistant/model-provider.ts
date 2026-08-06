@@ -122,11 +122,11 @@ function configuredCredential(env: NodeJS.ProcessEnv, endpoint?: string): { valu
   let host: string | undefined;
   try { host = endpoint ? new URL(endpoint).hostname.toLowerCase() : undefined; } catch { host = undefined; }
   const candidates: Array<[string, string | undefined]> = [
-    ['REPO_HARNESS_ASSISTANT_MODEL_API_KEY', env.REPO_HARNESS_ASSISTANT_MODEL_API_KEY],
+    ['FORGE_ASSISTANT_MODEL_API_KEY', env.FORGE_ASSISTANT_MODEL_API_KEY],
     ...(host === 'api.openai.com'
       ? [['OPENAI_API_KEY', env.OPENAI_API_KEY]]
       : host === 'api.deepseek.com'
-        ? [['REPO_HARNESS_DEEPSEEK_API_KEY', env.REPO_HARNESS_DEEPSEEK_API_KEY], ['DEEPSEEK_API_KEY', env.DEEPSEEK_API_KEY]]
+        ? [['FORGE_DEEPSEEK_API_KEY', env.FORGE_DEEPSEEK_API_KEY], ['DEEPSEEK_API_KEY', env.DEEPSEEK_API_KEY]]
         : []) as Array<[string, string | undefined]>,
   ];
   const found = candidates.find(([, value]) => value?.trim());
@@ -134,29 +134,29 @@ function configuredCredential(env: NodeJS.ProcessEnv, endpoint?: string): { valu
 }
 
 export function resolveAssistantModelConfig(env: NodeJS.ProcessEnv = process.env): AssistantModelConfig {
-  const requested = String(env.REPO_HARNESS_ASSISTANT_MODEL_PROVIDER ?? '').trim().toLowerCase();
-  const endpointOverride = env.REPO_HARNESS_ASSISTANT_MODEL_ENDPOINT?.trim();
-  const modelOverride = env.REPO_HARNESS_ASSISTANT_MODEL?.trim();
-  const timeoutMs = envInteger(env, 'REPO_HARNESS_ASSISTANT_MODEL_TIMEOUT_MS', DEFAULT_TIMEOUT_MS, 5 * 60_000);
-  const maxMessages = envInteger(env, 'REPO_HARNESS_ASSISTANT_MODEL_MAX_MESSAGES', DEFAULT_MAX_MESSAGES, 50);
-  const maxInputChars = envInteger(env, 'REPO_HARNESS_ASSISTANT_MODEL_MAX_INPUT_CHARS', DEFAULT_MAX_INPUT_CHARS, 200_000);
-  const maxOutputTokens = envInteger(env, 'REPO_HARNESS_ASSISTANT_MODEL_MAX_OUTPUT_TOKENS', DEFAULT_MAX_OUTPUT_TOKENS, 8_000);
+  const requested = String(env.FORGE_ASSISTANT_MODEL_PROVIDER ?? '').trim().toLowerCase();
+  const endpointOverride = env.FORGE_ASSISTANT_MODEL_ENDPOINT?.trim();
+  const modelOverride = env.FORGE_ASSISTANT_MODEL?.trim();
+  const timeoutMs = envInteger(env, 'FORGE_ASSISTANT_MODEL_TIMEOUT_MS', DEFAULT_TIMEOUT_MS, 5 * 60_000);
+  const maxMessages = envInteger(env, 'FORGE_ASSISTANT_MODEL_MAX_MESSAGES', DEFAULT_MAX_MESSAGES, 50);
+  const maxInputChars = envInteger(env, 'FORGE_ASSISTANT_MODEL_MAX_INPUT_CHARS', DEFAULT_MAX_INPUT_CHARS, 200_000);
+  const maxOutputTokens = envInteger(env, 'FORGE_ASSISTANT_MODEL_MAX_OUTPUT_TOKENS', DEFAULT_MAX_OUTPUT_TOKENS, 8_000);
   if (requested === 'mock') {
     return { provider: 'mock', configured: true, model: 'mock-assistant-model', timeoutMs, maxMessages, maxInputChars, maxOutputTokens, warnings: [] };
   }
   if (requested === 'disabled') {
     return { provider: 'disabled', configured: false, timeoutMs, maxMessages, maxInputChars, maxOutputTokens, warnings: ['Assistant model analysis is disabled; deterministic rules remain active.'] };
   }
-  const deepSeekConfigured = Boolean(env.REPO_HARNESS_DEEPSEEK_API_KEY?.trim() || env.DEEPSEEK_API_KEY?.trim());
+  const deepSeekConfigured = Boolean(env.FORGE_DEEPSEEK_API_KEY?.trim() || env.DEEPSEEK_API_KEY?.trim());
   const openAiConfigured = Boolean(env.OPENAI_API_KEY?.trim());
   const endpoint = endpointOverride
     || (openAiConfigured ? OPENAI_CHAT_COMPLETIONS_ENDPOINT : deepSeekConfigured ? DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT : undefined);
-  const model = modelOverride || (deepSeekConfigured ? env.REPO_HARNESS_DEEPSEEK_MODEL?.trim() || 'deepseek-chat' : undefined);
+  const model = modelOverride || (deepSeekConfigured ? env.FORGE_DEEPSEEK_MODEL?.trim() || 'deepseek-chat' : undefined);
   const credential = configuredCredential(env, endpoint);
   if (!endpoint || !model) {
     return {
       provider: 'disabled', configured: false, timeoutMs, maxMessages, maxInputChars, maxOutputTokens,
-      warnings: ['Configure REPO_HARNESS_ASSISTANT_MODEL_ENDPOINT and REPO_HARNESS_ASSISTANT_MODEL, or configure a supported provider key and model.'],
+      warnings: ['Configure FORGE_ASSISTANT_MODEL_ENDPOINT and FORGE_ASSISTANT_MODEL, or configure a supported provider key and model.'],
     };
   }
   if (!endpointIsAllowed(endpoint)) {
@@ -167,7 +167,7 @@ export function resolveAssistantModelConfig(env: NodeJS.ProcessEnv = process.env
   }
   const host = new URL(endpoint).host;
   const loopback = ['127.0.0.1', 'localhost'].includes(new URL(endpoint).hostname);
-  const unauthenticatedAllowed = env.REPO_HARNESS_ASSISTANT_MODEL_ALLOW_UNAUTHENTICATED === 'true';
+  const unauthenticatedAllowed = env.FORGE_ASSISTANT_MODEL_ALLOW_UNAUTHENTICATED === 'true';
   if (!credential.value && !loopback && !unauthenticatedAllowed) {
     return {
       provider: 'disabled', configured: false, endpoint, endpointHost: host, model, timeoutMs, maxMessages, maxInputChars, maxOutputTokens,

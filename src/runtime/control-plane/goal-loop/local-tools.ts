@@ -193,7 +193,7 @@ export function listLocalTools(options: LocalToolProbeOptions = {}): LocalToolDe
         capabilityTags: meta.capabilityTags,
         usedByWorkflows: meta.usedByWorkflows,
         summary: enabled
-          ? 'Bounded direct edit applied by repo-harness.'
+          ? 'Bounded direct edit applied by forge.'
           : 'Direct edit disabled by configuration.',
         healthOk: enabled,
       };

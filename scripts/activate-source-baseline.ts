@@ -151,7 +151,7 @@ function runCheck(repoRoot: string, definition: CheckDefinition): CheckReceipt {
     maxOutputBytes: 2 * 1024 * 1024,
     env: {
       ...process.env,
-      REPO_HARNESS_TEST_NO_INHERIT: '1',
+      FORGE_TEST_NO_INHERIT: '1',
     },
   });
   return {
@@ -222,9 +222,9 @@ async function request(args: string[]): Promise<void> {
       stdio: ['ignore', logFd, logFd],
       env: {
         ...process.env,
-        REPO_HARNESS_CONTROLLER_HOME: controllerHome,
-        REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT: repoRoot,
-        REPO_HARNESS_SOURCE_ROOT: repoRoot,
+        FORGE_CONTROLLER_HOME: controllerHome,
+        FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT: repoRoot,
+        FORGE_SOURCE_ROOT: repoRoot,
       },
     });
     child.unref();

@@ -59,7 +59,7 @@ interface ProposalStore {
 }
 
 function now(): string { return new Date().toISOString(); }
-function proposalsPath(repoRoot: string): string { return join(repoRoot, '.repo-harness', 'assistant', 'action-proposals.json'); }
+function proposalsPath(repoRoot: string): string { return join(repoRoot, '.forge', 'assistant', 'action-proposals.json'); }
 
 function readStore(repoRoot: string): ProposalStore {
   const path = proposalsPath(repoRoot);

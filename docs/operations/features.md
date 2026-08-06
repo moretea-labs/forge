@@ -1,6 +1,6 @@
 # Features and Setup Levels
 
-repo-harness is useful without coding agents or external plugins. Start with the core workflow, then add integrations only when a task requires them.
+Forge is useful without coding agents or external plugins. Start with the core workflow, then add integrations only when a task requires them.
 
 ## Core features
 
@@ -27,7 +27,7 @@ These features are part of the default local setup:
 | Browser | Playwright navigation, screenshots, and bounded browser evidence | Browser binaries and allowed domains. |
 | CodeGraph | Additional code relationships and impact navigation | CodeGraph CLI; native Windows automatic setup is not yet enabled. |
 | Google Workspace | Gmail and Calendar assistant actions | Explicit OAuth setup and plugin permission. |
-| Schedules and findings | Supervised recurring checks and candidate findings | Controller daemon running; live actions remain policy-gated. |
+| Schedules and findings | Supervised recurring checks and candidate findings | Canonical Forge Runtime running; live actions remain policy-gated. |
 
 ## Tool exposure
 

@@ -4,7 +4,7 @@
 
 ## Default Brain
 
-- File vault: `brain/repo-harness/references/coding-standards-reference.md`
+- File vault: `brain/forge/references/coding-standards-reference.md`
 - gbrain slug: `references/coding-standards-reference`
 
 ## Repo Role

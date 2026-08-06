@@ -16,8 +16,8 @@ hook_read_stdin_once
 input="$HOOK_STDIN_JSON"
 [[ -n "$input" ]] || exit 0
 
-CONTRACT_MARKER="[repo-harness:return-channel]"
-CONTRACT_TEXT=$'\n\n[repo-harness:return-channel] Your final text message is the only channel returned to your caller. Put the complete findings/report in final text. Do not call SendUserMessage for report delivery; content sent through SendUserMessage is delivered outside the Agent tool result.'
+CONTRACT_MARKER="[forge:return-channel]"
+CONTRACT_TEXT=$'\n\n[forge:return-channel] Your final text message is the only channel returned to your caller. Put the complete findings/report in final text. Do not call SendUserMessage for report delivery; content sent through SendUserMessage is delivered outside the Agent tool result.'
 
 if command -v bun >/dev/null 2>&1; then
   JSON_INPUT="$input" \

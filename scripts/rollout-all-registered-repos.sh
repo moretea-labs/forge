@@ -4,4 +4,4 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 cd "$ROOT"
-exec "$ROOT/scripts/repo-harness-local.sh" repo rollout "$@"
+exec "$ROOT/scripts/forge-local.sh" repo rollout "$@"

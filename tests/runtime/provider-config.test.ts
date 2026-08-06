@@ -36,7 +36,7 @@ afterEach(() => {
 });
 
 function fixture(env: NodeJS.ProcessEnv = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'repo-harness-provider-config-'));
+  const root = mkdtempSync(join(tmpdir(), 'forge-provider-config-'));
   roots.push(root);
   const ctx: ConfigFacadeContext = {
     controllerHome: root,
@@ -121,7 +121,7 @@ describe('provider config persistence', () => {
 
 describe('routing respects config', () => {
   test('disabled provider excluded from route', () => {
-    const { ctx } = fixture({ XAI_API_KEY: 'xai-test', REPO_HARNESS_ENABLE_LIVE_MODEL_PROVIDERS: '1' });
+    const { ctx } = fixture({ XAI_API_KEY: 'xai-test', FORGE_ENABLE_LIVE_MODEL_PROVIDERS: '1' });
     providerConfigUpdate(ctx, { preferLiveModelProviders: true });
     providerDisable(ctx, 'codex_cli');
     localToolDisable(ctx, 'codex_cli');
@@ -401,12 +401,12 @@ describe('credentials and live mode', () => {
       const p = providers.find((x) => x.providerId === id);
       expect(p?.safety.mayMutateFiles).toBe(true);
       expect(p?.safety.mayRunCommands).toBe(true);
-      expect(p?.safety.requiresApplyByRepoHarness).toBe(false);
+      expect(p?.safety.requiresApplyByForge).toBe(false);
       expect(p?.capabilities).toContain('local_file_mutation');
     }
     const api = providers.find((x) => x.providerId === 'grok_api');
     expect(api?.safety.mayMutateFiles).toBe(false);
-    expect(api?.safety.requiresApplyByRepoHarness).toBe(true);
+    expect(api?.safety.requiresApplyByForge).toBe(true);
   });
 
   test('Grok missing auth shown as missing_auth', () => {
@@ -429,7 +429,7 @@ describe('credentials and live mode', () => {
   });
 
   test('live + credential enables grok direct dispatch', () => {
-    const { ctx } = fixture({ XAI_API_KEY: 'xai-test', REPO_HARNESS_ENABLE_LIVE_MODEL_PROVIDERS: '1' });
+    const { ctx } = fixture({ XAI_API_KEY: 'xai-test', FORGE_ENABLE_LIVE_MODEL_PROVIDERS: '1' });
     providerConfigUpdate(ctx, { preferLiveModelProviders: true });
     const providers = listProviders({
       env: ctx.env,

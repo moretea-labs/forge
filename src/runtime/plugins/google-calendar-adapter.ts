@@ -407,7 +407,7 @@ export function buildGoogleCalendarPluginManifest(previousRevision = 0, previous
     authority: {
       strategy: 'derived',
       duplicateStateAllowed: false,
-      sourceOfTruth: [`repo-local:${googleCalendarPluginConfigPath()}`, 'env:REPO_HARNESS_*_ACCESS_TOKEN'],
+      sourceOfTruth: [`repo-local:${googleCalendarPluginConfigPath()}`, 'env:FORGE_*_ACCESS_TOKEN'],
     },
     enabled: config.enabled,
     lifecycle: {

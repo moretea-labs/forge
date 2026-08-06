@@ -101,13 +101,13 @@ export function resolveCliChildInvocation(
   const executable = options.runtimeExecutable?.trim() || process.execPath;
   const revision = normalizedRevision(
     options.sourceRevision
-      ?? env.REPO_HARNESS_RUNTIME_SOURCE_REVISION
-      ?? env.REPO_HARNESS_ACTIVE_RUNTIME_REVISION,
+      ?? env.FORGE_RUNTIME_SOURCE_REVISION
+      ?? env.FORGE_ACTIVE_RUNTIME_REVISION,
   );
   const diagnostics: string[] = [];
   let kind = options.runtimeKind;
 
-  if (!kind && env.REPO_HARNESS_RUNTIME_EXECUTION === 'standalone-binary') {
+  if (!kind && env.FORGE_RUNTIME_EXECUTION === 'standalone-binary') {
     kind = 'compiled_bun_release';
     diagnostics.push('runtime execution marker identifies an immutable Bun release');
   }
@@ -183,13 +183,13 @@ export function currentCliRuntimeTarget(options: CurrentCliRuntimeOptions = {}):
   const cwd = resolve(options.cwd ?? process.cwd());
   const sourceRevision = normalizedRevision(
     options.sourceRevision
-      ?? env.REPO_HARNESS_RUNTIME_SOURCE_REVISION
-      ?? env.REPO_HARNESS_ACTIVE_RUNTIME_REVISION,
+      ?? env.FORGE_RUNTIME_SOURCE_REVISION
+      ?? env.FORGE_ACTIVE_RUNTIME_REVISION,
   );
   const runtimeExecutable = options.runtimeExecutable?.trim() || process.execPath;
 
   if (options.runtimeKind === 'compiled_bun_release'
-    || env.REPO_HARNESS_RUNTIME_EXECUTION === 'standalone-binary') {
+    || env.FORGE_RUNTIME_EXECUTION === 'standalone-binary') {
     return {
       entry: argv[1]?.trim() || runtimeExecutable,
       cwd,
@@ -200,7 +200,7 @@ export function currentCliRuntimeTarget(options: CurrentCliRuntimeOptions = {}):
     };
   }
 
-  const configured = env.REPO_HARNESS_RUNTIME_CLI_ENTRY?.trim();
+  const configured = env.FORGE_RUNTIME_CLI_ENTRY?.trim();
   if (configured) {
     if (!exists(configured)) {
       throw new CliRuntimeResolutionError([`configured CLI entry does not exist: ${configured}`]);
@@ -220,7 +220,7 @@ export function currentCliRuntimeTarget(options: CurrentCliRuntimeOptions = {}):
       runtimeKind: kind,
       sourceRevision,
       immutable: options.immutable ?? false,
-      explanation: 'explicit REPO_HARNESS_RUNTIME_CLI_ENTRY',
+      explanation: 'explicit FORGE_RUNTIME_CLI_ENTRY',
     };
   }
 
@@ -253,7 +253,7 @@ export function currentCliRuntimeTarget(options: CurrentCliRuntimeOptions = {}):
   if (options.moduleUrl) {
     try {
       const moduleDir = dirname(fileURLToPath(options.moduleUrl));
-      const installed = join(moduleDir, 'repo-harness.js');
+      const installed = join(moduleDir, 'forge.js');
       if (exists(installed)) {
         return {
           entry: installed,
@@ -272,7 +272,7 @@ export function currentCliRuntimeTarget(options: CurrentCliRuntimeOptions = {}):
   }
 
   const sourceRoot = options.sourceRoot?.trim()
-    || env.REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT?.trim();
+    || env.FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT?.trim();
   if (sourceRoot) {
     const sourceEntry = join(resolve(sourceRoot), 'src', 'cli', 'index.ts');
     if (!exists(sourceEntry)) {

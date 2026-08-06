@@ -17,7 +17,7 @@ import type { TaskLedgerProjection } from '../../src/cli/controller/task-ledger'
 import { recordMcpIncident, recordMcpTiming } from '../../src/runtime/diagnostics/mcp-timing';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { createMcpToolContext as createMultiRepositoryContext } from '../../src/cli/mcp/multi-repository';
-import { createRepoHarnessMcpServer } from '../../src/cli/mcp/server';
+import { createForgeMcpServer } from '../../src/cli/mcp/server';
 import { writeJsonAtomic } from '../../src/runtime/shared/json-files';
 import {
   PROCESS_RUNNER_RELEASE_CANARY_CHILD_ARG,
@@ -134,12 +134,12 @@ async function withEnvironment(
 /**
  * Local-dev controller home: a live-PID daemon record (test process) and a
  * registered repository, so `controller_ready` evaluates readiness without a
- * real Controller Daemon process. Scheduler/projection files are intentionally
+ * real Canonical Forge Runtime process. Scheduler/projection files are intentionally
  * absent: the evaluator degrades those to warnings, not blockers.
  */
 function controllerFixture(): { controllerHome: string; repoRoot: string } {
-  const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-obs-ch-'));
-  const repoRoot = mkdtempSync(join(tmpdir(), 'repo-harness-obs-repo-'));
+  const controllerHome = mkdtempSync(join(tmpdir(), 'forge-obs-ch-'));
+  const repoRoot = mkdtempSync(join(tmpdir(), 'forge-obs-repo-'));
   mkdirSync(join(repoRoot, 'src'), { recursive: true });
   mkdirSync(join(repoRoot, 'tasks'), { recursive: true });
   writeFileSync(join(repoRoot, 'src/example.ts'), 'export const value = 1;\n');
@@ -192,7 +192,7 @@ describe('runtime observability', () => {
   test('controller_ready with no public endpoint env keeps local development ready and unknown', async () => {
     const { controllerHome, repoRoot } = controllerFixture();
     try {
-      await withEnvironment({ REPO_HARNESS_SUPERVISOR_PUBLIC_HEALTH_ENDPOINT: undefined }, async () => {
+      await withEnvironment({ FORGE_SUPERVISOR_PUBLIC_HEALTH_ENDPOINT: undefined }, async () => {
         const ctx = createMultiRepositoryContext({ repo: repoRoot, profile: 'controller', toolset: 'full', controllerHome });
         const result = await callRuntimeTool(ctx, 'controller_ready', {});
         expect(result).toBeTruthy();
@@ -304,7 +304,7 @@ describe('runtime observability', () => {
   });
 
   test('persists request-level MCP timing and incident records with the same trace identity', () => {
-    const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-observability-'));
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-observability-'));
     try {
       const traceId = 'trace-fixture';
       const requestId = 'request-fixture';
@@ -334,9 +334,9 @@ describe('runtime observability', () => {
   });
 
   test('serves the bounded stable tools/list by default and retains explicit Advanced compatibility', async () => {
-    const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-core-tools-'));
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-core-tools-'));
     const listNames = async (toolset?: 'core' | 'advanced') => {
-      const server = createRepoHarnessMcpServer({ controllerHome, profile: 'controller', ...(toolset ? { toolset } : {}) });
+      const server = createForgeMcpServer({ controllerHome, profile: 'controller', ...(toolset ? { toolset } : {}) });
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
       await server.connect(serverTransport);
       const client = new Client({ name: `runtime-tools-${toolset ?? 'default'}`, version: '1.0.0' }, { capabilities: {} });
@@ -369,8 +369,8 @@ describe('runtime observability', () => {
   });
 
   test('writes the same trace identity into response metadata and incident records', async () => {
-    const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-trace-'));
-    const server = createRepoHarnessMcpServer({ controllerHome, profile: 'controller', toolset: 'full' });
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-trace-'));
+    const server = createForgeMcpServer({ controllerHome, profile: 'controller', toolset: 'full' });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await server.connect(serverTransport);
     const client = new Client({ name: 'runtime-observability', version: '1.0.0' }, { capabilities: {} });

@@ -1,7 +1,7 @@
 import { accessSync, constants, existsSync, statSync } from 'fs';
 import { delimiter, isAbsolute, join } from 'path';
 
-const GIT_EXECUTABLE_ENV = 'REPO_HARNESS_GIT_EXECUTABLE';
+const GIT_EXECUTABLE_ENV = 'FORGE_GIT_EXECUTABLE';
 
 function isExecutableFile(path: string, platform: NodeJS.Platform): boolean {
   try {

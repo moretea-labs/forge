@@ -8,7 +8,7 @@ export interface GoogleCredentialStoreAdapter {
   write(service: StoredGoogleService, refreshToken: string): void;
 }
 
-const KEYCHAIN_SERVICE_PREFIX = 'repo-harness.google-oauth';
+const KEYCHAIN_SERVICE_PREFIX = 'forge.google-oauth';
 const KEYCHAIN_ACCOUNT = 'refresh-token';
 const memoryCache = new Map<StoredGoogleService, string>();
 

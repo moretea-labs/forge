@@ -1,13 +1,13 @@
-# Matea Documentation
+# Forge Documentation
 
-This is the public documentation hub for Matea's current open-source and runtime surface. Executable behavior and [`docs/architecture/current/`](architecture/current/) are authoritative; historical notes are context, not current contracts.
+This is the public documentation hub for Forge's current open-source and runtime surface. Executable behavior and [`docs/architecture/current/`](architecture/current/) are authoritative; historical notes are context, not current contracts.
 
 ## Choose a path
 
 | You want to… | Start here | Continue with |
 | --- | --- | --- |
-| Install Matea | [Install and start](tutorials/01-install-and-start.md) | [Platform support](operations/platform-support.md) |
-| Connect ChatGPT | [Connect ChatGPT](tutorials/02-connect-chatgpt.md) | [MCP setup](repo-harness-chatgpt-mcp-setup.md) |
+| Install Forge | [Install and start](tutorials/01-install-and-start.md) | [Platform support](operations/platform-support.md) |
+| Connect ChatGPT | [Connect ChatGPT](tutorials/02-connect-chatgpt.md) | [MCP setup](forge-chatgpt-mcp-setup.md) |
 | Finish a first task | [First repository task](tutorials/03-first-repository-task.md) | [Public usage guide](public-usage-guide.md) |
 | Understand safety and work state | [Wiki: Core Concepts](wiki/Core-Concepts.md) | [Wiki: Work Lifecycle](wiki/Work-Lifecycle.md) |
 | Operate or recover the runtime | [Wiki: Operations](wiki/Operations.md) | [Troubleshooting](operations/troubleshooting.md) |
@@ -32,7 +32,6 @@ The default `advanced` connector surface exposes 133 stable tools. The five pref
 
 - [Troubleshooting](operations/troubleshooting.md)
 - [Controller reliability runbook](operations/controller-reliability-runbook.md)
-- [Stable External Runtime Supervisor](operations/stable-external-runtime-supervisor.md)
 - [Standalone disaster recovery](operations/standalone-disaster-recovery.md)
 - [Controller performance and 502 troubleshooting](operations/controller-performance-and-502.md)
 
@@ -42,7 +41,7 @@ The default `advanced` connector surface exposes 133 stable tools. The five pref
 - [Browser plugin](operations/controller-browser-plugin.md)
 - [Google assistant plugins](personal-assistant-google-plugins.md)
 - [Local system assistant](operations/local-system-assistant.md)
-- [iOS development assistant](repo-harness-ios-development-assistant.md)
+- [iOS development assistant](forge-ios-development-assistant.md)
 
 ### Maintain and release
 

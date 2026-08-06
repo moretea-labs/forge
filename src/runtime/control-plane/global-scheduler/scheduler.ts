@@ -50,23 +50,23 @@ const WORKER_ENVIRONMENT_KEYS = [
   'HOME',
   'BUN_INSTALL',
   'NODE_OPTIONS',
-  'REPO_HARNESS_CONTROLLER_HOME',
-  'REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT',
-  'REPO_HARNESS_EXECUTION_WORKER',
-  'REPO_HARNESS_RUNTIME_INSTANCE_ID',
-  'REPO_HARNESS_RUNTIME_OWNER_PID',
-  'REPO_HARNESS_RELEASE_AUTHORITY_REVISION',
+  'FORGE_CONTROLLER_HOME',
+  'FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT',
+  'FORGE_EXECUTION_WORKER',
+  'FORGE_RUNTIME_INSTANCE_ID',
+  'FORGE_RUNTIME_OWNER_PID',
+  'FORGE_RELEASE_AUTHORITY_REVISION',
   // The release fencing token is passed to the actual child environment below,
   // but deliberately excluded from the persisted lifecycle diagnostic.
-  'REPO_HARNESS_RELEASE_ID',
-  'REPO_HARNESS_ARTIFACT_IDENTITY',
-  'REPO_HARNESS_WORKER_PROTOCOL_VERSION',
+  'FORGE_RELEASE_ID',
+  'FORGE_ARTIFACT_IDENTITY',
+  'FORGE_WORKER_PROTOCOL_VERSION',
 ] as const;
-const RUNTIME_CLEANUP_INTERVAL_MS = Math.max(30_000, Number(process.env.REPO_HARNESS_RUNTIME_CLEANUP_INTERVAL_MS ?? 60_000));
-const GIT_STATUS_SAMPLE_INTERVAL_MS = Math.max(1_000, Number(process.env.REPO_HARNESS_GIT_STATUS_SAMPLE_INTERVAL_MS ?? 5_000));
+const RUNTIME_CLEANUP_INTERVAL_MS = Math.max(30_000, Number(process.env.FORGE_RUNTIME_CLEANUP_INTERVAL_MS ?? 60_000));
+const GIT_STATUS_SAMPLE_INTERVAL_MS = Math.max(1_000, Number(process.env.FORGE_GIT_STATUS_SAMPLE_INTERVAL_MS ?? 5_000));
 const IDLE_REPOSITORY_SCAN_INTERVAL_MS = Math.max(
   GIT_STATUS_SAMPLE_INTERVAL_MS,
-  Number(process.env.REPO_HARNESS_IDLE_REPOSITORY_SCAN_INTERVAL_MS ?? 60_000),
+  Number(process.env.FORGE_IDLE_REPOSITORY_SCAN_INTERVAL_MS ?? 60_000),
 );
 const DARWIN_RECLAIMABLE_PAGE_LABELS = new Set([
   'Pages free',
@@ -234,27 +234,27 @@ export class GlobalScheduler {
     this.controllerPid = runtime.controllerPid ?? process.pid;
     this.actors = new RepoActorRegistry(controllerHome);
     const pollIntervalMs = Math.max(50, config.pollIntervalMs ?? 250);
-    const idleBackoffMaxMs = Math.max(250, config.idleBackoffMaxMs ?? Number(process.env.REPO_HARNESS_IDLE_BACKOFF_MAX_MS ?? 2_000));
-    const heartbeatIntervalMs = Math.max(25, config.heartbeatIntervalMs ?? Number(process.env.REPO_HARNESS_SCHEDULER_HEARTBEAT_INTERVAL_MS ?? 1_000));
+    const idleBackoffMaxMs = Math.max(250, config.idleBackoffMaxMs ?? Number(process.env.FORGE_IDLE_BACKOFF_MAX_MS ?? 2_000));
+    const heartbeatIntervalMs = Math.max(25, config.heartbeatIntervalMs ?? Number(process.env.FORGE_SCHEDULER_HEARTBEAT_INTERVAL_MS ?? 1_000));
     const heartbeatTimeoutMs = Math.max(
       heartbeatIntervalMs * 4,
       idleBackoffMaxMs * 4,
-      config.heartbeatTimeoutMs ?? Number(process.env.REPO_HARNESS_SCHEDULER_HEARTBEAT_TIMEOUT_MS ?? 60_000),
+      config.heartbeatTimeoutMs ?? Number(process.env.FORGE_SCHEDULER_HEARTBEAT_TIMEOUT_MS ?? 60_000),
     );
     this.config = {
-      maxWorkers: Math.max(1, config.maxWorkers ?? Number(process.env.REPO_HARNESS_MAX_WORKERS ?? 4)),
-      maxConcurrentRepositories: Math.max(1, config.maxConcurrentRepositories ?? Number(process.env.REPO_HARNESS_MAX_ACTIVE_REPOS ?? 4)),
+      maxWorkers: Math.max(1, config.maxWorkers ?? Number(process.env.FORGE_MAX_WORKERS ?? 4)),
+      maxConcurrentRepositories: Math.max(1, config.maxConcurrentRepositories ?? Number(process.env.FORGE_MAX_ACTIVE_REPOS ?? 4)),
       pollIntervalMs,
       idleBackoffMaxMs,
       heartbeatIntervalMs,
       heartbeatTimeoutMs,
-      maxHeavyChecks: Math.max(1, config.maxHeavyChecks ?? Number(process.env.REPO_HARNESS_MAX_HEAVY_CHECKS ?? 2)),
-      maxAgentProcesses: Math.max(1, config.maxAgentProcesses ?? Number(process.env.REPO_HARNESS_MAX_AGENT_PROCESSES ?? 4)),
-      maxCodexProcesses: Math.max(1, config.maxCodexProcesses ?? Number(process.env.REPO_HARNESS_MAX_CODEX_PROCESSES ?? 3)),
-      maxClaudeProcesses: Math.max(1, config.maxClaudeProcesses ?? Number(process.env.REPO_HARNESS_MAX_CLAUDE_PROCESSES ?? 2)),
-      maxGitHubProcesses: Math.max(1, config.maxGitHubProcesses ?? Number(process.env.REPO_HARNESS_MAX_GITHUB_PROCESSES ?? 2)),
-      minFreeMemoryMb: Math.max(64, config.minFreeMemoryMb ?? Number(process.env.REPO_HARNESS_MIN_FREE_MEMORY_MB ?? 512)),
-      maxLoadPerCpu: Math.max(0.25, config.maxLoadPerCpu ?? Number(process.env.REPO_HARNESS_MAX_LOAD_PER_CPU ?? 1.5)),
+      maxHeavyChecks: Math.max(1, config.maxHeavyChecks ?? Number(process.env.FORGE_MAX_HEAVY_CHECKS ?? 2)),
+      maxAgentProcesses: Math.max(1, config.maxAgentProcesses ?? Number(process.env.FORGE_MAX_AGENT_PROCESSES ?? 4)),
+      maxCodexProcesses: Math.max(1, config.maxCodexProcesses ?? Number(process.env.FORGE_MAX_CODEX_PROCESSES ?? 3)),
+      maxClaudeProcesses: Math.max(1, config.maxClaudeProcesses ?? Number(process.env.FORGE_MAX_CLAUDE_PROCESSES ?? 2)),
+      maxGitHubProcesses: Math.max(1, config.maxGitHubProcesses ?? Number(process.env.FORGE_MAX_GITHUB_PROCESSES ?? 2)),
+      minFreeMemoryMb: Math.max(64, config.minFreeMemoryMb ?? Number(process.env.FORGE_MIN_FREE_MEMORY_MB ?? 512)),
+      maxLoadPerCpu: Math.max(0.25, config.maxLoadPerCpu ?? Number(process.env.FORGE_MAX_LOAD_PER_CPU ?? 1.5)),
     };
     this.runtimeSourceRoot = runtime.runtimeSourceRoot ? resolve(runtime.runtimeSourceRoot) : undefined;
     this.workerEntrypoint = runtime.workerEntrypoint ? resolve(runtime.workerEntrypoint) : undefined;
@@ -460,9 +460,9 @@ export class GlobalScheduler {
       : ['--loader', command.loader, command.entry, ...workerArgs];
     const environment: Record<string, string | undefined> = {
       ...process.env,
-      REPO_HARNESS_EXECUTION_WORKER: '1',
-      REPO_HARNESS_CONTROLLER_HOME: this.controllerHome,
-      ...(this.runtimeSourceRoot ? { REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT: this.runtimeSourceRoot } : {}),
+      FORGE_EXECUTION_WORKER: '1',
+      FORGE_CONTROLLER_HOME: this.controllerHome,
+      ...(this.runtimeSourceRoot ? { FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT: this.runtimeSourceRoot } : {}),
       ...writeClaimEnvironment,
     };
     const stderrPath = join(executionJobRoot(this.controllerHome, repoId), 'worker-stderr', `${jobId}-attempt-${current.attempt}.log`);
@@ -611,7 +611,7 @@ export class GlobalScheduler {
           protectedControllerPid: this.controllerPid,
         });
       } catch (error) {
-        console.error('[repo-harness cleanup] periodic cleanup failed:', error);
+        console.error('[forge cleanup] periodic cleanup failed:', error);
       }
     }
     if (now - this.lastReconcile >= 5_000) {
@@ -796,7 +796,7 @@ export class GlobalScheduler {
       try {
         rebuildRepositoryProjection(this.controllerHome, repoId);
       } catch (error) {
-        console.error('[repo-harness scheduler] projection refresh failed:', error);
+        console.error('[forge scheduler] projection refresh failed:', error);
       }
     }
     for (const repository of projectionRefreshCandidates.values()) {
@@ -816,7 +816,7 @@ export class GlobalScheduler {
           },
         });
       } catch (error) {
-        console.error('[repo-harness scheduler] projection refresh failed:', error);
+        console.error('[forge scheduler] projection refresh failed:', error);
       }
     }
     // Process creation, lifecycle file writes, and Worker attachment are all
@@ -839,7 +839,7 @@ export class GlobalScheduler {
           repositories.map((repo) => repo.repoId),
         );
       } catch (error) {
-        console.error('[repo-harness goal-loop] tick failed:', error);
+        console.error('[forge goal-loop] tick failed:', error);
       }
       this.lastGoalLoopTick = now;
     }
@@ -853,7 +853,7 @@ export class GlobalScheduler {
       writeAgentExecutableReadinessSnapshot(this.controllerHome);
     } catch (error) {
       console.error(
-        '[repo-harness scheduler] Agent executable readiness probe failed:',
+        '[forge scheduler] Agent executable readiness probe failed:',
         error instanceof Error ? error.message : String(error),
       );
     }
@@ -881,7 +881,7 @@ export class GlobalScheduler {
           this.lastHeartbeatAt = new Date().toISOString();
           this.lastTickAt = this.lastHeartbeatAt;
           this.persistState(true);
-          console.error('[repo-harness scheduler] tick failed:', error);
+          console.error('[forge scheduler] tick failed:', error);
         }
         const delayMs = idleStreak > 0
           ? Math.min(

@@ -56,7 +56,7 @@ describe('Git executable and managed workspace guards', () => {
     expect(isAbsolute(git)).toBe(true);
     expect(resolveGitExecutable({
       PATH: '',
-      REPO_HARNESS_GIT_EXECUTABLE: git,
+      FORGE_GIT_EXECUTABLE: git,
     })).toBe(git);
     if (process.platform !== 'win32') {
       expect(isAbsolute(resolveGitExecutable({ PATH: '' }))).toBe(true);
@@ -64,7 +64,7 @@ describe('Git executable and managed workspace guards', () => {
   });
 
   test('creates and validates a same-repository managed worktree', () => {
-    const root = mkdtempSync(join(tmpdir(), 'repo-harness-git-runtime-'));
+    const root = mkdtempSync(join(tmpdir(), 'forge-git-runtime-'));
     roots.push(root);
     const controllerHome = join(root, 'controller');
     ensureControllerHome(controllerHome);

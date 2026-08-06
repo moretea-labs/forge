@@ -83,7 +83,7 @@ async function runMcpAction(action: () => void | Promise<void>): Promise<void> {
   try {
     await action();
   } catch (error) {
-    console.error(`repo-harness mcp: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`forge mcp: ${error instanceof Error ? error.message : String(error)}`);
     process.exit(2);
   }
 }
@@ -135,8 +135,8 @@ async function prepareCodexGoalFromSprint(rawOpts: McpPrepareGoalOptions): Promi
     throw new Error(`${payload.error.code}: ${payload.error.message}`);
   }
   return [
-    `[repo-harness mcp] Codex goal: ${payload.path}`,
-    '[repo-harness mcp] Host-native /goal prompt:',
+    `[forge mcp] Codex goal: ${payload.path}`,
+    '[forge mcp] Host-native /goal prompt:',
     '',
     String(payload.prompt ?? '').trimEnd(),
   ];
@@ -150,11 +150,11 @@ function toRepoRelativeInput(repoRoot: string, path: string): string {
 }
 
 export function buildMcpCommand(): Command {
-  const mcp = new Command('mcp').description('Run and configure the repo-harness MCP workflow sidecar');
+  const mcp = new Command('mcp').description('Run and configure the forge MCP workflow sidecar');
 
   mcp
     .command('serve')
-    .description('Start the repo-harness MCP server')
+    .description('Start the forge MCP server')
     .option('--repo <path>', 'Repository root to expose through the selected MCP profile', '.')
     .option('--controller-home <path>', 'Controller state root; defaults to repo _ops/controller-home when present')
     .option('--transport <transport>', 'Transport: stdio|http', 'stdio')
@@ -211,7 +211,7 @@ export function buildMcpCommand(): Command {
 
   mcp
     .command('doctor')
-    .description('Check repo-harness MCP setup status')
+    .description('Check forge MCP setup status')
     .option('--repo <path>', 'Repository root to inspect', '.')
     .option('--json', 'Output JSON instead of human-readable text')
     .action((rawOpts: { repo?: string; json?: boolean }) => {
@@ -240,7 +240,7 @@ export function buildMcpCommand(): Command {
 
   setup
     .command('codex')
-    .description('Patch Codex MCP config for repo-harness')
+    .description('Patch Codex MCP config for forge')
     .option('--repo <path>', 'Repository root to configure', '.')
     .option('--scope <scope>', 'Config scope: project|user', 'project')
     .option('--dry-run', 'Print planned changes without writing files')
@@ -303,7 +303,7 @@ export function buildMcpCommand(): Command {
     .description('Print the ChatGPT Connector setup guide')
     .option('--repo <path>', 'Repository root to inspect', '.')
     .option('--endpoint <url>', 'Public HTTPS /mcp endpoint to include in the guide')
-    .option('--write', 'Write docs/repo-harness-chatgpt-mcp-setup.md')
+    .option('--write', 'Write docs/forge-chatgpt-mcp-setup.md')
     .action((rawOpts: { repo?: string; endpoint?: string; write?: boolean }) => {
       void runMcpAction(() => {
         const result = runMcpPrintGuide(rawOpts);

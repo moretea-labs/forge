@@ -21,7 +21,7 @@ afterEach(() => {
 });
 
 function fixture(status: 'succeeded' | 'failed' | 'timed_out', options: { createProcess?: boolean } = {}) {
-  const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-work-validation-'));
+  const controllerHome = mkdtempSync(join(tmpdir(), 'forge-work-validation-'));
   roots.push(controllerHome);
   const now = '2026-08-03T00:00:00.000Z';
   const repoId = 'repo-validation';
@@ -188,7 +188,7 @@ function workspaceStatus(path: string, porcelain = ` M ${path}`) {
 
 describe('workspace-bound validation identity', () => {
   test('changes when file content changes without a HEAD or status-shape change', () => {
-    const root = mkdtempSync(join(tmpdir(), 'repo-harness-verification-evidence-'));
+    const root = mkdtempSync(join(tmpdir(), 'forge-verification-evidence-'));
     roots.push(root);
     const path = 'source.ts';
     writeFileSync(join(root, path), 'export const value = 1;\n');
@@ -202,7 +202,7 @@ describe('workspace-bound validation identity', () => {
   });
 
   test('decodes Git quoted paths before hashing exact content', () => {
-    const root = mkdtempSync(join(tmpdir(), 'repo-harness-verification-evidence-'));
+    const root = mkdtempSync(join(tmpdir(), 'forge-verification-evidence-'));
     roots.push(root);
     const path = 'space name.txt';
     const quoted = '"space name.txt"';
@@ -214,7 +214,7 @@ describe('workspace-bound validation identity', () => {
   });
 
   test('fails closed when Git status output is truncated', () => {
-    const root = mkdtempSync(join(tmpdir(), 'repo-harness-verification-evidence-'));
+    const root = mkdtempSync(join(tmpdir(), 'forge-verification-evidence-'));
     roots.push(root);
     expect(() => workspaceValidationFingerprint(root, {
       ...workspaceStatus('source.ts'),

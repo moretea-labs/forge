@@ -136,7 +136,7 @@ function writeFakeCodegraph(fakeBin: string, logFile: string): void {
 
 describe("init command", () => {
   test("defaults --repo to cwd and applies the existing-repo harness", () => {
-    const tmp = join(tmpdir(), `repo-harness-init-${Date.now()}`);
+    const tmp = join(tmpdir(), `forge-init-${Date.now()}`);
     const source = join(tmp, "source");
     const repo = join(tmp, "repo");
     const previousCwd = process.cwd();
@@ -166,7 +166,7 @@ describe("init command", () => {
   });
 
   test("runInit refreshes Codex handoff before outer workflow verification", () => {
-    const tmp = join(tmpdir(), `repo-harness-init-handoff-${Date.now()}`);
+    const tmp = join(tmpdir(), `forge-init-handoff-${Date.now()}`);
     const source = join(tmp, "source");
     const repo = join(tmp, "repo");
     const previousCwd = process.cwd();
@@ -233,7 +233,7 @@ describe("init command", () => {
   });
 
   test("runInit can bootstrap core Waza, Mermaid, and cross-review skills for Claude and Codex", () => {
-    const tmp = join(tmpdir(), `repo-harness-init-skills-${Date.now()}`);
+    const tmp = join(tmpdir(), `forge-init-skills-${Date.now()}`);
     const source = join(tmp, "source");
     const repo = join(tmp, "repo");
     const home = join(tmp, "home");
@@ -281,7 +281,7 @@ describe("init command", () => {
   });
 
   test("dry-run does not mutate host runtime or apply the target harness", () => {
-    const tmp = join(tmpdir(), `repo-harness-init-dry-run-${Date.now()}`);
+    const tmp = join(tmpdir(), `forge-init-dry-run-${Date.now()}`);
     const source = join(tmp, "source");
     const repo = join(tmp, "repo");
     const home = join(tmp, "home");
@@ -302,7 +302,7 @@ describe("init command", () => {
       });
 
       expect(result.exitCode).toBe(0);
-      expect(result.steps.find((step) => step.step === "sync repo-harness skills")?.detail).toBe("dry-run");
+      expect(result.steps.find((step) => step.step === "sync forge skills")?.detail).toBe("dry-run");
       expect(result.steps.find((step) => step.step === "install host adapters")?.detail).toBe("dry-run");
       expect(existsSync(join(home, ".codex", "hooks.json"))).toBe(false);
       expect(existsSync(join(repo, ".ai", "harness", "workflow-contract.json"))).toBe(false);
@@ -312,7 +312,7 @@ describe("init command", () => {
   });
 
   test("installs the gbrain CLI from GitHub when requested", () => {
-    const tmp = join(tmpdir(), `repo-harness-init-gbrain-${Date.now()}`);
+    const tmp = join(tmpdir(), `forge-init-gbrain-${Date.now()}`);
     const source = join(tmp, "source");
     const repo = join(tmp, "repo");
     const home = join(tmp, "home");
@@ -359,8 +359,8 @@ describe("init command", () => {
   });
 
   test("npx cache sources force copy-based installed skill sync", () => {
-    const tmp = join(tmpdir(), `repo-harness-init-npx-${Date.now()}`);
-    const source = join(tmp, "_npx", "abc123", "node_modules", "repo-harness");
+    const tmp = join(tmpdir(), `forge-init-npx-${Date.now()}`);
+    const source = join(tmp, "_npx", "abc123", "node_modules", "forge");
     const repo = join(tmp, "repo");
     try {
       mkdirSync(source, { recursive: true });
@@ -377,7 +377,7 @@ describe("init command", () => {
       });
 
       expect(result.exitCode).toBe(0);
-      expect(result.steps.find((step) => step.step === "sync repo-harness skills")?.stdout).toContain(
+      expect(result.steps.find((step) => step.step === "sync forge skills")?.stdout).toContain(
         "sync link=0",
       );
     } finally {
@@ -386,7 +386,7 @@ describe("init command", () => {
   });
 
   test("CLI adopt --dry-run --json returns the adoption planner protocol", () => {
-    const tmp = join(tmpdir(), `repo-harness-init-cli-codegraph-${Date.now()}`);
+    const tmp = join(tmpdir(), `forge-init-cli-codegraph-${Date.now()}`);
     try {
       mkdirSync(tmp, { recursive: true });
       const res = spawnSync(
@@ -429,7 +429,7 @@ describe("init command", () => {
     });
 
     expect(res.status).toBe(0);
-    expect(res.stdout).toContain("Usage: matea adopt");
+    expect(res.stdout).toContain("Usage: forge adopt");
     expect(res.stdout).toContain("--repo <path>");
     expect(res.stdout).toContain("--dry-run");
     expect(res.stdout).toContain("--experimental-ts-apply");
@@ -443,12 +443,12 @@ describe("init command", () => {
     });
 
     expect(res.status).toBe(2);
-    expect(res.stderr).toContain("matea update no longer refreshes repositories");
-    expect(res.stderr).toContain("matea adopt --repo <path>");
+    expect(res.stderr).toContain("forge update no longer refreshes repositories");
+    expect(res.stderr).toContain("forge adopt --repo <path>");
   });
 
   test("CLI adopt rejects user-level brain configuration flags", () => {
-    const tmp = join(tmpdir(), `repo-harness-adopt-brain-${Date.now()}`);
+    const tmp = join(tmpdir(), `forge-adopt-brain-${Date.now()}`);
     try {
       mkdirSync(tmp, { recursive: true });
       const res = spawnSync("bun", [CLI, "adopt", "--repo", tmp, "--brain-mode", "manifest-only", "--json"], {
@@ -458,14 +458,14 @@ describe("init command", () => {
 
       expect(res.status).toBe(2);
       expect(res.stderr).toContain("brain configuration writes user-level state");
-      expect(existsSync(join(tmp, ".repo-harness"))).toBe(false);
+      expect(existsSync(join(tmp, ".forge"))).toBe(false);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
 
   test("adopt refuses HOME before running migration or host bootstrap", () => {
-    const tmp = join(tmpdir(), `repo-harness-adopt-home-${Date.now()}`);
+    const tmp = join(tmpdir(), `forge-adopt-home-${Date.now()}`);
     const home = join(tmp, "home");
     try {
       mkdirSync(home, { recursive: true });
@@ -510,7 +510,7 @@ describe("init command", () => {
   }, 15000);
 
   test("configures CodeGraph MCP only when explicitly requested", () => {
-    const tmp = join(tmpdir(), `repo-harness-init-configure-codegraph-${Date.now()}`);
+    const tmp = join(tmpdir(), `forge-init-configure-codegraph-${Date.now()}`);
     const source = join(tmp, "source");
     const repo = join(tmp, "repo");
     const home = join(tmp, "home");
@@ -559,7 +559,7 @@ describe("init command", () => {
   }, CODEGRAPH_INIT_TIMEOUT_MS);
 
   test("adopt reports CodeGraph readiness exceptions as a structured failed step", () => {
-    const tmp = join(tmpdir(), `repo-harness-init-codegraph-failure-${Date.now()}`);
+    const tmp = join(tmpdir(), `forge-init-codegraph-failure-${Date.now()}`);
     const source = join(tmp, "source");
     const repo = join(tmp, "repo");
     const home = join(tmp, "home");
@@ -597,7 +597,7 @@ describe("init command", () => {
   });
 
   test("writes global working rules as an idempotent managed block", () => {
-    const tmp = join(tmpdir(), `repo-harness-init-global-rules-${Date.now()}`);
+    const tmp = join(tmpdir(), `forge-init-global-rules-${Date.now()}`);
     const source = join(tmp, "source");
     const home = join(tmp, "home");
     try {
@@ -625,7 +625,7 @@ describe("init command", () => {
       const codex = readFileSync(join(home, ".codex", "AGENTS.md"), "utf-8");
       const claude = readFileSync(join(home, ".claude", "CLAUDE.md"), "utf-8");
       expect(codex).toContain("user content");
-      expect(codex).toContain("<!-- BEGIN: repo-harness global-working-rules -->");
+      expect(codex).toContain("<!-- BEGIN: forge global-working-rules -->");
       expect(codex).toContain("- Use Chinese to report to user.");
       expect(claude).toContain("- Use Chinese to report to user.");
     } finally {
@@ -634,7 +634,7 @@ describe("init command", () => {
   });
 
   test("resolves host context paths from USERPROFILE when HOME is absent", () => {
-    const tmp = join(tmpdir(), `repo-harness-init-userprofile-${Date.now()}`);
+    const tmp = join(tmpdir(), `forge-init-userprofile-${Date.now()}`);
     const source = join(tmp, "source");
     const home = join(tmp, "profile");
     try {
@@ -657,7 +657,7 @@ describe("init command", () => {
   });
 
   test("does not insert global working rules when the user already has them", () => {
-    const tmp = join(tmpdir(), `repo-harness-init-global-rules-existing-${Date.now()}`);
+    const tmp = join(tmpdir(), `forge-init-global-rules-existing-${Date.now()}`);
     const source = join(tmp, "source");
     const home = join(tmp, "home");
     const existing = [
@@ -684,20 +684,20 @@ describe("init command", () => {
       expect(result.detail).toContain(`unchanged:${join(home, ".codex", "AGENTS.md")}`);
       const codex = readFileSync(join(home, ".codex", "AGENTS.md"), "utf-8");
       expect(codex).toBe(existing);
-      expect(codex).not.toContain("<!-- BEGIN: repo-harness global-working-rules -->");
+      expect(codex).not.toContain("<!-- BEGIN: forge global-working-rules -->");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
 
-  test("resolves brain roots from REPO_HARNESS_BRAIN_ROOT", () => {
-    const tmp = join(tmpdir(), `repo-harness-brain-root-${Date.now()}`);
+  test("resolves brain roots from FORGE_BRAIN_ROOT", () => {
+    const tmp = join(tmpdir(), `forge-brain-root-${Date.now()}`);
     try {
       mkdirSync(tmp, { recursive: true });
       const root = configuredBrainRoot({
         ...process.env,
         HOME: join(tmp, "home"),
-        REPO_HARNESS_BRAIN_ROOT: "~/custom-brain",
+        FORGE_BRAIN_ROOT: "~/custom-brain",
       });
       expect(root).toBe(join(tmp, "home", "custom-brain"));
     } finally {
@@ -706,7 +706,7 @@ describe("init command", () => {
   });
 
   test("interactive init collects a plan then calls existing init primitives", async () => {
-    const tmp = join(tmpdir(), `repo-harness-init-interactive-${Date.now()}`);
+    const tmp = join(tmpdir(), `forge-init-interactive-${Date.now()}`);
     const source = join(tmp, "source");
     const repo = join(tmp, "repo");
     const home = join(tmp, "home");

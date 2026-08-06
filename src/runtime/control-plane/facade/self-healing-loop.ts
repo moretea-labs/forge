@@ -143,7 +143,7 @@ function defaultDiagnoseIssues(input: SelfHealingInput): SelfHealingIssue[] {
   if (input.diagnostics?.controllerDaemonUnhealthy) {
     issues.push({
       kind: 'controller_daemon_health',
-      summary: 'Controller daemon health issue detected.',
+      summary: 'Forge Runtime health issue detected.',
       severity: 'error',
       safeToAutoRepair: false,
       requiresApproval: true,

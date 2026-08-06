@@ -114,7 +114,7 @@ export interface AdoptionPlanSummary {
   readonly failedTotal: number;
   readonly userOwnedFilesTouched: number;
   readonly generatedFiles: number;
-  readonly repoHarnessOwnedFiles: number;
+  readonly forgeOwnedFiles: number;
   readonly requiresVerification: boolean;
 }
 

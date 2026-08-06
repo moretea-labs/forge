@@ -32,7 +32,7 @@ describe('worker process-tree reclamation', () => {
   });
 
   test('refuses new ExecutionJobs used by the retired worker reclamation path', () => {
-    const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-process-tree-'));
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-process-tree-'));
     try {
       expect(() => createExecutionJob(controllerHome, {
         repoId: 'repo-a',

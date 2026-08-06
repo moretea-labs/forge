@@ -13,7 +13,7 @@ import { AssistantPluginError, toAssistantPluginError } from './errors';
 import { buildQueryString, encodeBase64Url, stableMockId } from './google-shared';
 
 const APP_STORE_CONNECT_PLUGIN_ID = 'app_store_connect';
-const CONFIG_ROOT = '.repo-harness/plugins';
+const CONFIG_ROOT = '.forge/plugins';
 const API_BASE_URL = 'https://api.appstoreconnect.apple.com';
 const DEFAULT_TIMEOUT_MS = 60_000;
 
@@ -103,13 +103,13 @@ function envValue(name: string): string | undefined {
 }
 
 function privateKeyMaterial(config: AppStoreConnectPluginConfig): { key?: string; source?: string; warning?: string } {
-  const inline = envValue('REPO_HARNESS_ASC_PRIVATE_KEY');
-  if (inline) return { key: inline.replace(/\\n/g, '\n'), source: 'env:REPO_HARNESS_ASC_PRIVATE_KEY' };
-  const envKeyPath = envValue('REPO_HARNESS_ASC_PRIVATE_KEY_PATH');
+  const inline = envValue('FORGE_ASC_PRIVATE_KEY');
+  if (inline) return { key: inline.replace(/\\n/g, '\n'), source: 'env:FORGE_ASC_PRIVATE_KEY' };
+  const envKeyPath = envValue('FORGE_ASC_PRIVATE_KEY_PATH');
   if (envKeyPath) {
     return existsSync(envKeyPath)
-      ? { key: readFileSync(envKeyPath, 'utf-8'), source: 'env:REPO_HARNESS_ASC_PRIVATE_KEY_PATH' }
-      : { source: 'env:REPO_HARNESS_ASC_PRIVATE_KEY_PATH', warning: 'Configured App Store Connect private key path does not exist.' };
+      ? { key: readFileSync(envKeyPath, 'utf-8'), source: 'env:FORGE_ASC_PRIVATE_KEY_PATH' }
+      : { source: 'env:FORGE_ASC_PRIVATE_KEY_PATH', warning: 'Configured App Store Connect private key path does not exist.' };
   }
   if (config.privateKeyPath) {
     return existsSync(config.privateKeyPath)
@@ -134,14 +134,14 @@ function resolveAuth(config: AppStoreConnectPluginConfig): AppStoreConnectAuthSt
     };
   }
 
-  const issuerId = envValue('REPO_HARNESS_ASC_ISSUER_ID') ?? config.issuerId;
-  const keyId = envValue('REPO_HARNESS_ASC_KEY_ID') ?? config.keyId;
+  const issuerId = envValue('FORGE_ASC_ISSUER_ID') ?? config.issuerId;
+  const keyId = envValue('FORGE_ASC_KEY_ID') ?? config.keyId;
   const key = privateKeyMaterial(config);
   const errors: string[] = [];
   const warnings: string[] = key.warning ? [key.warning] : [];
-  if (!issuerId) errors.push('Set REPO_HARNESS_ASC_ISSUER_ID or configure issuer_id.');
-  if (!keyId) errors.push('Set REPO_HARNESS_ASC_KEY_ID or configure key_id.');
-  if (!key.key) errors.push('Set REPO_HARNESS_ASC_PRIVATE_KEY, REPO_HARNESS_ASC_PRIVATE_KEY_PATH, or configure private_key_path.');
+  if (!issuerId) errors.push('Set FORGE_ASC_ISSUER_ID or configure issuer_id.');
+  if (!keyId) errors.push('Set FORGE_ASC_KEY_ID or configure key_id.');
+  if (!key.key) errors.push('Set FORGE_ASC_PRIVATE_KEY, FORGE_ASC_PRIVATE_KEY_PATH, or configure private_key_path.');
 
   return {
     provider: 'app-store-connect-api',
@@ -187,8 +187,8 @@ function derSignatureToJose(signature: Buffer): string {
 }
 
 function createJwt(config: AppStoreConnectPluginConfig): string {
-  const issuerId = envValue('REPO_HARNESS_ASC_ISSUER_ID') ?? config.issuerId;
-  const keyId = envValue('REPO_HARNESS_ASC_KEY_ID') ?? config.keyId;
+  const issuerId = envValue('FORGE_ASC_ISSUER_ID') ?? config.issuerId;
+  const keyId = envValue('FORGE_ASC_KEY_ID') ?? config.keyId;
   const key = privateKeyMaterial(config).key;
   if (!issuerId || !keyId || !key) throw new AssistantPluginError('PLUGIN_AUTH_REQUIRED', 'App Store Connect API credentials are incomplete.', { retryable: false });
 
@@ -277,7 +277,7 @@ function pluginState(config: AppStoreConnectPluginConfig, auth: AppStoreConnectA
         defaultAppId: config.defaultAppId,
         defaultLocale: config.defaultLocale,
         credentialSource: auth.credentialSource,
-        credentialPersistence: 'private keys are read from environment or local path and are never persisted by repo-harness',
+        credentialPersistence: 'private keys are read from environment or local path and are never persisted by forge',
         userFacingStatus: userFacingAscStatus(config, auth),
         readinessMode: !config.enabled
           ? 'disabled'
@@ -620,7 +620,7 @@ export function buildAppStoreConnectPluginManifest(previousRevision = 0, previou
     provider: 'apple',
     displayName: 'App Store Connect API Plugin',
     pluginVersion: '1.0.0',
-    authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: [`repo-local:${CONFIG_ROOT}/app-store-connect.json`, 'env:REPO_HARNESS_ASC_*'] },
+    authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: [`repo-local:${CONFIG_ROOT}/app-store-connect.json`, 'env:FORGE_ASC_*'] },
     enabled: config.enabled,
     lifecycle: { state: state.lifecycleState, reason: !config.enabled ? 'App Store Connect plugin is disabled.' : auth.ready ? 'App Store Connect API credentials are ready.' : auth.errors[0] ?? auth.warnings[0] },
     health: state.health,

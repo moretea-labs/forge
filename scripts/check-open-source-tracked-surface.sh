@@ -6,8 +6,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-ALLOWLIST_FILE="${REPO_HARNESS_OPEN_SOURCE_ALLOWLIST:-scripts/open-source-audit-allowlist.txt}"
-STRICT="${REPO_HARNESS_OPEN_SOURCE_AUDIT_STRICT:-1}"
+ALLOWLIST_FILE="${FORGE_OPEN_SOURCE_ALLOWLIST:-scripts/open-source-audit-allowlist.txt}"
+STRICT="${FORGE_OPEN_SOURCE_AUDIT_STRICT:-1}"
 
 echo "[open-source-audit] scanning tracked files (values redacted)"
 
@@ -77,7 +77,7 @@ declare -a FORBIDDEN_PATH_GLOBS=(
   '**/*tokens*.json'
   '**/*secret*'
   '**/external-filesystem-grants.json'
-  '**/.repo-harness/plugins/*.json'
+  '**/.forge/plugins/*.json'
 )
 
 path_forbidden=0

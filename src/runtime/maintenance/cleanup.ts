@@ -84,9 +84,9 @@ function processCommands(): Array<{ pid: number; command: string }> {
   }
 }
 
-function isSafeRepoHarnessTemp(path: string): boolean {
+function isSafeForgeTemp(path: string): boolean {
   const name = basename(path);
-  if (!name.startsWith('repo-harness')) return false;
+  if (!name.startsWith('forge')) return false;
   const parent = dirname(path);
   const allowedParents = new Set([resolve(tmpdir()), '/private/tmp', '/tmp']);
   return allowedParents.has(resolve(parent));
@@ -99,10 +99,10 @@ function scanTempDirs(minAgeMinutes: number, limit: number): RuntimeCleanupCandi
   const candidates: RuntimeCleanupCandidate[] = [];
   for (const root of roots) {
     let names: string[] = [];
-    try { names = readdirSync(root).filter((name) => name.startsWith('repo-harness')); } catch { continue; }
+    try { names = readdirSync(root).filter((name) => name.startsWith('forge')); } catch { continue; }
     for (const name of names) {
       const path = join(root, name);
-      if (!isSafeRepoHarnessTemp(path)) continue;
+      if (!isSafeForgeTemp(path)) continue;
       try {
         const stat = lstatSync(path);
         if (!stat.isDirectory()) continue;
@@ -113,7 +113,7 @@ function scanTempDirs(minAgeMinutes: number, limit: number): RuntimeCleanupCandi
           kind: 'temp_dir',
           path,
           reason: safe
-            ? `Repo-harness temp directory is older than ${minAgeMinutes} minutes and not referenced by a running process.`
+            ? `Forge temp directory is older than ${minAgeMinutes} minutes and not referenced by a running process.`
             : 'Temp directory is too new or still referenced by a running process.',
           ageMinutes,
           occupiedByPid: occupied?.pid,
@@ -321,7 +321,7 @@ function archiveLegacyRun(path: string, repoRoot: string): void {
 export function applyRuntimeCleanup(repoRoot: string, options: RuntimeCleanupOptions = {}): RuntimeCleanupApplyResult {
   // Passive / fenced runtimes must not run cleanup.
   try {
-    const controllerHome = process.env.REPO_HARNESS_CONTROLLER_HOME?.trim();
+    const controllerHome = process.env.FORGE_CONTROLLER_HOME?.trim();
     if (controllerHome) {
       const fence = assertThisRuntimeMayWrite('cleanup', controllerHome);
       if (!fence.allowed) {
@@ -355,7 +355,7 @@ export function applyRuntimeCleanup(repoRoot: string, options: RuntimeCleanupOpt
   const eligible = preview.candidates.filter((candidate) => candidate.safe);
   const applied: Array<RuntimeCleanupCandidate & { applied: boolean; error?: string }> = eligible.slice(0, normalized.maxRemovals).map((candidate) => {
     try {
-      if (candidate.kind === 'temp_dir' && candidate.path && isSafeRepoHarnessTemp(candidate.path)) {
+      if (candidate.kind === 'temp_dir' && candidate.path && isSafeForgeTemp(candidate.path)) {
         rmSync(candidate.path, { recursive: true, force: true });
         return { ...candidate, applied: true };
       }

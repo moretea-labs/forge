@@ -1,10 +1,10 @@
-# repo-harness AGENTS.md
+# Forge AGENTS.md
 
-This repository self-hosts the `repo-harness` contract; the former `repo-harness-skill` and `project-initializer` names have been fully removed and are no longer recognized by any tooling. Claude and Codex should follow the same repo-local workflow surface.
+This repository self-hosts the Forge contract. Retired project-skill and project-initializer staging paths are not supported or cleaned up by current tooling. Claude and Codex should follow the same repo-local workflow surface.
 
 ## Controller V8 execution bridge
 
-Treat ChatGPT as the controller and repo-harness as its repository execution layer. ChatGPT chooses how to inspect, plan, edit, verify, or delegate. repo-harness provides deterministic repository tools and does not impose an Agent-first workflow.
+Treat ChatGPT as the controller and Forge as its repository execution layer. ChatGPT chooses how to inspect, plan, edit, verify, or delegate. Forge provides deterministic repository tools and does not impose an Agent-first workflow.
 
 - Direct Edit is the default for understood work. One session may accept many patch batches, keep revision history, create savepoints, run checks, roll back selected revisions, and finalize one aggregate localized diff.
 - Tasks describe objectives, scope, checks, and acceptance criteria. They do not permanently bind Codex, Claude, or GitHub Copilot. The executor is selected when each Run starts.
@@ -31,9 +31,9 @@ Treat ChatGPT as the controller and repo-harness as its repository execution lay
 
 ## Runtime Architecture Guardrails
 
-- Treat repo-harness as one local MCP application, one active Runtime, one deployable release, and one lifecycle owner. Gateway, MCP transport, Controller, and Scheduler may be modules; they are not independently deployable generations by default.
+- Treat Forge as one local MCP application, one active Runtime, one deployable release, and one in-process lifecycle owner. Gateway, MCP transport, Controller, and Scheduler may be modules; they are not independently deployable generations by default.
 - Bounded restart downtime is acceptable. Prefer `stop -> switch complete release -> start -> verify -> full rollback`; do not add ingress, blue/green slots, adoption, or mixed generations without an explicit product requirement.
-- Do not respond to an incident by adding another status, boolean, state file, daemon, proxy, keepalive, watchdog, recovery owner, or fallback path. First identify the violated invariant and remove, merge, or correct the existing cause.
+- Do not respond to an incident by adding a second status authority, daemon, proxy, KeepAlive wrapper, watchdog, recovery owner, or fallback path; extend the canonical Runtime or standalone Recovery owner instead. First identify the violated invariant and remove, merge, or correct the existing cause.
 - Readiness is one derived whole-system conclusion. Multiple diagnostic checks and reason codes are allowed, but they must not become independent durable readiness state machines.
 - Keep lifecycle, readiness, liveness, capability, authorization, release identity, and diagnostics separate. Do not create composite states such as `status=ready` with `degraded=true`.
 - Only one component may perform lifecycle or recovery side effects. Observers and probes are read-only and submit typed requests to that owner.
@@ -45,7 +45,7 @@ Treat ChatGPT as the controller and repo-harness as its repository execution lay
 
 - Sync `tasks/` whenever substantive repo changes are made.
 - Use `tasks/notes/<plan-stem>.notes.md` only for non-obvious slice decisions, deviations, tradeoffs, and open questions; `<plan-stem>` is the active plan filename without `plan-` and `.md` (for example `20260531-0045-governance-workflow`). Do not use notes as durable memory or a task log, and archive/promote them deliberately when the slice closes.
-- Treat hook execution as central-first: trusted repos run `~/.repo-harness/hooks/` (bash shim) or the packaged CLI copy; this self-host repo pins `"hook_source": "repo"` in `.ai/harness/policy.json` so `.ai/hooks/` stays the live development runtime, with `assets/hooks/` as the product source mirrored on install. User-level `~/.claude/settings.json` and `~/.codex/hooks.json` are the host adapters.
+- Treat hook execution as central-first: trusted repos run `~/.forge/hooks/` (bash shim) or the packaged CLI copy; this self-host repo pins `"hook_source": "repo"` in `.ai/harness/policy.json` so `.ai/hooks/` stays the live development runtime, with `assets/hooks/` as the product source mirrored on install. User-level `~/.claude/settings.json` and `~/.codex/hooks.json` are the host adapters.
 - Keep the umbrella hierarchy explicit: architecture owns stable truth, capability contracts own local agent context, `tasks/workstreams/<domain>/<capability>/` owns durable progress, and `tasks/todos.md` owns only deferred medium/long-term goals with tradeoff and revisit trigger.
 - Treat `.ai/context/capabilities.json` as the source of truth for capability prefixes; `agent-context-blocks.txt` and nested agent files are compatibility inputs only.
 - Keep architecture drift handling split: `architecture-queue.sh` writes architecture requests/events, `workstream-sync.sh` maintains durable capability workstreams, and `context-contract-sync.sh` only updates controlled local `CLAUDE.md`/`AGENTS.md` architecture blocks.
@@ -56,7 +56,7 @@ Treat ChatGPT as the controller and repo-harness as its repository execution lay
 - Treat `deploy/` as the trackable deployment and operations surface for runbooks, submission materials, release checklists, helper scripts, ordered SQL files under `deploy/sql/`, and env examples.
 - Treat `_ops/` as ignored local operations state for secrets, real env files, provider state, artifacts, logs, and scratch files; do not commit or agent-edit `_ops/*`.
 - Treat contract-level task execution as worktree-first: `scripts/plan-to-todo.sh --plan <approved-plan>` starts `scripts/contract-worktree.sh start --plan <approved-plan>` when policy enables it, and completed blocks finish through Waza `/check` plus `scripts/contract-worktree.sh finish`.
-- After Codex Plan mode, Waza `/think`, or `repo-harness-plan` produces a decision-complete plan, capture it with `scripts/capture-plan.sh --slug <slug> --title <title>` so `plans/` becomes the file-backed source of truth; if the user has already approved implementation, capture with `--status Approved --execute` or run `scripts/plan-to-todo.sh --plan <active-plan>`.
+- After Codex Plan mode, Waza `/think`, or `forge-plan` produces a decision-complete plan, capture it with `scripts/capture-plan.sh --slug <slug> --title <title>` so `plans/` becomes the file-backed source of truth; if the user has already approved implementation, capture with `--status Approved --execute` or run `scripts/plan-to-todo.sh --plan <active-plan>`.
 - If current repo state conflicts with the task, open an isolated `codex/<task-slug>` worktree, finish there, run Waza `/check`-style validation, then merge back to `main` without absorbing unrelated dirty changes.
 - Route product discovery to gstack `office-hours`, complex engineering plans to gstack `plan-eng-review`, design plans to gstack `plan-design-review`, and daily small/medium planning, bug hunts, and checks to Waza `/think`, `/hunt`, and `/check`.
 - Codex automation profile is runtime-referenced, not vendored: required skills are `health`, `check`, and `diagram-design` from `~/.codex/skills`.

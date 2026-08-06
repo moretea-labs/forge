@@ -5,7 +5,7 @@ import { basename, dirname, join, relative, resolve } from 'path';
 import { durableControllerHome } from './controller-home';
 import type { RepositoryRecord } from './types';
 
-export const MANAGED_WORKTREE_HOME_ENV = 'REPO_HARNESS_WORKTREE_HOME';
+export const MANAGED_WORKTREE_HOME_ENV = 'FORGE_WORKTREE_HOME';
 
 function comparablePath(value: string): string {
   const resolved = resolve(value).replace(/\\/g, '/');
@@ -72,8 +72,8 @@ function controllerNamespace(controllerHome: string): string {
 function globalWorktreeBase(env: NodeJS.ProcessEnv): string {
   const xdg = env.XDG_STATE_HOME?.trim();
   return xdg
-    ? join(xdg, 'repo-harness', 'managed-worktrees')
-    : join(homedir(), '.repo-harness', 'managed-worktrees');
+    ? join(xdg, 'forge', 'managed-worktrees')
+    : join(homedir(), '.forge', 'managed-worktrees');
 }
 
 /**

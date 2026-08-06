@@ -53,7 +53,7 @@ import type {
 
 const JOB_ROOT = ".ai/harness/local-jobs";
 const ACTIVE_INDEX_PATH = `${JOB_ROOT}/active-index.json`;
-const CONFIG_PATH = ".repo-harness/local-bridge.json";
+const CONFIG_PATH = ".forge/local-bridge.json";
 const DEFAULT_LOCAL_JOB_OUTPUT_BYTES = 16 * 1024;
 const MAX_LOCAL_JOB_OUTPUT_BYTES = 512 * 1024;
 

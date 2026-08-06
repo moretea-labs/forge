@@ -5,7 +5,7 @@ import { classifyFailure, dominantRecoveryClass } from './classifier';
 
 export type SelfHealingFindingSeverity = 'low' | 'medium' | 'high' | 'critical';
 export type SelfHealingFindingKind = 'runtime' | 'auth' | 'browser' | 'filesystem' | 'source' | 'platform' | 'unknown';
-export type SelfHealingNextStepOwner = 'repo-harness' | 'local-user' | 'chatgpt' | 'codex-cli' | 'deepseek' | 'human';
+export type SelfHealingNextStepOwner = 'forge' | 'local-user' | 'chatgpt' | 'codex-cli' | 'deepseek' | 'human';
 
 export interface SelfHealingObservation {
   id: string;
@@ -204,7 +204,7 @@ function nextSteps(observations: SelfHealingObservation[], mode: 'shadow' | 'act
   if (observations.some((observation) => observation.kind === 'runtime')) {
     steps.push({
       id: 'inspect-runtime-maintenance',
-      owner: 'repo-harness',
+      owner: 'forge',
       action: 'Run runtime_maintenance_status and apply only safe maintenance candidates when authorized.',
       reason: 'Runtime metadata blockers should be fixed locally before source repair or model delegation.',
       requiresHumanApproval: mode !== 'active',
@@ -240,7 +240,7 @@ function nextSteps(observations: SelfHealingObservation[], mode: 'shadow' | 'act
   if (steps.length === 0) {
     steps.push({
       id: 'keep-observing',
-      owner: 'repo-harness',
+      owner: 'forge',
       action: 'Continue shadow monitoring and do not create repair work.',
       reason: 'No actionable blocker was observed in this tick.',
       requiresHumanApproval: false,
@@ -289,7 +289,7 @@ export function buildSelfHealingMonitorReport(input: SelfHealingMonitorInput): S
     },
     safetyInvariants: [
       'Shadow monitor ticks must not mutate source, runtime state, credentials, browser state, or external files.',
-      'Local maintenance may only touch repo-harness runtime metadata after explicit authorization.',
+      'Local maintenance may only touch forge runtime metadata after explicit authorization.',
       'Credential, browser, and filesystem expansion must use typed handoff/grant flows.',
       'Model-assisted source repair must use isolated worktrees and human-reviewed merge gates.',
     ],

@@ -65,7 +65,7 @@ interface GmailMessageSummary {
 }
 
 function now(): string { return new Date().toISOString(); }
-function assistantRoot(repoRoot: string): string { return join(repoRoot, '.repo-harness', 'assistant'); }
+function assistantRoot(repoRoot: string): string { return join(repoRoot, '.forge', 'assistant'); }
 function runsPath(repoRoot: string): string { return join(assistantRoot(repoRoot), 'routine-runs.json'); }
 function cursorsPath(repoRoot: string): string { return join(assistantRoot(repoRoot), 'gmail-cursors.json'); }
 

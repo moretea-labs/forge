@@ -14,7 +14,7 @@ afterEach(() => {
 });
 
 function controllerHome(): string {
-  const root = mkdtempSync(join(tmpdir(), 'repo-harness-controller-claim-'));
+  const root = mkdtempSync(join(tmpdir(), 'forge-controller-claim-'));
   roots.push(root);
   return root;
 }

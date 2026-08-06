@@ -57,7 +57,7 @@ export function checkConsistency(repoRoot: string = REPO_ROOT): ConsistencyResul
       ? (pkg.version as string)
       : null;
 
-  // Read the local source manifest when this script runs inside repo-harness;
+  // Read the local source manifest when this script runs inside forge;
   // generated projects resolve the upstream skill root instead.
   const localSvPath = join(repoRoot, "assets", "skill-version.json");
   const svPath = existsSync(localSvPath)
@@ -72,14 +72,14 @@ export function checkConsistency(repoRoot: string = REPO_ROOT): ConsistencyResul
   const usingLocalSkillManifest = svPath === localSvPath;
 
   const packageCoreVersion = packageJsonVersion?.split("-", 1)[0] ?? null;
-  const isRepoHarnessPackage =
-    pkg.name === "repo-harness" ||
-    pkg.name === "@moretea-labs/repo-harness-controller" ||
-    pkg.name === "@moretea-labs/matea";
+  const isForgePackage =
+    pkg.name === "forge" ||
+    pkg.name === "@moretea-labs/forge-controller" ||
+    pkg.name === "@moretea-labs/forge";
 
   if (
     usingLocalSkillManifest &&
-    isRepoHarnessPackage &&
+    isForgePackage &&
     packageCoreVersion !== null &&
     packageCoreVersion !== skillVersionJsonVersion
   ) {
@@ -96,7 +96,7 @@ export function checkConsistency(repoRoot: string = REPO_ROOT): ConsistencyResul
 
   if (!usingLocalSkillManifest && packageJsonVersion !== null) {
     warnings.push(
-      `package.json.version (${packageJsonVersion}) belongs to the target repo; workflow stamp uses upstream repo-harness skill-version.json`
+      `package.json.version (${packageJsonVersion}) belongs to the target repo; workflow stamp uses upstream forge skill-version.json`
     );
   }
 
@@ -161,7 +161,7 @@ if (import.meta.main) {
 
     if (result.consistent) {
       console.log(
-        `Workflow version check passed: repo-harness=${result.skillVersionJsonVersion}, template=${result.templateVersionJsonVersion}`
+        `Workflow version check passed: forge=${result.skillVersionJsonVersion}, template=${result.templateVersionJsonVersion}`
       );
       console.log(`Workflow version source: ${result.skillVersionSource}`);
       for (const warning of result.warnings) {

@@ -9,9 +9,9 @@ interface Request {
   maxOutputBytes: number;
 }
 
-const encoded = process.env.REPO_HARNESS_SUPERVISED_REQUEST;
-if (!encoded) throw new Error('REPO_HARNESS_SUPERVISED_REQUEST is required');
-delete process.env.REPO_HARNESS_SUPERVISED_REQUEST;
+const encoded = process.env.FORGE_SUPERVISED_REQUEST;
+if (!encoded) throw new Error('FORGE_SUPERVISED_REQUEST is required');
+delete process.env.FORGE_SUPERVISED_REQUEST;
 const request = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as Request;
 const result = await runBoundedChild(request.command, request.args, {
   cwd: request.cwd,

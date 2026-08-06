@@ -94,7 +94,7 @@ function main(): void {
       issueId: ISSUE_ID,
       taskId,
       receipt: completionReceipt(taskId, head, changedPaths, recordedAt),
-      reviewer: 'repo-harness-final-cutover',
+      reviewer: 'forge-final-cutover',
       note: 'Final SQLite cutover and legacy writer retirement were integrated at user direction. Final-HEAD tests were explicitly skipped; no check-pass claim is recorded.',
     });
     return { taskId, action: 'completed', ...completed };

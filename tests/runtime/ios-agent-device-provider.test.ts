@@ -32,24 +32,24 @@ function typedModuleFixture(version = '0.20.2', name = 'agent-device'): string {
 }
 
 beforeEach(() => {
-  process.env.REPO_HARNESS_AGENT_DEVICE_BACKEND = 'cli';
+  process.env.FORGE_AGENT_DEVICE_BACKEND = 'cli';
 });
 
 afterEach(() => {
   resetIosAgentDeviceRuntimeHooksForTest();
   resetIosDevelopmentHooksForTest();
   resetAgentDeviceTypedProviderHooksForTest();
-  delete process.env.REPO_HARNESS_AGENT_DEVICE_EXECUTABLE;
-  delete process.env.REPO_HARNESS_AGENT_DEVICE_BACKEND;
-  delete process.env.REPO_HARNESS_CONTROLLER_HOME;
+  delete process.env.FORGE_AGENT_DEVICE_EXECUTABLE;
+  delete process.env.FORGE_AGENT_DEVICE_BACKEND;
+  delete process.env.FORGE_CONTROLLER_HOME;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 function fixture() {
-  const repoRoot = mkdtempSync(join(tmpdir(), 'repo-harness-ios-agent-device-'));
-  const controllerHome = mkdtempSync(join(tmpdir(), 'repo-harness-ios-agent-device-controller-'));
+  const repoRoot = mkdtempSync(join(tmpdir(), 'forge-ios-agent-device-'));
+  const controllerHome = mkdtempSync(join(tmpdir(), 'forge-ios-agent-device-controller-'));
   roots.push(repoRoot, controllerHome);
-  process.env.REPO_HARNESS_CONTROLLER_HOME = controllerHome;
+  process.env.FORGE_CONTROLLER_HOME = controllerHome;
   spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });
   mkdirSync(join(repoRoot, 'App.xcodeproj'), { recursive: true });
   const repository = registerRepository({ path: repoRoot, controllerHome });
@@ -1155,7 +1155,7 @@ describe('optional agent-device iOS Simulator provider', () => {
   });
 
   it('does not mistake the enclosing application package for agent-device', () => {
-    const unrelatedEntry = typedModuleFixture('1.4.0-rc.6', 'matea');
+    const unrelatedEntry = typedModuleFixture('1.4.0-rc.6', 'forge');
     setAgentDeviceTypedProviderHooksForTest({ resolveModule: () => unrelatedEntry });
 
     expect(typedAgentDeviceIdentity()).toMatchObject({
@@ -1168,7 +1168,7 @@ describe('optional agent-device iOS Simulator provider', () => {
   it('does not dispatch a typed snapshot after the action deadline has expired', async () => {
     const value = fixture();
     readyIosTooling();
-    process.env.REPO_HARNESS_AGENT_DEVICE_BACKEND = 'typed';
+    process.env.FORGE_AGENT_DEVICE_BACKEND = 'typed';
     let typedSnapshots = 0;
     const typedEntry = typedModuleFixture();
     setAgentDeviceTypedProviderHooksForTest({
@@ -1222,7 +1222,7 @@ describe('optional agent-device iOS Simulator provider', () => {
   it('never mixes a typed module version with a different active CLI session version', async () => {
     const value = fixture();
     readyIosTooling();
-    process.env.REPO_HARNESS_AGENT_DEVICE_BACKEND = 'auto';
+    process.env.FORGE_AGENT_DEVICE_BACKEND = 'auto';
     const commands: string[][] = [];
     let typedLoads = 0;
     const mismatchedModule = mkdtempSync(join(tmpdir(), 'agent-device-mismatched-provider-'));
@@ -1269,7 +1269,7 @@ describe('optional agent-device iOS Simulator provider', () => {
     });
     expect(typedLoads).toBe(0);
 
-    process.env.REPO_HARNESS_AGENT_DEVICE_BACKEND = 'typed';
+    process.env.FORGE_AGENT_DEVICE_BACKEND = 'typed';
     await expect(executeIosPluginAction(pluginInput(value, 'agent_device_snapshot', {
       interaction_id: interactionId,
     }, 'typed-version-mismatch'))).rejects.toMatchObject({
@@ -1284,7 +1284,7 @@ describe('optional agent-device iOS Simulator provider', () => {
   it('uses the typed read provider for snapshots without spawning a CLI snapshot process', async () => {
     const value = fixture();
     readyIosTooling();
-    process.env.REPO_HARNESS_AGENT_DEVICE_BACKEND = 'typed';
+    process.env.FORGE_AGENT_DEVICE_BACKEND = 'typed';
     const commands: string[][] = [];
     const typedCalls: Array<{ config: Record<string, unknown>; options: Record<string, unknown> }> = [];
     const typedEntry = typedModuleFixture();
@@ -1347,7 +1347,7 @@ describe('optional agent-device iOS Simulator provider', () => {
   it('falls back from auto to CLI only when the optional typed module cannot load', async () => {
     const value = fixture();
     readyIosTooling();
-    process.env.REPO_HARNESS_AGENT_DEVICE_BACKEND = 'auto';
+    process.env.FORGE_AGENT_DEVICE_BACKEND = 'auto';
     const commands: string[][] = [];
     const typedEntry = typedModuleFixture();
     setAgentDeviceTypedProviderHooksForTest({
@@ -1393,7 +1393,7 @@ describe('optional agent-device iOS Simulator provider', () => {
   it('does not hide a typed Runner failure by silently retrying the snapshot through CLI', async () => {
     const value = fixture();
     readyIosTooling();
-    process.env.REPO_HARNESS_AGENT_DEVICE_BACKEND = 'auto';
+    process.env.FORGE_AGENT_DEVICE_BACKEND = 'auto';
     const commands: string[][] = [];
     const typedEntry = typedModuleFixture();
     setAgentDeviceTypedProviderHooksForTest({

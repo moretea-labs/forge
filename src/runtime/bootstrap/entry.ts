@@ -57,7 +57,7 @@ export function currentSupervisorBootstrapCommand(
       executionMode: 'standalone-binary',
     };
   }
-  const runtime = options.processExecutable ?? process.env.REPO_HARNESS_BUN_EXECUTABLE;
+  const runtime = options.processExecutable ?? process.env.FORGE_BUN_EXECUTABLE;
   if (!runtime) throw new Error('SUPERVISOR_RELEASE_NOT_STANDALONE');
   return {
     command: runtime,
@@ -69,7 +69,7 @@ export function currentSupervisorBootstrapCommand(
 }
 
 export async function runSupervisorBootstrap(): Promise<number> {
-  const controllerHome = resolve(option('--controller-home') ?? process.env.REPO_HARNESS_CONTROLLER_HOME ?? '');
+  const controllerHome = resolve(option('--controller-home') ?? process.env.FORGE_CONTROLLER_HOME ?? '');
   if (!controllerHome || controllerHome === resolve('.')) throw new Error('SUPERVISOR_CONTROLLER_HOME_REQUIRED');
   const command = currentSupervisorBootstrapCommand(controllerHome);
   const child = spawn(command.command, command.args, {
@@ -77,9 +77,9 @@ export async function runSupervisorBootstrap(): Promise<number> {
     stdio: 'inherit',
     env: {
       ...process.env,
-      REPO_HARNESS_CONTROLLER_HOME: controllerHome,
-      REPO_HARNESS_SUPERVISOR_BOOTSTRAP: '1',
-      REPO_HARNESS_RUNTIME_EXECUTION: command.executionMode,
+      FORGE_CONTROLLER_HOME: controllerHome,
+      FORGE_SUPERVISOR_BOOTSTRAP: '1',
+      FORGE_RUNTIME_EXECUTION: command.executionMode,
     },
   });
   return await new Promise<number>((resolveExit, reject) => {
@@ -98,7 +98,7 @@ if (import.meta.main || /[\\/]bootstrap(?:\\.bundle)?\\.[cm]?[jt]s$/.test(proces
   try {
     process.exitCode = await runSupervisorBootstrap();
   } catch (error) {
-    console.error(`[repo-harness supervisor bootstrap] ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`[forge supervisor bootstrap] ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
   }
 }

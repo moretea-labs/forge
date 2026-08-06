@@ -1,6 +1,6 @@
 # 功能与配置层级
 
-repo-harness 不依赖编码 Agent 或外部插件也能使用。先完成核心工作流，再按实际任务启用集成能力。
+Forge 不依赖编码 Agent 或外部插件也能使用。先完成核心工作流，再按实际任务启用集成能力。
 
 ## 核心功能
 
@@ -27,7 +27,7 @@ repo-harness 不依赖编码 Agent 或外部插件也能使用。先完成核心
 | Browser | Playwright 浏览、截图和证据 | 浏览器 binary 与允许访问的域名。 |
 | CodeGraph | 代码关系和影响范围导航 | CodeGraph CLI；Windows 原生暂不自动配置。 |
 | Google Workspace | Gmail、Calendar 助手能力 | 显式 OAuth 与插件权限。 |
-| Schedule / Finding | 受监督的周期检查和候选发现 | Controller daemon 持续运行，真实动作仍受策略控制。 |
+| Schedule / Finding | 受监督的周期检查和候选发现 | Canonical Forge Runtime 持续运行，真实动作仍受策略控制。 |
 
 ## 工具暴露
 

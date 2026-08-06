@@ -13,7 +13,7 @@ import { previewRuntimeCleanup } from '../../src/runtime/maintenance/cleanup';
 const homes: string[] = [];
 
 function controllerHome(): string {
-  const value = mkdtempSync(join(tmpdir(), 'repo-harness-runtime-cleanup-'));
+  const value = mkdtempSync(join(tmpdir(), 'forge-runtime-cleanup-'));
   homes.push(value);
   return value;
 }
@@ -70,7 +70,7 @@ describe('runtime cleanup', () => {
     const report = cleanupControllerRuntimeState(home, {
       inspectProcess: () => ({
         alive: true,
-        commandLine: `/opt/repo-harness/releases/release-1/daemon.js --controller-home ${home} --owner-epoch 42`,
+        commandLine: `/opt/forge/releases/release-1/daemon.js --controller-home ${home} --owner-epoch 42`,
       }),
     });
 
@@ -88,7 +88,7 @@ describe('runtime cleanup', () => {
     const report = cleanupControllerRuntimeState(home, {
       inspectProcess: () => ({
         alive: true,
-        commandLine: `/opt/repo-harness/releases/release-1/daemon.js --controller-home ${home}-other --owner-epoch 42`,
+        commandLine: `/opt/forge/releases/release-1/daemon.js --controller-home ${home}-other --owner-epoch 42`,
       }),
     });
 
@@ -350,7 +350,7 @@ describe('runtime cleanup', () => {
   });
 
   test('bounds cleanup preview candidates and reports truncation', () => {
-    const repoRoot = mkdtempSync(join(tmpdir(), 'repo-harness-cleanup-preview-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-cleanup-preview-'));
     homes.push(repoRoot);
     const jobsRoot = join(repoRoot, '.ai/harness/local-jobs');
     mkdirSync(jobsRoot, { recursive: true });

@@ -583,7 +583,7 @@ export function resolveProcessRunnerEntryPath(
   env: NodeJS.ProcessEnv = process.env,
   cwd: string = process.cwd(),
 ): string {
-  const configured = env.REPO_HARNESS_PROCESS_RUNNER_ENTRY?.trim();
+  const configured = env.FORGE_PROCESS_RUNNER_ENTRY?.trim();
   if (configured && existsSync(configured)) return configured;
 
   // Compiled daemon/Gateway entrypoints and process-runner.js are siblings in
@@ -603,15 +603,15 @@ export function resolveProcessRunnerEntryPath(
   } catch {
     /* continue to source-root fallback */
   }
-  const sourceRoot = env.REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT?.trim() || cwd;
+  const sourceRoot = env.FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT?.trim() || cwd;
   const sourceEntry = join(sourceRoot, 'src/runtime/execution/process-runtime/process-runner-entry.ts');
   if (existsSync(sourceEntry)) return sourceEntry;
   throw new Error('PROCESS_RUNNER_ENTRY_NOT_FOUND: immutable release is missing process-runner.js');
 }
-const PROCESS_RUNNER_RUNTIME_ENV = 'REPO_HARNESS_BUN_EXECUTABLE';
+const PROCESS_RUNNER_RUNTIME_ENV = 'FORGE_BUN_EXECUTABLE';
 
 /**
- * A compiled Bun executable reports the bundled repo-harness binary through
+ * A compiled Bun executable reports the bundled forge binary through
  * process.execPath. TypeScript runner entries must instead be launched by Bun.
  */
 export function resolveProcessRunnerRuntime(
@@ -626,7 +626,7 @@ export function resolveProcessRunnerRuntime(
 
 function runnerInvocation(entry: string, descriptorPath: string): { command: string; args: string[] } {
   const sourceEntry = entry.endsWith('.ts') || entry.endsWith('.tsx');
-  let standalone = !sourceEntry && process.env.REPO_HARNESS_RUNTIME_EXECUTION === 'standalone-binary';
+  let standalone = !sourceEntry && process.env.FORGE_RUNTIME_EXECUTION === 'standalone-binary';
   if (!sourceEntry && !standalone) {
     try {
       const manifest = JSON.parse(readFileSync(join(dirname(entry), 'manifest.json'), 'utf8')) as { executionMode?: unknown };
@@ -938,7 +938,7 @@ function spawnProcessRunner(descriptor: ProcessCommandDescriptor, descriptorPath
     cwd: descriptor.command.cwd,
     env: {
       ...processRunnerEnvironment(),
-      REPO_HARNESS_PROCESS_RUNNER: '1',
+      FORGE_PROCESS_RUNNER: '1',
     },
     // The Runner always keeps bounded durable files. While Controller is
     // attached, also stream redacted chunks over pipes so it does not stat and

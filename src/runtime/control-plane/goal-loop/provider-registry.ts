@@ -59,15 +59,15 @@ const AGENT_CLI_LIMITS: ProviderLimits = {
 const AGENT_CLI_SAFETY: ProviderSafety = {
   mayMutateFiles: true,
   mayRunCommands: true,
-  requiresApplyByRepoHarness: false,
+  requiresApplyByForge: false,
   requiresApprovalForExternalEffects: true,
 };
 
-/** Remote model APIs only return proposals; repo-harness applies patches. */
+/** Remote model APIs only return proposals; forge applies patches. */
 const APPLY_BY_HARNESS: ProviderSafety = {
   mayMutateFiles: false,
   mayRunCommands: false,
-  requiresApplyByRepoHarness: true,
+  requiresApplyByForge: true,
   requiresApprovalForExternalEffects: true,
 };
 
@@ -200,7 +200,7 @@ export function listProviders(options: ProviderRegistryEnv = {}): ProviderDescri
       directEditEnabled ? 'ready' : 'disabled',
       ['code_patch', 'local_file_mutation'],
       directEditEnabled
-        ? 'Bounded direct edit applied by repo-harness for deterministic small source changes.'
+        ? 'Bounded direct edit applied by forge for deterministic small source changes.'
         : 'Direct edit disabled in local tool configuration.',
       {
         directDispatch: directEditEnabled,
@@ -209,7 +209,7 @@ export function listProviders(options: ProviderRegistryEnv = {}): ProviderDescri
         safety: {
           mayMutateFiles: true,
           mayRunCommands: false,
-          requiresApplyByRepoHarness: true,
+          requiresApplyByForge: true,
           requiresApprovalForExternalEffects: true,
         },
         limits: { ...DEFAULT_LIMITS, maxPatchFiles: 3, maxChangedLines: 200 },
@@ -225,7 +225,7 @@ export function listProviders(options: ProviderRegistryEnv = {}): ProviderDescri
       !codexToolEnabled
         ? 'Codex CLI disabled in local tool configuration.'
         : codexReady
-          ? 'Local Codex CLI agent: may edit files and run commands; repo-harness still owns policy, verification, and external side effects.'
+          ? 'Local Codex CLI agent: may edit files and run commands; forge still owns policy, verification, and external side effects.'
           : 'Codex CLI not found on PATH.',
       {
         configured: codexReady,
@@ -245,7 +245,7 @@ export function listProviders(options: ProviderRegistryEnv = {}): ProviderDescri
       !claudeToolEnabled
         ? 'Claude CLI disabled in local tool configuration.'
         : claudeReady
-          ? 'Local Claude CLI agent: may edit files and run commands; repo-harness still owns policy, verification, and external side effects.'
+          ? 'Local Claude CLI agent: may edit files and run commands; forge still owns policy, verification, and external side effects.'
           : 'Claude CLI not found on PATH.',
       {
         configured: claudeReady,
@@ -265,7 +265,7 @@ export function listProviders(options: ProviderRegistryEnv = {}): ProviderDescri
       !grokCliToolEnabled
         ? 'Grok CLI disabled in local tool configuration.'
         : grokCliReady
-          ? 'Local Grok CLI agent: may edit files and run commands (no live remote API flag required); repo-harness still owns policy and verification.'
+          ? 'Local Grok CLI agent: may edit files and run commands (no live remote API flag required); forge still owns policy and verification.'
           : 'Grok CLI not found on PATH (install Grok Build TUI `grok` binary).',
       {
         configured: grokCliReady,
@@ -300,7 +300,7 @@ export function listProviders(options: ProviderRegistryEnv = {}): ProviderDescri
       grokRemote.status,
       ['code_patch', 'code_review', 'architecture_planning', 'test_failure_repair', 'structured_output', 'long_context'],
       (grokAuth
-        ? 'Grok/xAI API credential present (proposal-only; repo-harness applies patches).'
+        ? 'Grok/xAI API credential present (proposal-only; forge applies patches).'
         : 'Grok/xAI API missing auth (set XAI_API_KEY or configure in GUI).')
         + grokRemote.summarySuffix,
       {
@@ -318,7 +318,7 @@ export function listProviders(options: ProviderRegistryEnv = {}): ProviderDescri
       deepseekRemote.status,
       ['code_patch', 'code_review', 'architecture_planning', 'structured_output', 'tool_calling'],
       (deepseekAuth
-        ? 'DeepSeek API credential present (proposal-only; repo-harness applies patches).'
+        ? 'DeepSeek API credential present (proposal-only; forge applies patches).'
         : 'DeepSeek API missing auth (set DEEPSEEK_API_KEY or configure in GUI).')
         + deepseekRemote.summarySuffix,
       {
@@ -336,7 +336,7 @@ export function listProviders(options: ProviderRegistryEnv = {}): ProviderDescri
       openaiRemote.status,
       ['code_patch', 'code_review', 'architecture_planning', 'structured_output', 'long_context'],
       (openaiAuth
-        ? 'OpenAI API credential present (proposal-only; repo-harness applies patches).'
+        ? 'OpenAI API credential present (proposal-only; forge applies patches).'
         : 'OpenAI API missing auth (set OPENAI_API_KEY or configure in GUI).')
         + openaiRemote.summarySuffix,
       {
@@ -353,7 +353,7 @@ export function listProviders(options: ProviderRegistryEnv = {}): ProviderDescri
       'chatgpt_handoff',
       'handoff_only',
       ['architecture_planning', 'code_review', 'long_context', 'browser_planning'],
-      'Current ChatGPT conversation is handoff-only; not directly invokable via local CLI/API. repo-harness can create continuation packets, but cannot automatically invoke this ChatGPT session.',
+      'Current ChatGPT conversation is handoff-only; not directly invokable via local CLI/API. forge can create continuation packets, but cannot automatically invoke this ChatGPT session.',
       {
         directDispatch: false,
         configured: true,

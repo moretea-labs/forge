@@ -29,7 +29,7 @@ import { createPortfolioWorkflow } from '../src/runtime/workflow/portfolio/store
 import { recordCandidateFinding } from '../src/runtime/workflow/findings/store';
 import { assertAutomatedOperationAllowed } from '../src/runtime/control-plane/governance/external-effects';
 
-const root = mkdtempSync(join(tmpdir(), 'repo-harness-recovery-smoke-'));
+const root = mkdtempSync(join(tmpdir(), 'forge-recovery-smoke-'));
 const controllerHome = join(root, 'controller');
 const repoRoot = join(root, 'repo');
 

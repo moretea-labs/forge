@@ -188,7 +188,7 @@ describe('final SQLite control-plane cutover', () => {
     expect(() => assertControlPlaneMetadataPayload({ note: '-----BEGIN PRIVATE KEY-----' }, 'export')).toThrow('CONTROL_PLANE_METADATA_SECRET_REFUSED');
   });
 
-  test('Stable Supervisor and standalone Recovery bootstrap do not depend on legacy Issue/Task files', () => {
+  test('Forge Runtime service and standalone Recovery bootstrap do not depend on legacy Issue/Task files', () => {
     const files = [
       ...sourceFiles(join(process.cwd(), 'src/runtime/supervisor')),
       ...sourceFiles(join(process.cwd(), 'src/runtime/recovery')),

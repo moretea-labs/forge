@@ -88,15 +88,15 @@ export function isOptIn(repoRoot: string): boolean {
 
 /**
  * Central-first hook script resolution. The packaged copy ships inside the
- * globally installed repo-harness package, so upgrading the CLI upgrades hook
+ * globally installed forge package, so upgrading the CLI upgrades hook
  * behavior for every repo at once — no per-repo .ai/hooks refresh. Repos that
- * develop the hooks themselves (e.g. the repo-harness self-host checkout) pin
+ * develop the hooks themselves (e.g. the forge self-host checkout) pin
  * `"hook_source": "repo"` in .ai/harness/policy.json to keep running their
  * vendored copy.
  *
  * Order (mirrors scripts/hook-shim.sh, where "central" is the installed
- * ~/.repo-harness/hooks bundle instead of the packaged directory):
- *   1. REPO_HARNESS_HOOK_SOURCE env: `repo` | `central` | absolute hooks dir
+ * ~/.forge/hooks bundle instead of the packaged directory):
+ *   1. FORGE_HOOK_SOURCE env: `repo` | `central` | absolute hooks dir
  *   2. repo policy pin `"hook_source": "repo"`
  *   3. packaged assets/hooks (when present)
  *   4. vendored <repo>/.ai/hooks fallback
@@ -127,7 +127,7 @@ export function resolveHooksDir(
   env: NodeJS.ProcessEnv = process.env,
 ): ResolvedHooksDir {
   const repoDir = path.join(repoRoot, '.ai/hooks');
-  const override = env.REPO_HARNESS_HOOK_SOURCE?.trim();
+  const override = env.FORGE_HOOK_SOURCE?.trim();
   if (override === 'repo') return { dir: repoDir, source: 'env' };
   if (override === 'central') return { dir: packagedHooksDir(), source: 'env' };
   if (override && path.isAbsolute(override)) return { dir: override, source: 'env' };
@@ -153,7 +153,7 @@ function isSoftMissingRoute(event: HookEvent, routeId: RouteId): boolean {
 
 export function runHook(opts: RunHookOptions): RunHookResult {
   const cwd = opts.cwd ?? process.cwd();
-  const commandName = opts.commandName ?? 'repo-harness hook';
+  const commandName = opts.commandName ?? 'forge hook';
   const scriptsRun: string[] = [];
   const skippedScripts: string[] = [];
 
@@ -179,10 +179,10 @@ export function runHook(opts: RunHookOptions): RunHookResult {
   const hooksDir = resolved.dir;
   const syncHint =
     resolved.source === 'packaged'
-      ? 'upgrade the Matea CLI (bun add -g @moretea-labs/matea@latest) to refresh packaged hooks'
+      ? 'upgrade the Forge CLI (bun add -g @moretea-labs/forge@latest) to refresh packaged hooks'
       : resolved.source === 'repo-fallback'
-        ? 'upgrade the Matea CLI to restore packaged hooks, or set "hook_source": "repo" before syncing a full vendored hook runtime'
-        : `run 'matea adopt --repo ${repoRoot}' to sync pinned .ai/hooks`;
+        ? 'upgrade the Forge CLI to restore packaged hooks, or set "hook_source": "repo" before syncing a full vendored hook runtime'
+        : `run 'forge adopt --repo ${repoRoot}' to sync pinned .ai/hooks`;
   const sessionStartCollectStdout = opts.event === 'SessionStart' && opts.stdio === undefined;
   const sessionStartContexts: string[] = [];
   const codexStopDecisionStdout =
@@ -286,7 +286,7 @@ export function runHook(opts: RunHookOptions): RunHookResult {
 
   if (sessionStartCollectStdout && skippedScripts.length > 0) {
     sessionStartContexts.push(
-      `[repo-harness] hooks drift (source=${resolved.source}): missing ${skippedScripts.join(', ')}; ${syncHint}.`,
+      `[forge] hooks drift (source=${resolved.source}): missing ${skippedScripts.join(', ')}; ${syncHint}.`,
     );
   }
 

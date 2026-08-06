@@ -1,11 +1,11 @@
 import type { AppendManagedBlockOperation, ManagedBlockMarker } from "./operations";
 import { makeOperationId } from "./operations";
 
-export const GITIGNORE_MANAGED_BLOCK_MARKER = "repo-harness generated-runtime";
+export const GITIGNORE_MANAGED_BLOCK_MARKER = "forge generated-runtime";
 
 export const LEGACY_GITIGNORE_MANAGED_MARKERS: readonly ManagedBlockMarker[] = [
   {
-    begin: "# BEGIN: claude-runtime-temp (managed by repo-harness)",
+    begin: "# BEGIN: claude-runtime-temp (managed by forge)",
     end: "# END: claude-runtime-temp",
   },
 ];
@@ -83,18 +83,18 @@ export const GITIGNORE_MANAGED_BLOCK_CONTENT = [
   ".ai/harness/secrets-audit/",
   ".ai/harness/triage/*",
   "!.ai/harness/triage/.gitkeep",
-  ".repo-harness/chatgpt-browser.local.json",
-  ".repo-harness/chatgpt-browser.tokens.json",
-  ".repo-harness/tmp/",
-  ".repo-harness/cache/",
-  ".repo-harness/ios/",
-  ".repo-harness/review-artifacts/",
-  ".repo-harness/watchdog/",
-  ".repo-harness/runtime-diagnostics/",
-  ".repo-harness/secrets-audit/",
-  ".repo-harness/*.local.*",
-  ".repo-harness/*.tokens.*",
-  ".repo-harness/*.secret.*",
+  ".forge/chatgpt-browser.local.json",
+  ".forge/chatgpt-browser.tokens.json",
+  ".forge/tmp/",
+  ".forge/cache/",
+  ".forge/ios/",
+  ".forge/review-artifacts/",
+  ".forge/watchdog/",
+  ".forge/runtime-diagnostics/",
+  ".forge/secrets-audit/",
+  ".forge/*.local.*",
+  ".forge/*.tokens.*",
+  ".forge/*.secret.*",
   "*.pem",
   "*.key",
   "*.p12",
@@ -120,7 +120,7 @@ export function gitignoreManagedBlockOperation(
     marker: GITIGNORE_MANAGED_BLOCK_MARKER,
     content: gitignoreManagedBlockContent(extraContent),
     legacyMarkers: LEGACY_GITIGNORE_MANAGED_MARKERS,
-    reason: "Ensure repo-harness generated/runtime ignore block is present and current",
+    reason: "Ensure forge generated/runtime ignore block is present and current",
     risk: "low",
     status,
   };

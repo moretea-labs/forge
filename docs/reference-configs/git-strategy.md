@@ -4,7 +4,7 @@
 
 ## Default Brain
 
-- File vault: `brain/repo-harness/references/ai-driven-version-control-strategy.md`
+- File vault: `brain/forge/references/ai-driven-version-control-strategy.md`
 - gbrain slug: `references/ai-driven-version-control-strategy`
 
 ## Repo Role

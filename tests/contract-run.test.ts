@@ -139,7 +139,7 @@ describe("contract-run helper", () => {
 
       expect(res.status).toBe(0);
       const manifest = parseJson(res.stdout);
-      expect(manifest.kind).toBe("repo-harness-contract-run");
+      expect(manifest.kind).toBe("forge-contract-run");
       expect(manifest.status).toBe("dry_run");
       expect(manifest.contract).toBe("tasks/contracts/pilot.contract.md");
       expect((manifest.children as unknown[])).toEqual([]);

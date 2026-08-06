@@ -76,7 +76,7 @@ function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record
 
 describe('runtime source isolation', () => {
   test('resolver prefers package root over ambient execution cwd', () => {
-    const business = tempRoot('repo-harness-business-cwd-');
+    const business = tempRoot('forge-business-cwd-');
     initGitRepo(business, 'business-app');
     const resolved = resolveControllerRuntimeSourceRoot({ cwd: business, env: {} });
     expect(resolved.reason).toBe('package-root');
@@ -85,7 +85,7 @@ describe('runtime source isolation', () => {
   });
 
   test('immutable release identity never inherits a newer ambient parent Git HEAD', () => {
-    const parent = tempRoot('repo-harness-release-parent-');
+    const parent = tempRoot('forge-release-parent-');
     initGitRepo(parent, 'controller-runtime-fixture');
     const sourceCommit = git(parent, 'rev-parse', 'HEAD');
     const releaseRoot = join(parent, '_ops', 'controller-home', 'supervisor', 'releases', `release-${sourceCommit}`);
@@ -113,7 +113,7 @@ describe('runtime source isolation', () => {
   });
 
   test('malformed immutable release manifest fails closed instead of using ambient Git identity', () => {
-    const parent = tempRoot('repo-harness-invalid-release-parent-');
+    const parent = tempRoot('forge-invalid-release-parent-');
     initGitRepo(parent, 'controller-runtime-fixture');
     const releaseRoot = join(parent, '_ops', 'controller-home', 'supervisor', 'releases', 'invalid-release');
     mkdirSync(releaseRoot, { recursive: true });
@@ -123,8 +123,8 @@ describe('runtime source isolation', () => {
   });
 
   test('execution repository is never used as current runtime source for drift', () => {
-    const runtimeRoot = tempRoot('repo-harness-runtime-src-');
-    const businessRoot = tempRoot('repo-harness-business-src-');
+    const runtimeRoot = tempRoot('forge-runtime-src-');
+    const businessRoot = tempRoot('forge-business-src-');
     initGitRepo(runtimeRoot, 'controller-runtime-fixture');
     initGitRepo(businessRoot, 'business-app');
     git(businessRoot, 'checkout', '-b', 'perf-i18n-global-opt');
@@ -147,15 +147,15 @@ describe('runtime source isolation', () => {
   });
 
   test('session-like repository switch leaves generation identity unchanged', () => {
-    const runtimeRoot = tempRoot('repo-harness-runtime-gen-');
-    const repoA = tempRoot('repo-harness-exec-a-');
-    const repoB = tempRoot('repo-harness-exec-b-');
+    const runtimeRoot = tempRoot('forge-runtime-gen-');
+    const repoA = tempRoot('forge-exec-a-');
+    const repoB = tempRoot('forge-exec-b-');
     initGitRepo(runtimeRoot, 'controller-runtime-fixture');
     initGitRepo(repoA, 'business-a');
     initGitRepo(repoB, 'business-b');
     pinRuntimeSource(runtimeRoot);
 
-    const controllerHome = tempRoot('repo-harness-runtime-home-');
+    const controllerHome = tempRoot('forge-runtime-home-');
     ensureControllerHome(controllerHome);
     const before = rotateRuntimeGeneration(controllerHome, collectRuntimeSourceIdentity(runtimeRoot));
     const beforeRaw = readFileSync(join(controllerHome, 'system', 'runtime-generation.json'), 'utf8');
@@ -185,7 +185,7 @@ describe('runtime source isolation', () => {
   });
 
   test('true runtime source dirty triggers stale with accurate message', () => {
-    const runtimeRoot = tempRoot('repo-harness-runtime-dirty-');
+    const runtimeRoot = tempRoot('forge-runtime-dirty-');
     initGitRepo(runtimeRoot, 'controller-runtime-fixture');
     const active = collectRuntimeSourceIdentity(runtimeRoot);
     writeFileSync(join(runtimeRoot, 'src', 'runtime-change.ts'), 'export const changed = true;\n');
@@ -199,7 +199,7 @@ describe('runtime source isolation', () => {
   });
 
   test('accepts a clean non-default branch as the authoritative runtime checkout', () => {
-    const runtimeRoot = tempRoot('repo-harness-runtime-stable-branch-');
+    const runtimeRoot = tempRoot('forge-runtime-stable-branch-');
     initGitRepo(runtimeRoot, 'controller-runtime-fixture');
     git(runtimeRoot, 'checkout', '-b', 'codex/canonical-stable-baseline');
     const active = collectRuntimeSourceIdentity(runtimeRoot);
@@ -220,9 +220,9 @@ describe('runtime source isolation', () => {
   });
 
   test('MCP rh_status does not mark RUNTIME_SOURCE stale for a different execution repository', async () => {
-    const runtimeRoot = tempRoot('repo-harness-runtime-mcp-');
-    const businessRoot = tempRoot('repo-harness-business-mcp-');
-    const controllerHome = tempRoot('repo-harness-home-mcp-');
+    const runtimeRoot = tempRoot('forge-runtime-mcp-');
+    const businessRoot = tempRoot('forge-business-mcp-');
+    const controllerHome = tempRoot('forge-home-mcp-');
     initGitRepo(runtimeRoot, 'controller-runtime-fixture');
     initGitRepo(businessRoot, 'business-app');
     git(businessRoot, 'checkout', '-b', 'perf-i18n-global-opt');

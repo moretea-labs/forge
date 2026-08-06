@@ -1,6 +1,6 @@
 # Provider configuration and routing
 
-repo-harness does not require or privilege a specific model vendor. A fresh installation builds neutral routing from provider kind, declared capabilities, health, and the configured provider priority. Providers with the same priority use the provider id only as a deterministic tie-breaker.
+Forge does not require or privilege a specific model vendor. A fresh installation builds neutral routing from provider kind, declared capabilities, health, and the configured provider priority. Providers with the same priority use the provider id only as a deterministic tie-breaker.
 
 ## Where configuration lives
 
@@ -28,4 +28,4 @@ An explicit routing order intentionally overrides the general provider priority.
 
 Maintainers and users may place Grok, Codex, Claude, an API provider, or another registered provider first in their own Controller configuration. Those preferences belong under `controllerHome`; they are not open-source defaults and are not copied into the repository.
 
-Remote API calls remain double-gated: the provider must be enabled/configured in the GUI and `REPO_HARNESS_ENABLE_LIVE_MODEL_PROVIDERS` must explicitly allow live calls. Without both, the API provider is proposal-only.
+Remote API calls remain double-gated: the provider must be enabled/configured in the GUI and `FORGE_ENABLE_LIVE_MODEL_PROVIDERS` must explicitly allow live calls. Without both, the API provider is proposal-only.

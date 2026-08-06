@@ -29,7 +29,7 @@ import {
 import { listExecutionJobs } from '../execution/jobs/store';
 import { processRuntimeResourceDiagnostics } from '../execution/process-runtime';
 import { readSchedulerHealthSnapshot } from '../control-plane/global-scheduler/scheduler';
-import { readControllerDaemonStatus } from '../control-plane/daemon-client';
+import { readForgeRuntimeStatus } from '../control-plane/runtime-status-client';
 import { listAssistantPluginManifests } from '../plugins/store';
 
 export const READ_ONLY_DIAGNOSTIC_TOOLS = [
@@ -62,7 +62,7 @@ function performanceDiagnostic(
   const runtime = loadMcpRuntimeState(repository.canonicalRoot);
   const inferredLocalBridge = inferLocalControllerProcess(repository.canonicalRoot);
   const activeJobs = activeExecutionJobs(controllerHome, repository.repoId);
-  const daemon = readControllerDaemonStatus(controllerHome);
+  const daemon = readForgeRuntimeStatus(controllerHome);
   return {
     ...collectRuntimePerformanceDiagnostics({
       repoId: repository.repoId,
@@ -127,7 +127,7 @@ function recoveryProbe(
   repository: RepositoryRecord,
   args: Record<string, unknown>,
 ): Record<string, unknown> {
-  const daemon = readControllerDaemonStatus(controllerHome);
+  const daemon = readForgeRuntimeStatus(controllerHome);
   const scheduler = readSchedulerHealthSnapshot(controllerHome);
   const projectionSnapshot = readRepositoryProjectionSnapshot(controllerHome, repository.repoId);
   const projection = projectionSnapshot.projection;

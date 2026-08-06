@@ -46,7 +46,7 @@ export interface GitIdentityPerformanceSnapshot {
 }
 
 /** Git identity sampling TTL: one bounded subprocess, then cheap reads. */
-const GIT_IDENTITY_SAMPLE_TTL_MS = Math.max(1_000, Number(process.env.REPO_HARNESS_GIT_IDENTITY_SAMPLE_TTL_MS ?? 3_000));
+const GIT_IDENTITY_SAMPLE_TTL_MS = Math.max(1_000, Number(process.env.FORGE_GIT_IDENTITY_SAMPLE_TTL_MS ?? 3_000));
 const GIT_IDENTITY_CACHE_MAX_ENTRIES = 128;
 const gitIdentityCache = new Map<string, CachedGitIdentity>();
 const gitIdentityPerformance: GitIdentityPerformanceSnapshot = {

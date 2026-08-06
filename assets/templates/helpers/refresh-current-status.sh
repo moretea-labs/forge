@@ -388,7 +388,7 @@ render_status() {
   cat <<EOF_STATUS
 # Current Status Snapshot
 
-<!-- generated-by: repo-harness refresh-current-status v1 -->
+<!-- generated-by: forge refresh-current-status v1 -->
 <!-- updated_at: ${now} -->
 <!-- stale_after: ${stale_after} -->
 

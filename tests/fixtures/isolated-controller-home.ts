@@ -36,9 +36,9 @@ export async function allocateFreePort(): Promise<number> {
 
 /**
  * Create a fully isolated controller fixture that must never touch the real
- * REPO_HARNESS_CONTROLLER_HOME or default ports.
+ * FORGE_CONTROLLER_HOME or default ports.
  */
-export async function createIsolatedControllerFixture(prefix = 'repo-harness-isolated-'): Promise<IsolatedControllerFixture> {
+export async function createIsolatedControllerFixture(prefix = 'forge-isolated-'): Promise<IsolatedControllerFixture> {
   const repoRoot = mkdtempSync(join(tmpdir(), `${prefix}repo-`));
   const controllerHome = mkdtempSync(join(tmpdir(), `${prefix}home-`));
   const mcpPort = await allocateFreePort();
@@ -48,11 +48,11 @@ export async function createIsolatedControllerFixture(prefix = 'repo-harness-iso
 
   mkdirSync(join(repoRoot, '.ai', 'harness'), { recursive: true });
   mkdirSync(join(repoRoot, 'tasks'), { recursive: true });
-  mkdirSync(join(repoRoot, '.repo-harness'), { recursive: true });
+  mkdirSync(join(repoRoot, '.forge'), { recursive: true });
   writeFileSync(join(repoRoot, '.ai', 'harness', 'policy.json'), '{}\n');
   writeFileSync(join(repoRoot, 'tasks', 'current.md'), '# Current\n');
   writeFileSync(
-    join(repoRoot, '.repo-harness', 'mcp.local.json'),
+    join(repoRoot, '.forge', 'mcp.local.json'),
     `${JSON.stringify({
       version: 1,
       profile: 'controller',
@@ -66,7 +66,7 @@ export async function createIsolatedControllerFixture(prefix = 'repo-harness-iso
   execFileSync('git', ['config', 'user.name', 'Repo Harness Test'], { cwd: repoRoot, stdio: 'ignore' });
 
   // Guard: fixture homes must not be the real user controller home.
-  const realHome = process.env.HOME ? join(process.env.HOME, '.repo-harness', 'controller') : '';
+  const realHome = process.env.HOME ? join(process.env.HOME, '.forge', 'controller') : '';
   if (realHome && (controllerHome === realHome || repoRoot === realHome)) {
     throw new Error('TEST_GUARD: fixture collided with real controller home');
   }
@@ -88,15 +88,15 @@ export function isolatedControllerEnv(fixture: IsolatedControllerFixture, extra:
   return {
     ...process.env,
     ...extra,
-    REPO_HARNESS_CONTROLLER_HOME: fixture.controllerHome,
-    REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT: extra.REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT
-      ?? process.env.REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT
+    FORGE_CONTROLLER_HOME: fixture.controllerHome,
+    FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT: extra.FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT
+      ?? process.env.FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT
       ?? '',
-    REPO_HARNESS_CONTROLLER_LIFECYCLE_OWNER: extra.REPO_HARNESS_CONTROLLER_LIFECYCLE_OWNER ?? '',
-    REPO_HARNESS_CONTROLLER_START_TIMEOUT_MS: extra.REPO_HARNESS_CONTROLLER_START_TIMEOUT_MS ?? '45000',
+    FORGE_CONTROLLER_LIFECYCLE_OWNER: extra.FORGE_CONTROLLER_LIFECYCLE_OWNER ?? '',
+    FORGE_CONTROLLER_START_TIMEOUT_MS: extra.FORGE_CONTROLLER_START_TIMEOUT_MS ?? '45000',
     // Ensure tests never pick up host tunnel/ngrok rotation.
-    REPO_HARNESS_NGROK_ROTATION_CONFIG: join(fixture.controllerHome, 'disabled-ngrok-rotation.env'),
-    REPO_HARNESS_CONTROLLER_EXTERNAL_TUNNEL: 'none',
+    FORGE_NGROK_ROTATION_CONFIG: join(fixture.controllerHome, 'disabled-ngrok-rotation.env'),
+    FORGE_CONTROLLER_EXTERNAL_TUNNEL: 'none',
   };
 }
 
@@ -118,9 +118,9 @@ export async function destroyAllIsolatedControllerFixtures(): Promise<void> {
  * when running isolated lifecycle tests.
  */
 export function assertIsolatedControllerEnv(controllerHome: string): void {
-  const real = process.env.HOME ? join(process.env.HOME, '.repo-harness', 'controller') : '';
+  const real = process.env.HOME ? join(process.env.HOME, '.forge', 'controller') : '';
   if (real && controllerHome === real) {
-    throw new Error('TEST_GUARD: isolated test refused real ~/.repo-harness/controller');
+    throw new Error('TEST_GUARD: isolated test refused real ~/.forge/controller');
   }
   if (controllerHome.includes('/_ops/controller-home') && !controllerHome.includes(tmpdir())) {
     throw new Error(`TEST_GUARD: isolated test refused repo ops controller home: ${controllerHome}`);

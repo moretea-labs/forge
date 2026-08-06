@@ -160,8 +160,8 @@ git_changed_files_json() {
 
 git_diff_base_ref() {
   local branch
-  if [[ -n "${REPO_HARNESS_DIFF_BASE:-}" ]]; then
-    printf '%s' "$REPO_HARNESS_DIFF_BASE"
+  if [[ -n "${FORGE_DIFF_BASE:-}" ]]; then
+    printf '%s' "$FORGE_DIFF_BASE"
     return 0
   fi
   if [[ -n "${HARNESS_DIFF_BASE:-}" ]]; then
@@ -367,7 +367,7 @@ if [[ -f "scripts/sync-brain-docs.sh" && -f ".ai/harness/brain-manifest.json" ]]
   bash scripts/sync-brain-docs.sh --all >/dev/null || true
 fi
 if [[ -f "scripts/prepare-codex-handoff.sh" && ( -f ".ai/harness/handoff/current.md" || -f ".ai/harness/handoff/resume.md" ) ]]; then
-  bash scripts/prepare-codex-handoff.sh --reason "repo-harness-verify-sprint" >/dev/null || true
+  bash scripts/prepare-codex-handoff.sh --reason "forge-verify-sprint" >/dev/null || true
 fi
 set +e
 contract_output="$(bash scripts/verify-contract.sh --contract "$contract_file" --strict --report-file "$contract_report" 2>&1)"
@@ -479,7 +479,7 @@ handoff_resume_exists=false
 if command -v jq >/dev/null 2>&1 && jq -e . "$contract_report" >/dev/null 2>&1; then
   jq -n \
     --slurpfile contract_report "$contract_report" \
-    --arg schema "repo-harness-run-trace.v1" \
+    --arg schema "forge-run-trace.v1" \
     --arg status "$status" \
     --arg source "verify-sprint" \
     --arg command "bash scripts/verify-sprint.sh" \
@@ -585,7 +585,7 @@ if command -v jq >/dev/null 2>&1 && jq -e . "$contract_report" >/dev/null 2>&1; 
 else
   cat > "$checks_report" <<EOF_CHECKS
 {
-  "schema": "repo-harness-run-trace.v1",
+  "schema": "forge-run-trace.v1",
   "status": "$(json_escape "$status")",
   "source": "verify-sprint",
   "command": "bash scripts/verify-sprint.sh",

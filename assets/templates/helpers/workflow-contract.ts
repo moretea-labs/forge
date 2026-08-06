@@ -140,10 +140,10 @@ export function resolveAgenticDevRoot(_repoRoot = REPO_ROOT): string {
   const home = process.env.HOME;
   if (home && home.length > 0) {
     const candidates = [
-      join(home, "Projects", "repo-harness"),
-      join(home, ".codex", "skills", "repo-harness"),
-      join(home, ".claude", "skills", "repo-harness"),
-      join(home, ".agents", "skills", "repo-harness"),
+      join(home, "Projects", "forge"),
+      join(home, ".codex", "skills", "forge"),
+      join(home, ".claude", "skills", "forge"),
+      join(home, ".agents", "skills", "forge"),
     ];
 
     for (const candidate of candidates) {
@@ -153,7 +153,7 @@ export function resolveAgenticDevRoot(_repoRoot = REPO_ROOT): string {
     return candidates[0];
   }
 
-  return join(".repo-harness", "skills", "repo-harness");
+  return join(".forge", "skills", "forge");
 }
 
 export function resolveAgenticDevSkillRoot(repoRoot = REPO_ROOT): string {

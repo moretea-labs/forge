@@ -25,7 +25,7 @@ JSON snapshot under `.ai/harness/runs/`. Each run records:
 Example cron entry for a local checkout:
 
 ```cron
-17 8 * * * cd /path/to/repo && bash .ai/harness/scripts/heartbeat-triage.sh run --source scheduled >/tmp/repo-harness-heartbeat.log 2>&1
+17 8 * * * cd /path/to/repo && bash .ai/harness/scripts/heartbeat-triage.sh run --source scheduled >/tmp/forge-heartbeat.log 2>&1
 ```
 
 ## loop

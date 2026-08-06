@@ -5,9 +5,9 @@ param(
 )
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
-$PackageName = "@moretea-labs/matea"
-$PackageVersion = if ($env:MATEA_VERSION) { $env:MATEA_VERSION } elseif ($env:REPO_HARNESS_VERSION) { $env:REPO_HARNESS_VERSION } else { "next" }
-$InstallRuntime = if ($Runtime) { $Runtime.ToLowerInvariant() } elseif ($env:MATEA_INSTALL_RUNTIME) { $env:MATEA_INSTALL_RUNTIME.ToLowerInvariant() } elseif ($env:REPO_HARNESS_INSTALL_RUNTIME) { $env:REPO_HARNESS_INSTALL_RUNTIME.ToLowerInvariant() } else { "auto" }
+$PackageName = "@moretea-labs/forge"
+$PackageVersion = if ($env:FORGE_VERSION) { $env:FORGE_VERSION } else { "next" }
+$InstallRuntime = if ($Runtime) { $Runtime.ToLowerInvariant() } elseif ($env:FORGE_INSTALL_RUNTIME) { $env:FORGE_INSTALL_RUNTIME.ToLowerInvariant() } else { "auto" }
 $MinimumNodeVersion = [version]"20.10.0"
 $BunInstall = if ($env:BUN_INSTALL) { $env:BUN_INSTALL } else { Join-Path $HOME ".bun" }
 $BunBin = Join-Path $BunInstall "bin"
@@ -17,7 +17,7 @@ function Refresh-InstallerPath { Add-PathEntry $BunBin; if ($env:APPDATA) { Add-
 function Assert-Prerequisites {
   if ($PSVersionTable.PSVersion -lt [version]"5.1") { throw "PowerShell 5.1 or newer is required. PowerShell 7 is recommended." }
   if (-not (Test-Command "git")) { throw "Git is required. Install Git for Windows, reopen PowerShell, and rerun this installer." }
-  if (-not (Test-Command "node")) { throw "Node.js 20.10 or newer is required because the published Matea launcher uses Node." }
+  if (-not (Test-Command "node")) { throw "Node.js 20.10 or newer is required because the published Forge launcher uses Node." }
   $nodeText = (& node -p "process.versions.node").Trim(); if ($LASTEXITCODE -ne 0 -or -not $nodeText) { throw "Node.js is present, but its version could not be read." }
   if ([version]$nodeText -lt $MinimumNodeVersion) { throw "Node.js 20.10 or newer is required; found $nodeText." }
 }
@@ -25,12 +25,12 @@ function Install-BunIfNeeded { if (Test-Command "bun") { return }; Invoke-RestMe
 function Select-InstallRuntime {
   switch ($InstallRuntime) {
     "bun" { Install-BunIfNeeded; return "bun" }
-    "node" { if (-not (Test-Command "npm")) { throw "npm is required for MATEA_INSTALL_RUNTIME=node." }; return "node" }
+    "node" { if (-not (Test-Command "npm")) { throw "npm is required for FORGE_INSTALL_RUNTIME=node." }; return "node" }
     "auto" { if (Test-Command "bun") { return "bun" }; if (Test-Command "npm") { return "node" }; throw "Neither Bun nor npm is available." }
-    default { throw "Invalid MATEA_INSTALL_RUNTIME=$InstallRuntime. Expected auto, bun, or node." }
+    default { throw "Invalid FORGE_INSTALL_RUNTIME=$InstallRuntime. Expected auto, bun, or node." }
   }
 }
-if ($DryRun -or $env:MATEA_DRY_RUN -eq "1" -or $env:REPO_HARNESS_DRY_RUN -eq "1") { Write-Host "DRY RUN: would require Git and Node.js 20.10+, choose runtime ($InstallRuntime), install $PackageName@$PackageVersion, and verify the Matea CLI."; exit 0 }
+if ($DryRun -or $env:FORGE_DRY_RUN -eq "1") { Write-Host "DRY RUN: would require Git and Node.js 20.10+, choose runtime ($InstallRuntime), install $PackageName@$PackageVersion, and verify the Forge CLI."; exit 0 }
 Refresh-InstallerPath
 Assert-Prerequisites
 $Runtime = Select-InstallRuntime
@@ -38,11 +38,11 @@ $PackageSpec = "$PackageName@$PackageVersion"
 if ($Runtime -eq "bun") { & bun add -g $PackageSpec } else { & npm install -g $PackageSpec --omit=optional --no-audit --no-fund }
 if ($LASTEXITCODE -ne 0) { throw "Package installation failed with exit code $LASTEXITCODE." }
 Refresh-InstallerPath
-if (-not (Test-Command "matea")) { throw "matea is not on PATH after installation." }
-$Version = (& matea --version | Select-Object -First 1).Trim(); if ($LASTEXITCODE -ne 0 -or -not $Version) { throw "Matea installed, but version readback failed." }
-& matea doctor --help *> $null; if ($LASTEXITCODE -ne 0) { throw "Matea installed, but the doctor command could not be loaded." }
-Write-Host "Matea $Version installed."
+if (-not (Test-Command "forge")) { throw "forge is not on PATH after installation." }
+$Version = (& forge --version | Select-Object -First 1).Trim(); if ($LASTEXITCODE -ne 0 -or -not $Version) { throw "Forge installed, but version readback failed." }
+& forge doctor --help *> $null; if ($LASTEXITCODE -ne 0) { throw "Forge installed, but the doctor command could not be loaded." }
+Write-Host "Forge $Version installed."
 Write-Host "Next:"
-Write-Host "  matea install --no-cli"
-Write-Host "  matea doctor"
-Write-Host "  matea adopt --repo C:\path\to\your-project --dry-run"
+Write-Host "  forge install --no-cli"
+Write-Host "  forge doctor"
+Write-Host "  forge adopt --repo C:\path\to\your-project --dry-run"

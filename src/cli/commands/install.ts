@@ -1,5 +1,5 @@
 /**
- * `repo-harness install|uninstall --target codex|claude|both --location global|local`
+ * `forge install|uninstall --target codex|claude|both --location global|local`
  *
  * Resolves --target to AgentTarget list, calls target install/uninstall for
  * each, prints WriteResult lines. Idempotent: re-run with no diff returns
@@ -37,7 +37,7 @@ function resolveTargets(spec: InstallTargetSpec) {
   const t = getTarget(spec);
   if (!t) {
     throw new Error(
-      `matea install: unknown --target "${spec}" (known: ${listTargetIds().join(', ')}, both)`,
+      `forge install: unknown --target "${spec}" (known: ${listTargetIds().join(', ')}, both)`,
     );
   }
   return [t];

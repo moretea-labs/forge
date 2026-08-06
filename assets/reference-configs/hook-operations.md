@@ -1,24 +1,24 @@
 # Hook Operations Reference
 
-> Full troubleshooting runbook: `brain/repo-harness/runbooks/runbook-repo-harness-hook-troubleshooting.md` (`gbrain` slug `runbooks/runbook-repo-harness-hook-troubleshooting`).
+> Full troubleshooting runbook: `brain/forge/runbooks/runbook-forge-hook-troubleshooting.md` (`gbrain` slug `runbooks/runbook-forge-hook-troubleshooting`).
 
 ## Hook Authority Map
 
 Start with the shortest truth path:
 
-1. `~/.claude/settings.json` and `~/.codex/hooks.json` wire host events into `repo-harness-hook` (bash-shim installs use `bash ~/.repo-harness/hook-shim.sh <hook>.sh`), with `repo-harness hook` as the compatibility fallback.
-2. The dispatcher checks whether the current repo is opted in through `.ai/harness/workflow-contract.json` (and, for the bash shim, that its primary root is trusted in `~/.repo-harness/trusted-repos`).
+1. `~/.claude/settings.json` and `~/.codex/hooks.json` wire host events into `forge-hook` (bash-shim installs use `bash ~/.forge/hook-shim.sh <hook>.sh`), with `forge hook` as the compatibility fallback.
+2. The dispatcher checks whether the current repo is opted in through `.ai/harness/workflow-contract.json` (and, for the bash shim, that its primary root is trusted in `~/.forge/trusted-repos`).
 3. The route registry selects the ordered hook scripts for that event and route.
-4. Hook scripts resolve **central-first**: env `REPO_HARNESS_HOOK_SOURCE` (`repo` | `central` | absolute dir) → repo policy pin `"hook_source": "repo"` in `.ai/harness/policy.json` → the central copy → vendored `<repo>/.ai/hooks` fallback. The central copy is `~/.repo-harness/hooks/` (installed by `scripts/repo-harness.sh install`, stamped with `.version`) on the bash chain, and the packaged `assets/hooks/` inside the globally installed CLI on the `repo-harness-hook` chain.
+4. Hook scripts resolve **central-first**: env `FORGE_HOOK_SOURCE` (`repo` | `central` | absolute dir) → repo policy pin `"hook_source": "repo"` in `.ai/harness/policy.json` → the central copy → vendored `<repo>/.ai/hooks` fallback. The central copy is `~/.forge/hooks/` (installed by `scripts/forge.sh install`, stamped with `.version`) on the bash chain, and the packaged `assets/hooks/` inside the globally installed CLI on the `forge-hook` chain.
 
-Central-first means one `install` (or one CLI upgrade) updates hook behavior for every trusted opt-in repo at once; vendored `.ai/hooks` copies are inert defaults unless the repo pins `"hook_source": "repo"`. Missing advisory scripts warn and skip, but required guard routes still fail closed. `repo-harness doctor` and `scripts/repo-harness.sh status` report which source is active for the current repo.
+Central-first means one `install` (or one CLI upgrade) updates hook behavior for every trusted opt-in repo at once; vendored `.ai/hooks` copies are inert defaults unless the repo pins `"hook_source": "repo"`. Missing advisory scripts warn and skip, but required guard routes still fail closed. `forge doctor` and `scripts/forge.sh status` report which source is active for the current repo.
 Generated host adapter commands carry a 30 second timeout; long-running work belongs in explicit CLI commands, not hook foreground execution.
 
-`repo-harness adopt`, migration, and new-project scaffold paths do not copy the full hook runtime into ordinary downstream repos. Without a `"hook_source": "repo"` pin they prune stale top-level `.ai/hooks/*.sh` entry scripts and refresh only `.ai/hooks/lib/` helper libraries plus a README tombstone, because active execution should come from the user-level adapter and packaged hooks. Repos that intentionally develop or override hooks must set `"hook_source": "repo"` before syncing a full vendored hook runtime.
+`forge adopt`, migration, and new-project scaffold paths do not copy the full hook runtime into ordinary downstream repos. Without a `"hook_source": "repo"` pin they prune stale top-level `.ai/hooks/*.sh` entry scripts and refresh only `.ai/hooks/lib/` helper libraries plus a README tombstone, because active execution should come from the user-level adapter and packaged hooks. Repos that intentionally develop or override hooks must set `"hook_source": "repo"` before syncing a full vendored hook runtime.
 
-`UserPromptSubmit.default` dispatches to the active `prompt-guard.sh` resolved by the central-first hook source decision. For ordinary repos that means the packaged/user-level runtime; `.ai/hooks/prompt-guard.sh` is active only when the repo pins `"hook_source": "repo"`. The shell layer parses host prompt JSON, reads workflow files, performs capture side effects, and renders host-safe output; it pipes `{"prompt": ...}` into `repo-harness-hook prompt-guard-decide`, which owns every prompt-text intent classifier (Unicode-aware, in `src/cli/hook/prompt-intents.ts`) plus the intent x state decision table and returns one verdict JSON line (action, intent facts, derived strings). If the engine is unreachable or predates the protocol, the prompt layer degrades to a one-shot advisory instead of guessing; there is no shell fallback decision table.
+`UserPromptSubmit.default` dispatches to the active `prompt-guard.sh` resolved by the central-first hook source decision. For ordinary repos that means the packaged/user-level runtime; `.ai/hooks/prompt-guard.sh` is active only when the repo pins `"hook_source": "repo"`. The shell layer parses host prompt JSON, reads workflow files, performs capture side effects, and renders host-safe output; it pipes `{"prompt": ...}` into `forge-hook prompt-guard-decide`, which owns every prompt-text intent classifier (Unicode-aware, in `src/cli/hook/prompt-intents.ts`) plus the intent x state decision table and returns one verdict JSON line (action, intent facts, derived strings). If the engine is unreachable or predates the protocol, the prompt layer degrades to a one-shot advisory instead of guessing; there is no shell fallback decision table.
 
-Prompt-layer plan/spec/contract gates are advisory routing only. `PreToolUse.edit` keeps real path/scope and private-surface safety checks authoritative, while the plan-state gate defaults to `advice`; repositories may opt into `enforce` or `off` through policy `.guards.edit_plan_gate` or `REPO_HARNESS_EDIT_PLAN_GATE`. Done-claim gates block only on real failed or missing completion evidence, not on workflow ceremony.
+Prompt-layer plan/spec/contract gates are advisory routing only. `PreToolUse.edit` keeps real path/scope and private-surface safety checks authoritative, while the plan-state gate defaults to `advice`; repositories may opt into `enforce` or `off` through policy `.guards.edit_plan_gate` or `FORGE_EDIT_PLAN_GATE`. Done-claim gates block only on real failed or missing completion evidence, not on workflow ceremony.
 
 If you are asking "which hook file should I edit?", default to `assets/hooks/` for product changes and mirror into `.ai/hooks/` only for this self-host repo or another repo that pins `"hook_source": "repo"`; runtime pickup outside repo-pinned development happens on the next `install`/CLI upgrade because hooks resolve central-first.
 After installing or refreshing `~/.codex/hooks.json`, open Codex Settings and mark the user-level hook config as trusted; otherwise Codex will not execute it.
@@ -31,7 +31,7 @@ Repo-local `.claude/settings.json` and `.codex/hooks.json` hook adapters are leg
 Use this command for an explicit read-only audit:
 
 ```bash
-repo-harness security scan --json
+forge security scan --json
 ```
 
 `PostToolUse.always` runs one merged observer, `post-tool-observer.sh` (JSONL trace + lightweight advisories); the trace file `.claude/.trace.jsonl` is the single tool-trace record.
@@ -75,7 +75,7 @@ Hook scope is detect, classify, record, and remind:
 - `.ai/harness/scripts/architecture-queue.sh` writes requests/events.
 - `.ai/harness/scripts/workstream-sync.sh` maintains durable capability workstreams.
 - `.ai/harness/scripts/context-contract-sync.sh` updates only controlled local agent-context blocks.
-- `repo-harness capability-context request` may enqueue ignored runtime work under `.ai/harness/capability-context/`; `SessionStart` reminds the current agent to run `repo-harness capability-context sync --pending --apply`.
+- `forge capability-context request` may enqueue ignored runtime work under `.ai/harness/capability-context/`; `SessionStart` reminds the current agent to run `forge capability-context sync --pending --apply`.
 
 Agents, not hooks, author semantic snapshots and diagrams.
 Hooks do not spawn LLM agents in `PostEdit`.
@@ -84,7 +84,7 @@ Hooks do not spawn LLM agents in `PostEdit`.
 
 This repo has two hook surfaces on purpose:
 
-- `assets/hooks/` defines what downstream repos and the central runtime receive (`install` copies it to `~/.repo-harness/hooks/`; the npm package ships it for `repo-harness-hook`).
+- `assets/hooks/` defines what downstream repos and the central runtime receive (`install` copies it to `~/.forge/hooks/`; the npm package ships it for `forge-hook`).
 - `.ai/hooks/` defines this self-hosted repo's current runtime behavior; the self-host policy pins `"hook_source": "repo"` so hook development runs live working-tree code instead of the central copy.
 - User-level `~/.claude/settings.json` and `~/.codex/hooks.json` are host adapters only.
 

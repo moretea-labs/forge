@@ -4,7 +4,7 @@
 
 ## Default Brain
 
-- File vault: `brain/repo-harness/runbooks/runbook-agentic-spa-day-protocol.md`
+- File vault: `brain/forge/runbooks/runbook-agentic-spa-day-protocol.md`
 - gbrain slug: `runbooks/runbook-agentic-spa-day-protocol`
 
 ## Repo Role

@@ -17,7 +17,7 @@ export interface ResolveBrainRootOptions {
   customPath?: string;
 }
 
-export interface RepoHarnessUserConfig {
+export interface ForgeUserConfig {
   brainRoot?: string;
 }
 
@@ -31,14 +31,14 @@ export function expandHomePath(value: string, env?: NodeJS.ProcessEnv): string {
   return value;
 }
 
-export function repoHarnessConfigPath(env?: NodeJS.ProcessEnv): string {
-  return path.join(homeDir(env), ".repo-harness", "config.json");
+export function forgeConfigPath(env?: NodeJS.ProcessEnv): string {
+  return path.join(homeDir(env), ".forge", "config.json");
 }
 
-function readUserConfig(env?: NodeJS.ProcessEnv): RepoHarnessUserConfig {
+function readUserConfig(env?: NodeJS.ProcessEnv): ForgeUserConfig {
   try {
-    const raw = fs.readFileSync(repoHarnessConfigPath(env), "utf-8");
-    const parsed = JSON.parse(raw) as RepoHarnessUserConfig;
+    const raw = fs.readFileSync(forgeConfigPath(env), "utf-8");
+    const parsed = JSON.parse(raw) as ForgeUserConfig;
     return parsed && typeof parsed === "object" ? parsed : {};
   } catch (_error) {
     return {};
@@ -46,7 +46,7 @@ function readUserConfig(env?: NodeJS.ProcessEnv): RepoHarnessUserConfig {
 }
 
 export function configureBrainRoot(root: string, env?: NodeJS.ProcessEnv): { path: string; root: string } {
-  const configPath = repoHarnessConfigPath(env);
+  const configPath = forgeConfigPath(env);
   const resolved = path.resolve(expandHomePath(root, env));
   const current = readUserConfig(env);
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
@@ -125,7 +125,7 @@ export function defaultBrainRootChoice(opts: ResolveBrainRootOptions = {}): Brai
 }
 
 export function configuredBrainRoot(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.REPO_HARNESS_BRAIN_ROOT) return path.resolve(expandHomePath(env.REPO_HARNESS_BRAIN_ROOT, env));
+  if (env.FORGE_BRAIN_ROOT) return path.resolve(expandHomePath(env.FORGE_BRAIN_ROOT, env));
   const configured = readUserConfig(env).brainRoot;
   if (configured) return path.resolve(expandHomePath(configured, env));
   return defaultBrainRootChoice({ env }).root;

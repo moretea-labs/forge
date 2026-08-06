@@ -1,16 +1,16 @@
-# Matea
+# Forge
 
 <p align="center">
-  <img src="docs/images/matea-banner-cn.svg" alt="Matea——本地优先的行动型助手" width="1280">
+  <img src="docs/images/forge-banner-cn.svg" alt="Forge——本地优先的行动型助手" width="1280">
 </p>
 
 <p align="center"><strong>面向软件工作的本地优先行动型助手。</strong></p>
 
 <p align="center"><a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a></p>
 
-Matea 为 ChatGPT 提供持久、本地、可审查的工作空间，用来理解项目、执行有边界的操作并返回证据。当前重点是软件仓库，同时保留扩展到工具、服务、设备与个人工作流的能力，而且不会牺牲本地控制权。
+Forge 为 ChatGPT 提供持久、本地、可审查的工作空间，用来理解项目、执行有边界的操作并返回证据。当前重点是软件仓库，同时保留扩展到工具、服务、设备与个人工作流的能力，而且不会牺牲本地控制权。
 
-## 为什么使用 Matea
+## 为什么使用 Forge
 
 - **上下文不随聊天消失**：仓库注册、计划、工作状态、handoff 与验证证据可以跨会话保留。
 - **执行边界清晰**：普通本地工作可以顺畅完成；远程写入、破坏性操作和密钥访问仍需显式授权。
@@ -20,29 +20,32 @@ Matea 为 ChatGPT 提供持久、本地、可审查的工作空间，用来理�
 
 ## 发布状态
 
-`1.4.0-rc.6` 是 Matea 当前的 GitHub 候选版本。npm 包 `@moretea-labs/matea` **目前尚未公开发布**，所以源码安装仍是已验证的包安装路径。GitHub prerelease 与 npm 发布是两个需要分别验证的事实。
+`1.4.0-rc.6` 是 Forge 当前的 GitHub 候选版本。npm 包 `@moretea-labs/forge` **目前尚未公开发布**，所以源码安装仍是已验证的包安装路径。GitHub prerelease 与 npm 发布是两个需要分别验证的事实。
 
 ## 快速开始
 
 需要 Git、Node.js 20.10 或更高版本、npm 和可写的用户目录。Bun 1.0+ 是可选项，推荐用于源码开发和完整测试。
 
 ```bash
-git clone https://github.com/moretea-labs/matea.git
-cd matea
+git clone https://github.com/moretea-labs/forge.git
+cd forge
 npm ci --ignore-scripts --no-audit --no-fund
 npm install -g . --omit=optional --no-audit --no-fund
 
-matea --version
-matea init --target both
-matea doctor
+forge --version
+forge setup open --target both
+# 完成提示的配置动作，然后重复执行：
+forge setup next
+forge setup close
+forge doctor
 ```
 
 接入一个仓库：
 
 ```bash
-matea adopt --repo /path/to/your-project --dry-run
-matea adopt --repo /path/to/your-project
-matea repo list --json
+forge adopt --repo /path/to/your-project --dry-run
+forge adopt --repo /path/to/your-project
+forge repo list --json
 ```
 
 随后按维护中的路径完成首次使用：
@@ -54,25 +57,25 @@ matea repo list --json
 npm RC 发布后可以使用：
 
 ```bash
-npm install -g @moretea-labs/matea@next
+npm install -g @moretea-labs/forge@next
 # 或从同一个 npm 包安装：
-bun add -g @moretea-labs/matea@next
+bun add -g @moretea-labs/forge@next
 ```
 
 Bun 直接消费同一个 npm 包，不建立单独的发布渠道或版本线。
 
 ## 安全模型
 
-Matea 区分读取、本地仓库修改、远程影响、破坏性操作和密钥访问。工作始终绑定到已注册仓库；当发布身份、运行时所有权或操作边界不明确时，系统会失败关闭。详见[核心概念](docs/wiki/Core-Concepts.md)、[工作生命周期](docs/wiki/Work-Lifecycle.md)与[安全模型](docs/wiki/Security-Model.md)。
+Forge 区分读取、本地仓库修改、远程影响、破坏性操作和密钥访问。工作始终绑定到已注册仓库；当发布身份、运行时所有权或操作边界不明确时，系统会失败关闭。详见[核心概念](docs/wiki/Core-Concepts.md)、[工作生命周期](docs/wiki/Work-Lifecycle.md)与[安全模型](docs/wiki/Security-Model.md)。
 
-## 兼容策略
+## 产品标识
 
-`repo-harness` 与 `repo-harness-hook` 在 Matea 1.x 迁移期继续作为兼容命令。现有 `.repo-harness` 运行目录和协议标识也会保留，避免产品更名破坏本地状态与已有集成。
+Forge 只提供 `forge`、`forge-hook` 与 `forge-runtime` 命令。运行状态目录、环境变量、协议标识、发布产物与文档统一使用 Forge 命名，不再支持此前的产品别名。
 
 ## 文档
 
 - [文档中心](docs/README.md)
-- [Wiki 首页](docs/wiki/Home.md)与 [GitHub Wiki](https://github.com/moretea-labs/matea/wiki)
+- [Wiki 首页](docs/wiki/Home.md)与 [GitHub Wiki](https://github.com/moretea-labs/forge/wiki)
 - [公开使用指南](docs/public-usage-guide.zh-CN.md)
 - [平台支持](docs/operations/platform-support.zh-CN.md)
 - [故障排查](docs/operations/troubleshooting.zh-CN.md)
@@ -82,9 +85,9 @@ Matea 区分读取、本地仓库修改、远程影响、破坏性操作和密�
 
 ## 项目状态与支持
 
-Matea 仍处于 RC 收敛阶段，在 `1.4.0` 前接口可能调整。发布只能来自通过公开 release gate 的不可变 revision。
+Forge 仍处于 RC 收敛阶段，在 `1.4.0` 前接口可能调整。发布只能来自通过公开 release gate 的不可变 revision。
 
-- Bug 和文档问题：[GitHub Issues](https://github.com/moretea-labs/matea/issues)
+- Bug 和文档问题：[GitHub Issues](https://github.com/moretea-labs/forge/issues)
 - 使用问题：[SUPPORT.md](SUPPORT.md)
 - 安全问题：[SECURITY.md](SECURITY.md)
 - 参与贡献：[CONTRIBUTING.md](CONTRIBUTING.md)
@@ -92,4 +95,4 @@ Matea 仍处于 RC 收敛阶段，在 `1.4.0` 前接口可能调整。发布只�
 
 ## 许可证与归属
 
-项目采用 [MIT License](LICENSE)。Matea 最初基于 `AncientTwo/repo-harness` 开发，之后形成了大量修改并由 Moretea Labs 独立维护。上游版权和许可声明仍依法保留，详细信息见 [NOTICE](NOTICE) 与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+项目采用 [MIT License](LICENSE)。上游版权与许可声明依法保留，详细信息见 [NOTICE](NOTICE) 与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

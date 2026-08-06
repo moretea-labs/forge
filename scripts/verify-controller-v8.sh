@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 command -v bun >/dev/null 2>&1 || {
-  echo "Bun is required to verify repo-harness V8." >&2
+  echo "Bun is required to verify forge V8." >&2
   exit 127
 }
 

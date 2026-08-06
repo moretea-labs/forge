@@ -89,7 +89,7 @@ function stripWildcard(logicalPath) {
   return String(logicalPath || "").replace(/\/\*$/, "/");
 }
 
-const defaultBrainRoot = process.env.REPO_HARNESS_BRAIN_ROOT ||
+const defaultBrainRoot = process.env.FORGE_BRAIN_ROOT ||
   path.join(os.homedir(), "Library", "Mobile Documents", "com~apple~CloudDocs", "brain");
 
 function logicalToLocal(logicalPath) {

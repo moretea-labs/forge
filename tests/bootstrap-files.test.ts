@@ -29,7 +29,7 @@ describe("Bootstrap Script Contracts", () => {
   test("Codex agent metadata should exist for user-level installation", () => {
     const metadata = read("agents/openai.yaml");
     expect(metadata).toContain("interface:");
-    expect(metadata).toContain('display_name: "repo-harness"');
+    expect(metadata).toContain('display_name: "forge"');
     expect(metadata).toContain("short_description:");
     expect(metadata).toContain("default_prompt:");
   });
@@ -66,16 +66,17 @@ describe("Bootstrap Script Contracts", () => {
     expect(runner).not.toContain("git ls-files");
   });
 
-  test("repo package should expose workflow verification scripts", () => {
+  test("Forge package should expose workflow verification scripts", () => {
     const pkg = JSON.parse(read("package.json"));
     const cliEntry = read("src/cli/index.ts");
-    expect(pkg.name).toBe("@moretea-labs/matea");
+    expect(pkg.name).toBe("@moretea-labs/forge");
     expect(pkg.version).toMatch(/^1\.4\.0(?:-rc\.\d+)?$/);
     expect(pkg.private).toBeUndefined();
-    expect(pkg.bin["matea"]).toBe("bin/repo-harness.mjs");
-    expect(pkg.bin["matea-hook"]).toBe("bin/repo-harness-hook.mjs");
-    expect(pkg.bin["repo-harness"]).toBe("bin/repo-harness.mjs");
-    expect(pkg.bin["repo-harness-hook"]).toBe("bin/repo-harness-hook.mjs");
+    expect(pkg.bin).toEqual({
+      forge: "bin/forge.mjs",
+      "forge-hook": "bin/forge-hook.mjs",
+      "forge-runtime": "bin/forge-runtime.mjs",
+    });
     expect(pkg.files).toContain("assets/");
     expect(pkg.files).not.toContain("docs/reference-configs/");
     expect(cliEntry).toContain("CLI_VERSION");
@@ -84,13 +85,13 @@ describe("Bootstrap Script Contracts", () => {
     expect(pkg.scripts["check:ci"]).toBe("bun run check:main");
     expect(pkg.scripts["check:task"]).toBe("bun scripts/run-governed-gate.ts task");
     expect(pkg.scripts["check:main"]).toBe("bun scripts/run-governed-gate.ts main");
-    expect(pkg.scripts["check:brain-manifest"]).toBe("repo-harness run check-brain-manifest");
-    expect(pkg.scripts["check:task-sync"]).toBe("repo-harness run check-task-sync");
-    expect(pkg.scripts["check:deploy-sql"]).toBe("repo-harness run check-deploy-sql-order");
-    expect(pkg.scripts["check:architecture-sync"]).toBe("repo-harness run check-architecture-sync");
+    expect(pkg.scripts["check:brain-manifest"]).toBe("forge run check-brain-manifest");
+    expect(pkg.scripts["check:task-sync"]).toBe("node bin/forge.mjs run check-task-sync");
+    expect(pkg.scripts["check:deploy-sql"]).toBe("forge run check-deploy-sql-order");
+    expect(pkg.scripts["check:architecture-sync"]).toBe("forge run check-architecture-sync");
     expect(pkg.scripts["check:task-workflow"]).toBe("bash scripts/check-task-workflow.sh --strict");
-    expect(pkg.scripts["check:context-files"]).toBe("repo-harness run check-context-files");
-    expect(pkg.scripts["sync:brain-docs"]).toBe("repo-harness run sync-brain-docs --all");
+    expect(pkg.scripts["check:context-files"]).toBe("forge run check-context-files");
+    expect(pkg.scripts["sync:brain-docs"]).toBe("forge run sync-brain-docs --all");
   });
 
   test("ci gate should delegate to the content-addressed main gate", () => {
@@ -165,8 +166,8 @@ describe("Bootstrap Script Contracts", () => {
     expect(contract.documentation.referenceConfigs.source).toBe("user-level-runtime-docs");
     expect(contract.documentation.referenceConfigs.repoStubDirectory).toBe("docs/reference-configs");
     expect(contract.documentation.referenceConfigs.packageDirectory).toBe("assets/reference-configs");
-    expect(contract.documentation.referenceConfigs.resolverCommand).toBe("repo-harness docs path <doc-id>");
-    expect(contract.documentation.referenceConfigs.stubMarker).toBe("<!-- repo-harness: reference-config-stub v1 -->");
+    expect(contract.documentation.referenceConfigs.resolverCommand).toBe("forge docs path <doc-id>");
+    expect(contract.documentation.referenceConfigs.stubMarker).toBe("<!-- forge: reference-config-stub v1 -->");
     expect(contract.helpers.scripts).toContain("prepare-codex-handoff.sh");
     expect(contract.helpers.scripts).toContain("codex-handoff-resume.sh");
     expect(contract.helpers.scripts).toContain("check-agent-tooling.sh");
@@ -448,7 +449,7 @@ describe("Bootstrap Script Contracts", () => {
 
   test("setup script should delegate to the typed global init path", () => {
     const setup = read("scripts/setup-plugins.sh");
-    expect(setup).toContain("repo-harness init");
+    expect(setup).toContain("forge init");
     expect(setup).toContain('bun "$ROOT_DIR/src/cli/index.ts" init');
     expect(setup).not.toContain("ESSENTIAL_PLUGINS");
     expect(setup).not.toContain("feature-dev");

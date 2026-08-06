@@ -13,7 +13,7 @@ export type ReportSinkKind =
   | "notion_page"
   | "github_issue"
   | "local_file"
-  | "repo_harness_worklog";
+  | "forge_worklog";
 
 export type ReportSinkRisk = "readonly" | "workspace_write" | "remote_write";
 
@@ -90,7 +90,7 @@ export const DEFAULT_REPORT_SINKS: ReportSink[] = [
     risk: "readonly",
     requires_confirmation: false,
     title: "ChatGPT daily assistant brief",
-    description: "Default delivery path when no native repo-harness notification sink is configured.",
+    description: "Default delivery path when no native forge notification sink is configured.",
   },
   {
     id: "gmail-draft-daily-brief",
@@ -111,11 +111,11 @@ export const DEFAULT_REPORT_SINKS: ReportSink[] = [
   },
   {
     id: "repo-worklog-daily-brief",
-    kind: "repo_harness_worklog",
+    kind: "forge_worklog",
     enabled: false,
     risk: "workspace_write",
     requires_confirmation: true,
-    title: "repo-harness worklog report",
+    title: "forge worklog report",
   },
 ];
 

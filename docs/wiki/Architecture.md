@@ -13,11 +13,11 @@ This page is a short map. Start with [Runtime Architecture](Runtime-Architecture
 
 ## Authoritative documents
 
-- [System overview](https://github.com/moretea-labs/matea/blob/main/docs/architecture/current/system-overview.md)
-- [Architecture invariants](https://github.com/moretea-labs/matea/blob/main/docs/architecture/current/architecture-invariants.md)
-- [Entity model](https://github.com/moretea-labs/matea/blob/main/docs/architecture/current/entity-model.md)
-- [Job and Run lifecycle](https://github.com/moretea-labs/matea/blob/main/docs/architecture/current/job-and-run-lifecycle.md)
-- [Runtime directory map](https://github.com/moretea-labs/matea/blob/main/docs/architecture/current/runtime-directory-map.md)
-- [Verification and release gates](https://github.com/moretea-labs/matea/blob/main/docs/architecture/current/verification-and-release-gates.md)
+- [System overview](https://github.com/moretea-labs/forge/blob/main/docs/architecture/current/system-overview.md)
+- [Architecture invariants](https://github.com/moretea-labs/forge/blob/main/docs/architecture/current/architecture-invariants.md)
+- [Entity model](https://github.com/moretea-labs/forge/blob/main/docs/architecture/current/entity-model.md)
+- [Job and Run lifecycle](https://github.com/moretea-labs/forge/blob/main/docs/architecture/current/job-and-run-lifecycle.md)
+- [Runtime directory map](https://github.com/moretea-labs/forge/blob/main/docs/architecture/current/runtime-directory-map.md)
+- [Verification and release gates](https://github.com/moretea-labs/forge/blob/main/docs/architecture/current/verification-and-release-gates.md)
 
 Historical snapshots explain prior designs but are not current runtime contracts.

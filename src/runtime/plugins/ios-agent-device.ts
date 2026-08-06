@@ -170,7 +170,7 @@ export function resetIosAgentDeviceRuntimeHooksForTest(): void {
 }
 
 function executable(): string {
-  return process.env.REPO_HARNESS_AGENT_DEVICE_EXECUTABLE?.trim() || 'agent-device';
+  return process.env.FORGE_AGENT_DEVICE_EXECUTABLE?.trim() || 'agent-device';
 }
 
 function resolvedExecutable(): string {
@@ -355,9 +355,9 @@ function sessionEnv(input: AssistantPluginActionExecutionInput, record: Interact
     // commands. The previous five-second/zero-retention policy forced repeated
     // cold starts during ordinary multi-step device workflows.
     AGENT_DEVICE_DAEMON_IDLE_TIMEOUT_MS:
-      process.env.REPO_HARNESS_AGENT_DEVICE_DAEMON_IDLE_TIMEOUT_MS?.trim() || DEFAULT_AGENT_DEVICE_IDLE_MS,
+      process.env.FORGE_AGENT_DEVICE_DAEMON_IDLE_TIMEOUT_MS?.trim() || DEFAULT_AGENT_DEVICE_IDLE_MS,
     AGENT_DEVICE_IOS_RUNNER_IDLE_STOP_MS:
-      process.env.REPO_HARNESS_AGENT_DEVICE_IOS_RUNNER_IDLE_STOP_MS?.trim() || DEFAULT_AGENT_DEVICE_IDLE_MS,
+      process.env.FORGE_AGENT_DEVICE_IOS_RUNNER_IDLE_STOP_MS?.trim() || DEFAULT_AGENT_DEVICE_IDLE_MS,
   };
 }
 
@@ -370,9 +370,9 @@ function probeEnv(input: AssistantPluginActionExecutionInput, config?: AgentDevi
     AGENT_DEVICE_STATE_DIR: path,
     AGENT_DEVICE_PLATFORM: 'ios',
     AGENT_DEVICE_DAEMON_IDLE_TIMEOUT_MS:
-      process.env.REPO_HARNESS_AGENT_DEVICE_DAEMON_IDLE_TIMEOUT_MS?.trim() || DEFAULT_AGENT_DEVICE_IDLE_MS,
+      process.env.FORGE_AGENT_DEVICE_DAEMON_IDLE_TIMEOUT_MS?.trim() || DEFAULT_AGENT_DEVICE_IDLE_MS,
     AGENT_DEVICE_IOS_RUNNER_IDLE_STOP_MS:
-      process.env.REPO_HARNESS_AGENT_DEVICE_IOS_RUNNER_IDLE_STOP_MS?.trim() || DEFAULT_AGENT_DEVICE_IDLE_MS,
+      process.env.FORGE_AGENT_DEVICE_IOS_RUNNER_IDLE_STOP_MS?.trim() || DEFAULT_AGENT_DEVICE_IDLE_MS,
   };
 }
 
@@ -2150,7 +2150,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       interactionId,
       provider,
       engine: 'agent-device',
-      sessionId: `repo-harness-${sanitize(interactionId).slice(-40)}`,
+      sessionId: `forge-${sanitize(interactionId).slice(-40)}`,
       targetId: selected.id,
       targetAliases: selected.aliases,
       status: 'starting',

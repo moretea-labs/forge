@@ -19,7 +19,7 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 function temporaryRepository(): string {
-  const repo = mkdtempSync(join(tmpdir(), 'repo-harness-test-input-'));
+  const repo = mkdtempSync(join(tmpdir(), 'forge-test-input-'));
   git(repo, 'init', '-q');
   git(repo, 'config', 'user.email', 'tests@example.com');
   git(repo, 'config', 'user.name', 'Tests');

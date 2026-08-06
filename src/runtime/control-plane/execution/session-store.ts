@@ -33,8 +33,8 @@ export interface SessionIdentity {
 const PROCESS_INSTANCE_ID = `controller-${process.pid}-${randomUUID().slice(0, 12)}`;
 
 export function currentControllerInstanceId(): string {
-  return process.env.REPO_HARNESS_MCP_INSTANCE_ID?.trim()
-    || process.env.REPO_HARNESS_CONTROLLER_INSTANCE_ID?.trim()
+  return process.env.FORGE_MCP_INSTANCE_ID?.trim()
+    || process.env.FORGE_CONTROLLER_INSTANCE_ID?.trim()
     || PROCESS_INSTANCE_ID;
 }
 

@@ -11,7 +11,7 @@ afterEach(() => {
 });
 
 test('keeps user Requirement lifecycle separate from its active technical plan', () => {
-  const home = mkdtempSync(join('/tmp', 'repo-harness-requirement-'));
+  const home = mkdtempSync(join('/tmp', 'forge-requirement-'));
   homes.push(home);
   const options = { controllerHome: home, now: () => '2026-08-02T00:00:00.000Z' };
   const requirement = createRequirement(options, {
@@ -37,7 +37,7 @@ test('keeps user Requirement lifecycle separate from its active technical plan',
 });
 
 test('rejects reopening a completed Requirement without an explicit replacement state', () => {
-  const home = mkdtempSync(join('/tmp', 'repo-harness-requirement-'));
+  const home = mkdtempSync(join('/tmp', 'forge-requirement-'));
   homes.push(home);
   const options = { controllerHome: home };
   createRequirement(options, { requirementId: 'req-2', title: 'Outcome', outcomeStatement: 'Outcome statement' });
@@ -47,7 +47,7 @@ test('rejects reopening a completed Requirement without an explicit replacement 
 });
 
 test('restores a verified SQLite backup without losing Requirement authority', () => {
-  const home = mkdtempSync(join('/tmp', 'repo-harness-requirement-'));
+  const home = mkdtempSync(join('/tmp', 'forge-requirement-'));
   homes.push(home);
   const backup = join(home, 'backup.sqlite');
   const options = { controllerHome: home };
@@ -59,7 +59,7 @@ test('restores a verified SQLite backup without losing Requirement authority', (
 });
 
 test('historical cancelled Work evidence cannot reopen a reviewed Requirement outcome', () => {
-  const home = mkdtempSync(join('/tmp', 'repo-harness-requirement-'));
+  const home = mkdtempSync(join('/tmp', 'forge-requirement-'));
   homes.push(home);
   const options = { controllerHome: home, now: () => '2026-08-02T00:00:00.000Z' };
   createRequirement(options, { requirementId: 'req-reviewed', title: 'Reviewed outcome', outcomeStatement: 'The reviewed outcome remains done.' });
@@ -98,7 +98,7 @@ test('historical cancelled Work evidence cannot reopen a reviewed Requirement ou
 
 
 test('requires a Work-owned receipt before completing an active Requirement', () => {
-  const home = mkdtempSync(join('/tmp', 'repo-harness-requirement-'));
+  const home = mkdtempSync(join('/tmp', 'forge-requirement-'));
   homes.push(home);
   const options = { controllerHome: home, now: () => '2026-08-02T00:00:00.000Z' };
   createRequirement(options, {

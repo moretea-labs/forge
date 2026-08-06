@@ -81,7 +81,7 @@ describe("Hook contracts", () => {
     const script = read("assets/hooks/subagent-return-channel-guard.sh");
     expect(script).toContain("Task|Agent|SendUserMessage");
     expect(script).toContain("hook-input.sh");
-    expect(script).toContain("[repo-harness:return-channel]");
+    expect(script).toContain("[forge:return-channel]");
     expect(script).toContain("updatedInput");
     expect(script).toContain("permissionDecision: \"deny\"");
     expect(script).toContain(".agent_id");
@@ -99,7 +99,7 @@ describe("Hook contracts", () => {
     expect(script).toContain("Waza /think");
     expect(script).toContain("emit_agentic_packaging_hint");
     expect(script).toContain("[AgenticDevRoute]");
-    expect(script).toContain("repo-harness-autoplan after user authorization");
+    expect(script).toContain("forge-autoplan after user authorization");
     expect(script).toContain("hook will not plan or create assets");
     expect(script).not.toContain("Waza /hunt");
     expect(script).not.toContain("Waza /learn");
@@ -157,7 +157,7 @@ describe("Hook contracts", () => {
     const script = read("assets/hooks/session-start-context.sh");
     expect(script).toContain("Tooling Update Advisory");
     expect(script).toContain("setup check --target \"$target\" --check-updates --json");
-    expect(script).toContain("REPO_HARNESS_TOOLING_ADVISORY_TTL_SECONDS:-604800");
+    expect(script).toContain("FORGE_TOOLING_ADVISORY_TTL_SECONDS:-604800");
     expect(script).toContain("tooling-update-advisory-${target}.json");
     expect(script).toContain("tooling-update-advisory-${target}.rendered");
     expect(script).toContain("cli.update");

@@ -86,8 +86,8 @@ function fixture() {
       test: 'node -e "process.exit(0)"',
     },
   }, null, 2));
-  mkdirSync(join(repoRoot, '.repo-harness'), { recursive: true });
-  writeFileSync(join(repoRoot, '.repo-harness', 'checks.json'), JSON.stringify({
+  mkdirSync(join(repoRoot, '.forge'), { recursive: true });
+  writeFileSync(join(repoRoot, '.forge', 'checks.json'), JSON.stringify({
     version: 1,
     checks: {
       'quick-ok': {
@@ -110,7 +110,7 @@ function fixture() {
 }
 
 describe('Unified Process Runtime', () => {
-  test('uses Bun rather than a compiled repo-harness binary for source runner entries', () => {
+  test('uses Bun rather than a compiled forge binary for source runner entries', () => {
     const releaseRoot = mkdtempSync(join(tmpdir(), 'process-runtime-release-'));
     roots.push(releaseRoot);
     const daemonPath = join(releaseRoot, 'daemon.js');
@@ -119,28 +119,28 @@ describe('Unified Process Runtime', () => {
     writeFileSync(runnerPath, 'runner');
     expect(resolveProcessRunnerEntryPath(daemonPath, {}, releaseRoot)).toBe(runnerPath);
 
-    expect(resolveProcessRunnerRuntime('/opt/repo-harness/repo-harness.js', {})).toBe('bun');
+    expect(resolveProcessRunnerRuntime('/opt/forge/forge.js', {})).toBe('bun');
     expect(resolveProcessRunnerRuntime('/Users/test/.bun/bin/bun', {})).toBe('/Users/test/.bun/bin/bun');
-    expect(resolveProcessRunnerRuntime('/opt/repo-harness/repo-harness.js', {
-      REPO_HARNESS_BUN_EXECUTABLE: '/custom/bin/bun',
+    expect(resolveProcessRunnerRuntime('/opt/forge/forge.js', {
+      FORGE_BUN_EXECUTABLE: '/custom/bin/bun',
     })).toBe('/custom/bin/bun');
   });
 
   test('repository child PATH discovers standard Bun installs without changing existing precedence', () => {
-    const home = join(tmpdir(), 'repo-harness-user');
+    const home = join(tmpdir(), 'forge-user');
     const bunInstall = join(home, '.bun');
     const existing = [join(home, 'existing-bin'), '/usr/bin'];
     const sanitized = repositoryChildProcessEnvironment({
       HOME: home,
       BUN_INSTALL: bunInstall,
       PATH: existing.join(delimiter),
-      REPO_HARNESS_CONTROLLER_SECRET: 'remove-me',
+      FORGE_CONTROLLER_SECRET: 'remove-me',
     });
     expect(sanitized.PATH?.split(delimiter)).toEqual([
       ...existing,
       join(bunInstall, 'bin'),
     ]);
-    expect(sanitized.REPO_HARNESS_CONTROLLER_SECRET).toBeUndefined();
+    expect(sanitized.FORGE_CONTROLLER_SECRET).toBeUndefined();
   });
 
   test('short command returns completed direct handle without re-exec', async () => {
@@ -1178,21 +1178,21 @@ describe('Process Runner exactly-once semantics', () => {
     roots.push(root);
     const stdoutPath = join(root, 'out.log');
     const privateKeys = [
-      'REPO_HARNESS_CONTROLLER_HOME',
-      'REPO_HARNESS_CONTROLLER_INSTANCE_ID',
-      'REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT',
-      'REPO_HARNESS_DAEMON_INSTANCE_ID',
-      'REPO_HARNESS_MCP_INSTANCE_ID',
-      'REPO_HARNESS_MCP_PUBLIC_ORIGIN',
-      'REPO_HARNESS_PROCESS_RUNNER',
-      'REPO_HARNESS_PROCESS_RUNNER_ENTRY',
-      'REPO_HARNESS_RUNTIME_SLOT',
-      'REPO_HARNESS_RUNTIME_PASSIVE',
-      'REPO_HARNESS_STABLE_SUPERVISOR',
-      'REPO_HARNESS_SUPERVISOR_CHILD',
-      'REPO_HARNESS_SUPERVISOR_PUBLIC_HEALTH_ENDPOINT',
-      'REPO_HARNESS_WRITER_FENCING_TOKEN',
-      'REPO_HARNESS_WRITER_GENERATION',
+      'FORGE_CONTROLLER_HOME',
+      'FORGE_CONTROLLER_INSTANCE_ID',
+      'FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT',
+      'FORGE_DAEMON_INSTANCE_ID',
+      'FORGE_MCP_INSTANCE_ID',
+      'FORGE_MCP_PUBLIC_ORIGIN',
+      'FORGE_PROCESS_RUNNER',
+      'FORGE_PROCESS_RUNNER_ENTRY',
+      'FORGE_RUNTIME_SLOT',
+      'FORGE_RUNTIME_PASSIVE',
+      'FORGE_STABLE_SUPERVISOR',
+      'FORGE_SUPERVISOR_CHILD',
+      'FORGE_SUPERVISOR_PUBLIC_HEALTH_ENDPOINT',
+      'FORGE_WRITER_FENCING_TOKEN',
+      'FORGE_WRITER_GENERATION',
     ];
     const descriptor: ProcessCommandDescriptor = {
       schemaVersion: 1,

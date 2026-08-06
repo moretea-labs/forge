@@ -606,7 +606,7 @@ ensure_current_status_snapshot() {
     cat > tasks/current.md <<'CURRENT_STATUS_EOF'
 # Current Status Snapshot
 
-<!-- generated-by: repo-harness refresh-current-status v1 -->
+<!-- generated-by: forge refresh-current-status v1 -->
 <!-- updated_at: bootstrap -->
 <!-- stale_after: 24h -->
 
@@ -826,7 +826,7 @@ ARCHITECTURE_INDEX_EOF
     "functional_block_selector": {
       "script": "scripts/select-agent-context-blocks.sh",
       "config_file": ".ai/context/agent-context-blocks.txt",
-      "env": "REPO_HARNESS_CONTEXT_BLOCKS",
+      "env": "FORGE_CONTEXT_BLOCKS",
       "rule": "compatibility selector; capability registry is the source of truth"
     }
   },
@@ -906,7 +906,7 @@ ARCHITECTURE_INDEX_EOF
   },
   "plan_capture": {
     "script": "scripts/capture-plan.sh",
-    "sources": ["codex-plan-mode", "waza-think", "repo-harness-plan"],
+    "sources": ["codex-plan-mode", "waza-think", "forge-plan"],
     "rule": "Codex Plan mode and Waza think planning should capture decision-complete plans into plans/plan-*.md; implementation approval then projects the active approved plan through scripts/plan-to-todo.sh"
   },
   "planning": {
@@ -932,9 +932,9 @@ ARCHITECTURE_INDEX_EOF
     "on_demand": ["docs/brief.md", "docs/tech-stack.md", "docs/decisions.md", "docs/architecture.md", "docs/packages.md"],
     "reference_configs": ["harness-overview.md", "agentic-development-flow.md", "external-tooling.md", "sprint-contracts.md", "handoff-protocol.md", "document-generation.md", "global-working-rules.md"],
     "reference_source": "user-level-runtime-docs",
-    "reference_stub_marker": "<!-- repo-harness: reference-config-stub v1 -->",
-    "reference_resolver": "repo-harness docs path <doc-id>",
-    "rule": "create optional docs only when the agent has concrete repo evidence or the user asks; docs/reference-configs contains repo-local pointer stubs while full generic runtime docs live in the user-level/package repo-harness install"
+    "reference_stub_marker": "<!-- forge: reference-config-stub v1 -->",
+    "reference_resolver": "forge docs path <doc-id>",
+    "rule": "create optional docs only when the agent has concrete repo evidence or the user asks; docs/reference-configs contains repo-local pointer stubs while full generic runtime docs live in the user-level/package forge install"
   },
   "lsp_profiles": {
     "default": "typescript-lsp",
@@ -1047,7 +1047,7 @@ ARCHITECTURE_INDEX_EOF
       "index_dir": ".codegraph",
       "readiness": "required-for-agent-code-navigation",
       "hook_policy": "do-not-block-hooks",
-      "install_command": "bun add -g @colbymchenry/codegraph && repo-harness tools configure codegraph --target codex --location global",
+      "install_command": "bun add -g @colbymchenry/codegraph && forge tools configure codegraph --target codex --location global",
       "project_init_command": "codegraph init -i .",
       "sync_command": "codegraph sync .",
       "vendoring_policy": "do-not-add-package-dependency"
@@ -1101,7 +1101,7 @@ BRAIN_MANIFEST_EOF
   "functional_block_selector": {
     "script": "scripts/select-agent-context-blocks.sh",
     "config_file": ".ai/context/agent-context-blocks.txt",
-    "env": "REPO_HARNESS_CONTEXT_BLOCKS",
+    "env": "FORGE_CONTEXT_BLOCKS",
     "rule": "compatibility selector; capability registry is the source of truth"
   },
   "lsp_profiles": {

@@ -111,7 +111,7 @@ function resolveFromDir(
 export function resolveHelper(helper: string, cwd = process.cwd(), env: NodeJS.ProcessEnv = process.env): ResolvedHelper | null {
   const repoRoot = resolveRepoRoot(cwd, env);
   const repoHelpersRoot = join(repoRoot, '.ai', 'harness', 'scripts');
-  const override = env.REPO_HARNESS_HELPER_SOURCE?.trim();
+  const override = env.FORGE_HELPER_SOURCE?.trim();
 
   if (override === 'repo') return resolveFromDir(helper, repoHelpersRoot, 'env', repoRoot);
   if (override === 'package') return resolveFromDir(helper, PACKAGE_HELPERS_ROOT, 'env', repoRoot);
@@ -137,7 +137,7 @@ export function runHelper(opts: RunHelperOptions): RunHelperResult {
       exitCode: 2,
       reason: 'missing-helper',
       helper: opts.helper,
-      stderr: `repo-harness run: unknown helper "${opts.helper}"`,
+      stderr: `forge run: unknown helper "${opts.helper}"`,
     };
   }
 
@@ -145,7 +145,7 @@ export function runHelper(opts: RunHelperOptions): RunHelperResult {
   const command = resolved.fileName.endsWith('.sh') ? 'bash' : process.execPath;
   const child = runBoundedProcess(command, [resolved.path, ...args], {
     cwd: resolved.repoRoot,
-    env: { ...env, REPO_HARNESS_HELPER_SOURCE_PATH: resolved.path },
+    env: { ...env, FORGE_HELPER_SOURCE_PATH: resolved.path },
     stdio: opts.stdio ?? 'inherit',
     timeoutMs: opts.timeoutMs,
     maxOutputBytes: opts.maxOutputBytes,

@@ -464,11 +464,11 @@
       "ifMissing": true
     },
     {
-      "id": "appendManagedBlock:.gitignore:repo-harness-generated-runtime",
+      "id": "appendManagedBlock:.gitignore:forge-generated-runtime",
       "kind": "appendManagedBlock",
       "status": "planned",
       "path": ".gitignore",
-      "marker": "repo-harness generated-runtime"
+      "marker": "forge generated-runtime"
     }
   ],
   "summary": {
@@ -486,7 +486,7 @@
     "failedTotal": 0,
     "userOwnedFilesTouched": 1,
     "generatedFiles": 49,
-    "repoHarnessOwnedFiles": 10,
+    "forgeOwnedFiles": 10,
     "requiresVerification": false
   },
   "warnings": []

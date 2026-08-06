@@ -69,7 +69,7 @@ const INFRASTRUCTURE_RESOURCES = new Set<TestResource>([
   'git-worktree', 'process-tree', 'fixed-port', 'runtime-singleton',
 ]);
 const CONTENT_EXCLUDES = [
-  '.ai/', '.git/', '.codegraph/', '.repo-harness/', '_ops/', 'node_modules/', 'tasks/', 'plans/',
+  '.ai/', '.git/', '.codegraph/', '.forge/', '_ops/', 'node_modules/', 'tasks/', 'plans/', 'references/',
   'dist/', 'coverage/',
 ];
 const CHANGE_EXCLUDES = [...CONTENT_EXCLUDES, 'tmp/', 'temp/'];
@@ -109,12 +109,12 @@ export function testContentDigest(repoRoot: string): string {
   return hashFiles(
     repoRoot,
     repositoryFiles(repoRoot, true).filter((path) => !CONTENT_EXCLUDES.some((prefix) => path.startsWith(prefix))),
-    'repo-harness-test-content-v1',
+    'forge-test-content-v1',
   );
 }
 
 export function trackedTreeDigest(repoRoot: string): string {
-  return hashFiles(repoRoot, repositoryFiles(repoRoot, false), 'repo-harness-tracked-tree-v1');
+  return hashFiles(repoRoot, repositoryFiles(repoRoot, false), 'forge-tracked-tree-v1');
 }
 
 export function isTestRelevantChangedPath(rawPath: string): boolean {
@@ -133,7 +133,7 @@ export function isTestRelevantChangedPath(rawPath: string): boolean {
  * tracked file after each test.
  */
 export function workspaceMutationDigest(repoRoot: string): string {
-  const hash = createHash('sha256').update('repo-harness-workspace-mutation-v2\n');
+  const hash = createHash('sha256').update('forge-workspace-mutation-v2\n');
   hash.update(git(repoRoot, ['diff', '--binary', '--no-ext-diff']));
   hash.update('\0staged\0');
   hash.update(git(repoRoot, ['diff', '--cached', '--binary', '--no-ext-diff']));
@@ -142,7 +142,7 @@ export function workspaceMutationDigest(repoRoot: string): string {
     .filter(Boolean)
     .filter(isTestRelevantChangedPath);
   hash.update('\0untracked\0');
-  hash.update(hashFiles(repoRoot, untracked, 'repo-harness-untracked-mutation-v2'));
+  hash.update(hashFiles(repoRoot, untracked, 'forge-untracked-mutation-v2'));
   return hash.digest('hex');
 }
 
@@ -199,7 +199,7 @@ export function testInputPaths(repoRoot: string, testFile: string): string[] {
 }
 
 export function testInputDigest(repoRoot: string, testFile: string): string {
-  return hashFiles(repoRoot, testInputPaths(repoRoot, testFile), 'repo-harness-test-input-v2');
+  return hashFiles(repoRoot, testInputPaths(repoRoot, testFile), 'forge-test-input-v2');
 }
 
 function listTestsOnDisk(directory: string, repoRoot: string): string[] {
@@ -381,7 +381,7 @@ function toolchainSignature(): string {
 function capabilitySignature(): string {
   return createHash('sha256').update(JSON.stringify({
     ci: process.env.CI ?? '',
-    controllerHome: Boolean(process.env.REPO_HARNESS_CONTROLLER_HOME),
+    controllerHome: Boolean(process.env.FORGE_CONTROLLER_HOME),
     docker: Boolean(process.env.DOCKER_HOST),
   })).digest('hex').slice(0, 16);
 }

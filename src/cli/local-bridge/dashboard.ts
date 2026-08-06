@@ -4,7 +4,7 @@ export function localBridgeDashboardHtml(): string {
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>repo-harness · 执行助手控制台</title>
+<title>forge · 执行助手控制台</title>
 <style>
 :root{color-scheme:dark;--bg:#070b10;--panel:#0f1620;--panel2:#131c28;--line:rgba(255,255,255,.08);--text:#f3f6f9;--muted:#95a0ab;--faint:#6d7784;--green:#34d399;--amber:#fbbf24;--red:#f87171;--blue:#60a5fa;--radius:16px}
 *{box-sizing:border-box}html,body{height:100%;margin:0}body{background:radial-gradient(circle at 80% -10%,rgba(52,211,153,.14),transparent 32%),linear-gradient(160deg,#05080c,#0a1118 55%,#06090d);color:var(--text);font:14px/1.5 Inter,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif}
@@ -123,12 +123,12 @@ function toast(msg){var t=document.getElementById('toast');t.textContent=msg;t.c
 function pill(tone,label){return '<span class="pill '+esc(tone||'gray')+'">'+esc(label||'')+'</span>'}
 function setDot(id,tone){document.getElementById(id).className='dot '+(tone&&tone!=='green'?tone:'')}
 
-var selectedRepoId=queryRepoId()||safeGet('repoHarnessSelectedRepoId')||'';
+var selectedRepoId=queryRepoId()||safeGet('forgeSelectedRepoId')||'';
 var commandCenter=null;
 var automationSettings=null;
-var selectedWorkId=safeGet('repoHarnessSelectedWorkId')||'';
+var selectedWorkId=safeGet('forgeSelectedWorkId')||'';
 var selectedHandoffId='';
-var selectedPluginId=safeGet('repoHarnessSelectedPluginId')||'';
+var selectedPluginId=safeGet('forgeSelectedPluginId')||'';
 var modePreview=null;
 var advancedRaw=null;
 var lastFacade=null;
@@ -152,8 +152,8 @@ document.addEventListener('visibilitychange',function(){
 });
 
 function repoQuery(){return selectedRepoId?'?repoId='+encodeURIComponent(selectedRepoId):''}
-function rememberRepo(id){selectedRepoId=id||'';safeSet('repoHarnessSelectedRepoId',selectedRepoId);setQueryRepoId(selectedRepoId)}
-function rememberWork(id){selectedWorkId=id||'';safeSet('repoHarnessSelectedWorkId',selectedWorkId)}
+function rememberRepo(id){selectedRepoId=id||'';safeSet('forgeSelectedRepoId',selectedRepoId);setQueryRepoId(selectedRepoId)}
+function rememberWork(id){selectedWorkId=id||'';safeSet('forgeSelectedWorkId',selectedWorkId)}
 function api(path,opts){opts=opts||{};var headers=Object.assign({'content-type':'application/json'},opts.headers||{});return fetch(path,Object.assign({},opts,{credentials:'same-origin',headers:headers})).then(function(r){return r.json().catch(function(){return{}}).then(function(body){if(!r.ok){var msg=(body.error&&body.error.title)||body.summary||body.errorMessage||body.error||body.message||('请求失败 '+r.status);if(!msg||msg==='undefined')msg='请求失败，请查看高级诊断';var err=new Error(msg);err.payload=body;err.status=r.status;throw err}return body})})}
 function setBusy(on,label){
   busy=!!on;
@@ -524,7 +524,7 @@ function renderReadiness(){
   var ready=obj(obj(commandCenter).readiness);
   var fresh=obj(ready.connectorFreshness);
   document.getElementById('view-readiness').innerHTML=
-    '<div class="page-head"><div><h1>系统状态</h1><p>用白话告诉你 repo-harness 是否可用。</p></div>'+
+    '<div class="page-head"><div><h1>系统状态</h1><p>用白话告诉你 forge 是否可用。</p></div>'+
       '<div class="actions"><button class="btn primary" onclick="diagnoseFirst()">诊断</button><button class="btn" onclick="repairDryRun()">预览修复</button></div></div>'+
     '<div class="panel" style="margin-bottom:14px"><h2>'+esc(ready.headline||'')+'</h2><p class="muted">'+esc(ready.description||'')+'</p></div>'+
     '<div class="grid cards">'+arr(ready.sections).map(function(s){
@@ -561,7 +561,7 @@ function renderRepositories(){
 
 function rememberPlugin(id){
   selectedPluginId=id||'';
-  safeSet('repoHarnessSelectedPluginId', selectedPluginId);
+  safeSet('forgeSelectedPluginId', selectedPluginId);
 }
 
 function pluginById(id){
@@ -582,7 +582,7 @@ function renderCapabilities(){
   var failed=plugins.filter(function(p){return p.status==='failed'||p.status==='disabled'}).length;
   var root=document.getElementById('view-capabilities');
   root.innerHTML=
-    '<div class="page-head"><div><h1>能力 / 插件</h1><p>预览并管理 repo-harness 可调用的助手插件；普通动作直接执行，不可逆操作需要强确认。</p></div>'+
+    '<div class="page-head"><div><h1>能力 / 插件</h1><p>预览并管理 forge 可调用的助手插件；普通动作直接执行，不可逆操作需要强确认。</p></div>'+
       '<div class="actions"><button class="btn" onclick="refreshPlugins()">检查连接</button></div></div>'+
     '<div class="grid stats" style="margin-bottom:14px">'+
       '<div class="panel stat"><span>能力总数</span><strong>'+plugins.length+'</strong></div>'+
@@ -797,7 +797,7 @@ function renderAutomation(){
         return '<div style="margin:10px 0;padding:10px;border:1px solid var(--line);border-radius:12px">'+
           '<strong>'+esc(key)+'</strong><div class="muted mono" style="margin-top:6px">'+esc(order.join(' → ')||'—')+'</div></div>';
       }).join('')+
-      '<p class="faint">若无可直接调用提供方：repo-harness 会创建 continuation packet，而不是假装调用 ChatGPT 会话。</p>'+
+      '<p class="faint">若无可直接调用提供方：forge 会创建 continuation packet，而不是假装调用 ChatGPT 会话。</p>'+
     '</div>'; 
   bindNav(root);
 }
@@ -837,7 +837,7 @@ function providerCardHtml(p){
         '<p class="muted">'+esc(p.explanation||p.summary||'')+'</p>'+
         '<div class="evidence">'+(arr(p.capabilities).slice(0,8).map(function(c){return '<span>'+esc(c)+'</span>'}).join(''))+'</div>'+
         '<p class="faint" style="margin-top:6px">文件直接改动：'+(p.safety&&p.safety.canMutateFilesDirectly?'是':'否')+
-          ' · harness apply：'+(p.safety&&p.safety.requiresRepoHarnessApply?'是':'否')+
+          ' · harness apply：'+(p.safety&&p.safety.requiresForgeApply?'是':'否')+
           ' · 外部副作用：'+esc((p.safety&&p.safety.externalSideEffects)||'approval_required')+'</p>'+
         (p.lastErrorSummary?'<p class="faint">最近错误码：'+esc(p.lastErrorSummary)+'</p>':'')+
         (handoff?'<div class="setup" style="margin-top:8px"><strong>Direct dispatch：不支持</strong><p class="muted" style="margin:6px 0 0">'+esc(p.explanation||'')+'</p></div>':'')+

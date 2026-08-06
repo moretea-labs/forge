@@ -41,7 +41,7 @@ const repoRoot = resolve(option('--repo-root') ?? process.cwd());
 const repoId = option('--repo-id') ?? fail('--repo-id is required.');
 const controllerHome = resolve(
   option('--controller-home')
-    ?? process.env.REPO_HARNESS_CONTROLLER_HOME
+    ?? process.env.FORGE_CONTROLLER_HOME
     ?? join(repoRoot, '_ops/controller-home/runtime-slots/blue'),
 );
 const deviceSelector = option('--device');
@@ -50,7 +50,7 @@ const teamId = option('--team-id');
 const runnerBundleId = option('--runner-bundle-id');
 const developerDir = option('--developer-dir');
 const jdQuery = option('--jd-query');
-const executable = process.env.REPO_HARNESS_AGENT_DEVICE_EXECUTABLE?.trim() || 'agent-device';
+const executable = process.env.FORGE_AGENT_DEVICE_EXECUTABLE?.trim() || 'agent-device';
 
 const manifestPath = join(controllerHome, 'repositories', repoId, 'plugins', 'manifests', 'ios.json');
 mkdirSync(dirname(manifestPath), { recursive: true });

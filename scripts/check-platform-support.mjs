@@ -37,13 +37,13 @@ if (pkg.engines?.node !== ">=20.10.0") failures.push("package.json engines.node 
 if (!pkg.engines?.bun) failures.push("package.json must document the supported Bun runtime");
 if (!pkg.scripts?.["check:platform-support"]) failures.push("package.json is missing check:platform-support");
 
-requireText("bin/repo-harness.mjs", "#!/usr/bin/env node");
+requireText("bin/forge.mjs", "#!/usr/bin/env node");
 for (const path of ["install.sh", "install.ps1"]) {
-  requireText(path, "MATEA_INSTALL_RUNTIME");
-  requireText(path, "REPO_HARNESS_INSTALL_RUNTIME");
+  requireText(path, "FORGE_INSTALL_RUNTIME");
+  requireText(path, "FORGE_INSTALL_RUNTIME");
   requireText(path, "Node.js 20.10");
   requireText(path, "Git is required");
-  requireText(path, "matea install --no-cli");
+  requireText(path, "forge install --no-cli");
 }
 requireText("install.sh", "npm install -g");
 requireText("install.ps1", "npm install -g");

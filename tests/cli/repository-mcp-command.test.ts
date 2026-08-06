@@ -63,7 +63,7 @@ function writeLocalJobFixture(
 
 describe("repository MCP command tools", () => {
   test("registering an existing repository worktree preserves canonical repository authority", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "repo-harness-register-worktree-"));
+    const workspace = mkdtempSync(join(tmpdir(), "forge-register-worktree-"));
     const controllerHome = join(workspace, "controller-home");
     const repoRoot = join(workspace, "source");
     const worktreeRoot = join(workspace, "release-source");
@@ -71,9 +71,9 @@ describe("repository MCP command tools", () => {
       mkdirSync(controllerHome, { recursive: true });
       mkdirSync(repoRoot, { recursive: true });
       git(repoRoot, ["init", "-q"]);
-      git(repoRoot, ["config", "user.email", "repo-harness@example.invalid"]);
+      git(repoRoot, ["config", "user.email", "forge@example.invalid"]);
       git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
-      git(repoRoot, ["remote", "add", "origin", "https://github.com/moretea-labs/matea.git"]);
+      git(repoRoot, ["remote", "add", "origin", "https://github.com/moretea-labs/forge.git"]);
       writeFileSync(join(repoRoot, "README.md"), "# source\n");
       git(repoRoot, ["add", "README.md"]);
       git(repoRoot, ["commit", "-qm", "initial"]);
@@ -98,7 +98,7 @@ describe("repository MCP command tools", () => {
   });
 
   test("diagnoses the latest sibling source tree through MCP without mutating the project directories", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "repo-harness-mcp-repo-diagnose-"));
+    const workspace = mkdtempSync(join(tmpdir(), "forge-mcp-repo-diagnose-"));
     const controllerHome = join(workspace, "controller-home");
     const staleRoot = join(workspace, "TinyMoments");
     const richRoot = join(workspace, "TinyMoments 1.7");
@@ -133,7 +133,7 @@ describe("repository MCP command tools", () => {
   });
 
   test("bootstraps a non-Git local project through MCP", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "repo-harness-mcp-repo-bootstrap-"));
+    const workspace = mkdtempSync(join(tmpdir(), "forge-mcp-repo-bootstrap-"));
     const controllerHome = join(workspace, "controller-home");
     const projectRoot = join(workspace, "PulseMetronomeApp");
     try {
@@ -159,7 +159,7 @@ describe("repository MCP command tools", () => {
   });
 
   test("previews and executes repository-scoped git commands through MCP", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "repo-harness-mcp-repo-command-"));
+    const workspace = mkdtempSync(join(tmpdir(), "forge-mcp-repo-command-"));
     const controllerHome = join(workspace, "controller-home");
     const repoRoot = join(workspace, "sample-repo");
     try {
@@ -167,7 +167,7 @@ describe("repository MCP command tools", () => {
       mkdirSync(repoRoot, { recursive: true });
       git(repoRoot, ["init", "-b", "main"]);
       git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
-      git(repoRoot, ["config", "user.email", "repo-harness-test@example.com"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
       writeFileSync(join(repoRoot, "README.md"), "hello\n");
       git(repoRoot, ["add", "README.md"]);
       git(repoRoot, ["commit", "-m", "init"]);
@@ -212,7 +212,7 @@ describe("repository MCP command tools", () => {
   });
 
   test("Full Access does not require a preview token for ordinary repository execution", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "repo-harness-mcp-repo-command-token-"));
+    const workspace = mkdtempSync(join(tmpdir(), "forge-mcp-repo-command-token-"));
     const controllerHome = join(workspace, "controller-home");
     const repoRoot = join(workspace, "sample-repo");
     try {
@@ -220,7 +220,7 @@ describe("repository MCP command tools", () => {
       mkdirSync(repoRoot, { recursive: true });
       git(repoRoot, ["init", "-b", "main"]);
       git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
-      git(repoRoot, ["config", "user.email", "repo-harness-test@example.com"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
       writeFileSync(join(repoRoot, "README.md"), "hello\n");
       git(repoRoot, ["add", "README.md"]);
       git(repoRoot, ["commit", "-m", "init"]);
@@ -247,7 +247,7 @@ describe("repository MCP command tools", () => {
 
 
   test("repository command preview requires external filesystem grants and supports authorized external read/copy", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "repo-harness-mcp-external-command-"));
+    const workspace = mkdtempSync(join(tmpdir(), "forge-mcp-external-command-"));
     const controllerHome = join(workspace, "controller-home");
     const repoRoot = join(workspace, "sample-repo");
     const externalRoot = join(workspace, "external-data");
@@ -257,7 +257,7 @@ describe("repository MCP command tools", () => {
       mkdirSync(externalRoot, { recursive: true });
       git(repoRoot, ["init", "-b", "main"]);
       git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
-      git(repoRoot, ["config", "user.email", "repo-harness-test@example.com"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
       writeFileSync(join(repoRoot, "README.md"), "hello\n");
       git(repoRoot, ["add", "README.md"]);
       git(repoRoot, ["commit", "-m", "init"]);
@@ -324,7 +324,7 @@ describe("repository MCP command tools", () => {
   });
 
   test("repository command scope blocks expired grants, symlink escape, sensitive paths, and external writes", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "repo-harness-mcp-external-command-deny-"));
+    const workspace = mkdtempSync(join(tmpdir(), "forge-mcp-external-command-deny-"));
     const controllerHome = join(workspace, "controller-home");
     const repoRoot = join(workspace, "sample-repo");
     const externalRoot = join(workspace, "external-data");
@@ -337,7 +337,7 @@ describe("repository MCP command tools", () => {
       mkdirSync(fakeSsh, { recursive: true });
       git(repoRoot, ["init", "-b", "main"]);
       git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
-      git(repoRoot, ["config", "user.email", "repo-harness-test@example.com"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
       writeFileSync(join(repoRoot, "README.md"), "hello\n");
       git(repoRoot, ["add", "README.md"]);
       git(repoRoot, ["commit", "-m", "init"]);
@@ -360,7 +360,7 @@ describe("repository MCP command tools", () => {
         preview_ticket_id: expiredPreview.previewTicketId,
         confirm_authorization: true,
       });
-      writeFileSync(join(repoRoot, ".repo-harness/external-filesystem-grants.json"), `${JSON.stringify({
+      writeFileSync(join(repoRoot, ".forge/external-filesystem-grants.json"), `${JSON.stringify({
         schemaVersion: 1,
         updatedAt: new Date().toISOString(),
         grants: [{
@@ -405,7 +405,7 @@ describe("repository MCP command tools", () => {
   });
 
   test("repository command execute returns a compact handoff with inline output for short commands", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "repo-harness-mcp-repo-command-handoff-"));
+    const workspace = mkdtempSync(join(tmpdir(), "forge-mcp-repo-command-handoff-"));
     const controllerHome = join(workspace, "controller-home");
     const repoRoot = join(workspace, "sample-repo");
     try {
@@ -413,7 +413,7 @@ describe("repository MCP command tools", () => {
       mkdirSync(repoRoot, { recursive: true });
       git(repoRoot, ["init", "-b", "main"]);
       git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
-      git(repoRoot, ["config", "user.email", "repo-harness-test@example.com"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
       writeFileSync(join(repoRoot, "README.md"), "hello\n");
       git(repoRoot, ["add", "README.md"]);
       git(repoRoot, ["commit", "-m", "init"]);
@@ -453,7 +453,7 @@ describe("repository MCP command tools", () => {
   });
 
   test("repository command preview stays read-only and does not create a durable Job", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "repo-harness-mcp-repo-command-preview-"));
+    const workspace = mkdtempSync(join(tmpdir(), "forge-mcp-repo-command-preview-"));
     const controllerHome = join(workspace, "controller-home");
     const repoRoot = join(workspace, "sample-repo");
     try {
@@ -461,7 +461,7 @@ describe("repository MCP command tools", () => {
       mkdirSync(repoRoot, { recursive: true });
       git(repoRoot, ["init", "-b", "main"]);
       git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
-      git(repoRoot, ["config", "user.email", "repo-harness-test@example.com"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
       writeFileSync(join(repoRoot, "README.md"), "hello\n");
       git(repoRoot, ["add", "README.md"]);
       git(repoRoot, ["commit", "-m", "init"]);
@@ -490,7 +490,7 @@ describe("repository MCP command tools", () => {
     const longCommand = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
       "console.log('start'); setTimeout(() => console.log('ready'), 1000);",
     )}`;
-    const workspace = mkdtempSync(join(tmpdir(), "repo-harness-mcp-repo-command-async-"));
+    const workspace = mkdtempSync(join(tmpdir(), "forge-mcp-repo-command-async-"));
     const controllerHome = join(workspace, "controller-home");
     const repoRoot = join(workspace, "sample-repo");
     try {
@@ -498,7 +498,7 @@ describe("repository MCP command tools", () => {
       mkdirSync(repoRoot, { recursive: true });
       git(repoRoot, ["init", "-b", "main"]);
       git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
-      git(repoRoot, ["config", "user.email", "repo-harness-test@example.com"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
       writeFileSync(join(repoRoot, "README.md"), "hello\n");
       git(repoRoot, ["add", "README.md"]);
       git(repoRoot, ["commit", "-m", "init"]);
@@ -533,7 +533,7 @@ describe("repository MCP command tools", () => {
   });
 
   test("local job output snapshots read stdout and stderr with structured bounded responses", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "repo-harness-local-job-output-"));
+    const workspace = mkdtempSync(join(tmpdir(), "forge-local-job-output-"));
     const repoRoot = join(workspace, "repo");
     try {
       mkdirSync(repoRoot, { recursive: true });
@@ -558,7 +558,7 @@ describe("repository MCP command tools", () => {
   });
 
   test("local job output snapshots return structured not-found, reject traversal, and respect max_bytes", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "repo-harness-local-job-output-missing-"));
+    const workspace = mkdtempSync(join(tmpdir(), "forge-local-job-output-missing-"));
     const repoRoot = join(workspace, "repo");
     try {
       mkdirSync(repoRoot, { recursive: true });
@@ -591,7 +591,7 @@ describe("repository MCP command tools", () => {
   });
 
   test("durable repository_update can restore a disabled repository", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "repo-harness-mcp-repo-restore-"));
+    const workspace = mkdtempSync(join(tmpdir(), "forge-mcp-repo-restore-"));
     const controllerHome = join(workspace, "controller-home");
     const repoRoot = join(workspace, "sample-repo");
     try {
@@ -622,7 +622,7 @@ describe("repository MCP command tools", () => {
   });
 
   test("safe patch apply splits repeated paths, refreshes fingerprints, and returns actionable failures", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "repo-harness-safe-patch-complete-"));
+    const workspace = mkdtempSync(join(tmpdir(), "forge-safe-patch-complete-"));
     const controllerHome = join(workspace, "controller-home");
     const repoRoot = join(workspace, "sample-repo");
     try {
@@ -630,7 +630,7 @@ describe("repository MCP command tools", () => {
       mkdirSync(repoRoot, { recursive: true });
       git(repoRoot, ["init", "-b", "main"]);
       git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
-      git(repoRoot, ["config", "user.email", "repo-harness-test@example.com"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
       writeFileSync(join(repoRoot, "app.txt"), "alpha\nbeta\n");
       git(repoRoot, ["add", "app.txt"]);
       git(repoRoot, ["commit", "-m", "init"]);
@@ -667,7 +667,7 @@ describe("repository MCP command tools", () => {
   });
 
   test("structured git diff, commit, and finish workflow complete a feature branch", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "repo-harness-structured-git-complete-"));
+    const workspace = mkdtempSync(join(tmpdir(), "forge-structured-git-complete-"));
     const controllerHome = join(workspace, "controller-home");
     const repoRoot = join(workspace, "sample-repo");
     try {
@@ -675,7 +675,7 @@ describe("repository MCP command tools", () => {
       mkdirSync(repoRoot, { recursive: true });
       git(repoRoot, ["init", "-b", "main"]);
       git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
-      git(repoRoot, ["config", "user.email", "repo-harness-test@example.com"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
       writeFileSync(join(repoRoot, "README.md"), "hello\n");
       git(repoRoot, ["add", "README.md"]);
       git(repoRoot, ["commit", "-m", "init"]);
@@ -717,18 +717,18 @@ describe("repository MCP command tools", () => {
   });
 
   test("repository goals run checks, persist run artifacts, and feed stuck diagnosis", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "repo-harness-goal-run-complete-"));
+    const workspace = mkdtempSync(join(tmpdir(), "forge-goal-run-complete-"));
     const controllerHome = join(workspace, "controller-home");
     const repoRoot = join(workspace, "sample-repo");
     try {
       mkdirSync(controllerHome, { recursive: true });
       mkdirSync(repoRoot, { recursive: true });
-      mkdirSync(join(repoRoot, ".repo-harness"), { recursive: true });
+      mkdirSync(join(repoRoot, ".forge"), { recursive: true });
       git(repoRoot, ["init", "-b", "main"]);
       git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
-      git(repoRoot, ["config", "user.email", "repo-harness-test@example.com"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
       writeFileSync(join(repoRoot, "README.md"), "hello\n");
-      writeFileSync(join(repoRoot, ".repo-harness/checks.json"), JSON.stringify({
+      writeFileSync(join(repoRoot, ".forge/checks.json"), JSON.stringify({
         version: 1,
         checks: {
           "git-clean": { description: "Git status is readable", command: ["git", "status", "--short"], cwd: ".", timeoutMs: 5000 },

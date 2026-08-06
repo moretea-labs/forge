@@ -205,7 +205,7 @@ EOF_CHECKS
 if [[ -f "$checks_file" ]]; then
   echo "[ChecksFile] Preserved ${checks_file}; updated ${target_checks_file}."
 else
-  echo "[ChecksFile] Updated ${target_checks_file}; ${checks_file} remains reserved for repo-harness-run-trace.v1."
+  echo "[ChecksFile] Updated ${target_checks_file}; ${checks_file} remains reserved for forge-run-trace.v1."
 fi
 
 # Aggregated advisory (route-registry keeps one PostToolUse bash entry; the

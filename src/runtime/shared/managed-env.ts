@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'fs';
 import { delimiter, resolve } from 'path';
 
 const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const SUPPORTED_PREFIXES = ['REPO_HARNESS_', 'GOOGLE_'] as const;
+const SUPPORTED_PREFIXES = ['FORGE_', 'GOOGLE_'] as const;
 const SUPPORTED_NAMES = new Set([
   'OPENAI_WORKSPACE_AGENT_ACCESS_TOKEN',
   'CHATGPT_WORKSPACE_AGENT_ACCESS_TOKEN',
@@ -15,16 +15,16 @@ export interface ManagedEnvBootstrapOptions {
   repoRoot?: string;
 }
 
-function hasRepoHarnessMarkers(path: string): boolean {
+function hasForgeMarkers(path: string): boolean {
   return existsSync(resolve(path, '.git'))
-    || existsSync(resolve(path, '.repo-harness'))
+    || existsSync(resolve(path, '.forge'))
     || existsSync(resolve(path, '_ops'));
 }
 
 function inferRepoRoot(start: string): string | undefined {
   let current = resolve(start);
   while (true) {
-    if (hasRepoHarnessMarkers(current)) return current;
+    if (hasForgeMarkers(current)) return current;
     const parent = resolve(current, '..');
     if (parent === current) return undefined;
     current = parent;
@@ -114,20 +114,20 @@ function candidateFiles(options: ManagedEnvBootstrapOptions): string[] {
   const env = options.env ?? process.env;
   const files: string[] = [];
   const seen = new Set<string>();
-  const single = env.REPO_HARNESS_ENV_FILE?.trim();
+  const single = env.FORGE_ENV_FILE?.trim();
   if (single) pushCandidate(files, seen, single);
-  const multiple = env.REPO_HARNESS_ENV_FILES?.split(delimiter).map((value) => value.trim()).filter(Boolean) ?? [];
+  const multiple = env.FORGE_ENV_FILES?.split(delimiter).map((value) => value.trim()).filter(Boolean) ?? [];
   for (const entry of multiple) pushCandidate(files, seen, entry);
 
   const repoRoot = options.repoRoot?.trim() || inferRepoRoot(options.cwd ?? process.cwd());
   if (repoRoot) {
-    pushCandidate(files, seen, resolve(repoRoot, '_ops', 'secrets', 'repo-harness.env'));
+    pushCandidate(files, seen, resolve(repoRoot, '_ops', 'secrets', 'forge.env'));
     pushCandidate(files, seen, resolve(repoRoot, '_ops', 'secrets', 'controller.env'));
     pushCandidate(files, seen, resolve(repoRoot, '_ops', 'env', '.env.local'));
   }
   const controllerHome = options.controllerHome?.trim();
   if (controllerHome) {
-    pushCandidate(files, seen, resolve(controllerHome, '..', 'secrets', 'repo-harness.env'));
+    pushCandidate(files, seen, resolve(controllerHome, '..', 'secrets', 'forge.env'));
     pushCandidate(files, seen, resolve(controllerHome, '..', 'secrets', 'controller.env'));
     pushCandidate(files, seen, resolve(controllerHome, '..', 'env', '.env.local'));
   }

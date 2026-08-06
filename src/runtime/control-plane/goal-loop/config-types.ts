@@ -42,7 +42,7 @@ export interface ProviderConfigFile {
   updatedAt: string;
   /**
    * When true, remote API providers may attempt live calls if also allowed by env.
-   * GUI preference is AND-gated with REPO_HARNESS_ENABLE_LIVE_MODEL_PROVIDERS.
+   * GUI preference is AND-gated with FORGE_ENABLE_LIVE_MODEL_PROVIDERS.
    */
   preferLiveModelProviders: boolean;
   /** Master switch for autonomous goal loop ticks. */
@@ -154,7 +154,7 @@ export interface ProviderConfigCard {
   capabilities: string[];
   safety: {
     canMutateFilesDirectly: boolean;
-    requiresRepoHarnessApply: boolean;
+    requiresForgeApply: boolean;
     externalSideEffects: 'never' | 'approval_required';
   };
   credential: {

@@ -85,7 +85,7 @@ const MIN_AGENT_STARTUP_TIMEOUT_MS = 30_000;
 const MAX_AGENT_STARTUP_TIMEOUT_MS = 300_000;
 
 export function agentStartupTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
-  const configured = Number(env.REPO_HARNESS_AGENT_STARTUP_TIMEOUT_MS);
+  const configured = Number(env.FORGE_AGENT_STARTUP_TIMEOUT_MS);
   if (!Number.isFinite(configured)) return DEFAULT_AGENT_STARTUP_TIMEOUT_MS;
   return Math.max(MIN_AGENT_STARTUP_TIMEOUT_MS, Math.min(Math.trunc(configured), MAX_AGENT_STARTUP_TIMEOUT_MS));
 }
@@ -961,12 +961,12 @@ export function taskPrompt(
       : [
           "- Keep the change limited to this task. Do not broaden the requirement.",
           executionMode === "worktree"
-            ? "- Work only inside the isolated worktree. repo-harness will integrate and clean it automatically after a successful Run."
+            ? "- Work only inside the isolated worktree. forge will integrate and clean it automatically after a successful Run."
             : "- Work directly in the current repository workspace. Do not create another worktree, commit, merge, or push.",
           "- Finish with a concise report: changed files, checks, residual risks, and any blocker.",
         ];
   return [
-    "# repo-harness Controller Task",
+    "# forge Controller Task",
     "",
     `Issue: ${issueTitle}`,
     issueSummary ? `Issue summary: ${issueSummary}` : "",

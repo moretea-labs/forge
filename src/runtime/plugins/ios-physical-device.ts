@@ -395,8 +395,8 @@ function installedApps(
 }
 
 function configuredRunner(): { configured: boolean; endpoint?: string; error?: string } {
-  const raw = process.env.REPO_HARNESS_IOS_DEVICE_RUNNER_URL?.trim();
-  if (!raw) return { configured: false, error: 'Set REPO_HARNESS_IOS_DEVICE_RUNNER_URL to a trusted localhost WDA-compatible endpoint.' };
+  const raw = process.env.FORGE_IOS_DEVICE_RUNNER_URL?.trim();
+  if (!raw) return { configured: false, error: 'Set FORGE_IOS_DEVICE_RUNNER_URL to a trusted localhost WDA-compatible endpoint.' };
   try {
     const parsed = new URL(raw);
     if (parsed.protocol !== 'http:' || !LOCAL_RUNNER_HOSTS.has(parsed.hostname) || parsed.username || parsed.password) {
@@ -407,7 +407,7 @@ function configuredRunner(): { configured: boolean; endpoint?: string; error?: s
     parsed.hash = '';
     return { configured: true, endpoint: parsed.toString().replace(/\/$/, '') };
   } catch {
-    return { configured: false, error: 'REPO_HARNESS_IOS_DEVICE_RUNNER_URL is not a valid URL.' };
+    return { configured: false, error: 'FORGE_IOS_DEVICE_RUNNER_URL is not a valid URL.' };
   }
 }
 
@@ -546,7 +546,7 @@ function requireRunner(state: PhysicalSessionState): { endpoint: string; session
         prerequisites: [
           'Enable Developer Mode and trust/pair the iPhone with Xcode.',
           'Build and run a correctly signed WebDriverAgent-compatible runner for this device.',
-          'Forward its HTTP endpoint to localhost and set REPO_HARNESS_IOS_DEVICE_RUNNER_URL.',
+          'Forward its HTTP endpoint to localhost and set FORGE_IOS_DEVICE_RUNNER_URL.',
         ],
       },
     });
@@ -747,7 +747,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
     const conflict = listInteractionSessions(input.repoRoot, PROVIDER).find((entry) =>
       isInteractionSessionActive(entry.status) && interactionMayOwnTarget(entry, selectedAliases));
     if (conflict) {
-      throw new AssistantPluginError('PLUGIN_RESOURCE_BUSY', 'The selected iPhone already has an active repo-harness interaction.', {
+      throw new AssistantPluginError('PLUGIN_RESOURCE_BUSY', 'The selected iPhone already has an active forge interaction.', {
         retryable: true,
         details: {
           interactionId: conflict.interactionId,
@@ -765,7 +765,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       interactionId,
       provider: PROVIDER,
       engine: 'coredevice',
-      sessionId: `repo-harness-${sanitize(interactionId).slice(-40)}`,
+      sessionId: `forge-${sanitize(interactionId).slice(-40)}`,
       targetId: selected.identifier,
       targetAliases: selectedAliases.filter((value): value is string => Boolean(value)),
       status: 'starting',

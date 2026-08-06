@@ -1,6 +1,6 @@
 # Versioning and release baseline
 
-repo-harness uses Semantic Versioning for the public CLI package and matching GitHub tags.
+Forge uses Semantic Versioning for the public CLI package and matching GitHub tags.
 
 ## One version authority
 

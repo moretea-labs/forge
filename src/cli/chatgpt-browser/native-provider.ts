@@ -442,7 +442,7 @@ export async function runNativeProvider(input: BrowserConsultInput, bundle: Prom
       error: {
         code: 'NATIVE_PROFILE_NOT_BOUND',
         message: 'native provider requires a ChatGPT browser profile binding',
-        recovery: 'Run repo-harness chatgpt browser-setup --profile-dir <non-default-automation-user-data-dir>, then repo-harness chatgpt browser-bind --open.',
+        recovery: 'Run forge chatgpt browser-setup --profile-dir <non-default-automation-user-data-dir>, then forge chatgpt browser-bind --open.',
       },
     };
   }
@@ -517,7 +517,7 @@ export async function runNativeProvider(input: BrowserConsultInput, bundle: Prom
         output: [
           capture.text,
           '',
-          '[repo-harness native provider warning: assistant text was captured but did not remain stable before timeout.]',
+          '[forge native provider warning: assistant text was captured but did not remain stable before timeout.]',
         ].join('\n'),
         conversationUrl: conversationUrl(url),
         error: {

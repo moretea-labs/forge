@@ -10,7 +10,7 @@ Controller MCP uses one stable default schema so ChatGPT can reliably read, edit
 | **core** | `--toolset core` | Compatibility label for the same stable default schema. It does not reduce capability or require reconnecting. |
 | **full** | `--toolset full` | Every historical legacy and runtime definition. Use only for old integrations or deep compatibility diagnosis because the much larger schema can reduce tool-selection quality. |
 
-Configure via CLI flags, `REPO_HARNESS_MCP_TOOLSET`, or Controller Home MCP config. Empty/default controller configuration resolves to `advanced`.
+Configure via CLI flags, `FORGE_MCP_TOOLSET`, or Controller Home MCP config. Empty/default controller configuration resolves to `advanced`.
 
 ## Single source of truth
 

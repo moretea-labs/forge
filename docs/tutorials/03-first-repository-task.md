@@ -7,7 +7,7 @@ Use a small documentation or configuration change for the first run. The goal is
 Ask ChatGPT:
 
 ```text
-Use repo-harness. Check rh_status, then load rh_context for my selected repository. Summarize the current branch, working-tree state, relevant files, and available named checks. Do not modify anything yet.
+Use Forge. Check rh_status, then load rh_context for my selected repository. Summarize the current branch, working-tree state, relevant files, and available named checks. Do not modify anything yet.
 ```
 
 Resolve a dirty tree or ambiguous repository selection before writing.
@@ -24,7 +24,7 @@ Good first tasks name the desired outcome, allowed area, verification, and remot
 
 ## 3. Understand the execution mode
 
-repo-harness should prefer Direct Edit for a small known change. A Direct Edit records file fingerprints, revisions, a persisted diff, and check evidence. Larger or dependency-aware work may be promoted to a durable Issue/Task/Run. Coding agents remain optional workers, not the default controller.
+Forge should prefer Direct Edit for a small known change. A Direct Edit records file fingerprints, revisions, a persisted diff, and check evidence. Larger or dependency-aware work may be promoted to a durable Issue/Task/Run. Coding agents remain optional workers, not the default controller.
 
 ## 4. Review before acceptance
 

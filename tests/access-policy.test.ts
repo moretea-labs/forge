@@ -21,7 +21,7 @@ import { evaluatePolicyGate } from '../src/runtime/control-plane/facade/policy-g
 const tempRoots: string[] = [];
 
 function controllerHome(): string {
-  const root = mkdtempSync(join(tmpdir(), 'repo-harness-access-policy-'));
+  const root = mkdtempSync(join(tmpdir(), 'forge-access-policy-'));
   tempRoots.push(root);
   return root;
 }

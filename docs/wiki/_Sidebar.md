@@ -1,4 +1,4 @@
-**Matea Wiki**
+**Forge Wiki**
 
 - [Home](Home)
 - [Quick Start](Quick-Start)
@@ -15,6 +15,6 @@
 
 **Project**
 
-- [Repository](https://github.com/moretea-labs/matea)
-- [Versioned Docs](https://github.com/moretea-labs/matea/tree/main/docs)
-- [Support](https://github.com/moretea-labs/matea/blob/main/SUPPORT.md)
+- [Repository](https://github.com/moretea-labs/forge)
+- [Versioned Docs](https://github.com/moretea-labs/forge/tree/main/docs)
+- [Support](https://github.com/moretea-labs/forge/blob/main/SUPPORT.md)
