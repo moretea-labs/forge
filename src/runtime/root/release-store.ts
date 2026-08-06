@@ -10,6 +10,11 @@ import {
 import { loadRuntimeReleaseManifest } from './release-manifest';
 import type { RuntimeReleaseManifest } from './types';
 
+/**
+ * Local Controller Home recovery evidence. This database contains execution
+ * state and is never part of a release artifact, source checkout, package, or
+ * manifest distributed to another user or machine.
+ */
 export interface RuntimeDatabaseBackup {
   path: string;
   schemaVersion: number;
@@ -51,6 +56,7 @@ export function runtimeReleaseAuthorityPath(controllerHome: string): string {
   return join(ensureControllerHome(controllerHome), 'runtime', 'releases', 'authority.json');
 }
 
+/** Resolve a local operational backup path under Controller Home only. */
 function backupPath(controllerHome: string, releaseId: string, operationId: string): string {
   const safe = `${releaseId}-${operationId}`.replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 120);
   return join(ensureControllerHome(controllerHome), 'runtime', 'releases', 'backups', `${Date.now()}-${safe}.sqlite`);

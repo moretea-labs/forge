@@ -103,13 +103,13 @@ entrypoint
 core code and assets
 Runtime configuration schema
 release manifest
-SQLite schema compatibility
-pre-upgrade database backup contract
+SQLite schema compatibility (distributed metadata only; never database contents)
+local pre-upgrade database backup contract under Controller Home
 Worker protocol version
 migration and rollback metadata
 ```
 
-Release validation is offline and does not require a second serving Runtime, traffic router, fixed alternate port, or persistent slot identity. `src/runtime/root/release-store.ts` records one atomic active/previous authority and binds each previous release to its verified SQLite backup.
+Release validation is offline and does not require a second serving Runtime, traffic router, fixed alternate port, or persistent slot identity. `src/runtime/root/release-store.ts` records one atomic active/previous authority and binds each previous release to a verified local SQLite backup under Controller Home. SQLite rows are project execution state: they are not copied into the immutable release, source repository, installer, manifest, or anything distributed to another user.
 
 Activation is a whole-Runtime restart:
 

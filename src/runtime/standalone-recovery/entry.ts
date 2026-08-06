@@ -15,7 +15,7 @@ import {
   repairPublicTunnel,
   rollbackPrevious,
   secureEqual,
-  supervisorStatus,
+  runtimeStatus,
   verifyStableRuntime,
   watchdogTick,
   type WatchdogState,
@@ -81,7 +81,7 @@ async function cli(): Promise<void> {
     return;
   }
   switch (command) {
-    case 'status': output(await supervisorStatus(config)); return;
+    case 'status': output(await runtimeStatus(config)); return;
     case 'verify': output(await verifyStableRuntime(config)); return;
     case 'verify-external': {
       const verified = await verifyStableRuntime(config);
@@ -162,12 +162,12 @@ function matchesAnyPath(url: string | undefined, paths: string[]): boolean {
 }
 
 export const RECOVERY_TOOLS = [
-  { name: 'supervisor_status', description: 'Read the Stable Supervisor state.', inputSchema: { type: 'object', additionalProperties: false } },
+  { name: 'runtime_status', description: 'Read canonical Runtime ownership, readiness, endpoint, and release observation.', inputSchema: { type: 'object', additionalProperties: false } },
   { name: 'list_releases', description: 'Read active, previous, and known-good whole-Runtime release evidence.', inputSchema: { type: 'object', additionalProperties: false } },
   { name: 'verify_stable_runtime', description: 'Run independent stable runtime verification.', inputSchema: { type: 'object', additionalProperties: false } },
   { name: 'verify_external_runtime', description: 'Verify the external primary MCP endpoint.', inputSchema: { type: 'object', additionalProperties: false } },
   { name: 'attest_known_good', description: 'Record the active release as known-good only after full independent verification succeeds.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
-  { name: 'rollback_previous', description: 'Idempotently restore only a Supervisor-registered known-good previous release.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
+  { name: 'rollback_previous', description: 'While Canonical Runtime is stopped, atomically restore its attested previous whole-Runtime release and SQLite backup.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'restart_public_tunnel', description: 'Restart the explicitly configured public tunnel only after local runtime verification succeeds and the external endpoint is unavailable.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'reconnect_primary_connector', description: 'Check canonical Runtime Gateway and primary MCP reconnection readiness without publishing a release.', inputSchema: { type: 'object', additionalProperties: false } },
 ] as const;
@@ -379,7 +379,7 @@ function requestId(value: unknown): string | undefined {
 
 export async function dispatchRecoveryTool(config: RecoveryConfig, name: string, args: Record<string, unknown>): Promise<unknown> {
   switch (name) {
-    case 'supervisor_status': return supervisorStatus(config);
+    case 'runtime_status': return runtimeStatus(config);
     case 'list_releases': return listReleases(config);
     case 'verify_stable_runtime': return verifyStableRuntime(config);
     case 'verify_external_runtime': {

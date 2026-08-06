@@ -1,15 +1,18 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { spawn, spawnSync } from 'child_process';
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'fs';
-import { connect } from 'net';
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
-import { dirname, isAbsolute, join, resolve, sep } from 'path';
+import { dirname, isAbsolute, join, resolve } from 'path';
+import { observeRuntimeStatus } from '../root/status';
+import {
+  readRuntimeReleaseAuthority,
+  rollbackRuntimeRelease,
+  type RuntimePublishedRelease,
+  type RuntimeReleaseAuthority,
+} from '../root/release-store';
 import { createRecoveryHttpTransport, type RecoveryHttpTransport } from './http-transport';
 
-/**
- * This module deliberately imports only Node built-ins.  It is compiled into
- * the recovery binary and never follows current/active release symlinks.
- */
+/** Standalone recovery reads only canonical Runtime observation and whole-release authority. */
 export interface PublicTunnelServiceConfig {
   platform: 'launchd';
   label: string;
@@ -23,7 +26,6 @@ export interface PublicTunnelServiceConfig {
 export interface RecoveryConfig {
   schemaVersion: 1;
   controllerHome: string;
-  stableIngressUrl: string;
   publicMcpUrl?: string;
   publicTunnelService?: PublicTunnelServiceConfig;
   recoveryPublicUrl?: string;
@@ -34,22 +36,15 @@ export interface RecoveryConfig {
   gateway?: { host: string; port: number; bearerTokenFile: string };
 }
 
-interface SupervisorState {
-  observedState?: string;
-  currentOperationId?: string | null;
-  gatewayHost?: { releasePath?: string; releaseRevision?: string; slot?: string };
-  controllerDaemon?: { releasePath?: string; releaseRevision?: string; slot?: string };
-}
-
 interface ReleaseEvidence {
   path: string;
   revision: string;
+  artifactIdentity: string;
   manifestSha256: string;
+  workerProtocolVersion: number;
   controllerHome?: string;
-  configRevision?: string;
-  configHash?: string;
-  runtimeGeneration?: string;
-  runtimeFencingTokenSha256?: string;
+  releaseAuthorityRevision?: number;
+  releaseFencingTokenSha256?: string;
   attestedAt?: string;
 }
 
@@ -57,20 +52,6 @@ interface KnownGoodStore {
   schemaVersion: 1;
   releases: ReleaseEvidence[];
   updatedAt: string;
-}
-
-interface RuntimeBinding {
-  controllerHome: string;
-  configRevision: string;
-  configHash: string;
-  runtimeGeneration: string;
-  authorityTerm: string;
-  releaseRevision?: string;
-  releasePath?: string;
-  manifestHash?: string;
-  gatewayHost: string;
-  gatewayPort: number;
-  runtimeFencingTokenSha256: string;
 }
 
 export type RecoveryMutationAction =
@@ -101,7 +82,7 @@ type RecoveryLockAttempt<T> =
 export interface VerifyResult {
   ok: boolean;
   at: string;
-  supervisor: { ok: boolean; observedState?: string };
+  runtime: { ok: boolean; running: boolean; ready: boolean; stale: boolean; reasonCodes: string[] };
   releases: { active?: ReleaseEvidence; previous?: ReleaseEvidence; knownGood?: ReleaseEvidence; coherent: boolean };
   probes: Record<string, { ok: boolean; detail: string; status?: number; value?: unknown }>;
 }
@@ -144,7 +125,6 @@ export interface PublicTunnelRepairResult {
 
 const DEFAULT_CONFIG: Omit<RecoveryConfig, 'controllerHome'> = {
   schemaVersion: 1,
-  stableIngressUrl: 'http://127.0.0.1:8765',
   readOnlyTool: { name: 'controller_context' },
 };
 
@@ -190,23 +170,10 @@ function configuredRecoveryPublicUrl(config: RecoveryConfig): string | undefined
   return config.recoveryTunnelService ? undefined : config.publicTunnelService ? config.publicMcpUrl : undefined;
 }
 
-function socketPath(config: RecoveryConfig): string { return join(resolve(config.controllerHome), 'supervisor', 'control.sock'); }
-function supervisorStateFilePath(config: RecoveryConfig): string { return join(resolve(config.controllerHome), 'supervisor', 'state.json'); }
-
-// Keep the standalone recovery bundle dependent only on Node built-ins and its
-// local transport. A regression test compares this compatibility list with the
-// Supervisor release contract so the two surfaces cannot drift silently.
 export const STANDALONE_RECOVERY_REQUIRED_RELEASE_FILES = [
-  'supervisor.js',
-  'repo-harness.js',
-  'daemon.js',
-  'worker.js',
-  'process-runner.js',
-  'browser-handoff-host.js',
-  'browser-node-bridge-host.js',
-  'repo-harness-desktop-helper.mjs',
+  'manifest.json',
+  'repo-harness-runtime.mjs',
 ] as const;
-const REQUIRED_RELEASE_FILES = STANDALONE_RECOVERY_REQUIRED_RELEASE_FILES;
 
 export function recoveryConfigPath(controllerHome: string): string {
   return join(resolve(controllerHome), 'recovery', 'config', 'recovery.json');
@@ -233,126 +200,54 @@ export function createRecoveryConfig(controllerHome: string, input?: Partial<Rec
   return next;
 }
 
-function releaseEvidence(path: string | undefined): ReleaseEvidence | undefined {
-  if (!path) return undefined;
-  try {
-    const real = realpathSync(path);
-    const manifestPath = join(real, 'manifest.json');
-    const manifestBytes = readFileSync(manifestPath);
-    const manifest = JSON.parse(manifestBytes.toString('utf8')) as { releaseRevision?: unknown };
-    if (typeof manifest.releaseRevision !== 'string' || !/^[A-Za-z0-9._-]{6,128}$/.test(manifest.releaseRevision)) return undefined;
-    for (const entry of REQUIRED_RELEASE_FILES) if (!existsSync(join(real, entry))) return undefined;
-    return { path: real, revision: manifest.releaseRevision, manifestSha256: createHash('sha256').update(manifestBytes).digest('hex') };
-  } catch { return undefined; }
+function releaseEvidence(
+  controllerHome: string,
+  release: RuntimePublishedRelease | undefined,
+  authority: RuntimeReleaseAuthority | undefined,
+): ReleaseEvidence | undefined {
+  if (!release || !authority) return undefined;
+  return {
+    path: release.manifestPath,
+    revision: release.releaseId,
+    artifactIdentity: release.artifactIdentity,
+    manifestSha256: release.manifestSha256,
+    workerProtocolVersion: release.workerProtocolVersion,
+    controllerHome: resolve(controllerHome),
+    releaseAuthorityRevision: authority.revision,
+    releaseFencingTokenSha256: createHash('sha256').update(authority.fencingToken).digest('hex'),
+  };
 }
 
-function runtimeBinding(config: RecoveryConfig): RuntimeBinding | undefined {
-  const home = realpathSync(resolve(config.controllerHome));
-  try {
-    const configPath = join(home, 'bootstrap', 'runtime-config.json');
-    const configBytes = readFileSync(configPath);
-    const runtimeConfig = JSON.parse(configBytes.toString('utf8')) as {
-      schemaVersion?: unknown;
-      controllerHome?: unknown;
-      configRevision?: unknown;
-      revision?: unknown;
-      gateway?: { host?: unknown; port?: unknown };
-    };
-    if (runtimeConfig.schemaVersion !== 1 || resolve(String(runtimeConfig.controllerHome ?? '')) !== home) return undefined;
-    const configRevision = typeof runtimeConfig.configRevision === 'string'
-      ? runtimeConfig.configRevision
-      : typeof runtimeConfig.revision === 'string' ? runtimeConfig.revision : undefined;
-    if (!configRevision) return undefined;
-    const authority = json<{
-      schemaVersion?: unknown;
-      status?: unknown;
-      authorityTerm?: unknown;
-      generation?: unknown;
-      configRevision?: unknown;
-      configHash?: unknown;
-      fencingToken?: unknown;
-      active?: { releasePath?: unknown; releaseRevision?: unknown; manifestHash?: unknown };
-      gateway?: { host?: unknown; port?: unknown };
-    }>(join(home, 'bootstrap', 'runtime-authority.json'));
-    const configHash = createHash('sha256').update(configBytes).digest('hex');
-    const gatewayHost = typeof runtimeConfig.gateway?.host === 'string' ? runtimeConfig.gateway.host : undefined;
-    const gatewayPort = typeof runtimeConfig.gateway?.port === 'number' && Number.isInteger(runtimeConfig.gateway.port)
-      ? runtimeConfig.gateway.port
-      : undefined;
-    if (
-      authority?.schemaVersion !== 2
-      || authority.status !== 'committed'
-      || authority.configRevision !== configRevision
-      || authority.configHash !== configHash
-      || typeof authority.authorityTerm !== 'string'
-      || typeof authority.generation !== 'string'
-      || typeof authority.fencingToken !== 'string'
-      || typeof gatewayHost !== 'string'
-      || gatewayPort === undefined
-      || authority.gateway?.host !== gatewayHost
-      || authority.gateway?.port !== gatewayPort
-    ) return undefined;
-    return {
-      controllerHome: home,
-      configRevision,
-      configHash,
-      runtimeGeneration: authority.generation,
-      authorityTerm: authority.authorityTerm,
-      ...(typeof authority.active?.releaseRevision === 'string' ? { releaseRevision: authority.active.releaseRevision } : {}),
-      ...(typeof authority.active?.releasePath === 'string' ? { releasePath: realpathSync(authority.active.releasePath) } : {}),
-      ...(typeof authority.active?.manifestHash === 'string' ? { manifestHash: authority.active.manifestHash } : {}),
-      gatewayHost,
-      gatewayPort,
-      runtimeFencingTokenSha256: createHash('sha256').update(authority.fencingToken).digest('hex'),
-    };
-  } catch {
-    return undefined;
-  }
-}
-
-function knownGoodEvidence(config: RecoveryConfig, entry: ReleaseEvidence | undefined): ReleaseEvidence | undefined {
-  if (!entry || !entry.configRevision || !entry.configHash || !entry.runtimeGeneration || !entry.runtimeFencingTokenSha256 || !entry.attestedAt) return undefined;
-  const binding = runtimeBinding(config);
-  if (!binding || typeof entry.controllerHome !== 'string' || entry.controllerHome !== binding.controllerHome) return undefined;
-  const release = releaseEvidence(entry.path);
-  if (!release) return undefined;
-  const releasesRoot = realpathSync(join(resolve(config.controllerHome), 'supervisor', 'releases'));
-  if (!release.path.startsWith(`${releasesRoot}${sep}`)) return undefined;
-  if (release.path !== entry.path || release.revision !== entry.revision || release.manifestSha256 !== entry.manifestSha256) return undefined;
-  if (entry.configRevision !== binding.configRevision || entry.configHash !== binding.configHash) return undefined;
-  if (entry.runtimeGeneration !== binding.runtimeGeneration) return undefined;
-  if (entry.runtimeFencingTokenSha256 !== binding.runtimeFencingTokenSha256) return undefined;
-  return entry;
-}
-
-function selectKnownGoodRelease(config: RecoveryConfig, active: ReleaseEvidence | undefined): ReleaseEvidence | undefined {
-  const candidates = knownGood(config).releases
-    .map((entry) => knownGoodEvidence(config, entry))
-    .filter((entry): entry is ReleaseEvidence => Boolean(entry))
-    .filter((entry) => !active || entry.path !== active.path)
-    .sort((left, right) => Date.parse(right.attestedAt!) - Date.parse(left.attestedAt!));
-  return candidates[0];
-}
-
-function currentSupervisorRelease(config: RecoveryConfig): ReleaseEvidence | undefined {
-  return releaseEvidence(join(resolve(config.controllerHome), 'supervisor', 'current'));
-}
-
-function previousSupervisorRelease(config: RecoveryConfig): ReleaseEvidence | undefined {
-  return releaseEvidence(join(resolve(config.controllerHome), 'supervisor', 'previous'));
+function releaseAuthority(config: RecoveryConfig): RuntimeReleaseAuthority | undefined {
+  return readRuntimeReleaseAuthority(config.controllerHome);
 }
 
 function activeAuthorityRelease(config: RecoveryConfig): ReleaseEvidence | undefined {
-  const binding = runtimeBinding(config);
-  const release = releaseEvidence(binding?.releasePath);
-  if (!binding || !release) return undefined;
-  if (binding.releaseRevision && release.revision !== binding.releaseRevision) return undefined;
-  if (binding.manifestHash && release.manifestSha256 !== binding.manifestHash) return undefined;
-  return release;
+  const authority = releaseAuthority(config);
+  return releaseEvidence(config.controllerHome, authority?.active, authority);
 }
 
-function readSupervisorStateFile(config: RecoveryConfig): SupervisorState | undefined {
-  return json<SupervisorState>(supervisorStateFilePath(config));
+function previousAuthorityRelease(config: RecoveryConfig): ReleaseEvidence | undefined {
+  const authority = releaseAuthority(config);
+  return releaseEvidence(config.controllerHome, authority?.previous, authority);
+}
+
+function knownGoodEvidence(config: RecoveryConfig, entry: ReleaseEvidence | undefined): ReleaseEvidence | undefined {
+  if (!entry || !entry.attestedAt || !entry.releaseFencingTokenSha256 || typeof entry.controllerHome !== 'string') return undefined;
+  if (resolve(entry.controllerHome) !== resolve(config.controllerHome)) return undefined;
+  const authority = releaseAuthority(config);
+  const candidates = [
+    releaseEvidence(config.controllerHome, authority?.active, authority),
+    releaseEvidence(config.controllerHome, authority?.previous, authority),
+  ].filter((item): item is ReleaseEvidence => Boolean(item));
+  const matched = candidates.find((release) =>
+    release.path === entry.path
+    && release.revision === entry.revision
+    && release.artifactIdentity === entry.artifactIdentity
+    && release.manifestSha256 === entry.manifestSha256
+    && release.workerProtocolVersion === entry.workerProtocolVersion,
+  );
+  return matched ? entry : undefined;
 }
 
 function knownGood(config: RecoveryConfig): KnownGoodStore {
@@ -448,29 +343,8 @@ async function withLock<T>(
   throw new Error('RECOVERY_OPERATION_LOCK_BUSY');
 }
 
-function control(config: RecoveryConfig, command: Record<string, unknown>, timeoutMs = 5_000): Promise<Record<string, unknown>> {
-  return new Promise((resolveControl, reject) => {
-    const socket = connect(socketPath(config));
-    let text = '';
-    const timeout = setTimeout(() => { socket.destroy(); reject(new Error('RECOVERY_CONTROL_TIMEOUT')); }, timeoutMs);
-    socket.setEncoding('utf8');
-    socket.once('connect', () => socket.write(`${JSON.stringify(command)}\n`));
-    socket.on('data', (chunk: string) => {
-      text += chunk;
-      const newline = text.indexOf('\n');
-      if (newline < 0) return;
-      clearTimeout(timeout);
-      socket.end();
-      try { resolveControl(JSON.parse(text.slice(0, newline)) as Record<string, unknown>); } catch { reject(new Error('RECOVERY_CONTROL_INVALID_RESPONSE')); }
-    });
-    socket.once('error', (error) => { clearTimeout(timeout); reject(new Error(`RECOVERY_CONTROL_UNAVAILABLE: ${error.message}`)); });
-  });
-}
-
-export async function supervisorStatus(config: RecoveryConfig): Promise<SupervisorState> {
-  const response = await control(config, { command: 'status' });
-  if (response.ok !== true || !response.state || typeof response.state !== 'object') throw new Error('RECOVERY_SUPERVISOR_STATUS_UNAVAILABLE');
-  return response.state as SupervisorState;
+export async function runtimeStatus(config: RecoveryConfig) {
+  return observeRuntimeStatus(config.controllerHome);
 }
 
 async function probe(transport: RecoveryHttpTransport, url: string, timeoutMs = 4_000): Promise<{ ok: boolean; detail: string; status?: number }> {
@@ -581,11 +455,21 @@ async function closeRecoveryMcpSession(transport: RecoveryHttpTransport, url: st
   }
 }
 
+function runtimeEndpoint(config: RecoveryConfig): string | undefined {
+  return observeRuntimeStatus(config.controllerHome).snapshot?.endpoint;
+}
+
+function runtimeHealthEndpoint(endpoint: string): string {
+  const url = new URL(endpoint);
+  url.pathname = '/health';
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+}
+
 async function probeMcp(config: RecoveryConfig, transport: RecoveryHttpTransport): Promise<Record<string, { ok: boolean; detail: string; value?: unknown }>> {
-  const binding = runtimeBinding(config);
-  const url = config.publicMcpUrl
-    ?? (binding ? `http://${binding.gatewayHost}:${binding.gatewayPort}/mcp` : undefined);
-  if (!url) return { mcp_initialize: { ok: false, detail: 'canonical Runtime MCP binding is unavailable' } };
+  const url = config.publicMcpUrl ?? runtimeEndpoint(config);
+  if (!url) return { mcp_initialize: { ok: false, detail: 'canonical Runtime MCP endpoint is unavailable' } };
   const token = mainToken(config);
   if (!token) return { mcp_initialize: { ok: false, detail: 'main MCP probe credential is unavailable' } };
   const initialized = await mcpCall(transport, url, token, 1, 'initialize', {
@@ -635,39 +519,52 @@ async function probeMcp(config: RecoveryConfig, transport: RecoveryHttpTransport
 }
 
 export async function verifyStableRuntime(config: RecoveryConfig, transport = createRecoveryHttpTransport(config.controllerHome)): Promise<VerifyResult> {
-  let state: SupervisorState | undefined;
-  const probes: VerifyResult['probes'] = {};
-  try { state = await supervisorStatus(config); probes.supervisor_socket = { ok: true, detail: 'status received' }; }
-  catch (error) { probes.supervisor_socket = { ok: false, detail: error instanceof Error ? error.message : 'status failed' }; }
-  const active = activeAuthorityRelease(config)
-    ?? releaseEvidence(state?.gatewayHost?.releasePath)
-    ?? releaseEvidence(state?.controllerDaemon?.releasePath)
-    ?? currentSupervisorRelease(config);
-  const previous = previousSupervisorRelease(config);
+  const observation = observeRuntimeStatus(config.controllerHome);
+  const authority = releaseAuthority(config);
+  const active = activeAuthorityRelease(config);
+  const previous = previousAuthorityRelease(config);
   const known = matchingKnownGood(config, active);
-  const binding = runtimeBinding(config);
-  probes.stable_ingress = await probe(transport, `${config.stableIngressUrl.replace(/\/$/, '')}/health`);
-  if (binding) probes.active_gateway = await probe(transport, `http://${binding.gatewayHost}:${binding.gatewayPort}/health`);
-  else probes.active_gateway = { ok: false, detail: 'canonical Runtime Gateway binding unavailable' };
+  const probes: VerifyResult['probes'] = {
+    runtime_status: {
+      ok: observation.running && !observation.stale,
+      detail: observation.running
+        ? observation.stale ? 'canonical Runtime status is stale' : 'canonical Runtime owner is live'
+        : 'canonical Runtime is not running',
+    },
+  };
+  const endpoint = observation.snapshot?.endpoint;
+  probes.active_gateway = endpoint
+    ? await probe(transport, runtimeHealthEndpoint(endpoint))
+    : { ok: false, detail: 'canonical Runtime endpoint is unavailable' };
   if (config.publicMcpUrl) probes.external_mcp_http = await probeExternalMcp(transport, config.publicMcpUrl);
   if (config.gateway) probes.recovery_gateway = await probe(transport, `http://${config.gateway.host}:${config.gateway.port}/health`);
   const recoveryPublicUrl = configuredRecoveryPublicUrl(config);
   if (recoveryPublicUrl) probes.recovery_external_http = await probeExternalMcp(transport, recoveryPublicUrl);
   Object.assign(probes, await probeMcp(config, transport));
   const coreChecks = Object.entries(probes)
-    .filter(([name]) => !name.startsWith('recovery_') && name !== 'stable_ingress')
+    .filter(([name]) => !name.startsWith('recovery_'))
     .every(([, entry]) => entry.ok);
-  const supervisorHealthy = state?.observedState === 'healthy';
+  const runtimeHealthy = observation.running && observation.ready && !observation.stale;
   const coherent = Boolean(
-    active
-    && state?.gatewayHost?.releaseRevision === active.revision
-    && state?.controllerDaemon?.releaseRevision === active.revision,
+    authority
+    && active
+    && observation.snapshot?.releaseId === active.revision
+    && observation.snapshot?.artifactIdentity === active.artifactIdentity
+    && authority.active.workerProtocolVersion === active.workerProtocolVersion,
   );
-  const ok = Boolean(coreChecks && supervisorHealthy && coherent);
+  const ok = Boolean(coreChecks && runtimeHealthy && coherent);
   const result: VerifyResult = {
-    ok, at: new Date().toISOString(),
-    supervisor: { ok: supervisorHealthy, observedState: state?.observedState },
-    releases: { active, previous, knownGood: known, coherent }, probes,
+    ok,
+    at: new Date().toISOString(),
+    runtime: {
+      ok: runtimeHealthy,
+      running: observation.running,
+      ready: observation.ready,
+      stale: observation.stale,
+      reasonCodes: [...observation.reasonCodes],
+    },
+    releases: { active, previous, knownGood: known, coherent },
+    probes,
   };
   audit(config, 'verify', { ok, activeRevision: active?.revision, previousRevision: previous?.revision, coherent });
   return result;
@@ -675,40 +572,37 @@ export async function verifyStableRuntime(config: RecoveryConfig, transport = cr
 /** Explicitly records evidence only after the full independent verification passed. */
 export async function attestKnownGood(config: RecoveryConfig): Promise<ReleaseEvidence> {
   const locked = await withLock(config, { action: 'attest_known_good' }, async () => {
-  const verified = await verifyStableRuntime(config);
-  const binding = runtimeBinding(config);
-  const active = verified.releases.active;
-  if (
-    !verified.ok
-    || !active
-    || !binding
-    || binding.releaseRevision !== active.revision
-    || binding.manifestHash !== active.manifestSha256
-    || !binding.releasePath
-    || binding.releasePath !== active.path
-  ) {
-    throw new Error('RECOVERY_KNOWN_GOOD_ATTESTATION_REQUIRES_FULL_VERIFY_AND_RUNTIME_BINDING');
-  }
-  const attested: ReleaseEvidence = {
-    ...active,
-    controllerHome: binding.controllerHome,
-    configRevision: binding.configRevision,
-    configHash: binding.configHash,
-    runtimeGeneration: binding.runtimeGeneration,
-    runtimeFencingTokenSha256: binding.runtimeFencingTokenSha256,
-    attestedAt: new Date().toISOString(),
-  };
-  const store = knownGood(config);
-  const releases = [attested, ...store.releases.filter((entry) => entry.path !== active.path)].slice(0, 8);
-  writeJson(statePath(config), { schemaVersion: 1, releases, updatedAt: new Date().toISOString() } satisfies KnownGoodStore);
-  audit(config, 'known_good_attested', {
-    revision: active.revision,
-    manifestSha256: active.manifestSha256,
-    configRevision: binding.configRevision,
-    configHash: binding.configHash,
-    runtimeGeneration: binding.runtimeGeneration,
-  });
-  return attested;
+    const verified = await verifyStableRuntime(config);
+    const authority = releaseAuthority(config);
+    const active = verified.releases.active;
+    if (
+      !verified.ok
+      || !authority
+      || !active
+      || authority.active.releaseId !== active.revision
+      || authority.active.artifactIdentity !== active.artifactIdentity
+      || authority.active.manifestSha256 !== active.manifestSha256
+      || authority.active.workerProtocolVersion !== active.workerProtocolVersion
+    ) {
+      throw new Error('RECOVERY_KNOWN_GOOD_ATTESTATION_REQUIRES_FULL_VERIFY_AND_RELEASE_AUTHORITY');
+    }
+    const attested: ReleaseEvidence = {
+      ...active,
+      controllerHome: resolve(config.controllerHome),
+      releaseAuthorityRevision: authority.revision,
+      releaseFencingTokenSha256: createHash('sha256').update(authority.fencingToken).digest('hex'),
+      attestedAt: new Date().toISOString(),
+    };
+    const store = knownGood(config);
+    const releases = [attested, ...store.releases.filter((entry) => entry.path !== active.path)].slice(0, 8);
+    writeJson(statePath(config), { schemaVersion: 1, releases, updatedAt: new Date().toISOString() } satisfies KnownGoodStore);
+    audit(config, 'known_good_attested', {
+      revision: active.revision,
+      artifactIdentity: active.artifactIdentity,
+      manifestSha256: active.manifestSha256,
+      releaseAuthorityRevision: authority.revision,
+    });
+    return attested;
   });
   if (!locked.acquired) throw new Error(recoveryBusyDetail(locked.owner));
   return locked.value;
@@ -721,92 +615,59 @@ function quarantine(config: RecoveryConfig, release: ReleaseEvidence | undefined
   writeJson(quarantinePath(config), { schemaVersion: 1, releases });
 }
 
-async function operation(
-  config: RecoveryConfig,
-  requestId: string,
-  kind: string,
-  reason: string,
-  targetReleasePath?: string,
-): Promise<{ operationId?: string; phase?: string; deduplicated?: boolean }> {
-  const response = await control(config, {
-    command: 'operation_submit',
-    requestId,
-    kind,
-    actor: 'standalone-recovery',
-    reason,
-    ...(targetReleasePath ? { targetReleasePath } : {}),
-  });
-  if (response.ok !== true || !response.operation || typeof response.operation !== 'object') throw new Error('RECOVERY_OPERATION_REJECTED');
-  const accepted = response.operation as { operationId?: unknown; phase?: unknown };
-  return {
-    operationId: typeof accepted.operationId === 'string' ? accepted.operationId : undefined,
-    phase: typeof accepted.phase === 'string' ? accepted.phase : undefined,
-    deduplicated: response.deduplicated === true,
-  };
-}
-
-async function waitForOperation(config: RecoveryConfig, operationId: string): Promise<{ phase?: string; error?: string }> {
-  const deadline = Date.now() + 90_000;
-  while (Date.now() < deadline) {
-    const response = await control(config, { command: 'operation_get', operationId });
-    const operationValue = response.operation;
-    if (operationValue && typeof operationValue === 'object') {
-      const operationState = operationValue as { phase?: unknown; error?: unknown };
-      const phase = typeof operationState.phase === 'string' ? operationState.phase : undefined;
-      if (phase === 'succeeded' || phase === 'failed' || phase === 'locked_out') return { phase, error: typeof operationState.error === 'string' ? operationState.error : undefined };
-    }
-    await new Promise((resolveSleep) => setTimeout(resolveSleep, 1_000));
-  }
-  return { phase: 'timeout', error: 'RECOVERY_OPERATION_TIMEOUT' };
-}
-
 export async function rollbackPrevious(config: RecoveryConfig, reason = 'standalone recovery'): Promise<RollbackResult> {
   const locked = await withLock(config, { action: 'rollback_previous' }, async () => {
     const before = await verifyStableRuntime(config);
     const active = before.releases.active;
-    const knownActive = matchingKnownGood(config, active);
-    if (knownActive) return { ok: true, noOp: true, detail: 'active release is already independently attested known-good', verify: before };
-    const registeredPrevious = matchingKnownGood(config, before.releases.previous);
-    const target = registeredPrevious ?? selectKnownGoodRelease(config, active);
+    if (matchingKnownGood(config, active)) {
+      return { ok: true, noOp: true, detail: 'active whole-Runtime release is already independently attested known-good', verify: before };
+    }
+    if (before.runtime.running) {
+      return {
+        ok: false,
+        noOp: true,
+        detail: 'rollback refused: stop the complete Canonical Runtime before restoring its release and SQLite backup',
+        verify: before,
+      };
+    }
+    const target = matchingKnownGood(config, before.releases.previous);
     if (!active || !target) {
       audit(config, 'rollback_refused', {
-        reason: 'no registered known-good release satisfies manifest, config, Controller Home, and writer-fencing evidence',
+        reason: 'the atomic previous whole-Runtime release is not independently attested known-good',
         activeRevision: active?.revision,
       });
       return {
         ok: false,
-        detail: 'rollback refused: no registered known-good release passed manifest, config, Controller Home, and writer-fencing validation',
+        detail: 'rollback refused: no attested previous whole-Runtime release with a bound SQLite backup is available',
         verify: before,
       };
     }
-    const requestId = `recovery-rollback:${active.revision}:${target.revision}:${target.manifestSha256.slice(0, 12)}`;
-    const accepted = await operation(config, requestId, 'rollback', reason.slice(0, 500), target.path);
-    if (!accepted.operationId) return { ok: false, detail: 'rollback operation did not return an operation id' };
-    const completed = await waitForOperation(config, accepted.operationId);
-    if (completed.phase !== 'succeeded') {
-      quarantine(config, active, completed.error ?? completed.phase ?? 'rollback failed');
-      audit(config, 'rollback_failed', {
-        operationId: accepted.operationId,
+    const operationId = `recovery-rollback-${Date.now()}-${randomUUID().slice(0, 8)}`;
+    try {
+      const committed = rollbackRuntimeRelease(config.controllerHome, operationId);
+      if (
+        committed.active.releaseId !== target.revision
+        || committed.active.artifactIdentity !== target.artifactIdentity
+        || committed.active.manifestSha256 !== target.manifestSha256
+      ) throw new Error('RECOVERY_ROLLBACK_AUTHORITY_MISMATCH');
+      quarantine(config, active, 'whole-Runtime rollback completed');
+      audit(config, 'rollback_succeeded', {
+        operationId,
+        reason: reason.slice(0, 500),
         activeRevision: active.revision,
-        targetRevision: target.revision,
-        targetManifestSha256: target.manifestSha256,
-        reason: completed.error ?? completed.phase,
+        restoredRevision: target.revision,
+        restoredManifestSha256: target.manifestSha256,
       });
-      return { ok: false, operationId: accepted.operationId, detail: completed.error ?? 'rollback did not succeed' };
+      return {
+        ok: true,
+        operationId,
+        detail: 'whole-Runtime release and SQLite backup restored; Canonical Runtime remains stopped until its sole launcher starts it',
+      };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'whole-Runtime rollback failed';
+      audit(config, 'rollback_failed', { operationId, activeRevision: active.revision, targetRevision: target.revision, detail });
+      return { ok: false, operationId, detail };
     }
-    const after = await verifyStableRuntime(config);
-    if (!after.ok || after.releases.active?.revision !== target.revision || !matchingKnownGood(config, after.releases.active)) {
-      quarantine(config, active, 'post-rollback verification failed');
-      return { ok: false, operationId: accepted.operationId, detail: 'rollback completed but independent verification failed', verify: after };
-    }
-    quarantine(config, active, 'rollback completed');
-    audit(config, 'rollback_succeeded', {
-      operationId: accepted.operationId,
-      activeRevision: active.revision,
-      restoredRevision: target.revision,
-      restoredManifestSha256: target.manifestSha256,
-    });
-    return { ok: true, operationId: accepted.operationId, detail: 'known-good release restored and independently verified', verify: after };
   });
   if (!locked.acquired) return { ok: false, noOp: true, detail: recoveryBusyDetail(locked.owner), verify: await verifyStableRuntime(config) };
   return locked.value;
@@ -839,7 +700,6 @@ export function decideWatchdog(input: {
   evidenceClasses: string[];
   activeKnownGood: boolean;
   previousKnownGood: boolean;
-  operationInFlight: boolean;
   rollbackUsed: boolean;
   recoveryGatewayFailed?: boolean;
   recoveryGatewayRestartUsed?: boolean;
@@ -856,21 +716,20 @@ export function decideWatchdog(input: {
     const minimumFailures = input.publicTunnelMinimumFailures ?? 2;
     const minimumDuration = input.publicTunnelMinimumFailureDurationMs ?? 5_000;
     const sustained = input.publicTunnelFirstFailureAt !== undefined && Date.now() - input.publicTunnelFirstFailureAt >= minimumDuration;
-    if (!input.operationInFlight && failures >= minimumFailures && sustained) return { action: 'repair_public_tunnel', reason: 'local runtime and Recovery Gateway are healthy while the dedicated Recovery public endpoint is unavailable' };
-    if (input.operationInFlight) return { action: 'degraded', reason: 'Recovery tunnel repair deferred while a Supervisor operation owns runtime changes' };
+    if (failures >= minimumFailures && sustained) return { action: 'repair_public_tunnel', reason: 'local runtime and Recovery Gateway are healthy while the dedicated Recovery public endpoint is unavailable' };
     return { action: 'degraded', reason: 'Recovery tunnel failure has not yet met the bounded repair threshold' };
   }
   if (input.failures === 0) return { action: 'healthy', reason: 'all recovery probes healthy' };
   const restartSustained = input.firstFailureAt !== undefined && Date.now() - input.firstFailureAt >= 5_000;
-  if (!input.operationInFlight && input.failures >= 2 && restartSustained) {
+  if (input.failures >= 2 && restartSustained) {
     if (input.recoveryGatewayFailed && !input.recoveryGatewayRestartUsed) return { action: 'restart_recovery_gateway', reason: 'the independent Recovery Gateway health endpoint failed after a sustained bounded failure window' };
   }
   const sustained = input.firstFailureAt !== undefined && Date.now() - input.firstFailureAt >= 30_000;
   const independentEvidence = new Set(input.evidenceClasses).size >= 2;
-  if (input.failures >= 6 && sustained && independentEvidence && !input.activeKnownGood && input.previousKnownGood && !input.operationInFlight && !input.rollbackUsed) {
+  if (input.failures >= 6 && sustained && independentEvidence && !input.activeKnownGood && input.previousKnownGood && !input.rollbackUsed) {
     return { action: 'rollback', reason: 'six sustained failures have two independent evidence classes plus a verified previous whole-Runtime release' };
   }
-  return { action: 'degraded', reason: 'failure threshold, duration, operation ownership, or independent-evidence quorum not met' };
+  return { action: 'degraded', reason: 'failure threshold, duration, or independent-evidence quorum not met' };
 }
 
 export async function diagnose(config: RecoveryConfig): Promise<Record<string, unknown>> {
@@ -879,13 +738,12 @@ export async function diagnose(config: RecoveryConfig): Promise<Record<string, u
 }
 
 export async function listReleases(config: RecoveryConfig): Promise<Record<string, unknown>> {
-  let controlAvailable = true;
-  try { await supervisorStatus(config); }
-  catch { controlAvailable = false; }
+  const observation = observeRuntimeStatus(config.controllerHome);
   return {
-    controlAvailable,
-    active: activeAuthorityRelease(config) ?? currentSupervisorRelease(config),
-    previous: previousSupervisorRelease(config),
+    runtimeRunning: observation.running,
+    runtimeReady: observation.ready,
+    active: activeAuthorityRelease(config),
+    previous: previousAuthorityRelease(config),
     knownGood: knownGood(config).releases,
   };
 }
@@ -1003,10 +861,6 @@ export async function repairPublicTunnel(config: RecoveryConfig, dependencies: P
   if ((dependencies.platform ?? process.platform) !== 'darwin') {
     return { ok: false, attempted: false, noOp: true, detail: 'public tunnel repair is only supported for explicitly configured launchd services', verify: initial, localVerify };
   }
-  const supervisor = await bestEffortSupervisorState(config);
-  if (supervisor?.currentOperationId) {
-    return { ok: false, attempted: false, noOp: true, detail: 'public tunnel repair deferred while a Supervisor operation owns runtime changes', verify: initial, localVerify };
-  }
   const uid = await (dependencies.currentUid ?? currentUid)();
   const service = uid === undefined ? undefined : publicTunnelService(config, uid);
   if (!service) return { ok: false, attempted: false, noOp: true, detail: 'public tunnel launchd configuration is invalid or unavailable', verify: initial, localVerify };
@@ -1019,10 +873,6 @@ export async function repairPublicTunnel(config: RecoveryConfig, dependencies: P
     const localBefore = await verifyLocal(config);
     if (!isExternalTunnelFailure(config, before, localBefore)) {
       return { ok: (before.probes.recovery_external_http ?? before.probes.external_mcp_http)?.ok === true, attempted: false, noOp: true, detail: 'Recovery tunnel recovered before restart', serviceLabel: service.label, serviceTarget: service.target, verify: before, localVerify: localBefore };
-    }
-    const supervisorBeforeRestart = await bestEffortSupervisorState(config);
-    if (supervisorBeforeRestart?.currentOperationId) {
-      return { ok: false, attempted: false, noOp: true, detail: 'public tunnel repair deferred while a Supervisor operation owns runtime changes', serviceLabel: service.label, serviceTarget: service.target, verify: before, localVerify: localBefore };
     }
     writeJson(publicTunnelRepairStatePath(config), { lastAttemptAt: now(), serviceLabel: service.label });
     const started = await ensureLaunchdServiceStarted(service, dependencies.runCommand ?? command);
@@ -1133,10 +983,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
-async function bestEffortSupervisorState(config: RecoveryConfig): Promise<SupervisorState | undefined> {
-  try { return await supervisorStatus(config); } catch { return readSupervisorStateFile(config); }
-}
-
 export function gatewayToken(config: RecoveryConfig): string | undefined {
   const file = config.gateway?.bearerTokenFile;
   const parsed = file ? json<{ token?: unknown; expiresAt?: unknown }>(file) : undefined;
@@ -1199,14 +1045,11 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
       publicTunnelFailures: 0,
       publicTunnelFirstFailureAt: undefined,
     };
-  let operationInFlight = false;
-  try { operationInFlight = Boolean((await supervisorStatus(config)).currentOperationId); } catch { operationInFlight = false; }
   const decision = decideWatchdog({
     ...state,
     evidenceClasses,
     activeKnownGood,
     previousKnownGood,
-    operationInFlight,
     recoveryGatewayFailed: verified.probes.recovery_gateway?.ok === false,
     publicTunnelConfigured: Boolean(configuredRecoveryTunnel(config)),
     publicTunnelFailed,
