@@ -94,8 +94,6 @@ export interface SupervisorState {
   };
   ingress: {
     state: 'running' | 'degraded' | 'stopped';
-    activeUpstreamSlot: RuntimeSlotId;
-    activeUpstreamPort?: number;
     pid?: number;
     consecutiveFailures?: number;
     lastHealthyAt?: string;

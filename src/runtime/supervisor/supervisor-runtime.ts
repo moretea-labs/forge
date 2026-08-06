@@ -1108,8 +1108,6 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       ingress: {
         ...this.state.ingress,
         state: 'running',
-        activeUpstreamSlot: undefined,
-        activeUpstreamPort: undefined,
         pid: process.pid,
         lastHealthyAt: new Date().toISOString(),
       },
@@ -2541,8 +2539,6 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
           // Compatibility projection only. Ingress presence is no longer part of
           // Supervisor lifecycle health and the monitor never recreates it.
           state: this.ingressRouter ? 'running' : 'stopped',
-          activeUpstreamSlot: undefined,
-          activeUpstreamPort: undefined,
           pid: this.ingressRouter ? process.pid : undefined,
         },
       });

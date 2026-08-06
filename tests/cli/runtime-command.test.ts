@@ -80,6 +80,8 @@ describe('runtime command surface', () => {
     const httpTransport = readFileSync(join(ROOT, 'src/cli/mcp/transports/http.ts'), 'utf8');
     const runtimeTools = readFileSync(join(ROOT, 'src/runtime/gateway/mcp/runtime-tools.ts'), 'utf8');
     const supervisorRuntime = readFileSync(join(ROOT, 'src/runtime/supervisor/supervisor-runtime.ts'), 'utf8');
+    const supervisorTypes = readFileSync(join(ROOT, 'src/runtime/supervisor/types.ts'), 'utf8');
+    const supervisorStateStore = readFileSync(join(ROOT, 'src/runtime/supervisor/state-store.ts'), 'utf8');
     const facadeActions = readFileSync(join(ROOT, 'src/runtime/control-plane/facade/suggested-actions.ts'), 'utf8');
     const capabilityRegistry = readFileSync(join(ROOT, 'src/runtime/control-plane/facade/capability-registry.ts'), 'utf8');
     expect(mcpCommand).toContain('bindInheritedRuntimeWriterClaimFromEnvironment');
@@ -188,10 +190,14 @@ describe('runtime command surface', () => {
       .map((match) => match[1].trim());
     const legacyIngressPortAssignments = [...supervisorRuntime.matchAll(/activeUpstreamPort:\s*([^,\n]+)/g)]
       .map((match) => match[1].trim());
-    expect(legacyIngressSlotAssignments).toEqual(['undefined', 'undefined']);
-    expect(legacyIngressPortAssignments).toEqual(['undefined', 'undefined']);
+    expect(legacyIngressSlotAssignments).toEqual([]);
+    expect(legacyIngressPortAssignments).toEqual([]);
     expect(supervisorRuntime).not.toContain('this.state.ingress.activeUpstreamSlot');
     expect(supervisorRuntime).not.toContain('this.state.ingress.activeUpstreamPort');
+    expect(supervisorTypes).not.toContain('activeUpstreamSlot');
+    expect(supervisorTypes).not.toContain('activeUpstreamPort');
+    expect(supervisorStateStore).toContain('_legacyActiveUpstreamSlot');
+    expect(supervisorStateStore).toContain('_legacyActiveUpstreamPort');
     expect(runtimeTools).toContain('readControllerDaemonStatus');
     for (const legacy of [
       'controller_restart_verify',
