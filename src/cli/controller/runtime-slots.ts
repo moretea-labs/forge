@@ -1,7 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { ensureControllerHome } from '../repositories/controller-home';
-import { managedResource, type ManagedResource } from '../../runtime/resources';
 import { atomicActivateRuntime } from '../../runtime/bootstrap/stable-bootstrap';
 import {
   hasLegacyRuntimeAuthorityState,
@@ -38,8 +37,6 @@ export interface SlotIdentity {
   updatedAt: string;
   processGroupLeader?: number;
   logDir: string;
-  /** Additive ownership metadata for slot-home cleanup protection. */
-  resources?: ManagedResource[];
 }
 
 const DEFAULT_ROLLBACK_WINDOW_MS = 15 * 60_000;
@@ -162,20 +159,10 @@ export function readSlotIdentity(controllerHome: string, slot: RuntimeSlotId): S
 
 export function writeSlotIdentity(controllerHome: string, identity: SlotIdentity): SlotIdentity {
   ensureSlotHome(controllerHome, identity.slot);
-  const resourceCreatedAt = identity.resources?.[0]?.createdAt ?? identity.startedAt ?? nowIso();
   const next: SlotIdentity = {
     ...identity,
     schemaVersion: 1,
     updatedAt: nowIso(),
-    resources: identity.resources ?? [managedResource({
-      resourceId: `runtime-slot:${resolve(identity.controllerHome)}:${identity.slot}`,
-      type: 'runtime_slot',
-      owner: { kind: 'runtime_slot', id: `${resolve(identity.controllerHome)}:${identity.slot}` },
-      createdAt: resourceCreatedAt,
-      state: identity.role === 'failed' ? 'retained' : 'active',
-      path: identity.slotHome,
-      ...(identity.role === 'failed' ? { retentionReason: 'slot marked failed; cleanup requires explicit authority and rollback checks.' } : {}),
-    })],
   };
   atomicWrite(slotIdentityPath(controllerHome, identity.slot), next);
   return next;

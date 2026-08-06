@@ -57,10 +57,11 @@ underlying Job, event, and handoff records are not deleted by this view.
 
 ## Ownership-aware cleanup
 
-Ownership is embedded in existing lifecycle records through `ManagedResource`.
-New Agent Run worktrees, Execution Jobs, and runtime slot identities carry an
-owner, type, timestamps, state, and optional retention/path data. Missing legacy
-metadata remains unknown and is protected. Existing cleanup authorities retain
+Ownership is embedded in supported lifecycle records through `ManagedResource`.
+Agent Run worktrees and Execution Jobs carry an owner, type, timestamps, state,
+and optional retention/path data. Transitional runtime-slot records are not
+cleanup authority. Missing legacy metadata remains unknown and is protected.
+Existing cleanup authorities retain
 their startup/periodic/manual entrypoints, now emit a bounded audited
 `CleanupCycleSummary`, isolate failures, and default automatic removal to 50
 items per cycle. Type-specific collectors continue to guard process identity,
@@ -71,15 +72,14 @@ artifacts, edit sessions, branches, or unproven temporary resources. Those
 resources remain retained until their existing Git/reference/lease authority can
 prove eligibility.
 
-## Blue/green invariants
+## Transitional slot compatibility
 
-Runtime source identity remains controller-scoped and may differ from `main`.
-Active-slot authority, candidate/rollback lifecycle, dedicated slot homes, and
-generation checks remain the deployment authority. Slot identity records now
-carry an embedded `runtime_slot` ownership descriptor so cleanup can protect
-active, candidate, and rollback-referenced slot homes without changing cutover
-semantics.
+The legacy Supervisor may still retain candidate/standby slot records while MCP
+session migration is being removed. Those records are compatibility evidence,
+not deployment, resource, cleanup, or public lifecycle authority. Cleanup must
+continue to prove process identity and explicit rollback references; it must not
+infer ownership from an embedded slot resource descriptor.
 
 Focused regression coverage protects idle projections, missed refreshes, endpoint
-capability precedence, attention/history separation, bounded cleanup, slot
-identity ownership, and existing restart/MCP behavior.
+capability precedence, attention/history separation, bounded cleanup, and
+identity-safe compatibility behavior.

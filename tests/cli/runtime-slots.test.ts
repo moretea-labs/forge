@@ -91,11 +91,11 @@ describe('runtime slot authority (level 1)', () => {
     });
     expect(readActiveSlotAuthority(home).activeSlot).toBe('blue');
     const identity = readSlotIdentity(home, 'green');
-    expect(identity?.resources?.[0]).toMatchObject({
-      type: 'runtime_slot',
-      owner: { kind: 'runtime_slot' },
-      state: 'active',
-      path: identity?.slotHome,
+    expect(identity).toMatchObject({
+      slot: 'green',
+      role: 'candidate',
+      slotHome: join(home, 'runtime-slots', 'green'),
     });
+    expect(identity).not.toHaveProperty('resources');
   });
 });
