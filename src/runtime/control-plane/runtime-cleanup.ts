@@ -235,7 +235,7 @@ function commandReferencesControllerHome(commandLine: string, controllerHome: st
 
 export function expectedDaemonCommand(controllerHome: string, commandLine: string | undefined): boolean {
   if (!commandLine || !commandReferencesControllerHome(commandLine, controllerHome)) return false;
-  // Source/dev Daemons execute daemon-entry.ts/js. Immutable Supervisor releases
+  // Legacy source/dev Controller processes used daemon-entry.ts/js. Immutable legacy releases
   // execute the bundled daemon.js artifact. Both identities are valid only when
   // the command carries the exact slot/root Controller Home above.
   return /(?:^|[\\/])(?:daemon-entry\.(?:ts|js)|daemon\.js)(?:\s|$)/.test(commandLine);

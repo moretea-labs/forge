@@ -151,7 +151,7 @@ The following paths are legacy implementation inventory, not target building blo
 | `src/runtime/supervisor/ingress-router.ts` and ingress session/process state | delete in phase 4 |
 | MCP KeepAlive/restart commands and implementations | public/hidden entrypoints, the 911-line restart implementation, and the 1,136-line KeepAlive process/tunnel/restart owner are deleted in phase 2; reusable HTTP/stdio transports remain module code only |
 | MCP transport and Gateway tool Daemon auto-start | removed in phase 2; readiness and tool responses may observe daemon status but cannot create or recover Controller Services |
-| `src/runtime/control-plane/daemon-entry.ts` and `ensureControllerDaemon()` as an independent service API | no longer called by MCP transport or Gateway tools; delete the API and remaining non-MCP callers after Controller Services are Runtime-owned |
+| independent Controller Daemon entry and `ensureControllerDaemon()` service API | deleted; the remaining daemon status name is a read-only compatibility projection over Canonical Runtime observation |
 | `src/cli/controller/runtime-slots.ts` and slot homes | delete in phase 4 |
 | `src/cli/controller/bluegreen-rollout.ts` | delete in phases 4/7 |
 | public `controller` lifecycle/blue-green commands and public `supervisor` command | removed from the supported CLI surface in phase 2; implementation modules remain deletion inventory |

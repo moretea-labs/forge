@@ -20,27 +20,26 @@ Approved input: [`approved-target-architecture.zh-CN.md`](approved-target-archit
 
 ## 2. Layer responsibility migration
 
-- MCP performs authentication, schema validation, repository routing, bounded projection reads and durable acknowledgement.
-- Controller Daemon owns scheduling, reconciliation, Schedule and Portfolio progression.
+- MCP performs authentication, schema validation, repository routing, bounded projection reads and durable acknowledgement inside the Canonical Runtime.
+- Runtime Root owns Controller Services, scheduling, reconciliation, Schedule and Portfolio progression in the same process.
 - Repo Actor owns repository-local scheduling decisions and resource acquisition.
 - Worker owns commands, checks, Agent execution, integration and compatibility implementations.
 - Historical state is not used as a hot queue; active/recent/request indexes and projections are authoritative for observation.
 
-Runtime evidence: `router.ts`, `daemon-entry.ts`, `scheduler.ts`, `actor.ts`, `worker-entry.ts`, `materialized-view.ts`.
+Runtime evidence: `root/runtime.ts`, `root/entry.ts`, `router.ts`, `scheduler.ts`, `actor.ts`, `worker-entry.ts`, `materialized-view.ts`.
 
 ## 3. Target process topology
 
-Implemented as three independently restartable roles:
+Implemented as one canonical application process plus isolated execution Workers:
 
 ```text
-repo-harness MCP Gateway
-repo-harness Controller Daemon
+repo-harness-runtime (Runtime Root + Controller Services + Scheduler + Gateway/MCP)
 repo-harness isolated Worker
 ```
 
-The Daemon is auto-discovered and deduplicated. One Worker process executes one bounded Job. Gateway restart does not cancel accepted Jobs; Worker failure does not terminate Gateway.
+One Runtime process owns the complete local application. One Worker process executes one bounded Job and is fenced by Runtime/Job/lease identity; Worker failure does not create another Runtime owner.
 
-Verification: `scripts/smoke-runtime-control-plane.ts`, `scripts/smoke-mcp-http-runtime.ts`.
+Verification: `tests/runtime/canonical-single-runtime.test.ts`, `scripts/smoke-mcp-http-runtime.ts`.
 
 ## 4. Architecture constitution
 

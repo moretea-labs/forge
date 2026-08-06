@@ -456,14 +456,6 @@
       "module": "workflow",
       "resource": "temp-isolated"
     },
-    "tests/runtime/stable-supervisor-hardening.test.ts": {
-      "module": "process-runtime",
-      "resource": "runtime-singleton"
-    },
-    "tests/runtime/stable-supervisor-integration.test.ts": {
-      "module": "process-runtime",
-      "resource": "runtime-singleton"
-    },
     "tests/runtime/standalone-recovery.test.ts": {
       "module": "process-runtime",
       "resource": "process-tree"

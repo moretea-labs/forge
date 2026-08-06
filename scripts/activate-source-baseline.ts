@@ -73,7 +73,6 @@ const CHECKS: readonly CheckDefinition[] = [
       'tests/runtime/canonical-single-runtime.test.ts',
       'tests/cli/runtime-command.test.ts',
       'tests/runtime/stable-state-and-bootstrap.test.ts',
-      'tests/runtime/stable-supervisor-hardening.test.ts',
       'tests/cli/mcp-controller.test.ts',
     ],
     timeoutMs: 15 * 60_000,

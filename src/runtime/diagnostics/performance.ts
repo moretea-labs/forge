@@ -11,7 +11,7 @@ export interface RuntimeProcessSample {
   cpu: number;
   mem: number;
   command: string;
-  kind: 'controller-daemon' | 'worker' | 'local-controller' | 'mcp-server' | 'mcp-keepalive' | 'tunnel' | 'repo-harness' | 'other';
+  kind: 'runtime' | 'worker' | 'local-controller' | 'mcp-server' | 'mcp-keepalive' | 'tunnel' | 'repo-harness' | 'other';
   repoRoot?: string;
   jobId?: string;
   orphan: boolean;
@@ -125,8 +125,8 @@ export function isHighCpuPeerMcpProcess(sample: RuntimeProcessSample, repoRoot: 
   return currentRoot !== undefined && sampleRoot !== undefined && sampleRoot !== currentRoot;
 }
 
-export function isStaleControllerDaemonProcess(sample: RuntimeProcessSample, repoRoot: string): boolean {
-  if (sample.kind !== 'controller-daemon') return false;
+export function isStaleCanonicalRuntimeProcess(sample: RuntimeProcessSample, repoRoot: string): boolean {
+  if (sample.kind !== 'runtime') return false;
   if (sample.ppid !== 1) return false;
   const controllerHome = normalizeRootForCompare(extractFlag(sample.command, '--controller-home'));
   const currentRoot = normalizeRootForCompare(repoRoot);
@@ -147,7 +147,7 @@ function extractRepoRoot(command: string): string | undefined {
 }
 
 function classify(command: string): RuntimeProcessSample['kind'] {
-  if (command.includes('daemon-entry.ts')) return 'controller-daemon';
+  if (command.includes('repo-harness-runtime') || command.includes('/runtime/root/entry.ts')) return 'runtime';
   if (command.includes('worker-entry.ts') || command.includes('job-worker.ts') || command.includes('/runtime/execution/workers/')) return 'worker';
   if (command.includes(' controller ui ') || command.includes('src/cli/index.ts controller ui')) return 'local-controller';
   if (command.includes(' mcp serve ') || command.includes('src/cli/index.ts mcp serve')) return 'mcp-server';
@@ -306,7 +306,7 @@ export function collectRuntimePerformanceDiagnostics(input: DiagnosticsInput): R
   const processes = input.includeProcesses === false ? [] : collectRuntimeProcesses(activeJobIds);
   const repoRoot = normalizePath(input.repoRoot) ?? input.repoRoot;
   const peerMcpProcesses = processes.filter((process) => isHighCpuPeerMcpProcess(process, repoRoot));
-  const staleControllerDaemons = processes.filter((process) => isStaleControllerDaemonProcess(process, repoRoot));
+  const staleControllerDaemons = processes.filter((process) => isStaleCanonicalRuntimeProcess(process, repoRoot));
   const repoProcesses = processes.filter((process) =>
     normalizePath(process.repoRoot) === repoRoot
     || process.command.includes(input.repoRoot)

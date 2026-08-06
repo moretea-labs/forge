@@ -18,7 +18,7 @@ All notable changes to this skill are documented here.
 
 ### Performance
 
-- `ensureControllerDaemon` now returns immediately when the Controller daemon PID is live, skipping startup runtime cleanup and the global start lock on every durable MCP mutation.
+- Removed the independent Controller Daemon auto-start API; compatibility status reads now project the single Canonical Runtime owner/readiness without spawning a process.
 - Cached full-table process scans (~2.5s), git snapshots (~3s), and runtime source identity collection (~2.5s) so status/readiness storms do not re-run the same host/git work every request.
 
 ## [1.3.0] - 2026-06-22

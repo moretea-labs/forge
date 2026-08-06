@@ -145,7 +145,7 @@ import { loadMcpLocalConfig, loadMcpServiceLocalConfig, loadMcpServiceRuntimeSta
 import { loadRepositoryRegistry, registerRepository, removeRepository, resolveRepositorySelection } from "../repositories/registry";
 import { resolveControllerHome, resolveRepoPreferredControllerHome } from "../repositories/controller-home";
 import { ensureRepositoryRuntimeStorage } from "../repositories/runtime-storage";
-import { ensureControllerDaemon, readControllerDaemonStatus } from "../../runtime/control-plane/daemon-client";
+import { readControllerDaemonStatus } from "../../runtime/control-plane/daemon-client";
 import { readRuntimeGeneration } from "../../runtime/control-plane/runtime-generation";
 import { findExecutionJob, listExecutionJobs } from "../../runtime/execution/jobs/store";
 import { rebuildRepositoryProjection, readRepositoryProjectionSnapshot } from "../../runtime/projections/materialized-view";

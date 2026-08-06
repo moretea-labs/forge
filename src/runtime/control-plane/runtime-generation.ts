@@ -179,8 +179,8 @@ export function looksLikeControllerRuntimePackage(root: string): boolean {
   if (!root || !existsSync(root)) return false;
   const name = readPackageName(root);
   if (name === '@moretea-labs/matea' || name === '@moretea-labs/repo-harness-controller') return true;
-  // Source checkout / worktree without install: entry + package markers.
-  return existsSync(join(root, 'src', 'runtime', 'control-plane', 'daemon-entry.ts'))
+  // Source checkout / worktree without install: canonical Runtime entry + package markers.
+  return existsSync(join(root, 'src', 'runtime', 'root', 'entry.ts'))
     && existsSync(join(root, 'package.json'));
 }
 
@@ -188,7 +188,7 @@ export function looksLikeControllerRuntimePackage(root: string): boolean {
  * Unique Controller Runtime Source root resolver.
  *
  * Authority order:
- * 1. explicit root (daemon/lifecycle handoff)
+ * 1. explicit canonical Runtime root
  * 2. REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT / REPO_HARNESS_SOURCE_ROOT
  * 3. package root derived from this module (source checkout, global install, worktree)
  * 4. process.cwd() only when it itself looks like the controller package

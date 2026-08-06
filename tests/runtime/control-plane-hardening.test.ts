@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { ensureControllerDaemon, readControllerDaemonStatus, schedulerHeartbeatSnapshotHealthy } from '../../src/runtime/control-plane/daemon-client';
+import { readControllerDaemonStatus, schedulerHeartbeatSnapshotHealthy } from '../../src/runtime/control-plane/daemon-client';
 import { createExecutionJob } from '../../src/runtime/execution/jobs/store';
 import { TERMINAL_JOB_STATUSES } from '../../src/runtime/execution/jobs/types';
+import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
+import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 
 const roots: string[] = [];
 
@@ -18,102 +20,59 @@ afterEach(() => {
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
+function passingDiagnostics() {
+  return {
+    database: { outcome: 'pass' as const },
+    scheduler: { outcome: 'pass' as const },
+    releaseCoherence: { outcome: 'pass' as const },
+    mcpEndToEnd: { outcome: 'pass' as const },
+  };
+}
+
 describe('control-plane hardening', () => {
-  test('keeps a live daemon PID authoritative when the scheduler heartbeat is stale', () => {
-    const controllerHome = temp('repo-harness-daemon-fence-');
-    mkdirSync(join(controllerHome, 'daemon'), { recursive: true });
-    const startedAt = new Date(Date.now() - 60_000).toISOString();
-    writeFileSync(join(controllerHome, 'daemon', 'controller.pid'), `${process.pid}\n`);
-    writeFileSync(join(controllerHome, 'daemon', 'state.json'), `${JSON.stringify({
-      schemaVersion: 1,
-      status: 'ready',
-      pid: process.pid,
-      startedAt,
-    }, null, 2)}\n`);
+  test('projects canonical Runtime ownership through the transitional daemon status shape', () => {
+    const controllerHome = temp('repo-harness-runtime-status-');
+    const ownership = acquireRuntimeOwnership(controllerHome, 'runtime-test');
+    const startedAt = new Date(Date.now() - 1_000).toISOString();
+    try {
+      writeRuntimeStatusSnapshot(controllerHome, {
+        schemaVersion: 1,
+        runtimeInstanceId: 'runtime-test',
+        pid: process.pid,
+        releaseId: 'release-test',
+        artifactIdentity: 'artifact-test',
+        endpoint: 'http://127.0.0.1:0/mcp',
+        startedAt,
+        updatedAt: new Date().toISOString(),
+        readiness: {
+          ready: true,
+          reasonCodes: [],
+          diagnostics: passingDiagnostics(),
+          observedAt: new Date().toISOString(),
+        },
+      });
 
-    const degraded = readControllerDaemonStatus(controllerHome);
-    expect(degraded.status).toBe('ready');
-    expect(degraded.degraded).toBe(true);
-    expect(degraded.pid).toBe(process.pid);
-
-    const ensured = ensureControllerDaemon(controllerHome);
-    expect(ensured.pid).toBe(process.pid);
-    expect(ensured.startedAt).toBe(startedAt);
+      expect(readControllerDaemonStatus(controllerHome)).toMatchObject({
+        status: 'ready',
+        pid: process.pid,
+        startedAt,
+        instanceId: 'runtime-test',
+        gatewaySeparated: false,
+        workerIsolation: true,
+        degraded: false,
+        restartRequired: false,
+      });
+    } finally {
+      ownership.release();
+    }
   });
 
-  test('keeps a live passive candidate ready without requiring a Scheduler heartbeat', () => {
-    const controllerHome = temp('repo-harness-passive-daemon-ready-');
-    mkdirSync(join(controllerHome, 'daemon'), { recursive: true });
-    const startedAt = new Date(Date.now() - 60_000).toISOString();
-    writeFileSync(join(controllerHome, 'daemon', 'controller.pid'), `${process.pid}\n`);
-    writeFileSync(join(controllerHome, 'daemon', 'state.json'), `${JSON.stringify({
-      schemaVersion: 1,
-      status: 'ready',
-      pid: process.pid,
-      startedAt,
-      passive: true,
-      degraded: false,
-    }, null, 2)}\n`);
-
-    const status = readControllerDaemonStatus(controllerHome);
-    expect(status.status).toBe('ready');
-    expect(status.passive).toBe(true);
-    expect(status.degraded).toBe(false);
-    expect(status.pid).toBe(process.pid);
-  });
-
-  test('prefers a live Daemon with a fresh Scheduler heartbeat over a stale terminal projection', () => {
-    const controllerHome = temp('repo-harness-daemon-stale-terminal-');
-    mkdirSync(join(controllerHome, 'daemon'), { recursive: true });
-    mkdirSync(join(controllerHome, 'scheduler'), { recursive: true });
-    const startedAt = new Date(Date.now() - 60_000).toISOString();
-    writeFileSync(join(controllerHome, 'daemon', 'state.json'), `${JSON.stringify({
-      schemaVersion: 1,
-      status: 'stopped',
-      pid: process.pid,
-      startedAt,
-      stoppedAt: new Date().toISOString(),
-      shutdownReason: 'lifecycle_complete',
-    }, null, 2)}\n`);
-    writeFileSync(join(controllerHome, 'scheduler', 'state.json'), `${JSON.stringify({
-      schemaVersion: 1,
-      updatedAt: new Date().toISOString(),
-      loopStartedAt: startedAt,
-      lastHeartbeatAt: new Date().toISOString(),
-      heartbeatTimeoutMs: 60_000,
-      lastRepoDispatch: {},
-    }, null, 2)}\n`);
-
-    const status = readControllerDaemonStatus(controllerHome);
-    expect(status.status).toBe('ready');
-    expect(status.pid).toBe(process.pid);
-    expect(status.degraded).toBe(false);
-    expect(status.stoppedAt).toBeUndefined();
-    expect(status.shutdownReason).toBeUndefined();
-    const durable = JSON.parse(readFileSync(join(controllerHome, 'daemon', 'state.json'), 'utf8')) as { status: string };
-    expect(durable.status).toBe('stopped');
-  });
-
-  test('keeps a stale terminal projection when the Scheduler heartbeat is stale', () => {
-    const controllerHome = temp('repo-harness-daemon-terminal-no-heartbeat-');
-    mkdirSync(join(controllerHome, 'daemon'), { recursive: true });
-    mkdirSync(join(controllerHome, 'scheduler'), { recursive: true });
-    writeFileSync(join(controllerHome, 'daemon', 'state.json'), `${JSON.stringify({
-      schemaVersion: 1,
-      status: 'stopped',
-      pid: process.pid,
-      stoppedAt: new Date().toISOString(),
-    }, null, 2)}\n`);
-    writeFileSync(join(controllerHome, 'scheduler', 'state.json'), `${JSON.stringify({
-      schemaVersion: 1,
-      updatedAt: new Date(Date.now() - 120_000).toISOString(),
-      loopStartedAt: new Date(Date.now() - 180_000).toISOString(),
-      lastHeartbeatAt: new Date(Date.now() - 120_000).toISOString(),
-      heartbeatTimeoutMs: 60_000,
-      lastRepoDispatch: {},
-    }, null, 2)}\n`);
-
-    expect(readControllerDaemonStatus(controllerHome).status).toBe('stopped');
+  test('reports unavailable instead of creating a Controller process', () => {
+    const controllerHome = temp('repo-harness-runtime-unavailable-');
+    expect(readControllerDaemonStatus(controllerHome)).toMatchObject({
+      status: 'unavailable',
+      restartRequired: false,
+    });
   });
 
   test('uses the Scheduler-published heartbeat timeout and a safe legacy fallback', () => {
@@ -140,36 +99,6 @@ describe('control-plane hardening', () => {
     }, now)).toBe(false);
   });
 
-  test('ensureControllerDaemon skips startup cleanup when the daemon PID is live', () => {
-    const controllerHome = temp('repo-harness-daemon-hotpath-');
-    mkdirSync(join(controllerHome, 'daemon'), { recursive: true });
-    const startedAt = new Date().toISOString();
-    writeFileSync(join(controllerHome, 'daemon', 'controller.pid'), `${process.pid}\n`);
-    writeFileSync(join(controllerHome, 'daemon', 'state.json'), `${JSON.stringify({
-      schemaVersion: 1,
-      status: 'ready',
-      pid: process.pid,
-      startedAt,
-    }, null, 2)}\n`);
-    mkdirSync(join(controllerHome, 'scheduler'), { recursive: true });
-    writeFileSync(join(controllerHome, 'scheduler', 'state.json'), `${JSON.stringify({
-      schemaVersion: 1,
-      updatedAt: new Date().toISOString(),
-      loopStartedAt: new Date().toISOString(),
-      lastTickAt: new Date().toISOString(),
-      lastDispatchAt: new Date().toISOString(),
-      lastReconcileAt: new Date().toISOString(),
-      lastRepoDispatch: {},
-    }, null, 2)}\n`);
-
-    const first = ensureControllerDaemon(controllerHome);
-    const second = ensureControllerDaemon(controllerHome);
-    expect(first.pid).toBe(process.pid);
-    expect(second.pid).toBe(process.pid);
-    expect(second.startedAt).toBe(startedAt);
-    expect(readControllerDaemonStatus(controllerHome).pid).toBe(process.pid);
-  });
-
   test('refuses new ExecutionJobs for approval-wait and controller-scope recovery paths', () => {
     const controllerHome = temp('repo-harness-job-retired-');
     expect(() => createExecutionJob(controllerHome, {
@@ -182,7 +111,6 @@ describe('control-plane hardening', () => {
       payload: { operation: 'controller_ready', target: 'runtime', profile: 'controller', arguments: {} },
       resourceClaims: [],
     })).toThrow(/EXECUTION_JOB_RETIRED/);
-    // waiting_for_approval remains a non-terminal historical status for old records.
     expect(TERMINAL_JOB_STATUSES.has('waiting_for_approval')).toBe(false);
   });
 });

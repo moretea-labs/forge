@@ -2,33 +2,20 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { ensureControllerDaemon } from '../../src/runtime/control-plane/daemon-client';
 import { GlobalScheduler } from '../../src/runtime/control-plane/global-scheduler/scheduler';
 import {
   cleanupControllerRuntimeState,
   runtimeCleanupLogPath,
   type RuntimeCleanupReport,
 } from '../../src/runtime/control-plane/runtime-cleanup';
-import { isProcessAlive } from '../../src/runtime/shared/process-tree';
 import { previewRuntimeCleanup } from '../../src/runtime/maintenance/cleanup';
 
 const homes: string[] = [];
-const daemonPids = new Set<number>();
 
 function controllerHome(): string {
   const value = mkdtempSync(join(tmpdir(), 'repo-harness-runtime-cleanup-'));
   homes.push(value);
   return value;
-}
-
-async function waitFor<T>(read: () => T | undefined, timeoutMs = 5_000): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const value = read();
-    if (value !== undefined) return value;
-    await Bun.sleep(25);
-  }
-  throw new Error('timed out waiting for test state');
 }
 
 function cleanupEntries(home: string): RuntimeCleanupReport[] {
@@ -57,44 +44,11 @@ function age(path: string, ageMs = 8 * 60 * 60_000): void {
   utimesSync(path, old, old);
 }
 
-afterEach(async () => {
-  for (const pid of daemonPids) {
-    try {
-      process.kill(pid, 'SIGTERM');
-    } catch {
-      // The daemon may already be gone.
-    }
-    await waitFor(() => (!isProcessAlive(pid) ? true : undefined), 5_000).catch(() => undefined);
-  }
-  daemonPids.clear();
+afterEach(() => {
   while (homes.length > 0) rmSync(homes.pop()!, { recursive: true, force: true });
 });
 
 describe('runtime cleanup', () => {
-  test('startup cleanup removes stale daemon pid files and records the action', async () => {
-    const home = controllerHome();
-    mkdirSync(join(home, 'daemon'), { recursive: true });
-    writeFileSync(join(home, 'daemon', 'controller.pid'), 'not-a-pid\n', 'utf8');
-    writeFileSync(join(home, 'daemon', 'state.json'), `${JSON.stringify({
-      schemaVersion: 1,
-      status: 'ready',
-      pid: 999_999,
-      startedAt: new Date(Date.now() - 60_000).toISOString(),
-    }, null, 2)}\n`, 'utf8');
-
-    // Dead PID forces ensureControllerDaemon off the live fast-path so startup
-    // cleanup still runs before spawning a replacement daemon.
-    const status = ensureControllerDaemon(home);
-    if (status.pid) daemonPids.add(status.pid);
-
-    await waitFor(() => cleanupEntries(home).find((entry) => entry.reason === 'startup'));
-    const startup = cleanupEntries(home).find((entry) => entry.reason === 'startup');
-
-    expect(startup?.removedPidFiles).toContain('daemon/controller.pid');
-    expect(startup?.removedWorktrees).toEqual([]);
-    expect(existsSync(runtimeCleanupLogPath(home))).toBe(true);
-  });
-
   test('protects the current Controller PID even when command identity differs', () => {
     const home = controllerHome();
     writeDaemonState(home, 41_001);
@@ -438,81 +392,3 @@ describe('runtime cleanup', () => {
   });
 });
 
-
-describe('automatic runtime cleanup loop', () => {
-  test('uses a 24-hour minimum age and bounded removal budget', async () => {
-    const { runAutomaticRuntimeCleanupCycle } = await import('../../src/runtime/control-plane/daemon-entry');
-    let observed: Record<string, unknown> | undefined;
-    const result = runAutomaticRuntimeCleanupCycle('/repo', {
-      maxRemovals: 7,
-      cleanup: (_repoRoot, options) => {
-        observed = options as Record<string, unknown>;
-        return { mode: 'apply' } as never;
-      },
-    });
-
-    expect(result).toBeDefined();
-    expect(observed).toMatchObject({
-      minAgeMinutes: 1440,
-      maxRemovals: 7,
-      includeTempDirs: true,
-      includeTerminalLocalJobs: false,
-      includeLegacyRuns: false,
-      includeHistoricalAttention: false,
-      confirmCleanup: true,
-    });
-  });
-
-  test('keeps cleanup failures non-fatal', async () => {
-    const { runAutomaticRuntimeCleanupCycle } = await import('../../src/runtime/control-plane/daemon-entry');
-    const errors: unknown[] = [];
-    const result = runAutomaticRuntimeCleanupCycle('/repo', {
-      cleanup: () => { throw new Error('cleanup failed'); },
-      onError: (error) => errors.push(error),
-    });
-
-    expect(result).toBeUndefined();
-    expect(errors).toHaveLength(1);
-  });
-
-  test('does not overlap a re-entered daemon cleanup cycle', async () => {
-    const { runAutomaticRuntimeCleanupCycle } = await import('../../src/runtime/control-plane/daemon-entry');
-    let runs = 0;
-    let nestedResult: unknown;
-
-    const result = runAutomaticRuntimeCleanupCycle('/repo', {
-      cleanup: () => {
-        runs += 1;
-        nestedResult = runAutomaticRuntimeCleanupCycle('/repo', {
-          cleanup: () => {
-            runs += 1;
-            return { mode: 'apply' } as never;
-          },
-        });
-        return { mode: 'apply' } as never;
-      },
-    });
-
-    expect(result).toBeDefined();
-    expect(nestedResult).toBeUndefined();
-    expect(runs).toBe(1);
-  });
-
-  test('stops the periodic loop when the daemon aborts', async () => {
-    const { runAutomaticRuntimeCleanupLoop } = await import('../../src/runtime/control-plane/daemon-entry');
-    const abort = new AbortController();
-    let cycles = 0;
-    const loop = runAutomaticRuntimeCleanupLoop('/repo', abort.signal, {
-      initialDelayMs: 0,
-      intervalMs: 60_000,
-      cleanup: () => {
-        cycles += 1;
-        abort.abort();
-        return { mode: 'apply' } as never;
-      },
-    });
-
-    await loop;
-    expect(cycles).toBe(1);
-  });
-});

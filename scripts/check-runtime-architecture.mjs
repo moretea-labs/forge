@@ -15,6 +15,9 @@ function text(path) {
 function requireText(path, needle) {
   if (!text(path).includes(needle)) failures.push(`${path} must contain ${JSON.stringify(needle)}`);
 }
+function requireMissing(path) {
+  if (existsSync(resolve(root, path))) failures.push(`${path} must be deleted`);
+}
 function requireMatch(path, expression, description) {
   if (!expression.test(text(path))) failures.push(`${path} must ${description}`);
 }
@@ -35,7 +38,6 @@ function forbidBetween(path, startNeedle, endNeedle, expression, description) {
 const required = [
   'src/runtime/gateway/mcp/router.ts',
   'src/cli/agent-jobs/executable-resolver.ts',
-  'src/runtime/control-plane/daemon-entry.ts',
   'src/runtime/control-plane/global-scheduler/scheduler.ts',
   'src/runtime/control-plane/repo-actor/actor.ts',
   'src/runtime/execution/jobs/store.ts',
@@ -56,7 +58,6 @@ const required = [
   'src/runtime/workflow/schedules/engine.ts',
   'scripts/smoke-runtime-recovery.ts',
   'scripts/smoke-schedule-engine.ts',
-  'scripts/smoke-runtime-control-plane.ts',
   'src/runtime/workflow/portfolio/engine.ts',
   'src/runtime/workflow/findings/store.ts',
   'src/runtime/release/release-gate.ts',
@@ -76,6 +77,10 @@ const required = [
   'docs/architecture/current/approved-target-architecture.zh-CN.md',
 ];
 for (const path of required) text(path);
+requireMissing('src/runtime/control-plane/daemon-entry.ts');
+requireMissing('scripts/smoke-runtime-control-plane.ts');
+requireMissing('src/cli/controller/lifecycle.ts');
+requireMissing('src/cli/commands/supervisor.ts');
 
 requireText('docs/architecture/current/runtime-architecture-simplification.md', 'one local MCP application');
 requireText('docs/architecture/current/runtime-architecture-simplification.md', 'one active Runtime');
@@ -89,6 +94,7 @@ forbidBetween(
   'define the target Runtime without Supervisor, ingress, slots, or component rollback',
 );
 requireText('src/runtime/root/runtime.ts', 'export class CanonicalRepoHarnessRuntime');
+forbid('src/runtime/control-plane/daemon-client.ts', /ensureControllerDaemon|child_process|daemon-entry|isStableSupervisorInstalled/, 'keep daemon compatibility read-only and bound to canonical Runtime observation');
 requireText('src/runtime/root/runtime.ts', "startInProcessScheduler");
 requireText('src/runtime/root/runtime.ts', 'startRuntimeMcpTransport');
 forbid(
@@ -151,15 +157,6 @@ forbid(
 requireText('scripts/smoke-schedule-engine.ts', 'listHandoffItems');
 requireText('scripts/smoke-schedule-engine.ts', 'listExecutionJobs');
 requireText('scripts/smoke-schedule-engine.ts', "operation: 'runtime_maintenance_apply'");
-forbid(
-  'scripts/smoke-runtime-control-plane.ts',
-  /\bcreateExecutionJob\b|\bgetExecutionJob\b/,
-  'Runtime control-plane smoke must exercise direct Workbench and materialized reads without ExecutionJob polling',
-);
-requireText('scripts/smoke-runtime-control-plane.ts', 'callRepositoryTool');
-requireText('scripts/smoke-runtime-control-plane.ts', 'callRuntimeTool');
-requireText('scripts/smoke-runtime-control-plane.ts', 'listExecutionJobs');
-
 const server = text('src/cli/mcp/server.ts');
 const runtimeCall = server.indexOf('callRuntimeTool(ctx, name, args)');
 const durableCall = server.indexOf('routeDurableMcpCall(ctx, name, args)');
@@ -419,7 +416,6 @@ requireText('src/cli/mcp/tools.ts', "export * from './legacy-tool-service'");
 for (const path of [
   'src/runtime/gateway/mcp/router.ts',
   'src/runtime/gateway/mcp/runtime-tools.ts',
-  'src/runtime/control-plane/daemon-entry.ts',
   'src/runtime/control-plane/global-scheduler/scheduler.ts',
   'src/runtime/control-plane/repo-actor/actor.ts',
   'src/runtime/workflow/schedules/engine.ts',
