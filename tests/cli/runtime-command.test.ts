@@ -140,6 +140,12 @@ describe('runtime command surface', () => {
     expect(runtimeSlots).not.toContain('managedResource');
     expect(runtimeSlots).not.toContain('resources?:');
     expect(runtimeSlots).not.toContain("type: 'runtime_slot'");
+    expect(runtimeSlots).not.toContain('controllerHome: string');
+    expect(runtimeSlots).not.toContain('mcpPort: number');
+    expect(runtimeSlots).not.toContain('localControllerPort: number');
+    expect(runtimeSlots).not.toContain('processGroupLeader?: number');
+    expect(runtimeSlots).not.toContain('logDir: string');
+    expect(supervisorRuntime).not.toContain('logDir: dirname(this.options.logPath)');
     expect(httpTransport).not.toContain('ensureControllerDaemon');
     expect(httpTransport).toContain('readControllerDaemonStatus');
     expect(runtimeTools).not.toContain('ensureControllerDaemon');
@@ -344,6 +350,8 @@ describe('runtime command surface', () => {
     expect(supervisorOperationStore).toContain("phase: 'activating_runtime'");
     const supervisorHardeningTests = readFileSync(join(ROOT, 'tests/runtime/stable-supervisor-hardening.test.ts'), 'utf8');
     const stableStateTests = readFileSync(join(ROOT, 'tests/runtime/stable-state-and-bootstrap.test.ts'), 'utf8');
+    expect(stableStateTests).not.toContain('slotIdentity: identity as any');
+    expect(stableStateTests).not.toContain('authority: authority as any');
     expect(supervisorHardeningTests).not.toContain('replaceIngressRouter');
     expect(supervisorHardeningTests).toContain('Supervisor state reader strips legacy Ingress route and health telemetry');
     expect(supervisorHardeningTests).toContain("expect(migrated).not.toHaveProperty('ingress')");

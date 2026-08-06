@@ -25,18 +25,13 @@ export interface SlotIdentity {
   schemaVersion: 1;
   slot: RuntimeSlotId;
   role: 'active' | 'inactive' | 'candidate' | 'standby' | 'failed';
-  controllerHome: string;
   slotHome: string;
-  mcpPort: number;
-  localControllerPort: number;
   generation?: string;
   sourceCommit?: string;
   releasePath?: string;
   releaseRevision?: string;
   startedAt?: string;
   updatedAt: string;
-  processGroupLeader?: number;
-  logDir: string;
 }
 
 const DEFAULT_ROLLBACK_WINDOW_MS = 15 * 60_000;

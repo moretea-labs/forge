@@ -82,12 +82,8 @@ describe('runtime slot authority (level 1)', () => {
       schemaVersion: 1,
       slot: 'green',
       role: 'candidate',
-      controllerHome: home,
       slotHome: ensureSlotHome(home, 'green'),
-      mcpPort: 8775,
-      localControllerPort: 8776,
       updatedAt: new Date().toISOString(),
-      logDir: join(home, 'runtime-slots', 'green', 'logs'),
     });
     expect(readActiveSlotAuthority(home).activeSlot).toBe('blue');
     const identity = readSlotIdentity(home, 'green');

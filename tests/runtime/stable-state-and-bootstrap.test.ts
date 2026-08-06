@@ -495,32 +495,14 @@ describe('release coherence transplant', () => {
       restartBudget: {},
       updatedAt: '2026-07-21T00:00:00.000Z',
     };
-    const authority = {
-      schemaVersion: 1 as const,
-      activeSlot: 'green' as const,
-      generation: 'generation-a',
-      reason: 'test',
-      updatedAt: '2026-07-21T00:00:00.000Z',
-    };
-    const identity = {
-      schemaVersion: 1 as const,
-      slot: 'green' as const,
-      role: 'active' as const,
-      controllerHome: '/tmp/controller-home',
-      slotHome: '/tmp/controller-home/runtime-slots/green',
-      mcpPort: 8795,
-      localControllerPort: 8776,
-      generation: 'generation-a',
-      releasePath: '/tmp/releases/revision-b',
-      releaseRevision: 'revision-a',
-      startedAt: '2026-07-21T00:00:00.000Z',
-      updatedAt: '2026-07-21T00:00:00.000Z',
-      logDir: '/tmp/logs',
-    };
     const mismatched = evaluateRuntimeReleaseCoherence({
-      supervisorState: state as any,
-      authority: authority as any,
-      slotIdentity: identity as any,
+      supervisorState: {
+        ...state,
+        gatewayHost: {
+          ...state.gatewayHost,
+          releasePath: '/tmp/releases/revision-b',
+        },
+      } as any,
     });
     expect(mismatched.ok).toBe(false);
     expect(mismatched.releasePathCoherent).toBe(false);

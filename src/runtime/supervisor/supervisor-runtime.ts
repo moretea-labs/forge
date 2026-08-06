@@ -1,5 +1,5 @@
 import { realpathSync } from 'fs';
-import { dirname, resolve, sep } from 'path';
+import { resolve, sep } from 'path';
 import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState, readMcpServiceBearerToken, syncMcpControllerHomeBearerToken, writeMcpServiceLocalConfig, type McpRuntimeState } from '../../cli/mcp/auth';
 import {
   ensureSlotHome,
@@ -1494,17 +1494,13 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
         schemaVersion: 1,
         slot,
         role: 'candidate',
-        controllerHome: this.options.controllerHome,
         slotHome: daemon.controllerHome,
-        mcpPort: prepared.manager.gatewayBinding(slot).port,
-        localControllerPort: prepared.localControllerPort,
         ...(generation ? { generation } : {}),
         ...(sourceCommit ? { sourceCommit } : {}),
         ...(daemon.releasePath ? { releasePath: daemon.releasePath } : {}),
         ...(daemon.releaseRevision ? { releaseRevision: daemon.releaseRevision } : {}),
         startedAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-        logDir: dirname(this.options.logPath),
       });
       return {
         slot,
@@ -1887,12 +1883,8 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
         ...(readSlotIdentity(this.options.controllerHome, candidateSlot) ?? {
           schemaVersion: 1,
           slot: candidateSlot,
-          controllerHome: this.options.controllerHome,
           slotHome: activatedCandidate.controllerDaemon.controllerHome,
-          mcpPort: activatedCandidate.manager.gatewayBinding(candidateSlot).port,
-          localControllerPort: activatedCandidate.localControllerPort,
           updatedAt: new Date().toISOString(),
-          logDir: dirname(this.options.logPath),
         }),
         role: 'active',
       });
