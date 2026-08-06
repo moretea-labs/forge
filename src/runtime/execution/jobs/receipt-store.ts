@@ -3,6 +3,11 @@ import { join } from 'path';
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
 import { assertFencingToken } from '../../resources/leases/store';
+import {
+  assertRuntimeMayWriteOrThrow,
+  getRuntimeWriteClaim,
+  type RuntimeWriteClaim,
+} from '../../root/write-fence';
 import type { ExecutionChildReference } from './child-reference';
 import { getExecutionJob } from './store';
 import type { ExecutionJob } from './types';
@@ -21,7 +26,11 @@ export interface OperationReceipt {
   workerPid: number;
   /** Additive ownership snapshot; absent on legacy receipts. */
   leaseRefs?: OperationReceiptLeaseRef[];
-  ownerEpoch?: string;
+  runtimeInstanceId?: string;
+  releaseAuthorityRevision?: number;
+  releaseId?: string;
+  artifactIdentity?: string;
+  workerProtocolVersion?: number;
   startedAt: string;
   completedAt?: string;
   outcome?: 'succeeded' | 'failed' | 'delegated';
@@ -54,12 +63,42 @@ function sameLeaseOwnership(receipt: OperationReceipt, job: ExecutionJob): boole
   return receipt.leaseRefs.every((ref) => byId.get(ref.leaseId) === ref.fencingToken);
 }
 
+function matchesCanonicalIdentity<T>(receiptValue: T | undefined, jobValue: T | undefined): boolean {
+  // Canonical Jobs must never accept a legacy receipt that omitted Runtime or
+  // release identity. Legacy receipts remain readable only for legacy Jobs that
+  // also have no canonical lifecycle identity.
+  return receiptValue === jobValue;
+}
+
 export function operationReceiptMatchesJobOwnership(receipt: OperationReceipt, job: ExecutionJob): boolean {
   if (receipt.repoId !== job.repoId || receipt.jobId !== job.jobId || receipt.attempt !== job.attempt) return false;
   const currentWorkerPid = job.workerPid ?? job.workerLifecycle?.workerPid;
   if (currentWorkerPid !== undefined && receipt.workerPid !== currentWorkerPid) return false;
-  if (receipt.ownerEpoch && job.workerLifecycle?.ownerEpoch && receipt.ownerEpoch !== job.workerLifecycle.ownerEpoch) return false;
+  const lifecycle = job.workerLifecycle;
+  if (!matchesCanonicalIdentity(receipt.runtimeInstanceId, lifecycle?.runtimeInstanceId)) return false;
+  if (!matchesCanonicalIdentity(receipt.releaseAuthorityRevision, lifecycle?.releaseAuthorityRevision)) return false;
+  if (!matchesCanonicalIdentity(receipt.releaseId, lifecycle?.releaseId)) return false;
+  if (!matchesCanonicalIdentity(receipt.artifactIdentity, lifecycle?.artifactIdentity)) return false;
+  if (!matchesCanonicalIdentity(receipt.workerProtocolVersion, lifecycle?.workerProtocolVersion)) return false;
   return sameLeaseOwnership(receipt, job);
+}
+
+function jobLifecycleMatchesRuntimeClaim(job: ExecutionJob, claim: RuntimeWriteClaim | undefined): boolean {
+  const lifecycle = job.workerLifecycle;
+  if (!claim || claim.unmanaged) {
+    return lifecycle?.runtimeInstanceId === undefined
+      && lifecycle?.releaseAuthorityRevision === undefined
+      && lifecycle?.releaseId === undefined
+      && lifecycle?.artifactIdentity === undefined
+      && lifecycle?.workerProtocolVersion === undefined;
+  }
+  if (!lifecycle) return false;
+  return lifecycle.ownerPid === claim.ownerPid
+    && lifecycle.runtimeInstanceId === claim.runtimeInstanceId
+    && lifecycle.releaseAuthorityRevision === claim.releaseAuthorityRevision
+    && lifecycle.releaseId === claim.releaseId
+    && lifecycle.artifactIdentity === claim.artifactIdentity
+    && lifecycle.workerProtocolVersion === claim.workerProtocolVersion;
 }
 
 function assertOperationReceiptOwnership(
@@ -67,6 +106,7 @@ function assertOperationReceiptOwnership(
   job: ExecutionJob,
   workerPid: number,
 ): ExecutionJob {
+  assertRuntimeMayWriteOrThrow('write_workflow_terminal', controllerHome);
   const current = getExecutionJob(controllerHome, job.repoId, job.jobId);
   const ownerMatches = current.status === 'running'
     && current.attempt === job.attempt
@@ -75,18 +115,40 @@ function assertOperationReceiptOwnership(
   if (!ownerMatches) {
     throw new Error(`OPERATION_RECEIPT_OWNERSHIP_STALE: ${job.jobId} attempt=${job.attempt} workerPid=${workerPid}`);
   }
+  if (!jobLifecycleMatchesRuntimeClaim(current, getRuntimeWriteClaim())) {
+    throw new Error(`OPERATION_RECEIPT_RUNTIME_FENCED: ${job.jobId} attempt=${job.attempt}`);
+  }
   for (const ref of current.leaseRefs) {
     assertFencingToken(controllerHome, current.repoId, ref.leaseId, ref.fencingToken);
   }
   return current;
 }
 
-function receiptOwnership(job: ExecutionJob): Pick<OperationReceipt, 'attempt' | 'workerPid' | 'leaseRefs' | 'ownerEpoch'> {
+function receiptOwnership(job: ExecutionJob): Pick<
+  OperationReceipt,
+  | 'attempt'
+  | 'workerPid'
+  | 'leaseRefs'
+  | 'runtimeInstanceId'
+  | 'releaseAuthorityRevision'
+  | 'releaseId'
+  | 'artifactIdentity'
+  | 'workerProtocolVersion'
+> {
+  const lifecycle = job.workerLifecycle;
   return {
     attempt: job.attempt,
     workerPid: job.workerPid!,
     leaseRefs: leaseOwnership(job),
-    ...(job.workerLifecycle?.ownerEpoch ? { ownerEpoch: job.workerLifecycle.ownerEpoch } : {}),
+    ...(lifecycle?.runtimeInstanceId ? { runtimeInstanceId: lifecycle.runtimeInstanceId } : {}),
+    ...(lifecycle?.releaseAuthorityRevision !== undefined
+      ? { releaseAuthorityRevision: lifecycle.releaseAuthorityRevision }
+      : {}),
+    ...(lifecycle?.releaseId ? { releaseId: lifecycle.releaseId } : {}),
+    ...(lifecycle?.artifactIdentity ? { artifactIdentity: lifecycle.artifactIdentity } : {}),
+    ...(lifecycle?.workerProtocolVersion !== undefined
+      ? { workerProtocolVersion: lifecycle.workerProtocolVersion }
+      : {}),
   };
 }
 

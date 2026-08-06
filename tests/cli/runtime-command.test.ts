@@ -95,6 +95,7 @@ describe('runtime command surface', () => {
     const stableBootstrap = readFileSync(join(ROOT, 'src/runtime/bootstrap/stable-bootstrap.ts'), 'utf8');
     const releaseStore = readFileSync(join(ROOT, 'src/runtime/root/release-store.ts'), 'utf8');
     const writeFence = readFileSync(join(ROOT, 'src/runtime/root/write-fence.ts'), 'utf8');
+    const operationReceiptStore = readFileSync(join(ROOT, 'src/runtime/execution/jobs/receipt-store.ts'), 'utf8');
     const localBridgeSurface = readFileSync(join(ROOT, 'src/runtime/shared/local-bridge-surface.ts'), 'utf8');
     const localBridgeFacade = readFileSync(join(ROOT, 'src/cli/local-bridge/facade-api.ts'), 'utf8');
     const standaloneRecovery = readFileSync(join(ROOT, 'src/runtime/standalone-recovery/core.ts'), 'utf8');
@@ -294,6 +295,12 @@ describe('runtime command surface', () => {
     const persistedWorkerEnvironment = globalScheduler.slice(persistedWorkerEnvironmentStart, persistedWorkerEnvironmentEnd);
     expect(persistedWorkerEnvironment).not.toContain('REPO_HARNESS_RELEASE_FENCING_TOKEN');
     expect(globalScheduler).toContain('...writeClaimEnvironment');
+    expect(operationReceiptStore).toContain('runtimeInstanceId?: string');
+    expect(operationReceiptStore).toContain('releaseAuthorityRevision?: number');
+    expect(operationReceiptStore).toContain('artifactIdentity?: string');
+    expect(operationReceiptStore).toContain('workerProtocolVersion?: number');
+    expect(operationReceiptStore).not.toContain('ownerEpoch');
+    expect(operationReceiptStore).not.toContain('releaseFencingToken');
     expect(localBridgeSurface).not.toContain("from '../../cli/controller/runtime-slots'");
     expect(localBridgeSurface).not.toContain('readActiveSlotAuthority');
     expect(localBridgeSurface).not.toContain('runtimeSlotForHome');

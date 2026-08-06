@@ -2,7 +2,7 @@ import { existsSync, rmSync } from 'fs';
 import { join } from 'path';
 import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
-import { assertThisRuntimeMayWrite } from '../../cli/controller/stable-state/runtime-writer-context';
+import { assertRuntimeMayWrite } from '../root/write-fence';
 import { withControllerLock } from '../../cli/repositories/locks';
 
 export type ProjectionRefreshStatus = 'pending' | 'running' | 'failed';
@@ -150,7 +150,7 @@ export function updateRepositoryProjectionRefreshRequest(
   options: { lock?: boolean } = {},
 ): ProjectionDirtyMarker | undefined {
   try {
-    const fence = assertThisRuntimeMayWrite('update_active_projection', controllerHome);
+    const fence = assertRuntimeMayWrite('update_active_projection', controllerHome);
     if (!fence.allowed) {
       // Passive candidates must not mutate projections.
       return undefined;

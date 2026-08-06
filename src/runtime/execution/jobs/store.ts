@@ -10,7 +10,7 @@ import { touchSchedulerWakeSignal } from '../../control-plane/global-scheduler/w
 import { readJsonFile, removeFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
 import { terminateProcessTree } from '../../shared/process-tree';
 import { releaseExecutionLeases } from '../../resources/leases/store';
-import { assertThisRuntimeMayWriteOrThrow } from '../../../cli/controller/stable-state/runtime-writer-context';
+import { assertRuntimeMayWriteOrThrow } from '../../root/write-fence';
 import {
   ACTIVE_JOB_STATUSES,
   TERMINAL_JOB_STATUSES,
@@ -433,7 +433,7 @@ export function transitionExecutionJob(
   const TERMINAL = new Set(['succeeded', 'failed', 'cancelled', 'timed_out', 'orphaned']);
   if (TERMINAL.has(status)) {
     try {
-      assertThisRuntimeMayWriteOrThrow('write_workflow_terminal', controllerHome);
+      assertRuntimeMayWriteOrThrow('write_workflow_terminal', controllerHome);
     } catch (error) {
       if (error instanceof Error && error.message.startsWith('WRITER_FENCED:')) throw error;
     }

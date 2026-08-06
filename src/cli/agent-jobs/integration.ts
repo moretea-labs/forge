@@ -20,7 +20,7 @@ import { resolveMcpPath } from "../mcp/paths";
 import type { McpPolicy } from "../mcp/types";
 import { getAgentJob, markAgentJobClosure, markAgentJobIntegrated, markAgentJobIntegrationReview } from "./job-manager";
 import type { AgentJobMeta, AgentJobPreservationReason } from "./types";
-import { assertThisRuntimeMayWriteOrThrow } from "../controller/stable-state/runtime-writer-context";
+import { assertRuntimeMayWriteOrThrow } from "../../runtime/root/write-fence";
 
 type IntegrationChangeOutcome = "changed" | "already_integrated";
 
@@ -507,7 +507,7 @@ export function integrateAgentJob(
     const controllerHome = process.env.REPO_HARNESS_CONTROLLER_HOME
       ?? process.env.CONTROLLER_HOME
       ?? undefined;
-    assertThisRuntimeMayWriteOrThrow('integrate_worktree', controllerHome);
+    assertRuntimeMayWriteOrThrow('integrate_worktree', controllerHome);
   } catch (error) {
     if (error instanceof Error && error.message.startsWith('WRITER_FENCED:')) throw error;
     /* unbound legacy single-runtime */

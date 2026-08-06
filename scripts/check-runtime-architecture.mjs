@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const root = resolve(new URL('..', import.meta.url).pathname);
@@ -33,6 +33,15 @@ function forbidBetween(path, startNeedle, endNeedle, expression, description) {
     return;
   }
   if (expression.test(source.slice(start, end))) failures.push(`${path} violates ${description}`);
+}
+function sourceFiles(directory) {
+  const files = [];
+  for (const entry of readdirSync(resolve(root, directory), { withFileTypes: true })) {
+    const path = `${directory}/${entry.name}`;
+    if (entry.isDirectory()) files.push(...sourceFiles(path));
+    else if (entry.isFile() && path.endsWith('.ts')) files.push(path);
+  }
+  return files;
 }
 
 const required = [
@@ -86,6 +95,17 @@ requireMissing('docs/architecture/current/stable-external-runtime-supervisor.md'
 requireMissing('docs/architecture/modules/controller-runtime/stable-supervisor.md');
 requireMissing('docs/operations/stable-external-runtime-supervisor.md');
 requireMissing('docs/operations/stable-state-and-process-runtime.md');
+for (const path of sourceFiles('src')) {
+  if (path === 'src/cli/controller/stable-state/runtime-writer-context.ts') continue;
+  if (text(path).includes('runtime-writer-context')) {
+    failures.push(`${path} must import the Canonical Runtime write fence directly, not the temporary legacy facade`);
+  }
+}
+forbid(
+  'src/runtime/execution/jobs/receipt-store.ts',
+  /ownerEpoch|releaseFencingToken/,
+  'persist only non-secret Canonical Runtime/release identity in OperationReceipt ownership evidence',
+);
 
 requireText('docs/architecture/current/runtime-architecture-simplification.md', 'one local MCP application');
 requireText('docs/architecture/current/runtime-architecture-simplification.md', 'one active Runtime');

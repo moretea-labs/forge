@@ -9,7 +9,7 @@ import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { touchSchedulerWakeSignal } from '../../control-plane/global-scheduler/wake-signal';
 import { claimsConflict } from '../claims/conflicts';
 import { appendRuntimeEvent } from '../../evidence/event-ledger';
-import { assertThisRuntimeMayWrite, assertThisRuntimeMayWriteOrThrow } from '../../../cli/controller/stable-state/runtime-writer-context';
+import { assertRuntimeMayWrite, assertRuntimeMayWriteOrThrow } from '../../root/write-fence';
 import type {
   ExecutionLease,
   LeaseAcquisitionOptions,
@@ -163,7 +163,7 @@ export function acquireExecutionLeases(
 ): LeaseAcquisitionResult {
   // Writer fencing: passive / fenced runtimes must not acquire leases.
   try {
-    const fence = assertThisRuntimeMayWrite('renew_lease', controllerHome);
+    const fence = assertRuntimeMayWrite('renew_lease', controllerHome);
     if (!fence.allowed) {
       return {
         acquired: false,
@@ -299,7 +299,7 @@ export function renewExecutionLeases(
   expected?: ExpectedLeaseRef[],
 ): ExecutionLease[] {
   try {
-    assertThisRuntimeMayWriteOrThrow('renew_lease', controllerHome);
+    assertRuntimeMayWriteOrThrow('renew_lease', controllerHome);
   } catch (error) {
     if (error instanceof Error && error.message.startsWith('WRITER_FENCED:')) throw error;
     /* unbound legacy */
