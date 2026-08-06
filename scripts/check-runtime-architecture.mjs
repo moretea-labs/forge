@@ -90,13 +90,13 @@ requireMissing('src/runtime/control-plane/daemon-entry.ts');
 requireMissing('scripts/smoke-runtime-control-plane.ts');
 requireMissing('src/cli/controller/lifecycle.ts');
 requireMissing('src/cli/commands/supervisor.ts');
+requireMissing('src/cli/controller/stable-state/runtime-writer-context.ts');
 requireMissing('src/runtime/supervisor');
 requireMissing('docs/architecture/current/stable-external-runtime-supervisor.md');
 requireMissing('docs/architecture/modules/controller-runtime/stable-supervisor.md');
 requireMissing('docs/operations/stable-external-runtime-supervisor.md');
 requireMissing('docs/operations/stable-state-and-process-runtime.md');
 for (const path of sourceFiles('src')) {
-  if (path === 'src/cli/controller/stable-state/runtime-writer-context.ts') continue;
   if (text(path).includes('runtime-writer-context')) {
     failures.push(`${path} must import the Canonical Runtime write fence directly, not the temporary legacy facade`);
   }

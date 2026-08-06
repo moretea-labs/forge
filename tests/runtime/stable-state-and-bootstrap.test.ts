@@ -43,9 +43,9 @@ import {
   writeRuntimeConfig,
 } from '../../src/runtime/bootstrap/runtime-authority';
 import {
-  bindRuntimeWriterClaim,
-  clearRuntimeWriterClaimForTests,
-} from '../../src/cli/controller/stable-state/runtime-writer-context';
+  bindRuntimeWriteClaim,
+  clearRuntimeWriteClaimForTests,
+} from '../../src/runtime/root/write-fence';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 
 const roots: string[] = [];
@@ -446,10 +446,9 @@ describe('activation authority generation coherence', () => {
   test('writer bind fails closed when a Runtime owner exists without a full inherited claim', () => {
     const fx = homeFixture();
     const owner = acquireRuntimeOwnership(fx.controllerHome, 'runtime-bind-fail');
-    clearRuntimeWriterClaimForTests();
-    expect(() => bindRuntimeWriterClaim({
+    clearRuntimeWriteClaimForTests();
+    expect(() => bindRuntimeWriteClaim({
       controllerHome: fx.controllerHome,
-      adoptCurrentRuntime: false,
       allowUnmanagedMissing: true,
     })).toThrow(/RUNTIME_WRITE_CLAIM_BIND_FAILED/);
     owner.release();

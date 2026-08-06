@@ -68,7 +68,7 @@ import { gcTerminalProcesses } from '../../src/runtime/execution/process-runtime
 import { ensureControllerHome, repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { transitionExecutionJob, getExecutionJob } from '../../src/runtime/execution/jobs/store';
-import { bindRuntimeWriterClaim, clearRuntimeWriterClaimForTests } from '../../src/cli/controller/stable-state/runtime-writer-context';
+import { bindRuntimeWriteClaim, clearRuntimeWriteClaimForTests } from '../../src/runtime/root/write-fence';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import type { ExpectedProcessIdentity } from '../../src/runtime/shared/process-identity';
 
@@ -76,7 +76,7 @@ const roots: string[] = [];
 
 afterEach(() => {
   __resetLiveMonitorsForTests();
-  clearRuntimeWriterClaimForTests();
+  clearRuntimeWriteClaimForTests();
   while (roots.length > 0) {
     try {
       rmSync(roots.pop()!, { recursive: true, force: true });
@@ -614,12 +614,10 @@ describe('remaining process hardening', () => {
   test('a Runtime claim fenced after owner appearance cannot execute a remote side effect', () => {
     const fx = repoFixture();
     publishWriterAuthority(fx.controllerHome, { activeSlot: 'green', reason: 'active' });
-    bindRuntimeWriterClaim({
+    bindRuntimeWriteClaim({
       controllerHome: fx.controllerHome,
-      slot: 'blue',
-      allowLegacyMissing: true,
-      epoch: 'stale',
-      fencingToken: 'stale'});
+      allowUnmanagedMissing: true,
+    });
     const owner = acquireRuntimeOwnership(fx.controllerHome, 'runtime-remote-owner');
     const { executeRepositoryCommand } = require('../../src/cli/repositories/command-executor') as typeof import('../../src/cli/repositories/command-executor');
     // Force a remote_write classification path by using git push argv; dryRun false.
@@ -628,6 +626,7 @@ describe('remaining process hardening', () => {
       command: ['git', 'push', 'origin', 'main'],
       approvalToken: 'test',
       authorization: { confirmed: true } as any})).toThrow(/WRITER_FENCED|approval|AUTHORIZ|CONFIRM|denied|remote/i);
+    owner.release();
   });
 
   test('disk log quota stops unbounded growth', async () => {
