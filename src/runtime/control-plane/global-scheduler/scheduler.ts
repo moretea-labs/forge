@@ -7,7 +7,11 @@ import { listRepositories } from '../../../cli/repositories/registry';
 import { resolveControllerHome } from '../../../cli/repositories/controller-home';
 import { writeAgentExecutableReadinessSnapshot } from '../../../cli/agent-jobs/executable-resolver';
 import { withControllerLock } from '../../../cli/repositories/locks';
-import { assertThisRuntimeMayWrite, getRuntimeWriterClaim } from '../../../cli/controller/stable-state/runtime-writer-context';
+import {
+  assertRuntimeMayWrite,
+  getRuntimeWriteClaim,
+  runtimeWriteClaimEnvironment,
+} from '../../root/write-fence';
 import {
   attachExecutionWorker,
   executionJobRoot,
@@ -49,7 +53,14 @@ const WORKER_ENVIRONMENT_KEYS = [
   'REPO_HARNESS_CONTROLLER_HOME',
   'REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT',
   'REPO_HARNESS_EXECUTION_WORKER',
-  'REPO_HARNESS_SUPERVISOR_EPOCH',
+  'REPO_HARNESS_RUNTIME_INSTANCE_ID',
+  'REPO_HARNESS_RUNTIME_OWNER_PID',
+  'REPO_HARNESS_RELEASE_AUTHORITY_REVISION',
+  // The release fencing token is passed to the actual child environment below,
+  // but deliberately excluded from the persisted lifecycle diagnostic.
+  'REPO_HARNESS_RELEASE_ID',
+  'REPO_HARNESS_ARTIFACT_IDENTITY',
+  'REPO_HARNESS_WORKER_PROTOCOL_VERSION',
 ] as const;
 const RUNTIME_CLEANUP_INTERVAL_MS = Math.max(30_000, Number(process.env.REPO_HARNESS_RUNTIME_CLEANUP_INTERVAL_MS ?? 60_000));
 const GIT_STATUS_SAMPLE_INTERVAL_MS = Math.max(1_000, Number(process.env.REPO_HARNESS_GIT_STATUS_SAMPLE_INTERVAL_MS ?? 5_000));
@@ -180,7 +191,6 @@ export interface SchedulerRuntimeBinding {
   controllerStartedAt?: string;
   runtimeSourceRoot?: string;
   workerEntrypoint?: string;
-  ownerEpoch?: string;
   /** Canonical Runtime treats a tick failure as a whole-Runtime failure. */
   fatalOnTickError?: boolean;
 }
@@ -194,7 +204,6 @@ export class GlobalScheduler {
   private readonly controllerStartedAt?: string;
   private readonly runtimeSourceRoot?: string;
   private readonly workerEntrypoint?: string;
-  private readonly ownerEpoch?: string;
   private readonly fatalOnTickError: boolean;
   private lastScheduleTick = 0;
   private lastPortfolioTick = 0;
@@ -252,7 +261,6 @@ export class GlobalScheduler {
     };
     this.runtimeSourceRoot = runtime.runtimeSourceRoot ? resolve(runtime.runtimeSourceRoot) : undefined;
     this.workerEntrypoint = runtime.workerEntrypoint ? resolve(runtime.workerEntrypoint) : undefined;
-    this.ownerEpoch = runtime.ownerEpoch;
     this.fatalOnTickError = runtime.fatalOnTickError === true;
     const state = readJsonFile<SchedulerState>(schedulerStatePath(controllerHome), { schemaVersion: 1, updatedAt: new Date().toISOString(), lastRepoDispatch: {} });
     this.lastSourceScanAt = state.lastSourceScanAt ? Date.parse(state.lastSourceScanAt) || 0 : 0;
@@ -385,7 +393,11 @@ export class GlobalScheduler {
         stderrPath: recheckedMerged.stderrPath,
         processGroupId: recheckedMerged.processGroupId,
         ownerPid: recheckedMerged.ownerPid,
-        ownerEpoch: recheckedMerged.ownerEpoch,
+        runtimeInstanceId: recheckedMerged.runtimeInstanceId,
+        releaseAuthorityRevision: recheckedMerged.releaseAuthorityRevision,
+        releaseId: recheckedMerged.releaseId,
+        artifactIdentity: recheckedMerged.artifactIdentity,
+        workerProtocolVersion: recheckedMerged.workerProtocolVersion,
         attempt: rechecked.attempt,
         maxAttempts: rechecked.maxAttempts,
         ...(startupError ? { startupError } : {}),
@@ -409,7 +421,7 @@ export class GlobalScheduler {
   private spawnWorker(repoId: string, jobId: string): boolean {
     // Passive / fenced runtimes must not consume the queue or dispatch workers.
     try {
-      const fence = assertThisRuntimeMayWrite('consume_queue', this.controllerHome);
+      const fence = assertRuntimeMayWrite('consume_queue', this.controllerHome);
       if (!fence.allowed) return false;
     } catch {
       /* unbound legacy */
@@ -429,7 +441,6 @@ export class GlobalScheduler {
           environment: this.workerEnvironment(),
           ownerPid: this.controllerPid,
           ...(this.controllerStartedAt ? { ownerStartedAt: this.controllerStartedAt } : {}),
-          ...(this.ownerEpoch ? { ownerEpoch: this.ownerEpoch } : {}),
           attempt: current.attempt,
           maxAttempts: current.maxAttempts,
           spawnedAt: new Date().toISOString(),
@@ -442,27 +453,10 @@ export class GlobalScheduler {
     })();
     if (!command) return false;
     const bun = Boolean(process.versions.bun);
-    // Pass the daemon's captured writer claim so the worker never re-adopts
-    // the current active authority after cutover (fencing bypass).
-    let writerClaim: {
-      slot?: string;
-      generation?: string;
-      epoch?: string;
-      fencingToken?: string;
-    } = {};
-    try {
-      const claim = getRuntimeWriterClaim();
-      if (claim) {
-        writerClaim = {
-          slot: claim.slot,
-          generation: claim.generation,
-          epoch: claim.epoch,
-          fencingToken: claim.fencingToken,
-        };
-      }
-    } catch {
-      /* unbound legacy */
-    }
+    // Pass the parent's captured Runtime owner and whole-release claim. A Worker
+    // never re-adopts current authority after spawn; owner/release rotation fences it.
+    const writeClaim = getRuntimeWriteClaim();
+    const writeClaimEnvironment = writeClaim ? runtimeWriteClaimEnvironment(writeClaim) : {};
     const workerArgs = [
       '--controller-home', this.controllerHome,
       '--repo-id', repoId,
@@ -470,10 +464,6 @@ export class GlobalScheduler {
       '--controller-pid', String(this.controllerPid),
     ];
     if (this.controllerStartedAt) workerArgs.push('--controller-started-at', this.controllerStartedAt);
-    if (writerClaim.slot) workerArgs.push('--writer-slot', writerClaim.slot);
-    if (writerClaim.generation) workerArgs.push('--writer-generation', writerClaim.generation);
-    if (writerClaim.epoch) workerArgs.push('--writer-epoch', writerClaim.epoch);
-    if (writerClaim.fencingToken) workerArgs.push('--writer-fencing-token', writerClaim.fencingToken);
     const args = bun
       ? [command.entry, ...workerArgs]
       : ['--loader', command.loader, command.entry, ...workerArgs];
@@ -482,11 +472,7 @@ export class GlobalScheduler {
       REPO_HARNESS_EXECUTION_WORKER: '1',
       REPO_HARNESS_CONTROLLER_HOME: this.controllerHome,
       ...(this.runtimeSourceRoot ? { REPO_HARNESS_CONTROLLER_RUNTIME_SOURCE_ROOT: this.runtimeSourceRoot } : {}),
-      ...(this.ownerEpoch ? { REPO_HARNESS_SUPERVISOR_EPOCH: this.ownerEpoch } : {}),
-      ...(writerClaim.slot ? { REPO_HARNESS_WRITER_SLOT: writerClaim.slot } : {}),
-      ...(writerClaim.generation ? { REPO_HARNESS_WRITER_GENERATION: writerClaim.generation } : {}),
-      ...(writerClaim.epoch ? { REPO_HARNESS_WRITER_EPOCH: writerClaim.epoch } : {}),
-      ...(writerClaim.fencingToken ? { REPO_HARNESS_WRITER_FENCING_TOKEN: writerClaim.fencingToken } : {}),
+      ...writeClaimEnvironment,
     };
     const stderrPath = join(executionJobRoot(this.controllerHome, repoId), 'worker-stderr', `${jobId}-attempt-${current.attempt}.log`);
     mkdirSync(dirname(stderrPath), { recursive: true });
@@ -498,7 +484,13 @@ export class GlobalScheduler {
       environment: Object.fromEntries(WORKER_ENVIRONMENT_KEYS.map((key) => [key, environment[key]])),
       ownerPid: this.controllerPid,
       ...(this.controllerStartedAt ? { ownerStartedAt: this.controllerStartedAt } : {}),
-      ...(this.ownerEpoch ? { ownerEpoch: this.ownerEpoch } : {}),
+      ...(writeClaim ? {
+        runtimeInstanceId: writeClaim.runtimeInstanceId,
+        releaseAuthorityRevision: writeClaim.releaseAuthorityRevision,
+        releaseId: writeClaim.releaseId,
+        artifactIdentity: writeClaim.artifactIdentity,
+        workerProtocolVersion: writeClaim.workerProtocolVersion,
+      } : {}),
       attempt: current.attempt,
       maxAttempts: current.maxAttempts,
       spawnedAt: new Date().toISOString(),

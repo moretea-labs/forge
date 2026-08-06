@@ -6,7 +6,7 @@ import { startMcpStdio } from '../mcp/transports/stdio';
 import { callMcpTool } from '../mcp/tools';
 import { callAccessTool } from '../mcp/access-tools';
 import { assertControllerLifecycleOwner } from '../controller/lifecycle-authority';
-import { bindInheritedRuntimeWriterClaimFromEnvironment } from '../controller/stable-state/runtime-writer-context';
+import { bindInheritedRuntimeWriteClaimFromEnvironment } from '../../runtime/root/write-fence';
 import {
   runMcpDoctor,
   runMcpPrintGuide,
@@ -170,7 +170,7 @@ export function buildMcpCommand(): Command {
     .option('--dev-runner-max-timeout-ms <ms>', 'Maximum per-run timeout in milliseconds (default: 43200000)')
     .action(async (rawOpts: McpServeOptions) => {
       await runMcpAction(async () => {
-        bindInheritedRuntimeWriterClaimFromEnvironment();
+        bindInheritedRuntimeWriteClaimFromEnvironment();
         const devRunnerTimeoutMs = parsePositiveIntegerOption('dev-runner-timeout-ms', rawOpts.devRunnerTimeoutMs);
         const devRunnerMaxTimeoutMs = parsePositiveIntegerOption('dev-runner-max-timeout-ms', rawOpts.devRunnerMaxTimeoutMs);
         if (rawOpts.transport === 'stdio') {

@@ -16,6 +16,11 @@ import {
 } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { RuntimeReadinessState } from '../../src/runtime/root/readiness';
+import {
+  assertRuntimeMayWrite,
+  clearRuntimeWriteClaimForTests,
+  getRuntimeWriteClaim,
+} from '../../src/runtime/root/write-fence';
 import { observeRuntimeStatus, writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import {
   CanonicalRepoHarnessRuntime,
@@ -34,6 +39,7 @@ interface Fixture {
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
   while (cleanups.length > 0) await cleanups.pop()?.();
+  clearRuntimeWriteClaimForTests();
 });
 
 function createFixture(overrides: Partial<CanonicalRuntimeConfig> = {}): Fixture {
@@ -177,6 +183,12 @@ describe('canonical single Runtime', () => {
     cleanups.push(() => runtime.stop('TEST_CLEANUP'));
 
     await runtime.start();
+    expect(getRuntimeWriteClaim()).toMatchObject({
+      controllerHome: resolve(fixture.controllerHome),
+      runtimeInstanceId: 'runtime-status-test',
+      ownerPid: process.pid,
+    });
+    expect(assertRuntimeMayWrite('scheduler_write', fixture.controllerHome)).toMatchObject({ allowed: true });
     expect(observeRuntimeStatus(fixture.controllerHome, () => '2026-08-05T00:00:01.000Z')).toMatchObject({
       running: true,
       ready: true,
@@ -190,6 +202,7 @@ describe('canonical single Runtime', () => {
     });
 
     await runtime.stop('TEST_STOP');
+    expect(getRuntimeWriteClaim()).toBeUndefined();
     expect(observeRuntimeStatus(fixture.controllerHome, () => '2026-08-05T00:00:02.000Z')).toEqual({
       schemaVersion: 1,
       running: false,

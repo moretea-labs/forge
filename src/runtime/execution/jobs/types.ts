@@ -98,7 +98,11 @@ export interface ExecutionWorkerLifecycle {
   environment: Record<string, string | undefined>;
   ownerPid: number;
   ownerStartedAt?: string;
-  ownerEpoch?: string;
+  runtimeInstanceId?: string;
+  releaseAuthorityRevision?: number;
+  releaseId?: string;
+  artifactIdentity?: string;
+  workerProtocolVersion?: number;
   processGroupId?: number;
   workerPid?: number;
   attempt: number;

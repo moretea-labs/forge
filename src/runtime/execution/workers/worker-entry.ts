@@ -18,7 +18,7 @@ import { markOperationCompleted, markOperationStarted, operationReceiptMatchesJo
 import { markScheduledExecutionRunning } from '../../workflow/schedules/settlement';
 import { invalidateExecutionWorker } from './ownership';
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
-import { bindRuntimeWriterClaim } from '../../../cli/controller/stable-state/runtime-writer-context';
+import { bindInheritedRuntimeWriteClaimFromEnvironment } from '../../root/write-fence';
 
 function option(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -26,32 +26,12 @@ function option(name: string): string | undefined {
 }
 
 const controllerHome = ensureControllerHome(option('--controller-home'));
-// Bind ONLY the writer claim inherited from the parent daemon/scheduler.
-// Never re-read current authority and treat it as "mine" (cutover fencing bypass).
+// Bind only the immutable parent Runtime/release claim inherited at spawn.
+// A Worker never adopts the current owner or release after it has started.
 try {
-  const slotOpt = option('--writer-slot');
-  const slot = slotOpt === 'blue' || slotOpt === 'green'
-    ? slotOpt
-    : (process.env.REPO_HARNESS_WRITER_SLOT === 'blue' || process.env.REPO_HARNESS_WRITER_SLOT === 'green'
-      ? process.env.REPO_HARNESS_WRITER_SLOT
-      : undefined);
-  const epoch = option('--writer-epoch') ?? process.env.REPO_HARNESS_WRITER_EPOCH?.trim();
-  const fencingToken = option('--writer-fencing-token') ?? process.env.REPO_HARNESS_WRITER_FENCING_TOKEN?.trim();
-  const generation = option('--writer-generation') ?? process.env.REPO_HARNESS_WRITER_GENERATION?.trim();
-  bindRuntimeWriterClaim({
-    controllerHome,
-    slot,
-    generation,
-    epoch,
-    fencingToken,
-    // Workers must inherit a full claim when stable authority exists.
-    // Only allow synthetic legacy bind when there is no authority file at all.
-    allowLegacyMissing: true,
-    adoptCurrentAuthority: false,
-  });
+  bindInheritedRuntimeWriteClaimFromEnvironment(process.env, controllerHome);
 } catch (error) {
-  console.error('[repo-harness worker] writer claim bind failed:', error instanceof Error ? error.message : error);
-  // Fail closed: do not run production mutations without a bound claim when authority may exist.
+  console.error('[repo-harness worker] Runtime write claim bind failed:', error instanceof Error ? error.message : error);
   process.exit(78);
 }
 

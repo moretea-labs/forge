@@ -23,9 +23,7 @@ import {
   resourceKeysOverlap} from '../../src/runtime/resources/claims/conflicts';
 import {
   acquireExecutionLeases,
-  listActiveLeases,
-  releaseExecutionLeases,
-  renewExecutionLeases} from '../../src/runtime/resources/leases/store';
+  releaseExecutionLeases} from '../../src/runtime/resources/leases/store';
 import {
   claimWorkspaceRead,
   claimWorkspaceWrite,
@@ -35,11 +33,6 @@ import {
   assertWriterAuthority,
   publishWriterAuthority,
   readWriterAuthority} from '../../src/cli/controller/stable-state/writer-authority';
-import {
-  bindRuntimeWriterClaim,
-  clearRuntimeWriterClaimForTests,
-  assertThisRuntimeMayWrite,
-  getRuntimeWriterClaim} from '../../src/cli/controller/stable-state/runtime-writer-context';
 import {
   resolveStableControllerHome,
   resolveDualHome,
@@ -74,8 +67,9 @@ import {
 import { gcTerminalProcesses } from '../../src/runtime/execution/process-runtime/gc';
 import { ensureControllerHome, repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
-import { markRepositoryProjectionDirty, readRepositoryProjectionDirty } from '../../src/runtime/projections/invalidation';
 import { transitionExecutionJob, getExecutionJob } from '../../src/runtime/execution/jobs/store';
+import { bindRuntimeWriterClaim, clearRuntimeWriterClaimForTests } from '../../src/cli/controller/stable-state/runtime-writer-context';
+import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import type { ExpectedProcessIdentity } from '../../src/runtime/shared/process-identity';
 
 const roots: string[] = [];
@@ -225,101 +219,7 @@ describe('resource claim real conflicts', () => {
   });
 });
 
-describe('writer fencing production paths', () => {
-  test('captured claim is fenced after epoch cutover; current authority is not auto-assumed', () => {
-    const fx = homeFixture();
-    const first = publishWriterAuthority(fx.controllerHome, { activeSlot: 'green', reason: 'boot' });
-    bindRuntimeWriterClaim({
-      controllerHome: fx.controllerHome,
-      slot: 'green',
-      epoch: first.epoch,
-      fencingToken: first.fencingToken});
-    expect(assertThisRuntimeMayWrite('consume_queue').allowed).toBe(true);
-
-    const second = publishWriterAuthority(fx.controllerHome, {
-      activeSlot: 'blue',
-      reason: 'cutover',
-      previousEpoch: first.epoch});
-    // Old process still holds first claim — must be denied even though second is current.
-    expect(getRuntimeWriterClaim()?.epoch).toBe(first.epoch);
-    expect(assertThisRuntimeMayWrite('consume_queue').allowed).toBe(false);
-    expect(assertThisRuntimeMayWrite('renew_lease').allowed).toBe(false);
-    expect(assertThisRuntimeMayWrite('write_process_terminal').allowed).toBe(false);
-    expect(assertThisRuntimeMayWrite('write_workflow_terminal').allowed).toBe(false);
-    expect(assertThisRuntimeMayWrite('update_active_projection').allowed).toBe(false);
-    expect(assertThisRuntimeMayWrite('cleanup').allowed).toBe(false);
-    expect(assertThisRuntimeMayWrite('remote_side_effect').allowed).toBe(false);
-
-    // Re-binding as the new active runtime succeeds.
-    clearRuntimeWriterClaimForTests();
-    bindRuntimeWriterClaim({
-      controllerHome: fx.controllerHome,
-      slot: 'blue',
-      epoch: second.epoch,
-      fencingToken: second.fencingToken});
-    expect(assertThisRuntimeMayWrite('consume_queue').allowed).toBe(true);
-  });
-
-  test('passive candidate cannot acquire or renew leases', () => {
-    const fx = repoFixture();
-    const auth = publishWriterAuthority(fx.controllerHome, { activeSlot: 'green', reason: 'active' });
-    // Bind as blue (passive)
-    bindRuntimeWriterClaim({
-      controllerHome: fx.controllerHome,
-      slot: 'blue',
-      epoch: 'stale-epoch',
-      fencingToken: 'stale-token'});
-    const acquired = acquireExecutionLeases(
-      fx.controllerHome,
-      fx.repository.repoId,
-      'passive-job',
-      [claimWorkspaceRead('co')],
-      30_000,
-    );
-    expect(acquired.acquired).toBe(false);
-
-    // Active writer binds and acquires
-    clearRuntimeWriterClaimForTests();
-    bindRuntimeWriterClaim({
-      controllerHome: fx.controllerHome,
-      slot: 'green',
-      epoch: auth.epoch,
-      fencingToken: auth.fencingToken});
-    const ok = acquireExecutionLeases(
-      fx.controllerHome,
-      fx.repository.repoId,
-      'active-job',
-      [claimWorkspaceRead('co')],
-      30_000,
-    );
-    expect(ok.acquired).toBe(true);
-
-    // Switch epoch; renew from old claim fails
-    clearRuntimeWriterClaimForTests();
-    bindRuntimeWriterClaim({
-      controllerHome: fx.controllerHome,
-      slot: 'green',
-      epoch: auth.epoch,
-      fencingToken: auth.fencingToken});
-    publishWriterAuthority(fx.controllerHome, {
-      activeSlot: 'green',
-      reason: 'rotate',
-      previousEpoch: auth.epoch});
-    expect(() => renewExecutionLeases(fx.controllerHome, fx.repository.repoId, 'active-job', 30_000, ok.leases)).toThrow(/WRITER_FENCED|FENCING/);
-  });
-
-  test('passive candidate does not mark projections dirty', () => {
-    const fx = repoFixture();
-    publishWriterAuthority(fx.controllerHome, { activeSlot: 'green', reason: 'active' });
-    bindRuntimeWriterClaim({
-      controllerHome: fx.controllerHome,
-      slot: 'blue',
-      epoch: 'x',
-      fencingToken: 'y'});
-    markRepositoryProjectionDirty(fx.controllerHome, fx.repository.repoId, 'test');
-    expect(readRepositoryProjectionDirty(fx.controllerHome, fx.repository.repoId)).toBeUndefined();
-  });
-
+describe('activation transaction compatibility', () => {
   test('commit writes authority then projections atomically from reader view', () => {
     const fx = homeFixture();
     const record = commitActivationTransaction(fx.controllerHome, {
@@ -710,107 +610,17 @@ describe('process log GC', () => {
   });
 });
 
-describe('writer claim inheritance and remaining fencing', () => {
-  test('bindRuntimeWriterClaim uses inferred slot, not authority.activeSlot after cutover', () => {
-    const fx = homeFixture();
-    const slotHome = join(fx.controllerHome, 'runtime-slots', 'green');
-    mkdirSync(slotHome, { recursive: true });
-    const first = publishWriterAuthority(fx.controllerHome, { activeSlot: 'green', reason: 'boot' });
-    // Bind from slot home path without explicit slot — infer green.
-    bindRuntimeWriterClaim({
-      controllerHome: slotHome,
-      epoch: first.epoch,
-      fencingToken: first.fencingToken});
-    expect(getRuntimeWriterClaim()?.slot).toBe('green');
-
-    // Cutover to blue; old process still holds green claim.
-    publishWriterAuthority(fx.controllerHome, {
-      activeSlot: 'blue',
-      reason: 'cutover',
-      previousEpoch: first.epoch});
-    // If we re-bound by re-reading authority we would steal blue — must not.
-    clearRuntimeWriterClaimForTests();
-    expect(() => bindRuntimeWriterClaim({
-      controllerHome: slotHome,
-      allowLegacyMissing: true,
-      adoptCurrentAuthority: false})).toThrow(/WRITER_CLAIM_BIND_FAILED|inherit full writer claim/);
-  });
-
-  test('authority present without full inherited claim fails closed', () => {
-    const fx = homeFixture();
-    publishWriterAuthority(fx.controllerHome, { activeSlot: 'green', reason: 'boot' });
-    expect(() => bindRuntimeWriterClaim({
-      controllerHome: fx.controllerHome,
-      slot: 'green',
-      allowLegacyMissing: true,
-      adoptCurrentAuthority: false})).toThrow(/WRITER_CLAIM_BIND_FAILED/);
-  });
-
-  test('legacy home without authority still binds synthetic claim', () => {
-    const fx = homeFixture();
-    // No publishWriterAuthority
-    const claim = bindRuntimeWriterClaim({
-      controllerHome: fx.controllerHome,
-      slot: 'green',
-      allowLegacyMissing: true,
-      adoptCurrentAuthority: false});
-    expect(claim.legacy).toBe(true);
-    expect(assertThisRuntimeMayWrite('consume_queue').allowed).toBe(true);
-  });
-
-  test('stale worker claim cannot release leases after cutover', () => {
-    const fx = repoFixture();
-    const auth = publishWriterAuthority(fx.controllerHome, { activeSlot: 'green', reason: 'active' });
-    bindRuntimeWriterClaim({
-      controllerHome: fx.controllerHome,
-      slot: 'green',
-      epoch: auth.epoch,
-      fencingToken: auth.fencingToken});
-    const ok = acquireExecutionLeases(
-      fx.controllerHome,
-      fx.repository.repoId,
-      'job-release-fence',
-      [claimWorkspaceRead('co')],
-      30_000,
-    );
-    expect(ok.acquired).toBe(true);
-
-    // Cutover fences the old claim.
-    publishWriterAuthority(fx.controllerHome, {
-      activeSlot: 'green',
-      reason: 'rotate',
-      previousEpoch: auth.epoch});
-    expect(() => releaseExecutionLeases(
-      fx.controllerHome,
-      fx.repository.repoId,
-      'job-release-fence',
-      ok.leases,
-    )).toThrow(/WRITER_FENCED/);
-    // Lease still present.
-    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId).length).toBeGreaterThan(0);
-  });
-
-  test('passive cannot integrate worktree (fencing at integrateAgentJob boundary)', () => {
-    const fx = homeFixture();
-    publishWriterAuthority(fx.controllerHome, { activeSlot: 'green', reason: 'active' });
-    bindRuntimeWriterClaim({
-      controllerHome: fx.controllerHome,
-      slot: 'blue',
-      epoch: 'stale',
-      fencingToken: 'stale'});
-    // Dynamic require to avoid loading full agent-job graph when not needed for other tests.
-    const { integrateAgentJob } = require('../../src/cli/agent-jobs/integration') as typeof import('../../src/cli/agent-jobs/integration');
-    expect(() => integrateAgentJob(fx.root, { profile: 'controller' } as any, 'run_missing')).toThrow(/WRITER_FENCED/);
-  });
-
-  test('passive cannot execute remote side effect via command executor fence', () => {
+describe('remaining process hardening', () => {
+  test('a Runtime claim fenced after owner appearance cannot execute a remote side effect', () => {
     const fx = repoFixture();
     publishWriterAuthority(fx.controllerHome, { activeSlot: 'green', reason: 'active' });
     bindRuntimeWriterClaim({
       controllerHome: fx.controllerHome,
       slot: 'blue',
+      allowLegacyMissing: true,
       epoch: 'stale',
       fencingToken: 'stale'});
+    const owner = acquireRuntimeOwnership(fx.controllerHome, 'runtime-remote-owner');
     const { executeRepositoryCommand } = require('../../src/cli/repositories/command-executor') as typeof import('../../src/cli/repositories/command-executor');
     // Force a remote_write classification path by using git push argv; dryRun false.
     // Fence must throw before spawn.

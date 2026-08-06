@@ -11,7 +11,8 @@ import { startRuntimeMcpTransport, type RuntimeMcpTransportHandle } from './mcp-
 import { acquireRuntimeOwnership, type RuntimeOwnershipHandle } from './ownership';
 import { RuntimeReadinessState } from './readiness';
 import { loadRuntimeReleaseManifest } from './release-manifest';
-import { ensureActiveRuntimeRelease } from './release-store';
+import { ensureActiveRuntimeRelease, type RuntimeReleaseAuthority } from './release-store';
+import { bindRuntimeWriteClaim, clearRuntimeWriteClaim } from './write-fence';
 import { startInProcessScheduler, type RuntimeSchedulerHandle } from './scheduler';
 import { removeRuntimeStatusSnapshot, writeRuntimeStatusSnapshot } from './status';
 import type {
@@ -23,7 +24,8 @@ import type {
 
 export interface CanonicalRuntimeDependencies {
   loadReleaseManifest(path: string, controllerHome: string): RuntimeReleaseManifest;
-  ensureReleaseAuthority(controllerHome: string, manifestPath: string): unknown;
+  ensureReleaseAuthority(controllerHome: string, manifestPath: string): RuntimeReleaseAuthority;
+  bindWriteClaim(input: { controllerHome: string; owner: RuntimeOwnershipHandle['record']; authority: RuntimeReleaseAuthority }): void;
   acquireOwnership(controllerHome: string, runtimeInstanceId: string): RuntimeOwnershipHandle;
   inspectDatabase(controllerHome: string): ControlPlaneDatabaseInspection;
   startScheduler(controllerHome: string, timeoutMs?: number): RuntimeSchedulerHandle;
@@ -55,6 +57,7 @@ async function defaultMcpProbe(endpoint: string, authToken: string): Promise<voi
 const DEFAULT_DEPENDENCIES: CanonicalRuntimeDependencies = {
   loadReleaseManifest: loadRuntimeReleaseManifest,
   ensureReleaseAuthority: ensureActiveRuntimeRelease,
+  bindWriteClaim: (input) => { bindRuntimeWriteClaim(input); },
   acquireOwnership: acquireRuntimeOwnership,
   inspectDatabase: inspectControlPlaneDatabase,
   startScheduler: startInProcessScheduler,
@@ -139,7 +142,12 @@ export class CanonicalRepoHarnessRuntime {
       this.ownership = this.dependencies.acquireOwnership(this.config.controllerHome, this.runtimeInstanceId);
 
       stage = 'release';
-      this.dependencies.ensureReleaseAuthority(this.config.controllerHome, this.config.releaseManifestPath);
+      const releaseAuthority = this.dependencies.ensureReleaseAuthority(this.config.controllerHome, this.config.releaseManifestPath);
+      this.dependencies.bindWriteClaim({
+        controllerHome: this.config.controllerHome,
+        owner: this.ownership.record,
+        authority: releaseAuthority,
+      });
       this.readinessState.setDiagnostic('releaseCoherence', 'pass');
       this.publishStatus();
 
@@ -237,6 +245,7 @@ export class CanonicalRepoHarnessRuntime {
       await this.scheduler?.stop().catch(() => undefined);
       const ownerPid = this.ownership?.record.pid;
       this.ownership?.release();
+      clearRuntimeWriteClaim(this.runtimeInstanceId);
       if (ownerPid !== undefined) {
         removeRuntimeStatusSnapshot(this.config.controllerHome, this.runtimeInstanceId, ownerPid);
       }

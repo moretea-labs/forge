@@ -46,6 +46,7 @@ import {
   bindRuntimeWriterClaim,
   clearRuntimeWriterClaimForTests,
 } from '../../src/cli/controller/stable-state/runtime-writer-context';
+import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 
 const roots: string[] = [];
 
@@ -442,17 +443,16 @@ describe('activation authority generation coherence', () => {
     expect(status.authority?.generation).toBe('gen-status');
   });
 
-  test('daemon-style writer bind fails closed when authority present without full claim', () => {
+  test('writer bind fails closed when a Runtime owner exists without a full inherited claim', () => {
     const fx = homeFixture();
-    publishWriterAuthority(fx.controllerHome, { activeSlot: 'green', generation: 'g1', reason: 'bind-fail' });
+    const owner = acquireRuntimeOwnership(fx.controllerHome, 'runtime-bind-fail');
     clearRuntimeWriterClaimForTests();
     expect(() => bindRuntimeWriterClaim({
       controllerHome: fx.controllerHome,
-      slot: 'green',
-      // missing epoch + fencingToken, not allowed to adopt
-      adoptCurrentAuthority: false,
-      allowLegacyMissing: true,
-    })).toThrow(/WRITER_CLAIM_BIND_FAILED/);
+      adoptCurrentRuntime: false,
+      allowUnmanagedMissing: true,
+    })).toThrow(/RUNTIME_WRITE_CLAIM_BIND_FAILED/);
+    owner.release();
   });
 });
 
