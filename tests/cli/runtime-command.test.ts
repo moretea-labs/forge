@@ -198,6 +198,12 @@ describe('runtime command surface', () => {
     expect(compositeOperations).not.toContain('controllerFeatureVerify');
     expect(compositeOperations).not.toContain('controller-bluegreen-isolated.test.ts');
     expect(compositeOperations).not.toContain('allowGreenRollout');
+    expect(compositeOperations).not.toContain('controllerRestartVerify');
+    expect(compositeOperations).not.toContain('ControllerRestartVerifyInput');
+    expect(compositeOperations).not.toContain('runtime-slots');
+    expect(compositeOperations).not.toContain('readControllerRestartState');
+    expect(compositeOperations).not.toContain('requestControllerServiceRestart');
+    expect(compositeOperations).not.toContain('runtimeGeneration');
     expect(supervisorReleaseCoherence).toContain('ok: releaseCoherent');
     expect(supervisorReleaseCoherence).not.toContain('ActiveSlotAuthority');
     expect(supervisorReleaseCoherence).not.toContain('SlotIdentity');
