@@ -1089,11 +1089,6 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     });
     this.ingressRouter = await this.startCompatibilityIngressRouter();
     this.state = this.persist({
-      ingress: {
-        ...this.state.ingress,
-        state: 'running',
-        pid: process.pid,
-      },
       control: {
         host: this.control.host,
         port: this.control.port,
@@ -2517,13 +2512,6 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       if (runtimeHealthy) this.resetMonitorFailures();
       this.persist({
         observedState: runtimeHealthy ? 'healthy' : 'degraded',
-        ingress: {
-          ...this.state.ingress,
-          // Compatibility projection only. Ingress presence is no longer part of
-          // Supervisor lifecycle health and the monitor never recreates it.
-          state: this.ingressRouter ? 'running' : 'stopped',
-          pid: this.ingressRouter ? process.pid : undefined,
-        },
       });
 
       // Public endpoint observations are diagnostics only. They cannot degrade,
@@ -2604,7 +2592,7 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     this.ingressRouter = undefined;
     if (this.control) await this.control.close();
     this.control = undefined;
-    this.persist({ currentOperationId: null, ingress: { ...this.state.ingress, state: 'stopped' } });
+    this.persist({ currentOperationId: null });
   }
 
   async close(): Promise<void> {

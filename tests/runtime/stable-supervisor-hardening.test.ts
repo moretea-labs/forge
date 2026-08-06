@@ -1472,7 +1472,9 @@ describe('Stable Supervisor production hardening', () => {
         restartBudget: {},
         updatedAt: '2026-07-21T00:00:00.000Z',
       })}\n`);
-      expect(readSupervisorState(home)?.ingress).toEqual({ state: 'running', pid: 1234 });
+      const migrated = readSupervisorState(home);
+      expect(migrated?.supervisor.instanceId).toBe('legacy-ingress-state');
+      expect(migrated).not.toHaveProperty('ingress');
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -1502,7 +1504,6 @@ describe('Stable Supervisor production hardening', () => {
       activeGeneration: 'generation-a',
       controllerDaemon: daemon,
       gatewayHost: gateway,
-      ingress: { state: 'running' },
       restartBudget: {},
       updatedAt: '2026-07-21T00:00:00.000Z',
     } as SupervisorState;
@@ -1730,7 +1731,6 @@ describe('Stable Supervisor production hardening', () => {
       controllerDaemon: greenDaemon,
       gatewayHost: greenGateway,
       standby: { slot: 'blue', generation: 'generation-blue', controllerDaemon: blueDaemon, gatewayHost: blueGateway },
-      ingress: { state: 'running' },
       restartBudget: {},
       currentOperationId: 'rollout-operation',
       lastIncident: null,
@@ -1746,7 +1746,7 @@ describe('Stable Supervisor production hardening', () => {
     expect(reconciled.controllerDaemon?.pid).toBe(101);
     expect(reconciled.gatewayHost?.pid).toBe(102);
     expect(reconciled.standby?.slot).toBe('green');
-    expect(reconciled.ingress).toEqual({ state: 'running' });
+    expect(reconciled).not.toHaveProperty('ingress');
   });
 
   test('a committed rollout authority is resumable after Supervisor restart without blind replay', () => {
@@ -1801,7 +1801,6 @@ describe('Stable Supervisor production hardening', () => {
         controllerDaemon: greenDaemon,
         gatewayHost: greenGateway,
         standby: { slot: 'blue', generation: 'generation-blue', controllerDaemon: blueDaemon, gatewayHost: blueGateway },
-        ingress: { state: 'running' },
         restartBudget: {},
         currentOperationId: created.operation.operationId,
         lastIncident: null,
@@ -2087,7 +2086,6 @@ describe('Stable Supervisor production hardening', () => {
       activeGeneration: 'generation-old',
       controllerDaemon: daemon,
       gatewayHost: gateway,
-      ingress: { state: 'running' },
       restartBudget: {},
       currentOperationId: null,
       lastIncident: null,

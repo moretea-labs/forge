@@ -10,15 +10,10 @@ export function readSupervisorState(controllerHome: string): SupervisorState | n
   const path = supervisorStatePath(controllerHome);
   if (!existsSync(path)) return null;
   try {
-    const value = JSON.parse(readFileSync(path, 'utf8')) as SupervisorState;
-    if (value?.schemaVersion !== 1 || !value.supervisor || !value.ingress || !value.restartBudget) return null;
-    const legacyIngress = value.ingress as SupervisorState['ingress'] & Record<string, unknown>;
-    if (!['running', 'degraded', 'stopped'].includes(legacyIngress.state)) return null;
-    const ingress: SupervisorState['ingress'] = {
-      state: legacyIngress.state,
-      ...(typeof legacyIngress.pid === 'number' ? { pid: legacyIngress.pid } : {}),
-    };
-    return { ...value, ingress };
+    const value = JSON.parse(readFileSync(path, 'utf8')) as SupervisorState & { ingress?: unknown };
+    if (value?.schemaVersion !== 1 || !value.supervisor || !value.restartBudget) return null;
+    const { ingress: _legacyIngress, ...state } = value;
+    return state;
   } catch {
     return null;
   }
@@ -60,9 +55,6 @@ export function createSupervisorState(
     activeSlot: authority.activeSlot,
     ...(authority.previousSlot ? { previousSlot: authority.previousSlot } : {}),
     ...(authority.generation ?? generation?.generation ? { activeGeneration: authority.generation ?? generation?.generation } : {}),
-    ingress: {
-      state: 'stopped',
-    },
     restartBudget: {},
     currentOperationId: null,
     lastIncident: null,

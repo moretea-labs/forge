@@ -495,7 +495,6 @@ describe('release coherence transplant', () => {
       activeGeneration: 'generation-a',
       controllerDaemon: daemon as any,
       gatewayHost: { ...daemon, pid: 2 } as any,
-      ingress: { state: 'running' as const },
       restartBudget: {},
       updatedAt: '2026-07-21T00:00:00.000Z',
     };

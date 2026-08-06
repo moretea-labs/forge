@@ -94,10 +94,6 @@ export interface SupervisorState {
     gatewayHost: SupervisorManagedProcess;
     retainedUntil?: string;
   };
-  ingress: {
-    state: 'running' | 'degraded' | 'stopped';
-    pid?: number;
-  };
   control?: {
     host: string;
     port: number;
