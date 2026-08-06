@@ -325,8 +325,8 @@ describe('standalone disaster recovery core', () => {
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('attest_known_good');
     const attested = await dispatchRecoveryTool(config, 'attest_known_good', { request_id: 'attest-release-active' }) as { revision: string };
     expect(attested.revision).toBe('release-active');
-    const slots = await dispatchRecoveryTool(config, 'list_slots', {}) as { knownGood: Array<{ revision: string }> };
-    expect(slots.knownGood.map((entry) => entry.revision)).toContain('release-active');
+    const releases = await dispatchRecoveryTool(config, 'list_releases', {}) as { knownGood: Array<{ revision: string }> };
+    expect(releases.knownGood.map((entry) => entry.revision)).toContain('release-active');
     const rollback = await rollbackPrevious(config);
     expect(rollback.ok).toBe(true);
     expect(rollback.noOp).toBe(true);

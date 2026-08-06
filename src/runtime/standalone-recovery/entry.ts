@@ -7,7 +7,7 @@ import {
   attestKnownGood,
   diagnose,
   gatewayToken,
-  listSlots,
+  listReleases,
   loadRecoveryConfig,
   loadWatchdogState,
   saveWatchdogState,
@@ -47,7 +47,7 @@ export const RECOVERY_CLI_COMMANDS = [
   'status',
   'verify',
   'verify-external',
-  'list-slots',
+  'list-releases',
   'attest-known-good',
   'rollback-previous',
   'restart-gateway',
@@ -92,7 +92,7 @@ async function cli(): Promise<void> {
       output({ ok: verified.probes.external_mcp_http?.ok === true, external: verified.probes.external_mcp_http, mcp: verified.probes.mcp_initialize });
       return;
     }
-    case 'list-slots': output(await listSlots(config)); return;
+    case 'list-releases': output(await listReleases(config)); return;
     case 'attest-known-good': output(await attestKnownGood(config)); return;
     case 'rollback-previous': output(await rollbackPrevious(config)); return;
     case 'restart-gateway': output(await restartGateway(config)); return;
@@ -169,7 +169,7 @@ function matchesAnyPath(url: string | undefined, paths: string[]): boolean {
 
 export const RECOVERY_TOOLS = [
   { name: 'supervisor_status', description: 'Read the Stable Supervisor state.', inputSchema: { type: 'object', additionalProperties: false } },
-  { name: 'list_slots', description: 'Read active, previous, and known-good release evidence.', inputSchema: { type: 'object', additionalProperties: false } },
+  { name: 'list_releases', description: 'Read active, previous, and known-good whole-Runtime release evidence.', inputSchema: { type: 'object', additionalProperties: false } },
   { name: 'verify_stable_runtime', description: 'Run independent stable runtime verification.', inputSchema: { type: 'object', additionalProperties: false } },
   { name: 'verify_external_runtime', description: 'Verify the external primary MCP endpoint.', inputSchema: { type: 'object', additionalProperties: false } },
   { name: 'attest_known_good', description: 'Record the active release as known-good only after full independent verification succeeds.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
@@ -177,7 +177,7 @@ export const RECOVERY_TOOLS = [
   { name: 'restart_gateway', description: 'Request a bounded Gateway-only restart when the Gateway budget is not locked out.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'restart_stable_supervisor', description: 'Restart the registered Stable Supervisor service through launchd; does not downgrade to Gateway-only recovery.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'restart_public_tunnel', description: 'Restart the explicitly configured public tunnel only after local runtime verification succeeds and the external endpoint is unavailable.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
-  { name: 'reconnect_primary_connector', description: 'Check stable ingress and primary MCP reconnection readiness without rolling out.', inputSchema: { type: 'object', additionalProperties: false } },
+  { name: 'reconnect_primary_connector', description: 'Check canonical Runtime Gateway and primary MCP reconnection readiness without publishing a release.', inputSchema: { type: 'object', additionalProperties: false } },
 ] as const;
 
 const RECOVERY_OAUTH_SCOPE = 'repo-harness';
@@ -388,7 +388,7 @@ function requestId(value: unknown): string | undefined {
 export async function dispatchRecoveryTool(config: RecoveryConfig, name: string, args: Record<string, unknown>): Promise<unknown> {
   switch (name) {
     case 'supervisor_status': return supervisorStatus(config);
-    case 'list_slots': return listSlots(config);
+    case 'list_releases': return listReleases(config);
     case 'verify_stable_runtime': return verifyStableRuntime(config);
     case 'verify_external_runtime': {
       const verified = await verifyStableRuntime(config);

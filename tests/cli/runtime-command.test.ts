@@ -293,6 +293,15 @@ describe('runtime command surface', () => {
     expect(standaloneRecovery).toContain("name !== 'stable_ingress'");
     expect(standaloneRecovery).toContain('binding.gatewayHost');
     expect(standaloneRecovery).toContain('binding.gatewayPort');
+    expect(standaloneRecovery).toContain('export async function listReleases');
+    expect(standaloneRecovery).not.toContain('export async function listSlots');
+    expect(standaloneRecovery).not.toContain('activeSlot?: string');
+    expect(standaloneRecovery).not.toContain('previousSlot?: string');
+    const recoveryEntry = readFileSync(join(ROOT, 'src/runtime/standalone-recovery/entry.ts'), 'utf8');
+    expect(recoveryEntry).toContain("'list-releases'");
+    expect(recoveryEntry).toContain("name: 'list_releases'");
+    expect(recoveryEntry).not.toContain("'list-slots'");
+    expect(recoveryEntry).not.toContain("name: 'list_slots'");
     expect(supervisorReleaseCoherence).toContain('ok: releaseCoherent');
     expect(supervisorReleaseCoherence).not.toContain('ActiveSlotAuthority');
     expect(supervisorReleaseCoherence).not.toContain('SlotIdentity');

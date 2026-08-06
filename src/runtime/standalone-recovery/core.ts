@@ -36,8 +36,6 @@ export interface RecoveryConfig {
 
 interface SupervisorState {
   observedState?: string;
-  activeSlot?: string;
-  previousSlot?: string;
   currentOperationId?: string | null;
   supervisor?: { pid?: number; releasePath?: string; releaseRevision?: string };
   gatewayHost?: { releasePath?: string; releaseRevision?: string; slot?: string };
@@ -107,7 +105,7 @@ type RecoveryLockAttempt<T> =
 export interface VerifyResult {
   ok: boolean;
   at: string;
-  supervisor: { ok: boolean; observedState?: string; activeSlot?: string; previousSlot?: string };
+  supervisor: { ok: boolean; observedState?: string };
   releases: { active?: ReleaseEvidence; previous?: ReleaseEvidence; knownGood?: ReleaseEvidence; coherent: boolean };
   probes: Record<string, { ok: boolean; detail: string; status?: number; value?: unknown }>;
 }
@@ -704,7 +702,7 @@ export async function verifyStableRuntime(config: RecoveryConfig, transport = cr
   const ok = Boolean(coreChecks && supervisorHealthy && coherent);
   const result: VerifyResult = {
     ok, at: new Date().toISOString(),
-    supervisor: { ok: supervisorHealthy, observedState: state?.observedState, activeSlot: state?.activeSlot, previousSlot: state?.previousSlot },
+    supervisor: { ok: supervisorHealthy, observedState: state?.observedState },
     releases: { active, previous, knownGood: known, coherent }, probes,
   };
   audit(config, 'verify', { ok, activeRevision: active?.revision, previousRevision: previous?.revision, coherent });
@@ -922,15 +920,12 @@ export async function diagnose(config: RecoveryConfig): Promise<Record<string, u
   return { verified, knownGood: knownGood(config), quarantine: json(quarantinePath(config)) ?? { releases: [] } };
 }
 
-export async function listSlots(config: RecoveryConfig): Promise<Record<string, unknown>> {
-  let state: SupervisorState | undefined;
+export async function listReleases(config: RecoveryConfig): Promise<Record<string, unknown>> {
   let controlAvailable = true;
-  try { state = await supervisorStatus(config); }
-  catch { controlAvailable = false; state = readSupervisorStateFile(config); }
+  try { await supervisorStatus(config); }
+  catch { controlAvailable = false; }
   return {
     controlAvailable,
-    activeSlot: state?.activeSlot,
-    previousSlot: state?.previousSlot,
     active: activeAuthorityRelease(config) ?? currentSupervisorRelease(config),
     previous: previousSupervisorRelease(config),
     knownGood: knownGood(config).releases,
