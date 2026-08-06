@@ -1,7 +1,4 @@
-import { readControllerRestartState, type ControllerRestartState } from '../../../cli/controller/restart-coordinator';
-import { controllerAuthorityHome } from '../../../cli/controller/runtime-slots';
 import { withControllerLock } from '../../../cli/repositories/locks';
-import { controllerRestartRequestIdForExecutionJob } from '../../execution/jobs/restart-resume';
 import { claimExecutionJobForDispatch, findExecutionJob, listActiveExecutionJobs, transitionExecutionJob, updateExecutionJob } from '../../execution/jobs/store';
 import type { ExecutionJob, ExecutionJobStatus } from '../../execution/jobs/types';
 import { executionTimeoutDecision } from '../../execution/jobs/timeouts';
@@ -14,15 +11,9 @@ import {
   rankExecutionJobForDispatch,
 } from '../dispatch-priority';
 
-export type ControllerRestartStateReader = (
-  controllerHome: string,
-  requestId: string,
-) => ControllerRestartState | null | undefined;
-
 export interface RepoActorConfig {
   maxConcurrentWorkers: number;
   leaseTtlMs: number;
-  restartStateReader: ControllerRestartStateReader;
 }
 
 export interface RepoActorDispatch {
@@ -72,26 +63,6 @@ function dependencyState(controllerHome: string, job: ExecutionJob): 'ready' | '
   return 'ready';
 }
 
-export function shouldDeferControllerRestartRetry(
-  controllerHome: string,
-  job: ExecutionJob,
-  readState: ControllerRestartStateReader = readControllerRestartState,
-): boolean {
-  if (job.payload.operation !== 'controller_restart_verify') return false;
-
-  try {
-    const state = readState(
-      controllerAuthorityHome(controllerHome),
-      controllerRestartRequestIdForExecutionJob(job),
-    );
-    return Boolean(state && state.phase !== 'succeeded' && state.phase !== 'failed');
-  } catch {
-    // A partially-written operation state must not dispatch another verifier
-    // while Stable Supervisor ownership is unresolved.
-    return true;
-  }
-}
-
 export class RepoActor {
   readonly repoId: string;
   readonly controllerHome: string;
@@ -103,7 +74,6 @@ export class RepoActor {
     this.config = {
       maxConcurrentWorkers: Math.max(1, config.maxConcurrentWorkers ?? 2),
       leaseTtlMs: Math.max(10_000, config.leaseTtlMs ?? 30_000),
-      restartStateReader: config.restartStateReader ?? readControllerRestartState,
     };
   }
 
@@ -126,11 +96,6 @@ export class RepoActor {
 
         for (const job of candidates) {
           if (options.canDispatch && !options.canDispatch(job)) continue;
-          if (shouldDeferControllerRestartRetry(
-            this.controllerHome,
-            job,
-            this.config.restartStateReader,
-          )) return undefined;
 
           const timeout = executionTimeoutDecision(job);
           if (timeout) {

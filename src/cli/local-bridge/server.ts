@@ -133,7 +133,6 @@ import {
   defaultLocalAgentRunners,
 } from "../controller/runtime-config";
 import { taskExecutionPolicy, taskWriteScopesConflict } from "../controller/execution-policy";
-import { scheduleControllerServiceRestart } from "../controller/restart-coordinator";
 import { continueTaskAfterSuccessfulRun } from "../controller/execution-completion";
 import { applyCompletionDecision, completionDecisionQueues, finishCompletionBacklog, inspectCompletionBacklog } from "../controller/completion-backlog";
 import { finishEditSession, finishTaskRun } from "../controller/completion-orchestrator";
@@ -2169,19 +2168,12 @@ export async function startLocalBridgeServer(
         result = applyRuntimeCleanup(repoRoot, { includeTempDirs: true, includeTerminalLocalJobs: true, includeLegacyRuns: true, includeHistoricalAttention: true, confirmCleanup: true }) as unknown as Record<string, unknown>;
         affectedPaths = [".ai/harness/local-jobs", ".ai/harness/jobs"];
       } else if (action.id === "recovery.restart_controller" || action.id === "recovery.restart_local_bridge") {
-        const restart = scheduleControllerServiceRestart({
-          repo: repoRoot,
-          controllerHome,
-          requestId: queryString(request.body?.requestId) ?? queryString(request.body?.request_id),
-          requestedBy: "local-bridge-gui",
-          reason,
-          mode: "detached",
-        });
         result = {
-          restart,
-          note: "The detached coordinator owns the full stack restart. This HTTP response is returned before Local Bridge shutdown.",
+          skipped: true,
+          retired: true,
+          code: "RUNTIME_LIFECYCLE_ACTION_RETIRED",
+          reason: "Runtime restart is owned exclusively by the canonical Runtime service and cannot be initiated from Local Bridge.",
         };
-        affectedPaths = ["_ops/controller-home/restart"];
       } else {
         result = { skipped: true, reason: `${action.id} is planned but not executable from the Local Bridge HTTP process.` };
       }
