@@ -851,7 +851,6 @@ export function reconcileSupervisorStateWithAuthority(
       activeSlot: authority.activeSlot,
       previousSlot: authority.previousSlot,
       activeGeneration: authority.generation ?? state.activeGeneration,
-      ingress: { ...state.ingress, activeUpstreamSlot: authority.activeSlot },
       updatedAt: now,
     };
   }
@@ -861,7 +860,6 @@ export function reconcileSupervisorStateWithAuthority(
       activeSlot: authority.activeSlot,
       previousSlot: authority.previousSlot,
       activeGeneration: authority.generation ?? state.controllerDaemon?.generation ?? state.activeGeneration,
-      ingress: { ...state.ingress, activeUpstreamSlot: authority.activeSlot },
       updatedAt: now,
     };
   }
@@ -884,7 +882,6 @@ export function reconcileSupervisorStateWithAuthority(
       gatewayHost: state.standby.gatewayHost,
       standby: displaced,
       observedState: 'degraded',
-      ingress: { ...state.ingress, activeUpstreamSlot: authority.activeSlot },
       lastIncident: { at: now, reason: 'Supervisor state was reconciled to the active-slot authority after restart.' },
       updatedAt: now,
     };
@@ -906,7 +903,6 @@ export function reconcileSupervisorStateWithAuthority(
     gatewayHost: undefined,
     standby: displaced,
     observedState: 'degraded',
-    ingress: { ...state.ingress, activeUpstreamSlot: authority.activeSlot },
     lastIncident: {
       at: now,
       reason: 'No managed process pair matched the active-slot authority after restart; rebuilding the managed pair on the active slot.',
@@ -1112,8 +1108,8 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
       ingress: {
         ...this.state.ingress,
         state: 'running',
-        activeUpstreamSlot: this.state.activeSlot,
-        activeUpstreamPort: this.manager.gatewayBinding(this.state.activeSlot).port,
+        activeUpstreamSlot: undefined,
+        activeUpstreamPort: undefined,
         pid: process.pid,
         lastHealthyAt: new Date().toISOString(),
       },
@@ -1864,11 +1860,6 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
         gatewayHost: activatedCandidate.gatewayHost,
         previousSlot,
         standby: this.state.standby ? { ...this.state.standby, retainedUntil: nextAuthority.rollbackUntil } : undefined,
-        ingress: {
-          ...this.state.ingress,
-          activeUpstreamSlot: candidateSlot,
-          activeUpstreamPort: activatedCandidate.manager.gatewayBinding(candidateSlot).port,
-        },
       });
       await this.verifyAuthoritySelectedGateway({
         manager: activatedCandidate.manager,
@@ -1905,11 +1896,6 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
             activeGeneration: refreshed.generation,
             controllerDaemon: refreshed.controllerDaemon,
             gatewayHost: refreshed.gatewayHost,
-            ingress: {
-              ...this.state.ingress,
-              activeUpstreamSlot: candidateSlot,
-              activeUpstreamPort: refreshed.manager.gatewayBinding(candidateSlot).port,
-            },
           });
           await this.verifyAuthoritySelectedGateway({
             manager: refreshed.manager,
@@ -2005,11 +1991,6 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
             controllerDaemon: undefined,
             gatewayHost: undefined,
             standby: undefined,
-            ingress: {
-              ...this.state.ingress,
-              activeUpstreamSlot: previousSlot,
-              activeUpstreamPort: this.managerForManaged(previousGateway, previousSlot).gatewayBinding(previousSlot).port,
-            },
           });
           try {
             await this.ensureRuntime();
@@ -2029,11 +2010,6 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
         controllerDaemon: restoredDaemon,
         gatewayHost: restoredGateway,
         standby: undefined,
-        ingress: {
-          ...this.state.ingress,
-          activeUpstreamSlot: previousSlot,
-          activeUpstreamPort: this.managerForManaged(restoredGateway ?? previousGateway, previousSlot).gatewayBinding(previousSlot).port,
-        },
       });
       await this.stopSlotProcesses(activatedCandidate, 'rollout_failed_candidate_cleanup', operationId);
       const identity = readSlotIdentity(this.options.controllerHome, candidateSlot);
@@ -2124,11 +2100,6 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
         controllerDaemon: activatedTarget.controllerDaemon,
         gatewayHost: activatedTarget.gatewayHost,
         previousSlot: currentSlot,
-        ingress: {
-          ...this.state.ingress,
-          activeUpstreamSlot: targetSlot,
-          activeUpstreamPort: activatedTarget.manager.gatewayBinding(targetSlot).port,
-        },
       });
       await this.verifyAuthoritySelectedGateway({
         manager: activatedTarget.manager,
@@ -2163,20 +2134,12 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
           releasePath: failedDaemon.releasePath,
         });
       }
-      const restoredPort = restoredGateway
-        ? this.managerForManaged(restoredGateway, currentSlot).gatewayBinding(currentSlot).port
-        : this.state.ingress.activeUpstreamPort;
       this.persist({
         activeSlot: currentSlot,
         activeGeneration: failedDaemon.generation,
         controllerDaemon: restoredDaemon,
         gatewayHost: restoredGateway,
         standby: undefined,
-        ingress: {
-          ...this.state.ingress,
-          activeUpstreamSlot: currentSlot,
-          ...(restoredPort ? { activeUpstreamPort: restoredPort } : {}),
-        },
       });
       await this.stopSlotProcesses(activatedTarget);
       throw error;
@@ -2283,11 +2246,6 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
     this.persist({
       activeSlot: this.state.controllerDaemon?.slot ?? this.state.activeSlot,
       ...(activeGeneration ? { activeGeneration } : {}),
-      ingress: {
-        ...this.state.ingress,
-        activeUpstreamSlot: this.state.gatewayHost?.slot ?? this.state.activeSlot,
-        activeUpstreamPort: this.manager.gatewayBinding(this.state.gatewayHost?.slot ?? this.state.activeSlot).port,
-      },
     });
   }
 
@@ -2583,6 +2541,8 @@ export class StableSupervisorRuntime implements SupervisorControlHandlers {
           // Compatibility projection only. Ingress presence is no longer part of
           // Supervisor lifecycle health and the monitor never recreates it.
           state: this.ingressRouter ? 'running' : 'stopped',
+          activeUpstreamSlot: undefined,
+          activeUpstreamPort: undefined,
           pid: this.ingressRouter ? process.pid : undefined,
         },
       });

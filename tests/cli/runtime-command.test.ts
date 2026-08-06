@@ -184,6 +184,14 @@ describe('runtime command surface', () => {
     expect(cutoverVerificationBlock).toContain("/ready");
     expect(cutoverVerificationBlock).not.toContain('stableIngressHost');
     expect(cutoverVerificationBlock).not.toContain('stableIngressPort');
+    const legacyIngressSlotAssignments = [...supervisorRuntime.matchAll(/activeUpstreamSlot:\s*([^,\n]+)/g)]
+      .map((match) => match[1].trim());
+    const legacyIngressPortAssignments = [...supervisorRuntime.matchAll(/activeUpstreamPort:\s*([^,\n]+)/g)]
+      .map((match) => match[1].trim());
+    expect(legacyIngressSlotAssignments).toEqual(['undefined', 'undefined']);
+    expect(legacyIngressPortAssignments).toEqual(['undefined', 'undefined']);
+    expect(supervisorRuntime).not.toContain('this.state.ingress.activeUpstreamSlot');
+    expect(supervisorRuntime).not.toContain('this.state.ingress.activeUpstreamPort');
     expect(runtimeTools).toContain('readControllerDaemonStatus');
     for (const legacy of [
       'controller_restart_verify',
