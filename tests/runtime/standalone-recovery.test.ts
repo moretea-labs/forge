@@ -6,7 +6,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { createServer as createSocketServer, type Server as SocketServer } from 'net';
 import { basename, dirname, join } from 'path';
 import { tmpdir } from 'os';
-import { attestKnownGood, createRecoveryConfig, decideWatchdog, initializeStandaloneRecovery, loadWatchdogState, recoveryReconnectOperation, repairPublicTunnel, restartGateway, restartRecoveryGateway, restartSupervisor, rollbackPrevious, saveWatchdogState, verifyStableRuntime, type VerifyResult } from '../../src/runtime/standalone-recovery/core';
+import { attestKnownGood, createRecoveryConfig, decideWatchdog, initializeStandaloneRecovery, loadWatchdogState, repairPublicTunnel, restartRecoveryGateway, rollbackPrevious, saveWatchdogState, verifyStableRuntime, type VerifyResult } from '../../src/runtime/standalone-recovery/core';
 import { dispatchRecoveryTool, recoveryRuntimeRoleFromExecutable, RECOVERY_CLI_COMMANDS, RECOVERY_TOOLS } from '../../src/runtime/standalone-recovery/entry';
 import { createRecoveryHttpTransport, ExternalHttpsRecoveryTransport, resolveTrustedRecoveryCurl, type RecoveryHttpTransportOptions } from '../../src/runtime/standalone-recovery/http-transport';
 import { activateRecoveryRelease, captureLegacyRecoveryRelease, stageRecoveryRelease, verifyRecoveryReleaseActivation, type RecoveryActivationVerification } from '../../src/runtime/standalone-recovery/installer';
@@ -629,121 +629,6 @@ describe('standalone disaster recovery core', () => {
 
     rmSync(failedHome, { recursive: true, force: true });
     rmSync(timeoutHome, { recursive: true, force: true });
-  });
-
-  test('Gateway reconnect recovery remains Gateway-only and requires Supervisor control', () => {
-    const base = {
-      ok: false,
-      at: new Date().toISOString(),
-      supervisor: { ok: true, observedState: 'healthy' },
-      releases: { coherent: true },
-      probes: {
-        supervisor_socket: { ok: true, detail: 'status received' },
-        stable_ingress: { ok: true, detail: 'HTTP 200' },
-        active_gateway: { ok: true, detail: 'HTTP 200' },
-        mcp_initialize: { ok: false, detail: 'HTTP 406' },
-      },
-    };
-    expect(recoveryReconnectOperation(base)).toBe('none');
-    expect(recoveryReconnectOperation({
-      ...base,
-      probes: { ...base.probes, active_gateway: { ok: false, detail: 'connection refused' } },
-    })).toBe('restart_gateway');
-    expect(recoveryReconnectOperation({
-      ...base,
-      probes: {
-        ...base.probes,
-        supervisor_socket: { ok: false, detail: 'unavailable' },
-        active_gateway: { ok: false, detail: 'unavailable' },
-      },
-    })).toBe('none');
-  });
-
-  test('Gateway restart refuses locked-out Supervisors', async () => {
-    const home = mkdtempSync(join(tmpdir(), 'standalone-recovery-gateway-lockout-'));
-    const active = release(home, 'active', 'release-active');
-    const stablePort = await http((_request, response) => {
-      response.setHeader('content-type', 'application/json');
-      response.end(JSON.stringify({ status: 'ok' }));
-    });
-    let operationSubmits = 0;
-    const socket = createSocketServer((client) => client.on('data', (chunk) => {
-      const rpc = JSON.parse(String(chunk)) as { command?: string };
-      if (rpc.command === 'operation_submit') operationSubmits += 1;
-      client.end(`${JSON.stringify({
-        ok: true,
-        state: {
-          observedState: 'locked_out',
-          activeSlot: 'blue',
-          ingress: { state: 'running', activeUpstreamPort: 9 },
-          gatewayHost: { releasePath: active, releaseRevision: 'release-active' },
-          controllerDaemon: { releasePath: active, releaseRevision: 'release-active' },
-          restartBudget: {
-            'gatewayHost:test': { component: 'gatewayHost', lockedOut: true, attempts: 5, consecutiveFailures: 5 },
-          },
-        },
-      })}\n`);
-    }));
-    socketServers.push(socket); mkdirSync(join(home, 'supervisor'), { recursive: true });
-    await new Promise<void>((resolveListen, reject) => { socket.once('error', reject); socket.listen(join(home, 'supervisor', 'control.sock'), () => resolveListen()); });
-    const result = await restartGateway(createRecoveryConfig(home, { stableIngressUrl: `http://127.0.0.1:${stablePort}` }), 'lockout-test');
-    expect(result.ok).toBe(false);
-    expect(result.detail).toContain('locked out');
-    expect(operationSubmits).toBe(0);
-    rmSync(home, { recursive: true, force: true });
-  });
-
-  test('Supervisor restart never downgrades to a Gateway-only operation', async () => {
-    const home = mkdtempSync(join(tmpdir(), 'standalone-recovery-supervisor-restart-'));
-    const active = release(home, 'active', 'release-active');
-    const stablePort = await http((_request, response) => {
-      response.setHeader('content-type', 'application/json');
-      response.end(JSON.stringify({ status: 'ok' }));
-    });
-    let operationSubmits = 0;
-    const socket = createSocketServer((client) => client.on('data', (chunk) => {
-      const rpc = JSON.parse(String(chunk)) as { command?: string };
-      if (rpc.command === 'operation_submit') operationSubmits += 1;
-      client.end(`${JSON.stringify({
-        ok: true,
-        state: {
-          observedState: 'locked_out',
-          activeSlot: 'blue',
-          ingress: { state: 'running', activeUpstreamPort: 9 },
-          gatewayHost: { releasePath: active, releaseRevision: 'release-active' },
-          controllerDaemon: { releasePath: active, releaseRevision: 'release-active' },
-          supervisor: { pid: 999999, releasePath: active, releaseRevision: 'release-active' },
-        },
-      })}\n`);
-    }));
-    socketServers.push(socket); mkdirSync(join(home, 'supervisor'), { recursive: true });
-    await new Promise<void>((resolveListen, reject) => { socket.once('error', reject); socket.listen(join(home, 'supervisor', 'control.sock'), () => resolveListen()); });
-    const result = await restartSupervisor(createRecoveryConfig(home, { stableIngressUrl: `http://127.0.0.1:${stablePort}` }), 'supervisor-test');
-    expect(result.ok).toBe(false);
-    expect(result.detail).not.toContain('Gateway-only');
-    expect(operationSubmits).toBe(0);
-    rmSync(home, { recursive: true, force: true });
-  });
-
-  test('deduplicates cross-session Supervisor recovery and preserves a live global owner lock', async () => {
-    const home = mkdtempSync(join(tmpdir(), 'standalone-recovery-singleflight-'));
-    const active = release(home, 'active', 'release-active');
-    const port = await http((_request, response) => { response.end(JSON.stringify({ status: 'ok' })); });
-    const socket = createSocketServer((client) => client.on('data', () => client.end(`${JSON.stringify({ ok: true, state: { observedState: 'healthy', activeSlot: 'blue', ingress: { state: 'running', activeUpstreamPort: port }, gatewayHost: { releasePath: active, releaseRevision: 'release-active' }, controllerDaemon: { releasePath: active, releaseRevision: 'release-active' }, supervisor: { pid: process.pid, releasePath: active, releaseRevision: 'release-active' } } })}\n`)));
-    socketServers.push(socket); mkdirSync(join(home, 'supervisor'), { recursive: true });
-    await new Promise<void>((resolveListen, reject) => { socket.once('error', reject); socket.listen(join(home, 'supervisor', 'control.sock'), () => resolveListen()); });
-    const config = createRecoveryConfig(home, { stableIngressUrl: `http://127.0.0.1:${port}` });
-    const first = await restartSupervisor(config, 'same-restart-request');
-    const repeated = await restartSupervisor(config, 'same-restart-request');
-    const afterHealthy = await restartSupervisor(config, 'different-restart-request');
-    expect(first.noOp).toBe(true); expect(repeated.reused).toBe(true); expect(afterHealthy.noOp).toBe(true);
-    const lock = join(home, 'recovery', 'locks', 'operation.lock');
-    mkdirSync(join(home, 'recovery', 'locks'), { recursive: true });
-    writeFileSync(lock, JSON.stringify({ pid: process.pid, instanceId: 'other-session', acquiredAt: new Date(0).toISOString(), action: 'restart_supervisor', requestId: 'other-session-request' }));
-    const busy = await restartSupervisor(config, 'busy-restart-request');
-    expect(busy.inProgress).toBe(true); expect(busy.activeRequestId).toBe('other-session-request');
-    expect((JSON.parse(readFileSync(lock, 'utf8')) as { instanceId: string }).instanceId).toBe('other-session');
-    rmSync(home, { recursive: true, force: true });
   });
 
   test('persists watchdog failure windows and restart decisions across process restarts', () => {

@@ -310,6 +310,10 @@ describe('runtime command surface', () => {
     expect(standaloneRecovery).not.toContain("action: 'restart_supervisor'");
     expect(standaloneRecovery).not.toContain('gatewayRestartUsed');
     expect(standaloneRecovery).not.toContain('supervisorRestartUsed');
+    expect(standaloneRecovery).not.toContain('export async function restartGateway');
+    expect(standaloneRecovery).not.toContain('export async function restartSupervisor');
+    expect(standaloneRecovery).not.toContain('RestartSupervisorReceipt');
+    expect(standaloneRecovery).not.toContain('supervisorActivationPath');
     expect(supervisorReleaseCoherence).toContain('ok: releaseCoherent');
     expect(supervisorReleaseCoherence).not.toContain('ActiveSlotAuthority');
     expect(supervisorReleaseCoherence).not.toContain('SlotIdentity');
