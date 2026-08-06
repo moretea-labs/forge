@@ -651,7 +651,11 @@ function normalizeNoIndexPatch(raw: string, item: PatchItem): string {
 }
 
 function buildLocalizedPatch(repoRoot: string, sessionId: string, label: string, items: PatchItem[]): string {
-  const patchItems = items.filter((item) => item.beforeExists !== item.afterExists || item.before !== item.after);
+  const patchItems = items.filter((item) =>
+    item.beforeExists !== item.afterExists
+    || item.before !== item.after
+    || item.beforeMode !== item.afterMode,
+  );
   if (patchItems.length === 0) return '';
   const tempRoot = join(sessionDir(repoRoot, sessionId), 'diff-inputs', label);
   rmSync(tempRoot, { recursive: true, force: true });
@@ -692,7 +696,15 @@ function baselinePatchItems(repoRoot: string, session: EditSession): PatchItem[]
     const absolute = join(repoRoot, path);
     const afterExists = existsSync(absolute);
     const after = afterExists ? readFileSync(absolute, 'utf-8') : '';
-    return { relativePath: path, before, after, beforeExists, afterExists };
+    return {
+      relativePath: path,
+      before,
+      after,
+      beforeExists,
+      afterExists,
+      beforeMode: first.beforeMode,
+      afterMode: afterExists ? statSync(absolute).mode & 0o777 : undefined,
+    };
   });
 }
 
@@ -1079,7 +1091,17 @@ export function applyEditOperations(repoRoot: string, policy: McpPolicy, session
         });
         return;
       }
-      prepared.push({ operationIndex, operation, relativePath: decision.relativePath, absolutePath: decision.absolutePath, before, after: operation.content, beforeExists: false, afterExists: true });
+      prepared.push({
+        operationIndex,
+        operation,
+        relativePath: decision.relativePath,
+        absolutePath: decision.absolutePath,
+        before,
+        after: operation.content,
+        beforeExists: false,
+        afterExists: true,
+        afterMode: operation.content.startsWith('#!') ? 0o755 : 0o644,
+      });
       return;
     }
     if (!exists) {
@@ -1092,6 +1114,7 @@ export function applyEditOperations(repoRoot: string, policy: McpPolicy, session
       });
       return;
     }
+    const beforeMode = statSync(decision.absolutePath).mode & 0o777;
     const beforeHash = hash(before);
     if (beforeHash !== operation.expectedSha256) {
       failures.push({
@@ -1105,16 +1128,16 @@ export function applyEditOperations(repoRoot: string, policy: McpPolicy, session
       return;
     }
     if (operation.type === 'delete') {
-      prepared.push({ operationIndex, operation, relativePath: decision.relativePath, absolutePath: decision.absolutePath, before, after: '', beforeExists: true, afterExists: false });
+      prepared.push({ operationIndex, operation, relativePath: decision.relativePath, absolutePath: decision.absolutePath, before, after: '', beforeExists: true, afterExists: false, beforeMode });
       return;
     }
     if (operation.type === 'write') {
-      prepared.push({ operationIndex, operation, relativePath: decision.relativePath, absolutePath: decision.absolutePath, before, after: operation.content, beforeExists: true, afterExists: true });
+      prepared.push({ operationIndex, operation, relativePath: decision.relativePath, absolutePath: decision.absolutePath, before, after: operation.content, beforeExists: true, afterExists: true, beforeMode, afterMode: beforeMode });
       return;
     }
     try {
       const after = applyTextOperation(operation, before, decision.relativePath);
-      prepared.push({ operationIndex, operation, relativePath: decision.relativePath, absolutePath: decision.absolutePath, before, after, beforeExists: true, afterExists: true });
+      prepared.push({ operationIndex, operation, relativePath: decision.relativePath, absolutePath: decision.absolutePath, before, after, beforeExists: true, afterExists: true, beforeMode, afterMode: beforeMode });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       failures.push({
@@ -1159,6 +1182,8 @@ export function applyEditOperations(repoRoot: string, policy: McpPolicy, session
     after: item.after,
     beforeExists: item.beforeExists,
     afterExists: item.afterExists,
+    beforeMode: item.beforeMode,
+    afterMode: item.afterMode,
   })));
   const changedLinesByPath = changedLinesByPathFromPatch(revisionPatch);
   const changedLinesFor = (item: PreparedEditOperation) =>
@@ -1172,10 +1197,8 @@ export function applyEditOperations(repoRoot: string, policy: McpPolicy, session
   let appliedOperationCount = 0;
   try {
     prepared.forEach((item, index) => {
-      const beforeMode = item.beforeExists ? statSync(item.absolutePath).mode & 0o777 : undefined;
-      const afterMode = item.afterExists
-        ? beforeMode ?? (item.after.startsWith('#!') ? 0o755 : undefined)
-        : undefined;
+      const beforeMode = item.beforeMode;
+      const afterMode = item.afterMode;
       const backupRelative = `${SESSION_ROOT}/${session.sessionId}/backups/r${String(revision).padStart(4, '0')}-${String(index + 1).padStart(4, '0')}-${item.relativePath.replace(/[^a-zA-Z0-9._-]+/g, '__')}.bak`;
       if (item.beforeExists) {
         mkdirSync(dirname(join(repoRoot, backupRelative)), { recursive: true });

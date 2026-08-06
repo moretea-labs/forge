@@ -933,6 +933,9 @@ describe("Local Execution Bridge", () => {
     }]);
     expect(lstatSync(executablePath).mode & 0o111).toBe(0o111);
     expect(readFileSync(executablePath, "utf8")).toContain("value = 2");
+    const patch = readFileSync(join(root, ".ai/harness/edit-sessions", session.sessionId, "changes.patch"), "utf8");
+    expect(patch).not.toContain("old mode 100755");
+    expect(patch).not.toContain("new mode 100644");
   });
 
   test("registers and soft-removes repositories through the local-bridge API", async () => {
