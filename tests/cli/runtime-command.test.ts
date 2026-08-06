@@ -78,8 +78,6 @@ describe('runtime command surface', () => {
     const mcpCommand = readFileSync(join(ROOT, 'src/cli/commands/mcp.ts'), 'utf8');
     const lifecycleAuthority = readFileSync(join(ROOT, 'src/cli/controller/lifecycle-authority.ts'), 'utf8');
     const mcpAuth = readFileSync(join(ROOT, 'src/cli/mcp/auth.ts'), 'utf8');
-    const runtimeAuthority = readFileSync(join(ROOT, 'src/runtime/bootstrap/runtime-authority.ts'), 'utf8');
-    const runtimeSlots = readFileSync(join(ROOT, 'src/cli/controller/runtime-slots.ts'), 'utf8');
     const httpTransport = readFileSync(join(ROOT, 'src/cli/mcp/transports/http.ts'), 'utf8');
     const runtimeTools = readFileSync(join(ROOT, 'src/runtime/gateway/mcp/runtime-tools.ts'), 'utf8');
     const toolsetNames = readFileSync(join(ROOT, 'src/cli/mcp/toolset-names.ts'), 'utf8');
@@ -92,7 +90,6 @@ describe('runtime command surface', () => {
     const globalScheduler = readFileSync(join(ROOT, 'src/runtime/control-plane/global-scheduler/scheduler.ts'), 'utf8');
     const processRuntime = readFileSync(join(ROOT, 'src/runtime/execution/process-runtime/runtime.ts'), 'utf8');
     const daemonClient = readFileSync(join(ROOT, 'src/runtime/control-plane/daemon-client.ts'), 'utf8');
-    const stableBootstrap = readFileSync(join(ROOT, 'src/runtime/bootstrap/stable-bootstrap.ts'), 'utf8');
     const releaseStore = readFileSync(join(ROOT, 'src/runtime/root/release-store.ts'), 'utf8');
     const writeFence = readFileSync(join(ROOT, 'src/runtime/root/write-fence.ts'), 'utf8');
     const operationReceiptStore = readFileSync(join(ROOT, 'src/runtime/execution/jobs/receipt-store.ts'), 'utf8');
@@ -113,33 +110,13 @@ describe('runtime command surface', () => {
     const oauthFallbackEnd = mcpAuth.indexOf('export function mcpControllerHomeRuntimeStatePath', oauthFallbackStart);
     const oauthFallbackBlock = mcpAuth.slice(oauthFallbackStart, oauthFallbackEnd);
     expect(oauthFallbackBlock).not.toContain('runtime-slots');
-    const migrateConfigStart = runtimeAuthority.indexOf('export function migrateRuntimeConfig');
-    const migrateConfigEnd = runtimeAuthority.indexOf('export function requireRuntimeAuthority', migrateConfigStart);
-    const migrateConfigBlock = runtimeAuthority.slice(migrateConfigStart, migrateConfigEnd);
-    expect(migrateConfigBlock).not.toContain('runtime-slots');
-    const requireConfigStart = runtimeAuthority.indexOf('export function requireRuntimeConfig');
-    const requireConfigBlock = runtimeAuthority.slice(requireConfigStart);
-    expect(requireConfigBlock).not.toContain('runtime-slots');
-    expect(runtimeSlots).not.toContain('allocateSlotPorts');
-    expect(runtimeSlots).not.toContain('validateSlotPorts');
-    expect(runtimeSlots).not.toContain('SlotPortAllocation');
-    expect(runtimeSlots).not.toContain('resolveSlotControllerHome');
-    expect(runtimeSlots).not.toContain('resolveLifecycleControllerHome');
-    expect(runtimeSlots).not.toContain('slotPortDefaults');
-    expect(runtimeSlots).not.toContain('slotsShareRuntimeState');
-    expect(runtimeSlots).not.toContain('controllerAuthorityHome');
-    expect(runtimeSlots).not.toContain('activeSlotAuthorityPath');
-    expect(runtimeSlots).not.toContain('runtimeSlotForHome');
-    expect(runtimeSlots).toContain('RUNTIME_SLOT_ROOT_REQUIRED');
-    expect(runtimeSlots).not.toContain('ManagedResource');
-    expect(runtimeSlots).not.toContain('managedResource');
-    expect(runtimeSlots).not.toContain('resources?:');
-    expect(runtimeSlots).not.toContain("type: 'runtime_slot'");
-    expect(runtimeSlots).not.toContain('controllerHome: string');
-    expect(runtimeSlots).not.toContain('mcpPort: number');
-    expect(runtimeSlots).not.toContain('localControllerPort: number');
-    expect(runtimeSlots).not.toContain('processGroupLeader?: number');
-    expect(runtimeSlots).not.toContain('logDir: string');
+    for (const legacyAuthorityPath of [
+      'src/cli/controller/runtime-slots.ts',
+      'src/cli/controller/stable-state',
+      'src/runtime/bootstrap/runtime-authority.ts',
+      'src/runtime/bootstrap/activation-transaction.ts',
+      'src/runtime/bootstrap/stable-bootstrap.ts',
+    ]) expect(existsSync(join(ROOT, legacyAuthorityPath))).toBe(false);
     expect(httpTransport).not.toContain('ensureControllerDaemon');
     expect(httpTransport).toContain('readControllerDaemonStatus');
     expect(runtimeTools).not.toContain('ensureControllerDaemon');
@@ -272,9 +249,6 @@ describe('runtime command surface', () => {
     expect(existsSync(join(ROOT, 'src/runtime/control-plane/daemon-entry.ts'))).toBe(false);
     expect(existsSync(join(ROOT, 'scripts/smoke-runtime-control-plane.ts'))).toBe(false);
     expect(processRuntime).not.toContain("from '../../supervisor/identity'");
-    expect(stableBootstrap).toContain("from '../shared/process-identity'");
-    expect(stableBootstrap).not.toContain("from '../supervisor/identity'");
-    expect(stableBootstrap).not.toContain("from '../supervisor/types'");
     expect(releaseStore).toContain('publishRuntimeRelease');
     expect(releaseStore).toContain('rollbackRuntimeRelease');
     expect(releaseStore).toContain('backupControlPlaneDatabase');

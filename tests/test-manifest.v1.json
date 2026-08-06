@@ -267,10 +267,6 @@
       "module": "process-runtime",
       "resource": "controller-home-isolated"
     },
-    "tests/cli/runtime-slots.test.ts": {
-      "module": "process-runtime",
-      "resource": "temp-isolated"
-    },
     "tests/cli/security.test.ts": {
       "module": "controller",
       "resource": "temp-isolated"
@@ -423,10 +419,6 @@
       "module": "process-runtime",
       "resource": "process-tree"
     },
-    "tests/runtime/runtime-cutover-r2.test.ts": {
-      "module": "process-runtime",
-      "resource": "process-tree"
-    },
     "tests/runtime/runtime-observability.test.ts": {
       "module": "process-runtime",
       "resource": "temp-isolated"
@@ -450,10 +442,6 @@
     "tests/runtime/runtime-source-isolation.test.ts": {
       "module": "process-runtime",
       "resource": "process-tree"
-    },
-    "tests/runtime/stable-state-and-bootstrap.test.ts": {
-      "module": "workflow",
-      "resource": "temp-isolated"
     },
     "tests/runtime/standalone-recovery.test.ts": {
       "module": "process-runtime",
