@@ -144,7 +144,7 @@ interface RestartSupervisorReceipt {
 }
 
 export interface WatchdogDecision {
-  action: 'healthy' | 'degraded' | 'repair_public_tunnel' | 'restart_recovery_gateway' | 'restart_gateway' | 'restart_supervisor' | 'rollback';
+  action: 'healthy' | 'degraded' | 'repair_public_tunnel' | 'restart_recovery_gateway' | 'rollback';
   reason: string;
 }
 
@@ -156,8 +156,6 @@ export interface WatchdogState {
   publicTunnelFirstFailureAt?: number;
   publicTunnelRepairFailures?: number;
   recoveryGatewayRestartUsed?: boolean;
-  gatewayRestartUsed?: boolean;
-  supervisorRestartUsed?: boolean;
   lastDecision?: WatchdogDecision['action'];
   updatedAt?: string;
 }
@@ -878,11 +876,7 @@ export function decideWatchdog(input: {
   operationInFlight: boolean;
   rollbackUsed: boolean;
   recoveryGatewayFailed?: boolean;
-  gatewayFailed?: boolean;
-  supervisorFailed?: boolean;
   recoveryGatewayRestartUsed?: boolean;
-  gatewayRestartUsed?: boolean;
-  supervisorRestartUsed?: boolean;
   publicTunnelConfigured?: boolean;
   publicTunnelFailed?: boolean;
   publicTunnelFailures?: number;
@@ -904,15 +898,13 @@ export function decideWatchdog(input: {
   const restartSustained = input.firstFailureAt !== undefined && Date.now() - input.firstFailureAt >= 5_000;
   if (!input.operationInFlight && input.failures >= 2 && restartSustained) {
     if (input.recoveryGatewayFailed && !input.recoveryGatewayRestartUsed) return { action: 'restart_recovery_gateway', reason: 'the independent Recovery Gateway health endpoint failed after a sustained bounded failure window' };
-    if (input.supervisorFailed && !input.supervisorRestartUsed) return { action: 'restart_supervisor', reason: 'Supervisor control is unavailable after a sustained bounded failure window' };
-    if (input.gatewayFailed && !input.gatewayRestartUsed) return { action: 'restart_gateway', reason: 'active Gateway health failed after a sustained bounded failure window' };
   }
   const sustained = input.firstFailureAt !== undefined && Date.now() - input.firstFailureAt >= 30_000;
   const independentEvidence = new Set(input.evidenceClasses).size >= 2;
   if (input.failures >= 6 && sustained && independentEvidence && !input.activeKnownGood && input.previousKnownGood && !input.operationInFlight && !input.rollbackUsed) {
-    return { action: 'rollback', reason: 'restart paths were exhausted and six sustained failures have two independent evidence classes plus a verified previous release' };
+    return { action: 'rollback', reason: 'six sustained failures have two independent evidence classes plus a verified previous whole-Runtime release' };
   }
-  return { action: 'degraded', reason: 'failure threshold, duration, recovery ordering, or independent-evidence quorum not met' };
+  return { action: 'degraded', reason: 'failure threshold, duration, operation ownership, or independent-evidence quorum not met' };
 }
 
 export async function diagnose(config: RecoveryConfig): Promise<Record<string, unknown>> {
@@ -1434,12 +1426,12 @@ export function secureEqual(left: string, right: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState): Promise<{ state: WatchdogState; decision: WatchdogDecision; verify: VerifyResult; rollback?: RollbackResult; publicTunnelRepair?: PublicTunnelRepairResult; recoveryGatewayRestart?: RecoveryGatewayRestartResult; gatewayRestart?: Awaited<ReturnType<typeof restartGateway>>; supervisorRestart?: RestartSupervisorResult }> {
+export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState): Promise<{ state: WatchdogState; decision: WatchdogDecision; verify: VerifyResult; rollback?: RollbackResult; publicTunnelRepair?: PublicTunnelRepairResult; recoveryGatewayRestart?: RecoveryGatewayRestartResult }> {
   const verified = await verifyStableRuntime(config);
   const recoveryHealthy = verified.probes.recovery_gateway?.ok !== false
     && verified.probes.recovery_external_http?.ok !== false;
   if (verified.ok && recoveryHealthy) {
-    const state = { failures: 0, rollbackUsed: false, publicTunnelFailures: 0, publicTunnelRepairFailures: 0, recoveryGatewayRestartUsed: false, gatewayRestartUsed: false, supervisorRestartUsed: false, lastDecision: 'healthy' as const };
+    const state = { failures: 0, rollbackUsed: false, publicTunnelFailures: 0, publicTunnelRepairFailures: 0, recoveryGatewayRestartUsed: false, lastDecision: 'healthy' as const };
     return { state, decision: { action: 'healthy', reason: 'primary runtime and standalone Recovery verification passed' }, verify: verified };
   }
   const localVerify = configuredRecoveryTunnel(config) && configuredRecoveryPublicUrl(config) ? await verifyLocalRuntime(config) : undefined;
@@ -1473,8 +1465,6 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
     previousKnownGood,
     operationInFlight,
     recoveryGatewayFailed: verified.probes.recovery_gateway?.ok === false,
-    gatewayFailed: verified.probes.supervisor_socket?.ok === true && verified.probes.active_gateway?.ok !== true,
-    supervisorFailed: verified.probes.supervisor_socket?.ok !== true,
     publicTunnelConfigured: Boolean(configuredRecoveryTunnel(config)),
     publicTunnelFailed,
     publicTunnelMinimumFailures: configuredRecoveryTunnel(config)?.minimumFailures,
@@ -1492,16 +1482,8 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
     const recoveryGatewayRestart = await restartRecoveryGateway(config);
     return { state: { ...state, recoveryGatewayRestartUsed: true }, decision, verify: verified, recoveryGatewayRestart };
   }
-  if (decision.action === 'restart_gateway') {
-    const gatewayRestart = await restartGateway(config, `watchdog-gateway-${verified.releases.active?.revision ?? 'unknown'}`);
-    return { state: { ...state, gatewayRestartUsed: true }, decision, verify: verified, gatewayRestart };
-  }
-  if (decision.action === 'restart_supervisor') {
-    const supervisorRestart = await restartSupervisor(config, `watchdog-supervisor-${verified.releases.active?.revision ?? 'unknown'}`);
-    return { state: { ...state, supervisorRestartUsed: true }, decision, verify: verified, supervisorRestart };
-  }
   if (decision.action === 'rollback') {
-    const rollback = await rollbackPrevious(config, 'watchdog sustained multi-signal failure after bounded restart paths');
+    const rollback = await rollbackPrevious(config, 'watchdog sustained multi-signal failure with a verified previous whole-Runtime release');
     return { state: { ...state, rollbackUsed: true }, decision, verify: verified, rollback };
   }
   return { state, decision, verify: verified };

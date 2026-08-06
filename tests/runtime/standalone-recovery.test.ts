@@ -635,7 +635,7 @@ describe('standalone disaster recovery core', () => {
     const base = {
       ok: false,
       at: new Date().toISOString(),
-      supervisor: { ok: true, observedState: 'healthy', activeSlot: 'green', previousSlot: 'blue' },
+      supervisor: { ok: true, observedState: 'healthy' },
       releases: { coherent: true },
       probes: {
         supervisor_socket: { ok: true, detail: 'status received' },

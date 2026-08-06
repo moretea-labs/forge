@@ -12,9 +12,7 @@ import {
   loadWatchdogState,
   saveWatchdogState,
   reconnectMain,
-  restartGateway,
   repairPublicTunnel,
-  restartSupervisor,
   rollbackPrevious,
   secureEqual,
   supervisorStatus,
@@ -50,8 +48,6 @@ export const RECOVERY_CLI_COMMANDS = [
   'list-releases',
   'attest-known-good',
   'rollback-previous',
-  'restart-gateway',
-  'restart-supervisor',
   'restart-public-tunnel',
   'diagnose',
   'reconnect-main',
@@ -95,8 +91,6 @@ async function cli(): Promise<void> {
     case 'list-releases': output(await listReleases(config)); return;
     case 'attest-known-good': output(await attestKnownGood(config)); return;
     case 'rollback-previous': output(await rollbackPrevious(config)); return;
-    case 'restart-gateway': output(await restartGateway(config)); return;
-    case 'restart-supervisor': output(await restartSupervisor(config)); return;
     case 'restart-public-tunnel': output(await repairPublicTunnel(config)); return;
     case 'diagnose': output(await diagnose(config)); return;
     case 'reconnect-main': output(await reconnectMain(config)); return;
@@ -174,8 +168,6 @@ export const RECOVERY_TOOLS = [
   { name: 'verify_external_runtime', description: 'Verify the external primary MCP endpoint.', inputSchema: { type: 'object', additionalProperties: false } },
   { name: 'attest_known_good', description: 'Record the active release as known-good only after full independent verification succeeds.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'rollback_previous', description: 'Idempotently restore only a Supervisor-registered known-good previous release.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
-  { name: 'restart_gateway', description: 'Request a bounded Gateway-only restart when the Gateway budget is not locked out.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
-  { name: 'restart_stable_supervisor', description: 'Restart the registered Stable Supervisor service through launchd; does not downgrade to Gateway-only recovery.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'restart_public_tunnel', description: 'Restart the explicitly configured public tunnel only after local runtime verification succeeds and the external endpoint is unavailable.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'reconnect_primary_connector', description: 'Check canonical Runtime Gateway and primary MCP reconnection readiness without publishing a release.', inputSchema: { type: 'object', additionalProperties: false } },
 ] as const;
@@ -401,14 +393,6 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
     case 'rollback_previous': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       return rollbackPrevious(config, `recovery-gateway:${args.request_id}`);
-    }
-    case 'restart_gateway': {
-      if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
-      return restartGateway(config, String(args.request_id));
-    }
-    case 'restart_stable_supervisor': {
-      if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
-      return restartSupervisor(config, String(args.request_id));
     }
     case 'restart_public_tunnel': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');

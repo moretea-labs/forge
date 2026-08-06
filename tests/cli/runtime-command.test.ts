@@ -302,6 +302,14 @@ describe('runtime command surface', () => {
     expect(recoveryEntry).toContain("name: 'list_releases'");
     expect(recoveryEntry).not.toContain("'list-slots'");
     expect(recoveryEntry).not.toContain("name: 'list_slots'");
+    expect(recoveryEntry).not.toContain("'restart-gateway'");
+    expect(recoveryEntry).not.toContain("'restart-supervisor'");
+    expect(recoveryEntry).not.toContain("name: 'restart_gateway'");
+    expect(recoveryEntry).not.toContain("name: 'restart_stable_supervisor'");
+    expect(standaloneRecovery).not.toContain("action: 'restart_gateway'");
+    expect(standaloneRecovery).not.toContain("action: 'restart_supervisor'");
+    expect(standaloneRecovery).not.toContain('gatewayRestartUsed');
+    expect(standaloneRecovery).not.toContain('supervisorRestartUsed');
     expect(supervisorReleaseCoherence).toContain('ok: releaseCoherent');
     expect(supervisorReleaseCoherence).not.toContain('ActiveSlotAuthority');
     expect(supervisorReleaseCoherence).not.toContain('SlotIdentity');
