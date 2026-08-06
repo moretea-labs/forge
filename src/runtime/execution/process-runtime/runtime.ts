@@ -43,7 +43,7 @@ import {
 import { assertThisRuntimeMayWrite, assertThisRuntimeMayWriteOrThrow, getRuntimeWriterClaim } from '../../../cli/controller/stable-state/runtime-writer-context';
 import { readWriterAuthority } from '../../../cli/controller/stable-state/writer-authority';
 import { resolveStableControllerHome } from '../../../cli/controller/stable-state/stable-home';
-import { defaultProcessIdentityProbe, executableFingerprint } from '../../supervisor/identity';
+import { defaultProcessIdentityProbe, executableFingerprint } from '../../shared/process-identity';
 import {
   claimProcessRequest,
   createProcessRecord,

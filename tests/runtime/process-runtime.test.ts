@@ -48,7 +48,7 @@ import {
   clearRuntimeWriterClaimForTests,
 } from '../../src/cli/controller/stable-state/runtime-writer-context';
 import { publishWriterAuthority } from '../../src/cli/controller/stable-state/writer-authority';
-import { defaultProcessIdentityProbe, executableFingerprint } from '../../src/runtime/supervisor/identity';
+import { defaultProcessIdentityProbe, executableFingerprint } from '../../src/runtime/shared/process-identity';
 import { stageSupervisorRelease } from '../../src/runtime/supervisor/installer';
 import { ensureRepositoryRuntimeStorage } from '../../src/cli/repositories/runtime-storage';
 import { callProcessTool, processToolDefinitions } from '../../src/runtime/gateway/mcp/process-tools';

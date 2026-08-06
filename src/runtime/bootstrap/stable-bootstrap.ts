@@ -22,8 +22,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { isProcessAlive } from '../shared/process-tree';
-import { defaultProcessIdentityProbe, processIdentityMatches, type ProcessIdentityProbe } from '../supervisor/identity';
-import type { ProcessIdentity } from '../supervisor/types';
+import { defaultProcessIdentityProbe, processIdentityMatches, type ExpectedProcessIdentity, type ProcessIdentityProbe } from '../shared/process-identity';
 import {
   readWriterAuthority,
   type WriterAuthority,
@@ -242,7 +241,7 @@ export function atomicActivateRuntime(
  */
 export function ensureControlSocketReady(
   controllerHome: string,
-  self: ProcessIdentity,
+  self: ExpectedProcessIdentity,
   probe: ProcessIdentityProbe = defaultProcessIdentityProbe,
 ): { path: string; removedStale: boolean; reason?: string } {
   const path = controlSocketPath(controllerHome);
@@ -270,9 +269,6 @@ export function ensureControlSocketReady(
         pid: owner.pid,
         processStartTime: owner.processStartTime,
         executableFingerprint: owner.executableFingerprint,
-        instanceId: owner.instanceId,
-        controllerHome,
-        ownerEpoch: 0,
       },
       owner.pid,
       probe,

@@ -99,6 +99,8 @@ describe('runtime command surface', () => {
     const localBridgeServer = readFileSync(join(ROOT, 'src/cli/local-bridge/server.ts'), 'utf8');
     const repoActor = readFileSync(join(ROOT, 'src/runtime/control-plane/repo-actor/actor.ts'), 'utf8');
     const executionWorker = readFileSync(join(ROOT, 'src/runtime/execution/workers/executor.ts'), 'utf8');
+    const processRuntime = readFileSync(join(ROOT, 'src/runtime/execution/process-runtime/runtime.ts'), 'utf8');
+    const stableBootstrap = readFileSync(join(ROOT, 'src/runtime/bootstrap/stable-bootstrap.ts'), 'utf8');
     const localBridgeSurface = readFileSync(join(ROOT, 'src/runtime/shared/local-bridge-surface.ts'), 'utf8');
     const localBridgeFacade = readFileSync(join(ROOT, 'src/cli/local-bridge/facade-api.ts'), 'utf8');
     const standaloneRecovery = readFileSync(join(ROOT, 'src/runtime/standalone-recovery/core.ts'), 'utf8');
@@ -272,6 +274,11 @@ describe('runtime command surface', () => {
     expect(executionWorker).not.toContain('jobs/restart-resume');
     expect(executionWorker).toContain('const toolArguments = { ...(job.payload.arguments ?? {}) }');
     expect(executionWorker).not.toContain('controller_restart_verify');
+    expect(processRuntime).toContain("from '../../shared/process-identity'");
+    expect(processRuntime).not.toContain("from '../../supervisor/identity'");
+    expect(stableBootstrap).toContain("from '../shared/process-identity'");
+    expect(stableBootstrap).not.toContain("from '../supervisor/identity'");
+    expect(stableBootstrap).not.toContain("from '../supervisor/types'");
     expect(localBridgeSurface).not.toContain("from '../../cli/controller/runtime-slots'");
     expect(localBridgeSurface).not.toContain('readActiveSlotAuthority');
     expect(localBridgeSurface).not.toContain('runtimeSlotForHome');
