@@ -3,12 +3,12 @@ import { existsSync } from 'fs';
 import { isAbsolute, resolve } from 'path';
 import { Command } from 'commander';
 import { readMcpServiceOAuthPassphrase } from '../mcp/auth';
-import { launchAgentPath } from '../controller/launch-agents';
 import { resolveControllerHome } from '../repositories/controller-home';
 import { FORGE_VERSION } from '../../version';
 import {
   RECOVERY_GATEWAY_LABEL,
   RECOVERY_WATCHDOG_LABEL,
+  inspectRecoveryTunnelLaunchdContract,
   installStandaloneRecovery,
   recoveryLaunchdPid,
   recoveryLaunchdServicePid,
@@ -71,7 +71,7 @@ export interface RecoveryConnectorDescriptor {
   services: {
     gateway: { label: string; plistInstalled: boolean; running: boolean; pid?: number };
     watchdog: { label: string; plistInstalled: boolean; running: boolean; pid?: number };
-    tunnel: { configured: boolean; label?: string; plistInstalled: boolean; running: boolean; pid?: number };
+    tunnel: { configured: boolean; label?: string; plistInstalled: boolean; restartSafe: boolean; running: boolean; pid?: number };
   };
   tools: string[];
   warnings: string[];
@@ -95,11 +95,12 @@ export function recoveryConnectorDescriptor(
   const launchdPid = dependencies.launchdPid ?? recoveryLaunchdPid;
   const processAlive = dependencies.processAlive ?? isProcessAlive;
   const tunnelService = config.recoveryTunnelService?.platform === 'launchd' ? config.recoveryTunnelService : undefined;
-  const tunnelPlistPath = tunnelService ? (tunnelService.plistPath ?? launchAgentPath(tunnelService.label)) : undefined;
+  const tunnelContract = tunnelService ? inspectRecoveryTunnelLaunchdContract(tunnelService) : undefined;
   const tunnelLaunchdPid = tunnelService
     ? (dependencies.tunnelLaunchdPid ?? recoveryLaunchdServicePid)(tunnelService.label)
     : undefined;
-  const tunnelPlistInstalled = Boolean(tunnelPlistPath && pathExists(tunnelPlistPath));
+  const tunnelPlistInstalled = Boolean(tunnelContract?.plistPath && pathExists(tunnelContract.plistPath));
+  const tunnelRestartSafe = Boolean(tunnelContract?.restartSafe);
   const tunnelRunning = Boolean(tunnelLaunchdPid && processAlive(tunnelLaunchdPid));
   const gatewayPlistInstalled = pathExists(authority.gatewayLaunchAgent);
   const watchdogPlistInstalled = pathExists(authority.watchdogLaunchAgent);
@@ -133,6 +134,7 @@ export function recoveryConnectorDescriptor(
   else if (!publicEndpoint) warnings.push('ChatGPT Recovery Connector requires an HTTPS public endpoint.');
   else if (!tunnelService) warnings.push('A dedicated Forge Recovery tunnel service is not configured.');
   else if (!tunnelPlistInstalled) warnings.push('The dedicated Forge Recovery tunnel plist is not installed.');
+  else if (!tunnelRestartSafe) warnings.push('The dedicated Forge Recovery tunnel plist must use RunAtLoad=true and unconditional KeepAlive=true.');
   else if (!tunnelRunning) warnings.push('The dedicated Forge Recovery tunnel service is not running.');
   if (!passphraseConfigured) warnings.push('MCP OAuth passphrase is not configured. Run forge mcp setup chatgpt first.');
 
@@ -141,7 +143,7 @@ export function recoveryConnectorDescriptor(
     transport: 'streamable_http',
     url,
     public: publicEndpoint,
-    readyForChatGPT: installed && gatewayRunning && watchdogRunning && tunnelRunning && publicEndpoint && passphraseConfigured,
+    readyForChatGPT: installed && gatewayRunning && watchdogRunning && tunnelRestartSafe && tunnelRunning && publicEndpoint && passphraseConfigured,
     installed,
     currentRelease: authority.current?.releaseRevision,
     previousRelease: authority.previous?.releaseRevision,
@@ -168,6 +170,7 @@ export function recoveryConnectorDescriptor(
         configured: Boolean(tunnelService),
         ...(tunnelService ? { label: tunnelService.label } : {}),
         plistInstalled: tunnelPlistInstalled,
+        restartSafe: tunnelRestartSafe,
         running: tunnelRunning,
         ...(tunnelLaunchdPid ? { pid: tunnelLaunchdPid } : {}),
       },

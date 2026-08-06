@@ -35,7 +35,7 @@ import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { recoveryConnectorDescriptor } from '../../src/cli/commands/recovery';
 import { ensureMcpControllerHomeOAuthPassphrase } from '../../src/cli/mcp/auth';
-import { retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
+import { inspectRecoveryTunnelLaunchdContract, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -467,6 +467,7 @@ describe('standalone recovery on canonical Runtime', () => {
           configured: true,
           label: 'com.moretea.forge-recovery-tunnel',
           plistInstalled: false,
+          restartSafe: false,
           running: false,
         },
       },
@@ -496,6 +497,25 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(descriptor.public).toBe(false);
     expect(descriptor.readyForChatGPT).toBe(false);
     expect(descriptor.warnings).toContain('Recovery is loopback-only. Configure --recovery-public-url and a dedicated tunnel service before adding it to ChatGPT.');
+  });
+
+  test('requires RunAtLoad and unconditional KeepAlive for the Recovery tunnel launch agent', () => {
+    const home = controllerHome();
+    const plistPath = join(home, 'Library', 'LaunchAgents', 'com.moretea.forge-recovery-tunnel.plist');
+    mkdirSync(dirname(plistPath), { recursive: true });
+    writeFileSync(plistPath, '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict></dict></plist>');
+    expect(inspectRecoveryTunnelLaunchdContract({
+      platform: 'launchd',
+      label: 'com.moretea.forge-recovery-tunnel',
+      plistPath,
+    })).toMatchObject({ plistInstalled: true, runAtLoad: true, keepAliveAlways: false, restartSafe: false });
+
+    writeFileSync(plistPath, '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>');
+    expect(inspectRecoveryTunnelLaunchdContract({
+      platform: 'launchd',
+      label: 'com.moretea.forge-recovery-tunnel',
+      plistPath,
+    })).toMatchObject({ plistInstalled: true, runAtLoad: true, keepAliveAlways: true, restartSafe: true });
   });
 
   test('retires stale Recovery launch agents before the Forge services are installed', () => {

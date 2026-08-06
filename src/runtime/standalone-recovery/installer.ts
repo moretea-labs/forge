@@ -637,6 +637,35 @@ export async function activateRecoveryRelease(input: {
   }
 }
 
+export interface RecoveryTunnelLaunchdContract {
+  label: string;
+  plistPath: string;
+  plistInstalled: boolean;
+  runAtLoad: boolean;
+  keepAliveAlways: boolean;
+  restartSafe: boolean;
+}
+
+export function inspectRecoveryTunnelLaunchdContract(
+  service: PublicTunnelServiceConfig,
+): RecoveryTunnelLaunchdContract {
+  const plistPath = service.plistPath ?? launchAgentPath(service.label);
+  let source = '';
+  if (existsSync(plistPath)) {
+    try { source = readFileSync(plistPath, 'utf8'); } catch { source = ''; }
+  }
+  const runAtLoad = /<key>\s*RunAtLoad\s*<\/key>\s*<true\s*\/>/s.test(source);
+  const keepAliveAlways = /<key>\s*KeepAlive\s*<\/key>\s*<true\s*\/>/s.test(source);
+  return {
+    label: service.label,
+    plistPath,
+    plistInstalled: source.length > 0,
+    runAtLoad,
+    keepAliveAlways,
+    restartSafe: runAtLoad && keepAliveAlways,
+  };
+}
+
 export async function installStandaloneRecovery(input: {
   controllerHome: string;
   repoRoot: string;
@@ -650,6 +679,15 @@ export async function installStandaloneRecovery(input: {
 }, dependencies: RecoveryInstallerDependencies = {}): Promise<RecoveryInstallResult> {
   const controllerHome = resolve(input.controllerHome);
   const sourceRoot = resolve(input.sourceRoot ?? input.repoRoot);
+  if (input.recoveryTunnelService?.platform === 'launchd') {
+    const tunnelContract = inspectRecoveryTunnelLaunchdContract(input.recoveryTunnelService);
+    if (!tunnelContract.plistInstalled) {
+      throw new Error(`RECOVERY_TUNNEL_LAUNCHD_PLIST_MISSING: ${tunnelContract.plistPath}`);
+    }
+    if (!tunnelContract.restartSafe) {
+      throw new Error('RECOVERY_TUNNEL_LAUNCHD_RESTART_CONTRACT_REQUIRED: RunAtLoad=true and KeepAlive=true');
+    }
+  }
   const config = initializeStandaloneRecovery(controllerHome, input.port ?? 8787, {
     ...(input.publicMcpUrl ? { publicMcpUrl: input.publicMcpUrl } : {}),
     ...(input.recoveryPublicUrl ? { recoveryPublicUrl: input.recoveryPublicUrl } : {}),
