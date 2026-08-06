@@ -76,14 +76,7 @@ import { ensureControllerHome, repositoryControllerRoot } from '../../src/cli/re
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { markRepositoryProjectionDirty, readRepositoryProjectionDirty } from '../../src/runtime/projections/invalidation';
 import { transitionExecutionJob, getExecutionJob } from '../../src/runtime/execution/jobs/store';
-interface ProcessIdentity {
-  pid: number;
-  instanceId: string;
-  processStartTime: string;
-  executableFingerprint: string;
-  controllerHome: string;
-  ownerEpoch: number;
-}
+import type { ExpectedProcessIdentity } from '../../src/runtime/shared/process-identity';
 
 const roots: string[] = [];
 
@@ -123,14 +116,12 @@ function repoFixture() {
   return { ...fx, repoRoot, repository };
 }
 
-function fakeIdentity(pid = process.pid): ProcessIdentity {
+function fakeIdentity(pid = process.pid): ExpectedProcessIdentity & { instanceId: string } {
   return {
     pid,
     processStartTime: '1000',
     executableFingerprint: 'fp-test',
     instanceId: `inst-${pid}`,
-    controllerHome: '/tmp',
-    ownerEpoch: 1,
   };
 }
 

@@ -4,7 +4,7 @@
 >
 > **Scope:** Repo Harness local Runtime process ownership, readiness, release/rollback, Worker fencing, and deletion of legacy lifecycle paths.
 >
-> **Current implementation status:** transition. `src/runtime/root/` provides the first Canonical Runtime vertical slice, but the repository still contains a parallel Supervisor/Daemon/Ingress/slot lifecycle. That legacy stack is not the target and must not be expanded.
+> **Current implementation status:** transition. The source architecture now uses the Canonical Runtime and the Supervisor/Daemon/Ingress lifecycle island is deleted. Transition work remains only for runtime-slot/bootstrap compatibility authority and explicit Runtime/release-bound Worker fencing.
 
 ## 1. Non-negotiable end state
 

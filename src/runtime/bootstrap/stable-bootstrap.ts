@@ -241,7 +241,7 @@ export function atomicActivateRuntime(
  */
 export function ensureControlSocketReady(
   controllerHome: string,
-  self: ExpectedProcessIdentity,
+  self: ExpectedProcessIdentity & { instanceId: string },
   probe: ProcessIdentityProbe = defaultProcessIdentityProbe,
 ): { path: string; removedStale: boolean; reason?: string } {
   const path = controlSocketPath(controllerHome);
