@@ -188,7 +188,6 @@ export interface SchedulerConfig {
 
 export interface SchedulerRuntimeBinding {
   controllerPid?: number;
-  controllerStartedAt?: string;
   runtimeSourceRoot?: string;
   workerEntrypoint?: string;
   /** Canonical Runtime treats a tick failure as a whole-Runtime failure. */
@@ -201,7 +200,6 @@ export class GlobalScheduler {
   private readonly children = new Map<string, ChildProcess>();
   private readonly config: SchedulerConfig;
   private readonly controllerPid: number;
-  private readonly controllerStartedAt?: string;
   private readonly runtimeSourceRoot?: string;
   private readonly workerEntrypoint?: string;
   private readonly fatalOnTickError: boolean;
@@ -234,7 +232,6 @@ export class GlobalScheduler {
   ) {
     this.controllerHome = controllerHome;
     this.controllerPid = runtime.controllerPid ?? process.pid;
-    this.controllerStartedAt = runtime.controllerStartedAt;
     this.actors = new RepoActorRegistry(controllerHome);
     const pollIntervalMs = Math.max(50, config.pollIntervalMs ?? 250);
     const idleBackoffMaxMs = Math.max(250, config.idleBackoffMaxMs ?? Number(process.env.REPO_HARNESS_IDLE_BACKOFF_MAX_MS ?? 2_000));
@@ -419,13 +416,9 @@ export class GlobalScheduler {
   }
 
   private spawnWorker(repoId: string, jobId: string): boolean {
-    // Passive / fenced runtimes must not consume the queue or dispatch workers.
-    try {
-      const fence = assertRuntimeMayWrite('consume_queue', this.controllerHome);
-      if (!fence.allowed) return false;
-    } catch {
-      /* unbound legacy */
-    }
+    // A fenced Runtime must not consume the queue or dispatch Workers.
+    const fence = assertRuntimeMayWrite('consume_queue', this.controllerHome);
+    if (!fence.allowed) return false;
     const tracked = this.children.get(jobId);
     if (tracked?.pid && this.pidAlive(tracked.pid)) return false;
     const current = getExecutionJob(this.controllerHome, repoId, jobId);
@@ -440,7 +433,6 @@ export class GlobalScheduler {
           cwd: this.runtimeSourceRoot ?? process.cwd(),
           environment: this.workerEnvironment(),
           ownerPid: this.controllerPid,
-          ...(this.controllerStartedAt ? { ownerStartedAt: this.controllerStartedAt } : {}),
           attempt: current.attempt,
           maxAttempts: current.maxAttempts,
           spawnedAt: new Date().toISOString(),
@@ -463,7 +455,6 @@ export class GlobalScheduler {
       '--job-id', jobId,
       '--controller-pid', String(this.controllerPid),
     ];
-    if (this.controllerStartedAt) workerArgs.push('--controller-started-at', this.controllerStartedAt);
     const args = bun
       ? [command.entry, ...workerArgs]
       : ['--loader', command.loader, command.entry, ...workerArgs];
@@ -483,7 +474,6 @@ export class GlobalScheduler {
       cwd: command.cwd,
       environment: Object.fromEntries(WORKER_ENVIRONMENT_KEYS.map((key) => [key, environment[key]])),
       ownerPid: this.controllerPid,
-      ...(this.controllerStartedAt ? { ownerStartedAt: this.controllerStartedAt } : {}),
       ...(writeClaim ? {
         runtimeInstanceId: writeClaim.runtimeInstanceId,
         releaseAuthorityRevision: writeClaim.releaseAuthorityRevision,
@@ -816,13 +806,13 @@ export class GlobalScheduler {
           repository.repoId,
           repository.activeCheckoutId,
         );
+        const runtimeInstanceId = getRuntimeWriteClaim()?.runtimeInstanceId;
         refreshRepositoryProjectionForRepository(this.controllerHome, repository, {
           sourceRevision: sample?.head ?? undefined,
           reason: 'scheduler-source-scan',
           owner: {
             pid: this.controllerPid,
-            ...(this.controllerStartedAt ? { controllerStartedAt: this.controllerStartedAt } : {}),
-            ...(this.ownerEpoch ? { ownerEpoch: this.ownerEpoch } : {}),
+            ...(runtimeInstanceId ? { runtimeInstanceId } : {}),
           },
         });
       } catch (error) {

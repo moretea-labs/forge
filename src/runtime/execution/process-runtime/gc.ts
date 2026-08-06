@@ -11,7 +11,7 @@ import { join } from 'path';
 import { ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import { getProcessRecord, listActiveProcessIds } from './store';
 import type { ProcessRuntimeStatus } from './types';
-import { assertThisRuntimeMayWrite } from '../../../cli/controller/stable-state/runtime-writer-context';
+import { assertRuntimeMayWrite } from '../../root/write-fence';
 import { isProcessAlive } from '../../shared/process-tree';
 
 const TERMINAL: ReadonlySet<ProcessRuntimeStatus> = new Set([
@@ -68,19 +68,15 @@ function safeUnlink(path: string): boolean {
  */
 export function gcTerminalProcesses(options: ProcessGcOptions): ProcessGcResult {
   try {
-    try {
-      const fence = assertThisRuntimeMayWrite('cleanup', options.controllerHome);
-      if (!fence.allowed) {
-        return {
-          ok: false,
-          removedRecords: 0,
-          removedLogs: 0,
-          skippedActive: 0,
-          error: `writer_fenced:${fence.reason ?? 'denied'}`,
-        };
-      }
-    } catch {
-      /* unbound legacy — allow GC in single-runtime tests */
+    const fence = assertRuntimeMayWrite('cleanup', options.controllerHome);
+    if (!fence.allowed) {
+      return {
+        ok: false,
+        removedRecords: 0,
+        removedLogs: 0,
+        skippedActive: 0,
+        error: `writer_fenced:${fence.reason ?? 'denied'}`,
+      };
     }
 
     const maxAgeMs = options.maxAgeMs ?? 7 * 24 * 60 * 60_000;

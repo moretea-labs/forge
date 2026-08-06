@@ -428,7 +428,7 @@ Every due trigger uses a deterministic window or event identity. The Decision is
 
 Budgets, cooldown, maximum active Occurrences, consecutive-failure circuit breaking and exponential backoff are persisted. Dirty Workspaces, release barriers, repository disablement, human-attention state and recent external/infrastructure failures suppress unattended writes. Candidate Findings deduplicate observations and require explicit human promotion before Issue creation.
 
-The Controller Daemon ticks timer/condition/dependency triggers and resumes from file-backed state after restart. Repository events and manual triggers enter through the same idempotent path. Worker and Reconciler settlement keep Job, Occurrence and Schedule failure state consistent.
+The in-process Scheduler owned by the Canonical Runtime ticks timer/condition/dependency triggers and resumes from durable state after a whole-Runtime restart. Repository events and manual triggers enter through the same idempotent path. Worker and Reconciler settlement keep Job, Occurrence and Schedule failure state consistent.
 
 ## 24. Safety Boundary
 

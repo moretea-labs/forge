@@ -90,6 +90,10 @@ requireMissing('src/runtime/control-plane/daemon-entry.ts');
 requireMissing('scripts/smoke-runtime-control-plane.ts');
 requireMissing('src/cli/controller/lifecycle.ts');
 requireMissing('src/cli/commands/supervisor.ts');
+requireMissing('src/cli/controller/restart-coordinator-entry.ts');
+requireMissing('scripts/controller-runtime.sh');
+requireMissing('scripts/activate-source-baseline.command');
+requireMissing('scripts/restart-repo-harness.sh');
 requireMissing('src/cli/controller/stable-state');
 requireMissing('src/cli/controller/runtime-slots.ts');
 requireMissing('src/runtime/bootstrap/runtime-authority.ts');
@@ -117,6 +121,43 @@ for (const path of sourceFiles('src')) {
     }
   }
 }
+requireText('src/runtime/execution/process-runtime/gc.ts', "from '../../root/write-fence'");
+forbid(
+  'src/runtime/execution/process-runtime/gc.ts',
+  /runtime-writer-context|assertThisRuntimeMayWrite/,
+  'use only the Canonical Runtime write fence for cleanup',
+);
+requireText('src/runtime/execution/workers/ownership.ts', 'from "../../root/write-fence"');
+requireText('src/runtime/execution/workers/ownership.ts', "assertRuntimeMayWrite('renew_lease'");
+forbid(
+  'src/runtime/execution/workers/ownership.ts',
+  /daemon-client|readControllerDaemonStatus|CONTROLLER_EPOCH_STALE|controllerStartedAt/,
+  'derive Worker validity from Canonical Runtime ownership/release fencing, never Daemon projection state',
+);
+forbid(
+  'src/runtime/execution/workers/worker-entry.ts',
+  /--controller-started-at|controllerStartedAt/,
+  'inherit only the immutable Canonical Runtime/release claim and owner PID',
+);
+forbid(
+  'src/runtime/control-plane/global-scheduler/scheduler.ts',
+  /--controller-started-at|controllerStartedAt|ownerStartedAt|ownerEpoch/,
+  'spawn Workers and refresh projections without a legacy lifecycle epoch authority',
+);
+for (const projectionPath of [
+  'src/runtime/projections/invalidation.ts',
+  'src/runtime/projections/materialized-view.ts',
+  'src/runtime/projections/controller-context.ts',
+]) {
+  forbid(
+    projectionPath,
+    /controllerStartedAt|ownerEpoch/,
+    'use process identity and bounded staleness only, not a legacy lifecycle epoch authority',
+  );
+}
+requireText('src/runtime/projections/invalidation.ts', 'runtimeInstanceId?: string');
+requireText('src/runtime/projections/materialized-view.ts', 'currentOwner.runtimeInstanceId !== owner.runtimeInstanceId');
+requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'getRuntimeWriteClaim()?.runtimeInstanceId');
 forbid(
   'src/runtime/execution/jobs/receipt-store.ts',
   /ownerEpoch|releaseFencingToken/,

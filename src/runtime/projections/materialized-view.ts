@@ -25,7 +25,6 @@ import { readRepositoryGitStatusSample } from './git-status-sampler';
 import { listCampaigns } from '../workflow/campaigns/store';
 import { listAssistantPluginManifests } from '../plugins/store';
 import type { ProjectionObservation, ProjectionSourceReconciliation } from '../health';
-import { RUNTIME_HEALTH_THRESHOLDS } from '../health';
 import { isProcessAlive } from '../shared/process-tree';
 import type { TaskLedgerProjection } from '../../cli/controller/task-ledger';
 
@@ -369,8 +368,7 @@ function refreshOwner(input: RepositoryProjectionRefreshOptions, acquiredAt: str
   return {
     pid: input.owner?.pid ?? process.pid,
     acquiredAt,
-    ...(input.owner?.controllerStartedAt ? { controllerStartedAt: input.owner.controllerStartedAt } : {}),
-    ...(input.owner?.ownerEpoch ? { ownerEpoch: input.owner.ownerEpoch } : {}),
+    ...(input.owner?.runtimeInstanceId ? { runtimeInstanceId: input.owner.runtimeInstanceId } : {}),
   };
 }
 
@@ -382,13 +380,10 @@ function ownerStillOwnsRefresh(marker: ProjectionDirtyMarker, nowMs: number, cur
   const owner = marker.refreshOwner;
   if (!owner?.pid || !isProcessAlive(owner.pid)) return false;
   if (
-    currentOwner?.ownerEpoch
-    && owner.ownerEpoch
-    && currentOwner.ownerEpoch !== owner.ownerEpoch
-    && ageMs >= Math.min(PROJECTION_REFRESH_STALE_OWNER_MS, RUNTIME_HEALTH_THRESHOLDS.projectionRefreshGraceMs)
-  ) {
-    return false;
-  }
+    currentOwner?.runtimeInstanceId
+    && owner.runtimeInstanceId
+    && currentOwner.runtimeInstanceId !== owner.runtimeInstanceId
+  ) return false;
   return true;
 }
 

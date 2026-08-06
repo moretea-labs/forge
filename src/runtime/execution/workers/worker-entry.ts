@@ -38,7 +38,6 @@ try {
 const repoIdOption = option('--repo-id');
 const jobIdOption = option('--job-id');
 const controllerPid = Number(option('--controller-pid') ?? 0) || undefined;
-const controllerStartedAt = option('--controller-started-at');
 if (!repoIdOption || !jobIdOption) {
   throw new Error('worker-entry requires --repo-id and --job-id');
 }
@@ -140,7 +139,6 @@ async function main(): Promise<void> {
     workerPid: process.pid,
     attempt: job.attempt,
     controllerPid,
-    controllerStartedAt,
     job,
   });
   if (startupInvalidation) exitForOwnershipLoss(startupInvalidation.message);
@@ -156,7 +154,6 @@ async function main(): Promise<void> {
         workerPid: process.pid,
         attempt: claimedAttempt,
         controllerPid,
-        controllerStartedAt,
       });
       if (invalidation) exitForOwnershipLoss(invalidation.message);
       heartbeatExecutionJob(controllerHome, repoId, jobId, process.pid, claimedAttempt);
@@ -174,7 +171,6 @@ async function main(): Promise<void> {
     workerPid: process.pid,
     attempt: claimedAttempt,
     controllerPid,
-    controllerStartedAt,
     job: current,
   });
   if (completionInvalidation) exitForOwnershipLoss(completionInvalidation.message);

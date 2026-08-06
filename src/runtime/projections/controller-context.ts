@@ -32,7 +32,6 @@ export interface ControllerContextProjectionRefreshError {
 export interface ControllerContextProjectionRefreshOwner {
   pid: number;
   acquiredAt: string;
-  ownerEpoch?: string;
 }
 
 export interface ControllerContextProjection {
@@ -81,7 +80,6 @@ export interface ControllerContextProjectionRefreshRequest {
   variant: ControllerContextProjectionVariant;
   sourceIdentity: ControllerContextProjectionSourceIdentity;
   projectionGeneration?: string;
-  ownerEpoch?: string;
   force?: boolean;
   /** Invalidation marker nonce observed at queue time; persisted with the rebuilt record. */
   invalidationNonce?: string;
@@ -547,7 +545,6 @@ export function queueControllerContextProjectionRefresh(
   const owner: ControllerContextProjectionRefreshOwner = {
     pid: process.pid,
     acquiredAt: new Date().toISOString(),
-    ...(request.ownerEpoch ? { ownerEpoch: request.ownerEpoch } : {}),
   };
   writeProjectionState(controllerHome, repoId, request.sourceIdentity, {
     refreshState: 'refreshing',

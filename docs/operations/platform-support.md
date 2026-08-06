@@ -45,7 +45,6 @@ The native PowerShell path is release-tested for:
 The following are not yet claimed as complete native Windows workflows:
 
 - Bash-owned repository migration and hook scripts;
-- `scripts/controller-runtime.sh` lifecycle commands;
 - the full source-release Bash gate;
 - automatic CodeGraph configuration;
 - every external agent CLI and tunnel combination.

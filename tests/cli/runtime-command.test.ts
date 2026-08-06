@@ -81,7 +81,12 @@ describe('runtime command surface', () => {
     const httpTransport = readFileSync(join(ROOT, 'src/cli/mcp/transports/http.ts'), 'utf8');
     const runtimeTools = readFileSync(join(ROOT, 'src/runtime/gateway/mcp/runtime-tools.ts'), 'utf8');
     const toolsetNames = readFileSync(join(ROOT, 'src/cli/mcp/toolset-names.ts'), 'utf8');
-    const restartCoordinatorEntry = readFileSync(join(ROOT, 'src/cli/controller/restart-coordinator-entry.ts'), 'utf8');
+    const processGc = readFileSync(join(ROOT, 'src/runtime/execution/process-runtime/gc.ts'), 'utf8');
+    const workerOwnership = readFileSync(join(ROOT, 'src/runtime/execution/workers/ownership.ts'), 'utf8');
+    const workerEntry = readFileSync(join(ROOT, 'src/runtime/execution/workers/worker-entry.ts'), 'utf8');
+    const projectionInvalidation = readFileSync(join(ROOT, 'src/runtime/projections/invalidation.ts'), 'utf8');
+    const materializedView = readFileSync(join(ROOT, 'src/runtime/projections/materialized-view.ts'), 'utf8');
+    const controllerContextProjection = readFileSync(join(ROOT, 'src/runtime/projections/controller-context.ts'), 'utf8');
     const compositeOperations = readFileSync(join(ROOT, 'src/cli/controller/composite-operations.ts'), 'utf8');
     const controllerPostcondition = readFileSync(join(ROOT, 'src/cli/controller/postcondition.ts'), 'utf8');
     const localBridgeServer = readFileSync(join(ROOT, 'src/cli/local-bridge/server.ts'), 'utf8');
@@ -113,9 +118,13 @@ describe('runtime command surface', () => {
     for (const legacyAuthorityPath of [
       'src/cli/controller/runtime-slots.ts',
       'src/cli/controller/stable-state',
+      'src/cli/controller/restart-coordinator-entry.ts',
       'src/runtime/bootstrap/runtime-authority.ts',
       'src/runtime/bootstrap/activation-transaction.ts',
       'src/runtime/bootstrap/stable-bootstrap.ts',
+      'scripts/controller-runtime.sh',
+      'scripts/activate-source-baseline.command',
+      'scripts/restart-repo-harness.sh',
     ]) expect(existsSync(join(ROOT, legacyAuthorityPath))).toBe(false);
     expect(httpTransport).not.toContain('ensureControllerDaemon');
     expect(httpTransport).toContain('readControllerDaemonStatus');
@@ -265,6 +274,28 @@ describe('runtime command surface', () => {
     expect(writeFence).not.toContain('activeSlot');
     expect(writeFence).not.toContain('writer-authority.json');
     expect(writeFence).not.toContain('runtime-slots');
+    expect(processGc).toContain("from '../../root/write-fence'");
+    expect(processGc).not.toContain('runtime-writer-context');
+    expect(processGc).not.toContain('assertThisRuntimeMayWrite');
+    expect(workerOwnership).toContain('from "../../root/write-fence"');
+    expect(workerOwnership).toContain("assertRuntimeMayWrite('renew_lease'");
+    expect(workerOwnership).not.toContain('readControllerDaemonStatus');
+    expect(workerOwnership).not.toContain('daemon-client');
+    expect(workerOwnership).not.toContain('CONTROLLER_EPOCH_STALE');
+    expect(workerOwnership).not.toContain('controllerStartedAt');
+    expect(workerEntry).not.toContain('--controller-started-at');
+    expect(workerEntry).not.toContain('controllerStartedAt');
+    expect(globalScheduler).not.toContain('--controller-started-at');
+    expect(globalScheduler).not.toContain('controllerStartedAt');
+    expect(globalScheduler).not.toContain('ownerStartedAt');
+    expect(globalScheduler).not.toContain('ownerEpoch');
+    for (const projectionSource of [projectionInvalidation, materializedView, controllerContextProjection]) {
+      expect(projectionSource).not.toContain('controllerStartedAt');
+      expect(projectionSource).not.toContain('ownerEpoch');
+    }
+    expect(projectionInvalidation).toContain('runtimeInstanceId?: string');
+    expect(materializedView).toContain('currentOwner.runtimeInstanceId !== owner.runtimeInstanceId');
+    expect(globalScheduler).toContain('getRuntimeWriteClaim()?.runtimeInstanceId');
     const persistedWorkerEnvironmentStart = globalScheduler.indexOf('const WORKER_ENVIRONMENT_KEYS = [');
     const persistedWorkerEnvironmentEnd = globalScheduler.indexOf('] as const;', persistedWorkerEnvironmentStart);
     const persistedWorkerEnvironment = globalScheduler.slice(persistedWorkerEnvironmentStart, persistedWorkerEnvironmentEnd);
@@ -321,11 +352,10 @@ describe('runtime command surface', () => {
     expect(standaloneRecovery).not.toContain('RestartSupervisorReceipt');
     expect(standaloneRecovery).not.toContain('supervisorActivationPath');
     expect(existsSync(join(ROOT, 'src/cli/controller/restart-coordinator.ts'))).toBe(false);
-    expect(restartCoordinatorEntry).toContain('RUNTIME_LIFECYCLE_ACTION_RETIRED');
-    expect(restartCoordinatorEntry).toContain('process.exitCode = 2');
-    expect(restartCoordinatorEntry).not.toContain("from './restart-coordinator'");
-    expect(restartCoordinatorEntry).not.toContain("from './lifecycle'");
-    expect(restartCoordinatorEntry).not.toContain('spawn');
+    expect(existsSync(join(ROOT, 'src/cli/controller/restart-coordinator-entry.ts'))).toBe(false);
+    expect(existsSync(join(ROOT, 'scripts/controller-runtime.sh'))).toBe(false);
+    expect(existsSync(join(ROOT, 'scripts/activate-source-baseline.command'))).toBe(false);
+    expect(existsSync(join(ROOT, 'scripts/restart-repo-harness.sh'))).toBe(false);
     expect(runtimeTools).not.toContain('activeSlotRevision');
     expect(runtimeTools).not.toContain('generationCoherent');
     expect(runtimeTools).not.toContain('slotCoherent');

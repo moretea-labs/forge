@@ -44,7 +44,6 @@ Windows PowerShell 路径当前发布验证覆盖：
 暂不宣称完整原生支持：
 
 - Bash 编写的仓库迁移和 Hook 脚本；
-- `scripts/controller-runtime.sh` 生命周期；
 - 完整源码发布 Bash 门禁；
 - CodeGraph 自动配置；
 - 所有 Agent CLI 与隧道组合。

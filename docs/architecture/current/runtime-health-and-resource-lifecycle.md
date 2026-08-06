@@ -8,13 +8,13 @@ scheduler.
 
 ## Observation versus evaluation
 
-Runtime callers collect observations from the daemon, scheduler, workers,
-materialized projections, the Local Controller endpoint, and runtime storage.
-`src/runtime/health/evaluator.ts` is the side-effect-free authority that turns
-those observations into component state, current blockers, warnings, readiness,
-and the overall state. Lifecycle status, MCP readiness/recovery, Local Bridge
-status, and the console readiness model consume this evaluation; compatibility
-booleans remain additive projections of it.
+Runtime callers collect diagnostic observations from the Canonical Runtime,
+Scheduler, Workers, materialized projections, Local Controller endpoint, and
+runtime storage. `src/runtime/health/evaluator.ts` remains a side-effect-free
+operational evaluator for blockers and warnings; it is not a lifecycle or
+readiness authority. The Runtime Root publishes the only public Runtime
+readiness decision as `ready: boolean`, with module observations retained only
+as diagnostic evidence.
 
 Projection age is not a health signal by itself. A readable idle projection is
 usable even when old. A dirty/source-changed projection is warning-level during
@@ -72,13 +72,13 @@ artifacts, edit sessions, branches, or unproven temporary resources. Those
 resources remain retained until their existing Git/reference/lease authority can
 prove eligibility.
 
-## Transitional slot compatibility
+## Canonical lifecycle boundary
 
-The legacy Supervisor may still retain candidate/standby slot records while MCP
-session migration is being removed. Those records are compatibility evidence,
-not deployment, resource, cleanup, or public lifecycle authority. Cleanup must
-continue to prove process identity and explicit rollback references; it must not
-infer ownership from an embedded slot resource descriptor.
+Runtime slot, candidate/standby, and Supervisor records are no longer source
+contracts. Cleanup proves eligibility from current Runtime ownership, exact
+release authority, process identity, Job attempt, Lease tokens, and explicit
+whole-release rollback references; it never infers authority from historical
+slot or component metadata.
 
 Focused regression coverage protects idle projections, missed refreshes, endpoint
 capability precedence, attention/history separation, bounded cleanup, and

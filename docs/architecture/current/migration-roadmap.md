@@ -4,7 +4,7 @@
 > Completion baseline: 2026-06-25
 > Lifecycle convergence baseline: 2026-08-02
 
-The execution-plane phases below remain completed. The lifecycle itself is now a separate active convergence track governed by [`runtime-architecture-simplification.md`](runtime-architecture-simplification.md). It is not complete until its G1–G9 gates pass; current runtime health must not be interpreted as evidence that the five-service cutover has happened.
+The execution-plane phases below remain completed. The seven-phase lifecycle source convergence governed by [`runtime-architecture-simplification.md`](runtime-architecture-simplification.md) is also complete. This source result does not imply that a new release has been activated on a running installation; live activation remains a separate explicit operation with exact release evidence.
 
 ## P0 — Single-Owner Runtime Convergence
 
@@ -17,7 +17,7 @@ Active target:
 - SQLite contents and backups remain local Controller Home execution state and are never distributed in source, packages, releases, or manifests;
 - Workers are bounded Runtime-owned children and every state mutation is fenced by Runtime/release/Job/attempt/Lease identity;
 - standalone Recovery remains independently installable for diagnostics, self/tunnel repair, and offline whole-Runtime rollback, but owns no primary component lifecycle;
-- old bootstrap slot/writer compatibility state is removed after consumers migrate to Canonical Runtime fencing.
+- old bootstrap slot/writer compatibility state, restart coordinator, and component lifecycle scripts are removed; Canonical Runtime fencing is the only write authority.
 
 The convergence is one-way and fail-closed. Unsupported legacy authority must report migration/fencing errors rather than selecting a slot, component pointer, or fallback process owner.
 

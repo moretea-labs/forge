@@ -97,7 +97,6 @@ export interface ExecutionWorkerLifecycle {
   cwd: string;
   environment: Record<string, string | undefined>;
   ownerPid: number;
-  ownerStartedAt?: string;
   runtimeInstanceId?: string;
   releaseAuthorityRevision?: number;
   releaseId?: string;

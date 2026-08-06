@@ -37,7 +37,6 @@ export function startInProcessScheduler(
   const startedAfterMs = Date.now();
   const scheduler = new GlobalScheduler(controllerHome, {}, {
     controllerPid: process.pid,
-    controllerStartedAt: new Date().toISOString(),
     fatalOnTickError: true,
   });
   const done = scheduler.run(abort.signal);

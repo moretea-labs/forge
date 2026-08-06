@@ -26,9 +26,9 @@ The migration preserves the existing Issue, Task, Run, Edit Session, Local Job, 
 | Thin Harness V1 Fast Path | Implemented | `src/runtime/execution/thin-harness/` router, fast executor, receipts, typed batch, lightweight lanes; eligible short repository commands skip Local Job / ExecutionJob; docs in `thin-harness-v1.md` |
 | Deterministic MCP transport lifecycle | Implemented | global `McpSessionRegistry`, three-path DELETE support, stream leases, active-POST protection, capacity-aware `/ready`, and reconnect regression coverage |
 | Persist-before-execute durable commands | Implemented | `src/runtime/execution/jobs/store.ts`, global request index and semantic conflict detection |
-| Legacy independently restartable Controller Daemon | Deprecated transition code | Controller startup recovery and scheduling ownership must move into `src/runtime/root/`; the standalone service entry is deleted in phases 2/7 |
-| Canonical Single Runtime vertical slice | Implemented in source; production cutover pending | `src/runtime/root/` starts Controller Services, SQLite, Scheduler, Gateway Adapter, and MCP Transport under one lifecycle owner |
-| Legacy Supervisor/Ingress/slot lifecycle | Deprecated transition code, unreachable from public CLI/package lifecycle commands | Public `runtime`, `controller`, MCP and package-script lifecycle/rollout entrypoints are removed; internal implementation remains deletion inventory for phases 2/4/7 |
+| Independent Controller Daemon lifecycle | Deleted | The remaining daemon-named status adapter is read-only observation over Canonical Runtime state and cannot start, replace, recover, or fence Workers |
+| Canonical Single Runtime | Implemented in source; live activation separately authorized | `src/runtime/root/` starts Controller Services, SQLite, Scheduler, Gateway Adapter, and MCP Transport under one lifecycle owner |
+| Legacy Supervisor/Ingress/slot lifecycle | Deleted | Supervisor, Stable Ingress, slots, bootstrap authority, restart coordinator, component rollout/rollback, and repository lifecycle scripts are absent and guarded against reintroduction |
 | Isolated Worker processes | Implemented | `src/runtime/execution/workers/worker-entry.ts`, Scheduler process spawning |
 | Per-Repository Actor | Implemented | `src/runtime/control-plane/repo-actor/actor.ts`, actor registry and repository mailbox lock |
 | Resource Claims | Implemented | `src/runtime/gateway/mcp/resource-policy.ts`, `resources/claims/conflicts.ts` |

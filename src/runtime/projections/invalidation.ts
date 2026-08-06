@@ -10,8 +10,7 @@ export type ProjectionRefreshStatus = 'pending' | 'running' | 'failed';
 export interface ProjectionRefreshOwner {
   pid: number;
   acquiredAt: string;
-  controllerStartedAt?: string;
-  ownerEpoch?: string;
+  runtimeInstanceId?: string;
 }
 
 export interface ProjectionRefreshFailure {

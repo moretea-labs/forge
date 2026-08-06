@@ -1,4 +1,4 @@
-import { readControllerDaemonStatus } from "../../control-plane/daemon-client";
+import { assertRuntimeMayWrite } from "../../root/write-fence";
 import { getExecutionJob } from "../jobs/store";
 import { assertFencingToken } from "../../resources/leases/store";
 import type { ExecutionJob } from "../jobs/types";
@@ -6,8 +6,8 @@ import type { ExecutionJob } from "../jobs/types";
 export interface ExecutionWorkerInvalidation {
   code:
     | "PARENT_DISCONNECTED"
-    | "CONTROLLER_UNAVAILABLE"
-    | "CONTROLLER_EPOCH_STALE"
+    | "RUNTIME_UNAVAILABLE"
+    | "RUNTIME_AUTHORITY_STALE"
     | "JOB_NOT_RUNNING"
     | "WORKER_REPLACED"
     | "ATTEMPT_REPLACED"
@@ -33,16 +33,15 @@ export function invalidateExecutionWorker(
     workerPid: number;
     attempt?: number;
     controllerPid?: number;
-    controllerStartedAt?: string;
     currentParentPid?: number;
     job?: ExecutionJob;
   },
 ): ExecutionWorkerInvalidation | undefined {
   const currentParentPid = options.currentParentPid ?? process.ppid;
   // Execution Workers are intentionally spawned detached. On macOS/Linux an
-  // unref'd detached child may be re-parented to PID 1 while the owning
-  // Controller is still alive. PID 1 is therefore valid here; ownership is
-  // still fenced by Controller PID/start epoch, Job attempt, and leases below.
+  // unref'd detached child may be re-parented to PID 1 while the owning Runtime
+  // is still alive. PID 1 is therefore valid here; the Canonical Runtime claim,
+  // release identity, Job attempt, and Leases remain authoritative below.
   if (options.controllerPid && currentParentPid !== options.controllerPid && currentParentPid !== 1) {
     return {
       code: "PARENT_DISCONNECTED",
@@ -51,27 +50,16 @@ export function invalidateExecutionWorker(
   }
   if (options.controllerPid && !pidAlive(options.controllerPid)) {
     return {
-      code: "CONTROLLER_UNAVAILABLE",
-      message: `Controller process ${options.controllerPid} is no longer running`,
+      code: "RUNTIME_UNAVAILABLE",
+      message: `Runtime owner process ${options.controllerPid} is no longer running`,
     };
   }
-  if (options.controllerStartedAt) {
-    const daemon = readControllerDaemonStatus(controllerHome);
-    if (!["ready", "starting"].includes(daemon.status)) {
-      return {
-        code: "CONTROLLER_UNAVAILABLE",
-        message: `Controller daemon is ${daemon.status}`,
-      };
-    }
-    if (
-      daemon.startedAt &&
-      daemon.startedAt !== options.controllerStartedAt
-    ) {
-      return {
-        code: "CONTROLLER_EPOCH_STALE",
-        message: `Controller daemon epoch changed from ${options.controllerStartedAt} to ${daemon.startedAt}`,
-      };
-    }
+  const runtimeFence = assertRuntimeMayWrite('renew_lease', controllerHome);
+  if (!runtimeFence.allowed) {
+    return {
+      code: "RUNTIME_AUTHORITY_STALE",
+      message: `Runtime write authority is unavailable: ${runtimeFence.reason ?? 'denied'}`,
+    };
   }
   const job = options.job ?? getExecutionJob(controllerHome, repoId, jobId);
   if (job.status !== "running") {

@@ -58,7 +58,7 @@ Transport sessions use one global registry across all HTTP MCP paths. A client S
 
 Gateway health endpoints and compact status queries must not wait for active long operations.
 
-`/health` proves liveness and reports actual global session counts. `/ready` additionally proves that a new initialize can be accepted safely. A full pool remains ready when it contains a safe eviction candidate; it becomes not-ready when every slot is protected by active POST work. Supervisor recovery is recommended only after protected work exceeds its bounded stall threshold.
+`/health` proves liveness and reports actual global session counts. `/ready` additionally proves that a new initialize can be accepted safely. A full pool remains ready when it contains a safe eviction candidate; it becomes not-ready when every slot is protected by active POST work. A core failure makes whole-Runtime readiness false; any restart replaces the complete Runtime release rather than recovering an individual component.
 
 A 502 may describe Gateway or proxy availability. It must not be used as evidence that a Job failed or never started.
 

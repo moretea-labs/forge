@@ -8,7 +8,7 @@ Do not treat a single `ready` value as proof that autonomous delivery is active.
 
 | Layer | What it proves | Typical evidence |
 | --- | --- | --- |
-| Runtime readiness | Gateway, daemon, scheduler, worker loop, and Local Bridge can respond. | `controller_ready` process and queue fields |
+| Runtime readiness | The complete Canonical Runtime passed release coherence, SQLite, in-process Scheduler, and authenticated MCP end-to-end checks. | `controller_ready.ready` plus diagnostic reason codes |
 | Execution readiness | A suitable executor is authenticated, enabled, and able to start bounded work. | executor preflight and recent run classification |
 | Delivery readiness | The task can be integrated, verified, accepted, and committed without unresolved repository conflicts. | clean selected paths, checks, integration evidence |
 | Automation readiness | At least one enabled **live** schedule or live goal can create execution work. | schedule policy, occurrence status, budget and cooldown |
@@ -59,33 +59,27 @@ Recommended policy:
 - no cross-repository process termination from a repository-scoped repair action;
 - explicit operator authorization before terminating a peer repository process.
 
-## Restart coordination and reconnect contract
+## Whole-Runtime restart and reconnect contract
 
-For a Controller Home with `supervisor/current`, the Stable External Runtime Supervisor is the primary lifecycle owner. Use its typed `supervisor` CLI or the normal `rh_status`/`rh_work` runtime operations; use loopback Rescue MCP only when the primary Gateway is unavailable. Do not start a second KeepAlive or Daemon manually. The legacy coordinator remains the fallback for Homes without an installed stable release and remains readable for compatibility verification.
+`CanonicalRepoHarnessRuntime` is the only core lifecycle owner. Repository tools, MCP handlers, Workers, Local Bridge, diagnostics, and tunnels cannot start, stop, restart, adopt, roll out, or roll back a core component. The repository no longer contains Supervisor, KeepAlive, restart-coordinator, or component lifecycle shell entrypoints.
 
-Use `scripts/controller-runtime.sh restart` or an authorized recovery action. All MCP, Local Bridge, GUI, and Worker-owned restart requests must be accepted before the old process tree is stopped.
+A release change is performed only as an explicitly authorized whole-Runtime operation:
 
-The restart coordinator provides these guarantees:
+1. validate one immutable release manifest and configuration;
+2. quiesce admission and stop the complete Runtime;
+3. start `repo-harness-runtime` from that complete release;
+4. require binary whole-Runtime readiness;
+5. on failure, restore the previous release and its bound local SQLite backup, then start and verify the complete previous Runtime.
 
-- a request from inside the managed Supervisor, Gateway, Local Bridge, Daemon, or Worker ancestry is handed to a detached process group;
-- the accepted request is persisted under `<controllerHome>/restart/requests/<requestId>.json`, with the latest request also written to `<controllerHome>/restart/current.json`;
-- overlapping requests are deduplicated by request ID and by a controller-wide schedule/execution lock;
-- only the process that acquired a lock removes it;
-- phases are durable: `scheduled`, `coordinator_started`, `waiting_for_handoff`, `stopping`, `starting`, `verifying`, then `succeeded` or `failed`;
-- errors are bounded and retained instead of being reported as a successful daemon probe;
-- verification checks local MCP, Controller Daemon, Local Bridge, repository projection, current source/generation, connector readiness, the configured public health endpoint, and OAuth protected-resource discovery.
-
-A full Gateway restart can close the single in-flight MCP HTTP request. It cannot preserve that socket. The supported continuity contract is the stable domain plus durable request, Work, and Job identifiers: retry the same conversation after the endpoint is healthy and continue reading the existing durable state. Do not recreate the ChatGPT Connector when the endpoint, OAuth configuration, and tool schema are unchanged. Recreate or rescan only after an auth/schema change or an explicit `UNKNOWN_TOOL`/connector-staleness result.
-
-KeepAlive tolerates brief local `/health` failures so one transient probe does not tear down active sessions. A continuously unresponsive Gateway is replaced after 45 seconds, rather than being preserved for several minutes, because a live process with a blocked request path presents externally as repeated 502 responses. Large status and error payloads must remain bounded and heavy reads must execute through the durable control plane instead of the Gateway hot path.
+A whole-Runtime restart closes in-flight MCP sockets. Continuity comes from durable request, Work, Job, and evidence identifiers, not from a traffic router or component adoption. Retry the same idempotent request after the endpoint is healthy and continue reading the existing durable state. Recreate or rescan the ChatGPT Connector only after an authentication/schema change or an explicit connector-staleness result.
 
 After a restart, confirm:
 
-1. `controller_ready` reports Gateway, Daemon, Worker loop, Local Bridge, and projection ready.
-2. `controller_capabilities` reports no missing tools and the expected fingerprint.
-3. The public `/health` and `/.well-known/oauth-protected-resource/mcp` endpoints return valid JSON.
-4. `connectorNeedsReconnect` is not true.
-5. Previously accepted Work/Job identifiers remain readable and no mutation was blindly replayed.
+1. `controller_ready.ready` is true and all diagnostic evidence belongs to the same Runtime instance and release.
+2. `controller_capabilities` reports the expected tool fingerprint.
+3. The public `/health` and OAuth protected-resource endpoint return valid responses.
+4. Previously accepted Work/Job identifiers remain readable and no mutation was blindly replayed.
+5. No old Worker can renew Leases or commit results under the new Runtime/release fence.
 
 ## Cleanup
 
