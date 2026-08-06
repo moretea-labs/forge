@@ -106,7 +106,7 @@ function assertOperationReceiptOwnership(
   job: ExecutionJob,
   workerPid: number,
 ): ExecutionJob {
-  assertRuntimeMayWriteOrThrow('write_workflow_terminal', controllerHome);
+  assertRuntimeMayWriteOrThrow('write_operation_receipt', controllerHome);
   const current = getExecutionJob(controllerHome, job.repoId, job.jobId);
   const ownerMatches = current.status === 'running'
     && current.attempt === job.attempt

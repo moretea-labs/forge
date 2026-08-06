@@ -13,6 +13,7 @@ export const RUNTIME_WRITE_ACTIONS = [
   'release_lease',
   'write_process_terminal',
   'write_workflow_terminal',
+  'write_operation_receipt',
   'remote_side_effect',
   'cleanup',
   'update_active_projection',

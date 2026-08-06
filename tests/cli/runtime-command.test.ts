@@ -299,6 +299,7 @@ describe('runtime command surface', () => {
     expect(operationReceiptStore).toContain('releaseAuthorityRevision?: number');
     expect(operationReceiptStore).toContain('artifactIdentity?: string');
     expect(operationReceiptStore).toContain('workerProtocolVersion?: number');
+    expect(operationReceiptStore).toContain("assertRuntimeMayWriteOrThrow('write_operation_receipt'");
     expect(operationReceiptStore).not.toContain('ownerEpoch');
     expect(operationReceiptStore).not.toContain('releaseFencingToken');
     expect(localBridgeSurface).not.toContain("from '../../cli/controller/runtime-slots'");
