@@ -102,8 +102,6 @@ import {
   CONTROLLER_TOOL_SURFACE,
   CONTROLLER_TOOL_SURFACE_VERSION,
 } from '../../../cli/controller/runtime-config';
-import { readActiveSlotAuthority, readSlotIdentity } from '../../../cli/controller/runtime-slots';
-import { resolveStableControllerHome } from '../../../cli/controller/stable-state/stable-home';
 import { redactMcpText } from '../../../cli/mcp/redaction';
 import { resolveLocalBridgeSurface, summarizeRecentJobs } from '../../shared/local-bridge-surface';
 import { assistantPluginScope, controllerPluginRepository, executeAssistantPluginReadDirect, getAssistantPluginManifest, isDirectPluginReadAction, listAssistantPluginManifests, submitAssistantPluginAction } from '../../plugins/store';
@@ -1814,14 +1812,8 @@ export async function controllerReadinessEvidence(
   const localBridgeExpectedSurface = shouldProbeLocalBridge
     ? localControllerDiagnosticMatchesRuntime(localBridgeLiveHealth, {
       repoRoot: repository?.canonicalRoot,
-      generation: localBridgeSurface?.generation,
     })
     : true;
-  const expectedActiveSlot = localBridgeSurface?.activeSlot
-    ?? readActiveSlotAuthority(ctx.controllerHome).activeSlot;
-  const observedSlot = localBridgeLiveHealth?.slot === 'blue' || localBridgeLiveHealth?.slot === 'green'
-    ? localBridgeLiveHealth.slot
-    : undefined;
   const schedulerHeartbeatAgeMs = ageMs(scheduler.lastTickAt);
   const dispatchHeartbeatAgeMs = ageMs(scheduler.lastDispatchAt);
   const localBridgeObservation = {
@@ -1831,10 +1823,6 @@ export async function controllerReadinessEvidence(
     endpoint: localBridgeEndpoint,
     endpointReachable: shouldProbeLocalBridge ? localBridgeEndpointReachable : true,
     expectedSurface: localBridgeExpectedSurface,
-    activeSlot: observedSlot ? observedSlot === expectedActiveSlot : undefined,
-    generationMatches: localBridgeSurface?.generation && localBridgeLiveHealth?.generation
-      ? localBridgeLiveHealth.generation === localBridgeSurface.generation
-      : undefined,
     processAlive: localBridgeSurface?.processRunning,
     runtimeStateFresh: localBridgeSurface?.source === 'service-runtime'
       || localBridgeSurface?.source === 'repo-runtime',
@@ -1925,7 +1913,6 @@ export async function controllerReadinessEvidence(
       error: localBridgeSurface?.error,
       inferredPid: localBridgeSurface?.pid,
       statusSource: localBridgeSurface?.source ?? 'none',
-      activeSlot: observedSlot ? observedSlot === expectedActiveSlot : undefined,
       health: runtimeHealth.components.localBridge,
     } : undefined,
     projection,

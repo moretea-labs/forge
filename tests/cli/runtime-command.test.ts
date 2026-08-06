@@ -150,6 +150,17 @@ describe('runtime command surface', () => {
     expect(localBridgeBlock).not.toContain('generationMatches');
     expect(localBridgeBlock).not.toContain('health: health.components.localBridge.state');
     expect(localBridgeBlock).not.toContain('state: health.state');
+    const readinessEvidenceStart = runtimeTools.indexOf('export async function controllerReadinessEvidence');
+    const readinessEvidenceEnd = runtimeTools.indexOf('export async function controllerReadiness(', readinessEvidenceStart);
+    const readinessEvidenceBlock = runtimeTools.slice(readinessEvidenceStart, readinessEvidenceEnd);
+    expect(readinessEvidenceBlock).toContain('expectedSurface: localBridgeExpectedSurface');
+    expect(readinessEvidenceBlock).not.toContain('readActiveSlotAuthority');
+    expect(readinessEvidenceBlock).not.toContain('expectedActiveSlot');
+    expect(readinessEvidenceBlock).not.toContain('observedSlot');
+    expect(readinessEvidenceBlock).not.toContain('activeSlot:');
+    expect(readinessEvidenceBlock).not.toContain('generationMatches');
+    expect(runtimeTools).not.toContain("from '../../../cli/controller/runtime-slots'");
+    expect(runtimeTools).not.toContain("from '../../../cli/controller/stable-state/stable-home'");
     expect(runtimeTools).toContain('readControllerDaemonStatus');
     for (const legacy of [
       'controller_restart_verify',
