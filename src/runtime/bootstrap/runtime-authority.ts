@@ -271,8 +271,6 @@ export function migrateRuntimeConfig(
   const home = ensureControllerHome(controllerHome);
   const paths = [
     join(home, 'mcp', 'mcp.local.json'),
-    join(home, 'runtime-slots', 'blue', 'mcp', 'mcp.local.json'),
-    join(home, 'runtime-slots', 'green', 'mcp', 'mcp.local.json'),
     ...(options.legacyRepoRoots ?? []).map((root) => join(resolve(root), '.repo-harness', 'mcp.local.json')),
   ];
   const candidates = paths.flatMap((path) => {
@@ -444,8 +442,6 @@ export function requireRuntimeConfig(controllerHome: string): RuntimeConfig {
   const home = ensureControllerHome(controllerHome);
   const legacyCandidates = [
     join(home, 'mcp', 'mcp.local.json'),
-    join(home, 'runtime-slots', 'blue', 'mcp', 'mcp.local.json'),
-    join(home, 'runtime-slots', 'green', 'mcp', 'mcp.local.json'),
   ];
   if (legacyCandidates.some(existsSync) || existsSync(runtimeConfigPath(home))) {
     throw new Error('MIGRATION_REQUIRED: runtime-config.json is missing or invalid');

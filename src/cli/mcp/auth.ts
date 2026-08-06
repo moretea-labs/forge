@@ -189,8 +189,6 @@ export function mcpServiceOAuthTokenStoreFallbackPaths(controllerHome: string, l
   const primary = mcpControllerHomeOAuthTokenStorePath(stableHome);
   const candidates = [
     mcpControllerHomeOAuthTokenStorePath(controllerHome),
-    join(stableHome, 'runtime-slots', 'blue', 'mcp', 'mcp.oauth-tokens.json'),
-    join(stableHome, 'runtime-slots', 'green', 'mcp', 'mcp.oauth-tokens.json'),
     ...(legacyRepoRoot ? [mcpOAuthTokenStorePath(legacyRepoRoot)] : []),
   ];
   const seen = new Set<string>([primary]);

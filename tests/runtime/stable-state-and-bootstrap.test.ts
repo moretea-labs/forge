@@ -193,7 +193,7 @@ describe('single-owner runtime authority', () => {
     expect(() => migrateRuntimeAuthority(fx.controllerHome)).toThrow('MIGRATION_REQUIRED');
   });
 
-  test('migrates agreeing root and slot MCP configs exactly once', () => {
+  test('migrates the Controller Home MCP config exactly once', () => {
     const fx = homeFixture();
     const legacy = {
       server: { host: '127.0.0.1', port: 8770, transport: 'http' },
@@ -202,14 +202,9 @@ describe('single-owner runtime authority', () => {
       accessMode: 'full_access',
       localController: { host: '127.0.0.1', port: 8776 },
     };
-    for (const path of [
-      join(fx.controllerHome, 'mcp', 'mcp.local.json'),
-      join(fx.controllerHome, 'runtime-slots', 'blue', 'mcp', 'mcp.local.json'),
-      join(fx.controllerHome, 'runtime-slots', 'green', 'mcp', 'mcp.local.json'),
-    ]) {
-      mkdirSync(join(path, '..'), { recursive: true });
-      writeFileSync(path, `${JSON.stringify(legacy)}\n`);
-    }
+    const path = join(fx.controllerHome, 'mcp', 'mcp.local.json');
+    mkdirSync(join(path, '..'), { recursive: true });
+    writeFileSync(path, `${JSON.stringify(legacy)}\n`);
     const migrated = migrateRuntimeConfig(fx.controllerHome);
     expect(migrated).toMatchObject({
       ingress: { host: '127.0.0.1', port: 8770 },
@@ -222,7 +217,7 @@ describe('single-owner runtime authority', () => {
     expect(migrateRuntimeConfig(fx.controllerHome)).toEqual(migrated);
   });
 
-  test('conflicting root and slot MCP configs require explicit migration', () => {
+  test('ignores conflicting slot MCP config during canonical migration', () => {
     const fx = homeFixture();
     const rootPath = join(fx.controllerHome, 'mcp', 'mcp.local.json');
     const bluePath = join(fx.controllerHome, 'runtime-slots', 'blue', 'mcp', 'mcp.local.json');
@@ -230,8 +225,10 @@ describe('single-owner runtime authority', () => {
     mkdirSync(join(bluePath, '..'), { recursive: true });
     writeFileSync(rootPath, '{"server":{"host":"127.0.0.1","port":8770}}\n');
     writeFileSync(bluePath, '{"server":{"host":"127.0.0.1","port":8795}}\n');
-    expect(() => migrateRuntimeConfig(fx.controllerHome)).toThrow(/MIGRATION_REQUIRED: conflicting runtime config candidates/);
-    expect(existsSync(runtimeConfigPath(fx.controllerHome))).toBe(false);
+    const migrated = migrateRuntimeConfig(fx.controllerHome);
+    expect(migrated.gateway.port).toBe(8770);
+    expect(migrated.ingress.port).toBe(8770);
+    expect(existsSync(runtimeConfigPath(fx.controllerHome))).toBe(true);
   });
 
   test('primary authority ignores a conflicting compatibility projection', () => {

@@ -78,6 +78,8 @@ describe('runtime command surface', () => {
     const mcpCommand = readFileSync(join(ROOT, 'src/cli/commands/mcp.ts'), 'utf8');
     const lifecycleAuthority = readFileSync(join(ROOT, 'src/cli/controller/lifecycle-authority.ts'), 'utf8');
     const controllerLifecycle = readFileSync(join(ROOT, 'src/cli/controller/lifecycle.ts'), 'utf8');
+    const mcpAuth = readFileSync(join(ROOT, 'src/cli/mcp/auth.ts'), 'utf8');
+    const runtimeAuthority = readFileSync(join(ROOT, 'src/runtime/bootstrap/runtime-authority.ts'), 'utf8');
     const httpTransport = readFileSync(join(ROOT, 'src/cli/mcp/transports/http.ts'), 'utf8');
     const runtimeTools = readFileSync(join(ROOT, 'src/runtime/gateway/mcp/runtime-tools.ts'), 'utf8');
     const toolsetNames = readFileSync(join(ROOT, 'src/cli/mcp/toolset-names.ts'), 'utf8');
@@ -111,6 +113,17 @@ describe('runtime command surface', () => {
     expect(controllerLifecycle).not.toContain('slotRuntime');
     expect(controllerLifecycle).toContain('observedEndpointBinding(runtime?.server.endpoint)');
     expect(controllerLifecycle).toContain('observedEndpointBinding(runtime?.localController?.endpoint)');
+    const oauthFallbackStart = mcpAuth.indexOf('export function mcpServiceOAuthTokenStoreFallbackPaths');
+    const oauthFallbackEnd = mcpAuth.indexOf('export function mcpControllerHomeRuntimeStatePath', oauthFallbackStart);
+    const oauthFallbackBlock = mcpAuth.slice(oauthFallbackStart, oauthFallbackEnd);
+    expect(oauthFallbackBlock).not.toContain('runtime-slots');
+    const migrateConfigStart = runtimeAuthority.indexOf('export function migrateRuntimeConfig');
+    const migrateConfigEnd = runtimeAuthority.indexOf('export function requireRuntimeAuthority', migrateConfigStart);
+    const migrateConfigBlock = runtimeAuthority.slice(migrateConfigStart, migrateConfigEnd);
+    expect(migrateConfigBlock).not.toContain('runtime-slots');
+    const requireConfigStart = runtimeAuthority.indexOf('export function requireRuntimeConfig');
+    const requireConfigBlock = runtimeAuthority.slice(requireConfigStart);
+    expect(requireConfigBlock).not.toContain('runtime-slots');
     expect(httpTransport).not.toContain('ensureControllerDaemon');
     expect(httpTransport).toContain('readControllerDaemonStatus');
     expect(runtimeTools).not.toContain('ensureControllerDaemon');
