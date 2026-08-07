@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
+import { homedir } from 'os';
 import { dirname, join, resolve } from 'path';
 import { resolveControllerHome } from '../../cli/repositories/controller-home';
 import {
@@ -45,7 +46,7 @@ export function forgeRuntimeServicePaths(controllerHome: string): ForgeRuntimeSe
   const serviceRoot = join(home, 'runtime', 'service');
   const suffix = createHash('sha256').update(home).digest('hex').slice(0, 12);
   const label = `com.moretea.forge.runtime.${suffix}`;
-  const launchAgentsRoot = join(process.env.HOME ?? home, 'Library', 'LaunchAgents');
+  const launchAgentsRoot = join(process.env.HOME ?? homedir(), 'Library', 'LaunchAgents');
   return {
     controllerHome: home,
     serviceRoot,

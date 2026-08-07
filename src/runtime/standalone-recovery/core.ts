@@ -404,7 +404,22 @@ async function probeExternalMcp(transport: RecoveryHttpTransport, url: string): 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 4_000);
   try {
-    const response = await transport.request({ url, headers: { accept: 'application/json' }, timeoutMs: 4_000, signal: controller.signal });
+    // The MCP transport is POST-based. A GET on the MCP path returns 404 on
+    // some gateway implementations, so probe with an initialize request and
+    // accept the unauthenticated OAuth Bearer challenge.
+    const response = await transport.request({
+      url,
+      method: 'POST',
+      headers: { accept: 'application/json, text/event-stream', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 0,
+        method: 'initialize',
+        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'forge-standalone-recovery', version: '1' } },
+      }),
+      timeoutMs: 4_000,
+      signal: controller.signal,
+    });
     const challenge = response.headers['www-authenticate'] ?? '';
     const ok = response.ok || (response.status === 401 && /\bBearer\b/i.test(challenge));
     return { ok, detail: ok && response.status === 401 ? 'HTTP 401 OAuth challenge' : `HTTP ${response.status}`, status: response.status };
@@ -503,7 +518,8 @@ function runtimeEndpoint(config: RecoveryConfig): string | undefined {
 
 function runtimeHealthEndpoint(endpoint: string): string {
   const url = new URL(endpoint);
-  url.pathname = '/health';
+  // The canonical Runtime serves the whole-Runtime readiness probe at /ready.
+  url.pathname = '/ready';
   url.search = '';
   url.hash = '';
   return url.toString();

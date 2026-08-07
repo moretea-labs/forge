@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 import {
   attestKnownGood,
@@ -40,6 +40,15 @@ import { inspectRecoveryTunnelLaunchdContract, retireStaleRecoveryLaunchAgents }
 const roots: string[] = [];
 const servers: Server[] = [];
 const ownerships: RuntimeOwnershipHandle[] = [];
+
+interface RuntimeRequestRecord {
+  method?: string;
+  url?: string;
+  authorizationPresent: boolean;
+  accept?: string;
+  contentType?: string;
+  body: string;
+}
 
 afterEach(async () => {
   while (ownerships.length > 0) ownerships.pop()!.release();
@@ -81,26 +90,39 @@ function diagnostics() {
   };
 }
 
-async function runtimeServer(): Promise<{ port: number; endpoint: string }> {
+async function runtimeServer(options: { challengeUnauthenticatedMcp?: boolean } = {}): Promise<{ port: number; endpoint: string; requests: RuntimeRequestRecord[] }> {
   const sessionId = 'recovery-runtime-session';
+  const requests: RuntimeRequestRecord[] = [];
+  const record = (request: IncomingMessage, body = '') => requests.push({
+    method: request.method,
+    url: request.url,
+    authorizationPresent: typeof request.headers.authorization === 'string',
+    accept: request.headers.accept,
+    contentType: request.headers['content-type'],
+    body,
+  });
   const server = createServer((request: IncomingMessage, response: ServerResponse) => {
-    if (request.method === 'GET' && request.url === '/health') {
+    if (request.method === 'GET' && (request.url === '/health' || request.url === '/ready')) {
+      record(request);
       response.setHeader('content-type', 'application/json');
       response.end(JSON.stringify({ status: 'ok' }));
       return;
     }
     if (request.method === 'GET' && request.url === '/mcp') {
+      record(request);
       response.statusCode = 401;
       response.setHeader('www-authenticate', 'Bearer resource_metadata="http://127.0.0.1/.well-known/oauth-protected-resource/mcp"');
       response.end(JSON.stringify({ error: 'invalid_token' }));
       return;
     }
     if (request.method === 'DELETE' && request.url === '/mcp') {
+      record(request);
       response.statusCode = request.headers['mcp-session-id'] === sessionId ? 204 : 404;
       response.end();
       return;
     }
     if (request.method !== 'POST' || request.url !== '/mcp') {
+      record(request);
       response.statusCode = 404;
       response.end();
       return;
@@ -108,6 +130,13 @@ async function runtimeServer(): Promise<{ port: number; endpoint: string }> {
     let body = '';
     request.on('data', (chunk: Buffer) => { body += chunk.toString('utf8'); });
     request.on('end', () => {
+      record(request, body);
+      if (options.challengeUnauthenticatedMcp && typeof request.headers.authorization !== 'string') {
+        response.statusCode = 401;
+        response.setHeader('www-authenticate', 'Bearer resource_metadata="http://127.0.0.1/.well-known/oauth-protected-resource/mcp"');
+        response.end(JSON.stringify({ error: 'invalid_token' }));
+        return;
+      }
       const rpc = JSON.parse(body) as { id?: number; method: string };
       if (rpc.method === 'initialize') {
         response.setHeader('content-type', 'application/json');
@@ -140,7 +169,7 @@ async function runtimeServer(): Promise<{ port: number; endpoint: string }> {
   });
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('runtime test server unavailable');
-  return { port: address.port, endpoint: `http://127.0.0.1:${address.port}/mcp` };
+  return { port: address.port, endpoint: `http://127.0.0.1:${address.port}/mcp`, requests };
 }
 
 function writeMainToken(home: string): void {
@@ -228,6 +257,37 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(RECOVERY_CLI_COMMANDS).toContain('recover-primary-runtime');
   });
 
+  test('probes Runtime readiness at /ready and MCP with POST initialize while accepting a Bearer challenge', async () => {
+    const home = controllerHome();
+    const activeManifest = manifest(home, 'release-probe', 'artifact-probe');
+    ensureActiveRuntimeRelease(home, activeManifest);
+    const runtime = await runtimeServer({ challengeUnauthenticatedMcp: true });
+    writeMainToken(home);
+    startObservedRuntime(home, runtime.endpoint, 'release-probe', 'artifact-probe');
+    const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint });
+
+    const verified = await verifyStableRuntime(config);
+    expect(verified.ok).toBe(true);
+    expect(verified.probes.active_gateway).toMatchObject({ ok: true, detail: 'HTTP 200' });
+    expect(verified.probes.external_mcp_http).toMatchObject({ ok: true, detail: 'HTTP 401 OAuth challenge' });
+    expect(runtime.requests.some((request) => request.method === 'GET' && request.url === '/ready')).toBe(true);
+    expect(runtime.requests.some((request) => request.method === 'GET' && request.url === '/health')).toBe(false);
+    expect(runtime.requests.some((request) => request.method === 'GET' && request.url === '/mcp')).toBe(false);
+
+    const externalInitialize = runtime.requests.find((request) => (
+      request.method === 'POST'
+      && request.url === '/mcp'
+      && !request.authorizationPresent
+    ));
+    expect(externalInitialize).toBeDefined();
+    expect(externalInitialize?.accept).toBe('application/json, text/event-stream');
+    expect(externalInitialize?.contentType).toBe('application/json');
+    expect(JSON.parse(externalInitialize?.body ?? '{}')).toMatchObject({
+      jsonrpc: '2.0',
+      method: 'initialize',
+    });
+  });
+
   test('restores only the attested previous whole-Runtime release while Runtime is stopped', async () => {
     const home = controllerHome();
     const first = manifest(home, 'release-a', 'artifact-a');
@@ -313,6 +373,20 @@ describe('standalone recovery on canonical Runtime', () => {
       runtimeRecoveryCooldownMs: 60_000,
       nowMs: now,
     }).action).toBe('degraded');
+  });
+
+  test('resolves the installed Runtime launch agent from the OS home when HOME is absent', () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    delete process.env.HOME;
+    try {
+      const paths = forgeRuntimeServicePaths(home);
+      expect(paths.installedPlistPath).toBe(join(homedir(), 'Library', 'LaunchAgents', `${paths.label}.plist`));
+      expect(paths.installedPlistPath.startsWith(resolve(home))).toBe(false);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
   });
 
   test('restarts the installed primary Forge Runtime service and requires whole-Runtime verification', async () => {
