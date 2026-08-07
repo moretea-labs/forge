@@ -279,10 +279,15 @@ function validateWorkSemantics(contract: WorkContract): WorkContract {
   if (contract.completionReceipt) {
     const receipt = contract.completionReceipt;
     if (receipt.workId !== contract.workId) throw new Error('WORK_COMPLETION_RECEIPT_IDENTITY_MISMATCH');
-    if (!isRepositoryCompletionReceipt(receipt)) throw new Error('WORK_COMPLETION_RECEIPT_REPOSITORY_REQUIRED');
-    if (!receipt.targetBranch.trim() || !receipt.targetRevision.trim()) throw new Error('WORK_COMPLETION_RECEIPT_TARGET_REQUIRED');
-    if (receipt.delivery.status !== 'integrated' || !receipt.delivery.reachable) throw new Error('WORK_COMPLETION_RECEIPT_DELIVERY_NOT_PROVEN');
-    if (!['complete', 'maintenance_warning'].includes(receipt.cleanup.status) || receipt.cleanup.blockers.length > 0) throw new Error('WORK_COMPLETION_RECEIPT_CLEANUP_NOT_PROVEN');
+    if (isRepositoryCompletionReceipt(receipt)) {
+      if (!receipt.targetBranch.trim() || !receipt.targetRevision.trim()) throw new Error('WORK_COMPLETION_RECEIPT_TARGET_REQUIRED');
+      if (receipt.delivery.status !== 'integrated' || !receipt.delivery.reachable) throw new Error('WORK_COMPLETION_RECEIPT_DELIVERY_NOT_PROVEN');
+      if (!['complete', 'maintenance_warning'].includes(receipt.cleanup.status) || receipt.cleanup.blockers.length > 0) throw new Error('WORK_COMPLETION_RECEIPT_CLEANUP_NOT_PROVEN');
+    } else {
+      if (contract.workKind !== 'local_effect') throw new Error('WORK_COMPLETION_RECEIPT_LOCAL_EFFECT_KIND_REQUIRED');
+      if (contract.completionOutcome !== 'completed_local') throw new Error('WORK_COMPLETION_RECEIPT_LOCAL_EFFECT_OUTCOME_REQUIRED');
+      if (!receipt.operation.trim() || !receipt.target.id.trim()) throw new Error('WORK_COMPLETION_RECEIPT_LOCAL_EFFECT_TARGET_REQUIRED');
+    }
     if (contract.status !== 'completed') throw new Error('WORK_COMPLETION_RECEIPT_REQUIRES_COMPLETED_WORK');
     for (const phase of ['implementation', 'verification', 'delivery', 'cleanup'] as WorkPhase[]) {
       if (!['satisfied', 'skipped'].includes(contract.phaseEvidence[phase].state)) {
