@@ -13,7 +13,7 @@ export interface RuntimeGatewayServerOptions {
  * Build the authoritative Controller MCP surface inside the Canonical Runtime.
  *
  * The public OAuth Gateway is intentionally a thin proxy. It must never execute
- * writer-authority operations in its own source-checkout process. The Runtime
+ * Runtime-owned write operations in its own source-checkout process. The Runtime
  * owns the write claim, Process Runtime leases, Scheduler, and source identity,
  * so all Controller tools ultimately execute here.
  */
