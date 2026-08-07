@@ -4,6 +4,7 @@ import type { ControllerStartupRecoveryResult } from './startup-recovery';
 import type { RuntimeSourceIdentity } from './runtime-generation';
 import { readRuntimeOwner } from '../root/ownership';
 import { observeRuntimeStatus } from '../root/status';
+import { readRuntimeGeneration } from './runtime-generation';
 
 export type ForgeRuntimeShutdownReason =
   | 'SIGINT'
@@ -60,6 +61,7 @@ export function readForgeRuntimeStatus(controllerHome: string): ForgeRuntimeStat
   const observation = observeRuntimeStatus(home);
   const owner = readRuntimeOwner(home);
   const snapshot = observation.snapshot;
+  const generation = readRuntimeGeneration(home);
   const status: ForgeRuntimeStatus['status'] = observation.ready
     ? 'ready'
     : observation.running
@@ -79,6 +81,7 @@ export function readForgeRuntimeStatus(controllerHome: string): ForgeRuntimeStat
     ...(!observation.ready && observation.reasonCodes.length > 0 ? { error: observation.reasonCodes.join(',') } : {}),
     gatewaySeparated: false,
     workerIsolation: true,
+    ...(generation ? { generation: generation.generation, source: generation.source } : {}),
     degraded: observation.running && !observation.ready,
     restartRequired: false,
     restartReasons: [],
