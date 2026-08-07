@@ -18,7 +18,12 @@ import {
   RECOVERY_TOOLS,
 } from '../../runtime/standalone-recovery/entry';
 import {
+  activateRuntimeRelease,
   loadRecoveryConfig,
+  recoverPrimaryRuntime,
+  restartPrimaryRuntime,
+  restartRecoveryGateway,
+  rollbackPrevious,
   runtimeStatus,
   verifyStableRuntime,
   type PublicTunnelServiceConfig,
@@ -474,6 +479,57 @@ export function buildRecoveryCommand(): Command {
     .action(async (opts: { controllerHome: string }) => {
       const home = resolveControllerHome(opts.controllerHome);
       const result = await verifyStableRuntime(loadRecoveryConfig(home));
+      output(result);
+      if (!result.ok) process.exitCode = 1;
+    });
+
+  command.command('restart-runtime')
+    .description('Restart the canonical Forge Runtime service and require whole-Runtime verification')
+    .requiredOption('--controller-home <path>', 'Explicit Controller Home')
+    .action(async (opts: { controllerHome: string }) => {
+      const home = resolveControllerHome(opts.controllerHome);
+      const result = await restartPrimaryRuntime(loadRecoveryConfig(home));
+      output(result);
+      if (!result.ok) process.exitCode = 1;
+    });
+
+  command.command('recover')
+    .description('Stop the canonical Runtime, restore the attested previous whole release and SQLite backup, restart it, and require verification')
+    .requiredOption('--controller-home <path>', 'Explicit Controller Home')
+    .action(async (opts: { controllerHome: string }) => {
+      const home = resolveControllerHome(opts.controllerHome);
+      const result = await recoverPrimaryRuntime(loadRecoveryConfig(home));
+      output(result);
+      if (!result.ok) process.exitCode = 1;
+    });
+
+  command.command('rollback')
+    .description('While the Canonical Runtime is stopped, atomically restore its attested previous whole-Runtime release and SQLite backup')
+    .requiredOption('--controller-home <path>', 'Explicit Controller Home')
+    .action(async (opts: { controllerHome: string }) => {
+      const home = resolveControllerHome(opts.controllerHome);
+      const result = await rollbackPrevious(loadRecoveryConfig(home));
+      output(result);
+      if (!result.ok) process.exitCode = 1;
+    });
+
+  command.command('restart')
+    .description('Restart the independent Forge Recovery Gateway and require its local health endpoint')
+    .requiredOption('--controller-home <path>', 'Explicit Controller Home')
+    .action(async (opts: { controllerHome: string }) => {
+      const home = resolveControllerHome(opts.controllerHome);
+      const result = await restartRecoveryGateway(loadRecoveryConfig(home));
+      output(result);
+      if (!result.ok) process.exitCode = 1;
+    });
+
+  command.command('activate-runtime')
+    .description('Activate an already staged immutable Runtime release: stop, atomically switch whole-release authority, start, verify, and restore the previous whole release on failure')
+    .requiredOption('--controller-home <path>', 'Explicit Controller Home')
+    .requiredOption('--release-manifest <path>', 'Absolute manifest.json of the staged immutable Runtime release')
+    .action(async (opts: { controllerHome: string; releaseManifest: string }) => {
+      const home = resolveControllerHome(opts.controllerHome);
+      const result = await activateRuntimeRelease(loadRecoveryConfig(home), resolve(opts.releaseManifest));
       output(result);
       if (!result.ok) process.exitCode = 1;
     });

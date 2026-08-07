@@ -369,8 +369,8 @@ Issue
 - Protected operations such as secrets, Git internals, package lockfiles, CI workflow changes, commits, merges, and pushes are not default controller actions.
 
 Kernel-managed Agent goals and persistent Task Runs are retired. New work uses
-\`rh_work\` to create or continue a WorkContract, \`controller_claim\` to
-establish ownership, and \`launcher_start\` to begin an external
+\`rh_work\` to create or continue a WorkContract, \`rh_work.controller_claim\` to
+establish ownership, and \`rh_work.launcher_start\` to begin an external
 SuperController session.
 
 ## Dev Mode Agent Runner

@@ -31,6 +31,7 @@ import {
   type WorkPhaseEvidenceMap,
   type WorkPhaseEvidenceState,
   type WorkContractStore,
+  isRepositoryCompletionReceipt,
   isTerminalWorkContractStatus,
 } from './types';
 
@@ -278,6 +279,7 @@ function validateWorkSemantics(contract: WorkContract): WorkContract {
   if (contract.completionReceipt) {
     const receipt = contract.completionReceipt;
     if (receipt.workId !== contract.workId) throw new Error('WORK_COMPLETION_RECEIPT_IDENTITY_MISMATCH');
+    if (!isRepositoryCompletionReceipt(receipt)) throw new Error('WORK_COMPLETION_RECEIPT_REPOSITORY_REQUIRED');
     if (!receipt.targetBranch.trim() || !receipt.targetRevision.trim()) throw new Error('WORK_COMPLETION_RECEIPT_TARGET_REQUIRED');
     if (receipt.delivery.status !== 'integrated' || !receipt.delivery.reachable) throw new Error('WORK_COMPLETION_RECEIPT_DELIVERY_NOT_PROVEN');
     if (!['complete', 'maintenance_warning'].includes(receipt.cleanup.status) || receipt.cleanup.blockers.length > 0) throw new Error('WORK_COMPLETION_RECEIPT_CLEANUP_NOT_PROVEN');

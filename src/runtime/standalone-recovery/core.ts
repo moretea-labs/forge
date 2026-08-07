@@ -2,15 +2,18 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { spawn, spawnSync } from 'child_process';
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
-import { dirname, isAbsolute, join, resolve } from 'path';
+import { basename, dirname, isAbsolute, join, resolve } from 'path';
 import { observeRuntimeStatus } from '../root/status';
 import { forgeRuntimeServicePaths } from '../root/service';
+import { loadRuntimeReleaseManifest } from '../root/release-manifest';
 import {
+  publishRuntimeRelease,
   readRuntimeReleaseAuthority,
   rollbackRuntimeRelease,
   type RuntimePublishedRelease,
   type RuntimeReleaseAuthority,
 } from '../root/release-store';
+import type { RuntimeReleaseManifest } from '../root/types';
 import { createRecoveryHttpTransport, type RecoveryHttpTransport } from './http-transport';
 
 /** Standalone recovery reads only canonical Runtime observation and whole-release authority. */
@@ -70,6 +73,7 @@ export type RecoveryMutationAction =
   | 'rollback_previous'
   | 'restart_primary_runtime'
   | 'recover_primary_runtime'
+  | 'activate_runtime_release'
   | 'restart_recovery_gateway'
   | 'repair_public_tunnel';
 
@@ -158,6 +162,17 @@ export interface PrimaryRuntimeRecoveryResult {
   serviceTarget?: string;
   rollback?: RollbackResult;
   verify: VerifyResult;
+}
+
+export interface RuntimeReleaseActivationResult {
+  ok: boolean;
+  attempted: boolean;
+  noOp?: boolean;
+  detail: string;
+  serviceTarget?: string;
+  operationId?: string;
+  rollback?: RollbackResult;
+  verify?: VerifyResult;
 }
 
 const DEFAULT_CONFIG: Omit<RecoveryConfig, 'controllerHome'> = {
@@ -1092,6 +1107,172 @@ export async function recoverPrimaryRuntime(
     return { ok: false, attempted: true, detail: 'previous whole-Runtime release started but failed verification; service was stopped to prevent a restart loop', serviceTarget: service.target, rollback, verify: after } satisfies PrimaryRuntimeRecoveryResult;
   });
   if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner), serviceTarget: service.target, verify: initial };
+  return locked.value;
+}
+
+function validateRuntimeReleaseCandidate(
+  config: RecoveryConfig,
+  manifestPath: string,
+): { manifest: RuntimeReleaseManifest; releaseRoot: string; manifestPath: string } {
+  if (!isAbsolute(manifestPath)) throw new Error('RUNTIME_RELEASE_CANDIDATE_PATH_REQUIRED: an absolute release manifest path is required');
+  if (!existsSync(manifestPath)) throw new Error(`RUNTIME_RELEASE_CANDIDATE_MANIFEST_MISSING: ${manifestPath}`);
+  const resolvedManifestPath = resolve(manifestPath);
+  const manifest = loadRuntimeReleaseManifest(resolvedManifestPath, config.controllerHome);
+  const releaseRoot = dirname(resolvedManifestPath);
+  if (basename(releaseRoot) !== manifest.releaseId) {
+    throw new Error('RUNTIME_RELEASE_CANDIDATE_ID_MISMATCH: manifest releaseId must match the immutable release directory');
+  }
+  const executable = join(releaseRoot, manifest.entrypoint);
+  if (!existsSync(executable)) throw new Error(`RUNTIME_RELEASE_CANDIDATE_ENTRYPOINT_MISSING: ${executable}`);
+  const identity = `sha256:${createHash('sha256').update(readFileSync(executable)).digest('hex')}`;
+  if (identity !== manifest.artifactIdentity) {
+    throw new Error(`RUNTIME_RELEASE_CANDIDATE_ARTIFACT_MISMATCH: expected ${manifest.artifactIdentity} observed ${identity}`);
+  }
+  return { manifest, releaseRoot, manifestPath: resolvedManifestPath };
+}
+
+/**
+ * Activate an already staged and validated immutable Runtime release without
+ * depending on the primary Runtime execution plane. The transaction mirrors
+ * recoverPrimaryRuntime: stop the complete canonical service, atomically switch
+ * active/previous whole-release authority (with a local SQLite backup), start
+ * the one Runtime service, require whole-Runtime verification, and on failure
+ * restore the previous whole release and its SQLite backup before restarting.
+ */
+export async function activateRuntimeRelease(
+  config: RecoveryConfig,
+  candidateManifestPath: string,
+  dependencies: PrimaryRuntimeRecoveryDependencies = {},
+): Promise<RuntimeReleaseActivationResult> {
+  let candidate: { manifest: RuntimeReleaseManifest; releaseRoot: string; manifestPath: string };
+  try {
+    candidate = validateRuntimeReleaseCandidate(config, candidateManifestPath);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'runtime release candidate validation failed';
+    audit(config, 'runtime_release_activation_candidate_invalid', { detail });
+    return { ok: false, attempted: false, noOp: true, detail };
+  }
+  const current = releaseAuthority(config);
+  if (current && current.active.releaseId === candidate.manifest.releaseId) {
+    return {
+      ok: true,
+      attempted: false,
+      noOp: true,
+      detail: 'requested Runtime release is already the active whole-Runtime release',
+      verify: await verifyStableRuntime(config),
+    };
+  }
+  if ((dependencies.platform ?? process.platform) !== 'darwin') {
+    return { ok: false, attempted: false, noOp: true, detail: 'Runtime release activation currently requires the configured macOS launchd service' };
+  }
+  const uid = await (dependencies.currentUid ?? currentUid)();
+  const service = uid === undefined ? undefined : primaryRuntimeLaunchdService(config, uid);
+  if (!service) return { ok: false, attempted: false, noOp: true, detail: 'primary Forge Runtime launchd service is not installed', verify: await verifyStableRuntime(config) };
+  const runCommand = dependencies.runCommand ?? command;
+  const now = dependencies.now ?? Date.now;
+  const wait = dependencies.sleep ?? sleep;
+  const runtimeRunning = dependencies.runtimeRunning ?? ((value: RecoveryConfig) => observeRuntimeStatus(value.controllerHome).running);
+  const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
+  const operationId = `recovery-activate-runtime-${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const locked = await withLock(config, { action: 'activate_runtime_release', ...(operationId ? { requestId: operationId } : {}) }, async () => {
+    const before = await verifyLocal(config);
+    const stopped = await runCommand('launchctl', ['bootout', service.target], 15_000);
+    const stoppedCleanly = stopped.ok || /not found|no such process|could not find service|service is not loaded/i.test(`${stopped.stderr}\n${stopped.stdout}`);
+    if (!stoppedCleanly) {
+      const detail = `primary Runtime bootout failed: ${stopped.stderr || stopped.stdout || stopped.status}`;
+      audit(config, 'runtime_release_activation_stop_failed', { serviceTarget: service.target, operationId, detail });
+      return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: await verifyLocal(config) } satisfies RuntimeReleaseActivationResult;
+    }
+    const runtimeStopped = await waitForPrimaryRuntimeState({ config, expectedRunning: false, timeoutMs: 20_000, now, wait, runtimeRunning });
+    if (!runtimeStopped) {
+      const detail = 'primary Runtime owner remained live after bounded launchd bootout';
+      audit(config, 'runtime_release_activation_stop_unverified', { serviceTarget: service.target, operationId });
+      return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: await verifyLocal(config) } satisfies RuntimeReleaseActivationResult;
+    }
+    let committed: RuntimeReleaseAuthority;
+    try {
+      committed = publishRuntimeRelease(config.controllerHome, candidate.manifestPath, operationId);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'runtime release authority publish failed';
+      audit(config, 'runtime_release_activation_publish_failed', { serviceTarget: service.target, operationId, detail });
+      return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: await verifyLocal(config) } satisfies RuntimeReleaseActivationResult;
+    }
+    if (committed.active.releaseId !== candidate.manifest.releaseId || committed.active.artifactIdentity !== candidate.manifest.artifactIdentity) {
+      const detail = 'runtime release activation commit identity mismatch';
+      audit(config, 'runtime_release_activation_commit_mismatch', { serviceTarget: service.target, operationId });
+      return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: await verifyLocal(config) } satisfies RuntimeReleaseActivationResult;
+    }
+    const started = await ensureLaunchdServiceStarted(service, runCommand);
+    if (!started.ok) {
+      audit(config, 'runtime_release_activation_start_failed', { serviceTarget: service.target, operationId, detail: started.detail });
+      return { ok: false, attempted: true, detail: started.detail, serviceTarget: service.target, operationId, verify: await verifyLocal(config) } satisfies RuntimeReleaseActivationResult;
+    }
+    const after = await verifyPrimaryRuntimeAfterStart({
+      config,
+      timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
+      now,
+      wait,
+      verifyLocal,
+    });
+    if (after.ok && after.releases.active?.revision === candidate.manifest.releaseId) {
+      audit(config, 'runtime_release_activation_succeeded', { serviceTarget: service.target, operationId, activeRevision: after.releases.active?.revision });
+      return { ok: true, attempted: true, detail: 'requested Runtime release activated and passed whole-Runtime verification', serviceTarget: service.target, operationId, verify: after } satisfies RuntimeReleaseActivationResult;
+    }
+
+    // Activation failed: stop, restore the previous whole release and its SQLite
+    // backup, restart the one service, and require verification again.
+    await runCommand('launchctl', ['bootout', service.target], 15_000);
+    let rollback: RollbackResult;
+    try {
+      const rollbackOperationId = `recovery-activate-runtime-rollback-${Date.now()}-${randomUUID().slice(0, 8)}`;
+      const restored = rollbackRuntimeRelease(config.controllerHome, rollbackOperationId);
+      const previousRevision = current?.previous?.releaseId ?? '';
+      if (restored.active.releaseId !== previousRevision || restored.active.artifactIdentity !== current?.previous?.artifactIdentity) {
+        throw new Error('RECOVERY_RUNTIME_RELEASE_ROLLBACK_AUTHORITY_MISMATCH');
+      }
+      const restarted = await ensureLaunchdServiceStarted(service, runCommand);
+      if (!restarted.ok) {
+        rollback = { ok: false, operationId: rollbackOperationId, detail: `previous release authority restored but service start failed: ${restarted.detail}` };
+      } else {
+        const rolledBack = await verifyPrimaryRuntimeAfterStart({
+          config,
+          timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
+          now,
+          wait,
+          verifyLocal,
+        });
+        if (rolledBack.ok) {
+          rollback = { ok: true, operationId: rollbackOperationId, detail: 'previous whole-Runtime release and SQLite backup restored, restarted, and verified', verify: rolledBack };
+        } else {
+          await runCommand('launchctl', ['bootout', service.target], 15_000);
+          rollback = { ok: false, operationId: rollbackOperationId, detail: 'previous whole-Runtime release started but failed verification; service was stopped to prevent a restart loop', verify: rolledBack };
+        }
+      }
+    } catch (error) {
+      rollback = { ok: false, detail: error instanceof Error ? error.message : 'previous whole-Runtime release rollback failed' };
+    }
+    audit(config, 'runtime_release_activation_failed', {
+      serviceTarget: service.target,
+      operationId,
+      candidateRevision: candidate.manifest.releaseId,
+      rollbackOperationId: rollback.operationId,
+      rollbackOk: rollback.ok,
+      rollbackDetail: rollback.detail,
+      reasonCodes: after.runtime.reasonCodes,
+    });
+    return {
+      ok: false,
+      attempted: true,
+      detail: 'requested Runtime release activated but failed whole-Runtime verification; previous release restored',
+      serviceTarget: service.target,
+      operationId,
+      rollback,
+      verify: after,
+    } satisfies RuntimeReleaseActivationResult;
+  });
+  if (!locked.acquired) {
+    return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner), serviceTarget: service.target, verify: await verifyStableRuntime(config) };
+  }
   return locked.value;
 }
 

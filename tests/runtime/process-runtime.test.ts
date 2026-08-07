@@ -308,7 +308,7 @@ describe('Unified Process Runtime', () => {
       updatedAt: '2026-08-07T00:00:01.000Z',
       finishedAt: '2026-08-07T00:00:01.000Z',
       exitCode: 0,
-      terminalFenceToken:[REDACTED]
+      terminalFenceToken: 1,
       terminalWritten: true,
       checkExecution: {
         schemaVersion: 1,
@@ -400,7 +400,7 @@ describe('Unified Process Runtime', () => {
       updatedAt: '2026-08-07T00:00:01.000Z',
       finishedAt: '2026-08-07T00:00:01.000Z',
       exitCode: 0,
-      terminalFenceToken:[REDACTED]
+      terminalFenceToken: 1,
       terminalWritten: true,
       origin: { surface: 'check', checkId: 'cross-checkout' },
     });

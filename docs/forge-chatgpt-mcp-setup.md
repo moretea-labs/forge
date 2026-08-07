@@ -120,10 +120,10 @@ Default `--toolset core` exposes the five-tool ChatGPT facade (`rh_access`, `rh_
 For the current repository only, prefer a bounded local restart:
 
 ```bash
-launchctl kickstart -k gui/$(id -u)/com.moretea.forge.runtime.<controller-home-suffix>
+forge recovery restart-runtime --controller-home <absolute-controller-home>
 ```
 
-The launchd label is printed by `forge runtime service install` (it is `com.moretea.forge.runtime.<controller-home-suffix>`). The single Runtime restart also refreshes repository tools. There is no per-repository rollout or component restart surface.
+The single Runtime restart also refreshes repository tools. There is no per-repository rollout or component restart surface, and you never need to compute the launchd label or hand-write `launchctl kickstart` for routine maintenance.
 
 After the restart, rescan or recreate the ChatGPT Connector, then call `controller_capabilities` again and verify `expectedTools` still includes `repository_latest_source_diagnose` and `repository_bootstrap_local_project`.
 
@@ -179,8 +179,8 @@ Issue
 - Protected operations such as secrets, Git internals, package lockfiles, CI workflow changes, commits, merges, and pushes are not default controller actions.
 
 Kernel-managed Agent goals and persistent Task Runs are retired. New work uses
-`rh_work` to create or continue a WorkContract, `controller_claim` to
-establish ownership, and `launcher_start` to begin an external
+`rh_work` to create or continue a WorkContract, `rh_work.controller_claim` to
+establish ownership, and `rh_work.launcher_start` to begin an external
 SuperController session.
 
 ## Dev Mode Agent Runner

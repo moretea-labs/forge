@@ -133,8 +133,8 @@ export interface ConnectorFreshnessReport {
 }
 
 const DEFAULT_HOW_TO_FIX = [
-  '重启 controller：bun run controller:restart',
-  '检查状态：bun run controller:status',
+  '重启 Runtime：forge recovery restart-runtime --controller-home <absolute-controller-home>',
+  '检查状态：forge runtime status --controller-home <absolute-controller-home>',
   '在 ChatGPT 中刷新/重连 MCP Connector',
   '重新打开 Local Controller UI',
   '若仍异常，运行 console smoke / connector status 自检',
@@ -243,7 +243,7 @@ export async function observeLocalMcpRuntime(
 
   const file = loadMcpServiceRuntimeState(controllerHome, repoRoot) ?? loadMcpRuntimeState(repoRoot);
   if (!file?.server) return null;
-  // Ignore dead snapshots — they commonly lag behind controller:restart.
+  // Ignore dead snapshots — they commonly lag behind a Runtime restart.
   if (file.server.healthy !== true) return null;
   return {
     healthy: true,
@@ -369,8 +369,8 @@ export function evaluateConnectorFreshness(input: EvaluateConnectorFreshnessInpu
       restartRecommended: true,
       reconnectRecommended: false,
       suggestedActions: [
-        '重启 controller/MCP 后重新打开 Local Controller UI',
-        '运行 bun run controller:status',
+        '重启 Runtime（forge recovery restart-runtime）后重新打开 Local Controller UI',
+        '运行 forge runtime status 确认健康',
       ],
       howToFix: [...DEFAULT_HOW_TO_FIX],
       warnings: ['本地 MCP 工具列表为空或不可用。'],
@@ -391,13 +391,13 @@ export function evaluateConnectorFreshness(input: EvaluateConnectorFreshnessInpu
       restartRecommended: true,
       reconnectRecommended: false,
       suggestedActions: [
-        '重启 controller/MCP：bun run controller:restart',
+        '重启 Runtime：forge recovery restart-runtime',
         '确认 tools/list 包含 rh_status / rh_inbox / rh_context / rh_work',
         '重新运行 connector status / smoke 自检',
       ],
       howToFix: [
-        '重启 controller：bun run controller:restart',
-        '检查状态：bun run controller:status',
+        '重启 Runtime：forge recovery restart-runtime',
+        '检查状态：forge runtime status',
         '确认本地 tools/list 含 rh_status / rh_inbox / rh_context / rh_work',
         '重新打开 Local Controller UI',
         '运行 connector status 自检',
@@ -500,9 +500,9 @@ export function evaluateConnectorFreshness(input: EvaluateConnectorFreshnessInpu
       restartRecommended: true,
       reconnectRecommended: true,
       suggestedActions: [
-        '重启 controller/MCP：bun run controller:restart',
+        '重启 Runtime：forge recovery restart-runtime',
         '重启后若 ChatGPT 仍看不到 rh_*，再重连 Connector',
-        '运行 bun run controller:status 确认健康',
+        '运行 forge runtime status 确认健康',
       ],
       howToFix: [...DEFAULT_HOW_TO_FIX],
       warnings: [

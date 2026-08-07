@@ -7,7 +7,7 @@ import {
   type ControlPlaneRecord,
   type SqliteDatabase,
 } from './sqlite-store';
-import type { WorkContract } from '../facade/types';
+import { isRepositoryCompletionReceipt, type WorkContract } from '../facade/types';
 
 export const REQUIREMENT_STATES = ['planned', 'active', 'waiting_for_user', 'done', 'cancelled'] as const;
 export type RequirementState = (typeof REQUIREMENT_STATES)[number];
@@ -217,6 +217,7 @@ export function completeRequirementFromWork(
   const receipt = work.completionReceipt;
   if (!receipt) throw new Error('REQUIREMENT_WORK_COMPLETION_RECEIPT_REQUIRED');
   if (receipt.workId !== work.workId) throw new Error('REQUIREMENT_WORK_RECEIPT_IDENTITY_MISMATCH');
+  if (!isRepositoryCompletionReceipt(receipt)) throw new Error('REQUIREMENT_WORK_REPOSITORY_RECEIPT_REQUIRED');
   if (receipt.delivery.kind === 'superseded' || receipt.delivery.status !== 'integrated' || !receipt.delivery.reachable) throw new Error('REQUIREMENT_WORK_DELIVERY_NOT_PROVEN');
   if (!['complete', 'maintenance_warning'].includes(receipt.cleanup.status) || receipt.cleanup.blockers.length > 0) throw new Error('REQUIREMENT_WORK_CLEANUP_NOT_PROVEN');
 

@@ -4,6 +4,7 @@ import {
   type Requirement,
   type RequirementState,
 } from '../persistence/requirement-store';
+import { isRepositoryCompletionReceipt } from './types';
 import { listPlanContracts, summarizePlanContract } from './plan-contract-store';
 import { listWorkContracts, summarizeWorkContract } from './work-contract-store';
 import type { PlanContract, WorkContract } from './types';
@@ -79,7 +80,7 @@ function latestDelivery(requirementId: string, work: readonly WorkContract[]): R
       return rightAt.localeCompare(leftAt);
     })[0];
   const receipt = delivered?.completionReceipt;
-  if (!delivered || !receipt) return undefined;
+  if (!delivered || !receipt || !isRepositoryCompletionReceipt(receipt)) return undefined;
   return {
     workId: delivered.workId,
     receiptId: receipt.receiptId,
@@ -182,6 +183,7 @@ function summarizeDiagnosticWork(work: WorkContract): Record<string, unknown> {
     resultArtifactId: check.resultArtifactId,
   }));
   const receipt = work.completionReceipt;
+  const repositoryReceipt = receipt && isRepositoryCompletionReceipt(receipt) ? receipt : undefined;
   return {
     ...summarizeWorkContract(work),
     requirementId: work.requirementId,
@@ -192,13 +194,13 @@ function summarizeDiagnosticWork(work: WorkContract): Record<string, unknown> {
     completionOutcome: work.completionOutcome,
     checks,
     checkTruncatedCount: Math.max(0, work.checkRefs.length - checks.length),
-    completionReceipt: receipt ? {
-      receiptId: receipt.receiptId,
-      targetBranch: receipt.targetBranch,
-      targetRevision: receipt.targetRevision,
-      deliveryStatus: receipt.delivery.status,
-      cleanupStatus: receipt.cleanup.status,
-      recordedAt: receipt.recordedAt,
+    completionReceipt: repositoryReceipt ? {
+      receiptId: repositoryReceipt.receiptId,
+      targetBranch: repositoryReceipt.targetBranch,
+      targetRevision: repositoryReceipt.targetRevision,
+      deliveryStatus: repositoryReceipt.delivery.status,
+      cleanupStatus: repositoryReceipt.cleanup.status,
+      recordedAt: repositoryReceipt.recordedAt,
     } : undefined,
     executionRefs: {
       workerRef: work.workerRef,

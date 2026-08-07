@@ -13,7 +13,7 @@ export function resolveControllerHome(explicit?: string): string {
 
 /**
  * Prefer env, then repo-local self-host layout (`_ops/controller-home`) used by
- * `bun run controller:restart`, then the user-global default.
+ * `forge runtime service install`, then the user-global default.
  */
 export function resolveRepoPreferredControllerHome(repoRoot?: string, explicit?: string): string {
   const trimmedExplicit = explicit?.trim();

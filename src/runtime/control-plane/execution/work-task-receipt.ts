@@ -5,7 +5,7 @@ import { resolveCompletionTargetBranch } from '../../../cli/controller/completio
 import type { CompletionReceipt, ControllerIssue } from '../../../cli/controller/types';
 import { completeRequirementFromWork } from '../persistence/requirement-store';
 import { getWorkContract, recordWorkCompletionReceipt, updateWorkContract } from '../facade/work-contract-store';
-import { WORK_RECONCILIATION_METHODS, WORK_RECONCILIATION_OUTCOMES } from '../facade/types';
+import { isRepositoryCompletionReceipt, WORK_RECONCILIATION_METHODS, WORK_RECONCILIATION_OUTCOMES } from '../facade/types';
 import type {
   WorkReconciliationMethod,
   WorkReconciliationOutcome,
@@ -286,7 +286,8 @@ export function acceptVerifiedTaskFromReviewedWorkReconciliation(input: Controll
       { requirementId: recorded.requirementId, work: recorded },
     );
   }
-  const projectedReceipt = recorded.completionReceipt ?? receipt;
+  const recordedReceipt = recorded.completionReceipt;
+  const projectedReceipt = recordedReceipt && isRepositoryCompletionReceipt(recordedReceipt) ? recordedReceipt : receipt;
   const projectedVerification = { ...task.verification!, completionReceipt: projectedReceipt };
   const accepted = task.workId
     ? projectTaskFromWork(input.repoRoot, input.issueId, input.taskId, recorded, {
@@ -420,16 +421,18 @@ export function acceptVerifiedTaskFromControllerWork(input: ControllerWorkTaskRe
       { requirementId: recorded.requirementId, work: recorded },
     );
   }
+  const recordedReceipt = recorded.completionReceipt;
+  const projectedReceipt = recordedReceipt && isRepositoryCompletionReceipt(recordedReceipt) ? recordedReceipt : receipt;
   const projectedVerification = {
     ...task.verification,
-    completionReceipt: recorded.completionReceipt ?? receipt,
+    completionReceipt: projectedReceipt,
   };
   if (task.workId) {
     const projected = projectTaskFromWork(input.repoRoot, input.issueId, input.taskId, recorded, {
       verification: projectedVerification,
       note: input.note ?? `Projected completed Work ${input.workId} with receipt ${receipt.receiptId}.`,
     });
-    return { issue: projected, receipt: recorded.completionReceipt ?? receipt };
+    return { issue: projected, receipt: projectedReceipt };
   }
   recordTaskVerification(input.repoRoot, input.issueId, input.taskId, projectedVerification);
   const accepted = acceptVerifiedTask(

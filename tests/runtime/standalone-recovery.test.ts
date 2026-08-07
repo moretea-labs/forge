@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { createHash } from 'crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 import {
+  activateRuntimeRelease,
   attestKnownGood,
   createRecoveryConfig,
   decideWatchdog,
@@ -251,10 +253,12 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('runtime_status');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('restart_primary_runtime');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('recover_primary_runtime');
+    expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('activate_runtime_release');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).not.toContain('supervisor_status');
     expect(RECOVERY_CLI_COMMANDS).toContain('list-releases');
     expect(RECOVERY_CLI_COMMANDS).toContain('restart-primary-runtime');
     expect(RECOVERY_CLI_COMMANDS).toContain('recover-primary-runtime');
+    expect(RECOVERY_CLI_COMMANDS).toContain('activate-runtime-release');
   });
 
   test('probes Runtime readiness at /ready and MCP with POST initialize while accepting a Bearer challenge', async () => {
@@ -469,6 +473,105 @@ describe('standalone recovery on canonical Runtime', () => {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
     }
+  });
+
+  test('activates an already staged immutable Runtime release and keeps the previous whole release for rollback', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const first = manifest(home, 'release-a', 'artifact-a');
+      const candidateReleaseId = 'release-candidate';
+      const candidateRoot = join(home, 'runtime', 'releases', candidateReleaseId);
+      mkdirSync(candidateRoot, { recursive: true });
+      writeFileSync(join(candidateRoot, 'forge-runtime'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+      const artifactIdentity = `sha256:${createHash('sha256').update(readFileSync(join(candidateRoot, 'forge-runtime'))).digest('hex')}`;
+      const candidateManifestPath = join(candidateRoot, 'manifest.json');
+      writeFileSync(candidateManifestPath, `${JSON.stringify({
+        schemaVersion: 1,
+        releaseId: candidateReleaseId,
+        artifactIdentity,
+        entrypoint: 'forge-runtime',
+        arguments: [],
+        configurationSchemaVersion: 1,
+        controllerHome: resolve(home),
+        databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+        workerProtocolVersion: 1,
+        createdAt: new Date().toISOString(),
+      }, null, 2)}\n`);
+
+      ensureActiveRuntimeRelease(home, first);
+      const runtime = await runtimeServer();
+      writeMainToken(home);
+      const ownership = startObservedRuntime(home, runtime.endpoint, 'release-a', 'artifact-a');
+      const config = createRecoveryConfig(home, {
+        publicMcpUrl: runtime.endpoint,
+        primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
+      });
+      removeOwnership(ownership);
+      const paths = forgeRuntimeServicePaths(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+
+      let localProbes = 0;
+      const commands: string[][] = [];
+      const result = await activateRuntimeRelease(config, candidateManifestPath, {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (_command, args) => {
+          commands.push(args);
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        runtimeRunning: () => false,
+        verifyLocal: async () => ++localProbes >= 2
+          ? {
+              ...healthyVerify(),
+              releases: {
+                active: { path: candidateManifestPath, revision: candidateReleaseId, artifactIdentity, manifestSha256: 'candidate-sha', workerProtocolVersion: 1 },
+                coherent: true,
+              },
+            }
+          : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
+        now: (() => { let value = 0; return () => value += 1_000; })(),
+        sleep: async () => undefined,
+      });
+      expect(result).toMatchObject({ ok: true, attempted: true });
+      const authority = readRuntimeReleaseAuthority(home)!;
+      expect(authority.active.releaseId).toBe(candidateReleaseId);
+      expect(authority.active.artifactIdentity).toBe(artifactIdentity);
+      expect(authority.previous?.releaseId).toBe('release-a');
+      expect(authority.previous?.databaseBackup).toBeDefined();
+      expect(commands.some((args) => args.includes('bootout'))).toBe(true);
+      expect(commands.some((args) => args.includes('kickstart'))).toBe(true);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('rejects a staged Runtime release whose artifact identity does not match its binary', async () => {
+    const home = controllerHome();
+    const candidateReleaseId = 'release-bad-artifact';
+    const candidateRoot = join(home, 'runtime', 'releases', candidateReleaseId);
+    mkdirSync(candidateRoot, { recursive: true });
+    writeFileSync(join(candidateRoot, 'forge-runtime'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    const candidateManifestPath = join(candidateRoot, 'manifest.json');
+    writeFileSync(candidateManifestPath, `${JSON.stringify({
+      schemaVersion: 1,
+      releaseId: candidateReleaseId,
+      artifactIdentity: 'sha256:deadbeef',
+      entrypoint: 'forge-runtime',
+      arguments: [],
+      configurationSchemaVersion: 1,
+      controllerHome: resolve(home),
+      databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+      workerProtocolVersion: 1,
+      createdAt: new Date().toISOString(),
+    }, null, 2)}\n`);
+    const config = createRecoveryConfig(home);
+    const result = await activateRuntimeRelease(config, candidateManifestPath);
+    expect(result).toMatchObject({ ok: false, attempted: false, noOp: true });
+    expect(result.detail).toContain('ARTIFACT_MISMATCH');
   });
 
   test('restarts only the independent Recovery Gateway through its own bounded lock', async () => {

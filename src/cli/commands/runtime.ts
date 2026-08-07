@@ -30,6 +30,7 @@ export function buildRuntimeCommand(): Command {
     .requiredOption('--repo <path>', 'Repository root used as the immutable release source')
     .option('--host <host>', 'MCP listener host', '127.0.0.1')
     .option('--port <port>', 'MCP listener port', '8765')
+    .option('--stage-only', 'Build and validate the immutable Runtime release without publishing or activating it')
     .option('--auth-token-file <path>', 'Raw bearer token file (defaults to controllerHome/mcp/runtime-token, created from the MCP bearer token when missing)')
     .option('--exclusive-work-id <id>', 'Persistently admit only this P0 Work while migration is active')
     .option('--node-executable <path>', 'Executable launchd uses to run the Forge Runtime service runner', process.execPath)
@@ -43,6 +44,7 @@ export function buildRuntimeCommand(): Command {
       exclusiveWorkId?: string;
       nodeExecutable: string;
       runnerPath: string;
+      stageOnly?: boolean;
     }) => {
       const home = resolveControllerHome(opts.controllerHome);
       const repoRoot = resolve(opts.repo);
@@ -52,6 +54,20 @@ export function buildRuntimeCommand(): Command {
 
       const staged = stageRuntimeRelease({ controllerHome: home, sourceRoot: repoRoot });
       assertRuntimeReleaseFiles(staged);
+      if (opts.stageOnly === true) {
+        output({
+          status: 'staged',
+          release: {
+            releaseId: staged.releaseId,
+            sourceCommit: staged.sourceCommit,
+            artifactIdentity: staged.artifactIdentity,
+            manifestPath: staged.manifestPath,
+            manifestSha256: staged.manifestSha256,
+          },
+          next: `forge recovery activate-runtime --controller-home ${home} --release-manifest ${staged.manifestPath}`,
+        });
+        return;
+      }
 
       const tokenPath = resolve(opts.authTokenFile ?? join(home, 'mcp', 'runtime-token'));
       if (!existsSync(tokenPath)) {

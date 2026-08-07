@@ -203,7 +203,6 @@ export async function executeReadOnlyDiagnostic(
         minAgeMinutes: typeof args.min_age_minutes === 'number' ? args.min_age_minutes : undefined,
         maxCandidates: typeof args.max_candidates === 'number' ? args.max_candidates : undefined,
         cancelPendingApprovals: args.cancel_pending_approvals === true,
-        recentErrors: Array.isArray(args.recent_errors) ? args.recent_errors.map(String) : undefined,
       }) as unknown as Record<string, unknown>;
     case 'workflow_watchdog_report':
       return buildWorkflowWatchdogReport(controllerHome, repository, {

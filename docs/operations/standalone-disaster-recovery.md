@@ -47,11 +47,14 @@ attest_known_good
 restart_primary_runtime
 recover_primary_runtime
 rollback_previous
+activate_runtime_release
 restart_public_tunnel
 reconnect_primary_connector
 ```
 
 `restart_primary_runtime` restarts only the installed canonical Forge Runtime service and requires whole-Runtime verification. `recover_primary_runtime` is the complete failure transaction: stop the canonical service, restore the attested previous whole release and its SQLite backup, restart the service, and require verification.
+
+`activate_runtime_release` is the controlled bootstrap/upgrade escape hatch. It accepts an already staged and validated immutable Runtime release manifest and executes the same bounded transaction without depending on the primary Runtime execution plane: stop the complete canonical service, atomically switch active/previous whole-release authority with a local SQLite backup, start the one Runtime service, require whole-Runtime verification, and on failure restore the previous whole release and its SQLite backup before restarting. The candidate must match its manifest artifact identity and database schema compatibility; a fenced or stale primary Runtime is never required to stage, validate, or activate the release.
 
 `runtime_status` reads canonical Runtime observation. `list_releases` reads the whole-release authority. `attest_known_good` succeeds only after Runtime status, release identity, authenticated MCP initialization, tools/list, and the configured read-only MCP call pass together.
 
@@ -114,3 +117,20 @@ The installer owns publication and activation. Before registering `com.moretea.f
 Forge deliberately has no blue-green Runtime topology. There is one active whole-release authority and one canonical service. Candidate validation happens before activation; activation stops the complete Runtime, switches the atomic active release, starts one Runtime, and gates on whole-Runtime readiness. Failure restores the previous whole release and its bound SQLite backup.
 
 No rollout, service installation, or live restart is implied by source changes. Activating a new primary Runtime release still requires separate explicit authorization and exact release evidence.
+
+## Operator CLI
+
+The `forge recovery` command exposes the same bounded lifecycle surface as the Recovery Gateway tools, so routine maintenance never requires hand-written `launchctl`:
+
+```sh
+forge recovery status --controller-home /absolute/controller-home
+forge recovery verify --controller-home /absolute/controller-home
+forge recovery restart-runtime --controller-home /absolute/controller-home
+forge recovery recover --controller-home /absolute/controller-home
+forge recovery rollback --controller-home /absolute/controller-home
+forge recovery restart --controller-home /absolute/controller-home
+forge recovery install --controller-home /absolute/controller-home
+forge recovery activate-runtime --controller-home /absolute/controller-home --release-manifest /absolute/staged-release/manifest.json
+```
+
+`forge runtime status --controller-home /absolute/controller-home` reads the canonical Runtime status projection. `forge runtime service install --stage-only` builds and validates an immutable Runtime release without publishing it; the staged manifest can then be activated through `forge recovery activate-runtime` when the primary Runtime is fenced or unavailable.

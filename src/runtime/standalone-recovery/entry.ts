@@ -5,6 +5,7 @@ import { pathToFileURL } from 'url';
 import { readMcpServiceOAuthPassphrase } from '../../cli/mcp/auth';
 import { FORGE_VERSION } from '../../version';
 import {
+  activateRuntimeRelease,
   attestKnownGood,
   diagnose,
   gatewayToken,
@@ -53,6 +54,7 @@ export const RECOVERY_CLI_COMMANDS = [
   'rollback-previous',
   'restart-primary-runtime',
   'recover-primary-runtime',
+  'activate-runtime-release',
   'restart-public-tunnel',
   'diagnose',
   'reconnect-main',
@@ -98,6 +100,12 @@ async function cli(): Promise<void> {
     case 'rollback-previous': output(await rollbackPrevious(config)); return;
     case 'restart-primary-runtime': output(await restartPrimaryRuntime(config)); return;
     case 'recover-primary-runtime': output(await recoverPrimaryRuntime(config)); return;
+    case 'activate-runtime-release': {
+      const releasePath = option('--release-manifest') ?? option('--release-path');
+      if (!releasePath) throw new Error('RECOVERY_RELEASE_MANIFEST_REQUIRED: pass --release-manifest <absolute-path>');
+      output(await activateRuntimeRelease(config, releasePath));
+      return;
+    }
     case 'restart-public-tunnel': output(await repairPublicTunnel(config)); return;
     case 'diagnose': output(await diagnose(config)); return;
     case 'reconnect-main': output(await reconnectMain(config)); return;
@@ -182,6 +190,7 @@ export const RECOVERY_TOOLS = [
   { name: 'rollback_previous', description: 'While Canonical Runtime is stopped, atomically restore its attested previous whole-Runtime release and SQLite backup.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'restart_primary_runtime', description: 'Restart the installed canonical Forge Runtime service and require whole-Runtime verification.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'recover_primary_runtime', description: 'Stop the canonical Runtime, restore the attested previous whole release and SQLite backup, restart it, and require verification.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
+  { name: 'activate_runtime_release', description: 'Activate an already staged and validated immutable Runtime release while the Canonical Runtime is stopped; verify the new release and restore the previous whole release and SQLite backup on failure.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 }, release_path: { type: 'string', minLength: 8, maxLength: 1024 } }, required: ['request_id', 'release_path'], additionalProperties: false } },
   { name: 'restart_public_tunnel', description: 'Restart the explicitly configured public tunnel only after local runtime verification succeeds and the external endpoint is unavailable.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'reconnect_primary_connector', description: 'Check canonical Runtime Gateway and primary MCP reconnection readiness without publishing a release.', inputSchema: { type: 'object', additionalProperties: false } },
 ] as const;
@@ -415,6 +424,11 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
     case 'recover_primary_runtime': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       return recoverPrimaryRuntime(config, `recovery-gateway:${args.request_id}`);
+    }
+    case 'activate_runtime_release': {
+      if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
+      if (typeof args.release_path !== 'string' || !args.release_path.trim()) throw new Error('RECOVERY_RELEASE_PATH_REQUIRED');
+      return activateRuntimeRelease(config, args.release_path.trim());
     }
     case 'restart_public_tunnel': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
