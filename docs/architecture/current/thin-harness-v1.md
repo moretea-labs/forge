@@ -33,7 +33,7 @@ Use Campaign only for multiple truly independent, long-lived deliverables.
 | Batch Executor | `src/runtime/execution/thin-harness/batch-executor.ts` | Typed multi-step batch (≤20); one parent receipt; whole-batch write ownership |
 | Lightweight Lanes | `src/runtime/execution/thin-harness/lightweight-lanes.ts` | Read lanes (strict readonly effects) + patch_proposal_validate |
 | MCP integration | `src/cli/mcp/repository-tools.ts` | Fast path for eligible `repository_command_execute`; optional batch/lanes tools |
-| Command executor | `src/cli/repositories/command-executor.ts` | `repositorySnapshotAsync`, AbortSignal, process-group kill on async path |
+| Command executor | `src/cli/repositories/command-executor.ts` | `repositorySnapshotAsync`, bounded non-persistent readonly execution, AbortSignal, process-group kill on async path |
 
 ### Execution modes
 
@@ -84,6 +84,8 @@ interface ExecutionDecision {
 - unsupported system-level mutation
 
 ## What Fast Path does **not** create
+
+For short **typed-argv** readonly repository commands, the bounded direct reader additionally creates **no Process record, execution Lease, or Controller audit write**. It performs full repository identity/scope validation and before/after read-only Git observation, but never needs Runtime writer authority. Shell-form reads, mutating commands, and managed/long checks continue to use Process Runtime + Lease fencing.
 
 - ExecutionJob
 - Local Job

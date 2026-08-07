@@ -15,10 +15,13 @@ import {
   REPOSITORY_COMMAND_MAX_TIMEOUT_MS,
   REPOSITORY_COMMAND_MIN_TIMEOUT_MS} from '../../src/cli/repositories/command-executor';
 import { registerRepository } from '../../src/cli/repositories/registry';
+import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
+import { classifyRepositoryCommandRoute, executeRepositoryCommandViaProcessRuntime } from '../../src/runtime/execution/process-runtime/command-facade';
 import { getExecutionJob, updateExecutionJob } from '../../src/runtime/execution/jobs/store';
 import { waitForExecutionJob } from '../../src/runtime/execution/jobs/wait';
 import { executeExecutionJob } from '../../src/runtime/execution/workers/executor';
-import { acquireExecutionLeases, releaseExecutionLeases, renewExecutionLeases } from '../../src/runtime/resources/leases/store';
+import { acquireExecutionLeases, listActiveLeases, releaseExecutionLeases, renewExecutionLeases } from '../../src/runtime/resources/leases/store';
+import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { terminateProcessTree } from '../../src/runtime/shared/process-tree';
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from './process-hygiene';
 
@@ -108,6 +111,46 @@ describe('repository command execution lifecycle', () => {
       command: "printf 'ready\\n'",
       dryRun: true});
     expect(withDefault.execution.status).toBe('preview');
+  });
+
+  test('short readonly command executes without Process or Lease writer authority', async () => {
+    const controllerHome = tempRoot('forge-cmd-read-home-');
+    const repoRoot = tempRoot('forge-cmd-read-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    const owner = acquireRuntimeOwnership(controllerHome, 'other-runtime-owner');
+    try {
+      const execution = await executeRepositoryCommandViaProcessRuntime({
+        controllerHome,
+        repository,
+        command: ['git', 'status', '--short'],
+        timeoutMs: 10_000,
+        executionIdentity: executionIdentityForRepository(repository),
+      });
+      expect(execution.route).toBe('process_direct');
+      expect(execution.ok).toBe(true);
+      expect(execution.process).toBeUndefined();
+      expect(execution.stderr).not.toContain('runtime-authority@runtime-fence');
+      expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
+
+      const shellForm = await executeRepositoryCommandViaProcessRuntime({
+        controllerHome,
+        repository,
+        command: 'git status --short',
+        timeoutMs: 10_000,
+        executionIdentity: executionIdentityForRepository(repository),
+      });
+      expect(shellForm.process).toBeDefined();
+      expect(shellForm.process?.stderr).toContain('runtime-authority@runtime-fence');
+    } finally {
+      owner.release();
+    }
+  });
+
+  test('mutating commands remain on the managed Process Runtime route', () => {
+    expect(classifyRepositoryCommandRoute(['touch', 'marker.txt'])).toEqual({
+      route: 'process_managed',
+      reason: 'local_workspace_mutation',
+    });
   });
 
 });

@@ -896,6 +896,74 @@ export function executeRepositoryCommand(
   return execution;
 }
 
+/**
+ * Bounded readonly execution that deliberately owns no Controller mutation.
+ *
+ * This path exists for short repository reads that must remain available while
+ * Runtime writer authority is fenced or rotating. It reuses the exact command
+ * input/scope classifier, repository snapshots, bounded async process runner,
+ * cancellation, environment allowlist, output caps and redaction, but it never
+ * writes command audit state, Process records, Leases, Jobs or receipts.
+ */
+export async function executeRepositoryReadOnlyCommandDirect(
+  repository: RepositoryRecord,
+  input: ExecuteRepositoryCommandInput,
+): Promise<RepositoryCommandExecution> {
+  const prepared = await prepareRepositoryCommandExecutionAsync(
+    repository,
+    { ...input, dryRun: false },
+    undefined,
+  );
+  const { root, cwd, command, timeoutMs, maxOutputBytes, before, execution: base, externalPathUsages } = prepared;
+  if (base.classification.risk !== 'readonly') {
+    throw new Error(`READONLY_DIRECT_ROUTE_REQUIRED: received ${base.classification.risk}`);
+  }
+  if (!prepared.executable) {
+    throw new Error('READONLY_DIRECT_ROUTE_REJECTED: readonly command was not executable after policy evaluation');
+  }
+  const signal = input.signal;
+  if (signal?.aborted) {
+    return {
+      ...base,
+      status: 'executed',
+      ok: false,
+      exitCode: 1,
+      timedOut: false,
+      cancelled: true,
+      stdout: '',
+      stderr: 'cancelled before spawn',
+      after: before,
+      repositoryChanged: false,
+      changedPaths: [],
+      policyDecision: 'allowed',
+      infrastructureError: { code: 'COMMAND_CANCELLED', message: 'cancelled before spawn' },
+    };
+  }
+
+  const result = await runCanonicalCommand(command, cwd, timeoutMs, maxOutputBytes, { signal });
+  const after = await repositorySnapshotAsync(root, signal?.aborted ? undefined : signal);
+  return {
+    ...base,
+    status: 'executed',
+    ok: result.ok,
+    exitCode: result.exitCode,
+    timedOut: result.timedOut,
+    cancelled: result.cancelled,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    after,
+    repositoryChanged: snapshotChanged(before, after),
+    changedPaths: changedSnapshotPaths(before, after),
+    policyDecision: 'allowed',
+    externalPathUsages: externalPathUsages.length > 0 ? externalPathUsages : undefined,
+    infrastructureError: result.timedOut
+      ? { code: 'COMMAND_TIMED_OUT', message: result.stderr || `repository command timed out after ${timeoutMs}ms` }
+      : result.cancelled
+        ? { code: 'COMMAND_CANCELLED', message: result.stderr || 'repository command cancelled' }
+        : undefined,
+  };
+}
+
 export async function executeRepositoryCommandAsync(
   controllerHome: string,
   repository: RepositoryRecord,

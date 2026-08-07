@@ -827,12 +827,15 @@ export async function callRepositoryTool(
                 const detailLevel = args.detail_level === 'detail' || args.detail === true
                   ? 'detail'
                   : 'summary';
-                const completed = handle?.completed === true;
-                const status = !handle
-                  ? 'rejected'
-                  : completed
-                    ? (handle.cancelled ? 'cancelled' : handle.timedOut ? 'timed_out' : processResult.ok === true ? 'succeeded' : 'failed')
-                    : 'running';
+                const directWithoutHandle = processResult.route === 'process_direct' && !handle;
+                const completed = directWithoutHandle || handle?.completed === true;
+                const status = directWithoutHandle
+                  ? (processResult.ok === true ? 'succeeded' : 'failed')
+                  : !handle
+                    ? 'rejected'
+                    : completed
+                      ? (handle.cancelled ? 'cancelled' : handle.timedOut ? 'timed_out' : processResult.ok === true ? 'succeeded' : 'failed')
+                      : 'running';
                 const payload = compactProcessCommandPayload({
                   accepted: true,
                   mode: processResult.route,
@@ -849,17 +852,21 @@ export async function callRepositoryTool(
                   stdout: processResult.stdout,
                   stderr: processResult.stderr,
                   durableSideEffects: processResult.durableSideEffects,
-                  next: processResult.route === 'process_direct' || completed
-                    ? 'Process Runtime completed without Local Job / ExecutionJob / Worker.'
-                    : `Process Runtime is managing ${handle?.processId}; poll process_get/process_wait instead of creating a Local Job.`,
+                  next: directWithoutHandle
+                    ? 'Bounded readonly execution completed without Process record / Lease / Local Job / ExecutionJob / Worker.'
+                    : processResult.route === 'process_direct' || completed
+                      ? 'Process Runtime completed without Local Job / ExecutionJob / Worker.'
+                      : `Process Runtime is managing ${handle?.processId}; poll process_get/process_wait instead of creating a Local Job.`,
                   detailLevel,
                 });
                 payload.status = status;
                 payload.processId = handle?.processId;
                 payload.authorization = {
                   decision: 'allow',
-                  source: 'process_runtime',
-                  reason: 'Repository command executed through Unified Process Runtime.',
+                  source: directWithoutHandle ? 'bounded_read_direct' : 'process_runtime',
+                  reason: directWithoutHandle
+                    ? 'Readonly repository command executed through the bounded non-persistent direct path.'
+                    : 'Repository command executed through Unified Process Runtime.',
                 };
                 if (handle?.processId) {
                   payload.resultRef = { kind: 'process_logs', processId: handle.processId };

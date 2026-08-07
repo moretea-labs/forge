@@ -8,6 +8,7 @@
 
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { classifyRepositoryCommand } from '../../../cli/repositories/command-classifier';
+import { executeRepositoryReadOnlyCommandDirect } from '../../../cli/repositories/command-executor';
 import { normalizeRepositoryCommand } from '../../../cli/repositories/command-normalization';
 import { claimsForRepositoryCommand, scopeResourceClaims, toProcessClaims } from './resource-claims';
 import {
@@ -20,7 +21,7 @@ import {
 import type { ProcessHandle, ProcessCommandSpec } from './types';
 import { DEFAULT_INTERACTIVE_WAIT_MS } from './types';
 import { isFocusedCheckCommand } from '../thin-harness/execution-router';
-import type { ResolvedExecutionIdentity } from '../../control-plane/execution/execution-identity';
+import { assertExecutionIdentity, type ResolvedExecutionIdentity } from '../../control-plane/execution/execution-identity';
 
 export type RepositoryCommandRoute =
   | 'process_direct'
@@ -173,6 +174,37 @@ export async function executeRepositoryCommandViaProcessRuntime(
     return {
       route: 'reject',
       reason: 'missing_repository_cwd',
+      durableSideEffects: emptyEffects,
+    };
+  }
+
+  // A short readonly command owns no durable Process/Lease state. Validate the
+  // same immutable repository identity first, then execute with the bounded
+  // non-persistent reader. This keeps reads available while a stale/passive
+  // Runtime remains correctly fenced from Controller writes.
+  const canonicalCommand = normalizeRepositoryCommand(input.command);
+  if (decision.route === 'process_direct' && canonicalCommand.kind === 'argv') {
+    assertExecutionIdentity({
+      controllerHome: input.controllerHome,
+      identity: executionIdentity,
+      cwd,
+      requestedRepoId: input.repository.repoId,
+      requestedCheckoutId: input.repository.activeCheckoutId,
+    });
+    const direct = await executeRepositoryReadOnlyCommandDirect(input.repository, {
+      command: input.command,
+      cwd: input.cwd,
+      timeoutMs: Math.min(input.timeoutMs ?? 30_000, 30_000),
+      maxOutputBytes: input.maxOutputBytes,
+      signal: input.signal,
+    });
+    return {
+      route: 'process_direct',
+      reason: decision.reason,
+      ok: direct.ok,
+      exitCode: direct.exitCode,
+      stdout: direct.stdout,
+      stderr: direct.stderr,
       durableSideEffects: emptyEffects,
     };
   }
