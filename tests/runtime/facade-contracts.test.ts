@@ -25,7 +25,7 @@ describe('handoff and facade contracts', () => {
     expect(isTerminalHandoffStatus('expired')).toBe(true);
   });
 
-  test('selects direct control for small supervised work without WorkContract', () => {
+  test('selects direct control for small supervised mutation with Work lineage', () => {
     expect(
       selectExecutionMode({
         expectedFiles: 2,
@@ -36,10 +36,10 @@ describe('handoff and facade contracts', () => {
         requiresExternalEffect: false,
         requiresApproval: false,
       }),
-    ).toMatchObject({ mode: 'direct_control', missingContractFields: [], createWorkContract: false });
+    ).toMatchObject({ mode: 'direct_control', missingContractFields: [], createWorkContract: true, requiresWork: true });
   });
 
-  test('keeps approval-gated small work on the direct control path', () => {
+  test('routes unconfirmed approval-gated work to handoff', () => {
     expect(
       selectExecutionMode({
         objective: 'Apply a bounded policy fix',
@@ -51,7 +51,7 @@ describe('handoff and facade contracts', () => {
         requiresExternalEffect: false,
         requiresApproval: true,
       }),
-    ).toMatchObject({ mode: 'direct_control', createWorkContract: false });
+    ).toMatchObject({ mode: 'handoff_only', createHandoff: true, createWorkContract: false });
   });
 
   test('keeps small objective-only work direct instead of forcing handoff for missing scope fields', () => {
@@ -66,7 +66,7 @@ describe('handoff and facade contracts', () => {
         requiresExternalEffect: false,
         requiresApproval: false,
       }),
-    ).toMatchObject({ mode: 'direct_control', createWorkContract: false, createHandoff: false });
+    ).toMatchObject({ mode: 'direct_control', createWorkContract: true, createHandoff: false });
   });
 
   test('requires explicit user approval for architecture strategy conflicts', () => {

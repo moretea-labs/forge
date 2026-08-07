@@ -52,8 +52,10 @@ export interface GoalWorkloopContext {
   availableChecks?: readonly CheckDefinitionLike[];
   planStore?: PlanContractStoreOptions;
   sourceRevision?: string;
-  /** Runtime facade enables this for complex work; unit helpers remain reusable. */
-  requirePlanForGoalWorkloop?: boolean;
+  checkoutId?: string;
+  principalId?: string;
+  controllerInstanceId?: string;
+  workspaceFingerprint?: string;
   now?: () => string;
 }
 
@@ -235,19 +237,23 @@ export function routeWorkStart(
   const effectiveModeInput: ExecutionModeSelectionInput = {
     ...input.modeInput,
     objective: input.objective,
+    knownPaths: input.allowedPaths,
+    mutation: input.modeInput.mutation ?? input.modeInput.risk !== 'readonly',
+    approvalConfirmed: input.approvalConfirmed === true,
     requiresUserApproval: input.approvalConfirmed === true
       ? false
       : input.modeInput.requiresUserApproval === true || strategyConflictRequiresApproval,
   };
+  const selectedMode = selectExecutionMode(effectiveModeInput);
   const mode = input.forceMode
     ? {
+        ...selectedMode,
         mode: input.forceMode,
-        reason: `Forced mode: ${input.forceMode}`,
-        missingContractFields: [] as string[],
-        createWorkContract: input.forceMode === 'goal_workloop',
+        reason: `Forced mode: ${input.forceMode}. ${selectedMode.reason}`,
+        createWorkContract: input.forceMode === 'handoff_only' ? false : selectedMode.requiresWork,
         createHandoff: input.forceMode === 'handoff_only',
       }
-    : selectExecutionMode(effectiveModeInput);
+    : selectedMode;
 
   const policy = evaluatePolicyGate({
     capabilityId: mode.mode === 'direct_control' ? 'repository.direct_edit' : mode.mode === 'goal_workloop' ? 'controller.goal_workloop' : 'controller.handoff_inbox',
@@ -269,6 +275,10 @@ export function routeWorkStart(
       pathsExplicit: effectiveModeInput.scopeClear,
     },
   });
+
+  if (mode.mode === 'direct_control' && mode.createWorkContract) {
+    return startGoalWorkloop(ctx, input, policy, 'direct_control', mode.routeDecision);
+  }
 
   if (mode.mode === 'direct_control') {
     const available = ctx.availableChecks ?? [];
@@ -414,31 +424,24 @@ export function routeWorkStart(
     });
   }
 
-  return startGoalWorkloop(ctx, input, policy);
+  return startGoalWorkloop(ctx, input, policy, 'goal_workloop', mode.routeDecision);
 }
 
 export function startGoalWorkloop(
   ctx: GoalWorkloopContext,
   input: GoalWorkloopStartInput,
   policy?: PolicyDecision,
+  executionMode: 'direct_control' | 'goal_workloop' = 'goal_workloop',
+  routeDecision = selectExecutionMode({ ...input.modeInput, objective: input.objective, knownPaths: input.allowedPaths }).routeDecision,
 ): FacadeResult {
   const at = nowIso(ctx);
   const available = ctx.availableChecks ?? [];
   const normalized = normalizeCheckIds(input.checks ?? [], available);
   const workspaceMode = input.constraints?.workspaceMode ?? 'auto';
-  const needsWorktree = input.constraints?.requireWorktree
+  const needsWorktree = executionMode === 'goal_workloop' && (input.constraints?.requireWorktree
     ?? (workspaceMode === 'isolated'
-      || (workspaceMode === 'auto' && input.modeInput.requiresParallelism === true));
+      || (workspaceMode === 'auto' && input.modeInput.requiresParallelism === true)));
   const generatedWorkId = workIdFor(input.objective);
-  const planRequired = ctx.requirePlanForGoalWorkloop === true;
-  if (planRequired && (!input.planId || !input.planStepId)) {
-    return buildFacadeResult({
-      status: 'blocked',
-      summary: 'PLAN_REQUIRED: complex Goal Workloop start requires an approved plan_id and plan_step_id.',
-      data: { executionStarted: false },
-      suggestedNextActions: [{ label: 'List active plans', tool: 'rh_work', operation: 'plan_list', risk: 'readonly', confidence: 'high' }],
-    });
-  }
   if (input.planId || input.planStepId) {
     if (!input.planId || !input.planStepId || !ctx.planStore || !ctx.sourceRevision) {
       return buildFacadeResult({ status: 'blocked', summary: 'PLAN_CONTEXT_REQUIRED: plan_id, plan_step_id and a current source revision are required.', data: { executionStarted: false } });
@@ -469,7 +472,14 @@ export function startGoalWorkloop(
   const work = createWorkContract(ctx.workStore, {
     workId: generatedWorkId,
     repoId: ctx.repoId,
-    mode: 'goal_workloop',
+    checkoutId: ctx.checkoutId,
+    principalId: ctx.principalId,
+    controllerInstanceId: ctx.controllerInstanceId,
+    baseRevision: ctx.sourceRevision,
+    workspaceFingerprint: ctx.workspaceFingerprint,
+    routeDecisionFingerprint: routeDecision.inputFingerprint,
+    routeDecision,
+    mode: executionMode,
     objective: input.objective,
     acceptanceCriteria: input.acceptanceCriteria ?? [],
     constraints: input.constraints ?? { requireHandoffOnAmbiguity: true },
@@ -486,9 +496,11 @@ export function startGoalWorkloop(
     forbiddenPaths: input.forbiddenPaths ?? [],
     checks: normalized.validCheckIds,
     driver: {
-      preferred: input.modeInput.requiresWorker === true ? 'external_controller' : needsWorktree ? 'isolated_worktree' : 'direct_edit',
+      preferred: executionMode === 'direct_control'
+        ? 'direct_edit'
+        : input.modeInput.requiresWorker === true ? 'external_controller' : needsWorktree ? 'isolated_worktree' : 'direct_edit',
       allowWorker: false,
-      allowDirectEdit: input.modeInput.requiresWorker !== true && !needsWorktree,
+      allowDirectEdit: executionMode === 'direct_control' || (input.modeInput.requiresWorker !== true && !needsWorktree),
     },
     worktreePolicy: {
       required: needsWorktree,
@@ -526,9 +538,21 @@ export function startGoalWorkloop(
 
   return buildFacadeResult({
     status: 'ok',
-    summary: `Goal workloop started as ${updated.workId}.`,
+    summary: executionMode === 'direct_control'
+      ? `Direct-control Work lineage started as ${updated.workId}.`
+      : `Goal workloop started as ${updated.workId}.`,
     data: {
-      mode: { mode: 'goal_workloop', reason: 'WorkContract created for multi-step recoverable work.', createWorkContract: true, createHandoff: false, missingContractFields: [] },
+      mode: {
+        mode: executionMode,
+        reason: executionMode === 'direct_control'
+          ? 'A lightweight WorkContract records the mutation while execution stays on Direct Control.'
+          : 'WorkContract created for multi-step recoverable work.',
+        createWorkContract: true,
+        createHandoff: false,
+        missingContractFields: [],
+        requiresWork: true,
+        routeDecision,
+      },
       workContractCreated: true,
       work: summarizeWorkContract(updated),
       worktreeRequired: updated.worktreePolicy.required,

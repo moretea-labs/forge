@@ -66,11 +66,39 @@ export interface EditSessionCheckRecord {
   receipt?: ProcessCheckCompletionReceipt;
 }
 
+export interface EditSessionAssurance {
+  changedPaths: string[];
+  protectedPaths: string[];
+  changedLines: number;
+  semanticRisk: 'low' | 'medium' | 'high';
+  requiredChecks: string[];
+  approvalRequired: boolean;
+  verificationDepth: 'focused' | 'expanded' | 'architecture';
+  calculatedAt: string;
+}
+
+export interface EditSessionBinding {
+  workId?: string;
+  repoId?: string;
+  checkoutId?: string;
+  principalId?: string;
+  controllerInstanceId?: string;
+  routeDecisionFingerprint?: string;
+}
+
 export interface EditSession {
   schemaVersion: 3;
   sessionId: string;
   issueId?: string;
   taskId?: string;
+  workId?: string;
+  repoId?: string;
+  checkoutId?: string;
+  principalId?: string;
+  controllerInstanceId?: string;
+  routeDecisionFingerprint?: string;
+  workspaceFingerprint?: string;
+  assurance?: EditSessionAssurance;
   purpose: string;
   status: EditSessionStatus;
   allowedPaths: string[];
@@ -184,6 +212,60 @@ function hash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
+const ASSURANCE_PROTECTED_PATH = /(^|\/)(\.github|\.git|package-lock\.json|bun\.lock|pnpm-lock\.yaml|yarn\.lock|.*\.xcodeproj|.*\.xcworkspace)(\/|$)/;
+
+function workspaceFingerprint(repoRoot: string): string {
+  const head = gitRevision(repoRoot) ?? 'unborn';
+  const status = runProcess('git', ['status', '--porcelain=v1', '-z', '--untracked-files=all'], {
+    cwd: repoRoot,
+    timeoutMs: 10_000,
+    maxOutputBytes: 4 * 1024 * 1024,
+  });
+  if (!status.ok) throw new Error(`EDIT_SESSION_WORKSPACE_FINGERPRINT_FAILED: ${status.error || status.stderr}`);
+  return hash(`${head}\0${status.stdout}`);
+}
+
+function calculateAssurance(session: EditSession, at: string): EditSessionAssurance {
+  const changedPaths = [...new Set(session.operations.map((operation) => operation.path))].sort();
+  const protectedPaths = changedPaths.filter((path) => ASSURANCE_PROTECTED_PATH.test(path));
+  const changedLines = session.operations.reduce((sum, operation) => sum + operation.changedLines, 0);
+  const semanticRisk: EditSessionAssurance['semanticRisk'] = protectedPaths.length > 0 || changedLines > 2_000
+    ? 'high'
+    : changedLines > 500 || changedPaths.length > 10
+      ? 'medium'
+      : 'low';
+  const requiredChecks = [...new Set([
+    ...session.requestedChecks,
+    ...(semanticRisk !== 'low' ? ['package:check:type'] : []),
+    ...(protectedPaths.length > 0 ? ['package:check:runtime-architecture'] : []),
+  ])].sort();
+  return {
+    changedPaths,
+    protectedPaths,
+    changedLines,
+    semanticRisk,
+    requiredChecks,
+    approvalRequired: protectedPaths.length > 0 || changedLines > 2_000,
+    verificationDepth: protectedPaths.length > 0 ? 'architecture' : semanticRisk === 'medium' ? 'expanded' : 'focused',
+    calculatedAt: at,
+  };
+}
+
+function assertSessionIdentity(session: EditSession, binding: EditSessionBinding | undefined): void {
+  if (!binding) return;
+  const pairs: Array<[keyof EditSessionBinding, string | undefined, string | undefined]> = [
+    ['workId', session.workId, binding.workId],
+    ['repoId', session.repoId, binding.repoId],
+    ['checkoutId', session.checkoutId, binding.checkoutId],
+    ['principalId', session.principalId, binding.principalId],
+    ['controllerInstanceId', session.controllerInstanceId, binding.controllerInstanceId],
+    ['routeDecisionFingerprint', session.routeDecisionFingerprint, binding.routeDecisionFingerprint],
+  ];
+  for (const [field, expected, observed] of pairs) {
+    if (expected && expected !== observed) throw new Error(`EDIT_SESSION_IDENTITY_MISMATCH: ${String(field)}`);
+  }
+}
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -243,6 +325,14 @@ function normalizeStoredSession(value: Partial<EditSession> & { sessionId: strin
     sessionId: value.sessionId,
     issueId: value.issueId,
     taskId: value.taskId,
+    workId: value.workId,
+    repoId: value.repoId,
+    checkoutId: value.checkoutId,
+    principalId: value.principalId,
+    controllerInstanceId: value.controllerInstanceId,
+    routeDecisionFingerprint: value.routeDecisionFingerprint,
+    workspaceFingerprint: value.workspaceFingerprint,
+    assurance: value.assurance,
     purpose: value.purpose ?? 'Direct edit',
     status: normalizeLegacyStatus(value.status),
     allowedPaths: value.allowedPaths ?? [],
@@ -919,6 +1009,7 @@ export function beginEditSession(repoRoot: string, input: {
   maxFiles?: number;
   maxChangedLines?: number;
   checks?: string[];
+  binding?: EditSessionBinding;
 }): EditSession {
   const purpose = input.purpose.trim();
   if (!purpose) throw new Error('edit session purpose is required');
@@ -928,6 +1019,13 @@ export function beginEditSession(repoRoot: string, input: {
     sessionId: `EDIT-${Date.now()}-${randomBytes(4).toString('hex')}`,
     issueId: input.issueId?.trim() || undefined,
     taskId: input.taskId?.trim() || undefined,
+    workId: input.binding?.workId?.trim() || undefined,
+    repoId: input.binding?.repoId?.trim() || undefined,
+    checkoutId: input.binding?.checkoutId?.trim() || undefined,
+    principalId: input.binding?.principalId?.trim() || undefined,
+    controllerInstanceId: input.binding?.controllerInstanceId?.trim() || undefined,
+    routeDecisionFingerprint: input.binding?.routeDecisionFingerprint?.trim() || undefined,
+    workspaceFingerprint: workspaceFingerprint(repoRoot),
     purpose,
     status: 'open',
     allowedPaths: Array.from(new Set((input.allowedPaths ?? []).map((item) => item.trim()).filter(Boolean))),
@@ -996,6 +1094,7 @@ export function getEditSessionDiff(repoRoot: string, sessionId: string): {
 export function applyEditOperations(repoRoot: string, policy: McpPolicy, sessionId: string, operations: EditOperation[], options: {
   expectedRevision?: number;
   maxBatchOperations?: number;
+  binding?: EditSessionBinding;
 } = {}): EditSession {
   const session = getEditSession(repoRoot, sessionId);
   if (['finalized', 'rolled_back'].includes(session.status)) throw new Error(`edit session is closed: ${session.status}`);
@@ -1031,6 +1130,9 @@ export function applyEditOperations(repoRoot: string, policy: McpPolicy, session
   }
   const uniquePaths = new Set(operations.map((operation) => operation.path));
   if (uniquePaths.size !== operations.length) throw new Error('each path may appear only once per patch batch');
+  assertSessionIdentity(session, options.binding);
+  if (session.baseRevision && gitRevision(repoRoot) !== session.baseRevision) throw new Error('EDIT_SESSION_BASE_REVISION_CHANGED');
+  if (session.workspaceFingerprint && workspaceFingerprint(repoRoot) !== session.workspaceFingerprint) throw new Error('EDIT_SESSION_WORKSPACE_FINGERPRINT_CHANGED');
   try {
     assertCurrentHashes(repoRoot, session);
   } catch (error) {
@@ -1276,6 +1378,9 @@ export function applyEditOperations(repoRoot: string, policy: McpPolicy, session
   session.appliedAt = session.appliedAt ?? at;
   session.verifiedAt = undefined;
   session.checkResults = [];
+  session.assurance = calculateAssurance(session, at);
+  session.requestedChecks = session.assurance.requiredChecks;
+  session.workspaceFingerprint = workspaceFingerprint(repoRoot);
   session.updatedAt = at;
   if (firstRevision) persistAggregatePatchContent(repoRoot, session, revisionPatch);
   else persistAggregatePatch(repoRoot, session);
@@ -1446,6 +1551,9 @@ export function rollbackEditSession(repoRoot: string, sessionId: string, input: 
   session.verifiedAt = undefined;
   session.reviewer = undefined;
   session.reviewNote = undefined;
+  session.assurance = target === 0 ? undefined : calculateAssurance(session, at);
+  session.requestedChecks = session.assurance?.requiredChecks ?? session.requestedChecks;
+  session.workspaceFingerprint = workspaceFingerprint(repoRoot);
   session.updatedAt = at;
   if (target === 0) {
     session.status = 'rolled_back';
@@ -1471,8 +1579,14 @@ export function rollbackEditSession(repoRoot: string, sessionId: string, input: 
 export function finalizeEditSession(repoRoot: string, sessionId: string, input: {
   reviewer?: string;
   note?: string;
+  approvalConfirmed?: boolean;
+  binding?: EditSessionBinding;
 } = {}): EditSession {
   const session = getEditSession(repoRoot, sessionId);
+  assertSessionIdentity(session, input.binding);
+  if (session.baseRevision && gitRevision(repoRoot) !== session.baseRevision) throw new Error('EDIT_SESSION_BASE_REVISION_CHANGED');
+  if (session.workspaceFingerprint && workspaceFingerprint(repoRoot) !== session.workspaceFingerprint) throw new Error('EDIT_SESSION_WORKSPACE_FINGERPRINT_CHANGED');
+  if (session.assurance?.approvalRequired && input.approvalConfirmed !== true) throw new Error('EDIT_SESSION_APPROVAL_REQUIRED');
   const emptyOpenSession = session.status === 'open' && session.operations.length === 0;
   if (!emptyOpenSession && !['dirty', 'checked', 'check_failed'].includes(session.status)) {
     throw new Error(`edit session cannot be finalized from ${session.status}`);

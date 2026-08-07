@@ -434,6 +434,17 @@ export async function runTestSelection(
   const capability = capabilitySignature();
   let failures = 0;
   let cacheHits = 0;
+  const cacheProvenance: Array<{
+    file: string;
+    checkpointKey: string;
+    checkpointPath: string;
+    inputDigest: string;
+    testDigest: string;
+    runnerDigest: string;
+    completedAt: string;
+    durationMs: number;
+    attempts: number;
+  }> = [];
   let contaminated = false;
   let serialEquivalentMs = 0;
   const runStartedAt = performance.now();
@@ -451,7 +462,19 @@ export async function runTestSelection(
     if (cachedCheckpoint) {
       cacheHits += 1;
       serialEquivalentMs += cachedCheckpoint.durationMs;
-      console.error(`[tests] cache hit ${file}`);
+      const checkpointRelativePath = relative(repoRoot, checkpointPath).replace(/\\/g, '/');
+      cacheProvenance.push({
+        file,
+        checkpointKey: cachedCheckpoint.key,
+        checkpointPath: checkpointRelativePath,
+        inputDigest: cachedCheckpoint.inputDigest,
+        testDigest: cachedCheckpoint.testDigest,
+        runnerDigest: cachedCheckpoint.runnerDigest,
+        completedAt: cachedCheckpoint.completedAt,
+        durationMs: cachedCheckpoint.durationMs,
+        attempts: cachedCheckpoint.attempts,
+      });
+      console.error(`[tests] cache hit ${file} key=${cachedCheckpoint.key.slice(0, 16)} completedAt=${cachedCheckpoint.completedAt} evidence=${checkpointRelativePath}`);
       return;
     }
 
@@ -584,6 +607,7 @@ export async function runTestSelection(
     status: failures === 0 && !contaminated ? 'passed' : 'failed',
     selected: selection.files.length,
     cacheHits,
+    cacheProvenance: cacheProvenance.sort((left, right) => left.file.localeCompare(right.file)),
     failures,
     modules: selection.modules,
     durationMs,

@@ -300,6 +300,8 @@ export interface StructuredProviderOutput {
 }
 
 export interface ExecutorRouteInput {
+  /** Migration/testing escape hatch: adapters must return this exact policy decision. */
+  routePolicyInput?: import('../routing/route-policy').RoutePolicyInput;
   goal: Pick<
     GoalContract,
     | 'goalId'
@@ -351,6 +353,8 @@ export interface ExecutorRouteDecision {
   waitForUser: boolean;
   approvalState: ApprovalState;
   alternatives: string[];
+  /** Replayable evidence from the single Route Policy authority. */
+  routeDecision: import('../routing/route-policy').RouteDecision;
 }
 
 export interface GoalLoopTickResult {

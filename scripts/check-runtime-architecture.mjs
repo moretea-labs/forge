@@ -55,6 +55,8 @@ const required = [
   'src/runtime/execution/workers/worker-entry.ts',
   'src/runtime/execution/thin-harness/index.ts',
   'src/runtime/execution/thin-harness/execution-router.ts',
+  'src/runtime/control-plane/routing/route-policy.ts',
+  'docs/architecture/current/route-policy.md',
   'docs/architecture/current/thin-harness-v1.md',
   'src/runtime/resources/leases/store.ts',
   'src/runtime/evidence/event-ledger.ts',
@@ -91,6 +93,24 @@ const required = [
   'docs/architecture/current/approved-target-architecture.zh-CN.md',
 ];
 for (const path of required) text(path);
+requireText('src/runtime/control-plane/routing/route-policy.ts', "export function decideRoute");
+requireText('src/runtime/control-plane/routing/route-policy.ts', 'inputFingerprint');
+requireText('src/runtime/control-plane/routing/route-policy.ts', 'policyVersion');
+for (const adapter of [
+  'src/cli/controller/work-mode.ts',
+  'src/runtime/control-plane/facade/types.ts',
+  'src/runtime/control-plane/goal-loop/executor-router.ts',
+]) {
+  requireText(adapter, '@deprecated Compatibility adapter');
+  requireText(adapter, 'decideRoute(');
+  forbid(adapter, /expectedFiles\s*>|expectedChangedLines\s*>|KIND_RANK|providerOrder\s*\(/, 'delegate all routing thresholds and provider selection to Route Policy');
+}
+let routeAuthorityCount = 0;
+for (const path of sourceFiles('src')) {
+  routeAuthorityCount += (text(path).match(/export function decideRoute\s*\(/g) ?? []).length;
+  forbid(path, /requirePlanForGoalWorkloop\s*:\s*true/, 'never restore mandatory Plan gating in production');
+}
+if (routeAuthorityCount !== 1) failures.push(`exactly one decideRoute authority is required; found ${routeAuthorityCount}`);
 requireMissing('src/runtime/control-plane/daemon-entry.ts');
 requireMissing('scripts/smoke-runtime-control-plane.ts');
 requireMissing('src/cli/controller/lifecycle.ts');

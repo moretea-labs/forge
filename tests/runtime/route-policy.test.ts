@@ -1,0 +1,248 @@
+import { afterEach, describe, expect, test } from 'bun:test';
+import { execFileSync } from 'child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { assessWorkMode } from '../../src/cli/controller/work-mode';
+import { applyEditOperations, beginEditSession, finalizeEditSession } from '../../src/cli/editing/edit-session';
+import { getMcpPolicy } from '../../src/cli/mcp/policy';
+import { routeWorkStart } from '../../src/runtime/control-plane/facade/goal-workloop';
+import { approvePlanContract, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
+import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { selectExecutionMode } from '../../src/runtime/control-plane/facade/types';
+import { routeExecutor } from '../../src/runtime/control-plane/goal-loop/executor-router';
+import { decideRoute, type RoutePolicyInput } from '../../src/runtime/control-plane/routing/route-policy';
+
+const roots: string[] = [];
+afterEach(() => {
+  while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
+});
+
+function temp(prefix: string): string {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  roots.push(root);
+  return root;
+}
+
+function sharedInput(overrides: Partial<RoutePolicyInput> = {}): RoutePolicyInput {
+  return {
+    intent: {
+      objective: 'Apply a bounded repository fix',
+      scopeClear: true,
+      mutation: true,
+      expectedFiles: 2,
+      expectedChangedLines: 80,
+    },
+    workspace: { knownPaths: ['src/example.ts'], checkoutId: 'checkout-a', fingerprint: 'workspace-a' },
+    policy: { risk: 'local_repo_write' },
+    capabilities: {},
+    recovery: {},
+    ...overrides,
+  };
+}
+
+function executorInput(routePolicyInput: RoutePolicyInput) {
+  return {
+    routePolicyInput,
+    goal: {
+      goalId: 'goal-a',
+      repoId: 'repo-a',
+      mode: 'supervised' as const,
+      status: 'ready' as const,
+      objective: routePolicyInput.intent.objective,
+      constraints: {},
+      allowedExecutors: [],
+      forbiddenExecutors: [],
+      repairAttempts: 0,
+      retryBudget: 1,
+    },
+    taskIntent: 'code_implementation' as const,
+    risk: 'local_repo_write' as const,
+    providers: [],
+  };
+}
+
+describe('single Route Policy authority', () => {
+  test('returns the identical replayable RouteDecision through all three legacy adapters', () => {
+    const input = sharedInput();
+    const cli = assessWorkMode({ description: input.intent.objective, routePolicyInput: input }).routeDecision;
+    const facade = selectExecutionMode({ scopeClear: true, routePolicyInput: input }).routeDecision;
+    const goal = routeExecutor(executorInput(input)).routeDecision;
+
+    expect(cli).toEqual(facade);
+    expect(goal).toEqual(facade);
+    expect(cli.inputFingerprint).toHaveLength(64);
+    expect(JSON.parse(JSON.stringify(cli))).toEqual(cli);
+  });
+
+  test('keeps simple mutation direct but requires lightweight Work lineage', () => {
+    expect(decideRoute(sharedInput())).toMatchObject({
+      executionMode: 'direct_control',
+      executionPath: 'fast',
+      requiresWork: true,
+      requiresIsolation: false,
+    });
+    expect(decideRoute(sharedInput({
+      intent: { objective: 'Read repository status', scopeClear: true, mutation: false },
+      policy: { risk: 'readonly' },
+    }))).toMatchObject({ executionMode: 'direct_control', requiresWork: false });
+  });
+
+  test('allows complex Goal Workloop execution without a Plan while explicit Plan remains optional', () => {
+    const root = temp('route-workloop-');
+    const result = routeWorkStart({
+      workStore: { root: join(root, 'work') },
+      handoffStore: { root: join(root, 'handoff') },
+      repoId: 'repo-a',
+      checkoutId: 'checkout-a',
+      principalId: 'principal-a',
+      controllerInstanceId: 'controller-a',
+      sourceRevision: 'revision-a',
+      availableChecks: [{ id: 'package:check:type' }],
+    }, {
+      objective: 'Refactor the durable routing layer',
+      acceptanceCriteria: ['One route authority'],
+      allowedPaths: ['src/runtime/control-plane/**'],
+      checks: ['package:check:type'],
+      modeInput: {
+        scopeClear: true,
+        mutation: true,
+        expectedFiles: 8,
+        expectedChangedLines: 500,
+        requiresInvestigation: true,
+        requiresRecovery: true,
+        risk: 'local_repo_write',
+      },
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.summary).toContain('Goal workloop started');
+    expect(result.summary).not.toContain('PLAN_REQUIRED');
+    expect(result.data).toMatchObject({ workContractCreated: true });
+  });
+
+  test('still binds an explicitly approved Plan step while old Plan and Work shapes remain readable', () => {
+    const root = temp('route-planned-workloop-');
+    const planStore = { root: join(root, 'plan') };
+    createPlanContract(planStore, {
+      planId: 'plan-a', repoId: 'repo-a', scopeKey: 'route-policy', sourceRevision: 'revision-a', goal: 'Review the routing strategy first',
+      steps: [{
+        id: 'step-a', objective: 'Implement the approved route policy', dependencies: [], authoritativeFiles: [],
+        allowedPaths: ['src/runtime/control-plane/**'], forbiddenPaths: [], checks: ['package:check:type'],
+        acceptanceCriteria: ['One route authority'],
+      }],
+    });
+    approvePlanContract(planStore, 'plan-a');
+    const result = routeWorkStart({
+      workStore: { root: join(root, 'work') },
+      handoffStore: { root: join(root, 'handoff') },
+      planStore,
+      repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a', controllerInstanceId: 'controller-a',
+      sourceRevision: 'revision-a', availableChecks: [{ id: 'package:check:type' }],
+    }, {
+      objective: 'Implement the approved route policy', planId: 'plan-a', planStepId: 'step-a',
+      acceptanceCriteria: ['One route authority'], allowedPaths: ['src/runtime/control-plane/**'], checks: ['package:check:type'],
+      modeInput: { scopeClear: true, mutation: true, expectedFiles: 8, expectedChangedLines: 500, requiresRecovery: true, risk: 'local_repo_write' },
+    });
+    const workId = (result.data as { work?: { workId?: string } }).work?.workId;
+    expect(result.status).toBe('ok');
+    expect(workId).toBeTruthy();
+    expect(getPlanContract(planStore, 'plan-a')?.steps[0]).toMatchObject({ status: 'executing', workId });
+    expect(getWorkContract({ root: join(root, 'work') }, workId!)).toMatchObject({
+      repoId: 'repo-a', planId: 'plan-a', planStepId: 'step-a', mode: 'goal_workloop',
+    });
+  });
+
+  test('does not let missing Plan bypass policy, destructive, or remote-write approval', () => {
+    expect(decideRoute(sharedInput({
+      policy: { risk: 'destructive', destructive: true, requiresApproval: true },
+    }))).toMatchObject({ executionMode: 'handoff_only', requiresApproval: true, createHandoff: true });
+    expect(decideRoute(sharedInput({
+      policy: { risk: 'remote_write', remoteWrite: true, requiresApproval: true },
+    }))).toMatchObject({ executionMode: 'handoff_only', requiresApproval: true, createHandoff: true });
+  });
+
+  test('uses deterministic provider fallback and never selects unavailable providers', () => {
+    const decision = decideRoute(sharedInput({
+      intent: {
+        objective: 'Implement the change', scopeClear: true, mutation: true,
+        taskIntent: 'code_implementation', agentRequested: true,
+      },
+      capabilities: {
+        providers: [
+          { providerId: 'codex', kind: 'local_cli', status: 'unavailable', capabilities: ['code_patch'], directDispatch: true },
+          { providerId: 'claude', kind: 'remote_api', status: 'ready', capabilities: ['code_patch'], directDispatch: true },
+        ],
+        routingOrders: { implementation: ['codex', 'claude'] },
+      },
+    }));
+    expect(decision.selectedProviderId).toBe('claude');
+    expect(decision.alternatives).toEqual(['claude']);
+  });
+
+  test('blocks implicit dirty-workspace adoption', () => {
+    const decision = decideRoute(sharedInput({ workspace: { dirty: true, checkoutId: 'checkout-a', fingerprint: 'dirty-a' } }));
+    expect(decision).toMatchObject({ executionMode: 'handoff_only', requiresIsolation: true, createHandoff: true });
+    expect(decision.reasons.map((reason) => reason.code)).toContain('dirty_workspace_requires_explicit_adoption');
+  });
+
+  test('produces a stable fingerprint independent of object insertion order', () => {
+    const first = decideRoute(sharedInput());
+    const second = decideRoute({
+      recovery: {}, capabilities: {}, policy: { risk: 'local_repo_write' },
+      workspace: { fingerprint: 'workspace-a', checkoutId: 'checkout-a', knownPaths: ['src/example.ts'] },
+      intent: {
+        expectedChangedLines: 80, expectedFiles: 2, mutation: true,
+        scopeClear: true, objective: 'Apply a bounded repository fix',
+      },
+    });
+    expect(first.inputFingerprint).toBe(second.inputFingerprint);
+    expect(first.policyVersion).toBe(second.policyVersion);
+  });
+});
+
+describe('EditSession identity and post-diff assurance', () => {
+  function gitRepo(): string {
+    const root = temp('route-edit-');
+    execFileSync('git', ['init', '-q'], { cwd: root });
+    execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: root });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: root });
+    writeFileSync(join(root, 'README.md'), '# Test\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: root });
+    execFileSync('git', ['commit', '-qm', 'initial'], { cwd: root });
+    return root;
+  }
+
+  test('blocks patch execution when workspace fingerprint changes', () => {
+    const root = gitRepo();
+    const session = beginEditSession(root, {
+      purpose: 'Bound edit', allowedPaths: ['src/**'],
+      binding: { workId: 'work-a', repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a' },
+    });
+    writeFileSync(join(root, 'outside.txt'), 'unowned change\n');
+    expect(() => applyEditOperations(root, getMcpPolicy('executor'), session.sessionId, [
+      { type: 'create', path: 'src/example.ts', content: 'export const value = 1;\n' },
+    ], {
+      binding: { workId: 'work-a', repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a' },
+    })).toThrow('EDIT_SESSION_WORKSPACE_FINGERPRINT_CHANGED');
+  });
+
+  test('raises assurance when the real diff touches a protected path', () => {
+    const root = gitRepo();
+    const session = beginEditSession(root, {
+      purpose: 'Workflow edit', allowedPaths: ['.github/**'],
+      binding: { workId: 'work-a', repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a' },
+    });
+    const updated = applyEditOperations(root, getMcpPolicy('controller'), session.sessionId, [
+      { type: 'create', path: '.github/protected.yml', content: 'name: checks\n' },
+    ], {
+      binding: { workId: 'work-a', repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a' },
+    });
+    expect(updated.assurance).toMatchObject({ semanticRisk: 'high', approvalRequired: true, verificationDepth: 'architecture' });
+    expect(updated.requestedChecks).toContain('package:check:runtime-architecture');
+    expect(() => finalizeEditSession(root, session.sessionId, {
+      binding: { workId: 'work-a', repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a' },
+    })).toThrow('EDIT_SESSION_APPROVAL_REQUIRED');
+    expect(readFileSync(join(root, '.github/protected.yml'), 'utf8')).toContain('checks');
+  });
+});

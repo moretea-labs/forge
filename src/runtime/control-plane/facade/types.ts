@@ -1,6 +1,7 @@
 import type { ProcessCheckReceiptEvidence } from '../../evidence/process-check-receipt';
 import type { CompletionReceipt } from '../../../cli/controller/types';
 import type { AccessMode } from '../governance/access-policy';
+import { decideRoute, type RouteDecision, type RoutePolicyInput } from '../routing/route-policy';
 
 export const EXECUTION_MODES = ['direct_control', 'goal_workloop', 'handoff_only'] as const;
 export type ExecutionMode = (typeof EXECUTION_MODES)[number];
@@ -353,6 +354,14 @@ export interface WorkContract {
   schemaVersion: 1 | 2;
   workId: string;
   repoId: string;
+  /** Execution identity snapshot. Optional only for legacy records. */
+  checkoutId?: string;
+  principalId?: string;
+  controllerInstanceId?: string;
+  baseRevision?: string;
+  workspaceFingerprint?: string;
+  routeDecisionFingerprint?: string;
+  routeDecision?: RouteDecision;
   mode: ExecutionMode;
   objective: string;
   acceptanceCriteria: string[];
@@ -567,6 +576,10 @@ export interface ExecutionModeSelectionInput {
   expectedFiles?: number;
   expectedChangedLines?: number;
   scopeClear: boolean;
+  knownPaths?: string[];
+  workspaceDirty?: boolean;
+  workspaceFingerprint?: string;
+  checkoutId?: string;
   requiresInvestigation?: boolean;
   requiresLongRunningChecks?: boolean;
   requiresParallelism?: boolean;
@@ -577,10 +590,14 @@ export interface ExecutionModeSelectionInput {
   requiresExternalEffect?: boolean;
   requiresApproval?: boolean;
   requiresUserApproval?: boolean;
+  approvalConfirmed?: boolean;
   destructive?: boolean;
   remoteWrite?: boolean;
   secretAccess?: boolean;
+  mutation?: boolean;
   risk?: CapabilityRisk;
+  /** Migration/testing escape hatch: adapters must return this exact policy decision. */
+  routePolicyInput?: RoutePolicyInput;
 }
 
 export interface ExecutionModeSelection {
@@ -589,6 +606,8 @@ export interface ExecutionModeSelection {
   missingContractFields: string[];
   createWorkContract: boolean;
   createHandoff: boolean;
+  requiresWork: boolean;
+  routeDecision: RouteDecision;
 }
 
 export function isTerminalHandoffStatus(status: HandoffStatus): boolean {
@@ -599,80 +618,55 @@ export function isTerminalWorkContractStatus(status: WorkContractStatus): boolea
   return TERMINAL_WORK_CONTRACT_STATUSES.includes(status);
 }
 
+/** @deprecated Compatibility adapter. Route Policy is the sole routing authority. */
 export function selectExecutionMode(input: ExecutionModeSelectionInput): ExecutionModeSelection {
-  const expectedFiles = input.expectedFiles ?? 0;
-  const expectedChangedLines = input.expectedChangedLines ?? 0;
-  const requiresApproval = input.requiresApproval === true || input.requiresUserApproval === true;
-  const highRisk =
-    input.destructive === true
-    || input.remoteWrite === true
-    || input.secretAccess === true
-    || input.risk === 'destructive'
-    || input.risk === 'destructive_remote'
-    || input.risk === 'remote_write'
-    || input.risk === 'raw_secret_config';
-
-  const objectiveClear = input.objective === undefined ? input.scopeClear : input.objective.trim().length > 0;
   const missingContractFields: string[] = [];
   if (!input.scopeClear) missingContractFields.push('scopeSummary', 'acceptanceCriteria', 'allowedPaths');
   if (input.objective !== undefined && input.objective.trim().length === 0) missingContractFields.push('objective');
-
-  if (input.requiresUserApproval === true) {
-    return {
-      mode: 'handoff_only',
-      reason: 'The request changes or conflicts with user-approved architecture strategy and requires explicit user approval before execution.',
-      missingContractFields: [],
-      createWorkContract: false,
-      createHandoff: true,
-    };
-  }
-
-  if (!objectiveClear || (highRisk && requiresApproval && !input.scopeClear)) {
-    return {
-      mode: 'handoff_only',
-      reason: 'The request is underspecified, high-risk without clear scope, or missing authorization and needs ChatGPT or user clarification before execution.',
-      missingContractFields: missingContractFields.length ? missingContractFields : ['scopeSummary'],
-      createWorkContract: false,
-      createHandoff: true,
-    };
-  }
-
-  if (highRisk && requiresApproval) {
-    return {
-      mode: 'handoff_only',
-      reason: 'High-risk side effects require explicit authorization before any work contract or direct edit starts.',
-      missingContractFields: [],
-      createWorkContract: false,
-      createHandoff: true,
-    };
-  }
-
-  const complex =
-    input.requiresRecovery === true
-    || input.requiresWorker === true
-    || input.requiresExternalEffect === true
-    || input.requiresInvestigation === true
-    || input.requiresLongRunningChecks === true
-    || input.requiresParallelism === true
-    || input.needsDependencies === true
-    || expectedFiles > 3
-    || expectedChangedLines > 200;
-
-  if (!complex) {
-    return {
-      mode: 'direct_control',
-      reason: 'Small, clear, supervised work should stay on the fast direct-control path.',
-      missingContractFields: [],
-      createWorkContract: false,
-      createHandoff: false,
-    };
-  }
-
+  const routeDecision = decideRoute(input.routePolicyInput ?? {
+    intent: {
+      objective: input.objective ?? (input.scopeClear ? 'bounded repository work' : 'repository work requiring discovery'),
+      scopeClear: input.scopeClear,
+      mutation: input.mutation ?? input.risk !== 'readonly',
+      expectedFiles: input.expectedFiles,
+      expectedChangedLines: input.expectedChangedLines,
+      requiresInvestigation: input.requiresInvestigation,
+      requiresLongRunningChecks: input.requiresLongRunningChecks,
+      requiresParallelism: input.requiresParallelism,
+      needsDependencies: input.needsDependencies,
+      agentRequested: input.requiresWorker,
+    },
+    workspace: {
+      knownPaths: input.knownPaths,
+      dirty: input.workspaceDirty,
+      checkoutId: input.checkoutId,
+      fingerprint: input.workspaceFingerprint,
+    },
+    policy: {
+      risk: input.risk,
+      requiresApproval: input.requiresApproval,
+      requiresUserApproval: input.requiresUserApproval,
+      approvalConfirmed: input.approvalConfirmed,
+      destructive: input.destructive,
+      remoteWrite: input.remoteWrite,
+      secretAccess: input.secretAccess,
+    },
+    capabilities: {
+      requiresWorker: input.requiresWorker,
+      requiresExternalEffect: input.requiresExternalEffect,
+    },
+    recovery: {
+      required: input.requiresRecovery,
+      isolationRequired: input.requiresParallelism,
+    },
+  });
   return {
-    mode: 'goal_workloop',
-    reason: 'The request benefits from recovery, isolation, worker execution, approval, investigation, or background continuation.',
-    missingContractFields: [],
-    createWorkContract: true,
-    createHandoff: false,
+    mode: routeDecision.executionMode,
+    reason: routeDecision.reasons.map((reason) => reason.message).join(' '),
+    missingContractFields: routeDecision.executionMode === 'handoff_only' && missingContractFields.length > 0 ? missingContractFields : [],
+    createWorkContract: routeDecision.requiresWork,
+    createHandoff: routeDecision.createHandoff,
+    requiresWork: routeDecision.requiresWork,
+    routeDecision,
   };
 }

@@ -71,6 +71,8 @@ import {
 import { normalizeCheckIds } from '../../runtime/control-plane/facade/check-normalization';
 import { buildExecutionDiagnostics, buildRequirementBoard } from '../../runtime/control-plane/facade/requirement-board';
 import { acceptVerifiedTaskFromControllerWork } from '../../runtime/control-plane/execution/work-task-receipt';
+import { createWorkContract, getWorkContract } from '../../runtime/control-plane/facade/work-contract-store';
+import { decideRoute } from '../../runtime/control-plane/routing/route-policy';
 import { listCapabilityDescriptors, summarizeCapabilityGroups } from '../../runtime/control-plane/facade/capability-registry';
 import {
   getControllerTimeline,
@@ -2669,6 +2671,7 @@ export function buildMcpToolDefinitions(
           type: "object",
           properties: {
             purpose: { type: "string" },
+            work_id: { type: "string", description: "Optional existing WorkContract. Omit to create lightweight direct-control Work lineage." },
             issue_id: { type: "string" },
             task_id: { type: "string" },
             allowed_paths: { type: "array", items: { type: "string" } },
@@ -2825,6 +2828,7 @@ export function buildMcpToolDefinitions(
             session_id: { type: "string" },
             reviewer: { type: "string" },
             note: { type: "string" },
+            confirm_authorization: { type: "boolean", description: "Required when post-diff assurance detects protected paths or high semantic risk." },
           },
           required: ["session_id"],
           additionalProperties: false,
@@ -4698,19 +4702,81 @@ export async function callMcpTool(
             "TOOL_DISABLED",
             "begin_edit_session requires the controller profile",
           );
+        const purpose = String(args.purpose ?? "").trim();
+        const repoId = ctx.repoId?.trim();
+        if (!repoId) return errorResult("REPOSITORY_ID_REQUIRED", "begin_edit_session requires a bound repository identity");
+        const controllerHome = resolveRepoPreferredControllerHome(ctx.repoRoot);
+        const allowedPaths = stringList(args.allowed_paths);
+        const checks = stringList(args.checks);
+        const git = gitSnapshot(ctx.repoRoot);
+        const workspaceIdentity = createHash("sha256").update(JSON.stringify(git)).digest("hex");
+        const routeDecision = decideRoute({
+          intent: {
+            objective: purpose,
+            scopeClear: allowedPaths.length > 0,
+            mutation: true,
+            expectedFiles: typeof args.max_files === "number" ? args.max_files : allowedPaths.length,
+            expectedChangedLines: typeof args.max_changed_lines === "number" ? args.max_changed_lines : undefined,
+          },
+          workspace: { knownPaths: allowedPaths, checkoutId: ctx.checkoutId, fingerprint: workspaceIdentity },
+          policy: { risk: "local_repo_write", approvalConfirmed: true },
+          capabilities: {},
+          recovery: {},
+        });
+        const requestedWorkId = typeof args.work_id === "string" ? args.work_id.trim() : "";
+        const workId = requestedWorkId || `work-direct-${createHash("sha256").update(`${repoId}\0${purpose}\0${Date.now()}`).digest("hex").slice(0, 16)}`;
+        const workStore = { controllerHome, repoId };
+        const existingWork = getWorkContract(workStore, workId);
+        if (requestedWorkId && !existingWork) return errorResult("WORK_NOT_FOUND", `WorkContract ${workId} not found`);
+        if (!existingWork) {
+          createWorkContract(workStore, {
+            workId,
+            repoId,
+            checkoutId: ctx.checkoutId,
+            principalId: ctx.principalId,
+            controllerInstanceId: ctx.controllerInstanceId,
+            baseRevision: git.head ?? undefined,
+            workspaceFingerprint: workspaceIdentity,
+            routeDecisionFingerprint: routeDecision.inputFingerprint,
+            routeDecision,
+            mode: "direct_control",
+            objective: purpose,
+            acceptanceCriteria: [],
+            constraints: { workspaceMode: "current", requireWorktree: false, requireHandoffOnAmbiguity: true },
+            risk: "low",
+            status: "running",
+            phase: "implementation",
+            issueId: typeof args.issue_id === "string" ? args.issue_id : undefined,
+            taskId: typeof args.task_id === "string" ? args.task_id : undefined,
+            scopeSummary: purpose,
+            allowedPaths,
+            forbiddenPaths: [],
+            checks,
+            requestedBy: "chatgpt",
+            evidenceRefs: [],
+            handoffRefs: [],
+            suggestedNextActions: [],
+            policyDecisions: [],
+            checkRefs: [],
+            reconciliations: [],
+          });
+        }
         const session = beginEditSession(ctx.repoRoot, {
-          purpose: String(args.purpose ?? ""),
-          issueId:
-            typeof args.issue_id === "string" ? args.issue_id : undefined,
+          purpose,
+          issueId: typeof args.issue_id === "string" ? args.issue_id : undefined,
           taskId: typeof args.task_id === "string" ? args.task_id : undefined,
-          allowedPaths: stringList(args.allowed_paths),
-          maxFiles:
-            typeof args.max_files === "number" ? args.max_files : undefined,
-          maxChangedLines:
-            typeof args.max_changed_lines === "number"
-              ? args.max_changed_lines
-              : undefined,
-          checks: stringList(args.checks),
+          allowedPaths,
+          maxFiles: typeof args.max_files === "number" ? args.max_files : undefined,
+          maxChangedLines: typeof args.max_changed_lines === "number" ? args.max_changed_lines : undefined,
+          checks,
+          binding: {
+            workId,
+            repoId,
+            checkoutId: ctx.checkoutId,
+            principalId: ctx.principalId,
+            controllerInstanceId: ctx.controllerInstanceId,
+            routeDecisionFingerprint: routeDecision.inputFingerprint,
+          },
         });
         audit(
           ctx,
@@ -4729,10 +4795,11 @@ export async function callMcpTool(
           );
         let session;
         try {
+          const current = getEditSession(ctx.repoRoot, String(args.session_id ?? ""));
           session = applyEditOperations(
             ctx.repoRoot,
             ctx.policy,
-            String(args.session_id ?? ""),
+            current.sessionId,
             controllerEditOperations(args.operations),
             {
               expectedRevision:
@@ -4740,6 +4807,14 @@ export async function callMcpTool(
                   ? Math.trunc(args.expected_revision)
                   : undefined,
               maxBatchOperations: PREFERRED_EDIT_PATCH_BATCH_OPERATIONS,
+              binding: {
+                workId: current.workId,
+                repoId: ctx.repoId,
+                checkoutId: ctx.checkoutId,
+                principalId: ctx.principalId,
+                controllerInstanceId: ctx.controllerInstanceId,
+                routeDecisionFingerprint: current.routeDecisionFingerprint,
+              },
             },
           );
         } catch (error) {
@@ -4843,12 +4918,22 @@ export async function callMcpTool(
             "TOOL_DISABLED",
             "finalize_edit_session requires the controller profile",
           );
+        const current = getEditSession(ctx.repoRoot, String(args.session_id ?? ""));
         const session = finalizeEditSession(
           ctx.repoRoot,
-          String(args.session_id ?? ""),
+          current.sessionId,
           {
             reviewer: typeof args.reviewer === "string" ? args.reviewer : undefined,
             note: typeof args.note === "string" ? args.note : undefined,
+            approvalConfirmed: args.confirm_authorization === true,
+            binding: {
+              workId: current.workId,
+              repoId: ctx.repoId,
+              checkoutId: ctx.checkoutId,
+              principalId: ctx.principalId,
+              controllerInstanceId: ctx.controllerInstanceId,
+              routeDecisionFingerprint: current.routeDecisionFingerprint,
+            },
           },
         );
         audit(

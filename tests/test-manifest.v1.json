@@ -411,6 +411,10 @@
       "module": "process-runtime",
       "resource": "pure"
     },
+    "tests/runtime/route-policy.test.ts": {
+      "module": "routing",
+      "resource": "pure"
+    },
     "tests/runtime/repository-command-lifecycle.test.ts": {
       "module": "repository",
       "resource": "git-worktree"

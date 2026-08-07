@@ -3040,9 +3040,11 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           handoffStore: store,
           planStore: store,
           repoId: repository.repoId,
+          checkoutId: repository.activeCheckoutId,
+          principalId: ctx.principalId,
+          controllerInstanceId: ctx.controllerInstanceId,
           availableChecks: checks,
           sourceRevision: gitSnapshot(repository.canonicalRoot).head ?? undefined,
-          requirePlanForGoalWorkloop: true,
         };
 
         if (operation.startsWith('plan_')) {
@@ -3178,7 +3180,13 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         return result(response as unknown as Record<string, unknown>, response.status === 'blocked' || response.status === 'failed' || response.status === 'not_found');
       }
       case 'work_submit': {
-        const repository = selected(ctx, args);
+        const operationArgs = args.arguments && typeof args.arguments === 'object' && !Array.isArray(args.arguments)
+          ? { ...(args.arguments as Record<string, unknown>) }
+          : {};
+        const requestedCheckoutId = typeof operationArgs.checkout_id === 'string' && operationArgs.checkout_id.trim()
+          ? operationArgs.checkout_id.trim()
+          : undefined;
+        const repository = selected(ctx, requestedCheckoutId ? { ...args, checkout_id: requestedCheckoutId } : args);
         const requestId = String(args.request_id ?? '').trim();
         const operation = String(args.operation ?? '').trim();
         if (!requestId) throw new Error('INVALID_ARGUMENT: work_submit is missing required argument(s): request_id');
@@ -3194,9 +3202,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           throw new Error(`WORK_OPERATION_INVALID: ${operation} is unknown or not eligible for durable execution`);
         }
 
-        const operationArgs = args.arguments && typeof args.arguments === 'object' && !Array.isArray(args.arguments)
-          ? { ...(args.arguments as Record<string, unknown>) }
-          : {};
         const isRepositoryTool = operation.startsWith('repository_');
         const workerArgs = schemaAwareWorkSubmitArguments(
           operation,

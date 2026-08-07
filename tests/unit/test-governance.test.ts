@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { execFileSync } from 'child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { parseTestGovernanceArgs } from '../../scripts/test-governance';
@@ -48,6 +48,15 @@ describe('test governance', () => {
       baseRef: 'origin/main',
       explicitTests: ['tests/access-policy.test.ts'],
     });
+    expect(parseTestGovernanceArgs(['full', '--no-cache'])).toMatchObject({ gate: 'full', useCache: false });
+  });
+
+  test('records auditable provenance for every reused test checkpoint', () => {
+    const source = readFileSync(join(ROOT, 'src/testing/test-governance.ts'), 'utf8');
+    expect(source).toContain('cacheProvenance');
+    expect(source).toContain('checkpointKey: cachedCheckpoint.key');
+    expect(source).toContain('completedAt: cachedCheckpoint.completedAt');
+    expect(source).toContain('evidence=${checkpointRelativePath}');
   });
 
   test('collects staged, unstaged, untracked, and merge-base changes', () => {
