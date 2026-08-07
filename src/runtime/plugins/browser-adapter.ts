@@ -851,6 +851,7 @@ async function inventoryTabs(context: BrowserContextLike): Promise<BrowserTabInv
 function chooseTab(
   inventory: BrowserTabInventoryEntry[],
   target: BrowserActionTarget,
+  options: { allowBlank?: boolean } = {},
 ): { entry?: BrowserTabInventoryEntry; matchedBy: BrowserTabMatchReason; sessionResume?: BrowserSessionResumeDiagnostic } {
   const desiredUrl = comparableUrl(target.url);
   const savedTab = target.existingSession?.browser?.tab;
@@ -908,7 +909,7 @@ function chooseTab(
     };
   }
 
-  const blank = inventory.find((entry) => isBlankPage(entry.url));
+  const blank = options.allowBlank === false ? undefined : inventory.find((entry) => isBlankPage(entry.url));
   if (blank) {
     return {
       entry: blank,
@@ -948,14 +949,22 @@ function chooseTab(
 async function selectPage(
   context: BrowserContextLike,
   target: BrowserActionTarget,
+  options: { allowBlank?: boolean; allowNewPage?: boolean; bringToFront?: boolean } = {},
 ): Promise<{ page: PageLike; matchedBy: BrowserTabMatchReason; inventory: BrowserTabInventoryEntry[]; sessionResume?: BrowserSessionResumeDiagnostic }> {
   const inventory = await inventoryTabs(context);
-  const selection = chooseTab(inventory, target);
+  const selection = chooseTab(inventory, target, { allowBlank: options.allowBlank });
   if (selection.entry) {
     const page = context.pages()[selection.entry.index];
     if (!page) throw new Error(`Browser tab inventory selected missing page index ${selection.entry.index}`);
-    if (page.bringToFront) await page.bringToFront().catch(() => undefined);
+    if (options.bringToFront === true && page.bringToFront) await page.bringToFront().catch(() => undefined);
     return { page, matchedBy: selection.matchedBy, inventory, sessionResume: selection.sessionResume };
+  }
+  if (options.allowNewPage === false) {
+    throw new AssistantPluginError(
+      'PLUGIN_BROWSER_ATTACHED_TAB_NOT_FOUND',
+      'Attached browser had no saved or exact target tab; refusing to reuse a blank tab or open a new tab in the user browser.',
+      { retryable: true, details: { sessionId: target.sessionId, targetUrl: target.url, tabCount: inventory.length } },
+    );
   }
   const page = await context.newPage();
   return { page, matchedBy: 'new_page', inventory, sessionResume: selection.sessionResume };
@@ -1105,10 +1114,11 @@ async function openAttachedContext(
       const discovered = await discoverCdpEndpoint(endpoint, cdpDiscoveryTimeout(config));
       Object.assign(attempt, discovered);
       const browser = await connectOverCDP.call(runtime.chromium, discovered.discoveredEndpoint ?? endpoint);
-      const context = browser.contexts()[0] ?? (browser.newContext ? await browser.newContext() : undefined);
-      if (!context) throw new Error('CDP connection did not expose a browser context.');
-      await applyDomainGuard(context, config);
-      const selected = await selectPage(context, target);
+      try {
+        const context = browser.contexts()[0] ?? (browser.newContext ? await browser.newContext() : undefined);
+        if (!context) throw new Error('CDP connection did not expose a browser context.');
+        await applyDomainGuard(context, config);
+        const selected = await selectPage(context, target, { allowBlank: false, allowNewPage: false });
       const timeout = positiveNumber(args.timeout_ms, config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
       let response: { status?: () => number } | null | undefined;
       if (selected.matchedBy === 'new_page' || selected.matchedBy === 'blank' || comparableUrl(selected.page.url()) !== comparableUrl(target.url)) {
@@ -1135,18 +1145,23 @@ async function openAttachedContext(
         tabInventory: selected.inventory,
         sessionResume: selected.sessionResume,
       }, normalizedUrl(selected.page.url()), title, selected.matchedBy);
-      return {
-        attempts,
-        handle: {
-          page: selected.page,
-          diagnostics,
-          connection,
-          close: async () => {
-            if (browser.disconnect) await Promise.resolve(browser.disconnect()).catch(() => undefined);
-            else if (browser.close) await browser.close().catch(() => undefined);
+        return {
+          attempts,
+          handle: {
+            page: selected.page,
+            diagnostics,
+            connection,
+            close: async () => {
+              if (browser.disconnect) await Promise.resolve(browser.disconnect()).catch(() => undefined);
+              else if (browser.close) await browser.close().catch(() => undefined);
+            },
           },
-        },
-      };
+        };
+      } catch (error) {
+        if (browser.disconnect) await Promise.resolve(browser.disconnect()).catch(() => undefined);
+        else if (browser.close) await browser.close().catch(() => undefined);
+        throw error;
+      }
     } catch (error) {
       attempt.error = error instanceof Error ? error.message : String(error);
       attempts.push(attempt);
@@ -1172,7 +1187,15 @@ async function openNativeAttachedContext(
   const page = createMacOsBrowserPage(discovered.attachment, timeout) as unknown as PageLike;
   const initialUrl = page.url();
   if (!isRemoteHttpUrl(initialUrl) || comparableUrl(initialUrl) !== comparableUrl(target.url)) {
-    await page.goto(target.url, { waitUntil: waitUntil(args.wait_until), timeout });
+    return {
+      attempts: discovered.attempts.map((attempt) => attempt.status === 'selected'
+        ? {
+            ...attempt,
+            status: 'available' as const,
+            error: 'Active browser tab did not match the requested session URL; native attach refused to navigate the user tab.',
+          }
+        : attempt),
+    };
   }
   const title = await page.title();
   const pageUrl = normalizedUrl(page.url());

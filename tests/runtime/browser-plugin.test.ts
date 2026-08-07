@@ -662,6 +662,103 @@ describe('browser plugin', () => {
     });
   });
 
+  test('attach_preferred never navigates an unrelated native active tab and falls back to the managed profile', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpEndpoint: 'ws://127.0.0.1:9222/devtools/browser/stale',
+      cdpAttachFallback: 'managed_persistent',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+      allowedDomains: ['example.com'],
+    });
+    const runtime = mockAttachPlaywright([], { connectError: 'ECONNREFUSED 127.0.0.1:9222', managedTitle: 'Managed Target' }) as unknown as {
+      events: { launches: unknown[]; gotos: string[]; newPages: number };
+    };
+    const nativeScripts: string[] = [];
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      loadPlaywright: () => runtime as never,
+    });
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async (script) => {
+        nativeScripts.push(script);
+        return `true\x1ehttps://example.com/user-work\x1eUser Work\x1e0\x1e25\x1e1280\x1e925`;
+      },
+    });
+
+    const result = await executeBrowserPluginAction({
+      controllerHome: repoRoot,
+      repoId: 'repo',
+      repoRoot,
+      pluginId: 'browser',
+      actionId: 'open_page',
+      requestId: 'browser-native-no-hijack',
+      args: { url: 'https://example.com/target' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+
+    expect(runtime.events.launches).toHaveLength(1);
+    expect(runtime.events.newPages).toBe(1);
+    expect(runtime.events.gotos).toEqual(['https://example.com/target']);
+    expect(nativeScripts.some((script) => script.includes('set URL of active tab'))).toBe(false);
+    expect(result.browserConnection).toMatchObject({
+      requestedMode: 'attach_preferred',
+      mode: 'managed_persistent',
+      provider: 'playwright-persistent-context',
+      fallback: { from: 'attach_preferred', to: 'managed_persistent' },
+    });
+  });
+
+  test('CDP attach never consumes a blank user tab or opens a new user tab when no target tab exists', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpEndpoint: 'ws://127.0.0.1:9222/devtools/browser/live',
+      cdpAttachFallback: 'managed_persistent',
+      nativeAttachMode: 'disabled',
+      allowedDomains: ['example.com'],
+    });
+    const runtime = mockAttachPlaywright([
+      { url: 'about:blank', title: 'User New Tab' },
+      { url: 'https://example.com/unrelated', title: 'Unrelated' },
+    ], { managedTitle: 'Managed Target' }) as unknown as {
+      events: { launches: unknown[]; gotos: string[]; newPages: number; disconnects: number };
+    };
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      loadPlaywright: () => runtime as never,
+    });
+
+    const result = await executeBrowserPluginAction({
+      controllerHome: repoRoot,
+      repoId: 'repo',
+      repoRoot,
+      pluginId: 'browser',
+      actionId: 'open_page',
+      requestId: 'browser-cdp-no-user-tab-hijack',
+      args: { url: 'https://example.com/target' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+
+    expect(runtime.events.disconnects).toBe(1);
+    expect(runtime.events.launches).toHaveLength(1);
+    expect(result.browserConnection).toMatchObject({
+      requestedMode: 'attach_preferred',
+      mode: 'managed_persistent',
+      provider: 'playwright-persistent-context',
+    });
+  });
+
   test('attach_preferred fail_closed reports stale CDP endpoint diagnostics', async () => {
     const { repoRoot } = repoFixture();
     writeBrowserConfig(repoRoot, {
@@ -753,7 +850,7 @@ describe('browser plugin', () => {
 
     expect(firstRuntime.events.newPages).toBe(0);
     expect(firstRuntime.events.gotos).toEqual([]);
-    expect(firstRuntime.events.broughtToFront).toEqual(['Target']);
+    expect(firstRuntime.events.broughtToFront).toEqual([]);
     expect(firstRuntime.events.disconnects).toBe(1);
     expect(saved.browser).toMatchObject({
       mode: 'attach_preferred',
@@ -789,7 +886,7 @@ describe('browser plugin', () => {
 
     expect(secondRuntime.events.newPages).toBe(0);
     expect(secondRuntime.events.gotos).toEqual([]);
-    expect(secondRuntime.events.broughtToFront).toEqual(['Target']);
+    expect(secondRuntime.events.broughtToFront).toEqual([]);
   });
 
   test('wait_for_selector keeps authorization despite being read-only', async () => {

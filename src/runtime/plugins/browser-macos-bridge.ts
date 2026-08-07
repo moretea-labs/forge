@@ -160,7 +160,6 @@ function navigateScript(browser: MacOsBrowserDefinition): string {
 set targetUrl to item 1 of argv
 ${browserTellScript(browser, `
 if (count of windows) is 0 then error "FORGE_NO_BROWSER_WINDOW"
-activate
 set URL of active tab of front window to targetUrl
 return targetUrl
 `)}
@@ -170,7 +169,6 @@ end run`;
 function reloadScript(browser: MacOsBrowserDefinition): string {
   return browserTellScript(browser, `
 if (count of windows) is 0 then error "FORGE_NO_BROWSER_WINDOW"
-activate
 reload active tab of front window
 `);
 }
@@ -415,27 +413,22 @@ export class MacOsAppleEventsPage {
   }
 
   async click(selector: string): Promise<void> {
-    await this.bringToFront();
     await this.evaluate(selectorSource(selector, 'if (typeof element.click !== "function") throw new Error("Element is not clickable."); element.click(); return true;'));
   }
 
   async dblclick(selector: string): Promise<void> {
-    await this.bringToFront();
     await this.evaluate(selectorSource(selector, `element.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window })); return true;`));
   }
 
   async hover(selector: string): Promise<void> {
-    await this.bringToFront();
     await this.evaluate(selectorSource(selector, `for (const type of ['mouseover', 'mouseenter', 'mousemove']) element.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window })); return true;`));
   }
 
   async focus(selector: string): Promise<void> {
-    await this.bringToFront();
     await this.evaluate(selectorSource(selector, 'if (typeof element.focus !== "function") throw new Error("Element is not focusable."); element.focus(); return true;'));
   }
 
   async fill(selector: string, value: string): Promise<void> {
-    await this.bringToFront();
     await this.evaluate(selectorSource(selector, `
       if ('value' in element) {
         const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
@@ -455,7 +448,6 @@ export class MacOsAppleEventsPage {
   }
 
   async press(selector: string, key: string): Promise<void> {
-    await this.bringToFront();
     await this.evaluate(keyEventSource(selector, key));
   }
 
@@ -480,7 +472,6 @@ export class MacOsAppleEventsPage {
   }
 
   private async setChecked(selector: string, checked: boolean): Promise<void> {
-    await this.bringToFront();
     await this.evaluate(selectorSource(selector, `
       if (!('checked' in element)) throw new Error('Element is not checkable.');
       element.checked = ${checked};
@@ -543,7 +534,6 @@ export class MacOsAppleEventsPage {
 
   keyboard = {
     press: async (key: string): Promise<void> => {
-      await this.bringToFront();
       await this.evaluate(keyEventSource(undefined, key));
     },
   };
