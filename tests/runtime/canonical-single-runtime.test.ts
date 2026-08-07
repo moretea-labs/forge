@@ -6,6 +6,7 @@ import { join, resolve } from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { inspectControlPlaneDatabase } from '../../src/runtime/control-plane/persistence/sqlite-store';
+import { readRuntimeGeneration } from '../../src/runtime/control-plane/runtime-generation';
 import {
   activateExclusiveWorkAdmission,
   readWorkAdmissionPolicy,
@@ -181,6 +182,118 @@ describe('canonical single Runtime', () => {
     } finally {
       db.close();
     }
+  });
+
+  test('Runtime Root rotates an exact source snapshot on every startup', async () => {
+    const fixture = createFixture({ runtimeInstanceId: 'runtime-source-snapshot-one' });
+    const dependencies: Partial<CanonicalRuntimeDependencies> = {
+      startScheduler: () => inertScheduler(),
+      startTransport: async () => ({
+        endpoint: 'http://127.0.0.1:9876/mcp',
+        host: '127.0.0.1',
+        port: 9876,
+        close: async () => undefined,
+      }),
+      runMcpProbe: async () => undefined,
+    };
+    const first = new CanonicalForgeRuntime(fixture.config, dependencies);
+    cleanups.push(() => first.stop('TEST_CLEANUP'));
+    await first.start();
+
+    const firstGeneration = readRuntimeGeneration(fixture.controllerHome);
+    expect(firstGeneration).toMatchObject({
+      schemaVersion: 1,
+      revision: 1,
+      controllerHome: resolve(fixture.controllerHome),
+      source: {
+        repoRoot: resolve(fixture.repositoryRoot),
+        canonicalRoot: resolve(fixture.repositoryRoot),
+        branch: null,
+        dirty: false,
+      },
+    });
+    await first.stop('TEST_RESTART');
+
+    const second = new CanonicalForgeRuntime({
+      ...fixture.config,
+      runtimeInstanceId: 'runtime-source-snapshot-two',
+    }, dependencies);
+    cleanups.push(() => second.stop('TEST_CLEANUP'));
+    await second.start();
+
+    const secondGeneration = readRuntimeGeneration(fixture.controllerHome);
+    expect(secondGeneration?.revision).toBe(2);
+    expect(secondGeneration?.generation).not.toBe(firstGeneration?.generation);
+  });
+
+  test('source snapshot failure stops startup before mutable services are admitted', async () => {
+    const fixture = createFixture({ runtimeInstanceId: 'runtime-source-snapshot-failure' });
+    let databaseInspected = false;
+    let schedulerStarted = false;
+    let transportStarted = false;
+    const runtime = new CanonicalForgeRuntime(fixture.config, {
+      rotateRuntimeGeneration: () => {
+        throw new Error('injected source snapshot failure');
+      },
+      inspectDatabase: () => {
+        databaseInspected = true;
+        throw new Error('database should not be inspected');
+      },
+      startScheduler: () => {
+        schedulerStarted = true;
+        return inertScheduler();
+      },
+      startTransport: async () => {
+        transportStarted = true;
+        throw new Error('transport should not start');
+      },
+    });
+
+    await expect(runtime.start()).rejects.toThrow('injected source snapshot failure');
+    expect(databaseInspected).toBe(false);
+    expect(schedulerStarted).toBe(false);
+    expect(transportStarted).toBe(false);
+    expect(getRuntimeWriteClaim()).toBeUndefined();
+    expect(readRuntimeGeneration(fixture.controllerHome)).toBeUndefined();
+    expect(runtime.lastExit?.reasonCode).toBe('RUNTIME_SOURCE_SNAPSHOT_FAILED');
+    expect(runtime.readiness()).toMatchObject({
+      ready: false,
+      diagnostics: {
+        releaseCoherence: {
+          outcome: 'fail',
+          reasonCode: 'RUNTIME_SOURCE_SNAPSHOT_FAILED',
+        },
+      },
+    });
+  });
+
+  test('write-claim failure remains a release-coherence failure after source snapshot succeeds', async () => {
+    const fixture = createFixture({ runtimeInstanceId: 'runtime-write-claim-failure' });
+    let databaseInspected = false;
+    const runtime = new CanonicalForgeRuntime(fixture.config, {
+      bindWriteClaim: () => {
+        throw new Error('injected write claim failure');
+      },
+      inspectDatabase: () => {
+        databaseInspected = true;
+        throw new Error('database should not be inspected');
+      },
+    });
+
+    await expect(runtime.start()).rejects.toThrow('injected write claim failure');
+    expect(databaseInspected).toBe(false);
+    expect(getRuntimeWriteClaim()).toBeUndefined();
+    expect(readRuntimeGeneration(fixture.controllerHome)?.revision).toBe(1);
+    expect(runtime.lastExit?.reasonCode).toBe('RELEASE_COHERENCE_FAILED');
+    expect(runtime.readiness()).toMatchObject({
+      ready: false,
+      diagnostics: {
+        releaseCoherence: {
+          outcome: 'fail',
+          reasonCode: 'RELEASE_COHERENCE_FAILED',
+        },
+      },
+    });
   });
 
   test('Runtime Root publishes one instance-bound status projection and removes it on exit', async () => {

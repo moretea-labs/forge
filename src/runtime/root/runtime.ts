@@ -5,6 +5,10 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import type { ControlPlaneDatabaseInspection } from '../control-plane/persistence/sqlite-store';
 import { inspectControlPlaneDatabase } from '../control-plane/persistence/sqlite-store';
 import { activateExclusiveWorkAdmission } from '../control-plane/facade/work-admission-policy';
+import {
+  collectRuntimeSourceIdentity,
+  rotateRuntimeGeneration,
+} from '../control-plane/runtime-generation';
 import { RuntimeControllerServices } from './controller-services';
 import { createRuntimeGatewayServer } from './gateway-adapter';
 import { startRuntimeMcpTransport, type RuntimeMcpTransportHandle } from './mcp-transport';
@@ -31,6 +35,8 @@ export interface CanonicalRuntimeDependencies {
   startScheduler(controllerHome: string, timeoutMs?: number): RuntimeSchedulerHandle;
   startTransport(options: Parameters<typeof startRuntimeMcpTransport>[0]): Promise<RuntimeMcpTransportHandle>;
   runMcpProbe(endpoint: string, authToken: string): Promise<void>;
+  collectRuntimeSourceIdentity: typeof collectRuntimeSourceIdentity;
+  rotateRuntimeGeneration: typeof rotateRuntimeGeneration;
 }
 
 async function defaultMcpProbe(endpoint: string, authToken: string): Promise<void> {
@@ -63,6 +69,8 @@ const DEFAULT_DEPENDENCIES: CanonicalRuntimeDependencies = {
   startScheduler: startInProcessScheduler,
   startTransport: startRuntimeMcpTransport,
   runMcpProbe: defaultMcpProbe,
+  collectRuntimeSourceIdentity,
+  rotateRuntimeGeneration,
 };
 
 export class CanonicalForgeRuntime {
@@ -134,7 +142,7 @@ export class CanonicalForgeRuntime {
     if (this.started) throw new Error('RUNTIME_ALREADY_STARTED');
     this.started = true;
     this.readinessState.markNotReady();
-    let stage: 'release' | 'ownership' | 'database' | 'scheduler' | 'transport' | 'probe' = 'release';
+    let stage: 'release' | 'ownership' | 'source' | 'database' | 'scheduler' | 'transport' | 'probe' = 'release';
     try {
       this.release = this.dependencies.loadReleaseManifest(this.config.releaseManifestPath, this.config.controllerHome);
 
@@ -143,6 +151,12 @@ export class CanonicalForgeRuntime {
 
       stage = 'release';
       const releaseAuthority = this.dependencies.ensureReleaseAuthority(this.config.controllerHome, this.config.releaseManifestPath);
+
+      stage = 'source';
+      const runtimeSource = this.dependencies.collectRuntimeSourceIdentity(this.config.repositoryRoot);
+      this.dependencies.rotateRuntimeGeneration(this.config.controllerHome, runtimeSource);
+
+      stage = 'release';
       this.dependencies.bindWriteClaim({
         controllerHome: this.config.controllerHome,
         owner: this.ownership.record,
@@ -209,6 +223,7 @@ export class CanonicalForgeRuntime {
   private startupReason(stage: string): string {
     if (stage === 'release') return 'RELEASE_COHERENCE_FAILED';
     if (stage === 'ownership') return 'RUNTIME_OWNERSHIP_CONFLICT';
+    if (stage === 'source') return 'RUNTIME_SOURCE_SNAPSHOT_FAILED';
     if (stage === 'database') return 'DATABASE_UNAVAILABLE';
     if (stage === 'scheduler') return 'SCHEDULER_INITIALIZATION_FAILED';
     if (stage === 'transport') return 'MCP_LISTENER_FAILED';
@@ -216,8 +231,9 @@ export class CanonicalForgeRuntime {
   }
 
   private markStartupFailure(stage: string, reason: string): void {
-    if (stage === 'release') this.readinessState.setDiagnostic('releaseCoherence', 'fail', reason);
-    else if (stage === 'database') this.readinessState.setDiagnostic('database', 'fail', reason);
+    if (stage === 'release' || stage === 'source') {
+      this.readinessState.setDiagnostic('releaseCoherence', 'fail', reason);
+    } else if (stage === 'database') this.readinessState.setDiagnostic('database', 'fail', reason);
     else if (stage === 'scheduler') this.readinessState.setDiagnostic('scheduler', 'fail', reason);
     else if (stage === 'transport' || stage === 'probe') this.readinessState.setDiagnostic('mcpEndToEnd', 'fail', reason);
     this.readinessState.addReason(reason);
