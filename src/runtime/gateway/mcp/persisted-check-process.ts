@@ -1,7 +1,11 @@
 import { createHash } from 'crypto';
 import { existsSync } from 'fs';
 import { resolve } from 'path';
-import { listControllerChecks, snapshotControllerCheck } from '../../../cli/controller/check-runner';
+import {
+  controllerCheckExecutionIdentity,
+  listControllerChecks,
+  snapshotControllerCheck,
+} from '../../../cli/controller/check-runner';
 import {
   currentCliRuntimeTarget,
   resolveCliChildInvocation,
@@ -131,6 +135,25 @@ export async function runPersistedCheckViaProcessRuntime(
   const checkFingerprint = createHash('sha256')
     .update(JSON.stringify(checkSnapshot))
     .digest('hex');
+  const semanticCheck = controllerCheckExecutionIdentity(
+    input.repoRoot,
+    input.checkId,
+    timeoutMs,
+    checkSnapshot,
+  );
+  const processCheckExecution = {
+    schemaVersion: 1 as const,
+    checkId: semanticCheck.checkId,
+    cacheKey: semanticCheck.cacheKey,
+    revision: semanticCheck.revision,
+    definitionDigest: semanticCheck.definitionDigest,
+    environmentFingerprint: semanticCheck.environmentFingerprint,
+    timeoutMs: semanticCheck.timeoutMs,
+    reuseScope: semanticCheck.reuseScope,
+    scopeKey: semanticCheck.reuseScope === 'repository'
+      ? 'repository'
+      : `checkout:${executionIdentity.checkoutId}`,
+  };
   const cliTarget = resolveRuntimeCliTarget(input.controllerHome);
   const checkArgs = [
     ...INTERNAL_CHECK_SUBCOMMAND,
@@ -166,6 +189,7 @@ export async function runPersistedCheckViaProcessRuntime(
     interactiveWaitMs,
     timeoutMs: timeoutMs + 5_000,
     resourceClaims: toProcessClaims(claims),
+    checkExecution: processCheckExecution,
     origin: {
       surface: 'check',
       toolName: 'run_check',

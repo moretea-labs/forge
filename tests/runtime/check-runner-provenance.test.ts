@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
+  controllerCheckExecutionIdentity,
   listControllerChecks,
   readLatestControllerCheckEvidence,
   resolveSyncSupervisorBridgeRuntime,
@@ -26,7 +27,7 @@ function fixture(checks: Record<string, { command: string[]; effects?: unknown }
   writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({ name: 'check-provenance-fixture' }));
   mkdirSync(join(repoRoot, '.forge'), { recursive: true });
   writeFileSync(join(repoRoot, '.forge/checks.json'), JSON.stringify({ version: 1, checks }));
-  spawnSync('git', ['add', 'package.json'], { cwd: repoRoot, stdio: 'ignore' });
+  spawnSync('git', ['add', 'package.json', '.forge/checks.json'], { cwd: repoRoot, stdio: 'ignore' });
   spawnSync('git', ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'init'], {
     cwd: repoRoot,
     stdio: 'ignore',
@@ -130,6 +131,65 @@ describe('controller check provenance and failure classification', () => {
     expect((await runControllerCheckAsync(repoRoot, 'history')).cacheHit).toBe(true);
     expect(readFileSync(marker, 'utf8')).toBe('xx');
     expect(existsSync(join(repoRoot, '.ai/harness/checks/controller/history'))).toBe(true);
+  });
+
+  test('shares semantic identity across clean worktrees and invalidates dirty/config/environment changes', () => {
+    const repoRoot = fixture({
+      reusable: {
+        command: ['node', '--version'],
+        effects: { reads: ['.'], cache: 'write', temp: 'isolated', git: 'read' },
+      },
+    });
+    const peerRoot = mkdtempSync(join(tmpdir(), 'forge-check-provenance-peer-'));
+    rmSync(peerRoot, { recursive: true, force: true });
+    roots.push(peerRoot);
+    expect(spawnSync('git', ['worktree', 'add', '-b', 'peer-check-reuse', peerRoot], { cwd: repoRoot, stdio: 'ignore' }).status).toBe(0);
+
+    const first = controllerCheckExecutionIdentity(repoRoot, 'reusable');
+    const peer = controllerCheckExecutionIdentity(peerRoot, 'reusable');
+    expect(first.crossCheckoutReusable).toBe(true);
+    expect(peer.crossCheckoutReusable).toBe(true);
+    expect(peer.reuseScope).toBe('repository');
+    expect(peer.cacheKey).toBe(first.cacheKey);
+    expect(peer.revision).toBe(first.revision);
+
+    writeFileSync(join(peerRoot, 'dirty.txt'), 'dirty\n');
+    const dirty = controllerCheckExecutionIdentity(peerRoot, 'reusable');
+    expect(dirty.crossCheckoutReusable).toBe(false);
+    expect(dirty.reuseScope).toBe('checkout');
+    expect(dirty.cacheKey).not.toBe(first.cacheKey);
+    rmSync(join(peerRoot, 'dirty.txt'));
+
+    const configPath = join(peerRoot, '.forge/checks.json');
+    const config = JSON.parse(readFileSync(configPath, 'utf8')) as { checks: Record<string, { description?: string }> };
+    config.checks.reusable!.description = 'changed definition';
+    writeFileSync(configPath, JSON.stringify(config));
+    const changedDefinition = controllerCheckExecutionIdentity(peerRoot, 'reusable');
+    expect(changedDefinition.definitionDigest).not.toBe(first.definitionDigest);
+    expect(changedDefinition.cacheKey).not.toBe(first.cacheKey);
+
+    writeFileSync(configPath, readFileSync(join(repoRoot, '.forge/checks.json')));
+    const previousPath = process.env.PATH;
+    try {
+      process.env.PATH = `${previousPath ?? ''}${previousPath ? ':' : ''}/tmp/forge-semantic-env-change`;
+      const changedEnvironment = controllerCheckExecutionIdentity(peerRoot, 'reusable');
+      expect(changedEnvironment.environmentFingerprint).not.toBe(first.environmentFingerprint);
+      expect(changedEnvironment.cacheKey).not.toBe(first.cacheKey);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    }
+  });
+
+  test('fails closed for cross-checkout reuse when effects or toolchain are not safely fingerprinted', () => {
+    const repoRoot = fixture({
+      unknown_effects: { command: ['node', '--version'] },
+      networked: { command: ['node', '--version'], effects: { reads: ['.'], network: 'read' } },
+      external_tool: { command: ['git', 'status'], effects: { reads: ['.'], git: 'read' } },
+    });
+    expect(controllerCheckExecutionIdentity(repoRoot, 'unknown_effects').crossCheckoutReusable).toBe(false);
+    expect(controllerCheckExecutionIdentity(repoRoot, 'networked').crossCheckoutReusable).toBe(false);
+    expect(controllerCheckExecutionIdentity(repoRoot, 'external_tool').crossCheckoutReusable).toBe(false);
   });
 
   test('strips Controller writer and Supervisor authority from sync and async check children', async () => {

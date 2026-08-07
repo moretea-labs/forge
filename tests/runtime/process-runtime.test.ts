@@ -7,14 +7,17 @@ import { executionIdentityForRepository } from '../../src/runtime/control-plane/
 import {
   __resetLiveMonitorsForTests,
   cancelProcess,
+  claimProcessCheckExecution,
   claimProcessInvocation,
   claimProcessRequest,
   claimsForCheck,
   claimsForRepositoryCommand,
   fingerprintProcessCommand,
+  gcTerminalProcesses,
   getProcessHandle,
   getProcessRecord,
   listActiveProcessIds,
+  processCheckCompletionReceipt,
   processLogDir,
   reconcileAbandonedPreSpawnProcess,
   recoverManagedProcesses,
@@ -208,6 +211,281 @@ describe('Unified Process Runtime', () => {
     expect(handle.durableSideEffects.executionJobCount).toBe(0);
     expect(handle.durableSideEffects.localJobCount).toBe(0);
     expect(handle.durableSideEffects.workerSpawnCount).toBe(0);
+  });
+
+  test('semantic Check identity single-flights different requests and reuses successful terminal Process evidence', async () => {
+    const fx = fixture();
+    const marker = join(fx.root, 'semantic-runs.txt');
+    const checkExecution = {
+      schemaVersion: 1 as const,
+      checkId: 'semantic-check',
+      cacheKey: 'cache-semantic-check',
+      revision: 'revision-a',
+      definitionDigest: 'definition-a',
+      environmentFingerprint: 'environment-a',
+      timeoutMs: 15_000,
+      reuseScope: 'checkout' as const,
+      scopeKey: `checkout:${fx.repository.activeCheckoutId}`,
+    };
+    const run = (requestId: string) => spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', `require('fs').appendFileSync(${JSON.stringify(marker)}, 'x'); setTimeout(() => process.exit(0), 150)`],
+        cwd: fx.repoRoot,
+      },
+      interactiveWaitMs: 2_000,
+      timeoutMs: 15_000,
+      checkExecution,
+      origin: { surface: 'check', checkId: 'semantic-check', requestId },
+    });
+
+    const [first, second] = await Promise.all([run('semantic-request-a'), run('semantic-request-b')]);
+    expect(second.processId).toBe(first.processId);
+    expect(first.semanticDeduplicated === true || second.semanticDeduplicated === true).toBe(true);
+    expect(readFileSync(marker, 'utf8')).toBe('x');
+
+    const completedReuse = await run('semantic-request-c');
+    expect(completedReuse.processId).toBe(first.processId);
+    expect(completedReuse.semanticDeduplicated).toBe(true);
+    expect(readFileSync(marker, 'utf8')).toBe('x');
+  });
+
+  test('failed semantic Check Process is reclaimed by a new request instead of cached', async () => {
+    const fx = fixture();
+    const checkExecution = {
+      schemaVersion: 1 as const,
+      checkId: 'semantic-fail',
+      cacheKey: 'cache-semantic-fail',
+      revision: 'revision-fail',
+      definitionDigest: 'definition-fail',
+      environmentFingerprint: 'environment-fail',
+      timeoutMs: 15_000,
+      reuseScope: 'checkout' as const,
+      scopeKey: `checkout:${fx.repository.activeCheckoutId}`,
+    };
+    const run = (requestId: string) => spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(7)'], cwd: fx.repoRoot },
+      interactiveWaitMs: 2_000,
+      timeoutMs: 15_000,
+      checkExecution,
+      origin: { surface: 'check', checkId: 'semantic-fail', requestId },
+    });
+    const first = await run('semantic-fail-a');
+    const second = await run('semantic-fail-b');
+    expect(first.ok).toBe(false);
+    expect(second.ok).toBe(false);
+    expect(second.processId).not.toBe(first.processId);
+  });
+
+  test('consumer receipt can rebind repository-scoped semantic Process evidence but rejects identity drift', () => {
+    const fx = fixture();
+    const processId = 'proc_shared_receipt';
+    const record = createProcessRecord({
+      schemaVersion: 1,
+      processId,
+      repoId: fx.repository.repoId,
+      checkoutId: 'checkout-source',
+      workId: 'work-source',
+      commandId: 'command-source',
+      controllerHome: fx.controllerHome,
+      status: 'succeeded',
+      route: 'direct',
+      command: { kind: 'argv', executable: 'node', args: ['--version'], cwd: fx.repoRoot },
+      resourceClaims: [],
+      interactiveWaitMs: 100,
+      timeoutMs: 15_000,
+      maxOutputBytes: 4096,
+      startedAt: '2026-08-07T00:00:00.000Z',
+      updatedAt: '2026-08-07T00:00:01.000Z',
+      finishedAt: '2026-08-07T00:00:01.000Z',
+      exitCode: 0,
+      terminalFenceToken:[REDACTED]
+      terminalWritten: true,
+      checkExecution: {
+        schemaVersion: 1,
+        checkId: 'shared-check',
+        cacheKey: 'cache-shared',
+        revision: 'revision-shared',
+        definitionDigest: 'definition-shared',
+        environmentFingerprint: 'environment-shared',
+        timeoutMs: 15_000,
+        reuseScope: 'repository',
+        scopeKey: 'repository',
+      },
+      origin: {
+        surface: 'check',
+        checkId: 'shared-check',
+        requestId: 'source-request',
+        executionSessionId: 'source-session',
+      },
+    });
+    const shared = processCheckCompletionReceipt(record, {
+      repoId: fx.repository.repoId,
+      checkoutId: 'checkout-consumer',
+      workId: 'work-consumer',
+      executionSessionId: 'consumer-session',
+      checkId: 'shared-check',
+      requestId: 'consumer-request',
+      processId,
+      checkExecution: {
+        cacheKey: 'cache-shared',
+        revision: 'revision-shared',
+        definitionDigest: 'definition-shared',
+        environmentFingerprint: 'environment-shared',
+        timeoutMs: 15_000,
+        scopeKey: 'repository',
+      },
+    });
+    expect(shared).toMatchObject({
+      checkoutId: 'checkout-consumer',
+      sourceCheckoutId: 'checkout-source',
+      workId: 'work-consumer',
+      executionSessionId: 'consumer-session',
+      requestId: 'consumer-request',
+      processId,
+      reusedExecution: true,
+      checkCacheKey: 'cache-shared',
+    });
+    expect(() => processCheckCompletionReceipt(record, {
+      repoId: fx.repository.repoId,
+      checkoutId: 'checkout-consumer',
+      checkId: 'shared-check',
+      processId,
+      checkExecution: {
+        cacheKey: 'cache-drifted',
+        revision: 'revision-shared',
+        definitionDigest: 'definition-shared',
+        environmentFingerprint: 'environment-shared',
+        timeoutMs: 15_000,
+        scopeKey: 'repository',
+      },
+    })).toThrow(/PROCESS_CHECK_RECEIPT_IDENTITY_MISMATCH/);
+  });
+
+  test('semantic binding key crosses checkout only when the caller deliberately uses repository scope', () => {
+    const fx = fixture();
+    const processId = 'proc-cross-checkout';
+    const source = claimProcessCheckExecution({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      sourceCheckoutId: 'checkout-a',
+      scopeKey: 'repository',
+      cacheKey: 'cache-cross-checkout',
+      processId,
+    });
+    expect(source.status).toBe('claimed');
+    createProcessRecord({
+      schemaVersion: 1,
+      processId,
+      repoId: fx.repository.repoId,
+      checkoutId: 'checkout-a',
+      controllerHome: fx.controllerHome,
+      status: 'succeeded',
+      route: 'direct',
+      command: { kind: 'argv', executable: 'node', args: ['--version'], cwd: fx.repoRoot },
+      resourceClaims: [],
+      interactiveWaitMs: 100,
+      timeoutMs: 15_000,
+      maxOutputBytes: 4096,
+      startedAt: '2026-08-07T00:00:00.000Z',
+      updatedAt: '2026-08-07T00:00:01.000Z',
+      finishedAt: '2026-08-07T00:00:01.000Z',
+      exitCode: 0,
+      terminalFenceToken:[REDACTED]
+      terminalWritten: true,
+      origin: { surface: 'check', checkId: 'cross-checkout' },
+    });
+    const sameSemantic = claimProcessCheckExecution({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      sourceCheckoutId: 'checkout-b',
+      scopeKey: 'repository',
+      cacheKey: 'cache-cross-checkout',
+      processId: 'proc-other',
+    });
+    expect(sameSemantic.status).toBe('existing');
+    expect(sameSemantic.binding.processId).toBe(processId);
+  });
+
+  test('retains successful semantic Check evidence past age cutoff but still enforces terminal record budget', () => {
+    const fx = fixture();
+    const runtime = bindCanonicalRuntime(fx.controllerHome);
+    try {
+      const oldFinishedAt = '2020-01-01T00:00:00.000Z';
+      const semanticProcessId = 'proc-semantic-retained';
+      const ordinaryProcessId = 'proc-ordinary-expired';
+      const baseRecord = {
+        schemaVersion: 1 as const,
+        repoId: fx.repository.repoId,
+        checkoutId: fx.repository.activeCheckoutId,
+        controllerHome: fx.controllerHome,
+        status: 'succeeded' as const,
+        route: 'direct' as const,
+        command: { kind: 'argv' as const, executable: 'node', args: ['--version'], cwd: fx.repoRoot },
+        resourceClaims: [],
+        interactiveWaitMs: 100,
+        timeoutMs: 15_000,
+        maxOutputBytes: 4096,
+        startedAt: oldFinishedAt,
+        updatedAt: oldFinishedAt,
+        finishedAt: oldFinishedAt,
+        exitCode: 0,
+        terminalFenceToken: 1,
+        terminalWritten: true,
+        origin: { surface: 'check' as const },
+      };
+      createProcessRecord({
+        ...baseRecord,
+        processId: semanticProcessId,
+        origin: { surface: 'check', checkId: 'retained-check' },
+        checkExecution: {
+          schemaVersion: 1,
+          checkId: 'retained-check',
+          cacheKey: 'retained-cache-key',
+          revision: 'retained-revision',
+          definitionDigest: 'retained-definition',
+          environmentFingerprint: 'retained-environment',
+          timeoutMs: 15_000,
+          reuseScope: 'checkout',
+          scopeKey: `checkout:${fx.repository.activeCheckoutId}`,
+        },
+      });
+      createProcessRecord({
+        ...baseRecord,
+        processId: ordinaryProcessId,
+      });
+
+      const ageGc = gcTerminalProcesses({
+        controllerHome: fx.controllerHome,
+        repoId: fx.repository.repoId,
+        maxAgeMs: 0,
+        maxTerminalRecords: 10,
+      });
+      expect(ageGc.ok).toBe(true);
+      expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, ordinaryProcessId)).toBeUndefined();
+      expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, semanticProcessId)).toBeTruthy();
+
+      const budgetGc = gcTerminalProcesses({
+        controllerHome: fx.controllerHome,
+        repoId: fx.repository.repoId,
+        maxAgeMs: Number.MAX_SAFE_INTEGER,
+        maxTerminalRecords: 0,
+      });
+      expect(budgetGc.ok).toBe(true);
+      expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, semanticProcessId)).toBeUndefined();
+    } finally {
+      runtime.owner.release();
+      clearRuntimeWriteClaimForTests();
+    }
   });
 
   test('redacts synthetic launchctl-style secrets before direct output, records, and disk persistence', async () => {

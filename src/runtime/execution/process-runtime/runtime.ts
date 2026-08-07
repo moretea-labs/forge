@@ -43,6 +43,7 @@ import {
 import { assertRuntimeMayWrite, assertRuntimeMayWriteOrThrow, getRuntimeWriteClaim } from '../../root/write-fence';
 import { defaultProcessIdentityProbe, executableFingerprint } from '../../shared/process-identity';
 import {
+  claimProcessCheckExecution,
   claimProcessRequest,
   createProcessRecord,
   getProcessRecord,
@@ -876,7 +877,7 @@ function attachRunnerMonitor(
 
 function recordToHandle(
   record: ManagedProcessRecord,
-  extras?: { stdout?: string; stderr?: string; completed?: boolean; deduplicated?: boolean },
+  extras?: { stdout?: string; stderr?: string; completed?: boolean; deduplicated?: boolean; semanticDeduplicated?: boolean },
 ): ProcessHandle {
   const hintedStatus = effectiveProcessStatus(record, extras?.completed === true);
   const completed = isTerminalProcessStatus(hintedStatus) || record.terminalWritten === true;
@@ -895,6 +896,7 @@ function recordToHandle(
     timeoutMs: safeRecord.timeoutMs,
     completed,
     deduplicated: extras?.deduplicated,
+    semanticDeduplicated: extras?.semanticDeduplicated,
     requestId: safeRecord.origin?.requestId,
     ok: completed ? safeRecord.status === 'succeeded' : undefined,
     exitCode: safeRecord.exitCode,
@@ -983,6 +985,19 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
   const requestId = input.origin?.requestId?.trim() || undefined;
   const commandFingerprint = fingerprintProcessCommand(command);
   let processId = candidateProcessId;
+  let semanticExisting = false;
+  if (input.checkExecution) {
+    const semantic = claimProcessCheckExecution({
+      controllerHome: input.controllerHome,
+      repoId: input.repoId,
+      sourceCheckoutId: input.checkoutId,
+      scopeKey: input.checkExecution.scopeKey,
+      cacheKey: input.checkExecution.cacheKey,
+      processId: candidateProcessId,
+    });
+    processId = semantic.binding.processId;
+    semanticExisting = semantic.status === 'existing';
+  }
   if (requestId) {
     const claim = claimProcessRequest({
       controllerHome: input.controllerHome,
@@ -990,7 +1005,7 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
       checkoutId: input.checkoutId,
       requestId,
       commandFingerprint,
-      processId: candidateProcessId,
+      processId,
     });
     processId = claim.binding.processId;
     if (claim.status === 'existing') {
@@ -998,8 +1013,19 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
       if (!existing) {
         throw new Error(`PROCESS_REQUEST_INCOMPLETE: request ${requestId} is bound to missing process ${processId}; refusing re-execution`);
       }
-      return { ...existing, deduplicated: true, requestId };
+      return { ...existing, deduplicated: true, semanticDeduplicated: semanticExisting || existing.semanticDeduplicated, requestId };
     }
+  }
+  if (semanticExisting) {
+    let existing = getProcessHandle(input.controllerHome, input.repoId, processId);
+    for (let attempt = 0; !existing && attempt < 20; attempt += 1) {
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+      existing = getProcessHandle(input.controllerHome, input.repoId, processId);
+    }
+    if (!existing) {
+      throw new Error(`PROCESS_CHECK_EXECUTION_INCOMPLETE: semantic Check binding points to missing process ${processId}; refusing duplicate execution`);
+    }
+    return { ...existing, deduplicated: true, semanticDeduplicated: true, requestId };
   }
   const fenceToken = 1;
   const startedAt = nowIso();
@@ -1025,6 +1051,7 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     workId: input.workId,
     commandId: input.commandId?.trim() || processId,
     requestFingerprint: requestId ? commandFingerprint : undefined,
+    checkExecution: input.checkExecution,
     controllerHome: input.controllerHome,
     status: 'starting',
     route: input.returnHandleImmediately || interactiveWaitMs === 0 ? 'managed' : 'direct',

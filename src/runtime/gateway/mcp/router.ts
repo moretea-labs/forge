@@ -11,6 +11,7 @@ import { processToolDefinitions } from './process-tools';
 import { resolveRepositorySelection } from '../../../cli/repositories/registry';
 import { executionIdentityForRepository } from '../../control-plane/execution/execution-identity';
 import { getEditSession, recordEditSessionProcessCheckReceipts } from '../../../cli/editing/edit-session';
+import { controllerCheckExecutionIdentity } from '../../../cli/controller/check-runner';
 import type {
   ExecutionOperationMetadata,
   ExecutionTimeoutPolicy,
@@ -883,6 +884,10 @@ export async function routeDurableMcpCall(
     const receipts = processes.map((handle, index) => {
       const record = getProcessRecord(ctx.controllerHome, repository.repoId, handle.processId);
       if (!record) throw new Error(`PROCESS_CHECK_RECEIPT_MISSING: process record not found: ${handle.processId}`);
+      const checkId = checkIds[index]!;
+      const currentIdentity = record.checkExecution
+        ? controllerCheckExecutionIdentity(repository.canonicalRoot, checkId, record.checkExecution.timeoutMs)
+        : undefined;
       return processCheckCompletionReceipt(record, {
         repoId: repository.repoId,
         checkoutId: repository.activeCheckoutId,
@@ -890,8 +895,20 @@ export async function routeDurableMcpCall(
         editRevision: editSession.currentRevision,
         issueId: editSession.issueId,
         taskId: editSession.taskId,
-        checkId: checkIds[index],
+        checkId,
         processId: handle.processId,
+        ...(currentIdentity ? {
+          checkExecution: {
+            cacheKey: currentIdentity.cacheKey,
+            revision: currentIdentity.revision,
+            definitionDigest: currentIdentity.definitionDigest,
+            environmentFingerprint: currentIdentity.environmentFingerprint,
+            timeoutMs: currentIdentity.timeoutMs,
+            scopeKey: currentIdentity.reuseScope === 'repository'
+              ? 'repository'
+              : `checkout:${repository.activeCheckoutId}`,
+          },
+        } : {}),
       });
     });
     const checked = recordEditSessionProcessCheckReceipts(repository.canonicalRoot, editSession.sessionId, {
@@ -986,6 +1003,8 @@ export async function routeDurableMcpCall(
       processId: handle?.processId,
       status: handle?.status,
       completed: handle?.completed === true,
+      deduplicated: handle?.deduplicated === true,
+      semanticDeduplicated: handle?.semanticDeduplicated === true,
       ok: handle?.ok,
       exitCode: handle?.exitCode,
       timedOut: handle?.timedOut,

@@ -22,6 +22,7 @@ import { isSensitiveOutputKey, redactSensitiveText } from '../../evidence/sensit
 import {
   isManagedProcessActive,
   type ManagedProcessRecord,
+  type ProcessCheckExecutionBinding,
   type ProcessInvocationBinding,
   type ProcessRequestBinding,
   type ProcessRuntimeStatus,
@@ -69,6 +70,20 @@ function invocationBindingPath(controllerHome: string, repoId: string, checkoutI
     .update(JSON.stringify({ repoId, checkoutId: checkoutId?.trim() || null, requestId }))
     .digest('hex');
   return join(invocationBindingsRoot(controllerHome, repoId), `${key}.json`);
+}
+
+function checkExecutionBindingsRoot(controllerHome: string, repoId: string): string {
+  const dir = join(processesRoot(controllerHome, repoId), 'check-execution-bindings');
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function checkExecutionBindingKey(repoId: string, scopeKey: string, cacheKey: string): string {
+  return createHash('sha256').update(JSON.stringify({ repoId, scopeKey, cacheKey })).digest('hex');
+}
+
+function checkExecutionBindingPath(controllerHome: string, repoId: string, scopeKey: string, cacheKey: string): string {
+  return join(checkExecutionBindingsRoot(controllerHome, repoId), `${checkExecutionBindingKey(repoId, scopeKey, cacheKey)}.json`);
 }
 
 function indexPath(controllerHome: string, repoId: string): string {
@@ -229,6 +244,81 @@ export function getProcessRequestBinding(
   return readOrImportControlPlaneRecord<ProcessRequestBinding>(controllerHome, {
     namespace: 'process_request_binding', scope: repoId, key: bindingKey(repoId, checkoutId, normalized), schemaVersion: 1,
     readLegacy: () => readJson<ProcessRequestBinding>(requestBindingPath(controllerHome, repoId, checkoutId, normalized)),
+  })?.value;
+}
+
+/**
+ * Atomically bind one semantic Check identity to a physical Process. Active and
+ * successful terminal Processes remain reusable; failed/timeout/cancelled or
+ * missing Processes are replaced by a fresh candidate on the next request.
+ */
+export function claimProcessCheckExecution(input: {
+  controllerHome: string;
+  repoId: string;
+  sourceCheckoutId?: string;
+  scopeKey: string;
+  cacheKey: string;
+  processId: string;
+}): { status: 'claimed' | 'existing' | 'reclaimed'; binding: ProcessCheckExecutionBinding } {
+  const scopeKey = input.scopeKey.trim();
+  const cacheKey = input.cacheKey.trim();
+  if (!scopeKey || !cacheKey) throw new Error('PROCESS_CHECK_EXECUTION_IDENTITY_REQUIRED: scopeKey/cacheKey are required');
+  const path = checkExecutionBindingPath(input.controllerHome, input.repoId, scopeKey, cacheKey);
+  const candidate: ProcessCheckExecutionBinding = {
+    schemaVersion: 1,
+    repoId: input.repoId,
+    scopeKey,
+    cacheKey,
+    processId: input.processId,
+    sourceCheckoutId: input.sourceCheckoutId,
+    createdAt: new Date().toISOString(),
+  };
+  let disposition: 'claimed' | 'existing' | 'reclaimed' = 'claimed';
+  const binding = mutateControlPlaneRecord<ProcessCheckExecutionBinding>(input.controllerHome, {
+    namespace: 'process_check_execution_binding',
+    scope: input.repoId,
+    key: checkExecutionBindingKey(input.repoId, scopeKey, cacheKey),
+    schemaVersion: 1,
+    action: 'process_check_execution_binding_claim',
+    readLegacy: () => readJson<ProcessCheckExecutionBinding>(path),
+    mutate: (current) => {
+      if (!current) return candidate;
+      const existing = current.value;
+      if (existing.repoId !== input.repoId || existing.scopeKey !== scopeKey || existing.cacheKey !== cacheKey || !existing.processId) {
+        throw new Error(`PROCESS_CHECK_EXECUTION_BINDING_CORRUPT: ${cacheKey}`);
+      }
+      const record = readProcessRecord(processPath(input.controllerHome, input.repoId, existing.processId));
+      if (!record) {
+        const claimAgeMs = Date.now() - Date.parse(existing.createdAt);
+        if (Number.isFinite(claimAgeMs) && claimAgeMs >= 0 && claimAgeMs < 5_000) {
+          disposition = 'existing';
+          return existing;
+        }
+        disposition = 'reclaimed';
+        return candidate;
+      }
+      if (!isManagedProcessActive(record) && record.status !== 'succeeded') {
+        disposition = 'reclaimed';
+        return candidate;
+      }
+      disposition = 'existing';
+      return existing;
+    },
+  }).value;
+  if (!binding) throw new Error(`PROCESS_CHECK_EXECUTION_BINDING_CORRUPT: ${cacheKey}`);
+  return { status: disposition, binding };
+}
+
+export function getProcessCheckExecutionBinding(
+  controllerHome: string,
+  repoId: string,
+  scopeKey: string,
+  cacheKey: string,
+): ProcessCheckExecutionBinding | undefined {
+  const key = checkExecutionBindingKey(repoId, scopeKey, cacheKey);
+  return readOrImportControlPlaneRecord<ProcessCheckExecutionBinding>(controllerHome, {
+    namespace: 'process_check_execution_binding', scope: repoId, key, schemaVersion: 1,
+    readLegacy: () => readJson<ProcessCheckExecutionBinding>(checkExecutionBindingPath(controllerHome, repoId, scopeKey, cacheKey)),
   })?.value;
 }
 

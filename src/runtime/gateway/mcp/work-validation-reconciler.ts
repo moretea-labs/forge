@@ -9,6 +9,7 @@ import {
 } from '../../control-plane/execution/work-handle-store';
 import { processCheckCompletionReceipt } from '../../execution/process-runtime/check-receipt';
 import { getProcessRecord } from '../../execution/process-runtime/store';
+import { controllerCheckExecutionIdentity } from '../../../cli/controller/check-runner';
 
 export type WorkValidationOutcome =
   | 'not_validating'
@@ -163,6 +164,9 @@ export function reconcileWorkValidation(
     }
 
     try {
+      const currentIdentity = record.checkExecution
+        ? controllerCheckExecutionIdentity(handle.worktreePath, checkId, record.checkExecution.timeoutMs)
+        : undefined;
       const receipt = processCheckCompletionReceipt(record, {
         repoId: handle.repositoryId,
         checkoutId: handle.checkoutId,
@@ -170,6 +174,18 @@ export function reconcileWorkValidation(
         executionSessionId: handle.sessionId,
         checkId,
         processId: binding.processId,
+        ...(currentIdentity ? {
+          checkExecution: {
+            cacheKey: currentIdentity.cacheKey,
+            revision: currentIdentity.revision,
+            definitionDigest: currentIdentity.definitionDigest,
+            environmentFingerprint: currentIdentity.environmentFingerprint,
+            timeoutMs: currentIdentity.timeoutMs,
+            scopeKey: currentIdentity.reuseScope === 'repository'
+              ? 'repository'
+              : `checkout:${handle.checkoutId}`,
+          },
+        } : {}),
       });
       if (!receipt.ok) {
         if (receipt.status === 'timed_out' || receipt.status === 'cancelled') {

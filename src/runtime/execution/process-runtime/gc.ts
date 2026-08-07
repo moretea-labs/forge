@@ -87,7 +87,7 @@ export function gcTerminalProcesses(options: ProcessGcOptions): ProcessGcResult 
     }
 
     const active = new Set(listActiveProcessIds(options.controllerHome, options.repoId));
-    const terminal: Array<{ processId: string; finishedAt: number; path: string }> = [];
+    const terminal: Array<{ processId: string; finishedAt: number; path: string; reusableCheckEvidence: boolean }> = [];
     let skippedActive = 0;
 
     for (const name of readdirSync(root)) {
@@ -118,12 +118,15 @@ export function gcTerminalProcesses(options: ProcessGcOptions): ProcessGcResult 
         processId,
         finishedAt: Number.isFinite(finished) ? finished : 0,
         path: join(root, name),
+        reusableCheckEvidence: record.status === 'succeeded' && Boolean(record.checkExecution?.cacheKey),
       });
     }
 
     terminal.sort((a, b) => b.finishedAt - a.finishedAt);
     const cutoff = Date.now() - maxAgeMs;
-    const victims = terminal.filter((entry, index) => index >= maxTerminal || entry.finishedAt < cutoff);
+    const victims = terminal.filter((entry, index) =>
+      index >= maxTerminal || (!entry.reusableCheckEvidence && entry.finishedAt < cutoff),
+    );
 
     let removedRecords = 0;
     let removedLogs = 0;

@@ -132,6 +132,30 @@ export interface ProcessRequestBinding {
   createdAt: string;
 }
 
+/** Content-bound Check identity used only to index/reuse Process Runtime evidence. */
+export interface ProcessCheckExecutionIdentity {
+  schemaVersion: 1;
+  checkId: string;
+  cacheKey: string;
+  revision: string;
+  definitionDigest: string;
+  environmentFingerprint: string;
+  timeoutMs: number;
+  reuseScope: 'repository' | 'checkout';
+  scopeKey: string;
+}
+
+/** Persistent semantic Check binding to one physical Process record. */
+export interface ProcessCheckExecutionBinding {
+  schemaVersion: 1;
+  repoId: string;
+  scopeKey: string;
+  cacheKey: string;
+  processId: string;
+  sourceCheckoutId?: string;
+  createdAt: string;
+}
+
 /** Persistent logical invocation binding claimed before any child Process is spawned. */
 export interface ProcessInvocationBinding {
   schemaVersion: 1;
@@ -153,6 +177,8 @@ export interface ManagedProcessRecord {
   commandId?: string;
   /** Fingerprint bound to origin.requestId before spawn. */
   requestFingerprint?: string;
+  /** Semantic Check identity when this Process is eligible for single-flight/reuse. */
+  checkExecution?: ProcessCheckExecutionIdentity;
   controllerHome: string;
   status: ProcessRuntimeStatus;
   route: ProcessRouteMode;
@@ -244,6 +270,7 @@ export interface SpawnManagedProcessInput {
   timeoutMs?: number;
   maxOutputBytes?: number;
   resourceClaims?: ProcessResourceClaim[];
+  checkExecution?: ProcessCheckExecutionIdentity;
   origin?: ManagedProcessRecord['origin'];
   runtimeInstanceId?: string;
   releaseAuthorityRevision?: number;
@@ -269,6 +296,8 @@ export interface ProcessHandle {
   completed?: boolean;
   /** True when this response reused a previously claimed request binding. */
   deduplicated?: boolean;
+  /** True when a semantic Check identity reused another caller's physical Process. */
+  semanticDeduplicated?: boolean;
   requestId?: string;
   ok?: boolean;
   exitCode?: number;

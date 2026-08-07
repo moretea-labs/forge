@@ -7,6 +7,7 @@
  */
 
 import {
+  controllerCheckExecutionIdentity,
   listControllerChecks,
   snapshotControllerCheck,
   type ControllerCheck,
@@ -161,6 +162,20 @@ export async function runCheckViaProcessRuntime(
   const cwd = check.cwd === '.'
     ? executionIdentity.canonicalRoot
     : `${executionIdentity.canonicalRoot}/${check.cwd}`.replace(/\/+/g, '/');
+  const semanticCheck = controllerCheckExecutionIdentity(input.repoRoot, input.checkId, timeoutMs);
+  const processCheckExecution = {
+    schemaVersion: 1 as const,
+    checkId: semanticCheck.checkId,
+    cacheKey: semanticCheck.cacheKey,
+    revision: semanticCheck.revision,
+    definitionDigest: semanticCheck.definitionDigest,
+    environmentFingerprint: semanticCheck.environmentFingerprint,
+    timeoutMs: semanticCheck.timeoutMs,
+    reuseScope: semanticCheck.reuseScope,
+    scopeKey: semanticCheck.reuseScope === 'repository'
+      ? 'repository'
+      : `checkout:${executionIdentity.checkoutId}`,
+  };
 
   const handle = await spawnManagedProcess({
     controllerHome: input.controllerHome,
@@ -178,6 +193,7 @@ export async function runCheckViaProcessRuntime(
     interactiveWaitMs,
     timeoutMs,
     resourceClaims: toProcessClaims(claims),
+    checkExecution: processCheckExecution,
     origin: {
       surface: 'check',
       toolName: 'run_check',

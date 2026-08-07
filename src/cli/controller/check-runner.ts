@@ -39,6 +39,25 @@ export interface ControllerCheckSnapshot extends ControllerCheck {
   definitionDigest: string;
 }
 
+/**
+ * Content-bound semantic identity for one Check execution. It deliberately
+ * excludes checkout/session/request identity so equivalent clean worktrees may
+ * share physical execution and completed evidence when the check is proven
+ * checkout-independent.
+ */
+export interface ControllerCheckExecutionIdentity {
+  schemaVersion: 1;
+  checkId: string;
+  revision: string;
+  definitionDigest: string;
+  environmentFingerprint: string;
+  timeoutMs: number;
+  cacheKey: string;
+  checkoutClean: boolean;
+  crossCheckoutReusable: boolean;
+  reuseScope: 'repository' | 'checkout';
+}
+
 interface CheckConfig {
   version?: number;
   checks?: Record<string, {
@@ -334,30 +353,110 @@ function validateControllerCheckSnapshot(repoRoot: string, snapshot: ControllerC
   };
 }
 
-function checkEnvironmentFingerprint(): string {
+const CONTROLLER_CHECK_EXECUTION_IDENTITY_VERSION = 'controller-check-execution-v1';
+
+function checkEnvironmentFingerprint(check: ControllerCheck): string {
+  const env = repositoryChildProcessEnvironment(process.env);
   return createHash('sha256')
     .update(JSON.stringify({
       platform: process.platform,
       arch: process.arch,
       node: process.version,
       bun: typeof Bun !== 'undefined' ? Bun.version : undefined,
+      execPath: process.execPath,
+      commandExecutable: check.command[0],
+      path: env.PATH ?? '',
+      home: env.HOME ?? env.USERPROFILE ?? '',
+      bunInstall: env.BUN_INSTALL ?? '',
+      nodeOptions: env.NODE_OPTIONS ?? '',
+      nodePath: env.NODE_PATH ?? '',
+      ci: env.CI ?? '',
+      lang: env.LANG ?? '',
+      lcAll: env.LC_ALL ?? '',
+      tz: env.TZ ?? '',
     }))
     .digest('hex')
-    .slice(0, 16);
+    .slice(0, 24);
 }
 
-function buildCheckCacheKey(check: ControllerCheck, timeoutMs: number, revision: string): string {
+function checkWorkspaceClean(repoRoot: string): boolean {
+  const status = runProcess('git', ['status', '--porcelain=v1', '--untracked-files=all', '--', ...checkRevisionPathspecs()], {
+    cwd: repoRoot,
+    timeoutMs: 10_000,
+    maxOutputBytes: 1024 * 1024,
+  });
+  return status.ok && status.stdout.trim().length === 0;
+}
+
+function checkToolchainIsFingerprintable(check: ControllerCheck): boolean {
+  const executable = basename(check.command[0] ?? '').toLowerCase();
+  return check.command[0] === process.execPath || ['bun', 'node', 'nodejs'].includes(executable);
+}
+
+function checkEffectsAllowCrossCheckoutReuse(check: ControllerCheck): boolean {
+  const effects = check.effects;
+  if (!effects) return false;
+  if ((effects.writes?.length ?? 0) > 0) return false;
+  if (effects.git !== undefined && effects.git !== 'read') return false;
+  if (effects.network !== undefined) return false;
+  if (effects.temp === 'shared') return false;
+  return true;
+}
+
+function buildCheckCacheKey(
+  check: ControllerCheck,
+  timeoutMs: number,
+  revision: string,
+  definitionDigest = checkDefinitionDigest(check),
+  environmentFingerprint = checkEnvironmentFingerprint(check),
+): string {
   return createHash('sha256')
     .update(JSON.stringify({
+      identityVersion: CONTROLLER_CHECK_EXECUTION_IDENTITY_VERSION,
       id: check.id,
+      definitionDigest,
       command: check.command,
       cwd: check.cwd,
       timeoutMs,
       revision,
-      environment: checkEnvironmentFingerprint(),
+      environment: environmentFingerprint,
     }))
     .digest('hex')
     .slice(0, 24);
+}
+
+export function controllerCheckExecutionIdentity(
+  repoRoot: string,
+  id: string,
+  requestedTimeoutMs?: number,
+  snapshot?: ControllerCheckSnapshot,
+): ControllerCheckExecutionIdentity {
+  const check = snapshot
+    ? validateControllerCheckSnapshot(repoRoot, snapshot)
+    : listControllerChecks(repoRoot).find((entry) => entry.id === id);
+  if (!check || check.id !== id) throw new Error(`check not found: ${id}`);
+  const timeoutMs = requestedTimeoutMs === undefined
+    ? check.timeoutMs
+    : Math.min(check.timeoutMs, boundedTimeout(requestedTimeoutMs));
+  const revision = currentControllerCheckRevision(repoRoot);
+  const definitionDigest = checkDefinitionDigest(check);
+  const environmentFingerprint = checkEnvironmentFingerprint(check);
+  const checkoutClean = checkWorkspaceClean(repoRoot);
+  const crossCheckoutReusable = checkoutClean
+    && checkEffectsAllowCrossCheckoutReuse(check)
+    && checkToolchainIsFingerprintable(check);
+  return {
+    schemaVersion: 1,
+    checkId: id,
+    revision,
+    definitionDigest,
+    environmentFingerprint,
+    timeoutMs,
+    cacheKey: buildCheckCacheKey(check, timeoutMs, revision, definitionDigest, environmentFingerprint),
+    checkoutClean,
+    crossCheckoutReusable,
+    reuseScope: crossCheckoutReusable ? 'repository' : 'checkout',
+  };
 }
 
 function persistCheckEvidence(
@@ -431,9 +530,10 @@ function readControllerCheckEvidenceByKey(repoRoot: string, id: string, cacheKey
 export function runControllerCheck(repoRoot: string, id: string, requestedTimeoutMs?: number, snapshot?: ControllerCheckSnapshot): ControllerCheckResult {
   const check = snapshot ? validateControllerCheckSnapshot(repoRoot, snapshot) : listControllerChecks(repoRoot).find((entry) => entry.id === id);
   if (!check || check.id !== id) throw new Error(`check not found: ${id}`);
-  const timeoutMs = requestedTimeoutMs === undefined ? check.timeoutMs : Math.min(check.timeoutMs, boundedTimeout(requestedTimeoutMs));
-  const revision = currentControllerCheckRevision(repoRoot);
-  const cacheKey = buildCheckCacheKey(check, timeoutMs, revision);
+  const identity = controllerCheckExecutionIdentity(repoRoot, id, requestedTimeoutMs, snapshot);
+  const timeoutMs = identity.timeoutMs;
+  const revision = identity.revision;
+  const cacheKey = identity.cacheKey;
   const cached = readControllerCheckEvidenceByKey(repoRoot, id, cacheKey)
     ?? readLatestControllerCheckEvidence(repoRoot, id);
   if (cached?.cacheKey === cacheKey && cached.ok) {
@@ -763,11 +863,10 @@ export function runControllerCheckAsync(
     return Promise.reject(error);
   }
   if (!check || check.id !== id) return Promise.reject(new Error(`check not found: ${id}`));
-  const timeoutMs = options.requestedTimeoutMs === undefined
-    ? check.timeoutMs
-    : Math.min(check.timeoutMs, boundedTimeout(options.requestedTimeoutMs));
-  const revision = currentControllerCheckRevision(repoRoot);
-  const cacheKey = buildCheckCacheKey(check, timeoutMs, revision);
+  const identity = controllerCheckExecutionIdentity(repoRoot, id, options.requestedTimeoutMs, options.snapshot);
+  const timeoutMs = identity.timeoutMs;
+  const revision = identity.revision;
+  const cacheKey = identity.cacheKey;
   const cached = readControllerCheckEvidenceByKey(repoRoot, id, cacheKey)
     ?? readLatestControllerCheckEvidence(repoRoot, id);
   if (cached?.cacheKey === cacheKey && cached.ok) {

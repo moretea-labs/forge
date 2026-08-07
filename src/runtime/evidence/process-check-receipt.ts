@@ -21,6 +21,15 @@ export interface ProcessCheckReceiptEvidence {
   requestId?: string;
   processId: string;
   commandId?: string;
+  /** Physical checkout that executed the Check; differs from checkoutId on safe cross-checkout reuse. */
+  sourceCheckoutId?: string;
+  /** Existing controller-check cache identity proving content/definition/environment equivalence. */
+  checkCacheKey?: string;
+  checkRevision?: string;
+  checkDefinitionDigest?: string;
+  checkEnvironmentFingerprint?: string;
+  /** True when this consumer is bound to a physical Process originally launched by another consumer/checkout. */
+  reusedExecution?: boolean;
   status: ProcessCheckReceiptStatus;
   runtimeStatus: ProcessCheckReceiptRuntimeStatus;
   ok: boolean;

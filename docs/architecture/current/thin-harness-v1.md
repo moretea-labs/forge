@@ -75,6 +75,26 @@ An authorized `local_system` Target Grant is a first-class bounded workspace tar
 
 This preserves repository-free local operation without inventing a fake RepositoryRecord, WorkspaceJob, or parallel route policy.
 
+### Check semantic single-flight and evidence reuse
+
+`run_check` distinguishes **consumer identity** from **physical execution identity**. `requestId`, Session, Work, EditSession, and checkout coordinates remain consumer/audit bindings; they no longer define whether the same Check must run twice.
+
+The authoritative semantic Check identity reuses the existing Controller Check cache vocabulary and binds:
+
+- repository content revision (including dirty/untracked workspace content, excluding harness runtime artifacts);
+- immutable Check definition digest (`command`, `cwd`, declared effects, configured timeout/source);
+- bounded requested timeout contract;
+- non-secret child execution environment/toolchain fingerprint;
+- an explicit Check execution identity schema version.
+
+Process Runtime keeps one repo-scoped semantic binding from that identity to the existing persisted Process record. A matching active execution is single-flighted across request/session consumers. A matching successful terminal Process may be reused as completed evidence; failed, timed-out, cancelled, missing-stale, or identity-mismatched Processes are never treated as successful cache hits.
+
+Cross-checkout/worktree reuse is deliberately narrower than same-checkout reuse. It is allowed only when the consumer checkout is clean, the Check declares bounded effects with no workspace writes/network/shared temp, and its toolchain is explicitly fingerprintable. Otherwise the identity is checkout-scoped and a different checkout must execute independently. Dirty workspaces therefore never borrow evidence from another checkout merely because their Git HEAD matches.
+
+Verification receipts preserve the physical `processId` and source checkout while rebinding Session/Work/EditSession/request fields to the current consumer only after recomputing and exactly matching the current semantic Check identity. This prevents the first caller's identity from being attributed to later consumers.
+
+Successful semantic Check Process evidence is retained beyond the ordinary age cutoff so completed reuse survives across sessions, but it remains subject to the existing per-repository terminal Process budget. This is an index over the existing Process/check evidence authority, **not** a second Check cache, scheduler, Job store, or execution engine.
+
 ### Must use Durable Path
 
 - background / cross-session recovery
