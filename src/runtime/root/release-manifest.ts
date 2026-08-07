@@ -66,6 +66,9 @@ export function loadRuntimeReleaseManifest(
     controllerHome,
     databaseSchemaCompatibility: { minimum, maximum },
     workerProtocolVersion,
+    ...(typeof value.sourceCommit === 'string' && value.sourceCommit.trim() ? { sourceCommit: value.sourceCommit.trim() } : {}),
+    ...(typeof value.releaseRevision === 'string' && value.releaseRevision.trim() ? { releaseRevision: value.releaseRevision.trim() } : {}),
+    ...(typeof value.cleanWorkspace === 'boolean' ? { cleanWorkspace: value.cleanWorkspace } : {}),
     createdAt,
   };
 }

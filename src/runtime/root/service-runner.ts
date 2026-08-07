@@ -36,10 +36,12 @@ export function resolveForgeRuntimeServiceCommand(controllerHome: string, config
     env: {
       ...process.env,
       FORGE_CONTROLLER_HOME: home,
+      FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT: releaseRoot,
       FORGE_RELEASE_PATH: releaseRoot,
       FORGE_RELEASE_ID: authority.active.releaseId,
-      FORGE_RELEASE_REVISION: authority.active.releaseId,
-      FORGE_RELEASE_CLEAN_WORKSPACE: 'true',
+      FORGE_RELEASE_REVISION: activeRuntimeReleaseManifest.releaseRevision ?? authority.active.releaseId,
+      ...(activeRuntimeReleaseManifest.sourceCommit ? { FORGE_RELEASE_SOURCE_COMMIT: activeRuntimeReleaseManifest.sourceCommit } : {}),
+      FORGE_RELEASE_CLEAN_WORKSPACE: String(activeRuntimeReleaseManifest.cleanWorkspace !== false),
     },
   };
 }

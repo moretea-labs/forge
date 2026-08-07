@@ -90,6 +90,9 @@ export function stageRuntimeRelease(input: {
         maximum: CONTROL_PLANE_SCHEMA_VERSION,
       },
       workerProtocolVersion: 1,
+      sourceCommit,
+      releaseRevision: releaseId,
+      cleanWorkspace: true,
       createdAt: new Date(now()).toISOString(),
     };
     const manifestPath = join(staging, 'manifest.json');

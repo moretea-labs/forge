@@ -41,6 +41,9 @@ export interface RuntimeReleaseManifest {
     maximum: number;
   };
   workerProtocolVersion: number;
+  sourceCommit?: string;
+  releaseRevision?: string;
+  cleanWorkspace?: boolean;
   createdAt: string;
 }
 

@@ -91,6 +91,16 @@ export const RECOVERY_ACTIONS = {
     localOnly: true,
     boundedTo: ['forge_runtime_storage', 'forge_temp_dirs'],
   },
+  stageAndActivateRuntimeRelease: {
+    id: 'recovery.stage_and_activate_runtime_release',
+    title: 'Stage and activate canonical Runtime release',
+    description: 'Build one immutable Runtime release from the selected registered repository, then hand lifecycle activation to the standalone Recovery transaction.',
+    class: 'stale_runtime_state',
+    risk: 'medium',
+    confirmation: 'authorization',
+    localOnly: true,
+    boundedTo: ['registered_repository', 'runtime_release_storage', 'external_runtime_lifecycle'],
+  },
   createPatchHandoff: {
     id: 'recovery.create_patch_handoff',
     title: 'Create patch handoff',

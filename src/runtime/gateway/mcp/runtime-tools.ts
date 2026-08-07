@@ -1,6 +1,8 @@
 import { createHash } from 'crypto';
 import { existsSync } from 'fs';
 import { basename } from 'path';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { collectRuntimePerformanceDiagnostics, inferLocalControllerProcess } from '../../diagnostics/performance';
 import type { McpToolDefinition, CallToolResult } from '../../../cli/mcp/tools';
 import type { MultiRepositoryMcpToolContext } from '../../../cli/mcp/multi-repository';
@@ -156,6 +158,8 @@ import {
   previewRuntimeStorageRepair,
   applyRuntimeStorageRepair,
 } from '../../recovery';
+import { assertRuntimeReleaseFiles, stageRuntimeRelease } from '../../root/release-materialize';
+import { gatewayToken, loadRecoveryConfig } from '../../standalone-recovery/core';
 import {
   getLocalBridgeJobEventsSnapshot,
   getLocalBridgeJobSnapshot,
@@ -1093,6 +1097,37 @@ function withRuntimeResponseMeta(
   };
   response.responseMeta.structuredPayloadBytes = Buffer.byteLength(JSON.stringify(response), 'utf8');
   return response;
+}
+
+async function activateRuntimeReleaseThroughRecovery(
+  controllerHome: string,
+  manifestPath: string,
+): Promise<Record<string, unknown>> {
+  const config = loadRecoveryConfig(controllerHome);
+  const gateway = config.gateway;
+  if (!gateway || gateway.host !== '127.0.0.1') {
+    throw new Error('RECOVERY_GATEWAY_UNAVAILABLE: loopback Recovery Gateway is not configured');
+  }
+  const token = gatewayToken(config);
+  if (!token) throw new Error('RECOVERY_GATEWAY_AUTH_UNAVAILABLE');
+  const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${gateway.port}/recovery/mcp`), {
+    requestInit: { headers: { Authorization: `Bearer ${token}` } },
+  });
+  const client = new Client({ name: 'forge-runtime-lifecycle-handoff', version: '1.0.0' });
+  try {
+    await client.connect(transport);
+    const response = await client.callTool({
+      name: 'activate_runtime_release',
+      arguments: {
+        request_id: `gateway-handoff-${Date.now()}`,
+        release_path: manifestPath,
+      },
+    });
+    if (response.isError) throw new Error('RECOVERY_RUNTIME_ACTIVATION_FAILED');
+    return (response.structuredContent ?? { content: response.content }) as Record<string, unknown>;
+  } finally {
+    await client.close().catch(() => undefined);
+  }
 }
 
 function result(value: Record<string, unknown>, isError = false): CallToolResult {
@@ -4560,6 +4595,17 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         let payload: Record<string, unknown>;
         let affectedPaths: string[] = [];
         switch (action.id) {
+          case 'recovery.stage_and_activate_runtime_release': {
+            const staged = stageRuntimeRelease({
+              controllerHome: ctx.controllerHome,
+              sourceRoot: repository.canonicalRoot,
+            });
+            assertRuntimeReleaseFiles(staged);
+            const activation = await activateRuntimeReleaseThroughRecovery(ctx.controllerHome, staged.manifestPath);
+            payload = { staged, activation } as unknown as Record<string, unknown>;
+            affectedPaths = ['controllerHome/runtime/releases', 'controllerHome/runtime/releases/authority.json'];
+            break;
+          }
           case 'recovery.probe_again':
             payload = { recovery: await capabilityRecoverySnapshot(ctx, repository, args) };
             break;

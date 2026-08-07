@@ -189,6 +189,13 @@ async function proxyRuntimeTools(ctx: MultiRepositoryMcpToolContext) {
   return withCanonicalRuntimeClient(ctx, (client) => client.listTools());
 }
 
+function hasAuthoritativeRuntimeToolSurface(tools: { tools: Array<{ name: string }> }): boolean {
+  const names = new Set(tools.tools.map((tool) => tool.name));
+  return names.has('repository_command_execute')
+    && names.has('capability_recovery_apply')
+    && names.has('controller_ready');
+}
+
 async function proxyRuntimeToolCall(
   ctx: MultiRepositoryMcpToolContext,
   name: string,
@@ -207,8 +214,10 @@ export function createForgeMcpServerFromContext(baseContext: ServerToolContext):
   );
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     if (isMultiRepositoryContext(baseContext) && !getRuntimeWriteClaim()) {
-      try { return await proxyRuntimeTools(baseContext); }
-      catch { /* Runtime-unavailable fallback keeps the connector diagnosable. */ }
+      try {
+        const proxied = await proxyRuntimeTools(baseContext);
+        if (hasAuthoritativeRuntimeToolSurface(proxied)) return proxied;
+      } catch { /* Runtime-unavailable fallback keeps the connector diagnosable. */ }
     }
     return {
       tools: isMultiRepositoryContext(baseContext)
@@ -237,7 +246,14 @@ export function createForgeMcpServerFromContext(baseContext: ServerToolContext):
         // call to the loopback Runtime MCP endpoint. This prevents source-checkout
         // Gateway processes from acquiring Process Runtime leases or evaluating
         // Runtime source coherence against their own checkout.
-        if (!getRuntimeWriteClaim()) return proxyRuntimeToolCall(ctx, name, args);
+        if (!getRuntimeWriteClaim()) {
+          try {
+            const proxied = await proxyRuntimeTools(ctx);
+            if (hasAuthoritativeRuntimeToolSurface(proxied) && proxied.tools.some((tool) => tool.name === name)) {
+              return proxyRuntimeToolCall(ctx, name, args);
+            }
+          } catch { /* Old/unavailable Runtime: retain local bootstrap/recovery surface. */ }
+        }
         const accessResult = callAccessTool(ctx, name, args);
         if (accessResult) return accessResult;
         const executionResult = await callExecutionTool(ctx, name, args);
