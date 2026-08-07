@@ -162,7 +162,6 @@ export const STABLE_CONTROLLER_TOOL_NAMES = [
   'capability_recovery_apply',
   'runtime_maintenance_status',
   'runtime_maintenance_apply',
-  'self_healing_monitor_tick',
   'workflow_watchdog_report',
 ] as const;
 

@@ -41,7 +41,6 @@ export interface SelfHealingInput {
     readyForExecution?: boolean;
     recommendedActions?: string[];
     candidates?: Array<{ kind?: string; reason?: string; suggestedAction?: string; safe?: boolean }>;
-    restartEscalation?: { recommended?: boolean; reason?: string };
     warnings?: string[];
   };
   /** Optional watchdog/performance digests (bounded). */
@@ -109,16 +108,6 @@ function defaultDiagnoseIssues(input: SelfHealingInput): SelfHealingIssue[] {
   }
   for (const candidate of input.maintenanceStatus?.candidates ?? []) {
     issues.push(mapMaintenanceCandidate(candidate));
-  }
-  if (input.maintenanceStatus?.restartEscalation?.recommended) {
-    issues.push({
-      kind: 'controller_daemon_health',
-      summary: (input.maintenanceStatus.restartEscalation.reason || 'Restart escalation recommended after maintenance.').slice(0, 400),
-      severity: 'error',
-      safeToAutoRepair: false,
-      requiresApproval: true,
-      suggestedAction: 'restart_controller_or_bridge',
-    });
   }
   if (input.diagnostics?.codexUnavailable || input.diagnostics?.grokUnavailable) {
     issues.push({
@@ -305,7 +294,6 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
         linkedTools: [
           'runtime_maintenance_status',
           'runtime_maintenance_apply',
-          'self_healing_loop_plan',
           'workflow_watchdog_report',
           'runtime_performance_diagnostics',
         ],

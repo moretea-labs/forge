@@ -46,8 +46,6 @@ const READ_ONLY_TOOLS = new Set([
   'capability_recovery_probe',
   'capability_recovery_plan',
   'runtime_maintenance_status',
-  'self_healing_loop_plan',
-  'self_healing_monitor_tick',
   'goal_list',
   'goal_get',
   'goal_status',

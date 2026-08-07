@@ -17,11 +17,11 @@ A shadow schedule is observation-only. It may emit `would_execute` or `shadowed`
 
 ## First response sequence
 
-1. Read `controller_ready` and note queue depth, running workers, active leases, current attention, and plugin summary.
-2. Run `self_healing_monitor_tick` to compare canonical Runtime, Scheduler, Worker loop, projection, connector, and plugin state.
-3. If process readiness and projection disagree, inspect `runtime_maintenance_status` before requesting any service recovery.
-4. Apply `runtime_maintenance_apply` with `full_maintenance_pass` only after the bounded plan is reviewed. This may reconcile local jobs and rebuild projections; it must not be used as a substitute for source-code repair.
-5. Re-run readiness and retry the original operation with the same intent. Restart the controller only when maintenance cannot restore a coherent projection.
+1. Read `controller_ready` and note reason codes, source coherence, queue depth, running workers, active leases, current attention, and plugin summary.
+2. Run `capability_recovery_probe` (and `capability_recovery_plan` when needed) to classify the blocker without mutating state.
+3. If runtime metadata or projection state is degraded, inspect `runtime_maintenance_status` before requesting any external lifecycle action.
+4. Apply `runtime_maintenance_apply` only for a reviewed bounded metadata candidate. It may reconcile local jobs or rebuild projections; it must not perform Runtime lifecycle changes or source-code repair.
+5. Re-run `controller_ready` and `rh_status`, then retry the original operation with the same intent. If source coherence is blocked, follow the external lifecycle handoff for the existing single `forge-runtime`; do not attempt an in-process restart, component restart, second Runtime, or rollout.
 
 ## Schedule diagnosis
 

@@ -2167,13 +2167,6 @@ export async function startLocalBridgeServer(
       } else if (action.id === "recovery.reconcile_jobs") {
         result = applyRuntimeCleanup(repoRoot, { includeTempDirs: true, includeTerminalLocalJobs: true, includeLegacyRuns: true, includeHistoricalAttention: true, confirmCleanup: true }) as unknown as Record<string, unknown>;
         affectedPaths = [".ai/harness/local-jobs", ".ai/harness/jobs"];
-      } else if (action.id === "recovery.restart_controller" || action.id === "recovery.restart_local_bridge") {
-        result = {
-          skipped: true,
-          retired: true,
-          code: "RUNTIME_LIFECYCLE_ACTION_RETIRED",
-          reason: "Runtime restart is owned exclusively by the canonical Runtime service and cannot be initiated from Local Bridge.",
-        };
       } else {
         result = { skipped: true, reason: `${action.id} is planned but not executable from the Local Bridge HTTP process.` };
       }
