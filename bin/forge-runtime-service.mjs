@@ -8,10 +8,10 @@ const entry = join(root, 'src', 'runtime', 'root', 'service-runner-entry.ts');
 const loader = join(root, 'src', 'runtime', 'shared', 'node-ts-loader.mjs');
 const args = process.argv.slice(2);
 
-function commandExists(command) {
-  const probe = process.platform === 'win32' ? 'where' : 'command';
-  const probeArgs = process.platform === 'win32' ? [command] : ['-v', command];
-  return spawnSync(probe, probeArgs, { stdio: 'ignore', shell: process.platform !== 'win32' }).status === 0;
+function isBunExecutable() {
+  // launchd runs this launcher with a minimal PATH, so bun detection must not
+  // depend on `command -v bun`. Prefer the executing runtime identity instead.
+  return Boolean(process.versions?.bun) || /(?:^|[/\\-])bun(?:$|[/\\]|\.exe$)/i.test(process.execPath);
 }
 
 function run(command, commandArgs) {
@@ -23,8 +23,8 @@ function run(command, commandArgs) {
   process.exit(typeof result.status === 'number' ? result.status : 1);
 }
 
-if (process.env.FORGE_FORCE_NODE !== '1' && commandExists('bun')) {
-  run('bun', [entry, ...args]);
+if (process.env.FORGE_FORCE_NODE !== '1' && isBunExecutable()) {
+  run(process.execPath, [entry, ...args]);
 }
 const result = spawnSync(process.execPath, ['--loader', loader, entry, ...args], { stdio: 'inherit', env: process.env });
 if (result.error) {
