@@ -265,6 +265,21 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function editExecutionIdentity(ctx: McpToolContext): {
+  repoId: string;
+  checkoutId: string;
+  principalId: string;
+  controllerInstanceId: string;
+} {
+  const local = sha256(ctx.repoRoot).slice(0, 16);
+  return {
+    repoId: ctx.repoId?.trim() || `repo-local-${local}`,
+    checkoutId: ctx.checkoutId?.trim() || `checkout-local-${local}`,
+    principalId: ctx.principalId?.trim() || 'legacy-controller',
+    controllerInstanceId: ctx.controllerInstanceId?.trim() || 'legacy-controller',
+  };
+}
+
 function fileSummary(
   path: string,
   repoRoot: string,
@@ -4703,8 +4718,8 @@ export async function callMcpTool(
             "begin_edit_session requires the controller profile",
           );
         const purpose = String(args.purpose ?? "").trim();
-        const repoId = ctx.repoId?.trim();
-        if (!repoId) return errorResult("REPOSITORY_ID_REQUIRED", "begin_edit_session requires a bound repository identity");
+        const identity = editExecutionIdentity(ctx);
+        const repoId = identity.repoId;
         const controllerHome = resolveRepoPreferredControllerHome(ctx.repoRoot);
         const allowedPaths = stringList(args.allowed_paths);
         const checks = stringList(args.checks);
@@ -4718,7 +4733,7 @@ export async function callMcpTool(
             expectedFiles: typeof args.max_files === "number" ? args.max_files : allowedPaths.length,
             expectedChangedLines: typeof args.max_changed_lines === "number" ? args.max_changed_lines : undefined,
           },
-          workspace: { knownPaths: allowedPaths, checkoutId: ctx.checkoutId, fingerprint: workspaceIdentity },
+          workspace: { knownPaths: allowedPaths, checkoutId: identity.checkoutId, fingerprint: workspaceIdentity },
           policy: { risk: "local_repo_write", approvalConfirmed: true },
           capabilities: {},
           recovery: {},
@@ -4732,9 +4747,9 @@ export async function callMcpTool(
           createWorkContract(workStore, {
             workId,
             repoId,
-            checkoutId: ctx.checkoutId,
-            principalId: ctx.principalId,
-            controllerInstanceId: ctx.controllerInstanceId,
+            checkoutId: identity.checkoutId,
+            principalId: identity.principalId,
+            controllerInstanceId: identity.controllerInstanceId,
             baseRevision: git.head ?? undefined,
             workspaceFingerprint: workspaceIdentity,
             routeDecisionFingerprint: routeDecision.inputFingerprint,
@@ -4772,9 +4787,9 @@ export async function callMcpTool(
           binding: {
             workId,
             repoId,
-            checkoutId: ctx.checkoutId,
-            principalId: ctx.principalId,
-            controllerInstanceId: ctx.controllerInstanceId,
+            checkoutId: identity.checkoutId,
+            principalId: identity.principalId,
+            controllerInstanceId: identity.controllerInstanceId,
             routeDecisionFingerprint: routeDecision.inputFingerprint,
           },
         });
@@ -4796,6 +4811,7 @@ export async function callMcpTool(
         let session;
         try {
           const current = getEditSession(ctx.repoRoot, String(args.session_id ?? ""));
+          const identity = editExecutionIdentity(ctx);
           session = applyEditOperations(
             ctx.repoRoot,
             ctx.policy,
@@ -4809,10 +4825,10 @@ export async function callMcpTool(
               maxBatchOperations: PREFERRED_EDIT_PATCH_BATCH_OPERATIONS,
               binding: {
                 workId: current.workId,
-                repoId: ctx.repoId,
-                checkoutId: ctx.checkoutId,
-                principalId: ctx.principalId,
-                controllerInstanceId: ctx.controllerInstanceId,
+                repoId: identity.repoId,
+                checkoutId: identity.checkoutId,
+                principalId: identity.principalId,
+                controllerInstanceId: identity.controllerInstanceId,
                 routeDecisionFingerprint: current.routeDecisionFingerprint,
               },
             },
@@ -4919,6 +4935,7 @@ export async function callMcpTool(
             "finalize_edit_session requires the controller profile",
           );
         const current = getEditSession(ctx.repoRoot, String(args.session_id ?? ""));
+        const identity = editExecutionIdentity(ctx);
         const session = finalizeEditSession(
           ctx.repoRoot,
           current.sessionId,
@@ -4928,10 +4945,10 @@ export async function callMcpTool(
             approvalConfirmed: args.confirm_authorization === true,
             binding: {
               workId: current.workId,
-              repoId: ctx.repoId,
-              checkoutId: ctx.checkoutId,
-              principalId: ctx.principalId,
-              controllerInstanceId: ctx.controllerInstanceId,
+              repoId: identity.repoId,
+              checkoutId: identity.checkoutId,
+              principalId: identity.principalId,
+              controllerInstanceId: identity.controllerInstanceId,
               routeDecisionFingerprint: current.routeDecisionFingerprint,
             },
           },
