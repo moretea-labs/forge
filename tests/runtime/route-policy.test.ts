@@ -88,6 +88,113 @@ describe('single Route Policy authority', () => {
     }))).toMatchObject({ executionMode: 'direct_control', requiresWork: false });
   });
 
+  test('labels complex single-owner durable work as bounded_work without Issue, Plan, or Campaign', () => {
+    const assessment = assessWorkMode({
+      description: 'Refactor one routing subsystem with investigation and resumable checks',
+      knownPaths: ['src/runtime/control-plane/routing/route-policy.ts'],
+      expectedFiles: 8,
+      expectedChangedLines: 500,
+      requiresInvestigation: true,
+      requiresRecovery: true,
+      risk: 'medium',
+    });
+    expect(assessment).toMatchObject({
+      recommendedMode: 'bounded_work',
+      executionPath: 'durable',
+      issueRequired: false,
+      campaignRequired: false,
+    });
+    expect(assessment.routeDecision).toMatchObject({
+      executionMode: 'goal_workloop',
+      workMode: 'bounded_work',
+      executionPath: 'durable',
+      requiresWork: true,
+    });
+    expect(assessment.nextTools).toContain('rh_work(operation=start)');
+  });
+
+  test('keeps complex readonly investigation Work-bound without promoting to Issue or Campaign', () => {
+    const decision = decideRoute(sharedInput({
+      intent: {
+        objective: 'Investigate a cross-module regression without mutating yet',
+        scopeClear: true,
+        mutation: false,
+        expectedFiles: 6,
+        expectedChangedLines: 0,
+        requiresInvestigation: true,
+      },
+      policy: { risk: 'readonly' },
+    }));
+    expect(decision).toMatchObject({
+      executionMode: 'goal_workloop',
+      workMode: 'bounded_work',
+      executionPath: 'durable',
+      requiresWork: true,
+    });
+  });
+
+  test('selects Campaign from independent deliverable topology even without an Agent request', () => {
+    const decision = decideRoute(sharedInput({
+      intent: {
+        objective: 'Deliver three independent migration slices',
+        scopeClear: true,
+        mutation: true,
+        expectedFiles: 9,
+        expectedChangedLines: 600,
+        requiresIndependentDeliverables: true,
+        independentTaskCount: 3,
+        agentRequested: false,
+      },
+    }));
+    expect(decision).toMatchObject({
+      executionMode: 'goal_workloop',
+      workMode: 'campaign',
+      executionPath: 'campaign',
+      requiresWork: true,
+    });
+  });
+
+  test('keeps Campaign on Goal Workloop even when independent deliverables are individually tiny', () => {
+    expect(decideRoute(sharedInput({
+      intent: {
+        objective: 'Coordinate two tiny independent deliverables',
+        scopeClear: true,
+        mutation: true,
+        expectedFiles: 2,
+        expectedChangedLines: 40,
+        requiresIndependentDeliverables: true,
+        independentTaskCount: 2,
+      },
+    }))).toMatchObject({
+      executionMode: 'goal_workloop',
+      workMode: 'campaign',
+      executionPath: 'campaign',
+    });
+  });
+
+  test('keeps Agent preference subordinate to routing tier topology', () => {
+    expect(decideRoute(sharedInput({
+      intent: {
+        objective: 'Delegate a small bounded implementation',
+        scopeClear: true,
+        mutation: true,
+        expectedFiles: 2,
+        expectedChangedLines: 80,
+        agentRequested: true,
+      },
+    }))).toMatchObject({ workMode: 'quick_agent', executionPath: 'durable', requiresWork: true });
+    expect(decideRoute(sharedInput({
+      intent: {
+        objective: 'Delegate a large single deliverable',
+        scopeClear: true,
+        mutation: true,
+        expectedFiles: 12,
+        expectedChangedLines: 1_800,
+        agentRequested: true,
+      },
+    }))).toMatchObject({ workMode: 'issue_task', executionPath: 'durable' });
+  });
+
   test('allows complex Goal Workloop execution without a Plan while explicit Plan remains optional', () => {
     const root = temp('route-workloop-');
     const result = routeWorkStart({

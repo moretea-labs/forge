@@ -1,9 +1,9 @@
 import { createHash } from 'crypto';
 
-export const ROUTE_POLICY_VERSION = 'route-policy-v1' as const;
+export const ROUTE_POLICY_VERSION = 'route-policy-v2' as const;
 
 export type RouteExecutionMode = 'direct_control' | 'goal_workloop' | 'handoff_only';
-export type RouteWorkMode = 'direct_edit' | 'quick_agent' | 'issue_task' | 'campaign';
+export type RouteWorkMode = 'direct_edit' | 'bounded_work' | 'quick_agent' | 'issue_task' | 'campaign';
 export type RouteExecutionPath = 'fast' | 'durable' | 'campaign';
 export type RouteExecutorKind = 'direct_edit' | 'local_cli' | 'remote_api' | 'cloud_agent' | 'external_controller' | 'handoff_only';
 export type RouteApprovalState = 'approval_not_required' | 'normal_authorization_required' | 'strong_confirmation_required' | 'blocked_by_policy';
@@ -295,8 +295,10 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
   if (input.intent.needsDependencies) reasons.push({ code: 'dependencies', message: 'Dependency ordering requires durable Work.' });
   if (campaignEligible) reasons.push({ code: 'independent_deliverables', message: 'Multiple independent deliverables require campaign-level coordination.' });
 
-  const complex = requiresRecovery
+  const complex = campaignEligible
+    || requiresRecovery
     || requiresIsolation
+    || input.intent.agentRequested === true
     || input.capabilities.requiresWorker === true
     || input.capabilities.requiresExternalEffect === true
     || input.intent.requiresInvestigation === true
@@ -308,11 +310,16 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
     || expectedFiles > 4
     || expectedChangedLines > 200;
   const executionMode: RouteExecutionMode = complex ? 'goal_workloop' : 'direct_control';
-  const workMode: RouteWorkMode = campaignEligible && input.intent.agentRequested
+  // Work topology is independent from executor/provider choice. Campaign is
+  // selected only for genuinely independent/parallel deliverables; Agent
+  // preference may choose an executor inside a tier but must not create the tier.
+  const workMode: RouteWorkMode = campaignEligible
     ? 'campaign'
     : input.intent.agentRequested
       ? expectedFiles > 10 || expectedChangedLines > 1_500 ? 'issue_task' : 'quick_agent'
-      : 'direct_edit';
+      : complex
+        ? 'bounded_work'
+        : 'direct_edit';
   const executionPath: RouteExecutionPath = workMode === 'campaign' ? 'campaign' : complex ? 'durable' : 'fast';
   const providerSelection = selectProvider(input);
   const providersWereSupplied = input.capabilities.providers !== undefined;
@@ -338,7 +345,7 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
     selectedProviderId: selectedProvider?.providerId ?? null,
     workMode,
     executionPath,
-    requiresWork: mutation || requiresRecovery || requiresIsolation,
+    requiresWork: mutation || complex,
     requiresApproval: approvalRequired,
     requiresIsolation,
     requiresRecovery,

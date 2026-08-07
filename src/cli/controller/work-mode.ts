@@ -1,7 +1,7 @@
 import type { TaskRisk } from './types';
 import { decideRoute, type RouteDecision, type RoutePolicyInput } from '../../runtime/control-plane/routing/route-policy';
 
-export type WorkMode = 'direct_edit' | 'quick_agent' | 'issue_task' | 'campaign';
+export type WorkMode = 'direct_edit' | 'bounded_work' | 'quick_agent' | 'issue_task' | 'campaign';
 export type ExecutionPathPreference = 'fast' | 'durable' | 'campaign';
 
 export interface WorkModeAssessmentInput {
@@ -39,7 +39,14 @@ export interface WorkModeAssessment {
 function nextTools(decision: RouteDecision, investigation: boolean): string[] {
   if (decision.workMode === 'campaign') return ['create_campaign', 'add_campaign_task', 'reconcile_campaign', 'get_campaign_review_packet'];
   if (decision.workMode === 'issue_task') return ['inspect_issue_readiness', 'create_issue or append_task', 'dispatch_task', 'verify_task', 'accept_task'];
-  if (decision.workMode === 'quick_agent') return ['search_repository', 'submit_local_job(action=quick-agent-session)', 'get_task_run', 'get_task_diff'];
+  if (decision.workMode === 'quick_agent') return ['search_repository', 'rh_work(operation=delegate)', 'rh_work(operation=continue)', 'rh_work(operation=verify)'];
+  if (decision.workMode === 'bounded_work') return [
+    ...(investigation ? ['rh_context', 'search_repository'] : []),
+    'rh_work(operation=start)',
+    'rh_work(operation=continue)',
+    'rh_work(operation=verify)',
+    'rh_work(operation=finalize)',
+  ];
   return [
     ...(investigation ? ['search_repository', 'repository_workbench(operation=batch_execute reads)'] : []),
     'repository_workbench(operation=batch_execute)',

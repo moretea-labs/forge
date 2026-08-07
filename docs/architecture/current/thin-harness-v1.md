@@ -49,6 +49,16 @@ interface ExecutionDecision {
 }
 ```
 
+### Deterministic task tiers
+
+The sole Route Policy exposes three task-shape tiers. These are routing labels over existing execution primitives, not separate engines:
+
+1. **Direct** — `direct_edit` + `direct_control` + `fast`. Use for small, scope-clear, low-risk work. Readonly work creates no Work; small mutations may retain lightweight Work lineage without Issue, Plan, Campaign, or isolated worktree by default.
+2. **Bounded Work** — `bounded_work` + `goal_workloop` + `durable`. Use for one-owner work that needs investigation, recovery, isolation, protected-path handling, or broader bounded scope. It uses the existing WorkContract / `rh_work` lifecycle and does **not** require an Issue or Plan.
+3. **Campaign** — `campaign` + `goal_workloop` + `campaign`. Use only when the task explicitly contains multiple independent deliverables or parallel independent tasks that need coordination. Campaign selection is based on task topology, not on whether an Agent/provider was requested.
+
+`quick_agent` and `issue_task` remain executor/delegation-oriented modes when an Agent is explicitly requested and Campaign topology is absent. Provider choice never promotes a small task into Campaign by itself. An explicit approved Plan may still bind dependent Work steps, but Plan is optional and is never a prerequisite for Bounded Work or Campaign routing.
+
 ### Fast Path eligibility (default)
 
 - repository file read (size-capped)
