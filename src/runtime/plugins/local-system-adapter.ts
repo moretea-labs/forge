@@ -14,6 +14,7 @@ import {
   WorkspaceTargetGrantError,
   authorizeWorkspaceTargetGrant,
   listActiveWorkspaceTargetGrants,
+  resolveWorkspaceTargetCwd,
   resolveWorkspaceTargetPath,
   type ActiveWorkspaceTargetGrant,
   type WorkspaceTargetAccess,
@@ -28,11 +29,21 @@ import type {
   AssistantPluginPermissionScope,
 } from './types';
 import { AssistantPluginError } from './errors';
+import {
+  classifyRepositoryCommand,
+  classifyRepositoryCommandReplay,
+} from '../../cli/repositories/command-classifier';
+import {
+  assertCommandPathOperandsStayInRepository,
+  assertRepositoryCommandInputAllowed,
+} from '../../cli/repositories/command-scope';
+import { runCanonicalCommand } from '../../cli/repositories/command-executor';
 
 const PLUGIN_ID = 'local_system';
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const MAX_TEXT_CHARS = 100_000;
 const MAX_DIRECTORY_ENTRIES = 200;
+const TARGET_SAFE_FILESYSTEM_MUTATORS = new Set(['touch', 'mkdir', 'cp', 'mv', 'install', 'tee', 'truncate']);
 
 interface CommandResult {
   ok: boolean;
@@ -98,6 +109,14 @@ function requiredString(args: Record<string, unknown>, key: string): string {
 function optionalString(args: Record<string, unknown>, key: string): string | undefined {
   const value = typeof args[key] === 'string' ? String(args[key]).trim() : '';
   return value || undefined;
+}
+
+function requiredStringArray(args: Record<string, unknown>, key: string): string[] {
+  const value = args[key];
+  if (!Array.isArray(value) || value.length === 0 || value.some((entry) => typeof entry !== 'string' || !entry.trim())) {
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `${key} must be a non-empty string array.`, { retryable: false });
+  }
+  return value.map((entry) => String(entry));
 }
 
 function bounded(value: string, maxBytes = MAX_OUTPUT_BYTES): { content: string; truncated: boolean; byteLength: number } {
@@ -248,6 +267,7 @@ function actions(): AssistantPluginActionDescriptor[] {
     { actionId: 'authorize_target', title: 'Authorize filesystem target', description: 'Authorize one existing absolute directory under an expiring target key.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { target_key: { type: 'string' }, root_path: { type: 'string' }, expires_in_minutes: { type: 'number' }, reason: { type: 'string' }, access: { type: 'string', enum: ['read_only', 'read_write'] } }, required: ['target_key', 'root_path', 'reason'], additionalProperties: false } },
     { actionId: 'list_directory', title: 'List directory', description: 'List a bounded directory snapshot below an authorized target.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.files.read'], resourceClaims: controllerRead, argumentsSchema: { type: 'object', properties: targetProperties, required: ['target_key'], additionalProperties: false } },
     { actionId: 'read_text', title: 'Read text file', description: 'Read a bounded UTF-8 text file below an authorized target.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.files.read'], resourceClaims: controllerRead, argumentsSchema: { type: 'object', properties: { ...targetProperties, max_chars: { type: 'number' } }, required: ['target_key', 'path'], additionalProperties: false } },
+    { actionId: 'execute_command', title: 'Execute target command', description: 'Execute one bounded typed-argv command inside an authorized target without repository registration. Shell strings, target escapes, destructive/remote writes, and Git mutations are denied.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false, scopes: ['local-system.files.read', 'local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { target_key: { type: 'string' }, command: { type: 'array', items: { type: 'string' } }, cwd: { type: 'string' }, max_output_bytes: { type: 'number' } }, required: ['target_key', 'command'], additionalProperties: false } },
     { actionId: 'create_directory', title: 'Create directory', description: 'Create a directory below an authorized target without leaving that root.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: targetProperties, required: ['target_key', 'path'], additionalProperties: false } },
     { actionId: 'copy_file', title: 'Copy file', description: 'Copy a file between authorized targets without overwriting.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { source_target_key: { type: 'string' }, source_path: { type: 'string' }, destination_target_key: { type: 'string' }, destination_path: { type: 'string' } }, required: ['source_target_key', 'source_path', 'destination_target_key', 'destination_path'], additionalProperties: false } },
     { actionId: 'move_file', title: 'Move file', description: 'Move a file between authorized targets without overwriting.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { source_target_key: { type: 'string' }, source_path: { type: 'string' }, destination_target_key: { type: 'string' }, destination_path: { type: 'string' } }, required: ['source_target_key', 'source_path', 'destination_target_key', 'destination_path'], additionalProperties: false } },
@@ -288,7 +308,7 @@ function capabilities(): AssistantPluginCapability[] {
   return [
     { capabilityId: 'local-system-diagnostics', title: 'Local diagnostics', description: 'Inspect CPU, processes, and memory with bounded typed commands.', scopes: ['local-system.read'], actions: ['system_snapshot', 'process_detail'] },
     { capabilityId: 'local-system-open', title: 'Open local applications and files', description: 'Open applications and authorized files without arbitrary shell access.', scopes: ['local-system.open'], actions: ['open_application', 'reveal_in_finder', 'open_file'] },
-    { capabilityId: 'local-system-files', title: 'Authorized local files', description: 'Use expiring target grants for bounded local file operations.', scopes: ['local-system.files.read', 'local-system.files.write'], actions: ['list_targets', 'authorize_target', 'list_directory', 'read_text', 'create_directory', 'copy_file', 'move_file', 'rename_file'] },
+    { capabilityId: 'local-system-files', title: 'Authorized local files', description: 'Use expiring target grants for bounded local file operations and typed-argv commands without repository registration.', scopes: ['local-system.files.read', 'local-system.files.write'], actions: ['list_targets', 'authorize_target', 'list_directory', 'read_text', 'execute_command', 'create_directory', 'copy_file', 'move_file', 'rename_file'] },
   ];
 }
 
@@ -301,7 +321,7 @@ export function buildLocalSystemPluginManifest(previousRevision = 0, previousUpd
     pluginId: PLUGIN_ID,
     provider: 'local-macos',
     displayName: 'Local System Assistant',
-    pluginVersion: '1.1.0',
+    pluginVersion: '1.2.0',
     authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['controllerHome:system/local-system'] },
     enabled: true,
     lifecycle: { state: currentHealth.ready ? 'enabled' : 'degraded', reason: currentHealth.ready ? 'Local system capabilities are ready.' : currentHealth.warnings[0] },
@@ -364,6 +384,85 @@ export async function executeLocalSystemPluginAction(input: AssistantPluginActio
       const maxChars = Math.max(1, Math.min(Math.trunc(Number(input.args.max_chars ?? 20_000)), MAX_TEXT_CHARS));
       const content = readFileSync(resolved.path, 'utf8');
       return { targetKey: resolved.target.targetKey, path: resolved.relativePath, content: content.slice(0, maxChars), truncated: content.length > maxChars };
+    }
+    case 'execute_command': {
+      const targetKey = requiredString(input.args, 'target_key');
+      const argv = requiredStringArray(input.args, 'command');
+      const canonical = assertRepositoryCommandInputAllowed(argv);
+      if (canonical.kind !== 'argv') {
+        throw new AssistantPluginError('LOCAL_SYSTEM_COMMAND_TYPED_ARGV_REQUIRED', 'Target commands must use typed argv and cannot use a shell string.', { retryable: false });
+      }
+      const classification = classifyRepositoryCommand(canonical);
+      if (classification.risk === 'remote_write' || classification.risk === 'destructive') {
+        throw new AssistantPluginError('LOCAL_SYSTEM_COMMAND_RISK_DENIED', `Target command risk ${classification.risk} is not supported without repository registration.`, { retryable: false });
+      }
+      const executable = canonical.executable!.split(/[\\/]/).at(-1)?.toLowerCase() ?? '';
+      if (executable === 'git' && classification.risk !== 'readonly') {
+        throw new AssistantPluginError('LOCAL_SYSTEM_GIT_MUTATION_REQUIRES_REPOSITORY', 'Git mutations require a registered repository/checkout so refs and worktree ownership remain fenced.', { retryable: false });
+      }
+      if (classification.risk === 'workspace_write') {
+        const replay = classifyRepositoryCommandReplay(canonical);
+        const boundedFilesystemMutation = TARGET_SAFE_FILESYSTEM_MUTATORS.has(executable);
+        if (!boundedFilesystemMutation && !replay.replayable) {
+          throw new AssistantPluginError(
+            'LOCAL_SYSTEM_COMMAND_REPOSITORY_REQUIRED',
+            `Target command ${executable || '<unknown>'} has unbounded or unclassified side effects; register/promote the target before executing it.`,
+            { retryable: false },
+          );
+        }
+      }
+      const operation: WorkspaceTargetOperation = classification.risk === 'readonly' ? 'read' : 'write';
+      let resolved;
+      try {
+        resolved = resolveWorkspaceTargetCwd(
+          input.controllerHome,
+          targetKey,
+          requestOwnerScope(input),
+          optionalString(input.args, 'cwd') ?? '.',
+          operation,
+          currentDate(),
+        );
+      } catch (error) {
+        return rethrowTargetError(error);
+      }
+      assertCommandPathOperandsStayInRepository(canonical, resolved.path, resolved.root, []);
+      const maxOutputBytes = Math.max(1_024, Math.min(Math.trunc(Number(input.args.max_output_bytes ?? MAX_OUTPUT_BYTES)), 1024 * 1024));
+      const timeoutMs = Math.max(1_000, Math.min(Math.trunc(input.timeoutMs ?? 30_000), 30_000));
+      const executed = await runCanonicalCommand(canonical, resolved.path, timeoutMs, maxOutputBytes, { signal: input.signal });
+      if (!executed.ok) {
+        const code = executed.timedOut
+          ? 'LOCAL_SYSTEM_COMMAND_TIMED_OUT'
+          : executed.cancelled
+            ? 'LOCAL_SYSTEM_COMMAND_CANCELLED'
+            : 'LOCAL_SYSTEM_COMMAND_FAILED';
+        const message = executed.stderr.trim()
+          || executed.stdout.trim()
+          || `Target command exited with code ${executed.exitCode}.`;
+        throw new AssistantPluginError(code, bounded(message, maxOutputBytes).content, {
+          retryable: executed.timedOut,
+          details: {
+            command: argv,
+            exitCode: executed.exitCode,
+            timedOut: executed.timedOut,
+            cancelled: executed.cancelled,
+          },
+        });
+      }
+      return {
+        targetKey: resolved.target.targetKey,
+        workspaceId: resolved.target.workspaceId,
+        identityFingerprint: resolved.target.identityFingerprint,
+        repositoryRegistered: false,
+        cwd: resolved.relativePath || '.',
+        command: argv,
+        classification,
+        ok: executed.ok,
+        exitCode: executed.exitCode,
+        timedOut: executed.timedOut,
+        cancelled: executed.cancelled,
+        stdout: executed.stdout,
+        stderr: executed.stderr,
+      };
     }
     case 'create_directory': {
       const resolved = resolveTargetPath(input, requiredString(input.args, 'target_key'), requiredString(input.args, 'path'), { mustExist: false, operation: 'write' });

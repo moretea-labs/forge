@@ -1,5 +1,5 @@
 import type { ControllerTask, TaskStatus } from '../../../cli/controller/types';
-import type { WorkContract, WorkRisk } from './types';
+import { isRepositoryCompletionReceipt, type WorkContract, type WorkRisk } from './types';
 
 /**
  * Legacy Task statuses are a read-model vocabulary. They are intentionally
@@ -43,7 +43,7 @@ export function projectControllerTaskFromWork(
     // cancelled execution facts cannot move it backwards.
     status: task.status === 'done' && work.status !== 'completed' ? 'done' : taskStatusFromWork(work),
   };
-  if (work.completionReceipt && projected.verification) {
+  if (work.completionReceipt && projected.verification && isRepositoryCompletionReceipt(work.completionReceipt)) {
     projected.verification = {
       ...projected.verification,
       completionReceipt: work.completionReceipt,

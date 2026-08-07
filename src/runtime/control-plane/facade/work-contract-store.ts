@@ -310,6 +310,12 @@ function validateWorkSemantics(contract: WorkContract): WorkContract {
   if (outcome === 'completed_no_change' && contract.workKind !== 'completed_no_change') {
     throw new Error('WORK_SEMANTICS_INVALID: completed_no_change requires completed_no_change WorkKind');
   }
+  if (outcome === 'completed_local' && contract.workKind !== 'local_effect') {
+    throw new Error('WORK_SEMANTICS_INVALID: completed_local requires local_effect WorkKind');
+  }
+  if (outcome === 'completed_local' && contract.completionReceipt?.source !== 'local_effect') {
+    throw new Error('WORK_SEMANTICS_INVALID: completed_local requires a local_effect completion receipt');
+  }
   if (outcome === 'completed_remote' && contract.workKind !== 'remote_effect') {
     throw new Error('WORK_SEMANTICS_INVALID: completed_remote requires remote_effect WorkKind');
   }
@@ -614,6 +620,10 @@ export interface AcceptSubmittedWorkInput {
   objective?: string;
   mode?: WorkContract['mode'];
   requestedBy?: WorkContract['requestedBy'];
+  principalId?: string;
+  controllerInstanceId?: string;
+  workKind?: WorkKind;
+  risk?: WorkRisk;
   allowedPaths?: string[];
   forbiddenPaths?: string[];
   checks?: string[];
@@ -686,9 +696,13 @@ export function acceptSubmittedWorkContract(
     const contract = createWorkContract({ controllerHome: home, repoId: input.repoId, now: options.now }, {
       workId: `WORK-${Date.now()}-${randomUUID().slice(0, 8)}`,
       repoId: input.repoId,
+      principalId: input.principalId,
+      controllerInstanceId: input.controllerInstanceId,
       mode: input.mode ?? 'direct_control',
       objective: (input.objective ?? `Accepted operation ${input.operation.name}`).slice(0, 2_000),
       acceptanceCriteria: input.acceptanceCriteria ?? [],
+      workKind: input.workKind,
+      risk: input.risk,
       constraints: input.constraints ?? { requireHandoffOnAmbiguity: true },
       allowedPaths: input.allowedPaths ?? [],
       forbiddenPaths: input.forbiddenPaths ?? [],

@@ -98,7 +98,7 @@ export interface PreparedRepositoryCommandExecution {
   execution: RepositoryCommandExecution;
 }
 
-interface SpawnCommandResult {
+export interface SpawnCommandResult {
   ok: boolean;
   exitCode: number;
   timedOut: boolean;
@@ -207,7 +207,7 @@ async function killCommandTree(child: ChildProcess): Promise<void> {
   await terminateProcessTree(pid, { gracePeriodMs: 200, killAfterMs: 1_000, pollIntervalMs: 25 });
 }
 
-async function runCanonicalCommand(
+export async function runCanonicalCommand(
   command: CanonicalRepositoryCommand,
   cwd: string,
   timeoutMs: number,

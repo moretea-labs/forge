@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -28,7 +29,12 @@ import {
   resetLocalSystemPluginHooksForTest,
   setLocalSystemPluginHooksForTest,
 } from '../../src/runtime/plugins/local-system-adapter';
+import {
+  controllerPluginRepository,
+  submitAssistantPluginAction,
+} from '../../src/runtime/plugins/store';
 import type { AssistantPluginActionExecutionInput } from '../../src/runtime/plugins/types';
+import { getWorkContractByRequestId } from '../../src/runtime/control-plane/facade/work-contract-store';
 
 const roots: string[] = [];
 
@@ -380,5 +386,221 @@ describe('local_system target adapter', () => {
     });
     expect((principalList.targets as unknown[])).toHaveLength(1);
     expect((sharedList.targets as unknown[])).toHaveLength(1);
+  });
+
+  test('executes bounded typed-argv reads without repository registration or Work creation', async () => {
+    const controllerHome = temp('forge-target-command-read-controller-');
+    const root = temp('forge-target-command-read-root-');
+    writeFileSync(join(root, 'note.txt'), 'hello target\n');
+    authorizeWorkspaceTargetGrant(controllerHome, {
+      targetKey: 'project',
+      rootPath: root,
+      ownerScope: 'chatgpt-action:principal:test-user',
+      access: 'read_only',
+      reason: 'readonly command',
+    });
+
+    const requestId = 'target-read-command';
+    const submitted = await submitAssistantPluginAction(
+      controllerHome,
+      controllerPluginRepository(controllerHome),
+      {
+        pluginId: 'local_system',
+        actionId: 'execute_command',
+        requestId,
+        args: { target_key: 'project', command: ['cat', 'note.txt'] },
+        origin: { surface: 'chatgpt-action', actor: 'principal:test-user' },
+      },
+    );
+
+    expect(submitted.workId).toBeUndefined();
+    expect(submitted.receipt.workId).toBeUndefined();
+    expect((submitted.result?.result as Record<string, unknown>).repositoryRegistered).toBe(false);
+    expect((submitted.result?.result as Record<string, unknown>).stdout).toContain('hello target');
+    expect(getWorkContractByRequestId(controllerHome, requestId, '__controller__')).toBeUndefined();
+  });
+
+  test('terminalizes a lightweight local-effect Work for a target mutation', async () => {
+    const controllerHome = temp('forge-target-command-write-controller-');
+    const root = temp('forge-target-command-write-root-');
+    authorizeWorkspaceTargetGrant(controllerHome, {
+      targetKey: 'project',
+      rootPath: root,
+      ownerScope: 'chatgpt-action:principal:test-user',
+      access: 'read_write',
+      reason: 'mutation command',
+    });
+
+    const requestId = 'target-write-command';
+    const submitted = await submitAssistantPluginAction(
+      controllerHome,
+      controllerPluginRepository(controllerHome),
+      {
+        pluginId: 'local_system',
+        actionId: 'execute_command',
+        requestId,
+        args: { target_key: 'project', command: ['touch', 'created.txt'] },
+        origin: { surface: 'chatgpt-action', actor: 'principal:test-user' },
+      },
+    );
+
+    expect(existsSync(join(root, 'created.txt'))).toBe(true);
+    expect(submitted.workId).toBeTruthy();
+    expect(submitted.receipt.workId).toBe(submitted.workId);
+    const work = getWorkContractByRequestId(controllerHome, requestId, '__controller__');
+    expect(work).toMatchObject({
+      workId: submitted.workId,
+      status: 'completed',
+      workKind: 'local_effect',
+      dispatchState: 'terminal',
+      evidenceState: 'valid',
+      completionOutcome: 'completed_local',
+    });
+    expect(work?.completionReceipt).toMatchObject({
+      source: 'local_effect',
+      workId: submitted.workId,
+      operation: 'local_system/execute_command',
+      changed: true,
+    });
+  });
+
+  test('fails mutating Work terminally when target access rejects the command', async () => {
+    const controllerHome = temp('forge-target-command-fail-controller-');
+    const root = temp('forge-target-command-fail-root-');
+    authorizeWorkspaceTargetGrant(controllerHome, {
+      targetKey: 'project',
+      rootPath: root,
+      ownerScope: 'chatgpt-action:principal:test-user',
+      access: 'read_only',
+      reason: 'deny mutation',
+    });
+
+    const requestId = 'target-write-command-denied';
+    await expect(submitAssistantPluginAction(
+      controllerHome,
+      controllerPluginRepository(controllerHome),
+      {
+        pluginId: 'local_system',
+        actionId: 'execute_command',
+        requestId,
+        args: { target_key: 'project', command: ['touch', 'denied.txt'] },
+        origin: { surface: 'chatgpt-action', actor: 'principal:test-user' },
+      },
+    )).rejects.toThrow(/LOCAL_SYSTEM_TARGET_READ_ONLY/);
+
+    expect(existsSync(join(root, 'denied.txt'))).toBe(false);
+    expect(getWorkContractByRequestId(controllerHome, requestId, '__controller__')).toMatchObject({
+      status: 'failed',
+      workKind: 'local_effect',
+      dispatchState: 'terminal',
+      evidenceState: 'failed',
+    });
+  });
+
+  test('marks a mutating command Work failed when the process exits non-zero', async () => {
+    const controllerHome = temp('forge-target-command-exit-controller-');
+    const root = temp('forge-target-command-exit-root-');
+    mkdirSync(join(root, 'existing'));
+    authorizeWorkspaceTargetGrant(controllerHome, {
+      targetKey: 'project',
+      rootPath: root,
+      ownerScope: 'chatgpt-action:principal:test-user',
+      access: 'read_write',
+      reason: 'non-zero mutation',
+    });
+
+    const requestId = 'target-write-command-nonzero';
+    await expect(submitAssistantPluginAction(
+      controllerHome,
+      controllerPluginRepository(controllerHome),
+      {
+        pluginId: 'local_system',
+        actionId: 'execute_command',
+        requestId,
+        args: { target_key: 'project', command: ['mkdir', 'existing'] },
+        origin: { surface: 'chatgpt-action', actor: 'principal:test-user' },
+      },
+    )).rejects.toThrow(/LOCAL_SYSTEM_COMMAND_FAILED/);
+
+    expect(getWorkContractByRequestId(controllerHome, requestId, '__controller__')).toMatchObject({
+      status: 'failed',
+      workKind: 'local_effect',
+      dispatchState: 'terminal',
+      evidenceState: 'failed',
+    });
+  });
+
+  test('rejects dangerous and escaping target commands before execution', async () => {
+    const controllerHome = temp('forge-target-command-policy-controller-');
+    const root = temp('forge-target-command-policy-root-');
+    const outside = temp('forge-target-command-policy-outside-');
+    const outsideFile = join(outside, 'secret.txt');
+    writeFileSync(join(root, 'local.txt'), 'local\n');
+    writeFileSync(outsideFile, 'outside\n');
+    authorizeWorkspaceTargetGrant(controllerHome, {
+      targetKey: 'project',
+      rootPath: root,
+      ownerScope: 'chatgpt-action:principal:test-user',
+      access: 'read_write',
+      reason: 'command policy',
+    });
+
+    await expect(executeLocalSystemPluginAction(input(controllerHome, 'execute_command', {
+      target_key: 'project',
+      command: ['rm', 'local.txt'],
+    }))).rejects.toThrow(/LOCAL_SYSTEM_COMMAND_RISK_DENIED/);
+    expect(existsSync(join(root, 'local.txt'))).toBe(true);
+
+    await expect(executeLocalSystemPluginAction(input(controllerHome, 'execute_command', {
+      target_key: 'project',
+      command: ['cat', outsideFile],
+    }))).rejects.toThrow(/EXTERNAL_FILESYSTEM_GRANT_REQUIRED|COMMAND_SCOPE_DENIED/);
+
+    await expect(executeLocalSystemPluginAction(input(controllerHome, 'execute_command', {
+      target_key: 'project',
+      command: ['npm', 'publish'],
+    }))).rejects.toThrow(/LOCAL_SYSTEM_COMMAND_REPOSITORY_REQUIRED/);
+
+    await expect(executeLocalSystemPluginAction(input(controllerHome, 'execute_command', {
+      target_key: 'project',
+      command: ['docker', 'rm', 'anything'],
+    }))).rejects.toThrow(/LOCAL_SYSTEM_COMMAND_REPOSITORY_REQUIRED/);
+
+    await expect(executeLocalSystemPluginAction(input(controllerHome, 'execute_command', {
+      target_key: 'project',
+      command: 'cat local.txt',
+    }))).rejects.toThrow(/command must be a non-empty string array/);
+  });
+
+  test('structured target mutations use the same terminal local-effect Work lineage', async () => {
+    const controllerHome = temp('forge-target-structured-work-controller-');
+    const root = temp('forge-target-structured-work-root-');
+    authorizeWorkspaceTargetGrant(controllerHome, {
+      targetKey: 'project',
+      rootPath: root,
+      ownerScope: 'chatgpt-action:principal:test-user',
+      access: 'read_write',
+      reason: 'structured mutation',
+    });
+
+    const requestId = 'target-create-directory-work';
+    const submitted = await submitAssistantPluginAction(
+      controllerHome,
+      controllerPluginRepository(controllerHome),
+      {
+        pluginId: 'local_system',
+        actionId: 'create_directory',
+        requestId,
+        args: { target_key: 'project', path: 'generated' },
+        origin: { surface: 'chatgpt-action', actor: 'principal:test-user' },
+      },
+    );
+    expect(existsSync(join(root, 'generated'))).toBe(true);
+    expect(submitted.workId).toBeTruthy();
+    expect(getWorkContractByRequestId(controllerHome, requestId, '__controller__')).toMatchObject({
+      status: 'completed',
+      workKind: 'local_effect',
+      completionOutcome: 'completed_local',
+    });
   });
 });

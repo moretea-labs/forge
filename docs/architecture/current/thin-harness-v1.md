@@ -60,6 +60,21 @@ interface ExecutionDecision {
 - **strict** focused checks only (typed argv + explicit file/filter; bare `bun test` / `npm test` / `pytest` → durable)
 - continuous local edits on one checkout
 
+### Repository-free Target execution
+
+An authorized `local_system` Target Grant is a first-class bounded workspace target and does **not** require Repository Registry enrollment. It uses the existing `controllerHome/system/local-system/targets.json` authority and carries a stable `workspaceId`, owner scope, access mode, canonical root, and identity fingerprint.
+
+- file reads/writes remain symlink-safe and root-bounded;
+- `execute_command` accepts typed argv only, reuses the repository command classifier/scope policy and bounded process runner, and caps execution at 30 seconds;
+- readonly Target commands create no WorkContract;
+- Target mutations create one lightweight `direct_control` WorkContract and terminalize it in the same request with a `local_effect` completion receipt;
+- remote/destructive commands are rejected on Target execution;
+- `workspace_write` commands are fail-closed unless they are replay-safe local validation or part of the narrow path-governed filesystem mutation allowlist; unknown/system side effects require Repository promotion;
+- Git mutations are rejected until the target is promoted to a registered Repository/Checkout, because Git refs and worktree ownership require repository-scoped fencing;
+- long-running, recoverable, release, multi-checkout, or cross-session cache-heavy workflows should promote the target to a registered Repository instead of extending Target execution into a second scheduler/work model.
+
+This preserves repository-free local operation without inventing a fake RepositoryRecord, WorkspaceJob, or parallel route policy.
+
 ### Must use Durable Path
 
 - background / cross-session recovery

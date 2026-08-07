@@ -1,5 +1,5 @@
 import type { ProcessCheckReceiptEvidence } from '../../evidence/process-check-receipt';
-import type { CompletionReceipt } from '../../../cli/controller/types';
+import type { CompletionReceipt as RepositoryCompletionReceipt } from '../../../cli/controller/types';
 import type { AccessMode } from '../governance/access-policy';
 import { decideRoute, type RouteDecision, type RoutePolicyInput } from '../routing/route-policy';
 
@@ -121,6 +121,7 @@ export const WORK_KINDS = [
   'repository_change',
   'completed_no_change',
   'investigation',
+  'local_effect',
   'remote_effect',
   'reconciliation',
   'superseded',
@@ -133,8 +134,36 @@ export type DispatchState = (typeof DISPATCH_STATES)[number];
 export const EVIDENCE_STATES = ['none', 'partial', 'valid', 'stale', 'contradictory', 'failed'] as const;
 export type EvidenceState = (typeof EVIDENCE_STATES)[number];
 
-export const COMPLETION_OUTCOMES = ['completed_changed', 'completed_no_change', 'completed_remote', 'superseded'] as const;
+export const COMPLETION_OUTCOMES = ['completed_changed', 'completed_no_change', 'completed_local', 'completed_remote', 'superseded'] as const;
 export type CompletionOutcome = (typeof COMPLETION_OUTCOMES)[number];
+
+/**
+ * Terminal receipt for a bounded Controller-local side effect that is not a
+ * repository delivery. Repository Task/Issue completion keeps using the
+ * historical Git-oriented CompletionReceipt unchanged.
+ */
+export interface LocalEffectCompletionReceipt {
+  schemaVersion: 1;
+  receiptId: string;
+  source: 'local_effect';
+  workId: string;
+  operation: string;
+  target: {
+    kind: 'workspace_target' | 'controller_local';
+    id: string;
+    identityFingerprint?: string;
+  };
+  changed: boolean;
+  recordedAt: string;
+}
+
+export type WorkCompletionReceipt = RepositoryCompletionReceipt | LocalEffectCompletionReceipt;
+
+export function isRepositoryCompletionReceipt(
+  receipt: WorkCompletionReceipt,
+): receipt is RepositoryCompletionReceipt {
+  return receipt.source !== 'local_effect';
+}
 
 /** A reviewed exception for historical/manual integration; never inferred automatically. */
 export const WORK_RECONCILIATION_METHODS = ['exact_commit', 'owned_path_tree', 'reviewed_patch_identity'] as const;
@@ -386,7 +415,7 @@ export interface WorkContract {
   /** Stable Requirement authority that this Work may complete. */
   requirementId?: string;
   /** Work-owned completion receipt. Legacy Task receipts are projections only. */
-  completionReceipt?: CompletionReceipt;
+  completionReceipt?: WorkCompletionReceipt;
   /** Provenance for complex work dispatched from a durable PlanContract step. */
   planId?: string;
   planStepId?: string;

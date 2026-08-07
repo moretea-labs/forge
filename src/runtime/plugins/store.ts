@@ -9,6 +9,15 @@ import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/
 import { createFirstPartyPluginAdapterMap } from './first-party-registry';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
 import { markControllerContextProjectionDirty } from '../projections/controller-context';
+import { classifyRepositoryCommand } from '../../cli/repositories/command-classifier';
+import {
+  acceptSubmittedWorkContract,
+  appendWorkEvidence,
+  getWorkContract,
+  recordWorkCompletionReceipt,
+  updateWorkContract,
+} from '../control-plane/facade/work-contract-store';
+import type { LocalEffectCompletionReceipt, WorkRisk } from '../control-plane/facade/types';
 import type {
   AssistantPluginAdapter,
   AssistantPluginActionDescriptor,
@@ -488,6 +497,7 @@ export interface PluginActionReceipt {
   semanticKey: string;
   status: 'succeeded' | 'failed';
   createdAt: string;
+  workId?: string;
   origin?: { surface: string; actor?: string; correlationId?: string };
   result?: Record<string, unknown>;
   error?: { code: string; message: string };
@@ -548,6 +558,68 @@ export function compatibilityPluginJobFromReceipt(
   return compatibilityJobFromReceipt(receipt, checkoutId);
 }
 
+const LOCAL_SYSTEM_MUTATION_ACTIONS = new Set([
+  'authorize_target',
+  'create_directory',
+  'copy_file',
+  'move_file',
+  'rename_file',
+  'open_application',
+  'reveal_in_finder',
+  'open_file',
+]);
+
+function localSystemActionRequiresWork(
+  repository: RepositoryRecord,
+  pluginId: string,
+  actionId: string,
+  args: Record<string, unknown>,
+): boolean {
+  if (repository.repoId !== CONTROLLER_SCOPE_REPO_ID || pluginId !== 'local_system') return false;
+  if (LOCAL_SYSTEM_MUTATION_ACTIONS.has(actionId)) return true;
+  if (actionId !== 'execute_command' || !Array.isArray(args.command)) return false;
+  return classifyRepositoryCommand(args.command.map(String)).risk !== 'readonly';
+}
+
+function workRiskForPluginAction(action: AssistantPluginActionDescriptor): WorkRisk {
+  if (action.risk === 'readonly') return 'readonly';
+  if (action.risk === 'workspace_write') return 'medium';
+  if (action.risk === 'remote_write') return 'high';
+  return 'destructive';
+}
+
+function localEffectTarget(
+  args: Record<string, unknown>,
+  result: Record<string, unknown>,
+): LocalEffectCompletionReceipt['target'] {
+  const inner = result.result && typeof result.result === 'object' && !Array.isArray(result.result)
+    ? result.result as Record<string, unknown>
+    : result;
+  const target = inner.target && typeof inner.target === 'object' && !Array.isArray(inner.target)
+    ? inner.target as Record<string, unknown>
+    : undefined;
+  const id = String(
+    target?.workspaceId
+      ?? inner.workspaceId
+      ?? args.target_key
+      ?? args.destination_target_key
+      ?? args.source_target_key
+      ?? 'controller-local',
+  );
+  const identityFingerprint = typeof target?.identityFingerprint === 'string'
+    ? target.identityFingerprint
+    : typeof inner.identityFingerprint === 'string'
+      ? inner.identityFingerprint
+      : undefined;
+  return {
+    kind: id.startsWith('workspace_') || args.target_key || args.destination_target_key || args.source_target_key
+      ? 'workspace_target'
+      : 'controller_local',
+    id,
+    ...(identityFingerprint ? { identityFingerprint } : {}),
+  };
+}
+
 function compatibilityJobFromReceipt(receipt: PluginActionReceipt, checkoutId: string): ExecutionJob {
   return {
     schemaVersion: 1,
@@ -594,6 +666,7 @@ export async function submitAssistantPluginAction(
   deduplicated: boolean;
   result?: Record<string, unknown>;
   receipt: PluginActionReceipt;
+  workId?: string;
 }> {
   const manifest = getAssistantPluginManifest(controllerHome, repository, request.pluginId);
   const action = actionForManifest(manifest, request.actionId);
@@ -624,11 +697,53 @@ export async function submitAssistantPluginAction(
       deduplicated: true,
       result: existing.result,
       receipt: existing,
+      workId: existing.workId,
     };
   }
 
   const createdAt = new Date().toISOString();
   const receiptId = `PLG-${Date.now()}-${createHash('sha256').update(request.requestId).digest('hex').slice(0, 8)}`;
+  const requiresLocalEffectWork = localSystemActionRequiresWork(
+    repository,
+    request.pluginId,
+    request.actionId,
+    normalizedArgs,
+  );
+  const acceptedWork = requiresLocalEffectWork
+    ? acceptSubmittedWorkContract(controllerHome, {
+        requestId: request.requestId,
+        repoId: repository.repoId,
+        semanticKey: `local-effect:${key}`,
+        operation: {
+          name: `plugin:${request.pluginId}/${request.actionId}`,
+          semanticKey: key,
+          argumentHash: createHash('sha256').update(JSON.stringify(normalizedArgs)).digest('hex'),
+          mode: 'mutating',
+          idempotent: action.idempotent,
+          replayable: action.idempotent,
+          resourceClaims: mapResourceClaims(action, repository),
+        },
+        objective: `Execute bounded controller-local effect ${request.pluginId}/${request.actionId}`,
+        mode: 'direct_control',
+        requestedBy: 'chatgpt',
+        principalId: request.origin.actor,
+        controllerInstanceId: process.env.FORGE_RUNTIME_INSTANCE_ID?.trim()
+          || process.env.FORGE_WRITER_INSTANCE_ID?.trim()
+          || process.env.FORGE_DAEMON_INSTANCE_ID?.trim(),
+        workKind: 'local_effect',
+        risk: workRiskForPluginAction(action),
+        acceptanceCriteria: ['The requested local effect completes within its authorized Target Grant boundary.'],
+        constraints: { requireHandoffOnAmbiguity: true, allowDestructive: false },
+      }).contract
+    : undefined;
+  if (acceptedWork) {
+    updateWorkContract({ controllerHome, repoId: repository.repoId }, acceptedWork.workId, {
+      status: 'running',
+      workKind: 'local_effect',
+      dispatchState: 'running',
+      evidenceState: 'partial',
+    });
+  }
   appendRuntimeEvent(controllerHome, {
     repoId: repository.repoId,
     entityType: 'plugin',
@@ -661,6 +776,41 @@ export async function submitAssistantPluginAction(
         ? Date.now() + Math.max(1, Math.trunc(request.timeoutMs))
         : undefined,
     });
+    let resultWithLineage = result;
+    if (acceptedWork) {
+      const recordedAt = new Date().toISOString();
+      const target = localEffectTarget(normalizedArgs, result);
+      appendWorkEvidence({ controllerHome, repoId: repository.repoId }, acceptedWork.workId, {
+        title: 'controller-local effect completed',
+        summary: `${request.pluginId}/${request.actionId} completed for ${target.id}.`,
+        detailLevel: 'summary',
+      });
+      recordWorkCompletionReceipt(
+        { controllerHome, repoId: repository.repoId },
+        acceptedWork.workId,
+        {
+          schemaVersion: 1,
+          receiptId: `LFX-${Date.now()}-${createHash('sha256').update(`${request.requestId}:${acceptedWork.workId}`).digest('hex').slice(0, 8)}`,
+          source: 'local_effect',
+          workId: acceptedWork.workId,
+          operation: `${request.pluginId}/${request.actionId}`,
+          target,
+          changed: true,
+          recordedAt,
+        },
+        'completed_local',
+        'local_effect',
+      );
+      resultWithLineage = {
+        ...result,
+        work: {
+          workId: acceptedWork.workId,
+          workKind: 'local_effect',
+          completionOutcome: 'completed_local',
+          status: 'completed',
+        },
+      };
+    }
     const receipt: PluginActionReceipt = {
       schemaVersion: 1,
       receiptId,
@@ -671,8 +821,9 @@ export async function submitAssistantPluginAction(
       semanticKey: key,
       status: 'succeeded',
       createdAt,
+      ...(acceptedWork ? { workId: acceptedWork.workId } : {}),
       origin: request.origin,
-      result,
+      result: resultWithLineage,
     };
     writeJsonAtomic(pluginActionReceiptPath(controllerHome, repository.repoId, receiptId), receipt);
     writeJsonAtomic(requestPath, {
@@ -688,12 +839,27 @@ export async function submitAssistantPluginAction(
       action,
       job: compatibilityJobFromReceipt(receipt, repository.activeCheckoutId),
       deduplicated: false,
-      result,
+      result: resultWithLineage,
       receipt,
+      workId: acceptedWork?.workId,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const code = /^([A-Z][A-Z0-9_]+)/.exec(message)?.[1] ?? 'PLUGIN_ACTION_FAILED';
+    if (acceptedWork) {
+      const current = getWorkContract({ controllerHome, repoId: repository.repoId }, acceptedWork.workId);
+      updateWorkContract({ controllerHome, repoId: repository.repoId }, acceptedWork.workId, {
+        status: 'failed',
+        workKind: 'local_effect',
+        dispatchState: 'terminal',
+        evidenceState: 'failed',
+        evidenceRefs: [{
+          title: 'controller-local effect failed',
+          summary: `${request.pluginId}/${request.actionId}: ${message}`.slice(0, 1_000),
+          detailLevel: 'summary',
+        }, ...(current?.evidenceRefs ?? [])],
+      });
+    }
     const receipt: PluginActionReceipt = {
       schemaVersion: 1,
       receiptId,
@@ -704,6 +870,7 @@ export async function submitAssistantPluginAction(
       semanticKey: key,
       status: 'failed',
       createdAt,
+      ...(acceptedWork ? { workId: acceptedWork.workId } : {}),
       origin: request.origin,
       error: { code, message },
     };
