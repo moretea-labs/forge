@@ -5,6 +5,7 @@ import type { RuntimeControllerServices } from './controller-services';
 export interface RuntimeGatewayServerOptions {
   controllerHome: string;
   runtimeInstanceId: string;
+  runtimeSourceRoot: string;
   sessionId?: string;
 }
 
@@ -27,6 +28,7 @@ export function createRuntimeGatewayServer(
     principalId,
     sessionId: options.sessionId,
     controllerInstanceId: options.runtimeInstanceId,
+    runtimeSourceRoot: options.runtimeSourceRoot,
   });
   return createForgeMcpServerFromContext(context);
 }

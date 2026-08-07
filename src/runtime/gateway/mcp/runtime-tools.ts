@@ -1863,7 +1863,7 @@ export async function controllerReadiness(
   const workersReady = evidence.workerLoop.consuming;
   const databaseReady = evidence.health.components.projection.ready;
   const releaseCoherenceReady = evidence.daemon.status === 'ready' && evidence.daemon.degraded !== true;
-  const runtimeSource = runtimeSourceSnapshotStatus(evidence.daemon.source);
+  const runtimeSource = runtimeSourceSnapshotStatus(evidence.daemon.source, ctx.runtimeSourceRoot);
   const sourceCoherenceReady = !runtimeSource.restartRequired;
   if (!sourceCoherenceReady) reasonCodes.add(runtimeSource.code);
   const ready = evidence.ready
@@ -1967,7 +1967,7 @@ async function capabilityRecoveryInput(ctx: MultiRepositoryMcpToolContext, repos
     contextSourceIdentity,
   );
   const recentErrors = Array.isArray(args.recent_errors) ? args.recent_errors.map(String) : [];
-  const runtimeSource = runtimeSourceSnapshotStatus(readiness.daemon.source);
+  const runtimeSource = runtimeSourceSnapshotStatus(readiness.daemon.source, ctx.runtimeSourceRoot);
   let runtimeStorageReady: boolean | undefined;
   let runtimeStorageWarnings: string[] = [];
   try {
@@ -2594,7 +2594,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const liveGit = gitSnapshot(repository.canonicalRoot);
         // Compare startup Runtime Source against the Controller package authority —
         // never against the selected execution repository.
-        const runtimeSource = runtimeSourceSnapshotStatus(readiness.daemon.source);
+        const runtimeSource = runtimeSourceSnapshotStatus(readiness.daemon.source, ctx.runtimeSourceRoot);
         const sourceSnapshotStale = runtimeSource.restartRequired;
         // Dynamic import avoids a static cycle: toolset.ts composes runtimeToolDefinitions.
         const toolset = await import('../../../cli/mcp/toolset');

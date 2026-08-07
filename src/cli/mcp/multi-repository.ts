@@ -32,6 +32,8 @@ export interface McpServerOptions {
   sessionId?: string;
   principalId?: string;
   controllerInstanceId?: string;
+  /** Canonical Runtime source authority. Internal Runtime MCP only; never an execution repository. */
+  runtimeSourceRoot?: string;
 }
 
 export interface MultiRepositoryMcpToolContext extends McpToolContext {
@@ -39,6 +41,7 @@ export interface MultiRepositoryMcpToolContext extends McpToolContext {
   explicitRepository?: RepositoryRecord;
   toolset: McpToolset;
   toolsetLocked: boolean;
+  runtimeSourceRoot?: string;
 }
 
 type ToolResult = CallToolResult;
@@ -350,6 +353,7 @@ export function createMcpToolContext(opts: McpServerOptions): MultiRepositoryMcp
     sessionId: opts.sessionId,
     principalId: opts.principalId,
     controllerInstanceId: opts.controllerInstanceId,
+    runtimeSourceRoot: opts.runtimeSourceRoot,
   };
 }
 
