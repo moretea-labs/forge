@@ -1402,7 +1402,6 @@ export function repairConsole(
     readyForExecution?: boolean;
     recommendedActions?: string[];
     candidates?: Array<{ kind?: string; reason?: string; suggestedAction?: string; safe?: boolean }>;
-    restartEscalation?: { recommended?: boolean; reason?: string };
     warnings?: string[];
   } | undefined;
   try {
@@ -1416,10 +1415,6 @@ export function repairConsole(
         suggestedAction: candidate.suggestedAction,
         safe: candidate.safe,
       })),
-      restartEscalation: {
-        recommended: status.restartEscalation.recommended,
-        reason: status.restartEscalation.reason,
-      },
       warnings: status.warnings,
     };
   } catch {

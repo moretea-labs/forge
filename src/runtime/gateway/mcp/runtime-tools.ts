@@ -2274,14 +2274,12 @@ async function runFacadeRepair(
     readyForExecution?: boolean;
     recommendedActions?: string[];
     candidates?: Array<{ kind?: string; reason?: string; suggestedAction?: string; safe?: boolean }>;
-    restartEscalation?: { recommended?: boolean; reason?: string };
     warnings?: string[];
   } | undefined;
   try {
     const status = buildRuntimeMaintenanceStatus(repository, ctx.controllerHome, {
       minAgeMinutes: typeof args.min_age_minutes === 'number' ? args.min_age_minutes : undefined,
       maxCandidates: typeof args.max_candidates === 'number' ? args.max_candidates : 20,
-      recentErrors: Array.isArray(args.recent_errors) ? args.recent_errors.map(String) : undefined,
     });
     maintenanceStatus = {
       readyForExecution: status.readyForExecution,
@@ -2292,10 +2290,6 @@ async function runFacadeRepair(
         suggestedAction: candidate.suggestedAction,
         safe: candidate.safe,
       })),
-      restartEscalation: {
-        recommended: status.restartEscalation.recommended,
-        reason: status.restartEscalation.reason,
-      },
       warnings: status.warnings,
     };
   } catch {
