@@ -39,6 +39,8 @@ External tunnels are optional transports. They may connect to the Runtime endpoi
 
 `CanonicalForgeRuntime` is the sole root lifecycle owner. It performs one ordered startup, one ordered shutdown, and one fatal-failure path for the complete application.
 
+After acquiring the single Runtime ownership claim and confirming the selected whole-release authority, startup collects the exact configured Runtime source identity and atomically rotates `system/runtime-generation.json`. This happens before the write claim, Controller Services, SQLite admission, Scheduler, Workers, or MCP Transport. Source collection or snapshot persistence failure is a release-coherence startup failure; startup must stop and release ownership rather than serve with an unknown source baseline.
+
 It alone may:
 
 - acquire the Controller Home Runtime ownership claim;
