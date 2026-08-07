@@ -205,7 +205,6 @@ export class CanonicalForgeRuntime {
         readiness: () => this.readiness(),
         createServer: (principalId, sessionId) => createRuntimeGatewayServer(this.controller!, principalId, {
           controllerHome: this.config.controllerHome,
-          repositoryRoot: this.config.repositoryRoot,
           runtimeInstanceId: this.runtimeInstanceId,
           sessionId,
         }),

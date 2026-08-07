@@ -4,7 +4,6 @@ import type { RuntimeControllerServices } from './controller-services';
 
 export interface RuntimeGatewayServerOptions {
   controllerHome: string;
-  repositoryRoot: string;
   runtimeInstanceId: string;
   sessionId?: string;
 }
@@ -23,7 +22,6 @@ export function createRuntimeGatewayServer(
   options: RuntimeGatewayServerOptions,
 ): Server {
   const context = createMcpToolContext({
-    repo: options.repositoryRoot,
     controllerHome: options.controllerHome,
     profile: 'controller',
     principalId,

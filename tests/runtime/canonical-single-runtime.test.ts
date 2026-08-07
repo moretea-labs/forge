@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -159,8 +159,8 @@ describe('canonical single Runtime', () => {
     const endpoint = runtime.endpoint();
     expect(endpoint).toBeTruthy();
     const snapshot = await callControllerReady(endpoint!, fixture.config.authToken);
-    expect((snapshot.database as Record<string, unknown>).integrity).toBe('ok');
-    expect((snapshot.readiness as Record<string, unknown>).ready).toBe(true);
+    expect(((snapshot.diagnostics as Record<string, unknown>).database as Record<string, unknown>).ready).toBe(true);
+    expect(snapshot.ready).toBe(true);
 
     const unauthorized = await fetch(endpoint!, {
       method: 'POST',
@@ -207,7 +207,7 @@ describe('canonical single Runtime', () => {
       controllerHome: resolve(fixture.controllerHome),
       source: {
         repoRoot: resolve(fixture.repositoryRoot),
-        canonicalRoot: resolve(fixture.repositoryRoot),
+        canonicalRoot: realpathSync(fixture.repositoryRoot),
         branch: null,
         dirty: false,
       },
