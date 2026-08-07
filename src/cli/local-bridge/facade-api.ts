@@ -1394,7 +1394,6 @@ export function repairConsole(
     dryRun?: boolean;
     approvalConfirmed?: boolean;
     destructive?: boolean;
-    processKillOrRestart?: boolean;
     workId?: string;
   } = {},
 ): FacadeResult {
@@ -1431,7 +1430,6 @@ export function repairConsole(
       dryRun: input.dryRun === undefined ? true : input.dryRun,
       approvalConfirmed: input.approvalConfirmed === true,
       destructive: input.destructive === true,
-      processKillOrRestart: input.processKillOrRestart === true,
       workId: input.workId,
       maintenanceStatus,
       diagnostics: {

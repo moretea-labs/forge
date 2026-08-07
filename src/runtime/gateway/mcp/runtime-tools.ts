@@ -2334,7 +2334,6 @@ async function runFacadeRepair(
       workId: typeof args.work_id === 'string' ? args.work_id : undefined,
       chatgptPullFailed: args.chatgpt_pull_failed === true,
       destructive: args.destructive === true,
-      processKillOrRestart: args.process_kill_or_restart === true,
       remoteEffect: args.remote_write === true || args.remote_effect === true,
       maintenanceStatus,
       diagnostics: {

@@ -57,7 +57,6 @@ export interface SelfHealingInput {
   /** ChatGPT pull failure must not become task failure. */
   chatgptPullFailed?: boolean;
   destructive?: boolean;
-  processKillOrRestart?: boolean;
   remoteEffect?: boolean;
 }
 
@@ -132,31 +131,31 @@ function defaultDiagnoseIssues(input: SelfHealingInput): SelfHealingIssue[] {
   if (input.diagnostics?.controllerDaemonUnhealthy) {
     issues.push({
       kind: 'controller_daemon_health',
-      summary: 'Forge Runtime health issue detected.',
+      summary: 'Forge Runtime health issue detected. Runtime lifecycle recovery belongs to the external owner of the existing single Runtime.',
       severity: 'error',
       safeToAutoRepair: false,
-      requiresApproval: true,
-      suggestedAction: 'restart_controller_or_bridge',
+      requiresApproval: false,
+      suggestedAction: 'external_runtime_lifecycle_handoff',
     });
   }
   if (input.diagnostics?.schedulerUnhealthy) {
     issues.push({
       kind: 'durable_scheduler_health',
-      summary: 'Durable scheduler heartbeat is stale or unavailable.',
+      summary: 'Durable scheduler heartbeat is stale or unavailable; inspect bounded runtime maintenance state.',
       severity: 'error',
       safeToAutoRepair: false,
-      requiresApproval: true,
-      suggestedAction: 'restart_controller_or_bridge',
+      requiresApproval: false,
+      suggestedAction: 'runtime_maintenance_status',
     });
   }
   if (input.diagnostics?.localBridgeUnhealthy) {
     issues.push({
       kind: 'local_bridge_health',
-      summary: 'Local bridge health issue detected.',
+      summary: 'Local bridge health issue detected; use bounded handoff or retry rather than a component restart.',
       severity: 'error',
       safeToAutoRepair: false,
-      requiresApproval: true,
-      suggestedAction: 'restart_controller_or_bridge',
+      requiresApproval: false,
+      suggestedAction: 'handoff_or_retry_later',
     });
   }
   return issues;
@@ -207,13 +206,25 @@ function repairPlanFor(issue: SelfHealingIssue): {
         risk: 'readonly',
       };
     case 'controller_daemon_health':
+      return {
+        action: 'external_runtime_lifecycle_handoff',
+        dryRunDefault: true,
+        approvalRequired: false,
+        risk: 'readonly',
+      };
     case 'durable_scheduler_health':
+      return {
+        action: 'runtime_maintenance_status',
+        dryRunDefault: true,
+        approvalRequired: false,
+        risk: 'readonly',
+      };
     case 'local_bridge_health':
       return {
-        action: 'restart_controller_or_bridge',
+        action: 'handoff_or_retry_later',
         dryRunDefault: true,
-        approvalRequired: true,
-        risk: 'destructive',
+        approvalRequired: false,
+        risk: 'readonly',
       };
     default:
       return {
@@ -351,8 +362,8 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
       },
       attemptedActions: ['self_healing_diagnose', 'self_healing_repair'],
       evidenceRefs: [],
-      blockingDecision: 'Approve destructive/restart repair, retry later, or re-scope work.',
-      recommendedDecision: 'Prefer safe dry-run repairs; require approval for process kill/restart/remote effects.',
+      blockingDecision: 'Choose bounded metadata repair, external lifecycle handoff, retry later, or re-scope work.',
+      recommendedDecision: 'Prefer safe dry-run repairs; Runtime lifecycle changes belong to the external lifecycle owner.',
       recommendedPrompt: 'Review self-healing handoff and choose repair or stop.',
       suggestedNextActions: [
         {
@@ -388,11 +399,10 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
   // operation === 'repair'
   const needsStrongApproval =
     input.destructive === true
-    || input.processKillOrRestart === true
     || input.remoteEffect === true
-    || issues.some((issue) => issue.requiresApproval || !issue.safeToAutoRepair);
+    || issues.some((issue) => issue.requiresApproval);
 
-  // Safe maintenance is allowed without ChatGPT approval; destructive/restart/remote stays gated.
+  // Safe maintenance is allowed without ChatGPT approval; destructive/remote effects stay gated.
   const policy: PolicyDecision = dryRun
     ? {
         decision: 'dry_run_only',
@@ -457,11 +467,11 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
       workId: input.workId,
       title: 'Repair requires approval',
       severity: 'blocked',
-      creationReason: input.destructive || input.processKillOrRestart
+      creationReason: input.destructive
         ? 'destructive_action_requires_confirmation'
         : 'policy_approval_required',
       reason: policy.reason,
-      summary: 'Destructive/remote/process repair requires explicit approval.',
+      summary: 'Destructive or remote repair requires explicit approval.',
       currentState: {
         repoId: ctx.repoId,
         workId: input.workId,
@@ -470,7 +480,7 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
       attemptedActions: ['self_healing_repair'],
       evidenceRefs: [],
       blockingDecision: 'Confirm destructive repair authorization or keep dry-run only.',
-      recommendedDecision: 'Approve only if restart/kill/remote effect is intended.',
+      recommendedDecision: 'Approve only if a destructive or remote effect is intended.',
       recommendedPrompt: 'Approve or dismiss self-healing repair.',
       suggestedNextActions: [
         {

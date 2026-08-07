@@ -1827,7 +1827,6 @@ export async function startLocalBridgeServer(
         dryRun: body.dryRun === undefined ? true : body.dryRun === true,
         approvalConfirmed: body.approvalConfirmed === true,
         destructive: body.destructive === true,
-        processKillOrRestart: body.processKillOrRestart === true,
         workId: queryString(body.workId),
       });
       response.status(result.status === "approval_required" || result.status === "blocked" ? 409 : 200).json({
