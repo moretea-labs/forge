@@ -10,7 +10,7 @@ import {
 import { atomicWriteFileSync } from '../installer/shared';
 import { runBoundedChild } from '../../runtime/shared/bounded-child-supervisor';
 import { signalProcessTree } from '../../runtime/shared/process-tree';
-import { repositoryChildProcessEnvironment } from '../../runtime/shared/process-environment';
+import { repositoryChildProcessEnvironment, resolveBunExecutable } from '../../runtime/shared/process-environment';
 
 export interface ControllerCheckEffects {
   /** Repository-relative read scopes. Use [\".\"] for the whole checkout. */
@@ -115,10 +115,7 @@ export function resolveSyncSupervisorBridgeRuntime(
   execPath: string = process.execPath,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  const configured = env[CHECK_BRIDGE_RUNTIME_ENV]?.trim();
-  if (configured) return configured;
-  const executable = basename(execPath).toLowerCase();
-  return executable === 'bun' || executable === 'bun.exe' ? execPath : 'bun';
+  return resolveBunExecutable(execPath, env);
 }
 
 function boundedTimeout(value: unknown): number {

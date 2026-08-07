@@ -27,12 +27,12 @@ import {
   statSync,
   writeFileSync,
 } from 'fs';
-import { basename, dirname, join } from 'path';
+import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { capProcessOutput } from '../../../effects/process-runner';
 import { redactSensitiveText, sanitizeSensitiveTextFileInPlace } from '../../evidence/sensitive-output';
 import { isProcessAlive, terminateProcessTree } from '../../shared/process-tree';
-import { repositoryChildProcessEnvironment } from '../../shared/process-environment';
+import { repositoryChildProcessEnvironment, resolveBunExecutable } from '../../shared/process-environment';
 import {
   acquireExecutionLeases,
   listActiveLeases,
@@ -599,8 +599,6 @@ export function resolveProcessRunnerEntryPath(
   if (existsSync(sourceEntry)) return sourceEntry;
   throw new Error('PROCESS_RUNNER_ENTRY_NOT_FOUND: immutable release is missing process-runner.js');
 }
-const PROCESS_RUNNER_RUNTIME_ENV = 'FORGE_BUN_EXECUTABLE';
-
 /**
  * A compiled Bun executable reports the bundled forge binary through
  * process.execPath. TypeScript runner entries must instead be launched by Bun.
@@ -609,10 +607,7 @@ export function resolveProcessRunnerRuntime(
   execPath: string = process.execPath,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  const configured = env[PROCESS_RUNNER_RUNTIME_ENV]?.trim();
-  if (configured) return configured;
-  const executable = basename(execPath).toLowerCase();
-  return executable === 'bun' || executable === 'bun.exe' ? execPath : 'bun';
+  return resolveBunExecutable(execPath, env);
 }
 
 function runnerInvocation(entry: string, descriptorPath: string): { command: string; args: string[] } {

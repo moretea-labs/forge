@@ -1,4 +1,5 @@
-import { delimiter, isAbsolute, join } from 'path';
+import { existsSync } from 'fs';
+import { basename, delimiter, isAbsolute, join } from 'path';
 
 /**
  * Environment boundary for repository-owned child processes.
@@ -26,6 +27,30 @@ const RUNTIME_PRIVATE_ENV_KEYS = new Set([
 function appendExecutableDirectory(pathEntries: string[], candidate: string | undefined): void {
   if (!candidate || !isAbsolute(candidate) || pathEntries.includes(candidate)) return;
   pathEntries.push(candidate);
+}
+
+export function resolveBunExecutable(
+  execPath: string = process.execPath,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const configured = env.FORGE_BUN_EXECUTABLE?.trim();
+  if (configured) return configured;
+  const executable = basename(execPath).toLowerCase();
+  if (executable === 'bun' || executable === 'bun.exe') return execPath;
+
+  const binary = process.platform === 'win32' ? 'bun.exe' : 'bun';
+  const bunInstall = env.BUN_INSTALL?.trim();
+  const home = env.HOME?.trim() || env.USERPROFILE?.trim();
+  const candidates = [
+    bunInstall ? join(bunInstall, 'bin', binary) : undefined,
+    home ? join(home, '.bun', 'bin', binary) : undefined,
+    process.platform === 'darwin' ? join('/opt/homebrew/bin', binary) : undefined,
+    process.platform !== 'win32' ? join('/usr/local/bin', binary) : undefined,
+  ];
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) return candidate;
+  }
+  return binary;
 }
 
 export function repositoryChildProcessEnvironment(

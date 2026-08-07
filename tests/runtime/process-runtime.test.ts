@@ -170,6 +170,13 @@ describe('Unified Process Runtime', () => {
     expect(resolveProcessRunnerRuntime('/opt/forge/forge.js', {
       FORGE_BUN_EXECUTABLE: '/custom/bin/bun',
     })).toBe('/custom/bin/bun');
+
+    const home = mkdtempSync(join(tmpdir(), 'forge-bun-home-'));
+    roots.push(home);
+    const homeBun = join(home, '.bun', 'bin', process.platform === 'win32' ? 'bun.exe' : 'bun');
+    mkdirSync(join(home, '.bun', 'bin'), { recursive: true });
+    writeFileSync(homeBun, '');
+    expect(resolveProcessRunnerRuntime('/opt/forge/forge.js', { HOME: home, PATH: '/usr/bin' })).toBe(homeBun);
   });
 
   test('repository child PATH discovers standard Bun installs without changing existing precedence', () => {
