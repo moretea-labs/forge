@@ -625,7 +625,7 @@ export function selectExecutionMode(input: ExecutionModeSelectionInput): Executi
   if (input.objective !== undefined && input.objective.trim().length === 0) missingContractFields.push('objective');
   const routeDecision = decideRoute(input.routePolicyInput ?? {
     intent: {
-      objective: input.objective ?? (input.scopeClear ? 'bounded repository work' : 'repository work requiring discovery'),
+      objective: input.objective ?? (input.scopeClear ? 'bounded repository work' : ''),
       scopeClear: input.scopeClear,
       mutation: input.mutation ?? input.risk !== 'readonly',
       expectedFiles: input.expectedFiles,

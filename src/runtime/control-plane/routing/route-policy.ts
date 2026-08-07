@@ -305,13 +305,13 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
     || destructive
     || remoteWrite
     || secretAccess
-    || expectedFiles > 3
+    || expectedFiles > 4
     || expectedChangedLines > 200;
   const executionMode: RouteExecutionMode = complex ? 'goal_workloop' : 'direct_control';
   const workMode: RouteWorkMode = campaignEligible && input.intent.agentRequested
     ? 'campaign'
     : input.intent.agentRequested
-      ? complex ? 'issue_task' : 'quick_agent'
+      ? expectedFiles > 10 || expectedChangedLines > 1_500 ? 'issue_task' : 'quick_agent'
       : 'direct_edit';
   const executionPath: RouteExecutionPath = workMode === 'campaign' ? 'campaign' : complex ? 'durable' : 'fast';
   const providerSelection = selectProvider(input);

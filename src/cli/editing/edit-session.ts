@@ -216,7 +216,13 @@ const ASSURANCE_PROTECTED_PATH = /(^|\/)(\.github|\.git|package-lock\.json|bun\.
 
 function workspaceFingerprint(repoRoot: string): string {
   const head = gitRevision(repoRoot) ?? 'unborn';
-  const status = runProcess('git', ['status', '--porcelain=v1', '-z', '--untracked-files=all'], {
+  const status = runProcess('git', [
+    'status', '--porcelain=v1', '-z', '--untracked-files=all', '--', '.',
+    ':(exclude).ai/harness/**',
+    ':(exclude).forge/**',
+    ':(exclude).repo-harness/**',
+    ':(exclude)_ops/**',
+  ], {
     cwd: repoRoot,
     timeoutMs: 10_000,
     maxOutputBytes: 4 * 1024 * 1024,
