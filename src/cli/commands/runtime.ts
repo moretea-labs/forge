@@ -1,4 +1,6 @@
 import { Command } from 'commander';
+import { existsSync, writeFileSync } from 'fs';
+import { join, resolve } from 'path';
 import { resolveControllerHome } from '../repositories/controller-home';
 import { findExecutionJob, listActiveExecutionJobs, listExecutionJobs } from '../../runtime/execution/jobs/store';
 import { readJobEvents } from '../../runtime/evidence/event-ledger';
@@ -7,6 +9,10 @@ import { executeReadOnlyDiagnostic, isReadOnlyDiagnosticTool } from '../../runti
 import { readRepositoryProjection } from '../../runtime/projections/materialized-view';
 import { listOccurrences, listSchedules } from '../../runtime/workflow/schedules/store';
 import { observeRuntimeStatus } from '../../runtime/root/status';
+import { readMcpServiceBearerToken } from '../mcp/auth';
+import { publishRuntimeRelease } from '../../runtime/root/release-store';
+import { installForgeRuntimeService } from '../../runtime/root/service';
+import { assertRuntimeReleaseFiles, stageRuntimeRelease } from '../../runtime/root/release-materialize';
 
 function output(value: unknown, json = true): void {
   console.log(json ? JSON.stringify(value, null, 2) : String(value));
@@ -14,6 +20,78 @@ function output(value: unknown, json = true): void {
 
 export function buildRuntimeCommand(): Command {
   const command = new Command('runtime').description('Inspect the canonical Runtime and durable execution state');
+
+  const service = command.command('service')
+    .description('Install the macOS launchd owner for the single Forge Runtime root process');
+
+  service.command('install')
+    .description('Build an immutable Runtime release and install the single launchd Runtime service owner')
+    .requiredOption('--controller-home <path>', 'Explicit Controller Home')
+    .requiredOption('--repo <path>', 'Repository root used as the immutable release source')
+    .option('--host <host>', 'MCP listener host', '127.0.0.1')
+    .option('--port <port>', 'MCP listener port', '8765')
+    .option('--auth-token-file <path>', 'Raw bearer token file (defaults to controllerHome/mcp/runtime-token, created from the MCP bearer token when missing)')
+    .option('--exclusive-work-id <id>', 'Persistently admit only this P0 Work while migration is active')
+    .option('--node-executable <path>', 'Executable launchd uses to run the Forge Runtime service runner', process.execPath)
+    .option('--runner-path <path>', 'Forge Runtime service runner entry', join(resolve(import.meta.dir, '..', '..', '..'), 'bin', 'forge-runtime-service.mjs'))
+    .action(async (opts: {
+      controllerHome: string;
+      repo: string;
+      host: string;
+      port: string;
+      authTokenFile?: string;
+      exclusiveWorkId?: string;
+      nodeExecutable: string;
+      runnerPath: string;
+    }) => {
+      const home = resolveControllerHome(opts.controllerHome);
+      const repoRoot = resolve(opts.repo);
+      if (!existsSync(repoRoot)) throw new Error(`RUNTIME_SERVICE_REPOSITORY_MISSING: ${repoRoot}`);
+      const port = Number(opts.port);
+      if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error('RUNTIME_SERVICE_PORT_INVALID');
+
+      const staged = stageRuntimeRelease({ controllerHome: home, sourceRoot: repoRoot });
+      assertRuntimeReleaseFiles(staged);
+
+      const tokenPath = resolve(opts.authTokenFile ?? join(home, 'mcp', 'runtime-token'));
+      if (!existsSync(tokenPath)) {
+        const token = readMcpServiceBearerToken(home, repoRoot);
+        if (!token) throw new Error('RUNTIME_SERVICE_AUTH_TOKEN_UNAVAILABLE: run forge mcp setup chatgpt first');
+        writeFileSync(tokenPath, `${token}\n`, { mode: 0o600 });
+      }
+
+      const authority = publishRuntimeRelease(home, staged.manifestPath, `runtime-service-install-${Date.now()}`);
+      const paths = await installForgeRuntimeService({
+        config: {
+          schemaVersion: 1,
+          controllerHome: home,
+          repositoryRoot: repoRoot,
+          host: opts.host,
+          port,
+          authTokenFile: tokenPath,
+          ...(opts.exclusiveWorkId?.trim() ? { exclusiveWorkId: opts.exclusiveWorkId.trim() } : {}),
+        },
+        runnerPath: resolve(opts.runnerPath),
+        nodeExecutable: resolve(opts.nodeExecutable),
+      });
+      output({
+        status: 'installed',
+        release: {
+          releaseId: staged.releaseId,
+          sourceCommit: staged.sourceCommit,
+          artifactIdentity: staged.artifactIdentity,
+          manifestPath: staged.manifestPath,
+          manifestSha256: staged.manifestSha256,
+          authorityRevision: authority.revision,
+        },
+        service: {
+          label: paths.label,
+          plist: paths.installedPlistPath,
+          config: paths.configPath,
+        },
+        next: `forge runtime status --controller-home ${home}`,
+      });
+    });
 
   command.command('status')
     .description('Read the Runtime Root status projection, active durable Jobs, and materialized repository projections')

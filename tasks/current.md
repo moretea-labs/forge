@@ -1,40 +1,38 @@
 # Current Status Snapshot
 
-<!-- updated_at: 2026-08-03 -->
+<!-- updated_at: 2026-08-07 -->
 <!-- stale_after: 24h -->
 
-> **Status**: Stable Supervisor, daemon, gateway, ingress, public tunnel, and the 128-tool MCP surface are operational on immutable release `9776f1b8...`. The old 502/503 condition was caused by a stale service/runtime handoff; the repaired release is active and local/public health probes return HTTP 200.
-> **Updated At**: 2026-08-03
-> **Source**: Stable Supervisor state, release manifests, authenticated MCP initialize/tools/list/controller_ready probes, and local/public HTTP probes.
-> **Target**: Keep one fixed Bootstrap service aligned with the current immutable release and complete the accepted Requirement-centered control-plane migration.
+> **Status**: Unified `forge-runtime` is the single lifecycle owner on immutable release `17860...-70f981ba...` through the launchd service `com.moretea.forge.runtime.*`; Recovery Gateway/Watchdog/Tunnel are active on the renamed Controller Home path. The ChatGPT Repo Harness public MCP endpoint no longer returns 502.
+> **Updated At**: 2026-08-07
+> **Source**: Runtime status projection (`runtime/status.json`), whole-release authority (`runtime/releases/authority.json`), Recovery connector verification, authenticated MCP `controller_ready` calls, and local/public HTTP probes.
+> **Target**: Keep one canonical Forge Runtime release aligned with `main`, one Recovery service family, and the renamed `/Users/greyson/DevProjects/forge` paths.
 > **Stale After**: 24h
 
 This snapshot is a read model, not an execution gate.
 
 ## Current Focus
 
-- ✅ Immutable standalone Supervisor release `9776f1b8...` is active through the fixed Controller-home Bootstrap and launchd service.
-- ✅ Supervisor, daemon, gateway, and stable ingress converge on the same release; ingress `/health` and `/ready` return HTTP 200.
-- ✅ Public `https://mcp.moretea-lab.tech/health` returns HTTP 200 through the Cloudflare tunnel.
-- ✅ Authenticated MCP `initialize` and `tools/list` succeed; the active advanced surface exposes 128 tools.
-- ✅ The old 502/503 failure path is no longer active; the prior stale service metadata is now accepted when the fixed Bootstrap manifest matches the current release.
-- ⏭ Independently authenticate a ChatGPT Recovery Connector against the recovery Funnel endpoint.
-- ⏭ Configure the forced-command recovery SSH key after administrator approval; no SSH setting has been changed.
+- ✅ Unified `forge-runtime` is `ready: true` on port 8765 under one launchd service owner; the legacy Supervisor/daemon/slots architecture is deleted in source and not running.
+- ✅ `controller_ready` (read-only Repo Harness tool) succeeds locally and through the public tunnel; `/ready` returns HTTP 200 locally and publicly.
+- ✅ Recovery Gateway (8787), Watchdog, and dedicated cloudflared tunnel run on the renamed Controller Home and pass `forge recovery verify-connector` (OAuth PKCE + MCP).
+- ✅ Repository registry migrated to `displayName: Forge`, `canonicalRoot/localRoot: /Users/greyson/DevProjects/forge` with the original `repo_123b7cf58b6b17b5cbe46a56` id preserved.
+- ✅ CLI fix: `forge mcp setup chatgpt` no longer suggests the nonexistent `forge mcp keepalive`; the official `forge runtime service install` surface is implemented and documented.
+- ⏭ Rebuild and activate the runtime/recovery releases from the post-fix `main` HEAD so running releases exactly match the merged commit.
 
 ## Validation Completed
 
-- `bun test tests/runtime/stable-supervisor-hardening.test.ts -t 'service activation requires current, generated, installed, and running Supervisor releases to agree'`: 1/1.
-- Bootstrap service coherence now resolves generated and installed fixed-Bootstrap definitions against `bootstrap-manifest.json`; direct source probe returned `ok: true`.
-- Supervisor install staged and activated release `fc722c87...`; final state is `observedState: healthy`, active slot `green`, and `currentOperationId: null`.
-- Local `/health` and public `/health` returned HTTP 200 after activation; authenticated MCP `initialize` and `tools/list` succeeded.
-- `bun src/cli/index.ts controller board --repo .` succeeded and read the current Issue/Task projection.
-- Existing governance evidence remains in the prior snapshot; required checks must be rerun after this source and task-state update.
+- `bun scripts/verify-forge-runtime.sh` (6 selected runtime suites + typecheck): 0 failures.
+- Focused runtime/CLI suites (runtime command surface, canonical single Runtime, MCP setup hint, release store, service contract, lifecycle authority): 33/33 passed.
+- `bun run check:task` gate passed; `bun scripts/check-runtime-architecture.mjs` passed (44 required modules/documents).
+- Runtime restart via `launchctl kickstart` recovered to ready in seconds; Recovery Gateway/Watchdog kickstart recovered on the new release path.
+- Public `https://mcp.moretea-lab.tech/mcp` returns an authenticated MCP response (no 502); `controller_ready` succeeded through the public endpoint.
 
 ## Remaining Before Delivery
 
-- Do not create a ChatGPT Recovery Connector, configure SSH, or promote the user LaunchAgents to system LaunchDaemons without explicit administrator authorization.
-- Re-run the repository required checks after the final Issue/architecture snapshot commit.
-- Complete isolated fault injection, reboot, Tailscale SSH, reliable Grok, and ChatGPT Connector exercises before declaring unattended operation ready.
+- Activate the final releases built from the merged `main` HEAD and re-run the required checks.
+- Keep the compatibility symlink `repo-harness-controller-runtime -> forge` until Runtime, registry, Recovery, and tunnel all use the renamed path and reboot recovery is verified.
+- Preserve `scripts/TM17Runner.app/` and `scripts/tm17-ui-step.command` (untracked, must not be committed).
 
 
 ## Authority T2 Progress

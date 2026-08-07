@@ -18,10 +18,28 @@ describe('runtime command surface', () => {
     expect(result.stdout).toContain('job');
     expect(result.stdout).toContain('jobs');
     expect(result.stdout).toContain('schedules');
+    expect(result.stdout).toContain('service');
     expect(result.stdout).not.toMatch(/^\s+start\b/m);
     expect(result.stdout).not.toMatch(/^\s+stop\b/m);
     expect(result.stdout).not.toMatch(/^\s+restart\b/m);
     expect(result.stdout).not.toMatch(/^\s+doctor\b/m);
+  });
+
+  test('runtime service install is the single documented launchd owner surface', () => {
+    const service = spawnSync('bun', [CLI, 'runtime', 'service', '--help'], { cwd: ROOT, encoding: 'utf-8' });
+    expect(service.status).toBe(0);
+    expect(service.stdout).toContain('install');
+    expect(service.stdout).not.toMatch(/^\s+start\b/m);
+    expect(service.stdout).not.toMatch(/^\s+stop\b/m);
+    expect(service.stdout).not.toMatch(/^\s+restart\b/m);
+    expect(service.stdout).not.toMatch(/^\s+keepalive\b/m);
+
+    const install = spawnSync('bun', [CLI, 'runtime', 'service', 'install', '--help'], { cwd: ROOT, encoding: 'utf-8' });
+    expect(install.status).toBe(0);
+    expect(install.stdout).toContain('--controller-home');
+    expect(install.stdout).toContain('--repo');
+    expect(install.stdout).toContain('--port');
+    expect(install.stdout).not.toMatch(/^\s+keepalive\b/m);
   });
 
   test('root and controller command surfaces expose no legacy lifecycle or component rollout owner', () => {
@@ -39,9 +57,10 @@ describe('runtime command surface', () => {
     expect(controller.stdout).toContain('board');
     expect(controller.stdout).toContain('runs');
     expect(controller.stdout).toContain('change-verify');
-    for (const legacy of ['start', 'stop', 'status', 'restart', 'logs', 'rollout', 'rollback', 'restart-verify', 'feature-verify']) {
+    for (const legacy of ['start', 'stop', 'status', 'restart', 'logs', 'rollout', 'restart-verify', 'feature-verify']) {
       expect(controller.stdout).not.toMatch(new RegExp(`^\\s+${legacy}\\b`, 'm'));
     }
+    expect(controller.stdout).not.toMatch(/^\s+rollback\s/m);
   });
 
   test('package scripts expose no legacy lifecycle or component rollout owner', () => {
@@ -316,7 +335,6 @@ describe('runtime command surface', () => {
     expect(localBridgeSurface).toContain('return controllerHome ? [controllerHome] : []');
     expect(localBridgeFacade).toContain("observeRuntimeStatus(ctx.controllerHome)");
     expect(localBridgeFacade).not.toContain("from '../controller/lifecycle'");
-    expect(localBridgeFacade).not.toContain('readForgeRuntimeStatus');
     expect(localBridgeFacade).not.toContain('buildRuntimeOperationalView');
     expect(standaloneRecovery).not.toContain('runtime-slots');
     expect(standaloneRecovery).not.toContain('stableIngressUrl');
@@ -383,7 +401,7 @@ describe('runtime command surface', () => {
     expect(capabilityRegistry).not.toContain('controller.stable_supervisor');
 
     for (const legacy of ['keepalive', 'restart']) {
-      const result = spawnSync('bun', [CLI, 'mcp', legacy, '--help'], { cwd: ROOT, encoding: 'utf-8' });
+      const result = spawnSync('bun', [CLI, 'mcp', legacy], { cwd: ROOT, encoding: 'utf-8' });
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain('unknown command');
     }

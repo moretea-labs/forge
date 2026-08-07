@@ -205,22 +205,29 @@ For a shared editable installation, keep the forge checkout at a stable path suc
 
 \`\`\`bash
 forge mcp setup chatgpt --repo .
-forge mcp keepalive --repo . --profile controller --toolset core --enable-dev-runner --dev-runner-agents codex,claude --tunnel quick
+forge runtime service install \
+  --controller-home <absolute-controller-home> \
+  --repo <absolute-repo-root> \
+  --host 127.0.0.1 \
+  --port 8765
 \`\`\`
 
-The \`controller\` profile starts a localhost-only visual controller at \`http://127.0.0.1:8766/\` by default. It is separate from the public MCP tunnel. Use it to launch ready Tasks, create small Codex/Claude sessions, approve local Jobs, inspect live logs, and run named checks. Add \`--open-local-ui\` to open it automatically, or \`--no-local-ui\` to disable it.
+The \`controller\` profile writes the service-level MCP configuration consumed by the single \`forge-runtime\`. The macOS launchd service starts and restarts that one root process; Gateway, Controller Services, Scheduler, and MCP Transport share the same Runtime lifecycle owner. There is no MCP KeepAlive wrapper or component-level lifecycle command.
+
+The Runtime endpoint is loopback-only at \`http://127.0.0.1:8765/\`. The local visual controller surface is part of the same Runtime configuration; do not expose it directly.
 
 Health check:
 
 \`\`\`bash
-curl http://127.0.0.1:8765/health
+curl http://127.0.0.1:8765/ready
+forge runtime status --controller-home <absolute-controller-home>
 forge mcp doctor --repo .
 \`\`\`
 
 For a fixed Cloudflare domain, verify both local and public discovery without leaking tokens:
 
 \`\`\`bash
-curl http://127.0.0.1:8765/health
+curl http://127.0.0.1:8765/ready
 curl https://${CHATGPT_NAMED_TUNNEL_HOST_PLACEHOLDER}/.well-known/oauth-protected-resource/mcp
 env | grep -Ei 'proxy|no_proxy'
 HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= curl -v https://${CHATGPT_NAMED_TUNNEL_HOST_PLACEHOLDER}/mcp
@@ -240,20 +247,20 @@ Use this Connector URL:
 ${endpoint}
 \`\`\`
 
-Quick tunnels are useful for one-off smoke tests, but their URL may change. For routine use, prefer a fixed Cloudflare domain. If forge should start the Cloudflare tunnel process, use a named tunnel:
+Quick tunnels are useful for one-off smoke tests, but their URL may change. For routine use, prefer a fixed Cloudflare domain. Forge never owns the tunnel process: publish the loopback Runtime endpoint through your own stable HTTPS tunnel. With Cloudflare, create and route a named tunnel:
 
 \`\`\`bash
 cloudflared tunnel login
 cloudflared tunnel create forge-mcp
 cloudflared tunnel route dns forge-mcp ${CHATGPT_NAMED_TUNNEL_HOST_PLACEHOLDER}
-forge mcp keepalive --repo . --profile controller --toolset core --enable-dev-runner --dev-runner-agents codex,claude --tunnel named --cloudflare-tunnel-name forge-mcp --public-endpoint https://${CHATGPT_NAMED_TUNNEL_HOST_PLACEHOLDER}/mcp
+cloudflared tunnel run forge-mcp
 \`\`\`
 
-If Cloudflare is managed outside forge, keep forge on the fixed public origin without owning the tunnel process:
+Keep forge on the fixed public origin without owning the tunnel process:
 
 \`\`\`bash
 forge mcp setup chatgpt --repo . --endpoint https://${CHATGPT_NAMED_TUNNEL_HOST_PLACEHOLDER}/mcp
-forge mcp keepalive --repo . --profile controller --toolset core --enable-dev-runner --dev-runner-agents codex,claude --tunnel none --public-endpoint https://${CHATGPT_NAMED_TUNNEL_HOST_PLACEHOLDER}/mcp
+forge runtime service install --controller-home <absolute-controller-home> --repo <absolute-repo-root> --host 127.0.0.1 --port 8765
 \`\`\`
 
 Regenerate this guide with the stable endpoint:
@@ -303,16 +310,12 @@ Default \`--toolset core\` exposes the five-tool ChatGPT facade (\`rh_access\`, 
 For the current repository only, prefer a bounded local restart:
 
 \`\`\`bash
-forge mcp restart --repo .
+launchctl kickstart -k gui/$(id -u)/com.moretea.forge.runtime.<controller-home-suffix>
 \`\`\`
 
-If this repository is already registered with the global Controller and also needs a local harness refresh, use a repo-scoped rollout instead of an unscoped rollout:
+The launchd label is printed by \`forge runtime service install\` (it is \`com.moretea.forge.runtime.<controller-home-suffix>\`). The single Runtime restart also refreshes repository tools. There is no per-repository rollout or component restart surface.
 
-\`\`\`bash
-forge repo rollout --repo-id <current-repo-id>
-\`\`\`
-
-After either command, rescan or recreate the ChatGPT Connector, then call \`controller_capabilities\` again and verify \`expectedTools\` still includes \`repository_latest_source_diagnose\` and \`repository_bootstrap_local_project\`. Do not run an unscoped \`forge repo rollout\` unless you intentionally want to refresh every registered repository.
+After the restart, rescan or recreate the ChatGPT Connector, then call \`controller_capabilities\` again and verify \`expectedTools\` still includes \`repository_latest_source_diagnose\` and \`repository_bootstrap_local_project\`.
 
 ## Daily workflow
 
@@ -374,9 +377,7 @@ SuperController session.
 
 Local Agent execution is opt-in. GitHub cloud sessions use authenticated \`gh\` and do not require the local dev runner:
 
-\`\`\`bash
-forge mcp serve --repo . --transport http --host 127.0.0.1 --port 8765 --profile controller --enable-dev-runner --dev-runner-agents codex,claude
-\`\`\`
+The runner is enabled through the service-level MCP configuration written by \`forge mcp setup chatgpt\` (\`devMode.agentRunner\` and \`devMode.allowedAgents\`). It executes inside the single Forge Runtime's bounded worker processes; there is no separate \`forge mcp serve\` lifecycle to supervise.
 
 The runner defaults to 60 minutes per local Task and supports explicit values up to 12 hours. Requested values are validated and persisted unchanged; an invalid value fails instead of silently falling back to 120 seconds.
 
@@ -398,8 +399,6 @@ forge controller watch <RUN-ID> --repo . --log
 
 The \`--log\` view streams local Codex/Claude output while the process is running and polls GitHub cloud-session logs when available.
 
-Use \`forge mcp keepalive\` when the local server and tunnel should be supervised together.
-
 ## Local Codex MCP
 
 Configure Codex to read forge state:
@@ -420,11 +419,11 @@ The executor profile remains read-oriented. Controller-dispatched Codex work is 
 
 ## Troubleshooting
 
-- ChatGPT cannot connect: verify the HTTPS tunnel ends in \`/mcp\` and local \`/health\` responds.
+- ChatGPT cannot connect: verify the HTTPS tunnel ends in \`/mcp\` and local \`/ready\` responds.
 - Grok cannot connect: recreate it with the canonical \`…/mcp\` URL. The legacy \`…/mcp-grok\` URL is compatibility-only.
 - A genuinely non-OAuth client loops on \`/authorize\`: use \`…/mcp-bearer\` with a bearer token from \`controllerHome/mcp/mcp.tokens.json\`.
 - ChatGPT auth loops: retry authorization and inspect \`controllerHome/mcp/mcp.oauth.json\` first, then legacy \`.forge/mcp.oauth.json\` only when using fallback; do not paste the passphrase into chat.
-- Tool scan misses tools: run \`forge mcp restart --repo .\`, then rescan or recreate the versioned Connector and verify \`controller_capabilities.expectedTools\` includes \`repository_latest_source_diagnose\` and \`repository_bootstrap_local_project\`.
+- Tool scan misses tools: restart the Forge Runtime service with \`launchctl kickstart -k gui/$(id -u)/com.moretea.forge.runtime.<controller-home-suffix>\`, then rescan or recreate the versioned Connector and verify \`controller_capabilities.expectedTools\` includes \`repository_latest_source_diagnose\` and \`repository_bootstrap_local_project\`.
 - Codex cannot see the MCP server: rerun \`forge mcp setup codex --repo . --scope project\`.
 - A quick tunnel URL changed: update the Connector URL or switch to a named tunnel.
 - A Task is blocked: inspect \`get_task_run\`, shrink or re-plan the Task, then retry that Task rather than redispatching the full Issue.
@@ -549,7 +548,7 @@ export function runMcpSetupChatgpt(opts: {
       `[forge mcp] Config: ${relative(repoRoot, configPath)}`,
       `[forge mcp] Guide: ${relative(repoRoot, guidePath)} (generic; endpoint stays in ignored local config)`,
       `[forge mcp] Runtime state: ${relative(repoRoot, mcpControllerHomeRuntimeStatePath(controllerHome))}`,
-      `Next: forge mcp keepalive --repo . --host ${host} --port ${port} --profile controller --toolset ${config.toolset} --enable-dev-runner --dev-runner-agents codex --tunnel quick`,
+      `Next: forge runtime service install --controller-home ${controllerHome} --repo ${repoRoot} --host ${host} --port ${port}`,
     ],
   };
 }

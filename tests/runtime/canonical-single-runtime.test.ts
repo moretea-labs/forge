@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
@@ -167,6 +168,20 @@ describe('canonical single Runtime', () => {
     });
     expect(unauthorized.status).toBe(401);
   }, 20_000);
+
+  test('control-plane audit lookup index is created so inspection stays bounded', () => {
+    const fixture = createFixture();
+    inspectControlPlaneDatabase(fixture.controllerHome);
+    const db = new Database(join(fixture.controllerHome, 'control-plane.sqlite'));
+    try {
+      const rows = db.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'control_plane_audit_lookup'",
+      ).all();
+      expect(rows).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
 
   test('Runtime Root publishes one instance-bound status projection and removes it on exit', async () => {
     const fixture = createFixture({ runtimeInstanceId: 'runtime-status-test' });

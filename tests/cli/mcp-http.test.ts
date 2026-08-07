@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { createHash, randomBytes } from 'crypto';
 import { createServer } from 'net';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { mcpControllerHomeOAuthPath, mcpControllerHomeTokenPath } from '../../src/cli/mcp/auth';
@@ -698,6 +698,35 @@ describe('mcp http transport', () => {
       });
     } finally {
       await stopMcpServerProcess(proc);
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('the ChatGPT setup hint points only to existing Runtime service commands', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-setup-hint-'));
+    try {
+      await withTestControllerHome(repoRoot, async (_controllerHome) => {
+        mkdirSync(join(repoRoot, '.ai/harness'), { recursive: true });
+        writeFileSync(join(repoRoot, '.ai/harness/policy.json'), '{}\n');
+        const result = runMcpSetupChatgpt({ repo: repoRoot, port: '8765' });
+        const next = result.lines.find((line) => line.startsWith('Next: forge '));
+        expect(next).toBeDefined();
+        expect(next).not.toContain('keepalive');
+        const parts = next!.replace(/^Next: /, '').split(' ');
+        const probe = Bun.spawnSync(['bun', 'src/cli/index.ts', ...parts.slice(1, 4), '--help'], {
+          cwd: process.cwd(),
+          stdout: 'pipe',
+          stderr: 'pipe',
+        });
+        expect(probe.exitCode).toBe(0);
+        expect(probe.stdout.toString()).toContain('--controller-home');
+
+        const guide = readFileSync(join(repoRoot, 'docs', 'forge-chatgpt-mcp-setup.md'), 'utf8');
+        expect(guide).not.toContain('forge mcp keepalive');
+        expect(guide).not.toContain('forge mcp serve --repo');
+        expect(guide).toContain('forge runtime service install');
+      });
+    } finally {
       rmSync(repoRoot, { recursive: true, force: true });
     }
   });

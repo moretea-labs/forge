@@ -151,6 +151,8 @@ function initializeSchema(database: SqliteDatabase): void {
       revision INTEGER NOT NULL,
       occurred_at TEXT NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS control_plane_audit_lookup
+      ON control_plane_audit (namespace, scope, record_key, revision);
   `);
   database.prepare('INSERT OR IGNORE INTO control_plane_schema (version, applied_at) VALUES (?, ?)').run(CONTROL_PLANE_SCHEMA_VERSION, now());
 }
