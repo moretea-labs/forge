@@ -3,7 +3,7 @@
 <!-- updated_at: 2026-08-07 -->
 <!-- stale_after: 24h -->
 
-> **Status**: Unified `forge-runtime` is the single lifecycle owner on immutable release `17860...-70f981ba...` through the launchd service `com.moretea.forge.runtime.*`; Recovery Gateway/Watchdog/Tunnel are active on the renamed Controller Home path. The ChatGPT Repo Harness public MCP endpoint no longer returns 502.
+> **Status**: Unified `forge-runtime` is the single lifecycle owner on immutable release `1786101625826-668ffbe7...` through the launchd service `com.moretea.forge.runtime.41dd111b15e2`; standalone Recovery Gateway/Watchdog/Tunnel run the post-fix `main` release (`169e4119`), and the ChatGPT Repo Harness MCP surface executes repository commands again (no `PROCESS_LEASE_CONFLICT`).
 > **Updated At**: 2026-08-07
 > **Source**: Runtime status projection (`runtime/status.json`), whole-release authority (`runtime/releases/authority.json`), Recovery connector verification, authenticated MCP `controller_ready` calls, and local/public HTTP probes.
 > **Target**: Keep one canonical Forge Runtime release aligned with `main`, one Recovery service family, and the renamed `/Users/greyson/DevProjects/forge` paths.
@@ -15,10 +15,11 @@ This snapshot is a read model, not an execution gate.
 
 - ✅ Unified `forge-runtime` is `ready: true` on port 8765 under one launchd service owner; the legacy Supervisor/daemon/slots architecture is deleted in source and not running.
 - ✅ `controller_ready` (read-only Repo Harness tool) succeeds locally and through the public tunnel; `/ready` returns HTTP 200 locally and publicly.
-- ✅ Recovery Gateway (8787), Watchdog, and dedicated cloudflared tunnel run on the renamed Controller Home and pass `forge recovery verify-connector` (OAuth PKCE + MCP).
+- ✅ Recovery Gateway (8787), Watchdog, and dedicated cloudflared tunnel run on the renamed Controller Home and pass `forge recovery verify` and `verify-connector`; the Recovery MCP surface now exposes `activate_runtime_release`.
 - ✅ Repository registry migrated to `displayName: Forge`, `canonicalRoot/localRoot: /Users/greyson/DevProjects/forge` with the original `repo_123b7cf58b6b17b5cbe46a56` id preserved.
-- ✅ CLI fix: `forge mcp setup chatgpt` no longer suggests the nonexistent `forge mcp keepalive`; the official `forge runtime service install` surface is implemented and documented.
-- ⏭ Rebuild and activate the runtime/recovery releases from the post-fix `main` HEAD so running releases exactly match the merged commit.
+- ✅ CLI fix: `forge mcp setup chatgpt` no longer suggests the nonexistent `forge mcp keepalive`; the official `forge runtime service install --stage-only` and `forge recovery restart-runtime|recover|rollback|restart|activate-runtime` surfaces are implemented and documented.
+- ✅ `/usr/bin/true` executes through the Repo Harness Process Runtime with exit 0 (`process_direct`); no `PROCESS_LEASE_CONFLICT: runtime-authority@runtime-fence` remains.
+- ✅ MCP tool fingerprint refreshed: gateway `toolSurfaceFingerprint=6319a970d884e711`, `mcp.runtime.json` generation points at the new Runtime release.
 
 ## Validation Completed
 
