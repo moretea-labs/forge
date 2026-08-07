@@ -244,26 +244,24 @@ export function routeWorkStart(
       ? false
       : input.modeInput.requiresUserApproval === true || strategyConflictRequiresApproval,
   };
-  const selectedMode = selectExecutionMode(effectiveModeInput);
-  const mode = input.forceMode
+  const applyForcedMode = (selected: ReturnType<typeof selectExecutionMode>) => input.forceMode
     ? {
-        ...selectedMode,
+        ...selected,
         mode: input.forceMode,
-        reason: `Forced mode: ${input.forceMode}. ${selectedMode.reason}`,
-        createWorkContract: input.forceMode === 'handoff_only' ? false : selectedMode.requiresWork,
+        reason: `Forced mode: ${input.forceMode}. ${selected.reason}`,
+        createWorkContract: input.forceMode === 'handoff_only' ? false : selected.requiresWork,
         createHandoff: input.forceMode === 'handoff_only',
       }
-    : selectedMode;
-
-  const policy = evaluatePolicyGate({
-    capabilityId: mode.mode === 'direct_control' ? 'repository.direct_edit' : mode.mode === 'goal_workloop' ? 'controller.goal_workloop' : 'controller.handoff_inbox',
+    : selected;
+  const evaluateAccessPolicy = (selected: ReturnType<typeof selectExecutionMode>) => evaluatePolicyGate({
+    capabilityId: selected.mode === 'direct_control' ? 'repository.direct_edit' : selected.mode === 'goal_workloop' ? 'controller.goal_workloop' : 'controller.handoff_inbox',
     risk: input.modeInput.risk
       ?? (input.modeInput.secretAccess === true ? 'raw_secret_config'
         : input.modeInput.destructive === true ? 'destructive'
           : input.modeInput.remoteWrite === true ? 'remote_write'
             : input.modeInput.requiresApproval === true || input.modeInput.requiresUserApproval === true ? 'workspace_write'
-              : mode.mode === 'direct_control' ? 'local_repo_write'
-                : mode.mode === 'goal_workloop' ? 'workspace_write'
+              : selected.mode === 'direct_control' ? 'local_repo_write'
+                : selected.mode === 'goal_workloop' ? 'workspace_write'
                   : 'readonly'),
     accessMode: input.constraints?.accessMode,
     approvalConfirmed: input.approvalConfirmed === true,
@@ -275,6 +273,14 @@ export function routeWorkStart(
       pathsExplicit: effectiveModeInput.scopeClear,
     },
   });
+
+  let selectedMode = selectExecutionMode(effectiveModeInput);
+  let policy = evaluateAccessPolicy(selectedMode);
+  if (policy.decision === 'allowed' && effectiveModeInput.requiresUserApproval !== true) {
+    selectedMode = selectExecutionMode({ ...effectiveModeInput, approvalConfirmed: true });
+    policy = evaluateAccessPolicy(selectedMode);
+  }
+  const mode = applyForcedMode(selectedMode);
 
   if (mode.mode === 'direct_control' && mode.createWorkContract) {
     return startGoalWorkloop(ctx, input, policy, 'direct_control', mode.routeDecision);
@@ -320,10 +326,9 @@ export function routeWorkStart(
     });
   }
 
-  // Any policy approval decision must stop before a WorkContract is created. The policy
-  // gate already allows bounded Direct Control edits and Full Access local work, so
-  // requiring an additional caller-provided hint here would let Request-mode work bypass
-  // its approval boundary.
+  // Policy approval decisions stop before Work creation. Ordinary host-managed local work
+  // reaches this point only after the same Route Policy has been replayed with the Access
+  // Policy's explicit allowed decision as authorization evidence.
   const blockForHandoff =
     mode.mode === 'handoff_only'
     || policy.decision === 'denied'
