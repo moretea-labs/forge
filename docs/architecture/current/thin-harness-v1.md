@@ -68,6 +68,9 @@ An authorized `local_system` Target Grant is a first-class bounded workspace tar
 - `execute_command` accepts typed argv only, reuses the repository command classifier/scope policy and bounded process runner, and caps execution at 30 seconds;
 - readonly Target commands create no WorkContract;
 - Target mutations create one lightweight `direct_control` WorkContract and terminalize it in the same request with a `local_effect` completion receipt;
+- physical Target mutations are serialized by canonical filesystem root through existing Controller global resource locks; different roots remain concurrent, and multi-target copy/move acquires roots in deterministic order to avoid deadlock;
+- lock identity is the canonical root, not `targetKey`, owner, or `workspaceId`, so two grants pointing at the same physical directory cannot bypass write serialization;
+- readonly Target file/command actions remain outside the mutation lock path;
 - remote/destructive commands are rejected on Target execution;
 - `workspace_write` commands are fail-closed unless they are replay-safe local validation or part of the narrow path-governed filesystem mutation allowlist; unknown/system side effects require Repository promotion;
 - Git mutations are rejected until the target is promoted to a registered Repository/Checkout, because Git refs and worktree ownership require repository-scoped fencing;

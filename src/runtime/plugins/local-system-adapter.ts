@@ -13,9 +13,11 @@ import { dirname } from 'path';
 import {
   WorkspaceTargetGrantError,
   authorizeWorkspaceTargetGrant,
+  getActiveWorkspaceTargetGrant,
   listActiveWorkspaceTargetGrants,
   resolveWorkspaceTargetCwd,
   resolveWorkspaceTargetPath,
+  withWorkspaceTargetMutationLocks,
   type ActiveWorkspaceTargetGrant,
   type WorkspaceTargetAccess,
   type WorkspaceTargetOperation,
@@ -151,6 +153,7 @@ const TARGET_ERROR_CODES: Record<WorkspaceTargetGrantError['code'], string> = {
   TARGET_REASON_REQUIRED: 'LOCAL_SYSTEM_TARGET_REASON_REQUIRED',
   TARGET_STORE_CORRUPT: 'LOCAL_SYSTEM_TARGET_STORE_CORRUPT',
   TARGET_STORE_BUSY: 'LOCAL_SYSTEM_TARGET_STORE_BUSY',
+  TARGET_MUTATION_BUSY: 'LOCAL_SYSTEM_TARGET_MUTATION_BUSY',
   TARGET_IDENTITY_MISMATCH: 'LOCAL_SYSTEM_TARGET_IDENTITY_MISMATCH',
   TARGET_OWNER_SCOPE_REQUIRED: 'LOCAL_SYSTEM_TARGET_OWNER_INVALID',
   TARGET_OWNER_MISMATCH: 'LOCAL_SYSTEM_TARGET_OWNER_MISMATCH',
@@ -166,7 +169,7 @@ const TARGET_ERROR_CODES: Record<WorkspaceTargetGrantError['code'], string> = {
 function rethrowTargetError(error: unknown): never {
   if (error instanceof WorkspaceTargetGrantError) {
     throw new AssistantPluginError(TARGET_ERROR_CODES[error.code], error.message, {
-      retryable: error.code === 'TARGET_STORE_BUSY',
+      retryable: error.code === 'TARGET_STORE_BUSY' || error.code === 'TARGET_MUTATION_BUSY',
     });
   }
   throw error;
@@ -192,6 +195,31 @@ function resolveTargetPath(
       ...(options.file ? { kind: 'file' as const } : {}),
       operation: options.operation ?? 'read',
     });
+  } catch (error) {
+    return rethrowTargetError(error);
+  }
+}
+
+async function withTargetMutation<T>(
+  input: AssistantPluginActionExecutionInput,
+  targetKeys: readonly string[],
+  operation: () => Promise<T> | T,
+): Promise<T> {
+  try {
+    const ownerScope = requestOwnerScope(input);
+    const targets = targetKeys.map((targetKey) => getActiveWorkspaceTargetGrant(
+      input.controllerHome,
+      targetKey,
+      currentDate(),
+      ownerScope,
+    ));
+    return await withWorkspaceTargetMutationLocks(
+      input.controllerHome,
+      targets,
+      `local-system:${input.requestId}`,
+      operation,
+      { waitMs: 5_000 },
+    );
   } catch (error) {
     return rethrowTargetError(error);
   }
@@ -412,82 +440,100 @@ export async function executeLocalSystemPluginAction(input: AssistantPluginActio
         }
       }
       const operation: WorkspaceTargetOperation = classification.risk === 'readonly' ? 'read' : 'write';
-      let resolved;
-      try {
-        resolved = resolveWorkspaceTargetCwd(
-          input.controllerHome,
-          targetKey,
-          requestOwnerScope(input),
-          optionalString(input.args, 'cwd') ?? '.',
-          operation,
-          currentDate(),
-        );
-      } catch (error) {
-        return rethrowTargetError(error);
-      }
-      assertCommandPathOperandsStayInRepository(canonical, resolved.path, resolved.root, []);
-      const maxOutputBytes = Math.max(1_024, Math.min(Math.trunc(Number(input.args.max_output_bytes ?? MAX_OUTPUT_BYTES)), 1024 * 1024));
-      const timeoutMs = Math.max(1_000, Math.min(Math.trunc(input.timeoutMs ?? 30_000), 30_000));
-      const executed = await runCanonicalCommand(canonical, resolved.path, timeoutMs, maxOutputBytes, { signal: input.signal });
-      if (!executed.ok) {
-        const code = executed.timedOut
-          ? 'LOCAL_SYSTEM_COMMAND_TIMED_OUT'
-          : executed.cancelled
-            ? 'LOCAL_SYSTEM_COMMAND_CANCELLED'
-            : 'LOCAL_SYSTEM_COMMAND_FAILED';
-        const message = executed.stderr.trim()
-          || executed.stdout.trim()
-          || `Target command exited with code ${executed.exitCode}.`;
-        throw new AssistantPluginError(code, bounded(message, maxOutputBytes).content, {
-          retryable: executed.timedOut,
-          details: {
-            command: argv,
-            exitCode: executed.exitCode,
-            timedOut: executed.timedOut,
-            cancelled: executed.cancelled,
-          },
-        });
-      }
-      return {
-        targetKey: resolved.target.targetKey,
-        workspaceId: resolved.target.workspaceId,
-        identityFingerprint: resolved.target.identityFingerprint,
-        repositoryRegistered: false,
-        cwd: resolved.relativePath || '.',
-        command: argv,
-        classification,
-        ok: executed.ok,
-        exitCode: executed.exitCode,
-        timedOut: executed.timedOut,
-        cancelled: executed.cancelled,
-        stdout: executed.stdout,
-        stderr: executed.stderr,
+      const execute = async () => {
+        let resolved;
+        try {
+          resolved = resolveWorkspaceTargetCwd(
+            input.controllerHome,
+            targetKey,
+            requestOwnerScope(input),
+            optionalString(input.args, 'cwd') ?? '.',
+            operation,
+            currentDate(),
+          );
+        } catch (error) {
+          return rethrowTargetError(error);
+        }
+        assertCommandPathOperandsStayInRepository(canonical, resolved.path, resolved.root, []);
+        const maxOutputBytes = Math.max(1_024, Math.min(Math.trunc(Number(input.args.max_output_bytes ?? MAX_OUTPUT_BYTES)), 1024 * 1024));
+        const timeoutMs = Math.max(1_000, Math.min(Math.trunc(input.timeoutMs ?? 30_000), 30_000));
+        const executed = await runCanonicalCommand(canonical, resolved.path, timeoutMs, maxOutputBytes, { signal: input.signal });
+        if (!executed.ok) {
+          const code = executed.timedOut
+            ? 'LOCAL_SYSTEM_COMMAND_TIMED_OUT'
+            : executed.cancelled
+              ? 'LOCAL_SYSTEM_COMMAND_CANCELLED'
+              : 'LOCAL_SYSTEM_COMMAND_FAILED';
+          const message = executed.stderr.trim()
+            || executed.stdout.trim()
+            || `Target command exited with code ${executed.exitCode}.`;
+          throw new AssistantPluginError(code, bounded(message, maxOutputBytes).content, {
+            retryable: executed.timedOut,
+            details: {
+              command: argv,
+              exitCode: executed.exitCode,
+              timedOut: executed.timedOut,
+              cancelled: executed.cancelled,
+            },
+          });
+        }
+        return {
+          targetKey: resolved.target.targetKey,
+          workspaceId: resolved.target.workspaceId,
+          identityFingerprint: resolved.target.identityFingerprint,
+          repositoryRegistered: false,
+          cwd: resolved.relativePath || '.',
+          command: argv,
+          classification,
+          ok: executed.ok,
+          exitCode: executed.exitCode,
+          timedOut: executed.timedOut,
+          cancelled: executed.cancelled,
+          stdout: executed.stdout,
+          stderr: executed.stderr,
+        };
       };
+      return operation === 'write'
+        ? await withTargetMutation(input, [targetKey], execute)
+        : await execute();
     }
     case 'create_directory': {
-      const resolved = resolveTargetPath(input, requiredString(input.args, 'target_key'), requiredString(input.args, 'path'), { mustExist: false, operation: 'write' });
-      if (existsSync(resolved.path) && !statSync(resolved.path).isDirectory()) throw new AssistantPluginError('LOCAL_SYSTEM_DESTINATION_EXISTS', 'A non-directory already exists at the destination.', { retryable: false });
-      mkdirSync(resolved.path, { recursive: true });
-      return { created: true, targetKey: resolved.target.targetKey, path: resolved.relativePath };
+      const targetKey = requiredString(input.args, 'target_key');
+      return await withTargetMutation(input, [targetKey], () => {
+        const resolved = resolveTargetPath(input, targetKey, requiredString(input.args, 'path'), { mustExist: false, operation: 'write' });
+        if (existsSync(resolved.path) && !statSync(resolved.path).isDirectory()) throw new AssistantPluginError('LOCAL_SYSTEM_DESTINATION_EXISTS', 'A non-directory already exists at the destination.', { retryable: false });
+        mkdirSync(resolved.path, { recursive: true });
+        return { created: true, targetKey: resolved.target.targetKey, path: resolved.relativePath };
+      });
     }
     case 'copy_file': {
-      const pair = filePair(input, 'read');
-      copyFileSync(pair.source, pair.destination, constants.COPYFILE_EXCL);
-      return { copied: true, source: pair.source, destination: pair.destination, overwrite: false };
+      const sourceTargetKey = requiredString(input.args, 'source_target_key');
+      const destinationTargetKey = requiredString(input.args, 'destination_target_key');
+      return await withTargetMutation(input, [sourceTargetKey, destinationTargetKey], () => {
+        const pair = filePair(input, 'read');
+        copyFileSync(pair.source, pair.destination, constants.COPYFILE_EXCL);
+        return { copied: true, source: pair.source, destination: pair.destination, overwrite: false };
+      });
     }
     case 'move_file': {
-      const pair = filePair(input, 'write');
-      renameSync(pair.source, pair.destination);
-      return { moved: true, source: pair.source, destination: pair.destination, overwrite: false };
+      const sourceTargetKey = requiredString(input.args, 'source_target_key');
+      const destinationTargetKey = requiredString(input.args, 'destination_target_key');
+      return await withTargetMutation(input, [sourceTargetKey, destinationTargetKey], () => {
+        const pair = filePair(input, 'write');
+        renameSync(pair.source, pair.destination);
+        return { moved: true, source: pair.source, destination: pair.destination, overwrite: false };
+      });
     }
     case 'rename_file': {
       const targetKey = requiredString(input.args, 'target_key');
-      const source = resolveTargetPath(input, targetKey, requiredString(input.args, 'source_path'), { mustExist: true, operation: 'write' });
-      const destination = resolveTargetPath(input, targetKey, requiredString(input.args, 'destination_path'), { mustExist: false, operation: 'write' });
-      if (existsSync(destination.path)) throw new AssistantPluginError('LOCAL_SYSTEM_DESTINATION_EXISTS', 'Destination already exists; overwrite is not allowed.', { retryable: false });
-      mkdirSync(dirname(destination.path), { recursive: true });
-      renameSync(source.path, destination.path);
-      return { renamed: true, source: source.relativePath, destination: destination.relativePath, overwrite: false };
+      return await withTargetMutation(input, [targetKey], () => {
+        const source = resolveTargetPath(input, targetKey, requiredString(input.args, 'source_path'), { mustExist: true, operation: 'write' });
+        const destination = resolveTargetPath(input, targetKey, requiredString(input.args, 'destination_path'), { mustExist: false, operation: 'write' });
+        if (existsSync(destination.path)) throw new AssistantPluginError('LOCAL_SYSTEM_DESTINATION_EXISTS', 'Destination already exists; overwrite is not allowed.', { retryable: false });
+        mkdirSync(dirname(destination.path), { recursive: true });
+        renameSync(source.path, destination.path);
+        return { renamed: true, source: source.relativePath, destination: destination.relativePath, overwrite: false };
+      });
     }
     case 'reveal_in_finder':
     case 'open_file': {

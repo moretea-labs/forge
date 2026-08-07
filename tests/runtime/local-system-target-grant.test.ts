@@ -22,7 +22,9 @@ import {
   resolveWorkspaceTargetCwd,
   resolveWorkspaceTargetPath,
   WorkspaceTargetGrantError,
+  withWorkspaceTargetMutationLocks,
   workspaceTargetGrantStorePath,
+  workspaceTargetMutationResourceId,
 } from '../../src/runtime/workspace-targets';
 import {
   executeLocalSystemPluginAction,
@@ -76,7 +78,120 @@ function expectGrantCode(action: () => unknown, code: WorkspaceTargetGrantError[
   }
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
 describe('workspace target grant authority', () => {
+  test('serializes same-root mutations while allowing different roots to overlap', async () => {
+    const controllerHome = temp('forge-target-lock-controller-');
+    const rootA = temp('forge-target-lock-a-');
+    const rootB = temp('forge-target-lock-b-');
+    const targetA = authorizeWorkspaceTargetGrant(controllerHome, {
+      targetKey: 'a', rootPath: rootA, ownerScope: 'owner:a', access: 'read_write', reason: 'lock a',
+    });
+    const targetB = authorizeWorkspaceTargetGrant(controllerHome, {
+      targetKey: 'b', rootPath: rootB, ownerScope: 'owner:b', access: 'read_write', reason: 'lock b',
+    });
+
+    let sameActive = 0;
+    let sameMax = 0;
+    const sameMutation = (owner: string) => withWorkspaceTargetMutationLocks(
+      controllerHome,
+      [targetA],
+      owner,
+      async () => {
+        sameActive += 1;
+        sameMax = Math.max(sameMax, sameActive);
+        await delay(40);
+        sameActive -= 1;
+      },
+      { waitMs: 1_000 },
+    );
+    await Promise.all([sameMutation('same-a'), sameMutation('same-b')]);
+    expect(sameMax).toBe(1);
+
+    let differentActive = 0;
+    let differentMax = 0;
+    await Promise.all([
+      withWorkspaceTargetMutationLocks(controllerHome, [targetA], 'different-a', async () => {
+        differentActive += 1;
+        differentMax = Math.max(differentMax, differentActive);
+        await delay(40);
+        differentActive -= 1;
+      }, { waitMs: 1_000 }),
+      withWorkspaceTargetMutationLocks(controllerHome, [targetB], 'different-b', async () => {
+        differentActive += 1;
+        differentMax = Math.max(differentMax, differentActive);
+        await delay(40);
+        differentActive -= 1;
+      }, { waitMs: 1_000 }),
+    ]);
+    expect(differentMax).toBe(2);
+  });
+
+  test('uses canonical root rather than grant owner as mutation contention identity', async () => {
+    const controllerHome = temp('forge-target-lock-shared-controller-');
+    const root = temp('forge-target-lock-shared-root-');
+    const first = authorizeWorkspaceTargetGrant(controllerHome, {
+      targetKey: 'first', rootPath: root, ownerScope: 'owner:first', access: 'read_write', reason: 'first grant',
+    });
+    const second = authorizeWorkspaceTargetGrant(controllerHome, {
+      targetKey: 'second', rootPath: root, ownerScope: 'owner:second', access: 'read_write', reason: 'second grant',
+    });
+    expect(first.workspaceId).not.toBe(second.workspaceId);
+    expect(workspaceTargetMutationResourceId(first)).toBe(workspaceTargetMutationResourceId(second));
+
+    let active = 0;
+    let maxActive = 0;
+    const run = (target: typeof first, owner: string) => withWorkspaceTargetMutationLocks(
+      controllerHome,
+      [target],
+      owner,
+      async () => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await delay(30);
+        active -= 1;
+      },
+      { waitMs: 1_000 },
+    );
+    await Promise.all([run(first, 'first-op'), run(second, 'second-op')]);
+    expect(maxActive).toBe(1);
+  });
+
+  test('orders multi-target locks deterministically so reverse requests cannot deadlock', async () => {
+    const controllerHome = temp('forge-target-lock-pair-controller-');
+    const rootA = temp('forge-target-lock-pair-a-');
+    const rootB = temp('forge-target-lock-pair-b-');
+    const targetA = authorizeWorkspaceTargetGrant(controllerHome, {
+      targetKey: 'a', rootPath: rootA, ownerScope: 'owner:pair', access: 'read_write', reason: 'pair a',
+    });
+    const targetB = authorizeWorkspaceTargetGrant(controllerHome, {
+      targetKey: 'b', rootPath: rootB, ownerScope: 'owner:pair', access: 'read_write', reason: 'pair b',
+    });
+
+    let active = 0;
+    let maxActive = 0;
+    const run = (targets: [typeof targetA, typeof targetB], owner: string) => withWorkspaceTargetMutationLocks(
+      controllerHome,
+      targets,
+      owner,
+      async () => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await delay(30);
+        active -= 1;
+      },
+      { waitMs: 1_000 },
+    );
+    await Promise.all([
+      run([targetA, targetB], 'pair-forward'),
+      run([targetB, targetA], 'pair-reverse'),
+    ]);
+    expect(maxActive).toBe(1);
+  });
+
   test('keeps the existing local_system targets.json as the sole store', () => {
     const controllerHome = temp('forge-target-controller-');
     expect(workspaceTargetGrantStorePath(controllerHome)).toBe(

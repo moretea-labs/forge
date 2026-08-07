@@ -4,6 +4,8 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { controllerSystemRoot } from '../../cli/repositories/controller-home';
 import {
   ControllerLockContentionError,
+  acquireControllerLockAsync,
+  releaseControllerLock,
   withControllerLock,
 } from '../../cli/repositories/locks';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
@@ -85,6 +87,7 @@ export type WorkspaceTargetGrantErrorCode =
   | 'TARGET_REASON_REQUIRED'
   | 'TARGET_STORE_CORRUPT'
   | 'TARGET_STORE_BUSY'
+  | 'TARGET_MUTATION_BUSY'
   | 'TARGET_IDENTITY_MISMATCH'
   | 'TARGET_OWNER_SCOPE_REQUIRED'
   | 'TARGET_OWNER_MISMATCH'
@@ -115,6 +118,84 @@ function targetRoot(controllerHome: string): string {
 /** Existing local_system storage remains the sole target-grant authority. */
 export function workspaceTargetGrantStorePath(controllerHome: string): string {
   return join(targetRoot(controllerHome), 'targets.json');
+}
+
+/**
+ * Mutation contention is rooted in the canonical filesystem root, not owner or
+ * target key. Two independently authorized grants for the same directory must
+ * still serialize physical writes, while different roots remain independent.
+ */
+export function workspaceTargetMutationResourceId(target: ActiveWorkspaceTargetGrant): string {
+  const canonical = canonicalRoot(target.rootPath);
+  return `workspace-target-root-${createHash('sha256').update(canonical).digest('hex').slice(0, 24)}`;
+}
+
+export async function withWorkspaceTargetMutationLocks<T>(
+  controllerHome: string,
+  targets: readonly ActiveWorkspaceTargetGrant[],
+  owner: string,
+  operation: () => Promise<T> | T,
+  options: { waitMs?: number; at?: Date } = {},
+): Promise<T> {
+  const requestedOwner = owner.trim() || 'workspace-target-mutation';
+  const byResource = new Map<string, ActiveWorkspaceTargetGrant>();
+  for (const target of targets) {
+    byResource.set(workspaceTargetMutationResourceId(target), target);
+  }
+  const ordered = [...byResource.entries()].sort(([left], [right]) => left.localeCompare(right));
+  const acquired: Array<{ resource: string; lockId: string }> = [];
+  try {
+    for (const [resource] of ordered) {
+      const lock = await acquireControllerLockAsync(
+        controllerHome,
+        { scope: 'global', resource },
+        requestedOwner,
+        undefined,
+        options.waitMs ?? 5_000,
+      );
+      acquired.push({ resource, lockId: lock.lockId });
+    }
+
+    // Re-resolve every grant after all mutation roots are locked. This closes
+    // the resolve→lock TOCTOU window and fails closed if a target was expired,
+    // revoked, repointed, or changed access/owner while the caller waited.
+    for (const target of targets) {
+      const current = getActiveWorkspaceTargetGrant(
+        controllerHome,
+        target.targetKey,
+        options.at ?? new Date(),
+        target.ownerScope,
+      );
+      if (
+        current.workspaceId !== target.workspaceId
+        || current.identityFingerprint !== target.identityFingerprint
+        || workspaceTargetMutationResourceId(current) !== workspaceTargetMutationResourceId(target)
+      ) {
+        throw new WorkspaceTargetGrantError(
+          'TARGET_IDENTITY_MISMATCH',
+          `Target ${target.targetKey} changed while waiting for mutation ownership.`,
+        );
+      }
+    }
+
+    return await operation();
+  } catch (error) {
+    if (error instanceof ControllerLockContentionError) {
+      throw new WorkspaceTargetGrantError(
+        'TARGET_MUTATION_BUSY',
+        `Target mutation is busy: ${error.message}`,
+      );
+    }
+    throw error;
+  } finally {
+    for (const entry of acquired.reverse()) {
+      releaseControllerLock(
+        controllerHome,
+        { scope: 'global', resource: entry.resource },
+        entry.lockId,
+      );
+    }
+  }
 }
 
 function persistedString(
