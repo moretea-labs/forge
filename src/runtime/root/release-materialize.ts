@@ -55,7 +55,10 @@ export function stageRuntimeRelease(input: {
   const sourceRoot = resolve(input.sourceRoot);
   const sourceCommit = gitText(sourceRoot, ['rev-parse', '--verify', 'HEAD']);
   if (!/^[a-f0-9]{40}$/i.test(sourceCommit)) throw new Error('RUNTIME_RELEASE_SOURCE_COMMIT_INVALID');
-  const dirty = gitText(sourceRoot, ['status', '--porcelain=v1']);
+  // Immutable release source is the tracked working tree. Untracked files are
+  // not part of the release and must never block activation (for example
+  // local-only helper apps or .command launchers).
+  const dirty = gitText(sourceRoot, ['status', '--porcelain=v1', '--untracked-files=no']);
   if (dirty) throw new Error(`RUNTIME_RELEASE_DIRTY_SOURCE: ${dirty.split(/\r?\n/).slice(0, 20).join(', ')}`);
 
   const now = dependencies.now ?? Date.now;
