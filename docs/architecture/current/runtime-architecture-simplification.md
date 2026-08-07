@@ -162,6 +162,7 @@ The following paths are legacy implementation inventory, not target building blo
 | stable ingress ports and private blue/green ports | deleted; one Runtime endpoint is configured directly |
 | component generation and mixed-generation coherence | deleted; one Runtime instance/release identity remains |
 | Gateway/MCP component restart, rollout, rollback, green-gate and Supervisor facade operations | removed from direct tools and `rh_status`/`rh_work`; no compatibility facade may trigger lifecycle changes |
+| Recovery lifecycle/self-healing compatibility surfaces | deleted from descriptors, MCP definitions, dispatch branches and maintenance status; source-coherence failure produces an external lifecycle handoff only |
 | component rollout/rollback operation stores | deleted with the Supervisor implementation; only whole-Runtime release authority remains |
 | compatibility authority projections | deleted after one-way migration; no permanent dual-read or dual-write remains |
 

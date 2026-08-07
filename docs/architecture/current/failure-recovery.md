@@ -98,6 +98,16 @@ resume fair scheduling and normal asynchronous observation
 
 Projection rebuild is unconditional on daemon restart, so a stale persisted projection is repaired even when a dirty marker was lost. Recovery failures are isolated by repository and phase: one broken repository does not prevent healthy repositories from recovering, and a failure in one phase does not silently skip later Lease or projection repair. The Controller must not assume every persisted `running` entity is still running. It verifies Lease, heartbeat, process/provider state, and durable result evidence.
 
+### Runtime source coherence and lifecycle handoff
+
+Runtime source coherence is part of the one binary readiness decision. A missing or stale startup Runtime source snapshot is a blocking condition, not a warning and not a metadata-maintenance candidate.
+
+The running Runtime never owns its own replacement. Recovery diagnostics may classify the condition and return a structured external lifecycle handoff, but they must not expose a Runtime/component restart action, detached restart coordinator, rollout slot, or autonomous source-repair fallback.
+
+The external lifecycle owner may replace only the existing single `forge-runtime` service. It must not start a second Runtime, create a component Runtime, mutate the source checkout as part of recovery, or introduce a rollout path. Readiness becomes true again only after the replacement Runtime has published a startup source snapshot and source-coherence evaluation proves that the configured Runtime source and active Runtime source agree.
+
+Local runtime maintenance remains limited to bounded Controller Home / repository runtime metadata repair. When that executor has no safe candidate, its continuation is an explicit handoff; it does not escalate to an invented lifecycle or source-repair action.
+
 ## 6. Repo Actor Recovery
 
 A Repo Actor is a logical single owner. Its mailbox and sequence position must be recoverable.

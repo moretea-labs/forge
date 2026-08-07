@@ -9,11 +9,10 @@ import {
   buildPatchHandoffArtifact,
   buildRecoveryAuditRecord,
   buildRuntimeMaintenanceStatus,
-  buildSelfHealingLoopPlan,
-  buildSelfHealingMonitorReport,
   applyRuntimeMaintenance,
   classifyFailure,
   detectDirtyPathConflicts,
+  recoveryActionById,
 } from '../../src/runtime/recovery';
 import {
   applyExternalFilesystemGrant,
@@ -78,6 +77,45 @@ describe('capability recovery probe', () => {
 
     expect(snapshot.overallState).toBe('ready');
     expect(snapshot.fallbackRequired).toBe(false);
+  });
+
+  it('turns missing Runtime source snapshot into one external lifecycle handoff', () => {
+    const snapshot = buildCapabilityRecoverySnapshot({
+      generatedAt: '2026-08-07T00:00:00.000Z',
+      daemonStatus: 'ready',
+      schedulerStatus: 'ready',
+      queueDepth: 0,
+      runningWorkers: 0,
+      activeLeases: 0,
+      localBridgeRunning: true,
+      connectorHealthy: true,
+      runtimeProjectionStale: false,
+      runtimeProjectionPersisted: true,
+      runtimeSourceCoherence: {
+        ready: false,
+        code: 'RUNTIME_SOURCE_SNAPSHOT_MISSING',
+        reasons: ['Controller runtime source snapshot is missing'],
+        summary: 'Controller runtime source snapshot is missing.',
+      },
+      commandPreviewAvailable: true,
+      commandExecuteAvailable: true,
+      issueToolsAvailable: true,
+      jobToolsAvailable: true,
+    });
+
+    const source = snapshot.capabilities.find((capability) => capability.id === 'runtime.source_coherence');
+    expect(snapshot.overallState).toBe('blocked');
+    expect(snapshot.fallbackRequired).toBe(true);
+    expect(source?.class).toBe('external_lifecycle_required');
+    expect(source?.suggestedActions).toEqual([]);
+    expect(snapshot.externalLifecycleHandoff).toMatchObject({
+      owner: 'external_runtime_lifecycle',
+      target: 'forge-runtime',
+      reasonCode: 'RUNTIME_SOURCE_SNAPSHOT_MISSING',
+      requiredAction: 'restart_existing_single_runtime',
+    });
+    expect(snapshot.externalLifecycleHandoff?.constraints.join(' ')).toContain('second Runtime');
+    expect(snapshot.recommendedActions.map((action) => action.id)).not.toContain('recovery.restart_controller');
   });
 
   it('routes platform blocks to patch handoff instead of restart loops', () => {
@@ -181,6 +219,12 @@ describe('authorized recovery actions', () => {
     expect(() => assertRecoveryAuthorized(RECOVERY_ACTIONS.cleanupApply, RECOVERY_ACTIONS.cleanupApply.id)).not.toThrow();
   });
 
+  it('does not resolve deleted Runtime lifecycle or autonomous source-repair actions', () => {
+    expect(recoveryActionById('recovery.restart_controller')).toBeUndefined();
+    expect(recoveryActionById('recovery.restart_local_bridge')).toBeUndefined();
+    expect(recoveryActionById('recovery.create_self_fix_task')).toBeUndefined();
+  });
+
   it('builds audit evidence records', () => {
     const record = buildRecoveryAuditRecord({
       actor: 'test',
@@ -225,6 +269,8 @@ describe('runtime maintenance executor', () => {
 
     const before = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 0 });
     expect(before.recommendedActions).toContain('local_jobs_reconcile');
+    expect(JSON.stringify(before)).not.toContain('restartEscalation');
+    expect(JSON.stringify(before)).not.toContain('controller:restart');
 
     const applied = applyRuntimeMaintenance(repository, controllerHome, {
       actionId: 'local_jobs_reconcile',
@@ -283,20 +329,6 @@ describe('runtime maintenance executor', () => {
     expect(existsSync(symbolicLink)).toBe(true);
     expect(readFileSync(target, 'utf8')).toBe('preserve');
   });
-
-  it('plans model repair only after bounded local recovery and restart fallback', () => {
-    const plan = buildSelfHealingLoopPlan({
-      objective: 'fix repeated TypeError in recovery apply',
-      recentErrors: ['TypeError: cannot read properties of undefined'],
-      chatgptAvailable: false,
-      codexCliAvailable: true,
-      deepseekAvailable: true,
-    });
-
-    expect(plan.failureClass).toBe('source_defect_suspected');
-    expect(plan.modelRepairProducer.preferredProducer).toBe('local_codex_cli');
-    expect(plan.phases.map((phase) => phase.id)).toEqual(['observe', 'local-maintenance', 'capability-grant-resolution', 'restart-fallback', 'model-repair-generation', 'continuation']);
-  });
 });
 
 describe('auth and external filesystem handoffs', () => {
@@ -347,41 +379,6 @@ describe('auth and external filesystem handoffs', () => {
     const snapshot = readExternalFilesystemSnapshot(repoRoot, { target_key: 'notes', path: 'note.txt' });
     expect(snapshot.kind).toBe('file');
     expect(snapshot.text).toBe('hello external');
-  });
-});
-
-
-describe('self-healing monitor report', () => {
-  it('turns runtime blockers into shadow candidate findings without source mutation', () => {
-    const report = buildSelfHealingMonitorReport({
-      repoId: 'repo-test',
-      mode: 'shadow',
-      recentErrors: ['RUNTIME_STORAGE_NOT_READY: local-jobs: active or unreadable Local Jobs must finish before runtime storage can be relocated'],
-    });
-
-    expect(report.overallState).toBe('blocked');
-    expect(report.automationPolicy.canAutoCreateCandidateFindings).toBe(true);
-    expect(report.automationPolicy.canAutoModifySource).toBe(false);
-    expect(report.automationPolicy.canAutoMergeOrPush).toBe(false);
-    expect(report.candidateFindings[0]?.semanticKey).toContain('self-healing:repo-test:runtime:local_jobs_legacy_active');
-    expect(report.nextSteps.map((step) => step.id)).toContain('inspect-runtime-maintenance');
-  });
-
-  it('keeps auth and grant failures behind explicit human handoff', () => {
-    const report = buildSelfHealingMonitorReport({
-      repoId: 'repo-test',
-      recentErrors: [
-        'gmail.list_messages failed: auth_required token refresh needed',
-        'WEB_TARGET_NOT_ALLOWED: domain is outside allowed_domains',
-        'EXTERNAL_FILESYSTEM_GRANT_REQUIRED: root path requires a target grant',
-      ],
-    });
-
-    expect(report.candidateFindings.map((finding) => finding.semanticKey).join('\n')).toContain(':auth:auth_required');
-    expect(report.candidateFindings.map((finding) => finding.semanticKey).join('\n')).toContain(':browser:browser_domain_grant_required');
-    expect(report.candidateFindings.map((finding) => finding.semanticKey).join('\n')).toContain(':filesystem:external_filesystem_grant_required');
-    expect(report.nextSteps.find((step) => step.id === 'prepare-auth-handoff')?.requiresHumanApproval).toBe(true);
-    expect(report.nextSteps.find((step) => step.id === 'typed-grant-review')?.requiresHumanApproval).toBe(true);
   });
 });
 

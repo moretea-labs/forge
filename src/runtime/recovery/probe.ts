@@ -64,7 +64,7 @@ function suggestedActionsForClass(recoveryClass: RecoveryClass): RecoveryActionD
   if (recoveryClass === 'browser_domain_grant_required') return [RECOVERY_ACTIONS.browserDomainAccessPreview];
   if (recoveryClass === 'external_filesystem_grant_required') return [RECOVERY_ACTIONS.externalFilesystemGrantPreview];
   if (recoveryClass === 'agent_runtime_failure') return [RECOVERY_ACTIONS.reconcileJobs];
-  if (recoveryClass === 'source_defect_suspected') return [RECOVERY_ACTIONS.createSelfFixTask];
+  if (recoveryClass === 'source_defect_suspected' || recoveryClass === 'external_lifecycle_required') return [];
   if (['runtime_storage_not_ready', 'local_jobs_legacy_active', 'local_jobs_unreadable', 'local_jobs_reconciliation_required', 'maintenance_executor_required'].includes(recoveryClass)) {
     return [RECOVERY_ACTIONS.localJobsReconcile, RECOVERY_ACTIONS.finalizeRuntimeStorageRelocation];
   }
@@ -124,10 +124,10 @@ export function buildCapabilityRecoverySnapshot(input: CapabilityRecoveryInput):
   const sharedHealth = input.runtimeHealth;
   if (sharedHealth) {
     capabilities.push(
-      capabilityFromSharedHealth(at, 'forge.runtime', 'Forge Runtime', sharedHealth.components.daemon, 'local_recoverable', [RECOVERY_ACTIONS.restartController]),
-      capabilityFromSharedHealth(at, 'durable.scheduler', 'Durable scheduler', sharedHealth.components.scheduler, 'stale_runtime_state', [RECOVERY_ACTIONS.reconcileJobs, RECOVERY_ACTIONS.restartController]),
+      capabilityFromSharedHealth(at, 'forge.runtime', 'Forge Runtime', sharedHealth.components.daemon, 'external_lifecycle_required'),
+      capabilityFromSharedHealth(at, 'durable.scheduler', 'Durable scheduler', sharedHealth.components.scheduler, 'stale_runtime_state', [RECOVERY_ACTIONS.reconcileJobs]),
       capabilityFromSharedHealth(at, 'worker.loop', 'Worker loop', sharedHealth.components.workers, 'stale_runtime_state', [RECOVERY_ACTIONS.reconcileJobs]),
-      capabilityFromSharedHealth(at, 'local.bridge', 'Local bridge', sharedHealth.components.localBridge, 'local_recoverable', [RECOVERY_ACTIONS.restartLocalBridge]),
+      capabilityFromSharedHealth(at, 'local.bridge', 'Local bridge', sharedHealth.components.localBridge, 'local_recoverable', [RECOVERY_ACTIONS.probeAgain]),
       capabilityFromSharedHealth(at, 'runtime.projection', 'Runtime projection', sharedHealth.components.projection, 'stale_runtime_state', [RECOVERY_ACTIONS.rebuildProjection]),
       capabilityFromSharedHealth(at, 'runtime.storage', 'Runtime storage', sharedHealth.components.runtimeStorage, 'runtime_storage_not_ready', runtimeStorageActions('runtime_storage_not_ready')),
     );
@@ -135,12 +135,12 @@ export function buildCapabilityRecoverySnapshot(input: CapabilityRecoveryInput):
     const daemonReady = input.daemonStatus === undefined || input.daemonStatus === 'ready';
     capabilities.push(daemonReady
       ? capability(at, 'forge.runtime', 'Forge Runtime', 'ready', 'unknown', 'Forge Runtime is ready.', [], { status: input.daemonStatus ?? 'unknown' })
-      : capability(at, 'forge.runtime', 'Forge Runtime', 'unavailable', 'local_recoverable', `Forge Runtime is ${input.daemonStatus ?? 'unknown'}.`, [RECOVERY_ACTIONS.restartController], { status: input.daemonStatus, error: input.daemonError }));
+      : capability(at, 'forge.runtime', 'Forge Runtime', 'unavailable', 'external_lifecycle_required', `Forge Runtime is ${input.daemonStatus ?? 'unknown'}; lifecycle recovery belongs to the external owner of the existing single Runtime service.`, [], { status: input.daemonStatus, error: input.daemonError }));
 
     const schedulerAge = input.schedulerHeartbeatAgeMs;
     const schedulerStale = typeof schedulerAge === 'number' && schedulerAge > SCHEDULER_STALE_MS;
     capabilities.push(schedulerStale || input.schedulerStatus === 'degraded' || input.schedulerStatus === 'not_ready'
-      ? capability(at, 'durable.scheduler', 'Durable scheduler', 'degraded', 'stale_runtime_state', 'Scheduler heartbeat is stale or degraded.', [RECOVERY_ACTIONS.reconcileJobs, RECOVERY_ACTIONS.restartController], { schedulerStatus: input.schedulerStatus, schedulerHeartbeatAgeMs: schedulerAge })
+      ? capability(at, 'durable.scheduler', 'Durable scheduler', 'degraded', 'stale_runtime_state', 'Scheduler heartbeat is stale or degraded.', [RECOVERY_ACTIONS.reconcileJobs], { schedulerStatus: input.schedulerStatus, schedulerHeartbeatAgeMs: schedulerAge })
       : capability(at, 'durable.scheduler', 'Durable scheduler', 'ready', 'unknown', 'Scheduler heartbeat is healthy.', [], { schedulerStatus: input.schedulerStatus, schedulerHeartbeatAgeMs: schedulerAge }));
 
     const queueStalled = queueDepth > 0 && runningWorkers === 0;
@@ -149,13 +149,20 @@ export function buildCapabilityRecoverySnapshot(input: CapabilityRecoveryInput):
       : capability(at, 'worker.loop', 'Worker loop', 'ready', 'unknown', 'Worker loop has no stuck queue evidence.', [], { queueDepth, runningWorkers, activeLeases }));
 
     capabilities.push(input.localBridgeRunning === false
-      ? capability(at, 'local.bridge', 'Local bridge', 'unavailable', 'local_recoverable', 'Local bridge is not running.', [RECOVERY_ACTIONS.restartLocalBridge], { error: input.localBridgeError })
+      ? capability(at, 'local.bridge', 'Local bridge', 'unavailable', 'local_recoverable', 'Local bridge is not running. Component restart recovery is not a supported Runtime action.', [RECOVERY_ACTIONS.probeAgain], { error: input.localBridgeError })
       : capability(at, 'local.bridge', 'Local bridge', 'ready', 'unknown', 'Local bridge is available.', [], { running: input.localBridgeRunning }));
   }
 
   capabilities.push(input.connectorHealthy === false
-    ? capability(at, 'chatgpt.connector', 'ChatGPT connector', 'degraded', 'local_recoverable', 'Connector runtime state does not match the expected tool surface.', [RECOVERY_ACTIONS.restartLocalBridge], { mismatch: input.connectorMismatch })
+    ? capability(at, 'chatgpt.connector', 'ChatGPT connector', 'degraded', 'local_recoverable', 'Connector runtime state does not match the expected tool surface.', [RECOVERY_ACTIONS.probeAgain], { mismatch: input.connectorMismatch })
     : capability(at, 'chatgpt.connector', 'ChatGPT connector', 'ready', 'unknown', 'Connector runtime state matches expected configuration.', [], { healthy: input.connectorHealthy }));
+
+  if (input.runtimeSourceCoherence) {
+    const source = input.runtimeSourceCoherence;
+    capabilities.push(source.ready
+      ? capability(at, 'runtime.source_coherence', 'Runtime source coherence', 'ready', 'unknown', source.summary ?? 'Runtime source snapshot matches the current Runtime source.', [], { code: source.code, reasons: source.reasons ?? [] })
+      : capability(at, 'runtime.source_coherence', 'Runtime source coherence', 'blocked', 'external_lifecycle_required', source.summary ?? 'Runtime source snapshot is missing or stale. The running Runtime cannot repair or restart its own lifecycle.', [], { code: source.code, reasons: source.reasons ?? [], lifecycleOwner: 'external_runtime_lifecycle' }));
+  }
 
   if (!sharedHealth) {
     capabilities.push(input.runtimeProjectionStale === true || input.runtimeProjectionPersisted === false
@@ -247,12 +254,34 @@ export function buildCapabilityRecoverySnapshot(input: CapabilityRecoveryInput):
       : states.degraded > 0
         ? 'degraded'
         : 'ready';
+  const externalLifecycleCapability = capabilities.find((item) => item.class === 'external_lifecycle_required' && item.state !== 'ready');
+  const externalLifecycleHandoff = externalLifecycleCapability ? {
+    owner: 'external_runtime_lifecycle' as const,
+    target: 'forge-runtime' as const,
+    reasonCode: input.runtimeSourceCoherence?.ready === false
+      ? input.runtimeSourceCoherence.code ?? 'RUNTIME_SOURCE_COHERENCE_FAILED'
+      : 'RUNTIME_LIFECYCLE_EXTERNAL_ACTION_REQUIRED',
+    summary: externalLifecycleCapability.reason,
+    requiredAction: 'restart_existing_single_runtime' as const,
+    constraints: [
+      'Operate on the existing single forge-runtime service only.',
+      'Do not start a second Runtime, component Runtime, restart coordinator, or rollout slot.',
+      'Do not mutate the source checkout as part of lifecycle recovery.',
+      'The currently running Runtime must not attempt to own its own restart.',
+    ],
+    verification: [
+      'The restarted Runtime publishes ready=true.',
+      'A startup Runtime source snapshot exists under Controller Home.',
+      'Runtime source coherence reports no drift against the current configured Runtime source.',
+      'Runtime/release ownership evidence identifies one active Runtime.',
+    ],
+  } : undefined;
 
   return {
     schemaVersion: 1,
     generatedAt: at,
     overallState,
-    fallbackRequired: platformBlocked,
+    fallbackRequired: platformBlocked || externalLifecycleHandoff !== undefined,
     platformBlocked,
     capabilities,
     recommendedActions,
@@ -265,9 +294,12 @@ export function buildCapabilityRecoverySnapshot(input: CapabilityRecoveryInput):
       topRisks,
       nextBestAction: recommendedActions[0],
     },
-    notes: platformBlocked
-      ? ['One or more calls appear blocked before reaching forge. Avoid local restart loops; use patch handoff or narrower typed tools.']
-      : (input.runtimeStorageReady === false ? ['Runtime storage is not ready. Use runtime_maintenance_status/runtime_maintenance_apply; do not try to repair repository_command_execute with repository_command_execute.'] : []),
+    externalLifecycleHandoff,
+    notes: externalLifecycleHandoff
+      ? ['Runtime lifecycle action is required outside the running Runtime. Use the existing single forge-runtime service only; no rollout, second Runtime, component restart, or source mutation.']
+      : platformBlocked
+        ? ['One or more calls appear blocked before reaching forge. Use patch handoff or narrower typed tools; do not infer a local Runtime lifecycle failure.']
+        : (input.runtimeStorageReady === false ? ['Runtime storage is not ready. Use runtime_maintenance_status/runtime_maintenance_apply; do not try to repair repository_command_execute with repository_command_execute.'] : []),
     runtimeHealth: sharedHealth,
     runtimeOperationalView: input.runtimeOperationalView,
   };

@@ -147,8 +147,6 @@ import {
   applyRuntimeMaintenance,
   buildCapabilityRecoverySnapshot,
   buildRuntimeMaintenanceStatus,
-  buildSelfHealingLoopPlan,
-  buildSelfHealingMonitorReport,
   recoveryActionById,
   buildRecoveryAuditRecord,
   assertRecoveryAuthorized,
@@ -440,7 +438,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     repo_id: repoId,
     recent_errors: { type: 'array', items: { type: 'string' } },
   }),
-  definition('capability_recovery_apply', 'Apply bounded metadata maintenance after explicit authorization. Runtime start, stop, restart, rollout, and component recovery actions are retired.', {
+  definition('capability_recovery_apply', 'Apply one currently supported bounded recovery action after explicit authorization. Runtime lifecycle actions are outside this surface.', {
     repo_id: repoId,
     action_id: { type: 'string' },
     confirm_authorization: { type: 'boolean' },
@@ -454,7 +452,6 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     min_age_minutes: { type: 'number' },
     max_candidates: { type: 'number' },
     cancel_pending_approvals: { type: 'boolean' },
-    recent_errors: { type: 'array', items: { type: 'string' } },
   }),
   definition('runtime_maintenance_apply', 'Apply one bounded runtime maintenance action without repository_command_execute or Local Job tickets.', {
     repo_id: repoId,
@@ -465,22 +462,6 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     max_candidates: { type: 'number' },
     cancel_pending_approvals: { type: 'boolean' },
   }, ['action_id', 'confirm_maintenance', 'authorization'], false),
-  definition('self_healing_loop_plan', 'Deprecated compatibility surface. Returns a diagnostic handoff only; autonomous Runtime recovery and source repair are retired.', {
-    repo_id: repoId,
-    objective: { type: 'string' },
-    recent_errors: { type: 'array', items: { type: 'string' } },
-    platform_blocked: { type: 'boolean' },
-    source_defect_suspected: { type: 'boolean' },
-    chatgpt_available: { type: 'boolean' },
-    codex_cli_available: { type: 'boolean' },
-    deepseek_available: { type: 'boolean' },
-  }),
-  definition('self_healing_monitor_tick', 'Deprecated compatibility surface. Returns bounded diagnostics only and never owns Runtime lifecycle or source repair.', {
-    repo_id: repoId,
-    recent_errors: { type: 'array', items: { type: 'string' } },
-    objective: { type: 'string' },
-    active_mode: { type: 'boolean', description: 'Defaults to false. Active mode may recommend authorized local maintenance but still does not mutate state in this tool.' },
-  }),
   definition('goal_create', 'Deprecated historical GoalContract creation. Use rh_work PlanContract/WorkContract instead.', {
     repo_id: repoId,
     title: { type: 'string' },
@@ -1847,12 +1828,16 @@ export async function controllerReadiness(
   const workersReady = evidence.workerLoop.consuming;
   const databaseReady = evidence.health.components.projection.ready;
   const releaseCoherenceReady = evidence.daemon.status === 'ready' && evidence.daemon.degraded !== true;
+  const runtimeSource = runtimeSourceSnapshotStatus(evidence.daemon.source);
+  const sourceCoherenceReady = !runtimeSource.restartRequired;
+  if (!sourceCoherenceReady) reasonCodes.add(runtimeSource.code);
   const ready = evidence.ready
     && controllerServicesReady
     && schedulerReady
     && workersReady
     && databaseReady
-    && releaseCoherenceReady;
+    && releaseCoherenceReady
+    && sourceCoherenceReady;
 
   return {
     ready,
@@ -1894,11 +1879,16 @@ export async function controllerReadiness(
         },
       },
       releaseCoherence: {
-        ready: releaseCoherenceReady,
+        ready: releaseCoherenceReady && sourceCoherenceReady,
         evidence: {
           status: evidence.daemon.status,
           degraded: evidence.daemon.degraded,
           error: evidence.daemon.error,
+          sourceCoherence: {
+            ready: sourceCoherenceReady,
+            code: runtimeSource.code,
+            reasons: runtimeSource.reasons,
+          },
         },
       },
       mcpEndToEnd: {
@@ -1942,6 +1932,7 @@ async function capabilityRecoveryInput(ctx: MultiRepositoryMcpToolContext, repos
     contextSourceIdentity,
   );
   const recentErrors = Array.isArray(args.recent_errors) ? args.recent_errors.map(String) : [];
+  const runtimeSource = runtimeSourceSnapshotStatus(readiness.daemon.source);
   let runtimeStorageReady: boolean | undefined;
   let runtimeStorageWarnings: string[] = [];
   try {
@@ -1974,6 +1965,14 @@ async function capabilityRecoveryInput(ctx: MultiRepositoryMcpToolContext, repos
     connectorHealthy: undefined,
     runtimeProjectionStale: runtimeSnapshot.stale,
     runtimeProjectionPersisted: runtimeSnapshot.persisted,
+    runtimeSourceCoherence: {
+      ready: !runtimeSource.restartRequired,
+      code: runtimeSource.code,
+      reasons: runtimeSource.reasons,
+      summary: runtimeSource.restartRequired
+        ? formatRuntimeSourceDriftMessage(runtimeSource)
+        : 'Runtime source snapshot matches the current Controller Runtime source.',
+    },
     contextProjectionStale,
     commandPreviewAvailable: args.command_preview_available === undefined ? true : args.command_preview_available === true,
     commandExecuteAvailable: args.command_execute_available === undefined ? true : args.command_execute_available === true,
@@ -4260,13 +4259,14 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const ready = blockingCapabilityCount === 0 && snapshot.platformBlocked !== true;
         return result({
           ready,
-          reasonCodes: ready ? [] : ['RUNTIME_DIAGNOSTICS_ATTENTION_REQUIRED'],
+          reasonCodes: ready ? [] : [snapshot.externalLifecycleHandoff?.reasonCode ?? 'RUNTIME_DIAGNOSTICS_ATTENTION_REQUIRED'],
           diagnostics: {
             capabilityCount: snapshot.capabilities.length,
             blockingCapabilityCount,
             platformBlocked: snapshot.platformBlocked === true,
             recentAuditCount: listRecoveryAuditRecords(ctx.controllerHome, repository.repoId, 10).length,
           },
+          externalLifecycleHandoff: snapshot.externalLifecycleHandoff,
           observedAt: snapshot.generatedAt,
           mutatesState: false,
           ownsRuntimeLifecycle: false,
@@ -4281,7 +4281,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const ready = blockingCapabilityCount === 0 && snapshot.platformBlocked !== true;
         return result({
           ready,
-          reasonCodes: ready ? [] : ['RUNTIME_DIAGNOSTICS_ATTENTION_REQUIRED'],
+          reasonCodes: ready ? [] : [snapshot.externalLifecycleHandoff?.reasonCode ?? 'RUNTIME_DIAGNOSTICS_ATTENTION_REQUIRED'],
           diagnostics: {
             capabilityCount: snapshot.capabilities.length,
             blockingCapabilityCount,
@@ -4289,10 +4289,13 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           },
           observedAt: snapshot.generatedAt,
           handoffRequired: !ready,
+          externalLifecycleHandoff: snapshot.externalLifecycleHandoff,
           notes: snapshot.notes,
           next: ready
             ? 'Continue through the current Runtime and Work interfaces.'
-            : 'Inspect runtime_maintenance_status and create an rh_inbox handoff when operator or external Controller action is required.',
+            : snapshot.externalLifecycleHandoff
+              ? 'Create or consume an rh_inbox handoff for the external Runtime lifecycle owner. Operate on the existing single forge-runtime only, then verify controller_ready and rh_status source coherence.'
+              : 'Inspect runtime_maintenance_status and create an rh_inbox handoff when operator or external Controller action is required.',
         });
       }
       case 'runtime_maintenance_status': {
@@ -4301,7 +4304,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           minAgeMinutes: typeof args.min_age_minutes === 'number' ? args.min_age_minutes : undefined,
           maxCandidates: typeof args.max_candidates === 'number' ? args.max_candidates : undefined,
           cancelPendingApprovals: args.cancel_pending_approvals === true,
-          recentErrors: Array.isArray(args.recent_errors) ? args.recent_errors.map(String) : undefined,
         }) as unknown as Record<string, unknown>);
       }
       case 'runtime_maintenance_apply': {
@@ -4318,55 +4320,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           maxCandidates: typeof args.max_candidates === 'number' ? args.max_candidates : undefined,
           cancelPendingApprovals: args.cancel_pending_approvals === true,
         }) as unknown as Record<string, unknown>);
-      }
-      case 'self_healing_loop_plan': {
-        return result({
-          retired: true,
-          reasonCode: 'AUTONOMOUS_RUNTIME_RECOVERY_RETIRED',
-          summary: 'Runtime recovery is owned by the Canonical Runtime lifecycle. This compatibility tool cannot restart modules or dispatch source repair.',
-          replacements: ['runtime_maintenance_status', 'rh_context', 'rh_inbox'],
-          mutatesState: false,
-        });
-      }
-      case 'self_healing_monitor_tick': {
-        const repository = selected(ctx, args);
-        const recentErrors = Array.isArray(args.recent_errors) ? args.recent_errors.map(String) : undefined;
-        const plugins = listAssistantPluginManifests(ctx.controllerHome, repository);
-        const recovery = await capabilityRecoverySnapshot(ctx, repository, { ...args, recent_errors: recentErrors });
-        const maintenance = buildRuntimeMaintenanceStatus(repository, ctx.controllerHome, { recentErrors });
-        const auth = buildWorkspaceAuthStatus(plugins);
-        const browserManifest = getAssistantPluginManifest(ctx.controllerHome, repository, 'browser');
-        const browserTargets = listWebTargets(repository.canonicalRoot, browserManifest);
-        const externalFilesystem = listExternalFilesystemTargets(repository.canonicalRoot);
-        const blockingCapabilityCount = recovery.capabilities
-          .filter((capability) => ['blocked', 'unavailable', 'degraded'].includes(capability.state))
-          .length;
-        const ready = blockingCapabilityCount === 0 && recovery.platformBlocked !== true;
-        return result({
-          retired: true,
-          ready,
-          reasonCodes: ready ? [] : ['RUNTIME_DIAGNOSTICS_ATTENTION_REQUIRED'],
-          diagnostics: {
-            capabilityCount: recovery.capabilities.length,
-            blockingCapabilityCount,
-            runtimeMaintenanceRecommendedActions: maintenance.recommendedActions,
-            workspaceAuthActionRequired: Array.isArray((auth as { actionRequired?: unknown[] }).actionRequired)
-              ? (auth as { actionRequired?: unknown[] }).actionRequired!.length
-              : 0,
-            browserTargetCount: browserTargets.length,
-            externalFilesystemTargetCount: Array.isArray(externalFilesystem) ? externalFilesystem.length : 0,
-          },
-          observedAt: new Date().toISOString(),
-          summary: 'Autonomous self-healing is retired. Diagnostics are evidence only; Runtime lifecycle remains owned by forge-runtime.',
-          replacements: ['runtime_maintenance_status', 'rh_context', 'rh_inbox'],
-          safety: {
-            mutatesState: false,
-            startsJobs: false,
-            readsSecrets: false,
-            canAutoModifySource: false,
-            canRestartRuntime: false,
-          },
-        });
       }
       case 'goal_create':
       case 'goal_list':
@@ -4688,16 +4641,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             affectedPaths = ['.ai/harness/local-jobs', '.ai/harness/controller'];
             break;
           }
-          case 'recovery.restart_controller':
-          case 'recovery.restart_local_bridge':
-            return result({
-              error: {
-                code: 'RUNTIME_LIFECYCLE_ACTION_RETIRED',
-                message: 'Component restart recovery is retired. Runtime lifecycle is owned only by forge-runtime.',
-              },
-              retired: true,
-              replacement: 'forge-runtime',
-            }, true);
           case 'recovery.create_patch_handoff':
             payload = prepareFallbackHandoffArtifacts(repository, { reason }) as unknown as Record<string, unknown>;
             affectedPaths = ['.ai/handoff'];
@@ -4710,9 +4653,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             break;
           case 'recovery.external_filesystem_grant_preview':
             payload = { skipped: true, nextTool: 'external_filesystem_grant_preview', reason: 'External filesystem access must be converted into a named read-only target first.' };
-            break;
-          case 'recovery.create_self_fix_task':
-            payload = { skipped: true, next: 'Create an isolated Issue/Task or Campaign for source repair; automatic source-fix dispatch remains gated by existing execution policies.' };
             break;
           default:
             payload = { skipped: true, reason: `No executor is registered for ${action.id}.` };

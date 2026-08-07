@@ -6,5 +6,4 @@ export * from './probe';
 export * from './types';
 export * from './store';
 export * from './maintenance-executor';
-export * from './monitor';
 export * from './local-jobs-repair';

@@ -10,8 +10,6 @@ import {
   RUNTIME_TEMP_RETENTION_MINUTES,
   scanRuntimeTempEntries,
 } from '../diagnostics/performance';
-import { classifyFailure, dominantRecoveryClass } from './classifier';
-import type { RecoveryClass } from './types';
 import {
   applyRuntimeStorageRepair,
   previewRuntimeStorageRepair,
@@ -101,16 +99,10 @@ export interface RuntimeMaintenanceStatus {
   summary: RuntimeMaintenanceSummary;
   runtimeStorageRepair: RuntimeStorageRepairPreview;
   recommendedActions: RuntimeMaintenanceActionId[];
-  restartEscalation: {
-    recommended: boolean;
-    reason: string;
-    safeCommand: string;
-  };
   continuation: {
     retryOriginalOperation: boolean;
     afterSuccess: string[];
   };
-  advancedRepair: AdvancedRepairPlan;
   warnings: string[];
 }
 
@@ -120,40 +112,6 @@ export interface RuntimeMaintenanceApplyResult extends Omit<RuntimeMaintenanceSt
   applied: Array<RuntimeMaintenanceCandidate & { applied: boolean; result?: string; error?: string }>;
   runtimeStorageRepairApply?: RuntimeStorageRepairApplyResult;
   projection?: unknown;
-}
-
-export interface AdvancedRepairPlan {
-  needed: boolean;
-  preferredProducer: 'chatgpt_supervised' | 'local_codex_cli' | 'deepseek_backup_controller' | 'human_operator';
-  reason: string;
-  escalationOrder: string[];
-  guardrails: string[];
-}
-
-export interface SelfHealingLoopPlanInput {
-  objective?: string;
-  recentErrors?: string[];
-  platformBlocked?: boolean;
-  sourceDefectSuspected?: boolean;
-  chatgptAvailable?: boolean;
-  codexCliAvailable?: boolean;
-  deepseekAvailable?: boolean;
-}
-
-export interface SelfHealingLoopPlan {
-  schemaVersion: 1;
-  generatedAt: string;
-  objective: string;
-  failureClass: RecoveryClass;
-  phases: Array<{
-    id: string;
-    owner: string;
-    action: string;
-    exitCriteria: string;
-    fallback?: string;
-  }>;
-  modelRepairProducer: AdvancedRepairPlan;
-  invariants: string[];
 }
 
 interface LocalJobState {
@@ -457,48 +415,10 @@ function safeRuntimeStorage(repository: RuntimeMaintenanceRepository, controller
   }
 }
 
-function advancedRepairPlan(input: { recentErrors?: string[]; platformBlocked?: boolean; sourceDefectSuspected?: boolean; chatgptAvailable?: boolean; codexCliAvailable?: boolean; deepseekAvailable?: boolean } = {}): AdvancedRepairPlan {
-  const classes = (input.recentErrors ?? []).map(classifyFailure);
-  const failureClass = dominantRecoveryClass(classes);
-  const sourceDefect = input.sourceDefectSuspected === true || failureClass === 'source_defect_suspected';
-  if (!sourceDefect && failureClass !== 'unknown' && failureClass !== 'platform_blocked') {
-    return {
-      needed: false,
-      preferredProducer: 'chatgpt_supervised',
-      reason: 'Evidence points to bounded runtime maintenance, configuration, or authorization rather than a source repair.',
-      escalationOrder: ['runtime_maintenance_apply', 'capability_recovery_probe'],
-      guardrails: ['Do not spawn a model repair agent for state-only failures.', 'Prefer local metadata repair before source modification.'],
-    };
-  }
-  const chatgptAvailable = input.chatgptAvailable !== false && input.platformBlocked !== true;
-  const codexAvailable = input.codexCliAvailable === true;
-  const deepseekAvailable = input.deepseekAvailable === true;
-  const preferredProducer = chatgptAvailable
-    ? 'chatgpt_supervised'
-    : codexAvailable
-      ? 'local_codex_cli'
-      : deepseekAvailable
-        ? 'deepseek_backup_controller'
-        : 'human_operator';
-  return {
-    needed: sourceDefect || input.platformBlocked === true,
-    preferredProducer,
-    reason: sourceDefect
-      ? 'Source defect is suspected; generate a patch in an isolated worktree after local maintenance is exhausted.'
-      : 'Primary controller may be blocked; prepare a bounded handoff rather than bypassing forge policy.',
-    escalationOrder: ['chatgpt_supervised', 'local_codex_cli', 'deepseek_backup_controller', 'human_operator'],
-    guardrails: [
-      'Model repair agents produce plans or patches only; forge remains the policy, approval, lease, and audit authority.',
-      'Use isolated worktrees for source repair and keep runtime metadata maintenance separate from code changes.',
-      'Require checks and human approval before merging or pushing model-produced source changes.',
-    ],
-  };
-}
-
 export function buildRuntimeMaintenanceStatus(
   repository: RuntimeMaintenanceRepository,
   controllerHome: string,
-  options: RuntimeMaintenanceOptions & { recentErrors?: string[] } = {},
+  options: RuntimeMaintenanceOptions = {},
 ): RuntimeMaintenanceStatus {
   const normalized = normalizedOptions(options);
   const storage = safeRuntimeStorage(repository, controllerHome);
@@ -532,29 +452,19 @@ export function buildRuntimeMaintenanceStatus(
       ...uniqueActions(candidates, storage.report?.readyForExecution === true),
       ...typedRepairActions(runtimeStorageRepair),
     ])),
-    restartEscalation: {
-      recommended: storage.error !== undefined || (storage.report?.readyForExecution === false && candidates.length === 0),
-      reason: storage.error
-        ? 'Runtime storage inspection failed; restart can refresh daemon state after local metadata repair has been attempted.'
-        : storage.report?.readyForExecution === false && candidates.length === 0 && runtimeStorageRepair.candidates.length === 0
-          ? 'Storage remains blocked but no safe metadata candidate was found; restart or manual review is the next bounded fallback.'
-          : 'Restart is not the first-line action; use runtime maintenance first.',
-      safeCommand: 'npm run controller:restart',
-    },
     continuation: {
       retryOriginalOperation: true,
       afterSuccess: [
         'run capability_recovery_probe',
         'retry the originally blocked operation with the same request intent',
-        'only escalate to restart or model repair if runtime maintenance cannot produce a ready projection',
+        'if no safe metadata candidate exists, create a bounded handoff instead of inventing a Runtime restart or source-repair fallback',
       ],
     },
-    advancedRepair: advancedRepairPlan({ recentErrors: options.recentErrors }),
     warnings: [
       'Runtime maintenance only edits forge metadata under .ai/harness and controller-home for the selected repository.',
       'Pending approvals are not cancelled unless cancel_pending_approvals is explicitly enabled.',
       'System temp cleanup only removes direct forge-prefixed children of approved temp roots after a 24-hour retention period and a fresh process-occupancy check.',
-      'Source repair should be delegated to ChatGPT/Codex/DeepSeek only after local maintenance and restart fallbacks fail.',
+      'Runtime lifecycle changes and source repair are outside the runtime maintenance executor.',
     ],
   };
 }
@@ -797,77 +707,3 @@ export function applyRuntimeMaintenance(
   };
 }
 
-export function buildSelfHealingLoopPlan(input: SelfHealingLoopPlanInput = {}): SelfHealingLoopPlan {
-  const generatedAt = now();
-  const objective = input.objective?.trim() || 'Restore forge execution and continue the blocked user task safely.';
-  const classes = (input.recentErrors ?? []).map(classifyFailure);
-  const failureClass = input.platformBlocked === true
-    ? 'platform_blocked'
-    : input.sourceDefectSuspected === true
-      ? 'source_defect_suspected'
-      : dominantRecoveryClass(classes);
-  const producer = advancedRepairPlan({
-    recentErrors: input.recentErrors,
-    platformBlocked: input.platformBlocked,
-    sourceDefectSuspected: input.sourceDefectSuspected,
-    chatgptAvailable: input.chatgptAvailable,
-    codexCliAvailable: input.codexCliAvailable,
-    deepseekAvailable: input.deepseekAvailable,
-  });
-  return {
-    schemaVersion: 1,
-    generatedAt,
-    objective,
-    failureClass,
-    phases: [
-      {
-        id: 'observe',
-        owner: 'forge supervisor',
-        action: 'Collect capability, runtime storage, local-job, scheduler, bridge, plugin, and recent-error evidence using read-only probes.',
-        exitCriteria: 'Failure class and first safe recovery action are deterministic.',
-      },
-      {
-        id: 'local-maintenance',
-        owner: 'maintenance executor',
-        action: 'Apply bounded runtime metadata repair without repository_command_execute or Local Job tickets.',
-        exitCriteria: 'Runtime storage is ready and projection is fresh, or no safe local candidate remains.',
-        fallback: 'Restart controller/local bridge once if runtime metadata repair cannot refresh readiness.',
-      },
-      {
-        id: 'capability-grant-resolution',
-        owner: 'typed capability tools',
-        action: 'Resolve non-source blockers through explicit Gmail/Workspace auth handoffs, browser domain grants, or read-only external filesystem target grants.',
-        exitCriteria: 'Required plugin auth, browser targets, or external filesystem targets are ready through typed grants rather than arbitrary shell or absolute-path retries.',
-        fallback: 'Escalate to restart only if the grant state is written but the controller still reports stale readiness.',
-      },
-      {
-        id: 'restart-fallback',
-        owner: 'local supervisor or user',
-        action: 'Restart only forge controller services after local maintenance or capability grant resolution is exhausted.',
-        exitCriteria: 'Daemon, bridge, scheduler, plugin health, and projection become ready.',
-        fallback: 'Escalate to model-assisted source repair if the same failure repeats after restart.',
-      },
-      {
-        id: 'model-repair-generation',
-        owner: producer.preferredProducer,
-        action: 'Generate a bounded source repair plan or patch in an isolated worktree when evidence points to a source defect.',
-        exitCriteria: 'Patch passes configured checks and is reviewed by a human or supervising controller.',
-        fallback: 'Use the next producer in the escalation order without bypassing forge policy.',
-      },
-      {
-        id: 'continuation',
-        owner: 'forge scheduler',
-        action: 'Retry the original blocked operation from its durable intent or ask for confirmation when the operation has external effects.',
-        exitCriteria: 'Original task completes, is safely paused, or is escalated with evidence.',
-      },
-    ],
-    modelRepairProducer: producer,
-    invariants: [
-      'State-only recovery must not modify source files.',
-      'Model-generated source repair must not directly mutate runtime metadata.',
-      'Auth, browser, and external filesystem blockers must be resolved through typed grant/login handoff tools before model repair.',
-      'All destructive or external effects remain behind forge approval and audit.',
-      'Every recovery pass must be idempotent and bounded to one registered repository.',
-    ],
-  };
-}

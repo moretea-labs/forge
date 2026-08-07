@@ -7,6 +7,7 @@ export type RecoveryClass =
   | 'platform_blocked'
   | 'dirty_worktree_conflict'
   | 'stale_runtime_state'
+  | 'external_lifecycle_required'
   | 'runtime_storage_not_ready'
   | 'browser_domain_grant_required'
   | 'external_filesystem_grant_required'
@@ -53,6 +54,23 @@ export interface CapabilityStatus {
   suggestedActions: RecoveryActionDescriptor[];
 }
 
+export interface RuntimeSourceCoherenceEvidence {
+  ready: boolean;
+  code?: string;
+  reasons?: string[];
+  summary?: string;
+}
+
+export interface ExternalRuntimeLifecycleHandoff {
+  owner: 'external_runtime_lifecycle';
+  target: 'forge-runtime';
+  reasonCode: string;
+  summary: string;
+  requiredAction: 'restart_existing_single_runtime';
+  constraints: string[];
+  verification: string[];
+}
+
 export interface CapabilityRecoveryInput {
   generatedAt?: string;
   daemonStatus?: string;
@@ -69,6 +87,7 @@ export interface CapabilityRecoveryInput {
   connectorMismatch?: string;
   runtimeProjectionStale?: boolean;
   runtimeProjectionPersisted?: boolean;
+  runtimeSourceCoherence?: RuntimeSourceCoherenceEvidence;
   contextProjectionStale?: boolean;
   /** Shared health classification used by lifecycle/MCP/recovery consumers. */
   runtimeHealth?: RuntimeHealthEvaluation;
@@ -112,6 +131,7 @@ export interface CapabilityRecoverySnapshot {
   capabilities: CapabilityStatus[];
   recommendedActions: RecoveryActionDescriptor[];
   summary: CapabilityRecoverySummary;
+  externalLifecycleHandoff?: ExternalRuntimeLifecycleHandoff;
   notes: string[];
   runtimeHealth?: RuntimeHealthEvaluation;
   runtimeOperationalView?: RuntimeOperationalView;
