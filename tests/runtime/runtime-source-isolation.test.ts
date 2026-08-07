@@ -257,11 +257,11 @@ describe('runtime source isolation', () => {
       operation: 'get',
     }));
     const data = payload.data as {
-      readiness: { ready: boolean; state: string; reasons: Array<{ code: string; message: string }> };
+      readiness: { ready: boolean; reasonCodes: string[] };
       repositoryState?: { branch?: string | null };
       runtime?: { source?: { canonicalRoot?: string; branch?: string | null } };
     };
-    expect(data.readiness.reasons.some((reason) => reason.code.startsWith('RUNTIME_SOURCE'))).toBe(false);
+    expect(data.readiness.reasonCodes.some((code) => code.startsWith('RUNTIME_SOURCE'))).toBe(false);
     expect(JSON.stringify(payload)).not.toContain('runtime source root moved');
     // repository state still reflects the business checkout
     if (data.repositoryState?.branch) {
