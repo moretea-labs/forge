@@ -44,8 +44,17 @@ export function repositoryChildProcessEnvironment(
   const pathEntries = (sanitized.PATH ?? '').split(delimiter).filter(Boolean);
   const bunInstall = sanitized.BUN_INSTALL?.trim();
   const home = sanitized.HOME?.trim() || sanitized.USERPROFILE?.trim();
+  const voltaHome = sanitized.VOLTA_HOME?.trim();
+  const nvmBin = sanitized.NVM_BIN?.trim();
+  const pnpmHome = sanitized.PNPM_HOME?.trim();
   appendExecutableDirectory(pathEntries, bunInstall ? join(bunInstall, 'bin') : undefined);
   appendExecutableDirectory(pathEntries, home ? join(home, '.bun', 'bin') : undefined);
+  appendExecutableDirectory(pathEntries, nvmBin);
+  appendExecutableDirectory(pathEntries, voltaHome ? join(voltaHome, 'bin') : undefined);
+  appendExecutableDirectory(pathEntries, pnpmHome);
+  appendExecutableDirectory(pathEntries, home ? join(home, '.local', 'bin') : undefined);
+  if (process.platform === 'darwin') appendExecutableDirectory(pathEntries, '/opt/homebrew/bin');
+  if (process.platform !== 'win32') appendExecutableDirectory(pathEntries, '/usr/local/bin');
   sanitized.PATH = pathEntries.join(delimiter);
 
   return sanitized;

@@ -182,10 +182,13 @@ describe('Unified Process Runtime', () => {
       PATH: existing.join(delimiter),
       FORGE_CONTROLLER_SECRET: 'remove-me',
     });
-    expect(sanitized.PATH?.split(delimiter)).toEqual([
-      ...existing,
-      join(bunInstall, 'bin'),
-    ]);
+    const pathEntries = sanitized.PATH?.split(delimiter) ?? [];
+    expect(pathEntries.slice(0, existing.length)).toEqual(existing);
+    expect(pathEntries).toContain(join(bunInstall, 'bin'));
+    expect(pathEntries).toContain(join(home, '.local', 'bin'));
+    if (process.platform === 'darwin') expect(pathEntries).toContain('/opt/homebrew/bin');
+    if (process.platform !== 'win32') expect(pathEntries).toContain('/usr/local/bin');
+    expect(new Set(pathEntries).size).toBe(pathEntries.length);
     expect(sanitized.FORGE_CONTROLLER_SECRET).toBeUndefined();
   });
 
