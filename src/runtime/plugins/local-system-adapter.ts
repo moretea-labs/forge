@@ -3,17 +3,22 @@ import {
   constants,
   copyFileSync,
   existsSync,
-  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
-  realpathSync,
   renameSync,
   statSync,
 } from 'fs';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
-import { controllerSystemRoot } from '../../cli/repositories/controller-home';
-import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
+import { dirname } from 'path';
+import {
+  WorkspaceTargetGrantError,
+  authorizeWorkspaceTargetGrant,
+  listActiveWorkspaceTargetGrants,
+  resolveWorkspaceTargetPath,
+  type ActiveWorkspaceTargetGrant,
+  type WorkspaceTargetAccess,
+  type WorkspaceTargetOperation,
+} from '../workspace-targets';
 import type {
   AssistantPluginActionDescriptor,
   AssistantPluginActionExecutionInput,
@@ -28,19 +33,6 @@ const PLUGIN_ID = 'local_system';
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const MAX_TEXT_CHARS = 100_000;
 const MAX_DIRECTORY_ENTRIES = 200;
-
-interface LocalSystemTarget {
-  targetKey: string;
-  rootPath: string;
-  createdAt: string;
-  expiresAt: string;
-  reason: string;
-}
-
-interface LocalSystemTargetStore {
-  schemaVersion: 1;
-  targets: LocalSystemTarget[];
-}
 
 interface CommandResult {
   ok: boolean;
@@ -65,38 +57,36 @@ export function resetLocalSystemPluginHooksForTest(): void {
   hooks = {};
 }
 
+function currentDate(): Date {
+  return hooks.now?.() ?? new Date();
+}
+
 function now(): string {
-  return (hooks.now?.() ?? new Date()).toISOString();
+  return currentDate().toISOString();
 }
 
-function pluginRoot(controllerHome: string): string {
-  const root = join(controllerSystemRoot(controllerHome), 'local-system');
-  mkdirSync(root, { recursive: true });
-  return root;
+const GENERIC_CONTROLLER_ACTORS = new Set([
+  '',
+  'anonymous',
+  'plugin_action_execute',
+]);
+
+function requestOwnerScope(input: AssistantPluginActionExecutionInput): string {
+  const actor = input.origin.actor?.trim() || '';
+  if (GENERIC_CONTROLLER_ACTORS.has(actor)) return 'controller:shared';
+  return `${input.origin.surface}:${actor}`;
 }
 
-function targetsPath(controllerHome: string): string {
-  return join(pluginRoot(controllerHome), 'targets.json');
-}
-
-function loadTargets(controllerHome: string): LocalSystemTargetStore {
+function activeTargets(input: AssistantPluginActionExecutionInput): ActiveWorkspaceTargetGrant[] {
   try {
-    const store = readJsonFile<LocalSystemTargetStore>(targetsPath(controllerHome));
-    return { schemaVersion: 1, targets: Array.isArray(store.targets) ? store.targets : [] };
-  } catch {
-    return { schemaVersion: 1, targets: [] };
+    return listActiveWorkspaceTargetGrants(
+      input.controllerHome,
+      currentDate(),
+      requestOwnerScope(input),
+    );
+  } catch (error) {
+    return rethrowTargetError(error);
   }
-}
-
-function saveTargets(controllerHome: string, store: LocalSystemTargetStore): void {
-  writeJsonAtomic(targetsPath(controllerHome), store);
-}
-
-function activeTargets(controllerHome: string): LocalSystemTarget[] {
-  const current = Date.now();
-  return loadTargets(controllerHome).targets
-    .filter((target) => Date.parse(target.expiresAt) > current)
-    .sort((left, right) => left.targetKey.localeCompare(right.targetKey));
 }
 
 function requiredString(args: Record<string, unknown>, key: string): string {
@@ -136,84 +126,90 @@ function run(command: string, args: string[], timeoutMs = 30_000): CommandResult
   };
 }
 
-function inside(root: string, candidate: string): boolean {
-  const rel = relative(root, candidate);
-  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
-}
+const TARGET_ERROR_CODES: Record<WorkspaceTargetGrantError['code'], string> = {
+  TARGET_ROOT_INVALID: 'LOCAL_SYSTEM_TARGET_ROOT_INVALID',
+  TARGET_KEY_REQUIRED: 'LOCAL_SYSTEM_TARGET_KEY_REQUIRED',
+  TARGET_REASON_REQUIRED: 'LOCAL_SYSTEM_TARGET_REASON_REQUIRED',
+  TARGET_STORE_CORRUPT: 'LOCAL_SYSTEM_TARGET_STORE_CORRUPT',
+  TARGET_STORE_BUSY: 'LOCAL_SYSTEM_TARGET_STORE_BUSY',
+  TARGET_IDENTITY_MISMATCH: 'LOCAL_SYSTEM_TARGET_IDENTITY_MISMATCH',
+  TARGET_OWNER_SCOPE_REQUIRED: 'LOCAL_SYSTEM_TARGET_OWNER_INVALID',
+  TARGET_OWNER_MISMATCH: 'LOCAL_SYSTEM_TARGET_OWNER_MISMATCH',
+  TARGET_UNAVAILABLE: 'LOCAL_SYSTEM_TARGET_UNAVAILABLE',
+  PATH_OUTSIDE_TARGET: 'LOCAL_SYSTEM_PATH_OUTSIDE_TARGET',
+  SYMLINK_ESCAPE: 'LOCAL_SYSTEM_SYMLINK_ESCAPE',
+  PATH_NOT_FOUND: 'LOCAL_SYSTEM_PATH_NOT_FOUND',
+  PATH_NOT_DIRECTORY: 'LOCAL_SYSTEM_PATH_NOT_DIRECTORY',
+  PATH_NOT_FILE: 'LOCAL_SYSTEM_PATH_NOT_FILE',
+  TARGET_ACCESS_DENIED: 'LOCAL_SYSTEM_TARGET_READ_ONLY',
+};
 
-function findExistingAncestor(candidate: string): string {
-  let current = candidate;
-  while (!existsSync(current)) {
-    const parent = dirname(current);
-    if (parent === current) throw new AssistantPluginError('LOCAL_SYSTEM_PATH_INVALID', 'No existing parent directory was found.', { retryable: false });
-    current = parent;
+function rethrowTargetError(error: unknown): never {
+  if (error instanceof WorkspaceTargetGrantError) {
+    throw new AssistantPluginError(TARGET_ERROR_CODES[error.code], error.message, {
+      retryable: error.code === 'TARGET_STORE_BUSY',
+    });
   }
-  return current;
-}
-
-function resolveTarget(controllerHome: string, targetKey: string): LocalSystemTarget {
-  const target = activeTargets(controllerHome).find((entry) => entry.targetKey === targetKey);
-  if (!target) throw new AssistantPluginError('LOCAL_SYSTEM_TARGET_UNAVAILABLE', `Target ${targetKey} is missing or expired.`, { retryable: false });
-  return target;
+  throw error;
 }
 
 function resolveTargetPath(
-  controllerHome: string,
+  input: AssistantPluginActionExecutionInput,
   targetKey: string,
   relativePath: string | undefined,
-  options: { mustExist: boolean; directory?: boolean },
-): { target: LocalSystemTarget; root: string; path: string; relativePath: string } {
-  const target = resolveTarget(controllerHome, targetKey);
-  const raw = (relativePath ?? '').trim();
-  if (raw.includes('\0') || isAbsolute(raw)) {
-    throw new AssistantPluginError('LOCAL_SYSTEM_PATH_OUTSIDE_TARGET', 'Path must be relative to the authorized target.', { retryable: false });
+  options: {
+    mustExist: boolean;
+    directory?: boolean;
+    file?: boolean;
+    operation?: WorkspaceTargetOperation;
+  },
+) {
+  try {
+    return resolveWorkspaceTargetPath(input.controllerHome, targetKey, relativePath, {
+      mustExist: options.mustExist,
+      ownerScope: requestOwnerScope(input),
+      at: currentDate(),
+      ...(options.directory ? { kind: 'directory' as const } : {}),
+      ...(options.file ? { kind: 'file' as const } : {}),
+      operation: options.operation ?? 'read',
+    });
+  } catch (error) {
+    return rethrowTargetError(error);
   }
-  const root = realpathSync(target.rootPath);
-  const candidate = resolve(root, raw || '.');
-  if (!inside(root, candidate)) {
-    throw new AssistantPluginError('LOCAL_SYSTEM_PATH_OUTSIDE_TARGET', 'Path traversal outside the authorized target is not allowed.', { retryable: false });
-  }
-  const ancestor = realpathSync(findExistingAncestor(candidate));
-  if (!inside(root, ancestor)) {
-    throw new AssistantPluginError('LOCAL_SYSTEM_SYMLINK_ESCAPE', 'A path component resolves outside the authorized target.', { retryable: false });
-  }
-  if (existsSync(candidate)) {
-    const canonical = realpathSync(candidate);
-    if (!inside(root, canonical)) {
-      throw new AssistantPluginError('LOCAL_SYSTEM_SYMLINK_ESCAPE', 'The requested path resolves outside the authorized target.', { retryable: false });
-    }
-    if (options.directory && !statSync(canonical).isDirectory()) {
-      throw new AssistantPluginError('LOCAL_SYSTEM_PATH_NOT_DIRECTORY', 'The requested path is not a directory.', { retryable: false });
-    }
-    return { target, root, path: canonical, relativePath: relative(root, canonical) };
-  }
-  if (options.mustExist) {
-    throw new AssistantPluginError('LOCAL_SYSTEM_PATH_NOT_FOUND', `Path ${raw || '.'} does not exist.`, { retryable: false });
-  }
-  return { target, root, path: candidate, relativePath: relative(root, candidate) };
 }
 
 function authorizeTarget(input: AssistantPluginActionExecutionInput): Record<string, unknown> {
-  const targetKey = sanitizeFileComponent(requiredString(input.args, 'target_key'));
-  const requestedRoot = requiredString(input.args, 'root_path');
-  if (!isAbsolute(requestedRoot) || !existsSync(requestedRoot) || !statSync(requestedRoot).isDirectory()) {
-    throw new AssistantPluginError('LOCAL_SYSTEM_TARGET_ROOT_INVALID', 'root_path must be an existing absolute directory.', { retryable: false });
+  const rawAccess = optionalString(input.args, 'access');
+  if (rawAccess && rawAccess !== 'read_only' && rawAccess !== 'read_write') {
+    throw new AssistantPluginError(
+      'PLUGIN_ACTION_ARGUMENT_INVALID',
+      'access must be read_only or read_write.',
+      { retryable: false },
+    );
   }
-  const rootPath = realpathSync(requestedRoot);
-  const expiresInMinutes = Math.max(1, Math.min(Math.trunc(Number(input.args.expires_in_minutes ?? 480)), 1_440));
-  const createdAt = now();
-  const target: LocalSystemTarget = {
-    targetKey,
-    rootPath,
-    createdAt,
-    expiresAt: new Date(Date.now() + expiresInMinutes * 60_000).toISOString(),
-    reason: requiredString(input.args, 'reason'),
-  };
-  const store = loadTargets(input.controllerHome);
-  store.targets = store.targets.filter((entry) => entry.targetKey !== targetKey);
-  store.targets.push(target);
-  saveTargets(input.controllerHome, store);
-  return { target, storage: 'controllerHome/system/local-system/targets.json', repositoryRegistered: false };
+  const ownerScope = requestOwnerScope(input);
+  const controllerInstanceId = process.env.FORGE_WRITER_INSTANCE_ID?.trim()
+    || process.env.FORGE_RUNTIME_INSTANCE_ID?.trim()
+    || process.env.FORGE_DAEMON_INSTANCE_ID?.trim();
+  try {
+    const target = authorizeWorkspaceTargetGrant(input.controllerHome, {
+      targetKey: requiredString(input.args, 'target_key'),
+      rootPath: requiredString(input.args, 'root_path'),
+      expiresInMinutes: Number(input.args.expires_in_minutes ?? 480),
+      reason: requiredString(input.args, 'reason'),
+      access: (rawAccess as WorkspaceTargetAccess | undefined) ?? 'read_write',
+      ownerScope,
+      ...(controllerInstanceId ? { controllerInstanceId } : {}),
+      now: currentDate(),
+    });
+    return {
+      target,
+      storage: 'controllerHome/system/local-system/targets.json',
+      repositoryRegistered: false,
+    };
+  } catch (error) {
+    return rethrowTargetError(error);
+  }
 }
 
 function systemSnapshot(): Record<string, unknown> {
@@ -249,7 +245,7 @@ function actions(): AssistantPluginActionDescriptor[] {
     { actionId: 'process_detail', title: 'Process detail', description: 'Read bounded details for one process id.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.read'], resourceClaims: [], argumentsSchema: { type: 'object', properties: { pid: { type: 'number' } }, required: ['pid'], additionalProperties: false } },
     { actionId: 'open_application', title: 'Open application', description: 'Open one macOS application by name or bundle id.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false, scopes: ['local-system.open'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { app_name: { type: 'string' }, bundle_id: { type: 'string' } }, additionalProperties: false } },
     { actionId: 'list_targets', title: 'List filesystem targets', description: 'List active expiring local filesystem grants.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 10_000, cancellable: true, idempotent: true, scopes: ['local-system.files.read'], resourceClaims: controllerRead, argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } },
-    { actionId: 'authorize_target', title: 'Authorize filesystem target', description: 'Authorize one existing absolute directory under an expiring target key.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { target_key: { type: 'string' }, root_path: { type: 'string' }, expires_in_minutes: { type: 'number' }, reason: { type: 'string' } }, required: ['target_key', 'root_path', 'reason'], additionalProperties: false } },
+    { actionId: 'authorize_target', title: 'Authorize filesystem target', description: 'Authorize one existing absolute directory under an expiring target key.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { target_key: { type: 'string' }, root_path: { type: 'string' }, expires_in_minutes: { type: 'number' }, reason: { type: 'string' }, access: { type: 'string', enum: ['read_only', 'read_write'] } }, required: ['target_key', 'root_path', 'reason'], additionalProperties: false } },
     { actionId: 'list_directory', title: 'List directory', description: 'List a bounded directory snapshot below an authorized target.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.files.read'], resourceClaims: controllerRead, argumentsSchema: { type: 'object', properties: targetProperties, required: ['target_key'], additionalProperties: false } },
     { actionId: 'read_text', title: 'Read text file', description: 'Read a bounded UTF-8 text file below an authorized target.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.files.read'], resourceClaims: controllerRead, argumentsSchema: { type: 'object', properties: { ...targetProperties, max_chars: { type: 'number' } }, required: ['target_key', 'path'], additionalProperties: false } },
     { actionId: 'create_directory', title: 'Create directory', description: 'Create a directory below an authorized target without leaving that root.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: targetProperties, required: ['target_key', 'path'], additionalProperties: false } },
@@ -270,7 +266,12 @@ function health(): AssistantPluginHealth {
     probed: true,
     errors: [],
     warnings: ready ? [] : ['Application opening and macOS diagnostics require macOS.'],
-    details: { provider: 'local-macos', scope: 'controller', repositoryRegistrationRequired: false },
+    details: {
+      provider: 'local-macos',
+      scope: 'controller',
+      repositoryRegistrationRequired: false,
+      targetAuthority: 'controllerHome/system/local-system/targets.json',
+    },
   };
 }
 
@@ -279,7 +280,7 @@ function permissions(): AssistantPluginPermissionScope[] {
     { scope: 'local-system.read', mode: 'read', description: 'Read bounded local process and memory diagnostics.', granted: true, required: true },
     { scope: 'local-system.open', mode: 'write', description: 'Open applications or authorized files.', granted: true, required: false },
     { scope: 'local-system.files.read', mode: 'read', description: 'Read files only below active target grants.', granted: true, required: false },
-    { scope: 'local-system.files.write', mode: 'write', description: 'Create, copy, move, or rename files below active target grants.', granted: true, required: false },
+    { scope: 'local-system.files.write', mode: 'write', description: 'Create, copy, move, or rename files below active read-write target grants.', granted: true, required: false },
   ];
 }
 
@@ -300,7 +301,7 @@ export function buildLocalSystemPluginManifest(previousRevision = 0, previousUpd
     pluginId: PLUGIN_ID,
     provider: 'local-macos',
     displayName: 'Local System Assistant',
-    pluginVersion: '1.0.0',
+    pluginVersion: '1.1.0',
     authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['controllerHome:system/local-system'] },
     enabled: true,
     lifecycle: { state: currentHealth.ready ? 'enabled' : 'degraded', reason: currentHealth.ready ? 'Local system capabilities are ready.' : currentHealth.warnings[0] },
@@ -312,11 +313,23 @@ export function buildLocalSystemPluginManifest(previousRevision = 0, previousUpd
   };
 }
 
-function filePair(input: AssistantPluginActionExecutionInput): { source: string; destination: string } {
-  const source = resolveTargetPath(input.controllerHome, requiredString(input.args, 'source_target_key'), requiredString(input.args, 'source_path'), { mustExist: true });
-  const destination = resolveTargetPath(input.controllerHome, requiredString(input.args, 'destination_target_key'), requiredString(input.args, 'destination_path'), { mustExist: false });
+function filePair(
+  input: AssistantPluginActionExecutionInput,
+  sourceOperation: WorkspaceTargetOperation,
+): { source: string; destination: string } {
+  const source = resolveTargetPath(
+    input,
+    requiredString(input.args, 'source_target_key'),
+    requiredString(input.args, 'source_path'),
+    { mustExist: true, file: true, operation: sourceOperation },
+  );
+  const destination = resolveTargetPath(
+    input,
+    requiredString(input.args, 'destination_target_key'),
+    requiredString(input.args, 'destination_path'),
+    { mustExist: false, operation: 'write' },
+  );
   if (existsSync(destination.path)) throw new AssistantPluginError('LOCAL_SYSTEM_DESTINATION_EXISTS', 'Destination already exists; overwrite is not allowed.', { retryable: false });
-  if (!statSync(source.path).isFile()) throw new AssistantPluginError('LOCAL_SYSTEM_SOURCE_NOT_FILE', 'Source must be a file.', { retryable: false });
   mkdirSync(dirname(destination.path), { recursive: true });
   return { source: source.path, destination: destination.path };
 }
@@ -336,10 +349,10 @@ export async function executeLocalSystemPluginAction(input: AssistantPluginActio
       if (!opened.ok) throw new AssistantPluginError('LOCAL_SYSTEM_OPEN_FAILED', opened.stderr || opened.stdout, { retryable: true, details: { command } });
       return { opened: true, command };
     }
-    case 'list_targets': return { targets: activeTargets(input.controllerHome), repositoryRegistered: false };
+    case 'list_targets': return { targets: activeTargets(input), repositoryRegistered: false };
     case 'authorize_target': return authorizeTarget(input);
     case 'list_directory': {
-      const resolved = resolveTargetPath(input.controllerHome, requiredString(input.args, 'target_key'), optionalString(input.args, 'path'), { mustExist: true, directory: true });
+      const resolved = resolveTargetPath(input, requiredString(input.args, 'target_key'), optionalString(input.args, 'path'), { mustExist: true, directory: true });
       const entries = readdirSync(resolved.path, { withFileTypes: true }).slice(0, MAX_DIRECTORY_ENTRIES).map((entry) => ({
         name: entry.name,
         type: entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : entry.isSymbolicLink() ? 'symlink' : 'other',
@@ -347,32 +360,31 @@ export async function executeLocalSystemPluginAction(input: AssistantPluginActio
       return { targetKey: resolved.target.targetKey, path: resolved.relativePath, entries, truncated: entries.length === MAX_DIRECTORY_ENTRIES };
     }
     case 'read_text': {
-      const resolved = resolveTargetPath(input.controllerHome, requiredString(input.args, 'target_key'), requiredString(input.args, 'path'), { mustExist: true });
-      if (!statSync(resolved.path).isFile()) throw new AssistantPluginError('LOCAL_SYSTEM_PATH_NOT_FILE', 'The requested path is not a file.', { retryable: false });
+      const resolved = resolveTargetPath(input, requiredString(input.args, 'target_key'), requiredString(input.args, 'path'), { mustExist: true, file: true });
       const maxChars = Math.max(1, Math.min(Math.trunc(Number(input.args.max_chars ?? 20_000)), MAX_TEXT_CHARS));
       const content = readFileSync(resolved.path, 'utf8');
       return { targetKey: resolved.target.targetKey, path: resolved.relativePath, content: content.slice(0, maxChars), truncated: content.length > maxChars };
     }
     case 'create_directory': {
-      const resolved = resolveTargetPath(input.controllerHome, requiredString(input.args, 'target_key'), requiredString(input.args, 'path'), { mustExist: false });
+      const resolved = resolveTargetPath(input, requiredString(input.args, 'target_key'), requiredString(input.args, 'path'), { mustExist: false, operation: 'write' });
       if (existsSync(resolved.path) && !statSync(resolved.path).isDirectory()) throw new AssistantPluginError('LOCAL_SYSTEM_DESTINATION_EXISTS', 'A non-directory already exists at the destination.', { retryable: false });
       mkdirSync(resolved.path, { recursive: true });
       return { created: true, targetKey: resolved.target.targetKey, path: resolved.relativePath };
     }
     case 'copy_file': {
-      const pair = filePair(input);
+      const pair = filePair(input, 'read');
       copyFileSync(pair.source, pair.destination, constants.COPYFILE_EXCL);
       return { copied: true, source: pair.source, destination: pair.destination, overwrite: false };
     }
     case 'move_file': {
-      const pair = filePair(input);
+      const pair = filePair(input, 'write');
       renameSync(pair.source, pair.destination);
       return { moved: true, source: pair.source, destination: pair.destination, overwrite: false };
     }
     case 'rename_file': {
       const targetKey = requiredString(input.args, 'target_key');
-      const source = resolveTargetPath(input.controllerHome, targetKey, requiredString(input.args, 'source_path'), { mustExist: true });
-      const destination = resolveTargetPath(input.controllerHome, targetKey, requiredString(input.args, 'destination_path'), { mustExist: false });
+      const source = resolveTargetPath(input, targetKey, requiredString(input.args, 'source_path'), { mustExist: true, operation: 'write' });
+      const destination = resolveTargetPath(input, targetKey, requiredString(input.args, 'destination_path'), { mustExist: false, operation: 'write' });
       if (existsSync(destination.path)) throw new AssistantPluginError('LOCAL_SYSTEM_DESTINATION_EXISTS', 'Destination already exists; overwrite is not allowed.', { retryable: false });
       mkdirSync(dirname(destination.path), { recursive: true });
       renameSync(source.path, destination.path);
@@ -380,7 +392,7 @@ export async function executeLocalSystemPluginAction(input: AssistantPluginActio
     }
     case 'reveal_in_finder':
     case 'open_file': {
-      const resolved = resolveTargetPath(input.controllerHome, requiredString(input.args, 'target_key'), requiredString(input.args, 'path'), { mustExist: true });
+      const resolved = resolveTargetPath(input, requiredString(input.args, 'target_key'), requiredString(input.args, 'path'), { mustExist: true });
       const command = input.actionId === 'reveal_in_finder' ? ['open', '-R', resolved.path] : ['open', resolved.path];
       const opened = run(command[0], command.slice(1));
       if (!opened.ok) throw new AssistantPluginError('LOCAL_SYSTEM_OPEN_FAILED', opened.stderr || opened.stdout, { retryable: true, details: { command } });
