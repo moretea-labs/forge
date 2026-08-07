@@ -574,6 +574,73 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(result.detail).toContain('ARTIFACT_MISMATCH');
   });
 
+  test('restores the pre-activation active whole release and restarts the service when activation verification fails', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const first = manifest(home, 'release-a', 'artifact-a');
+      const candidateReleaseId = 'release-failed-activation';
+      const candidateRoot = join(home, 'runtime', 'releases', candidateReleaseId);
+      mkdirSync(candidateRoot, { recursive: true });
+      writeFileSync(join(candidateRoot, 'forge-runtime'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+      const artifactIdentity = `sha256:${createHash('sha256').update(readFileSync(join(candidateRoot, 'forge-runtime'))).digest('hex')}`;
+      const candidateManifestPath = join(candidateRoot, 'manifest.json');
+      writeFileSync(candidateManifestPath, `${JSON.stringify({
+        schemaVersion: 1,
+        releaseId: candidateReleaseId,
+        artifactIdentity,
+        entrypoint: 'forge-runtime',
+        arguments: [],
+        configurationSchemaVersion: 1,
+        controllerHome: resolve(home),
+        databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+        workerProtocolVersion: 1,
+        createdAt: new Date().toISOString(),
+      }, null, 2)}\n`);
+
+      ensureActiveRuntimeRelease(home, first);
+      const runtime = await runtimeServer();
+      writeMainToken(home);
+      const ownership = startObservedRuntime(home, runtime.endpoint, 'release-a', 'artifact-a');
+      const config = createRecoveryConfig(home, {
+        publicMcpUrl: runtime.endpoint,
+        primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
+      });
+      removeOwnership(ownership);
+      const paths = forgeRuntimeServicePaths(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+
+      const commands: string[][] = [];
+      let probes = 0;
+      const result = await activateRuntimeRelease(config, candidateManifestPath, {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (_command, args) => {
+          commands.push(args);
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        runtimeRunning: () => false,
+        verifyLocal: async () => ++probes > 12
+          ? healthyVerify()
+          : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
+        now: (() => { let value = 0; return () => value += 1_000; })(),
+        sleep: async () => undefined,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.rollback).toMatchObject({ ok: true });
+      expect(readRuntimeReleaseAuthority(home)).toMatchObject({
+        active: { releaseId: 'release-a', artifactIdentity: 'artifact-a' },
+        previous: { releaseId: candidateReleaseId, artifactIdentity },
+      });
+      expect(commands.filter((args) => args.includes('kickstart')).length).toBeGreaterThanOrEqual(2);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
   test('restarts only the independent Recovery Gateway through its own bounded lock', async () => {
     const home = controllerHome();
     const config = initializeStandaloneRecovery(home, 8787);

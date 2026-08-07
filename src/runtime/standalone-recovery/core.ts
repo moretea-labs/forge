@@ -760,7 +760,15 @@ export async function reconnectMain(config: RecoveryConfig): Promise<{ ok: boole
 
 async function verifyLocalRuntime(config: RecoveryConfig): Promise<VerifyResult> {
   // Do not let an external tunnel outage masquerade as a local MCP failure.
-  return verifyStableRuntime({ ...config, publicMcpUrl: undefined, recoveryPublicUrl: undefined });
+  // The canonical Runtime MCP gateway exposes only controller_ready; the public
+  // gateway additionally exposes controller_context, so local verification must
+  // probe the tool the Runtime actually serves.
+  return verifyStableRuntime({
+    ...config,
+    publicMcpUrl: undefined,
+    recoveryPublicUrl: undefined,
+    readOnlyTool: { name: 'controller_ready' },
+  });
 }
 
 function isExternalTunnelFailure(config: RecoveryConfig, verified: VerifyResult, localVerify: VerifyResult): boolean {
@@ -1153,6 +1161,7 @@ export async function activateRuntimeRelease(
     return { ok: false, attempted: false, noOp: true, detail };
   }
   const current = releaseAuthority(config);
+  const previousActive = current?.active;
   if (current && current.active.releaseId === candidate.manifest.releaseId) {
     return {
       ok: true,
@@ -1226,8 +1235,12 @@ export async function activateRuntimeRelease(
     try {
       const rollbackOperationId = `recovery-activate-runtime-rollback-${Date.now()}-${randomUUID().slice(0, 8)}`;
       const restored = rollbackRuntimeRelease(config.controllerHome, rollbackOperationId);
-      const previousRevision = current?.previous?.releaseId ?? '';
-      if (restored.active.releaseId !== previousRevision || restored.active.artifactIdentity !== current?.previous?.artifactIdentity) {
+      const previousRevision = previousActive?.releaseId ?? '';
+      const previousIdentity = previousActive?.artifactIdentity;
+      if (
+        restored.active.releaseId !== previousRevision
+        || (previousIdentity !== undefined && restored.active.artifactIdentity !== previousIdentity)
+      ) {
         throw new Error('RECOVERY_RUNTIME_RELEASE_ROLLBACK_AUTHORITY_MISMATCH');
       }
       const restarted = await ensureLaunchdServiceStarted(service, runCommand);
