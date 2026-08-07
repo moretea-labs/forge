@@ -102,6 +102,7 @@ import {
 import { redactMcpText } from '../../../cli/mcp/redaction';
 import { resolveLocalBridgeSurface, summarizeRecentJobs } from '../../shared/local-bridge-surface';
 import { assistantPluginScope, controllerPluginRepository, executeAssistantPluginReadDirect, getAssistantPluginManifest, isDirectPluginReadAction, listAssistantPluginManifests, submitAssistantPluginAction } from '../../plugins/store';
+import { mcpPluginExecutionOrigin } from '../../plugins/execution-origin';
 import {
   listWebTargets,
   mergeAllowedDomains,
@@ -4947,7 +4948,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           signal: ctx.signal,
           confirmAuthorization: args.confirm_authorization === true,
           confirmationText: typeof args.confirmation_text === 'string' ? args.confirmation_text : undefined,
-          origin: { surface: 'mcp' as const, actor: 'plugin_action_execute', correlationId: requestId },
+          origin: mcpPluginExecutionOrigin(ctx.principalId, 'plugin_action_execute', requestId),
         };
         const manifest = getAssistantPluginManifest(ctx.controllerHome, repository, pluginId);
         const action = manifest.actions.find((entry) => entry.actionId === actionId);

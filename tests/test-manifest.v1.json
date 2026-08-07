@@ -23,10 +23,10 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 95,
-    "maxTestLines": 40500,
-    "maxPureFiles": 31,
-    "maxTempIsolatedFiles": 41,
+    "maxTestFiles": 97,
+    "maxTestLines": 41000,
+    "maxPureFiles": 32,
+    "maxTempIsolatedFiles": 42,
     "maxProcessTreeFiles": 17,
     "maxGitWorktreeFiles": 15,
     "maxFixedPortFiles": 6,
@@ -387,9 +387,17 @@
       "module": "ios",
       "resource": "process-tree"
     },
+    "tests/runtime/local-system-target-grant.test.ts": {
+      "module": "controller",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/managed-process-plugin.test.ts": {
       "module": "controller",
       "resource": "process-tree"
+    },
+    "tests/runtime/plugin-execution-origin.test.ts": {
+      "module": "controller",
+      "resource": "pure"
     },
     "tests/runtime/process-check-receipt.test.ts": {
       "module": "process-runtime",
