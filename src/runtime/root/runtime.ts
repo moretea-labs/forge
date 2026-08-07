@@ -53,8 +53,9 @@ async function defaultMcpProbe(endpoint: string, authToken: string): Promise<voi
     const result = await client.callTool({ name: 'controller_ready', arguments: {} });
     if (result.isError) throw new Error('MCP_PROBE_CONTROLLER_CALL_FAILED');
     const structured = result.structuredContent as Record<string, unknown> | undefined;
-    const database = structured?.database as Record<string, unknown> | undefined;
-    if (database?.integrity !== 'ok') throw new Error('MCP_PROBE_SQLITE_READ_FAILED');
+    const diagnostics = structured?.diagnostics as Record<string, unknown> | undefined;
+    const database = diagnostics?.database as Record<string, unknown> | undefined;
+    if (database?.ready !== true) throw new Error('MCP_PROBE_SQLITE_READ_FAILED');
   } finally {
     await client.close().catch(() => undefined);
   }
@@ -202,7 +203,12 @@ export class CanonicalForgeRuntime {
         port: this.config.port,
         authToken: this.config.authToken,
         readiness: () => this.readiness(),
-        createServer: (principalId) => createRuntimeGatewayServer(this.controller!, principalId),
+        createServer: (principalId, sessionId) => createRuntimeGatewayServer(this.controller!, principalId, {
+          controllerHome: this.config.controllerHome,
+          repositoryRoot: this.config.repositoryRoot,
+          runtimeInstanceId: this.runtimeInstanceId,
+          sessionId,
+        }),
         onFatal: (error) => this.failCore('MCP_TRANSPORT_FAILED', error.message),
       });
       this.publishStatus();

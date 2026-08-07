@@ -1,42 +1,34 @@
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js';
+import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { createForgeMcpServerFromContext, createMcpToolContext } from '../../cli/mcp/server';
 import type { RuntimeControllerServices } from './controller-services';
 
-const CONTROLLER_READY_TOOL = {
-  name: 'controller_ready',
-  description: 'Read whole-Runtime readiness and the SQLite-backed Controller control-plane inspection.',
-  inputSchema: {
-    type: 'object',
-    properties: {},
-    additionalProperties: false,
-  },
-} as const;
+export interface RuntimeGatewayServerOptions {
+  controllerHome: string;
+  repositoryRoot: string;
+  runtimeInstanceId: string;
+  sessionId?: string;
+}
 
+/**
+ * Build the authoritative Controller MCP surface inside the Canonical Runtime.
+ *
+ * The public OAuth Gateway is intentionally a thin proxy. It must never execute
+ * writer-authority operations in its own source-checkout process. The Runtime
+ * owns the write claim, Process Runtime leases, Scheduler, and source identity,
+ * so all Controller tools ultimately execute here.
+ */
 export function createRuntimeGatewayServer(
-  controller: RuntimeControllerServices,
+  _controller: RuntimeControllerServices,
   principalId: string,
+  options: RuntimeGatewayServerOptions,
 ): Server {
-  const server = new Server(
-    { name: 'forge-runtime', version: '1.0.0' },
-    { capabilities: { tools: {} } },
-  );
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [CONTROLLER_READY_TOOL] }));
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    if (request.params.name !== CONTROLLER_READY_TOOL.name) {
-      throw new Error(`TOOL_NOT_FOUND: ${request.params.name}`);
-    }
-    const args = request.params.arguments ?? {};
-    if (Object.keys(args).length > 0) throw new Error('INVALID_ARGUMENT: controller_ready accepts no arguments');
-    const snapshot = controller.readRuntimeSnapshot();
-    const response = { principalId, ...snapshot };
-    return {
-      content: [{ type: 'text' as const, text: JSON.stringify(response) }],
-      structuredContent: response,
-      isError: false,
-    };
+  const context = createMcpToolContext({
+    repo: options.repositoryRoot,
+    controllerHome: options.controllerHome,
+    profile: 'controller',
+    principalId,
+    sessionId: options.sessionId,
+    controllerInstanceId: options.runtimeInstanceId,
   });
-  return server;
+  return createForgeMcpServerFromContext(context);
 }

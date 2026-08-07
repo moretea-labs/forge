@@ -22,7 +22,7 @@ export interface StartRuntimeMcpTransportOptions {
   port: number;
   authToken: string;
   readiness: () => RuntimeReadiness;
-  createServer: (principalId: string) => Server;
+  createServer: (principalId: string, sessionId?: string) => Server;
   onFatal?: (error: Error) => void;
 }
 
@@ -93,8 +93,14 @@ export async function startRuntimeMcpTransport(
       const sessionId = typeof requestedSessionId === 'string' ? requestedSessionId : undefined;
       if (isInitialize(body)) {
         let transport: StreamableHTTPServerTransport;
-        const principal = principalId(options.authToken);
-        const server = options.createServer(principal);
+        const forwardedPrincipalId = typeof req.headers['x-forge-forwarded-principal-id'] === 'string'
+          ? req.headers['x-forge-forwarded-principal-id'].trim().slice(0, 512)
+          : '';
+        const forwardedSessionId = typeof req.headers['x-forge-forwarded-session-id'] === 'string'
+          ? req.headers['x-forge-forwarded-session-id'].trim().slice(0, 512)
+          : '';
+        const principal = forwardedPrincipalId || principalId(options.authToken);
+        const server = options.createServer(principal, forwardedSessionId || undefined);
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (createdSessionId) => {
