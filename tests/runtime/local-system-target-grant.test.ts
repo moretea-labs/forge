@@ -540,10 +540,16 @@ describe('local_system target adapter', () => {
     const root = temp('forge-target-open-safe-root-');
     const commandFile = join(root, 'run-system.command');
     const executableScript = join(root, 'run.sh');
+    const packageFile = join(root, 'installer.pkg');
+    const diskImage = join(root, 'image.dmg');
+    const appBundle = join(root, 'Example.app');
     const document = join(root, 'notes.txt');
     writeFileSync(commandFile, '#!/bin/zsh\necho unsafe\n');
     writeFileSync(executableScript, '#!/bin/sh\necho unsafe\n');
     chmodSync(executableScript, 0o755);
+    writeFileSync(packageFile, 'pkg');
+    writeFileSync(diskImage, 'dmg');
+    mkdirSync(appBundle);
     writeFileSync(document, 'safe document\n');
     authorizeWorkspaceTargetGrant(controllerHome, {
       targetKey: 'project', rootPath: root, ownerScope: 'chatgpt-action:principal:test-user', access: 'read_write', reason: 'document open safety',
@@ -562,6 +568,10 @@ describe('local_system target adapter', () => {
     await expect(executeLocalSystemPluginAction(input(controllerHome, 'open_file', {
       target_key: 'project', path: 'run.sh',
     }))).rejects.toThrow(/LOCAL_SYSTEM_EXECUTABLE_OPEN_DENIED/);
+    for (const path of ['installer.pkg', 'image.dmg', 'Example.app']) {
+      await expect(executeLocalSystemPluginAction(input(controllerHome, 'open_file', { target_key: 'project', path })))
+        .rejects.toThrow(/LOCAL_SYSTEM_EXECUTABLE_OPEN_DENIED/);
+    }
     expect(commands).toHaveLength(0);
 
     await expect(executeLocalSystemPluginAction(input(controllerHome, 'open_file', {
@@ -600,6 +610,32 @@ describe('local_system target adapter', () => {
     expect((submitted.result?.result as Record<string, unknown>).repositoryRegistered).toBe(false);
     expect((submitted.result?.result as Record<string, unknown>).stdout).toContain('hello target');
     expect(getWorkContractByRequestId(controllerHome, requestId, '__controller__')).toBeUndefined();
+  });
+
+  test('writes bounded text and initializes Git without repository registration', async () => {
+    const controllerHome = temp('forge-target-write-git-controller-');
+    const root = temp('forge-target-write-git-root-');
+    authorizeWorkspaceTargetGrant(controllerHome, {
+      targetKey: 'project', rootPath: root, ownerScope: 'chatgpt-action:principal:test-user', access: 'read_write', reason: 'write and git init',
+    });
+
+    const written = await executeLocalSystemPluginAction(input(controllerHome, 'write_text', {
+      target_key: 'project', path: 'src/a.ts', content: 'export const a = 1;\n',
+    }));
+    expect(written).toMatchObject({ written: true, path: 'src/a.ts', repositoryRegistered: false });
+    expect(readFileSync(join(root, 'src/a.ts'), 'utf8')).toBe('export const a = 1;\n');
+    await expect(executeLocalSystemPluginAction(input(controllerHome, 'write_text', {
+      target_key: 'project', path: 'src/a.ts', content: 'replace\n',
+    }))).rejects.toThrow(/LOCAL_SYSTEM_DESTINATION_EXISTS/);
+    await expect(executeLocalSystemPluginAction(input(controllerHome, 'write_text', {
+      target_key: 'project', path: 'src/a.ts', content: 'replace\n', overwrite: true,
+    }))).resolves.toMatchObject({ written: true, overwrite: true });
+
+    const initialized = await executeLocalSystemPluginAction(input(controllerHome, 'initialize_git', {
+      target_key: 'project', initial_branch: 'main',
+    }));
+    expect(initialized).toMatchObject({ initialized: true, repositoryRegistered: false, command: ['git', 'init', '-b', 'main'] });
+    expect(existsSync(join(root, '.git'))).toBe(true);
   });
 
   test('terminalizes a lightweight local-effect Work for a target mutation', async () => {
