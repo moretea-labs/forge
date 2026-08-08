@@ -4,7 +4,7 @@ import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, re
 import { homedir } from 'os';
 import { basename, dirname, isAbsolute, join, resolve } from 'path';
 import { observeRuntimeStatus } from '../root/status';
-import { forgeRuntimeServicePaths } from '../root/service';
+import { ensureForgeRuntimeLaunchAgentContract, forgeRuntimeServicePaths } from '../root/service';
 import { loadRuntimeReleaseManifest } from '../root/release-manifest';
 import { assertRuntimeReleaseFiles, stageRuntimeRelease, type StagedRuntimeRelease } from '../root/release-materialize';
 import {
@@ -1320,6 +1320,13 @@ export async function activateRuntimeRelease(
       audit(config, 'runtime_release_activation_commit_mismatch', { serviceTarget: service.target, operationId });
       return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: await verifyLocal(config) } satisfies RuntimeReleaseActivationResult;
     }
+    try {
+      ensureForgeRuntimeLaunchAgentContract({ controllerHome: config.controllerHome });
+    } catch (error) {
+      const detail = `runtime launchd stable-release contract update failed: ${error instanceof Error ? error.message : String(error)}`;
+      audit(config, 'runtime_release_activation_launchd_contract_failed', { serviceTarget: service.target, operationId, detail });
+      return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: await verifyLocal(config) } satisfies RuntimeReleaseActivationResult;
+    }
     const started = await ensureLaunchdServiceStarted(service, runCommand);
     if (!started.ok) {
       audit(config, 'runtime_release_activation_start_failed', { serviceTarget: service.target, operationId, detail: started.detail });
@@ -1344,6 +1351,7 @@ export async function activateRuntimeRelease(
     try {
       const rollbackOperationId = `recovery-activate-runtime-rollback-${Date.now()}-${randomUUID().slice(0, 8)}`;
       const restored = rollbackRuntimeRelease(config.controllerHome, rollbackOperationId);
+      ensureForgeRuntimeLaunchAgentContract({ controllerHome: config.controllerHome });
       const previousRevision = previousActive?.releaseId ?? '';
       const previousIdentity = previousActive?.artifactIdentity;
       if (

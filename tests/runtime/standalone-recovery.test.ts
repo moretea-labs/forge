@@ -68,8 +68,10 @@ function controllerHome(): string {
 }
 
 function manifest(home: string, releaseId: string, artifactIdentity: string, workerProtocolVersion = 1): string {
-  const path = join(home, 'manifests', `${releaseId}.json`);
-  mkdirSync(dirname(path), { recursive: true });
+  const releaseRoot = join(home, 'runtime', 'releases', releaseId);
+  const path = join(releaseRoot, 'manifest.json');
+  mkdirSync(releaseRoot, { recursive: true });
+  writeFileSync(join(releaseRoot, 'forge-runtime'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
   writeFileSync(path, `${JSON.stringify({
     schemaVersion: 1,
     releaseId,
