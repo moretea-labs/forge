@@ -3933,6 +3933,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           maxFiles: typeof args.max_files === 'number' ? args.max_files : undefined,
           maxSnippets: typeof args.max_snippets === 'number' ? args.max_snippets : undefined,
           maxCharsPerSnippet: typeof args.max_chars_per_snippet === 'number' ? args.max_chars_per_snippet : undefined,
+          structuralContext: args.structural_context === 'auto' || args.structural_context === 'required' ? args.structural_context : 'off',
         });
         return result({
           repoId: repository.repoId,

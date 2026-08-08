@@ -6,8 +6,14 @@ import { redactMcpText } from "../mcp/redaction";
 import { projectBoard } from "./issue-store";
 import { buildControllerTaskLedgerProjection, type TaskLedgerTaskProjection } from "./task-ledger";
 import { legacyIssueAuthorityRetired } from "./legacy-issue-cutover";
+import {
+  queryCodeGraphReadProvider,
+  type CodeGraphIndexMetadata,
+  type CodeGraphNodeSummary,
+  type CodeGraphReadProviderResponse,
+} from "../../runtime/context/codegraph-read-provider";
 
-const CONTEXT_PACK_SCHEMA_VERSION = 3;
+const CONTEXT_PACK_SCHEMA_VERSION = 4;
 const DEFAULT_MAX_FILES = 8;
 const DEFAULT_MAX_SNIPPETS = 20;
 const DEFAULT_SNIPPET_CONTEXT_BEFORE = 12;
@@ -31,6 +37,8 @@ const STOPWORDS = new Set([
   "repo", "repository", "runtime", "should", "task", "that", "this", "through", "todo", "update", "when", "with",
 ]);
 
+export type StructuralContextMode = "off" | "auto" | "required";
+
 export interface ControllerContextPackOptions {
   description?: string;
   issueId?: string;
@@ -42,6 +50,11 @@ export interface ControllerContextPackOptions {
   maxFiles?: number;
   maxSnippets?: number;
   maxCharsPerSnippet?: number;
+  structuralContext?: StructuralContextMode;
+}
+
+export interface ControllerContextPackDependencies {
+  queryCodeGraph?: typeof queryCodeGraphReadProvider;
 }
 
 export interface ControllerContextPackSnippet {
@@ -90,6 +103,19 @@ export interface ControllerContextPackProjection {
     policyDeniedFiles: number;
     skippedLargeFiles: number;
     skippedBinaryFiles: number;
+    truncated: boolean;
+  };
+  structuralContext: {
+    provider: "codegraph";
+    requestedMode: StructuralContextMode;
+    status: "disabled" | "ready" | "stale" | "unavailable" | "degraded";
+    requiredSatisfied: boolean;
+    query?: string;
+    entryPoints: Array<Pick<CodeGraphNodeSummary, "id" | "kind" | "name" | "filePath" | "startLine" | "endLine">>;
+    relatedFiles: string[];
+    metadata?: Pick<CodeGraphIndexMetadata, "initialized" | "lastIndexedAt" | "buildVersion" | "extractionVersion" | "staleEngine" | "changedFiles">;
+    fallbackReason?: string;
+    timingsMs?: CodeGraphReadProviderResponse["timingsMs"];
     truncated: boolean;
   };
   files: ControllerContextPackFile[];
@@ -319,10 +345,24 @@ function mergeHitLines(lines: number[]): number[] {
   return merged;
 }
 
+function structuralResult(response: CodeGraphReadProviderResponse): {
+  nodes: CodeGraphNodeSummary[];
+  entryPoints: CodeGraphNodeSummary[];
+  relatedFiles: string[];
+  truncated: boolean;
+} {
+  const result = response.result ?? {};
+  const nodes = Array.isArray(result.nodes) ? result.nodes as CodeGraphNodeSummary[] : [];
+  const entryPoints = Array.isArray(result.entryPoints) ? result.entryPoints as CodeGraphNodeSummary[] : [];
+  const relatedFiles = Array.isArray(result.relatedFiles) ? result.relatedFiles.filter((value): value is string => typeof value === "string") : [];
+  return { nodes, entryPoints, relatedFiles, truncated: result.truncated === true };
+}
+
 export function buildControllerContextPack(
   repoRoot: string,
   policy: McpPolicy,
   options: ControllerContextPackOptions = {},
+  dependencies: ControllerContextPackDependencies = {},
 ): ControllerContextPackProjection {
   const maxFiles = clamp(options.maxFiles, DEFAULT_MAX_FILES, 1, 30);
   const maxSnippets = clamp(options.maxSnippets, DEFAULT_MAX_SNIPPETS, 1, 80);
@@ -344,6 +384,7 @@ export function buildControllerContextPack(
   const ledger = board ? buildControllerTaskLedgerProjection(repoRoot, board) : undefined;
   const compactTask = ledger ? ledgerTask(ledger, focus.issue?.id, focus.task?.id) : undefined;
   const allowedPathGlobs = cleanList(compactTask?.allowedPaths);
+  const searchIncludeGlobs = includeGlobs.length > 0 ? includeGlobs : allowedPathGlobs;
   const taskChecks = cleanList(compactTask?.checks);
   const goalParts = [
     options.description,
@@ -362,6 +403,88 @@ export function buildControllerContextPack(
   let skippedLargeFiles = 0;
   let skippedBinaryFiles = 0;
   let searchTruncated = false;
+  const structuralMode = options.structuralContext ?? "off";
+  let structuralContext: ControllerContextPackProjection["structuralContext"] = {
+    provider: "codegraph",
+    requestedMode: structuralMode,
+    status: "disabled",
+    requiredSatisfied: structuralMode !== "required",
+    entryPoints: [],
+    relatedFiles: [],
+    truncated: false,
+  };
+
+  if (structuralMode !== "off") {
+    const structuralQuery = goal || terms.join(" ");
+    if (!structuralQuery) {
+      structuralContext = {
+        ...structuralContext,
+        status: "degraded",
+        requiredSatisfied: false,
+        fallbackReason: "No task description or search term was available for structural context.",
+      };
+    } else {
+      const queryCodeGraph = dependencies.queryCodeGraph ?? queryCodeGraphReadProvider;
+      const structural = queryCodeGraph(repoRoot, {
+        operation: "context",
+        query: structuralQuery,
+        limit: Math.min(Math.max(maxFiles, 4), 12),
+        maxNodes: Math.min(Math.max(maxFiles * 5, 20), 60),
+        maxDepth: 2,
+      });
+      const graph = structuralResult(structural);
+      const metadata = structural.metadata
+        ? {
+            initialized: structural.metadata.initialized,
+            lastIndexedAt: structural.metadata.lastIndexedAt,
+            buildVersion: structural.metadata.buildVersion,
+            extractionVersion: structural.metadata.extractionVersion,
+            staleEngine: structural.metadata.staleEngine,
+            changedFiles: structural.metadata.changedFiles,
+          }
+        : undefined;
+      structuralContext = {
+        provider: "codegraph",
+        requestedMode: structuralMode,
+        status: structural.status,
+        requiredSatisfied: structuralMode !== "required" || structural.status === "ready",
+        query: structuralQuery,
+        entryPoints: graph.entryPoints.slice(0, 12).map((node) => ({
+          id: node.id,
+          kind: node.kind,
+          name: node.name,
+          filePath: node.filePath,
+          startLine: node.startLine,
+          endLine: node.endLine,
+        })),
+        relatedFiles: Array.from(new Set(graph.relatedFiles)).slice(0, 80),
+        metadata,
+        ...(structural.error ? { fallbackReason: `${structural.error.code}: ${structural.error.message}` } : {}),
+        timingsMs: structural.timingsMs,
+        truncated: graph.truncated,
+      };
+
+      const addStructuralPath = (path: string, reason: string, line?: number): void => {
+        if (!path || !coveredByGlob(path, searchIncludeGlobs) || excludeGlobs.some((glob) => globMatches(glob, path))) return;
+        const readable = readableFile(repoRoot, policy, path);
+        if (!readable.ok) {
+          deniedPaths.push({ path: readable.path, reason: readable.reason });
+          return;
+        }
+        addReason(candidates, readable.path, reason, line);
+      };
+      for (const node of graph.nodes.slice(0, maxFiles * 6)) {
+        addStructuralPath(node.filePath, `codegraph:context:${node.kind}:${node.name}`, node.startLine);
+      }
+      for (const node of graph.entryPoints) {
+        addStructuralPath(node.filePath, `codegraph:entry:${node.name}`, node.startLine);
+      }
+      for (const path of graph.relatedFiles.slice(0, maxFiles * 6)) addStructuralPath(path, "codegraph:related");
+      for (const path of metadata?.changedFiles.added ?? []) addStructuralPath(path, "codegraph:changed-file", 1);
+      for (const path of metadata?.changedFiles.modified ?? []) addStructuralPath(path, "codegraph:changed-file", 1);
+      for (const path of metadata?.changedFiles.removed ?? []) omitted.push({ path, reason: "codegraph reports file removed since index" });
+    }
+  }
 
   for (const path of explicitKnownPaths) {
     const expanded = expandKnownPath(repoRoot, policy, path, Math.max(maxFiles * 4, 40));
@@ -377,7 +500,6 @@ export function buildControllerContextPack(
     if (!includeGlobs.includes(glob)) includeGlobs.push(glob);
   }
 
-  const searchIncludeGlobs = includeGlobs.length > 0 ? includeGlobs : allowedPathGlobs;
   // SearchRepository reports files scanned per query. Enforce one shared budget
   // across all terms instead of allowing every token to rescan up to 10k files.
   let remainingSearchFileBudget = MAX_TOTAL_SEARCHED_FILES;
@@ -497,6 +619,7 @@ export function buildControllerContextPack(
       skippedBinaryFiles,
       truncated: searchTruncated,
     },
+    structuralContext,
     files,
     deniedPaths: deniedPaths.slice(0, 20),
     omitted: omitted.slice(0, 30),
@@ -509,12 +632,17 @@ export function buildControllerContextPack(
       strategy: "Use this pack for scoped investigation only. Do not treat search ranking or summaries as proof of the correct implementation.",
       rawCodeRequiredForImplementation: true,
       notes: [
-        "The pack includes bounded raw snippets around explicit paths and search hits; expand exact files/ranges before editing important code.",
+        "The pack includes bounded raw snippets around explicit paths, text search hits, and any policy-approved structural candidates; expand exact files/ranges before editing important code.",
+        "CodeGraph structural evidence is discovery evidence. Raw source access still passes through Forge repository policy and current-file reads.",
+        structuralContext.status === "stale" ? "CodeGraph reports stale structural evidence. Treat graph relationships as hints and prefer the returned current raw source for changed files." : structuralContext.status === "unavailable" || structuralContext.status === "degraded" ? "Structural context was unavailable or degraded; bounded text search remains the fallback." : structuralContext.status === "ready" ? "CodeGraph structural context was queried read-only with index sync disabled." : "Structural context was not requested.",
         "Run focused validation after patching; a context pack is not a substitute for tests, typecheck, diff review, or source review.",
         taskChecks.length > 0 ? `Task checks advertised by the board: ${taskChecks.join(", ")}.` : "No task-specific checks were found in the compact ledger.",
       ],
     },
     next: [
+      ...(structuralMode === "required" && !structuralContext.requiredSatisfied
+        ? ["Structural context was required but is not current/ready. Refresh CodeGraph explicitly or continue only with the degraded-plan warning visible."]
+        : []),
       files.length > 0
         ? "Inspect the returned snippets and request exact wider ranges for files that will be edited."
         : "Provide known_paths or narrower search_terms before attempting implementation.",
