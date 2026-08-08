@@ -11,7 +11,10 @@ import {
 import { resolveDiagnosticCliInvocation, runReadOnlyDiagnosticViaProcessRuntime } from '../../src/runtime/diagnostics/process-facade';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
-import { resolvePersistedCheckCliInvocation } from '../../src/runtime/gateway/mcp/persisted-check-process';
+import {
+  resolvePersistedCheckCliInvocation,
+  resolvePersistedCheckRuntimeExecutable,
+} from '../../src/runtime/gateway/mcp/persisted-check-process';
 
 const diagnosticArgs = ['runtime', 'diagnostic-read', '--tool', 'workflow_watchdog_report'];
 
@@ -44,6 +47,29 @@ describe('typed CLI child invocation', () => {
       executable: '/opt/releases/forge.js',
       args: diagnosticArgs,
     });
+  });
+
+  test('persisted checks use the immutable forge-cli sidecar instead of the Runtime daemon', () => {
+    const cliTarget = {
+      entry: '/opt/releases/release-123/forge-runtime',
+      cwd: '/opt/releases/release-123',
+      runtimeKind: 'compiled_bun_release' as const,
+      sourceRevision: 'release-123',
+      immutable: true,
+      explanation: 'fixture',
+    };
+    const executable = resolvePersistedCheckRuntimeExecutable(
+      cliTarget,
+      '/opt/releases/release-123/forge-runtime',
+      (path) => path === '/opt/releases/release-123/forge-cli',
+    );
+    expect(executable).toBe('/opt/releases/release-123/forge-cli');
+    expect(resolvePersistedCheckCliInvocation(executable, diagnosticArgs, {
+      runtimeExecutable: executable,
+      runtimeKind: 'compiled_bun_release',
+      sourceRevision: 'release-123',
+      immutable: true,
+    })).toEqual({ executable, args: diagnosticArgs });
   });
 
   test('passes source entries to Bun and Node runtimes', () => {

@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { existsSync } from 'fs';
-import { resolve } from 'path';
+import { dirname, resolve } from 'path';
 import {
   controllerCheckExecutionIdentity,
   listControllerChecks,
@@ -60,6 +60,19 @@ export function resolveRuntimeCliTarget(controllerHome?: string): CliRuntimeTarg
 
 export function resolveRuntimeCliEntry(controllerHome?: string): string {
   return resolveRuntimeCliTarget(controllerHome).entry;
+}
+
+export function resolvePersistedCheckRuntimeExecutable(
+  cliTarget: CliRuntimeTarget,
+  runtimeExecutable = process.execPath,
+  entryExists: (path: string) => boolean = existsSync,
+): string {
+  if (cliTarget.runtimeKind !== 'compiled_bun_release') return runtimeExecutable;
+  const cliSidecar = resolve(dirname(runtimeExecutable), 'forge-cli');
+  if (!entryExists(cliSidecar)) {
+    throw new Error(`PERSISTED_CHECK_CLI_SIDECAR_MISSING: ${cliSidecar}`);
+  }
+  return cliSidecar;
 }
 
 /**
@@ -166,8 +179,12 @@ export async function runPersistedCheckViaProcessRuntime(
     '--expected-check-fingerprint',
     checkFingerprint,
   ];
-  const invocation = resolvePersistedCheckCliInvocation(cliTarget.entry, checkArgs, {
-    runtimeExecutable: process.execPath,
+  const persistedCheckExecutable = resolvePersistedCheckRuntimeExecutable(cliTarget);
+  const invocation = resolvePersistedCheckCliInvocation(
+    cliTarget.runtimeKind === 'compiled_bun_release' ? persistedCheckExecutable : cliTarget.entry,
+    checkArgs,
+    {
+    runtimeExecutable: persistedCheckExecutable,
     runtimeKind: cliTarget.runtimeKind,
     sourceRevision: cliTarget.sourceRevision,
     immutable: cliTarget.immutable,
