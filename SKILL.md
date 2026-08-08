@@ -34,6 +34,18 @@ Treat ChatGPT as the controller and Forge as its repository execution layer. Cha
 - Ordinary local risk levels are metadata, not permission gates. There is no approval queue and no `approve_risk` handshake. Only an explicitly destructive or irreversible operation requires authorization in the same request.
 - The Controller UI is hierarchical: Overview, Work, Activity, and Settings. Work is organized as Issue -> Task -> Execution instead of exposing every technical record as a top-level destination.
 - Hard runtime boundaries remain for secrets, credentials, Git internals, concurrent write conflicts, out-of-scope writes when a scope is declared, and remote or irreversible side effects.
+## Explicit mode directives
+
+Automatic routing remains authoritative when the user does not provide a mode directive. In particular, understood bounded work still defaults to Direct Edit; adding explicit modes must not make ordinary requests Plan-first, Agent-first, Issue-first, or Campaign-first.
+
+A leading mode directive is an opt-in instruction to ChatGPT's Forge router. It applies only to the current request, is removed from the objective before execution, and never bypasses permissions, Runtime authority, protected-path rules, approvals, or destructive/remote-write confirmation.
+
+- `-plan` or `/plan`: force the reviewed planning path. Planning is read-only: inspect repository state, prefer CodeGraph symbol/reference/dependency/test-impact evidence when the capability is ready, load only relevant architecture/ADR/design/README material, then create or revise the existing PlanContract. Review the PlanContract before approval. Do not start mutation until the reviewed plan is approved and execution is explicitly bound to an approved plan step. If CodeGraph is unavailable, report the degraded evidence source and use bounded repository context instead of pretending graph coverage exists.
+- `-debug` or `/debug`: force evidence-first debugging. Reproduce or characterize the failure, collect bounded evidence, isolate the smallest causal surface, then patch and run focused verification. The directive does not force an Agent or Campaign; existing routing still chooses Direct, bounded Work, or an optional worker from the actual scope and risk.
+- `-campaign` or `/campaign`: force the durable Campaign topology for the current request. Use Campaign review checkpoints and independent task coordination even when automatic routing would otherwise choose Direct or bounded Work. This is an explicit user override of topology, not a permission override.
+
+A bare directive with no objective should return/explain that mode's working contract and must not mutate repository state. Mode directives are not sticky across turns unless the user repeats them or explicitly asks to continue the same active Plan/Campaign.
+
 ## When to use
 
 - install or refresh the CLI+hooks workflow in an existing repo

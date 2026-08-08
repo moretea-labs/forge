@@ -26,6 +26,19 @@ describe("Bootstrap Script Contracts", () => {
     expect(existsSync(join(ROOT, "references/skill-factory-guide.md"))).toBe(false);
   });
 
+  test("router keeps automatic Direct default while exposing explicit opt-in modes", () => {
+    const skill = read("SKILL.md");
+    expect(skill).toContain("understood bounded work still defaults to Direct Edit");
+    expect(skill).toContain("`-plan` or `/plan`");
+    expect(skill).toContain("`-debug` or `/debug`");
+    expect(skill).toContain("`-campaign` or `/campaign`");
+    expect(skill).toContain("Planning is read-only");
+    expect(skill).toContain("existing PlanContract");
+    expect(skill).toContain("does not force an Agent or Campaign");
+    expect(skill).toContain("explicit user override of topology, not a permission override");
+    expect(skill).toContain("Mode directives are not sticky across turns");
+  });
+
   test("Codex agent metadata should exist for user-level installation", () => {
     const metadata = read("agents/openai.yaml");
     expect(metadata).toContain("interface:");
