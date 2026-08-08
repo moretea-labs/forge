@@ -15,8 +15,10 @@ function sourceFixture() {
   const controllerHome = mkdtempSync(join(tmpdir(), 'forge-runtime-release-controller-'));
   roots.push(root, controllerHome);
   mkdirSync(join(root, 'src/runtime/plugins'), { recursive: true });
+  mkdirSync(join(root, 'bin'), { recursive: true });
   writeFileSync(join(root, 'README.md'), 'fixture\n');
   writeFileSync(join(root, 'src/runtime/plugins/browser-node-bridge-host.ts'), 'console.log("host");\n');
+  writeFileSync(join(root, 'bin/forge-desktop-helper.mjs'), '#!/usr/bin/env node\nconsole.log("desktop-helper");\n');
   spawnSync('git', ['init', '-b', 'main'], { cwd: root, stdio: 'ignore' });
   spawnSync('git', ['config', 'user.email', 'forge-test@example.invalid'], { cwd: root, stdio: 'ignore' });
   spawnSync('git', ['config', 'user.name', 'Forge Test'], { cwd: root, stdio: 'ignore' });
@@ -26,7 +28,7 @@ function sourceFixture() {
 }
 
 describe('runtime release materialization', () => {
-  test('stages and hashes the Browser Node bridge host beside immutable runtime executables', () => {
+  test('stages and hashes Browser and Desktop helper artifacts beside immutable runtime executables', () => {
     const { root, controllerHome } = sourceFixture();
     const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
       now: () => 1_700_000_000_000,
@@ -46,9 +48,15 @@ describe('runtime release materialization', () => {
     expect(existsSync(hostPath)).toBe(true);
     expect(readFileSync(hostPath, 'utf8')).toBe('node-host-bundle');
     expect(staged.browserNodeBridgeArtifactIdentity).toMatch(/^sha256:/);
+    const desktopHelperPath = join(staged.releasePath, 'forge-desktop-helper.mjs');
+    expect(existsSync(desktopHelperPath)).toBe(true);
+    expect(readFileSync(desktopHelperPath, 'utf8')).toContain('desktop-helper');
+    expect(staged.desktopHelperArtifactIdentity).toMatch(/^sha256:/);
     const manifest = JSON.parse(readFileSync(staged.manifestPath, 'utf8')) as Record<string, unknown>;
     expect(manifest.browserNodeBridgeEntrypoint).toBe('browser-node-bridge-host.js');
     expect(manifest.browserNodeBridgeArtifactIdentity).toBe(staged.browserNodeBridgeArtifactIdentity);
+    expect(manifest.desktopHelperEntrypoint).toBe('forge-desktop-helper.mjs');
+    expect(manifest.desktopHelperArtifactIdentity).toBe(staged.desktopHelperArtifactIdentity);
     assertRuntimeReleaseFiles(staged);
   });
 

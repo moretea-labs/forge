@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { resolveBunExecutable } from '../shared/process-environment';
@@ -20,6 +20,7 @@ export interface StagedRuntimeRelease {
   artifactIdentity: string;
   diagnosticArtifactIdentity?: string;
   browserNodeBridgeArtifactIdentity?: string;
+  desktopHelperArtifactIdentity?: string;
   manifestSha256: string;
   sourceCommit: string;
 }
@@ -125,6 +126,16 @@ export function stageRuntimeRelease(input: {
     }
     chmodSync(browserNodeBridgePath, 0o700);
     const browserNodeBridgeArtifactIdentity = `sha256:${sha256(browserNodeBridgePath)}`;
+
+    const desktopHelperEntrypoint = 'forge-desktop-helper.mjs' as const;
+    const sourceDesktopHelperPath = join(sourceRoot, 'bin', desktopHelperEntrypoint);
+    if (!existsSync(sourceDesktopHelperPath)) {
+      throw new Error(`RUNTIME_RELEASE_DESKTOP_HELPER_SOURCE_MISSING: ${sourceDesktopHelperPath}`);
+    }
+    const desktopHelperPath = join(staging, desktopHelperEntrypoint);
+    copyFileSync(sourceDesktopHelperPath, desktopHelperPath);
+    chmodSync(desktopHelperPath, 0o700);
+    const desktopHelperArtifactIdentity = `sha256:${sha256(desktopHelperPath)}`;
     const manifest = {
       schemaVersion: 1,
       releaseId,
@@ -134,6 +145,8 @@ export function stageRuntimeRelease(input: {
       diagnosticArtifactIdentity,
       browserNodeBridgeEntrypoint,
       browserNodeBridgeArtifactIdentity,
+      desktopHelperEntrypoint,
+      desktopHelperArtifactIdentity,
       arguments: [],
       configurationSchemaVersion: 1,
       controllerHome: resolve(input.controllerHome),
@@ -157,6 +170,7 @@ export function stageRuntimeRelease(input: {
       artifactIdentity,
       diagnosticArtifactIdentity,
       browserNodeBridgeArtifactIdentity,
+      desktopHelperArtifactIdentity,
       manifestSha256: createHash('sha256').update(`${JSON.stringify(manifest, null, 2)}\n`).digest('hex'),
       sourceCommit,
     };
@@ -178,5 +192,8 @@ export function assertRuntimeReleaseFiles(release: StagedRuntimeRelease): void {
   }
   if (release.browserNodeBridgeArtifactIdentity && !existsSync(join(release.releasePath, 'browser-node-bridge-host.js'))) {
     throw new Error(`RUNTIME_RELEASE_BROWSER_NODE_HOST_MISSING: ${join(release.releasePath, 'browser-node-bridge-host.js')}`);
+  }
+  if (release.desktopHelperArtifactIdentity && !existsSync(join(release.releasePath, 'forge-desktop-helper.mjs'))) {
+    throw new Error(`RUNTIME_RELEASE_DESKTOP_HELPER_MISSING: ${join(release.releasePath, 'forge-desktop-helper.mjs')}`);
   }
 }
