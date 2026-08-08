@@ -14,6 +14,7 @@ import {
   detectDirtyPathConflicts,
   recoveryActionById,
 } from '../../src/runtime/recovery';
+import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import {
   applyExternalFilesystemGrant,
   buildWorkspaceAuthStatus,
@@ -294,6 +295,50 @@ describe('runtime maintenance executor', () => {
     const legacyApplied = applied.applied.some((candidate) => candidate.applied && candidate.id === 'JOB-broken');
     const typedApplied = applied.runtimeStorageRepairApply?.applied.some((candidate) => candidate.status === 'applied' && candidate.path.includes('JOB-broken')) ?? false;
     expect(legacyApplied || typedApplied).toBe(true);
+  });
+
+  it('bulk-cancels stale nonterminal WorkContracts only during an explicitly confirmed full maintenance pass', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-stale-work-'));
+    temporaryRoots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    mkdirSync(controllerHome, { recursive: true });
+    mkdirSync(repoRoot, { recursive: true });
+    const repository = { repoId: 'repo-stale-work', canonicalRoot: repoRoot };
+    const oldAt = '2026-01-01T00:00:00.000Z';
+    const work = createWorkContract({ controllerHome, repoId: repository.repoId, now: () => oldAt }, {
+      workId: 'work-stale-ready',
+      objective: 'legacy ready work',
+      scopeSummary: 'legacy',
+      acceptanceCriteria: ['historical'],
+      allowedPaths: [],
+      checks: [],
+      status: 'ready',
+      risk: 'low',
+      continuationPrompt: 'legacy',
+    });
+    expect(work.status).toBe('ready');
+
+    const status = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
+    expect(status.summary.staleWorkContracts).toBe(1);
+    expect(status.candidates).toContainEqual(expect.objectContaining({
+      kind: 'stale_work_contract',
+      id: 'work-stale-ready',
+      safe: true,
+    }));
+
+    const applied = applyRuntimeMaintenance(repository, controllerHome, {
+      actionId: 'full_maintenance_pass',
+      confirmMaintenance: true,
+      minAgeMinutes: 1,
+      maxCandidates: 50,
+    });
+    expect(applied.applied).toContainEqual(expect.objectContaining({
+      kind: 'stale_work_contract',
+      id: 'work-stale-ready',
+      applied: true,
+    }));
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, 'work-stale-ready')?.status).toBe('cancelled');
   });
 
   it('removes only stale direct forge temp entries during full maintenance', () => {

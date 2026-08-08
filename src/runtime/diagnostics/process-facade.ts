@@ -10,7 +10,14 @@ import {
   type CliRuntimeTarget,
 } from '../../cli/runtime-invocation';
 import { readRuntimeGeneration, resolveControllerRuntimeSourceRoot } from '../control-plane/runtime-generation';
-import { readProcessLogs, spawnManagedProcess, type ProcessHandle } from '../execution/process-runtime';
+import {
+  effectiveProcessStatus,
+  processContractStatus,
+  readProcessLogs,
+  spawnManagedProcess,
+  waitForProcess,
+  type ProcessHandle,
+} from '../execution/process-runtime';
 import { isReadOnlyDiagnosticTool, type ReadOnlyDiagnosticTool } from './read-only-tool';
 
 const DEFAULT_DIAGNOSTIC_INTERACTIVE_WAIT_MS = 2_000;
@@ -77,11 +84,15 @@ function processPointers(repoId: string, processId: string): Record<string, unkn
 }
 
 function processSummary(handle: ProcessHandle): Record<string, unknown> {
+  const effective = effectiveProcessStatus(handle, handle.completed === true);
+  const status = handle.completed === true && handle.ok === false && (effective === 'starting' || effective === 'running' || effective === 'running_recovered')
+    ? 'failed'
+    : effective;
   return {
     processId: handle.processId,
     commandId: handle.commandId,
-    status: handle.status,
-    contractStatus: handle.contractStatus,
+    status,
+    contractStatus: processContractStatus(status),
     route: handle.route,
     startedAt: handle.startedAt,
     completed: handle.completed === true,
@@ -187,7 +198,7 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
     24 * 60 * 60_000,
   );
   const requestId = typeof input.args.request_id === 'string' ? input.args.request_id.trim() || undefined : undefined;
-  const handle = await spawnManagedProcess({
+  const spawned = await spawnManagedProcess({
     controllerHome: input.controllerHome,
     repoId: input.repository.repoId,
     checkoutId: input.repository.activeCheckoutId,
@@ -241,6 +252,9 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
     },
   });
 
+  const handle = spawned.completed === true
+    ? await waitForProcess(input.controllerHome, input.repository.repoId, spawned.processId, { timeoutMs: 1_000 }).catch(() => spawned)
+    : spawned;
   const pointers = processPointers(input.repository.repoId, handle.processId);
   if (handle.completed === true) {
     if (handle.ok !== true) {

@@ -274,8 +274,20 @@ export function currentCliRuntimeTarget(options: CurrentCliRuntimeOptions = {}):
   const sourceRoot = options.sourceRoot?.trim()
     || env.FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT?.trim();
   if (sourceRoot) {
-    const sourceEntry = join(resolve(sourceRoot), 'src', 'cli', 'index.ts');
+    const resolvedSourceRoot = resolve(sourceRoot);
+    const sourceEntry = join(resolvedSourceRoot, 'src', 'cli', 'index.ts');
     if (!exists(sourceEntry)) {
+      const immutableRuntime = join(resolvedSourceRoot, 'forge-runtime');
+      if (exists(immutableRuntime)) {
+        return {
+          entry: immutableRuntime,
+          cwd: resolvedSourceRoot,
+          runtimeKind: 'compiled_bun_release',
+          sourceRevision,
+          immutable: true,
+          explanation: 'explicit controller runtime source root is an immutable Runtime release',
+        };
+      }
       throw new CliRuntimeResolutionError([`source runtime entry does not exist: ${sourceEntry}`]);
     }
     const executableKind = runtimeKindFromExecutable(runtimeExecutable);
@@ -286,7 +298,7 @@ export function currentCliRuntimeTarget(options: CurrentCliRuntimeOptions = {}):
     }
     return {
       entry: sourceEntry,
-      cwd: resolve(sourceRoot),
+      cwd: resolvedSourceRoot,
       runtimeKind: executableKind === 'node' ? 'node_source' : 'bun_source',
       sourceRevision,
       immutable: false,

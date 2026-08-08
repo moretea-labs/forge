@@ -117,6 +117,21 @@ describe('typed CLI child invocation', () => {
     expect(source.runtimeKind).toBe('node_source');
     expect(source.entry).toBe('/repo with spaces/src/cli/index.ts');
 
+    const immutableRoot = currentCliRuntimeTarget({
+      argv: [],
+      env: {},
+      sourceRoot: '/controller/runtime/releases/release-1',
+      runtimeExecutable: '/controller/runtime/releases/release-1/forge-runtime',
+      sourceRevision: 'release-1',
+      entryExists: (path) => path === '/controller/runtime/releases/release-1/forge-runtime',
+    });
+    expect(immutableRoot).toMatchObject({
+      entry: '/controller/runtime/releases/release-1/forge-runtime',
+      cwd: '/controller/runtime/releases/release-1',
+      runtimeKind: 'compiled_bun_release',
+      immutable: true,
+    });
+
     const compiled = currentCliRuntimeTarget({
       argv: ['/Applications/Repo Harness/forge', '/$bunfs/root/forge.js'],
       env: { FORGE_RUNTIME_EXECUTION: 'standalone-binary' },

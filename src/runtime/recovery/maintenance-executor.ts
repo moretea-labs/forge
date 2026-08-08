@@ -4,6 +4,8 @@ import { tmpdir } from 'os';
 import { ensureRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } from '../../cli/repositories/runtime-storage';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { rebuildRepositoryProjection } from '../projections/materialized-view';
+import { getWorkContract, readWorkContractStore, transitionWorkContractPhase } from '../control-plane/facade/work-contract-store';
+import { isTerminalWorkContractStatus } from '../control-plane/facade/types';
 import {
   collectRuntimeProcesses,
   removeRuntimeTempEntry,
@@ -30,7 +32,8 @@ export type RuntimeMaintenanceCandidateKind =
   | 'unreadable_local_job'
   | 'missing_job_metadata'
   | 'runtime_storage_warning'
-  | 'stale_runtime_temp_entry';
+  | 'stale_runtime_temp_entry'
+  | 'stale_work_contract';
 
 export interface RuntimeMaintenanceRepository {
   repoId: string;
@@ -85,6 +88,7 @@ export interface RuntimeMaintenanceSummary {
   missingJobMetadata: number;
   runtimeStorageWarnings: number;
   staleRuntimeTempEntries: number;
+  staleWorkContracts: number;
 }
 
 export interface RuntimeMaintenanceStatus {
@@ -211,6 +215,7 @@ function summarize(candidates: RuntimeMaintenanceCandidate[]): RuntimeMaintenanc
     missingJobMetadata: candidates.filter((candidate) => candidate.kind === 'missing_job_metadata').length,
     runtimeStorageWarnings: candidates.filter((candidate) => candidate.kind === 'runtime_storage_warning').length,
     staleRuntimeTempEntries: candidates.filter((candidate) => candidate.kind === 'stale_runtime_temp_entry').length,
+    staleWorkContracts: candidates.filter((candidate) => candidate.kind === 'stale_work_contract').length,
   };
 }
 
@@ -385,6 +390,34 @@ function normalizedOptions(options: RuntimeMaintenanceOptions = {}): Required<Ru
   };
 }
 
+function scanStaleWorkContractCandidates(
+  repository: RuntimeMaintenanceRepository,
+  controllerHome: string,
+  options: Required<RuntimeMaintenanceOptions>,
+): RuntimeMaintenanceCandidate[] {
+  const nowMs = Date.now();
+  return readWorkContractStore({ controllerHome, repoId: repository.repoId }).contracts
+    .filter((contract) => !isTerminalWorkContractStatus(contract.status))
+    .map((contract) => {
+      const updatedMs = Date.parse(contract.updatedAt);
+      const ageMinutes = Number.isFinite(updatedMs) ? Math.max(0, Math.floor((nowMs - updatedMs) / 60_000)) : 0;
+      return { contract, ageMinutes };
+    })
+    .filter(({ ageMinutes }) => ageMinutes >= options.minAgeMinutes)
+    .sort((left, right) => right.ageMinutes - left.ageMinutes)
+    .slice(0, options.maxCandidates)
+    .map(({ contract, ageMinutes }) => ({
+      kind: 'stale_work_contract' as const,
+      id: contract.workId,
+      status: contract.status,
+      safe: true,
+      reason: 'Nonterminal WorkContract exceeded the explicit maintenance age threshold; cancellation preserves durable evidence and does not delete source or remote state.',
+      ageMinutes,
+      suggestedAction: 'full_maintenance_pass' as const,
+      ownershipStatus: 'explicit' as const,
+    }));
+}
+
 function readBoolean(input: Record<string, unknown>, snake: string, camel: string): boolean | undefined {
   if (typeof input[snake] === 'boolean') return input[snake] as boolean;
   if (typeof input[camel] === 'boolean') return input[camel] as boolean;
@@ -429,7 +462,8 @@ export function buildRuntimeMaintenanceStatus(
   const localJobCandidates = scanLocalJobCandidates(repository.canonicalRoot, normalized);
   const storageCandidates = runtimeStorageCandidates(storage.report);
   const tempCandidates = scanRuntimeTempCandidates(repository, normalized.maxCandidates);
-  const candidates = [...localJobCandidates, ...storageCandidates, ...tempCandidates].slice(0, normalized.maxCandidates);
+  const staleWorkCandidates = scanStaleWorkContractCandidates(repository, controllerHome, normalized);
+  const candidates = [...localJobCandidates, ...storageCandidates, ...tempCandidates, ...staleWorkCandidates].slice(0, normalized.maxCandidates);
   const summary = summarize(candidates);
   const blockingCandidates = candidates.filter((candidate) => candidate.kind !== 'stale_runtime_temp_entry');
   const readyForExecution = storage.report?.readyForExecution === true
@@ -681,6 +715,20 @@ export function applyRuntimeMaintenance(
             minAgeMinutes: RUNTIME_TEMP_RETENTION_MINUTES,
           }),
         };
+      }
+      if (candidate.kind === 'stale_work_contract') {
+        const work = getWorkContract({ controllerHome, repoId: repository.repoId }, candidate.id);
+        if (!work || isTerminalWorkContractStatus(work.status)) {
+          return { ...candidate, applied: false, result: 'already_terminal' };
+        }
+        transitionWorkContractPhase({ controllerHome, repoId: repository.repoId }, work.workId, {
+          phase: 'cleanup',
+          status: 'cancelled',
+          state: 'skipped',
+          summary: 'Cancelled by explicit full maintenance stale Work cleanup; durable evidence retained.',
+          evidenceRefs: work.evidenceRefs,
+        });
+        return { ...candidate, applied: true, result: 'work_contract_cancelled_evidence_retained' };
       }
       return { ...candidate, applied: false, result: 'unsupported_candidate' };
     } catch (error) {
