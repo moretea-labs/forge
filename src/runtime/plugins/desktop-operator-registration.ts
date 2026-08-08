@@ -1,0 +1,306 @@
+import type { ExternalPluginRegistrationInput } from './external-registration';
+import type { AssistantPluginActionDescriptor } from './types';
+
+const CONTROLLER_WRITE = [{ resource: 'repo-state' as const, mode: 'write' as const }];
+const SELECTOR_SCHEMA = {
+  type: 'object',
+  properties: {
+    ref: { type: 'string' },
+    role: { type: 'string' },
+    title: { type: 'string' },
+    identifier: { type: 'string' },
+  },
+  anyOf: [
+    { required: ['ref'] },
+    { required: ['role'] },
+    { required: ['title'] },
+    { required: ['identifier'] },
+  ],
+  additionalProperties: false,
+};
+
+function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
+  return [
+    {
+      actionId: 'desktop_status',
+      title: 'Desktop status',
+      description: 'Read Desktop Operator health, sessions, and bounded running-application summaries.',
+      readOnly: true,
+      risk: 'readonly',
+      confirmation: 'none',
+      defaultTimeoutMs: 5_000,
+      cancellable: true,
+      idempotent: true,
+      scopes: ['desktop.status'],
+      resourceClaims: [],
+      argumentsSchema: {
+        type: 'object',
+        properties: { limit: { type: 'integer', minimum: 1, maximum: 500 } },
+        additionalProperties: false,
+      },
+    },
+    {
+      actionId: 'desktop_session_open',
+      title: 'Open desktop session',
+      description: 'Launch or locate one application, optionally activate it, and create a bounded interaction session.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: 10_000,
+      cancellable: true,
+      idempotent: false,
+      scopes: ['desktop.session'],
+      resourceClaims: CONTROLLER_WRITE,
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          bundle_id: { type: 'string' },
+          app_name: { type: 'string' },
+          launch: { type: 'boolean' },
+          activate: { type: 'boolean' },
+        },
+        anyOf: [{ required: ['bundle_id'] }, { required: ['app_name'] }],
+        additionalProperties: false,
+      },
+    },
+    {
+      actionId: 'desktop_observe',
+      title: 'Observe desktop session',
+      description: 'Read a bounded Accessibility snapshot and window list for one interaction session.',
+      readOnly: true,
+      risk: 'readonly',
+      confirmation: 'none',
+      defaultTimeoutMs: 10_000,
+      cancellable: true,
+      idempotent: true,
+      scopes: ['desktop.observe'],
+      resourceClaims: [],
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          interaction_id: { type: 'string' },
+          max_depth: { type: 'integer', minimum: 1, maximum: 20 },
+          max_nodes: { type: 'integer', minimum: 1, maximum: 5_000 },
+          include_values: { type: 'boolean' },
+        },
+        required: ['interaction_id'],
+        additionalProperties: false,
+      },
+    },
+    {
+      actionId: 'desktop_press',
+      title: 'Press desktop element',
+      description: 'Press one Accessibility element in an existing desktop interaction session.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: 10_000,
+      cancellable: true,
+      idempotent: false,
+      scopes: ['desktop.interact'],
+      resourceClaims: CONTROLLER_WRITE,
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          interaction_id: { type: 'string' },
+          selector: SELECTOR_SCHEMA,
+          coordinate_fallback: { type: 'boolean' },
+        },
+        required: ['interaction_id', 'selector'],
+        additionalProperties: false,
+      },
+    },
+    {
+      actionId: 'desktop_type_text',
+      title: 'Type desktop text',
+      description: 'Type text into one selected Accessibility element in an existing interaction session.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: 10_000,
+      cancellable: true,
+      idempotent: false,
+      scopes: ['desktop.interact'],
+      resourceClaims: CONTROLLER_WRITE,
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          interaction_id: { type: 'string' },
+          selector: SELECTOR_SCHEMA,
+          text: { type: 'string' },
+          replace: { type: 'boolean' },
+        },
+        required: ['interaction_id', 'selector', 'text'],
+        additionalProperties: false,
+      },
+    },
+    {
+      actionId: 'desktop_key',
+      title: 'Press desktop keys',
+      description: 'Send one bounded key chord, optionally activating an existing interaction session first.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: 10_000,
+      cancellable: true,
+      idempotent: false,
+      scopes: ['desktop.interact'],
+      resourceClaims: CONTROLLER_WRITE,
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          interaction_id: { type: 'string' },
+          keys: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string' } },
+        },
+        required: ['keys'],
+        additionalProperties: false,
+      },
+    },
+    {
+      actionId: 'desktop_open_url',
+      title: 'Open desktop URL',
+      description: 'Open one absolute URL through macOS application routing.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: 10_000,
+      cancellable: true,
+      idempotent: false,
+      scopes: ['desktop.interact'],
+      resourceClaims: CONTROLLER_WRITE,
+      argumentsSchema: {
+        type: 'object',
+        properties: { url: { type: 'string' } },
+        required: ['url'],
+        additionalProperties: false,
+      },
+    },
+    {
+      actionId: 'desktop_screenshot',
+      title: 'Capture desktop screenshot',
+      description: 'Capture one bounded display or window screenshot. Authorization is required because screen contents may be sensitive.',
+      readOnly: true,
+      risk: 'readonly',
+      confirmation: 'authorization',
+      defaultTimeoutMs: 15_000,
+      cancellable: true,
+      idempotent: false,
+      scopes: ['desktop.capture'],
+      resourceClaims: [],
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          scope: { type: 'string', enum: ['display', 'window'] },
+          interaction_id: { type: 'string' },
+          window_id: { type: 'integer', minimum: 1 },
+          label: { type: 'string' },
+        },
+        additionalProperties: false,
+      },
+    },
+    {
+      actionId: 'desktop_batch',
+      title: 'Run desktop batch',
+      description: 'Run at most 50 non-batch Desktop Operator steps under one authorized interaction request.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: 30_000,
+      cancellable: true,
+      idempotent: false,
+      scopes: ['desktop.batch'],
+      resourceClaims: CONTROLLER_WRITE,
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          steps: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 50,
+            items: {
+              type: 'object',
+              properties: {
+                action: { type: 'string' },
+                arguments: { type: 'object' },
+              },
+              required: ['action'],
+              additionalProperties: false,
+            },
+          },
+          on_error: { type: 'string', enum: ['stop', 'continue'] },
+        },
+        required: ['steps'],
+        additionalProperties: false,
+      },
+    },
+    {
+      actionId: 'desktop_session_close',
+      title: 'Close desktop session',
+      description: 'Close one Desktop Operator interaction session without terminating the target application.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'none',
+      defaultTimeoutMs: 5_000,
+      cancellable: true,
+      idempotent: true,
+      scopes: ['desktop.session'],
+      resourceClaims: CONTROLLER_WRITE,
+      argumentsSchema: {
+        type: 'object',
+        properties: { interaction_id: { type: 'string' } },
+        required: ['interaction_id'],
+        additionalProperties: false,
+      },
+    },
+  ];
+}
+
+export interface DesktopOperatorRegistrationOptions {
+  socketPath: string;
+  pluginVersion?: string;
+  protocolVersion?: string;
+  enabled?: boolean;
+}
+
+export function createDesktopOperatorRegistrationInput(
+  options: DesktopOperatorRegistrationOptions,
+): ExternalPluginRegistrationInput {
+  const permissions = [
+    { scope: 'desktop.status', mode: 'read' as const, description: 'Read provider health, sessions, and bounded application summaries.', granted: true, required: true },
+    { scope: 'desktop.session', mode: 'write' as const, description: 'Create and close bounded application interaction sessions.', granted: true, required: false },
+    { scope: 'desktop.observe', mode: 'read' as const, description: 'Read bounded Accessibility snapshots and window metadata.', granted: true, required: false },
+    { scope: 'desktop.interact', mode: 'write' as const, description: 'Press controls, type text, send keys, and open URLs on macOS.', granted: true, required: false },
+    { scope: 'desktop.capture', mode: 'read' as const, description: 'Capture bounded desktop screenshots after explicit authorization.', granted: true, required: false },
+    { scope: 'desktop.batch', mode: 'write' as const, description: 'Execute a bounded batch of registered desktop actions.', granted: true, required: false },
+  ];
+  const actions = desktopOperatorActions();
+  return {
+    pluginId: 'desktop_operator',
+    providerPluginId: 'desktop_operator',
+    displayName: 'Forge Desktop Operator',
+    provider: 'local-macos',
+    pluginVersion: options.pluginVersion ?? '0.1.0',
+    protocolVersion: options.protocolVersion ?? '1.0',
+    scope: 'controller',
+    enabled: options.enabled !== false,
+    transport: {
+      kind: 'unix_socket_jsonl',
+      socketPath: options.socketPath,
+      healthTimeoutMs: 2_000,
+      actionTimeoutMs: 30_000,
+      maxRequestBytes: 1_048_576,
+      maxResponseBytes: 1_048_576,
+    },
+    permissions,
+    capabilities: [
+      { capabilityId: 'desktop.status', title: 'Desktop status', description: 'Read Desktop Operator status.', scopes: ['desktop.status'], actions: ['desktop_status'] },
+      { capabilityId: 'desktop.session', title: 'Desktop sessions', description: 'Create and close application interaction sessions.', scopes: ['desktop.session'], actions: ['desktop_session_open', 'desktop_session_close'] },
+      { capabilityId: 'desktop.observe', title: 'Desktop observation', description: 'Read bounded Accessibility and window state.', scopes: ['desktop.observe'], actions: ['desktop_observe'] },
+      { capabilityId: 'desktop.interact', title: 'Desktop interaction', description: 'Press, type, send keys, and open URLs.', scopes: ['desktop.interact'], actions: ['desktop_press', 'desktop_type_text', 'desktop_key', 'desktop_open_url'] },
+      { capabilityId: 'desktop.capture', title: 'Desktop capture', description: 'Capture authorized screenshots.', scopes: ['desktop.capture'], actions: ['desktop_screenshot'] },
+      { capabilityId: 'desktop.batch', title: 'Desktop batch', description: 'Run bounded desktop action batches.', scopes: ['desktop.batch'], actions: ['desktop_batch'] },
+    ],
+    actions,
+    legacyIdentities: ['Repo Harness Desktop Operator'],
+  };
+}

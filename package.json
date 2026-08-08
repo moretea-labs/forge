@@ -123,6 +123,7 @@
     "check:task-sync": "node bin/forge.mjs run check-task-sync",
     "check:task-workflow": "bash scripts/check-task-workflow.sh --strict",
     "runtime:activate-source-baseline": "bun scripts/activate-source-baseline.ts request",
+    "plugin:install-desktop-operator": "bun scripts/install-desktop-operator-registration.ts",
     "sync:brain-docs": "forge run sync-brain-docs --all",
     "sync:codex-installed": "bash scripts/sync-codex-installed-copies.sh",
     "check:forge-runtime": "bash scripts/verify-forge-runtime.sh",
