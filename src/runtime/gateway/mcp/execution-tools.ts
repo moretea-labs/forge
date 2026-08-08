@@ -200,6 +200,36 @@ function normalizedRequiredString(args: Record<string, unknown>, key: string): s
   return typeof args[key] === 'string' && args[key].trim() ? args[key].trim() : undefined;
 }
 
+function selectWorkFinalizationTarget(
+  repository: ReturnType<typeof getRepository>,
+  handle: Pick<WorkHandleState, 'sourceCheckoutId' | 'checkoutId'>,
+) {
+  const preferredCheckoutId = handle.sourceCheckoutId?.trim();
+  if (preferredCheckoutId) {
+    try {
+      return selectRepositoryCheckout(repository, preferredCheckoutId, { allowArchived: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // Legacy Work can outlive the registry entry for the source checkout after
+      // an earlier partial cleanup. Git refs/worktree administration are
+      // repository-common operations, so fall back only for a positively
+      // identified missing/removed source checkout; all other errors fail closed.
+      if (!message.startsWith('CHECKOUT_NOT_ACTIVE:') && !message.startsWith('checkout not found for ')) throw error;
+    }
+  }
+  return repository;
+}
+
+function workReturnCheckoutId(
+  ctx: MultiRepositoryMcpToolContext,
+  handle: Pick<WorkHandleState, 'repositoryId' | 'sourceCheckoutId' | 'checkoutId'>,
+  fallbackCheckoutId?: string,
+): string | undefined {
+  const repository = getRepository(handle.repositoryId, ctx.controllerHome, { includeRemoved: true });
+  const target = selectWorkFinalizationTarget(repository, handle);
+  return target.activeCheckoutId ?? repository.activeCheckoutId ?? fallbackCheckoutId;
+}
+
 function completionReceiptForFinalizedWork(
   ctx: MultiRepositoryMcpToolContext,
   handle: WorkHandleState,
@@ -207,7 +237,7 @@ function completionReceiptForFinalizedWork(
   args: Record<string, unknown>,
 ): CompletionReceipt {
   const repository = getRepository(handle.repositoryId, ctx.controllerHome, { includeRemoved: true });
-  const target = selectRepositoryCheckout(repository, handle.sourceCheckoutId ?? repository.activeCheckoutId);
+  const target = selectWorkFinalizationTarget(repository, handle);
   const targetBranch = typeof args.target_branch === 'string' && args.target_branch.trim()
     ? args.target_branch.trim()
     : repository.defaultBranch || 'main';
@@ -663,7 +693,7 @@ async function reconcileTerminalCleanup(
   });
   updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
     activeWorkId: undefined,
-    activeCheckoutId: persisted.sourceCheckoutId ?? session.activeCheckoutId,
+    activeCheckoutId: workReturnCheckoutId(ctx, persisted, session.activeCheckoutId),
   });
   if (cleaned.receipt.complete && !wasComplete) {
     appendWorkEvidence(
@@ -1332,7 +1362,7 @@ function cleanupOnlyMergedHead(
   const cancelledContract = contract?.status === 'cancelled';
 
   const repository = getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true });
-  const target = selectRepositoryCheckout(repository, current.sourceCheckoutId ?? repository.activeCheckoutId);
+  const target = selectWorkFinalizationTarget(repository, current);
   const targetBranch = typeof args.target_branch === 'string' && args.target_branch.trim()
     ? args.target_branch.trim()
     : repository.defaultBranch || 'main';
@@ -1394,7 +1424,7 @@ function failedCleanupOnlyHead(
   const expectedHead = current.expectedHead ?? current.baseCommit;
   if (!expectedHead) return undefined;
   const repository = getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true });
-  const target = selectRepositoryCheckout(repository, current.sourceCheckoutId ?? repository.activeCheckoutId);
+  const target = selectWorkFinalizationTarget(repository, current);
   const targetBranch = typeof args.target_branch === 'string' && args.target_branch.trim()
     ? args.target_branch.trim()
     : repository.defaultBranch || 'main';
@@ -1502,7 +1532,7 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       releasePreparedWorkOwnership(ctx, current);
       updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
         activeWorkId: undefined,
-        activeCheckoutId: current.sourceCheckoutId ?? session.activeCheckoutId,
+        activeCheckoutId: workReturnCheckoutId(ctx, current, session.activeCheckoutId),
       });
       return {
         idempotent: true,
@@ -1603,9 +1633,9 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     }));
 
     if (!failedCleanupProof.worktreeMissing && current.finalization.worktreeCleanup !== 'done') {
-      const target = selectRepositoryCheckout(
+      const target = selectWorkFinalizationTarget(
         getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true }),
-        current.sourceCheckoutId ?? current.checkoutId,
+        current,
       );
       const cleanup = runCleanup(target.canonicalRoot, current.worktreePath);
       if (!cleanup.ok) {
@@ -1630,9 +1660,9 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     }
 
     if (args.delete_branch !== false && current.finalization.branchCleanup !== 'done') {
-      const target = selectRepositoryCheckout(
+      const target = selectWorkFinalizationTarget(
         getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true }),
-        current.sourceCheckoutId ?? current.checkoutId,
+        current,
       );
       const deleted = repositoryGitDeleteBranch(ctx.controllerHome, target, {
         branch: current.branch,
@@ -1828,7 +1858,7 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     validateWorkHandle(ctx.controllerHome, current, identity, 'full', 'finalize');
     const contract = contractFor(ctx, current);
     if (contract?.constraints.allowMerge === false) throw new Error('WORK_MERGE_NOT_ALLOWED: WorkContract disallows merge');
-    const target = selectRepositoryCheckout(getRepository(current.repositoryId, ctx.controllerHome), current.sourceCheckoutId ?? current.checkoutId);
+    const target = selectWorkFinalizationTarget(getRepository(current.repositoryId, ctx.controllerHome), current);
     const deleteAfterWorktreeCleanup = current.managedWorktree && args.delete_branch !== false;
     const merged = repositoryGitFinishWorkflow(ctx.controllerHome, target, { featureBranch: current.branch, targetBranch: typeof args.target_branch === 'string' ? args.target_branch : undefined, deleteBranch: !deleteAfterWorktreeCleanup && args.delete_branch !== false, noFf: args.no_ff === true, authorizationDecision: gitAuthorization, sessionId: session.sessionId, principalId: session.principalId, workId: current.workId, goalId: current.goalId });
     const pendingAuthorization = merged.steps.find((step) => step.execution.authorizationDecision?.decision === 'user_confirmation_required')?.execution.authorizationDecision;
@@ -1848,7 +1878,7 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     if (!current.managedWorktree) {
       current = transact('worktree-cleanup-skipped', (fresh) => writeWorkHandle(ctx.controllerHome, { ...fresh, finalization: { ...fresh.finalization, worktreeCleanup: 'skipped' } }));
     } else {
-      const target = selectRepositoryCheckout(getRepository(current.repositoryId, ctx.controllerHome), current.sourceCheckoutId ?? current.checkoutId);
+      const target = selectWorkFinalizationTarget(getRepository(current.repositoryId, ctx.controllerHome), current);
       const cleanup = runCleanup(target.canonicalRoot, current.worktreePath);
       if (!cleanup.ok) return failStage('worktreeCleanup', cleanup.message ?? 'worktree cleanup failed');
       current = transact('worktree-cleanup-done', (fresh) => {
@@ -1862,7 +1892,7 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
   }
 
   if (wants.cleanup && current.finalization.branchCleanup === 'pending' && current.finalization.merge === 'done') {
-    const target = selectRepositoryCheckout(getRepository(current.repositoryId, ctx.controllerHome), current.sourceCheckoutId ?? current.checkoutId);
+    const target = selectWorkFinalizationTarget(getRepository(current.repositoryId, ctx.controllerHome), current);
     const deleted = repositoryGitDeleteBranch(ctx.controllerHome, target, { branch: current.branch, force: false, authorizationDecision: gitAuthorization, sessionId: session.sessionId, principalId: session.principalId, workId: current.workId, goalId: current.goalId });
     if (deleted.execution.authorizationDecision?.decision === 'user_confirmation_required') return { authorization: deleted.execution.authorizationDecision, work: compactHandle(current), stages: current.finalization };
     if (deleted.execution.status !== 'executed' || deleted.execution.ok !== true) return failStage('branchCleanup', deleted.execution.stderr || 'feature branch cleanup failed');

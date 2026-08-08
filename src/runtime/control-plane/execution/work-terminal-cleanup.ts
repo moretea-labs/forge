@@ -372,6 +372,23 @@ function preserveDirtyWorktree(
   return persist(input.controllerHome, current, receipt);
 }
 
+function selectTerminalCleanupTarget(repository: ReturnType<typeof getRepository>, handle: WorkHandleState): ReturnType<typeof getRepository> {
+  const sourceCheckoutId = handle.sourceCheckoutId?.trim();
+  if (sourceCheckoutId) {
+    try {
+      return selectRepositoryCheckout(repository, sourceCheckoutId, { allowArchived: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.startsWith('CHECKOUT_NOT_ACTIVE:') && !message.startsWith('checkout not found for ')) throw error;
+    }
+  }
+  // Terminal cleanup only performs repository-common Git administration after
+  // proving Work ownership/branch containment. A removed legacy source checkout
+  // must not strand those resources when another active checkout still owns the
+  // same Repository record.
+  return repository;
+}
+
 export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Promise<TerminalWorkCleanupResult> {
   const repository = getRepository(input.handle.repositoryId, input.controllerHome, { includeRemoved: true });
   const targetBranch = input.targetBranch?.trim() || repository.defaultBranch || 'main';
@@ -442,7 +459,7 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
   current = persist(input.controllerHome, current, receipt);
   if (receipt.blockers.length > 0) return { handle: current, receipt };
 
-  const target = selectRepositoryCheckout(repository, current.sourceCheckoutId ?? repository.activeCheckoutId, { allowArchived: true });
+  const target = selectTerminalCleanupTarget(repository, current);
   let registeredPath: string | undefined;
   try {
     registeredPath = selectRepositoryCheckout(repository, current.checkoutId, { allowArchived: true }).canonicalRoot;

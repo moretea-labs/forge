@@ -5,7 +5,7 @@ import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { createMcpToolContext } from '../../src/cli/mcp/server';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { addRepositoryCheckout, registerRepository, setRepositoryCheckoutLifecycle } from '../../src/cli/repositories/registry';
 import { callExecutionTool } from '../../src/runtime/gateway/mcp/execution-tools';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
@@ -112,6 +112,40 @@ describe('rh_work managed lifecycle closure', () => {
     expect(payload.status).toBe('ok');
     expect(payload.data?.lifecycleClosed).toBe(true);
     expect(readFileSync(join(fx.repoRoot, 'lifecycle.txt'), 'utf8')).toBe('closed-loop\n');
+    expect(existsSync(work.worktreePath)).toBe(false);
+    expect(branchExists(fx.repoRoot, work.branch)).toBe(false);
+  });
+
+  test('stop can close a legacy Work after its source checkout registry entry was removed', async () => {
+    const fx = fixture('removed-source');
+    const work = await prepareManagedWork(fx, 'Legacy Work whose source checkout was already removed');
+    const replacementRoot = join(fx.root, 'replacement-checkout');
+    git(fx.repoRoot, ['worktree', 'add', '-b', 'replacement-checkout', replacementRoot, 'main']);
+    addRepositoryCheckout({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      path: replacementRoot,
+      activate: true,
+    });
+    setRepositoryCheckoutLifecycle({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      lifecycle: 'removed',
+      reason: 'simulate an earlier partial lifecycle cleanup',
+    });
+
+    const stopped = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'stop',
+      work_id: work.workId,
+      reason: 'legacy cleanup acceptance',
+    });
+    expect(stopped?.isError).not.toBe(true);
+    const payload = stopped?.structuredContent as { status?: string; data?: { worktreeDeleted?: boolean; cleanupPending?: boolean } };
+    expect(payload.status).toBe('ok');
+    expect(payload.data?.worktreeDeleted).toBe(true);
+    expect(payload.data?.cleanupPending).toBe(false);
     expect(existsSync(work.worktreePath)).toBe(false);
     expect(branchExists(fx.repoRoot, work.branch)).toBe(false);
   });
