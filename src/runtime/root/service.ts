@@ -96,6 +96,23 @@ interface RuntimeReleaseManifestRecord {
   entrypoint: string;
   controllerHome: string;
   artifactIdentity: string;
+  arguments?: string[];
+  releaseRevision?: string;
+  sourceCommit?: string;
+  cleanWorkspace?: boolean;
+}
+
+interface ActiveRuntimeReleaseRecord {
+  releaseId: string;
+  manifestPath: string;
+  releaseRoot: string;
+  entrypoint: string;
+  manifest: RuntimeReleaseManifestRecord;
+}
+
+interface ActiveRuntimeLaunchSpec {
+  args: string[];
+  environment: Record<string, string>;
 }
 
 function isInside(parent: string, child: string): boolean {
@@ -103,26 +120,64 @@ function isInside(parent: string, child: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 }
 
-export function activeRuntimeEntrypoint(controllerHome: string): string | undefined {
+function readActiveRuntimeRelease(controllerHome: string): ActiveRuntimeReleaseRecord | undefined {
   const home = resolveControllerHome(controllerHome);
   const releasesRoot = join(home, 'runtime', 'releases');
   const authorityPath = join(releasesRoot, 'authority.json');
   if (!existsSync(authorityPath)) return undefined;
   const authority = JSON.parse(readFileSync(authorityPath, 'utf8')) as RuntimeReleaseAuthorityRecord;
-  if (authority.schemaVersion !== 1 || authority.status !== 'committed' || !authority.active?.manifestPath) {
+  const active = authority.active;
+  if (authority.schemaVersion !== 1 || authority.status !== 'committed' || !active?.manifestPath) {
     throw new Error('FORGE_RUNTIME_RELEASE_AUTHORITY_INVALID');
   }
-  const manifestPath = resolve(authority.active.manifestPath);
+  const manifestPath = resolve(active.manifestPath);
   if (!isInside(releasesRoot, manifestPath)) throw new Error('FORGE_RUNTIME_RELEASE_MANIFEST_OUTSIDE_RELEASES');
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as RuntimeReleaseManifestRecord;
   if (manifest.schemaVersion !== 1 || !manifest.releaseId || !manifest.entrypoint) throw new Error('FORGE_RUNTIME_RELEASE_MANIFEST_INVALID');
   if (resolve(manifest.controllerHome) !== home) throw new Error('FORGE_RUNTIME_RELEASE_CONTROLLER_HOME_MISMATCH');
-  if (authority.active.releaseId && authority.active.releaseId !== manifest.releaseId) throw new Error('FORGE_RUNTIME_RELEASE_ID_MISMATCH');
+  if (active.releaseId && active.releaseId !== manifest.releaseId) throw new Error('FORGE_RUNTIME_RELEASE_ID_MISMATCH');
   const releaseRoot = dirname(manifestPath);
   const entrypoint = resolve(releaseRoot, manifest.entrypoint);
   if (!isInside(releaseRoot, entrypoint)) throw new Error('FORGE_RUNTIME_RELEASE_ENTRYPOINT_OUTSIDE_RELEASE');
   if (!existsSync(entrypoint)) throw new Error(`FORGE_RUNTIME_RELEASE_ENTRYPOINT_MISSING: ${entrypoint}`);
-  return entrypoint;
+  return { releaseId: active.releaseId ?? manifest.releaseId, manifestPath, releaseRoot, entrypoint, manifest };
+}
+
+export function activeRuntimeEntrypoint(controllerHome: string): string | undefined {
+  return readActiveRuntimeRelease(controllerHome)?.entrypoint;
+}
+
+function activeRuntimeLaunchSpec(controllerHome: string): ActiveRuntimeLaunchSpec | undefined {
+  const home = resolveControllerHome(controllerHome);
+  const active = readActiveRuntimeRelease(home);
+  if (!active) return undefined;
+  const config = readForgeRuntimeServiceConfig(forgeRuntimeServicePaths(home).configPath);
+  if (config.controllerHome !== home) throw new Error('FORGE_RUNTIME_SERVICE_HOME_MISMATCH');
+  const manifestArguments = active.manifest.arguments ?? [];
+  if (!Array.isArray(manifestArguments) || !manifestArguments.every((argument) => typeof argument === 'string')) {
+    throw new Error('FORGE_RUNTIME_RELEASE_ARGUMENTS_INVALID');
+  }
+  return {
+    args: [
+      '--controller-home', home,
+      '--repo', config.repositoryRoot,
+      '--release-manifest', active.manifestPath,
+      '--host', config.host,
+      '--port', String(config.port),
+      '--auth-token-file', config.authTokenFile,
+      ...manifestArguments,
+      ...(config.exclusiveWorkId ? ['--exclusive-work-id', config.exclusiveWorkId] : []),
+    ],
+    environment: {
+      FORGE_CONTROLLER_HOME: home,
+      FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT: active.releaseRoot,
+      FORGE_RELEASE_PATH: active.releaseRoot,
+      FORGE_RELEASE_ID: active.releaseId,
+      FORGE_RELEASE_REVISION: active.manifest.releaseRevision ?? active.releaseId,
+      ...(active.manifest.sourceCommit ? { FORGE_RELEASE_SOURCE_COMMIT: active.manifest.sourceCommit } : {}),
+      FORGE_RELEASE_CLEAN_WORKSPACE: String(active.manifest.cleanWorkspace !== false),
+    },
+  };
 }
 
 function atomicSymlink(path: string, target: string): void {
@@ -151,14 +206,16 @@ export function ensureForgeRuntimeLaunchAgentContract(input: { controllerHome: s
   const paths = forgeRuntimeServicePaths(input.controllerHome);
   const active = activeRuntimeEntrypoint(input.controllerHome);
   const useRelease = Boolean(active);
+  const releaseLaunch = useRelease ? activeRuntimeLaunchSpec(input.controllerHome) : undefined;
   if (useRelease) syncForgeRuntimeActiveEntrypoint(input.controllerHome);
   if (!useRelease && (!input.bootstrapNodeExecutable || !input.bootstrapRunnerPath)) {
     throw new Error('FORGE_RUNTIME_BOOTSTRAP_RUNNER_REQUIRED');
   }
+  if (useRelease && !releaseLaunch) throw new Error('FORGE_RUNTIME_RELEASE_LAUNCH_SPEC_UNAVAILABLE');
   const plist = renderForgeRuntimeLaunchAgent({
     paths,
     ...(useRelease
-      ? { activeEntrypointPath: paths.activeEntrypointPath }
+      ? { activeEntrypointPath: paths.activeEntrypointPath, runtimeArgs: releaseLaunch!.args, environment: releaseLaunch!.environment }
       : { nodeExecutable: input.bootstrapNodeExecutable!, runnerPath: input.bootstrapRunnerPath! }),
   });
   const existingSource = existsSync(paths.sourcePlistPath) ? readFileSync(paths.sourcePlistPath, 'utf8') : undefined;
@@ -169,11 +226,16 @@ export function ensureForgeRuntimeLaunchAgentContract(input: { controllerHome: s
   return { paths, mode: useRelease ? 'release' : 'bootstrap', changed };
 }
 
-export function renderForgeRuntimeLaunchAgent(input: { paths: ForgeRuntimeServicePaths; activeEntrypointPath?: string; nodeExecutable?: string; runnerPath?: string }): string {
+export function renderForgeRuntimeLaunchAgent(input: { paths: ForgeRuntimeServicePaths; activeEntrypointPath?: string; runtimeArgs?: string[]; environment?: Record<string, string>; nodeExecutable?: string; runnerPath?: string }): string {
+  if (input.activeEntrypointPath && !input.runtimeArgs) throw new Error('FORGE_RUNTIME_RELEASE_LAUNCH_ARGS_REQUIRED');
   const args = input.activeEntrypointPath
-    ? [resolve(input.activeEntrypointPath), '--controller-home', input.paths.controllerHome, '--config', input.paths.configPath]
+    ? [resolve(input.activeEntrypointPath), ...(input.runtimeArgs ?? [])]
     : [resolve(input.nodeExecutable!), resolve(input.runnerPath!), '--controller-home', input.paths.controllerHome, '--config', input.paths.configPath];
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${xml(input.paths.label)}</string>\n  <key>ProgramArguments</key>\n  <array>\n${args.map((arg) => `    <string>${xml(arg)}</string>`).join('\n')}\n  </array>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <dict>\n    <key>SuccessfulExit</key>\n    <false/>\n  </dict>\n  <key>ThrottleInterval</key>\n  <integer>5</integer>\n  <key>ProcessType</key>\n  <string>Interactive</string>\n  <key>StandardOutPath</key>\n  <string>${xml(input.paths.stdoutPath)}</string>\n  <key>StandardErrorPath</key>\n  <string>${xml(input.paths.stderrPath)}</string>\n</dict>\n</plist>\n`;
+  const environmentEntries = Object.entries(input.environment ?? {}).sort(([left], [right]) => left.localeCompare(right));
+  const environmentXml = environmentEntries.length > 0
+    ? `  <key>EnvironmentVariables</key>\n  <dict>\n${environmentEntries.map(([key, value]) => `    <key>${xml(key)}</key>\n    <string>${xml(value)}</string>`).join('\n')}\n  </dict>\n`
+    : '';
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${xml(input.paths.label)}</string>\n  <key>ProgramArguments</key>\n  <array>\n${args.map((arg) => `    <string>${xml(arg)}</string>`).join('\n')}\n  </array>\n${environmentXml}  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <dict>\n    <key>SuccessfulExit</key>\n    <false/>\n  </dict>\n  <key>ThrottleInterval</key>\n  <integer>5</integer>\n  <key>ProcessType</key>\n  <string>Interactive</string>\n  <key>StandardOutPath</key>\n  <string>${xml(input.paths.stdoutPath)}</string>\n  <key>StandardErrorPath</key>\n  <string>${xml(input.paths.stderrPath)}</string>\n</dict>\n</plist>\n`;
 }
 
 export async function installForgeRuntimeService(input: { config: ForgeRuntimeServiceConfig; runnerPath: string; nodeExecutable?: string }): Promise<ForgeRuntimeServicePaths> {

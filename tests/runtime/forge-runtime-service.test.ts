@@ -55,9 +55,17 @@ describe('Forge Runtime service', () => {
     expect(bootstrap).toContain('--config');
     expect(bootstrap).toContain('forge-runtime-service.mjs');
 
-    const release = renderForgeRuntimeLaunchAgent({ paths, activeEntrypointPath: paths.activeEntrypointPath });
+    const release = renderForgeRuntimeLaunchAgent({
+      paths,
+      activeEntrypointPath: paths.activeEntrypointPath,
+      runtimeArgs: ['--controller-home', fx.home, '--repo', fx.repo],
+      environment: { FORGE_CONTROLLER_HOME: fx.home },
+    });
     expect(release).toContain(paths.activeEntrypointPath);
+    expect(release).toContain('<string>--repo</string>');
+    expect(release).toContain('<key>EnvironmentVariables</key>');
     expect(release).not.toContain('forge-runtime-service.mjs');
+    expect(release).not.toContain('<string>--config</string>');
   });
 
   test('pins launchd persistence to active immutable release once authority exists', () => {
@@ -74,11 +82,26 @@ describe('Forge Runtime service', () => {
       entrypoint: 'forge-runtime',
       controllerHome: fx.home,
       artifactIdentity: 'sha256:test',
+      releaseRevision: 'release-revision-a',
+      sourceCommit: 'source-a',
+      cleanWorkspace: true,
+      arguments: [],
     })}\n`);
     writeFileSync(join(fx.home, 'runtime', 'releases', 'authority.json'), `${JSON.stringify({
       schemaVersion: 1,
       status: 'committed',
       active: { releaseId: 'release-a', manifestPath, artifactIdentity: 'sha256:test' },
+    })}\n`);
+
+    mkdirSync(paths.serviceRoot, { recursive: true });
+    writeFileSync(paths.configPath, `${JSON.stringify({
+      schemaVersion: 1,
+      controllerHome: fx.home,
+      repositoryRoot: fx.repo,
+      host: '127.0.0.1',
+      port: 8765,
+      authTokenFile: fx.token,
+      exclusiveWorkId: 'work-test',
     })}\n`);
 
     expect(activeRuntimeEntrypoint(fx.home)).toBe(entry);
@@ -89,6 +112,27 @@ describe('Forge Runtime service', () => {
     expect(ensured.mode).toBe('release');
     const plist = readFileSync(paths.installedPlistPath, 'utf8');
     expect(plist).toContain(paths.activeEntrypointPath);
+    expect(plist).toContain('<string>--repo</string>');
+    expect(plist).toContain(`<string>${fx.repo}</string>`);
+    expect(plist).toContain('<string>--release-manifest</string>');
+    expect(plist).toContain(`<string>${manifestPath}</string>`);
+    expect(plist).toContain('<string>--host</string>');
+    expect(plist).toContain('<string>127.0.0.1</string>');
+    expect(plist).toContain('<string>--port</string>');
+    expect(plist).toContain('<string>8765</string>');
+    expect(plist).toContain('<string>--auth-token-file</string>');
+    expect(plist).toContain(`<string>${fx.token}</string>`);
+    expect(plist).toContain('<string>--exclusive-work-id</string>');
+    expect(plist).toContain('<string>work-test</string>');
+    expect(plist).toContain('<key>FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT</key>');
+    expect(plist).toContain(`<string>${releaseRoot}</string>`);
+    expect(plist).toContain('<key>FORGE_RELEASE_ID</key>');
+    expect(plist).toContain('<string>release-a</string>');
+    expect(plist).toContain('<key>FORGE_RELEASE_REVISION</key>');
+    expect(plist).toContain('<string>release-revision-a</string>');
+    expect(plist).toContain('<key>FORGE_RELEASE_SOURCE_COMMIT</key>');
+    expect(plist).toContain('<string>source-a</string>');
+    expect(plist).not.toContain('<string>--config</string>');
     expect(plist).not.toContain('forge-runtime-service.mjs');
   });
 
