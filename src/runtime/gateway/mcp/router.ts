@@ -45,6 +45,10 @@ export const RETIRED_AGENT_OPERATIONS = new Set([
   'submit_local_job',
 ]);
 
+// Explicitly authorized bounded control-plane writes whose handlers already own
+// their mutation boundary. These must not be promoted to retired ExecutionJobs.
+const DIRECT_CONTROL_WRITE_TOOLS = new Set(['runtime_maintenance_apply']);
+
 // Historical ExecutionJobs remain readable migration evidence only.
 function executionJobCreationRetired(): boolean {
   return true;
@@ -333,6 +337,9 @@ export function classifyGatewayExecutionPath(
   }
   if (isSelfManagedDurableTool(name)) {
     return { path: 'direct', reasons: ['self_managed_durable_boundary'] };
+  }
+  if (DIRECT_CONTROL_WRITE_TOOLS.has(name) && !wantsAsyncExecution(args)) {
+    return { path: 'direct', reasons: ['bounded_direct_control_write'] };
   }
   if (EXPLICIT_EXTERNAL_CONTROLLER_TOOLS.has(name)) {
     return { path: 'durable', reasons: ['explicit_external_controller_boundary'] };

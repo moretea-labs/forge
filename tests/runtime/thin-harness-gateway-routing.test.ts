@@ -111,6 +111,20 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(classification.decision?.mode).toBe('fast');
   });
 
+  test('routes bounded runtime maintenance writes directly but preserves explicit async durable routing', () => {
+    expect(classifyGatewayExecutionPath('runtime_maintenance_apply', {
+      action_id: 'full_maintenance_pass',
+      confirm_maintenance: true,
+      authorization: 'full_maintenance_pass',
+    })).toMatchObject({ path: 'direct', reasons: ['bounded_direct_control_write'] });
+    expect(classifyGatewayExecutionPath('runtime_maintenance_apply', {
+      action_id: 'full_maintenance_pass',
+      confirm_maintenance: true,
+      authorization: 'full_maintenance_pass',
+      apply_mode: 'async',
+    }).path).toBe('durable');
+  });
+
   test('async / durable request still forces durable', () => {
     expect(classifyGatewayExecutionPath('repository_command_execute', {
       command: ['git', 'status'],
