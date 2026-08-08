@@ -90,7 +90,7 @@ export function stageRuntimeRelease(input: {
     const diagnosticCompile = compileBinary({
       sourceRoot,
       outputPath: diagnosticExecutable,
-      entryPath: join(sourceRoot, 'src/cli/index.ts'),
+      entryPath: join(sourceRoot, 'src/cli/diagnostic-entry.ts'),
     });
     if (!diagnosticCompile.ok) {
       throw new Error(`RUNTIME_RELEASE_DIAGNOSTIC_BUILD_FAILED: ${diagnosticCompile.stderr || diagnosticCompile.stdout || diagnosticCompile.error}`.slice(0, 2_000));
