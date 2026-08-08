@@ -535,6 +535,57 @@ describe('local_system target adapter', () => {
     expect((sharedList.targets as unknown[])).toHaveLength(1);
   });
 
+  test('terminates only a PID whose command identity matches exactly enough', async () => {
+    const controllerHome = temp('forge-local-system-process-controller-');
+    const signals: Array<{ pid: number; signal: NodeJS.Signals }> = [];
+    setLocalSystemPluginHooksForTest({
+      runCommand: (command, args) => {
+        expect(command).toBe('ps');
+        expect(args).toEqual(['-p', '96834', '-o', 'command=']);
+        return { ok: true, status: 0, stdout: '/Users/greyson/investment-decision-system/.venv/bin/python -m app.mcp.server\n', stderr: '', command: [command, ...args] };
+      },
+      signalProcess: (pid, signal) => { signals.push({ pid, signal }); },
+    });
+
+    await expect(executeLocalSystemPluginAction(input(controllerHome, 'terminate_process', {
+      pid: 96834,
+      expected_command_contains: 'investment-decision-system/.venv/bin/python -m app.mcp.server',
+    }))).resolves.toMatchObject({ terminated: true, pid: 96834, signal: 'SIGTERM' });
+    expect(signals).toEqual([{ pid: 96834, signal: 'SIGTERM' }]);
+
+    signals.length = 0;
+    await expect(executeLocalSystemPluginAction(input(controllerHome, 'terminate_process', {
+      pid: 96834,
+      expected_command_contains: 'cloudflared',
+    }))).rejects.toThrow(/LOCAL_SYSTEM_PROCESS_IDENTITY_MISMATCH/);
+    expect(signals).toHaveLength(0);
+  });
+
+  test('restarts only a loaded user LaunchAgent whose program identity matches', async () => {
+    const controllerHome = temp('forge-local-system-launchagent-controller-');
+    const commands: string[][] = [];
+    setLocalSystemPluginHooksForTest({
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (args[0] === 'print') {
+          return { ok: true, status: 0, stdout: 'path = /Users/greyson/DevProjects/investment-decision-system/scripts/run-mcp-daemon.sh\n', stderr: '', command: [command, ...args] };
+        }
+        return { ok: true, status: 0, stdout: '', stderr: '', command: [command, ...args] };
+      },
+    });
+
+    const result = await executeLocalSystemPluginAction(input(controllerHome, 'restart_user_launch_agent', {
+      label: 'com.greyson.investment-decision-mcp',
+      expected_program_contains: 'investment-decision-system/scripts/run-mcp-daemon.sh',
+    }));
+    expect(result).toMatchObject({ restarted: true, label: 'com.greyson.investment-decision-mcp' });
+    expect(commands).toHaveLength(2);
+    expect(commands[0][0]).toBe('/bin/launchctl');
+    expect(commands[0][1]).toBe('print');
+    expect(commands[1][1]).toBe('kickstart');
+    expect(commands[1][2]).toBe('-k');
+  });
+
   test('never auto-opens command files or executable scripts', async () => {
     const controllerHome = temp('forge-target-open-safe-controller-');
     const root = temp('forge-target-open-safe-root-');

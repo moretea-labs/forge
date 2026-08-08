@@ -1,5 +1,5 @@
 import { AssistantPluginError } from './errors';
-import type { ExternalPluginRegistration } from './external-registration';
+import { getExternalPluginRegistration, listExternalPluginRegistrations, type ExternalPluginRegistration } from './external-registration';
 import { callExternalUnixSocket, probeExternalUnixSocketSync, type ExternalUnixSocketCallOptions } from './external-unix-socket';
 import type { AssistantPluginAdapter, AssistantPluginHealth, AssistantPluginManifest } from './types';
 
@@ -94,6 +94,15 @@ function callOptions(registration: ExternalPluginRegistration, input: Omit<Exter
     maxRequestBytes: registration.transport.maxRequestBytes,
     maxResponseBytes: registration.transport.maxResponseBytes,
   };
+}
+
+export function getExternalPluginAdapter(controllerHome: string, pluginId: string): AssistantPluginAdapter | undefined {
+  const registration = getExternalPluginRegistration(controllerHome, pluginId);
+  return registration ? createExternalPluginAdapter(registration) : undefined;
+}
+
+export function listExternalPluginAdapters(controllerHome: string): AssistantPluginAdapter[] {
+  return listExternalPluginRegistrations(controllerHome).map((registration) => createExternalPluginAdapter(registration));
 }
 
 export function createExternalPluginAdapter(

@@ -7,6 +7,7 @@ import type { ExecutionJob, ResourceClaimSpec } from '../execution/jobs/types';
 import { appendRuntimeEvent } from '../evidence/event-ledger';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
 import { createFirstPartyPluginAdapterMap } from './first-party-registry';
+import { getExternalPluginAdapter, listExternalPluginAdapters } from './external-adapter';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
 import { markControllerContextProjectionDirty } from '../projections/controller-context';
 import { classifyRepositoryCommand } from '../../cli/repositories/command-classifier';
@@ -30,8 +31,17 @@ import type {
 
 const PLUGIN_ADAPTERS = createFirstPartyPluginAdapterMap();
 
-export function assistantPluginScope(pluginId: string): AssistantPluginAdapter['scope'] | undefined {
-  return PLUGIN_ADAPTERS.get(pluginId)?.scope;
+function resolvePluginAdapter(controllerHome: string, pluginId: string): AssistantPluginAdapter | undefined {
+  return PLUGIN_ADAPTERS.get(pluginId) ?? getExternalPluginAdapter(controllerHome, pluginId);
+}
+
+function listPluginAdapters(controllerHome: string): AssistantPluginAdapter[] {
+  const external = listExternalPluginAdapters(controllerHome).filter((adapter) => !PLUGIN_ADAPTERS.has(adapter.pluginId));
+  return [...PLUGIN_ADAPTERS.values(), ...external];
+}
+
+export function assistantPluginScope(pluginId: string, controllerHome?: string): AssistantPluginAdapter['scope'] | undefined {
+  return PLUGIN_ADAPTERS.get(pluginId)?.scope ?? (controllerHome ? getExternalPluginAdapter(controllerHome, pluginId)?.scope : undefined);
 }
 
 const PLUGIN_MANIFEST_CACHE_TTL_MS = 5_000;
@@ -226,7 +236,7 @@ function cachedManifestForRepository(
 }
 
 function computeManifest(controllerHome: string, repository: RepositoryRecord, pluginId: string): AssistantPluginManifest {
-  const adapter = PLUGIN_ADAPTERS.get(pluginId);
+  const adapter = resolvePluginAdapter(controllerHome, pluginId);
   if (!adapter || !adapterMatchesRepository(adapter, repository)) throw new Error(`PLUGIN_NOT_FOUND: ${pluginId}`);
   const previous = readStoredManifest(controllerHome, repository.repoId, pluginId);
   const built = adapter.buildManifest(previous?.revision ?? 0, previous?.updatedAt, repository.canonicalRoot);
@@ -368,8 +378,8 @@ export type ListAssistantPluginManifestsOptions = {
   forceRefresh?: boolean;
 };
 
-function listAssistantPluginIds(repository: RepositoryRecord): string[] {
-  return [...PLUGIN_ADAPTERS.values()]
+function listAssistantPluginIds(controllerHome: string, repository: RepositoryRecord): string[] {
+  return listPluginAdapters(controllerHome)
     .filter((adapter) => adapterMatchesRepository(adapter, repository))
     .map((adapter) => adapter.pluginId)
     .sort((left, right) => left.localeCompare(right));
@@ -386,7 +396,7 @@ export function listAssistantPluginManifests(
     const cached = readPluginManifestCache(pluginManifestListCache, cacheKey);
     if (cached) return cached;
   }
-  const manifests = listAssistantPluginIds(repository)
+  const manifests = listAssistantPluginIds(controllerHome, repository)
     .map((pluginId) => {
       if (preferStored) {
         const stored = readStoredManifest(controllerHome, repository.repoId, pluginId);
@@ -438,7 +448,7 @@ function syncAssistantPluginManifest(
   markControllerContextProjectionDirty(repository.canonicalRoot, `plugin:${pluginId}:synced`);
   cacheAssistantPluginManifest(controllerHome, repository.repoId, manifest, false);
   cacheAssistantPluginManifest(controllerHome, repository.repoId, manifest, true);
-  const manifests = listAssistantPluginIds(repository)
+  const manifests = listAssistantPluginIds(controllerHome, repository)
     .map((candidatePluginId) => {
       if (candidatePluginId === pluginId) return manifest;
       return readStoredManifest(controllerHome, repository.repoId, candidatePluginId)
@@ -891,7 +901,7 @@ export async function submitAssistantPluginAction(
 export async function executeAssistantPluginAction(
   input: AssistantPluginActionExecutionInput,
 ): Promise<Record<string, unknown>> {
-  const adapter = PLUGIN_ADAPTERS.get(input.pluginId);
+  const adapter = resolvePluginAdapter(input.controllerHome, input.pluginId);
   if (!adapter) throw new Error(`PLUGIN_NOT_FOUND: ${input.pluginId}`);
   const repository = {
     repoId: input.repoId,

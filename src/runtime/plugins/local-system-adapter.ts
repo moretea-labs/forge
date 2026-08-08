@@ -64,6 +64,7 @@ interface CommandResult {
 export interface LocalSystemPluginHooks {
   now?: () => Date;
   runCommand?: (command: string, args: string[], timeoutMs?: number) => CommandResult;
+  signalProcess?: (pid: number, signal: NodeJS.Signals) => void;
 }
 
 let hooks: LocalSystemPluginHooks = {};
@@ -299,6 +300,104 @@ function processDetail(pidValue: unknown): Record<string, unknown> {
   return { pid, found: detail.ok && Boolean(detail.stdout.trim()), output: bounded(detail.stdout || detail.stderr), command: detail.command };
 }
 
+function requiredPositivePid(value: unknown): number {
+  const pid = Number(value);
+  if (!Number.isInteger(pid) || pid <= 0) {
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'pid must be a positive integer.', { retryable: false });
+  }
+  if (pid === process.pid) {
+    throw new AssistantPluginError('LOCAL_SYSTEM_PROCESS_SELF_DENIED', 'The local_system host process cannot terminate itself.', { retryable: false });
+  }
+  return pid;
+}
+
+function verifiedProcessCommand(pid: number, expectedCommand: string): { found: boolean; commandLine: string; command: string[] } {
+  const expected = expectedCommand.trim();
+  if (expected.length < 4) {
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'expected_command_contains must contain at least 4 characters.', { retryable: false });
+  }
+  const detail = run('ps', ['-p', String(pid), '-o', 'command=']);
+  const commandLine = detail.stdout.trim();
+  if (!detail.ok || !commandLine) return { found: false, commandLine: '', command: detail.command };
+  if (!commandLine.includes(expected)) {
+    throw new AssistantPluginError(
+      'LOCAL_SYSTEM_PROCESS_IDENTITY_MISMATCH',
+      `PID ${pid} does not match expected command identity.`,
+      { retryable: false, details: { pid, expectedCommandContains: expected, observedCommand: bounded(commandLine, 4096).content } },
+    );
+  }
+  return { found: true, commandLine, command: detail.command };
+}
+
+function terminateVerifiedProcess(pidValue: unknown, expectedCommandValue: unknown): Record<string, unknown> {
+  const pid = requiredPositivePid(pidValue);
+  const expectedCommand = typeof expectedCommandValue === 'string' ? expectedCommandValue.trim() : '';
+  const verified = verifiedProcessCommand(pid, expectedCommand);
+  if (!verified.found) {
+    return { terminated: false, alreadyExited: true, pid, signal: 'SIGTERM', verificationCommand: verified.command };
+  }
+  try {
+    if (hooks.signalProcess) hooks.signalProcess(pid, 'SIGTERM');
+    else process.kill(pid, 'SIGTERM');
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code === 'ESRCH') return { terminated: false, alreadyExited: true, pid, signal: 'SIGTERM', verificationCommand: verified.command };
+    throw new AssistantPluginError('LOCAL_SYSTEM_PROCESS_TERMINATE_FAILED', error instanceof Error ? error.message : String(error), {
+      retryable: code === 'EBUSY', details: { pid, expectedCommandContains: expectedCommand },
+    });
+  }
+  return {
+    terminated: true,
+    alreadyExited: false,
+    pid,
+    signal: 'SIGTERM',
+    expectedCommandContains: expectedCommand,
+    observedCommand: bounded(verified.commandLine, 4096),
+    verificationCommand: verified.command,
+  };
+}
+
+function restartVerifiedUserLaunchAgent(labelValue: unknown, expectedProgramValue: unknown): Record<string, unknown> {
+  if (process.platform !== 'darwin' || typeof process.getuid !== 'function') {
+    throw new AssistantPluginError('LOCAL_SYSTEM_LAUNCHD_UNAVAILABLE', 'User LaunchAgent restart is available only on macOS.', { retryable: false });
+  }
+  const label = typeof labelValue === 'string' ? labelValue.trim() : '';
+  if (!/^[A-Za-z0-9._-]{3,200}$/.test(label)) {
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'label must be a concrete macOS LaunchAgent label.', { retryable: false });
+  }
+  const expectedProgram = typeof expectedProgramValue === 'string' ? expectedProgramValue.trim() : '';
+  if (expectedProgram.length < 4) {
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'expected_program_contains must contain at least 4 characters.', { retryable: false });
+  }
+  const service = `gui/${process.getuid()}/${label}`;
+  const inspected = run('/bin/launchctl', ['print', service], 15_000);
+  if (!inspected.ok) {
+    throw new AssistantPluginError('LOCAL_SYSTEM_LAUNCH_AGENT_NOT_FOUND', `LaunchAgent ${label} is not loaded.`, {
+      retryable: false, details: { label, service, stderr: bounded(inspected.stderr, 4096).content },
+    });
+  }
+  const observed = `${inspected.stdout}\n${inspected.stderr}`;
+  if (!observed.includes(expectedProgram)) {
+    throw new AssistantPluginError('LOCAL_SYSTEM_LAUNCH_AGENT_IDENTITY_MISMATCH', `LaunchAgent ${label} does not match expected program identity.`, {
+      retryable: false, details: { label, expectedProgramContains: expectedProgram, observed: bounded(observed, 8192).content },
+    });
+  }
+  const restarted = run('/bin/launchctl', ['kickstart', '-k', service], 30_000);
+  if (!restarted.ok) {
+    throw new AssistantPluginError('LOCAL_SYSTEM_LAUNCH_AGENT_RESTART_FAILED', restarted.stderr.trim() || restarted.stdout.trim() || `Failed to restart ${label}.`, {
+      retryable: true, details: { label, service, exitCode: restarted.status },
+    });
+  }
+  return {
+    restarted: true,
+    label,
+    service,
+    expectedProgramContains: expectedProgram,
+    inspectCommand: inspected.command,
+    restartCommand: restarted.command,
+  };
+}
+
 function actions(): AssistantPluginActionDescriptor[] {
   const controllerRead = [{ resource: 'repo-state' as const, mode: 'read' as const }];
   const controllerWrite = [{ resource: 'repo-state' as const, mode: 'write' as const }];
@@ -309,6 +408,8 @@ function actions(): AssistantPluginActionDescriptor[] {
   return [
     { actionId: 'system_snapshot', title: 'System snapshot', description: 'Read bounded CPU, process, memory, and pressure diagnostics.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 30_000, cancellable: true, idempotent: true, scopes: ['local-system.read'], resourceClaims: [], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } },
     { actionId: 'process_detail', title: 'Process detail', description: 'Read bounded details for one process id.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.read'], resourceClaims: [], argumentsSchema: { type: 'object', properties: { pid: { type: 'number' } }, required: ['pid'], additionalProperties: false } },
+    { actionId: 'terminate_process', title: 'Terminate verified process', description: 'Send SIGTERM to one exact PID only after its current command line matches the caller-provided expected identity.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.process'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { pid: { type: 'number' }, expected_command_contains: { type: 'string' } }, required: ['pid', 'expected_command_contains'], additionalProperties: false } },
+    { actionId: 'restart_user_launch_agent', title: 'Restart verified user LaunchAgent', description: 'Restart one loaded user LaunchAgent by exact label only after launchctl evidence contains the expected program identity.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false, scopes: ['local-system.process'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { label: { type: 'string' }, expected_program_contains: { type: 'string' } }, required: ['label', 'expected_program_contains'], additionalProperties: false } },
     { actionId: 'open_application', title: 'Open application', description: 'Open one macOS application by name or bundle id.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false, scopes: ['local-system.open'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { app_name: { type: 'string' }, bundle_id: { type: 'string' } }, additionalProperties: false } },
     { actionId: 'list_targets', title: 'List filesystem targets', description: 'List active expiring local filesystem grants.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 10_000, cancellable: true, idempotent: true, scopes: ['local-system.files.read'], resourceClaims: controllerRead, argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } },
     { actionId: 'authorize_target', title: 'Authorize filesystem target', description: 'Authorize an expiring filesystem target. By default, a path inside a Git project authorizes the whole project/repository root; use scope=directory only when intentionally granting a narrower directory.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { target_key: { type: 'string' }, root_path: { type: 'string' }, scope: { type: 'string', enum: ['auto', 'project', 'directory'] }, expires_in_minutes: { type: 'number' }, reason: { type: 'string' }, access: { type: 'string', enum: ['read_only', 'read_write'] } }, required: ['target_key', 'root_path', 'reason'], additionalProperties: false } },
@@ -347,6 +448,7 @@ function health(): AssistantPluginHealth {
 function permissions(): AssistantPluginPermissionScope[] {
   return [
     { scope: 'local-system.read', mode: 'read', description: 'Read bounded local process and memory diagnostics.', granted: true, required: true },
+    { scope: 'local-system.process', mode: 'write', description: 'Terminate one verified PID or restart one verified user LaunchAgent after explicit authorization.', granted: true, required: false },
     { scope: 'local-system.open', mode: 'write', description: 'Open applications or authorized files.', granted: true, required: false },
     { scope: 'local-system.files.read', mode: 'read', description: 'Read files only below active target grants.', granted: true, required: false },
     { scope: 'local-system.files.write', mode: 'write', description: 'Create, copy, move, or rename files below active read-write target grants.', granted: true, required: false },
@@ -356,6 +458,7 @@ function permissions(): AssistantPluginPermissionScope[] {
 function capabilities(): AssistantPluginCapability[] {
   return [
     { capabilityId: 'local-system-diagnostics', title: 'Local diagnostics', description: 'Inspect CPU, processes, and memory with bounded typed commands.', scopes: ['local-system.read'], actions: ['system_snapshot', 'process_detail'] },
+    { capabilityId: 'local-system-process-control', title: 'Verified process lifecycle', description: 'Terminate one verified PID or restart one verified macOS user LaunchAgent without exposing arbitrary shell execution.', scopes: ['local-system.process'], actions: ['terminate_process', 'restart_user_launch_agent'] },
     { capabilityId: 'local-system-open', title: 'Open local applications and files', description: 'Open applications and authorized files without arbitrary shell access.', scopes: ['local-system.open'], actions: ['open_application', 'reveal_in_finder', 'open_file'] },
     { capabilityId: 'local-system-files', title: 'Authorized local files', description: 'Use expiring target grants for bounded local file operations and typed-argv commands without repository registration.', scopes: ['local-system.files.read', 'local-system.files.write'], actions: ['list_targets', 'authorize_target', 'list_directory', 'read_text', 'write_text', 'initialize_git', 'execute_command', 'create_directory', 'copy_file', 'move_file', 'rename_file'] },
   ];
@@ -370,7 +473,7 @@ export function buildLocalSystemPluginManifest(previousRevision = 0, previousUpd
     pluginId: PLUGIN_ID,
     provider: 'local-macos',
     displayName: 'Local System Assistant',
-    pluginVersion: '1.2.0',
+    pluginVersion: '1.3.0',
     authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['controllerHome:system/local-system'] },
     enabled: true,
     lifecycle: { state: currentHealth.ready ? 'enabled' : 'degraded', reason: currentHealth.ready ? 'Local system capabilities are ready.' : currentHealth.warnings[0] },
@@ -407,6 +510,8 @@ export async function executeLocalSystemPluginAction(input: AssistantPluginActio
   switch (input.actionId) {
     case 'system_snapshot': return systemSnapshot();
     case 'process_detail': return processDetail(input.args.pid);
+    case 'terminate_process': return terminateVerifiedProcess(input.args.pid, input.args.expected_command_contains);
+    case 'restart_user_launch_agent': return restartVerifiedUserLaunchAgent(input.args.label, input.args.expected_program_contains);
     case 'open_application': {
       const appName = optionalString(input.args, 'app_name');
       const bundleId = optionalString(input.args, 'bundle_id');

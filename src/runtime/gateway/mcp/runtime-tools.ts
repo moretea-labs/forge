@@ -1690,7 +1690,7 @@ function pluginRepository(
   args: Record<string, unknown>,
   pluginId: string,
 ) {
-  return assistantPluginScope(pluginId) === 'controller'
+  return assistantPluginScope(pluginId, ctx.controllerHome) === 'controller'
     ? controllerPluginRepository(ctx.controllerHome)
     : selected(ctx, args);
 }
