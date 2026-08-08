@@ -14,6 +14,7 @@ import { buildQueryString, encodeBase64Url, stableMockId } from './google-shared
 
 const APP_STORE_CONNECT_PLUGIN_ID = 'app_store_connect';
 const CONFIG_ROOT = '.forge/plugins';
+const LEGACY_CONFIG_ROOT = '.repo-harness/plugins';
 const API_BASE_URL = 'https://api.appstoreconnect.apple.com';
 const DEFAULT_TIMEOUT_MS = 60_000;
 
@@ -65,6 +66,10 @@ function configPath(repoRoot: string): string {
   return join(repoRoot, CONFIG_ROOT, 'app-store-connect.json');
 }
 
+function legacyConfigPath(repoRoot: string): string {
+  return join(repoRoot, LEGACY_CONFIG_ROOT, 'app-store-connect.json');
+}
+
 function normalizeConfig(raw: Partial<AppStoreConnectPluginConfig>): AppStoreConnectPluginConfig {
   return {
     schemaVersion: 1,
@@ -81,7 +86,11 @@ function normalizeConfig(raw: Partial<AppStoreConnectPluginConfig>): AppStoreCon
 }
 
 function loadConfig(repoRoot: string): AppStoreConnectPluginConfig {
-  const path = configPath(repoRoot);
+  // `.forge/plugins` is the current authority, but installations created before
+  // the Forge config-root migration may still have the App Store Connect config
+  // under `.repo-harness/plugins`. Read that legacy file only when the current
+  // path is absent; the next explicit configure action writes the current path.
+  const path = existsSync(configPath(repoRoot)) ? configPath(repoRoot) : legacyConfigPath(repoRoot);
   if (!existsSync(path)) return normalizeConfig({});
   try {
     return normalizeConfig(JSON.parse(readFileSync(path, 'utf-8')) as Partial<AppStoreConnectPluginConfig>);
@@ -673,8 +682,8 @@ export function buildAppStoreConnectPluginManifest(previousRevision = 0, previou
     pluginId: APP_STORE_CONNECT_PLUGIN_ID,
     provider: 'apple',
     displayName: 'App Store Connect API Plugin',
-    pluginVersion: '1.1.0',
-    authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: [`repo-local:${CONFIG_ROOT}/app-store-connect.json`, 'env:FORGE_ASC_*'] },
+    pluginVersion: '1.1.1',
+    authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: [`repo-local:${CONFIG_ROOT}/app-store-connect.json`, `legacy-read-fallback:${LEGACY_CONFIG_ROOT}/app-store-connect.json`, 'env:FORGE_ASC_*'] },
     enabled: config.enabled,
     lifecycle: { state: state.lifecycleState, reason: !config.enabled ? 'App Store Connect plugin is disabled.' : auth.ready ? 'App Store Connect API credentials are ready.' : auth.errors[0] ?? auth.warnings[0] },
     health: state.health,

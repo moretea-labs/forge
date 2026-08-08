@@ -132,6 +132,31 @@ describe('terminal Work cleanup', () => {
     expect(worktreeCount(fx.repositoryRoot)).toBe(1);
   });
 
+  test('deletes a branch proven contained in targetBranch even when the cleanup checkout HEAD is stale', async () => {
+    const fx = fixture('stale-current-head');
+    writeFileSync(join(fx.workspace.root!, 'delivered.txt'), 'delivered\n');
+    git(fx.workspace.root!, ['add', 'delivered.txt']);
+    git(fx.workspace.root!, ['commit', '-m', 'deliver feature']);
+    const featureHead = git(fx.workspace.root!, ['rev-parse', 'HEAD']);
+    git(fx.repositoryRoot, ['merge', '--ff-only', fx.branch]);
+    expect(git(fx.repositoryRoot, ['rev-parse', 'main'])).toBe(featureHead);
+    git(fx.repositoryRoot, ['branch', 'stale-cleanup-head', fx.handle.baseCommit!]);
+    git(fx.repositoryRoot, ['checkout', 'stale-cleanup-head']);
+
+    const handle = writeWorkHandle(fx.controllerHome, {
+      ...fx.handle,
+      expectedHead: featureHead,
+    });
+    const result = await cleanup(fx, handle);
+    expect(result.receipt).toMatchObject({
+      complete: true,
+      branchCleanup: { status: 'deleted', uniqueCommits: 0 },
+      worktree: { status: 'removed' },
+    });
+    expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(false);
+    expect(git(fx.repositoryRoot, ['branch', '--show-current'])).toBe('stale-cleanup-head');
+  });
+
   test('cancelled cleanup preserves pending validation instead of fabricating failure', async () => {
     const fx = fixture('cancelled');
     const cancelled = writeWorkHandle(fx.controllerHome, {

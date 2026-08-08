@@ -951,6 +951,29 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     });
   }
 
+  // A Work-owned completion receipt is the strongest delivery/cleanup authority.
+  // Physical finalization records status=completed + receipt atomically. A facade
+  // retry must be idempotent and must never re-run weaker pre-delivery evidence
+  // evaluation that could attempt to demote an already completed Work.
+  if (work.status === 'completed' && work.completionReceipt) {
+    if (work.planId && work.planStepId && ctx.planStore) {
+      completePlanStepForWork(ctx.planStore, { planId: work.planId, stepId: work.planStepId, work });
+    }
+    return buildFacadeResult({
+      status: 'ok',
+      summary: `Finalize result: succeeded for ${work.workId}.`,
+      data: {
+        work: summarizeWorkContract(work),
+        finalStatus: 'completed',
+        completionReceipt: work.completionReceipt,
+        idempotent: true,
+        hiddenFailure: false,
+      },
+      evidenceRefs: work.evidenceRefs.slice(0, 5),
+      suggestedNextActions: [{ label: 'Read controller status', tool: 'rh_status', operation: 'get', risk: 'readonly' }],
+    });
+  }
+
   const completionEvidence = evaluateWorkCompletionEvidence(work);
   const history = completionEvidence.history;
 

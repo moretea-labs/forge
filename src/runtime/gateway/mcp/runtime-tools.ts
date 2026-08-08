@@ -8,7 +8,8 @@ import type { McpToolDefinition, CallToolResult } from '../../../cli/mcp/tools';
 import type { MultiRepositoryMcpToolContext } from '../../../cli/mcp/multi-repository';
 import { repositoryScopedToolArgs } from '../../../cli/mcp/multi-repository';
 import { reconcileReadinessProjectionSource } from '../../../cli/mcp/readiness-projection';
-import { listRepositories, repositorySummary, resolveRepositorySelection } from '../../../cli/repositories/registry';
+import { listRepositories, repositorySummary, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
+import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import { cancelExecutionJob, findExecutionJob, getExecutionJob, getExecutionJobByRequestId, listExecutionJobs } from '../../execution/jobs/store';
 import { waitForExecutionJob } from '../../execution/jobs/wait';
@@ -201,9 +202,10 @@ import {
   releaseControllerSession,
   resumeControllerSession,
 } from '../../control-plane/facade';
-import { currentControllerInstanceId } from '../../control-plane/execution/session-store';
+import { currentControllerInstanceId, startExecutionSession, updateExecutionSession } from '../../control-plane/execution/session-store';
 import { observeRuntimeStatus } from '../../root/status';
 import { reconcileWorkValidation } from './work-validation-reconciler';
+import { callExecutionTool } from './execution-tools';
 import { launchSuperController } from '../../control-plane/launcher/thin-launcher';
 import {
   executorDispatch,
@@ -334,6 +336,14 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     infrastructure_failed: { type: 'boolean' },
     check_failed: { type: 'boolean' },
     authorize_destructive_cleanup: { type: 'boolean' },
+    commit: { type: 'boolean', description: 'Finalize override. Defaults to true only when the Work owns uncommitted changes.' },
+    merge: { type: 'boolean', description: 'Finalize override. Defaults to true for managed Work delivery.' },
+    cleanup: { type: 'boolean', description: 'Finalize/stop override. Defaults to true so managed worktrees close automatically.' },
+    target_branch: { type: 'string', description: 'Delivery branch; defaults to the repository default branch.' },
+    delete_branch: { type: 'boolean', description: 'Defaults to true after target-branch containment is proven.' },
+    no_ff: { type: 'boolean' },
+    completion_outcome: { type: 'string', enum: ['completed_changed', 'completed_no_change'] },
+    no_change_evidence: { type: 'string', description: 'Optional explicit proof for a no-change completion; otherwise the lifecycle coordinator derives proof only for an unchanged validated HEAD.' },
     detail_level: { type: 'string', enum: ['summary', 'detail'] },
     reason: { type: 'string', description: 'Bounded reason for a work stop or repair record.' },
   }, [], false),
@@ -1537,6 +1547,110 @@ function authenticatedFacadeControllerIdentity(
     sessionId,
     controllerInstanceId: ctx.controllerInstanceId?.trim() || currentControllerInstanceId(),
   };
+}
+
+function bindFacadeExecutionSession(
+  ctx: MultiRepositoryMcpToolContext,
+  repository: ReturnType<typeof selected>,
+  handle: WorkHandleState,
+  args: Record<string, unknown>,
+) {
+  const identity = authenticatedFacadeControllerIdentity(ctx, args);
+  const session = startExecutionSession(ctx.controllerHome, {
+    sessionId: identity.sessionId,
+    principalId: identity.principalId,
+    controllerInstanceId: identity.controllerInstanceId,
+    permissionSnapshotVersion: handle.permissionSnapshotVersion,
+  });
+  return updateExecutionSession(ctx.controllerHome, {
+    sessionId: session.sessionId,
+    principalId: session.principalId,
+    controllerInstanceId: session.controllerInstanceId,
+  }, {
+    activeRepositoryId: repository.repoId,
+    activeCheckoutId: handle.checkoutId,
+    activeWorkId: handle.workId,
+    permissionSnapshotVersion: handle.permissionSnapshotVersion,
+    lastValidatedAt: new Date().toISOString(),
+  });
+}
+
+async function finalizeFacadeWorkHandle(
+  ctx: MultiRepositoryMcpToolContext,
+  repository: ReturnType<typeof selected>,
+  args: Record<string, unknown>,
+  operation: 'finalize' | 'stop',
+): Promise<CallToolResult | undefined> {
+  const workId = String(args.work_id ?? '').trim();
+  if (!workId) return undefined;
+  const handle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
+  if (!handle) return undefined;
+  const session = bindFacadeExecutionSession(ctx, repository, handle, args);
+  const targetBranch = typeof args.target_branch === 'string' && args.target_branch.trim()
+    ? args.target_branch.trim()
+    : repository.defaultBranch || 'main';
+  const common = {
+    session_id: session.sessionId,
+    repo_id: repository.repoId,
+    work_id: workId,
+    target_branch: targetBranch,
+    delete_branch: args.delete_branch !== false,
+    cleanup: args.cleanup !== false,
+  };
+
+  if (operation === 'stop') {
+    return callExecutionTool(ctx, 'work_finalize', {
+      ...common,
+      commit: false,
+      merge: false,
+    });
+  }
+
+  const worktree = selectRepositoryCheckout(repository, handle.checkoutId, { allowArchived: true });
+  const status = repositoryGitStatus(worktree);
+  const head = status.head ?? handle.expectedHead ?? handle.baseCommit;
+  const committedDelta = Boolean(head && handle.baseCommit && head !== handle.baseCommit);
+  const commit = typeof args.commit === 'boolean' ? args.commit : !status.clean;
+  const merge = typeof args.merge === 'boolean' ? args.merge : true;
+  const requestedOutcome = args.completion_outcome === 'completed_no_change' || args.completion_outcome === 'completed_changed'
+    ? args.completion_outcome
+    : undefined;
+  const completionOutcome = requestedOutcome ?? (!commit && !committedDelta && status.clean ? 'completed_no_change' : 'completed_changed');
+  const explicitNoChangeEvidence = typeof args.no_change_evidence === 'string' ? args.no_change_evidence.trim() : '';
+  const noChangeEvidence = completionOutcome === 'completed_no_change'
+    ? explicitNoChangeEvidence || `Validated Work ${workId} has no repository delta from base ${handle.baseCommit ?? 'unknown'} at clean HEAD ${head ?? 'unknown'}.`
+    : undefined;
+  const finalizeArgs = {
+    ...common,
+    commit,
+    merge,
+    no_ff: args.no_ff === true,
+    completion_outcome: completionOutcome,
+    ...(noChangeEvidence ? { no_change_evidence: noChangeEvidence } : {}),
+  };
+
+  let physical = await callExecutionTool(ctx, 'work_finalize', finalizeArgs);
+  let payload = contextRecord(physical?.structuredContent);
+  if (
+    physical
+    && physical.isError !== true
+    && typeof payload.continuation === 'string'
+    && payload.continuation.startsWith('WORK_COMMITTED_REVALIDATION_REQUIRED')
+  ) {
+    const contract = getWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, workId);
+    const validation = await callExecutionTool(ctx, 'work_validate', {
+      session_id: session.sessionId,
+      repo_id: repository.repoId,
+      work_id: workId,
+      check_ids: contract?.checks ?? [],
+    });
+    if (!validation || validation.isError === true) return validation;
+    const validationPayload = contextRecord(validation.structuredContent);
+    if (contextRecord(validationPayload.validation).passed !== true) return validation;
+    physical = await callExecutionTool(ctx, 'work_finalize', finalizeArgs);
+    payload = contextRecord(physical?.structuredContent);
+  }
+  return physical;
 }
 
 function selected(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>) {
@@ -3164,6 +3278,78 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           return result(facade as unknown as Record<string, unknown>, facade.status === 'blocked');
         }
 
+        if (operation === 'stop') {
+          const facade = runGoalWorkloop({ ...workloopCtx, sourceRevision: workloopCtx.sourceRevision ?? undefined }, 'stop', args);
+          if (facade.status !== 'ok') {
+            return result(facade as unknown as Record<string, unknown>, true);
+          }
+          try {
+            const physical = await finalizeFacadeWorkHandle(ctx, repository, args, 'stop');
+            if (!physical) return result(facade as unknown as Record<string, unknown>);
+            const cleanup = contextRecord(physical.structuredContent);
+            const cleanupCompleted = cleanup.cleanupCompleted === true || contextRecord(cleanup.work).state === 'cleaned';
+            const response = {
+              ...facade,
+              status: cleanupCompleted ? 'ok' : 'blocked',
+              summary: cleanupCompleted
+                ? `${facade.summary} Managed worktree and branch cleanup completed automatically.`
+                : `${facade.summary} Automatic managed-resource cleanup is incomplete and remains visible for retry.`,
+              data: {
+                ...(facade.data && typeof facade.data === 'object' ? facade.data : {}),
+                worktreeDeleted: cleanupCompleted,
+                cleanupPending: !cleanupCompleted,
+                lifecycleCleanup: cleanup,
+              },
+            };
+            return result(response as unknown as Record<string, unknown>, !cleanupCompleted || physical.isError === true);
+          } catch (error) {
+            const response = {
+              ...facade,
+              status: 'blocked',
+              summary: `${facade.summary} Automatic managed-resource cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+              data: {
+                ...(facade.data && typeof facade.data === 'object' ? facade.data : {}),
+                worktreeDeleted: false,
+                cleanupPending: true,
+              },
+            };
+            return result(response as unknown as Record<string, unknown>, true);
+          }
+        }
+
+        if (operation === 'finalize') {
+          const workId = String(args.work_id ?? '').trim();
+          const before = workId ? getWorkContract(store, workId) : undefined;
+          if (before && !before.completionReceipt) {
+            try {
+              const physical = await finalizeFacadeWorkHandle(ctx, repository, args, 'finalize');
+              if (physical?.isError === true) return physical;
+              const refreshed = getWorkContract(store, workId);
+              if (physical && !refreshed?.completionReceipt) return physical;
+            } catch (error) {
+              const blocked = buildFacadeResult({
+                status: 'blocked',
+                summary: error instanceof Error ? error.message : 'Work delivery/finalization failed.',
+                data: { workId, lifecycleClosed: false },
+              });
+              return result(blocked as unknown as Record<string, unknown>, true);
+            }
+          }
+          const facade = runGoalWorkloop({ ...workloopCtx, sourceRevision: workloopCtx.sourceRevision ?? undefined }, 'finalize', args);
+          const completed = getWorkContract(store, workId);
+          const lifecycleClosed = Boolean(completed?.completionReceipt)
+            && (!readWorkHandle(ctx.controllerHome, repository.repoId, workId)
+              || readWorkHandle(ctx.controllerHome, repository.repoId, workId)?.finalization.worktreeCleanup !== 'pending');
+          const response = {
+            ...facade,
+            data: {
+              ...(facade.data && typeof facade.data === 'object' ? facade.data : {}),
+              lifecycleClosed,
+            },
+          };
+          return result(response as unknown as Record<string, unknown>, response.status === 'blocked' || response.status === 'failed' || response.status === 'not_found');
+        }
+
         let resumedControllerSession: ReturnType<typeof resumeControllerSession> | undefined;
         if (operation === 'continue') {
           try {
@@ -3188,7 +3374,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           }
         }
 
-        const facade = runGoalWorkloop({ ...workloopCtx, sourceRevision: workloopCtx.sourceRevision ?? undefined }, operation as 'start' | 'continue' | 'finalize' | 'stop', args);
+        const facade = runGoalWorkloop({ ...workloopCtx, sourceRevision: workloopCtx.sourceRevision ?? undefined }, operation as 'start' | 'continue', args);
         const response = resumedControllerSession
           ? {
               ...facade,
@@ -4741,7 +4927,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
       case 'list_plugins': {
         const controllerRepository = controllerPluginRepository(ctx.controllerHome);
         const controllerPlugins = listAssistantPluginManifests(ctx.controllerHome, controllerRepository, {
-          preferStored: true,
+          forceRefresh: true,
         }).map(summarizePlugin);
         let repositoryPlugins: ReturnType<typeof summarizePlugin>[] = [];
         let repositoryId: string | undefined;
@@ -4749,7 +4935,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           const repository = selected(ctx, args);
           repositoryId = repository.repoId;
           repositoryPlugins = listAssistantPluginManifests(ctx.controllerHome, repository, {
-            preferStored: true,
+            forceRefresh: true,
           }).map(summarizePlugin);
         } catch (error) {
           if (typeof args.repo_id === 'string' && args.repo_id.trim()) throw error;

@@ -571,7 +571,12 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
     receipt.branchCleanup.reason = 'Unique commits are not archived.';
     addBlocker(receipt, `BRANCH_UNPRESERVED: ${current.branch}`);
   } else {
-    const deleted = git(target.canonicalRoot, ['branch', uniqueCommits > 0 ? '-D' : '-d', current.branch]);
+    // We already proved the exact branch relation against targetBranch above.
+    // `git branch -d` instead consults the checkout's current HEAD, which may be
+    // an older/stale source checkout and can falsely reject a branch that is
+    // fully contained in the explicit target branch. After that target-branch
+    // proof (or a verified archive for unique commits), delete the ref directly.
+    const deleted = git(target.canonicalRoot, ['branch', '-D', current.branch]);
     if (!deleted.ok && branchExists(target.canonicalRoot, current.branch)) {
       receipt.branchCleanup.status = 'failed';
       receipt.branchCleanup.reason = deleted.stderr || 'branch delete failed';

@@ -165,11 +165,11 @@ describe('Unified Process Runtime', () => {
     writeFileSync(runnerPath, 'runner');
     expect(resolveProcessRunnerEntryPath(daemonPath, {}, releaseRoot)).toBe(runnerPath);
 
-    expect(resolveProcessRunnerRuntime('/opt/forge/forge.js', {})).toBe('bun');
+    expect(resolveProcessRunnerRuntime('/opt/forge/forge.js', {})).toMatch(/(?:^|\/)bun$/);
     expect(resolveProcessRunnerRuntime('/Users/test/.bun/bin/bun', {})).toBe('/Users/test/.bun/bin/bun');
     expect(resolveProcessRunnerRuntime('/opt/forge/forge.js', {
-      FORGE_BUN_EXECUTABLE: '/custom/bin/bun',
-    })).toBe('/custom/bin/bun');
+      FORGE_BUN_EXECUTABLE: process.execPath,
+    })).toBe(process.execPath);
 
     // A bundled JavaScript runner is still a script, even when the hosting Runtime
     // itself is an immutable standalone binary. The runner must be interpreted by

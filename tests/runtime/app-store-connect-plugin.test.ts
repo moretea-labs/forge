@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -36,7 +36,7 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     const repoRoot = root();
     await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', { enabled: true, provider: 'mock' }));
     const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
-    expect(manifest.pluginVersion).toBe('1.1.0');
+    expect(manifest.pluginVersion).toBe('1.1.1');
     expect(manifest.actions.find((action) => action.actionId === 'list_xcode_cloud_workflows')).toMatchObject({ readOnly: true, risk: 'readonly' });
     expect(manifest.actions.find((action) => action.actionId === 'update_xcode_cloud_workflow')).toMatchObject({
       readOnly: false,
@@ -44,6 +44,25 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
       confirmation: 'strong_confirmation',
       requiredConfirmationText: 'update-xcode-cloud-workflow',
     });
+  });
+
+  test('reads legacy repo-harness config when the Forge config path has not been migrated yet', async () => {
+    const repoRoot = root();
+    const legacyRoot = join(repoRoot, '.repo-harness', 'plugins');
+    mkdirSync(legacyRoot, { recursive: true });
+    writeFileSync(join(legacyRoot, 'app-store-connect.json'), JSON.stringify({
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'mock',
+      defaultLocale: 'en-US',
+    }, null, 2));
+
+    const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
+    expect(manifest.enabled).toBe(true);
+    expect(manifest.health.ready).toBe(true);
+    expect(manifest.authority.sourceOfTruth).toContain('legacy-read-fallback:.repo-harness/plugins/app-store-connect.json');
+    const auth = await executeAppStoreConnectPluginAction(input(repoRoot, 'auth_status', {}));
+    expect(auth).toMatchObject({ ready: true, provider: 'mock' });
   });
 
   test('dry-run maps workflow trigger settings onto the official ciWorkflows PATCH resource', async () => {
