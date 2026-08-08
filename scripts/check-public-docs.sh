@@ -94,34 +94,10 @@ if grep -q 'PACKAGE_NAME="forge"' install.sh || grep -q '\$PackageName = "forge"
   exit 1
 fi
 
-node - <<'NODE'
-const p = require("./package.json");
-const files = new Set(p.files || []);
-for (const required of [
-  "LICENSE", "CHANGELOG.md", "CONTRIBUTING.md", "SECURITY.md", "SUPPORT.md",
-  "CODE_OF_CONDUCT.md", "NOTICE", "THIRD_PARTY_NOTICES.md", "README.md",
-  "README.en.md", "README.zh-CN.md", "docs/README.md", "docs/tutorials/",
-  "docs/operations/", "docs/wiki/",
-]) {
-  if (!files.has(required)) throw new Error(`package files missing ${required}`);
-}
-for (const forbidden of ["ARCHITECTURE_MIGRATION_REPORT.md", "OPTIMIZATION_REPORT.md"]) {
-  if (files.has(forbidden)) throw new Error(`internal report must not be packed: ${forbidden}`);
-}
-if (p.publishConfig?.access !== "public" || p.publishConfig?.provenance !== true) {
-  throw new Error("publishConfig must enable public access and provenance");
-}
-if (p.publishConfig?.tag !== undefined) throw new Error("publishConfig.tag must be omitted");
-if (!String(p.repository?.url || "").includes("moretea-labs/forge")) {
-  throw new Error("package repository metadata is not canonical");
-}
-const expectedBins = { forge: "bin/forge.mjs", "forge-hook": "bin/forge-hook.mjs", "forge-runtime": "bin/forge-runtime.mjs" };
-if (JSON.stringify(Object.keys(p.bin || {}).sort()) !== JSON.stringify(Object.keys(expectedBins).sort())) {
-  throw new Error("package bin surface is not Forge-only");
-}
-for (const [name, target] of Object.entries(expectedBins)) {
-  if (p.bin?.[name] !== target) throw new Error(`invalid Forge bin mapping: ${name}`);
-}
-NODE
+# Package identity, publish metadata, required package files, and the Forge-only
+# bin surface are owned by one canonical checker. Reuse it here instead of an
+# inline `node -` stdin program so this gate also works when `node` is provided
+# by a Bun-compatible shim that does not interpret `-` as stdin JavaScript.
+node scripts/check-package-identity.mjs
 
 echo "[public-docs] OK"
