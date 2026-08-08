@@ -33,6 +33,8 @@ describe("Bootstrap Script Contracts", () => {
     expect(skill).toContain("`-debug` or `/debug`");
     expect(skill).toContain("`-campaign` or `/campaign`");
     expect(skill).toContain("Planning is read-only");
+    expect(skill).toContain("`structural_context=required`");
+    expect(skill).toContain("`structural_context=auto`");
     expect(skill).toContain("existing PlanContract");
     expect(skill).toContain("does not force an Agent or Campaign");
     expect(skill).toContain("explicit user override of topology, not a permission override");
