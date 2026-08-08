@@ -308,14 +308,16 @@ describe('runtime maintenance executor', () => {
     const oldAt = '2026-01-01T00:00:00.000Z';
     const work = createWorkContract({ controllerHome, repoId: repository.repoId, now: () => oldAt }, {
       workId: 'work-stale-ready',
+      repoId: repository.repoId,
+      mode: 'goal_workloop',
       objective: 'legacy ready work',
-      scopeSummary: 'legacy',
       acceptanceCriteria: ['historical'],
       allowedPaths: [],
+      forbiddenPaths: [],
       checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
       status: 'ready',
-      risk: 'low',
-      continuationPrompt: 'legacy',
     });
     expect(work.status).toBe('ready');
 
