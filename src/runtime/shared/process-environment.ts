@@ -1,4 +1,5 @@
 import { existsSync } from 'fs';
+import { homedir } from 'os';
 import { basename, delimiter, isAbsolute, join } from 'path';
 
 /**
@@ -41,6 +42,7 @@ function validBunExecutable(candidate: string | undefined): string | undefined {
 export function resolveBunExecutable(
   execPath: string = process.execPath,
   env: NodeJS.ProcessEnv = process.env,
+  accountHome: string = homedir(),
 ): string {
   const configured = validBunExecutable(env.FORGE_BUN_EXECUTABLE);
   if (configured) return configured;
@@ -49,7 +51,7 @@ export function resolveBunExecutable(
 
   const binary = process.platform === 'win32' ? 'bun.exe' : 'bun';
   const bunInstall = env.BUN_INSTALL?.trim();
-  const home = env.HOME?.trim() || env.USERPROFILE?.trim();
+  const home = env.HOME?.trim() || env.USERPROFILE?.trim() || accountHome.trim();
   const candidates = [
     bunInstall ? join(bunInstall, 'bin', binary) : undefined,
     home ? join(home, '.bun', 'bin', binary) : undefined,
