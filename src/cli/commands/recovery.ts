@@ -496,6 +496,48 @@ export function buildRecoveryCommand(): Command {
       if (!result.ok) process.exitCode = 1;
     });
 
+  command.command('bootstrap-cutover')
+    .description('One-time external lifecycle bootstrap: upgrade standalone Recovery, activate current Runtime source transactionally, then restart the explicit primary Connector')
+    .requiredOption('--controller-home <path>', 'Explicit Controller Home')
+    .requiredOption('--repo <path>', 'Forge source repository root used for Recovery and Runtime immutable releases')
+    .requiredOption('--primary-connector-service-label <label>', 'Primary OAuth/Connector launchd label')
+    .option('--primary-connector-service-plist <path>', 'Absolute primary OAuth/Connector launchd plist path')
+    .action(async (opts: {
+      controllerHome: string;
+      repo: string;
+      primaryConnectorServiceLabel: string;
+      primaryConnectorServicePlist?: string;
+    }) => {
+      const home = resolveControllerHome(opts.controllerHome);
+      const repoRoot = resolve(opts.repo);
+      const current = loadRecoveryConfig(home);
+      const primaryConnectorService = launchdService(
+        opts.primaryConnectorServiceLabel,
+        opts.primaryConnectorServicePlist,
+        'RECOVERY_PRIMARY_CONNECTOR',
+      ) as PrimaryConnectorServiceConfig;
+      const installed = await installStandaloneRecovery({
+        controllerHome: home,
+        repoRoot,
+        port: current.gateway.port,
+        publicMcpUrl: current.publicMcpUrl,
+        recoveryPublicUrl: current.recoveryPublicUrl,
+        recoveryTunnelService: current.recoveryTunnelService,
+        primaryRuntimeService: current.primaryRuntimeService ?? { platform: 'launchd' },
+        primaryConnectorService,
+      });
+      const refreshed = loadRecoveryConfig(home);
+      const runtime = await stageAndActivateConfiguredRuntimeRelease(refreshed);
+      if (!runtime.ok) {
+        output({ ok: false, phase: 'runtime_activation', recovery: installed, runtime });
+        process.exitCode = 1;
+        return;
+      }
+      const connector = await restartPrimaryConnector(refreshed);
+      output({ ok: connector.ok, phase: connector.ok ? 'complete' : 'connector_restart', recovery: installed, runtime, connector });
+      if (!connector.ok) process.exitCode = 1;
+    });
+
   command.command('restart-connector')
     .description('Restart the explicitly configured primary OAuth/Connector launchd service through standalone Recovery')
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
