@@ -1,0 +1,239 @@
+import { createHash } from 'crypto';
+import { existsSync, mkdirSync, readdirSync } from 'fs';
+import { isAbsolute, join } from 'path';
+import { controllerSystemRoot, ensureControllerHome } from '../../cli/repositories/controller-home';
+import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
+import type {
+  AssistantPluginActionDescriptor,
+  AssistantPluginCapability,
+  AssistantPluginPermissionScope,
+  AssistantPluginScope,
+} from './types';
+
+const EXTERNAL_REGISTRATION_SCHEMA_VERSION = 1;
+const PLUGIN_ID_PATTERN = /^[a-z][a-z0-9_]{1,63}$/;
+const PROTOCOL_VERSION_PATTERN = /^\d+\.\d+$/;
+
+export interface ExternalPluginUnixSocketTransport {
+  kind: 'unix_socket_jsonl';
+  socketPath: string;
+  maxRequestBytes?: number;
+  maxResponseBytes?: number;
+  healthTimeoutMs?: number;
+  actionTimeoutMs?: number;
+}
+
+export interface ExternalPluginRegistration {
+  schemaVersion: 1;
+  revision: number;
+  pluginId: string;
+  providerPluginId: string;
+  displayName: string;
+  provider: string;
+  pluginVersion: string;
+  protocolVersion: string;
+  scope: AssistantPluginScope;
+  enabled: boolean;
+  transport: ExternalPluginUnixSocketTransport;
+  permissions: AssistantPluginPermissionScope[];
+  capabilities: AssistantPluginCapability[];
+  actions: AssistantPluginActionDescriptor[];
+  legacyIdentities?: string[];
+  registrationFingerprint: string;
+  installedAt: string;
+  updatedAt: string;
+}
+
+export interface ExternalPluginRegistrationInput {
+  pluginId: string;
+  providerPluginId?: string;
+  displayName: string;
+  provider: string;
+  pluginVersion: string;
+  protocolVersion: string;
+  scope: AssistantPluginScope;
+  enabled?: boolean;
+  transport: ExternalPluginUnixSocketTransport;
+  permissions: AssistantPluginPermissionScope[];
+  capabilities: AssistantPluginCapability[];
+  actions: AssistantPluginActionDescriptor[];
+  legacyIdentities?: string[];
+}
+
+function registrationRoot(controllerHome: string): string {
+  ensureControllerHome(controllerHome);
+  return join(controllerSystemRoot(controllerHome), 'plugins', 'external', 'registrations');
+}
+
+export function externalPluginRegistrationPath(controllerHome: string, pluginId: string): string {
+  return join(registrationRoot(controllerHome), `${sanitizeFileComponent(pluginId)}.json`);
+}
+
+function boundedInteger(value: number | undefined, fallback: number, min: number, max: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(Math.max(Math.trunc(value), min), max);
+}
+
+function normalizedTransport(input: ExternalPluginUnixSocketTransport): ExternalPluginUnixSocketTransport {
+  if (input.kind !== 'unix_socket_jsonl') throw new Error(`EXTERNAL_PLUGIN_TRANSPORT_UNSUPPORTED: ${String(input.kind)}`);
+  const socketPath = input.socketPath.trim();
+  if (!socketPath || !isAbsolute(socketPath)) {
+    throw new Error('EXTERNAL_PLUGIN_SOCKET_PATH_INVALID: trusted registrations require an absolute Unix socket path');
+  }
+  return {
+    kind: 'unix_socket_jsonl',
+    socketPath,
+    maxRequestBytes: boundedInteger(input.maxRequestBytes, 1_048_576, 1_024, 4 * 1_048_576),
+    maxResponseBytes: boundedInteger(input.maxResponseBytes, 1_048_576, 1_024, 4 * 1_048_576),
+    healthTimeoutMs: boundedInteger(input.healthTimeoutMs, 2_000, 100, 10_000),
+    actionTimeoutMs: boundedInteger(input.actionTimeoutMs, 30_000, 100, 120_000),
+  };
+}
+
+function normalizedString(value: string, field: string, max = 256): string {
+  const normalized = value.trim();
+  if (!normalized) throw new Error(`EXTERNAL_PLUGIN_${field.toUpperCase()}_REQUIRED`);
+  return normalized.slice(0, max);
+}
+
+function assertPluginId(value: string, field: string): string {
+  const normalized = value.trim();
+  if (!PLUGIN_ID_PATTERN.test(normalized)) throw new Error(`EXTERNAL_PLUGIN_${field.toUpperCase()}_INVALID: ${normalized}`);
+  return normalized;
+}
+
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, canonical(entry)]));
+  }
+  return value;
+}
+
+function registrationFingerprint(input: Omit<ExternalPluginRegistration, 'revision' | 'registrationFingerprint' | 'installedAt' | 'updatedAt'>): string {
+  return createHash('sha256').update(JSON.stringify(canonical(input))).digest('hex');
+}
+
+function validatePolicy(input: ExternalPluginRegistrationInput): void {
+  const permissionScopes = new Set<string>();
+  for (const permission of input.permissions) {
+    const scope = normalizedString(permission.scope, 'permission_scope', 128);
+    if (permissionScopes.has(scope)) throw new Error(`EXTERNAL_PLUGIN_PERMISSION_DUPLICATE: ${scope}`);
+    permissionScopes.add(scope);
+  }
+
+  const actionIds = new Set<string>();
+  for (const action of input.actions) {
+    const actionId = normalizedString(action.actionId, 'action_id', 128);
+    if (actionIds.has(actionId)) throw new Error(`EXTERNAL_PLUGIN_ACTION_DUPLICATE: ${actionId}`);
+    actionIds.add(actionId);
+    for (const scope of action.scopes) {
+      if (!permissionScopes.has(scope)) throw new Error(`EXTERNAL_PLUGIN_ACTION_SCOPE_UNDECLARED: ${actionId}/${scope}`);
+    }
+    if (action.readOnly && action.risk !== 'readonly') throw new Error(`EXTERNAL_PLUGIN_ACTION_RISK_INVALID: read-only action ${actionId} must use readonly risk`);
+    if (!action.readOnly && action.risk === 'readonly') throw new Error(`EXTERNAL_PLUGIN_ACTION_RISK_INVALID: write action ${actionId} cannot use readonly risk`);
+    if (action.risk === 'destructive' && action.confirmation !== 'strong_confirmation') {
+      throw new Error(`EXTERNAL_PLUGIN_DESTRUCTIVE_CONFIRMATION_REQUIRED: ${actionId}`);
+    }
+  }
+
+  const capabilityIds = new Set<string>();
+  for (const capability of input.capabilities) {
+    const capabilityId = normalizedString(capability.capabilityId, 'capability_id', 128);
+    if (capabilityIds.has(capabilityId)) throw new Error(`EXTERNAL_PLUGIN_CAPABILITY_DUPLICATE: ${capabilityId}`);
+    capabilityIds.add(capabilityId);
+    for (const actionId of capability.actions) {
+      if (!actionIds.has(actionId)) throw new Error(`EXTERNAL_PLUGIN_CAPABILITY_ACTION_UNKNOWN: ${capabilityId}/${actionId}`);
+    }
+    for (const scope of capability.scopes) {
+      if (!permissionScopes.has(scope)) throw new Error(`EXTERNAL_PLUGIN_CAPABILITY_SCOPE_UNDECLARED: ${capabilityId}/${scope}`);
+    }
+  }
+}
+
+function normalizeRegistrationInput(input: ExternalPluginRegistrationInput): Omit<ExternalPluginRegistration, 'revision' | 'registrationFingerprint' | 'installedAt' | 'updatedAt'> {
+  validatePolicy(input);
+  const pluginId = assertPluginId(input.pluginId, 'plugin_id');
+  const providerPluginId = assertPluginId(input.providerPluginId ?? pluginId, 'provider_plugin_id');
+  const protocolVersion = normalizedString(input.protocolVersion, 'protocol_version', 32);
+  if (!PROTOCOL_VERSION_PATTERN.test(protocolVersion)) throw new Error(`EXTERNAL_PLUGIN_PROTOCOL_VERSION_INVALID: ${protocolVersion}`);
+  if (!['controller', 'repository'].includes(input.scope)) throw new Error(`EXTERNAL_PLUGIN_SCOPE_INVALID: ${String(input.scope)}`);
+  return {
+    schemaVersion: EXTERNAL_REGISTRATION_SCHEMA_VERSION,
+    pluginId,
+    providerPluginId,
+    displayName: normalizedString(input.displayName, 'display_name'),
+    provider: normalizedString(input.provider, 'provider'),
+    pluginVersion: normalizedString(input.pluginVersion, 'plugin_version', 64),
+    protocolVersion,
+    scope: input.scope,
+    enabled: input.enabled !== false,
+    transport: normalizedTransport(input.transport),
+    permissions: structuredClone(input.permissions),
+    capabilities: structuredClone(input.capabilities),
+    actions: structuredClone(input.actions),
+    legacyIdentities: Array.from(new Set((input.legacyIdentities ?? []).map((value) => value.trim()).filter(Boolean))).slice(0, 20),
+  };
+}
+
+export function validateExternalPluginRegistration(value: ExternalPluginRegistration): ExternalPluginRegistration {
+  if (value.schemaVersion !== EXTERNAL_REGISTRATION_SCHEMA_VERSION) throw new Error('EXTERNAL_PLUGIN_REGISTRATION_SCHEMA_UNSUPPORTED');
+  const normalized = normalizeRegistrationInput(value);
+  if (!Number.isInteger(value.revision) || value.revision < 1) throw new Error('EXTERNAL_PLUGIN_REGISTRATION_REVISION_INVALID');
+  if (!value.installedAt || !value.updatedAt) throw new Error('EXTERNAL_PLUGIN_REGISTRATION_TIMESTAMP_REQUIRED');
+  const expectedFingerprint = registrationFingerprint(normalized);
+  if (value.registrationFingerprint !== expectedFingerprint) throw new Error('EXTERNAL_PLUGIN_REGISTRATION_FINGERPRINT_MISMATCH');
+  return {
+    ...normalized,
+    revision: value.revision,
+    registrationFingerprint: expectedFingerprint,
+    installedAt: value.installedAt,
+    updatedAt: value.updatedAt,
+  };
+}
+
+export function getExternalPluginRegistration(controllerHome: string, pluginId: string): ExternalPluginRegistration | undefined {
+  const path = externalPluginRegistrationPath(controllerHome, pluginId);
+  if (!existsSync(path)) return undefined;
+  return validateExternalPluginRegistration(readJsonFile<ExternalPluginRegistration>(path));
+}
+
+export function listExternalPluginRegistrations(controllerHome: string): ExternalPluginRegistration[] {
+  const root = registrationRoot(controllerHome);
+  if (!existsSync(root)) return [];
+  return readdirSync(root, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+    .flatMap((entry) => {
+      try {
+        return [validateExternalPluginRegistration(readJsonFile<ExternalPluginRegistration>(join(root, entry.name)))];
+      } catch {
+        return [];
+      }
+    })
+    .sort((left, right) => left.pluginId.localeCompare(right.pluginId));
+}
+
+export function installExternalPluginRegistration(
+  controllerHome: string,
+  input: ExternalPluginRegistrationInput,
+  options: { expectedRevision?: number; now?: Date } = {},
+): ExternalPluginRegistration {
+  const normalized = normalizeRegistrationInput(input);
+  const existing = getExternalPluginRegistration(controllerHome, normalized.pluginId);
+  if (options.expectedRevision !== undefined && existing?.revision !== options.expectedRevision) {
+    throw new Error(`EXTERNAL_PLUGIN_REGISTRATION_REVISION_CONFLICT: expected ${options.expectedRevision}, current ${existing?.revision ?? 0}`);
+  }
+  const at = (options.now ?? new Date()).toISOString();
+  const next: ExternalPluginRegistration = {
+    ...normalized,
+    revision: (existing?.revision ?? 0) + 1,
+    registrationFingerprint: registrationFingerprint(normalized),
+    installedAt: existing?.installedAt ?? at,
+    updatedAt: at,
+  };
+  mkdirSync(registrationRoot(controllerHome), { recursive: true, mode: 0o700 });
+  writeJsonAtomic(externalPluginRegistrationPath(controllerHome, next.pluginId), next);
+  return next;
+}
