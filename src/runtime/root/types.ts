@@ -35,6 +35,8 @@ export interface RuntimeReleaseManifest {
   entrypoint: 'forge-runtime';
   diagnosticEntrypoint?: 'forge-cli';
   diagnosticArtifactIdentity?: string;
+  browserNodeBridgeEntrypoint?: 'browser-node-bridge-host.js';
+  browserNodeBridgeArtifactIdentity?: string;
   arguments: string[];
   configurationSchemaVersion: 1;
   controllerHome: string;

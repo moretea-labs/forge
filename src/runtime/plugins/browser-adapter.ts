@@ -13,11 +13,14 @@ import type {
 import { AssistantPluginError, toAssistantPluginError } from './errors';
 import { executeBrowserActionThroughNode, shouldUseBrowserNodeBridge } from './browser-node-bridge';
 import {
-  createMacOsBrowserPage,
+  closeMacOsBrowserOwnedTab,
+  createMacOsBrowserOwnedPage,
+  createMacOsBrowserOwnedPageFromRef,
   discoverMacOsBrowserAttachment,
   macOsActiveBrowserAttachSupported,
   type MacOsBrowserAttachAttempt,
   type MacOsBrowserProduct,
+  type MacOsBrowserTabRef,
 } from './browser-macos-bridge';
 import {
   assertBrowserProfileAvailable,
@@ -75,6 +78,10 @@ interface BrowserTabResumeState {
   matchedBy: BrowserTabMatchReason;
   inventoryCount: number;
   capturedAt: string;
+  ownership?: 'plugin_owned' | 'user_owned';
+  ownerToken?: string;
+  windowId?: number;
+  tabId?: number;
 }
 
 interface BrowserSessionConnectionState {
@@ -348,7 +355,7 @@ function normalizeConfig(raw: Partial<BrowserPluginConfig>): BrowserPluginConfig
     cdpDiscoveryTimeoutMs: typeof raw.cdpDiscoveryTimeoutMs === 'number'
       ? Math.min(positiveNumber(raw.cdpDiscoveryTimeoutMs, DEFAULT_CDP_DISCOVERY_TIMEOUT_MS), MAX_CDP_DISCOVERY_TIMEOUT_MS)
       : undefined,
-    cdpAttachFallback: browserCdpAttachFallback(raw.cdpAttachFallback) ?? 'managed_persistent',
+    cdpAttachFallback: browserCdpAttachFallback(raw.cdpAttachFallback) ?? 'fail_closed',
     nativeAttachMode: browserNativeAttachMode(raw.nativeAttachMode) ?? 'auto',
     nativeBrowserCandidates: browserProductList(raw.nativeBrowserCandidates) ?? ['vivaldi', 'chrome'],
     defaultTimeoutMs: typeof raw.defaultTimeoutMs === 'number' ? positiveNumber(raw.defaultTimeoutMs, DEFAULT_TIMEOUT_MS) : undefined,
@@ -715,13 +722,20 @@ function selectedProfile(config: BrowserPluginConfig, repoRoot: string, activeMo
   };
 }
 
-type BrowserTabMatchReason = 'saved_url_title' | 'saved_url' | 'exact_url' | 'blank' | 'new_page';
+type BrowserTabMatchReason = 'owned_token' | 'saved_url_title' | 'saved_url' | 'exact_url' | 'blank' | 'new_page';
+
+const BROWSER_OWNER_PREFIX = 'forge-browser-owned:';
 
 interface BrowserTabInventoryEntry {
   index: number;
   key: string;
   url: string;
   title?: string;
+  ownerToken?: string;
+}
+
+function ownerTokenForSession(sessionId: string): string {
+  return `${BROWSER_OWNER_PREFIX}${createHash('sha256').update(sessionId).digest('hex').slice(0, 24)}`;
 }
 
 interface BrowserSessionResumeDiagnostic {
@@ -838,12 +852,19 @@ async function inventoryTabs(context: BrowserContextLike): Promise<BrowserTabInv
     if (!page) continue;
     const url = page.url();
     let title: string | undefined;
+    let ownerToken: string | undefined;
     try {
       title = await page.title();
     } catch {
       title = undefined;
     }
-    entries.push({ index, key: tabKey(url, title), url, title });
+    try {
+      const candidate = await page.evaluate<string>('typeof window !== "undefined" ? String(window.name || "") : ""');
+      ownerToken = typeof candidate === 'string' && candidate.startsWith(BROWSER_OWNER_PREFIX) ? candidate : undefined;
+    } catch {
+      ownerToken = undefined;
+    }
+    entries.push({ index, key: tabKey(url, title), url, title, ownerToken });
   }
   return entries;
 }
@@ -851,10 +872,27 @@ async function inventoryTabs(context: BrowserContextLike): Promise<BrowserTabInv
 function chooseTab(
   inventory: BrowserTabInventoryEntry[],
   target: BrowserActionTarget,
-  options: { allowBlank?: boolean } = {},
+  options: { allowBlank?: boolean; requireOwnedToken?: boolean } = {},
 ): { entry?: BrowserTabInventoryEntry; matchedBy: BrowserTabMatchReason; sessionResume?: BrowserSessionResumeDiagnostic } {
   const desiredUrl = comparableUrl(target.url);
   const savedTab = target.existingSession?.browser?.tab;
+  const expectedOwnerToken = savedTab?.ownership === 'plugin_owned' ? savedTab.ownerToken : undefined;
+  if (options.requireOwnedToken) {
+    const owned = expectedOwnerToken ? inventory.find((entry) => entry.ownerToken === expectedOwnerToken) : undefined;
+    if (owned) {
+      return {
+        entry: owned,
+        matchedBy: 'owned_token',
+        sessionResume: { sessionId: target.sessionId, status: 'matched', reason: 'Saved plugin-owned tab marker matched an attached browser tab.', savedTab },
+      };
+    }
+    return {
+      matchedBy: 'new_page',
+      sessionResume: savedTab
+        ? { sessionId: target.sessionId, status: 'stale_tab', reason: 'Saved plugin-owned tab marker was not found; refusing to use a user-owned tab.', savedTab }
+        : { sessionId: target.sessionId, status: 'no_saved_tab', reason: 'No plugin-owned tab exists in the attached browser.' },
+    };
+  }
   const savedUrl = savedTab?.url ? comparableUrl(savedTab.url) : undefined;
   const savedTitle = savedTab?.title;
   const savedUrlTitle = savedUrl && savedTitle
@@ -949,10 +987,10 @@ function chooseTab(
 async function selectPage(
   context: BrowserContextLike,
   target: BrowserActionTarget,
-  options: { allowBlank?: boolean; allowNewPage?: boolean; bringToFront?: boolean } = {},
+  options: { allowBlank?: boolean; allowNewPage?: boolean; bringToFront?: boolean; requireOwnedToken?: boolean } = {},
 ): Promise<{ page: PageLike; matchedBy: BrowserTabMatchReason; inventory: BrowserTabInventoryEntry[]; sessionResume?: BrowserSessionResumeDiagnostic }> {
   const inventory = await inventoryTabs(context);
-  const selection = chooseTab(inventory, target, { allowBlank: options.allowBlank });
+  const selection = chooseTab(inventory, target, { allowBlank: options.allowBlank, requireOwnedToken: options.requireOwnedToken });
   if (selection.entry) {
     const page = context.pages()[selection.entry.index];
     if (!page) throw new Error(`Browser tab inventory selected missing page index ${selection.entry.index}`);
@@ -989,6 +1027,7 @@ function refreshConnectionTab(
   pageUrl: string,
   title: string,
   matchedBy: BrowserTabMatchReason = connection.tab?.matchedBy ?? 'exact_url',
+  ownership?: Pick<BrowserTabResumeState, 'ownership' | 'ownerToken' | 'windowId' | 'tabId'>,
 ): BrowserConnectionSummary {
   const index = connection.tab?.index ?? connection.tabInventory?.find((entry) => comparableUrl(entry.url) === comparableUrl(pageUrl) && entry.title === title)?.index ?? 0;
   return {
@@ -1001,6 +1040,10 @@ function refreshConnectionTab(
       matchedBy,
       inventoryCount: connection.tabInventory?.length ?? 1,
       capturedAt: now(),
+      ownership: ownership?.ownership ?? connection.tab?.ownership,
+      ownerToken: ownership?.ownerToken ?? connection.tab?.ownerToken,
+      windowId: ownership?.windowId ?? connection.tab?.windowId,
+      tabId: ownership?.tabId ?? connection.tab?.tabId,
     },
   };
 }
@@ -1118,7 +1161,7 @@ async function openAttachedContext(
         const context = browser.contexts()[0] ?? (browser.newContext ? await browser.newContext() : undefined);
         if (!context) throw new Error('CDP connection did not expose a browser context.');
         await applyDomainGuard(context, config);
-        const selected = await selectPage(context, target, { allowBlank: false, allowNewPage: false });
+        const selected = await selectPage(context, target, { allowBlank: false, allowNewPage: false, requireOwnedToken: true });
       const timeout = positiveNumber(args.timeout_ms, config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
       let response: { status?: () => number } | null | undefined;
       if (selected.matchedBy === 'new_page' || selected.matchedBy === 'blank' || comparableUrl(selected.page.url()) !== comparableUrl(target.url)) {
@@ -1178,44 +1221,56 @@ async function openNativeAttachedContext(
 ): Promise<{ handle?: BrowserOpenHandle; attempts: MacOsBrowserAttachAttempt[] }> {
   if (config.nativeAttachMode === 'disabled') return { attempts: [] };
   const timeout = positiveNumber(args.timeout_ms, config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
-  const discovered = await discoverMacOsBrowserAttachment(
-    config.nativeBrowserCandidates ?? ['vivaldi', 'chrome'],
-    Math.min(timeout, MAX_CDP_DISCOVERY_TIMEOUT_MS),
-  );
+  const savedTab = target.existingSession?.browser?.tab;
+  const savedProduct = target.existingSession?.browser?.provider === 'macos-apple-events'
+    && savedTab?.ownership === 'plugin_owned'
+    && typeof savedTab.windowId === 'number'
+    && typeof savedTab.tabId === 'number'
+    ? target.existingSession.browser.browserProduct
+    : undefined;
+  const candidates = savedProduct ? [savedProduct] : (config.nativeBrowserCandidates ?? ['vivaldi', 'chrome']);
+  let discovered = await discoverMacOsBrowserAttachment(candidates, Math.min(timeout, MAX_CDP_DISCOVERY_TIMEOUT_MS));
+  if (!discovered.attachment && savedProduct) {
+    discovered = await discoverMacOsBrowserAttachment(config.nativeBrowserCandidates ?? ['vivaldi', 'chrome'], Math.min(timeout, MAX_CDP_DISCOVERY_TIMEOUT_MS));
+  }
   if (!discovered.attachment) return { attempts: discovered.attempts };
 
-  const page = createMacOsBrowserPage(discovered.attachment, timeout) as unknown as PageLike;
-  const initialUrl = page.url();
-  if (!isRemoteHttpUrl(initialUrl) || comparableUrl(initialUrl) !== comparableUrl(target.url)) {
-    return {
-      attempts: discovered.attempts.map((attempt) => attempt.status === 'selected'
-        ? {
-            ...attempt,
-            status: 'available' as const,
-            error: 'Active browser tab did not match the requested session URL; native attach refused to navigate the user tab.',
-          }
-        : attempt),
-    };
+  const ownerToken = ownerTokenForSession(target.sessionId);
+  let page: PageLike | undefined;
+  let sessionResume: BrowserSessionResumeDiagnostic;
+  let matchedBy: BrowserTabMatchReason = 'new_page';
+  if (savedTab?.ownership === 'plugin_owned'
+    && typeof savedTab.windowId === 'number'
+    && typeof savedTab.tabId === 'number'
+    && target.existingSession?.browser?.browserProduct === discovered.attachment.metadata.product) {
+    const ref: MacOsBrowserTabRef = { windowId: savedTab.windowId, tabId: savedTab.tabId };
+    const candidate = createMacOsBrowserOwnedPageFromRef(discovered.attachment, ref, timeout) as unknown as PageLike;
+    try {
+      await candidate.title();
+      page = candidate;
+      matchedBy = 'owned_token';
+      sessionResume = { sessionId: target.sessionId, status: 'matched', reason: 'Reattached to the saved plugin-owned macOS browser tab.', savedTab };
+    } catch {
+      sessionResume = { sessionId: target.sessionId, status: 'stale_tab', reason: 'Saved plugin-owned macOS tab no longer exists; one replacement tab was created.', savedTab };
+    }
+  } else {
+    sessionResume = savedTab
+      ? { sessionId: target.sessionId, status: 'stale_tab', reason: 'Legacy or user-owned tab metadata is never reused for plugin actions; one plugin-owned tab was created.', savedTab }
+      : { sessionId: target.sessionId, status: 'no_saved_tab', reason: 'Created one plugin-owned tab while preserving the user active tab.' };
   }
+  if (!page) page = await createMacOsBrowserOwnedPage(discovered.attachment, target.url, timeout) as unknown as PageLike;
+  if (comparableUrl(page.url()) !== comparableUrl(target.url)) {
+    await page.goto(target.url, { waitUntil: waitUntil(args.wait_until), timeout });
+  } else if (page.waitForLoadState) {
+    await page.waitForLoadState(waitUntil(args.wait_until), { timeout });
+  }
+  await page.evaluate(`window.name = ${JSON.stringify(ownerToken)}`);
   const title = await page.title();
   const pageUrl = normalizedUrl(page.url());
   assertUrlAllowed(pageUrl, config);
-  const inventory: BrowserTabInventoryEntry[] = [{ index: 0, key: tabKey(pageUrl, title), url: pageUrl, title }];
-  const savedTab = target.existingSession?.browser?.tab;
-  const sessionResume: BrowserSessionResumeDiagnostic = savedTab
-    ? {
-        sessionId: target.sessionId,
-        status: comparableUrl(savedTab.url) === comparableUrl(pageUrl) ? 'matched' : 'stale_tab',
-        reason: comparableUrl(savedTab.url) === comparableUrl(pageUrl)
-          ? 'Saved tab URL matched the active macOS browser tab.'
-          : 'The saved tab was unavailable; the active macOS browser tab was reused.',
-        savedTab,
-      }
-    : {
-        sessionId: target.sessionId,
-        status: 'no_saved_tab',
-        reason: 'No saved tab metadata was available; the active macOS browser tab was reused.',
-      };
+  const nativeRef = (page as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
+  if (!nativeRef) throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_OWNERSHIP_MISSING', 'Native browser did not return a stable plugin-owned tab reference.', { retryable: true });
+  const inventory: BrowserTabInventoryEntry[] = [{ index: 0, key: tabKey(pageUrl, title), url: pageUrl, title, ownerToken }];
   const metadata = discovered.attachment.metadata;
   const connection = refreshConnectionTab({
     requestedMode: 'attach_preferred',
@@ -1226,25 +1281,15 @@ async function openNativeAttachedContext(
     profile: {
       profileMode: config.profileMode,
       profileDirectory: config.profileDirectory,
-      selectedProfilePath: `macos:${metadata.product}:active-profile`,
+      selectedProfilePath: `macos:${metadata.product}:owned-tab`,
     },
     tabInventory: inventory,
     sessionResume,
-  }, pageUrl, title, 'exact_url');
-  const diagnostics: PageDiagnostics = {
-    consoleErrors: [],
-    failedRequests: [],
-    navigation: { url: pageUrl },
-  };
-  return {
-    attempts: discovered.attempts,
-    handle: {
-      page,
-      diagnostics,
-      connection,
-      close: async () => undefined,
-    },
-  };
+  }, pageUrl, title, matchedBy, {
+    ownership: 'plugin_owned', ownerToken, windowId: nativeRef.windowId, tabId: nativeRef.tabId,
+  });
+  const diagnostics: PageDiagnostics = { consoleErrors: [], failedRequests: [], navigation: { url: pageUrl } };
+  return { attempts: discovered.attempts, handle: { page, diagnostics, connection, close: async () => undefined } };
 }
 
 async function openBrowser(
@@ -1254,9 +1299,10 @@ async function openBrowser(
   args: Record<string, unknown>,
 ): Promise<BrowserOpenHandle> {
   const requestedMode = config.browserMode ?? 'managed_persistent';
-  const runtime = runtimeHooks.loadPlaywright();
   if (requestedMode === 'attach_preferred') {
-    const attached = await openAttachedContext(runtime, repoRoot, config, target, args);
+    const attached = cdpEndpoints(config).length > 0 && runtimeHooks.moduleAvailable('playwright')
+      ? await openAttachedContext(runtimeHooks.loadPlaywright(), repoRoot, config, target, args)
+      : { attempts: [] as CdpAttachAttempt[] };
     if (attached.handle) return attached.handle;
 
     const native = await openNativeAttachedContext(repoRoot, config, target, args);
@@ -1279,7 +1325,10 @@ async function openBrowser(
         },
       });
     }
-    return openManagedContext(runtime, repoRoot, config, target, args, 'managed_persistent', requestedMode, {
+    if (!runtimeHooks.moduleAvailable('playwright')) {
+      throw new AssistantPluginError('PLUGIN_BROWSER_DEPENDENCY_UNAVAILABLE', `Managed browser fallback requires Playwright, but native/CDP attach was unavailable. ${reason}`, { retryable: false });
+    }
+    return openManagedContext(runtimeHooks.loadPlaywright(), repoRoot, config, target, args, 'managed_persistent', requestedMode, {
       policy: fallbackPolicy,
       from: 'attach_preferred',
       to: 'managed_persistent',
@@ -1289,7 +1338,10 @@ async function openBrowser(
     });
   }
 
-  return openManagedContext(runtime, repoRoot, config, target, args, requestedMode, requestedMode);
+  if (!runtimeHooks.moduleAvailable('playwright')) {
+    throw new AssistantPluginError('PLUGIN_BROWSER_DEPENDENCY_UNAVAILABLE', 'Managed browser mode requires Playwright.', { retryable: false });
+  }
+  return openManagedContext(runtimeHooks.loadPlaywright(), repoRoot, config, target, args, requestedMode, requestedMode);
 }
 
 async function withPage<T>(
@@ -1956,13 +2008,16 @@ function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPlugin
       details: { ...baseDetails, userFacingStatus: 'disabled' },
     };
   }
-  if (!dependencyReady) {
+  const nativeRouteReady = config.browserMode === 'attach_preferred'
+    && config.nativeAttachMode !== 'disabled'
+    && macOsActiveBrowserAttachSupported();
+  if (!dependencyReady && !nativeRouteReady) {
     return {
       state: 'error',
       checkedAt: now(),
       ready: false,
       probed: true,
-      errors: ['Browser plugin requires playwright. Run bun install before using browser actions.'],
+      errors: ['Browser plugin requires Playwright for the configured browser mode. Run bun install or configure attach_preferred native attach.'],
       warnings,
       details: { ...baseDetails, install: 'bun install', userFacingStatus: 'not ready' },
     };
@@ -2047,7 +2102,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
       throw new AssistantPluginError('PLUGIN_CONFIGURATION_INVALID', configErrors[0], { retryable: false });
     }
   }
-  if (shouldUseBrowserNodeBridge(input.actionId, current.browserMode, runtimeHooksCustomized)) {
+  if (shouldUseBrowserNodeBridge(input.actionId, current.browserMode, runtimeHooksCustomized, cdpEndpoints(current).length > 0)) {
     return await executeBrowserActionThroughNode(input);
   }
   try {
@@ -2113,13 +2168,34 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
       case 'close_page': {
         const sessionId = requiredString(input.args.session_id, 'session_id');
         assertBrowserSessionAvailable(input.repoRoot, sessionId);
+        const session = findSession(input.repoRoot, sessionId);
+        const tab = session?.browser?.tab;
+        if (session?.browser?.provider === 'macos-apple-events'
+          && session.browser.browserProduct
+          && tab?.ownership === 'plugin_owned'
+          && typeof tab.windowId === 'number'
+          && typeof tab.tabId === 'number') {
+          await closeMacOsBrowserOwnedTab(session.browser.browserProduct, { windowId: tab.windowId, tabId: tab.tabId }, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS)
+            .catch(() => undefined);
+        }
         rmSync(sessionPath(input.repoRoot, sessionId), { force: true });
-        return { closed: true, sessionId };
+        return { closed: true, sessionId, resourceClosed: tab?.ownership === 'plugin_owned' };
       }
       case 'clear_session': {
         assertBrowserSessionAvailable(input.repoRoot);
         const sessions = listSavedSessions(input.repoRoot);
-        for (const session of sessions) rmSync(sessionPath(input.repoRoot, session.sessionId), { force: true });
+        for (const session of sessions) {
+          const tab = session.browser?.tab;
+          if (session.browser?.provider === 'macos-apple-events'
+            && session.browser.browserProduct
+            && tab?.ownership === 'plugin_owned'
+            && typeof tab.windowId === 'number'
+            && typeof tab.tabId === 'number') {
+            await closeMacOsBrowserOwnedTab(session.browser.browserProduct, { windowId: tab.windowId, tabId: tab.tabId }, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS)
+              .catch(() => undefined);
+          }
+          rmSync(sessionPath(input.repoRoot, session.sessionId), { force: true });
+        }
         return { cleared: true, count: sessions.length };
       }
       case 'request_human_handoff': {

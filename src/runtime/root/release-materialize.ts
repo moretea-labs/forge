@@ -19,6 +19,7 @@ export interface StagedRuntimeRelease {
   releaseId: string;
   artifactIdentity: string;
   diagnosticArtifactIdentity?: string;
+  browserNodeBridgeArtifactIdentity?: string;
   manifestSha256: string;
   sourceCommit: string;
 }
@@ -27,6 +28,7 @@ export interface RuntimeReleaseMaterializerDependencies {
   now?: () => number;
   uuid?: () => string;
   compileBinary?: (input: { sourceRoot: string; outputPath: string; entryPath?: string }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
+  bundleNodeHost?: (input: { sourceRoot: string; outputPath: string; entryPath: string }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
 }
 
 function gitText(root: string, args: string[]): string {
@@ -46,6 +48,18 @@ function defaultCompileBinary(input: { sourceRoot: string; outputPath: string; e
     'build',
     input.entryPath ?? join(input.sourceRoot, 'src/runtime/root/entry.ts'),
     '--compile',
+    '--outfile',
+    input.outputPath,
+  ], { cwd: input.sourceRoot, timeoutMs: 300_000, maxOutputBytes: 512 * 1024 });
+}
+
+function defaultBundleNodeHost(input: { sourceRoot: string; outputPath: string; entryPath: string }): { ok: boolean; stderr?: string; stdout?: string; error?: string } {
+  const configured = process.env.FORGE_BUN_BIN?.trim();
+  const bun = configured || resolveBunExecutable(process.execPath, process.env);
+  return runProcess(bun, [
+    'build',
+    input.entryPath,
+    '--target=node',
     '--outfile',
     input.outputPath,
   ], { cwd: input.sourceRoot, timeoutMs: 300_000, maxOutputBytes: 512 * 1024 });
@@ -97,6 +111,20 @@ export function stageRuntimeRelease(input: {
     }
     chmodSync(diagnosticExecutable, 0o700);
     const diagnosticArtifactIdentity = `sha256:${sha256(diagnosticExecutable)}`;
+
+    const browserNodeBridgeEntrypoint = 'browser-node-bridge-host.js' as const;
+    const browserNodeBridgePath = join(staging, browserNodeBridgeEntrypoint);
+    const bundleNodeHost = dependencies.bundleNodeHost ?? defaultBundleNodeHost;
+    const browserHostBundle = bundleNodeHost({
+      sourceRoot,
+      outputPath: browserNodeBridgePath,
+      entryPath: join(sourceRoot, 'src/runtime/plugins/browser-node-bridge-host.ts'),
+    });
+    if (!browserHostBundle.ok) {
+      throw new Error(`RUNTIME_RELEASE_BROWSER_NODE_HOST_BUILD_FAILED: ${browserHostBundle.stderr || browserHostBundle.stdout || browserHostBundle.error}`.slice(0, 2_000));
+    }
+    chmodSync(browserNodeBridgePath, 0o700);
+    const browserNodeBridgeArtifactIdentity = `sha256:${sha256(browserNodeBridgePath)}`;
     const manifest = {
       schemaVersion: 1,
       releaseId,
@@ -104,6 +132,8 @@ export function stageRuntimeRelease(input: {
       entrypoint: 'forge-runtime',
       diagnosticEntrypoint: 'forge-cli',
       diagnosticArtifactIdentity,
+      browserNodeBridgeEntrypoint,
+      browserNodeBridgeArtifactIdentity,
       arguments: [],
       configurationSchemaVersion: 1,
       controllerHome: resolve(input.controllerHome),
@@ -126,6 +156,7 @@ export function stageRuntimeRelease(input: {
       releaseId,
       artifactIdentity,
       diagnosticArtifactIdentity,
+      browserNodeBridgeArtifactIdentity,
       manifestSha256: createHash('sha256').update(`${JSON.stringify(manifest, null, 2)}\n`).digest('hex'),
       sourceCommit,
     };
@@ -144,5 +175,8 @@ export function assertRuntimeReleaseFiles(release: StagedRuntimeRelease): void {
   }
   if (release.diagnosticArtifactIdentity && !existsSync(join(release.releasePath, 'forge-cli'))) {
     throw new Error(`RUNTIME_RELEASE_DIAGNOSTIC_ENTRYPOINT_MISSING: ${join(release.releasePath, 'forge-cli')}`);
+  }
+  if (release.browserNodeBridgeArtifactIdentity && !existsSync(join(release.releasePath, 'browser-node-bridge-host.js'))) {
+    throw new Error(`RUNTIME_RELEASE_BROWSER_NODE_HOST_MISSING: ${join(release.releasePath, 'browser-node-bridge-host.js')}`);
   }
 }

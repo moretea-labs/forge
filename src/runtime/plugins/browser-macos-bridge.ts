@@ -17,6 +17,11 @@ interface MacOsBrowserDefinition {
   appPaths: string[];
 }
 
+export interface MacOsBrowserTabRef {
+  windowId: number;
+  tabId: number;
+}
+
 export interface MacOsBrowserMetadata {
   product: MacOsBrowserProduct;
   appName: string;
@@ -25,6 +30,9 @@ export interface MacOsBrowserMetadata {
   url: string;
   title: string;
   bounds: { x: number; y: number; width: number; height: number };
+  windowId?: number;
+  tabId?: number;
+  active?: boolean;
 }
 
 export interface MacOsBrowserAttachAttempt {
@@ -141,24 +149,70 @@ set targetWindow to front window
 set targetTab to active tab of targetWindow
 set windowBounds to bounds of targetWindow
 set separator to ASCII character 30
-return (frontmost as text) & separator & (URL of targetTab as text) & separator & (title of targetTab as text) & separator & ((item 1 of windowBounds) as text) & separator & ((item 2 of windowBounds) as text) & separator & ((item 3 of windowBounds) as text) & separator & ((item 4 of windowBounds) as text)
+return (frontmost as text) & separator & (URL of targetTab as text) & separator & (title of targetTab as text) & separator & ((item 1 of windowBounds) as text) & separator & ((item 2 of windowBounds) as text) & separator & ((item 3 of windowBounds) as text) & separator & ((item 4 of windowBounds) as text) & separator & ((id of targetWindow) as text) & separator & ((id of targetTab) as text) & separator & "true"
 `);
 }
 
-function executeJavaScriptScript(browser: MacOsBrowserDefinition): string {
+function targetTabPreamble(ref: MacOsBrowserTabRef): string {
+  return `set targetWindow to first window whose id is ${Math.trunc(ref.windowId)}\nset targetTab to first tab of targetWindow whose id is ${Math.trunc(ref.tabId)}`;
+}
+
+function targetMetadataScript(browser: MacOsBrowserDefinition, ref: MacOsBrowserTabRef): string {
+  return browserTellScript(browser, `
+${targetTabPreamble(ref)}
+set windowBounds to bounds of targetWindow
+set separator to ASCII character 30
+set targetIsActive to ((id of active tab of targetWindow) is (id of targetTab))
+return (frontmost as text) & separator & (URL of targetTab as text) & separator & (title of targetTab as text) & separator & ((item 1 of windowBounds) as text) & separator & ((item 2 of windowBounds) as text) & separator & ((item 3 of windowBounds) as text) & separator & ((item 4 of windowBounds) as text) & separator & ((id of targetWindow) as text) & separator & ((id of targetTab) as text) & separator & (targetIsActive as text)
+`);
+}
+
+function createOwnedTabScript(browser: MacOsBrowserDefinition): string {
+  return `on run argv
+set targetUrl to item 1 of argv
+${browserTellScript(browser, `
+if (count of windows) is 0 then error "FORGE_NO_BROWSER_WINDOW"
+set targetWindow to front window
+set originalActiveIndex to active tab index of targetWindow
+set targetTab to make new tab at end of tabs of targetWindow with properties {URL:targetUrl}
+set targetTabId to id of targetTab
+set active tab index of targetWindow to originalActiveIndex
+set separator to ASCII character 30
+return ((id of targetWindow) as text) & separator & (targetTabId as text)
+`)}
+end run`;
+}
+
+function closeOwnedTabScript(browser: MacOsBrowserDefinition, ref: MacOsBrowserTabRef): string {
+  return browserTellScript(browser, `
+try
+${targetTabPreamble(ref)}
+close targetTab
+end try
+`);
+}
+
+function executeJavaScriptScript(browser: MacOsBrowserDefinition, ref?: MacOsBrowserTabRef): string {
   return `on run argv
 set javascriptSource to item 1 of argv
-${browserTellScript(browser, `
+${browserTellScript(browser, ref ? `
+${targetTabPreamble(ref)}
+return execute targetTab javascript javascriptSource
+` : `
 if (count of windows) is 0 then error "FORGE_NO_BROWSER_WINDOW"
 return execute active tab of front window javascript javascriptSource
 `)}
 end run`;
 }
 
-function navigateScript(browser: MacOsBrowserDefinition): string {
+function navigateScript(browser: MacOsBrowserDefinition, ref?: MacOsBrowserTabRef): string {
   return `on run argv
 set targetUrl to item 1 of argv
-${browserTellScript(browser, `
+${browserTellScript(browser, ref ? `
+${targetTabPreamble(ref)}
+set URL of targetTab to targetUrl
+return targetUrl
+` : `
 if (count of windows) is 0 then error "FORGE_NO_BROWSER_WINDOW"
 set URL of active tab of front window to targetUrl
 return targetUrl
@@ -166,8 +220,11 @@ return targetUrl
 end run`;
 }
 
-function reloadScript(browser: MacOsBrowserDefinition): string {
-  return browserTellScript(browser, `
+function reloadScript(browser: MacOsBrowserDefinition, ref?: MacOsBrowserTabRef): string {
+  return browserTellScript(browser, ref ? `
+${targetTabPreamble(ref)}
+reload targetTab
+` : `
 if (count of windows) is 0 then error "FORGE_NO_BROWSER_WINDOW"
 reload active tab of front window
 `);
@@ -204,6 +261,9 @@ function parseMetadata(product: MacOsBrowserProduct, raw: string): MacOsBrowserM
       width: Math.max(1, right - left),
       height: Math.max(1, bottom - top),
     },
+    windowId: parts[7] ? parseInteger(parts[7], 'window id') : undefined,
+    tabId: parts[8] ? parseInteger(parts[8], 'tab id') : undefined,
+    active: parts[9] ? (parts[9] ?? '').toLowerCase() === 'true' : undefined,
   };
 }
 
@@ -325,11 +385,13 @@ export class MacOsAppleEventsPage {
   private metadata: MacOsBrowserMetadata;
   private readonly browser: MacOsBrowserDefinition;
   private readonly timeoutMs: number;
+  private readonly targetRef?: MacOsBrowserTabRef;
 
-  constructor(attachment: MacOsBrowserAttachment, timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS) {
-    this.metadata = { ...attachment.metadata };
+  constructor(attachment: MacOsBrowserAttachment, timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS, targetRef?: MacOsBrowserTabRef) {
+    this.metadata = { ...attachment.metadata, ...(targetRef ? { windowId: targetRef.windowId, tabId: targetRef.tabId } : {}) };
     this.browser = browserDefinition(attachment.metadata.product);
     this.timeoutMs = timeoutMs;
+    this.targetRef = targetRef;
   }
 
   private async runAppleScript(script: string, args: string[] = [], timeoutMs = this.timeoutMs): Promise<string> {
@@ -345,17 +407,22 @@ export class MacOsAppleEventsPage {
   }
 
   private async refreshMetadata(): Promise<MacOsBrowserMetadata> {
-    this.metadata = parseMetadata(this.browser.product, await this.runAppleScript(metadataScript(this.browser)));
+    const script = this.targetRef ? targetMetadataScript(this.browser, this.targetRef) : metadataScript(this.browser);
+    this.metadata = parseMetadata(this.browser.product, await this.runAppleScript(script));
     return this.metadata;
   }
 
   private async executeJavaScriptRaw(source: string, timeoutMs = this.timeoutMs): Promise<string> {
-    return await this.runAppleScript(executeJavaScriptScript(this.browser), [source], timeoutMs);
+    return await this.runAppleScript(executeJavaScriptScript(this.browser, this.targetRef), [source], timeoutMs);
+  }
+
+  tabRef(): MacOsBrowserTabRef | undefined {
+    return this.targetRef ? { ...this.targetRef } : undefined;
   }
 
   async goto(url: string, options: Record<string, unknown> = {}): Promise<unknown> {
     const timeout = typeof options.timeout === 'number' ? Math.trunc(options.timeout) : this.timeoutMs;
-    await this.runAppleScript(navigateScript(this.browser), [url], timeout);
+    await this.runAppleScript(navigateScript(this.browser, this.targetRef), [url], timeout);
     await this.waitForLoadState(String(options.waitUntil ?? 'domcontentloaded'), { timeout });
     await this.refreshMetadata();
     return undefined;
@@ -363,7 +430,7 @@ export class MacOsAppleEventsPage {
 
   async reload(options: Record<string, unknown> = {}): Promise<unknown> {
     const timeout = typeof options.timeout === 'number' ? Math.trunc(options.timeout) : this.timeoutMs;
-    await this.runAppleScript(reloadScript(this.browser), [], timeout);
+    await this.runAppleScript(reloadScript(this.browser, this.targetRef), [], timeout);
     await this.waitForLoadState(String(options.waitUntil ?? 'domcontentloaded'), { timeout });
     await this.refreshMetadata();
     return undefined;
@@ -409,6 +476,12 @@ export class MacOsAppleEventsPage {
     const path = typeof options.path === 'string' ? options.path : undefined;
     if (!path) throw new Error('Native browser screenshot requires an output path.');
     const metadata = await this.refreshMetadata();
+    if (this.targetRef && (!metadata.frontmost || metadata.active !== true)) {
+      throw new AssistantPluginError('PLUGIN_BROWSER_FOREGROUND_REQUIRED', 'Native screenshot refused to activate a background plugin-owned tab. Bring the tab to the foreground explicitly before capturing it.', {
+        retryable: true,
+        details: { browserProduct: this.browser.product, windowId: this.targetRef.windowId, tabId: this.targetRef.tabId },
+      });
+    }
     return await runtimeHooks.captureRegion(metadata.bounds, path, this.timeoutMs);
   }
 
@@ -541,4 +614,37 @@ export class MacOsAppleEventsPage {
 
 export function createMacOsBrowserPage(attachment: MacOsBrowserAttachment, timeoutMs?: number): MacOsAppleEventsPage {
   return new MacOsAppleEventsPage(attachment, timeoutMs);
+}
+
+export async function createMacOsBrowserOwnedPage(
+  attachment: MacOsBrowserAttachment,
+  url: string,
+  timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
+): Promise<MacOsAppleEventsPage> {
+  const browser = browserDefinition(attachment.metadata.product);
+  const raw = await runtimeHooks.runAppleScript(createOwnedTabScript(browser), [url], timeoutMs);
+  const parts = raw.split(RECORD_SEPARATOR);
+  if (parts.length < 2) throw new Error(`Browser scripting returned incomplete owned-tab metadata for ${browser.appName}.`);
+  const ref = { windowId: parseInteger(parts[0] ?? '', 'window id'), tabId: parseInteger(parts[1] ?? '', 'tab id') };
+  return new MacOsAppleEventsPage({
+    ...attachment,
+    metadata: { ...attachment.metadata, url, title: '', windowId: ref.windowId, tabId: ref.tabId, active: false },
+  }, timeoutMs, ref);
+}
+
+export function createMacOsBrowserOwnedPageFromRef(
+  attachment: MacOsBrowserAttachment,
+  ref: MacOsBrowserTabRef,
+  timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
+): MacOsAppleEventsPage {
+  return new MacOsAppleEventsPage(attachment, timeoutMs, ref);
+}
+
+export async function closeMacOsBrowserOwnedTab(
+  product: MacOsBrowserProduct,
+  ref: MacOsBrowserTabRef,
+  timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
+): Promise<void> {
+  const browser = browserDefinition(product);
+  await runtimeHooks.runAppleScript(closeOwnedTabScript(browser, ref), [], timeoutMs);
 }

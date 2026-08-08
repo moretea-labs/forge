@@ -118,12 +118,18 @@ export function resolveBrowserNodeBridgeHostPath(options: {
   );
 }
 
-export function shouldUseBrowserNodeBridge(actionId: string, browserMode: string | undefined, runtimeHooksCustomized: boolean): boolean {
+export function shouldUseBrowserNodeBridge(
+  actionId: string,
+  browserMode: string | undefined,
+  runtimeHooksCustomized: boolean,
+  hasConfiguredCdpEndpoint = false,
+): boolean {
   const bunHosted = typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined';
   return bunHosted
     && process.env[HOST_FLAG] !== '1'
     && !runtimeHooksCustomized
     && browserMode === 'attach_preferred'
+    && hasConfiguredCdpEndpoint
     && !LOCAL_ACTIONS.has(actionId);
 }
 

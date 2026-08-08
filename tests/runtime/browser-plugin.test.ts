@@ -212,6 +212,89 @@ function mockAttachPlaywright(
   } as never;
 }
 
+function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi') {
+  const separator = '\x1e';
+  const userTab = { id: 501, url: 'https://example.com/user-work', title: 'User Work' };
+  const ownedTabs = new Map<number, { url: string; title: string; ownerToken?: string }>();
+  const events = {
+    created: [] as number[],
+    closed: [] as number[],
+    navigated: [] as Array<{ tabId: number; url: string }>,
+    activeTabId: userTab.id,
+  };
+  let nextTabId = 9001;
+  const appName = product === 'chrome' ? 'Google Chrome' : 'Vivaldi';
+
+  const tabIdFromScript = (script: string): number | undefined => {
+    const matches = [...script.matchAll(/whose id is (\d+)/g)];
+    const raw = matches.at(-1)?.[1];
+    return raw ? Number(raw) : undefined;
+  };
+  const metadata = (tabId: number, url: string, title: string, active: boolean) =>
+    `true${separator}${url}${separator}${title}${separator}0${separator}25${separator}1280${separator}925${separator}77${separator}${tabId}${separator}${active ? 'true' : 'false'}`;
+
+  return {
+    events,
+    hooks: {
+      platform: 'darwin' as const,
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async (script: string, args: string[] = []) => {
+        if (!script.includes(appName)) {
+          return metadata(701, 'https://example.com/other-browser', 'Other Browser', false);
+        }
+        if (script.includes('make new tab at end of tabs of targetWindow')) {
+          const tabId = nextTabId++;
+          const url = args[0] ?? 'about:blank';
+          ownedTabs.set(tabId, { url, title: `Forge ${tabId}` });
+          events.created.push(tabId);
+          return `77${separator}${tabId}`;
+        }
+        if (script.includes('close targetTab')) {
+          const tabId = tabIdFromScript(script);
+          if (tabId && ownedTabs.delete(tabId)) events.closed.push(tabId);
+          return '';
+        }
+        if (script.includes('set URL of targetTab to targetUrl')) {
+          const tabId = tabIdFromScript(script);
+          const entry = tabId ? ownedTabs.get(tabId) : undefined;
+          if (!tabId || !entry) throw new Error('missing owned tab');
+          entry.url = args[0] ?? entry.url;
+          events.navigated.push({ tabId, url: entry.url });
+          return entry.url;
+        }
+        if (script.includes('execute targetTab javascript javascriptSource')) {
+          const tabId = tabIdFromScript(script);
+          const entry = tabId ? ownedTabs.get(tabId) : undefined;
+          if (!tabId || !entry) throw new Error('missing owned tab');
+          const source = args[0] ?? '';
+          if (source.includes('document.readyState')) return JSON.stringify({ ok: true, value: 'complete' });
+          if (source.includes('window.name =')) {
+            const token = source.match(/forge-browser-owned:[a-f0-9]+/)?.[0];
+            if (token) entry.ownerToken = token;
+            return JSON.stringify({ ok: true, value: { __forgeUndefined: true } });
+          }
+          return JSON.stringify({ ok: true, value: true });
+        }
+        if (script.includes('set targetIsActive')) {
+          const tabId = tabIdFromScript(script);
+          const entry = tabId ? ownedTabs.get(tabId) : undefined;
+          if (!tabId || !entry) throw new Error('missing owned tab');
+          return metadata(tabId, entry.url, entry.title, events.activeTabId === tabId);
+        }
+        if (script.includes('set targetTab to active tab of targetWindow')) {
+          return metadata(userTab.id, userTab.url, userTab.title, true);
+        }
+        return '';
+      },
+      captureRegion: async (_region: { x: number; y: number; width: number; height: number }, path: string) => {
+        writeFileSync(path, 'png');
+        return Buffer.from('png');
+      },
+    },
+  };
+}
+
 describe('browser plugin', () => {
   test('manifest keeps readonly actions readonly and only exposes the supported interaction surface', async () => {
     const { repoRoot } = repoFixture();
@@ -600,120 +683,86 @@ describe('browser plugin', () => {
     expect(discovered.attempts.every((attempt) => !('url' in attempt))).toBe(true);
   });
 
-  test('attach_preferred uses the signed-in Vivaldi active tab after CDP fails', async () => {
+  test('attach_preferred creates one plugin-owned Vivaldi tab, preserves the user tab, and reuses it across actions', async () => {
     const { repoRoot } = repoFixture();
     writeBrowserConfig(repoRoot, {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
       browserMode: 'attach_preferred',
-      cdpEndpoint: 'ws://127.0.0.1:9222/devtools/browser/stale',
       cdpAttachFallback: 'fail_closed',
       nativeAttachMode: 'auto',
-      nativeBrowserCandidates: ['vivaldi', 'chrome'],
+      nativeBrowserCandidates: ['vivaldi'],
       allowedDomains: ['example.com'],
     });
-    const runtime = mockAttachPlaywright([], { connectError: 'ECONNREFUSED 127.0.0.1:9222' }) as unknown as {
-      events: {
-        connects: string[];
-        launches: Array<{ userDataDir: string; options: Record<string, unknown> }>;
-      };
-    };
-    setBrowserPluginRuntimeHooksForTest({
-      moduleAvailable: () => true,
-      loadPlaywright: () => runtime as never,
-    });
-    setMacOsBrowserRuntimeHooksForTest({
-      platform: 'darwin',
-      appExists: () => true,
-      processRunning: async () => true,
-      runAppleScript: async (script) => script.includes('Vivaldi')
-        ? `true\x1ehttps://example.com/\x1eSigned-in Vivaldi\x1e0\x1e25\x1e1280\x1e925`
-        : `false\x1ehttps://example.com/chrome\x1eChrome\x1e0\x1e25\x1e1280\x1e925`,
-      captureRegion: async (_region, path) => {
-        writeFileSync(path, 'png');
-        return Buffer.from('png');
-      },
-    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('vivaldi');
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
 
-    const result = await executeBrowserPluginAction({
-      controllerHome: repoRoot,
-      repoId: 'repo',
-      repoRoot,
-      pluginId: 'browser',
-      actionId: 'open_page',
-      requestId: 'browser-attach-vivaldi-native',
-      args: { url: 'https://example.com/' },
+    const first = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'browser-owned-first', args: { session_id: 'owned-session', url: 'https://example.com/first' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const second = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'browser-owned-second', args: { session_id: 'owned-session', url: 'https://example.com/second' },
       origin: { surface: 'local-ui', actor: 'test' },
     });
 
-    expect(runtime.events.connects).toEqual(['ws://127.0.0.1:9222/devtools/browser/stale']);
-    expect(runtime.events.launches).toHaveLength(0);
-    expect(result.browserConnection).toMatchObject({
-      requestedMode: 'attach_preferred',
-      mode: 'attach_preferred',
+    expect(native.events.created).toEqual([9001]);
+    expect(native.events.activeTabId).toBe(501);
+    expect(native.events.navigated).toEqual([{ tabId: 9001, url: 'https://example.com/second' }]);
+    expect(first.browserConnection).toMatchObject({
       provider: 'macos-apple-events',
-      attached: true,
-      browserProduct: 'vivaldi',
+      tab: { ownership: 'plugin_owned', windowId: 77, tabId: 9001 },
     });
-    expect(result.session).toMatchObject({
-      url: 'https://example.com/',
-      title: 'Signed-in Vivaldi',
+    expect(second.browserConnection).toMatchObject({
+      provider: 'macos-apple-events',
+      tab: { ownership: 'plugin_owned', windowId: 77, tabId: 9001 },
+      sessionResume: { status: 'matched' },
     });
+
+    const closed = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'close_session',
+      requestId: 'browser-owned-close', args: { session_id: 'owned-session' }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(closed).toMatchObject({ closed: true, resourceClosed: true });
+    expect(native.events.closed).toEqual([9001]);
+    expect(native.events.activeTabId).toBe(501);
   });
 
-  test('attach_preferred never navigates an unrelated native active tab and falls back to the managed profile', async () => {
+  test('two attach_preferred sessions own separate native tabs and never reuse the user active tab', async () => {
     const { repoRoot } = repoFixture();
     writeBrowserConfig(repoRoot, {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
       browserMode: 'attach_preferred',
-      cdpEndpoint: 'ws://127.0.0.1:9222/devtools/browser/stale',
-      cdpAttachFallback: 'managed_persistent',
+      cdpAttachFallback: 'fail_closed',
       nativeAttachMode: 'auto',
       nativeBrowserCandidates: ['chrome'],
       allowedDomains: ['example.com'],
     });
-    const runtime = mockAttachPlaywright([], { connectError: 'ECONNREFUSED 127.0.0.1:9222', managedTitle: 'Managed Target' }) as unknown as {
-      events: { launches: unknown[]; gotos: string[]; newPages: number };
-    };
-    const nativeScripts: string[] = [];
-    setBrowserPluginRuntimeHooksForTest({
-      moduleAvailable: () => true,
-      loadPlaywright: () => runtime as never,
-    });
-    setMacOsBrowserRuntimeHooksForTest({
-      platform: 'darwin',
-      appExists: () => true,
-      processRunning: async () => true,
-      runAppleScript: async (script) => {
-        nativeScripts.push(script);
-        return `true\x1ehttps://example.com/user-work\x1eUser Work\x1e0\x1e25\x1e1280\x1e925`;
-      },
-    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('chrome');
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
 
-    const result = await executeBrowserPluginAction({
-      controllerHome: repoRoot,
-      repoId: 'repo',
-      repoRoot,
-      pluginId: 'browser',
-      actionId: 'open_page',
-      requestId: 'browser-native-no-hijack',
-      args: { url: 'https://example.com/target' },
+    const one = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'browser-native-session-one', args: { session_id: 'session-one', url: 'https://example.com/one' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const two = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'browser-native-session-two', args: { session_id: 'session-two', url: 'https://example.com/two' },
       origin: { surface: 'local-ui', actor: 'test' },
     });
 
-    expect(runtime.events.launches).toHaveLength(1);
-    expect(runtime.events.newPages).toBe(1);
-    expect(runtime.events.gotos).toEqual(['https://example.com/target']);
-    expect(nativeScripts.some((script) => script.includes('set URL of active tab'))).toBe(false);
-    expect(result.browserConnection).toMatchObject({
-      requestedMode: 'attach_preferred',
-      mode: 'managed_persistent',
-      provider: 'playwright-persistent-context',
-      fallback: { from: 'attach_preferred', to: 'managed_persistent' },
-    });
+    expect(native.events.created).toEqual([9001, 9002]);
+    expect(native.events.activeTabId).toBe(501);
+    expect((one.browserConnection as Record<string, any>).tab.tabId).toBe(9001);
+    expect((two.browserConnection as Record<string, any>).tab.tabId).toBe(9002);
   });
 
   test('CDP attach never consumes a blank user tab or opens a new user tab when no target tab exists', async () => {
@@ -1306,12 +1355,13 @@ describe('browser plugin', () => {
 
   test('selects the Node bridge only for Bun-hosted attached page actions', () => {
     delete process.env.FORGE_BROWSER_NODE_BRIDGE_HOST;
-    expect(shouldUseBrowserNodeBridge('open_page', 'attach_preferred', false)).toBe(true);
-    expect(shouldUseBrowserNodeBridge('list_sessions', 'attach_preferred', false)).toBe(false);
-    expect(shouldUseBrowserNodeBridge('open_page', 'managed_persistent', false)).toBe(false);
-    expect(shouldUseBrowserNodeBridge('open_page', 'attach_preferred', true)).toBe(false);
+    expect(shouldUseBrowserNodeBridge('open_page', 'attach_preferred', false, true)).toBe(true);
+    expect(shouldUseBrowserNodeBridge('open_page', 'attach_preferred', false, false)).toBe(false);
+    expect(shouldUseBrowserNodeBridge('list_sessions', 'attach_preferred', false, true)).toBe(false);
+    expect(shouldUseBrowserNodeBridge('open_page', 'managed_persistent', false, true)).toBe(false);
+    expect(shouldUseBrowserNodeBridge('open_page', 'attach_preferred', true, true)).toBe(false);
     process.env.FORGE_BROWSER_NODE_BRIDGE_HOST = '1';
-    expect(shouldUseBrowserNodeBridge('open_page', 'attach_preferred', false)).toBe(false);
+    expect(shouldUseBrowserNodeBridge('open_page', 'attach_preferred', false, true)).toBe(false);
   });
 
   test('uses an explicitly configured executable for the Browser Node bridge and fails closed when invalid', () => {
