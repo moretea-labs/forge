@@ -647,7 +647,7 @@ export interface RecoveryTunnelLaunchdContract {
 }
 
 export function inspectRecoveryTunnelLaunchdContract(
-  service: Pick<PublicTunnelServiceConfig | PrimaryConnectorServiceConfig, 'label' | 'plistPath'>,
+  service: Pick<PublicTunnelServiceConfig | PrimaryConnectorServiceConfig, 'platform' | 'label' | 'plistPath'>,
 ): RecoveryTunnelLaunchdContract {
   const plistPath = service.plistPath ?? launchAgentPath(service.label);
   let source = '';
