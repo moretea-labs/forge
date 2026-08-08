@@ -519,7 +519,7 @@ export function buildRecoveryCommand(): Command {
       const installed = await installStandaloneRecovery({
         controllerHome: home,
         repoRoot,
-        port: current.gateway.port,
+        port: current.gateway?.port ?? 8787,
         publicMcpUrl: current.publicMcpUrl,
         recoveryPublicUrl: current.recoveryPublicUrl,
         recoveryTunnelService: current.recoveryTunnelService,
