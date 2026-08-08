@@ -1140,6 +1140,35 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
       return recordToHandle(failed ?? record, { completed: true, stdout: '', stderr: message });
     }
     if (!acquisition.acquired) {
+      // A Runtime cutover can outlive the Controller monitor for the command
+      // that requested the cutover: the independent Process Runner writes its
+      // durable receipt after the new Runtime has already completed startup
+      // recovery. Reconcile only the exact Process owners that block this
+      // acquisition, then retry once. Live/identity-matching processes remain
+      // active and keep their leases; no fence is bypassed.
+      const blockingProcessIds = [...new Set(acquisition.blockers
+        .map((blocker) => blocker.ownerJobId.startsWith('process:') ? blocker.ownerJobId.slice('process:'.length) : '')
+        .filter(Boolean))];
+      if (blockingProcessIds.length > 0) {
+        for (const blockingProcessId of blockingProcessIds) {
+          getProcessHandle(input.controllerHome, input.repoId, blockingProcessId);
+        }
+        acquisition = acquireExecutionLeases(
+          input.controllerHome,
+          input.repoId,
+          processOwnerJobId(processId),
+          toResourceClaimSpecs(resourceClaims),
+          {
+            ttlMs: Math.max(30_000, timeoutMs + 30_000),
+            visibility: 'ephemeral',
+            notifyScheduler: false,
+            invalidateProjection: false,
+            emitRuntimeEvent: false,
+          },
+        );
+      }
+    }
+    if (!acquisition.acquired) {
       const blockers = acquisition.blockers
         .map((b) => `${b.resourceKey}@${b.ownerJobId}`)
         .join(', ');

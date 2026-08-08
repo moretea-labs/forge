@@ -1972,7 +1972,7 @@ export async function controllerReadiness(
   const workersReady = evidence.workerLoop.consuming;
   const databaseReady = evidence.health.components.projection.ready;
   const releaseCoherenceReady = evidence.daemon.status === 'ready' && evidence.daemon.degraded !== true;
-  const runtimeSource = runtimeSourceSnapshotStatus(evidence.daemon.source, ctx.runtimeSourceRoot);
+  const runtimeSource = runtimeSourceSnapshotStatus(evidence.daemon.source);
   const sourceCoherenceReady = !runtimeSource.restartRequired;
   if (!sourceCoherenceReady) reasonCodes.add(runtimeSource.code);
   const ready = evidence.ready

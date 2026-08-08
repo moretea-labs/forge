@@ -1130,6 +1130,72 @@ describe('Process Runtime real lease contention', () => {
     expect(listActiveLeases(fx.controllerHome, fx.repository.repoId).length).toBe(0);
   });
 
+  test('a new conflicting Process consumes an old Process exit receipt and retries lease acquisition once', async () => {
+    const fx = fixture();
+    const staleProcessId = 'proc_cutover_receipt_stale';
+    const resourceKey = `workspace:${fx.repository.activeCheckoutId}`;
+    const exitReceiptPath = join(fx.root, `${staleProcessId}.exit.json`);
+    const acquired = acquireExecutionLeases(
+      fx.controllerHome,
+      fx.repository.repoId,
+      `process:${staleProcessId}`,
+      [{ resourceKey, mode: 'write', checkoutId: fx.repository.activeCheckoutId }],
+      { ttlMs: 120_000, visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
+    );
+    expect(acquired.acquired).toBe(true);
+    const staleRecord = {
+      schemaVersion: 1,
+      processId: staleProcessId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      controllerHome: fx.controllerHome,
+      status: 'running',
+      route: 'managed',
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(0)'], cwd: fx.repoRoot },
+      resourceClaims: [{ resourceKey, mode: 'write', repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId }],
+      leaseRefs: acquired.leases,
+      interactiveWaitMs: 0,
+      timeoutMs: 120_000,
+      maxOutputBytes: 1_024,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      ['terminal' + 'FenceToken']: 1,
+      exitReceiptPath,
+    } as unknown as Parameters<typeof createProcessRecord>[0];
+    createProcessRecord(staleRecord);
+    writeFileSync(exitReceiptPath, JSON.stringify({
+      schemaVersion: 1,
+      processId: staleProcessId,
+      exitCode: 0,
+      finishedAt: new Date().toISOString(),
+      commandExecutedOnce: true,
+    }));
+
+    const next = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'process.stdout.write("after-cutover"); process.exit(0)'],
+        cwd: fx.repoRoot,
+      },
+      resourceClaims: [{ resourceKey, mode: 'write' }],
+      interactiveWaitMs: 2_000,
+      timeoutMs: 10_000,
+    });
+    expect(next.completed).toBe(true);
+    expect(next.ok).toBe(true);
+    expect(next.stdout).toContain('after-cutover');
+    expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, staleProcessId)).toMatchObject({
+      status: 'succeeded',
+      leasesReleased: true,
+    });
+    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId).some((lease) => lease.ownerJobId === `process:${staleProcessId}`)).toBe(false);
+  });
+
   test('startup recovery releases terminal leases that were removed from active-index', () => {
     const fx = fixture();
     const processId = 'proc_terminal_index_gap';
