@@ -72,6 +72,17 @@ export function resolveManagedRuntimeSourceIdentity(options: {
 } | undefined {
   const binding = readReleaseIdentityBindingFromEnv(options.env ?? process.env);
   if (!binding) return undefined;
+  let requestedRoot: string;
+  try {
+    requestedRoot = existsSync(options.runtimeRoot) ? realpathSync(options.runtimeRoot) : resolve(options.runtimeRoot);
+  } catch {
+    requestedRoot = resolve(options.runtimeRoot);
+  }
+  // An inherited FORGE_RELEASE_* binding describes the hosting immutable
+  // Runtime, not every arbitrary source/repository path inspected by that
+  // process or its children. Only apply the binding when the caller is
+  // explicitly collecting identity for that exact release root.
+  if (requestedRoot !== binding.releasePath) return undefined;
   const canonicalRoot = binding.releasePath;
   const repoId = `repo_${repositoryIdentity(canonicalRoot)}`;
   return {

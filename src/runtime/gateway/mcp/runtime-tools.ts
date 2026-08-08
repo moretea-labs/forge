@@ -2703,7 +2703,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const liveGit = gitSnapshot(repository.canonicalRoot);
         // Compare startup Runtime Source against the Controller package authority —
         // never against the selected execution repository.
-        const runtimeSource = runtimeSourceSnapshotStatus(readiness.daemon.source, ctx.runtimeSourceRoot);
+        const runtimeSource = runtimeSourceSnapshotStatus(readiness.daemon.source);
         const sourceSnapshotStale = runtimeSource.restartRequired;
         // Dynamic import avoids a static cycle: toolset.ts composes runtimeToolDefinitions.
         const toolset = await import('../../../cli/mcp/toolset');

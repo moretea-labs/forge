@@ -471,7 +471,19 @@ export function evaluateActiveRuntimeSourceDrift(
         return undefined;
       }
     })()
-    : collectCurrentControllerRuntimeSourceIdentity(options);
+    : active?.releaseRevision && active.canonicalRoot && existsSync(active.canonicalRoot)
+      ? (() => {
+        try {
+          // An immutable release cannot drift to the long-lived MCP Gateway's
+          // source checkout. Re-read the frozen release itself so missing or
+          // corrupted release identity still fails closed, while source-mode
+          // runtimes continue to compare against their live source authority.
+          return collectRuntimeSourceIdentityCached(active.canonicalRoot);
+        } catch {
+          return undefined;
+        }
+      })()
+      : collectCurrentControllerRuntimeSourceIdentity(options);
   return {
     current,
     ...evaluateRuntimeSourceDrift(active, current),

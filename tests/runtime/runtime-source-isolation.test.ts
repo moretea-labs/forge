@@ -112,6 +112,75 @@ describe('runtime source isolation', () => {
     expect(identity.dirty).toBe(false);
   });
 
+  test('immutable Runtime drift evaluation self-validates the frozen release instead of the long-lived MCP source checkout', () => {
+    const parent = tempRoot('forge-release-drift-parent-');
+    initGitRepo(parent, 'controller-runtime-fixture');
+    const sourceCommit = git(parent, 'rev-parse', 'HEAD');
+    const releaseRoot = join(parent, '_ops', 'controller-home', 'runtime', 'releases', `release-${sourceCommit}`);
+    mkdirSync(releaseRoot, { recursive: true });
+    writeFileSync(join(releaseRoot, 'manifest.json'), JSON.stringify({
+      schemaVersion: 3,
+      releaseRevision: sourceCommit,
+      sourceCommit,
+      cleanWorkspace: true,
+    }));
+    const active = collectRuntimeSourceIdentity(releaseRoot);
+    pinRuntimeSource(parent);
+    writeFileSync(join(parent, 'src', 'gateway-main-advanced.ts'), 'export const gatewayAdvanced = true;\n');
+    git(parent, 'add', '.');
+    git(parent, 'commit', '-m', 'advance long-lived gateway source');
+
+    const drift = evaluateActiveRuntimeSourceDrift(active);
+    expect(drift.restartRequired).toBe(false);
+    expect(drift.code).toBe('RUNTIME_SOURCE_OK');
+    expect(drift.current?.canonicalRoot).toBe(realpathSync(releaseRoot));
+    expect(drift.current?.releaseRevision).toBe(sourceCommit);
+  });
+
+  test('inherited immutable release binding does not replace an explicitly inspected independent source root', () => {
+    const releaseParent = tempRoot('forge-bound-release-parent-');
+    initGitRepo(releaseParent, 'controller-runtime-fixture');
+    const releaseCommit = git(releaseParent, 'rev-parse', 'HEAD');
+    const releaseRoot = join(releaseParent, '_ops', 'controller-home', 'runtime', 'releases', `release-${releaseCommit}`);
+    mkdirSync(releaseRoot, { recursive: true });
+    writeFileSync(join(releaseRoot, 'manifest.json'), JSON.stringify({
+      schemaVersion: 3,
+      releaseId: `release-${releaseCommit}`,
+      releaseRevision: `release-${releaseCommit}`,
+      sourceCommit: releaseCommit,
+      cleanWorkspace: true,
+    }));
+    const sourceRoot = tempRoot('forge-independent-source-');
+    initGitRepo(sourceRoot, 'independent-controller-source');
+    const previous = {
+      path: process.env.FORGE_RELEASE_PATH,
+      id: process.env.FORGE_RELEASE_ID,
+      revision: process.env.FORGE_RELEASE_REVISION,
+      sourceCommit: process.env.FORGE_RELEASE_SOURCE_COMMIT,
+      clean: process.env.FORGE_RELEASE_CLEAN_WORKSPACE,
+    };
+    process.env.FORGE_RELEASE_PATH = releaseRoot;
+    process.env.FORGE_RELEASE_ID = `release-${releaseCommit}`;
+    process.env.FORGE_RELEASE_REVISION = `release-${releaseCommit}`;
+    process.env.FORGE_RELEASE_SOURCE_COMMIT = releaseCommit;
+    process.env.FORGE_RELEASE_CLEAN_WORKSPACE = 'true';
+    try {
+      const sourceIdentity = collectRuntimeSourceIdentity(sourceRoot);
+      expect(sourceIdentity.canonicalRoot).toBe(realpathSync(sourceRoot));
+      expect(sourceIdentity.releaseRevision).toBeUndefined();
+      const releaseIdentity = collectRuntimeSourceIdentity(releaseRoot);
+      expect(releaseIdentity.canonicalRoot).toBe(realpathSync(releaseRoot));
+      expect(releaseIdentity.releaseRevision).toBe(`release-${releaseCommit}`);
+    } finally {
+      const restore = (key: string, value: string | undefined) => value === undefined ? delete process.env[key] : process.env[key] = value;
+      restore('FORGE_RELEASE_PATH', previous.path);
+      restore('FORGE_RELEASE_ID', previous.id);
+      restore('FORGE_RELEASE_REVISION', previous.revision);
+      restore('FORGE_RELEASE_SOURCE_COMMIT', previous.sourceCommit);
+      restore('FORGE_RELEASE_CLEAN_WORKSPACE', previous.clean);
+    }
+  });
+
   test('malformed immutable release manifest fails closed instead of using ambient Git identity', () => {
     const parent = tempRoot('forge-invalid-release-parent-');
     initGitRepo(parent, 'controller-runtime-fixture');

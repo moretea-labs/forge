@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { statSync } from 'fs';
+import { dirname } from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { ControlPlaneDatabaseInspection } from '../control-plane/persistence/sqlite-store';
@@ -154,7 +155,14 @@ export class CanonicalForgeRuntime {
       const releaseAuthority = this.dependencies.ensureReleaseAuthority(this.config.controllerHome, this.config.releaseManifestPath);
 
       stage = 'source';
-      const runtimeSource = this.dependencies.collectRuntimeSourceIdentity(this.config.repositoryRoot);
+      // A materialized immutable release carries its frozen source identity in
+      // the release manifest and must snapshot that release directory. Source/
+      // fixture manifests without source identity keep the historical explicit
+      // repositoryRoot behavior so development-mode Runtime drift remains live.
+      const runtimeSourceRoot = this.release.sourceCommit && this.release.releaseRevision
+        ? dirname(this.config.releaseManifestPath)
+        : this.config.repositoryRoot;
+      const runtimeSource = this.dependencies.collectRuntimeSourceIdentity(runtimeSourceRoot);
       this.dependencies.rotateRuntimeGeneration(this.config.controllerHome, runtimeSource);
 
       stage = 'release';
