@@ -159,6 +159,7 @@ import {
   applyRuntimeStorageRepair,
 } from '../../recovery';
 import { gatewayToken, loadRecoveryConfig } from '../../standalone-recovery/core';
+import { assertRuntimeReleaseFiles, stageRuntimeRelease } from '../../root/release-materialize';
 import {
   getLocalBridgeJobEventsSnapshot,
   getLocalBridgeJobSnapshot,
@@ -4590,9 +4591,23 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         let affectedPaths: string[] = [];
         switch (action.id) {
           case 'recovery.stage_and_activate_runtime_release': {
-            payload = await callStandaloneRecoveryTool(ctx.controllerHome, 'stage_and_activate_runtime_release', {
-              request_id: `runtime-cutover-${Date.now()}`,
+            const staged = stageRuntimeRelease({
+              controllerHome: ctx.controllerHome,
+              sourceRoot: repository.canonicalRoot,
             });
+            assertRuntimeReleaseFiles(staged);
+            payload = {
+              staged: {
+                releaseId: staged.releaseId,
+                sourceCommit: staged.sourceCommit,
+                artifactIdentity: staged.artifactIdentity,
+                manifestSha256: staged.manifestSha256,
+              },
+              activation: await callStandaloneRecoveryTool(ctx.controllerHome, 'activate_runtime_release', {
+                request_id: `runtime-cutover-${Date.now()}`,
+                release_path: staged.manifestPath,
+              }),
+            };
             affectedPaths = ['controllerHome/runtime/releases', 'controllerHome/runtime/releases/authority.json'];
             break;
           }
