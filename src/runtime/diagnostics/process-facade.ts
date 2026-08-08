@@ -159,7 +159,7 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
     } else {
       target = runtimeCliTarget(input.controllerHome);
       invocation = resolveDiagnosticCliInvocation(target.entry, [], {
-        runtimeExecutable: process.execPath,
+        runtimeExecutable: target.runtimeKind === 'compiled_bun_release' ? target.entry : process.execPath,
         runtimeKind: target.runtimeKind,
         sourceRevision: target.sourceRevision,
         immutable: target.immutable,
@@ -227,7 +227,7 @@ export async function runReadOnlyDiagnosticViaProcessRuntime(input: {
           ],
           target
             ? {
-              runtimeExecutable: invocation.executable,
+              runtimeExecutable: target.runtimeKind === 'compiled_bun_release' ? target.entry : invocation.executable,
               runtimeKind: target.runtimeKind,
               sourceRevision: target.sourceRevision,
               immutable: target.immutable,

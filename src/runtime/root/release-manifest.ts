@@ -45,6 +45,19 @@ export function loadRuntimeReleaseManifest(
       `RELEASE_DATABASE_SCHEMA_INCOMPATIBLE: runtime=${CONTROL_PLANE_SCHEMA_VERSION} supported=${minimum}-${maximum}`,
     );
   }
+  let diagnosticEntrypoint: 'forge-cli' | undefined;
+  let diagnosticArtifactIdentity: string | undefined;
+  if (value.diagnosticEntrypoint !== undefined) {
+    const diagnosticEntry = requireString(value.diagnosticEntrypoint, 'diagnosticEntrypoint');
+    if (diagnosticEntry !== 'forge-cli') {
+      throw new Error(`RELEASE_MANIFEST_INVALID: diagnosticEntrypoint must be forge-cli, got ${diagnosticEntry}`);
+    }
+    diagnosticEntrypoint = 'forge-cli';
+    diagnosticArtifactIdentity = requireString(value.diagnosticArtifactIdentity, 'diagnosticArtifactIdentity');
+  } else if (value.diagnosticArtifactIdentity !== undefined) {
+    throw new Error('RELEASE_MANIFEST_INVALID: diagnosticArtifactIdentity requires diagnosticEntrypoint');
+  }
+
   const argumentsValue = value.arguments;
   if (!Array.isArray(argumentsValue) || argumentsValue.some((item) => typeof item !== 'string')) {
     throw new Error('RELEASE_MANIFEST_INVALID: arguments must be a string array');
@@ -61,6 +74,7 @@ export function loadRuntimeReleaseManifest(
     releaseId: requireString(value.releaseId, 'releaseId'),
     artifactIdentity: requireString(value.artifactIdentity, 'artifactIdentity'),
     entrypoint: 'forge-runtime',
+    ...(diagnosticEntrypoint ? { diagnosticEntrypoint, diagnosticArtifactIdentity } : {}),
     arguments: argumentsValue as string[],
     configurationSchemaVersion: 1,
     controllerHome,

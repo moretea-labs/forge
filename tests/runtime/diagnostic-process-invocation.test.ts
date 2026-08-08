@@ -123,14 +123,22 @@ describe('typed CLI child invocation', () => {
       sourceRoot: '/controller/runtime/releases/release-1',
       runtimeExecutable: '/controller/runtime/releases/release-1/forge-runtime',
       sourceRevision: 'release-1',
-      entryExists: (path) => path === '/controller/runtime/releases/release-1/forge-runtime',
+      entryExists: (path) => path === '/controller/runtime/releases/release-1/forge-cli',
     });
     expect(immutableRoot).toMatchObject({
-      entry: '/controller/runtime/releases/release-1/forge-runtime',
+      entry: '/controller/runtime/releases/release-1/forge-cli',
       cwd: '/controller/runtime/releases/release-1',
       runtimeKind: 'compiled_bun_release',
       immutable: true,
     });
+    expect(() => currentCliRuntimeTarget({
+      argv: [],
+      env: {},
+      sourceRoot: '/controller/runtime/releases/legacy-release',
+      runtimeExecutable: '/controller/runtime/releases/legacy-release/forge-runtime',
+      sourceRevision: 'legacy-release',
+      entryExists: (path) => path === '/controller/runtime/releases/legacy-release/forge-runtime',
+    })).toThrow(/missing forge-cli diagnostic sidecar/);
 
     const compiled = currentCliRuntimeTarget({
       argv: ['/Applications/Repo Harness/forge', '/$bunfs/root/forge.js'],

@@ -278,15 +278,21 @@ export function currentCliRuntimeTarget(options: CurrentCliRuntimeOptions = {}):
     const sourceEntry = join(resolvedSourceRoot, 'src', 'cli', 'index.ts');
     if (!exists(sourceEntry)) {
       const immutableRuntime = join(resolvedSourceRoot, 'forge-runtime');
-      if (exists(immutableRuntime)) {
+      const immutableCli = join(resolvedSourceRoot, 'forge-cli');
+      if (exists(immutableCli)) {
         return {
-          entry: immutableRuntime,
+          entry: immutableCli,
           cwd: resolvedSourceRoot,
           runtimeKind: 'compiled_bun_release',
           sourceRevision,
           immutable: true,
-          explanation: 'explicit controller runtime source root is an immutable Runtime release',
+          explanation: 'explicit controller runtime source root provides the same-version immutable forge-cli diagnostic sidecar',
         };
+      }
+      if (exists(immutableRuntime)) {
+        throw new CliRuntimeResolutionError([
+          `immutable Runtime release is missing forge-cli diagnostic sidecar: ${immutableCli}`,
+        ]);
       }
       throw new CliRuntimeResolutionError([`source runtime entry does not exist: ${sourceEntry}`]);
     }

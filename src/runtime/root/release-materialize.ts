@@ -7,8 +7,9 @@ import { CONTROL_PLANE_SCHEMA_VERSION } from '../control-plane/persistence/sqlit
 
 /**
  * Stage one immutable Forge Runtime release below Controller Home. The staged
- * release contains the compiled `forge-runtime` entrypoint plus a manifest that
- * satisfies `loadRuntimeReleaseManifest`. Activation is the explicit
+ * release contains the compiled `forge-runtime` entrypoint, a same-commit
+ * `forge-cli` diagnostic sidecar, plus a manifest that satisfies
+ * `loadRuntimeReleaseManifest`. Activation is the explicit
  * `forge runtime service install` operation; staging alone never starts or
  * publishes anything.
  */
@@ -17,6 +18,7 @@ export interface StagedRuntimeRelease {
   manifestPath: string;
   releaseId: string;
   artifactIdentity: string;
+  diagnosticArtifactIdentity?: string;
   manifestSha256: string;
   sourceCommit: string;
 }
@@ -24,7 +26,7 @@ export interface StagedRuntimeRelease {
 export interface RuntimeReleaseMaterializerDependencies {
   now?: () => number;
   uuid?: () => string;
-  compileBinary?: (input: { sourceRoot: string; outputPath: string }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
+  compileBinary?: (input: { sourceRoot: string; outputPath: string; entryPath?: string }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
 }
 
 function gitText(root: string, args: string[]): string {
@@ -37,12 +39,12 @@ function sha256(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
-function defaultCompileBinary(input: { sourceRoot: string; outputPath: string }): { ok: boolean; stderr?: string; stdout?: string; error?: string } {
+function defaultCompileBinary(input: { sourceRoot: string; outputPath: string; entryPath?: string }): { ok: boolean; stderr?: string; stdout?: string; error?: string } {
   const configured = process.env.FORGE_BUN_BIN?.trim();
   const bun = configured || resolveBunExecutable(process.execPath, process.env);
   return runProcess(bun, [
     'build',
-    join(input.sourceRoot, 'src/runtime/root/entry.ts'),
+    input.entryPath ?? join(input.sourceRoot, 'src/runtime/root/entry.ts'),
     '--compile',
     '--outfile',
     input.outputPath,
@@ -71,18 +73,37 @@ export function stageRuntimeRelease(input: {
   const releasePath = join(releasesRoot, releaseId);
   mkdirSync(staging, { recursive: true, mode: 0o700 });
   try {
+    const compileBinary = dependencies.compileBinary ?? defaultCompileBinary;
     const executable = join(staging, 'forge-runtime');
-    const compile = (dependencies.compileBinary ?? defaultCompileBinary)({ sourceRoot, outputPath: executable });
+    const compile = compileBinary({
+      sourceRoot,
+      outputPath: executable,
+      entryPath: join(sourceRoot, 'src/runtime/root/entry.ts'),
+    });
     if (!compile.ok) {
       throw new Error(`RUNTIME_RELEASE_BUILD_FAILED: ${compile.stderr || compile.stdout || compile.error}`.slice(0, 2_000));
     }
     chmodSync(executable, 0o700);
     const artifactIdentity = `sha256:${sha256(executable)}`;
+
+    const diagnosticExecutable = join(staging, 'forge-cli');
+    const diagnosticCompile = compileBinary({
+      sourceRoot,
+      outputPath: diagnosticExecutable,
+      entryPath: join(sourceRoot, 'src/cli/index.ts'),
+    });
+    if (!diagnosticCompile.ok) {
+      throw new Error(`RUNTIME_RELEASE_DIAGNOSTIC_BUILD_FAILED: ${diagnosticCompile.stderr || diagnosticCompile.stdout || diagnosticCompile.error}`.slice(0, 2_000));
+    }
+    chmodSync(diagnosticExecutable, 0o700);
+    const diagnosticArtifactIdentity = `sha256:${sha256(diagnosticExecutable)}`;
     const manifest = {
       schemaVersion: 1,
       releaseId,
       artifactIdentity,
       entrypoint: 'forge-runtime',
+      diagnosticEntrypoint: 'forge-cli',
+      diagnosticArtifactIdentity,
       arguments: [],
       configurationSchemaVersion: 1,
       controllerHome: resolve(input.controllerHome),
@@ -104,6 +125,7 @@ export function stageRuntimeRelease(input: {
       manifestPath: join(releasePath, 'manifest.json'),
       releaseId,
       artifactIdentity,
+      diagnosticArtifactIdentity,
       manifestSha256: createHash('sha256').update(`${JSON.stringify(manifest, null, 2)}\n`).digest('hex'),
       sourceCommit,
     };
@@ -119,5 +141,8 @@ export function assertRuntimeReleaseFiles(release: StagedRuntimeRelease): void {
   }
   if (!existsSync(join(release.releasePath, 'forge-runtime'))) {
     throw new Error(`RUNTIME_RELEASE_ENTRYPOINT_MISSING: ${join(release.releasePath, 'forge-runtime')}`);
+  }
+  if (release.diagnosticArtifactIdentity && !existsSync(join(release.releasePath, 'forge-cli'))) {
+    throw new Error(`RUNTIME_RELEASE_DIAGNOSTIC_ENTRYPOINT_MISSING: ${join(release.releasePath, 'forge-cli')}`);
   }
 }

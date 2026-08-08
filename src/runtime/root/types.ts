@@ -33,6 +33,8 @@ export interface RuntimeReleaseManifest {
   releaseId: string;
   artifactIdentity: string;
   entrypoint: 'forge-runtime';
+  diagnosticEntrypoint?: 'forge-cli';
+  diagnosticArtifactIdentity?: string;
   arguments: string[];
   configurationSchemaVersion: 1;
   controllerHome: string;
