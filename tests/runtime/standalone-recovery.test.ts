@@ -67,6 +67,24 @@ function controllerHome(): string {
   return home;
 }
 
+function runtimeServiceConfig(home: string): void {
+  const paths = forgeRuntimeServicePaths(home);
+  const repositoryRoot = join(home, 'runtime-source');
+  const authTokenFile = join(home, 'mcp', 'runtime-token');
+  mkdirSync(repositoryRoot, { recursive: true });
+  mkdirSync(dirname(authTokenFile), { recursive: true });
+  writeFileSync(authTokenFile, 'test-token\n');
+  mkdirSync(paths.serviceRoot, { recursive: true });
+  writeFileSync(paths.configPath, `${JSON.stringify({
+    schemaVersion: 1,
+    controllerHome: resolve(home),
+    repositoryRoot,
+    host: '127.0.0.1',
+    port: 8765,
+    authTokenFile,
+  }, null, 2)}\n`);
+}
+
 function manifest(home: string, releaseId: string, artifactIdentity: string, workerProtocolVersion = 1): string {
   const releaseRoot = join(home, 'runtime', 'releases', releaseId);
   const path = join(releaseRoot, 'manifest.json');
@@ -508,6 +526,7 @@ describe('standalone recovery on canonical Runtime', () => {
       removeOwnership(ownership);
       publishRuntimeRelease(home, second, 'publish-release-b');
       const paths = forgeRuntimeServicePaths(home);
+      runtimeServiceConfig(home);
       mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
       writeFileSync(paths.installedPlistPath, '<plist/>');
 
@@ -572,6 +591,7 @@ describe('standalone recovery on canonical Runtime', () => {
       });
       removeOwnership(ownership);
       const paths = forgeRuntimeServicePaths(home);
+      runtimeServiceConfig(home);
       mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
       writeFileSync(paths.installedPlistPath, '<plist/>');
 
@@ -671,6 +691,7 @@ describe('standalone recovery on canonical Runtime', () => {
       });
       removeOwnership(ownership);
       const paths = forgeRuntimeServicePaths(home);
+      runtimeServiceConfig(home);
       mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
       writeFileSync(paths.installedPlistPath, '<plist/>');
 
