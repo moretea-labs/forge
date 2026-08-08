@@ -13,6 +13,7 @@ import { ensureControllerHome } from '../../src/cli/repositories/controller-home
 import { registerRepository } from '../../src/cli/repositories/registry';
 import {
   resolvePersistedCheckCliInvocation,
+  resolvePersistedCheckProcessInvocation,
   resolvePersistedCheckRuntimeExecutable,
 } from '../../src/runtime/gateway/mcp/persisted-check-process';
 
@@ -49,7 +50,7 @@ describe('typed CLI child invocation', () => {
     });
   });
 
-  test('persisted checks use the immutable forge-cli sidecar instead of the Runtime daemon', () => {
+  test('persisted checks use a dedicated immutable check runner instead of the Runtime daemon or diagnostic CLI', () => {
     const cliTarget = {
       entry: '/opt/releases/release-123/forge-runtime',
       cwd: '/opt/releases/release-123',
@@ -61,14 +62,12 @@ describe('typed CLI child invocation', () => {
     const executable = resolvePersistedCheckRuntimeExecutable(
       cliTarget,
       '/opt/releases/release-123/forge-runtime',
-      (path) => path === '/opt/releases/release-123/forge-cli',
+      (path) => path === '/opt/releases/release-123/forge-check-runner',
     );
-    expect(executable).toBe('/opt/releases/release-123/forge-cli');
-    expect(resolvePersistedCheckCliInvocation(executable, diagnosticArgs, {
-      runtimeExecutable: executable,
-      runtimeKind: 'compiled_bun_release',
-      sourceRevision: 'release-123',
-      immutable: true,
+    expect(executable).toBe('/opt/releases/release-123/forge-check-runner');
+    expect(resolvePersistedCheckProcessInvocation(cliTarget, diagnosticArgs, {
+      runtimeExecutable: '/opt/releases/release-123/forge-runtime',
+      entryExists: (path) => path === '/opt/releases/release-123/forge-check-runner',
     })).toEqual({ executable, args: diagnosticArgs });
   });
 

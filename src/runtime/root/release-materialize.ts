@@ -22,6 +22,7 @@ export interface StagedRuntimeRelease {
   browserNodeBridgeArtifactIdentity?: string;
   desktopHelperArtifactIdentity?: string;
   processRunnerArtifactIdentity?: string;
+  checkRunnerArtifactIdentity?: string;
   manifestSha256: string;
   sourceCommit: string;
 }
@@ -143,6 +144,19 @@ export function stageRuntimeRelease(input: {
     chmodSync(processRunnerPath, 0o700);
     const processRunnerArtifactIdentity = `sha256:${sha256(processRunnerPath)}`;
 
+    const checkRunnerEntrypoint = 'forge-check-runner' as const;
+    const checkRunnerPath = join(staging, checkRunnerEntrypoint);
+    const checkRunnerCompile = compileBinary({
+      sourceRoot,
+      outputPath: checkRunnerPath,
+      entryPath: join(sourceRoot, 'src/runtime/execution/process-runtime/check-runner-sidecar.ts'),
+    });
+    if (!checkRunnerCompile.ok) {
+      throw new Error(`RUNTIME_RELEASE_CHECK_RUNNER_BUILD_FAILED: ${checkRunnerCompile.stderr || checkRunnerCompile.stdout || checkRunnerCompile.error}`.slice(0, 2_000));
+    }
+    chmodSync(checkRunnerPath, 0o700);
+    const checkRunnerArtifactIdentity = `sha256:${sha256(checkRunnerPath)}`;
+
     const desktopHelperEntrypoint = 'forge-desktop-helper.mjs' as const;
     const sourceDesktopHelperPath = join(sourceRoot, 'bin', desktopHelperEntrypoint);
     if (!existsSync(sourceDesktopHelperPath)) {
@@ -165,6 +179,8 @@ export function stageRuntimeRelease(input: {
       desktopHelperArtifactIdentity,
       processRunnerEntrypoint,
       processRunnerArtifactIdentity,
+      checkRunnerEntrypoint,
+      checkRunnerArtifactIdentity,
       arguments: [],
       configurationSchemaVersion: 1,
       controllerHome: resolve(input.controllerHome),
@@ -190,6 +206,7 @@ export function stageRuntimeRelease(input: {
       browserNodeBridgeArtifactIdentity,
       desktopHelperArtifactIdentity,
       processRunnerArtifactIdentity,
+      checkRunnerArtifactIdentity,
       manifestSha256: createHash('sha256').update(`${JSON.stringify(manifest, null, 2)}\n`).digest('hex'),
       sourceCommit,
     };
@@ -217,5 +234,8 @@ export function assertRuntimeReleaseFiles(release: StagedRuntimeRelease): void {
   }
   if (release.processRunnerArtifactIdentity && !existsSync(join(release.releasePath, 'process-runner.js'))) {
     throw new Error(`RUNTIME_RELEASE_PROCESS_RUNNER_MISSING: ${join(release.releasePath, 'process-runner.js')}`);
+  }
+  if (release.checkRunnerArtifactIdentity && !existsSync(join(release.releasePath, 'forge-check-runner'))) {
+    throw new Error(`RUNTIME_RELEASE_CHECK_RUNNER_MISSING: ${join(release.releasePath, 'forge-check-runner')}`);
   }
 }

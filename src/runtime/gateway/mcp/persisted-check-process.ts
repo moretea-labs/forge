@@ -23,7 +23,7 @@ import {
   type RunCheckFacadeInput,
   type RunCheckFacadeResult,
 } from '../../execution/process-runtime';
-const INTERNAL_CHECK_SUBCOMMAND = ['controller', 'run-check-process'] as const;
+const PERSISTED_CHECK_SOURCE_ENTRY = 'src/runtime/execution/process-runtime/check-runner-sidecar.ts';
 
 export function resolvePersistedCheckCliInvocation(
   cliEntry: string,
@@ -68,11 +68,34 @@ export function resolvePersistedCheckRuntimeExecutable(
   entryExists: (path: string) => boolean = existsSync,
 ): string {
   if (cliTarget.runtimeKind !== 'compiled_bun_release') return runtimeExecutable;
-  const cliSidecar = resolve(dirname(runtimeExecutable), 'forge-cli');
-  if (!entryExists(cliSidecar)) {
-    throw new Error(`PERSISTED_CHECK_CLI_SIDECAR_MISSING: ${cliSidecar}`);
+  const checkRunner = resolve(dirname(runtimeExecutable), 'forge-check-runner');
+  if (!entryExists(checkRunner)) {
+    throw new Error(`PERSISTED_CHECK_RUNNER_MISSING: ${checkRunner}`);
   }
-  return cliSidecar;
+  return checkRunner;
+}
+
+export function resolvePersistedCheckProcessInvocation(
+  cliTarget: CliRuntimeTarget,
+  args: string[],
+  options: { runtimeExecutable?: string; entryExists?: (path: string) => boolean } = {},
+): CliChildInvocation {
+  const runtimeExecutable = options.runtimeExecutable ?? process.execPath;
+  const executable = resolvePersistedCheckRuntimeExecutable(cliTarget, runtimeExecutable, options.entryExists ?? existsSync);
+  if (cliTarget.runtimeKind === 'compiled_bun_release') {
+    return { executable, args };
+  }
+  const sourceEntry = resolve(cliTarget.cwd, PERSISTED_CHECK_SOURCE_ENTRY);
+  if (!(options.entryExists ?? existsSync)(sourceEntry)) {
+    throw new Error(`PERSISTED_CHECK_SOURCE_RUNNER_MISSING: ${sourceEntry}`);
+  }
+  return resolvePersistedCheckCliInvocation(sourceEntry, args, {
+    runtimeExecutable: executable,
+    runtimeKind: cliTarget.runtimeKind,
+    sourceRevision: cliTarget.sourceRevision,
+    immutable: false,
+    ...(cliTarget.runtimeKind === 'package_launcher' ? { launcherEntry: cliTarget.entry } : {}),
+  });
 }
 
 /**
@@ -169,7 +192,6 @@ export async function runPersistedCheckViaProcessRuntime(
   };
   const cliTarget = resolveRuntimeCliTarget(input.controllerHome);
   const checkArgs = [
-    ...INTERNAL_CHECK_SUBCOMMAND,
     '--repo',
     executionIdentity.canonicalRoot,
     '--check-id',
@@ -179,17 +201,7 @@ export async function runPersistedCheckViaProcessRuntime(
     '--expected-check-fingerprint',
     checkFingerprint,
   ];
-  const persistedCheckExecutable = resolvePersistedCheckRuntimeExecutable(cliTarget);
-  const invocation = resolvePersistedCheckCliInvocation(
-    cliTarget.runtimeKind === 'compiled_bun_release' ? persistedCheckExecutable : cliTarget.entry,
-    checkArgs,
-    {
-    runtimeExecutable: persistedCheckExecutable,
-    runtimeKind: cliTarget.runtimeKind,
-    sourceRevision: cliTarget.sourceRevision,
-    immutable: cliTarget.immutable,
-    ...(cliTarget.runtimeKind === 'package_launcher' ? { launcherEntry: cliTarget.entry } : {}),
-  });
+  const invocation = resolvePersistedCheckProcessInvocation(cliTarget, checkArgs);
   const handle = await spawnManagedProcess({
     controllerHome: input.controllerHome,
     repoId: executionIdentity.repositoryId,

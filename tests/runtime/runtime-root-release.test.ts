@@ -34,7 +34,12 @@ describe('runtime release materialization', () => {
       now: () => 1_700_000_000_000,
       uuid: () => 'release-test',
       compileBinary: ({ outputPath, entryPath }) => {
-        writeFileSync(outputPath, entryPath?.endsWith('cli-sidecar.ts') ? 'cli-binary' : 'runtime-binary');
+        const kind = entryPath?.endsWith('check-runner-sidecar.ts')
+          ? 'check-runner-binary'
+          : entryPath?.endsWith('cli-sidecar.ts')
+            ? 'cli-binary'
+            : 'runtime-binary';
+        writeFileSync(outputPath, kind);
         return { ok: true };
       },
       bundleNodeHost: ({ outputPath, entryPath }) => {
@@ -61,6 +66,10 @@ describe('runtime release materialization', () => {
     expect(existsSync(processRunnerPath)).toBe(true);
     expect(readFileSync(processRunnerPath, 'utf8')).toBe('process-runner-bundle');
     expect(staged.processRunnerArtifactIdentity).toMatch(/^sha256:/);
+    const checkRunnerPath = join(staged.releasePath, 'forge-check-runner');
+    expect(existsSync(checkRunnerPath)).toBe(true);
+    expect(readFileSync(checkRunnerPath, 'utf8')).toBe('check-runner-binary');
+    expect(staged.checkRunnerArtifactIdentity).toMatch(/^sha256:/);
     const manifest = JSON.parse(readFileSync(staged.manifestPath, 'utf8')) as Record<string, unknown>;
     expect(manifest.browserNodeBridgeEntrypoint).toBe('browser-node-bridge-host.js');
     expect(manifest.browserNodeBridgeArtifactIdentity).toBe(staged.browserNodeBridgeArtifactIdentity);
@@ -68,6 +77,8 @@ describe('runtime release materialization', () => {
     expect(manifest.desktopHelperArtifactIdentity).toBe(staged.desktopHelperArtifactIdentity);
     expect(manifest.processRunnerEntrypoint).toBe('process-runner.js');
     expect(manifest.processRunnerArtifactIdentity).toBe(staged.processRunnerArtifactIdentity);
+    expect(manifest.checkRunnerEntrypoint).toBe('forge-check-runner');
+    expect(manifest.checkRunnerArtifactIdentity).toBe(staged.checkRunnerArtifactIdentity);
     assertRuntimeReleaseFiles(staged);
   });
 
