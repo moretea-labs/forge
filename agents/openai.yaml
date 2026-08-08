@@ -1,4 +1,4 @@
 interface:
-  display_name: "repo-harness"
-  short_description: "Install, migrate, audit, and repair repo-local agentic development harnesses"
-  default_prompt: "Set up or modernize this repository for agentic development with CLAUDE.md, AGENTS.md, tasks-first workflow files, and shared repo contracts."
+  display_name: "forge"
+  short_description: "Operate Forge workflows for repository planning, execution, verification, migration, audit, and repair"
+  default_prompt: "Use Forge to inspect this repository, choose the smallest appropriate workflow, and carry out or plan the requested work with bounded evidence and verification."
