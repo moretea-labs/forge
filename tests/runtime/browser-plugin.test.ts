@@ -212,7 +212,8 @@ function mockAttachPlaywright(
   } as never;
 }
 
-function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi') {
+function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', options: { javaScriptEnabled?: boolean } = {}) {
+  const javaScriptEnabled = options.javaScriptEnabled !== false;
   const separator = '\x1e';
   const userTab = { id: 501, url: 'https://example.com/user-work', title: 'User Work' };
   const ownedTabs = new Map<number, { url: string; title: string; ownerToken?: string }>();
@@ -264,6 +265,7 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi') {
           return entry.url;
         }
         if (script.includes('execute targetTab javascript javascriptSource')) {
+          if (!javaScriptEnabled) throw new Error('Executing JavaScript through AppleScript is turned off. Allow JavaScript from Apple Events.');
           const tabId = tabIdFromScript(script);
           const entry = tabId ? ownedTabs.get(tabId) : undefined;
           if (!tabId || !entry) throw new Error('missing owned tab');
@@ -729,6 +731,44 @@ describe('browser plugin', () => {
     });
     expect(closed).toMatchObject({ closed: true, resourceClosed: true });
     expect(native.events.closed).toEqual([9001]);
+    expect(native.events.activeTabId).toBe(501);
+  });
+
+  test('native open_page preserves tab ownership when JavaScript from Apple Events is disabled and DOM actions fail clearly', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['vivaldi'],
+      allowedDomains: ['example.com'],
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('vivaldi', { javaScriptEnabled: false });
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+
+    const opened = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'browser-native-no-js-open', args: { session_id: 'native-no-js', url: 'https://example.com/no-js' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+
+    expect(native.events.created).toEqual([9001]);
+    expect(native.events.activeTabId).toBe(501);
+    expect(opened.browserConnection).toMatchObject({
+      provider: 'macos-apple-events',
+      tab: { ownership: 'plugin_owned', windowId: 77, tabId: 9001 },
+    });
+
+    await expect(executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text',
+      requestId: 'browser-native-no-js-dom', args: { session_id: 'native-no-js' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    })).rejects.toThrow('PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED');
+    expect(native.events.created).toEqual([9001]);
     expect(native.events.activeTabId).toBe(501);
   });
 

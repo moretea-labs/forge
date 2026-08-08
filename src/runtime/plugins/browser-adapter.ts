@@ -18,6 +18,7 @@ import {
   createMacOsBrowserOwnedPageFromRef,
   discoverMacOsBrowserAttachment,
   macOsActiveBrowserAttachSupported,
+  macOsBrowserJavaScriptAutomationDisabled,
   type MacOsBrowserAttachAttempt,
   type MacOsBrowserProduct,
   type MacOsBrowserTabRef,
@@ -1264,7 +1265,12 @@ async function openNativeAttachedContext(
   } else if (page.waitForLoadState) {
     await page.waitForLoadState(waitUntil(args.wait_until), { timeout });
   }
-  await page.evaluate(`window.name = ${JSON.stringify(ownerToken)}`);
+  try {
+    await page.evaluate(`window.name = ${JSON.stringify(ownerToken)}`);
+  } catch (error) {
+    if (!macOsBrowserJavaScriptAutomationDisabled(error)
+      && !(error instanceof AssistantPluginError && error.code === 'PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED')) throw error;
+  }
   const title = await page.title();
   const pageUrl = normalizedUrl(page.url());
   assertUrlAllowed(pageUrl, config);

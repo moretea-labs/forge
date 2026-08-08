@@ -49,6 +49,11 @@ export interface MacOsBrowserAttachment {
   attempts: MacOsBrowserAttachAttempt[];
 }
 
+export function macOsBrowserJavaScriptAutomationDisabled(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return /Executing JavaScript through AppleScript is turned off|allow JavaScript from Apple Events/i.test(message);
+}
+
 interface MacOsBrowserRuntimeHooks {
   platform: NodeJS.Platform;
   appExists(path: string): boolean;
@@ -413,7 +418,18 @@ export class MacOsAppleEventsPage {
   }
 
   private async executeJavaScriptRaw(source: string, timeoutMs = this.timeoutMs): Promise<string> {
-    return await this.runAppleScript(executeJavaScriptScript(this.browser, this.targetRef), [source], timeoutMs);
+    try {
+      return await this.runAppleScript(executeJavaScriptScript(this.browser, this.targetRef), [source], timeoutMs);
+    } catch (error) {
+      if (macOsBrowserJavaScriptAutomationDisabled(error)) {
+        throw new AssistantPluginError(
+          'PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED',
+          `${this.browser.appName} allows tab/window automation, but DOM actions require Settings > Privacy > Apple Events > Allow JavaScript from Apple Events.`,
+          { retryable: false, details: { browserProduct: this.browser.product, bundleId: this.browser.bundleId } },
+        );
+      }
+      throw error;
+    }
   }
 
   tabRef(): MacOsBrowserTabRef | undefined {
@@ -585,7 +601,11 @@ export class MacOsAppleEventsPage {
         if (state === 'load' || state === 'networkidle') {
           if (readyState === 'complete') return;
         } else if (readyState === 'interactive' || readyState === 'complete') return;
-      } catch {
+      } catch (error) {
+        if (error instanceof AssistantPluginError && error.code === 'PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED') {
+          const metadata = await this.refreshMetadata();
+          if (metadata.url && metadata.url !== 'about:blank' && metadata.url !== 'chrome://newtab/' && metadata.url !== 'vivaldi://newtab/') return;
+        }
         // Navigation can transiently invalidate the current JavaScript execution context.
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
