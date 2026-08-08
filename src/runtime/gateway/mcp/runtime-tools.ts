@@ -158,7 +158,6 @@ import {
   previewRuntimeStorageRepair,
   applyRuntimeStorageRepair,
 } from '../../recovery';
-import { assertRuntimeReleaseFiles, stageRuntimeRelease } from '../../root/release-materialize';
 import { gatewayToken, loadRecoveryConfig } from '../../standalone-recovery/core';
 import {
   getLocalBridgeJobEventsSnapshot,
@@ -1099,9 +1098,10 @@ function withRuntimeResponseMeta(
   return response;
 }
 
-async function activateRuntimeReleaseThroughRecovery(
+async function callStandaloneRecoveryTool(
   controllerHome: string,
-  manifestPath: string,
+  name: string,
+  args: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   const config = loadRecoveryConfig(controllerHome);
   const gateway = config.gateway;
@@ -1116,14 +1116,8 @@ async function activateRuntimeReleaseThroughRecovery(
   const client = new Client({ name: 'forge-runtime-lifecycle-handoff', version: '1.0.0' });
   try {
     await client.connect(transport);
-    const response = await client.callTool({
-      name: 'activate_runtime_release',
-      arguments: {
-        request_id: `gateway-handoff-${Date.now()}`,
-        release_path: manifestPath,
-      },
-    });
-    if (response.isError) throw new Error('RECOVERY_RUNTIME_ACTIVATION_FAILED');
+    const response = await client.callTool({ name, arguments: args });
+    if (response.isError) throw new Error(`RECOVERY_TOOL_FAILED: ${name}`);
     return (response.structuredContent ?? { content: response.content }) as Record<string, unknown>;
   } finally {
     await client.close().catch(() => undefined);
@@ -4596,14 +4590,17 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         let affectedPaths: string[] = [];
         switch (action.id) {
           case 'recovery.stage_and_activate_runtime_release': {
-            const staged = stageRuntimeRelease({
-              controllerHome: ctx.controllerHome,
-              sourceRoot: repository.canonicalRoot,
+            payload = await callStandaloneRecoveryTool(ctx.controllerHome, 'stage_and_activate_runtime_release', {
+              request_id: `runtime-cutover-${Date.now()}`,
             });
-            assertRuntimeReleaseFiles(staged);
-            const activation = await activateRuntimeReleaseThroughRecovery(ctx.controllerHome, staged.manifestPath);
-            payload = { staged, activation } as unknown as Record<string, unknown>;
             affectedPaths = ['controllerHome/runtime/releases', 'controllerHome/runtime/releases/authority.json'];
+            break;
+          }
+          case 'recovery.restart_primary_connector': {
+            payload = await callStandaloneRecoveryTool(ctx.controllerHome, 'restart_primary_connector', {
+              request_id: `connector-restart-${Date.now()}`,
+            });
+            affectedPaths = ['controllerHome/recovery/audit'];
             break;
           }
           case 'recovery.probe_again':

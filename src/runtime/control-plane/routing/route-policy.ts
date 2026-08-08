@@ -91,7 +91,7 @@ export interface RouteDecision {
   policyVersion: typeof ROUTE_POLICY_VERSION;
 }
 
-const PROTECTED_PATH = /(^|\/)(\.github|\.git|package-lock\.json|bun\.lock|pnpm-lock\.yaml|yarn\.lock|.*\.xcodeproj|.*\.xcworkspace)(\/|$)/;
+const PROTECTED_PATH = /(^|\/)(\.github|\.git|.*\.xcodeproj|.*\.xcworkspace)(\/|$)/;
 
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);

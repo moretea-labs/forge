@@ -101,6 +101,16 @@ export const RECOVERY_ACTIONS = {
     localOnly: true,
     boundedTo: ['registered_repository', 'runtime_release_storage', 'external_runtime_lifecycle'],
   },
+  restartPrimaryConnector: {
+    id: 'recovery.restart_primary_connector',
+    title: 'Restart primary Connector',
+    description: 'Restart only the explicitly configured primary OAuth/Connector launchd service through standalone Recovery after local Canonical Runtime verification.',
+    class: 'stale_runtime_state',
+    risk: 'medium',
+    confirmation: 'authorization',
+    localOnly: true,
+    boundedTo: ['primary_connector_service', 'external_runtime_lifecycle'],
+  },
   createPatchHandoff: {
     id: 'recovery.create_patch_handoff',
     title: 'Create patch handoff',

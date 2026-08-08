@@ -88,6 +88,17 @@ describe('single Route Policy authority', () => {
     }))).toMatchObject({ executionMode: 'direct_control', requiresWork: false });
   });
 
+  test('keeps standard dependency lockfile updates on bounded direct routing', () => {
+    for (const path of ['frontend/package-lock.json', 'bun.lock', 'packages/app/pnpm-lock.yaml', 'web/yarn.lock']) {
+      const decision = decideRoute(sharedInput({
+        intent: { objective: 'Refresh dependency lockfile', scopeClear: true, mutation: true, expectedFiles: 1, expectedChangedLines: 60 },
+        workspace: { knownPaths: [path], checkoutId: 'checkout-a', fingerprint: 'workspace-a' },
+      }));
+      expect(decision.executionMode).toBe('direct_control');
+      expect(decision.reasons.some((reason) => reason.code === 'protected_path')).toBe(false);
+    }
+  });
+
   test('labels complex single-owner durable work as bounded_work without Issue, Plan, or Campaign', () => {
     const assessment = assessWorkMode({
       description: 'Refactor one routing subsystem with investigation and resumable checks',

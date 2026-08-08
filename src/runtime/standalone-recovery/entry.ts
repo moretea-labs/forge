@@ -16,7 +16,9 @@ import {
   reconnectMain,
   recoverPrimaryRuntime,
   repairPublicTunnel,
+  restartPrimaryConnector,
   restartPrimaryRuntime,
+  stageAndActivateConfiguredRuntimeRelease,
   rollbackPrevious,
   secureEqual,
   runtimeStatus,
@@ -53,8 +55,10 @@ export const RECOVERY_CLI_COMMANDS = [
   'attest-known-good',
   'rollback-previous',
   'restart-primary-runtime',
+  'restart-primary-connector',
   'recover-primary-runtime',
   'activate-runtime-release',
+  'stage-and-activate-runtime-release',
   'restart-public-tunnel',
   'diagnose',
   'reconnect-main',
@@ -99,6 +103,7 @@ async function cli(): Promise<void> {
     case 'attest-known-good': output(await attestKnownGood(config)); return;
     case 'rollback-previous': output(await rollbackPrevious(config)); return;
     case 'restart-primary-runtime': output(await restartPrimaryRuntime(config)); return;
+    case 'restart-primary-connector': output(await restartPrimaryConnector(config)); return;
     case 'recover-primary-runtime': output(await recoverPrimaryRuntime(config)); return;
     case 'activate-runtime-release': {
       const releasePath = option('--release-manifest') ?? option('--release-path');
@@ -106,6 +111,7 @@ async function cli(): Promise<void> {
       output(await activateRuntimeRelease(config, releasePath));
       return;
     }
+    case 'stage-and-activate-runtime-release': output(await stageAndActivateConfiguredRuntimeRelease(config)); return;
     case 'restart-public-tunnel': output(await repairPublicTunnel(config)); return;
     case 'diagnose': output(await diagnose(config)); return;
     case 'reconnect-main': output(await reconnectMain(config)); return;
@@ -189,8 +195,10 @@ export const RECOVERY_TOOLS = [
   { name: 'attest_known_good', description: 'Record the active release as known-good only after full independent verification succeeds.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'rollback_previous', description: 'While Canonical Runtime is stopped, atomically restore its attested previous whole-Runtime release and SQLite backup.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'restart_primary_runtime', description: 'Restart the installed canonical Forge Runtime service and require whole-Runtime verification.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
+  { name: 'restart_primary_connector', description: 'Restart the explicitly configured primary OAuth/Connector launchd service only after local Canonical Runtime verification succeeds.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'recover_primary_runtime', description: 'Stop the canonical Runtime, restore the attested previous whole release and SQLite backup, restart it, and require verification.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'activate_runtime_release', description: 'Activate an already staged and validated immutable Runtime release while the Canonical Runtime is stopped; verify the new release and restore the previous whole release and SQLite backup on failure.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 }, release_path: { type: 'string', minLength: 8, maxLength: 1024 } }, required: ['request_id', 'release_path'], additionalProperties: false } },
+  { name: 'stage_and_activate_runtime_release', description: 'Build one immutable Runtime release from the fixed Recovery-configured source root, then activate it transactionally with rollback protection. No arbitrary source path is accepted.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'restart_public_tunnel', description: 'Restart the explicitly configured public tunnel only after local runtime verification succeeds and the external endpoint is unavailable.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'reconnect_primary_connector', description: 'Check canonical Runtime Gateway and primary MCP reconnection readiness without publishing a release.', inputSchema: { type: 'object', additionalProperties: false } },
 ] as const;
@@ -421,6 +429,10 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       return restartPrimaryRuntime(config);
     }
+    case 'restart_primary_connector': {
+      if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
+      return restartPrimaryConnector(config);
+    }
     case 'recover_primary_runtime': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       return recoverPrimaryRuntime(config, `recovery-gateway:${args.request_id}`);
@@ -429,6 +441,10 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       if (typeof args.release_path !== 'string' || !args.release_path.trim()) throw new Error('RECOVERY_RELEASE_PATH_REQUIRED');
       return activateRuntimeRelease(config, args.release_path.trim());
+    }
+    case 'stage_and_activate_runtime_release': {
+      if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
+      return stageAndActivateConfiguredRuntimeRelease(config);
     }
     case 'restart_public_tunnel': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
@@ -609,7 +625,7 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
     if (message.method !== 'tools/call' || typeof message.params?.name !== 'string') { json(response, 200, rpcError(id, -32601, 'Unsupported MCP method.')); return; }
     const name = message.params.name;
     const args = message.params.arguments && typeof message.params.arguments === 'object' && !Array.isArray(message.params.arguments) ? message.params.arguments as Record<string, unknown> : {};
-    if (name === 'attest_known_good' || name === 'rollback_previous' || name === 'restart_primary_runtime' || name === 'recover_primary_runtime' || name === 'restart_public_tunnel') {
+    if (name === 'attest_known_good' || name === 'rollback_previous' || name === 'restart_primary_runtime' || name === 'restart_primary_connector' || name === 'recover_primary_runtime' || name === 'activate_runtime_release' || name === 'stage_and_activate_runtime_release' || name === 'restart_public_tunnel') {
       const address = request.socket.remoteAddress ?? 'unknown'; const now = Date.now();
       const window = (recentMutations.get(address) ?? []).filter((at) => now - at < 60_000);
       if (window.length >= 3) { json(response, 429, rpcError(id, -32029, 'Recovery mutation rate limit exceeded.')); return; }

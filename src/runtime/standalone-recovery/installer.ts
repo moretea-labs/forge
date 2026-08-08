@@ -24,7 +24,7 @@ import {
 } from '../../cli/controller/launch-agents';
 import { isProcessAlive } from '../shared/process-tree';
 import { FORGE_VERSION } from '../../version';
-import { initializeStandaloneRecovery, loadRecoveryConfig, type PrimaryRuntimeServiceConfig, type PublicTunnelServiceConfig, type RecoveryConfig } from './core';
+import { initializeStandaloneRecovery, loadRecoveryConfig, type PrimaryConnectorServiceConfig, type PrimaryRuntimeServiceConfig, type PublicTunnelServiceConfig, type RecoveryConfig } from './core';
 import {
   RECOVERY_RELEASE_BINARIES,
   RECOVERY_RELEASE_ROLE_CANARY_ARG,
@@ -647,7 +647,7 @@ export interface RecoveryTunnelLaunchdContract {
 }
 
 export function inspectRecoveryTunnelLaunchdContract(
-  service: PublicTunnelServiceConfig,
+  service: Pick<PublicTunnelServiceConfig | PrimaryConnectorServiceConfig, 'label' | 'plistPath'>,
 ): RecoveryTunnelLaunchdContract {
   const plistPath = service.plistPath ?? launchAgentPath(service.label);
   let source = '';
@@ -675,6 +675,7 @@ export async function installStandaloneRecovery(input: {
   recoveryPublicUrl?: string;
   recoveryTunnelService?: PublicTunnelServiceConfig;
   primaryRuntimeService?: PrimaryRuntimeServiceConfig;
+  primaryConnectorService?: PrimaryConnectorServiceConfig;
   stageOnly?: boolean;
 }, dependencies: RecoveryInstallerDependencies = {}): Promise<RecoveryInstallResult> {
   const controllerHome = resolve(input.controllerHome);
@@ -688,11 +689,22 @@ export async function installStandaloneRecovery(input: {
       throw new Error('RECOVERY_TUNNEL_LAUNCHD_RESTART_CONTRACT_REQUIRED: RunAtLoad=true and KeepAlive=true');
     }
   }
+  if (input.primaryConnectorService?.platform === 'launchd') {
+    const connectorContract = inspectRecoveryTunnelLaunchdContract(input.primaryConnectorService);
+    if (!connectorContract.plistInstalled) {
+      throw new Error(`RECOVERY_PRIMARY_CONNECTOR_LAUNCHD_PLIST_MISSING: ${connectorContract.plistPath}`);
+    }
+    if (!connectorContract.restartSafe) {
+      throw new Error('RECOVERY_PRIMARY_CONNECTOR_LAUNCHD_RESTART_CONTRACT_REQUIRED: RunAtLoad=true and KeepAlive=true');
+    }
+  }
   const config = initializeStandaloneRecovery(controllerHome, input.port ?? 8787, {
     ...(input.publicMcpUrl ? { publicMcpUrl: input.publicMcpUrl } : {}),
     ...(input.recoveryPublicUrl ? { recoveryPublicUrl: input.recoveryPublicUrl } : {}),
     ...(input.recoveryTunnelService ? { recoveryTunnelService: input.recoveryTunnelService } : {}),
     ...(input.primaryRuntimeService ? { primaryRuntimeService: input.primaryRuntimeService } : {}),
+    primaryRuntimeSourceRoot: resolve(input.repoRoot),
+    ...(input.primaryConnectorService ? { primaryConnectorService: input.primaryConnectorService } : {}),
   });
   const staged = stageRecoveryRelease({ controllerHome, sourceRoot }, dependencies);
   if (input.stageOnly) return { controllerHome, staged, config };

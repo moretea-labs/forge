@@ -14,8 +14,10 @@ import {
   recoveryConfigPath,
   listReleases,
   recoverPrimaryRuntime,
+  restartPrimaryConnector,
   restartPrimaryRuntime,
   restartRecoveryGateway,
+  stageAndActivateConfiguredRuntimeRelease,
   rollbackPrevious,
   runtimeStatus,
   verifyStableRuntime,
@@ -222,6 +224,64 @@ function healthyVerify(): VerifyResult {
     },
   };
 }
+
+test('standalone Recovery restarts only the configured primary Connector service', async () => {
+  const home = controllerHome();
+  const plistPath = join(home, 'connector.plist');
+  writeFileSync(plistPath, '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>');
+  const config = createRecoveryConfig(home, {
+    publicMcpUrl: 'https://mcp.example.test/mcp',
+    primaryConnectorService: { platform: 'launchd', label: 'com.moretea.forge.mcp-gateway', plistPath },
+  });
+  const commands: string[][] = [];
+  const result = await restartPrimaryConnector(config, {
+    platform: 'darwin',
+    currentUid: async () => 501,
+    verifyLocal: async () => healthyVerify(),
+    reconnect: async () => ({ ok: true, detail: 'public MCP reachable', verify: healthyVerify() }),
+    runCommand: async (name, args) => {
+      commands.push([name, ...args]);
+      return { ok: true, status: 0, stdout: '', stderr: '' };
+    },
+  });
+  expect(result).toMatchObject({ ok: true, attempted: true, serviceTarget: 'gui/501/com.moretea.forge.mcp-gateway' });
+  expect(commands).toContainEqual(['launchctl', 'print', 'gui/501/com.moretea.forge.mcp-gateway']);
+  expect(commands).toContainEqual(['launchctl', 'kickstart', '-k', 'gui/501/com.moretea.forge.mcp-gateway']);
+});
+
+test('standalone Recovery stages only its configured Runtime source and hands activation to the transaction', async () => {
+  const home = controllerHome();
+  const sourceRoot = join(home, 'source');
+  mkdirSync(sourceRoot, { recursive: true });
+  const releasePath = join(home, 'runtime', 'releases', 'release-new');
+  mkdirSync(releasePath, { recursive: true });
+  const manifestPath = join(releasePath, 'manifest.json');
+  writeFileSync(manifestPath, '{}');
+  writeFileSync(join(releasePath, 'forge-runtime'), 'binary');
+  const config = createRecoveryConfig(home, { primaryRuntimeSourceRoot: sourceRoot });
+  let stagedFrom = '';
+  let activatedManifest = '';
+  const result = await stageAndActivateConfiguredRuntimeRelease(config, {
+    stage: (input) => {
+      stagedFrom = input.sourceRoot;
+      return {
+        releasePath,
+        manifestPath,
+        releaseId: 'release-new',
+        artifactIdentity: 'sha256:test',
+        manifestSha256: 'manifest-sha',
+        sourceCommit: 'a'.repeat(40),
+      };
+    },
+    activate: async (_config, path) => {
+      activatedManifest = path;
+      return { ok: true, attempted: true, detail: 'activated' };
+    },
+  });
+  expect(stagedFrom).toBe(resolve(sourceRoot));
+  expect(activatedManifest).toBe(manifestPath);
+  expect(result).toMatchObject({ ok: true, attempted: true, staged: { releaseId: 'release-new' } });
+});
 
 describe('standalone recovery on canonical Runtime', () => {
   test('verifies and attests the single active whole-Runtime release', async () => {

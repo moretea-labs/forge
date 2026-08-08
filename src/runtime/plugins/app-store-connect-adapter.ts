@@ -302,6 +302,8 @@ function permissions(ready: boolean): AssistantPluginPermissionScope[] {
     permission('appstoreconnect.metadata.write', 'write', 'Patch App Store Connect metadata after dry-run review and authorization.', ready),
     permission('appstoreconnect.testflight.write', 'write', 'Assign builds to TestFlight groups and prepare beta review submissions.', ready),
     permission('appstoreconnect.release.write', 'write', 'Create App Store versions and gated review submissions.', ready),
+    permission('appstoreconnect.xcodecloud.read', 'read', 'Read Xcode Cloud products and workflow configuration.', ready),
+    permission('appstoreconnect.xcodecloud.write', 'write', 'Update Xcode Cloud workflow configuration after dry-run review and strong confirmation.', ready),
   ];
 }
 
@@ -342,6 +344,13 @@ function capabilities(): AssistantPluginCapability[] {
       scopes: ['appstoreconnect.release.write'],
       actions: ['create_app_store_version', 'create_review_submission', 'submit_for_review'],
     },
+    {
+      capabilityId: 'xcode-cloud-workflows',
+      title: 'Xcode Cloud Workflows',
+      description: 'Read Xcode Cloud products/workflows and preview or update a fixed workflow configuration through the official App Store Connect API.',
+      scopes: ['appstoreconnect.xcodecloud.read', 'appstoreconnect.xcodecloud.write'],
+      actions: ['list_xcode_cloud_products', 'list_xcode_cloud_workflows', 'get_xcode_cloud_workflow', 'preview_xcode_cloud_workflow_update', 'update_xcode_cloud_workflow'],
+    },
   ];
 }
 
@@ -351,7 +360,7 @@ function actions(): AssistantPluginActionDescriptor[] {
   return [
     {
       actionId: 'configure', title: 'Configure App Store Connect plugin', description: 'Enable official App Store Connect API access and save non-secret defaults.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: true,
-      scopes: ['appstoreconnect.apps.read', 'appstoreconnect.metadata.write', 'appstoreconnect.testflight.write', 'appstoreconnect.release.write'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
+      scopes: ['appstoreconnect.apps.read', 'appstoreconnect.metadata.write', 'appstoreconnect.testflight.write', 'appstoreconnect.release.write', 'appstoreconnect.xcodecloud.read', 'appstoreconnect.xcodecloud.write'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
       argumentsSchema: { type: 'object', properties: { enabled: { type: 'boolean' }, provider: { type: 'string', enum: ['mock', 'app-store-connect-api'] }, issuer_id: { type: 'string' }, key_id: { type: 'string' }, private_key_path: { type: 'string' }, clear_private_key_path: { type: 'boolean' }, clear_api_identity: { type: 'boolean' }, team_id: { type: 'string' }, clear_team_id: { type: 'boolean' }, default_app_id: { type: 'string' }, clear_default_app_id: { type: 'boolean' }, default_locale: { type: 'string' }, default_timeout_ms: { type: 'number' } }, additionalProperties: false },
     },
     { actionId: 'auth_status', title: 'Check App Store Connect auth', description: 'Report API readiness without returning secrets.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 10_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.apps.read'], resourceClaims: [], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } },
@@ -366,6 +375,11 @@ function actions(): AssistantPluginActionDescriptor[] {
     { actionId: 'list_beta_groups', title: 'List TestFlight beta groups', description: 'List TestFlight beta groups for one app.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.apps.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { app_id: { type: 'string' }, limit: { type: 'number' } }, additionalProperties: false } },
     { actionId: 'list_beta_testers', title: 'List beta testers', description: 'List TestFlight beta testers for one app.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.apps.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { app_id: { type: 'string' }, limit: { type: 'number' } }, additionalProperties: false } },
     { actionId: 'list_review_submissions', title: 'List review submissions', description: 'List App Store review submissions for one app when available.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.apps.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { app_id: { type: 'string' }, limit: { type: 'number' } }, additionalProperties: false } },
+    { actionId: 'list_xcode_cloud_products', title: 'List Xcode Cloud products', description: 'List Xcode Cloud products, optionally filtered to an App Store Connect app.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.xcodecloud.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { app_id: { type: 'string' }, limit: { type: 'number' } }, additionalProperties: false } },
+    { actionId: 'list_xcode_cloud_workflows', title: 'List Xcode Cloud workflows', description: 'List workflows for one exact Xcode Cloud product.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.xcodecloud.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { product_id: { type: 'string' }, limit: { type: 'number' } }, required: ['product_id'], additionalProperties: false } },
+    { actionId: 'get_xcode_cloud_workflow', title: 'Get Xcode Cloud workflow', description: 'Read one Xcode Cloud workflow including start conditions and actions.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.xcodecloud.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { workflow_id: { type: 'string' } }, required: ['workflow_id'], additionalProperties: false } },
+    { actionId: 'preview_xcode_cloud_workflow_update', title: 'Preview Xcode Cloud workflow update', description: 'Build the fixed ciWorkflows PATCH request without sending it.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 10_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.xcodecloud.write'], resourceClaims: [], argumentsSchema: { type: 'object', properties: { workflow_id: { type: 'string' }, name: { type: 'string' }, description: { type: 'string' }, is_enabled: { type: 'boolean' }, clean: { type: 'boolean' }, container_file_path: { type: 'string' }, branch_start_condition: { type: ['object', 'null'], additionalProperties: true }, tag_start_condition: { type: ['object', 'null'], additionalProperties: true }, pull_request_start_condition: { type: ['object', 'null'], additionalProperties: true }, scheduled_start_condition: { type: ['object', 'null'], additionalProperties: true }, manual_branch_start_condition: { type: ['object', 'null'], additionalProperties: true }, manual_tag_start_condition: { type: ['object', 'null'], additionalProperties: true }, manual_pull_request_start_condition: { type: ['object', 'null'], additionalProperties: true }, actions: { type: 'array', items: { type: 'object', additionalProperties: true } } }, required: ['workflow_id'], additionalProperties: false } },
+    { actionId: 'update_xcode_cloud_workflow', title: 'Update Xcode Cloud workflow', description: 'Patch one exact Xcode Cloud workflow through the official App Store Connect API. Use dry_run=true before applying.', readOnly: false, risk: 'remote_write', confirmation: 'strong_confirmation', requiredConfirmationText: 'update-xcode-cloud-workflow', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false, scopes: ['appstoreconnect.xcodecloud.write'], resourceClaims: writeRemote, argumentsSchema: { type: 'object', properties: { workflow_id: { type: 'string' }, name: { type: 'string' }, description: { type: 'string' }, is_enabled: { type: 'boolean' }, clean: { type: 'boolean' }, container_file_path: { type: 'string' }, branch_start_condition: { type: ['object', 'null'], additionalProperties: true }, tag_start_condition: { type: ['object', 'null'], additionalProperties: true }, pull_request_start_condition: { type: ['object', 'null'], additionalProperties: true }, scheduled_start_condition: { type: ['object', 'null'], additionalProperties: true }, manual_branch_start_condition: { type: ['object', 'null'], additionalProperties: true }, manual_tag_start_condition: { type: ['object', 'null'], additionalProperties: true }, manual_pull_request_start_condition: { type: ['object', 'null'], additionalProperties: true }, actions: { type: 'array', items: { type: 'object', additionalProperties: true } }, dry_run: { type: 'boolean' } }, required: ['workflow_id'], additionalProperties: false } },
     { actionId: 'preview_app_info_localization_update', title: 'Preview app metadata update', description: 'Build the App Info Localization PATCH payload without sending it.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 10_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.metadata.write'], resourceClaims: [], argumentsSchema: { type: 'object', properties: { localization_id: { type: 'string' }, name: { type: 'string' }, subtitle: { type: 'string' }, privacy_policy_url: { type: 'string' }, privacy_policy_text: { type: 'string' } }, required: ['localization_id'], additionalProperties: false } },
     { actionId: 'update_app_info_localization', title: 'Update app metadata localization', description: 'Patch App Store Connect App Info Localization metadata through the official API. Use dry_run=true before applying.', readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false, scopes: ['appstoreconnect.metadata.write'], resourceClaims: writeRemote, argumentsSchema: { type: 'object', properties: { localization_id: { type: 'string' }, name: { type: 'string' }, subtitle: { type: 'string' }, privacy_policy_url: { type: 'string' }, privacy_policy_text: { type: 'string' }, dry_run: { type: 'boolean' } }, required: ['localization_id'], additionalProperties: false } },
     { actionId: 'preview_app_store_version_metadata_update', title: 'Preview version metadata update', description: 'Build the App Store Version Localization PATCH payload without sending it.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 10_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.metadata.write'], resourceClaims: [], argumentsSchema: { type: 'object', properties: { localization_id: { type: 'string' }, description: { type: 'string' }, keywords: { type: 'string' }, marketing_url: { type: 'string' }, promotional_text: { type: 'string' }, support_url: { type: 'string' }, whats_new: { type: 'string' } }, required: ['localization_id'], additionalProperties: false } },
@@ -452,6 +466,38 @@ function versionLocalizationPatch(args: Record<string, unknown>): Record<string,
   return { data: { type: 'appStoreVersionLocalizations', id, attributes } };
 }
 
+function xcodeCloudWorkflowPatch(args: Record<string, unknown>): Record<string, unknown> {
+  const id = requiredArg(args, 'workflow_id');
+  const attributes: Record<string, unknown> = {};
+  const stringFields = new Map([
+    ['name', 'name'],
+    ['description', 'description'],
+    ['container_file_path', 'containerFilePath'],
+  ]);
+  for (const [inputName, attributeName] of stringFields) {
+    const value = stringValue(args[inputName]);
+    if (value !== undefined) attributes[attributeName] = value;
+  }
+  if (typeof args.is_enabled === 'boolean') attributes.isEnabled = args.is_enabled;
+  if (typeof args.clean === 'boolean') attributes.clean = args.clean;
+  const objectFields = new Map([
+    ['branch_start_condition', 'branchStartCondition'],
+    ['tag_start_condition', 'tagStartCondition'],
+    ['pull_request_start_condition', 'pullRequestStartCondition'],
+    ['scheduled_start_condition', 'scheduledStartCondition'],
+    ['manual_branch_start_condition', 'manualBranchStartCondition'],
+    ['manual_tag_start_condition', 'manualTagStartCondition'],
+    ['manual_pull_request_start_condition', 'manualPullRequestStartCondition'],
+  ]);
+  for (const [inputName, attributeName] of objectFields) {
+    const value = args[inputName];
+    if (value === null || (value && typeof value === 'object' && !Array.isArray(value))) attributes[attributeName] = value;
+  }
+  if (Array.isArray(args.actions)) attributes.actions = args.actions;
+  if (Object.keys(attributes).length === 0) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Provide at least one Xcode Cloud workflow field to update.', { retryable: false });
+  return { data: { type: 'ciWorkflows', id, attributes } };
+}
+
 function requiredArg(args: Record<string, unknown>, name: string): string {
   const value = stringValue(args[name]);
   if (!value) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `${name} is required.`, { retryable: false });
@@ -524,6 +570,14 @@ function mockResponse(actionId: string, args: Record<string, unknown>, config: A
       }],
     };
   }
+  if (actionId === 'list_xcode_cloud_products') return { data: [{ type: 'ciProducts', id: stableMockId('ci_product', { id }), attributes: { name: 'Mock Xcode Cloud Product', productType: 'APP' } }] };
+  if (actionId === 'list_xcode_cloud_workflows') return { data: [{ type: 'ciWorkflows', id: stableMockId('ci_workflow', { product: args.product_id }), attributes: { name: 'CI', isEnabled: true, clean: false } }] };
+  if (actionId === 'get_xcode_cloud_workflow') return { data: { type: 'ciWorkflows', id: requiredArg(args, 'workflow_id'), attributes: { name: 'CI', isEnabled: true, branchStartCondition: {} } } };
+  if (actionId === 'preview_xcode_cloud_workflow_update' || (actionId === 'update_xcode_cloud_workflow' && args.dry_run === true)) {
+    const body = xcodeCloudWorkflowPatch(args);
+    return { dryRun: true, request: { method: 'PATCH', path: `/v1/ciWorkflows/${requiredArg(args, 'workflow_id')}`, body }, provider: 'mock' };
+  }
+  if (actionId === 'update_xcode_cloud_workflow') return { dryRun: false, provider: 'mock', data: xcodeCloudWorkflowPatch(args).data, applied: true };
   if (actionId === 'list_review_submissions') {
     return {
       data: [{
@@ -619,7 +673,7 @@ export function buildAppStoreConnectPluginManifest(previousRevision = 0, previou
     pluginId: APP_STORE_CONNECT_PLUGIN_ID,
     provider: 'apple',
     displayName: 'App Store Connect API Plugin',
-    pluginVersion: '1.0.0',
+    pluginVersion: '1.1.0',
     authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: [`repo-local:${CONFIG_ROOT}/app-store-connect.json`, 'env:FORGE_ASC_*'] },
     enabled: config.enabled,
     lifecycle: { state: state.lifecycleState, reason: !config.enabled ? 'App Store Connect plugin is disabled.' : auth.ready ? 'App Store Connect API credentials are ready.' : auth.errors[0] ?? auth.warnings[0] },
@@ -701,6 +755,22 @@ export async function executeAppStoreConnectPluginAction(input: AssistantPluginA
       return apiRequest(config, { path: '/v1/betaTesters', query: { 'filter[apps]': appId(input.args, config), limit: limit(input.args.limit) } });
     case 'list_review_submissions':
       return apiRequest(config, { path: '/v1/reviewSubmissions', query: { 'filter[app]': appId(input.args, config), limit: limit(input.args.limit) } });
+    case 'list_xcode_cloud_products':
+      return apiRequest(config, { path: '/v1/ciProducts', query: { 'filter[app]': stringValue(input.args.app_id), limit: limit(input.args.limit) } });
+    case 'list_xcode_cloud_workflows':
+      return apiRequest(config, { path: `/v1/ciProducts/${encodeURIComponent(requiredArg(input.args, 'product_id'))}/workflows`, query: { limit: limit(input.args.limit), 'fields[ciWorkflows]': 'name,description,branchStartCondition,tagStartCondition,pullRequestStartCondition,scheduledStartCondition,manualBranchStartCondition,manualTagStartCondition,manualPullRequestStartCondition,actions,isEnabled,isLockedForEditing,clean,containerFilePath,lastModifiedDate' } });
+    case 'get_xcode_cloud_workflow':
+      return apiRequest(config, { path: `/v1/ciWorkflows/${encodeURIComponent(requiredArg(input.args, 'workflow_id'))}`, query: { 'fields[ciWorkflows]': 'name,description,branchStartCondition,tagStartCondition,pullRequestStartCondition,scheduledStartCondition,manualBranchStartCondition,manualTagStartCondition,manualPullRequestStartCondition,actions,isEnabled,isLockedForEditing,clean,containerFilePath,lastModifiedDate,product,repository,xcodeVersion,macOsVersion', include: 'product,repository,xcodeVersion,macOsVersion' } });
+    case 'preview_xcode_cloud_workflow_update': {
+      const body = xcodeCloudWorkflowPatch(input.args);
+      return { dryRun: true, request: { method: 'PATCH', path: `/v1/ciWorkflows/${requiredArg(input.args, 'workflow_id')}`, body } };
+    }
+    case 'update_xcode_cloud_workflow': {
+      const workflowId = requiredArg(input.args, 'workflow_id');
+      const body = xcodeCloudWorkflowPatch(input.args);
+      if (input.args.dry_run === true) return { dryRun: true, request: { method: 'PATCH', path: `/v1/ciWorkflows/${workflowId}`, body } };
+      return apiRequest(config, { path: `/v1/ciWorkflows/${encodeURIComponent(workflowId)}`, method: 'PATCH', body });
+    }
     case 'preview_app_info_localization_update':
       return { dryRun: true, request: { method: 'PATCH', path: `/v1/appInfoLocalizations/${stringValue(input.args.localization_id) ?? ''}`, body: localizationPatch(input.args) } };
     case 'update_app_info_localization': {

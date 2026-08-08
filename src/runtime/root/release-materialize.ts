@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { runProcess } from '../../effects/process-runner';
+import { resolveBunExecutable } from '../shared/process-environment';
 import { CONTROL_PLANE_SCHEMA_VERSION } from '../control-plane/persistence/sqlite-store';
 
 /**
@@ -38,7 +39,7 @@ function sha256(path: string): string {
 
 function defaultCompileBinary(input: { sourceRoot: string; outputPath: string }): { ok: boolean; stderr?: string; stdout?: string; error?: string } {
   const configured = process.env.FORGE_BUN_BIN?.trim();
-  const bun = configured || (process.versions.bun && /(?:^|\/)bun(?:$|-)/.test(process.execPath) ? process.execPath : 'bun');
+  const bun = configured || resolveBunExecutable(process.execPath, process.env);
   return runProcess(bun, [
     'build',
     join(input.sourceRoot, 'src/runtime/root/entry.ts'),

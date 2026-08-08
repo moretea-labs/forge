@@ -6,6 +6,7 @@ import { basename, dirname, isAbsolute, join, resolve } from 'path';
 import { observeRuntimeStatus } from '../root/status';
 import { forgeRuntimeServicePaths } from '../root/service';
 import { loadRuntimeReleaseManifest } from '../root/release-manifest';
+import { assertRuntimeReleaseFiles, stageRuntimeRelease, type StagedRuntimeRelease } from '../root/release-materialize';
 import {
   publishRuntimeRelease,
   readRuntimeReleaseAuthority,
@@ -37,6 +38,13 @@ export interface PrimaryRuntimeServiceConfig {
   postRestartVerifyTimeoutMs?: number;
 }
 
+export interface PrimaryConnectorServiceConfig {
+  platform: 'launchd';
+  label: string;
+  plistPath?: string;
+  postRestartVerifyTimeoutMs?: number;
+}
+
 export interface RecoveryConfig {
   schemaVersion: 1;
   controllerHome: string;
@@ -44,6 +52,8 @@ export interface RecoveryConfig {
   recoveryPublicUrl?: string;
   recoveryTunnelService?: PublicTunnelServiceConfig;
   primaryRuntimeService?: PrimaryRuntimeServiceConfig;
+  primaryRuntimeSourceRoot?: string;
+  primaryConnectorService?: PrimaryConnectorServiceConfig;
   mainMcpTokenFile?: string;
   expectedToolFingerprint?: string;
   readOnlyTool?: { name: string; arguments?: Record<string, unknown> };
@@ -74,6 +84,8 @@ export type RecoveryMutationAction =
   | 'restart_primary_runtime'
   | 'recover_primary_runtime'
   | 'activate_runtime_release'
+  | 'stage_and_activate_runtime_release'
+  | 'restart_primary_connector'
   | 'restart_recovery_gateway'
   | 'repair_public_tunnel';
 
@@ -152,6 +164,24 @@ export interface PrimaryRuntimeRestartResult {
   detail: string;
   serviceTarget?: string;
   verify: VerifyResult;
+}
+
+export interface PrimaryConnectorRestartResult {
+  ok: boolean;
+  attempted: boolean;
+  noOp?: boolean;
+  detail: string;
+  serviceTarget?: string;
+  verify: VerifyResult;
+}
+
+export interface ConfiguredRuntimeActivationResult {
+  ok: boolean;
+  attempted: boolean;
+  noOp?: boolean;
+  detail: string;
+  staged?: StagedRuntimeRelease;
+  activation?: RuntimeReleaseActivationResult;
 }
 
 export interface PrimaryRuntimeRecoveryResult {
@@ -241,6 +271,8 @@ export function loadRecoveryConfig(controllerHome: string, explicit?: string): R
     ...(typeof loaded.recoveryPublicUrl === 'string' ? { recoveryPublicUrl: loaded.recoveryPublicUrl } : {}),
     ...(loaded.recoveryTunnelService ? { recoveryTunnelService: loaded.recoveryTunnelService } : {}),
     ...(loaded.primaryRuntimeService ? { primaryRuntimeService: loaded.primaryRuntimeService } : {}),
+    ...(typeof loaded.primaryRuntimeSourceRoot === 'string' ? { primaryRuntimeSourceRoot: resolve(loaded.primaryRuntimeSourceRoot) } : {}),
+    ...(loaded.primaryConnectorService ? { primaryConnectorService: loaded.primaryConnectorService } : {}),
     ...(typeof loaded.mainMcpTokenFile === 'string' ? { mainMcpTokenFile: loaded.mainMcpTokenFile } : {}),
     ...(typeof loaded.expectedToolFingerprint === 'string' ? { expectedToolFingerprint: loaded.expectedToolFingerprint } : {}),
     ...(loaded.readOnlyTool ? { readOnlyTool: loaded.readOnlyTool } : {}),
@@ -978,6 +1010,83 @@ function primaryRuntimeLaunchdService(config: RecoveryConfig, uid: number): Laun
   };
 }
 
+export interface PrimaryConnectorRecoveryDependencies {
+  platform?: NodeJS.Platform;
+  currentUid?: () => Promise<number | undefined>;
+  runCommand?: CommandRunner;
+  verifyLocal?: (config: RecoveryConfig) => Promise<VerifyResult>;
+  reconnect?: (config: RecoveryConfig) => Promise<{ ok: boolean; detail: string; verify: VerifyResult }>;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+function primaryConnectorLaunchdService(config: RecoveryConfig, uid: number): LaunchdService | undefined {
+  const configured = config.primaryConnectorService;
+  if (!configured || configured.platform !== 'launchd' || !configured.label.trim()) return undefined;
+  const label = configured.label.trim();
+  const plistPath = resolve(configured.plistPath ?? join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`));
+  if (!existsSync(plistPath)) return undefined;
+  const domain = `gui/${uid}`;
+  return { uid, domain, target: `${domain}/${label}`, label, plistPath };
+}
+
+export async function restartPrimaryConnector(
+  config: RecoveryConfig,
+  dependencies: PrimaryConnectorRecoveryDependencies = {},
+): Promise<PrimaryConnectorRestartResult> {
+  const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
+  const initialLocal = await verifyLocal(config);
+  if (!initialLocal.ok) {
+    return {
+      ok: false,
+      attempted: false,
+      noOp: true,
+      detail: 'Canonical Runtime must be locally healthy before the primary Connector is restarted',
+      verify: initialLocal,
+    };
+  }
+  if ((dependencies.platform ?? process.platform) !== 'darwin') {
+    return { ok: false, attempted: false, noOp: true, detail: 'primary Connector restart currently requires the configured macOS launchd service', verify: initialLocal };
+  }
+  const uid = await (dependencies.currentUid ?? currentUid)();
+  const service = uid === undefined ? undefined : primaryConnectorLaunchdService(config, uid);
+  if (!service) {
+    return { ok: false, attempted: false, noOp: true, detail: 'primary Connector launchd service is not configured or installed', verify: initialLocal };
+  }
+  const reconnect = dependencies.reconnect ?? reconnectMain;
+  const now = dependencies.now ?? Date.now;
+  const wait = dependencies.sleep ?? sleep;
+  const timeoutMs = config.primaryConnectorService?.postRestartVerifyTimeoutMs ?? 30_000;
+  const locked = await withLock(config, { action: 'restart_primary_connector' }, async () => {
+    const restarted = await ensureLaunchdServiceStarted(service, dependencies.runCommand ?? command);
+    if (!restarted.ok) {
+      audit(config, 'primary_connector_restart_failed', { serviceTarget: service.target, detail: restarted.detail });
+      return { ok: false, attempted: true, detail: restarted.detail, serviceTarget: service.target, verify: initialLocal } satisfies PrimaryConnectorRestartResult;
+    }
+    const deadline = now() + timeoutMs;
+    let observed = await reconnect(config);
+    while (!observed.ok && now() < deadline) {
+      await wait(1_000);
+      observed = await reconnect(config);
+    }
+    audit(config, observed.ok ? 'primary_connector_restart_succeeded' : 'primary_connector_restart_unverified', {
+      serviceTarget: service.target,
+      detail: observed.detail,
+    });
+    return {
+      ok: observed.ok,
+      attempted: true,
+      detail: observed.ok ? 'primary Connector restarted and the public MCP endpoint is reachable' : 'primary Connector restarted but the public MCP endpoint did not recover before timeout',
+      serviceTarget: service.target,
+      verify: observed.verify,
+    } satisfies PrimaryConnectorRestartResult;
+  });
+  if (!locked.acquired) {
+    return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner), serviceTarget: service.target, verify: initialLocal };
+  }
+  return locked.value;
+}
+
 async function waitForPrimaryRuntimeState(input: {
   config: RecoveryConfig;
   expectedRunning: boolean;
@@ -1289,6 +1398,46 @@ export async function activateRuntimeRelease(
   return locked.value;
 }
 
+export interface ConfiguredRuntimeActivationDependencies {
+  stage?: typeof stageRuntimeRelease;
+  activate?: (config: RecoveryConfig, manifestPath: string) => Promise<RuntimeReleaseActivationResult>;
+}
+
+export async function stageAndActivateConfiguredRuntimeRelease(
+  config: RecoveryConfig,
+  dependencies: ConfiguredRuntimeActivationDependencies = {},
+): Promise<ConfiguredRuntimeActivationResult> {
+  const sourceRoot = config.primaryRuntimeSourceRoot?.trim();
+  if (!sourceRoot) {
+    return { ok: false, attempted: false, noOp: true, detail: 'primary Runtime source root is not configured in standalone Recovery' };
+  }
+  let staged: StagedRuntimeRelease;
+  try {
+    staged = (dependencies.stage ?? stageRuntimeRelease)({ controllerHome: config.controllerHome, sourceRoot });
+    assertRuntimeReleaseFiles(staged);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'Runtime release staging failed';
+    audit(config, 'runtime_release_stage_failed', { sourceRoot, detail });
+    return { ok: false, attempted: false, noOp: true, detail };
+  }
+  const activation = await (dependencies.activate ?? activateRuntimeRelease)(config, staged.manifestPath);
+  audit(config, activation.ok ? 'runtime_release_stage_and_activate_succeeded' : 'runtime_release_stage_and_activate_failed', {
+    sourceRoot,
+    releaseId: staged.releaseId,
+    sourceCommit: staged.sourceCommit,
+    activationAttempted: activation.attempted,
+    activationDetail: activation.detail,
+  });
+  return {
+    ok: activation.ok,
+    attempted: activation.attempted,
+    noOp: activation.noOp,
+    detail: activation.ok ? 'configured Runtime source was staged as one immutable release and activated through standalone Recovery' : activation.detail,
+    staged,
+    activation,
+  };
+}
+
 function recoveryTunnelService(config: RecoveryConfig, uid: number): LaunchdService | undefined {
   const configured = configuredRecoveryTunnel(config);
   if (!configured || configured.platform !== 'launchd') return undefined;
@@ -1457,7 +1606,7 @@ export function gatewayToken(config: RecoveryConfig): string | undefined {
 export function initializeStandaloneRecovery(
   controllerHome: string,
   port = 8787,
-  extensions: Partial<Pick<RecoveryConfig, 'publicMcpUrl' | 'recoveryPublicUrl' | 'recoveryTunnelService' | 'primaryRuntimeService'>> = {},
+  extensions: Partial<Pick<RecoveryConfig, 'publicMcpUrl' | 'recoveryPublicUrl' | 'recoveryTunnelService' | 'primaryRuntimeService' | 'primaryRuntimeSourceRoot' | 'primaryConnectorService'>> = {},
 ): RecoveryConfig {
   const root = resolve(controllerHome);
   const tokenPath = join(root, 'recovery', 'config', 'gateway-token.json');

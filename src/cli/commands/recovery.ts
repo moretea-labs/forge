@@ -21,11 +21,14 @@ import {
   activateRuntimeRelease,
   loadRecoveryConfig,
   recoverPrimaryRuntime,
+  restartPrimaryConnector,
   restartPrimaryRuntime,
   restartRecoveryGateway,
+  stageAndActivateConfiguredRuntimeRelease,
   rollbackPrevious,
   runtimeStatus,
   verifyStableRuntime,
+  type PrimaryConnectorServiceConfig,
   type PublicTunnelServiceConfig,
 } from '../../runtime/standalone-recovery/core';
 import { readRecoveryRuntimeIdentity } from '../../runtime/standalone-recovery/release';
@@ -43,11 +46,11 @@ function endpoint(value: string | undefined, optionName: string): string | undef
   return parsed.toString();
 }
 
-function launchdService(label?: string, plistPath?: string): PublicTunnelServiceConfig | undefined {
-  if (plistPath && !label) throw new Error('RECOVERY_TUNNEL_SERVICE_LABEL_REQUIRED');
+function launchdService(label?: string, plistPath?: string, role = 'RECOVERY_TUNNEL'): PublicTunnelServiceConfig | PrimaryConnectorServiceConfig | undefined {
+  if (plistPath && !label) throw new Error(`${role}_SERVICE_LABEL_REQUIRED`);
   if (!label) return undefined;
-  if (!/^com\.[A-Za-z0-9._-]{1,180}$/.test(label)) throw new Error('RECOVERY_TUNNEL_SERVICE_LABEL_INVALID');
-  if (plistPath && !isAbsolute(plistPath)) throw new Error('RECOVERY_TUNNEL_SERVICE_PLIST_ABSOLUTE_REQUIRED');
+  if (!/^com\.[A-Za-z0-9._-]{1,180}$/.test(label)) throw new Error(`${role}_SERVICE_LABEL_INVALID`);
+  if (plistPath && !isAbsolute(plistPath)) throw new Error(`${role}_SERVICE_PLIST_ABSOLUTE_REQUIRED`);
   return { platform: 'launchd', label, ...(plistPath ? { plistPath } : {}) };
 }
 
@@ -493,6 +496,26 @@ export function buildRecoveryCommand(): Command {
       if (!result.ok) process.exitCode = 1;
     });
 
+  command.command('restart-connector')
+    .description('Restart the explicitly configured primary OAuth/Connector launchd service through standalone Recovery')
+    .requiredOption('--controller-home <path>', 'Explicit Controller Home')
+    .action(async (opts: { controllerHome: string }) => {
+      const home = resolveControllerHome(opts.controllerHome);
+      const result = await restartPrimaryConnector(loadRecoveryConfig(home));
+      output(result);
+      if (!result.ok) process.exitCode = 1;
+    });
+
+  command.command('stage-and-activate-runtime')
+    .description('Stage current configured Runtime source as an immutable release and activate it transactionally through standalone Recovery')
+    .requiredOption('--controller-home <path>', 'Explicit Controller Home')
+    .action(async (opts: { controllerHome: string }) => {
+      const home = resolveControllerHome(opts.controllerHome);
+      const result = await stageAndActivateConfiguredRuntimeRelease(loadRecoveryConfig(home));
+      output(result);
+      if (!result.ok) process.exitCode = 1;
+    });
+
   command.command('recover')
     .description('Stop the canonical Runtime, restore the attested previous whole release and SQLite backup, restart it, and require verification')
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
@@ -542,6 +565,8 @@ export function buildRecoveryCommand(): Command {
     .option('--recovery-public-url <url>', 'Dedicated Forge Recovery MCP public URL')
     .option('--recovery-tunnel-service-label <label>', 'Dedicated Recovery tunnel launchd label')
     .option('--recovery-tunnel-service-plist <path>', 'Absolute Recovery tunnel launchd plist path')
+    .option('--primary-connector-service-label <label>', 'Primary OAuth/Connector launchd label managed by standalone Recovery')
+    .option('--primary-connector-service-plist <path>', 'Absolute primary OAuth/Connector launchd plist path')
     .option('--stage-only', 'Build and canary the Recovery release without activating services')
     .action(async (opts: {
       controllerHome: string;
@@ -550,12 +575,15 @@ export function buildRecoveryCommand(): Command {
       recoveryPublicUrl?: string;
       recoveryTunnelServiceLabel?: string;
       recoveryTunnelServicePlist?: string;
+      primaryConnectorServiceLabel?: string;
+      primaryConnectorServicePlist?: string;
       stageOnly?: boolean;
     }) => {
       const home = resolveControllerHome(opts.controllerHome);
       const port = Number(opts.port);
       if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('RECOVERY_PORT_INVALID');
-      const recoveryTunnelService = launchdService(opts.recoveryTunnelServiceLabel, opts.recoveryTunnelServicePlist);
+      const recoveryTunnelService = launchdService(opts.recoveryTunnelServiceLabel, opts.recoveryTunnelServicePlist, 'RECOVERY_TUNNEL') as PublicTunnelServiceConfig | undefined;
+      const primaryConnectorService = launchdService(opts.primaryConnectorServiceLabel, opts.primaryConnectorServicePlist, 'RECOVERY_PRIMARY_CONNECTOR') as PrimaryConnectorServiceConfig | undefined;
       const recoveryPublicUrl = endpoint(opts.recoveryPublicUrl, 'RECOVERY_PUBLIC_URL');
       if (Boolean(recoveryTunnelService) !== Boolean(recoveryPublicUrl)) {
         throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
@@ -570,6 +598,7 @@ export function buildRecoveryCommand(): Command {
         publicMcpUrl: endpoint(opts.publicMcpUrl, 'PUBLIC_MCP_URL'),
         recoveryPublicUrl,
         recoveryTunnelService,
+        primaryConnectorService,
       });
       output({
         status: opts.stageOnly ? 'staged' : 'installed',
