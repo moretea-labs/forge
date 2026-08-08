@@ -31,6 +31,7 @@ import {
   type WorkPhaseEvidenceMap,
   type WorkPhaseEvidenceState,
   type WorkContractStore,
+  isDirectEditWorkCompletionReceipt,
   isRepositoryCompletionReceipt,
   isTerminalWorkContractStatus,
 } from './types';
@@ -283,6 +284,14 @@ function validateWorkSemantics(contract: WorkContract): WorkContract {
       if (!receipt.targetBranch.trim() || !receipt.targetRevision.trim()) throw new Error('WORK_COMPLETION_RECEIPT_TARGET_REQUIRED');
       if (receipt.delivery.status !== 'integrated' || !receipt.delivery.reachable) throw new Error('WORK_COMPLETION_RECEIPT_DELIVERY_NOT_PROVEN');
       if (!['complete', 'maintenance_warning'].includes(receipt.cleanup.status) || receipt.cleanup.blockers.length > 0) throw new Error('WORK_COMPLETION_RECEIPT_CLEANUP_NOT_PROVEN');
+    } else if (isDirectEditWorkCompletionReceipt(receipt)) {
+      if (!receipt.editSessionId.trim()) throw new Error('WORK_COMPLETION_RECEIPT_DIRECT_EDIT_SESSION_REQUIRED');
+      if (!receipt.targetBranch.trim() || !receipt.targetRevision.trim()) throw new Error('WORK_COMPLETION_RECEIPT_TARGET_REQUIRED');
+      if (receipt.delivery.status !== 'integrated' || !receipt.delivery.reachable) throw new Error('WORK_COMPLETION_RECEIPT_DELIVERY_NOT_PROVEN');
+      if (!['complete', 'maintenance_warning'].includes(receipt.cleanup.status) || receipt.cleanup.blockers.length > 0) throw new Error('WORK_COMPLETION_RECEIPT_CLEANUP_NOT_PROVEN');
+      if (!['repository_change', 'completed_no_change'].includes(contract.workKind)) throw new Error('WORK_COMPLETION_RECEIPT_DIRECT_EDIT_KIND_REQUIRED');
+      const expectedOutcome = contract.workKind === 'completed_no_change' ? 'completed_no_change' : 'completed_changed';
+      if (contract.completionOutcome !== expectedOutcome) throw new Error('WORK_COMPLETION_RECEIPT_DIRECT_EDIT_OUTCOME_REQUIRED');
     } else {
       if (contract.workKind !== 'local_effect') throw new Error('WORK_COMPLETION_RECEIPT_LOCAL_EFFECT_KIND_REQUIRED');
       if (contract.completionOutcome !== 'completed_local') throw new Error('WORK_COMPLETION_RECEIPT_LOCAL_EFFECT_OUTCOME_REQUIRED');

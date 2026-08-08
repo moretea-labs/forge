@@ -157,12 +157,41 @@ export interface LocalEffectCompletionReceipt {
   recordedAt: string;
 }
 
-export type WorkCompletionReceipt = RepositoryCompletionReceipt | LocalEffectCompletionReceipt;
+/**
+ * Completion authority for a standalone Direct Edit that is not bound to the
+ * retired Issue/Task completion model. The receipt proves that one finalized
+ * edit session is present at an exact reachable Git revision with clean owned
+ * paths, while keeping the WorkContract as the canonical lifecycle authority.
+ */
+export interface DirectEditWorkCompletionReceipt {
+  schemaVersion: 1;
+  receiptId: string;
+  source: 'direct_edit_work';
+  workId: string;
+  editSessionId: string;
+  targetBranch: string;
+  targetRevision: string;
+  sourceRevision?: string;
+  baseRevision?: string;
+  changedPaths: string[];
+  delivery: RepositoryCompletionReceipt['delivery'];
+  cleanup: RepositoryCompletionReceipt['cleanup'];
+  verifiedAt: string;
+  recordedAt: string;
+}
+
+export type WorkCompletionReceipt = RepositoryCompletionReceipt | DirectEditWorkCompletionReceipt | LocalEffectCompletionReceipt;
 
 export function isRepositoryCompletionReceipt(
   receipt: WorkCompletionReceipt,
 ): receipt is RepositoryCompletionReceipt {
-  return receipt.source !== 'local_effect';
+  return receipt.source !== 'local_effect' && receipt.source !== 'direct_edit_work';
+}
+
+export function isDirectEditWorkCompletionReceipt(
+  receipt: WorkCompletionReceipt,
+): receipt is DirectEditWorkCompletionReceipt {
+  return receipt.source === 'direct_edit_work';
 }
 
 /** A reviewed exception for historical/manual integration; never inferred automatically. */

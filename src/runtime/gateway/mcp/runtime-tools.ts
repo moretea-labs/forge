@@ -17,6 +17,7 @@ import type { ExecutionJob } from '../../execution/jobs/types';
 import { getProcessHandle, processRuntimeResourceDiagnostics, waitForProcess } from '../../execution/process-runtime';
 import { buildJobOperationDigest } from '../../control-plane/facade/operation-digest';
 import { readWorkHandle, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
+import { reconcileFinalizedDirectEditWorksAfterCommit } from '../../control-plane/execution/direct-edit-work-completion';
 import { readJobEvents } from '../../evidence/event-ledger';
 import { readExecutionArtifact } from '../../evidence/artifact-store';
 import { readExecutionEvidence } from '../../evidence/evidence-store';
@@ -3685,10 +3686,21 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           paths: args.paths,
           message: args.message,
         });
+        const directEditWorkCompletion = !committed.error && committed.commit?.ok === true
+          ? reconcileFinalizedDirectEditWorksAfterCommit({
+              controllerHome: ctx.controllerHome,
+              repoId: repository.repoId,
+              checkoutId: repository.activeCheckoutId,
+              repoRoot: repository.canonicalRoot,
+              committedPaths: committed.paths,
+              fallbackBranch: repository.defaultBranch || 'main',
+            })
+          : undefined;
         return result({
           repoId: repository.repoId,
           checkoutId: repository.activeCheckoutId,
           ...committed,
+          ...(directEditWorkCompletion ? { directEditWorkCompletion } : {}),
         }, Boolean(committed.error));
       }
       case 'prepare_handoff_artifacts': {
