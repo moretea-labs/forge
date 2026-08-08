@@ -39,7 +39,7 @@ import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { recoveryConnectorDescriptor } from '../../src/cli/commands/recovery';
 import { ensureMcpControllerHomeOAuthPassphrase } from '../../src/cli/mcp/auth';
-import { inspectRecoveryTunnelLaunchdContract, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
+import { inspectPrimaryConnectorLaunchdContract, inspectRecoveryTunnelLaunchdContract, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -820,6 +820,24 @@ describe('standalone recovery on canonical Runtime', () => {
       label: 'com.moretea.forge-recovery-tunnel',
       plistPath,
     })).toMatchObject({ plistInstalled: true, runAtLoad: true, keepAliveAlways: true, restartSafe: true });
+  });
+
+  test('accepts failure-triggered KeepAlive for the explicitly managed primary Connector', () => {
+    const home = controllerHome();
+    const plistPath = join(home, 'Library', 'LaunchAgents', 'com.moretea.forge.mcp-gateway.plist');
+    mkdirSync(dirname(plistPath), { recursive: true });
+    writeFileSync(plistPath, '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict></dict></plist>');
+    expect(inspectPrimaryConnectorLaunchdContract({
+      platform: 'launchd',
+      label: 'com.moretea.forge.mcp-gateway',
+      plistPath,
+    })).toMatchObject({
+      plistInstalled: true,
+      runAtLoad: true,
+      keepAliveAlways: false,
+      keepAliveOnFailure: true,
+      restartSafe: true,
+    });
   });
 
   test('retires stale Recovery launch agents before the Forge services are installed', () => {

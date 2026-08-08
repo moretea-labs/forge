@@ -643,11 +643,13 @@ export interface RecoveryTunnelLaunchdContract {
   plistInstalled: boolean;
   runAtLoad: boolean;
   keepAliveAlways: boolean;
+  keepAliveOnFailure: boolean;
   restartSafe: boolean;
 }
 
-export function inspectRecoveryTunnelLaunchdContract(
+function inspectLaunchdRestartContract(
   service: Pick<PublicTunnelServiceConfig | PrimaryConnectorServiceConfig, 'platform' | 'label' | 'plistPath'>,
+  allowConditionalKeepAlive: boolean,
 ): RecoveryTunnelLaunchdContract {
   const plistPath = service.plistPath ?? launchAgentPath(service.label);
   let source = '';
@@ -656,14 +658,28 @@ export function inspectRecoveryTunnelLaunchdContract(
   }
   const runAtLoad = /<key>\s*RunAtLoad\s*<\/key>\s*<true\s*\/>/s.test(source);
   const keepAliveAlways = /<key>\s*KeepAlive\s*<\/key>\s*<true\s*\/>/s.test(source);
+  const keepAliveOnFailure = /<key>\s*KeepAlive\s*<\/key>\s*<dict>[\s\S]*?<key>\s*SuccessfulExit\s*<\/key>\s*<false\s*\/>[\s\S]*?<\/dict>/s.test(source);
   return {
     label: service.label,
     plistPath,
     plistInstalled: source.length > 0,
     runAtLoad,
     keepAliveAlways,
-    restartSafe: runAtLoad && keepAliveAlways,
+    keepAliveOnFailure,
+    restartSafe: runAtLoad && (keepAliveAlways || (allowConditionalKeepAlive && keepAliveOnFailure)),
   };
+}
+
+export function inspectRecoveryTunnelLaunchdContract(
+  service: Pick<PublicTunnelServiceConfig | PrimaryConnectorServiceConfig, 'platform' | 'label' | 'plistPath'>,
+): RecoveryTunnelLaunchdContract {
+  return inspectLaunchdRestartContract(service, false);
+}
+
+export function inspectPrimaryConnectorLaunchdContract(
+  service: Pick<PrimaryConnectorServiceConfig, 'platform' | 'label' | 'plistPath'>,
+): RecoveryTunnelLaunchdContract {
+  return inspectLaunchdRestartContract(service, true);
 }
 
 export async function installStandaloneRecovery(input: {
@@ -690,12 +706,12 @@ export async function installStandaloneRecovery(input: {
     }
   }
   if (input.primaryConnectorService?.platform === 'launchd') {
-    const connectorContract = inspectRecoveryTunnelLaunchdContract(input.primaryConnectorService);
+    const connectorContract = inspectPrimaryConnectorLaunchdContract(input.primaryConnectorService);
     if (!connectorContract.plistInstalled) {
       throw new Error(`RECOVERY_PRIMARY_CONNECTOR_LAUNCHD_PLIST_MISSING: ${connectorContract.plistPath}`);
     }
     if (!connectorContract.restartSafe) {
-      throw new Error('RECOVERY_PRIMARY_CONNECTOR_LAUNCHD_RESTART_CONTRACT_REQUIRED: RunAtLoad=true and KeepAlive=true');
+      throw new Error('RECOVERY_PRIMARY_CONNECTOR_LAUNCHD_RESTART_CONTRACT_REQUIRED: RunAtLoad=true and KeepAlive=true or KeepAlive.SuccessfulExit=false');
     }
   }
   const config = initializeStandaloneRecovery(controllerHome, input.port ?? 8787, {
