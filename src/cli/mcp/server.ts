@@ -196,6 +196,13 @@ function hasAuthoritativeRuntimeToolSurface(tools: { tools: Array<{ name: string
     && names.has('controller_ready');
 }
 
+export function shouldProxyRuntimeToolCall(
+  tools: { tools: Array<{ name: string }> },
+  name: string,
+): boolean {
+  return tools.tools.some((tool) => tool.name === name);
+}
+
 async function proxyRuntimeToolCall(
   ctx: MultiRepositoryMcpToolContext,
   name: string,
@@ -249,7 +256,13 @@ export function createForgeMcpServerFromContext(baseContext: ServerToolContext):
         if (!getRuntimeWriteClaim()) {
           try {
             const proxied = await proxyRuntimeTools(ctx);
-            if (hasAuthoritativeRuntimeToolSurface(proxied) && proxied.tools.some((tool) => tool.name === name)) {
+            // Call routing is per-tool, not all-or-nothing. A canonical Runtime
+            // that explicitly exposes this tool owns its execution even when a
+            // newer source Gateway knows additional unrelated tools. Falling
+            // back locally for a Runtime-owned mutation would evaluate writer
+            // fencing in the thin Gateway and surface a false runtime-authority
+            // conflict.
+            if (shouldProxyRuntimeToolCall(proxied, name)) {
               return proxyRuntimeToolCall(ctx, name, args);
             }
           } catch { /* Old/unavailable Runtime: retain local bootstrap/recovery surface. */ }
