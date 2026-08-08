@@ -32,6 +32,7 @@ import {
   type PublicTunnelServiceConfig,
 } from '../../runtime/standalone-recovery/core';
 import { readRecoveryRuntimeIdentity } from '../../runtime/standalone-recovery/release';
+import { configureCodegraph, ensureCodegraph } from '../tools/codegraph';
 import { isProcessAlive } from '../../runtime/shared/process-tree';
 
 function output(value: unknown, json = true): void {
@@ -502,11 +503,13 @@ export function buildRecoveryCommand(): Command {
     .requiredOption('--repo <path>', 'Forge source repository root used for Recovery and Runtime immutable releases')
     .requiredOption('--primary-connector-service-label <label>', 'Primary OAuth/Connector launchd label')
     .option('--primary-connector-service-plist <path>', 'Absolute primary OAuth/Connector launchd plist path')
+    .option('--configure-codegraph', 'Initialize/sync CodeGraph and configure repository-scoped MCP for Codex and Claude during the bootstrap')
     .action(async (opts: {
       controllerHome: string;
       repo: string;
       primaryConnectorServiceLabel: string;
       primaryConnectorServicePlist?: string;
+      configureCodegraph?: boolean;
     }) => {
       const home = resolveControllerHome(opts.controllerHome);
       const repoRoot = resolve(opts.repo);
@@ -533,9 +536,19 @@ export function buildRecoveryCommand(): Command {
         process.exitCode = 1;
         return;
       }
+      let codegraph: Record<string, unknown> | undefined;
+      let codegraphOk = true;
+      if (opts.configureCodegraph === true) {
+        const ensured = ensureCodegraph({ repoRoot, init: true, sync: true, host: 'both' });
+        const configured = configureCodegraph({ repoRoot, target: 'both', location: 'global' });
+        codegraphOk = !ensured.actions.some((entry) => entry.status === 'failed')
+          && !configured.actions.some((entry) => entry.status === 'failed');
+        codegraph = { ensured, configured };
+      }
       const connector = await restartPrimaryConnector(refreshed);
-      output({ ok: connector.ok, phase: connector.ok ? 'complete' : 'connector_restart', recovery: installed, runtime, connector });
-      if (!connector.ok) process.exitCode = 1;
+      const ok = connector.ok && codegraphOk;
+      output({ ok, phase: !connector.ok ? 'connector_restart' : !codegraphOk ? 'codegraph_configuration' : 'complete', recovery: installed, runtime, ...(codegraph ? { codegraph } : {}), connector });
+      if (!ok) process.exitCode = 1;
     });
 
   command.command('restart-connector')
