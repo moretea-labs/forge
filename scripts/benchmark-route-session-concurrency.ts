@@ -9,6 +9,9 @@ import { callMultiRepositoryTool } from '../src/cli/mcp/multi-repository';
 import { callRuntimeTool } from '../src/runtime/gateway/mcp/runtime-tools';
 import { createWorkContract } from '../src/runtime/control-plane/facade/work-contract-store';
 import { executionIdentityForRepository } from '../src/runtime/control-plane/execution/execution-identity';
+import { acquireRuntimeOwnership } from '../src/runtime/root/ownership';
+import { ensureActiveRuntimeRelease } from '../src/runtime/root/release-store';
+import { bindRuntimeWriteClaim, clearRuntimeWriteClaimForTests } from '../src/runtime/root/write-fence';
 import {
   acquireCheckoutMutationGate,
   releaseCheckoutMutationGateOwned,
@@ -81,6 +84,25 @@ function git(root: string, args: string[]): void {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf8' });
   if (result.status !== 0) throw new Error(result.stderr || `git ${args.join(' ')} failed`);
 }
+function bindBenchmarkRuntime(controllerHome: string): void {
+  const manifestPath = join(controllerHome, 'benchmark-runtime.manifest.json');
+  writeFileSync(manifestPath, JSON.stringify({
+    schemaVersion: 1,
+    releaseId: 'benchmark-runtime-release',
+    artifactIdentity: 'benchmark-runtime-artifact',
+    entrypoint: 'forge-runtime',
+    arguments: [],
+    configurationSchemaVersion: 1,
+    controllerHome,
+    databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+    workerProtocolVersion: 1,
+    createdAt: new Date().toISOString(),
+  }));
+  const owner = acquireRuntimeOwnership(controllerHome, 'benchmark-runtime');
+  const authority = ensureActiveRuntimeRelease(controllerHome, manifestPath);
+  bindRuntimeWriteClaim({ controllerHome, owner: owner.record, authority });
+}
+
 function repositoryFixture(root: string, controllerHome: string, name: string) {
   const repoRoot = join(root, name);
   mkdirSync(repoRoot, { recursive: true });
@@ -113,6 +135,7 @@ async function main(): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), 'route-session-concurrency-'));
   const controllerHome = ensureControllerHome(join(root, 'controller'));
   try {
+    bindBenchmarkRuntime(controllerHome);
     const first = repositoryFixture(root, controllerHome, 'repository-a');
     const second = repositoryFixture(root, controllerHome, 'repository-b');
     const results = new Map<string, Sample[]>();
@@ -392,6 +415,7 @@ async function main(): Promise<void> {
     }
     process.stdout.write(serialized);
   } finally {
+    clearRuntimeWriteClaimForTests();
     rmSync(root, { recursive: true, force: true });
   }
 }
