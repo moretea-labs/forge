@@ -67,6 +67,7 @@ describe('bundled Desktop plugin', () => {
     const manifests = listAssistantPluginManifests(repository.canonicalRoot.replace(/\/system$/, ''), repository);
     const desktop = manifests.find((entry) => entry.pluginId === 'desktop');
     expect(desktop).toBeDefined();
+    expect(desktop?.displayName).toBe('Forge Desktop');
     expect(desktop?.enabled).toBe(false);
     expect(desktop?.health.state).toBe('disabled');
     expect(desktop?.health.details?.runtime).toBe('managed_process');

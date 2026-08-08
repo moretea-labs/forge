@@ -292,7 +292,7 @@ export function buildDesktopPluginManifest(previousRevision = 0, previousUpdated
     revision: Math.max(1, previousRevision || 1),
     pluginId: PLUGIN_ID,
     provider: 'bundled-managed-desktop',
-    displayName: 'Repo Harness Desktop',
+    displayName: 'Forge Desktop',
     pluginVersion: '1.0.0',
     authority: {
       strategy: 'derived',
