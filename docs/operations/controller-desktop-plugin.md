@@ -1,6 +1,6 @@
 # Controller Desktop Plugin
 
-The `desktop` plugin is a bundled first-party Repo Harness capability for bounded
+The `desktop` plugin is a bundled first-party Forge capability for bounded
 macOS desktop observation and application launch. It is not downloaded from a
 marketplace and it does not require a user-configured socket, executable path, or
 registration descriptor.
@@ -19,7 +19,7 @@ ChatGPT / CLI / Local UI
 
 The Controller starts the helper on demand for one action. The child performs a
 versioned handshake, executes one bounded request, returns one structured result,
-and exits. Repo Harness enforces request and response size limits, timeout,
+and exits. Forge enforces request and response size limits, timeout,
 cancellation, capability negotiation, bounded diagnostics, and process cleanup.
 The helper is launched directly without a shell.
 
@@ -64,10 +64,10 @@ Use the controller-scoped plugin action without a repository id:
 ```
 
 Then call `get_plugin` for `desktop`, followed by `status` and `observe`.
-No ChatGPT reconnect is required because Repo Harness reuses the existing
-`list_plugins`, `get_plugin`, and `plugin_action_execute` tool schemas. A Controller
-restart or rollout is required only when loading a newly installed Repo Harness
-runtime revision.
+No ChatGPT reconnect is required because Forge reuses the existing
+`list_plugins`, `get_plugin`, and `plugin_action_execute` tool schemas. Loading a
+new Runtime revision may require the external lifecycle owner to restart the
+existing single Forge Runtime; it must not create a second Runtime or rollout slot.
 
 Configuration authority is stored under:
 
@@ -76,7 +76,7 @@ Configuration authority is stored under:
 ```
 
 The derived manifest and registry remain Controller projections. The helper path
-is resolved from the active Repo Harness installation and is not returned as
+is resolved from the active Forge installation and is not returned as
 user-facing configuration.
 
 ## Permissions
@@ -109,4 +109,4 @@ A helper failure is surfaced as a structured `PLUGIN_MANAGED_PROCESS_*` or
 
 ## Immutable release packaging
 
-Whole-Runtime releases include `forge-desktop-helper.mjs` as a required, hashed sibling artifact. The Desktop adapter resolves it from the validated active Runtime release identity, then uses argv/source candidates only as development compatibility fallbacks. It launches the helper with the same trusted Node resolver used by the bounded Node bridge path; it does not execute the compiled Repo Harness binary as a JavaScript interpreter. Release validation fails closed when the helper is missing or empty, and plugin health reports helper and trusted-runtime availability without returning either local path.
+Whole-Runtime releases include `forge-desktop-helper.mjs` as a required, hashed sibling artifact. The Desktop adapter resolves it from the validated active Runtime release identity, then uses argv/source candidates only as development compatibility fallbacks. It launches the helper with the same trusted Node resolver used by the bounded Node bridge path; it does not execute the compiled Forge binary as a JavaScript interpreter. Release validation fails closed when the helper is missing or empty, and plugin health reports helper and trusted-runtime availability without returning either local path.

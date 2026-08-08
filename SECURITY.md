@@ -41,7 +41,7 @@ Please allow maintainers time to reproduce, fix, and prepare an advisory before 
 
 ## Credential exposure response
 
-Repo Harness redacts credential-shaped Process Runtime output before persistence
+Forge redacts credential-shaped Process Runtime output before persistence
 and sanitizes bounded historical logs and result artifacts when they are read or
 reconciled. These controls reduce retained exposure but do not revoke a credential.
 If a real token, password, private key, or authenticated URL may have appeared in
