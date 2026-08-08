@@ -42,6 +42,11 @@ describe('runtime release materialization', () => {
         writeFileSync(outputPath, 'node-host-bundle');
         return { ok: true };
       },
+      bundleProcessRunner: ({ outputPath, entryPath }) => {
+        expect(entryPath.endsWith('src/runtime/execution/process-runtime/process-runner-entry.ts')).toBe(true);
+        writeFileSync(outputPath, 'process-runner-bundle');
+        return { ok: true };
+      },
     });
 
     const hostPath = join(staged.releasePath, 'browser-node-bridge-host.js');
@@ -52,11 +57,17 @@ describe('runtime release materialization', () => {
     expect(existsSync(desktopHelperPath)).toBe(true);
     expect(readFileSync(desktopHelperPath, 'utf8')).toContain('desktop-helper');
     expect(staged.desktopHelperArtifactIdentity).toMatch(/^sha256:/);
+    const processRunnerPath = join(staged.releasePath, 'process-runner.js');
+    expect(existsSync(processRunnerPath)).toBe(true);
+    expect(readFileSync(processRunnerPath, 'utf8')).toBe('process-runner-bundle');
+    expect(staged.processRunnerArtifactIdentity).toMatch(/^sha256:/);
     const manifest = JSON.parse(readFileSync(staged.manifestPath, 'utf8')) as Record<string, unknown>;
     expect(manifest.browserNodeBridgeEntrypoint).toBe('browser-node-bridge-host.js');
     expect(manifest.browserNodeBridgeArtifactIdentity).toBe(staged.browserNodeBridgeArtifactIdentity);
     expect(manifest.desktopHelperEntrypoint).toBe('forge-desktop-helper.mjs');
     expect(manifest.desktopHelperArtifactIdentity).toBe(staged.desktopHelperArtifactIdentity);
+    expect(manifest.processRunnerEntrypoint).toBe('process-runner.js');
+    expect(manifest.processRunnerArtifactIdentity).toBe(staged.processRunnerArtifactIdentity);
     assertRuntimeReleaseFiles(staged);
   });
 
@@ -69,6 +80,10 @@ describe('runtime release materialization', () => {
       },
       bundleNodeHost: ({ outputPath }) => {
         writeFileSync(outputPath, 'node-host-bundle');
+        return { ok: true };
+      },
+      bundleProcessRunner: ({ outputPath }) => {
+        writeFileSync(outputPath, 'process-runner-bundle');
         return { ok: true };
       },
     });

@@ -171,6 +171,18 @@ describe('Unified Process Runtime', () => {
       FORGE_BUN_EXECUTABLE: '/custom/bin/bun',
     })).toBe('/custom/bin/bun');
 
+    // A bundled JavaScript runner is still a script, even when the hosting Runtime
+    // itself is an immutable standalone binary. The runner must be interpreted by
+    // Bun rather than executed as the forge Runtime binary.
+    const previousExecutionMode = process.env.FORGE_RUNTIME_EXECUTION;
+    process.env.FORGE_RUNTIME_EXECUTION = 'standalone-binary';
+    try {
+      expect(resolveProcessRunnerEntryPath(daemonPath, {}, releaseRoot)).toBe(runnerPath);
+    } finally {
+      if (previousExecutionMode === undefined) delete process.env.FORGE_RUNTIME_EXECUTION;
+      else process.env.FORGE_RUNTIME_EXECUTION = previousExecutionMode;
+    }
+
     const home = mkdtempSync(join(tmpdir(), 'forge-bun-home-'));
     roots.push(home);
     const homeBun = join(home, '.bun', 'bin', process.platform === 'win32' ? 'bun.exe' : 'bun');

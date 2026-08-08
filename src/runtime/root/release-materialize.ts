@@ -21,6 +21,7 @@ export interface StagedRuntimeRelease {
   diagnosticArtifactIdentity?: string;
   browserNodeBridgeArtifactIdentity?: string;
   desktopHelperArtifactIdentity?: string;
+  processRunnerArtifactIdentity?: string;
   manifestSha256: string;
   sourceCommit: string;
 }
@@ -30,6 +31,7 @@ export interface RuntimeReleaseMaterializerDependencies {
   uuid?: () => string;
   compileBinary?: (input: { sourceRoot: string; outputPath: string; entryPath?: string }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
   bundleNodeHost?: (input: { sourceRoot: string; outputPath: string; entryPath: string }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
+  bundleProcessRunner?: (input: { sourceRoot: string; outputPath: string; entryPath: string }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
 }
 
 function gitText(root: string, args: string[]): string {
@@ -54,7 +56,7 @@ function defaultCompileBinary(input: { sourceRoot: string; outputPath: string; e
   ], { cwd: input.sourceRoot, timeoutMs: 300_000, maxOutputBytes: 512 * 1024 });
 }
 
-function defaultBundleNodeHost(input: { sourceRoot: string; outputPath: string; entryPath: string }): { ok: boolean; stderr?: string; stdout?: string; error?: string } {
+function defaultBundleNodeScript(input: { sourceRoot: string; outputPath: string; entryPath: string }): { ok: boolean; stderr?: string; stdout?: string; error?: string } {
   const configured = process.env.FORGE_BUN_BIN?.trim();
   const bun = configured || resolveBunExecutable(process.execPath, process.env);
   return runProcess(bun, [
@@ -115,7 +117,7 @@ export function stageRuntimeRelease(input: {
 
     const browserNodeBridgeEntrypoint = 'browser-node-bridge-host.js' as const;
     const browserNodeBridgePath = join(staging, browserNodeBridgeEntrypoint);
-    const bundleNodeHost = dependencies.bundleNodeHost ?? defaultBundleNodeHost;
+    const bundleNodeHost = dependencies.bundleNodeHost ?? defaultBundleNodeScript;
     const browserHostBundle = bundleNodeHost({
       sourceRoot,
       outputPath: browserNodeBridgePath,
@@ -126,6 +128,20 @@ export function stageRuntimeRelease(input: {
     }
     chmodSync(browserNodeBridgePath, 0o700);
     const browserNodeBridgeArtifactIdentity = `sha256:${sha256(browserNodeBridgePath)}`;
+
+    const processRunnerEntrypoint = 'process-runner.js' as const;
+    const processRunnerPath = join(staging, processRunnerEntrypoint);
+    const bundleProcessRunner = dependencies.bundleProcessRunner ?? defaultBundleNodeScript;
+    const processRunnerBundle = bundleProcessRunner({
+      sourceRoot,
+      outputPath: processRunnerPath,
+      entryPath: join(sourceRoot, 'src/runtime/execution/process-runtime/process-runner-entry.ts'),
+    });
+    if (!processRunnerBundle.ok) {
+      throw new Error(`RUNTIME_RELEASE_PROCESS_RUNNER_BUILD_FAILED: ${processRunnerBundle.stderr || processRunnerBundle.stdout || processRunnerBundle.error}`.slice(0, 2_000));
+    }
+    chmodSync(processRunnerPath, 0o700);
+    const processRunnerArtifactIdentity = `sha256:${sha256(processRunnerPath)}`;
 
     const desktopHelperEntrypoint = 'forge-desktop-helper.mjs' as const;
     const sourceDesktopHelperPath = join(sourceRoot, 'bin', desktopHelperEntrypoint);
@@ -147,6 +163,8 @@ export function stageRuntimeRelease(input: {
       browserNodeBridgeArtifactIdentity,
       desktopHelperEntrypoint,
       desktopHelperArtifactIdentity,
+      processRunnerEntrypoint,
+      processRunnerArtifactIdentity,
       arguments: [],
       configurationSchemaVersion: 1,
       controllerHome: resolve(input.controllerHome),
@@ -171,6 +189,7 @@ export function stageRuntimeRelease(input: {
       diagnosticArtifactIdentity,
       browserNodeBridgeArtifactIdentity,
       desktopHelperArtifactIdentity,
+      processRunnerArtifactIdentity,
       manifestSha256: createHash('sha256').update(`${JSON.stringify(manifest, null, 2)}\n`).digest('hex'),
       sourceCommit,
     };
@@ -195,5 +214,8 @@ export function assertRuntimeReleaseFiles(release: StagedRuntimeRelease): void {
   }
   if (release.desktopHelperArtifactIdentity && !existsSync(join(release.releasePath, 'forge-desktop-helper.mjs'))) {
     throw new Error(`RUNTIME_RELEASE_DESKTOP_HELPER_MISSING: ${join(release.releasePath, 'forge-desktop-helper.mjs')}`);
+  }
+  if (release.processRunnerArtifactIdentity && !existsSync(join(release.releasePath, 'process-runner.js'))) {
+    throw new Error(`RUNTIME_RELEASE_PROCESS_RUNNER_MISSING: ${join(release.releasePath, 'process-runner.js')}`);
   }
 }
