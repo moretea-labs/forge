@@ -33,7 +33,6 @@ deploy/release-checklists/**
 evals/benchmark.md
 plans/**
 tasks/**
-APPLY.md
 examples/agent-architecture.md
 
 # Test fixtures intentionally exercise absolute-path handling with synthetic paths.
