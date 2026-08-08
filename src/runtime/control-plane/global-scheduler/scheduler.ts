@@ -34,6 +34,7 @@ import { readJsonFile, writeJsonAtomic } from '../../shared/json-files';
 import { isProcessAlive, terminateProcessTree } from '../../shared/process-tree';
 import { readSchedulerWakeSignal, waitForSchedulerWakeSignal } from './wake-signal';
 import { cleanupControllerRuntimeState } from '../runtime-cleanup';
+import { reconcileTerminalWorkCleanups } from '../execution/work-terminal-cleanup';
 import { schedulerDispatchAllowed } from '../facade/work-admission-policy';
 import { rebuildRepositoryProjection, refreshRepositoryProjectionForRepository } from '../../projections/materialized-view';
 import { readRepositoryGitStatusSample, sampleRepositoryGitStatusForRepositories } from '../../projections/git-status-sampler';
@@ -221,6 +222,7 @@ export class GlobalScheduler {
   private lastSourceScanRepoCount = 0;
   private sourceScansAvoided = 0;
   private runtimeCleanup = cleanupControllerRuntimeState;
+  private terminalWorkCleanup = reconcileTerminalWorkCleanups;
   private lastDarwinMemorySampleAt = 0;
   private cachedDarwinAvailableMemoryMb: number | undefined;
   private darwinMemorySampleInFlight: Promise<void> | undefined;
@@ -612,6 +614,11 @@ export class GlobalScheduler {
         });
       } catch (error) {
         console.error('[forge cleanup] periodic cleanup failed:', error);
+      }
+      try {
+        await this.terminalWorkCleanup(this.controllerHome, { nowMs: now });
+      } catch (error) {
+        console.error('[forge cleanup] terminal Work cleanup failed:', error);
       }
     }
     if (now - this.lastReconcile >= 5_000) {

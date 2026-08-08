@@ -378,9 +378,13 @@ describe('runtime cleanup', () => {
     const scheduler = new GlobalScheduler(home, { pollIntervalMs: 1 });
     const internal = scheduler as unknown as {
       runtimeCleanup: () => never;
+      terminalWorkCleanup: () => Promise<never>;
     };
     internal.runtimeCleanup = () => {
       throw new Error('synthetic cleanup failure');
+    };
+    internal.terminalWorkCleanup = async () => {
+      throw new Error('synthetic terminal Work cleanup failure');
     };
     const originalError = console.error;
     console.error = () => undefined;

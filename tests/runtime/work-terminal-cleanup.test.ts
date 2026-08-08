@@ -13,7 +13,7 @@ import {
   writeWorkHandle,
   type WorkHandleState,
 } from '../../src/runtime/control-plane/execution/work-handle-store';
-import { cleanupTerminalWork } from '../../src/runtime/control-plane/execution/work-terminal-cleanup';
+import { cleanupTerminalWork, reconcileTerminalWorkCleanups } from '../../src/runtime/control-plane/execution/work-terminal-cleanup';
 import { processLogDir } from '../../src/runtime/execution/process-runtime';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import type { ManagedProcessRecord } from '../../src/runtime/execution/process-runtime/types';
@@ -109,6 +109,80 @@ async function cleanup(fx: ReturnType<typeof fixture>, handle: WorkHandleState =
 }
 
 describe('terminal Work cleanup', () => {
+  test('periodic reconciler closes a stale cancelled managed Work without a caller cleanup request', async () => {
+    const fx = fixture('periodic-cancelled');
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId: fx.handle.workId,
+      repoId: fx.repository.repoId,
+      mode: 'direct_control',
+      objective: 'Cancelled Work should close its managed Git resources.',
+      acceptanceCriteria: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'cancelled',
+      phase: 'cleanup',
+    });
+
+    const report = await reconcileTerminalWorkCleanups(fx.controllerHome, { minAgeMs: 0, maxWork: 5 });
+    expect(report.cleaned).toContain(fx.handle.workId);
+    expect(report.errors).toEqual([]);
+    expect(existsSync(fx.workspace.root!)).toBe(false);
+    expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(false);
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, fx.handle.workId)?.state).toBe('cleaned');
+  });
+
+  test('periodic reconciler repairs only clean zero-unique-commit legacy branch drift before cleanup', async () => {
+    const fx = fixture('periodic-branch-drift');
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId: fx.handle.workId,
+      repoId: fx.repository.repoId,
+      mode: 'direct_control',
+      objective: 'Legacy branch identity drift should be reconciled only when cleanup is provably lossless.',
+      acceptanceCriteria: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'cancelled',
+      phase: 'cleanup',
+    });
+    const actualBranch = 'cleanup/periodic-branch-drift';
+    git(fx.workspace.root!, ['branch', '-m', actualBranch]);
+
+    const report = await reconcileTerminalWorkCleanups(fx.controllerHome, { minAgeMs: 0, maxWork: 5 });
+    expect(report.branchReconciled).toContainEqual({ workId: fx.handle.workId, from: fx.branch, to: actualBranch });
+    expect(report.cleaned).toContain(fx.handle.workId);
+    expect(existsSync(fx.workspace.root!)).toBe(false);
+    expect(branchExists(fx.repositoryRoot, actualBranch)).toBe(false);
+  });
+
+  test('periodic reconciler leaves non-terminal Work untouched', async () => {
+    const fx = fixture('periodic-active');
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId: fx.handle.workId,
+      repoId: fx.repository.repoId,
+      mode: 'direct_control',
+      objective: 'Active Work remains owned.',
+      acceptanceCriteria: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'running',
+      phase: 'implementation',
+    });
+
+    const report = await reconcileTerminalWorkCleanups(fx.controllerHome, { minAgeMs: 0, maxWork: 5 });
+    expect(report.skippedNonTerminal).toContain(fx.handle.workId);
+    expect(existsSync(fx.workspace.root!)).toBe(true);
+    expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(true);
+  });
+
   test('removes a clean failed worktree, preserves failure, and is idempotent', async () => {
     const fx = fixture('clean');
     const first = await cleanup(fx);

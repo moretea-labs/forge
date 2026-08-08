@@ -11,12 +11,14 @@ import { dirname, join, resolve } from 'path';
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import {
   getRepository,
+  listRepositories,
   selectRepositoryCheckout,
   setRepositoryCheckoutLifecycle,
 } from '../../../cli/repositories/registry';
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { getWorkContract } from '../facade/work-contract-store';
-import { isTerminalWorkContractStatus } from '../facade/types';
+import { getControllerSession, releaseControllerSession } from '../facade/controller-session-store';
+import { isRepositoryCompletionReceipt, isTerminalWorkContractStatus, type WorkContract } from '../facade/types';
 import {
   cancelProcess,
   getProcessHandle,
@@ -389,6 +391,89 @@ function selectTerminalCleanupTarget(repository: ReturnType<typeof getRepository
   return repository;
 }
 
+export interface TerminalWorkCleanupReconcileOptions {
+  nowMs?: number;
+  minAgeMs?: number;
+  maxWork?: number;
+}
+
+export interface TerminalWorkCleanupReconcileReport {
+  scanned: number;
+  eligible: number;
+  attempted: number;
+  cleaned: string[];
+  blocked: Array<{ workId: string; reason: string }>;
+  skippedRecent: string[];
+  skippedRetained: string[];
+  skippedNonTerminal: string[];
+  branchReconciled: Array<{ workId: string; from: string; to: string }>;
+  errors: Array<{ workId: string; error: string }>;
+  truncated: boolean;
+}
+
+function terminalOutcomeForContract(contract: WorkContract): WorkTerminalOutcome {
+  if (contract.status === 'cancelled') return 'cancelled';
+  if (contract.status === 'completed') return 'completed_cleanup';
+  return 'failed';
+}
+
+function cleanupRetainedByRequest(contract: WorkContract, _handle: WorkHandleState): boolean {
+  // `skipped` in old WorkHandle finalization records was also used for legacy
+  // no-op/error paths, so it is not sufficient proof of an explicit retention
+  // request. Only the completion receipt's dedicated maintenance warning is
+  // authoritative enough to suppress automatic reconciliation.
+  const receipt = contract.completionReceipt;
+  if (!receipt || !isRepositoryCompletionReceipt(receipt)) return false;
+  return receipt.cleanup.warnings.some((warning) => warning.code === 'cleanup_retained_by_request');
+}
+
+function reconcileLegacyTerminalBranchDrift(
+  controllerHome: string,
+  repository: ReturnType<typeof getRepository>,
+  handle: WorkHandleState,
+  targetBranch: string,
+): { handle: WorkHandleState; reconciled?: { from: string; to: string }; blocker?: string } {
+  if (!existsSync(handle.worktreePath)) return { handle };
+  let registered;
+  try {
+    registered = selectRepositoryCheckout(repository, handle.checkoutId, { allowArchived: true });
+  } catch (error) {
+    return { handle, blocker: `BRANCH_DRIFT_CHECKOUT_UNKNOWN: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  if (resolve(registered.canonicalRoot) !== resolve(handle.worktreePath)) {
+    return { handle, blocker: `BRANCH_DRIFT_PATH_MISMATCH: registry=${registered.canonicalRoot}; handle=${handle.worktreePath}` };
+  }
+  const actualBranch = git(handle.worktreePath, ['branch', '--show-current']);
+  if (!actualBranch.ok || !actualBranch.stdout || actualBranch.stdout === handle.branch) return { handle };
+  const status = git(handle.worktreePath, ['status', '--porcelain=v1', '--untracked-files=all']);
+  if (!status.ok || status.stdout) {
+    return { handle, blocker: `BRANCH_DRIFT_UNSAFE_DIRTY: expected=${handle.branch}; actual=${actualBranch.stdout || 'unknown'}` };
+  }
+  const target = selectTerminalCleanupTarget(repository, handle);
+  const worktreeCommonDir = gitCommonDir(handle.worktreePath);
+  const targetCommonDir = gitCommonDir(target.canonicalRoot);
+  if (!worktreeCommonDir || !targetCommonDir || worktreeCommonDir !== targetCommonDir) {
+    return { handle, blocker: `BRANCH_DRIFT_GIT_COMMON_DIR_MISMATCH: expected=${handle.branch}; actual=${actualBranch.stdout}` };
+  }
+  if (actualBranch.stdout === targetBranch) {
+    return { handle, blocker: `BRANCH_DRIFT_IS_TARGET: ${targetBranch}` };
+  }
+  if (!branchExists(target.canonicalRoot, targetBranch)) {
+    return { handle, blocker: `BRANCH_DRIFT_TARGET_MISSING: ${targetBranch}` };
+  }
+  const head = git(handle.worktreePath, ['rev-parse', 'HEAD']);
+  if (!head.ok || !head.stdout) return { handle, blocker: 'BRANCH_DRIFT_HEAD_UNKNOWN' };
+  const contained = git(target.canonicalRoot, ['merge-base', '--is-ancestor', head.stdout, `refs/heads/${targetBranch}`]);
+  if (!contained.ok) {
+    return { handle, blocker: `BRANCH_DRIFT_UNIQUE_COMMITS: expected=${handle.branch}; actual=${actualBranch.stdout}` };
+  }
+  if (branchUsedByAnotherWorktree(target.canonicalRoot, actualBranch.stdout, handle.worktreePath)) {
+    return { handle, blocker: `BRANCH_DRIFT_IN_USE: ${actualBranch.stdout}` };
+  }
+  const updated = writeWorkHandle(controllerHome, { ...handle, branch: actualBranch.stdout });
+  return { handle: updated, reconciled: { from: handle.branch, to: actualBranch.stdout } };
+}
+
 export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Promise<TerminalWorkCleanupResult> {
   const repository = getRepository(input.handle.repositoryId, input.controllerHome, { includeRemoved: true });
   const targetBranch = input.targetBranch?.trim() || repository.defaultBranch || 'main';
@@ -646,4 +731,91 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
         finalization,
       });
   return { handle: current, receipt };
+}
+
+export async function reconcileTerminalWorkCleanups(
+  controllerHome: string,
+  options: TerminalWorkCleanupReconcileOptions = {},
+): Promise<TerminalWorkCleanupReconcileReport> {
+  const nowMs = options.nowMs ?? Date.now();
+  const minAgeMs = Math.max(0, options.minAgeMs ?? 60_000);
+  const maxWork = Math.max(1, Math.min(100, Math.trunc(options.maxWork ?? 20)));
+  const report: TerminalWorkCleanupReconcileReport = {
+    scanned: 0,
+    eligible: 0,
+    attempted: 0,
+    cleaned: [],
+    blocked: [],
+    skippedRecent: [],
+    skippedRetained: [],
+    skippedNonTerminal: [],
+    branchReconciled: [],
+    errors: [],
+    truncated: false,
+  };
+
+  const repositories = listRepositories(controllerHome).filter((repository) => repository.enabled && !repository.removedAt);
+  outer: for (const repository of repositories) {
+    const handles = listWorkHandles(controllerHome, repository.repoId, 10_000)
+      .filter((handle) => handle.managedWorktree)
+      .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
+    for (const originalHandle of handles) {
+      report.scanned += 1;
+      const contract = getWorkContract({ controllerHome, repoId: repository.repoId }, originalHandle.workContractId ?? originalHandle.workId);
+      if (!contract || !isTerminalWorkContractStatus(contract.status)) {
+        report.skippedNonTerminal.push(originalHandle.workId);
+        continue;
+      }
+      if (originalHandle.state === 'cleaned' && originalHandle.cleanupReceipt?.complete === true) continue;
+      if (cleanupRetainedByRequest(contract, originalHandle)) {
+        report.skippedRetained.push(originalHandle.workId);
+        continue;
+      }
+      const terminalAt = Math.max(Date.parse(contract.updatedAt) || 0, Date.parse(originalHandle.updatedAt) || 0);
+      if (terminalAt > 0 && nowMs - terminalAt < minAgeMs) {
+        report.skippedRecent.push(originalHandle.workId);
+        continue;
+      }
+      report.eligible += 1;
+      if (report.attempted >= maxWork) {
+        report.truncated = true;
+        break outer;
+      }
+      report.attempted += 1;
+      try {
+        const targetBranch = repository.defaultBranch || 'main';
+        const drift = reconcileLegacyTerminalBranchDrift(controllerHome, repository, originalHandle, targetBranch);
+        if (drift.blocker) {
+          report.blocked.push({ workId: originalHandle.workId, reason: drift.blocker });
+          continue;
+        }
+        if (drift.reconciled) report.branchReconciled.push({ workId: originalHandle.workId, ...drift.reconciled });
+        const cleaned = await cleanupTerminalWork({
+          controllerHome,
+          handle: drift.handle,
+          targetBranch,
+          deleteBranch: true,
+          terminalOutcome: terminalOutcomeForContract(contract),
+          failureReason: drift.handle.failureReason ?? drift.handle.finalization.lastError,
+        });
+        const workId = cleaned.handle.workContractId ?? cleaned.handle.workId;
+        const controllerSession = getControllerSession({ controllerHome, repoId: repository.repoId }, workId);
+        if (controllerSession) {
+          releaseControllerSession({ controllerHome, repoId: repository.repoId }, workId, controllerSession.controllerId);
+          cleaned.receipt.ownership.controllerLease = 'released';
+        } else {
+          cleaned.receipt.ownership.controllerLease = 'already_released';
+        }
+        writeWorkHandle(controllerHome, { ...cleaned.handle, cleanupReceipt: cleaned.receipt });
+        if (cleaned.receipt.complete) report.cleaned.push(originalHandle.workId);
+        else report.blocked.push({
+          workId: originalHandle.workId,
+          reason: cleaned.receipt.blockers.join('; ') || cleaned.receipt.worktree.reason || cleaned.receipt.branchCleanup.reason || 'terminal cleanup incomplete',
+        });
+      } catch (error) {
+        report.errors.push({ workId: originalHandle.workId, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+  }
+  return report;
 }

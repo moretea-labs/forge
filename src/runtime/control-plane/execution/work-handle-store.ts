@@ -20,6 +20,7 @@ export type WorkHandleStateName = (typeof WORK_HANDLE_STATES)[number];
 export type WorkTerminalOutcome =
   | 'failed'
   | 'cancelled'
+  | 'completed_cleanup'
   | 'blocked_terminal'
   | 'validation_failed'
   | 'infrastructure_failed';
