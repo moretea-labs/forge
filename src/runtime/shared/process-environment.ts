@@ -29,11 +29,20 @@ function appendExecutableDirectory(pathEntries: string[], candidate: string | un
   pathEntries.push(candidate);
 }
 
+function validBunExecutable(candidate: string | undefined): string | undefined {
+  const value = candidate?.trim();
+  if (!value) return undefined;
+  const executable = basename(value).toLowerCase();
+  if (executable !== 'bun' && executable !== 'bun.exe') return undefined;
+  if (isAbsolute(value) && !existsSync(value)) return undefined;
+  return value;
+}
+
 export function resolveBunExecutable(
   execPath: string = process.execPath,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  const configured = env.FORGE_BUN_EXECUTABLE?.trim();
+  const configured = validBunExecutable(env.FORGE_BUN_EXECUTABLE);
   if (configured) return configured;
   const executable = basename(execPath).toLowerCase();
   if (executable === 'bun' || executable === 'bun.exe') return execPath;
