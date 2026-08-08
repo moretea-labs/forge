@@ -9,7 +9,7 @@ import {
   renameSync,
   statSync,
 } from 'fs';
-import { dirname } from 'path';
+import { dirname, extname } from 'path';
 import {
   WorkspaceTargetGrantError,
   authorizeWorkspaceTargetGrant,
@@ -20,6 +20,7 @@ import {
   withWorkspaceTargetMutationLocks,
   type ActiveWorkspaceTargetGrant,
   type WorkspaceTargetAccess,
+  type WorkspaceTargetGrantScope,
   type WorkspaceTargetOperation,
 } from '../workspace-targets';
 import type {
@@ -46,6 +47,10 @@ const MAX_OUTPUT_BYTES = 64 * 1024;
 const MAX_TEXT_CHARS = 100_000;
 const MAX_DIRECTORY_ENTRIES = 200;
 const TARGET_SAFE_FILESYSTEM_MUTATORS = new Set(['touch', 'mkdir', 'cp', 'mv', 'install', 'tee', 'truncate']);
+const AUTO_OPEN_DENIED_EXTENSIONS = new Set([
+  '.command', '.sh', '.bash', '.zsh', '.fish', '.tool',
+  '.app', '.pkg', '.mpkg', '.dmg', '.workflow',
+]);
 
 interface CommandResult {
   ok: boolean;
@@ -227,10 +232,18 @@ async function withTargetMutation<T>(
 
 function authorizeTarget(input: AssistantPluginActionExecutionInput): Record<string, unknown> {
   const rawAccess = optionalString(input.args, 'access');
+  const rawScope = optionalString(input.args, 'scope') ?? 'auto';
   if (rawAccess && rawAccess !== 'read_only' && rawAccess !== 'read_write') {
     throw new AssistantPluginError(
       'PLUGIN_ACTION_ARGUMENT_INVALID',
       'access must be read_only or read_write.',
+      { retryable: false },
+    );
+  }
+  if (!['auto', 'project', 'directory'].includes(rawScope)) {
+    throw new AssistantPluginError(
+      'PLUGIN_ACTION_ARGUMENT_INVALID',
+      'scope must be auto, project, or directory.',
       { retryable: false },
     );
   }
@@ -245,12 +258,16 @@ function authorizeTarget(input: AssistantPluginActionExecutionInput): Record<str
       expiresInMinutes: Number(input.args.expires_in_minutes ?? 480),
       reason: requiredString(input.args, 'reason'),
       access: (rawAccess as WorkspaceTargetAccess | undefined) ?? 'read_write',
+      scope: rawScope as WorkspaceTargetGrantScope,
       ownerScope,
       ...(controllerInstanceId ? { controllerInstanceId } : {}),
       now: currentDate(),
     });
     return {
       target,
+      authorizationScope: rawScope,
+      requestedRootPath: requiredString(input.args, 'root_path'),
+      effectiveRootPath: target.rootPath,
       storage: 'controllerHome/system/local-system/targets.json',
       repositoryRegistered: false,
     };
@@ -292,7 +309,7 @@ function actions(): AssistantPluginActionDescriptor[] {
     { actionId: 'process_detail', title: 'Process detail', description: 'Read bounded details for one process id.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.read'], resourceClaims: [], argumentsSchema: { type: 'object', properties: { pid: { type: 'number' } }, required: ['pid'], additionalProperties: false } },
     { actionId: 'open_application', title: 'Open application', description: 'Open one macOS application by name or bundle id.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false, scopes: ['local-system.open'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { app_name: { type: 'string' }, bundle_id: { type: 'string' } }, additionalProperties: false } },
     { actionId: 'list_targets', title: 'List filesystem targets', description: 'List active expiring local filesystem grants.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 10_000, cancellable: true, idempotent: true, scopes: ['local-system.files.read'], resourceClaims: controllerRead, argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } },
-    { actionId: 'authorize_target', title: 'Authorize filesystem target', description: 'Authorize one existing absolute directory under an expiring target key.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { target_key: { type: 'string' }, root_path: { type: 'string' }, expires_in_minutes: { type: 'number' }, reason: { type: 'string' }, access: { type: 'string', enum: ['read_only', 'read_write'] } }, required: ['target_key', 'root_path', 'reason'], additionalProperties: false } },
+    { actionId: 'authorize_target', title: 'Authorize filesystem target', description: 'Authorize an expiring filesystem target. By default, a path inside a Git project authorizes the whole project/repository root; use scope=directory only when intentionally granting a narrower directory.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { target_key: { type: 'string' }, root_path: { type: 'string' }, scope: { type: 'string', enum: ['auto', 'project', 'directory'] }, expires_in_minutes: { type: 'number' }, reason: { type: 'string' }, access: { type: 'string', enum: ['read_only', 'read_write'] } }, required: ['target_key', 'root_path', 'reason'], additionalProperties: false } },
     { actionId: 'list_directory', title: 'List directory', description: 'List a bounded directory snapshot below an authorized target.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.files.read'], resourceClaims: controllerRead, argumentsSchema: { type: 'object', properties: targetProperties, required: ['target_key'], additionalProperties: false } },
     { actionId: 'read_text', title: 'Read text file', description: 'Read a bounded UTF-8 text file below an authorized target.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.files.read'], resourceClaims: controllerRead, argumentsSchema: { type: 'object', properties: { ...targetProperties, max_chars: { type: 'number' } }, required: ['target_key', 'path'], additionalProperties: false } },
     { actionId: 'execute_command', title: 'Execute target command', description: 'Execute one bounded typed-argv command inside an authorized target without repository registration. Shell strings, target escapes, destructive/remote writes, and Git mutations are denied.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false, scopes: ['local-system.files.read', 'local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { target_key: { type: 'string' }, command: { type: 'array', items: { type: 'string' } }, cwd: { type: 'string' }, max_output_bytes: { type: 'number' } }, required: ['target_key', 'command'], additionalProperties: false } },
@@ -301,7 +318,7 @@ function actions(): AssistantPluginActionDescriptor[] {
     { actionId: 'move_file', title: 'Move file', description: 'Move a file between authorized targets without overwriting.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { source_target_key: { type: 'string' }, source_path: { type: 'string' }, destination_target_key: { type: 'string' }, destination_path: { type: 'string' } }, required: ['source_target_key', 'source_path', 'destination_target_key', 'destination_path'], additionalProperties: false } },
     { actionId: 'rename_file', title: 'Rename file', description: 'Rename a file inside one authorized target without overwriting.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { target_key: { type: 'string' }, source_path: { type: 'string' }, destination_path: { type: 'string' } }, required: ['target_key', 'source_path', 'destination_path'], additionalProperties: false } },
     { actionId: 'reveal_in_finder', title: 'Reveal in Finder', description: 'Reveal an authorized file or directory in Finder.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false, scopes: ['local-system.open'], resourceClaims: controllerRead, argumentsSchema: { type: 'object', properties: targetProperties, required: ['target_key', 'path'], additionalProperties: false } },
-    { actionId: 'open_file', title: 'Open file', description: 'Open an authorized local file with its default application.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false, scopes: ['local-system.open'], resourceClaims: controllerRead, argumentsSchema: { type: 'object', properties: targetProperties, required: ['target_key', 'path'], additionalProperties: false } },
+    { actionId: 'open_file', title: 'Open document', description: 'Open one authorized non-executable local document with its default application. Scripts, .command files, packages, disk images, app bundles, and executable files are never auto-opened.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false, scopes: ['local-system.open'], resourceClaims: controllerRead, argumentsSchema: { type: 'object', properties: targetProperties, required: ['target_key', 'path'], additionalProperties: false } },
   ];
 }
 
@@ -538,6 +555,18 @@ export async function executeLocalSystemPluginAction(input: AssistantPluginActio
     case 'reveal_in_finder':
     case 'open_file': {
       const resolved = resolveTargetPath(input, requiredString(input.args, 'target_key'), requiredString(input.args, 'path'), { mustExist: true });
+      if (input.actionId === 'open_file') {
+        const file = statSync(resolved.path);
+        const extension = extname(resolved.path).toLowerCase();
+        const executable = (file.mode & 0o111) !== 0;
+        if (!file.isFile() || executable || AUTO_OPEN_DENIED_EXTENSIONS.has(extension)) {
+          throw new AssistantPluginError(
+            'LOCAL_SYSTEM_EXECUTABLE_OPEN_DENIED',
+            'Executable/script-like files are never auto-opened. Use read_text or reveal_in_finder for inspection, or execute_command with explicit typed argv when execution is intended.',
+            { retryable: false, details: { targetKey: resolved.target.targetKey, path: resolved.relativePath, extension, executable } },
+          );
+        }
+      }
       const command = input.actionId === 'reveal_in_finder' ? ['open', '-R', resolved.path] : ['open', resolved.path];
       const opened = run(command[0], command.slice(1));
       if (!opened.ok) throw new AssistantPluginError('LOCAL_SYSTEM_OPEN_FAILED', opened.stderr || opened.stdout, { retryable: true, details: { command } });

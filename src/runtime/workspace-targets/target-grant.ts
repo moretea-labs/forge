@@ -11,6 +11,7 @@ import {
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
 
 export type WorkspaceTargetAccess = 'read_only' | 'read_write';
+export type WorkspaceTargetGrantScope = 'auto' | 'project' | 'directory';
 export type WorkspaceTargetOperation = 'read' | 'write';
 export type WorkspaceTargetGitKind =
   | 'none'
@@ -61,6 +62,7 @@ export interface AuthorizeWorkspaceTargetGrantInput {
   expiresInMinutes?: number;
   reason: string;
   access?: WorkspaceTargetAccess;
+  scope?: WorkspaceTargetGrantScope;
   ownerScope: string;
   controllerInstanceId?: string;
   now?: Date;
@@ -91,6 +93,7 @@ export type WorkspaceTargetGrantErrorCode =
   | 'TARGET_IDENTITY_MISMATCH'
   | 'TARGET_OWNER_SCOPE_REQUIRED'
   | 'TARGET_OWNER_MISMATCH'
+  | 'TARGET_PROJECT_REQUIRED'
   | 'TARGET_UNAVAILABLE'
   | 'PATH_OUTSIDE_TARGET'
   | 'SYMLINK_ESCAPE'
@@ -447,7 +450,21 @@ export function authorizeWorkspaceTargetGrant(
   if (!reason) {
     throw new WorkspaceTargetGrantError('TARGET_REASON_REQUIRED', 'Target reason is required.');
   }
-  const rootPath = canonicalRoot(input.rootPath);
+  const requestedRootPath = canonicalRoot(input.rootPath);
+  const requestedGit = detectGitIdentity(requestedRootPath);
+  const scope = input.scope ?? 'auto';
+  if (!['auto', 'project', 'directory'].includes(scope)) {
+    throw new WorkspaceTargetGrantError('TARGET_ROOT_INVALID', 'Target scope must be auto, project, or directory.');
+  }
+  if (scope === 'project' && !requestedGit.repositoryRoot) {
+    throw new WorkspaceTargetGrantError(
+      'TARGET_PROJECT_REQUIRED',
+      'Project-scoped authorization requires a Git repository; use directory scope for a non-project directory.',
+    );
+  }
+  const rootPath = scope !== 'directory' && requestedGit.repositoryRoot
+    ? canonicalRoot(requestedGit.repositoryRoot)
+    : requestedRootPath;
   const access = input.access ?? 'read_write';
   const targetKey = sanitizeFileComponent(rawTargetKey);
   const createdAt = (input.now ?? new Date()).toISOString();

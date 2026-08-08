@@ -17,5 +17,6 @@ export {
   type WorkspaceTargetGitKind,
   type WorkspaceTargetGrant,
   type WorkspaceTargetGrantErrorCode,
+  type WorkspaceTargetGrantScope,
   type WorkspaceTargetOperation,
 } from './target-grant';

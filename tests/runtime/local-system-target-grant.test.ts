@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -222,7 +224,7 @@ describe('workspace target grant authority', () => {
     expect(target.access).toBe('read_write');
     expect(target.ownerScope).toBe('legacy:shared');
     expect(target.workspaceId.startsWith('workspace_')).toBe(true);
-    expect(target.rootPath).toBe(resolve(root));
+    expect(target.rootPath).toBe(realpathSync(root));
   });
 
   test('fails closed when the persisted target store is corrupt', () => {
@@ -331,6 +333,7 @@ describe('workspace target grant authority', () => {
       () => resolveWorkspaceTargetPath(controllerHome, 'first', '.', {
         ownerScope: 'chatgpt-action:principal:other-user',
         mustExist: true,
+        at: new Date('2026-08-07T00:03:00.000Z'),
       }),
       'TARGET_OWNER_MISMATCH',
     );
@@ -402,18 +405,18 @@ describe('workspace target grant authority', () => {
       ownerScope: 'principal:test',
       mustExist: true,
       kind: 'file',
-    }).path).toBe(resolve(root, 'src/index.ts'));
+    }).path).toBe(realpathSync(join(root, 'src', 'index.ts')));
     expect(resolveWorkspaceTargetCwd(
       controllerHome,
       'workspace',
       'principal:test',
       'src',
       'read',
-    ).path).toBe(resolve(root, 'src'));
+    ).path).toBe(realpathSync(join(root, 'src')));
     expect(resolveWorkspaceTargetPath(controllerHome, 'workspace', 'generated/out.txt', {
       ownerScope: 'principal:test',
       operation: 'write',
-    }).path).toBe(resolve(root, 'generated/out.txt'));
+    }).path).toBe(join(realpathSync(root), 'generated', 'out.txt'));
     expectGrantCode(
       () => resolveWorkspaceTargetPath(controllerHome, 'workspace', '../outside', {
         ownerScope: 'principal:test',
@@ -448,7 +451,7 @@ describe('workspace target grant authority', () => {
     });
 
     expect(resolveWorkspaceTargetCwd(controllerHome, 'readonly', 'principal:test').path)
-      .toBe(resolve(root));
+      .toBe(realpathSync(root));
     expectGrantCode(
       () => resolveWorkspaceTargetPath(controllerHome, 'readonly', 'new.txt', {
         ownerScope: 'principal:test',
@@ -460,6 +463,35 @@ describe('workspace target grant authority', () => {
 });
 
 describe('local_system target adapter', () => {
+  test('promotes Git-contained target authorization to the project root by default', async () => {
+    const controllerHome = temp('forge-target-project-scope-controller-');
+    const project = temp('forge-target-project-scope-root-');
+    mkdirSync(join(project, '.git'));
+    const nested = join(project, 'src', 'feature');
+    mkdirSync(nested, { recursive: true });
+
+    const auto = authorizeWorkspaceTargetGrant(controllerHome, {
+      targetKey: 'auto-project',
+      rootPath: nested,
+      ownerScope: 'principal:test',
+      access: 'read_write',
+      reason: 'project work',
+    });
+    expect(auto.rootPath).toBe(realpathSync(project));
+    expect(auto.git.kind).toBe('repository_root');
+
+    const directory = authorizeWorkspaceTargetGrant(controllerHome, {
+      targetKey: 'directory-only',
+      rootPath: nested,
+      scope: 'directory',
+      ownerScope: 'principal:test',
+      access: 'read_write',
+      reason: 'narrow directory work',
+    });
+    expect(directory.rootPath).toBe(realpathSync(nested));
+    expect(directory.git.kind).toBe('within_repository');
+  });
+
   test('authorizes and lists a scoped grant without repository registration', async () => {
     const controllerHome = temp('forge-target-plugin-controller-');
     const root = temp('forge-target-plugin-root-');
@@ -501,6 +533,41 @@ describe('local_system target adapter', () => {
     });
     expect((principalList.targets as unknown[])).toHaveLength(1);
     expect((sharedList.targets as unknown[])).toHaveLength(1);
+  });
+
+  test('never auto-opens command files or executable scripts', async () => {
+    const controllerHome = temp('forge-target-open-safe-controller-');
+    const root = temp('forge-target-open-safe-root-');
+    const commandFile = join(root, 'run-system.command');
+    const executableScript = join(root, 'run.sh');
+    const document = join(root, 'notes.txt');
+    writeFileSync(commandFile, '#!/bin/zsh\necho unsafe\n');
+    writeFileSync(executableScript, '#!/bin/sh\necho unsafe\n');
+    chmodSync(executableScript, 0o755);
+    writeFileSync(document, 'safe document\n');
+    authorizeWorkspaceTargetGrant(controllerHome, {
+      targetKey: 'project', rootPath: root, ownerScope: 'chatgpt-action:principal:test-user', access: 'read_write', reason: 'document open safety',
+    });
+    const commands: string[][] = [];
+    setLocalSystemPluginHooksForTest({
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        return { ok: true, status: 0, stdout: '', stderr: '', command: [command, ...args] };
+      },
+    });
+
+    await expect(executeLocalSystemPluginAction(input(controllerHome, 'open_file', {
+      target_key: 'project', path: 'run-system.command',
+    }))).rejects.toThrow(/LOCAL_SYSTEM_EXECUTABLE_OPEN_DENIED/);
+    await expect(executeLocalSystemPluginAction(input(controllerHome, 'open_file', {
+      target_key: 'project', path: 'run.sh',
+    }))).rejects.toThrow(/LOCAL_SYSTEM_EXECUTABLE_OPEN_DENIED/);
+    expect(commands).toHaveLength(0);
+
+    await expect(executeLocalSystemPluginAction(input(controllerHome, 'open_file', {
+      target_key: 'project', path: 'notes.txt',
+    }))).resolves.toMatchObject({ opened: true, path: 'notes.txt' });
+    expect(commands).toEqual([['open', realpathSync(document)]]);
   });
 
   test('executes bounded typed-argv reads without repository registration or Work creation', async () => {
