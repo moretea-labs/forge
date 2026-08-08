@@ -586,6 +586,67 @@ describe('local_system target adapter', () => {
     expect(commands[1][2]).toBe('-k');
   });
 
+  test('stops and starts only a verified current-user LaunchAgent from its installed plist', async () => {
+    const controllerHome = temp('forge-local-system-launchagent-lifecycle-controller-');
+    const home = temp('forge-local-system-launchagent-home-');
+    const launchAgents = join(home, 'Library', 'LaunchAgents');
+    mkdirSync(launchAgents, { recursive: true });
+    const label = 'com.greyson.forge-recovery-watchdog';
+    const program = '/Users/greyson/DevProjects/forge/recovery/current/forge-recovery-watchdog';
+    writeFileSync(join(launchAgents, `${label}.plist`), `<plist><dict><key>Label</key><string>${label}</string><key>Program</key><string>${program}</string></dict></plist>`);
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    let loaded = true;
+    const commands: string[][] = [];
+    setLocalSystemPluginHooksForTest({
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (args[0] === 'print') {
+          return loaded
+            ? { ok: true, status: 0, stdout: `path = ${program}\n`, stderr: '', command: [command, ...args] }
+            : { ok: false, status: 113, stdout: '', stderr: 'service not found', command: [command, ...args] };
+        }
+        if (args[0] === 'bootout') loaded = false;
+        if (args[0] === 'bootstrap') loaded = true;
+        return { ok: true, status: 0, stdout: '', stderr: '', command: [command, ...args] };
+      },
+    });
+    try {
+      await expect(executeLocalSystemPluginAction(input(controllerHome, 'stop_user_launch_agent', {
+        label,
+        expected_program_contains: 'forge-recovery-watchdog',
+      }))).resolves.toMatchObject({ stopped: true, label });
+      await expect(executeLocalSystemPluginAction(input(controllerHome, 'start_user_launch_agent', {
+        label,
+        expected_program_contains: 'forge-recovery-watchdog',
+      }))).resolves.toMatchObject({ started: true, label });
+      expect(commands.map((entry) => entry[1])).toEqual(['print', 'bootout', 'print', 'bootstrap', 'enable', 'kickstart']);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('start user LaunchAgent fails closed when the installed plist identity mismatches', async () => {
+    const controllerHome = temp('forge-local-system-launchagent-mismatch-controller-');
+    const home = temp('forge-local-system-launchagent-mismatch-home-');
+    const launchAgents = join(home, 'Library', 'LaunchAgents');
+    mkdirSync(launchAgents, { recursive: true });
+    const label = 'com.greyson.expected';
+    writeFileSync(join(launchAgents, `${label}.plist`), `<plist><dict><string>${label}</string><string>/tmp/unexpected-service</string></dict></plist>`);
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      await expect(executeLocalSystemPluginAction(input(controllerHome, 'start_user_launch_agent', {
+        label,
+        expected_program_contains: 'expected-program',
+      }))).rejects.toThrow(/LOCAL_SYSTEM_LAUNCH_AGENT_IDENTITY_MISMATCH/);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
   test('never auto-opens command files or executable scripts', async () => {
     const controllerHome = temp('forge-target-open-safe-controller-');
     const root = temp('forge-target-open-safe-root-');
