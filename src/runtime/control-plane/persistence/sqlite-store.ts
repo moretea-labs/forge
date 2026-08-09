@@ -168,14 +168,24 @@ function openDatabase(controllerHome: string): SqliteDatabase {
   const existed = existsSync(path);
   const database = openRawDatabase(path);
   try {
+    // Ordinary control-plane reads/writes reopen SQLite frequently. A PRAGMA
+    // quick_check here turns every bounded metadata access into a full B-tree
+    // scan. Runtime startup and explicit backup/restore inspection already call
+    // inspectOpenDatabase(), which is the authoritative integrity boundary.
+    // Keep schema fail-closed on every open, but reserve the full integrity scan
+    // for those lifecycle/inspection boundaries.
     if (existed) {
-      assertDatabaseIntegrity(database, path);
-      assertSupportedSchema(database, path);
+      try {
+        assertSupportedSchema(database, path);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.startsWith('CONTROL_PLANE_')) throw error;
+        throw new Error(`CONTROL_PLANE_SQLITE_CORRUPT: ${path}: ${message}`);
+      }
     }
     database.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
     initializeSchema(database);
     assertSupportedSchema(database, path, true);
-    assertDatabaseIntegrity(database, path);
     return database;
   } catch (error) {
     database.close();
