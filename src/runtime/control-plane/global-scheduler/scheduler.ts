@@ -31,6 +31,7 @@ import { tickPortfolioWorkflows } from '../../workflow/portfolio/engine';
 import { tickCampaigns } from '../../workflow/campaigns/engine';
 import { tickGoalLoopsForController } from '../goal-loop';
 import { readJsonFile, writeJsonAtomic } from '../../shared/json-files';
+import { resolveBunExecutable } from '../../shared/process-environment';
 import { isProcessAlive, terminateProcessTree } from '../../shared/process-tree';
 import { readSchedulerWakeSignal, waitForSchedulerWakeSignal } from './wake-signal';
 import { cleanupControllerRuntimeState } from '../runtime-cleanup';
@@ -193,6 +194,14 @@ export interface SchedulerRuntimeBinding {
   workerEntrypoint?: string;
   /** Canonical Runtime treats a tick failure as a whole-Runtime failure. */
   fatalOnTickError?: boolean;
+}
+
+export function resolveSchedulerWorkerExecutable(
+  isBun: boolean = Boolean(process.versions.bun),
+  execPath: string = process.execPath,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return isBun ? resolveBunExecutable(execPath, env) : execPath;
 }
 
 export class GlobalScheduler {
@@ -447,6 +456,7 @@ export class GlobalScheduler {
     })();
     if (!command) return false;
     const bun = Boolean(process.versions.bun);
+    const workerExecutable = resolveSchedulerWorkerExecutable(bun);
     // Pass the parent's captured Runtime owner and whole-release claim. A Worker
     // never re-adopts current authority after spawn; owner/release rotation fences it.
     const writeClaim = getRuntimeWriteClaim();
@@ -471,7 +481,7 @@ export class GlobalScheduler {
     mkdirSync(dirname(stderrPath), { recursive: true });
     writeFileSync(stderrPath, '', 'utf8');
     const lifecycle: ExecutionWorkerLifecycle = {
-      executable: process.execPath,
+      executable: workerExecutable,
       args,
       cwd: command.cwd,
       environment: Object.fromEntries(WORKER_ENVIRONMENT_KEYS.map((key) => [key, environment[key]])),
@@ -492,7 +502,7 @@ export class GlobalScheduler {
     this.persistSpawnedWorker(repoId, jobId, lifecycle);
     let child: ChildProcess;
     try {
-      child = spawn(process.execPath, args, {
+      child = spawn(workerExecutable, args, {
         cwd: command.cwd,
         stdio: ['ignore', 'ignore', 'pipe'],
         detached: process.platform !== 'win32',

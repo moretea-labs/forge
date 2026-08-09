@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { resolveBunExecutable } from '../../src/runtime/shared/process-environment';
+import { resolveSchedulerWorkerExecutable } from '../../src/runtime/control-plane/global-scheduler/scheduler';
 
 const homes: string[] = [];
 afterEach(() => {
@@ -26,6 +27,14 @@ describe('repository child process environment', () => {
 
   test('uses the hosting executable only when it is Bun itself', () => {
     expect(resolveBunExecutable('bun', { HOME: '/Users/nonexistent-for-test' })).toBe('bun');
+  });
+
+  test('compiled Runtime scheduler resolves a real Bun executable instead of recursively spawning forge-runtime', () => {
+    expect(resolveSchedulerWorkerExecutable(true, '/tmp/forge-runtime', {
+      FORGE_BUN_EXECUTABLE: 'bun',
+      HOME: '/Users/nonexistent-for-test',
+    })).toBe('bun');
+    expect(resolveSchedulerWorkerExecutable(false, '/tmp/node', {})).toBe('/tmp/node');
   });
 
   test('resolves ~/.bun/bin/bun from the OS account home when env -i removes HOME', () => {

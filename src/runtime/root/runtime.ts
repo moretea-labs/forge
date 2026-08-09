@@ -256,6 +256,13 @@ export class CanonicalForgeRuntime {
 
   private failCore(reasonCode: string, message: string): void {
     if (this.stopping || this.lastExit) return;
+    process.stderr.write(`${JSON.stringify({
+      event: 'forge_runtime_core_failure',
+      runtimeInstanceId: this.runtimeInstanceId,
+      reasonCode,
+      message,
+      observedAt: new Date().toISOString(),
+    })}\n`);
     if (reasonCode.startsWith('SCHEDULER_')) this.readinessState.setDiagnostic('scheduler', 'fail', reasonCode);
     if (reasonCode.startsWith('MCP_')) this.readinessState.setDiagnostic('mcpEndToEnd', 'fail', reasonCode);
     this.readinessState.addReason(reasonCode);
