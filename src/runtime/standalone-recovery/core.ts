@@ -146,6 +146,7 @@ export interface WatchdogState {
   publicTunnelFirstFailureAt?: number;
   publicTunnelRepairFailures?: number;
   recoveryGatewayRestartUsed?: boolean;
+  recoveryReleaseRevision?: string;
   lastFullVerifyAt?: number;
   lastDecision?: WatchdogDecision['action'];
   updatedAt?: string;
@@ -819,6 +820,23 @@ function isExternalTunnelFailure(config: RecoveryConfig, verified: VerifyResult,
   const external = verified.probes.recovery_external_http ?? verified.probes.external_mcp_http;
   const localRecoveryGatewayHealthy = localVerify.probes.recovery_gateway?.ok ?? true;
   return Boolean(configuredRecoveryTunnel(config) && configuredRecoveryPublicUrl(config) && localVerify.ok && localRecoveryGatewayHealthy && external?.ok !== true);
+}
+
+export const WATCHDOG_RUNTIME_STARTUP_GRACE_MS = 60_000;
+
+export function runtimeWithinWatchdogStartupGrace(
+  input: { running: boolean; stale: boolean; snapshot?: { startedAt?: string } },
+  nowMs = Date.now(),
+  graceMs = WATCHDOG_RUNTIME_STARTUP_GRACE_MS,
+): boolean {
+  const startedAtMs = input.snapshot?.startedAt ? Date.parse(input.snapshot.startedAt) : Number.NaN;
+  return Boolean(
+    input.running
+    && !input.stale
+    && Number.isFinite(startedAtMs)
+    && nowMs >= startedAtMs
+    && nowMs - startedAtMs < Math.max(0, graceMs),
+  );
 }
 
 export function decideWatchdog(input: {
@@ -1756,11 +1774,16 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
   primaryRuntimeRecovery?: PrimaryRuntimeRecoveryResult;
 }> {
   const now = Date.now();
+  const runtimeObservation = observeRuntimeStatus(config.controllerHome);
+  const runtimeStartupGrace = runtimeWithinWatchdogStartupGrace(runtimeObservation, now);
   // Five-second watchdog ticks must stay cheap while the system is healthy.
   // Full MCP protocol verification serializes the entire tool surface, so run
   // it periodically and immediately escalate to it when a local health probe
-  // fails. Explicit verify/attest/release operations remain strict by default.
-  const fullVerifyDue = prior.lastFullVerifyAt === undefined || now - prior.lastFullVerifyAt >= 60_000;
+  // fails. A live Runtime that was just started gets a bounded grace window so
+  // startup/reconciliation cannot itself trigger a Recovery restart storm.
+  // Explicit verify/attest/release operations remain strict by default.
+  const fullVerifyDue = !runtimeStartupGrace
+    && (prior.lastFullVerifyAt === undefined || now - prior.lastFullVerifyAt >= 60_000);
   let fullVerificationPerformed = fullVerifyDue;
   let verified = await verifyStableRuntime(
     config,
@@ -1768,12 +1791,31 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
     { probeMcpProtocol: fullVerifyDue },
   );
   let localVerify = await verifyLocalRuntime(config, { probeMcpProtocol: fullVerifyDue });
-  if (!localVerify.ok && !fullVerifyDue) {
+  if (!localVerify.ok && !fullVerifyDue && !runtimeStartupGrace) {
     verified = await verifyStableRuntime(config);
     localVerify = await verifyLocalRuntime(config);
     fullVerificationPerformed = true;
   }
   const lastFullVerifyAt = fullVerificationPerformed ? now : prior.lastFullVerifyAt;
+  if (runtimeStartupGrace && !localVerify.ok) {
+    const state: WatchdogState = {
+      ...prior,
+      failures: 0,
+      firstFailureAt: undefined,
+      runtimeRestartAttempts: 0,
+      runtimeRestartFailures: 0,
+      runtimeRestartLastAttemptAt: undefined,
+      runtimeRecoveryFailures: 0,
+      runtimeRecoveryLastAttemptAt: undefined,
+      lastFullVerifyAt,
+      lastDecision: 'degraded',
+    };
+    return {
+      state,
+      decision: { action: 'degraded', reason: 'canonical Runtime is within startup grace; restart escalation suppressed' },
+      verify: verified,
+    };
+  }
   const recoveryHealthy = verified.probes.recovery_gateway?.ok !== false
     && verified.probes.recovery_external_http?.ok !== false;
   if (verified.ok && localVerify.ok && recoveryHealthy) {
@@ -1788,6 +1830,7 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
       publicTunnelFailures: 0,
       publicTunnelRepairFailures: 0,
       recoveryGatewayRestartUsed: false,
+      recoveryReleaseRevision: prior.recoveryReleaseRevision,
       lastFullVerifyAt,
       lastDecision: 'healthy',
     };

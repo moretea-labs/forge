@@ -20,6 +20,7 @@ import {
   stageAndActivateConfiguredRuntimeRelease,
   rollbackPrevious,
   runtimeStatus,
+  runtimeWithinWatchdogStartupGrace,
   verifyStableRuntime,
   type VerifyResult,
 } from '../../src/runtime/standalone-recovery/core';
@@ -27,6 +28,7 @@ import {
   dispatchRecoveryTool,
   RECOVERY_CLI_COMMANDS,
   RECOVERY_TOOLS,
+  resetWatchdogStateForRecoveryRelease,
 } from '../../src/runtime/standalone-recovery/entry';
 import { inspectControlPlaneDatabase } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { acquireRuntimeOwnership, type RuntimeOwnershipHandle } from '../../src/runtime/root/ownership';
@@ -1187,6 +1189,61 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(persisted).not.toHaveProperty('stableIngressUrl');
     expect(persisted).not.toHaveProperty('publicTunnelService');
     expect(persisted).not.toHaveProperty('agentRepair');
+  });
+
+  test('resets inherited Watchdog failures when the Recovery release changes', () => {
+    const stale = {
+      failures: 7,
+      firstFailureAt: 123,
+      rollbackUsed: true,
+      runtimeRestartAttempts: 3,
+      runtimeRestartFailures: 3,
+      runtimeRecoveryFailures: 2,
+      publicTunnelFailures: 4,
+      publicTunnelFirstFailureAt: 456,
+      publicTunnelRepairFailures: 2,
+      recoveryGatewayRestartUsed: true,
+      recoveryReleaseRevision: 'release-old',
+      lastFullVerifyAt: 789,
+      lastDecision: 'restart_primary_runtime' as const,
+    };
+    const reset = resetWatchdogStateForRecoveryRelease(stale, 'release-new');
+    expect(reset).toEqual({
+      failures: 0,
+      rollbackUsed: false,
+      runtimeRestartAttempts: 0,
+      runtimeRestartFailures: 0,
+      runtimeRecoveryFailures: 0,
+      publicTunnelFailures: 0,
+      publicTunnelRepairFailures: 0,
+      recoveryGatewayRestartUsed: false,
+      recoveryReleaseRevision: 'release-new',
+    });
+    expect(resetWatchdogStateForRecoveryRelease(reset, 'release-new')).toBe(reset);
+  });
+
+  test('grants startup grace only to a live non-stale Runtime owner', () => {
+    const now = Date.parse('2026-08-09T06:20:00.000Z');
+    expect(runtimeWithinWatchdogStartupGrace({
+      running: true,
+      stale: false,
+      snapshot: { startedAt: '2026-08-09T06:19:30.000Z' },
+    }, now)).toBe(true);
+    expect(runtimeWithinWatchdogStartupGrace({
+      running: true,
+      stale: false,
+      snapshot: { startedAt: '2026-08-09T06:18:00.000Z' },
+    }, now)).toBe(false);
+    expect(runtimeWithinWatchdogStartupGrace({
+      running: false,
+      stale: false,
+      snapshot: { startedAt: '2026-08-09T06:19:30.000Z' },
+    }, now)).toBe(false);
+    expect(runtimeWithinWatchdogStartupGrace({
+      running: true,
+      stale: true,
+      snapshot: { startedAt: '2026-08-09T06:19:30.000Z' },
+    }, now)).toBe(false);
   });
 
   test('keeps watchdog state decisions independent from any Supervisor operation field', () => {

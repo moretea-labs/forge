@@ -119,10 +119,32 @@ async function cli(): Promise<void> {
   }
 }
 
+export function resetWatchdogStateForRecoveryRelease(
+  state: WatchdogState,
+  releaseRevision: string,
+): WatchdogState {
+  if (state.recoveryReleaseRevision === releaseRevision) return state;
+  return {
+    failures: 0,
+    rollbackUsed: false,
+    runtimeRestartAttempts: 0,
+    runtimeRestartFailures: 0,
+    runtimeRecoveryFailures: 0,
+    publicTunnelFailures: 0,
+    publicTunnelRepairFailures: 0,
+    recoveryGatewayRestartUsed: false,
+    recoveryReleaseRevision: releaseRevision,
+  };
+}
+
 async function startWatchdog(config: RecoveryConfig): Promise<void> {
   const runtimeIdentity = writeRecoveryRuntimeIdentity(config.controllerHome, 'watchdog');
   process.stdout.write(JSON.stringify({ status: 'ready', role: 'watchdog', runtimeIdentity }) + '\n');
-  let state: WatchdogState = loadWatchdogState(config);
+  const loadedState = loadWatchdogState(config);
+  let state = runtimeIdentity?.releaseRevision
+    ? resetWatchdogStateForRecoveryRelease(loadedState, runtimeIdentity.releaseRevision)
+    : loadedState;
+  if (state !== loadedState) state = saveWatchdogState(config, state);
   for (;;) {
     try {
       const result = await watchdogTick(config, state);
