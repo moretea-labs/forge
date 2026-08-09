@@ -3,7 +3,7 @@
 <!-- updated_at: 2026-08-09 -->
 <!-- stale_after: 24h -->
 
-> **Status**: The canonical immutable Runtime now runs `c75ca5c2` and is ready with the embedded Local Bridge owned by the same process and no readiness warnings. Local System now has explicit owner-scoped revocation and strongly confirmed single-file deletion in source; live acceptance follows immutable activation of this slice. The complete retained legacy inventory is documented: 1,318 nonterminal sessions all lack durable `workId` ownership evidence and remain fail-closed. Live Resend delivery remains externally blocked until an API key, verified sending domain, and sender identity are configured.
+> **Status**: The canonical immutable Runtime runs `7dea3716` and is ready with the embedded Local Bridge owned by the same process and no readiness warnings. Local System's complete authorize/use/concurrent-write/digest-pinned-script/delete/revoke lifecycle passed live acceptance without changing the Repository Registry. Explicit task modes and required Plan/Debug CodeGraph context are implemented and under focused validation. The 1,318 unknown-owned legacy Edit Sessions remain fail-closed. Live Resend delivery remains externally blocked until an API key, verified sending domain, and sender identity are configured.
 > **Updated At**: 2026-08-09
 > **Source**: Source review, focused Runtime/MCP tests, authenticated `repo-harness6` session evidence, repeated 60-second Controller RPC timeouts, and connector/source schema comparison.
 > **Target**: Keep one canonical Forge Runtime release aligned with `main`, one Recovery service family, and the renamed `/Users/greyson/DevProjects/forge` paths.
@@ -13,6 +13,9 @@ This snapshot is a read model, not an execution gate.
 
 ## Current Focus
 
+- ✅ Explicit `-direct`, `-plan`, `-debug`, `-review`, `-campaign`, `-release`, and `-scale` modes now change Route Policy topology and publish executable workflow contracts; explicit topology never bypasses authorization, dirty-workspace, or remote/destructive gates.
+- ✅ `controller_context` always returns a non-null stable recommendation. Plan and Debug automatically acquire a bounded CodeGraph-backed `modeContextPack`; task-specific recommendations replace cached projection guidance so one request cannot inherit another task's mode.
+- ✅ CodeGraph 1.0.1 incrementally synchronized the persisted main index to 1,064 files / 22,889 nodes / 92,035 edges with zero pending changes. Required scheduler, maintenance, Runtime-readiness, and external-plugin call-path queries passed; an isolated detached-worktree index proved revision-specific views.
 - ✅ The route/session benchmark now performs real Process writes across two temporary repositories and a real second checkout created by `git worktree`; seven iterations proved independent repo/checkout identities and bounded same-checkout Lease rejection.
 - ✅ The same benchmark now exercises content-derived Check coalescing, completed cross-checkout reuse, and dirty-workspace invalidation across different execution session ids, with physical/logical/cache counters and queue/Lease wait percentiles persisted in the operations baseline.
 - ✅ Local System source now closes the temporary-grant lifecycle: an authenticated owner can revoke its active grant immediately, and a strongly confirmed structured action can delete one regular file inside a read-write target without exposing recursive deletion or arbitrary `rm`. Both paths retain plugin receipt and local-effect Work lineage.
@@ -22,7 +25,7 @@ This snapshot is a read model, not an execution gate.
 - ✅ Terminal Process lease cleanup now persists a redacted structured failure diagnostic while retaining the canonical `pending` retry phase; exact-set/scope/fencing failures stay fail-closed, restart recovery retries them, and success clears the diagnostic without adding a second recovery owner.
 - ✅ Explicit full maintenance has zero remaining safe stale Work/Edit candidates. Four WorkContracts were cancelled with evidence retained; ten Work-bound sessions were finalized, superseded, or rolled back through existing cleanup semantics.
 - ⚠️ The full local inventory contains 1,318 retained nonterminal legacy Edit Sessions (`dirty` 1,179 / `open` 130 / `checked` 2 / `check_failed` 7). Every record lacks `workId`, so ownership cannot be proven and automatic cleanup correctly fails closed; all session IDs and the closeout rule are recorded in `docs/researches/20260809-stale-edit-session-inventory.md`.
-- ✅ Runtime release `1786278054234-c75ca5c244f83c44c22a987d0d9a021305ce793b` is active with database, scheduler, release coherence, MCP, and embedded Local Bridge diagnostics passing; `controller_ready` has no warning or reason codes.
+- ✅ Runtime release `1786278767043-7dea37164fcb1571e212c1a208984bb129ae3c90` is active with database, scheduler, release coherence, MCP, and embedded Local Bridge diagnostics passing; `controller_ready` has no warning or reason codes.
 - ✅ First-party `resend` plugin source now exposes non-secret configuration, auth/domain/SMTP status, domain verification, strongly confirmed sending, and sent-message receipt lookup; the personal-assistant reporting model includes a disabled-by-default `resend_email` sink.
 - ⚠️ `FORGE_RESEND_API_KEY` / `RESEND_API_KEY` and `.forge/plugins/resend.json` are absent in the current checkout, so no live email can be sent or claimed as accepted yet.
 - ✅ `ce6834e5b` fixes compiled `forge-runtime` Worker launch recursion by resolving the real Bun executable and preserves structured Runtime core-failure stderr.
@@ -43,6 +46,9 @@ This snapshot is a read model, not an execution gate.
 
 ## Validation Completed
 
+- `bun test tests/runtime/route-policy.test.ts tests/cli/mcp-controller.test.ts tests/runtime/thin-harness-gateway-routing.test.ts`: 77/77 passed for all explicit mode contracts, override priority, policy fencing, non-null context recommendations, and automatic Plan CodeGraph context.
+- CodeGraph acceptance: main incremental sync completed with zero pending files; the four required structural queries resolved production edges, and a detached `7dea3716` worktree produced an independent 640-file / 14,776-node / 62,307-edge index that correctly did not contain the main checkout's new `ExplicitTaskMode` symbol.
+- Live Local System acceptance on an unregistered non-Git temporary directory passed authorize, list/read, directory create, two concurrent writes, readonly commands, ordinary project-command denial, digest-pinned canonical-interpreter script execution, strongly confirmed file deletion, revoke, and post-revoke denial. The Repository Registry hash before and after an isolated authorize→revoke cycle remained exactly `7d17a58b011c26a2434658a35bd0e99dbc7582d7dd334d69e5edfa3e5b53832f`.
 - `bun run benchmark:route-session-concurrency --iterations 7`: all physical concurrency/cache scenarios met their expected outcome. Totals: 28 Check subscribers / 14 physical executions / 7 coalesces / 7 cache hits / 7 cross-checkout reuses / 7 invalidations; same-checkout Lease admission p50/p95 was 39.02/43.84 ms.
 - `bun test tests/runtime/local-system-target-grant.test.ts`: 29/29 passed, including owner-isolated revoke/fail-closed behavior, strong-confirmation single-file deletion, digest-pinned project-script execution, non-directory deletion refusal, symlink escape rejection, restart-stable identity, store contention, and same-root mutation serialization.
 - Live audit before the fix proved the warning was real: service runtime state claimed embedded PID 60290 at `127.0.0.1:8766`, but the PID and listener were absent. Runtime tool discovery contained exactly 123 tools, expected/actual counts matched with no missing/unexpected/duplicate entries, and neither retired `self_healing_monitor_tick` nor `self_healing_loop_plan` was advertised.
@@ -66,8 +72,8 @@ This snapshot is a read model, not an execution gate.
 
 ## Remaining Before Delivery
 
-- Activate the Local System slice through the immutable Recovery transaction, then run the complete non-Git temporary-directory lifecycle and prove Repository Registry hashes remain unchanged.
-- Refresh/reconnect the external ChatGPT connector after activation so its cached `rh_work` schema includes `controller_claim` and `launcher_start`, then re-run live `controller_ready`, capabilities, and watchdog probes.
+- Commit and immutably activate the explicit-mode/CodeGraph slice, then exercise small/large/default and Plan/Debug mode responses against the live Runtime.
+- Continue Desktop Operator, macOS permission/TCC, normal Chrome, plugin lifecycle/health, UI Design, App Store Connect, delivery, branding/UI/iOS, and open-source acceptance slices.
 - Keep the compatibility symlink `repo-harness-controller-runtime -> forge` until Runtime, registry, Recovery, and tunnel all use the renamed path and reboot recovery is verified.
 - Preserve `scripts/TM17Runner.app/` and `scripts/tm17-ui-step.command` (untracked, must not be committed).
 

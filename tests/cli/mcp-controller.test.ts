@@ -783,6 +783,39 @@ describe("MCP controller profile", () => {
       expect(context.value.checks.some((check: { id: string }) => check.id === "focused")).toBe(true);
       expect(context.value.recommendedExecution.recommendedMode).toBe("direct_edit");
 
+      const defaultContext = await jsonTool(ctx, "controller_context", {});
+      expect(defaultContext.value.recommendedExecution).toMatchObject({
+        recommendedMode: "direct_edit",
+        taskMode: "direct",
+      });
+
+      const largeContext = await jsonTool(ctx, "controller_context", {
+        description: "Refactor a large cross-module runtime surface",
+        expected_files: 12,
+        expected_changed_lines: 1_000,
+      });
+      expect(largeContext.value.recommendedExecution).toMatchObject({
+        recommendedMode: "bounded_work",
+        taskMode: "bounded",
+      });
+
+      const planContext = await jsonTool(ctx, "controller_context", {
+        description: "Plan a cross-module routing change",
+        mode: "-plan",
+        known_paths: ["src/example.ts"],
+        expected_files: 8,
+      });
+      expect(planContext.value.recommendedExecution).toMatchObject({
+        recommendedMode: "bounded_work",
+        taskMode: "plan",
+        explicitMode: "plan",
+        modeBehavior: { structuralContext: "required", mutationPhase: "plan_only" },
+      });
+      expect(planContext.value.modeContextPack.structuralContext).toMatchObject({
+        provider: "codegraph",
+        requestedMode: "required",
+      });
+
       const pack = await jsonTool(ctx, "controller_context_pack", {
         issue_id: created.value.id,
         task_id: "T1",
@@ -1676,6 +1709,24 @@ describe("MCP controller profile", () => {
       // Default summary carries compact plugin counts only; manifests are detail.
       expect(summary.plugins).toHaveProperty("enabledCount");
       expect(summary.plugins).not.toHaveProperty("provider");
+      expect(summary.execution.recommendedMode).toBe("direct_edit");
+      const planned = JSON.parse((await callRuntimeTool(multi, "controller_context", {
+        repo_id: repository.repoId,
+        description: "Plan a cross-module change",
+        mode: "-plan",
+        known_paths: ["src/example.ts"],
+      }))!.content[0].text);
+      expect(planned.execution.recommendedMode).toBe("bounded_work");
+      expect(planned.recommendedExecution).toMatchObject({ taskMode: "plan", explicitMode: "plan" });
+      expect(planned.modeContextPack.structuralContext.requestedMode).toBe("required");
+      const directAgain = JSON.parse((await callRuntimeTool(multi, "controller_context", {
+        repo_id: repository.repoId,
+        description: "Read one known file",
+        mode: "direct",
+        known_paths: ["src/example.ts"],
+      }))!.content[0].text);
+      expect(directAgain.execution.recommendedMode).toBe("direct_edit");
+      expect(directAgain.modeContextPack).toBeUndefined();
       const detail = JSON.parse((await callRuntimeTool(multi, "controller_context", { repo_id: repository.repoId, detail_level: "detail" }))!.content[0].text);
       const plugin = detail.plugins.find((entry: { pluginId: string }) => entry.pluginId === "github");
 

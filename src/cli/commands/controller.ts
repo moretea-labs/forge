@@ -176,9 +176,10 @@ export function buildControllerCommand(): Command {
     .option('--parallel', 'Parallel work is required')
     .option('--long-checks', 'Long-running verification is required')
     .option('--dependencies', 'A durable Task dependency graph is required')
+    .option('--mode <mode>', 'Explicit mode: direct, plan, debug, review, campaign, release, or scale')
     .option('--risk <risk>', 'readonly, low, medium, high, or destructive', 'low')
     .option('--json', 'Output JSON')
-    .action((description: string, opts: { path?: string[]; expectedFiles?: string; expectedLines?: string; investigation?: boolean; parallel?: boolean; longChecks?: boolean; dependencies?: boolean; risk?: 'readonly' | 'low' | 'medium' | 'high' | 'destructive'; json?: boolean }) => {
+    .action((description: string, opts: { path?: string[]; expectedFiles?: string; expectedLines?: string; investigation?: boolean; parallel?: boolean; longChecks?: boolean; dependencies?: boolean; mode?: 'direct' | 'plan' | 'debug' | 'review' | 'campaign' | 'release' | 'scale'; risk?: 'readonly' | 'low' | 'medium' | 'high' | 'destructive'; json?: boolean }) => {
       const result = assessWorkMode({
         description,
         knownPaths: opts.path,
@@ -188,6 +189,7 @@ export function buildControllerCommand(): Command {
         requiresParallelism: opts.parallel,
         requiresLongRunningChecks: opts.longChecks,
         needsDependencies: opts.dependencies,
+        explicitMode: opts.mode,
         risk: opts.risk,
       });
       output(result, opts.json === true);

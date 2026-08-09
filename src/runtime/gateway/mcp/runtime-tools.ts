@@ -65,7 +65,7 @@ import {
   normalizeCampaignDependencyReferences,
 } from '../../workflow/campaigns/normalize';
 import { ensureRepositoryRuntimeStorage } from '../../../cli/repositories/runtime-storage';
-import { assessWorkMode } from '../../../cli/controller/work-mode';
+import { assessWorkMode, parseExplicitTaskMode } from '../../../cli/controller/work-mode';
 import { projectBoard } from '../../../cli/controller/issue-store';
 import {
   buildControllerTaskLedgerProjection,
@@ -1290,9 +1290,11 @@ export function runtimeIdentitySnapshot(ctx: MultiRepositoryMcpToolContext): Run
 }
 
 function controllerContextAssessment(args: Record<string, unknown>) {
-  if (typeof args.description !== 'string' || !args.description.trim()) return undefined;
+  const description = typeof args.description === 'string' && args.description.trim()
+    ? args.description
+    : 'Inspect the selected repository context.';
   return assessWorkMode({
-    description: args.description,
+    description,
     knownPaths: stringList(args.known_paths),
     expectedFiles: typeof args.expected_files === 'number' ? args.expected_files : undefined,
     expectedChangedLines: typeof args.expected_changed_lines === 'number' ? args.expected_changed_lines : undefined,
@@ -1307,6 +1309,7 @@ function controllerContextAssessment(args: Record<string, unknown>) {
     agentRequested: args.agent_requested === true || args.requires_worker === true,
     requiresWorkerIsolation: args.requires_worker_isolation === true,
     risk: typeof args.risk === 'string' ? args.risk as TaskRisk : undefined,
+    explicitMode: parseExplicitTaskMode(args.mode) ?? (typeof args.description === 'string' && args.description.trim() ? undefined : 'direct'),
   });
 }
 
@@ -3948,6 +3951,16 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         };
         const repositoryStartedAt = performance.now();
         const repository = selected(ctx, args);
+        const recommendedExecution = controllerContextAssessment(args);
+        const modeContextPack = recommendedExecution.modeBehavior.structuralContext === 'required'
+          ? buildControllerContextPack(repository.canonicalRoot, ctx.policy, {
+              description: typeof args.description === 'string' ? args.description : undefined,
+              knownPaths: stringList(args.known_paths),
+              structuralContext: 'required',
+              maxFiles: 8,
+              maxSnippets: 20,
+            })
+          : undefined;
         markPhase('repositoryRouting', repositoryStartedAt);
         const variant = args.detail_level === 'detail' ? 'detail' as const : 'summary' as const;
         const runtimeRoot = repositoryControllerRoot(ctx.controllerHome, repository.repoId);
@@ -4046,7 +4059,20 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           projectionRecord: typeof cached,
           input: { cacheHit: boolean; stale: boolean; refreshJobId?: string },
         ): CallToolResult => {
-          if (!controllerContextProjectionPayloadMatchesSourceIdentity(payload, sourceIdentity)) {
+          const { modeContextPack: _cachedModeContextPack, ...basePayload } = payload;
+          const taskScopedPayload = {
+            ...basePayload,
+            ...(basePayload.detailLevel === 'summary' ? {
+              execution: {
+                ...contextRecord(basePayload.execution),
+                recommendedMode: recommendedExecution.recommendedMode,
+                executionPath: recommendedExecution.executionPath,
+              },
+            } : {}),
+            recommendedExecution,
+            ...(modeContextPack ? { modeContextPack } : {}),
+          };
+          if (!controllerContextProjectionPayloadMatchesSourceIdentity(taskScopedPayload, sourceIdentity)) {
             const response = withRuntimeResponseMeta({
               error: {
                 code: 'CONTEXT_PROJECTION_SOURCE_MISMATCH',
@@ -4067,7 +4093,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             return result(response, true);
           }
           const response = withRuntimeResponseMeta({
-            ...payload,
+            ...taskScopedPayload,
             ...projectionPayload(projectionRecord, input.stale, input.refreshJobId),
           }, responseStartedAt, { ...responseOptions, cacheHit: input.cacheHit, stale: input.stale, refreshJobId: input.refreshJobId });
           const responseBytes = Buffer.byteLength(JSON.stringify(response), 'utf8');
@@ -4193,7 +4219,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             repoId: repository.repoId,
             repository: repositorySummary(repository),
             runtimeStorage,
-            recommendedExecution: controllerContextAssessment(args),
+            recommendedExecution,
+            ...(modeContextPack ? { modeContextPack } : {}),
             runtimeProjection,
             runtimeProjectionState: {
               stale: runtimeSnapshot.stale,

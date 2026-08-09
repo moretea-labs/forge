@@ -1,12 +1,13 @@
 import { createHash } from 'crypto';
 
-export const ROUTE_POLICY_VERSION = 'route-policy-v2' as const;
+export const ROUTE_POLICY_VERSION = 'route-policy-v3' as const;
 
 export type RouteExecutionMode = 'direct_control' | 'goal_workloop' | 'handoff_only';
 export type RouteWorkMode = 'direct_edit' | 'bounded_work' | 'quick_agent' | 'issue_task' | 'campaign';
 export type RouteExecutionPath = 'fast' | 'durable' | 'campaign';
 export type RouteExecutorKind = 'direct_edit' | 'local_cli' | 'remote_api' | 'cloud_agent' | 'external_controller' | 'handoff_only';
 export type RouteApprovalState = 'approval_not_required' | 'normal_authorization_required' | 'strong_confirmation_required' | 'blocked_by_policy';
+export type ExplicitTaskMode = 'direct' | 'plan' | 'debug' | 'review' | 'campaign' | 'release' | 'scale';
 
 export interface RouteReason {
   code: string;
@@ -36,6 +37,8 @@ export interface RoutePolicyInput {
     requiresIndependentDeliverables?: boolean;
     independentTaskCount?: number;
     agentRequested?: boolean;
+    /** Explicit operator mode. It overrides heuristic topology, never policy gates. */
+    explicitMode?: ExplicitTaskMode;
     preferredProviderId?: string;
     allowedProviderIds?: readonly string[];
     forbiddenProviderIds?: readonly string[];
@@ -229,9 +232,17 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
   const approvalRequired = input.policy.requiresApproval === true || input.policy.requiresUserApproval === true || destructive || remoteWrite || secretAccess;
   const approvalConfirmed = input.policy.approvalConfirmed === true;
   const protectedPath = paths.some((path) => PROTECTED_PATH.test(path));
-  const requiresIsolation = input.recovery.isolationRequired === true || input.intent.requiresParallelism === true;
-  const requiresRecovery = input.recovery.required === true || input.intent.requiresLongRunningChecks === true;
-  const campaignEligible = input.intent.requiresIndependentDeliverables === true
+  const explicitMode = input.intent.explicitMode;
+  const explicitParallelMode = explicitMode === 'campaign' || explicitMode === 'scale';
+  const requiresIsolation = explicitMode === 'direct'
+    ? false
+    : input.recovery.isolationRequired === true || input.intent.requiresParallelism === true || explicitParallelMode;
+  const requiresRecovery = input.recovery.required === true
+    || input.intent.requiresLongRunningChecks === true
+    || explicitMode === 'debug'
+    || explicitMode === 'release'
+    || explicitMode === 'scale';
+  const campaignEligible = explicitParallelMode || input.intent.requiresIndependentDeliverables === true
     || independentTaskCount >= 3
     || (input.intent.requiresParallelism === true && independentTaskCount >= 2);
 
@@ -287,6 +298,7 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
       approvalState: 'approval_not_required', alternatives: [], ...decisionBase(input, reasons),
     };
   }
+  if (explicitMode) reasons.push({ code: `explicit_${explicitMode}`, message: `Explicit -${explicitMode} mode overrides automatic work topology while policy gates remain authoritative.` });
   if (protectedPath) reasons.push({ code: 'protected_path', message: 'The predicted scope includes a protected or release-sensitive path.' });
   if (requiresRecovery) reasons.push({ code: 'recovery_required', message: 'The operation needs resumable Work and bounded recovery.' });
   if (requiresIsolation) reasons.push({ code: 'isolation_required', message: 'The operation requires an isolated checkout or serialized lane.' });
@@ -295,7 +307,14 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
   if (input.intent.needsDependencies) reasons.push({ code: 'dependencies', message: 'Dependency ordering requires durable Work.' });
   if (campaignEligible) reasons.push({ code: 'independent_deliverables', message: 'Multiple independent deliverables require campaign-level coordination.' });
 
-  const complex = campaignEligible
+  const explicitBoundedMode = explicitMode === 'plan'
+    || explicitMode === 'debug'
+    || explicitMode === 'review'
+    || explicitMode === 'release';
+  const complex = explicitMode === 'direct'
+    ? false
+    : campaignEligible
+    || explicitBoundedMode
     || requiresRecovery
     || requiresIsolation
     || input.intent.agentRequested === true
@@ -313,7 +332,9 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
   // Work topology is independent from executor/provider choice. Campaign is
   // selected only for genuinely independent/parallel deliverables; Agent
   // preference may choose an executor inside a tier but must not create the tier.
-  const workMode: RouteWorkMode = campaignEligible
+  const workMode: RouteWorkMode = explicitMode === 'direct'
+    ? 'direct_edit'
+    : campaignEligible
     ? 'campaign'
     : input.intent.agentRequested
       ? expectedFiles > 10 || expectedChangedLines > 1_500 ? 'issue_task' : 'quick_agent'

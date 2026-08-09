@@ -82,7 +82,7 @@ import {
 } from "../controller/progress";
 import { exportControllerWorklog, parseWorklogCategory } from "../controller/worklog";
 import { inspectProjectGovernance, reconcileProjectGovernance } from "../controller/governance";
-import { assessWorkMode } from "../controller/work-mode";
+import { assessWorkMode, parseExplicitTaskMode } from "../controller/work-mode";
 import { taskExecutionPolicy } from "../controller/execution-policy";
 import { finishEditSession, finishTaskRun } from "../controller/completion-orchestrator";
 import { buildControllerTaskLedgerProjection } from "../controller/task-ledger";
@@ -1616,6 +1616,7 @@ export function buildMcpToolDefinitions(
           type: "object",
           properties: {
             description: { type: "string" },
+            mode: { type: "string", enum: ["direct", "plan", "debug", "review", "campaign", "release", "scale", "-direct", "-plan", "-debug", "-review", "-campaign", "-release", "-scale"] },
             known_paths: { type: "array", items: { type: "string" } },
             expected_files: { type: "number" },
             expected_changed_lines: { type: "number" },
@@ -2146,6 +2147,7 @@ export function buildMcpToolDefinitions(
           type: "object",
           properties: {
             description: { type: "string" },
+            mode: { type: "string", enum: ["direct", "plan", "debug", "review", "campaign", "release", "scale", "-direct", "-plan", "-debug", "-review", "-campaign", "-release", "-scale"] },
             known_paths: { type: "array", items: { type: "string" } },
             expected_files: { type: "number" },
             expected_changed_lines: { type: "number" },
@@ -3342,17 +3344,28 @@ export async function callMcpTool(
           timeoutMs: check.timeoutMs,
           source: check.source,
         }));
-        const assessment = typeof args.description === "string" && args.description.trim()
-          ? assessWorkMode({
-              description: String(args.description),
+        const assessment = assessWorkMode({
+          description: typeof args.description === "string" && args.description.trim()
+            ? String(args.description)
+            : "Inspect the selected repository context.",
+          knownPaths: stringList(args.known_paths),
+          expectedFiles: typeof args.expected_files === "number" ? args.expected_files : undefined,
+          expectedChangedLines: typeof args.expected_changed_lines === "number" ? args.expected_changed_lines : undefined,
+          requiresInvestigation: args.requires_investigation === true,
+          requiresParallelism: args.requires_parallelism === true,
+          requiresLongRunningChecks: args.requires_long_running_checks === true,
+          needsDependencies: args.needs_dependencies === true,
+          risk: typeof args.risk === "string" ? args.risk as TaskRisk : undefined,
+          explicitMode: parseExplicitTaskMode(args.mode)
+            ?? (typeof args.description === "string" && args.description.trim() ? undefined : "direct"),
+        });
+        const modeContextPack = assessment.modeBehavior.structuralContext === "required"
+          ? buildControllerContextPack(ctx.repoRoot, ctx.policy, {
+              description: typeof args.description === "string" ? args.description : undefined,
               knownPaths: stringList(args.known_paths),
-              expectedFiles: typeof args.expected_files === "number" ? args.expected_files : undefined,
-              expectedChangedLines: typeof args.expected_changed_lines === "number" ? args.expected_changed_lines : undefined,
-              requiresInvestigation: args.requires_investigation === true,
-              requiresParallelism: args.requires_parallelism === true,
-              requiresLongRunningChecks: args.requires_long_running_checks === true,
-              needsDependencies: args.needs_dependencies === true,
-              risk: typeof args.risk === "string" ? args.risk as TaskRisk : undefined,
+              structuralContext: "required",
+              maxFiles: 8,
+              maxSnippets: 20,
             })
           : undefined;
         const payload = {
@@ -3390,6 +3403,7 @@ export async function callMcpTool(
           },
           checks,
           recommendedExecution: assessment,
+          ...(modeContextPack ? { modeContextPack } : {}),
         };
         audit(ctx, name, "ok", args);
         return textResult(payload);
@@ -4075,6 +4089,7 @@ export async function callMcpTool(
           requiresLongRunningChecks: args.requires_long_running_checks === true,
           needsDependencies: args.needs_dependencies === true,
           risk: typeof args.risk === "string" ? args.risk as TaskRisk : undefined,
+          explicitMode: parseExplicitTaskMode(args.mode),
         });
         audit(ctx, name, "ok", args);
         return textResult(assessment);

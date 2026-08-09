@@ -144,6 +144,64 @@ describe('single Route Policy authority', () => {
     });
   });
 
+  test('gives every explicit task mode executable behavior instead of a label', () => {
+    const expected = {
+      direct: { workMode: 'direct_edit', executionPath: 'fast', mutationPhase: 'execute', structuralContext: 'off' },
+      plan: { workMode: 'bounded_work', executionPath: 'durable', mutationPhase: 'plan_only', structuralContext: 'required' },
+      debug: { workMode: 'bounded_work', executionPath: 'durable', mutationPhase: 'diagnose_first', structuralContext: 'required' },
+      review: { workMode: 'bounded_work', executionPath: 'durable', mutationPhase: 'read_only', structuralContext: 'off' },
+      campaign: { workMode: 'campaign', executionPath: 'campaign', mutationPhase: 'coordinate', structuralContext: 'off' },
+      release: { workMode: 'bounded_work', executionPath: 'durable', mutationPhase: 'release_gate', structuralContext: 'off' },
+      scale: { workMode: 'campaign', executionPath: 'campaign', mutationPhase: 'benchmark', structuralContext: 'off' },
+    } as const;
+
+    for (const mode of Object.keys(expected) as Array<keyof typeof expected>) {
+      const contract = expected[mode];
+      const assessment = assessWorkMode({
+        description: `Exercise -${mode} behavior`,
+        knownPaths: ['src/example.ts'],
+        expectedFiles: mode === 'direct' ? 1 : 30,
+        expectedChangedLines: mode === 'direct' ? 2 : 3_000,
+        explicitMode: `-${mode}` as `-${keyof typeof expected}`,
+        risk: 'low',
+      });
+      expect(assessment.explicitMode).toBe(mode);
+      expect(assessment.taskMode).toBe(mode);
+      expect(assessment.routeDecision.workMode).toBe(contract.workMode);
+      expect(assessment.executionPath).toBe(contract.executionPath);
+      expect(assessment.modeBehavior.mutationPhase).toBe(contract.mutationPhase);
+      expect(assessment.modeBehavior.structuralContext).toBe(contract.structuralContext);
+      expect(assessment.modeBehavior.workflow.length).toBeGreaterThan(2);
+      expect(assessment.routeDecision.reasons.some((reason) => reason.code === `explicit_${mode}`)).toBe(true);
+    }
+  });
+
+  test('explicit mode overrides heuristics but never authorization or dirty-workspace gates', () => {
+    const direct = assessWorkMode({
+      description: 'Explicitly keep this supervised operation direct',
+      knownPaths: Array.from({ length: 20 }, (_, index) => `src/file-${index}.ts`),
+      expectedFiles: 20,
+      expectedChangedLines: 3_000,
+      requiresInvestigation: true,
+      requiresParallelism: true,
+      explicitMode: 'direct',
+      risk: 'low',
+    });
+    expect(direct.routeDecision).toMatchObject({ executionMode: 'direct_control', workMode: 'direct_edit', requiresIsolation: false });
+
+    const blocked = decideRoute(sharedInput({
+      intent: { objective: 'Unsafe direct remote mutation', scopeClear: true, mutation: true, explicitMode: 'direct' },
+      policy: { risk: 'remote_write', remoteWrite: true, requiresApproval: true, approvalConfirmed: false },
+    }));
+    expect(blocked).toMatchObject({ executionMode: 'handoff_only', approvalState: 'normal_authorization_required' });
+
+    const dirty = decideRoute(sharedInput({
+      intent: { objective: 'Dirty direct mutation', scopeClear: true, mutation: true, explicitMode: 'direct' },
+      workspace: { knownPaths: ['src/example.ts'], dirty: true },
+    }));
+    expect(dirty).toMatchObject({ executionMode: 'handoff_only', requiresIsolation: true });
+  });
+
   test('selects Campaign from independent deliverable topology even without an Agent request', () => {
     const decision = decideRoute(sharedInput({
       intent: {

@@ -46,7 +46,7 @@ import {
   classifyRepositoryCommandRoute,
   executeRepositoryCommandViaProcessRuntime,
 } from '../../runtime/execution/process-runtime/command-facade';
-import { assessWorkMode } from '../controller/work-mode';
+import { assessWorkMode, parseExplicitTaskMode } from '../controller/work-mode';
 import type { CallToolResult, McpToolDefinition } from './tools';
 import {
   compactCommandOutput,
@@ -558,6 +558,7 @@ export async function callRepositoryTool(
             agentRequested: payload.agent_requested === true || payload.requires_worker === true,
             requiresWorkerIsolation: payload.requires_worker_isolation === true,
             risk: typeof payload.risk === 'string' ? payload.risk as 'low' | 'medium' | 'high' | 'destructive' : undefined,
+            explicitMode: parseExplicitTaskMode(payload.mode),
           });
           return result({
             assessment,
