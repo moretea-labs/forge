@@ -4,7 +4,7 @@ import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, re
 import { homedir } from 'os';
 import { basename, dirname, isAbsolute, join, resolve } from 'path';
 import { observeRuntimeStatus } from '../root/status';
-import { ensureForgeRuntimeLaunchAgentContract, forgeRuntimeServicePaths } from '../root/service';
+import { ensureForgeRuntimeLaunchAgentContract, forgeRuntimeServicePaths, readForgeRuntimeServiceConfig } from '../root/service';
 import { loadRuntimeReleaseManifest } from '../root/release-manifest';
 import { assertRuntimeReleaseFiles, stageRuntimeRelease, type StagedRuntimeRelease } from '../root/release-materialize';
 import {
@@ -1125,6 +1125,34 @@ async function waitForLaunchdServiceUnloaded(input: {
   return !printed.ok;
 }
 
+async function waitForPrimaryRuntimePortReleased(input: {
+  config: RecoveryConfig;
+  timeoutMs: number;
+  now: () => number;
+  wait: (ms: number) => Promise<void>;
+  runCommand: CommandRunner;
+}): Promise<boolean> {
+  const paths = forgeRuntimeServicePaths(input.config.controllerHome);
+  let port: number;
+  try {
+    port = readForgeRuntimeServiceConfig(paths.configPath).port;
+  } catch {
+    return false;
+  }
+  const isListening = async (): Promise<boolean> => {
+    const result = await input.runCommand('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN'], 3_000);
+    if (result.ok) return result.stdout.trim().length > 0;
+    if (result.status === 1 && result.stderr.trim().length === 0) return false;
+    return true;
+  };
+  const deadline = input.now() + input.timeoutMs;
+  while (input.now() < deadline) {
+    if (!(await isListening())) return true;
+    await input.wait(250);
+  }
+  return !(await isListening());
+}
+
 async function verifyPrimaryRuntimeAfterStart(input: {
   config: RecoveryConfig;
   timeoutMs: number;
@@ -1220,6 +1248,13 @@ export async function recoverPrimaryRuntime(
     const serviceUnloaded = await waitForLaunchdServiceUnloaded({ service, timeoutMs: 20_000, now, wait, runCommand });
     if (!serviceUnloaded) {
       const detail = 'primary Runtime launchd service remained loaded after bounded bootout';
+      audit(config, 'primary_runtime_recovery_stop_unverified', { serviceTarget: service.target, detail });
+      return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: await verifyLocal(config) } satisfies PrimaryRuntimeRecoveryResult;
+    }
+
+    const portReleased = await waitForPrimaryRuntimePortReleased({ config, timeoutMs: 20_000, now, wait, runCommand });
+    if (!portReleased) {
+      const detail = 'primary Runtime TCP port remained occupied after bounded launchd bootout';
       audit(config, 'primary_runtime_recovery_stop_unverified', { serviceTarget: service.target, detail });
       return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: await verifyLocal(config) } satisfies PrimaryRuntimeRecoveryResult;
     }
@@ -1341,6 +1376,12 @@ export async function activateRuntimeRelease(
       audit(config, 'runtime_release_activation_stop_unverified', { serviceTarget: service.target, operationId, detail });
       return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: await verifyLocal(config) } satisfies RuntimeReleaseActivationResult;
     }
+    const portReleased = await waitForPrimaryRuntimePortReleased({ config, timeoutMs: 20_000, now, wait, runCommand });
+    if (!portReleased) {
+      const detail = 'primary Runtime TCP port remained occupied after bounded launchd bootout';
+      audit(config, 'runtime_release_activation_stop_unverified', { serviceTarget: service.target, operationId, detail });
+      return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: await verifyLocal(config) } satisfies RuntimeReleaseActivationResult;
+    }
     let committed: RuntimeReleaseAuthority;
     try {
       committed = publishRuntimeRelease(config.controllerHome, candidate.manifestPath, operationId);
@@ -1390,12 +1431,17 @@ export async function activateRuntimeRelease(
     const rollbackServiceUnloaded = rollbackRuntimeStopped
       ? await waitForLaunchdServiceUnloaded({ service, timeoutMs: 20_000, now, wait, runCommand })
       : false;
-    if (!rollbackRuntimeStopped || !rollbackServiceUnloaded) {
+    const rollbackPortReleased = rollbackRuntimeStopped && rollbackServiceUnloaded
+      ? await waitForPrimaryRuntimePortReleased({ config, timeoutMs: 20_000, now, wait, runCommand })
+      : false;
+    if (!rollbackRuntimeStopped || !rollbackServiceUnloaded || !rollbackPortReleased) {
       rollback = {
         ok: false,
         detail: !rollbackRuntimeStopped
           ? 'candidate Runtime owner remained live after bounded rollback bootout'
-          : 'candidate Runtime launchd service remained loaded after bounded rollback bootout',
+          : !rollbackServiceUnloaded
+            ? 'candidate Runtime launchd service remained loaded after bounded rollback bootout'
+            : 'candidate Runtime TCP port remained occupied after bounded rollback bootout',
       };
     } else {
       try {

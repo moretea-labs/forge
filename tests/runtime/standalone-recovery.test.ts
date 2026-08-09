@@ -630,6 +630,57 @@ describe('standalone recovery on canonical Runtime', () => {
     }
   });
 
+  test('does not publish a candidate while the primary Runtime TCP port is still occupied after bootout', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const first = manifest(home, 'release-a', 'artifact-a');
+      const candidate = verifiedManifest(home, 'release-port-busy');
+      ensureActiveRuntimeRelease(home, first);
+      const runtime = await runtimeServer();
+      writeMainToken(home);
+      const ownership = startObservedRuntime(home, runtime.endpoint, 'release-a', 'artifact-a');
+      const config = createRecoveryConfig(home, {
+        publicMcpUrl: runtime.endpoint,
+        primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
+      });
+      removeOwnership(ownership);
+      const paths = forgeRuntimeServicePaths(home);
+      runtimeServiceConfig(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+
+      let launchdLoaded = true;
+      let kickstarts = 0;
+      const result = await activateRuntimeRelease(config, candidate.path, {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (commandName, args) => {
+          if (commandName === 'lsof') return { ok: true, status: 0, stdout: 'forge-runtime 123 greyson TCP *:8765 (LISTEN)', stderr: '' };
+          if (args[0] === 'bootout') launchdLoaded = false;
+          if (args[0] === 'print') return launchdLoaded
+            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+          if (args[0] === 'kickstart') kickstarts += 1;
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        runtimeRunning: () => false,
+        verifyLocal: async () => healthyVerify(),
+        now: (() => { let value = 0; return () => value += 1_000; })(),
+        sleep: async () => undefined,
+      });
+
+      expect(result).toMatchObject({ ok: false, attempted: true });
+      expect(result.detail).toContain('TCP port remained occupied');
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
+      expect(kickstarts).toBe(0);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
   test('activates an already staged immutable Runtime release and keeps the previous whole release for rollback', async () => {
     const home = controllerHome();
     const previousHome = process.env.HOME;
