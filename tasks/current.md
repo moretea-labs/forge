@@ -33,6 +33,7 @@ This snapshot is a read model, not an execution gate.
 
 ## Validation Completed
 
+- `bun test tests/runtime/capability-recovery.test.ts`: 29/29 passed, including terminal committed/superseded/unique-dirty, active/missing ownership, empty-session, explicit-full-only, summary, and legacy maintenance coverage for stale Edit Sessions.
 - `bun test tests/runtime/process-environment.test.ts`: 5/5 passed.
 - `bun test tests/runtime/canonical-single-runtime.test.ts`: 16/16 passed (previously 15/16).
 - `bun test tests/runtime/execution-job-reconciliation.test.ts`: 3/3 passed.

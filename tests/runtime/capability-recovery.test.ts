@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it } from 'bun:test';
+import { execFileSync } from 'child_process';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   RECOVERY_ACTIONS,
+  AUTOMATIC_RUNTIME_MAINTENANCE_ACTION_ALLOWLIST,
   assertRecoveryAuthorized,
   buildCapabilityRecoverySnapshot,
   buildPatchHandoffArtifact,
@@ -14,6 +16,8 @@ import {
   detectDirtyPathConflicts,
   recoveryActionById,
 } from '../../src/runtime/recovery';
+import { applyEditOperations, beginEditSession, getEditSession } from '../../src/cli/editing/edit-session';
+import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import {
   applyExternalFilesystemGrant,
@@ -253,6 +257,60 @@ describe('runtime maintenance executor', () => {
     return { root, controllerHome, localJobs, repository: { repoId: 'repo-test', canonicalRoot: root } };
   }
 
+  function editFixture(input: { workStatus?: 'cancelled' | 'running'; createWork?: boolean; applyEdit?: boolean } = {}) {
+    const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-edit-session-'));
+    temporaryRoots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    const runtimeTempRoot = join(root, 'system-temp');
+    mkdirSync(repoRoot, { recursive: true });
+    mkdirSync(runtimeTempRoot, { recursive: true });
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoRoot });
+    mkdirSync(join(repoRoot, 'src'), { recursive: true });
+    writeFileSync(join(repoRoot, 'README.md'), '# Test\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
+
+    const repoId = 'repo-maintenance-edit';
+    const checkoutId = 'checkout-maintenance-edit';
+    const workId = input.createWork === false ? 'work-missing' : `work-${input.workStatus ?? 'cancelled'}`;
+    if (input.createWork !== false) {
+      createWorkContract({ controllerHome, repoId }, {
+        workId,
+        repoId,
+        checkoutId,
+        mode: 'direct_control',
+        objective: 'Characterize stale Edit Session maintenance.',
+        acceptanceCriteria: [],
+        allowedPaths: ['src/**'],
+        forbiddenPaths: [],
+        checks: [],
+        constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+        requestedBy: 'chatgpt',
+        status: input.workStatus ?? 'cancelled',
+      });
+    }
+    const binding = { workId, repoId, checkoutId, principalId: 'principal-test', controllerInstanceId: 'controller-instance-test' };
+    const session = beginEditSession(repoRoot, {
+      purpose: 'Stale Edit Session maintenance fixture',
+      allowedPaths: ['src/**'],
+      binding,
+    });
+    if (input.applyEdit !== false) {
+      applyEditOperations(repoRoot, getMcpPolicy('controller'), session.sessionId, [
+        { type: 'create', path: 'src/session.ts', content: 'export const sessionValue = 1;\n' },
+      ], { binding });
+    }
+    return {
+      controllerHome,
+      repoRoot,
+      repository: { repoId, canonicalRoot: repoRoot, runtimeTempRoots: [runtimeTempRoot] },
+      sessionId: session.sessionId,
+    };
+  }
+
   it('terminalizes stale active Local Jobs without using Local Job tickets', () => {
     const { controllerHome, localJobs, repository } = tempRepo();
     const jobDir = join(localJobs, 'JOB-stale');
@@ -341,6 +399,82 @@ describe('runtime maintenance executor', () => {
       applied: true,
     }));
     expect(getWorkContract({ controllerHome, repoId: repository.repoId }, 'work-stale-ready')?.status).toBe('cancelled');
+  });
+
+  it('finalizes a terminal Work edit session whose source was committed', () => {
+    const fx = editFixture();
+    execFileSync('git', ['add', 'src/session.ts'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-qm', 'commit edit session'], { cwd: fx.repoRoot });
+
+    const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
+    expect(status.summary.staleEditSessions).toBe(1);
+    expect(status.candidates).toContainEqual(expect.objectContaining({ kind: 'stale_edit_session', id: fx.sessionId, safe: true }));
+    const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
+      actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50,
+    });
+    expect(applied.applied).toContainEqual(expect.objectContaining({ id: fx.sessionId, applied: true, result: 'edit_session_finalized' }));
+    expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('finalized');
+  });
+
+  it('supersedes a terminal Work edit session when newer source replaced its after-image', () => {
+    const fx = editFixture();
+    writeFileSync(join(fx.repoRoot, 'src/session.ts'), 'export const sessionValue = 2;\n');
+
+    const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
+      actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50,
+    });
+    expect(applied.applied).toContainEqual(expect.objectContaining({ id: fx.sessionId, applied: true, result: 'edit_session_superseded' }));
+    expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('superseded');
+    expect(readFileSync(join(fx.repoRoot, 'src/session.ts'), 'utf8')).toBe('export const sessionValue = 2;\n');
+  });
+
+  it('fails closed without changing source when a terminal Work edit session still owns unique uncommitted content', () => {
+    const fx = editFixture();
+    const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
+      actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50,
+    });
+    expect(applied.applied).toContainEqual(expect.objectContaining({
+      id: fx.sessionId,
+      applied: false,
+      error: expect.stringContaining('unique uncommitted changes'),
+    }));
+    expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('dirty');
+    expect(readFileSync(join(fx.repoRoot, 'src/session.ts'), 'utf8')).toBe('export const sessionValue = 1;\n');
+  });
+
+  it('does not treat active or missing Work ownership as safe stale Edit Session candidates', () => {
+    const active = editFixture({ workStatus: 'running' });
+    const missing = editFixture({ createWork: false });
+    for (const fx of [active, missing]) {
+      const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
+      expect(status.candidates).toContainEqual(expect.objectContaining({ kind: 'stale_edit_session', id: fx.sessionId, safe: false }));
+      const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
+        actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50,
+      });
+      expect(applied.applied.some((candidate) => candidate.id === fx.sessionId && candidate.applied)).toBe(false);
+      expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('dirty');
+    }
+  });
+
+  it('rolls back an empty stale open session owned by terminal Work without touching source', () => {
+    const fx = editFixture({ applyEdit: false });
+    const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
+      actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50,
+    });
+    expect(applied.applied).toContainEqual(expect.objectContaining({ id: fx.sessionId, applied: true, result: 'edit_session_rolled_back' }));
+    expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('rolled_back');
+    expect(existsSync(join(fx.repoRoot, 'src/session.ts'))).toBe(false);
+  });
+
+  it('keeps stale Edit Session cleanup exclusive to explicit full maintenance', () => {
+    const fx = editFixture();
+    expect(AUTOMATIC_RUNTIME_MAINTENANCE_ACTION_ALLOWLIST.has('full_maintenance_pass')).toBe(false);
+    expect(AUTOMATIC_RUNTIME_MAINTENANCE_ACTION_ALLOWLIST.has('local_jobs_reconcile')).toBe(true);
+    const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
+      actionId: 'local_jobs_reconcile', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50,
+    });
+    expect(applied.applied.some((candidate) => candidate.id === fx.sessionId && candidate.applied)).toBe(false);
+    expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('dirty');
   });
 
   it('removes only stale direct forge temp entries during full maintenance', () => {
