@@ -7,6 +7,14 @@ import { buildResendPluginManifest, executeResendPluginAction } from '../../src/
 import { createFirstPartyPluginAdapterMap } from '../../src/runtime/plugins/first-party-registry';
 import { DEFAULT_REPORT_SINKS } from '../../src/runtime/personal-assistant/reporting-runtime';
 import {
+  completeResendOAuthLogin,
+  getResendOAuthAccessToken,
+  prepareResendOAuthLogin,
+  resetResendOAuthRuntimeForTest,
+  setResendCredentialStoreAdapterForTest,
+  type ResendCredentialStoreAdapter,
+} from '../../src/runtime/safe-tooling/resend-oauth';
+import {
   assistantPluginScope,
   controllerPluginRepository,
   executeAssistantPluginAction,
@@ -46,14 +54,24 @@ function resendFixture(): string {
   return repoRoot;
 }
 
-function resendAction(repoRoot: string, actionId: string, args: Record<string, unknown> = {}) {
+function memoryResendCredentialStore(): ResendCredentialStoreAdapter & { values: Map<string, string> } {
+  const values = new Map<string, string>();
+  return {
+    values,
+    available: () => true,
+    read: (service, account) => values.get(`${service}:${account}`),
+    write: (service, account, value) => { values.set(`${service}:${account}`, value); },
+  };
+}
+
+function resendAction(repoRoot: string, actionId: string, args: Record<string, unknown> = {}, requestId = `req_${actionId}`) {
   return executeResendPluginAction({
     controllerHome: join(repoRoot, '.controller'),
     repoId: 'repo_test',
     repoRoot,
     pluginId: 'resend',
     actionId,
-    requestId: `req_${actionId}`,
+    requestId,
     args,
     origin: { surface: 'mcp', actor: 'test' },
   });
@@ -171,6 +189,97 @@ describe('Resend first-party plugin', () => {
       globalThis.fetch = originalFetch;
       if (originalKey === undefined) delete process.env.FORGE_RESEND_API_KEY;
       else process.env.FORGE_RESEND_API_KEY = originalKey;
+    }
+  });
+
+  test('uses Resend OAuth PKCE with rotating Keychain refresh credentials and never returns token material', async () => {
+    const repoRoot = resendFixture();
+    const controllerHome = join(repoRoot, '.controller');
+    const store = memoryResendCredentialStore();
+    const originalFetch = globalThis.fetch;
+    const originalForgeKey = process.env.FORGE_RESEND_API_KEY;
+    const originalResendKey = process.env.RESEND_API_KEY;
+    setResendCredentialStoreAdapterForTest(store);
+    delete process.env.FORGE_RESEND_API_KEY;
+    delete process.env.RESEND_API_KEY;
+    let refreshCalls = 0;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/oauth/register')) return Response.json({ client_id: 'client-123', scope: 'full_access' });
+      if (url.endsWith('/oauth/token')) {
+        const body = new URLSearchParams(String(init?.body ?? ''));
+        if (body.get('grant_type') === 'authorization_code') {
+          expect(body.get('code_verifier')?.length).toBeGreaterThanOrEqual(43);
+          return Response.json({ access_token: 'access-1', refresh_token: 'refresh-1', expires_in: 900, scope: 'full_access' });
+        }
+        refreshCalls += 1;
+        expect(body.get('refresh_token')).toBe('refresh-1');
+        return Response.json({ access_token: 'access-2', refresh_token: 'refresh-2', expires_in: 900, scope: 'full_access' });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as typeof fetch;
+    try {
+      const prepared = await prepareResendOAuthLogin(controllerHome);
+      expect(prepared.pkce).toBe(true);
+      expect(prepared.dynamicClientRegistration).toBe(true);
+      expect(JSON.stringify(prepared)).not.toContain('codeVerifier');
+      const authorizationUrl = new URL(String(prepared.authorizationUrl));
+      expect(authorizationUrl.searchParams.get('scope')).toBe('full_access');
+      const state = authorizationUrl.searchParams.get('state');
+      const completed = await completeResendOAuthLogin(controllerHome, { state: state ?? undefined, code: 'authorization-code' });
+      expect(completed.authenticated).toBe(true);
+      expect(JSON.stringify(completed)).not.toContain('access-1');
+      expect(JSON.stringify(completed)).not.toContain('refresh-1');
+      setResendCredentialStoreAdapterForTest(store);
+      const refreshed = await getResendOAuthAccessToken();
+      expect(refreshed?.token).toBe('access-2');
+      expect(refreshCalls).toBe(1);
+      expect([...store.values.values()].some((value) => value.includes('refresh-2'))).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+      resetResendOAuthRuntimeForTest();
+      if (originalForgeKey === undefined) delete process.env.FORGE_RESEND_API_KEY; else process.env.FORGE_RESEND_API_KEY = originalForgeKey;
+      if (originalResendKey === undefined) delete process.env.RESEND_API_KEY; else process.env.RESEND_API_KEY = originalResendKey;
+    }
+  });
+
+  test('stores a sending-only SMTP key in Keychain and uses an idempotency key for live sends', async () => {
+    const repoRoot = resendFixture();
+    const store = memoryResendCredentialStore();
+    const originalFetch = globalThis.fetch;
+    const originalKey = process.env.FORGE_RESEND_API_KEY;
+    setResendCredentialStoreAdapterForTest(store);
+    process.env.FORGE_RESEND_API_KEY = 're_admin_test';
+    let observedIdempotencyKey: string | undefined;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/api-keys')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+        expect(body.permission).toBe('sending_access');
+        return Response.json({ id: 'smtp-key-id', token: 're_smtp_secret' });
+      }
+      if (url.endsWith('/domains')) return Response.json({ data: [{ id: 'domain-1', name: 'updates.example.com', status: 'verified' }] });
+      if (url.endsWith('/emails')) {
+        observedIdempotencyKey = new Headers(init?.headers).get('Idempotency-Key') ?? undefined;
+        return Response.json({ id: 'email-123' });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as typeof fetch;
+    try {
+      await resendAction(repoRoot, 'configure', { enabled: true, provider: 'resend-api', sending_domain: 'updates.example.com', from_email: 'forge@updates.example.com' });
+      const provisioned = await resendAction(repoRoot, 'provision_smtp_credential', { name: 'Forge SMTP' });
+      expect(provisioned.stored).toBe(true);
+      expect(JSON.stringify(provisioned)).not.toContain('re_smtp_secret');
+      expect([...store.values.values()].some((value) => value.includes('re_smtp_secret'))).toBe(true);
+      const smtp = await resendAction(repoRoot, 'smtp_status');
+      expect(smtp.ready).toBe(true);
+      const sent = await resendAction(repoRoot, 'send_email', { to: ['receiver@example.com'], subject: 'Daily report', text: 'Status OK' }, 'daily-report-2026-08-09');
+      expect(sent.status).toBe('sent');
+      expect(observedIdempotencyKey).toBe('forge-resend-daily-report-2026-08-09');
+    } finally {
+      globalThis.fetch = originalFetch;
+      resetResendOAuthRuntimeForTest();
+      if (originalKey === undefined) delete process.env.FORGE_RESEND_API_KEY; else process.env.FORGE_RESEND_API_KEY = originalKey;
     }
   });
 
