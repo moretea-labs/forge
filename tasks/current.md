@@ -1,17 +1,25 @@
 # Current Status Snapshot
 
-<!-- updated_at: 2026-08-07 -->
+<!-- updated_at: 2026-08-09 -->
 <!-- stale_after: 24h -->
 
-> **Status**: Unified `forge-runtime` is the single lifecycle owner on immutable release `1786101625826-668ffbe7...` through the launchd service `com.moretea.forge.runtime.41dd111b15e2`; standalone Recovery Gateway/Watchdog/Tunnel run the post-fix `main` release (`169e4119`), and the ChatGPT Repo Harness MCP surface executes repository commands again (no `PROCESS_LEASE_CONFLICT`).
-> **Updated At**: 2026-08-07
-> **Source**: Runtime status projection (`runtime/status.json`), whole-release authority (`runtime/releases/authority.json`), Recovery connector verification, authenticated MCP `controller_ready` calls, and local/public HTTP probes.
+> **Status**: Runtime stability source fixes are complete on `codex/runtime-stability-readiness`: compiled Scheduler Workers resolve real Bun, per-Job reconciliation failures are isolated without swallowing Runtime-wide writer fencing, canonical MCP readiness uses the Runtime-injected source authority, and Runtime core failures emit structured stderr. No rollout or Runtime restart was performed; the currently exposed Repo Harness connector still times out at 60 seconds and its cached `rh_work` schema omits source-defined `controller_claim` / `launcher_start` operations.
+> **Updated At**: 2026-08-09
+> **Source**: Source review, focused Runtime/MCP tests, authenticated `repo-harness6` session evidence, repeated 60-second Controller RPC timeouts, and connector/source schema comparison.
 > **Target**: Keep one canonical Forge Runtime release aligned with `main`, one Recovery service family, and the renamed `/Users/greyson/DevProjects/forge` paths.
 > **Stale After**: 24h
 
 This snapshot is a read model, not an execution gate.
 
 ## Current Focus
+
+- ✅ `ce6834e5b` fixes compiled `forge-runtime` Worker launch recursion by resolving the real Bun executable and preserves structured Runtime core-failure stderr.
+- ✅ Canonical `controller_ready` now compares the startup source snapshot with `ctx.runtimeSourceRoot`, eliminating false `RUNTIME_SOURCE_SNAPSHOT_STALE` diagnostics caused by the Gateway process cwd.
+- ✅ Startup and periodic ExecutionJob reconciliation isolate a malformed historical Job, continue healthy Job cleanup, remove timed-out Jobs from the active index, and release their Leases; `WRITER_FENCED` still fails the complete Runtime.
+- ⚠️ Live `controller_context`, `work_prepare`, `controller_capabilities`, and `workflow_watchdog_report` calls timed out or failed at the Controller transport. Source fixes are verified but intentionally not activated under this slice's no-rollout/no-restart constraint.
+- ⚠️ Source `rh_work` supports `controller_claim` and `launcher_start`; the current ChatGPT connector snapshot exposes `rh_work` but its operation enum stops at `delegate`. `quick_agent_session` remains a compatibility tool with an intentional retirement response.
+
+### Prior deployed baseline (2026-08-07)
 
 - ✅ Unified `forge-runtime` is `ready: true` on port 8765 under one launchd service owner; the legacy Supervisor/daemon/slots architecture is deleted in source and not running.
 - ✅ `controller_ready` (read-only Repo Harness tool) succeeds locally and through the public tunnel; `/ready` returns HTTP 200 locally and publicly.
@@ -23,6 +31,11 @@ This snapshot is a read model, not an execution gate.
 
 ## Validation Completed
 
+- `bun test tests/runtime/process-environment.test.ts`: 5/5 passed.
+- `bun test tests/runtime/canonical-single-runtime.test.ts`: 16/16 passed (previously 15/16).
+- `bun test tests/runtime/execution-job-reconciliation.test.ts`: 3/3 passed.
+- `bun test tests/runtime/runtime-source-isolation.test.ts`: 11/11 passed.
+- `bun test tests/cli/mcp-controller.test.ts`: 36/36 passed.
 - `bun scripts/verify-forge-runtime.sh` (6 selected runtime suites + typecheck): 0 failures.
 - Focused runtime/CLI suites (runtime command surface, canonical single Runtime, MCP setup hint, release store, service contract, lifecycle authority): 33/33 passed.
 - `bun run check:task` gate passed; `bun scripts/check-runtime-architecture.mjs` passed (44 required modules/documents).
@@ -31,7 +44,8 @@ This snapshot is a read model, not an execution gate.
 
 ## Remaining Before Delivery
 
-- Activate the final releases built from the merged `main` HEAD and re-run the required checks.
+- Activation of the final immutable release remains with the external Runtime lifecycle owner; this stability slice explicitly performed no rollout or Runtime restart.
+- Refresh/reconnect the external ChatGPT connector after activation so its cached `rh_work` schema includes `controller_claim` and `launcher_start`, then re-run live `controller_ready`, capabilities, and watchdog probes.
 - Keep the compatibility symlink `repo-harness-controller-runtime -> forge` until Runtime, registry, Recovery, and tunnel all use the renamed path and reboot recovery is verified.
 - Preserve `scripts/TM17Runner.app/` and `scripts/tm17-ui-step.command` (untracked, must not be committed).
 
