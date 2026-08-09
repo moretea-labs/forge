@@ -23,6 +23,7 @@ export interface StagedRuntimeRelease {
   desktopHelperArtifactIdentity?: string;
   processRunnerArtifactIdentity?: string;
   checkRunnerArtifactIdentity?: string;
+  externalPluginProbeArtifactIdentity?: string;
   manifestSha256: string;
   sourceCommit: string;
 }
@@ -157,6 +158,16 @@ export function stageRuntimeRelease(input: {
     chmodSync(checkRunnerPath, 0o700);
     const checkRunnerArtifactIdentity = `sha256:${sha256(checkRunnerPath)}`;
 
+    const externalPluginProbeEntrypoint = 'external-unix-socket-probe.cjs' as const;
+    const sourceExternalPluginProbePath = join(sourceRoot, 'src', 'runtime', 'plugins', externalPluginProbeEntrypoint);
+    if (!existsSync(sourceExternalPluginProbePath)) {
+      throw new Error(`RUNTIME_RELEASE_EXTERNAL_PLUGIN_PROBE_SOURCE_MISSING: ${sourceExternalPluginProbePath}`);
+    }
+    const externalPluginProbePath = join(staging, externalPluginProbeEntrypoint);
+    copyFileSync(sourceExternalPluginProbePath, externalPluginProbePath);
+    chmodSync(externalPluginProbePath, 0o700);
+    const externalPluginProbeArtifactIdentity = `sha256:${sha256(externalPluginProbePath)}`;
+
     const desktopHelperEntrypoint = 'forge-desktop-helper.mjs' as const;
     const sourceDesktopHelperPath = join(sourceRoot, 'bin', desktopHelperEntrypoint);
     if (!existsSync(sourceDesktopHelperPath)) {
@@ -181,6 +192,8 @@ export function stageRuntimeRelease(input: {
       processRunnerArtifactIdentity,
       checkRunnerEntrypoint,
       checkRunnerArtifactIdentity,
+      externalPluginProbeEntrypoint,
+      externalPluginProbeArtifactIdentity,
       arguments: [],
       configurationSchemaVersion: 1,
       controllerHome: resolve(input.controllerHome),
@@ -207,6 +220,7 @@ export function stageRuntimeRelease(input: {
       desktopHelperArtifactIdentity,
       processRunnerArtifactIdentity,
       checkRunnerArtifactIdentity,
+      externalPluginProbeArtifactIdentity,
       manifestSha256: createHash('sha256').update(`${JSON.stringify(manifest, null, 2)}\n`).digest('hex'),
       sourceCommit,
     };
@@ -237,5 +251,8 @@ export function assertRuntimeReleaseFiles(release: StagedRuntimeRelease): void {
   }
   if (release.checkRunnerArtifactIdentity && !existsSync(join(release.releasePath, 'forge-check-runner'))) {
     throw new Error(`RUNTIME_RELEASE_CHECK_RUNNER_MISSING: ${join(release.releasePath, 'forge-check-runner')}`);
+  }
+  if (release.externalPluginProbeArtifactIdentity && !existsSync(join(release.releasePath, 'external-unix-socket-probe.cjs'))) {
+    throw new Error(`RUNTIME_RELEASE_EXTERNAL_PLUGIN_PROBE_MISSING: ${join(release.releasePath, 'external-unix-socket-probe.cjs')}`);
   }
 }

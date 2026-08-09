@@ -18,6 +18,7 @@ function sourceFixture() {
   mkdirSync(join(root, 'bin'), { recursive: true });
   writeFileSync(join(root, 'README.md'), 'fixture\n');
   writeFileSync(join(root, 'src/runtime/plugins/browser-node-bridge-host.ts'), 'console.log("host");\n');
+  writeFileSync(join(root, 'src/runtime/plugins/external-unix-socket-probe.cjs'), 'console.log("probe");\n');
   writeFileSync(join(root, 'bin/forge-desktop-helper.mjs'), '#!/usr/bin/env node\nconsole.log("desktop-helper");\n');
   spawnSync('git', ['init', '-b', 'main'], { cwd: root, stdio: 'ignore' });
   spawnSync('git', ['config', 'user.email', 'forge-test@example.invalid'], { cwd: root, stdio: 'ignore' });
@@ -58,6 +59,10 @@ describe('runtime release materialization', () => {
     expect(existsSync(hostPath)).toBe(true);
     expect(readFileSync(hostPath, 'utf8')).toBe('node-host-bundle');
     expect(staged.browserNodeBridgeArtifactIdentity).toMatch(/^sha256:/);
+    const externalPluginProbePath = join(staged.releasePath, 'external-unix-socket-probe.cjs');
+    expect(existsSync(externalPluginProbePath)).toBe(true);
+    expect(readFileSync(externalPluginProbePath, 'utf8')).toContain('probe');
+    expect(staged.externalPluginProbeArtifactIdentity).toMatch(/^sha256:/);
     const desktopHelperPath = join(staged.releasePath, 'forge-desktop-helper.mjs');
     expect(existsSync(desktopHelperPath)).toBe(true);
     expect(readFileSync(desktopHelperPath, 'utf8')).toContain('desktop-helper');
@@ -79,6 +84,8 @@ describe('runtime release materialization', () => {
     expect(manifest.processRunnerArtifactIdentity).toBe(staged.processRunnerArtifactIdentity);
     expect(manifest.checkRunnerEntrypoint).toBe('forge-check-runner');
     expect(manifest.checkRunnerArtifactIdentity).toBe(staged.checkRunnerArtifactIdentity);
+    expect(manifest.externalPluginProbeEntrypoint).toBe('external-unix-socket-probe.cjs');
+    expect(manifest.externalPluginProbeArtifactIdentity).toBe(staged.externalPluginProbeArtifactIdentity);
     assertRuntimeReleaseFiles(staged);
   });
 
