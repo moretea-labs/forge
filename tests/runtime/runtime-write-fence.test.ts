@@ -88,6 +88,24 @@ describe('Canonical Runtime write fence', () => {
     fx.owner.release();
   });
 
+  test('allows an isolated authority-free Controller Home under a claim for another canonical home', () => {
+    const fx = fixture();
+    bindRuntimeWriteClaim({ controllerHome: fx.home, owner: fx.owner.record, authority: fx.authority });
+    const isolated = ensureControllerHome(mkdtempSync(join(tmpdir(), 'runtime-write-isolated-')));
+    roots.push(isolated);
+    expect(assertRuntimeMayWrite('renew_lease', isolated)).toMatchObject({
+      allowed: true,
+      reason: 'isolated_controller_home_without_runtime_authority',
+    });
+    const isolatedOwner = acquireRuntimeOwnership(isolated, 'runtime-isolated');
+    expect(assertRuntimeMayWrite('renew_lease', isolated)).toMatchObject({
+      allowed: false,
+      reason: 'controller_home_mismatch',
+    });
+    isolatedOwner.release();
+    fx.owner.release();
+  });
+
   test('unmanaged tests remain writable only while no Runtime authority exists', () => {
     const home = ensureControllerHome(mkdtempSync(join(tmpdir(), 'runtime-write-unmanaged-')));
     roots.push(home);

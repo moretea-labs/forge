@@ -146,7 +146,7 @@ function sanitizeTerminalProcessArtifacts(record: ManagedProcessRecord): Managed
     }
   }
   if (filesChanged === 0 && !descriptorRemoved && record.outputRedaction) return record;
-  return updateProcessRecord(record.controllerHome, record.repoId, record.processId, {
+  const updated = updateProcessRecord(record.controllerHome, record.repoId, record.processId, {
     outputRedaction: {
       schemaVersion: 1,
       sanitizedAt: nowIso(),
@@ -155,7 +155,12 @@ function sanitizeTerminalProcessArtifacts(record: ManagedProcessRecord): Managed
       redactionCount,
       descriptorRemoved: descriptorRemoved || record.outputRedaction?.descriptorRemoved === true,
     },
-  }, { allowTerminal: true }) ?? record;
+  }, { allowTerminal: true });
+  // A non-authoritative Controller can still have a trustworthy local terminal
+  // outcome from its live Runner waiter while the durable record remains
+  // writer-fenced in `running`. Persist redaction metadata best-effort, but never
+  // let that metadata update replace the terminal projection we are returning.
+  return updated ? { ...record, outputRedaction: updated.outputRedaction } : record;
 }
 
 function canonicalizeCommandCwd(cwd: string | undefined): string | null {
@@ -914,6 +919,17 @@ function recordToHandle(
   const completed = isTerminalProcessStatus(hintedStatus) || record.terminalWritten === true;
   const coherentRecord = hintedStatus === record.status ? record : { ...record, status: hintedStatus };
   const safeRecord = completed ? sanitizeTerminalProcessArtifacts(coherentRecord) : coherentRecord;
+  // Short-lived runner output can be fully buffered by the streaming redactor,
+  // leaving the Controller-side pipe tail empty even though the authoritative
+  // bounded log file was persisted before the exit receipt. A terminal handle
+  // must therefore fall back to the durable log, including after Controller
+  // recreation, instead of projecting an empty string as final output.
+  const persistedStdout = completed && !(extras?.stdout || safeRecord.stdoutTail) && safeRecord.stdoutPath
+    ? readFileTailBytes(safeRecord.stdoutPath, PROCESS_LOG_TAIL_BYTES).text
+    : undefined;
+  const persistedStderr = completed && !(extras?.stderr || safeRecord.stderrTail) && safeRecord.stderrPath
+    ? readFileTailBytes(safeRecord.stderrPath, PROCESS_LOG_TAIL_BYTES).text
+    : undefined;
   return {
     processId: safeRecord.processId,
     workId: safeRecord.workId,
@@ -933,8 +949,12 @@ function recordToHandle(
     exitCode: safeRecord.exitCode,
     timedOut: safeRecord.timedOut,
     cancelled: safeRecord.cancelled,
-    stdout: extras?.stdout !== undefined ? safeProcessText(extras.stdout) : completed ? safeProcessText(safeRecord.stdoutTail ?? '') : undefined,
-    stderr: extras?.stderr !== undefined ? safeProcessText(extras.stderr) : completed ? safeProcessText(safeRecord.stderrTail ?? '') : undefined,
+    stdout: extras?.stdout
+      ? safeProcessText(extras.stdout)
+      : completed ? safeProcessText(safeRecord.stdoutTail || persistedStdout || '') : undefined,
+    stderr: extras?.stderr
+      ? safeProcessText(extras.stderr)
+      : completed ? safeProcessText(safeRecord.stderrTail || persistedStderr || '') : undefined,
     stdoutTail: safeRecord.stdoutTail ? safeProcessText(safeRecord.stdoutTail) : undefined,
     stderrTail: safeRecord.stderrTail ? safeProcessText(safeRecord.stderrTail) : undefined,
     durableSideEffects: {

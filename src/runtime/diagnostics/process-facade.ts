@@ -109,7 +109,7 @@ function readDiagnosticOutput(
   handle: ProcessHandle,
 ): { output: string; bytes: number } {
   const persisted = readProcessLogs(controllerHome, repoId, handle.processId, DEFAULT_DIAGNOSTIC_MAX_OUTPUT_BYTES);
-  const output = handle.stdout ?? handle.stdoutTail ?? persisted?.stdout ?? '';
+  const output = handle.stdout || handle.stdoutTail || persisted?.stdout || '';
   return {
     output,
     bytes: persisted?.stdoutBytes ?? Buffer.byteLength(output, 'utf8'),

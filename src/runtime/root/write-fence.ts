@@ -234,13 +234,26 @@ export function assertRuntimeMayWrite(
   controllerHomeOverride?: string,
 ): RuntimeWriteFenceCheck {
   let claim = processClaim;
+  const explicitHome = controllerHomeOverride
+    ? resolveControllerHome(controllerHomeOverride)
+    : undefined;
+  // An explicitly selected Controller Home with no Runtime owner and no release
+  // authority is isolated by definition: there is no canonical writer to fence.
+  // Check this before parsing inherited claim environment, because long-lived
+  // parent processes can legitimately pass a stale claim for a different home
+  // into short-lived test/sandbox children.
+  if (!claim && explicitHome) {
+    const explicitOwner = readRuntimeOwner(explicitHome);
+    const explicitAuthority = readRuntimeReleaseAuthority(explicitHome);
+    if (!explicitOwner && !explicitAuthority) {
+      return { allowed: true, reason: 'unbound_no_runtime_authority' };
+    }
+  }
   if (!claim) {
     try { claim = bindInheritedRuntimeWriteClaimFromEnvironment(); }
     catch { return { allowed: false, reason: 'inherited_runtime_write_claim_invalid' }; }
   }
-  const home = controllerHomeOverride
-    ? resolveControllerHome(controllerHomeOverride)
-    : claim?.controllerHome;
+  const home = explicitHome ?? claim?.controllerHome;
   if (!home) return { allowed: true, reason: 'unbound_no_controller_home' };
   const owner = readRuntimeOwner(home);
   const authority = readRuntimeReleaseAuthority(home);
@@ -249,6 +262,12 @@ export function assertRuntimeMayWrite(
     return { allowed: false, reason: 'runtime_write_claim_unbound_while_authority_present', owner, authority };
   }
   if (resolve(claim.controllerHome) !== resolve(home)) {
+    // A canonical Runtime child may intentionally create/use an isolated
+    // Controller Home for tests or bounded local tooling. If that target has no
+    // owner and no release authority, there is no competing writer to fence.
+    // The moment an authority exists there, exact Controller Home identity is
+    // required again and the inherited claim remains fenced.
+    if (!owner && !authority) return { allowed: true, reason: 'isolated_controller_home_without_runtime_authority' };
     return { allowed: false, reason: 'controller_home_mismatch', owner, authority };
   }
   if (claim.unmanaged) {
