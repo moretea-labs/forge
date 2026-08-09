@@ -121,6 +121,7 @@ describe('Resend first-party plugin', () => {
     expect(createFirstPartyPluginAdapterMap().has('resend')).toBe(true);
     expect(manifest.enabled).toBe(false);
     expect(manifest.authority.sourceOfTruth).toContain('env:FORGE_RESEND_API_KEY|RESEND_API_KEY');
+    expect(manifest.actions.find((candidate) => candidate.actionId === 'create_domain')?.confirmation).toBe('authorization');
     const send = manifest.actions.find((candidate) => candidate.actionId === 'send_email');
     expect(send?.confirmation).toBe('strong_confirmation');
     expect(send?.requiredConfirmationText).toBe('send-resend-email');
@@ -146,6 +147,31 @@ describe('Resend first-party plugin', () => {
     expect(smtp.domainStatus).toBe('verified');
     expect((smtp.smtp as Record<string, unknown>).host).toBe('smtp.resend.com');
     expect((smtp.smtp as Record<string, unknown>).username).toBe('resend');
+  });
+
+  test('adds the mandatory User-Agent to direct Resend API requests', async () => {
+    const repoRoot = resendFixture();
+    const originalFetch = globalThis.fetch;
+    const originalKey = process.env.FORGE_RESEND_API_KEY;
+    let observedUserAgent: string | undefined;
+    process.env.FORGE_RESEND_API_KEY = 're_test_key';
+    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      observedUserAgent = headers.get('User-Agent') ?? undefined;
+      return new Response(JSON.stringify({ object: 'list', has_more: false, data: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch;
+    try {
+      await resendAction(repoRoot, 'configure', { enabled: true, provider: 'resend-api' });
+      await resendAction(repoRoot, 'list_domains');
+      expect(observedUserAgent).toBe('Forge-Resend-Plugin/1.0.0');
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalKey === undefined) delete process.env.FORGE_RESEND_API_KEY;
+      else process.env.FORGE_RESEND_API_KEY = originalKey;
+    }
   });
 
   test('returns a sent receipt and lets callers verify the provider event', async () => {

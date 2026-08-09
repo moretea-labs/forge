@@ -13,6 +13,7 @@ import { AssistantPluginError, toAssistantPluginError } from './errors';
 const RESEND_PLUGIN_ID = 'resend';
 const CONFIG_ROOT = '.forge/plugins';
 const API_BASE_URL = 'https://api.resend.com';
+const RESEND_USER_AGENT = 'Forge-Resend-Plugin/1.0.0';
 const DEFAULT_TIMEOUT_MS = 30_000;
 const SMTP_HOST = 'smtp.resend.com';
 const SMTP_PORTS = [465, 587] as const;
@@ -187,7 +188,7 @@ function capabilities(): AssistantPluginCapability[] {
       title: 'Resend Domain Verification',
       description: 'Trigger verification for one exact domain after explicit authorization.',
       scopes: ['resend.domain.write'],
-      actions: ['verify_domain'],
+      actions: ['create_domain', 'verify_domain'],
     },
     {
       capabilityId: 'resend-delivery',
@@ -247,6 +248,19 @@ function actions(): AssistantPluginActionDescriptor[] {
       argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
     },
     {
+      actionId: 'create_domain', title: 'Create Resend domain', description: 'Create one exact sending-only Resend domain and return its required DNS records.',
+      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 45_000,
+      cancellable: true, idempotent: false, scopes: ['resend.domain.write'], resourceClaims: [{ resource: 'remote', mode: 'exclusive' }],
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          region: { type: 'string', enum: ['us-east-1', 'eu-west-1', 'sa-east-1', 'ap-northeast-1'] },
+        },
+        required: ['name'], additionalProperties: false,
+      },
+    },
+    {
       actionId: 'verify_domain', title: 'Verify Resend domain', description: 'Trigger asynchronous verification for one exact Resend domain.',
       readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 45_000,
       cancellable: true, idempotent: false, scopes: ['resend.domain.write'], resourceClaims: [{ resource: 'remote', mode: 'exclusive' }],
@@ -287,6 +301,7 @@ async function resendRequest(
   init: { method?: string; body?: Record<string, unknown> } = {},
 ): Promise<Record<string, unknown>> {
   if (config.provider === 'mock') {
+    if (path === '/domains' && init.method === 'POST') return { object: 'domain', id: 'domain_mock_created', name: init.body?.name, status: 'not_started', records: [] };
     if (path === '/domains') return { object: 'list', has_more: false, data: config.sendingDomain ? [{ id: 'domain_mock', name: config.sendingDomain, status: 'verified' }] : [] };
     if (path.startsWith('/domains/domain_mock')) return { object: 'domain', id: 'domain_mock', name: config.sendingDomain, status: 'verified', records: [] };
     if (path === '/emails' && init.method === 'POST') return { id: 'email_mock' };
@@ -303,6 +318,7 @@ async function resendRequest(
       method: init.method ?? 'GET',
       headers: {
         Authorization: `Bearer ${credential.value}`,
+        'User-Agent': RESEND_USER_AGENT,
         ...(init.body ? { 'Content-Type': 'application/json' } : {}),
       },
       ...(init.body ? { body: JSON.stringify(init.body) } : {}),
@@ -375,6 +391,18 @@ export async function executeResendPluginAction(input: AssistantPluginActionExec
       return resendRequest(current, '/domains');
     case 'get_domain':
       return resendRequest(current, `/domains/${encodeURIComponent(requiredString(input.args.domain_id, 'domain_id'))}`);
+    case 'create_domain': {
+      const name = requiredString(input.args.name, 'name').toLowerCase();
+      const region = stringValue(input.args.region);
+      return resendRequest(current, '/domains', {
+        method: 'POST',
+        body: {
+          name,
+          ...(region ? { region } : {}),
+          capabilities: { sending: 'enabled', receiving: 'disabled' },
+        },
+      });
+    }
     case 'verify_domain':
       return resendRequest(current, `/domains/${encodeURIComponent(requiredString(input.args.domain_id, 'domain_id'))}/verify`, { method: 'POST' });
     case 'smtp_status': {
