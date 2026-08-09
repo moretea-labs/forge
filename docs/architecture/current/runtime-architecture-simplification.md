@@ -30,7 +30,8 @@ forge-runtime
   ├─ Controller Services           in process
   ├─ Scheduler                     in process
   ├─ SQLite                        in process / library boundary
-  └─ Worker processes              bounded child execution units
+  ├─ Worker processes              bounded child execution units
+  └─ Helper processes              bounded, request-owned execution units
 ```
 
 External tunnels are optional transports. They may connect to the Runtime endpoint, but they cannot start, stop, restart, adopt, publish, roll back, or determine readiness for the Runtime.
@@ -103,6 +104,7 @@ A Runtime release is one immutable compatibility set:
 ```text
 entrypoint
 core code and assets
+bounded helper runtimes and libraries (Process/Check, Browser/Desktop, external-plugin probe, CodeGraph Node/library/sidecar)
 Runtime configuration schema
 release manifest
 SQLite schema compatibility (distributed metadata only; never database contents)
@@ -125,6 +127,8 @@ Activation is a whole-Runtime restart:
 8. start the previous Runtime and require whole-Runtime readiness.
 
 No operation may independently publish, restart, or roll back Gateway, Controller, Scheduler, MCP Transport, SQLite schema, or Worker protocol.
+
+Bounded helper processes remain part of this one compatibility set. They do not become services or lifecycle owners: the Runtime launches them for one request, applies deadlines and cancellation, and collects typed evidence. In particular, CodeGraph reads only an existing checkout-local `.codegraph/` index; failure degrades the requesting structural-context contract and never establishes a separate readiness or recovery state machine.
 
 ## 6. Worker boundary and fencing
 

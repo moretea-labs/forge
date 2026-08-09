@@ -57,6 +57,35 @@ export function loadRuntimeReleaseManifest(
   } else if (value.diagnosticArtifactIdentity !== undefined) {
     throw new Error('RELEASE_MANIFEST_INVALID: diagnosticArtifactIdentity requires diagnosticEntrypoint');
   }
+  const codeGraphFields = [
+    value.codeGraphNodeEntrypoint,
+    value.codeGraphNodeArtifactIdentity,
+    value.codeGraphSidecarEntrypoint,
+    value.codeGraphSidecarArtifactIdentity,
+    value.codeGraphLibraryRoot,
+    value.codeGraphLibraryArtifactIdentity,
+  ];
+  const hasCodeGraphRuntime = codeGraphFields.some((entry) => entry !== undefined);
+  let codeGraphRuntime: Pick<RuntimeReleaseManifest,
+    'codeGraphNodeEntrypoint' | 'codeGraphNodeArtifactIdentity'
+    | 'codeGraphSidecarEntrypoint' | 'codeGraphSidecarArtifactIdentity'
+    | 'codeGraphLibraryRoot' | 'codeGraphLibraryArtifactIdentity'> | undefined;
+  if (hasCodeGraphRuntime) {
+    const nodeEntrypoint = requireString(value.codeGraphNodeEntrypoint, 'codeGraphNodeEntrypoint');
+    const sidecarEntrypoint = requireString(value.codeGraphSidecarEntrypoint, 'codeGraphSidecarEntrypoint');
+    const libraryRoot = requireString(value.codeGraphLibraryRoot, 'codeGraphLibraryRoot');
+    if (nodeEntrypoint !== 'codegraph-node' || sidecarEntrypoint !== 'codegraph-sidecar.cjs' || libraryRoot !== 'codegraph-lib') {
+      throw new Error('RELEASE_MANIFEST_INVALID: CodeGraph release paths must use the canonical co-located names');
+    }
+    codeGraphRuntime = {
+      codeGraphNodeEntrypoint: 'codegraph-node',
+      codeGraphNodeArtifactIdentity: requireString(value.codeGraphNodeArtifactIdentity, 'codeGraphNodeArtifactIdentity'),
+      codeGraphSidecarEntrypoint: 'codegraph-sidecar.cjs',
+      codeGraphSidecarArtifactIdentity: requireString(value.codeGraphSidecarArtifactIdentity, 'codeGraphSidecarArtifactIdentity'),
+      codeGraphLibraryRoot: 'codegraph-lib',
+      codeGraphLibraryArtifactIdentity: requireString(value.codeGraphLibraryArtifactIdentity, 'codeGraphLibraryArtifactIdentity'),
+    };
+  }
 
   const argumentsValue = value.arguments;
   if (!Array.isArray(argumentsValue) || argumentsValue.some((item) => typeof item !== 'string')) {
@@ -75,6 +104,7 @@ export function loadRuntimeReleaseManifest(
     artifactIdentity: requireString(value.artifactIdentity, 'artifactIdentity'),
     entrypoint: 'forge-runtime',
     ...(diagnosticEntrypoint ? { diagnosticEntrypoint, diagnosticArtifactIdentity } : {}),
+    ...(codeGraphRuntime ?? {}),
     arguments: argumentsValue as string[],
     configurationSchemaVersion: 1,
     controllerHome,

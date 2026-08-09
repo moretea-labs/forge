@@ -37,6 +37,12 @@ export interface RuntimeReleaseManifest {
   diagnosticArtifactIdentity?: string;
   browserNodeBridgeEntrypoint?: 'browser-node-bridge-host.js';
   browserNodeBridgeArtifactIdentity?: string;
+  codeGraphNodeEntrypoint?: 'codegraph-node';
+  codeGraphNodeArtifactIdentity?: string;
+  codeGraphSidecarEntrypoint?: 'codegraph-sidecar.cjs';
+  codeGraphSidecarArtifactIdentity?: string;
+  codeGraphLibraryRoot?: 'codegraph-lib';
+  codeGraphLibraryArtifactIdentity?: string;
   arguments: string[];
   configurationSchemaVersion: 1;
   controllerHome: string;

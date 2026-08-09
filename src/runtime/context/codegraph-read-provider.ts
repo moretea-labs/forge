@@ -121,9 +121,28 @@ function boundedInteger(value: number | undefined, fallback: number, min: number
   return Math.min(Math.max(Math.trunc(value), min), max);
 }
 
-export function resolveCodeGraphBundledRuntime(): { nodeExecutable: string; sidecarPath: string; platformPackage: string } {
+export function resolveCodeGraphBundledRuntime(options: { runtimeRoot?: string } = {}): {
+  nodeExecutable: string;
+  sidecarPath: string;
+  libraryPath: string;
+  platformPackage: string;
+  source: 'release' | 'dependency';
+} {
   const target = `${process.platform}-${process.arch}`;
   const platformPackage = `@colbymchenry/codegraph-${target}`;
+  const runtimeRoot = options.runtimeRoot ?? dirname(process.execPath);
+  const releaseNode = join(runtimeRoot, 'codegraph-node');
+  const releaseSidecar = join(runtimeRoot, 'codegraph-sidecar.cjs');
+  const releaseLibrary = join(runtimeRoot, 'codegraph-lib', 'dist', 'index.js');
+  if (isExecutable(releaseNode) && existsSync(releaseSidecar) && existsSync(releaseLibrary)) {
+    return {
+      nodeExecutable: releaseNode,
+      sidecarPath: releaseSidecar,
+      libraryPath: releaseLibrary,
+      platformPackage,
+      source: 'release',
+    };
+  }
   let packageJson: string;
   try {
     packageJson = require.resolve(`${platformPackage}/package.json`);
@@ -138,12 +157,16 @@ export function resolveCodeGraphBundledRuntime(): { nodeExecutable: string; side
   if (!existsSync(sidecarPath)) {
     throw new Error('CODEGRAPH_SIDECAR_MISSING: packaged read-only sidecar could not be resolved');
   }
-  return { nodeExecutable, sidecarPath, platformPackage };
+  const libraryPath = join(dirname(packageJson), 'lib', 'dist', 'index.js');
+  if (!existsSync(libraryPath)) {
+    throw new Error(`CODEGRAPH_LIBRARY_UNAVAILABLE: compiled library is missing for ${platformPackage}`);
+  }
+  return { nodeExecutable, sidecarPath, libraryPath, platformPackage, source: 'dependency' };
 }
 
-function minimalEnvironment(nodeExecutable: string): NodeJS.ProcessEnv {
+function minimalEnvironment(runtime: ReturnType<typeof resolveCodeGraphBundledRuntime>): NodeJS.ProcessEnv {
   return Object.fromEntries(Object.entries({
-    PATH: dirname(nodeExecutable),
+    PATH: dirname(runtime.nodeExecutable),
     HOME: process.env.HOME,
     TMPDIR: process.env.TMPDIR,
     TEMP: process.env.TEMP,
@@ -153,6 +176,7 @@ function minimalEnvironment(nodeExecutable: string): NodeJS.ProcessEnv {
     CODEGRAPH_TELEMETRY: '0',
     DO_NOT_TRACK: '1',
     CODEGRAPH_NO_DAEMON: '1',
+    FORGE_CODEGRAPH_LIBRARY_PATH: runtime.libraryPath,
   }).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
 }
 
@@ -229,7 +253,7 @@ export function queryCodeGraphReadProvider(
     cwd: resolve(repoRoot),
     input,
     encoding: 'utf8',
-    env: minimalEnvironment(runtime.nodeExecutable),
+    env: minimalEnvironment(runtime),
     timeout: boundedInteger(options.timeoutMs, DEFAULT_TIMEOUT_MS, 1_000, 60_000),
     maxBuffer: MAX_RESPONSE_BYTES,
     windowsHide: true,

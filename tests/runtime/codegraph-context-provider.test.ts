@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'child_process';
-import { mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync } from 'fs';
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { buildControllerContextPack } from '../../src/cli/controller/context-pack';
@@ -58,6 +58,24 @@ describe('CodeGraph read provider', () => {
     expect(runtime.platformPackage).toBe(`@colbymchenry/codegraph-${process.platform}-${process.arch}`);
     expect(runtime.nodeExecutable).toContain('@colbymchenry/codegraph-');
     expect(runtime.sidecarPath).toEndWith('codegraph-sidecar.cjs');
+    expect(runtime.libraryPath).toContain('@colbymchenry/codegraph-');
+    expect(runtime.source).toBe('dependency');
+  });
+
+  test('prefers one complete co-located immutable-release CodeGraph runtime', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-codegraph-release-'));
+    roots.push(root);
+    writeFileSync(join(root, 'codegraph-node'), 'node');
+    chmodSync(join(root, 'codegraph-node'), 0o700);
+    writeFileSync(join(root, 'codegraph-sidecar.cjs'), 'sidecar');
+    mkdirSync(join(root, 'codegraph-lib', 'dist'), { recursive: true });
+    writeFileSync(join(root, 'codegraph-lib', 'dist', 'index.js'), 'library');
+    expect(resolveCodeGraphBundledRuntime({ runtimeRoot: root })).toMatchObject({
+      nodeExecutable: join(root, 'codegraph-node'),
+      sidecarPath: join(root, 'codegraph-sidecar.cjs'),
+      libraryPath: join(root, 'codegraph-lib', 'dist', 'index.js'),
+      source: 'release',
+    });
   });
 
   test('fails closed before spawning for operations outside the read-only protocol', () => {

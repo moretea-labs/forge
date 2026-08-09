@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { assertRuntimeReleaseFiles, stageRuntimeRelease } from '../../src/runtime/root/release-materialize';
+import { loadRuntimeReleaseManifest } from '../../src/runtime/root/release-manifest';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -26,6 +27,18 @@ function sourceFixture() {
   spawnSync('git', ['add', '.'], { cwd: root, stdio: 'ignore' });
   spawnSync('git', ['commit', '-m', 'fixture'], { cwd: root, stdio: 'ignore' });
   return { root, controllerHome };
+}
+
+function materializeFakeCodeGraphRuntime(input: {
+  nodeOutputPath: string;
+  sidecarOutputPath: string;
+  libraryOutputPath: string;
+}) {
+  writeFileSync(input.nodeOutputPath, 'codegraph-node');
+  writeFileSync(input.sidecarOutputPath, 'codegraph-sidecar');
+  mkdirSync(join(input.libraryOutputPath, 'dist'), { recursive: true });
+  writeFileSync(join(input.libraryOutputPath, 'dist', 'index.js'), 'module.exports = {}');
+  return { ok: true };
 }
 
 describe('runtime release materialization', () => {
@@ -53,6 +66,7 @@ describe('runtime release materialization', () => {
         writeFileSync(outputPath, 'process-runner-bundle');
         return { ok: true };
       },
+      materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
     });
 
     const hostPath = join(staged.releasePath, 'browser-node-bridge-host.js');
@@ -86,7 +100,47 @@ describe('runtime release materialization', () => {
     expect(manifest.checkRunnerArtifactIdentity).toBe(staged.checkRunnerArtifactIdentity);
     expect(manifest.externalPluginProbeEntrypoint).toBe('external-unix-socket-probe.cjs');
     expect(manifest.externalPluginProbeArtifactIdentity).toBe(staged.externalPluginProbeArtifactIdentity);
+    expect(existsSync(join(staged.releasePath, 'codegraph-node'))).toBe(true);
+    expect(existsSync(join(staged.releasePath, 'codegraph-sidecar.cjs'))).toBe(true);
+    expect(existsSync(join(staged.releasePath, 'codegraph-lib', 'dist', 'index.js'))).toBe(true);
+    expect(staged.codeGraphNodeArtifactIdentity).toMatch(/^sha256:/);
+    expect(staged.codeGraphSidecarArtifactIdentity).toMatch(/^sha256:/);
+    expect(staged.codeGraphLibraryArtifactIdentity).toMatch(/^sha256:/);
+    expect(manifest.codeGraphNodeEntrypoint).toBe('codegraph-node');
+    expect(manifest.codeGraphNodeArtifactIdentity).toBe(staged.codeGraphNodeArtifactIdentity);
+    expect(manifest.codeGraphSidecarEntrypoint).toBe('codegraph-sidecar.cjs');
+    expect(manifest.codeGraphSidecarArtifactIdentity).toBe(staged.codeGraphSidecarArtifactIdentity);
+    expect(manifest.codeGraphLibraryRoot).toBe('codegraph-lib');
+    expect(manifest.codeGraphLibraryArtifactIdentity).toBe(staged.codeGraphLibraryArtifactIdentity);
+    expect(loadRuntimeReleaseManifest(staged.manifestPath, controllerHome)).toMatchObject({
+      codeGraphNodeEntrypoint: 'codegraph-node',
+      codeGraphNodeArtifactIdentity: staged.codeGraphNodeArtifactIdentity,
+      codeGraphSidecarEntrypoint: 'codegraph-sidecar.cjs',
+      codeGraphSidecarArtifactIdentity: staged.codeGraphSidecarArtifactIdentity,
+      codeGraphLibraryRoot: 'codegraph-lib',
+      codeGraphLibraryArtifactIdentity: staged.codeGraphLibraryArtifactIdentity,
+    });
     assertRuntimeReleaseFiles(staged);
+  });
+
+  test('rejects a partial CodeGraph runtime declaration in an immutable release manifest', () => {
+    const { root, controllerHome } = sourceFixture();
+    const manifestPath = join(root, 'partial-codegraph-manifest.json');
+    writeFileSync(manifestPath, `${JSON.stringify({
+      schemaVersion: 1,
+      releaseId: 'release-partial-codegraph',
+      artifactIdentity: 'sha256:runtime',
+      entrypoint: 'forge-runtime',
+      codeGraphNodeEntrypoint: 'codegraph-node',
+      arguments: [],
+      configurationSchemaVersion: 1,
+      controllerHome,
+      databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+      workerProtocolVersion: 1,
+      createdAt: new Date().toISOString(),
+    }, null, 2)}\n`);
+    expect(() => loadRuntimeReleaseManifest(manifestPath, controllerHome))
+      .toThrow('codeGraphSidecarEntrypoint is required');
   });
 
   test('release assertion fails closed when the declared Browser Node bridge host is missing', () => {
@@ -104,6 +158,7 @@ describe('runtime release materialization', () => {
         writeFileSync(outputPath, 'process-runner-bundle');
         return { ok: true };
       },
+      materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
     });
     rmSync(join(staged.releasePath, 'browser-node-bridge-host.js'));
     expect(() => assertRuntimeReleaseFiles(staged)).toThrow('RUNTIME_RELEASE_BROWSER_NODE_HOST_MISSING');

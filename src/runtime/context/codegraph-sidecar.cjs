@@ -111,7 +111,8 @@ async function main() {
 
   let library;
   try {
-    library = require('@colbymchenry/codegraph');
+    const configuredLibrary = process.env.FORGE_CODEGRAPH_LIBRARY_PATH;
+    library = require(configuredLibrary || '@colbymchenry/codegraph');
     if (typeof library.setLogger === 'function' && library.silentLogger) library.setLogger(library.silentLogger);
   } catch (error) {
     fail(operation, 'CODEGRAPH_LIBRARY_UNAVAILABLE', error instanceof Error ? error.message : error);
