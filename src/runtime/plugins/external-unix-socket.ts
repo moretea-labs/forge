@@ -1,8 +1,9 @@
 import { spawnSync } from 'child_process';
 import { existsSync } from 'fs';
 import { createConnection, type Socket } from 'net';
-import { isAbsolute } from 'path';
+import { dirname, isAbsolute, join } from 'path';
 import { fileURLToPath } from 'url';
+import { resolveBunExecutable } from '../shared/process-environment';
 import { AssistantPluginError } from './errors';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -174,12 +175,31 @@ export async function callExternalUnixSocket(
   });
 }
 
+export function resolveExternalPluginProbeSidecarPath(
+  execPath: string = process.execPath,
+  moduleUrl: string = import.meta.url,
+): string {
+  const releaseSibling = join(dirname(execPath), 'external-unix-socket-probe.cjs');
+  if (existsSync(releaseSibling)) return releaseSibling;
+  const moduleSibling = fileURLToPath(new URL('./external-unix-socket-probe.cjs', moduleUrl));
+  if (existsSync(moduleSibling)) return moduleSibling;
+  throw transportError('EXTERNAL_PLUGIN_PROBE_SIDECAR_MISSING', 'External provider probe sidecar is unavailable.', { retryable: false });
+}
+
+export function resolveExternalPluginProbeRuntime(
+  execPath: string = process.execPath,
+  env: NodeJS.ProcessEnv = process.env,
+  accountHome?: string,
+): string {
+  return resolveBunExecutable(execPath, env, accountHome);
+}
+
 export function probeExternalUnixSocketSync(
   options: ExternalUnixSocketCallOptions,
 ): Record<string, unknown> {
   validateSocketPath(options.socketPath);
-  const sidecarPath = fileURLToPath(new URL('./external-unix-socket-probe.cjs', import.meta.url));
-  if (!existsSync(sidecarPath)) throw transportError('EXTERNAL_PLUGIN_PROBE_SIDECAR_MISSING', 'External provider probe sidecar is unavailable.', { retryable: false });
+  const sidecarPath = resolveExternalPluginProbeSidecarPath();
+  const probeRuntime = resolveExternalPluginProbeRuntime();
   const timeoutMs = timeoutFor(options, true);
   const input = JSON.stringify({
     socketPath: options.socketPath,
@@ -190,7 +210,7 @@ export function probeExternalUnixSocketSync(
     maxRequestBytes: boundedInteger(options.maxRequestBytes, DEFAULT_MAX_REQUEST_BYTES, 1_024, 4 * DEFAULT_MAX_REQUEST_BYTES),
     maxResponseBytes: boundedInteger(options.maxResponseBytes, DEFAULT_MAX_RESPONSE_BYTES, 1_024, 4 * DEFAULT_MAX_RESPONSE_BYTES),
   });
-  const execution = spawnSync(process.execPath, [sidecarPath], {
+  const execution = spawnSync(probeRuntime, [sidecarPath], {
     input,
     encoding: 'utf8',
     timeout: timeoutMs + 1_000,

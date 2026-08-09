@@ -1,10 +1,15 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawn, type ChildProcess } from 'child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { createServer, type Server } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { callExternalUnixSocket, probeExternalUnixSocketSync } from '../../src/runtime/plugins/external-unix-socket';
+import {
+  callExternalUnixSocket,
+  probeExternalUnixSocketSync,
+  resolveExternalPluginProbeRuntime,
+  resolveExternalPluginProbeSidecarPath,
+} from '../../src/runtime/plugins/external-unix-socket';
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -103,6 +108,26 @@ describe('external Unix socket provider transport', () => {
       params: { action: 'fail', arguments: {} },
       timeoutMs: 2_000,
     })).rejects.toThrow('ELEMENT_NOT_FOUND');
+  });
+
+  test('compiled Runtime resolves the probe beside its executable and launches it with Bun', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-external-probe-release-'));
+    roots.push(root);
+    const releaseRoot = join(root, 'release');
+    const home = join(root, 'home');
+    const bunRoot = join(home, '.bun', 'bin');
+    mkdirSync(releaseRoot, { recursive: true });
+    mkdirSync(bunRoot, { recursive: true });
+    const runtimePath = join(releaseRoot, 'forge-runtime');
+    const sidecarPath = join(releaseRoot, 'external-unix-socket-probe.cjs');
+    const bunPath = join(bunRoot, process.platform === 'win32' ? 'bun.exe' : 'bun');
+    writeFileSync(runtimePath, 'compiled-runtime');
+    writeFileSync(sidecarPath, 'probe-sidecar');
+    writeFileSync(bunPath, 'bun-runtime');
+
+    expect(resolveExternalPluginProbeSidecarPath(runtimePath, 'file:///missing/external-unix-socket.ts')).toBe(sidecarPath);
+    expect(resolveExternalPluginProbeRuntime(runtimePath, { HOME: home }, home)).toBe(bunPath);
+    expect(resolveExternalPluginProbeRuntime(runtimePath, { HOME: home }, home)).not.toBe(runtimePath);
   });
 
   test('synchronous probe uses a separate bounded sidecar and preserves the response envelope', async () => {
