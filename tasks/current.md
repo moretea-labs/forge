@@ -3,7 +3,7 @@
 <!-- updated_at: 2026-08-09 -->
 <!-- stale_after: 24h -->
 
-> **Status**: Runtime stability source fixes are committed on `main`; current closeout work adds a first-party Resend reporting sink with environment-only credentials, strongly confirmed delivery, provider receipt lookup, and explicit domain/SMTP readiness. Live Resend delivery remains externally blocked until an API key, verified sending domain, and sender identity are configured.
+> **Status**: The canonical immutable Runtime now runs `bc2badee` and is ready. Explicit full maintenance safely cancelled four stale WorkContracts and reconciled ten Work-bound stale Edit Sessions without rolling back source. The complete retained legacy inventory is documented: 1,318 nonterminal sessions all lack durable `workId` ownership evidence and remain fail-closed. Live Resend delivery remains externally blocked until an API key, verified sending domain, and sender identity are configured.
 > **Updated At**: 2026-08-09
 > **Source**: Source review, focused Runtime/MCP tests, authenticated `repo-harness6` session evidence, repeated 60-second Controller RPC timeouts, and connector/source schema comparison.
 > **Target**: Keep one canonical Forge Runtime release aligned with `main`, one Recovery service family, and the renamed `/Users/greyson/DevProjects/forge` paths.
@@ -13,6 +13,9 @@ This snapshot is a read model, not an execution gate.
 
 ## Current Focus
 
+- ✅ Explicit full maintenance has zero remaining safe stale Work/Edit candidates. Four WorkContracts were cancelled with evidence retained; ten Work-bound sessions were finalized, superseded, or rolled back through existing cleanup semantics.
+- ⚠️ The full local inventory contains 1,318 retained nonterminal legacy Edit Sessions (`dirty` 1,179 / `open` 130 / `checked` 2 / `check_failed` 7). Every record lacks `workId`, so ownership cannot be proven and automatic cleanup correctly fails closed; all session IDs and the closeout rule are recorded in `docs/researches/20260809-stale-edit-session-inventory.md`.
+- ✅ Runtime release `1786276859850-bc2badee7b6ce5e8769ee1f89ef7680a47eca25b` is active at PID 48981 with database, scheduler, release coherence, and MCP end-to-end diagnostics passing; queue, workers, and leases are zero for Forge.
 - ✅ First-party `resend` plugin source now exposes non-secret configuration, auth/domain/SMTP status, domain verification, strongly confirmed sending, and sent-message receipt lookup; the personal-assistant reporting model includes a disabled-by-default `resend_email` sink.
 - ⚠️ `FORGE_RESEND_API_KEY` / `RESEND_API_KEY` and `.forge/plugins/resend.json` are absent in the current checkout, so no live email can be sent or claimed as accepted yet.
 - ✅ `ce6834e5b` fixes compiled `forge-runtime` Worker launch recursion by resolving the real Bun executable and preserves structured Runtime core-failure stderr.
@@ -33,6 +36,8 @@ This snapshot is a read model, not an execution gate.
 
 ## Validation Completed
 
+- Live `runtime_maintenance_status` after the final explicit pass reported zero safe candidates, zero stale WorkContracts, and 437 protected unknown-owned Edit Sessions inside its bounded 500-candidate window; an unbounded local metadata scan accounted for all 1,318 retained IDs.
+- `EDIT-1786271171326-396c4572` received exact-revision Process Check receipt `check_receipt_c55cb76569e2b352cd867080` for `package:check:type`, then maintenance finalized it without source rollback.
 - `bun test tests/runtime/capability-recovery.test.ts`: 29/29 passed, including terminal committed/superseded/unique-dirty, active/missing ownership, empty-session, explicit-full-only, summary, and legacy maintenance coverage for stale Edit Sessions.
 - `bun test tests/runtime/process-environment.test.ts`: 5/5 passed.
 - `bun test tests/runtime/canonical-single-runtime.test.ts`: 16/16 passed (previously 15/16).
