@@ -3,7 +3,7 @@
 <!-- updated_at: 2026-08-09 -->
 <!-- stale_after: 24h -->
 
-> **Status**: Runtime stability source fixes are complete on `codex/runtime-stability-readiness`: compiled Scheduler Workers resolve real Bun, per-Job reconciliation failures are isolated without swallowing Runtime-wide writer fencing, canonical MCP readiness uses the Runtime-injected source authority, and Runtime core failures emit structured stderr. No rollout or Runtime restart was performed; the currently exposed Repo Harness connector still times out at 60 seconds and its cached `rh_work` schema omits source-defined `controller_claim` / `launcher_start` operations.
+> **Status**: Runtime stability source fixes are committed on `main`; current closeout work adds a first-party Resend reporting sink with environment-only credentials, strongly confirmed delivery, provider receipt lookup, and explicit domain/SMTP readiness. Live Resend delivery remains externally blocked until an API key, verified sending domain, and sender identity are configured.
 > **Updated At**: 2026-08-09
 > **Source**: Source review, focused Runtime/MCP tests, authenticated `repo-harness6` session evidence, repeated 60-second Controller RPC timeouts, and connector/source schema comparison.
 > **Target**: Keep one canonical Forge Runtime release aligned with `main`, one Recovery service family, and the renamed `/Users/greyson/DevProjects/forge` paths.
@@ -13,6 +13,8 @@ This snapshot is a read model, not an execution gate.
 
 ## Current Focus
 
+- ✅ First-party `resend` plugin source now exposes non-secret configuration, auth/domain/SMTP status, domain verification, strongly confirmed sending, and sent-message receipt lookup; the personal-assistant reporting model includes a disabled-by-default `resend_email` sink.
+- ⚠️ `FORGE_RESEND_API_KEY` / `RESEND_API_KEY` and `.forge/plugins/resend.json` are absent in the current checkout, so no live email can be sent or claimed as accepted yet.
 - ✅ `ce6834e5b` fixes compiled `forge-runtime` Worker launch recursion by resolving the real Bun executable and preserves structured Runtime core-failure stderr.
 - ✅ Canonical `controller_ready` now compares the startup source snapshot with `ctx.runtimeSourceRoot`, eliminating false `RUNTIME_SOURCE_SNAPSHOT_STALE` diagnostics caused by the Gateway process cwd.
 - ✅ Startup and periodic ExecutionJob reconciliation isolate a malformed historical Job, continue healthy Job cleanup, remove timed-out Jobs from the active index, and release their Leases; `WRITER_FENCED` still fails the complete Runtime.

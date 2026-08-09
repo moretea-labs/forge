@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
+import { buildResendPluginManifest, executeResendPluginAction } from '../../src/runtime/plugins/resend-adapter';
+import { createFirstPartyPluginAdapterMap } from '../../src/runtime/plugins/first-party-registry';
+import { DEFAULT_REPORT_SINKS } from '../../src/runtime/personal-assistant/reporting-runtime';
 import {
   assistantPluginScope,
   controllerPluginRepository,
@@ -35,6 +38,25 @@ function fixture(enabled = true) {
     actions: [{ actionId: 'desktop_status', title: 'Desktop status', description: 'Read status.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 500, cancellable: true, idempotent: true, scopes: ['desktop.observe'], resourceClaims: [], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } }],
   });
   return { controllerHome, socketPath, repository: controllerPluginRepository(controllerHome) };
+}
+
+function resendFixture(): string {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'forge-resend-plugin-'));
+  roots.push(repoRoot);
+  return repoRoot;
+}
+
+function resendAction(repoRoot: string, actionId: string, args: Record<string, unknown> = {}) {
+  return executeResendPluginAction({
+    controllerHome: join(repoRoot, '.controller'),
+    repoId: 'repo_test',
+    repoRoot,
+    pluginId: 'resend',
+    actionId,
+    requestId: `req_${actionId}`,
+    args,
+    origin: { surface: 'mcp', actor: 'test' },
+  });
 }
 
 describe('external plugin store integration', () => {
@@ -89,5 +111,60 @@ describe('external plugin store integration', () => {
     const desktop = manifests.find((manifest) => manifest.pluginId === 'desktop');
     expect(desktop?.displayName).toBe('Forge Desktop');
     expect(manifests.filter((manifest) => manifest.pluginId === 'desktop')).toHaveLength(1);
+  });
+});
+
+describe('Resend first-party plugin', () => {
+  test('is registered with strongly confirmed delivery and environment-only credentials', () => {
+    const repoRoot = resendFixture();
+    const manifest = buildResendPluginManifest(0, undefined, repoRoot);
+    expect(createFirstPartyPluginAdapterMap().has('resend')).toBe(true);
+    expect(manifest.enabled).toBe(false);
+    expect(manifest.authority.sourceOfTruth).toContain('env:FORGE_RESEND_API_KEY|RESEND_API_KEY');
+    const send = manifest.actions.find((candidate) => candidate.actionId === 'send_email');
+    expect(send?.confirmation).toBe('strong_confirmation');
+    expect(send?.requiredConfirmationText).toBe('send-resend-email');
+    expect(DEFAULT_REPORT_SINKS.find((sink) => sink.kind === 'resend_email')?.enabled).toBe(false);
+  });
+
+  test('persists only non-secret defaults and derives SMTP readiness from domain verification', async () => {
+    const repoRoot = resendFixture();
+    await resendAction(repoRoot, 'configure', {
+      enabled: true,
+      provider: 'mock',
+      sending_domain: 'updates.example.com',
+      from_email: 'forge@updates.example.com',
+      from_name: 'Forge',
+    });
+    const configText = readFileSync(join(repoRoot, '.forge/plugins/resend.json'), 'utf8');
+    expect(configText).toContain('updates.example.com');
+    expect(configText).not.toContain('apiKey');
+    expect(configText).not.toContain('password');
+
+    const smtp = await resendAction(repoRoot, 'smtp_status');
+    expect(smtp.ready).toBe(true);
+    expect(smtp.domainStatus).toBe('verified');
+    expect((smtp.smtp as Record<string, unknown>).host).toBe('smtp.resend.com');
+    expect((smtp.smtp as Record<string, unknown>).username).toBe('resend');
+  });
+
+  test('returns a sent receipt and lets callers verify the provider event', async () => {
+    const repoRoot = resendFixture();
+    await resendAction(repoRoot, 'configure', {
+      enabled: true,
+      provider: 'mock',
+      sending_domain: 'updates.example.com',
+      from_email: 'forge@updates.example.com',
+    });
+    const sent = await resendAction(repoRoot, 'send_email', {
+      to: ['recipient@example.com'],
+      subject: 'Forge daily report test',
+      text: 'Runtime ready.',
+    });
+    expect(sent.status).toBe('sent');
+    expect(sent.emailId).toBe('email_mock');
+
+    const receipt = await resendAction(repoRoot, 'get_email', { email_id: sent.emailId });
+    expect(receipt.status).toBe('sent');
   });
 });

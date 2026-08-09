@@ -10,6 +10,7 @@ import { triageItems } from "./triage-runtime";
 export type ReportSinkKind =
   | "chatgpt"
   | "gmail_draft"
+  | "resend_email"
   | "notion_page"
   | "github_issue"
   | "local_file"
@@ -100,6 +101,16 @@ export const DEFAULT_REPORT_SINKS: ReportSink[] = [
     requires_confirmation: true,
     title: "Gmail draft daily assistant brief",
     description: "Creates a reviewable draft instead of sending mail automatically.",
+  },
+  {
+    id: "resend-daily-brief",
+    kind: "resend_email",
+    enabled: false,
+    risk: "remote_write",
+    requires_confirmation: true,
+    title: "Resend email daily assistant brief",
+    description: "Sends the rendered daily brief through the first-party Resend plugin after strong confirmation.",
+    config: { plugin_id: "resend", action_id: "send_email" },
   },
   {
     id: "notion-daily-brief",

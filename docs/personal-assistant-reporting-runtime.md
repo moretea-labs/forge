@@ -13,6 +13,7 @@ The runtime therefore defines explicit report sinks:
 
 - `chatgpt` — read-only scheduled daily brief.
 - `gmail_draft` — creates a reviewable draft, never sends automatically.
+- `resend_email` — sends through the first-party Resend plugin only after strong confirmation; API credentials remain environment-only, while domain and SMTP readiness are observable without exposing secrets.
 - `notion_page` — writes a daily journal page after authorization.
 - `github_issue` — appends or updates an issue for engineering workflows.
 - `local_file` — writes a local markdown report in the Forge workspace.
@@ -44,5 +45,5 @@ This means the assistant can implement user preferences such as:
 2. Run `triageItems`.
 3. Run `buildDailyAssistantBrief`.
 4. Render via `renderBriefMarkdown`.
-5. Deliver to the selected sink only if its policy allows it.
+5. Deliver to the selected sink only if its policy allows it. `resend_email` uses `resend/send_email`, then `resend/get_email` can verify the provider `last_event` receipt.
 6. Execute proposed actions only after the confirmation gate accepts the action batch.
