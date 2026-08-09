@@ -9,6 +9,14 @@ import type {
   AssistantPluginPermissionScope,
 } from './types';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
+import {
+  getResendOAuthAccessToken,
+  prepareResendOAuthLogin,
+  readStoredResendOAuthCredential,
+  readStoredResendSmtpToken,
+  resendCredentialStoreStatus,
+  writeStoredResendSmtpToken,
+} from '../safe-tooling/resend-oauth';
 
 const RESEND_PLUGIN_ID = 'resend';
 const CONFIG_ROOT = '.forge/plugins';
@@ -119,12 +127,13 @@ function resolveAuth(config: ResendPluginConfig): ResendAuthState {
     };
   }
   const credential = apiKey();
-  if (!credential.value) {
+  const oauth = readStoredResendOAuthCredential();
+  if (!credential.value && !oauth) {
     return {
       ready: false,
       authenticated: false,
       probed: false,
-      errors: ['Set FORGE_RESEND_API_KEY or RESEND_API_KEY before invoking live Resend actions.'],
+      errors: ['Connect Resend with OAuth or set FORGE_RESEND_API_KEY / RESEND_API_KEY before invoking live actions.'],
       warnings: [],
     };
   }
@@ -132,9 +141,9 @@ function resolveAuth(config: ResendPluginConfig): ResendAuthState {
     ready: true,
     authenticated: true,
     probed: false,
-    credentialSource: credential.source,
+    credentialSource: credential.source ?? 'keychain:resend-oauth',
     errors: [],
-    warnings: [],
+    warnings: credential.value ? [] : ['A stored Resend OAuth refresh credential is available; access tokens are refreshed on demand.'],
   };
 }
 
@@ -143,7 +152,7 @@ function health(config: ResendPluginConfig, auth: ResendAuthState): AssistantPlu
     return {
       state: 'disabled', checkedAt: now(), ready: false, probed: false,
       errors: [], warnings: ['Plugin is disabled. Enable it before using Resend provider actions.'],
-      details: { provider: config.provider, credentialPersistence: 'API keys are read from process environment and are never persisted by Forge' },
+      details: { provider: config.provider, credentialPersistence: 'OAuth/SMTP credentials use macOS Keychain; environment API keys remain supported and are never persisted by Forge', credentialStore: resendCredentialStoreStatus() },
     };
   }
   return {
@@ -156,7 +165,8 @@ function health(config: ResendPluginConfig, auth: ResendAuthState): AssistantPlu
     details: {
       provider: config.provider,
       credentialSource: auth.credentialSource ?? 'missing',
-      credentialPersistence: 'API keys are read from process environment and are never persisted by Forge',
+      credentialPersistence: 'OAuth/SMTP credentials use macOS Keychain; environment API keys remain supported and are never persisted by Forge',
+      credentialStore: resendCredentialStoreStatus(),
       sendingDomain: config.sendingDomain,
       fromEmail: config.fromEmail,
       smtpHost: SMTP_HOST,
@@ -181,7 +191,7 @@ function capabilities(): AssistantPluginCapability[] {
       title: 'Resend Domain and SMTP Readiness',
       description: 'Validate API credentials, sending-domain verification, and derived SMTP settings without exposing secrets.',
       scopes: ['resend.read'],
-      actions: ['auth_status', 'list_domains', 'get_domain', 'smtp_status', 'get_email'],
+      actions: ['oauth_login_prepare', 'auth_status', 'list_domains', 'get_domain', 'smtp_status', 'get_email'],
     },
     {
       capabilityId: 'resend-domain',
@@ -195,7 +205,7 @@ function capabilities(): AssistantPluginCapability[] {
       title: 'Resend Email Delivery',
       description: 'Send a message only after strong confirmation and return a provider receipt for status follow-up.',
       scopes: ['resend.send'],
-      actions: ['send_email'],
+      actions: ['provision_smtp_credential', 'send_email'],
     },
   ];
 }
@@ -219,6 +229,15 @@ function actions(): AssistantPluginActionDescriptor[] {
           default_timeout_ms: { type: 'number' },
         },
         additionalProperties: false,
+      },
+    },
+    {
+      actionId: 'oauth_login_prepare', title: 'Connect Resend with OAuth',
+      description: 'Dynamically register a PKCE public client and return a Resend consent URL. No API key is requested or returned.',
+      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 30_000,
+      cancellable: true, idempotent: false, scopes: ['resend.read'], resourceClaims: [{ resource: 'remote', mode: 'write' }],
+      argumentsSchema: {
+        type: 'object', properties: { scope: { type: 'string', enum: ['emails:send', 'full_access'] }, redirect_uri: { type: 'string' } }, additionalProperties: false,
       },
     },
     {
@@ -267,6 +286,13 @@ function actions(): AssistantPluginActionDescriptor[] {
       argumentsSchema: { type: 'object', properties: { domain_id: { type: 'string' } }, required: ['domain_id'], additionalProperties: false },
     },
     {
+      actionId: 'provision_smtp_credential', title: 'Provision Resend SMTP credential',
+      description: 'Create one sending-only Resend API key for SMTP and store it directly in macOS Keychain without returning the token.',
+      readOnly: false, risk: 'remote_write', confirmation: 'strong_confirmation', requiredConfirmationText: 'provision-resend-smtp',
+      defaultTimeoutMs: 45_000, cancellable: true, idempotent: false, scopes: ['resend.send'], resourceClaims: [{ resource: 'remote', mode: 'exclusive' }],
+      argumentsSchema: { type: 'object', properties: { name: { type: 'string' } }, additionalProperties: false },
+    },
+    {
       actionId: 'send_email', title: 'Send email with Resend', description: 'Send one email through Resend after strong confirmation.',
       readOnly: false, risk: 'remote_write', confirmation: 'strong_confirmation', requiredConfirmationText: 'send-resend-email',
       defaultTimeoutMs: 45_000, cancellable: true, idempotent: false, scopes: ['resend.send'], resourceClaims: [{ resource: 'remote', mode: 'exclusive' }],
@@ -298,19 +324,26 @@ function defaultFrom(config: ResendPluginConfig): string {
 async function resendRequest(
   config: ResendPluginConfig,
   path: string,
-  init: { method?: string; body?: Record<string, unknown> } = {},
+  init: { method?: string; body?: Record<string, unknown>; headers?: Record<string, string> } = {},
 ): Promise<Record<string, unknown>> {
   if (config.provider === 'mock') {
     if (path === '/domains' && init.method === 'POST') return { object: 'domain', id: 'domain_mock_created', name: init.body?.name, status: 'not_started', records: [] };
     if (path === '/domains') return { object: 'list', has_more: false, data: config.sendingDomain ? [{ id: 'domain_mock', name: config.sendingDomain, status: 'verified' }] : [] };
     if (path.startsWith('/domains/domain_mock')) return { object: 'domain', id: 'domain_mock', name: config.sendingDomain, status: 'verified', records: [] };
+    if (path === '/api-keys' && init.method === 'POST') return { id: 'api_key_mock', token: 're_mock_smtp_token' };
     if (path === '/emails' && init.method === 'POST') return { id: 'email_mock' };
     if (path === '/emails/email_mock') return { object: 'email', id: 'email_mock', last_event: 'sent' };
     return { object: 'mock', ok: true };
   }
 
-  const credential = apiKey();
-  if (!credential.value) throw new AssistantPluginError('PLUGIN_AUTH_REQUIRED', 'Resend API key is required.');
+  const environmentCredential = apiKey();
+  const oauthCredential = environmentCredential.value ? undefined : await getResendOAuthAccessToken(config.defaultTimeoutMs);
+  const credential = environmentCredential.value
+    ? { value: environmentCredential.value, source: environmentCredential.source }
+    : oauthCredential
+      ? { value: oauthCredential.token, source: oauthCredential.source }
+      : {};
+  if (!credential.value) throw new AssistantPluginError('PLUGIN_AUTH_REQUIRED', 'Connect Resend with OAuth or configure an environment API key.');
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.defaultTimeoutMs);
   try {
@@ -320,6 +353,7 @@ async function resendRequest(
         Authorization: `Bearer ${credential.value}`,
         'User-Agent': RESEND_USER_AGENT,
         ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+        ...(init.headers ?? {}),
       },
       ...(init.body ? { body: JSON.stringify(init.body) } : {}),
       signal: controller.signal,
@@ -355,7 +389,7 @@ export function buildResendPluginManifest(previousRevision = 0, previousUpdatedA
   return {
     schemaVersion: 1, manifestVersion: 1, revision: Math.max(1, previousRevision || 1),
     pluginId: RESEND_PLUGIN_ID, provider: 'resend', displayName: 'Resend Email Plugin', pluginVersion: '1.0.0',
-    authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['repo-local:.forge/plugins/resend.json', 'env:FORGE_RESEND_API_KEY|RESEND_API_KEY'] },
+    authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['repo-local:.forge/plugins/resend.json', 'macos-keychain:forge.resend-oauth|forge.resend-smtp', 'env:FORGE_RESEND_API_KEY|RESEND_API_KEY'] },
     enabled: config.enabled,
     lifecycle: {
       state: !config.enabled ? 'disabled' : auth.ready ? 'enabled' : 'error',
@@ -382,6 +416,11 @@ export async function executeResendPluginAction(input: AssistantPluginActionExec
       const auth = resolveAuth(config);
       return { config, auth: { ...auth, credentialValue: undefined }, smtp: { host: SMTP_HOST, ports: SMTP_PORTS, username: 'resend', passwordSource: auth.credentialSource } };
     }
+    case 'oauth_login_prepare':
+      return prepareResendOAuthLogin(input.controllerHome, {
+        redirectUri: stringValue(input.args.redirect_uri),
+        scope: input.args.scope === 'emails:send' ? 'emails:send' : 'full_access',
+      });
     case 'auth_status': {
       const auth = resolveAuth(current);
       if (current.provider === 'resend-api') await resendRequest(current, '/domains');
@@ -412,10 +451,22 @@ export async function executeResendPluginAction(input: AssistantPluginActionExec
         : undefined;
       const domainStatus = stringValue(configured?.status);
       return {
-        provider: 'resend', ready: Boolean(apiKey().value || current.provider === 'mock') && domainStatus === 'verified' && Boolean(current.fromEmail),
+        provider: 'resend', ready: Boolean(apiKey().value || readStoredResendSmtpToken() || current.provider === 'mock') && domainStatus === 'verified' && Boolean(current.fromEmail),
         domain: current.sendingDomain, domainStatus: domainStatus ?? 'not_configured', fromEmail: current.fromEmail,
-        smtp: { host: SMTP_HOST, ports: SMTP_PORTS, username: 'resend', passwordConfigured: Boolean(apiKey().value || current.provider === 'mock'), security: ['implicit_tls', 'starttls'] },
+        smtp: { host: SMTP_HOST, ports: SMTP_PORTS, username: 'resend', passwordConfigured: Boolean(apiKey().value || readStoredResendSmtpToken() || current.provider === 'mock'), passwordSource: apiKey().value ? apiKey().source : readStoredResendSmtpToken() ? 'keychain:resend-smtp' : undefined, security: ['implicit_tls', 'starttls'] },
       };
+    }
+    case 'provision_smtp_credential': {
+      if (current.provider === 'mock') return { provider: 'mock', stored: true, apiKeyId: 'api_key_mock', credentialStore: resendCredentialStoreStatus() };
+      const response = await resendRequest(current, '/api-keys', {
+        method: 'POST',
+        body: { name: stringValue(input.args.name) ?? 'Forge SMTP', permission: 'sending_access' },
+      });
+      const token = stringValue(response.token);
+      if (!token) throw new AssistantPluginError('PLUGIN_PROVIDER_RESPONSE_INVALID', 'Resend did not return the one-time SMTP API key token.');
+      const apiKeyId = stringValue(response.id);
+      writeStoredResendSmtpToken(token, apiKeyId);
+      return { provider: 'resend', stored: true, apiKeyId, credentialStore: resendCredentialStoreStatus(), credentialMaterialReturned: false };
     }
     case 'send_email': {
       const to = stringArray(input.args.to);
@@ -424,8 +475,10 @@ export async function executeResendPluginAction(input: AssistantPluginActionExec
       const text = stringValue(input.args.text);
       const html = stringValue(input.args.html);
       if (!text && !html) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'text or html is required.');
+      const idempotencyKey = `forge-resend-${input.requestId}`.slice(0, 256);
       const response = await resendRequest(current, '/emails', {
         method: 'POST',
+        headers: { 'Idempotency-Key': idempotencyKey },
         body: {
           from: stringValue(input.args.from) ?? defaultFrom(current), to, subject,
           ...(text ? { text } : {}), ...(html ? { html } : {}),
@@ -434,7 +487,7 @@ export async function executeResendPluginAction(input: AssistantPluginActionExec
           ...(stringArray(input.args.reply_to) ? { reply_to: stringArray(input.args.reply_to) } : {}),
         },
       });
-      return { provider: 'resend', status: 'sent', emailId: response.id, acceptedAt: now() };
+      return { provider: 'resend', status: 'sent', emailId: response.id, acceptedAt: now(), idempotencyKey };
     }
     case 'get_email': {
       const emailId = requiredString(input.args.email_id, 'email_id');

@@ -163,6 +163,7 @@ import { submitAssistantIntent, runAssistantRoutineNow } from "../../runtime/ass
 import { updateAssistantRoutineLifecycle } from "../../runtime/assistant/schedule-binding";
 import { assistantOpenApiSchema } from "../../runtime/assistant/openapi";
 import { completeGoogleOAuthLogin } from "../../runtime/safe-tooling/google-oauth-broker";
+import { completeResendOAuthLogin } from "../../runtime/safe-tooling/resend-oauth";
 import { approveAssistantActionProposal, listAssistantActionProposals, rejectAssistantActionProposal } from "../../runtime/assistant/action-proposals";
 import { assistantModelReadiness } from "../../runtime/assistant/model-provider";
 import { createAssistantStandingGrant, listAssistantStandingGrants, revokeAssistantStandingGrant } from "../../runtime/assistant/standing-grants";
@@ -1230,6 +1231,22 @@ export async function startLocalBridgeServer(
       response.status(200).type("html").send(`<!doctype html><meta charset="utf-8"><title>Google authorization complete</title><h1>Google authorization complete</h1><p>${String(result.service)} is connected. You can close this window.</p>`);
     } catch (error) {
       response.status(400).type("html").send(`<!doctype html><meta charset="utf-8"><title>Google authorization failed</title><h1>Google authorization failed</h1><p>${errorMessage(error).replace(/[<>&]/g, "")}</p>`);
+    }
+  });
+
+  app.get("/oauth/resend/callback", async (request, response) => {
+    response.setHeader("Cache-Control", "no-store");
+    response.setHeader("Referrer-Policy", "no-referrer");
+    try {
+      await completeResendOAuthLogin(controllerHome, {
+        state: queryString(request.query.state),
+        code: queryString(request.query.code),
+        error: queryString(request.query.error),
+        errorDescription: queryString(request.query.error_description),
+      });
+      response.status(200).type("html").send('<!doctype html><meta charset="utf-8"><title>Resend authorization complete</title><h1>Resend authorization complete</h1><p>Forge is connected to Resend. You can close this window.</p>');
+    } catch (error) {
+      response.status(400).type("html").send(`<!doctype html><meta charset="utf-8"><title>Resend authorization failed</title><h1>Resend authorization failed</h1><p>${errorMessage(error).replace(/[<>&]/g, "")}</p>`);
     }
   });
 
