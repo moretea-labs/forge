@@ -20,6 +20,7 @@ import { createMcpToolContext as createMultiRepositoryContext } from '../../src/
 import { createForgeMcpServer } from '../../src/cli/mcp/server';
 import { writeJsonAtomic } from '../../src/runtime/shared/json-files';
 import { acquireRuntimeOwnership, type RuntimeOwnershipHandle } from '../../src/runtime/root/ownership';
+import { collectRuntimeSourceIdentity, rotateRuntimeGeneration } from '../../src/runtime/control-plane/runtime-generation';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { STABLE_CONTROLLER_TOOL_NAMES } from '../../src/cli/mcp/toolset-names';
 import {
@@ -128,6 +129,11 @@ function controllerFixture(): { controllerHome: string; repoRoot: string; owners
   writeFileSync(join(repoRoot, 'src/example.ts'), 'export const value = 1;\n');
   writeFileSync(join(repoRoot, 'tasks/current.md'), '# Current\n');
   spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });
+  spawnSync('git', ['config', 'user.email', 'forge-test@example.invalid'], { cwd: repoRoot, stdio: 'ignore' });
+  spawnSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot, stdio: 'ignore' });
+  spawnSync('git', ['add', '.'], { cwd: repoRoot, stdio: 'ignore' });
+  spawnSync('git', ['commit', '-m', 'fixture'], { cwd: repoRoot, stdio: 'ignore' });
+  rotateRuntimeGeneration(controllerHome, collectRuntimeSourceIdentity(repoRoot));
   const now = new Date().toISOString();
   const runtimeInstanceId = 'runtime-observability';
   const ownership = acquireRuntimeOwnership(controllerHome, runtimeInstanceId);
@@ -187,7 +193,13 @@ describe('runtime observability', () => {
   test('controller_ready remains ready without a configured public endpoint', async () => {
     const { controllerHome, repoRoot, ownership } = controllerFixture();
     try {
-      const ctx = createMultiRepositoryContext({ repo: repoRoot, profile: 'controller', toolset: 'full', controllerHome });
+      const ctx = createMultiRepositoryContext({
+        repo: repoRoot,
+        profile: 'controller',
+        toolset: 'full',
+        controllerHome,
+        runtimeSourceRoot: repoRoot,
+      });
       const result = await callRuntimeTool(ctx, 'controller_ready', {});
       expect(result).toBeTruthy();
       const payload = JSON.parse(result!.content[0].text) as Record<string, unknown>;

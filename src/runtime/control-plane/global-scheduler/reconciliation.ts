@@ -57,7 +57,23 @@ function ambiguousStartedOperation(controllerHome: string, job: ExecutionJob): b
   return receipt.state === 'started';
 }
 
-type ReconcileSummary = { inspected: number; requeued: number; terminal: number; recovered: number };
+type ReconcileSummary = { inspected: number; requeued: number; terminal: number; recovered: number; isolated: number };
+
+function recordIsolatedReconciliationFailure(job: ExecutionJob, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  // Losing the canonical write fence is a Runtime-wide invariant violation,
+  // not corrupt state owned by one historical Job. Preserve the Scheduler's
+  // fatal path so Runtime Root can stop the complete Runtime.
+  if (message.startsWith('WRITER_FENCED:')) throw error;
+  process.stderr.write(`${JSON.stringify({
+    event: 'forge_scheduler_execution_job_reconciliation_isolated',
+    repoId: job.repoId,
+    jobId: job.jobId,
+    code: message.includes(':') ? message.slice(0, message.indexOf(':')) : 'EXECUTION_JOB_RECONCILIATION_FAILED',
+    message: message.slice(0, 1_000),
+    observedAt: new Date().toISOString(),
+  })}\n`);
+}
 
 function heartbeatAgeMs(heartbeatAt: string | undefined): number {
   if (!heartbeatAt) return Number.POSITIVE_INFINITY;
@@ -130,47 +146,53 @@ function reconcileExecutionJobsWith(
   let requeued = 0;
   let terminal = 0;
   let recovered = 0;
+  let isolated = 0;
   for (const job of jobs) {
-    if (job.status !== 'running') {
-      const timeout = executionTimeoutDecision(job);
-      if (timeout) {
-        releaseExecutionLeases(controllerHome, job.repoId, job.jobId, job.leaseRefs);
-        const terminalJob = transitionExecutionJob(controllerHome, job.repoId, job.jobId, 'timed_out', {
-          error: {
-            code: timeout.code,
-            message: timeout.message,
-            retryable: false,
-            details: { timeoutPhase: timeout.phase, deadlineAt: timeout.deadlineAt },
-          },
-          leaseRefs: [],
-        });
-        settleScheduledExecution(controllerHome, terminalJob, 'failed', `Scheduled operation exceeded its ${timeout.phase} timeout.`);
-        terminal += 1;
-      }
-      continue;
-    }
-
-    const timeout = executionTimeoutDecision(job);
-    const loss = workerLossContext(job);
-    let lossReason: WorkerLossReason = loss.reason;
-    if (!timeout && !loss.workerLost) {
-      try {
-        if (job.leaseRefs.length > 0) {
-          renewExecutionLeases(controllerHome, job.repoId, job.jobId, 30_000, job.leaseRefs);
+    try {
+      if (job.status !== 'running') {
+        const timeout = executionTimeoutDecision(job);
+        if (timeout) {
+          releaseExecutionLeases(controllerHome, job.repoId, job.jobId, job.leaseRefs);
+          const terminalJob = transitionExecutionJob(controllerHome, job.repoId, job.jobId, 'timed_out', {
+            error: {
+              code: timeout.code,
+              message: timeout.message,
+              retryable: false,
+              details: { timeoutPhase: timeout.phase, deadlineAt: timeout.deadlineAt },
+            },
+            leaseRefs: [],
+          });
+          settleScheduledExecution(controllerHome, terminalJob, 'failed', `Scheduled operation exceeded its ${timeout.phase} timeout.`);
+          terminal += 1;
         }
         continue;
-      } catch {
-        lossReason = 'lease_lost';
       }
-    }
 
-    const termination = terminateWorker(job.workerPid);
-    const outcome = finalizeRunningJob(controllerHome, job, timeout, termination, lossReason, loss.heartbeatAgeMs);
-    requeued += outcome.requeued;
-    terminal += outcome.terminal;
-    recovered += outcome.recovered;
+      const timeout = executionTimeoutDecision(job);
+      const loss = workerLossContext(job);
+      let lossReason: WorkerLossReason = loss.reason;
+      if (!timeout && !loss.workerLost) {
+        try {
+          if (job.leaseRefs.length > 0) {
+            renewExecutionLeases(controllerHome, job.repoId, job.jobId, 30_000, job.leaseRefs);
+          }
+          continue;
+        } catch {
+          lossReason = 'lease_lost';
+        }
+      }
+
+      const termination = terminateWorker(job.workerPid);
+      const outcome = finalizeRunningJob(controllerHome, job, timeout, termination, lossReason, loss.heartbeatAgeMs);
+      requeued += outcome.requeued;
+      terminal += outcome.terminal;
+      recovered += outcome.recovered;
+    } catch (error) {
+      recordIsolatedReconciliationFailure(job, error);
+      isolated += 1;
+    }
   }
-  return { inspected: jobs.length, requeued, terminal, recovered };
+  return { inspected: jobs.length, requeued, terminal, recovered, isolated };
 }
 
 async function reconcileExecutionJobsAsyncWith(
@@ -182,47 +204,53 @@ async function reconcileExecutionJobsAsyncWith(
   let requeued = 0;
   let terminal = 0;
   let recovered = 0;
+  let isolated = 0;
   for (const job of jobs) {
-    if (job.status !== 'running') {
-      const timeout = executionTimeoutDecision(job);
-      if (timeout) {
-        releaseExecutionLeases(controllerHome, job.repoId, job.jobId, job.leaseRefs);
-        const terminalJob = transitionExecutionJob(controllerHome, job.repoId, job.jobId, 'timed_out', {
-          error: {
-            code: timeout.code,
-            message: timeout.message,
-            retryable: false,
-            details: { timeoutPhase: timeout.phase, deadlineAt: timeout.deadlineAt },
-          },
-          leaseRefs: [],
-        });
-        settleScheduledExecution(controllerHome, terminalJob, 'failed', `Scheduled operation exceeded its ${timeout.phase} timeout.`);
-        terminal += 1;
-      }
-      continue;
-    }
-
-    const timeout = executionTimeoutDecision(job);
-    const loss = workerLossContext(job);
-    let lossReason: WorkerLossReason = loss.reason;
-    if (!timeout && !loss.workerLost) {
-      try {
-        if (job.leaseRefs.length > 0) {
-          renewExecutionLeases(controllerHome, job.repoId, job.jobId, 30_000, job.leaseRefs);
+    try {
+      if (job.status !== 'running') {
+        const timeout = executionTimeoutDecision(job);
+        if (timeout) {
+          releaseExecutionLeases(controllerHome, job.repoId, job.jobId, job.leaseRefs);
+          const terminalJob = transitionExecutionJob(controllerHome, job.repoId, job.jobId, 'timed_out', {
+            error: {
+              code: timeout.code,
+              message: timeout.message,
+              retryable: false,
+              details: { timeoutPhase: timeout.phase, deadlineAt: timeout.deadlineAt },
+            },
+            leaseRefs: [],
+          });
+          settleScheduledExecution(controllerHome, terminalJob, 'failed', `Scheduled operation exceeded its ${timeout.phase} timeout.`);
+          terminal += 1;
         }
         continue;
-      } catch {
-        lossReason = 'lease_lost';
       }
-    }
 
-    const termination = await terminateWorker(job.workerPid);
-    const outcome = finalizeRunningJob(controllerHome, job, timeout, termination, lossReason, loss.heartbeatAgeMs);
-    requeued += outcome.requeued;
-    terminal += outcome.terminal;
-    recovered += outcome.recovered;
+      const timeout = executionTimeoutDecision(job);
+      const loss = workerLossContext(job);
+      let lossReason: WorkerLossReason = loss.reason;
+      if (!timeout && !loss.workerLost) {
+        try {
+          if (job.leaseRefs.length > 0) {
+            renewExecutionLeases(controllerHome, job.repoId, job.jobId, 30_000, job.leaseRefs);
+          }
+          continue;
+        } catch {
+          lossReason = 'lease_lost';
+        }
+      }
+
+      const termination = await terminateWorker(job.workerPid);
+      const outcome = finalizeRunningJob(controllerHome, job, timeout, termination, lossReason, loss.heartbeatAgeMs);
+      requeued += outcome.requeued;
+      terminal += outcome.terminal;
+      recovered += outcome.recovered;
+    } catch (error) {
+      recordIsolatedReconciliationFailure(job, error);
+      isolated += 1;
+    }
   }
-  return { inspected: jobs.length, requeued, terminal, recovered };
+  return { inspected: jobs.length, requeued, terminal, recovered, isolated };
 }
 
 function finalizeRunningJob(
