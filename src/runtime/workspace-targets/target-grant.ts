@@ -68,6 +68,12 @@ export interface AuthorizeWorkspaceTargetGrantInput {
   now?: Date;
 }
 
+export interface RevokeWorkspaceTargetGrantInput {
+  targetKey: string;
+  ownerScope: string;
+  now?: Date;
+}
+
 export interface ResolveWorkspaceTargetPathOptions {
   ownerScope: string;
   mustExist?: boolean;
@@ -502,6 +508,71 @@ export function authorizeWorkspaceTargetGrant(
           return existingOwner !== ownerScope && existingOwner !== 'legacy:shared';
         });
         store.targets.push(target);
+        saveStore(controllerHome, store);
+        return target;
+      },
+      5_000,
+    );
+  } catch (error) {
+    if (error instanceof ControllerLockContentionError) {
+      throw new WorkspaceTargetGrantError(
+        'TARGET_STORE_BUSY',
+        `Target grant store is busy: ${error.message}`,
+      );
+    }
+    throw error;
+  }
+}
+
+export function revokeWorkspaceTargetGrant(
+  controllerHome: string,
+  input: RevokeWorkspaceTargetGrantInput,
+): ActiveWorkspaceTargetGrant {
+  const ownerScope = input.ownerScope.trim();
+  if (!ownerScope) {
+    throw new WorkspaceTargetGrantError(
+      'TARGET_OWNER_SCOPE_REQUIRED',
+      'Target owner scope is required.',
+    );
+  }
+  const rawTargetKey = input.targetKey.trim();
+  if (!rawTargetKey) {
+    throw new WorkspaceTargetGrantError('TARGET_KEY_REQUIRED', 'Target key is required.');
+  }
+  const targetKey = sanitizeFileComponent(rawTargetKey);
+
+  try {
+    return withControllerLock(
+      controllerHome,
+      { scope: 'global', resource: 'local-system-target-grants' },
+      `workspace-target-revoke:${ownerScope}`,
+      () => {
+        const store = loadStore(controllerHome);
+        const sameKey = store.targets.filter((entry) => entry.targetKey === targetKey);
+        const owned = sameKey.find((entry) => {
+          const existingOwner = entry.ownerScope?.trim() || 'legacy:shared';
+          return existingOwner === ownerScope || existingOwner === 'legacy:shared';
+        });
+        if (!owned) {
+          if (sameKey.length > 0) {
+            throw new WorkspaceTargetGrantError(
+              'TARGET_OWNER_MISMATCH',
+              `Target ${targetKey} belongs to a different owner scope.`,
+            );
+          }
+          throw new WorkspaceTargetGrantError(
+            'TARGET_UNAVAILABLE',
+            `Target ${targetKey} is missing or expired.`,
+          );
+        }
+        if (Date.parse(owned.expiresAt) <= (input.now ?? new Date()).getTime()) {
+          throw new WorkspaceTargetGrantError(
+            'TARGET_UNAVAILABLE',
+            `Target ${targetKey} is missing or expired.`,
+          );
+        }
+        const target = enrichGrant(owned);
+        store.targets = store.targets.filter((entry) => entry !== owned);
         saveStore(controllerHome, store);
         return target;
       },

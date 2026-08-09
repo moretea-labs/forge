@@ -570,8 +570,10 @@ export function compatibilityPluginJobFromReceipt(
 
 const LOCAL_SYSTEM_MUTATION_ACTIONS = new Set([
   'authorize_target',
+  'revoke_target',
   'create_directory',
   'write_text',
+  'delete_file',
   'initialize_git',
   'copy_file',
   'move_file',

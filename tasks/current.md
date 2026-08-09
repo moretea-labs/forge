@@ -3,7 +3,7 @@
 <!-- updated_at: 2026-08-09 -->
 <!-- stale_after: 24h -->
 
-> **Status**: The canonical immutable Runtime now runs `bc2badee` and is ready. Explicit full maintenance safely cancelled four stale WorkContracts and reconciled ten Work-bound stale Edit Sessions without rolling back source. The complete retained legacy inventory is documented: 1,318 nonterminal sessions all lack durable `workId` ownership evidence and remain fail-closed. Live Resend delivery remains externally blocked until an API key, verified sending domain, and sender identity are configured.
+> **Status**: The canonical immutable Runtime now runs `c75ca5c2` and is ready with the embedded Local Bridge owned by the same process and no readiness warnings. Local System now has explicit owner-scoped revocation and strongly confirmed single-file deletion in source; live acceptance follows immutable activation of this slice. The complete retained legacy inventory is documented: 1,318 nonterminal sessions all lack durable `workId` ownership evidence and remain fail-closed. Live Resend delivery remains externally blocked until an API key, verified sending domain, and sender identity are configured.
 > **Updated At**: 2026-08-09
 > **Source**: Source review, focused Runtime/MCP tests, authenticated `repo-harness6` session evidence, repeated 60-second Controller RPC timeouts, and connector/source schema comparison.
 > **Target**: Keep one canonical Forge Runtime release aligned with `main`, one Recovery service family, and the renamed `/Users/greyson/DevProjects/forge` paths.
@@ -13,12 +13,13 @@ This snapshot is a read model, not an execution gate.
 
 ## Current Focus
 
+- ✅ Local System source now closes the temporary-grant lifecycle: an authenticated owner can revoke its active grant immediately, and a strongly confirmed structured action can delete one regular file inside a read-write target without exposing recursive deletion or arbitrary `rm`. Both paths retain plugin receipt and local-effect Work lineage.
 - ✅ An enabled implicit/embedded Local Bridge is now owned by the Canonical Runtime as an in-process HTTP UI/API module. Runtime startup publishes current PID/endpoint/generation evidence; ordered shutdown closes the listener and marks the compatibility projection stopped. Explicit standalone/remote modes remain externally owned.
 - ✅ Local Bridge surface identity now matches the canonical runtime generation and does not expose a repository absolute path from its unauthenticated localhost health endpoint.
 - ✅ Terminal Process lease cleanup now persists a redacted structured failure diagnostic while retaining the canonical `pending` retry phase; exact-set/scope/fencing failures stay fail-closed, restart recovery retries them, and success clears the diagnostic without adding a second recovery owner.
 - ✅ Explicit full maintenance has zero remaining safe stale Work/Edit candidates. Four WorkContracts were cancelled with evidence retained; ten Work-bound sessions were finalized, superseded, or rolled back through existing cleanup semantics.
 - ⚠️ The full local inventory contains 1,318 retained nonterminal legacy Edit Sessions (`dirty` 1,179 / `open` 130 / `checked` 2 / `check_failed` 7). Every record lacks `workId`, so ownership cannot be proven and automatic cleanup correctly fails closed; all session IDs and the closeout rule are recorded in `docs/researches/20260809-stale-edit-session-inventory.md`.
-- ✅ Runtime release `1786276859850-bc2badee7b6ce5e8769ee1f89ef7680a47eca25b` is active at PID 48981 with database, scheduler, release coherence, and MCP end-to-end diagnostics passing; queue, workers, and leases are zero for Forge.
+- ✅ Runtime release `1786278054234-c75ca5c244f83c44c22a987d0d9a021305ce793b` is active with database, scheduler, release coherence, MCP, and embedded Local Bridge diagnostics passing; `controller_ready` has no warning or reason codes.
 - ✅ First-party `resend` plugin source now exposes non-secret configuration, auth/domain/SMTP status, domain verification, strongly confirmed sending, and sent-message receipt lookup; the personal-assistant reporting model includes a disabled-by-default `resend_email` sink.
 - ⚠️ `FORGE_RESEND_API_KEY` / `RESEND_API_KEY` and `.forge/plugins/resend.json` are absent in the current checkout, so no live email can be sent or claimed as accepted yet.
 - ✅ `ce6834e5b` fixes compiled `forge-runtime` Worker launch recursion by resolving the real Bun executable and preserves structured Runtime core-failure stderr.
@@ -39,6 +40,7 @@ This snapshot is a read model, not an execution gate.
 
 ## Validation Completed
 
+- `bun test tests/runtime/local-system-target-grant.test.ts`: 28/28 passed, including owner-isolated revoke/fail-closed behavior, strong-confirmation single-file deletion, non-directory deletion refusal, symlink escape rejection, restart-stable identity, store contention, and same-root mutation serialization.
 - Live audit before the fix proved the warning was real: service runtime state claimed embedded PID 60290 at `127.0.0.1:8766`, but the PID and listener were absent. Runtime tool discovery contained exactly 123 tools, expected/actual counts matched with no missing/unexpected/duplicate entries, and neither retired `self_healing_monitor_tick` nor `self_healing_loop_plan` was advertised.
 - `bun test tests/runtime/canonical-single-runtime.test.ts`: 18/18 passed, including same-process Local Bridge start/health/projection/close evidence and ordered complete-Runtime shutdown.
 - Local Bridge/canonical Runtime/runtime-command focused matrix: 52/52 passed; `bun run check:task` passed with typecheck, architecture validation, and 10 governed affected test files.
@@ -60,7 +62,7 @@ This snapshot is a read model, not an execution gate.
 
 ## Remaining Before Delivery
 
-- Activation of the final immutable release remains with the external Runtime lifecycle owner; this stability slice explicitly performed no rollout or Runtime restart.
+- Activate the Local System slice through the immutable Recovery transaction, then run the complete non-Git temporary-directory lifecycle and prove Repository Registry hashes remain unchanged.
 - Refresh/reconnect the external ChatGPT connector after activation so its cached `rh_work` schema includes `controller_claim` and `launcher_start`, then re-run live `controller_ready`, capabilities, and watchdog probes.
 - Keep the compatibility symlink `repo-harness-controller-runtime -> forge` until Runtime, registry, Recovery, and tunnel all use the renamed path and reboot recovery is verified.
 - Preserve `scripts/TM17Runner.app/` and `scripts/tm17-ui-step.command` (untracked, must not be committed).

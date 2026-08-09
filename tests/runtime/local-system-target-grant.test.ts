@@ -23,6 +23,7 @@ import {
   listActiveWorkspaceTargetGrants,
   resolveWorkspaceTargetCwd,
   resolveWorkspaceTargetPath,
+  revokeWorkspaceTargetGrant,
   WorkspaceTargetGrantError,
   withWorkspaceTargetMutationLocks,
   workspaceTargetGrantStorePath,
@@ -365,6 +366,39 @@ describe('workspace target grant authority', () => {
     ).workspaceId).toBe(otherOwner.workspaceId);
   });
 
+  test('revokes only the caller-owned target grant and fails closed afterward', () => {
+    const controllerHome = temp('forge-target-revoke-controller-');
+    const root = temp('forge-target-revoke-root-');
+    const first = authorizeWorkspaceTargetGrant(controllerHome, {
+      targetKey: 'shared-key',
+      rootPath: root,
+      ownerScope: 'principal:first',
+      reason: 'first owner',
+    });
+    const second = authorizeWorkspaceTargetGrant(controllerHome, {
+      targetKey: 'shared-key',
+      rootPath: root,
+      ownerScope: 'principal:second',
+      reason: 'second owner',
+    });
+
+    const revoked = revokeWorkspaceTargetGrant(controllerHome, {
+      targetKey: 'shared-key',
+      ownerScope: 'principal:first',
+    });
+    expect(revoked.workspaceId).toBe(first.workspaceId);
+    expectGrantCode(
+      () => getActiveWorkspaceTargetGrant(controllerHome, 'shared-key', new Date(), 'principal:first'),
+      'TARGET_OWNER_MISMATCH',
+    );
+    expect(getActiveWorkspaceTargetGrant(
+      controllerHome,
+      'shared-key',
+      new Date(),
+      'principal:second',
+    ).workspaceId).toBe(second.workspaceId);
+  });
+
   test('fails closed on concurrent grant-store mutation instead of losing an update', () => {
     const controllerHome = temp('forge-target-lock-controller-');
     const root = temp('forge-target-lock-root-');
@@ -533,6 +567,24 @@ describe('local_system target adapter', () => {
     });
     expect((principalList.targets as unknown[])).toHaveLength(1);
     expect((sharedList.targets as unknown[])).toHaveLength(1);
+  });
+
+  test('revokes an authorized target through the plugin boundary', async () => {
+    const controllerHome = temp('forge-target-plugin-revoke-controller-');
+    const root = temp('forge-target-plugin-revoke-root-');
+    await executeLocalSystemPluginAction(input(controllerHome, 'authorize_target', {
+      target_key: 'temporary',
+      root_path: root,
+      expires_in_minutes: 60,
+      reason: 'temporary acceptance target',
+    }));
+
+    await expect(executeLocalSystemPluginAction(input(controllerHome, 'revoke_target', {
+      target_key: 'temporary',
+    }))).resolves.toMatchObject({ revoked: true, targetKey: 'temporary', repositoryRegistered: false });
+    await expect(executeLocalSystemPluginAction(input(controllerHome, 'list_directory', {
+      target_key: 'temporary',
+    }))).rejects.toThrow(/LOCAL_SYSTEM_TARGET_UNAVAILABLE/);
   });
 
   test('terminates only a PID whose command identity matches exactly enough', async () => {
@@ -748,6 +800,50 @@ describe('local_system target adapter', () => {
     }));
     expect(initialized).toMatchObject({ initialized: true, repositoryRegistered: false, command: ['git', 'init', '-b', 'main'] });
     expect(existsSync(join(root, '.git'))).toBe(true);
+  });
+
+  test('deletes only one authorized regular file after strong confirmation', async () => {
+    const controllerHome = temp('forge-target-delete-controller-');
+    const root = temp('forge-target-delete-root-');
+    writeFileSync(join(root, 'delete-me.txt'), 'temporary\n');
+    mkdirSync(join(root, 'keep-directory'));
+    authorizeWorkspaceTargetGrant(controllerHome, {
+      targetKey: 'project',
+      rootPath: root,
+      ownerScope: 'chatgpt-action:principal:test-user',
+      access: 'read_write',
+      reason: 'bounded delete',
+    });
+
+    const repository = controllerPluginRepository(controllerHome);
+    await expect(submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: 'local_system',
+      actionId: 'delete_file',
+      requestId: 'target-delete-missing-confirmation',
+      args: { target_key: 'project', path: 'delete-me.txt' },
+      origin: { surface: 'chatgpt-action', actor: 'principal:test-user' },
+    })).rejects.toThrow(/PLUGIN_CONFIRMATION_REQUIRED/);
+    expect(existsSync(join(root, 'delete-me.txt'))).toBe(true);
+
+    const submitted = await submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: 'local_system',
+      actionId: 'delete_file',
+      requestId: 'target-delete-confirmed',
+      args: { target_key: 'project', path: 'delete-me.txt' },
+      confirmAuthorization: true,
+      confirmationText: 'delete-local-system-file',
+      origin: { surface: 'chatgpt-action', actor: 'principal:test-user' },
+    });
+    expect(existsSync(join(root, 'delete-me.txt'))).toBe(false);
+    expect(existsSync(join(root, 'keep-directory'))).toBe(true);
+    expect(submitted.result?.result).toMatchObject({ deleted: true, path: 'delete-me.txt' });
+    expect(getWorkContractByRequestId(controllerHome, 'target-delete-confirmed', '__controller__'))
+      .toMatchObject({ status: 'completed', workKind: 'local_effect' });
+
+    await expect(executeLocalSystemPluginAction(input(controllerHome, 'delete_file', {
+      target_key: 'project', path: 'keep-directory',
+    }))).rejects.toThrow(/LOCAL_SYSTEM_PATH_NOT_FILE/);
+    expect(existsSync(join(root, 'keep-directory'))).toBe(true);
   });
 
   test('terminalizes a lightweight local-effect Work for a target mutation', async () => {

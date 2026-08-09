@@ -8,6 +8,7 @@ import {
   readdirSync,
   renameSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from 'fs';
 import { dirname, extname, join, resolve } from 'path';
@@ -18,6 +19,7 @@ import {
   listActiveWorkspaceTargetGrants,
   resolveWorkspaceTargetCwd,
   resolveWorkspaceTargetPath,
+  revokeWorkspaceTargetGrant,
   withWorkspaceTargetMutationLocks,
   type ActiveWorkspaceTargetGrant,
   type WorkspaceTargetAccess,
@@ -479,9 +481,11 @@ function actions(): AssistantPluginActionDescriptor[] {
     { actionId: 'open_application', title: 'Open application', description: 'Open one macOS application by name or bundle id.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false, scopes: ['local-system.open'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { app_name: { type: 'string' }, bundle_id: { type: 'string' } }, additionalProperties: false } },
     { actionId: 'list_targets', title: 'List filesystem targets', description: 'List active expiring local filesystem grants.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 10_000, cancellable: true, idempotent: true, scopes: ['local-system.files.read'], resourceClaims: controllerRead, argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } },
     { actionId: 'authorize_target', title: 'Authorize filesystem target', description: 'Authorize an expiring filesystem target. By default, a path inside a Git project authorizes the whole project/repository root; use scope=directory only when intentionally granting a narrower directory.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { target_key: { type: 'string' }, root_path: { type: 'string' }, scope: { type: 'string', enum: ['auto', 'project', 'directory'] }, expires_in_minutes: { type: 'number' }, reason: { type: 'string' }, access: { type: 'string', enum: ['read_only', 'read_write'] } }, required: ['target_key', 'root_path', 'reason'], additionalProperties: false } },
+    { actionId: 'revoke_target', title: 'Revoke filesystem target', description: 'Immediately revoke one active filesystem target owned by the authenticated caller.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: false, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { target_key: { type: 'string' } }, required: ['target_key'], additionalProperties: false } },
     { actionId: 'list_directory', title: 'List directory', description: 'List a bounded directory snapshot below an authorized target.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.files.read'], resourceClaims: controllerRead, argumentsSchema: { type: 'object', properties: targetProperties, required: ['target_key'], additionalProperties: false } },
     { actionId: 'read_text', title: 'Read text file', description: 'Read a bounded UTF-8 text file below an authorized target.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.files.read'], resourceClaims: controllerRead, argumentsSchema: { type: 'object', properties: { ...targetProperties, max_chars: { type: 'number' } }, required: ['target_key', 'path'], additionalProperties: false } },
     { actionId: 'write_text', title: 'Write text file', description: 'Create or explicitly overwrite one bounded UTF-8 text file below an authorized read-write target.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { ...targetProperties, content: { type: 'string' }, overwrite: { type: 'boolean' } }, required: ['target_key', 'path', 'content'], additionalProperties: false } },
+    { actionId: 'delete_file', title: 'Delete file', description: 'Delete one exact regular file below an authorized read-write target. Arbitrary recursive or directory deletion is never exposed.', readOnly: false, risk: 'destructive', confirmation: 'strong_confirmation', requiredConfirmationText: 'delete-local-system-file', defaultTimeoutMs: 15_000, cancellable: true, idempotent: false, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: targetProperties, required: ['target_key', 'path'], additionalProperties: false } },
     { actionId: 'initialize_git', title: 'Initialize local Git repository', description: 'Run only git init inside an authorized read-write target without registering it in Repository Registry.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: true, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { target_key: { type: 'string' }, cwd: { type: 'string' }, initial_branch: { type: 'string' } }, required: ['target_key'], additionalProperties: false } },
     { actionId: 'execute_command', title: 'Execute target command', description: 'Execute one bounded typed-argv command inside an authorized target without repository registration. Shell strings, target escapes, destructive/remote writes, and Git mutations other than the dedicated initialize_git action are denied.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false, scopes: ['local-system.files.read', 'local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { target_key: { type: 'string' }, command: { type: 'array', items: { type: 'string' } }, cwd: { type: 'string' }, max_output_bytes: { type: 'number' } }, required: ['target_key', 'command'], additionalProperties: false } },
     { actionId: 'create_directory', title: 'Create directory', description: 'Create a directory below an authorized target without leaving that root.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: targetProperties, required: ['target_key', 'path'], additionalProperties: false } },
@@ -526,7 +530,7 @@ function capabilities(): AssistantPluginCapability[] {
     { capabilityId: 'local-system-diagnostics', title: 'Local diagnostics', description: 'Inspect CPU, processes, and memory with bounded typed commands.', scopes: ['local-system.read'], actions: ['system_snapshot', 'process_detail'] },
     { capabilityId: 'local-system-process-control', title: 'Verified process lifecycle', description: 'Terminate one verified PID or stop/start/restart one verified macOS user LaunchAgent without exposing arbitrary shell execution.', scopes: ['local-system.process'], actions: ['terminate_process', 'restart_user_launch_agent', 'stop_user_launch_agent', 'start_user_launch_agent'] },
     { capabilityId: 'local-system-open', title: 'Open local applications and files', description: 'Open applications and authorized files without arbitrary shell access.', scopes: ['local-system.open'], actions: ['open_application', 'reveal_in_finder', 'open_file'] },
-    { capabilityId: 'local-system-files', title: 'Authorized local files', description: 'Use expiring target grants for bounded local file operations and typed-argv commands without repository registration.', scopes: ['local-system.files.read', 'local-system.files.write'], actions: ['list_targets', 'authorize_target', 'list_directory', 'read_text', 'write_text', 'initialize_git', 'execute_command', 'create_directory', 'copy_file', 'move_file', 'rename_file'] },
+    { capabilityId: 'local-system-files', title: 'Authorized local files', description: 'Use expiring target grants for bounded local file operations and typed-argv commands without repository registration.', scopes: ['local-system.files.read', 'local-system.files.write'], actions: ['list_targets', 'authorize_target', 'revoke_target', 'list_directory', 'read_text', 'write_text', 'delete_file', 'initialize_git', 'execute_command', 'create_directory', 'copy_file', 'move_file', 'rename_file'] },
   ];
 }
 
@@ -593,6 +597,24 @@ export async function executeLocalSystemPluginAction(input: AssistantPluginActio
     }
     case 'list_targets': return { targets: activeTargets(input), repositoryRegistered: false };
     case 'authorize_target': return authorizeTarget(input);
+    case 'revoke_target': {
+      try {
+        const target = revokeWorkspaceTargetGrant(input.controllerHome, {
+          targetKey: requiredString(input.args, 'target_key'),
+          ownerScope: requestOwnerScope(input),
+          now: currentDate(),
+        });
+        return {
+          revoked: true,
+          targetKey: target.targetKey,
+          workspaceId: target.workspaceId,
+          identityFingerprint: target.identityFingerprint,
+          repositoryRegistered: false,
+        };
+      } catch (error) {
+        return rethrowTargetError(error);
+      }
+    }
     case 'list_directory': {
       const resolved = resolveTargetPath(input, requiredString(input.args, 'target_key'), optionalString(input.args, 'path'), { mustExist: true, directory: true });
       const entries = readdirSync(resolved.path, { withFileTypes: true }).slice(0, MAX_DIRECTORY_ENTRIES).map((entry) => ({
@@ -626,6 +648,25 @@ export async function executeLocalSystemPluginAction(input: AssistantPluginActio
         mkdirSync(dirname(resolved.path), { recursive: true });
         writeFileSync(resolved.path, content, { encoding: 'utf8', flag: overwrite ? 'w' : 'wx', mode: 0o600 });
         return { written: true, targetKey: resolved.target.targetKey, workspaceId: resolved.target.workspaceId, path: resolved.relativePath, overwrite, bytes: Buffer.byteLength(content, 'utf8'), repositoryRegistered: false };
+      });
+    }
+    case 'delete_file': {
+      const targetKey = requiredString(input.args, 'target_key');
+      return await withTargetMutation(input, [targetKey], () => {
+        const resolved = resolveTargetPath(input, targetKey, requiredString(input.args, 'path'), {
+          mustExist: true,
+          file: true,
+          operation: 'write',
+        });
+        unlinkSync(resolved.path);
+        return {
+          deleted: true,
+          targetKey: resolved.target.targetKey,
+          workspaceId: resolved.target.workspaceId,
+          identityFingerprint: resolved.target.identityFingerprint,
+          path: resolved.relativePath,
+          repositoryRegistered: false,
+        };
       });
     }
     case 'initialize_git': {

@@ -43,6 +43,8 @@ All plugin file paths and future command working directories must use the same c
 
 The resolver re-canonicalizes the root at use time. A moved, deleted, or replaced root fails closed. Grant-store mutations use the existing global Controller Lock and fail with retryable contention instead of silently losing concurrent updates.
 
+Explicit revocation uses the same owner-scoped authority and Controller Lock. It removes only the caller-owned active grant; the next read, write, or command fails closed as unavailable. Revocation is recorded through the normal plugin action receipt and local-effect Work lineage rather than a second audit store.
+
 ## Git behavior
 
 Git discovery is read-only and recognizes:
@@ -62,5 +64,6 @@ A Target Grant supplies workspace facts and path authorization only. It does not
 - Mutations still require Work lineage, current owner identity, policy/route evidence, base workspace fingerprint, verification, and a final receipt.
 - The existing repository command classifier and approval policy must be reused when command execution is wired to Target Grants.
 - Repository-wide Git refs, Issue ownership, release operations, and long-lived repository defaults still require explicit Repository Registry promotion.
+- Single-file deletion is a dedicated root-bounded action with strong confirmation and a durable receipt. Recursive/directory deletion and arbitrary `rm` execution remain unavailable.
 
 This boundary enables repository-free local work without weakening command policy or introducing a parallel lifecycle owner.
