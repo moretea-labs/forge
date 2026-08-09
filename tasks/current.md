@@ -13,6 +13,7 @@ This snapshot is a read model, not an execution gate.
 
 ## Current Focus
 
+- ✅ Terminal Process lease cleanup now persists a redacted structured failure diagnostic while retaining the canonical `pending` retry phase; exact-set/scope/fencing failures stay fail-closed, restart recovery retries them, and success clears the diagnostic without adding a second recovery owner.
 - ✅ Explicit full maintenance has zero remaining safe stale Work/Edit candidates. Four WorkContracts were cancelled with evidence retained; ten Work-bound sessions were finalized, superseded, or rolled back through existing cleanup semantics.
 - ⚠️ The full local inventory contains 1,318 retained nonterminal legacy Edit Sessions (`dirty` 1,179 / `open` 130 / `checked` 2 / `check_failed` 7). Every record lacks `workId`, so ownership cannot be proven and automatic cleanup correctly fails closed; all session IDs and the closeout rule are recorded in `docs/researches/20260809-stale-edit-session-inventory.md`.
 - ✅ Runtime release `1786276859850-bc2badee7b6ce5e8769ee1f89ef7680a47eca25b` is active at PID 48981 with database, scheduler, release coherence, and MCP end-to-end diagnostics passing; queue, workers, and leases are zero for Forge.
@@ -36,6 +37,8 @@ This snapshot is a read model, not an execution gate.
 
 ## Validation Completed
 
+- `bun test tests/runtime/process-runtime.test.ts`: 51/51 passed, including normal exactly-once release, exit-receipt conflict recovery, terminal records missing from active index, whole-release change recovery, fencing mismatch fail-closed, visible transient failure plus successful retry, and read/write contention.
+- Live Process `proc_mslrbu8k_bdf30891` completed `package:check:type` with workspace-read/build-cache-write leases, terminal status `succeeded`, `leaseReleaseState=released`, and no active lease files. Historical failure `proc_mslcn0gt_9c86a2f5` is also terminal with all three recorded leases released. A typed `/usr/bin/true` readonly command used `readonly_fast_path` with no Process record or execution lease.
 - Live `runtime_maintenance_status` after the final explicit pass reported zero safe candidates, zero stale WorkContracts, and 437 protected unknown-owned Edit Sessions inside its bounded 500-candidate window; an unbounded local metadata scan accounted for all 1,318 retained IDs.
 - `EDIT-1786271171326-396c4572` received exact-revision Process Check receipt `check_receipt_c55cb76569e2b352cd867080` for `package:check:type`, then maintenance finalized it without source rollback.
 - `bun test tests/runtime/capability-recovery.test.ts`: 29/29 passed, including terminal committed/superseded/unique-dirty, active/missing ownership, empty-session, explicit-full-only, summary, and legacy maintenance coverage for stale Edit Sessions.

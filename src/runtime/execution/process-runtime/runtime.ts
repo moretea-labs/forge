@@ -386,6 +386,28 @@ function expectedLeaseRefsForProcess(record: ManagedProcessRecord, repoId: strin
   });
 }
 
+function recordLeaseReleaseFailure(
+  controllerHome: string,
+  repoId: string,
+  record: ManagedProcessRecord,
+  error: unknown,
+): ManagedProcessRecord {
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  const message = redactSensitiveText(rawMessage).text;
+  const separator = message.indexOf(':');
+  const code = separator > 0 ? message.slice(0, separator) : 'TERMINAL_PROCESS_LEASE_RELEASE_FAILED';
+  return updateProcessRecord(controllerHome, repoId, record.processId, {
+    leasesReleased: false,
+    leaseReleaseState: 'pending',
+    leaseReleaseFailure: {
+      code,
+      message,
+      attemptedAt: nowIso(),
+      attempts: (record.leaseReleaseFailure?.attempts ?? 0) + 1,
+    },
+  }, { allowTerminal: true }) ?? record;
+}
+
 /**
  * Release terminal Process leases exactly once. Safe under recovery/cancel races.
  * Authorization is the durable terminal record plus exact owner/scope/token refs,
@@ -406,12 +428,19 @@ export function releaseProcessLeasesOnce(
       controllerHome,
       repoId,
       processId,
-      { leasesReleased: true, leaseReleaseState: 'released' },
+      { leasesReleased: true, leaseReleaseState: 'released', leaseReleaseFailure: undefined },
       { allowTerminal: true },
     );
   }
   const expectedRefs = expectedLeaseRefsForProcess(record, repoId);
-  if (expectedRefs.length !== refs.length) return record;
+  if (expectedRefs.length !== refs.length) {
+    return recordLeaseReleaseFailure(
+      controllerHome,
+      repoId,
+      record,
+      new Error(`TERMINAL_PROCESS_LEASE_REF_INVALID: ${processId} contains malformed or cross-scope lease references`),
+    );
+  }
   try {
     releaseTerminalProcessLeases(
       controllerHome,
@@ -420,19 +449,26 @@ export function releaseProcessLeasesOnce(
       expectedRefs,
       { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
     );
-  } catch {
+  } catch (error) {
     // Exact-set or token mismatch remains pending and retryable. Failed cleanup
     // must never become a durable released claim.
-    return getProcessRecord(controllerHome, repoId, processId) ?? record;
+    return recordLeaseReleaseFailure(controllerHome, repoId, record, error);
   }
   const remaining = listActiveLeases(controllerHome, repoId)
     .some((lease) => lease.ownerJobId === processOwnerJobId(processId));
-  if (remaining) return getProcessRecord(controllerHome, repoId, processId) ?? record;
+  if (remaining) {
+    return recordLeaseReleaseFailure(
+      controllerHome,
+      repoId,
+      record,
+      new Error(`TERMINAL_PROCESS_LEASES_REMAIN_ACTIVE: ${processId} still owns active leases after cleanup`),
+    );
+  }
   return updateProcessRecord(
     controllerHome,
     repoId,
     processId,
-    { leasesReleased: true, leaseReleaseState: 'released' },
+    { leasesReleased: true, leaseReleaseState: 'released', leaseReleaseFailure: undefined },
     { allowTerminal: true },
   ) ?? getProcessRecord(controllerHome, repoId, processId);
 }

@@ -112,6 +112,14 @@ export interface ProcessLeaseRef {
   workId?: string;
 }
 
+/** Retryable diagnostic for terminal lease cleanup; not a second lease state machine. */
+export interface ProcessLeaseReleaseFailure {
+  code: string;
+  message: string;
+  attemptedAt: string;
+  attempts: number;
+}
+
 export interface ProcessCommandSpec {
   kind: 'argv' | 'shell';
   executable?: string;
@@ -189,6 +197,8 @@ export interface ManagedProcessRecord {
   leaseRefs?: ProcessLeaseRef[];
   /** Durable terminal cleanup phase; pending remains retryable after controller restart. */
   leaseReleaseState?: 'pending' | 'released';
+  /** Last structured cleanup failure while leaseReleaseState remains pending. */
+  leaseReleaseFailure?: ProcessLeaseReleaseFailure;
   /** Compatibility projection of leaseReleaseState === released. */
   leasesReleased?: boolean;
   interactiveWaitMs: number;

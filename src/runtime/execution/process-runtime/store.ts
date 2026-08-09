@@ -169,6 +169,11 @@ function sanitizeProcessRecord(record: ManagedProcessRecord): { record: ManagedP
     stdoutTail: safeText(record.stdoutTail),
     stderrTail: safeText(record.stderrTail),
     error: record.error ? { code: safeText(record.error.code) ?? record.error.code, message: safeText(record.error.message) ?? '' } : undefined,
+    leaseReleaseFailure: record.leaseReleaseFailure ? {
+      ...record.leaseReleaseFailure,
+      code: safeText(record.leaseReleaseFailure.code) ?? record.leaseReleaseFailure.code,
+      message: safeText(record.leaseReleaseFailure.message) ?? '',
+    } : undefined,
     origin: record.origin ? {
       ...record.origin,
       toolName: safeText(record.origin.toolName),
