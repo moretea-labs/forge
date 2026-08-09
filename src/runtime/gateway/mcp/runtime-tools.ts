@@ -1799,13 +1799,12 @@ async function probeLocalControllerHealth(endpoint: string | undefined): Promise
 
 function localControllerDiagnosticMatchesRuntime(
   payload: Record<string, unknown> | null,
-  expected: { repoRoot?: string; generation?: string } = {},
+  expected: { generation?: string } = {},
 ): boolean {
   return payload?.status === 'ok'
     && payload.toolSurface === FORGE_TOOL_SURFACE
     && payload.schemaVersion === FORGE_MCP_SCHEMA_VERSION
     && payload.version === FORGE_VERSION
-    && (expected.repoRoot === undefined || payload.repoRoot === expected.repoRoot)
     && (expected.generation === undefined || payload.generation === expected.generation);
 }
 
@@ -1850,7 +1849,7 @@ export async function controllerReadinessEvidence(
   const localBridgeEndpointReachable = localBridgeLiveHealth !== null;
   const localBridgeExpectedSurface = shouldProbeLocalBridge
     ? localControllerDiagnosticMatchesRuntime(localBridgeLiveHealth, {
-      repoRoot: repository?.canonicalRoot,
+      generation: localBridgeSurface?.generation,
     })
     : true;
   const schedulerHeartbeatAgeMs = ageMs(scheduler.lastTickAt);
@@ -3745,7 +3744,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const endpointReachable = liveHealth !== null;
         const expectedSurface = shouldProbe
           ? localControllerDiagnosticMatchesRuntime(liveHealth, {
-            repoRoot: repository.canonicalRoot,
+            generation: surface.generation,
           })
           : false;
         const processAlive = surface.processRunning;

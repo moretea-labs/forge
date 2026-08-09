@@ -300,7 +300,12 @@ describe('canonical single Runtime', () => {
     expect(bridge).toBeTruthy();
     cleanups.push(() => bridge?.close());
     const health = await fetch(new URL('/health', bridge!.endpoint)).then((response) => response.json()) as Record<string, unknown>;
-    expect(health).toMatchObject({ status: 'ok', localOnly: true, mode: 'embedded' });
+    expect(health).toMatchObject({
+      status: 'ok',
+      localOnly: true,
+      mode: 'embedded',
+    });
+    expect(health.repoRoot).toBeUndefined();
     expect(loadMcpServiceRuntimeState(fixture.controllerHome)?.localController).toMatchObject({
       endpoint: bridge!.endpoint,
       running: true,

@@ -214,6 +214,8 @@ describe('runtime command surface', () => {
     const readinessEvidenceEnd = runtimeTools.indexOf('export async function controllerReadiness(', readinessEvidenceStart);
     const readinessEvidenceBlock = runtimeTools.slice(readinessEvidenceStart, readinessEvidenceEnd);
     expect(readinessEvidenceBlock).toContain('expectedSurface: localBridgeExpectedSurface');
+    expect(readinessEvidenceBlock).toContain('generation: localBridgeSurface?.generation');
+    expect(readinessEvidenceBlock).not.toContain('repoRoot: repository?.canonicalRoot');
     expect(readinessEvidenceBlock).not.toContain('readActiveSlotAuthority');
     expect(readinessEvidenceBlock).not.toContain('expectedActiveSlot');
     expect(readinessEvidenceBlock).not.toContain('observedSlot');
