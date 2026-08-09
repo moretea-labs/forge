@@ -8,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  realpathSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -165,6 +166,37 @@ function run(command: string, args: string[], timeoutMs = 30_000): CommandResult
     stderr: String(result.stderr ?? result.error?.message ?? ''),
     command: [command, ...args],
   };
+}
+
+function projectScriptRuntimePath(runtime: string): string {
+  const home = process.env.HOME?.trim();
+  const candidates: Record<string, string[]> = {
+    node: ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node'],
+    bun: [
+      ...(home ? [join(resolve(home), '.bun', 'bin', 'bun')] : []),
+      '/opt/homebrew/bin/bun',
+      '/usr/local/bin/bun',
+    ],
+    python3: ['/opt/homebrew/bin/python3', '/usr/local/bin/python3', '/usr/bin/python3'],
+    ruby: ['/opt/homebrew/bin/ruby', '/usr/local/bin/ruby', '/usr/bin/ruby'],
+    bash: ['/opt/homebrew/bin/bash', '/usr/local/bin/bash', '/bin/bash'],
+    sh: ['/bin/sh'],
+  };
+  const executable = (candidates[runtime] ?? []).find((candidate) => {
+    try {
+      return existsSync(candidate) && statSync(candidate).isFile() && (statSync(candidate).mode & 0o111) !== 0;
+    } catch {
+      return false;
+    }
+  });
+  if (!executable) {
+    throw new AssistantPluginError(
+      'LOCAL_SYSTEM_SCRIPT_RUNTIME_UNAVAILABLE',
+      `The approved ${runtime} interpreter is not installed in a canonical system location.`,
+      { retryable: false, details: { runtime } },
+    );
+  }
+  return realpathSync(executable);
 }
 
 const TARGET_ERROR_CODES: Record<WorkspaceTargetGrantError['code'], string> = {
@@ -825,7 +857,7 @@ export async function executeLocalSystemPluginAction(input: AssistantPluginActio
             { retryable: false, details: { targetKey, path: script.relativePath, expectedSha256, observedSha256 } },
           );
         }
-        const argv = [runtime, script.path, ...scriptArguments];
+        const argv = [projectScriptRuntimePath(runtime), script.path, ...scriptArguments];
         const canonical = assertRepositoryCommandInputAllowed(argv);
         assertCommandPathOperandsStayInRepository(canonical, cwd.path, cwd.root, []);
         const maxOutputBytes = Math.max(1_024, Math.min(Math.trunc(Number(input.args.max_output_bytes ?? MAX_OUTPUT_BYTES)), 1024 * 1024));
