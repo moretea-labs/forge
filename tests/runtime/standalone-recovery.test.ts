@@ -21,6 +21,7 @@ import {
   rollbackPrevious,
   runtimeStatus,
   runtimeWithinWatchdogStartupGrace,
+  watchdogRuntimeStartupGraceMs,
   verifyStableRuntime,
   type VerifyResult,
 } from '../../src/runtime/standalone-recovery/core';
@@ -1222,8 +1223,12 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(resetWatchdogStateForRecoveryRelease(reset, 'release-new')).toBe(reset);
   });
 
-  test('grants startup grace only to a live non-stale Runtime owner', () => {
+  test('grants startup grace only to a live non-stale Runtime owner and never shorter than release verification', () => {
     const now = Date.parse('2026-08-09T06:20:00.000Z');
+    expect(watchdogRuntimeStartupGraceMs({ primaryRuntimeService: { platform: 'launchd' } })).toBe(60_000);
+    expect(watchdogRuntimeStartupGraceMs({
+      primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 120_000 },
+    })).toBe(120_000);
     expect(runtimeWithinWatchdogStartupGrace({
       running: true,
       stale: false,

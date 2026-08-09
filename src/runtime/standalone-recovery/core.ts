@@ -824,6 +824,16 @@ function isExternalTunnelFailure(config: RecoveryConfig, verified: VerifyResult,
 
 export const WATCHDOG_RUNTIME_STARTUP_GRACE_MS = 60_000;
 
+export function watchdogRuntimeStartupGraceMs(
+  config: Pick<RecoveryConfig, 'primaryRuntimeService'>,
+): number {
+  const configuredVerifyTimeout = config.primaryRuntimeService?.postRestartVerifyTimeoutMs;
+  return Math.max(
+    WATCHDOG_RUNTIME_STARTUP_GRACE_MS,
+    Number.isFinite(configuredVerifyTimeout) ? Math.max(0, configuredVerifyTimeout ?? 0) : 0,
+  );
+}
+
 export function runtimeWithinWatchdogStartupGrace(
   input: { running: boolean; stale: boolean; snapshot?: { startedAt?: string } },
   nowMs = Date.now(),
@@ -1775,7 +1785,11 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
 }> {
   const now = Date.now();
   const runtimeObservation = observeRuntimeStatus(config.controllerHome);
-  const runtimeStartupGrace = runtimeWithinWatchdogStartupGrace(runtimeObservation, now);
+  const runtimeStartupGrace = runtimeWithinWatchdogStartupGrace(
+    runtimeObservation,
+    now,
+    watchdogRuntimeStartupGraceMs(config),
+  );
   // Five-second watchdog ticks must stay cheap while the system is healthy.
   // Full MCP protocol verification serializes the entire tool surface, so run
   // it periodically and immediately escalate to it when a local health probe
