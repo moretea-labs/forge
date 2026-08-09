@@ -215,23 +215,22 @@ function mockAttachPlaywright(
 function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', options: { javaScriptEnabled?: boolean } = {}) {
   const javaScriptEnabled = options.javaScriptEnabled !== false;
   const separator = '\x1e';
-  const userTab = { id: 501, url: 'https://example.com/user-work', title: 'User Work' };
-  const ownedTabs = new Map<number, { url: string; title: string; ownerToken?: string }>();
+  const userTab = { id: '501', url: 'https://example.com/user-work', title: 'User Work' };
+  const ownedTabs = new Map<string, { url: string; title: string; ownerToken?: string }>();
   const events = {
-    created: [] as number[],
-    closed: [] as number[],
-    navigated: [] as Array<{ tabId: number; url: string }>,
+    created: [] as string[],
+    closed: [] as string[],
+    navigated: [] as Array<{ tabId: string; url: string }>,
     activeTabId: userTab.id,
   };
   let nextTabId = 9001;
   const appName = product === 'chrome' ? 'Google Chrome' : 'Vivaldi';
 
-  const tabIdFromScript = (script: string): number | undefined => {
-    const matches = [...script.matchAll(/whose id is (\d+)/g)];
-    const raw = matches.at(-1)?.[1];
-    return raw ? Number(raw) : undefined;
+  const tabIdFromScript = (script: string): string | undefined => {
+    const matches = [...script.matchAll(/whose id is "([^"]+)"/g)];
+    return matches.at(-1)?.[1];
   };
-  const metadata = (tabId: number, url: string, title: string, active: boolean) =>
+  const metadata = (tabId: string, url: string, title: string, active: boolean) =>
     `true${separator}${url}${separator}${title}${separator}0${separator}25${separator}1280${separator}925${separator}77${separator}${tabId}${separator}${active ? 'true' : 'false'}`;
 
   return {
@@ -242,14 +241,14 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
       processRunning: async () => true,
       runAppleScript: async (script: string, args: string[] = []) => {
         if (!script.includes(appName)) {
-          return metadata(701, 'https://example.com/other-browser', 'Other Browser', false);
+          return metadata('701', 'https://example.com/other-browser', 'Other Browser', false);
         }
         if (script.includes('make new tab at end of tabs of targetWindow')) {
-          const tabId = nextTabId++;
+          const tabId = String(nextTabId++);
           const url = args[0] ?? 'about:blank';
           ownedTabs.set(tabId, { url, title: `Forge ${tabId}` });
           events.created.push(tabId);
-          return `77${separator}${tabId}`;
+          return `window-77${separator}${tabId}`;
         }
         if (script.includes('close targetTab')) {
           const tabId = tabIdFromScript(script);
@@ -685,6 +684,47 @@ describe('browser plugin', () => {
     expect(discovered.attempts.every((attempt) => !('url' in attempt))).toBe(true);
   });
 
+  test('fail-closed native attach health stays degraded until a live browser attach succeeds', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+      allowedDomains: ['example.com'],
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async () => { throw new Error('Chrome Apple Events timed out'); },
+    });
+
+    const unverified = buildBrowserPluginManifest(0, undefined, repoRoot);
+    expect(unverified.health).toMatchObject({ state: 'degraded', ready: false, probed: false });
+
+    const failed = await discoverMacOsBrowserAttachment(['chrome']);
+    expect(failed.attachment).toBeUndefined();
+    const degraded = buildBrowserPluginManifest(0, undefined, repoRoot);
+    expect(degraded.health).toMatchObject({ state: 'degraded', ready: false, probed: true });
+    expect(degraded.health.warnings.join('\n')).toContain('Chrome Apple Events timed out');
+
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async () => `true\x1ehttps://example.com/chrome\x1eChrome\x1e10\x1e20\x1e1210\x1e820`,
+    });
+    const succeeded = await discoverMacOsBrowserAttachment(['chrome']);
+    expect(succeeded.attachment?.metadata.product).toBe('chrome');
+    const ready = buildBrowserPluginManifest(0, undefined, repoRoot);
+    expect(ready.health).toMatchObject({ state: 'ready', ready: true, probed: true });
+  });
+
   test('attach_preferred creates one plugin-owned Vivaldi tab, preserves the user tab, and reuses it across actions', async () => {
     const { repoRoot } = repoFixture();
     writeBrowserConfig(repoRoot, {
@@ -712,16 +752,16 @@ describe('browser plugin', () => {
       origin: { surface: 'local-ui', actor: 'test' },
     });
 
-    expect(native.events.created).toEqual([9001]);
-    expect(native.events.activeTabId).toBe(501);
-    expect(native.events.navigated).toEqual([{ tabId: 9001, url: 'https://example.com/second' }]);
+    expect(native.events.created).toEqual(['9001']);
+    expect(native.events.activeTabId).toBe('501');
+    expect(native.events.navigated).toEqual([{ tabId: '9001', url: 'https://example.com/second' }]);
     expect(first.browserConnection).toMatchObject({
       provider: 'macos-apple-events',
-      tab: { ownership: 'plugin_owned', windowId: 77, tabId: 9001 },
+      tab: { ownership: 'plugin_owned', windowId: 'window-77', tabId: '9001' },
     });
     expect(second.browserConnection).toMatchObject({
       provider: 'macos-apple-events',
-      tab: { ownership: 'plugin_owned', windowId: 77, tabId: 9001 },
+      tab: { ownership: 'plugin_owned', windowId: 'window-77', tabId: '9001' },
       sessionResume: { status: 'matched' },
     });
 
@@ -730,8 +770,8 @@ describe('browser plugin', () => {
       requestId: 'browser-owned-close', args: { session_id: 'owned-session' }, origin: { surface: 'local-ui', actor: 'test' },
     });
     expect(closed).toMatchObject({ closed: true, resourceClosed: true });
-    expect(native.events.closed).toEqual([9001]);
-    expect(native.events.activeTabId).toBe(501);
+    expect(native.events.closed).toEqual(['9001']);
+    expect(native.events.activeTabId).toBe('501');
   });
 
   test('native open_page preserves tab ownership when JavaScript from Apple Events is disabled and DOM actions fail clearly', async () => {
@@ -756,11 +796,11 @@ describe('browser plugin', () => {
       origin: { surface: 'local-ui', actor: 'test' },
     });
 
-    expect(native.events.created).toEqual([9001]);
-    expect(native.events.activeTabId).toBe(501);
+    expect(native.events.created).toEqual(['9001']);
+    expect(native.events.activeTabId).toBe('501');
     expect(opened.browserConnection).toMatchObject({
       provider: 'macos-apple-events',
-      tab: { ownership: 'plugin_owned', windowId: 77, tabId: 9001 },
+      tab: { ownership: 'plugin_owned', windowId: 'window-77', tabId: '9001' },
     });
 
     await expect(executeBrowserPluginAction({
@@ -768,8 +808,8 @@ describe('browser plugin', () => {
       requestId: 'browser-native-no-js-dom', args: { session_id: 'native-no-js' },
       origin: { surface: 'local-ui', actor: 'test' },
     })).rejects.toThrow('PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED');
-    expect(native.events.created).toEqual([9001]);
-    expect(native.events.activeTabId).toBe(501);
+    expect(native.events.created).toEqual(['9001']);
+    expect(native.events.activeTabId).toBe('501');
   });
 
   test('two attach_preferred sessions own separate native tabs and never reuse the user active tab', async () => {
@@ -799,10 +839,10 @@ describe('browser plugin', () => {
       origin: { surface: 'local-ui', actor: 'test' },
     });
 
-    expect(native.events.created).toEqual([9001, 9002]);
-    expect(native.events.activeTabId).toBe(501);
-    expect((one.browserConnection as Record<string, any>).tab.tabId).toBe(9001);
-    expect((two.browserConnection as Record<string, any>).tab.tabId).toBe(9002);
+    expect(native.events.created).toEqual(['9001', '9002']);
+    expect(native.events.activeTabId).toBe('501');
+    expect((one.browserConnection as Record<string, any>).tab.tabId).toBe('9001');
+    expect((two.browserConnection as Record<string, any>).tab.tabId).toBe('9002');
   });
 
   test('CDP attach never consumes a blank user tab or opens a new user tab when no target tab exists', async () => {

@@ -18,8 +18,8 @@ interface MacOsBrowserDefinition {
 }
 
 export interface MacOsBrowserTabRef {
-  windowId: number;
-  tabId: number;
+  windowId: string;
+  tabId: string;
 }
 
 export interface MacOsBrowserMetadata {
@@ -30,8 +30,8 @@ export interface MacOsBrowserMetadata {
   url: string;
   title: string;
   bounds: { x: number; y: number; width: number; height: number };
-  windowId?: number;
-  tabId?: number;
+  windowId?: string;
+  tabId?: string;
   active?: boolean;
 }
 
@@ -46,6 +46,13 @@ export interface MacOsBrowserAttachAttempt {
 
 export interface MacOsBrowserAttachment {
   metadata: MacOsBrowserMetadata;
+  attempts: MacOsBrowserAttachAttempt[];
+}
+
+export interface MacOsBrowserAttachObservation {
+  checkedAt: string;
+  ready: boolean;
+  selectedProduct?: MacOsBrowserProduct;
   attempts: MacOsBrowserAttachAttempt[];
 }
 
@@ -109,6 +116,7 @@ const defaultRuntimeHooks: MacOsBrowserRuntimeHooks = {
 };
 
 let runtimeHooks: MacOsBrowserRuntimeHooks = { ...defaultRuntimeHooks };
+let lastAttachObservation: MacOsBrowserAttachObservation | undefined;
 
 export function setMacOsBrowserRuntimeHooksForTest(hooks: Partial<MacOsBrowserRuntimeHooks>): void {
   runtimeHooks = { ...defaultRuntimeHooks, ...hooks };
@@ -116,6 +124,13 @@ export function setMacOsBrowserRuntimeHooksForTest(hooks: Partial<MacOsBrowserRu
 
 export function resetMacOsBrowserRuntimeHooksForTest(): void {
   runtimeHooks = { ...defaultRuntimeHooks };
+  lastAttachObservation = undefined;
+}
+
+export function getMacOsBrowserAttachObservation(): MacOsBrowserAttachObservation | undefined {
+  return lastAttachObservation
+    ? { ...lastAttachObservation, attempts: lastAttachObservation.attempts.map((attempt) => ({ ...attempt })) }
+    : undefined;
 }
 
 const BROWSERS: Record<MacOsBrowserProduct, MacOsBrowserDefinition> = {
@@ -154,12 +169,12 @@ set targetWindow to front window
 set targetTab to active tab of targetWindow
 set windowBounds to bounds of targetWindow
 set separator to ASCII character 30
-return (frontmost as text) & separator & (URL of targetTab as text) & separator & (title of targetTab as text) & separator & ((item 1 of windowBounds) as text) & separator & ((item 2 of windowBounds) as text) & separator & ((item 3 of windowBounds) as text) & separator & ((item 4 of windowBounds) as text) & separator & ((id of targetWindow) as text) & separator & ((id of targetTab) as text) & separator & "true"
+return (frontmost as text) & separator & (URL of targetTab as text) & separator & (title of targetTab as text) & separator & ((item 1 of windowBounds) as text) & separator & ((item 2 of windowBounds) as text) & separator & ((item 3 of windowBounds) as text) & separator & ((item 4 of windowBounds) as text)
 `);
 }
 
 function targetTabPreamble(ref: MacOsBrowserTabRef): string {
-  return `set targetWindow to first window whose id is ${Math.trunc(ref.windowId)}\nset targetTab to first tab of targetWindow whose id is ${Math.trunc(ref.tabId)}`;
+  return `set targetWindow to first window whose id is ${quotedAppleScript(ref.windowId)}\nset targetTab to first tab of targetWindow whose id is ${quotedAppleScript(ref.tabId)}`;
 }
 
 function targetMetadataScript(browser: MacOsBrowserDefinition, ref: MacOsBrowserTabRef): string {
@@ -168,7 +183,7 @@ ${targetTabPreamble(ref)}
 set windowBounds to bounds of targetWindow
 set separator to ASCII character 30
 set targetIsActive to ((id of active tab of targetWindow) is (id of targetTab))
-return (frontmost as text) & separator & (URL of targetTab as text) & separator & (title of targetTab as text) & separator & ((item 1 of windowBounds) as text) & separator & ((item 2 of windowBounds) as text) & separator & ((item 3 of windowBounds) as text) & separator & ((item 4 of windowBounds) as text) & separator & ((id of targetWindow) as text) & separator & ((id of targetTab) as text) & separator & (targetIsActive as text)
+return (frontmost as text) & separator & (URL of targetTab as text) & separator & (title of targetTab as text) & separator & ((item 1 of windowBounds) as text) & separator & ((item 2 of windowBounds) as text) & separator & ((item 3 of windowBounds) as text) & separator & ((item 4 of windowBounds) as text) & separator & "" & separator & "" & separator & (targetIsActive as text)
 `);
 }
 
@@ -245,6 +260,12 @@ function parseInteger(value: string, field: string): number {
   return parsed;
 }
 
+function parseBrowserId(value: string, field: string): string {
+  const parsed = value.trim();
+  if (!parsed) throw new Error(`Invalid ${field} returned by browser scripting.`);
+  return parsed;
+}
+
 function parseMetadata(product: MacOsBrowserProduct, raw: string): MacOsBrowserMetadata {
   const browser = browserDefinition(product);
   const parts = raw.split(RECORD_SEPARATOR);
@@ -266,8 +287,8 @@ function parseMetadata(product: MacOsBrowserProduct, raw: string): MacOsBrowserM
       width: Math.max(1, right - left),
       height: Math.max(1, bottom - top),
     },
-    windowId: parts[7] ? parseInteger(parts[7], 'window id') : undefined,
-    tabId: parts[8] ? parseInteger(parts[8], 'tab id') : undefined,
+    windowId: parts[7] ? parseBrowserId(parts[7], 'window id') : undefined,
+    tabId: parts[8] ? parseBrowserId(parts[8], 'tab id') : undefined,
     active: parts[9] ? (parts[9] ?? '').toLowerCase() === 'true' : undefined,
   };
 }
@@ -319,9 +340,18 @@ export async function discoverMacOsBrowserAttachment(
   const available = inspected.filter((entry): entry is { metadata: MacOsBrowserMetadata; attempt: MacOsBrowserAttachAttempt } => Boolean(entry.metadata));
   const selected = available.find((entry) => entry.metadata.frontmost) ?? available[0];
   const attempts = inspected.map((entry) => ({ ...entry.attempt }));
-  if (!selected) return { attempts };
+  if (!selected) {
+    lastAttachObservation = { checkedAt: new Date().toISOString(), ready: false, attempts: attempts.map((attempt) => ({ ...attempt })) };
+    return { attempts };
+  }
   const selectedAttempt = attempts.find((entry) => entry.product === selected.metadata.product);
   if (selectedAttempt) selectedAttempt.status = 'selected';
+  lastAttachObservation = {
+    checkedAt: new Date().toISOString(),
+    ready: true,
+    selectedProduct: selected.metadata.product,
+    attempts: attempts.map((attempt) => ({ ...attempt })),
+  };
   return {
     attempts,
     attachment: {
@@ -645,7 +675,7 @@ export async function createMacOsBrowserOwnedPage(
   const raw = await runtimeHooks.runAppleScript(createOwnedTabScript(browser), [url], timeoutMs);
   const parts = raw.split(RECORD_SEPARATOR);
   if (parts.length < 2) throw new Error(`Browser scripting returned incomplete owned-tab metadata for ${browser.appName}.`);
-  const ref = { windowId: parseInteger(parts[0] ?? '', 'window id'), tabId: parseInteger(parts[1] ?? '', 'tab id') };
+  const ref = { windowId: parseBrowserId(parts[0] ?? '', 'window id'), tabId: parseBrowserId(parts[1] ?? '', 'tab id') };
   return new MacOsAppleEventsPage({
     ...attachment,
     metadata: { ...attachment.metadata, url, title: '', windowId: ref.windowId, tabId: ref.tabId, active: false },

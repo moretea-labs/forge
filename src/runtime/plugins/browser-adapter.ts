@@ -17,6 +17,7 @@ import {
   createMacOsBrowserOwnedPage,
   createMacOsBrowserOwnedPageFromRef,
   discoverMacOsBrowserAttachment,
+  getMacOsBrowserAttachObservation,
   macOsActiveBrowserAttachSupported,
   macOsBrowserJavaScriptAutomationDisabled,
   type MacOsBrowserAttachAttempt,
@@ -81,8 +82,8 @@ interface BrowserTabResumeState {
   capturedAt: string;
   ownership?: 'plugin_owned' | 'user_owned';
   ownerToken?: string;
-  windowId?: number;
-  tabId?: number;
+  windowId?: string;
+  tabId?: string;
 }
 
 interface BrowserSessionConnectionState {
@@ -1225,8 +1226,8 @@ async function openNativeAttachedContext(
   const savedTab = target.existingSession?.browser?.tab;
   const savedProduct = target.existingSession?.browser?.provider === 'macos-apple-events'
     && savedTab?.ownership === 'plugin_owned'
-    && typeof savedTab.windowId === 'number'
-    && typeof savedTab.tabId === 'number'
+    && typeof savedTab.windowId === 'string'
+    && typeof savedTab.tabId === 'string'
     ? target.existingSession.browser.browserProduct
     : undefined;
   const candidates = savedProduct ? [savedProduct] : (config.nativeBrowserCandidates ?? ['vivaldi', 'chrome']);
@@ -1241,8 +1242,8 @@ async function openNativeAttachedContext(
   let sessionResume: BrowserSessionResumeDiagnostic;
   let matchedBy: BrowserTabMatchReason = 'new_page';
   if (savedTab?.ownership === 'plugin_owned'
-    && typeof savedTab.windowId === 'number'
-    && typeof savedTab.tabId === 'number'
+    && typeof savedTab.windowId === 'string'
+    && typeof savedTab.tabId === 'string'
     && target.existingSession?.browser?.browserProduct === discovered.attachment.metadata.product) {
     const ref: MacOsBrowserTabRef = { windowId: savedTab.windowId, tabId: savedTab.tabId };
     const candidate = createMacOsBrowserOwnedPageFromRef(discovered.attachment, ref, timeout) as unknown as PageLike;
@@ -2014,10 +2015,44 @@ function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPlugin
       details: { ...baseDetails, userFacingStatus: 'disabled' },
     };
   }
-  const nativeRouteReady = config.browserMode === 'attach_preferred'
+  const nativeAttachConfigured = config.browserMode === 'attach_preferred'
     && config.nativeAttachMode !== 'disabled'
     && macOsActiveBrowserAttachSupported();
-  if (!dependencyReady && !nativeRouteReady) {
+  const nativeObservation = nativeAttachConfigured ? getMacOsBrowserAttachObservation() : undefined;
+  const cdpRouteReady = config.browserMode === 'attach_preferred'
+    && cdpEndpoints(config).length > 0
+    && dependencyReady;
+  const managedRouteReady = dependencyReady
+    && (config.browserMode !== 'attach_preferred' || config.cdpAttachFallback === 'managed_persistent');
+  const nativeRouteReady = nativeAttachConfigured && nativeObservation?.ready === true;
+  const nativeRouteUnverified = nativeAttachConfigured
+    && cdpEndpoints(config).length === 0
+    && config.cdpAttachFallback === 'fail_closed'
+    && nativeObservation === undefined;
+  const nativeRouteFailed = nativeAttachConfigured
+    && cdpEndpoints(config).length === 0
+    && config.cdpAttachFallback === 'fail_closed'
+    && nativeObservation?.ready === false;
+  if (nativeRouteUnverified || nativeRouteFailed) {
+    const nativeWarnings = nativeRouteFailed
+      ? nativeObservation?.attempts.map((attempt) => `${attempt.appName}: ${attempt.error ?? attempt.status}`) ?? []
+      : ['Native active-browser attach has not completed a live probe in this Runtime instance.'];
+    return {
+      state: 'degraded',
+      checkedAt: now(),
+      ready: false,
+      probed: nativeRouteFailed,
+      errors: [],
+      warnings: [...warnings, ...nativeWarnings],
+      details: {
+        ...baseDetails,
+        nativeAttachObservation: nativeObservation,
+        provider: 'macos-active-browser-fail-closed',
+        userFacingStatus: 'not ready',
+      },
+    };
+  }
+  if (!cdpRouteReady && !managedRouteReady && !nativeRouteReady) {
     return {
       state: 'error',
       checkedAt: now(),
@@ -2054,6 +2089,7 @@ function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPlugin
     warnings,
     details: {
       ...baseDetails,
+      nativeAttachObservation: nativeObservation,
       allowedDomains: config.allowedDomains,
       provider: config.browserMode === 'attach_preferred'
         ? 'cdp-or-macos-active-browser-or-persistent-context'
@@ -2082,12 +2118,14 @@ export function buildBrowserPluginManifest(previousRevision = 0, previousUpdated
     },
     enabled: config.enabled,
     lifecycle: {
-      state: !config.enabled ? 'disabled' : state.ready ? 'enabled' : 'error',
+      state: !config.enabled ? 'disabled' : state.state === 'degraded' ? 'degraded' : state.ready ? 'enabled' : 'error',
       reason: !config.enabled
         ? 'Browser plugin is disabled.'
         : state.ready
           ? `Browser plugin is ready via ${config.browserMode === 'attach_preferred' ? 'CDP, macOS active-browser attach, and explicit managed fallback.' : 'Playwright persistent context.'}`
-          : state.errors[0],
+          : state.state === 'degraded'
+            ? state.warnings[0] ?? 'Browser plugin requires a successful live native attach probe.'
+            : state.errors[0],
     },
     health: state,
     permissions: permissions(state.ready),
@@ -2179,8 +2217,8 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         if (session?.browser?.provider === 'macos-apple-events'
           && session.browser.browserProduct
           && tab?.ownership === 'plugin_owned'
-          && typeof tab.windowId === 'number'
-          && typeof tab.tabId === 'number') {
+          && typeof tab.windowId === 'string'
+          && typeof tab.tabId === 'string') {
           await closeMacOsBrowserOwnedTab(session.browser.browserProduct, { windowId: tab.windowId, tabId: tab.tabId }, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS)
             .catch(() => undefined);
         }
