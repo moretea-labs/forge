@@ -1,4 +1,5 @@
 import { spawnSync } from 'child_process';
+import { createHash } from 'crypto';
 import {
   constants,
   copyFileSync,
@@ -50,6 +51,7 @@ const MAX_OUTPUT_BYTES = 64 * 1024;
 const MAX_TEXT_CHARS = 100_000;
 const MAX_DIRECTORY_ENTRIES = 200;
 const TARGET_SAFE_FILESYSTEM_MUTATORS = new Set(['touch', 'mkdir', 'cp', 'mv', 'install', 'tee', 'truncate']);
+const PROJECT_SCRIPT_RUNTIMES = new Set(['node', 'bun', 'python3', 'ruby', 'bash', 'sh']);
 const AUTO_OPEN_DENIED_EXTENSIONS = new Set([
   '.command', '.sh', '.bash', '.zsh', '.fish', '.tool',
   '.app', '.pkg', '.mpkg', '.dmg', '.workflow',
@@ -128,6 +130,15 @@ function requiredStringArray(args: Record<string, unknown>, key: string): string
     throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `${key} must be a non-empty string array.`, { retryable: false });
   }
   return value.map((entry) => String(entry));
+}
+
+function optionalStringArray(args: Record<string, unknown>, key: string): string[] {
+  const value = args[key];
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `${key} must be a string array.`, { retryable: false });
+  }
+  return value.map(String);
 }
 
 function bounded(value: string, maxBytes = MAX_OUTPUT_BYTES): { content: string; truncated: boolean; byteLength: number } {
@@ -488,6 +499,7 @@ function actions(): AssistantPluginActionDescriptor[] {
     { actionId: 'delete_file', title: 'Delete file', description: 'Delete one exact regular file below an authorized read-write target. Arbitrary recursive or directory deletion is never exposed.', readOnly: false, risk: 'destructive', confirmation: 'strong_confirmation', requiredConfirmationText: 'delete-local-system-file', defaultTimeoutMs: 15_000, cancellable: true, idempotent: false, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: targetProperties, required: ['target_key', 'path'], additionalProperties: false } },
     { actionId: 'initialize_git', title: 'Initialize local Git repository', description: 'Run only git init inside an authorized read-write target without registering it in Repository Registry.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: true, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { target_key: { type: 'string' }, cwd: { type: 'string' }, initial_branch: { type: 'string' } }, required: ['target_key'], additionalProperties: false } },
     { actionId: 'execute_command', title: 'Execute target command', description: 'Execute one bounded typed-argv command inside an authorized target without repository registration. Shell strings, target escapes, destructive/remote writes, and Git mutations other than the dedicated initialize_git action are denied.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false, scopes: ['local-system.files.read', 'local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { target_key: { type: 'string' }, command: { type: 'array', items: { type: 'string' } }, cwd: { type: 'string' }, max_output_bytes: { type: 'number' } }, required: ['target_key', 'command'], additionalProperties: false } },
+    { actionId: 'execute_project_script', title: 'Execute verified project script', description: 'Execute one exact script below an authorized read-write target through a fixed interpreter after its SHA-256 digest and strong confirmation match. Eval flags and shell command strings are never accepted.', readOnly: false, risk: 'destructive', confirmation: 'strong_confirmation', requiredConfirmationText: 'execute-local-system-project-script', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false, scopes: ['local-system.files.read', 'local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { target_key: { type: 'string' }, runtime: { type: 'string', enum: ['node', 'bun', 'python3', 'ruby', 'bash', 'sh'] }, script_path: { type: 'string' }, expected_sha256: { type: 'string' }, arguments: { type: 'array', items: { type: 'string' } }, cwd: { type: 'string' }, max_output_bytes: { type: 'number' } }, required: ['target_key', 'runtime', 'script_path', 'expected_sha256'], additionalProperties: false } },
     { actionId: 'create_directory', title: 'Create directory', description: 'Create a directory below an authorized target without leaving that root.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: targetProperties, required: ['target_key', 'path'], additionalProperties: false } },
     { actionId: 'copy_file', title: 'Copy file', description: 'Copy a file between authorized targets without overwriting.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { source_target_key: { type: 'string' }, source_path: { type: 'string' }, destination_target_key: { type: 'string' }, destination_path: { type: 'string' } }, required: ['source_target_key', 'source_path', 'destination_target_key', 'destination_path'], additionalProperties: false } },
     { actionId: 'move_file', title: 'Move file', description: 'Move a file between authorized targets without overwriting.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { source_target_key: { type: 'string' }, source_path: { type: 'string' }, destination_target_key: { type: 'string' }, destination_path: { type: 'string' } }, required: ['source_target_key', 'source_path', 'destination_target_key', 'destination_path'], additionalProperties: false } },
@@ -530,7 +542,7 @@ function capabilities(): AssistantPluginCapability[] {
     { capabilityId: 'local-system-diagnostics', title: 'Local diagnostics', description: 'Inspect CPU, processes, and memory with bounded typed commands.', scopes: ['local-system.read'], actions: ['system_snapshot', 'process_detail'] },
     { capabilityId: 'local-system-process-control', title: 'Verified process lifecycle', description: 'Terminate one verified PID or stop/start/restart one verified macOS user LaunchAgent without exposing arbitrary shell execution.', scopes: ['local-system.process'], actions: ['terminate_process', 'restart_user_launch_agent', 'stop_user_launch_agent', 'start_user_launch_agent'] },
     { capabilityId: 'local-system-open', title: 'Open local applications and files', description: 'Open applications and authorized files without arbitrary shell access.', scopes: ['local-system.open'], actions: ['open_application', 'reveal_in_finder', 'open_file'] },
-    { capabilityId: 'local-system-files', title: 'Authorized local files', description: 'Use expiring target grants for bounded local file operations and typed-argv commands without repository registration.', scopes: ['local-system.files.read', 'local-system.files.write'], actions: ['list_targets', 'authorize_target', 'revoke_target', 'list_directory', 'read_text', 'write_text', 'delete_file', 'initialize_git', 'execute_command', 'create_directory', 'copy_file', 'move_file', 'rename_file'] },
+    { capabilityId: 'local-system-files', title: 'Authorized local files', description: 'Use expiring target grants for bounded local file operations and typed-argv commands without repository registration.', scopes: ['local-system.files.read', 'local-system.files.write'], actions: ['list_targets', 'authorize_target', 'revoke_target', 'list_directory', 'read_text', 'write_text', 'delete_file', 'initialize_git', 'execute_command', 'execute_project_script', 'create_directory', 'copy_file', 'move_file', 'rename_file'] },
   ];
 }
 
@@ -543,7 +555,7 @@ export function buildLocalSystemPluginManifest(previousRevision = 0, previousUpd
     pluginId: PLUGIN_ID,
     provider: 'local-macos',
     displayName: 'Local System Assistant',
-    pluginVersion: '1.4.0',
+    pluginVersion: '1.5.0',
     authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['controllerHome:system/local-system'] },
     enabled: true,
     lifecycle: { state: currentHealth.ready ? 'enabled' : 'degraded', reason: currentHealth.ready ? 'Local system capabilities are ready.' : currentHealth.warnings[0] },
@@ -774,6 +786,81 @@ export async function executeLocalSystemPluginAction(input: AssistantPluginActio
       return operation === 'write'
         ? await withTargetMutation(input, [targetKey], execute)
         : await execute();
+    }
+    case 'execute_project_script': {
+      const targetKey = requiredString(input.args, 'target_key');
+      const runtime = requiredString(input.args, 'runtime').toLowerCase();
+      if (!PROJECT_SCRIPT_RUNTIMES.has(runtime)) {
+        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'runtime is not an approved project-script interpreter.', { retryable: false });
+      }
+      const expectedSha256 = requiredString(input.args, 'expected_sha256').toLowerCase();
+      if (!/^[a-f0-9]{64}$/.test(expectedSha256)) {
+        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'expected_sha256 must be a 64-character hexadecimal digest.', { retryable: false });
+      }
+      const scriptArguments = optionalStringArray(input.args, 'arguments');
+      return await withTargetMutation(input, [targetKey], async () => {
+        const script = resolveTargetPath(input, targetKey, requiredString(input.args, 'script_path'), {
+          mustExist: true,
+          file: true,
+          operation: 'write',
+        });
+        let cwd;
+        try {
+          cwd = resolveWorkspaceTargetCwd(
+            input.controllerHome,
+            targetKey,
+            requestOwnerScope(input),
+            optionalString(input.args, 'cwd') ?? '.',
+            'write',
+            currentDate(),
+          );
+        } catch (error) {
+          return rethrowTargetError(error);
+        }
+        const observedSha256 = createHash('sha256').update(readFileSync(script.path)).digest('hex');
+        if (observedSha256 !== expectedSha256) {
+          throw new AssistantPluginError(
+            'LOCAL_SYSTEM_SCRIPT_DIGEST_MISMATCH',
+            'The project script changed after review; provide its current SHA-256 digest before retrying.',
+            { retryable: false, details: { targetKey, path: script.relativePath, expectedSha256, observedSha256 } },
+          );
+        }
+        const argv = [runtime, script.path, ...scriptArguments];
+        const canonical = assertRepositoryCommandInputAllowed(argv);
+        assertCommandPathOperandsStayInRepository(canonical, cwd.path, cwd.root, []);
+        const maxOutputBytes = Math.max(1_024, Math.min(Math.trunc(Number(input.args.max_output_bytes ?? MAX_OUTPUT_BYTES)), 1024 * 1024));
+        const timeoutMs = Math.max(1_000, Math.min(Math.trunc(input.timeoutMs ?? 30_000), 30_000));
+        const executed = await runCanonicalCommand(canonical, cwd.path, timeoutMs, maxOutputBytes, { signal: input.signal });
+        if (!executed.ok) {
+          const code = executed.timedOut
+            ? 'LOCAL_SYSTEM_SCRIPT_TIMED_OUT'
+            : executed.cancelled
+              ? 'LOCAL_SYSTEM_SCRIPT_CANCELLED'
+              : 'LOCAL_SYSTEM_SCRIPT_FAILED';
+          throw new AssistantPluginError(
+            code,
+            bounded(executed.stderr.trim() || executed.stdout.trim() || `Project script exited with code ${executed.exitCode}.`, maxOutputBytes).content,
+            { retryable: executed.timedOut, details: { runtime, path: script.relativePath, exitCode: executed.exitCode } },
+          );
+        }
+        return {
+          targetKey: script.target.targetKey,
+          workspaceId: script.target.workspaceId,
+          identityFingerprint: script.target.identityFingerprint,
+          repositoryRegistered: false,
+          cwd: cwd.relativePath || '.',
+          runtime,
+          scriptPath: script.relativePath,
+          scriptSha256: observedSha256,
+          arguments: scriptArguments,
+          ok: true,
+          exitCode: executed.exitCode,
+          timedOut: executed.timedOut,
+          cancelled: executed.cancelled,
+          stdout: executed.stdout,
+          stderr: executed.stderr,
+        };
+      });
     }
     case 'create_directory': {
       const targetKey = requiredString(input.args, 'target_key');

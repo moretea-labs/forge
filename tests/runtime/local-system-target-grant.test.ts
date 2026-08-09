@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { createHash } from 'crypto';
 import {
   chmodSync,
   existsSync,
@@ -774,6 +775,65 @@ describe('local_system target adapter', () => {
     expect((submitted.result?.result as Record<string, unknown>).repositoryRegistered).toBe(false);
     expect((submitted.result?.result as Record<string, unknown>).stdout).toContain('hello target');
     expect(getWorkContractByRequestId(controllerHome, requestId, '__controller__')).toBeUndefined();
+  });
+
+  test('executes one digest-pinned project script only after strong confirmation', async () => {
+    const controllerHome = temp('forge-target-project-script-controller-');
+    const root = temp('forge-target-project-script-root-');
+    const content = 'console.log("verified-project-script", process.cwd());\n';
+    writeFileSync(join(root, 'check.mjs'), content);
+    authorizeWorkspaceTargetGrant(controllerHome, {
+      targetKey: 'project',
+      rootPath: root,
+      ownerScope: 'chatgpt-action:principal:test-user',
+      access: 'read_write',
+      reason: 'project script',
+    });
+    const repository = controllerPluginRepository(controllerHome);
+    const args = {
+      target_key: 'project',
+      runtime: 'node',
+      script_path: 'check.mjs',
+      expected_sha256: createHash('sha256').update(content).digest('hex'),
+    };
+
+    await expect(submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: 'local_system',
+      actionId: 'execute_project_script',
+      requestId: 'target-project-script-no-confirm',
+      args,
+      origin: { surface: 'chatgpt-action', actor: 'principal:test-user' },
+    })).rejects.toThrow(/PLUGIN_CONFIRMATION_REQUIRED/);
+
+    await expect(submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: 'local_system',
+      actionId: 'execute_project_script',
+      requestId: 'target-project-script-wrong-digest',
+      args: { ...args, expected_sha256: '0'.repeat(64) },
+      confirmAuthorization: true,
+      confirmationText: 'execute-local-system-project-script',
+      origin: { surface: 'chatgpt-action', actor: 'principal:test-user' },
+    })).rejects.toThrow(/LOCAL_SYSTEM_SCRIPT_DIGEST_MISMATCH/);
+
+    const submitted = await submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: 'local_system',
+      actionId: 'execute_project_script',
+      requestId: 'target-project-script-confirmed',
+      args,
+      confirmAuthorization: true,
+      confirmationText: 'execute-local-system-project-script',
+      origin: { surface: 'chatgpt-action', actor: 'principal:test-user' },
+    });
+    expect(submitted.result?.result).toMatchObject({
+      ok: true,
+      runtime: 'node',
+      scriptPath: 'check.mjs',
+      repositoryRegistered: false,
+    });
+    expect(String((submitted.result?.result as Record<string, unknown>).stdout))
+      .toContain('verified-project-script');
+    expect(getWorkContractByRequestId(controllerHome, 'target-project-script-confirmed', '__controller__'))
+      .toMatchObject({ status: 'completed', risk: 'destructive', constraints: { allowDestructive: true } });
   });
 
   test('writes bounded text and initializes Git without repository registration', async () => {

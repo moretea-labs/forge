@@ -575,6 +575,7 @@ const LOCAL_SYSTEM_MUTATION_ACTIONS = new Set([
   'write_text',
   'delete_file',
   'initialize_git',
+  'execute_project_script',
   'copy_file',
   'move_file',
   'rename_file',
@@ -747,7 +748,12 @@ export async function submitAssistantPluginAction(
         workKind: 'local_effect',
         risk: workRiskForPluginAction(action),
         acceptanceCriteria: ['The requested local effect completes within its authorized Target Grant boundary.'],
-        constraints: { requireHandoffOnAmbiguity: true, allowDestructive: false },
+        constraints: {
+          requireHandoffOnAmbiguity: true,
+          allowDestructive: action.risk === 'destructive'
+            && request.confirmAuthorization === true
+            && request.confirmationText === action.requiredConfirmationText,
+        },
       }).contract
     : undefined;
   if (acceptedWork) {

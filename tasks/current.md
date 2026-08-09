@@ -14,6 +14,7 @@ This snapshot is a read model, not an execution gate.
 ## Current Focus
 
 - ✅ Local System source now closes the temporary-grant lifecycle: an authenticated owner can revoke its active grant immediately, and a strongly confirmed structured action can delete one regular file inside a read-write target without exposing recursive deletion or arbitrary `rm`. Both paths retain plugin receipt and local-effect Work lineage.
+- ✅ Project scripts use a separate high-risk Local System action instead of weakening ordinary command classification: fixed interpreter, root-contained script, exact SHA-256 pin, strong confirmation, target mutation lock, and destructive authorization evidence on the Work contract.
 - ✅ An enabled implicit/embedded Local Bridge is now owned by the Canonical Runtime as an in-process HTTP UI/API module. Runtime startup publishes current PID/endpoint/generation evidence; ordered shutdown closes the listener and marks the compatibility projection stopped. Explicit standalone/remote modes remain externally owned.
 - ✅ Local Bridge surface identity now matches the canonical runtime generation and does not expose a repository absolute path from its unauthenticated localhost health endpoint.
 - ✅ Terminal Process lease cleanup now persists a redacted structured failure diagnostic while retaining the canonical `pending` retry phase; exact-set/scope/fencing failures stay fail-closed, restart recovery retries them, and success clears the diagnostic without adding a second recovery owner.
@@ -40,7 +41,7 @@ This snapshot is a read model, not an execution gate.
 
 ## Validation Completed
 
-- `bun test tests/runtime/local-system-target-grant.test.ts`: 28/28 passed, including owner-isolated revoke/fail-closed behavior, strong-confirmation single-file deletion, non-directory deletion refusal, symlink escape rejection, restart-stable identity, store contention, and same-root mutation serialization.
+- `bun test tests/runtime/local-system-target-grant.test.ts`: 29/29 passed, including owner-isolated revoke/fail-closed behavior, strong-confirmation single-file deletion, digest-pinned project-script execution, non-directory deletion refusal, symlink escape rejection, restart-stable identity, store contention, and same-root mutation serialization.
 - Live audit before the fix proved the warning was real: service runtime state claimed embedded PID 60290 at `127.0.0.1:8766`, but the PID and listener were absent. Runtime tool discovery contained exactly 123 tools, expected/actual counts matched with no missing/unexpected/duplicate entries, and neither retired `self_healing_monitor_tick` nor `self_healing_loop_plan` was advertised.
 - `bun test tests/runtime/canonical-single-runtime.test.ts`: 18/18 passed, including same-process Local Bridge start/health/projection/close evidence and ordered complete-Runtime shutdown.
 - Local Bridge/canonical Runtime/runtime-command focused matrix: 52/52 passed; `bun run check:task` passed with typecheck, architecture validation, and 10 governed affected test files.
