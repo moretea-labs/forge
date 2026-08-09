@@ -1108,6 +1108,23 @@ async function waitForPrimaryRuntimeState(input: {
   return input.runtimeRunning(input.config) === input.expectedRunning;
 }
 
+async function waitForLaunchdServiceUnloaded(input: {
+  service: LaunchdService;
+  timeoutMs: number;
+  now: () => number;
+  wait: (ms: number) => Promise<void>;
+  runCommand: CommandRunner;
+}): Promise<boolean> {
+  const deadline = input.now() + input.timeoutMs;
+  while (input.now() < deadline) {
+    const printed = await input.runCommand('launchctl', ['print', input.service.target], 5_000);
+    if (!printed.ok) return true;
+    await input.wait(250);
+  }
+  const printed = await input.runCommand('launchctl', ['print', input.service.target], 5_000);
+  return !printed.ok;
+}
+
 async function verifyPrimaryRuntimeAfterStart(input: {
   config: RecoveryConfig;
   timeoutMs: number;
@@ -1198,6 +1215,12 @@ export async function recoverPrimaryRuntime(
     if (!runtimeStopped) {
       const detail = 'primary Runtime owner remained live after bounded launchd bootout';
       audit(config, 'primary_runtime_recovery_stop_unverified', { serviceTarget: service.target });
+      return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: await verifyLocal(config) } satisfies PrimaryRuntimeRecoveryResult;
+    }
+    const serviceUnloaded = await waitForLaunchdServiceUnloaded({ service, timeoutMs: 20_000, now, wait, runCommand });
+    if (!serviceUnloaded) {
+      const detail = 'primary Runtime launchd service remained loaded after bounded bootout';
+      audit(config, 'primary_runtime_recovery_stop_unverified', { serviceTarget: service.target, detail });
       return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: await verifyLocal(config) } satisfies PrimaryRuntimeRecoveryResult;
     }
 
@@ -1312,6 +1335,12 @@ export async function activateRuntimeRelease(
       audit(config, 'runtime_release_activation_stop_unverified', { serviceTarget: service.target, operationId });
       return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: await verifyLocal(config) } satisfies RuntimeReleaseActivationResult;
     }
+    const serviceUnloaded = await waitForLaunchdServiceUnloaded({ service, timeoutMs: 20_000, now, wait, runCommand });
+    if (!serviceUnloaded) {
+      const detail = 'primary Runtime launchd service remained loaded after bounded bootout';
+      audit(config, 'runtime_release_activation_stop_unverified', { serviceTarget: service.target, operationId, detail });
+      return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: await verifyLocal(config) } satisfies RuntimeReleaseActivationResult;
+    }
     let committed: RuntimeReleaseAuthority;
     try {
       committed = publishRuntimeRelease(config.controllerHome, candidate.manifestPath, operationId);
@@ -1357,38 +1386,51 @@ export async function activateRuntimeRelease(
     // backup, restart the one service, and require verification again.
     await runCommand('launchctl', ['bootout', service.target], 15_000);
     let rollback: RollbackResult;
-    try {
-      const rollbackOperationId = `recovery-activate-runtime-rollback-${Date.now()}-${randomUUID().slice(0, 8)}`;
-      const restored = rollbackRuntimeRelease(config.controllerHome, rollbackOperationId);
-      ensureForgeRuntimeLaunchAgentContract({ controllerHome: config.controllerHome });
-      const previousRevision = previousActive?.releaseId ?? '';
-      const previousIdentity = previousActive?.artifactIdentity;
-      if (
-        restored.active.releaseId !== previousRevision
-        || (previousIdentity !== undefined && restored.active.artifactIdentity !== previousIdentity)
-      ) {
-        throw new Error('RECOVERY_RUNTIME_RELEASE_ROLLBACK_AUTHORITY_MISMATCH');
-      }
-      const restarted = await ensureLaunchdServiceStarted(service, runCommand);
-      if (!restarted.ok) {
-        rollback = { ok: false, operationId: rollbackOperationId, detail: `previous release authority restored but service start failed: ${restarted.detail}` };
-      } else {
-        const rolledBack = await verifyPrimaryRuntimeAfterStart({
-          config,
-          timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
-          now,
-          wait,
-          verifyLocal,
-        });
-        if (rolledBack.ok) {
-          rollback = { ok: true, operationId: rollbackOperationId, detail: 'previous whole-Runtime release and SQLite backup restored, restarted, and verified', verify: rolledBack };
-        } else {
-          await runCommand('launchctl', ['bootout', service.target], 15_000);
-          rollback = { ok: false, operationId: rollbackOperationId, detail: 'previous whole-Runtime release started but failed verification; service was stopped to prevent a restart loop', verify: rolledBack };
+    const rollbackRuntimeStopped = await waitForPrimaryRuntimeState({ config, expectedRunning: false, timeoutMs: 20_000, now, wait, runtimeRunning });
+    const rollbackServiceUnloaded = rollbackRuntimeStopped
+      ? await waitForLaunchdServiceUnloaded({ service, timeoutMs: 20_000, now, wait, runCommand })
+      : false;
+    if (!rollbackRuntimeStopped || !rollbackServiceUnloaded) {
+      rollback = {
+        ok: false,
+        detail: !rollbackRuntimeStopped
+          ? 'candidate Runtime owner remained live after bounded rollback bootout'
+          : 'candidate Runtime launchd service remained loaded after bounded rollback bootout',
+      };
+    } else {
+      try {
+        const rollbackOperationId = `recovery-activate-runtime-rollback-${Date.now()}-${randomUUID().slice(0, 8)}`;
+        const restored = rollbackRuntimeRelease(config.controllerHome, rollbackOperationId);
+        ensureForgeRuntimeLaunchAgentContract({ controllerHome: config.controllerHome });
+        const previousRevision = previousActive?.releaseId ?? '';
+        const previousIdentity = previousActive?.artifactIdentity;
+        if (
+          restored.active.releaseId !== previousRevision
+          || (previousIdentity !== undefined && restored.active.artifactIdentity !== previousIdentity)
+        ) {
+          throw new Error('RECOVERY_RUNTIME_RELEASE_ROLLBACK_AUTHORITY_MISMATCH');
         }
+        const restarted = await ensureLaunchdServiceStarted(service, runCommand);
+        if (!restarted.ok) {
+          rollback = { ok: false, operationId: rollbackOperationId, detail: `previous release authority restored but service start failed: ${restarted.detail}` };
+        } else {
+          const rolledBack = await verifyPrimaryRuntimeAfterStart({
+            config,
+            timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
+            now,
+            wait,
+            verifyLocal,
+          });
+          if (rolledBack.ok) {
+            rollback = { ok: true, operationId: rollbackOperationId, detail: 'previous whole-Runtime release and SQLite backup restored, restarted, and verified', verify: rolledBack };
+          } else {
+            await runCommand('launchctl', ['bootout', service.target], 15_000);
+            rollback = { ok: false, operationId: rollbackOperationId, detail: 'previous whole-Runtime release started but failed verification; service was stopped to prevent a restart loop', verify: rolledBack };
+          }
+        }
+      } catch (error) {
+        rollback = { ok: false, detail: error instanceof Error ? error.message : 'previous whole-Runtime release rollback failed' };
       }
-    } catch (error) {
-      rollback = { ok: false, detail: error instanceof Error ? error.message : 'previous whole-Runtime release rollback failed' };
     }
     audit(config, 'runtime_release_activation_failed', {
       serviceTarget: service.target,

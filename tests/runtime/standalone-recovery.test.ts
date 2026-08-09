@@ -553,12 +553,18 @@ describe('standalone recovery on canonical Runtime', () => {
       writeFileSync(paths.installedPlistPath, '<plist/>');
 
       let localProbes = 0;
+      let launchdLoaded = true;
       const commands: string[][] = [];
       const result = await recoverPrimaryRuntime(config, 'test exhausted restarts', {
         platform: 'darwin',
         currentUid: async () => 501,
         runCommand: async (_command, args) => {
           commands.push(args);
+          if (args[0] === 'bootout') launchdLoaded = false;
+          if (args[0] === 'print') return launchdLoaded
+            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+          if (args[0] === 'bootstrap') launchdLoaded = true;
           return { ok: true, status: 0, stdout: '', stderr: '' };
         },
         runtimeRunning: () => false,
@@ -572,6 +578,52 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
       expect(commands.some((args) => args.includes('bootout'))).toBe(true);
       expect(commands.some((args) => args.includes('kickstart'))).toBe(true);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('does not publish a candidate while the primary launchd service is still loaded after bootout', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const first = manifest(home, 'release-a', 'artifact-a');
+      const candidate = verifiedManifest(home, 'release-still-loaded');
+      ensureActiveRuntimeRelease(home, first);
+      const runtime = await runtimeServer();
+      writeMainToken(home);
+      const ownership = startObservedRuntime(home, runtime.endpoint, 'release-a', 'artifact-a');
+      const config = createRecoveryConfig(home, {
+        publicMcpUrl: runtime.endpoint,
+        primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
+      });
+      removeOwnership(ownership);
+      const paths = forgeRuntimeServicePaths(home);
+      runtimeServiceConfig(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+
+      let kickstarts = 0;
+      const result = await activateRuntimeRelease(config, candidate.path, {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (_command, args) => {
+          if (args[0] === 'print') return { ok: true, status: 0, stdout: 'still loaded', stderr: '' };
+          if (args[0] === 'kickstart') kickstarts += 1;
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        runtimeRunning: () => false,
+        verifyLocal: async () => healthyVerify(),
+        now: (() => { let value = 0; return () => value += 1_000; })(),
+        sleep: async () => undefined,
+      });
+
+      expect(result).toMatchObject({ ok: false, attempted: true });
+      expect(result.detail).toContain('launchd service remained loaded');
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
+      expect(kickstarts).toBe(0);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
@@ -618,12 +670,18 @@ describe('standalone recovery on canonical Runtime', () => {
       writeFileSync(paths.installedPlistPath, '<plist/>');
 
       let localProbes = 0;
+      let launchdLoaded = true;
       const commands: string[][] = [];
       const result = await activateRuntimeRelease(config, candidateManifestPath, {
         platform: 'darwin',
         currentUid: async () => 501,
         runCommand: async (_command, args) => {
           commands.push(args);
+          if (args[0] === 'bootout') launchdLoaded = false;
+          if (args[0] === 'print') return launchdLoaded
+            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+          if (args[0] === 'bootstrap') launchdLoaded = true;
           if (args[0] === 'kickstart') return { ok: false, status: 37, stdout: '', stderr: '' };
           return { ok: true, status: 0, stdout: '', stderr: '' };
         },
@@ -720,11 +778,17 @@ describe('standalone recovery on canonical Runtime', () => {
 
       const commands: string[][] = [];
       let probes = 0;
+      let launchdLoaded = true;
       const result = await activateRuntimeRelease(config, candidateManifestPath, {
         platform: 'darwin',
         currentUid: async () => 501,
         runCommand: async (_command, args) => {
           commands.push(args);
+          if (args[0] === 'bootout') launchdLoaded = false;
+          if (args[0] === 'print') return launchdLoaded
+            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+          if (args[0] === 'bootstrap') launchdLoaded = true;
           return { ok: true, status: 0, stdout: '', stderr: '' };
         },
         runtimeRunning: () => false,
@@ -769,10 +833,16 @@ describe('standalone recovery on canonical Runtime', () => {
       writeFileSync(paths.installedPlistPath, '<plist/>');
 
       let kickstarts = 0;
+      let launchdLoaded = true;
       const result = await activateRuntimeRelease(config, candidate.path, {
         platform: 'darwin',
         currentUid: async () => 501,
         runCommand: async (_command, args) => {
+          if (args[0] === 'bootout') launchdLoaded = false;
+          if (args[0] === 'print') return launchdLoaded
+            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+          if (args[0] === 'bootstrap') launchdLoaded = true;
           if (args[0] === 'kickstart') {
             kickstarts += 1;
             if (kickstarts === 1) return { ok: false, status: 78, stdout: '', stderr: '' };
@@ -823,17 +893,22 @@ describe('standalone recovery on canonical Runtime', () => {
       let printCalls = 0;
       let kickstarts = 0;
       let bootstraps = 0;
+      let launchdLoaded = true;
       const result = await activateRuntimeRelease(config, candidate.path, {
         platform: 'darwin',
         currentUid: async () => 501,
         runCommand: async (_command, args) => {
+          if (args[0] === 'bootout') launchdLoaded = false;
           if (args[0] === 'print') {
             printCalls += 1;
-            if (printCalls <= 2) return { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+            return launchdLoaded
+              ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+              : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
           }
           if (args[0] === 'bootstrap') {
             bootstraps += 1;
-            return { ok: false, status: 5, stdout: '', stderr: 'Input/output error' };
+            if (bootstraps === 1) return { ok: false, status: 5, stdout: '', stderr: 'Input/output error' };
+            launchdLoaded = true;
           }
           if (args[0] === 'kickstart') kickstarts += 1;
           return { ok: true, status: 0, stdout: '', stderr: '' };
@@ -848,9 +923,9 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(result.detail).toContain('bootstrap did not load service');
       expect(result.rollback).toMatchObject({ ok: true });
       expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
-      expect(bootstraps).toBe(1);
+      expect(bootstraps).toBe(2);
       expect(kickstarts).toBe(1);
-      expect(printCalls).toBe(3);
+      expect(printCalls).toBe(6);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
