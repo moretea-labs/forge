@@ -113,7 +113,7 @@ export interface ControllerContextPackProjection {
     query?: string;
     entryPoints: Array<Pick<CodeGraphNodeSummary, "id" | "kind" | "name" | "filePath" | "startLine" | "endLine">>;
     relatedFiles: string[];
-    metadata?: Pick<CodeGraphIndexMetadata, "initialized" | "lastIndexedAt" | "buildVersion" | "extractionVersion" | "staleEngine" | "changedFiles">;
+    metadata?: Pick<CodeGraphIndexMetadata, "initialized" | "lastIndexedAt" | "buildVersion" | "extractionVersion" | "staleEngine" | "changedFiles" | "ignoredChangedFileCount">;
     fallbackReason?: string;
     timingsMs?: CodeGraphReadProviderResponse["timingsMs"];
     truncated: boolean;
@@ -441,6 +441,7 @@ export function buildControllerContextPack(
             extractionVersion: structural.metadata.extractionVersion,
             staleEngine: structural.metadata.staleEngine,
             changedFiles: structural.metadata.changedFiles,
+            ignoredChangedFileCount: structural.metadata.ignoredChangedFileCount,
           }
         : undefined;
       structuralContext = {

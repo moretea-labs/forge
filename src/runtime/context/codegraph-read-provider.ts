@@ -46,6 +46,8 @@ export interface CodeGraphIndexMetadata {
     modified: string[];
     removed: string[];
   };
+  /** CodeGraph SDK drift entries excluded by the repository's Git ignore authority. */
+  ignoredChangedFileCount?: number;
   stats?: {
     nodeCount: number;
     edgeCount: number;
@@ -200,6 +202,51 @@ function providerStatus(metadata: CodeGraphIndexMetadata): CodeGraphProviderStat
   return 'ready';
 }
 
+/**
+ * CodeGraph 1.0.1 deliberately discovers nested repositories below ignored
+ * directories. Its read-only change scan can then report those same paths as
+ * permanently added/removed relative to the owning repository. Ignore only
+ * paths that Git itself classifies as excluded; tracked changes still make the
+ * structural index stale and any Git probe failure keeps the SDK result.
+ */
+export function filterGitIgnoredCodeGraphChanges(
+  repoRoot: string,
+  metadata: CodeGraphIndexMetadata,
+): CodeGraphIndexMetadata {
+  const changed = [
+    ...metadata.changedFiles.added,
+    ...metadata.changedFiles.modified,
+    ...metadata.changedFiles.removed,
+  ];
+  if (changed.length === 0) return metadata;
+  const git = spawnSync('git', ['-C', resolve(repoRoot), 'check-ignore', '--stdin', '-z'], {
+    input: `${changed.join('\0')}\0`,
+    encoding: 'utf8',
+    env: {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      GIT_TERMINAL_PROMPT: '0',
+      GIT_CONFIG_NOSYSTEM: '1',
+      CI: '1',
+    },
+    timeout: 5_000,
+    maxBuffer: 512 * 1024,
+    windowsHide: true,
+  });
+  if (git.error || (git.status !== 0 && git.status !== 1)) return metadata;
+  const ignored = new Set(String(git.stdout ?? '').split('\0').filter(Boolean));
+  if (ignored.size === 0) return metadata;
+  return {
+    ...metadata,
+    changedFiles: {
+      added: metadata.changedFiles.added.filter((path) => !ignored.has(path)),
+      modified: metadata.changedFiles.modified.filter((path) => !ignored.has(path)),
+      removed: metadata.changedFiles.removed.filter((path) => !ignored.has(path)),
+    },
+    ignoredChangedFileCount: ignored.size,
+  };
+}
+
 function errorResponse(operation: CodeGraphReadOperation, code: string, message: string, total: number): CodeGraphReadProviderResponse {
   const unavailable = code.includes('MISSING') || code.includes('UNAVAILABLE') || code.includes('NOT_INITIALIZED');
   return {
@@ -281,13 +328,14 @@ export function queryCodeGraphReadProvider(
   if (!parsed.ok) {
     return errorResponse(request.operation, parsed.error.code, parsed.error.message, performance.now() - startedAt);
   }
+  const metadata = filterGitIgnoredCodeGraphChanges(repoRoot, parsed.metadata);
   return {
     schemaVersion: 1,
     provider: 'codegraph',
     operation: request.operation,
-    ok: parsed.metadata.initialized,
-    status: providerStatus(parsed.metadata),
-    metadata: parsed.metadata,
+    ok: metadata.initialized,
+    status: providerStatus(metadata),
+    metadata,
     result: parsed.result,
     timingsMs: {
       total: Math.round((performance.now() - startedAt) * 100) / 100,

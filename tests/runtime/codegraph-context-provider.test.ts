@@ -5,7 +5,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { buildControllerContextPack } from '../../src/cli/controller/context-pack';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
-import { queryCodeGraphReadProvider, resolveCodeGraphBundledRuntime, type CodeGraphReadProviderResponse } from '../../src/runtime/context/codegraph-read-provider';
+import { filterGitIgnoredCodeGraphChanges, queryCodeGraphReadProvider, resolveCodeGraphBundledRuntime, type CodeGraphReadProviderResponse } from '../../src/runtime/context/codegraph-read-provider';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -83,6 +83,27 @@ describe('CodeGraph read provider', () => {
     roots.push(root);
     const response = queryCodeGraphReadProvider(root, { operation: 'sync' as never });
     expect(response).toMatchObject({ ok: false, status: 'degraded', error: { code: 'CODEGRAPH_OPERATION_NOT_ALLOWED' } });
+  });
+
+  test('does not make a structural index stale for Git-ignored operational paths', () => {
+    const root = contextRepo();
+    writeFileSync(join(root, '.gitignore'), 'ignored/\n');
+    execFileSync('git', ['add', '.gitignore'], { cwd: root });
+    execFileSync('git', ['commit', '-qm', 'ignore operational files'], { cwd: root });
+    const metadata = filterGitIgnoredCodeGraphChanges(root, {
+      initialized: true,
+      lastIndexedAt: 1,
+      buildVersion: '1.0.1',
+      extractionVersion: 24,
+      staleEngine: false,
+      changedFiles: {
+        added: ['ignored/generated.js'],
+        modified: ['src/service.ts'],
+        removed: ['ignored/old.js'],
+      },
+    });
+    expect(metadata.changedFiles).toEqual({ added: [], modified: ['src/service.ts'], removed: [] });
+    expect(metadata.ignoredChangedFileCount).toBe(2);
   });
 
   test('reports an uninitialized project without creating a CodeGraph index', () => {

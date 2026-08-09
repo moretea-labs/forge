@@ -71,6 +71,7 @@ autoresearch/
 *.tgz
 _ref/
 _ops/
+.repo-harness/
 .forge/mcp.local.json
 .forge/mcp.tokens.json
 .forge/chatgpt-browser.local.json
