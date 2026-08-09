@@ -1,4 +1,5 @@
 import { runProcess } from '../../effects/process-runner';
+import { repositoryChildProcessEnvironment } from '../../runtime/shared/process-environment';
 import {
   ExecutorHealthError,
   classifyExecutorFailure,
@@ -49,6 +50,7 @@ function ghApi(repoRoot: string, args: string[], input?: string) {
     timeoutMs: 120_000,
     maxOutputBytes: 1024 * 1024,
     input,
+    env: repositoryChildProcessEnvironment(),
   });
 }
 
@@ -91,7 +93,12 @@ export function getGitHubAgentSession(repoRoot: string, owner: string, repo: str
 export function getGitHubAgentSessionLog(repoRoot: string, owner: string, repo: string, taskId: string, follow = false): string {
   const args = ['agent-task', 'view', '--repo', `${owner}/${repo}`, taskId, '--log'];
   if (follow) args.push('--follow');
-  const result = runProcess('gh', args, { cwd: repoRoot, timeoutMs: follow ? 900_000 : 120_000, maxOutputBytes: 2 * 1024 * 1024 });
+  const result = runProcess('gh', args, {
+    cwd: repoRoot,
+    timeoutMs: follow ? 900_000 : 120_000,
+    maxOutputBytes: 2 * 1024 * 1024,
+    env: repositoryChildProcessEnvironment(),
+  });
   if (!result.ok) throw new Error(`failed to read GitHub agent session log: ${result.error || result.stderr}`);
   return result.stdout;
 }

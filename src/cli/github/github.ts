@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { runProcess } from '../../effects/process-runner';
+import { repositoryChildProcessEnvironment } from '../../runtime/shared/process-environment';
 import { getIssue, updateIssue, updateTask } from '../controller/issue-store';
 import type { ControllerIssue, ControllerTask, GitHubIssueLink } from '../controller/types';
 import { readTaskRunEvidence } from '../controller/run-evidence';
@@ -43,7 +44,13 @@ function parseRepo(value: string): { owner: string; repo: string } {
 }
 
 function gh(repoRoot: string, args: string[], input?: string, maxOutputBytes = 512 * 1024) {
-  return runProcess('gh', args, { cwd: repoRoot, timeoutMs: 120_000, maxOutputBytes, input });
+  return runProcess('gh', args, {
+    cwd: repoRoot,
+    timeoutMs: 120_000,
+    maxOutputBytes,
+    input,
+    env: repositoryChildProcessEnvironment(),
+  });
 }
 
 export function resolveGitHubRepository(repoRoot: string, explicitRepo?: string): GitHubRepositoryInfo {
