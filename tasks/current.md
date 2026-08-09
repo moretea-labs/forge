@@ -13,6 +13,8 @@ This snapshot is a read model, not an execution gate.
 
 ## Current Focus
 
+- ✅ The route/session benchmark now performs real Process writes across two temporary repositories and a real second checkout created by `git worktree`; seven iterations proved independent repo/checkout identities and bounded same-checkout Lease rejection.
+- ✅ The same benchmark now exercises content-derived Check coalescing, completed cross-checkout reuse, and dirty-workspace invalidation across different execution session ids, with physical/logical/cache counters and queue/Lease wait percentiles persisted in the operations baseline.
 - ✅ Local System source now closes the temporary-grant lifecycle: an authenticated owner can revoke its active grant immediately, and a strongly confirmed structured action can delete one regular file inside a read-write target without exposing recursive deletion or arbitrary `rm`. Both paths retain plugin receipt and local-effect Work lineage.
 - ✅ Project scripts use a separate high-risk Local System action instead of weakening ordinary command classification: a fixed interpreter resolved from closed canonical system paths, root-contained script, exact SHA-256 pin, strong confirmation, target mutation lock, and destructive authorization evidence on the Work contract.
 - ✅ An enabled implicit/embedded Local Bridge is now owned by the Canonical Runtime as an in-process HTTP UI/API module. Runtime startup publishes current PID/endpoint/generation evidence; ordered shutdown closes the listener and marks the compatibility projection stopped. Explicit standalone/remote modes remain externally owned.
@@ -41,6 +43,7 @@ This snapshot is a read model, not an execution gate.
 
 ## Validation Completed
 
+- `bun run benchmark:route-session-concurrency --iterations 7`: all physical concurrency/cache scenarios met their expected outcome. Totals: 28 Check subscribers / 14 physical executions / 7 coalesces / 7 cache hits / 7 cross-checkout reuses / 7 invalidations; same-checkout Lease admission p50/p95 was 39.02/43.84 ms.
 - `bun test tests/runtime/local-system-target-grant.test.ts`: 29/29 passed, including owner-isolated revoke/fail-closed behavior, strong-confirmation single-file deletion, digest-pinned project-script execution, non-directory deletion refusal, symlink escape rejection, restart-stable identity, store contention, and same-root mutation serialization.
 - Live audit before the fix proved the warning was real: service runtime state claimed embedded PID 60290 at `127.0.0.1:8766`, but the PID and listener were absent. Runtime tool discovery contained exactly 123 tools, expected/actual counts matched with no missing/unexpected/duplicate entries, and neither retired `self_healing_monitor_tick` nor `self_healing_loop_plan` was advertised.
 - `bun test tests/runtime/canonical-single-runtime.test.ts`: 18/18 passed, including same-process Local Bridge start/health/projection/close evidence and ordered complete-Runtime shutdown.

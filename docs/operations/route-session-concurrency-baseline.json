@@ -1,20 +1,24 @@
 {
   "schemaVersion": 1,
-  "measuredAt": "2026-08-05T01:42:41.632Z",
+  "measuredAt": "2026-08-09T12:40:34.837Z",
   "iterations": 7,
   "thresholdPolicy": "max(1ms, observed p99 * 1.25, observed p95 * 1.5)",
   "notes": {
     "durableJobSubmit": "ExecutionJob creation is retired; this measures durable Process admission and persistence.",
-    "gatewayRestartRecovery": "A fresh Process store read is performed before terminal completion."
+    "gatewayRestartRecovery": "A fresh Process store read is performed before terminal completion.",
+    "physicalConcurrency": "The multi-repository and multi-checkout scenarios launch real Process Runners that write isolated marker files under temporary Git repositories and a real git worktree.",
+    "sameCheckoutContention": "leaseWaitMs is the bounded end-to-end admission time for the conflicting second Process, including identity/persistence work around the Lease decision.",
+    "checkIdentity": "The cache identity is derived from repository-scoped storage plus content revision, check definition digest, environment/toolchain fingerprint, timeout contract, and reuse scope. Session and request ids are subscribers, not cache-key inputs.",
+    "checkCacheMetrics": "physicalExecutions/logicalSubscribers/coalesced/cacheHits/invalidations/crossCheckoutReuses are summed across measured iterations."
   },
   "scenarios": {
     "context_cold_read": {
       "samples": 7,
       "phases": {
         "wallClockMs": {
-          "p50": 0.2,
-          "p95": 78.65,
-          "p99": 78.65
+          "p50": 0.13,
+          "p95": 26.26,
+          "p99": 26.26
         },
         "queueTimeMs": {
           "p50": 0,
@@ -26,15 +30,20 @@
           "p95": 0,
           "p99": 0
         },
+        "leaseWaitMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
         "storageTimeMs": {
           "p50": 0,
           "p95": 0,
           "p99": 0
         },
         "gitObservationMs": {
-          "p50": 0.18,
-          "p95": 78.62,
-          "p99": 78.62
+          "p50": 0.12,
+          "p95": 26.24,
+          "p99": 26.24
         },
         "workerProcessMs": {
           "p50": 0,
@@ -42,12 +51,12 @@
           "p99": 0
         },
         "projectionMs": {
-          "p50": 0.18,
-          "p95": 78.62,
-          "p99": 78.62
+          "p50": 0.12,
+          "p95": 26.24,
+          "p99": 26.24
         },
         "serializationMs": {
-          "p50": 0.02,
+          "p50": 0.01,
           "p95": 0.02,
           "p99": 0.02
         }
@@ -56,14 +65,16 @@
       "timeoutRate": 0,
       "contentionRate": 0,
       "failureRate": 0,
+      "metrics": {},
       "derivedThresholds": {
-        "wallClockMs": 118,
+        "wallClockMs": 40,
         "queueTimeMs": 1,
         "lockWaitMs": 1,
+        "leaseWaitMs": 1,
         "storageTimeMs": 1,
-        "gitObservationMs": 118,
+        "gitObservationMs": 40,
         "workerProcessMs": 1,
-        "projectionMs": 118,
+        "projectionMs": 40,
         "serializationMs": 1
       }
     },
@@ -71,9 +82,9 @@
       "samples": 7,
       "phases": {
         "wallClockMs": {
-          "p50": 0.12,
-          "p95": 0.36,
-          "p99": 0.36
+          "p50": 0.07,
+          "p95": 0.11,
+          "p99": 0.11
         },
         "queueTimeMs": {
           "p50": 0,
@@ -81,6 +92,11 @@
           "p99": 0
         },
         "lockWaitMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "leaseWaitMs": {
           "p50": 0,
           "p95": 0,
           "p99": 0
@@ -101,24 +117,26 @@
           "p99": 0
         },
         "projectionMs": {
-          "p50": 0.11,
-          "p95": 0.34,
-          "p99": 0.34
+          "p50": 0.06,
+          "p95": 0.1,
+          "p99": 0.1
         },
         "serializationMs": {
-          "p50": 0.02,
-          "p95": 0.02,
-          "p99": 0.02
+          "p50": 0.01,
+          "p95": 0.01,
+          "p99": 0.01
         }
       },
       "successRate": 1,
       "timeoutRate": 0,
       "contentionRate": 0,
       "failureRate": 0,
+      "metrics": {},
       "derivedThresholds": {
         "wallClockMs": 1,
         "queueTimeMs": 1,
         "lockWaitMs": 1,
+        "leaseWaitMs": 1,
         "storageTimeMs": 1,
         "gitObservationMs": 1,
         "workerProcessMs": 1,
@@ -130,9 +148,9 @@
       "samples": 7,
       "phases": {
         "wallClockMs": {
-          "p50": 7.78,
-          "p95": 25.3,
-          "p99": 25.3
+          "p50": 1.72,
+          "p95": 13.17,
+          "p99": 13.17
         },
         "queueTimeMs": {
           "p50": 0,
@@ -144,10 +162,15 @@
           "p95": 0,
           "p99": 0
         },
+        "leaseWaitMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
         "storageTimeMs": {
-          "p50": 7.78,
-          "p95": 25.3,
-          "p99": 25.3
+          "p50": 1.72,
+          "p95": 13.17,
+          "p99": 13.17
         },
         "gitObservationMs": {
           "p50": 0,
@@ -174,11 +197,13 @@
       "timeoutRate": 0,
       "contentionRate": 0,
       "failureRate": 0,
+      "metrics": {},
       "derivedThresholds": {
-        "wallClockMs": 38,
+        "wallClockMs": 20,
         "queueTimeMs": 1,
         "lockWaitMs": 1,
-        "storageTimeMs": 38,
+        "leaseWaitMs": 1,
+        "storageTimeMs": 20,
         "gitObservationMs": 1,
         "workerProcessMs": 1,
         "projectionMs": 1,
@@ -189,9 +214,9 @@
       "samples": 7,
       "phases": {
         "wallClockMs": {
-          "p50": 3.92,
-          "p95": 5.58,
-          "p99": 5.58
+          "p50": 1.05,
+          "p95": 1.77,
+          "p99": 1.77
         },
         "queueTimeMs": {
           "p50": 0,
@@ -203,10 +228,15 @@
           "p95": 0,
           "p99": 0
         },
+        "leaseWaitMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
         "storageTimeMs": {
-          "p50": 3.92,
-          "p95": 5.58,
-          "p99": 5.58
+          "p50": 1.05,
+          "p95": 1.77,
+          "p99": 1.77
         },
         "gitObservationMs": {
           "p50": 0,
@@ -233,11 +263,13 @@
       "timeoutRate": 0,
       "contentionRate": 0,
       "failureRate": 0,
+      "metrics": {},
       "derivedThresholds": {
-        "wallClockMs": 9,
+        "wallClockMs": 3,
         "queueTimeMs": 1,
         "lockWaitMs": 1,
-        "storageTimeMs": 9,
+        "leaseWaitMs": 1,
+        "storageTimeMs": 3,
         "gitObservationMs": 1,
         "workerProcessMs": 1,
         "projectionMs": 1,
@@ -248,9 +280,9 @@
       "samples": 7,
       "phases": {
         "wallClockMs": {
-          "p50": 22.86,
-          "p95": 25.73,
-          "p99": 25.73
+          "p50": 9.52,
+          "p95": 12.23,
+          "p99": 12.23
         },
         "queueTimeMs": {
           "p50": 0,
@@ -258,9 +290,14 @@
           "p99": 0
         },
         "lockWaitMs": {
-          "p50": 22.86,
-          "p95": 25.73,
-          "p99": 25.73
+          "p50": 9.52,
+          "p95": 12.23,
+          "p99": 12.23
+        },
+        "leaseWaitMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
         },
         "storageTimeMs": {
           "p50": 0,
@@ -292,10 +329,12 @@
       "timeoutRate": 0,
       "contentionRate": 0,
       "failureRate": 0,
+      "metrics": {},
       "derivedThresholds": {
-        "wallClockMs": 39,
+        "wallClockMs": 19,
         "queueTimeMs": 1,
-        "lockWaitMs": 39,
+        "lockWaitMs": 19,
+        "leaseWaitMs": 1,
         "storageTimeMs": 1,
         "gitObservationMs": 1,
         "workerProcessMs": 1,
@@ -307,16 +346,21 @@
       "samples": 7,
       "phases": {
         "wallClockMs": {
-          "p50": 125.63,
-          "p95": 132.44,
-          "p99": 132.44
+          "p50": 36.51,
+          "p95": 41.32,
+          "p99": 41.32
         },
         "queueTimeMs": {
-          "p50": 125.63,
-          "p95": 132.44,
-          "p99": 132.44
+          "p50": 36.51,
+          "p95": 41.32,
+          "p99": 41.32
         },
         "lockWaitMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "leaseWaitMs": {
           "p50": 0,
           "p95": 0,
           "p99": 0
@@ -351,10 +395,12 @@
       "timeoutRate": 0,
       "contentionRate": 0,
       "failureRate": 0,
+      "metrics": {},
       "derivedThresholds": {
-        "wallClockMs": 199,
-        "queueTimeMs": 199,
+        "wallClockMs": 62,
+        "queueTimeMs": 62,
         "lockWaitMs": 1,
+        "leaseWaitMs": 1,
         "storageTimeMs": 1,
         "gitObservationMs": 1,
         "workerProcessMs": 1,
@@ -366,9 +412,9 @@
       "samples": 7,
       "phases": {
         "wallClockMs": {
-          "p50": 176.54,
-          "p95": 220.56,
-          "p99": 220.56
+          "p50": 66.22,
+          "p95": 74.74,
+          "p99": 74.74
         },
         "queueTimeMs": {
           "p50": 0,
@@ -376,6 +422,11 @@
           "p99": 0
         },
         "lockWaitMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "leaseWaitMs": {
           "p50": 0,
           "p95": 0,
           "p99": 0
@@ -391,9 +442,9 @@
           "p99": 0
         },
         "workerProcessMs": {
-          "p50": 176.53,
-          "p95": 220.56,
-          "p99": 220.56
+          "p50": 66.21,
+          "p95": 74.74,
+          "p99": 74.74
         },
         "projectionMs": {
           "p50": 0,
@@ -410,13 +461,15 @@
       "timeoutRate": 0,
       "contentionRate": 0,
       "failureRate": 0,
+      "metrics": {},
       "derivedThresholds": {
-        "wallClockMs": 331,
+        "wallClockMs": 113,
         "queueTimeMs": 1,
         "lockWaitMs": 1,
+        "leaseWaitMs": 1,
         "storageTimeMs": 1,
         "gitObservationMs": 1,
-        "workerProcessMs": 331,
+        "workerProcessMs": 113,
         "projectionMs": 1,
         "serializationMs": 1
       }
@@ -425,9 +478,9 @@
       "samples": 7,
       "phases": {
         "wallClockMs": {
-          "p50": 180.27,
-          "p95": 228.12,
-          "p99": 228.12
+          "p50": 80.99,
+          "p95": 112.45,
+          "p99": 112.45
         },
         "queueTimeMs": {
           "p50": 0,
@@ -435,6 +488,11 @@
           "p99": 0
         },
         "lockWaitMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "leaseWaitMs": {
           "p50": 0,
           "p95": 0,
           "p99": 0
@@ -450,9 +508,9 @@
           "p99": 0
         },
         "workerProcessMs": {
-          "p50": 180.27,
-          "p95": 228.12,
-          "p99": 228.12
+          "p50": 80.99,
+          "p95": 112.45,
+          "p99": 112.45
         },
         "projectionMs": {
           "p50": 0,
@@ -469,13 +527,15 @@
       "timeoutRate": 0,
       "contentionRate": 0,
       "failureRate": 0,
+      "metrics": {},
       "derivedThresholds": {
-        "wallClockMs": 343,
+        "wallClockMs": 169,
         "queueTimeMs": 1,
         "lockWaitMs": 1,
+        "leaseWaitMs": 1,
         "storageTimeMs": 1,
         "gitObservationMs": 1,
-        "workerProcessMs": 343,
+        "workerProcessMs": 169,
         "projectionMs": 1,
         "serializationMs": 1
       }
@@ -484,16 +544,21 @@
       "samples": 7,
       "phases": {
         "wallClockMs": {
-          "p50": 0.6,
-          "p95": 52.91,
-          "p99": 52.91
+          "p50": 199.09,
+          "p95": 217.13,
+          "p99": 217.13
         },
         "queueTimeMs": {
+          "p50": 78.5,
+          "p95": 94.6,
+          "p99": 94.6
+        },
+        "lockWaitMs": {
           "p50": 0,
           "p95": 0,
           "p99": 0
         },
-        "lockWaitMs": {
+        "leaseWaitMs": {
           "p50": 0,
           "p95": 0,
           "p99": 0
@@ -509,14 +574,14 @@
           "p99": 0
         },
         "workerProcessMs": {
+          "p50": 120.73,
+          "p95": 123.57,
+          "p99": 123.57
+        },
+        "projectionMs": {
           "p50": 0,
           "p95": 0,
           "p99": 0
-        },
-        "projectionMs": {
-          "p50": 0.6,
-          "p95": 52.9,
-          "p99": 52.9
         },
         "serializationMs": {
           "p50": 0,
@@ -528,14 +593,20 @@
       "timeoutRate": 0,
       "contentionRate": 0,
       "failureRate": 0,
+      "metrics": {
+        "isolatedRepoIds": 14,
+        "logicalSubscribers": 14,
+        "physicalExecutions": 14
+      },
       "derivedThresholds": {
-        "wallClockMs": 80,
-        "queueTimeMs": 1,
+        "wallClockMs": 326,
+        "queueTimeMs": 142,
         "lockWaitMs": 1,
+        "leaseWaitMs": 1,
         "storageTimeMs": 1,
         "gitObservationMs": 1,
-        "workerProcessMs": 1,
-        "projectionMs": 80,
+        "workerProcessMs": 186,
+        "projectionMs": 1,
         "serializationMs": 1
       }
     },
@@ -543,19 +614,24 @@
       "samples": 7,
       "phases": {
         "wallClockMs": {
-          "p50": 5.56,
-          "p95": 10.02,
-          "p99": 10.02
+          "p50": 200.89,
+          "p95": 217.73,
+          "p99": 217.73
         },
         "queueTimeMs": {
+          "p50": 79.11,
+          "p95": 90.85,
+          "p99": 90.85
+        },
+        "lockWaitMs": {
           "p50": 0,
           "p95": 0,
           "p99": 0
         },
-        "lockWaitMs": {
-          "p50": 5.56,
-          "p95": 10.02,
-          "p99": 10.02
+        "leaseWaitMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
         },
         "storageTimeMs": {
           "p50": 0,
@@ -568,9 +644,9 @@
           "p99": 0
         },
         "workerProcessMs": {
-          "p50": 0,
-          "p95": 0,
-          "p99": 0
+          "p50": 122.54,
+          "p95": 126.88,
+          "p99": 126.88
         },
         "projectionMs": {
           "p50": 0,
@@ -587,13 +663,19 @@
       "timeoutRate": 0,
       "contentionRate": 0,
       "failureRate": 0,
+      "metrics": {
+        "distinctCheckouts": 14,
+        "logicalSubscribers": 14,
+        "physicalExecutions": 14
+      },
       "derivedThresholds": {
-        "wallClockMs": 16,
-        "queueTimeMs": 1,
-        "lockWaitMs": 16,
+        "wallClockMs": 327,
+        "queueTimeMs": 137,
+        "lockWaitMs": 1,
+        "leaseWaitMs": 1,
         "storageTimeMs": 1,
         "gitObservationMs": 1,
-        "workerProcessMs": 1,
+        "workerProcessMs": 191,
         "projectionMs": 1,
         "serializationMs": 1
       }
@@ -602,9 +684,9 @@
       "samples": 7,
       "phases": {
         "wallClockMs": {
-          "p50": 2.75,
-          "p95": 4.87,
-          "p99": 4.87
+          "p50": 288.41,
+          "p95": 293.64,
+          "p99": 293.64
         },
         "queueTimeMs": {
           "p50": 0,
@@ -612,9 +694,14 @@
           "p99": 0
         },
         "lockWaitMs": {
-          "p50": 2.75,
-          "p95": 4.87,
-          "p99": 4.87
+          "p50": 39.02,
+          "p95": 43.84,
+          "p99": 43.84
+        },
+        "leaseWaitMs": {
+          "p50": 39.02,
+          "p95": 43.84,
+          "p99": 43.84
         },
         "storageTimeMs": {
           "p50": 0,
@@ -646,10 +733,16 @@
       "timeoutRate": 0,
       "contentionRate": 1,
       "failureRate": 0,
+      "metrics": {
+        "leaseConflicts": 7,
+        "logicalSubscribers": 14,
+        "physicalExecutions": 7
+      },
       "derivedThresholds": {
-        "wallClockMs": 8,
+        "wallClockMs": 441,
         "queueTimeMs": 1,
-        "lockWaitMs": 8,
+        "lockWaitMs": 66,
+        "leaseWaitMs": 66,
         "storageTimeMs": 1,
         "gitObservationMs": 1,
         "workerProcessMs": 1,
@@ -657,28 +750,33 @@
         "serializationMs": 1
       }
     },
-    "gateway_restart_recovery": {
+    "check_cache_coalescing_reuse": {
       "samples": 7,
       "phases": {
         "wallClockMs": {
-          "p50": 193.58,
-          "p95": 210.62,
-          "p99": 210.62
+          "p50": 435.95,
+          "p95": 475.88,
+          "p99": 475.88
         },
         "queueTimeMs": {
-          "p50": 0,
-          "p95": 0,
-          "p99": 0
+          "p50": 77.83,
+          "p95": 81.27,
+          "p99": 81.27
         },
         "lockWaitMs": {
           "p50": 0,
           "p95": 0,
           "p99": 0
         },
+        "leaseWaitMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
         "storageTimeMs": {
-          "p50": 0.44,
-          "p95": 0.6,
-          "p99": 0.6
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
         },
         "gitObservationMs": {
           "p50": 0,
@@ -686,9 +784,9 @@
           "p99": 0
         },
         "workerProcessMs": {
-          "p50": 193.58,
-          "p95": 210.62,
-          "p99": 210.62
+          "p50": 354.68,
+          "p95": 405.41,
+          "p99": 405.41
         },
         "projectionMs": {
           "p50": 0,
@@ -705,13 +803,88 @@
       "timeoutRate": 0,
       "contentionRate": 0,
       "failureRate": 0,
+      "metrics": {
+        "cacheHits": 7,
+        "coalesced": 7,
+        "crossCheckoutReuses": 7,
+        "invalidations": 7,
+        "logicalSubscribers": 28,
+        "physicalExecutions": 14
+      },
       "derivedThresholds": {
-        "wallClockMs": 316,
-        "queueTimeMs": 1,
+        "wallClockMs": 714,
+        "queueTimeMs": 122,
         "lockWaitMs": 1,
+        "leaseWaitMs": 1,
         "storageTimeMs": 1,
         "gitObservationMs": 1,
-        "workerProcessMs": 316,
+        "workerProcessMs": 609,
+        "projectionMs": 1,
+        "serializationMs": 1
+      }
+    },
+    "gateway_restart_recovery": {
+      "samples": 7,
+      "phases": {
+        "wallClockMs": {
+          "p50": 97.58,
+          "p95": 98.43,
+          "p99": 98.43
+        },
+        "queueTimeMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "lockWaitMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "leaseWaitMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "storageTimeMs": {
+          "p50": 0.18,
+          "p95": 0.67,
+          "p99": 0.67
+        },
+        "gitObservationMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "workerProcessMs": {
+          "p50": 97.57,
+          "p95": 98.43,
+          "p99": 98.43
+        },
+        "projectionMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "serializationMs": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        }
+      },
+      "successRate": 1,
+      "timeoutRate": 0,
+      "contentionRate": 0,
+      "failureRate": 0,
+      "metrics": {},
+      "derivedThresholds": {
+        "wallClockMs": 148,
+        "queueTimeMs": 1,
+        "lockWaitMs": 1,
+        "leaseWaitMs": 1,
+        "storageTimeMs": 2,
+        "gitObservationMs": 1,
+        "workerProcessMs": 148,
         "projectionMs": 1,
         "serializationMs": 1
       }

@@ -1,9 +1,13 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { ensureControllerHome } from '../src/cli/repositories/controller-home';
-import { registerRepository } from '../src/cli/repositories/registry';
+import {
+  addRepositoryCheckout,
+  registerRepository,
+  selectRepositoryCheckout,
+} from '../src/cli/repositories/registry';
 import { createMcpToolContext } from '../src/cli/mcp/server';
 import { callMultiRepositoryTool } from '../src/cli/mcp/multi-repository';
 import { callRuntimeTool } from '../src/runtime/gateway/mcp/runtime-tools';
@@ -17,19 +21,17 @@ import {
   releaseCheckoutMutationGateOwned,
 } from '../src/runtime/execution/thin-harness/mutation-gate';
 import {
-  acquireExecutionLeases,
-  releaseExecutionLeases,
-} from '../src/runtime/resources/leases/store';
-import {
   getProcessHandle,
   spawnManagedProcess,
   waitForProcess,
 } from '../src/runtime/execution/process-runtime';
+import { controllerCheckExecutionIdentity } from '../src/cli/controller/check-runner';
 
 const PHASES = [
   'wallClockMs',
   'queueTimeMs',
   'lockWaitMs',
+  'leaseWaitMs',
   'storageTimeMs',
   'gitObservationMs',
   'workerProcessMs',
@@ -39,7 +41,11 @@ const PHASES = [
 type Phase = (typeof PHASES)[number];
 type Outcome = 'success' | 'timeout' | 'contention' | 'failed';
 type Phases = Record<Phase, number>;
-interface Sample { phases: Phases; outcome: Outcome }
+interface Sample {
+  phases: Phases;
+  outcome: Outcome;
+  metrics?: Record<string, number>;
+}
 
 function phases(): Phases {
   return Object.fromEntries(PHASES.map((phase) => [phase, 0])) as Phases;
@@ -72,6 +78,9 @@ function summarize(samples: Sample[]) {
     timeoutRate: rate('timeout'),
     contentionRate: rate('contention'),
     failureRate: rate('failed'),
+    metrics: Object.fromEntries([...new Set(samples.flatMap((sample) => Object.keys(sample.metrics ?? {})))]
+      .sort()
+      .map((key) => [key, samples.reduce((total, sample) => total + (sample.metrics?.[key] ?? 0), 0)])),
     derivedThresholds: Object.fromEntries(PHASES.map((phase) => {
       const values = samples.map((sample) => sample.phases[phase]);
       const p95 = percentile(values, 0.95);
@@ -110,6 +119,19 @@ function repositoryFixture(root: string, controllerHome: string, name: string) {
   git(repoRoot, ['config', 'user.name', 'Benchmark']);
   git(repoRoot, ['config', 'user.email', 'benchmark@example.com']);
   writeFileSync(join(repoRoot, 'README.md'), `${name}\n`);
+  writeFileSync(join(repoRoot, '.gitignore'), '.benchmark/\n.forge/repository.json\n.ai/harness/checks/\n');
+  mkdirSync(join(repoRoot, '.forge'), { recursive: true });
+  writeFileSync(join(repoRoot, '.forge', 'checks.json'), `${JSON.stringify({
+    version: 1,
+    checks: {
+      'benchmark:semantic': {
+        description: 'Content-bound benchmark check',
+        command: [process.execPath, '-e', 'setTimeout(() => process.exit(0), 100)'],
+        timeoutMs: 10_000,
+        effects: { reads: ['.'], temp: 'isolated', git: 'read' },
+      },
+    },
+  }, null, 2)}\n`);
   git(repoRoot, ['add', '.']);
   git(repoRoot, ['commit', '-m', 'init']);
   const repository = registerRepository({ path: repoRoot, controllerHome, displayName: name });
@@ -117,6 +139,35 @@ function repositoryFixture(root: string, controllerHome: string, name: string) {
     repoRoot,
     repository,
     context: createMcpToolContext({ controllerHome, profile: 'controller', repo: repoRoot }),
+  };
+}
+
+function worktreeFixture(
+  root: string,
+  controllerHome: string,
+  source: ReturnType<typeof repositoryFixture>,
+) {
+  const repoRoot = join(root, 'repository-a-isolated');
+  git(source.repoRoot, ['worktree', 'add', '-b', 'benchmark-isolated', repoRoot, 'HEAD']);
+  const withCheckout = addRepositoryCheckout({
+    controllerHome,
+    repoId: source.repository.repoId,
+    path: repoRoot,
+    activate: false,
+  });
+  const checkout = withCheckout.checkouts.find((entry) => entry.worktree && entry.branch === 'benchmark-isolated');
+  if (!checkout) throw new Error('benchmark worktree checkout registration failed');
+  return {
+    repoRoot,
+    repository: selectRepositoryCheckout(withCheckout, checkout.checkoutId),
+  };
+}
+
+function physicalCommand(marker: string, output: string, delayMs = 80) {
+  return {
+    kind: 'argv' as const,
+    executable: process.execPath,
+    args: ['-e', `const fs=require('fs'); fs.mkdirSync('.benchmark',{recursive:true}); setTimeout(()=>{fs.writeFileSync(${JSON.stringify(marker)},${JSON.stringify(output)}); process.stdout.write(${JSON.stringify(output)});},${delayMs})`],
   };
 }
 async function guarded(operation: () => Promise<Sample>): Promise<Sample> {
@@ -138,6 +189,7 @@ async function main(): Promise<void> {
     bindBenchmarkRuntime(controllerHome);
     const first = repositoryFixture(root, controllerHome, 'repository-a');
     const second = repositoryFixture(root, controllerHome, 'repository-b');
+    const firstIsolated = worktreeFixture(root, controllerHome, first);
     const results = new Map<string, Sample[]>();
     const run = async (name: string, operation: () => Promise<Sample>) => {
       results.set(name, [...(results.get(name) ?? []), await guarded(operation)]);
@@ -321,50 +373,260 @@ async function main(): Promise<void> {
       await run('concurrent_two_repository_load', async () => {
         const timing = phases();
         const started = performance.now();
-        const projectionStarted = performance.now();
-        const values = await Promise.all([
-          callRuntimeTool(first.context, 'controller_context_pack', { repo_id: first.repository.repoId, variant: 'summary' }),
-          callRuntimeTool(second.context, 'controller_context_pack', { repo_id: second.repository.repoId, variant: 'summary' }),
+        const queueStarted = performance.now();
+        const markerA = `.benchmark/multi-a-${index}.txt`;
+        const markerB = `.benchmark/multi-b-${index}.txt`;
+        const [handleA, handleB] = await Promise.all([
+          spawnManagedProcess({
+            controllerHome,
+            repoId: first.repository.repoId,
+            checkoutId: first.repository.activeCheckoutId,
+            executionIdentity: executionIdentityForRepository(first.repository),
+            commandId: `benchmark-multi-a-${index}`,
+            origin: { surface: 'system', requestId: `benchmark-multi-a-${index}` },
+            command: { ...physicalCommand(markerA, `repo-a-${index}`), cwd: first.repoRoot },
+            resourceClaims: [{ resourceKey: `workspace:${first.repository.activeCheckoutId}`, mode: 'write' }],
+            returnHandleImmediately: true,
+            timeoutMs: 5_000,
+          }),
+          spawnManagedProcess({
+            controllerHome,
+            repoId: second.repository.repoId,
+            checkoutId: second.repository.activeCheckoutId,
+            executionIdentity: executionIdentityForRepository(second.repository),
+            commandId: `benchmark-multi-b-${index}`,
+            origin: { surface: 'system', requestId: `benchmark-multi-b-${index}` },
+            command: { ...physicalCommand(markerB, `repo-b-${index}`), cwd: second.repoRoot },
+            resourceClaims: [{ resourceKey: `workspace:${second.repository.activeCheckoutId}`, mode: 'write' }],
+            returnHandleImmediately: true,
+            timeoutMs: 5_000,
+          }),
         ]);
-        timing.projectionMs = elapsed(projectionStarted);
+        timing.queueTimeMs = elapsed(queueStarted);
+        const processStarted = performance.now();
+        const [completedA, completedB] = await Promise.all([
+          waitForProcess(controllerHome, first.repository.repoId, handleA.processId, { timeoutMs: 5_000 }),
+          waitForProcess(controllerHome, second.repository.repoId, handleB.processId, { timeoutMs: 5_000 }),
+        ]);
+        timing.workerProcessMs = elapsed(processStarted);
         timing.wallClockMs = elapsed(started);
-        return { phases: timing, outcome: values.some((value) => value?.isError) ? 'failed' : 'success' };
+        const isolated = handleA.processId !== handleB.processId
+          && readFileSync(join(first.repoRoot, markerA), 'utf8') === `repo-a-${index}`
+          && readFileSync(join(second.repoRoot, markerB), 'utf8') === `repo-b-${index}`
+          && completedA.stdout === `repo-a-${index}`
+          && completedB.stdout === `repo-b-${index}`;
+        return {
+          phases: timing,
+          outcome: completedA.ok && completedB.ok && isolated ? 'success' : 'failed',
+          metrics: { physicalExecutions: 2, logicalSubscribers: 2, isolatedRepoIds: isolated ? 2 : 0 },
+        };
       });
 
       await run('same_repository_different_checkout_load', async () => {
         const timing = phases();
         const started = performance.now();
-        const lockStarted = performance.now();
-        const ownerA = `benchmark-checkout-a-${index}`;
-        const ownerB = `benchmark-checkout-b-${index}`;
-        const leaseA = acquireExecutionLeases(controllerHome, first.repository.repoId, ownerA, [
-          { repoId: first.repository.repoId, checkoutId: 'checkout-a', resourceKey: 'workspace:checkout-a', mode: 'write' },
-        ], { ttlMs: 5_000 });
-        const leaseB = acquireExecutionLeases(controllerHome, first.repository.repoId, ownerB, [
-          { repoId: first.repository.repoId, checkoutId: 'checkout-b', resourceKey: 'workspace:checkout-b', mode: 'write' },
-        ], { ttlMs: 5_000 });
-        timing.lockWaitMs = elapsed(lockStarted);
+        const queueStarted = performance.now();
+        const markerA = `.benchmark/checkout-main-${index}.txt`;
+        const markerB = `.benchmark/checkout-isolated-${index}.txt`;
+        const [handleA, handleB] = await Promise.all([
+          spawnManagedProcess({
+            controllerHome,
+            repoId: first.repository.repoId,
+            checkoutId: first.repository.activeCheckoutId,
+            executionIdentity: executionIdentityForRepository(first.repository),
+            commandId: `benchmark-checkout-main-${index}`,
+            origin: { surface: 'system', requestId: `benchmark-checkout-main-${index}` },
+            command: { ...physicalCommand(markerA, `main-${index}`), cwd: first.repoRoot },
+            resourceClaims: [{ resourceKey: `workspace:${first.repository.activeCheckoutId}`, mode: 'write' }],
+            returnHandleImmediately: true,
+            timeoutMs: 5_000,
+          }),
+          spawnManagedProcess({
+            controllerHome,
+            repoId: firstIsolated.repository.repoId,
+            checkoutId: firstIsolated.repository.activeCheckoutId,
+            executionIdentity: executionIdentityForRepository(firstIsolated.repository),
+            commandId: `benchmark-checkout-isolated-${index}`,
+            origin: { surface: 'system', requestId: `benchmark-checkout-isolated-${index}` },
+            command: { ...physicalCommand(markerB, `isolated-${index}`), cwd: firstIsolated.repoRoot },
+            resourceClaims: [{ resourceKey: `workspace:${firstIsolated.repository.activeCheckoutId}`, mode: 'write' }],
+            returnHandleImmediately: true,
+            timeoutMs: 5_000,
+          }),
+        ]);
+        timing.queueTimeMs = elapsed(queueStarted);
+        const processStarted = performance.now();
+        const [completedA, completedB] = await Promise.all([
+          waitForProcess(controllerHome, first.repository.repoId, handleA.processId, { timeoutMs: 5_000 }),
+          waitForProcess(controllerHome, first.repository.repoId, handleB.processId, { timeoutMs: 5_000 }),
+        ]);
+        timing.workerProcessMs = elapsed(processStarted);
         timing.wallClockMs = elapsed(started);
-        releaseExecutionLeases(controllerHome, first.repository.repoId, ownerA);
-        releaseExecutionLeases(controllerHome, first.repository.repoId, ownerB);
-        return { phases: timing, outcome: leaseA.acquired && leaseB.acquired ? 'success' : 'contention' };
+        const isolated = first.repository.activeCheckoutId !== firstIsolated.repository.activeCheckoutId
+          && handleA.processId !== handleB.processId
+          && readFileSync(join(first.repoRoot, markerA), 'utf8') === `main-${index}`
+          && readFileSync(join(firstIsolated.repoRoot, markerB), 'utf8') === `isolated-${index}`;
+        return {
+          phases: timing,
+          outcome: completedA.ok && completedB.ok && isolated ? 'success' : 'failed',
+          metrics: { physicalExecutions: 2, logicalSubscribers: 2, distinctCheckouts: isolated ? 2 : 0 },
+        };
       });
 
       await run('same_checkout_contention', async () => {
         const timing = phases();
         const started = performance.now();
+        const marker = `.benchmark/contention-${index}.txt`;
+        const live = await spawnManagedProcess({
+          controllerHome,
+          repoId: first.repository.repoId,
+          checkoutId: first.repository.activeCheckoutId,
+          executionIdentity: executionIdentityForRepository(first.repository),
+          commandId: `benchmark-contention-live-${index}`,
+          origin: { surface: 'system', requestId: `benchmark-contention-live-${index}` },
+          command: { ...physicalCommand(marker, `winner-${index}`, 200), cwd: first.repoRoot },
+          resourceClaims: [{ resourceKey: `workspace:${first.repository.activeCheckoutId}`, mode: 'write' }],
+          returnHandleImmediately: true,
+          timeoutMs: 5_000,
+        });
         const lockStarted = performance.now();
-        const owner = `benchmark-live-${index}`;
-        const live = acquireExecutionLeases(controllerHome, first.repository.repoId, owner, [
-          { repoId: first.repository.repoId, checkoutId: 'checkout-one', resourceKey: 'workspace:checkout-one', mode: 'write' },
-        ], { ttlMs: 5_000 });
-        const blocked = acquireExecutionLeases(controllerHome, first.repository.repoId, `benchmark-blocked-${index}`, [
-          { repoId: first.repository.repoId, checkoutId: 'checkout-one', resourceKey: 'workspace:checkout-one', mode: 'write' },
-        ], { ttlMs: 5_000 });
+        const blocked = await spawnManagedProcess({
+          controllerHome,
+          repoId: first.repository.repoId,
+          checkoutId: first.repository.activeCheckoutId,
+          executionIdentity: executionIdentityForRepository(first.repository),
+          commandId: `benchmark-contention-blocked-${index}`,
+          origin: { surface: 'system', requestId: `benchmark-contention-blocked-${index}` },
+          command: { ...physicalCommand(`.benchmark/blocked-${index}.txt`, `blocked-${index}`), cwd: first.repoRoot },
+          resourceClaims: [{ resourceKey: `workspace:${first.repository.activeCheckoutId}`, mode: 'write' }],
+          returnHandleImmediately: true,
+          timeoutMs: 5_000,
+        });
         timing.lockWaitMs = elapsed(lockStarted);
+        timing.leaseWaitMs = timing.lockWaitMs;
+        const completed = await waitForProcess(controllerHome, first.repository.repoId, live.processId, { timeoutMs: 5_000 });
         timing.wallClockMs = elapsed(started);
-        releaseExecutionLeases(controllerHome, first.repository.repoId, owner);
-        return { phases: timing, outcome: live.acquired && !blocked.acquired ? 'contention' : 'failed' };
+        const correctlyBlocked = completed.ok
+          && blocked.ok === false
+          && blocked.stderr?.includes('PROCESS_LEASE_CONFLICT')
+          && existsSync(join(first.repoRoot, marker))
+          && !existsSync(join(first.repoRoot, `.benchmark/blocked-${index}.txt`));
+        return {
+          phases: timing,
+          outcome: correctlyBlocked ? 'contention' : 'failed',
+          metrics: { physicalExecutions: correctlyBlocked ? 1 : 0, logicalSubscribers: 2, leaseConflicts: correctlyBlocked ? 1 : 0 },
+        };
+      });
+
+      await run('check_cache_coalescing_reuse', async () => {
+        const timing = phases();
+        const started = performance.now();
+        const requestedTimeoutMs = 5_000 + index;
+        const sourceIdentity = controllerCheckExecutionIdentity(
+          first.repoRoot,
+          'benchmark:semantic',
+          requestedTimeoutMs,
+        );
+        const isolatedIdentity = controllerCheckExecutionIdentity(
+          firstIsolated.repoRoot,
+          'benchmark:semantic',
+          requestedTimeoutMs,
+        );
+        const command = {
+          kind: 'argv' as const,
+          executable: process.execPath,
+          args: ['-e', 'setTimeout(() => process.exit(0), 100)'],
+        };
+        const runCheck = (
+          repository: typeof first.repository,
+          repoRoot: string,
+          requestId: string,
+          executionSessionId: string,
+          identity: typeof sourceIdentity,
+        ) => spawnManagedProcess({
+          controllerHome,
+          repoId: repository.repoId,
+          checkoutId: repository.activeCheckoutId,
+          executionIdentity: executionIdentityForRepository(repository),
+          commandId: requestId,
+          origin: { surface: 'check', checkId: 'benchmark:semantic', requestId, executionSessionId },
+          command: { ...command, cwd: repoRoot },
+          checkExecution: {
+            ...identity,
+            scopeKey: identity.reuseScope === 'repository'
+              ? 'repository'
+              : `checkout:${repository.activeCheckoutId}`,
+          },
+          resourceClaims: [{ resourceKey: `workspace:${repository.activeCheckoutId}`, mode: 'read' }],
+          returnHandleImmediately: true,
+          timeoutMs: requestedTimeoutMs,
+        });
+
+        const queueStarted = performance.now();
+        const [firstSubscriber, secondSubscriber] = await Promise.all([
+          runCheck(first.repository, first.repoRoot, `benchmark-check-a-${index}`, `session-a-${index}`, sourceIdentity),
+          runCheck(first.repository, first.repoRoot, `benchmark-check-b-${index}`, `session-b-${index}`, sourceIdentity),
+        ]);
+        timing.queueTimeMs = elapsed(queueStarted);
+        const completed = await waitForProcess(
+          controllerHome,
+          first.repository.repoId,
+          firstSubscriber.processId,
+          { timeoutMs: 5_000 },
+        );
+        const crossCheckoutReuse = await runCheck(
+          firstIsolated.repository,
+          firstIsolated.repoRoot,
+          `benchmark-check-cross-${index}`,
+          `session-cross-${index}`,
+          isolatedIdentity,
+        );
+
+        const dirtyPath = join(firstIsolated.repoRoot, `dirty-${index}.txt`);
+        writeFileSync(dirtyPath, `dirty-${index}\n`);
+        const dirtyIdentity = controllerCheckExecutionIdentity(
+          firstIsolated.repoRoot,
+          'benchmark:semantic',
+          requestedTimeoutMs,
+        );
+        const invalidated = await runCheck(
+          firstIsolated.repository,
+          firstIsolated.repoRoot,
+          `benchmark-check-dirty-${index}`,
+          `session-dirty-${index}`,
+          dirtyIdentity,
+        );
+        const invalidatedCompleted = await waitForProcess(
+          controllerHome,
+          first.repository.repoId,
+          invalidated.processId,
+          { timeoutMs: 5_000 },
+        );
+        rmSync(dirtyPath);
+        timing.workerProcessMs = elapsed(started) - timing.queueTimeMs;
+        timing.wallClockMs = elapsed(started);
+        const coalesced = firstSubscriber.processId === secondSubscriber.processId
+          && secondSubscriber.semanticDeduplicated === true;
+        const reused = crossCheckoutReuse.processId === firstSubscriber.processId
+          && crossCheckoutReuse.semanticDeduplicated === true
+          && sourceIdentity.cacheKey === isolatedIdentity.cacheKey
+          && sourceIdentity.reuseScope === 'repository'
+          && isolatedIdentity.reuseScope === 'repository';
+        const cacheInvalidated = dirtyIdentity.cacheKey !== sourceIdentity.cacheKey
+          && dirtyIdentity.reuseScope === 'checkout'
+          && invalidated.processId !== firstSubscriber.processId;
+        return {
+          phases: timing,
+          outcome: completed.ok && invalidatedCompleted.ok && coalesced && reused && cacheInvalidated ? 'success' : 'failed',
+          metrics: {
+            physicalExecutions: 2,
+            logicalSubscribers: 4,
+            coalesced: coalesced ? 1 : 0,
+            cacheHits: reused ? 1 : 0,
+            invalidations: cacheInvalidated ? 1 : 0,
+            crossCheckoutReuses: reused ? 1 : 0,
+          },
+        };
       });
 
       await run('gateway_restart_recovery', async () => {
@@ -405,6 +667,10 @@ async function main(): Promise<void> {
       notes: {
         durableJobSubmit: 'ExecutionJob creation is retired; this measures durable Process admission and persistence.',
         gatewayRestartRecovery: 'A fresh Process store read is performed before terminal completion.',
+        physicalConcurrency: 'The multi-repository and multi-checkout scenarios launch real Process Runners that write isolated marker files under temporary Git repositories and a real git worktree.',
+        sameCheckoutContention: 'leaseWaitMs is the bounded end-to-end admission time for the conflicting second Process, including identity/persistence work around the Lease decision.',
+        checkIdentity: 'The cache identity is derived from repository-scoped storage plus content revision, check definition digest, environment/toolchain fingerprint, timeout contract, and reuse scope. Session and request ids are subscribers, not cache-key inputs.',
+        checkCacheMetrics: 'physicalExecutions/logicalSubscribers/coalesced/cacheHits/invalidations/crossCheckoutReuses are summed across measured iterations.',
       },
       scenarios: Object.fromEntries([...results].map(([name, samples]) => [name, summarize(samples)])),
     };
