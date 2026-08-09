@@ -203,6 +203,26 @@ export function shouldProxyRuntimeToolCall(
   return tools.tools.some((tool) => tool.name === name);
 }
 
+export async function proxyCanonicalRuntimeToolIfOwned<T>(input: {
+  name: string;
+  runtimeReady: boolean;
+  listTools: () => Promise<{ tools: Array<{ name: string }> }>;
+  callTool: () => Promise<T>;
+}): Promise<{ handled: false } | { handled: true; result: T }> {
+  let tools: { tools: Array<{ name: string }> };
+  try {
+    tools = await input.listTools();
+  } catch (error) {
+    if (input.runtimeReady) throw error;
+    return { handled: false };
+  }
+  if (!shouldProxyRuntimeToolCall(tools, input.name)) return { handled: false };
+  // Once canonical Runtime ownership of this tool is established, never replay
+  // the call locally. Transport/tool failures must propagate so mutations cannot
+  // execute twice and source Gateways cannot evaluate canonical writer fencing.
+  return { handled: true, result: await input.callTool() };
+}
+
 async function proxyRuntimeToolCall(
   ctx: MultiRepositoryMcpToolContext,
   name: string,
@@ -254,18 +274,13 @@ export function createForgeMcpServerFromContext(baseContext: ServerToolContext):
         // Gateway processes from acquiring Process Runtime leases or evaluating
         // Runtime source coherence against their own checkout.
         if (!getRuntimeWriteClaim()) {
-          try {
-            const proxied = await proxyRuntimeTools(ctx);
-            // Call routing is per-tool, not all-or-nothing. A canonical Runtime
-            // that explicitly exposes this tool owns its execution even when a
-            // newer source Gateway knows additional unrelated tools. Falling
-            // back locally for a Runtime-owned mutation would evaluate writer
-            // fencing in the thin Gateway and surface a false runtime-authority
-            // conflict.
-            if (shouldProxyRuntimeToolCall(proxied, name)) {
-              return proxyRuntimeToolCall(ctx, name, args);
-            }
-          } catch { /* Old/unavailable Runtime: retain local bootstrap/recovery surface. */ }
+          const routed = await proxyCanonicalRuntimeToolIfOwned({
+            name,
+            runtimeReady: observeRuntimeStatus(ctx.controllerHome).ready,
+            listTools: () => proxyRuntimeTools(ctx),
+            callTool: () => proxyRuntimeToolCall(ctx, name, args),
+          });
+          if (routed.handled) return routed.result;
         }
         const accessResult = callAccessTool(ctx, name, args);
         if (accessResult) return accessResult;
