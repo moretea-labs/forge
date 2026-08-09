@@ -57,6 +57,7 @@ import { ensureRepositoryRuntimeStorage } from '../../src/cli/repositories/runti
 import { callProcessTool, processToolDefinitions } from '../../src/runtime/gateway/mcp/process-tools';
 import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repository';
 import { repositoryChildProcessEnvironment } from '../../src/runtime/shared/process-environment';
+import { rebuildRepositoryProjection } from '../../src/runtime/projections/materialized-view';
 
 const roots: string[] = [];
 
@@ -156,6 +157,50 @@ function fixture() {
 }
 
 describe('Unified Process Runtime', () => {
+  test('ephemeral Process leases enforce conflicts without polluting durable projection readiness', () => {
+    const fx = fixture();
+    bindCanonicalRuntime(fx.controllerHome);
+    const resourceKey = `workspace:${fx.repository.activeCheckoutId}`;
+    const first = acquireExecutionLeases(
+      fx.controllerHome,
+      fx.repository.repoId,
+      'process:ephemeral-projection-test',
+      [{ resourceKey, mode: 'write', repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId }],
+      {
+        ttlMs: 60_000,
+        visibility: 'ephemeral',
+        notifyScheduler: false,
+        invalidateProjection: false,
+        emitRuntimeEvent: false,
+      },
+    );
+    expect(first.acquired).toBe(true);
+    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)).toHaveLength(1);
+
+    const projection = rebuildRepositoryProjection(fx.controllerHome, fx.repository.repoId);
+    expect(projection.activeLeases).toBe(0);
+    expect(projection.releaseFrozen).toBe(false);
+
+    const blocked = acquireExecutionLeases(
+      fx.controllerHome,
+      fx.repository.repoId,
+      'process:ephemeral-projection-contender',
+      [{ resourceKey, mode: 'write', repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId }],
+      {
+        ttlMs: 60_000,
+        visibility: 'ephemeral',
+        notifyScheduler: false,
+        invalidateProjection: false,
+        emitRuntimeEvent: false,
+      },
+    );
+    expect(blocked.acquired).toBe(false);
+    expect(blocked.blockers).toContainEqual(expect.objectContaining({
+      resourceKey,
+      ownerJobId: 'process:ephemeral-projection-test',
+    }));
+  });
+
   test('uses Bun rather than a compiled forge binary for source runner entries', () => {
     const releaseRoot = mkdtempSync(join(tmpdir(), 'process-runtime-release-'));
     roots.push(releaseRoot);

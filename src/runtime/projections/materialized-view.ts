@@ -138,6 +138,15 @@ function attentionSummary(job: ExecutionJob): RepositoryRuntimeProjection['atten
   return { jobId: job.jobId, status: job.status, message: job.error?.message };
 }
 
+function projectionVisibleLeases(leases: ReturnType<typeof listActiveLeases>) {
+  // Ephemeral leases protect fast-path Process execution from conflicting writes,
+  // but by contract they do not represent Scheduler/Worker durable activity.
+  // Counting them here can freeze readiness if a projection is rebuilt while a
+  // short-lived local Process is active and the ephemeral release intentionally
+  // skips projection invalidation.
+  return leases.filter((lease) => lease.visibility !== 'ephemeral');
+}
+
 function projectionWithExecutionIndexOverlay(
   controllerHome: string,
   repoId: string,
@@ -153,6 +162,7 @@ function projectionWithExecutionIndexOverlay(
   try { leases = listActiveLeases(controllerHome, repoId); }
   catch { leases = undefined; }
 
+  const projectionLeases = leases ? projectionVisibleLeases(leases) : undefined;
   const activeJobSummaries = activeJobs?.map(executionJobSummary) ?? base.activeJobs;
   const activeJobIds = new Set(activeJobSummaries.map((job) => job.jobId));
   const attentionJobs = recentJobs?.filter((job) => ATTENTION_JOB_STATUSES.has(job.status));
@@ -171,9 +181,9 @@ function projectionWithExecutionIndexOverlay(
     runningWorkers: activeJobs
       ? activeJobs.filter((job) => job.status === 'running').length
       : base.runningWorkers,
-    activeLeases: leases ? leases.length : base.activeLeases,
-    releaseFrozen: leases
-      ? leases.some((lease) => lease.resourceKey.startsWith('release:'))
+    activeLeases: projectionLeases ? projectionLeases.length : base.activeLeases,
+    releaseFrozen: projectionLeases
+      ? projectionLeases.some((lease) => lease.resourceKey.startsWith('release:'))
       : base.releaseFrozen,
     currentAttention,
     attention,
@@ -194,7 +204,7 @@ function buildRepositoryProjection(
   const revision = (previous?.revision ?? 0) + 1;
   const activeJobs = listActiveExecutionJobs(controllerHome, repoId);
   const activeJobIds = new Set(activeJobs.map((job) => job.jobId));
-  const leases = listActiveLeases(controllerHome, repoId);
+  const leases = projectionVisibleLeases(listActiveLeases(controllerHome, repoId));
   const attentionJobs = listExecutionJobs(controllerHome, repoId, 100)
     .filter((job) => ATTENTION_JOB_STATUSES.has(job.status));
   // Terminal attention records remain in history for diagnosis and audit, but only
