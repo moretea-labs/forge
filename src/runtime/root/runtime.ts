@@ -19,6 +19,7 @@ import { loadRuntimeReleaseManifest } from './release-manifest';
 import { ensureActiveRuntimeRelease, type RuntimeReleaseAuthority } from './release-store';
 import { bindRuntimeWriteClaim, clearRuntimeWriteClaim } from './write-fence';
 import { startInProcessScheduler, type RuntimeSchedulerHandle } from './scheduler';
+import { startConfiguredRuntimeLocalBridge, type RuntimeLocalBridgeHandle } from './local-bridge';
 import { removeRuntimeStatusSnapshot, writeRuntimeStatusSnapshot } from './status';
 import type {
   CanonicalRuntimeConfig,
@@ -34,6 +35,7 @@ export interface CanonicalRuntimeDependencies {
   acquireOwnership(controllerHome: string, runtimeInstanceId: string): RuntimeOwnershipHandle;
   inspectDatabase(controllerHome: string): ControlPlaneDatabaseInspection;
   startScheduler(controllerHome: string, timeoutMs?: number): RuntimeSchedulerHandle;
+  startLocalBridge(input: { controllerHome: string; repositoryRoot: string }): Promise<RuntimeLocalBridgeHandle | undefined>;
   startTransport(options: Parameters<typeof startRuntimeMcpTransport>[0]): Promise<RuntimeMcpTransportHandle>;
   runMcpProbe(endpoint: string, authToken: string): Promise<void>;
   collectRuntimeSourceIdentity: typeof collectRuntimeSourceIdentity;
@@ -69,6 +71,7 @@ const DEFAULT_DEPENDENCIES: CanonicalRuntimeDependencies = {
   acquireOwnership: acquireRuntimeOwnership,
   inspectDatabase: inspectControlPlaneDatabase,
   startScheduler: startInProcessScheduler,
+  startLocalBridge: startConfiguredRuntimeLocalBridge,
   startTransport: startRuntimeMcpTransport,
   runMcpProbe: defaultMcpProbe,
   collectRuntimeSourceIdentity,
@@ -81,6 +84,7 @@ export class CanonicalForgeRuntime {
   private readonly dependencies: CanonicalRuntimeDependencies;
   private ownership?: RuntimeOwnershipHandle;
   private scheduler?: RuntimeSchedulerHandle;
+  private localBridge?: RuntimeLocalBridgeHandle;
   private transport?: RuntimeMcpTransportHandle;
   private controller?: RuntimeControllerServices;
   private release?: RuntimeReleaseManifest;
@@ -144,7 +148,7 @@ export class CanonicalForgeRuntime {
     if (this.started) throw new Error('RUNTIME_ALREADY_STARTED');
     this.started = true;
     this.readinessState.markNotReady();
-    let stage: 'release' | 'ownership' | 'source' | 'database' | 'scheduler' | 'transport' | 'probe' = 'release';
+    let stage: 'release' | 'ownership' | 'source' | 'database' | 'scheduler' | 'localBridge' | 'transport' | 'probe' = 'release';
     try {
       this.release = this.dependencies.loadReleaseManifest(this.config.releaseManifestPath, this.config.controllerHome);
 
@@ -205,6 +209,12 @@ export class CanonicalForgeRuntime {
         (error) => this.failCore('SCHEDULER_STALLED', error instanceof Error ? error.message : String(error)),
       );
 
+      stage = 'localBridge';
+      this.localBridge = await this.dependencies.startLocalBridge({
+        controllerHome: this.config.controllerHome,
+        repositoryRoot: this.config.repositoryRoot,
+      });
+
       stage = 'transport';
       this.transport = await this.dependencies.startTransport({
         host: this.config.host,
@@ -240,6 +250,7 @@ export class CanonicalForgeRuntime {
     if (stage === 'source') return 'RUNTIME_SOURCE_SNAPSHOT_FAILED';
     if (stage === 'database') return 'DATABASE_UNAVAILABLE';
     if (stage === 'scheduler') return 'SCHEDULER_INITIALIZATION_FAILED';
+    if (stage === 'localBridge') return 'LOCAL_BRIDGE_STARTUP_FAILED';
     if (stage === 'transport') return 'MCP_LISTENER_FAILED';
     return 'MCP_END_TO_END_FAILED';
   }
@@ -279,6 +290,7 @@ export class CanonicalForgeRuntime {
       // Stop accepting new MCP work before quiescing Scheduler activity, then
       // release the Controller Home claim only after all in-process services stop.
       await this.transport?.close().catch(() => undefined);
+      await this.localBridge?.close().catch(() => undefined);
       await this.scheduler?.stop().catch(() => undefined);
       const ownerPid = this.ownership?.record.pid;
       this.ownership?.release();

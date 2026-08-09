@@ -3,6 +3,7 @@ import { Database } from 'bun:sqlite';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
+import { spawnSync } from 'child_process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { inspectControlPlaneDatabase } from '../../src/runtime/control-plane/persistence/sqlite-store';
@@ -29,6 +30,12 @@ import {
   type CanonicalRuntimeDependencies,
 } from '../../src/runtime/root/runtime';
 import type { CanonicalRuntimeConfig } from '../../src/runtime/root/types';
+import { startConfiguredRuntimeLocalBridge } from '../../src/runtime/root/local-bridge';
+import {
+  loadMcpServiceRuntimeState,
+  writeMcpServiceLocalConfig,
+  writeMcpServiceRuntimeState,
+} from '../../src/cli/mcp/auth';
 
 interface Fixture {
   root: string;
@@ -224,6 +231,85 @@ describe('canonical single Runtime', () => {
     const secondGeneration = readRuntimeGeneration(fixture.controllerHome);
     expect(secondGeneration?.revision).toBe(2);
     expect(secondGeneration?.generation).not.toBe(firstGeneration?.generation);
+  });
+
+  test('canonical Runtime owns the configured embedded Local Bridge lifecycle', async () => {
+    const fixture = createFixture({ runtimeInstanceId: 'runtime-embedded-local-bridge' });
+    let localBridgeStarted = false;
+    let localBridgeClosed = false;
+    const runtime = new CanonicalForgeRuntime(fixture.config, {
+      startScheduler: () => inertScheduler(),
+      startLocalBridge: async (input) => {
+        localBridgeStarted = true;
+        expect(input).toEqual({
+          controllerHome: fixture.controllerHome,
+          repositoryRoot: fixture.repositoryRoot,
+        });
+        return {
+          endpoint: 'http://127.0.0.1:8766/',
+          close: async () => { localBridgeClosed = true; },
+        };
+      },
+      startTransport: async () => ({
+        endpoint: 'http://127.0.0.1:9876/mcp',
+        host: '127.0.0.1',
+        port: 9876,
+        close: async () => undefined,
+      }),
+      runMcpProbe: async () => undefined,
+    });
+
+    await runtime.start();
+    expect(localBridgeStarted).toBe(true);
+    expect(localBridgeClosed).toBe(false);
+    await runtime.stop('TEST_LOCAL_BRIDGE_CLOSE');
+    expect(localBridgeClosed).toBe(true);
+  });
+
+  test('configured embedded Local Bridge publishes live same-process evidence', async () => {
+    const fixture = createFixture();
+    spawnSync('git', ['init', '-b', 'main'], { cwd: fixture.repositoryRoot, encoding: 'utf8' });
+    spawnSync('git', ['config', 'user.name', 'Forge Test'], { cwd: fixture.repositoryRoot, encoding: 'utf8' });
+    spawnSync('git', ['config', 'user.email', 'forge-test@example.invalid'], { cwd: fixture.repositoryRoot, encoding: 'utf8' });
+    writeFileSync(join(fixture.repositoryRoot, 'README.md'), '# fixture\n', 'utf8');
+    spawnSync('git', ['add', 'README.md'], { cwd: fixture.repositoryRoot, encoding: 'utf8' });
+    spawnSync('git', ['commit', '-m', 'test fixture'], { cwd: fixture.repositoryRoot, encoding: 'utf8' });
+    writeMcpServiceLocalConfig(fixture.controllerHome, {
+      version: 1,
+      localController: { enabled: true, mode: 'embedded', host: '127.0.0.1', port: 0 },
+    });
+    writeMcpServiceRuntimeState(fixture.controllerHome, {
+      version: 1,
+      repo: fixture.repositoryRoot,
+      startedAt: '2026-08-05T00:00:00.000Z',
+      updatedAt: '2026-08-05T00:00:00.000Z',
+      status: 'running',
+      tunnelMode: 'none',
+      server: {
+        endpoint: 'http://127.0.0.1:8765/mcp',
+        running: true,
+        healthy: true,
+        restartCount: 0,
+      },
+    });
+
+    const bridge = await startConfiguredRuntimeLocalBridge({
+      controllerHome: fixture.controllerHome,
+      repositoryRoot: fixture.repositoryRoot,
+    });
+    expect(bridge).toBeTruthy();
+    cleanups.push(() => bridge?.close());
+    const health = await fetch(new URL('/health', bridge!.endpoint)).then((response) => response.json()) as Record<string, unknown>;
+    expect(health).toMatchObject({ status: 'ok', localOnly: true, mode: 'embedded' });
+    expect(loadMcpServiceRuntimeState(fixture.controllerHome)?.localController).toMatchObject({
+      endpoint: bridge!.endpoint,
+      running: true,
+      mode: 'embedded',
+      pid: process.pid,
+    });
+
+    await bridge!.close();
+    expect(loadMcpServiceRuntimeState(fixture.controllerHome)?.localController?.running).toBe(false);
   });
 
   test('source snapshot failure stops startup before mutable services are admitted', async () => {

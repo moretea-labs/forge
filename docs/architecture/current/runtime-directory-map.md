@@ -32,6 +32,8 @@ src/runtime/
 
 `src/cli/` contains the Forge CLI, MCP adapter surface and bounded internal operation implementations. It is not a second lifecycle owner. Gateway handlers admit and route work; the Runtime Root, Process Runtime and bounded Workers own execution.
 
+When Controller Home explicitly enables the Local Bridge without selecting external `standalone` or `remote` mode, `src/runtime/root/local-bridge.ts` starts that HTTP UI/API as an in-process module of the Canonical Runtime and closes it before releasing Runtime ownership. Its compatibility projection may describe the endpoint, but it is not a separate process, launch service, readiness authority, or recovery owner.
+
 New scheduling ownership must be added under `src/runtime/`, never inside MCP transport handlers.
 
 ## Runtime Storage Ownership and Quarantine

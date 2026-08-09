@@ -13,6 +13,7 @@ This snapshot is a read model, not an execution gate.
 
 ## Current Focus
 
+- ✅ An enabled implicit/embedded Local Bridge is now owned by the Canonical Runtime as an in-process HTTP UI/API module. Runtime startup publishes current PID/endpoint/generation evidence; ordered shutdown closes the listener and marks the compatibility projection stopped. Explicit standalone/remote modes remain externally owned.
 - ✅ Terminal Process lease cleanup now persists a redacted structured failure diagnostic while retaining the canonical `pending` retry phase; exact-set/scope/fencing failures stay fail-closed, restart recovery retries them, and success clears the diagnostic without adding a second recovery owner.
 - ✅ Explicit full maintenance has zero remaining safe stale Work/Edit candidates. Four WorkContracts were cancelled with evidence retained; ten Work-bound sessions were finalized, superseded, or rolled back through existing cleanup semantics.
 - ⚠️ The full local inventory contains 1,318 retained nonterminal legacy Edit Sessions (`dirty` 1,179 / `open` 130 / `checked` 2 / `check_failed` 7). Every record lacks `workId`, so ownership cannot be proven and automatic cleanup correctly fails closed; all session IDs and the closeout rule are recorded in `docs/researches/20260809-stale-edit-session-inventory.md`.
@@ -37,6 +38,8 @@ This snapshot is a read model, not an execution gate.
 
 ## Validation Completed
 
+- Live audit before the fix proved the warning was real: service runtime state claimed embedded PID 60290 at `127.0.0.1:8766`, but the PID and listener were absent. Runtime tool discovery contained exactly 123 tools, expected/actual counts matched with no missing/unexpected/duplicate entries, and neither retired `self_healing_monitor_tick` nor `self_healing_loop_plan` was advertised.
+- `bun test tests/runtime/canonical-single-runtime.test.ts`: 18/18 passed, including same-process Local Bridge start/health/projection/close evidence and ordered complete-Runtime shutdown.
 - `bun test tests/runtime/process-runtime.test.ts`: 51/51 passed, including normal exactly-once release, exit-receipt conflict recovery, terminal records missing from active index, whole-release change recovery, fencing mismatch fail-closed, visible transient failure plus successful retry, and read/write contention.
 - Live Process `proc_mslrbu8k_bdf30891` completed `package:check:type` with workspace-read/build-cache-write leases, terminal status `succeeded`, `leaseReleaseState=released`, and no active lease files. Historical failure `proc_mslcn0gt_9c86a2f5` is also terminal with all three recorded leases released. A typed `/usr/bin/true` readonly command used `readonly_fast_path` with no Process record or execution lease.
 - Live `runtime_maintenance_status` after the final explicit pass reported zero safe candidates, zero stale WorkContracts, and 437 protected unknown-owned Edit Sessions inside its bounded 500-candidate window; an unbounded local metadata scan accounted for all 1,318 retained IDs.
