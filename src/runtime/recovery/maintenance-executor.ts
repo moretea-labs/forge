@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { basename, dirname, join, relative, resolve } from 'path';
 import { tmpdir } from 'os';
+import { cleanupEditSession, getEditSession, listEditSessions } from '../../cli/editing/edit-session';
 import { ensureRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } from '../../cli/repositories/runtime-storage';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { rebuildRepositoryProjection } from '../projections/materialized-view';
@@ -33,7 +34,8 @@ export type RuntimeMaintenanceCandidateKind =
   | 'missing_job_metadata'
   | 'runtime_storage_warning'
   | 'stale_runtime_temp_entry'
-  | 'stale_work_contract';
+  | 'stale_work_contract'
+  | 'stale_edit_session';
 
 export interface RuntimeMaintenanceRepository {
   repoId: string;
@@ -89,6 +91,7 @@ export interface RuntimeMaintenanceSummary {
   runtimeStorageWarnings: number;
   staleRuntimeTempEntries: number;
   staleWorkContracts: number;
+  staleEditSessions: number;
 }
 
 export interface RuntimeMaintenanceStatus {
@@ -216,6 +219,7 @@ function summarize(candidates: RuntimeMaintenanceCandidate[]): RuntimeMaintenanc
     runtimeStorageWarnings: candidates.filter((candidate) => candidate.kind === 'runtime_storage_warning').length,
     staleRuntimeTempEntries: candidates.filter((candidate) => candidate.kind === 'stale_runtime_temp_entry').length,
     staleWorkContracts: candidates.filter((candidate) => candidate.kind === 'stale_work_contract').length,
+    staleEditSessions: candidates.filter((candidate) => candidate.kind === 'stale_edit_session').length,
   };
 }
 
@@ -418,6 +422,49 @@ function scanStaleWorkContractCandidates(
     }));
 }
 
+function scanStaleEditSessionCandidates(
+  repository: RuntimeMaintenanceRepository,
+  controllerHome: string,
+  options: Required<RuntimeMaintenanceOptions>,
+): RuntimeMaintenanceCandidate[] {
+  const nowMs = Date.now();
+  return listEditSessions(repository.canonicalRoot, Math.min(options.maxCandidates * 3, 500))
+    .filter((summary) => ['open', 'dirty', 'checked', 'check_failed'].includes(summary.status))
+    .flatMap((summary) => {
+      try {
+        const session = getEditSession(repository.canonicalRoot, summary.sessionId);
+        const updatedMs = Date.parse(session.updatedAt);
+        const ageMinutes = Number.isFinite(updatedMs) ? Math.max(0, Math.floor((nowMs - updatedMs) / 60_000)) : 0;
+        return [{ session, ageMinutes }];
+      } catch {
+        return [];
+      }
+    })
+    .filter(({ ageMinutes }) => ageMinutes >= options.minAgeMinutes)
+    .sort((left, right) => right.ageMinutes - left.ageMinutes)
+    .slice(0, options.maxCandidates)
+    .map(({ session, ageMinutes }) => {
+      const work = session.workId
+        ? getWorkContract({ controllerHome, repoId: repository.repoId }, session.workId)
+        : undefined;
+      const terminalWork = Boolean(work && isTerminalWorkContractStatus(work.status));
+      return {
+        kind: 'stale_edit_session' as const,
+        id: session.sessionId,
+        status: session.status,
+        safe: terminalWork,
+        reason: terminalWork
+          ? 'Edit Session belongs to a terminal WorkContract; cleanup may reconcile metadata only and must refuse unique uncommitted source changes.'
+          : session.workId
+            ? 'Edit Session WorkContract is missing or still nonterminal; active-session ownership must remain fenced.'
+            : 'Edit Session has no durable WorkContract ownership evidence; maintenance fails closed.',
+        ageMinutes,
+        suggestedAction: 'full_maintenance_pass' as const,
+        ownershipStatus: terminalWork ? 'explicit' as const : 'unknown' as const,
+      };
+    });
+}
+
 function readBoolean(input: Record<string, unknown>, snake: string, camel: string): boolean | undefined {
   if (typeof input[snake] === 'boolean') return input[snake] as boolean;
   if (typeof input[camel] === 'boolean') return input[camel] as boolean;
@@ -463,7 +510,8 @@ export function buildRuntimeMaintenanceStatus(
   const storageCandidates = runtimeStorageCandidates(storage.report);
   const tempCandidates = scanRuntimeTempCandidates(repository, normalized.maxCandidates);
   const staleWorkCandidates = scanStaleWorkContractCandidates(repository, controllerHome, normalized);
-  const candidates = [...localJobCandidates, ...storageCandidates, ...tempCandidates, ...staleWorkCandidates].slice(0, normalized.maxCandidates);
+  const staleEditCandidates = scanStaleEditSessionCandidates(repository, controllerHome, normalized);
+  const candidates = [...localJobCandidates, ...storageCandidates, ...staleWorkCandidates, ...staleEditCandidates, ...tempCandidates].slice(0, normalized.maxCandidates);
   const summary = summarize(candidates);
   const blockingCandidates = candidates.filter((candidate) => candidate.kind !== 'stale_runtime_temp_entry');
   const readyForExecution = storage.report?.readyForExecution === true
@@ -729,6 +777,18 @@ export function applyRuntimeMaintenance(
           evidenceRefs: work.evidenceRefs,
         });
         return { ...candidate, applied: true, result: 'work_contract_cancelled_evidence_retained' };
+      }
+      if (candidate.kind === 'stale_edit_session') {
+        const cleaned = cleanupEditSession(repository.canonicalRoot, candidate.id, {
+          reviewer: 'runtime-maintenance',
+          note: 'Reconciled by explicit full maintenance after the owning WorkContract reached a terminal state; source files were not rolled back.',
+        });
+        const closed = ['finalized', 'superseded', 'rolled_back'].includes(cleaned.status);
+        return {
+          ...candidate,
+          applied: closed,
+          result: closed ? `edit_session_${cleaned.status}` : 'edit_session_retained_nonterminal',
+        };
       }
       return { ...candidate, applied: false, result: 'unsupported_candidate' };
     } catch (error) {
