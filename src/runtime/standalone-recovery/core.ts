@@ -979,7 +979,8 @@ async function ensureLaunchdServiceStarted(service: LaunchdService, runCommand: 
     await runCommand('launchctl', ['enable', service.target], 5_000);
   }
   const started = await runCommand('launchctl', ['kickstart', '-k', service.target], 15_000);
-  if (!started.ok && !/already|in progress/i.test(`${started.stderr}\n${started.stdout}`)) {
+  const alreadyInProgress = started.status === 37 || /already|in progress/i.test(`${started.stderr}\n${started.stdout}`);
+  if (!started.ok && !alreadyInProgress) {
     return { ok: false, detail: `launchd kickstart failed: ${started.stderr || started.stdout || started.status}` };
   }
   return { ok: true, detail: service.target };

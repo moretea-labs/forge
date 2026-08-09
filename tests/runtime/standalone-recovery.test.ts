@@ -624,6 +624,7 @@ describe('standalone recovery on canonical Runtime', () => {
         currentUid: async () => 501,
         runCommand: async (_command, args) => {
           commands.push(args);
+          if (args[0] === 'kickstart') return { ok: false, status: 37, stdout: '', stderr: '' };
           return { ok: true, status: 0, stdout: '', stderr: '' };
         },
         runtimeRunning: () => false,
@@ -774,7 +775,7 @@ describe('standalone recovery on canonical Runtime', () => {
         runCommand: async (_command, args) => {
           if (args[0] === 'kickstart') {
             kickstarts += 1;
-            if (kickstarts === 1) return { ok: false, status: 37, stdout: '', stderr: '' };
+            if (kickstarts === 1) return { ok: false, status: 78, stdout: '', stderr: '' };
           }
           return { ok: true, status: 0, stdout: '', stderr: '' };
         },
