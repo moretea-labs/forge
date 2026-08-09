@@ -845,7 +845,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     }).mode).toBe('reject');
   });
 
-  test('small multi-file work stays direct_edit / fast and never auto-campaign', () => {
+  test('small multi-file work stays direct while independent deliverables become a Campaign', () => {
     const assessment = assessWorkMode({
       description: 'Update three TypeScript helpers and a focused unit test',
       knownPaths: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'tests/a.test.ts'],
@@ -863,9 +863,9 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       independentTaskCount: 3,
       requiresParallelism: true,
     });
-    expect(directCampaign.recommendedMode).toBe('direct_edit');
-    expect(directCampaign.executionPath).toBe('durable');
-    expect(directCampaign.campaignRequired).toBe(false);
+    expect(directCampaign.recommendedMode).toBe('campaign');
+    expect(directCampaign.executionPath).toBe('campaign');
+    expect(directCampaign.campaignRequired).toBe(true);
 
     const campaign = assessWorkMode({
       description: 'Use Agents to ship three independent product workstreams in parallel',
@@ -879,13 +879,13 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(campaign.campaignRequired).toBe(true);
   });
 
-  test('never recommends quick_agent or Issue dispatch without explicit Agent opt-in', () => {
+  test('keeps bounded Work agent-free and reserves Agent modes for explicit opt-in', () => {
     const medium = assessWorkMode({
       description: 'Implement a broad but bounded refactor directly',
       expectedFiles: 10,
       expectedChangedLines: 1_500,
     });
-    expect(medium.recommendedMode).toBe('direct_edit');
+    expect(medium.recommendedMode).toBe('bounded_work');
     expect(medium.executionPath).toBe('durable');
     expect(medium.issueRequired).toBe(false);
 
@@ -902,7 +902,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       expectedFiles: 20,
       expectedChangedLines: 3_000,
     });
-    expect(broad.recommendedMode).toBe('direct_edit');
+    expect(broad.recommendedMode).toBe('bounded_work');
     expect(broad.executionPath).toBe('durable');
     expect(broad.issueRequired).toBe(false);
     expect(broad.nextTools).not.toContain('dispatch_task');
@@ -931,7 +931,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       },
     });
     expect(directResponse?.isError).not.toBe(true);
-    expect((directResponse?.structuredContent as { assessment: { recommendedMode: string } }).assessment.recommendedMode).toBe('direct_edit');
+    expect((directResponse?.structuredContent as { assessment: { recommendedMode: string } }).assessment.recommendedMode).toBe('bounded_work');
 
     const agentResponse = await callRepositoryTool(fx.controllerHome, 'repository_workbench', {
       repo_id: fx.repository.repoId,

@@ -23,15 +23,15 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 97,
+    "maxTestFiles": 105,
     "maxTestLines": 41000,
     "maxPureFiles": 32,
-    "maxTempIsolatedFiles": 42,
+    "maxTempIsolatedFiles": 45,
     "maxProcessTreeFiles": 17,
     "maxGitWorktreeFiles": 15,
     "maxFixedPortFiles": 6,
     "maxRuntimeSingletonFiles": 6,
-    "maxControllerHomeIsolatedFiles": 10,
+    "maxControllerHomeIsolatedFiles": 11,
     "maxDestructiveFiles": 0
   },
   "pathModuleRules": [
@@ -523,6 +523,58 @@
     "tests/runtime/test-governance-speed.test.ts": {
       "module": "runner",
       "resource": "temp-isolated"
+    },
+    "tests/cli/mcp-runtime-proxy-routing.test.ts": {
+      "module": "controller",
+      "resource": "pure"
+    },
+    "tests/runtime/app-store-connect-plugin.test.ts": {
+      "module": "ios",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/codegraph-context-provider.test.ts": {
+      "module": "controller",
+      "resource": "git-worktree"
+    },
+    "tests/runtime/desktop-operator-registration.test.ts": {
+      "module": "controller",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/direct-edit-work-completion.test.ts": {
+      "module": "workflow",
+      "resource": "git-worktree"
+    },
+    "tests/runtime/execution-job-reconciliation.test.ts": {
+      "module": "process-runtime",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/external-plugin-adapter.test.ts": {
+      "module": "controller",
+      "resource": "pure"
+    },
+    "tests/runtime/external-plugin-registration.test.ts": {
+      "module": "controller",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/external-plugin-store-integration.test.ts": {
+      "module": "controller",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/external-unix-socket.test.ts": {
+      "module": "controller",
+      "resource": "process-tree"
+    },
+    "tests/runtime/process-environment.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/rh-work-lifecycle.test.ts": {
+      "module": "workflow",
+      "resource": "git-worktree"
+    },
+    "tests/runtime/runtime-root-release.test.ts": {
+      "module": "release",
+      "resource": "git-worktree"
     }
   }
 }
