@@ -380,6 +380,12 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(runtime.requests.some((request) => request.method === 'GET' && request.url === '/health')).toBe(false);
     expect(runtime.requests.some((request) => request.method === 'GET' && request.url === '/mcp')).toBe(false);
 
+    const requestCountBeforeLightVerify = runtime.requests.length;
+    const lightweight = await verifyStableRuntime(config, undefined, { probeMcpProtocol: false });
+    expect(lightweight.ok).toBe(true);
+    expect(lightweight.probes.mcp_tools_list).toBeUndefined();
+    expect(runtime.requests.slice(requestCountBeforeLightVerify).some((request) => request.method === 'POST' && request.url === '/mcp' && request.authorizationPresent)).toBe(false);
+
     const externalInitialize = runtime.requests.find((request) => (
       request.method === 'POST'
       && request.url === '/mcp'

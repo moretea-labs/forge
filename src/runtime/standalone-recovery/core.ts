@@ -116,6 +116,10 @@ export interface VerifyResult {
   probes: Record<string, { ok: boolean; detail: string; status?: number; value?: unknown }>;
 }
 
+export interface VerifyStableRuntimeOptions {
+  probeMcpProtocol?: boolean;
+}
+
 export interface RollbackResult {
   ok: boolean;
   noOp?: boolean;
@@ -142,6 +146,7 @@ export interface WatchdogState {
   publicTunnelFirstFailureAt?: number;
   publicTunnelRepairFailures?: number;
   recoveryGatewayRestartUsed?: boolean;
+  lastFullVerifyAt?: number;
   lastDecision?: WatchdogDecision['action'];
   updatedAt?: string;
 }
@@ -623,7 +628,11 @@ async function probeMcp(config: RecoveryConfig, transport: RecoveryHttpTransport
   };
 }
 
-export async function verifyStableRuntime(config: RecoveryConfig, transport = createRecoveryHttpTransport(config.controllerHome)): Promise<VerifyResult> {
+export async function verifyStableRuntime(
+  config: RecoveryConfig,
+  transport = createRecoveryHttpTransport(config.controllerHome),
+  options: VerifyStableRuntimeOptions = {},
+): Promise<VerifyResult> {
   const observation = observeRuntimeStatus(config.controllerHome);
   const authority = releaseAuthority(config);
   const active = activeAuthorityRelease(config);
@@ -645,7 +654,7 @@ export async function verifyStableRuntime(config: RecoveryConfig, transport = cr
   if (config.gateway) probes.recovery_gateway = await probe(transport, `http://${config.gateway.host}:${config.gateway.port}/health`);
   const recoveryPublicUrl = configuredRecoveryPublicUrl(config);
   if (recoveryPublicUrl) probes.recovery_external_http = await probeExternalMcp(transport, recoveryPublicUrl);
-  Object.assign(probes, await probeMcp(config, transport));
+  if (options.probeMcpProtocol !== false) Object.assign(probes, await probeMcp(config, transport));
   const coreChecks = Object.entries(probes)
     .filter(([name]) => !name.startsWith('recovery_'))
     .every(([, entry]) => entry.ok);
@@ -790,7 +799,10 @@ export async function reconnectMain(config: RecoveryConfig): Promise<{ ok: boole
   return { ok, detail: ok ? 'canonical Runtime Gateway and primary endpoint are reachable; client session may refresh' : 'primary endpoint remains unavailable; recovery channel remains independent', verify: verified };
 }
 
-async function verifyLocalRuntime(config: RecoveryConfig): Promise<VerifyResult> {
+async function verifyLocalRuntime(
+  config: RecoveryConfig,
+  options: VerifyStableRuntimeOptions = {},
+): Promise<VerifyResult> {
   // Do not let an external tunnel outage masquerade as a local MCP failure.
   // The canonical Runtime MCP gateway exposes only controller_ready; the public
   // gateway additionally exposes controller_context, so local verification must
@@ -800,7 +812,7 @@ async function verifyLocalRuntime(config: RecoveryConfig): Promise<VerifyResult>
     publicMcpUrl: undefined,
     recoveryPublicUrl: undefined,
     readOnlyTool: { name: 'controller_ready' },
-  });
+  }, createRecoveryHttpTransport(config.controllerHome), options);
 }
 
 function isExternalTunnelFailure(config: RecoveryConfig, verified: VerifyResult, localVerify: VerifyResult): boolean {
@@ -1743,8 +1755,25 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
   primaryRuntimeRestart?: PrimaryRuntimeRestartResult;
   primaryRuntimeRecovery?: PrimaryRuntimeRecoveryResult;
 }> {
-  const verified = await verifyStableRuntime(config);
-  const localVerify = await verifyLocalRuntime(config);
+  const now = Date.now();
+  // Five-second watchdog ticks must stay cheap while the system is healthy.
+  // Full MCP protocol verification serializes the entire tool surface, so run
+  // it periodically and immediately escalate to it when a local health probe
+  // fails. Explicit verify/attest/release operations remain strict by default.
+  const fullVerifyDue = prior.lastFullVerifyAt === undefined || now - prior.lastFullVerifyAt >= 60_000;
+  let fullVerificationPerformed = fullVerifyDue;
+  let verified = await verifyStableRuntime(
+    config,
+    createRecoveryHttpTransport(config.controllerHome),
+    { probeMcpProtocol: fullVerifyDue },
+  );
+  let localVerify = await verifyLocalRuntime(config, { probeMcpProtocol: fullVerifyDue });
+  if (!localVerify.ok && !fullVerifyDue) {
+    verified = await verifyStableRuntime(config);
+    localVerify = await verifyLocalRuntime(config);
+    fullVerificationPerformed = true;
+  }
+  const lastFullVerifyAt = fullVerificationPerformed ? now : prior.lastFullVerifyAt;
   const recoveryHealthy = verified.probes.recovery_gateway?.ok !== false
     && verified.probes.recovery_external_http?.ok !== false;
   if (verified.ok && localVerify.ok && recoveryHealthy) {
@@ -1759,11 +1788,11 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
       publicTunnelFailures: 0,
       publicTunnelRepairFailures: 0,
       recoveryGatewayRestartUsed: false,
+      lastFullVerifyAt,
       lastDecision: 'healthy',
     };
     return { state, decision: { action: 'healthy', reason: 'primary runtime and standalone Recovery verification passed' }, verify: verified };
   }
-  const now = Date.now();
   const publicTunnelFailed = isExternalTunnelFailure(config, verified, localVerify);
   const evidenceClasses = Object.entries(localVerify.probes)
     .filter(([name, value]) => !name.startsWith('recovery_') && !value.ok)
@@ -1774,6 +1803,7 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
   const state: WatchdogState = publicTunnelFailed
     ? {
       ...prior,
+      lastFullVerifyAt,
       failures: prior.failures + 1,
       firstFailureAt: prior.firstFailureAt ?? now,
       publicTunnelFailures: (prior.publicTunnelFailures ?? 0) + 1,
@@ -1781,6 +1811,7 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
     }
     : {
       ...prior,
+      lastFullVerifyAt,
       failures: prior.failures + 1,
       firstFailureAt: prior.firstFailureAt ?? now,
       publicTunnelFailures: 0,
