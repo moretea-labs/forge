@@ -1,7 +1,8 @@
 import { AssistantPluginError } from './errors';
 import { getExternalPluginRegistration, listExternalPluginRegistrations, type ExternalPluginRegistration } from './external-registration';
 import { callExternalUnixSocket, probeExternalUnixSocketSync, type ExternalUnixSocketCallOptions } from './external-unix-socket';
-import type { AssistantPluginAdapter, AssistantPluginHealth, AssistantPluginManifest } from './types';
+import { restartVerifiedUserLaunchAgent, startVerifiedUserLaunchAgent, stopVerifiedUserLaunchAgent } from './local-system-adapter';
+import type { AssistantPluginActionDescriptor, AssistantPluginAdapter, AssistantPluginCapability, AssistantPluginHealth, AssistantPluginManifest, AssistantPluginPermissionScope } from './types';
 
 interface ProviderManifest {
   id: string;
@@ -24,6 +25,9 @@ interface ProviderHealth {
 export interface ExternalPluginAdapterDependencies {
   probe?: (options: ExternalUnixSocketCallOptions) => Record<string, unknown>;
   call?: (options: ExternalUnixSocketCallOptions) => Promise<Record<string, unknown>>;
+  startVerifiedUserLaunchAgent?: (label: unknown, expectedProgram: unknown) => Record<string, unknown>;
+  stopVerifiedUserLaunchAgent?: (label: unknown, expectedProgram: unknown) => Record<string, unknown>;
+  restartVerifiedUserLaunchAgent?: (label: unknown, expectedProgram: unknown) => Record<string, unknown>;
   now?: () => Date;
 }
 
@@ -87,6 +91,27 @@ function failedHealth(error: unknown, checkedAt: string): AssistantPluginHealth 
   };
 }
 
+const EXTERNAL_PROVIDER_LIFECYCLE_ACTIONS = new Set(['provider_start', 'provider_stop', 'provider_restart']);
+
+function lifecyclePolicy(registration: ExternalPluginRegistration): {
+  permissions: AssistantPluginPermissionScope[];
+  capabilities: AssistantPluginCapability[];
+  actions: AssistantPluginActionDescriptor[];
+} {
+  if (!registration.lifecycle) return { permissions: [], capabilities: [], actions: [] };
+  const scope = 'external-provider.lifecycle';
+  const actions: AssistantPluginActionDescriptor[] = [
+    { actionId: 'provider_start', title: 'Start external provider', description: 'Start the registration-bound verified macOS user LaunchAgent for this external provider.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: true, scopes: [scope], resourceClaims: [{ resource: 'repo-state', mode: 'write' }], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } },
+    { actionId: 'provider_stop', title: 'Stop external provider', description: 'Stop the registration-bound verified macOS user LaunchAgent for this external provider.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: true, scopes: [scope], resourceClaims: [{ resource: 'repo-state', mode: 'write' }], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } },
+    { actionId: 'provider_restart', title: 'Restart external provider', description: 'Restart the registration-bound verified macOS user LaunchAgent for this external provider.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false, scopes: [scope], resourceClaims: [{ resource: 'repo-state', mode: 'write' }], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } },
+  ];
+  return {
+    permissions: [{ scope, mode: 'write', description: 'Control only the verified user LaunchAgent bound to this external provider registration.', granted: true, required: false }],
+    capabilities: [{ capabilityId: 'external-provider-lifecycle', title: 'External provider lifecycle', description: 'Start, stop, or restart only the verified macOS user LaunchAgent identity stored in this registration.', scopes: [scope], actions: actions.map((action) => action.actionId) }],
+    actions,
+  };
+}
+
 function callOptions(registration: ExternalPluginRegistration, input: Omit<ExternalUnixSocketCallOptions, 'socketPath' | 'maxRequestBytes' | 'maxResponseBytes'>): ExternalUnixSocketCallOptions {
   return {
     ...input,
@@ -111,7 +136,11 @@ export function createExternalPluginAdapter(
 ): AssistantPluginAdapter {
   const probe = dependencies.probe ?? probeExternalUnixSocketSync;
   const call = dependencies.call ?? callExternalUnixSocket;
+  const startProvider = dependencies.startVerifiedUserLaunchAgent ?? startVerifiedUserLaunchAgent;
+  const stopProvider = dependencies.stopVerifiedUserLaunchAgent ?? stopVerifiedUserLaunchAgent;
+  const restartProvider = dependencies.restartVerifiedUserLaunchAgent ?? restartVerifiedUserLaunchAgent;
   const now = dependencies.now ?? (() => new Date());
+  const lifecycle = lifecyclePolicy(registration);
 
   return {
     pluginId: registration.pluginId,
@@ -131,9 +160,9 @@ export function createExternalPluginAdapter(
           enabled: false,
           lifecycle: { state: 'disabled', reason: 'External provider registration is disabled.' },
           health: { state: 'disabled', checkedAt, ready: false, probed: false, errors: [], warnings: [] },
-          permissions: structuredClone(registration.permissions),
-          capabilities: structuredClone(registration.capabilities),
-          actions: structuredClone(registration.actions),
+          permissions: structuredClone([...registration.permissions, ...lifecycle.permissions]),
+          capabilities: structuredClone([...registration.capabilities, ...lifecycle.capabilities]),
+          actions: structuredClone([...registration.actions, ...lifecycle.actions]),
           updatedAt: previousUpdatedAt ?? checkedAt,
         };
       }
@@ -181,14 +210,21 @@ export function createExternalPluginAdapter(
               : 'External provider identity/transport could not be verified.',
         },
         health,
-        permissions: structuredClone(registration.permissions),
-        capabilities: structuredClone(registration.capabilities),
-        actions: structuredClone(registration.actions),
+        permissions: structuredClone([...registration.permissions, ...lifecycle.permissions]),
+        capabilities: structuredClone([...registration.capabilities, ...lifecycle.capabilities]),
+        actions: structuredClone([...registration.actions, ...lifecycle.actions]),
         updatedAt: previousUpdatedAt ?? checkedAt,
       };
     },
     async executeAction(input) {
       if (!registration.enabled) throw providerError('EXTERNAL_PLUGIN_DISABLED', `External provider ${registration.pluginId} is disabled.`);
+      if (EXTERNAL_PROVIDER_LIFECYCLE_ACTIONS.has(input.actionId)) {
+        const bound = registration.lifecycle;
+        if (!bound) throw providerError('EXTERNAL_PLUGIN_LIFECYCLE_NOT_CONFIGURED', `External provider ${registration.pluginId} has no verified lifecycle binding.`);
+        if (input.actionId === 'provider_start') return startProvider(bound.label, bound.expectedProgramContains);
+        if (input.actionId === 'provider_stop') return stopProvider(bound.label, bound.expectedProgramContains);
+        return restartProvider(bound.label, bound.expectedProgramContains);
+      }
       const providerManifest = await call(callOptions(registration, {
         requestId: `${input.requestId}:manifest`,
         method: 'manifest',

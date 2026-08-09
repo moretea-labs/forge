@@ -41,6 +41,20 @@ describe('Desktop Operator trusted external registration', () => {
     expect(input.actions.find((action) => action.actionId === 'desktop_screenshot')?.confirmation).toBe('authorization');
   });
 
+  test('binds optional provider lifecycle to one verified user LaunchAgent identity', () => {
+    const input = createDesktopOperatorRegistrationInput({
+      socketPath: '/tmp/forge-desktop-operator.sock',
+      launchAgentLabel: 'com.moretea.desktop-operator',
+      expectedProgramContains: 'forge-desktop-operator',
+    });
+    expect(input.lifecycle).toEqual({
+      kind: 'verified_user_launch_agent',
+      label: 'com.moretea.desktop-operator',
+      expectedProgramContains: 'forge-desktop-operator',
+    });
+    expect(input.actions.map((action) => action.actionId)).not.toContain('provider_restart');
+  });
+
   test('installs through the existing CAS/fingerprinted registration authority', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-desktop-registration-'));
     const installed = installExternalPluginRegistration(

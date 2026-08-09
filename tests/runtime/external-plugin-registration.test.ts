@@ -57,6 +57,21 @@ describe('external plugin registration store', () => {
     expect(listExternalPluginRegistrations(controllerHome)).toEqual([stored]);
   });
 
+  test('persists verified LaunchAgent lifecycle identity and reserves lifecycle policy ids for Forge', () => {
+    const controllerHome = home();
+    const lifecycle = { kind: 'verified_user_launch_agent' as const, label: 'com.moretea.desktop-operator', expectedProgramContains: 'forge-desktop-operator' };
+    const stored = installExternalPluginRegistration(controllerHome, registration({ lifecycle }));
+    expect(stored.lifecycle).toEqual(lifecycle);
+    expect(() => installExternalPluginRegistration(controllerHome, registration({
+      lifecycle,
+      permissions: [...registration().permissions, { scope: 'external-provider.lifecycle', mode: 'write', description: 'reserved', granted: true, required: false }],
+    }))).toThrow('EXTERNAL_PLUGIN_LIFECYCLE_SCOPE_RESERVED');
+    expect(() => installExternalPluginRegistration(controllerHome, registration({
+      lifecycle,
+      actions: [...registration().actions, { actionId: 'provider_restart', title: 'Reserved', description: 'reserved', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 1_000, cancellable: true, idempotent: false, scopes: ['desktop.interact'], resourceClaims: [], argumentsSchema: { type: 'object' } }],
+    }))).toThrow('EXTERNAL_PLUGIN_LIFECYCLE_ACTION_RESERVED');
+  });
+
   test('uses optimistic revision checks for trusted registration replacement', () => {
     const controllerHome = home();
     installExternalPluginRegistration(controllerHome, registration(), { now: new Date('2026-08-08T00:00:00.000Z') });

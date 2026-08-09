@@ -257,6 +257,8 @@ function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
 
 export interface DesktopOperatorRegistrationOptions {
   socketPath: string;
+  launchAgentLabel?: string;
+  expectedProgramContains?: string;
   pluginVersion?: string;
   protocolVersion?: string;
   enabled?: boolean;
@@ -291,6 +293,11 @@ export function createDesktopOperatorRegistrationInput(
       maxRequestBytes: 1_048_576,
       maxResponseBytes: 1_048_576,
     },
+    lifecycle: options.launchAgentLabel && options.expectedProgramContains ? {
+      kind: 'verified_user_launch_agent',
+      label: options.launchAgentLabel,
+      expectedProgramContains: options.expectedProgramContains,
+    } : undefined,
     permissions,
     capabilities: [
       { capabilityId: 'desktop.status', title: 'Desktop status', description: 'Read Desktop Operator status.', scopes: ['desktop.status'], actions: ['desktop_status'] },

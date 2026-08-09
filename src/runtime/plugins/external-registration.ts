@@ -23,6 +23,14 @@ export interface ExternalPluginUnixSocketTransport {
   actionTimeoutMs?: number;
 }
 
+export interface ExternalPluginVerifiedUserLaunchAgentLifecycle {
+  kind: 'verified_user_launch_agent';
+  label: string;
+  expectedProgramContains: string;
+}
+
+export type ExternalPluginLifecycle = ExternalPluginVerifiedUserLaunchAgentLifecycle;
+
 export interface ExternalPluginRegistration {
   schemaVersion: 1;
   revision: number;
@@ -35,6 +43,7 @@ export interface ExternalPluginRegistration {
   scope: AssistantPluginScope;
   enabled: boolean;
   transport: ExternalPluginUnixSocketTransport;
+  lifecycle?: ExternalPluginLifecycle;
   permissions: AssistantPluginPermissionScope[];
   capabilities: AssistantPluginCapability[];
   actions: AssistantPluginActionDescriptor[];
@@ -54,6 +63,7 @@ export interface ExternalPluginRegistrationInput {
   scope: AssistantPluginScope;
   enabled?: boolean;
   transport: ExternalPluginUnixSocketTransport;
+  lifecycle?: ExternalPluginLifecycle;
   permissions: AssistantPluginPermissionScope[];
   capabilities: AssistantPluginCapability[];
   actions: AssistantPluginActionDescriptor[];
@@ -116,6 +126,16 @@ function registrationFingerprint(input: Omit<ExternalPluginRegistration, 'revisi
   return createHash('sha256').update(JSON.stringify(canonical(input))).digest('hex');
 }
 
+function normalizedLifecycle(input: ExternalPluginLifecycle | undefined): ExternalPluginLifecycle | undefined {
+  if (!input) return undefined;
+  if (input.kind !== 'verified_user_launch_agent') throw new Error(`EXTERNAL_PLUGIN_LIFECYCLE_UNSUPPORTED: ${String((input as { kind?: unknown }).kind)}`);
+  const label = input.label.trim();
+  if (!/^[A-Za-z0-9._-]{3,200}$/.test(label)) throw new Error(`EXTERNAL_PLUGIN_LIFECYCLE_LABEL_INVALID: ${label}`);
+  const expectedProgramContains = input.expectedProgramContains.trim();
+  if (expectedProgramContains.length < 4 || expectedProgramContains.length > 1024) throw new Error('EXTERNAL_PLUGIN_LIFECYCLE_PROGRAM_IDENTITY_INVALID');
+  return { kind: 'verified_user_launch_agent', label, expectedProgramContains };
+}
+
 function validatePolicy(input: ExternalPluginRegistrationInput): void {
   const permissionScopes = new Set<string>();
   for (const permission of input.permissions) {
@@ -139,11 +159,20 @@ function validatePolicy(input: ExternalPluginRegistrationInput): void {
     }
   }
 
+  if (input.lifecycle) {
+    const reservedActions = new Set(['provider_start', 'provider_stop', 'provider_restart']);
+    for (const actionId of actionIds) {
+      if (reservedActions.has(actionId)) throw new Error(`EXTERNAL_PLUGIN_LIFECYCLE_ACTION_RESERVED: ${actionId}`);
+    }
+    if (permissionScopes.has('external-provider.lifecycle')) throw new Error('EXTERNAL_PLUGIN_LIFECYCLE_SCOPE_RESERVED');
+  }
+
   const capabilityIds = new Set<string>();
   for (const capability of input.capabilities) {
     const capabilityId = normalizedString(capability.capabilityId, 'capability_id', 128);
     if (capabilityIds.has(capabilityId)) throw new Error(`EXTERNAL_PLUGIN_CAPABILITY_DUPLICATE: ${capabilityId}`);
     capabilityIds.add(capabilityId);
+    if (input.lifecycle && capabilityId === 'external-provider-lifecycle') throw new Error('EXTERNAL_PLUGIN_LIFECYCLE_CAPABILITY_RESERVED');
     for (const actionId of capability.actions) {
       if (!actionIds.has(actionId)) throw new Error(`EXTERNAL_PLUGIN_CAPABILITY_ACTION_UNKNOWN: ${capabilityId}/${actionId}`);
     }
@@ -171,6 +200,7 @@ function normalizeRegistrationInput(input: ExternalPluginRegistrationInput): Omi
     scope: input.scope,
     enabled: input.enabled !== false,
     transport: normalizedTransport(input.transport),
+    lifecycle: normalizedLifecycle(input.lifecycle),
     permissions: structuredClone(input.permissions),
     capabilities: structuredClone(input.capabilities),
     actions: structuredClone(input.actions),

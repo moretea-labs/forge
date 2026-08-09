@@ -87,6 +87,32 @@ describe('external plugin adapter', () => {
     expect(calls).toHaveLength(1);
   });
 
+  test('injects and executes registration-bound provider lifecycle without calling a stopped provider', async () => {
+    const lifecycle = { kind: 'verified_user_launch_agent' as const, label: 'com.moretea.desktop-operator', expectedProgramContains: 'forge-desktop-operator' };
+    const lifecycleCalls: string[] = [];
+    const providerCalls: ExternalUnixSocketCallOptions[] = [];
+    const adapter = createExternalPluginAdapter(registration({ lifecycle }), {
+      probe: () => { throw new Error('provider is currently stopped'); },
+      call: async (options) => { providerCalls.push(options); throw new Error('provider should not be called for lifecycle actions'); },
+      startVerifiedUserLaunchAgent: (label, expected) => { lifecycleCalls.push(`start:${label}:${expected}`); return { started: true }; },
+      stopVerifiedUserLaunchAgent: (label, expected) => { lifecycleCalls.push(`stop:${label}:${expected}`); return { stopped: true }; },
+      restartVerifiedUserLaunchAgent: (label, expected) => { lifecycleCalls.push(`restart:${label}:${expected}`); return { restarted: true }; },
+    });
+    const manifest = adapter.buildManifest(0);
+    expect(manifest.lifecycle.state).toBe('degraded');
+    expect(manifest.permissions).toContainEqual(expect.objectContaining({ scope: 'external-provider.lifecycle', mode: 'write' }));
+    expect(manifest.capabilities).toContainEqual(expect.objectContaining({ capabilityId: 'external-provider-lifecycle' }));
+    expect(manifest.actions.map((action) => action.actionId)).toEqual(expect.arrayContaining(['provider_start', 'provider_stop', 'provider_restart']));
+
+    expect(await adapter.executeAction({ controllerHome: '/tmp/home', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'desktop_operator', actionId: 'provider_start', requestId: 'lifecycle-1', args: {}, origin: { surface: 'mcp' } })).toEqual({ started: true });
+    expect(await adapter.executeAction({ controllerHome: '/tmp/home', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'desktop_operator', actionId: 'provider_restart', requestId: 'lifecycle-2', args: {}, origin: { surface: 'mcp' } })).toEqual({ restarted: true });
+    expect(lifecycleCalls).toEqual([
+      'start:com.moretea.desktop-operator:forge-desktop-operator',
+      'restart:com.moretea.desktop-operator:forge-desktop-operator',
+    ]);
+    expect(providerCalls).toHaveLength(0);
+  });
+
   test('routes supported execution only after provider manifest validation', async () => {
     const calls: ExternalUnixSocketCallOptions[] = [];
     const adapter = createExternalPluginAdapter(registration(), {

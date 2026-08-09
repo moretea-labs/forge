@@ -449,7 +449,7 @@ function assertInstalledLaunchAgentIdentity(identity: ReturnType<typeof userLaun
   }
 }
 
-function restartVerifiedUserLaunchAgent(labelValue: unknown, expectedProgramValue: unknown): Record<string, unknown> {
+export function restartVerifiedUserLaunchAgent(labelValue: unknown, expectedProgramValue: unknown): Record<string, unknown> {
   const identity = userLaunchAgentIdentity(labelValue, expectedProgramValue);
   const inspected = run('/bin/launchctl', ['print', identity.service], 15_000);
   if (!inspected.ok) {
@@ -467,7 +467,7 @@ function restartVerifiedUserLaunchAgent(labelValue: unknown, expectedProgramValu
   return { restarted: true, label: identity.label, service: identity.service, expectedProgramContains: identity.expectedProgram, inspectCommand: inspected.command, restartCommand: restarted.command };
 }
 
-function stopVerifiedUserLaunchAgent(labelValue: unknown, expectedProgramValue: unknown): Record<string, unknown> {
+export function stopVerifiedUserLaunchAgent(labelValue: unknown, expectedProgramValue: unknown): Record<string, unknown> {
   const identity = userLaunchAgentIdentity(labelValue, expectedProgramValue);
   const inspected = run('/bin/launchctl', ['print', identity.service], 15_000);
   if (!inspected.ok) {
@@ -484,7 +484,7 @@ function stopVerifiedUserLaunchAgent(labelValue: unknown, expectedProgramValue: 
   return { stopped: true, alreadyStopped: false, label: identity.label, service: identity.service, expectedProgramContains: identity.expectedProgram, inspectCommand: inspected.command, stopCommand: stopped.command };
 }
 
-function startVerifiedUserLaunchAgent(labelValue: unknown, expectedProgramValue: unknown): Record<string, unknown> {
+export function startVerifiedUserLaunchAgent(labelValue: unknown, expectedProgramValue: unknown): Record<string, unknown> {
   const identity = userLaunchAgentIdentity(labelValue, expectedProgramValue);
   assertInstalledLaunchAgentIdentity(identity);
   const inspected = run('/bin/launchctl', ['print', identity.service], 15_000);

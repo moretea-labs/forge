@@ -11,7 +11,7 @@ function argument(name: string): string | undefined {
 }
 
 function usage(): never {
-  throw new Error('Usage: bun scripts/install-desktop-operator-registration.ts --controller-home <path> --socket <absolute-path> [--version 0.1.0] [--protocol 1.0] [--expected-revision N] [--disabled]');
+  throw new Error('Usage: bun scripts/install-desktop-operator-registration.ts --controller-home <path> --socket <absolute-path> [--launch-agent-label <label> --expected-program-contains <identity>] [--version 0.1.0] [--protocol 1.0] [--expected-revision N] [--disabled]');
 }
 
 const controllerHome = argument('--controller-home') ?? process.env.FORGE_CONTROLLER_HOME?.trim();
@@ -27,6 +27,8 @@ const registration = installExternalPluginRegistration(
   controllerHome,
   createDesktopOperatorRegistrationInput({
     socketPath,
+    launchAgentLabel: argument('--launch-agent-label'),
+    expectedProgramContains: argument('--expected-program-contains'),
     pluginVersion: argument('--version') ?? '0.1.0',
     protocolVersion: argument('--protocol') ?? '1.0',
     enabled: !process.argv.includes('--disabled'),
