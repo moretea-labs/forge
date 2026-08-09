@@ -105,6 +105,28 @@ function manifest(home: string, releaseId: string, artifactIdentity: string, wor
   return path;
 }
 
+function verifiedManifest(home: string, releaseId: string): { path: string; artifactIdentity: string } {
+  const releaseRoot = join(home, 'runtime', 'releases', releaseId);
+  const path = join(releaseRoot, 'manifest.json');
+  mkdirSync(releaseRoot, { recursive: true });
+  const binaryPath = join(releaseRoot, 'forge-runtime');
+  writeFileSync(binaryPath, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+  const artifactIdentity = `sha256:${createHash('sha256').update(readFileSync(binaryPath)).digest('hex')}`;
+  writeFileSync(path, `${JSON.stringify({
+    schemaVersion: 1,
+    releaseId,
+    artifactIdentity,
+    entrypoint: 'forge-runtime',
+    arguments: [],
+    configurationSchemaVersion: 1,
+    controllerHome: resolve(home),
+    databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+    workerProtocolVersion: 1,
+    createdAt: new Date().toISOString(),
+  }, null, 2)}\n`);
+  return { path, artifactIdentity };
+}
+
 function diagnostics() {
   return {
     database: { outcome: 'pass' as const },
@@ -718,6 +740,116 @@ describe('standalone recovery on canonical Runtime', () => {
         previous: { releaseId: candidateReleaseId, artifactIdentity },
       });
       expect(commands.filter((args) => args.includes('kickstart')).length).toBeGreaterThanOrEqual(2);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('rolls back the previous whole Runtime when candidate kickstart fails', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const first = manifest(home, 'release-a', 'artifact-a');
+      const candidate = verifiedManifest(home, 'release-start-failure');
+      ensureActiveRuntimeRelease(home, first);
+      const runtime = await runtimeServer();
+      writeMainToken(home);
+      const ownership = startObservedRuntime(home, runtime.endpoint, 'release-a', 'artifact-a');
+      const config = createRecoveryConfig(home, {
+        publicMcpUrl: runtime.endpoint,
+        primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
+      });
+      removeOwnership(ownership);
+      const paths = forgeRuntimeServicePaths(home);
+      runtimeServiceConfig(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+
+      let kickstarts = 0;
+      const result = await activateRuntimeRelease(config, candidate.path, {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (_command, args) => {
+          if (args[0] === 'kickstart') {
+            kickstarts += 1;
+            if (kickstarts === 1) return { ok: false, status: 37, stdout: '', stderr: '' };
+          }
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        runtimeRunning: () => false,
+        verifyLocal: async () => healthyVerify(),
+        now: (() => { let value = 0; return () => value += 1_000; })(),
+        sleep: async () => undefined,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.detail).toContain('failed to start');
+      expect(result.rollback).toMatchObject({ ok: true });
+      expect(readRuntimeReleaseAuthority(home)).toMatchObject({
+        active: { releaseId: 'release-a', artifactIdentity: 'artifact-a' },
+        previous: { releaseId: 'release-start-failure', artifactIdentity: candidate.artifactIdentity },
+      });
+      expect(kickstarts).toBe(2);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('does not kickstart a candidate when tolerated bootstrap EIO did not actually load the service', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const first = manifest(home, 'release-a', 'artifact-a');
+      const candidate = verifiedManifest(home, 'release-bootstrap-eio');
+      ensureActiveRuntimeRelease(home, first);
+      const runtime = await runtimeServer();
+      writeMainToken(home);
+      const ownership = startObservedRuntime(home, runtime.endpoint, 'release-a', 'artifact-a');
+      const config = createRecoveryConfig(home, {
+        publicMcpUrl: runtime.endpoint,
+        primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
+      });
+      removeOwnership(ownership);
+      const paths = forgeRuntimeServicePaths(home);
+      runtimeServiceConfig(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+
+      let printCalls = 0;
+      let kickstarts = 0;
+      let bootstraps = 0;
+      const result = await activateRuntimeRelease(config, candidate.path, {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (_command, args) => {
+          if (args[0] === 'print') {
+            printCalls += 1;
+            if (printCalls <= 2) return { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+          }
+          if (args[0] === 'bootstrap') {
+            bootstraps += 1;
+            return { ok: false, status: 5, stdout: '', stderr: 'Input/output error' };
+          }
+          if (args[0] === 'kickstart') kickstarts += 1;
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        runtimeRunning: () => false,
+        verifyLocal: async () => healthyVerify(),
+        now: (() => { let value = 0; return () => value += 1_000; })(),
+        sleep: async () => undefined,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.detail).toContain('bootstrap did not load service');
+      expect(result.rollback).toMatchObject({ ok: true });
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
+      expect(bootstraps).toBe(1);
+      expect(kickstarts).toBe(1);
+      expect(printCalls).toBe(3);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

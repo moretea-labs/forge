@@ -972,6 +972,10 @@ async function ensureLaunchdServiceStarted(service: LaunchdService, runCommand: 
     if (!bootstrapped.ok && !/already|in progress|Input\/output error/i.test(`${bootstrapped.stderr}\n${bootstrapped.stdout}`)) {
       return { ok: false, detail: `launchd bootstrap failed: ${bootstrapped.stderr || bootstrapped.stdout || bootstrapped.status}` };
     }
+    const loaded = await runCommand('launchctl', ['print', service.target], 5_000);
+    if (!loaded.ok) {
+      return { ok: false, detail: `launchd bootstrap did not load service: ${loaded.stderr || loaded.stdout || loaded.status}` };
+    }
     await runCommand('launchctl', ['enable', service.target], 5_000);
   }
   const started = await runCommand('launchctl', ['kickstart', '-k', service.target], 15_000);
@@ -1328,20 +1332,24 @@ export async function activateRuntimeRelease(
       return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: await verifyLocal(config) } satisfies RuntimeReleaseActivationResult;
     }
     const started = await ensureLaunchdServiceStarted(service, runCommand);
+    let after: VerifyResult;
+    let activationFailureDetail: string | undefined;
     if (!started.ok) {
+      activationFailureDetail = started.detail;
       audit(config, 'runtime_release_activation_start_failed', { serviceTarget: service.target, operationId, detail: started.detail });
-      return { ok: false, attempted: true, detail: started.detail, serviceTarget: service.target, operationId, verify: await verifyLocal(config) } satisfies RuntimeReleaseActivationResult;
-    }
-    const after = await verifyPrimaryRuntimeAfterStart({
-      config,
-      timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
-      now,
-      wait,
-      verifyLocal,
-    });
-    if (after.ok && after.releases.active?.revision === candidate.manifest.releaseId) {
-      audit(config, 'runtime_release_activation_succeeded', { serviceTarget: service.target, operationId, activeRevision: after.releases.active?.revision });
-      return { ok: true, attempted: true, detail: 'requested Runtime release activated and passed whole-Runtime verification', serviceTarget: service.target, operationId, verify: after } satisfies RuntimeReleaseActivationResult;
+      after = await verifyLocal(config);
+    } else {
+      after = await verifyPrimaryRuntimeAfterStart({
+        config,
+        timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
+        now,
+        wait,
+        verifyLocal,
+      });
+      if (after.ok && after.releases.active?.revision === candidate.manifest.releaseId) {
+        audit(config, 'runtime_release_activation_succeeded', { serviceTarget: service.target, operationId, activeRevision: after.releases.active?.revision });
+        return { ok: true, attempted: true, detail: 'requested Runtime release activated and passed whole-Runtime verification', serviceTarget: service.target, operationId, verify: after } satisfies RuntimeReleaseActivationResult;
+      }
     }
 
     // Activation failed: stop, restore the previous whole release and its SQLite
@@ -1393,7 +1401,9 @@ export async function activateRuntimeRelease(
     return {
       ok: false,
       attempted: true,
-      detail: 'requested Runtime release activated but failed whole-Runtime verification; previous release restored',
+      detail: activationFailureDetail
+        ? `requested Runtime release failed to start; previous release restored: ${activationFailureDetail}`
+        : 'requested Runtime release activated but failed whole-Runtime verification; previous release restored',
       serviceTarget: service.target,
       operationId,
       rollback,
