@@ -98,7 +98,7 @@ function workInput(workId: string, repoId = 'repo-test') {
   };
 }
 
-async function callControllerReady(endpoint: string, token: string): Promise<Record<string, unknown>> {
+async function callRepositoryList(endpoint: string, token: string): Promise<Record<string, unknown>> {
   const transport = new StreamableHTTPClientTransport(new URL(endpoint), {
     requestInit: { headers: { Authorization: `Bearer ${token}` } },
   });
@@ -106,8 +106,10 @@ async function callControllerReady(endpoint: string, token: string): Promise<Rec
   try {
     await client.connect(transport);
     const listed = await client.listTools();
-    expect(listed.tools.map((tool) => tool.name)).toContain('controller_ready');
-    const result = await client.callTool({ name: 'controller_ready', arguments: {} });
+    const names = listed.tools.map((tool) => tool.name);
+    expect(names).toContain('repository_list');
+    expect(names).not.toContain('controller_ready');
+    const result = await client.callTool({ name: 'repository_list', arguments: {} });
     expect(result.isError).not.toBe(true);
     return result.structuredContent as Record<string, unknown>;
   } finally {
@@ -148,7 +150,7 @@ describe('canonical single Runtime', () => {
     expect(() => state.markReady()).toThrow('RUNTIME_READINESS_INCOMPLETE');
   });
 
-  test('one process serves authenticated initialize, tools/list, Controller call, and SQLite read', async () => {
+  test('one process serves authenticated initialize, bounded tools/list, bootstrap call, and SQLite readiness', async () => {
     const fixture = createFixture({ exclusiveWorkId: 'WORK-P0' });
     const runtime = new CanonicalForgeRuntime(fixture.config);
     cleanups.push(() => runtime.stop('TEST_CLEANUP'));
@@ -165,9 +167,8 @@ describe('canonical single Runtime', () => {
     });
     const endpoint = runtime.endpoint();
     expect(endpoint).toBeTruthy();
-    const snapshot = await callControllerReady(endpoint!, fixture.config.authToken);
-    expect(((snapshot.diagnostics as Record<string, unknown>).database as Record<string, unknown>).ready).toBe(true);
-    expect(snapshot.ready).toBe(true);
+    const repositoryList = await callRepositoryList(endpoint!, fixture.config.authToken);
+    expect(Array.isArray(repositoryList.repositories)).toBe(true);
 
     const unauthorized = await fetch(endpoint!, {
       method: 'POST',

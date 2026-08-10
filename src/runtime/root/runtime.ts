@@ -50,15 +50,16 @@ async function defaultMcpProbe(endpoint: string, authToken: string): Promise<voi
   try {
     await client.connect(transport);
     const tools = await client.listTools();
-    if (!tools.tools.some((tool) => tool.name === 'controller_ready')) {
-      throw new Error('MCP_PROBE_TOOL_MISSING: controller_ready');
+    if (!tools.tools.some((tool) => tool.name === 'repository_list')) {
+      throw new Error('MCP_PROBE_TOOL_MISSING: repository_list');
     }
-    const result = await client.callTool({ name: 'controller_ready', arguments: {} });
-    if (result.isError) throw new Error('MCP_PROBE_CONTROLLER_CALL_FAILED');
-    const structured = result.structuredContent as Record<string, unknown> | undefined;
-    const diagnostics = structured?.diagnostics as Record<string, unknown> | undefined;
-    const database = diagnostics?.database as Record<string, unknown> | undefined;
-    if (database?.ready !== true) throw new Error('MCP_PROBE_SQLITE_READ_FAILED');
+    // Probe a permanent bootstrap tool that is valid before any repository is
+    // selected or registered. Database initialization has already failed closed
+    // earlier in Runtime startup; this probe owns only MCP initialize/list/call.
+    const result = await client.callTool({ name: 'repository_list', arguments: {} });
+    if (result.isError || !result.structuredContent) {
+      throw new Error('MCP_PROBE_BOOTSTRAP_CALL_FAILED');
+    }
   } finally {
     await client.close().catch(() => undefined);
   }
