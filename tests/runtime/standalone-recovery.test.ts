@@ -308,6 +308,9 @@ test('standalone Recovery stages only its configured Runtime source and hands a 
   }));
   writeFileSync(join(releasePath, 'forge-runtime'), 'binary');
   writeFileSync(join(releasePath, 'future-sidecar-v2'), 'future-sidecar');
+  const baseline = verifiedManifest(home, 'release-baseline');
+  ensureActiveRuntimeRelease(home, baseline.path);
+  const expectedAuthority = readRuntimeReleaseAuthority(home)!;
   const config = createRecoveryConfig(home, { primaryRuntimeSourceRoot: sourceRoot });
   let stagedFrom = '';
   let activatedManifest = '';
@@ -323,12 +326,17 @@ test('standalone Recovery stages only its configured Runtime source and hands a 
         sourceCommit: 'a'.repeat(40),
       };
     },
-    activate: async (_config, path) => {
+    activate: async (_config, path, guard) => {
       activatedManifest = path;
       expect(existsSync(join(dirname(path), 'future-sidecar-v2'))).toBe(true);
+      expect(guard).toMatchObject({
+        requestId: 'recovery-gateway:stage-request-1',
+        expectedAuthorityRevision: expectedAuthority.revision,
+        expectedActiveReleaseId: 'release-baseline',
+      });
       return { ok: true, attempted: true, detail: 'activated' };
     },
-  });
+  }, 'recovery-gateway:stage-request-1');
   expect(stagedFrom).toBe(resolve(sourceRoot));
   expect(activatedManifest).toBe(manifestPath);
   expect(result).toMatchObject({ ok: true, attempted: true, staged: { releaseId: 'release-new' } });
@@ -365,6 +373,13 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('restart_primary_runtime');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('recover_primary_runtime');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('activate_runtime_release');
+    const activateTool = RECOVERY_TOOLS.find((tool) => tool.name === 'activate_runtime_release');
+    expect(activateTool?.inputSchema.required).toEqual(expect.arrayContaining([
+      'request_id',
+      'release_path',
+      'expected_active_release_id',
+      'expected_authority_revision',
+    ]));
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).not.toContain('supervisor_status');
     expect(RECOVERY_CLI_COMMANDS).toContain('list-releases');
     expect(RECOVERY_CLI_COMMANDS).toContain('restart-primary-runtime');
@@ -690,6 +705,85 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(result.detail).toContain('TCP port remained occupied');
       expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
       expect(kickstarts).toBe(0);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('rejects stale-base activation before stopping Runtime when authority advanced after the caller decision', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const releaseA = verifiedManifest(home, 'release-a');
+      const releaseB = verifiedManifest(home, 'release-b');
+      const candidate = verifiedManifest(home, 'release-candidate');
+      ensureActiveRuntimeRelease(home, releaseA.path);
+      const observed = readRuntimeReleaseAuthority(home)!;
+      publishRuntimeRelease(home, releaseB.path, 'newer-activation');
+      runtimeServiceConfig(home);
+      const paths = forgeRuntimeServicePaths(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+      const commands: string[][] = [];
+
+      const result = await activateRuntimeRelease(createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd' } }), candidate.path, {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (name, args) => {
+          commands.push([name, ...args]);
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+      }, {
+        requestId: 'recovery-gateway:stale-request',
+        expectedAuthorityRevision: observed.revision,
+        expectedActiveReleaseId: observed.active.releaseId,
+      });
+
+      expect(result).toMatchObject({ ok: false, attempted: false, noOp: true });
+      expect(result.detail).toContain('RUNTIME_RELEASE_ACTIVATION_STALE_BASE');
+      expect(commands).toEqual([]);
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-b');
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('rejects ordinary reverse activation of current.previous and leaves rollback to the explicit recovery path', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const releaseA = verifiedManifest(home, 'release-a');
+      const releaseB = verifiedManifest(home, 'release-b');
+      ensureActiveRuntimeRelease(home, releaseA.path);
+      publishRuntimeRelease(home, releaseB.path, 'activate-b');
+      const observed = readRuntimeReleaseAuthority(home)!;
+      runtimeServiceConfig(home);
+      const paths = forgeRuntimeServicePaths(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+      const commands: string[][] = [];
+
+      const result = await activateRuntimeRelease(createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd' } }), releaseA.path, {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (name, args) => {
+          commands.push([name, ...args]);
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+      }, {
+        requestId: 'recovery-gateway:reverse-request',
+        expectedAuthorityRevision: observed.revision,
+        expectedActiveReleaseId: observed.active.releaseId,
+      });
+
+      expect(result).toMatchObject({ ok: false, attempted: false, noOp: true });
+      expect(result.detail).toContain('RUNTIME_RELEASE_REVERSE_ACTIVATION_REQUIRES_ROLLBACK');
+      expect(commands).toEqual([]);
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-b');
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

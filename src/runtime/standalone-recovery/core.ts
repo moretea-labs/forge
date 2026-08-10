@@ -1036,6 +1036,15 @@ export interface PrimaryRuntimeRecoveryDependencies {
   sleep?: (ms: number) => Promise<void>;
 }
 
+export interface RuntimeReleaseActivationGuard {
+  /** External caller identity for audit/lock attribution. */
+  requestId?: string;
+  /** Authority snapshot observed when the caller decided to activate; null means the caller observed no authority. */
+  expectedAuthorityRevision?: number | null;
+  /** Active release observed when the caller decided to activate; null means the caller observed no active release. */
+  expectedActiveReleaseId?: string | null;
+}
+
 function configuredPrimaryRuntimeService(config: RecoveryConfig): PrimaryRuntimeServiceConfig {
   return config.primaryRuntimeService ?? { platform: 'launchd' };
 }
@@ -1363,25 +1372,15 @@ export async function activateRuntimeRelease(
   config: RecoveryConfig,
   candidateManifestPath: string,
   dependencies: PrimaryRuntimeRecoveryDependencies = {},
+  guard: RuntimeReleaseActivationGuard = {},
 ): Promise<RuntimeReleaseActivationResult> {
   let candidate: { manifest: RuntimeReleaseManifest; releaseRoot: string; manifestPath: string };
   try {
     candidate = validateRuntimeReleaseCandidate(config, candidateManifestPath);
   } catch (error) {
     const detail = error instanceof Error ? error.message : 'runtime release candidate validation failed';
-    audit(config, 'runtime_release_activation_candidate_invalid', { detail });
+    audit(config, 'runtime_release_activation_candidate_invalid', { detail, ...(guard.requestId ? { requestId: guard.requestId } : {}) });
     return { ok: false, attempted: false, noOp: true, detail };
-  }
-  const current = releaseAuthority(config);
-  const previousActive = current?.active;
-  if (current && current.active.releaseId === candidate.manifest.releaseId) {
-    return {
-      ok: true,
-      attempted: false,
-      noOp: true,
-      detail: 'requested Runtime release is already the active whole-Runtime release',
-      verify: await verifyStableRuntime(config),
-    };
   }
   if ((dependencies.platform ?? process.platform) !== 'darwin') {
     return { ok: false, attempted: false, noOp: true, detail: 'Runtime release activation currently requires the configured macOS launchd service' };
@@ -1395,7 +1394,63 @@ export async function activateRuntimeRelease(
   const runtimeRunning = dependencies.runtimeRunning ?? ((value: RecoveryConfig) => observeRuntimeStatus(value.controllerHome).running);
   const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
   const operationId = `recovery-activate-runtime-${Date.now()}-${randomUUID().slice(0, 8)}`;
-  const locked = await withLock(config, { action: 'activate_runtime_release', ...(operationId ? { requestId: operationId } : {}) }, async () => {
+  const lockRequestId = guard.requestId?.trim() || operationId;
+  const locked = await withLock(config, { action: 'activate_runtime_release', requestId: lockRequestId }, async () => {
+    // Re-read authority only after acquiring the mutation lock. A caller may
+    // have selected its candidate before another activation completed; stale
+    // decisions must fail before bootout/publish rather than overwrite the newer
+    // active release.
+    const current = releaseAuthority(config);
+    const previousActive = current?.active;
+    const expectedRevision = guard.expectedAuthorityRevision;
+    const expectedActiveReleaseId = typeof guard.expectedActiveReleaseId === 'string' ? guard.expectedActiveReleaseId.trim() : guard.expectedActiveReleaseId;
+    if (expectedRevision !== undefined && (expectedRevision === null ? current !== undefined : current?.revision !== expectedRevision)) {
+      const detail = `RUNTIME_RELEASE_ACTIVATION_STALE_BASE: expected authority revision ${expectedRevision}, observed ${current?.revision ?? 'none'}`;
+      audit(config, 'runtime_release_activation_stale_base', {
+        operationId,
+        requestId: lockRequestId,
+        candidateRevision: candidate.manifest.releaseId,
+        expectedAuthorityRevision: expectedRevision,
+        observedAuthorityRevision: current?.revision,
+        expectedActiveReleaseId,
+        observedActiveReleaseId: current?.active.releaseId,
+      });
+      return { ok: false, attempted: false, noOp: true, detail, operationId } satisfies RuntimeReleaseActivationResult;
+    }
+    if (expectedActiveReleaseId !== undefined && (expectedActiveReleaseId === null ? current?.active !== undefined : current?.active.releaseId !== expectedActiveReleaseId)) {
+      const detail = `RUNTIME_RELEASE_ACTIVATION_STALE_BASE: expected active release ${expectedActiveReleaseId}, observed ${current?.active.releaseId ?? 'none'}`;
+      audit(config, 'runtime_release_activation_stale_base', {
+        operationId,
+        requestId: lockRequestId,
+        candidateRevision: candidate.manifest.releaseId,
+        expectedAuthorityRevision: expectedRevision,
+        observedAuthorityRevision: current?.revision,
+        expectedActiveReleaseId,
+        observedActiveReleaseId: current?.active.releaseId,
+      });
+      return { ok: false, attempted: false, noOp: true, detail, operationId } satisfies RuntimeReleaseActivationResult;
+    }
+    if (current && current.active.releaseId === candidate.manifest.releaseId) {
+      return {
+        ok: true,
+        attempted: false,
+        noOp: true,
+        detail: 'requested Runtime release is already the active whole-Runtime release',
+        operationId,
+        verify: await verifyLocal(config),
+      } satisfies RuntimeReleaseActivationResult;
+    }
+    if (current?.previous?.releaseId === candidate.manifest.releaseId) {
+      const detail = 'RUNTIME_RELEASE_REVERSE_ACTIVATION_REQUIRES_ROLLBACK: activate_runtime_release cannot replace the active release with current.previous; use rollback_previous or recover_primary_runtime';
+      audit(config, 'runtime_release_reverse_activation_rejected', {
+        operationId,
+        requestId: lockRequestId,
+        candidateRevision: candidate.manifest.releaseId,
+        activeRevision: current.active.releaseId,
+        authorityRevision: current.revision,
+      });
+      return { ok: false, attempted: false, noOp: true, detail, operationId } satisfies RuntimeReleaseActivationResult;
+    }
     const before = await verifyLocal(config);
     const stopped = await runCommand('launchctl', ['bootout', service.target], 15_000);
     const stoppedCleanly = stopped.ok || /not found|no such process|could not find service|service is not loaded/i.test(`${stopped.stderr}\n${stopped.stdout}`);
@@ -1458,7 +1513,7 @@ export async function activateRuntimeRelease(
         verifyLocal,
       });
       if (after.ok && after.releases.active?.revision === candidate.manifest.releaseId) {
-        audit(config, 'runtime_release_activation_succeeded', { serviceTarget: service.target, operationId, activeRevision: after.releases.active?.revision });
+        audit(config, 'runtime_release_activation_succeeded', { serviceTarget: service.target, operationId, requestId: lockRequestId, activeRevision: after.releases.active?.revision, expectedAuthorityRevision: guard.expectedAuthorityRevision, expectedActiveReleaseId: guard.expectedActiveReleaseId });
         return { ok: true, attempted: true, detail: 'requested Runtime release activated and passed whole-Runtime verification', serviceTarget: service.target, operationId, verify: after } satisfies RuntimeReleaseActivationResult;
       }
     }
@@ -1547,17 +1602,21 @@ export async function activateRuntimeRelease(
 
 export interface ConfiguredRuntimeActivationDependencies {
   stage?: typeof stageRuntimeReleaseFromCandidateSource;
-  activate?: (config: RecoveryConfig, manifestPath: string) => Promise<RuntimeReleaseActivationResult>;
+  activate?: (config: RecoveryConfig, manifestPath: string, guard: RuntimeReleaseActivationGuard) => Promise<RuntimeReleaseActivationResult>;
 }
 
 export async function stageAndActivateConfiguredRuntimeRelease(
   config: RecoveryConfig,
   dependencies: ConfiguredRuntimeActivationDependencies = {},
+  requestId?: string,
 ): Promise<ConfiguredRuntimeActivationResult> {
   const sourceRoot = config.primaryRuntimeSourceRoot?.trim();
   if (!sourceRoot) {
     return { ok: false, attempted: false, noOp: true, detail: 'primary Runtime source root is not configured in standalone Recovery' };
   }
+  // Capture the base before staging. Staging can take long enough for another
+  // activation to win; the later publish must prove this base is still current.
+  const expectedAuthority = releaseAuthority(config);
   let staged: StagedRuntimeRelease;
   try {
     staged = (dependencies.stage ?? stageRuntimeReleaseFromCandidateSource)({ controllerHome: config.controllerHome, sourceRoot });
@@ -1567,9 +1626,19 @@ export async function stageAndActivateConfiguredRuntimeRelease(
     audit(config, 'runtime_release_stage_failed', { sourceRoot, detail });
     return { ok: false, attempted: false, noOp: true, detail };
   }
-  const activation = await (dependencies.activate ?? activateRuntimeRelease)(config, staged.manifestPath);
+  const activationGuard: RuntimeReleaseActivationGuard = {
+    ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
+    expectedAuthorityRevision: expectedAuthority?.revision ?? null,
+    expectedActiveReleaseId: expectedAuthority?.active.releaseId ?? null,
+  };
+  const activation = dependencies.activate
+    ? await dependencies.activate(config, staged.manifestPath, activationGuard)
+    : await activateRuntimeRelease(config, staged.manifestPath, {}, activationGuard);
   audit(config, activation.ok ? 'runtime_release_stage_and_activate_succeeded' : 'runtime_release_stage_and_activate_failed', {
     sourceRoot,
+    ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
+    expectedAuthorityRevision: activationGuard.expectedAuthorityRevision,
+    expectedActiveReleaseId: activationGuard.expectedActiveReleaseId,
     releaseId: staged.releaseId,
     sourceCommit: staged.sourceCommit,
     activationAttempted: activation.attempted,
