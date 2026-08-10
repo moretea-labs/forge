@@ -52,6 +52,8 @@ export interface ExecuteRepositoryCommandInput {
    * re-run multiple sync/async git snapshots for the same command.
    */
   reuseSnapshot?: RepositoryCommandSnapshot;
+  /** Internal: explicit ephemeral workspace authority may operate without a Git repository. */
+  allowNonGitWorkspace?: boolean;
 }
 
 export interface RepositoryCommandSnapshot {
@@ -63,6 +65,18 @@ export interface RepositoryCommandSnapshot {
   refsHash: string;
   paths: string[];
   pathFingerprints: Record<string, string>;
+}
+
+function emptyWorkspaceSnapshot(): RepositoryCommandSnapshot {
+  return {
+    head: null,
+    branch: null,
+    status: '',
+    dirty: false,
+    refsHash: createHash('sha256').update('').digest('hex'),
+    paths: [],
+    pathFingerprints: {},
+  };
 }
 
 export interface RepositoryCommandExecution {
@@ -730,7 +744,7 @@ function prepareRepositoryCommandExecution(
   const externalGrants = loadExternalFilesystemGrants(root).grants;
   const externalPathUsages = assertCommandPathOperandsStayInRepository(command, cwd, root, externalGrants);
   const classification = classifyRepositoryCommand(command, repository.defaultBranch);
-  const before = input.reuseSnapshot ?? repositorySnapshot(root);
+  const before = input.reuseSnapshot ?? (input.allowNonGitWorkspace ? emptyWorkspaceSnapshot() : repositorySnapshot(root));
   return finalizePreparedExecution(
     repository,
     input,
@@ -765,7 +779,7 @@ async function prepareRepositoryCommandExecutionAsync(
   const externalGrants = loadExternalFilesystemGrants(root).grants;
   const externalPathUsages = assertCommandPathOperandsStayInRepository(command, cwd, root, externalGrants);
   const classification = classifyRepositoryCommand(command, repository.defaultBranch);
-  const before = input.reuseSnapshot ?? await repositorySnapshotAsync(root, input.signal);
+  const before = input.reuseSnapshot ?? (input.allowNonGitWorkspace ? emptyWorkspaceSnapshot() : await repositorySnapshotAsync(root, input.signal));
   return finalizePreparedExecution(
     repository,
     input,
@@ -941,7 +955,7 @@ export async function executeRepositoryReadOnlyCommandDirect(
   }
 
   const result = await runCanonicalCommand(command, cwd, timeoutMs, maxOutputBytes, { signal });
-  const after = await repositorySnapshotAsync(root, signal?.aborted ? undefined : signal);
+  const after = input.allowNonGitWorkspace ? before : await repositorySnapshotAsync(root, signal?.aborted ? undefined : signal);
   return {
     ...base,
     status: 'executed',

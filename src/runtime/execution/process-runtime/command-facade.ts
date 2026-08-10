@@ -197,6 +197,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
       timeoutMs: Math.min(input.timeoutMs ?? 30_000, 30_000),
       maxOutputBytes: input.maxOutputBytes,
       signal: input.signal,
+      allowNonGitWorkspace: executionIdentity.authority === 'ephemeral_workspace',
     });
     return {
       route: 'process_direct',

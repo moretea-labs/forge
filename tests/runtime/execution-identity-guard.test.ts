@@ -436,6 +436,43 @@ describe('execution identity pre-spawn guard', () => {
     expect(resolved.checkoutId).toBe(fx.repoA.activeCheckoutId);
   });
 
+  test('ephemeral workspace identity validates a non-Git root without Repository Registry ownership and rejects cwd escape', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-ephemeral-identity-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller-home');
+    const workspaceRoot = join(root, 'plain-workspace');
+    const child = join(workspaceRoot, 'child');
+    const outside = join(root, 'outside');
+    mkdirSync(controllerHome, { recursive: true });
+    mkdirSync(child, { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    const canonicalRoot = realpathSync(workspaceRoot);
+    const identity = executionIdentityFromCoordinates({
+      authority: 'ephemeral_workspace',
+      repositoryId: 'workspace_test_identity',
+      checkoutId: 'workspace_checkout_test_identity',
+      canonicalRoot,
+    });
+
+    const guarded = assertExecutionIdentity({
+      controllerHome,
+      identity,
+      cwd: child,
+      requestedRepoId: identity.repositoryId,
+      requestedCheckoutId: identity.checkoutId,
+    });
+    expect(guarded.canonicalRoot).toBe(canonicalRoot);
+    expect(guarded.resolvedCwd).toBe(realpathSync(child));
+    expect(guarded.gitTopLevel).toBeUndefined();
+    expect(guarded.gitCommonDirectory).toBeUndefined();
+
+    expect(() => assertExecutionIdentity({
+      controllerHome,
+      identity,
+      cwd: outside,
+    })).toThrow(/WORKSPACE_SCOPE_MISMATCH/);
+  });
+
   test('happy path identity matches and spawn uses guarded cwd', async () => {
     const fx = dualRepoFixture();
     const identity = executionIdentityForRepository(fx.repoA, {

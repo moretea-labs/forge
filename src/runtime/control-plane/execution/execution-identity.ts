@@ -1,5 +1,5 @@
 import { spawnSync } from 'child_process';
-import { existsSync, realpathSync } from 'fs';
+import { existsSync, realpathSync, statSync } from 'fs';
 import { isAbsolute, relative, resolve } from 'path';
 import {
   getRepository,
@@ -24,10 +24,12 @@ export type ExecutionIdentityErrorCode =
   | 'WORKTREE_PATH_MISMATCH'
   | 'REPOSITORY_NOT_EXECUTABLE'
   | 'LEGACY_WORK_IDENTITY_AMBIGUOUS'
-  | 'LEGACY_WORK_IDENTITY_REJECTED';
+  | 'LEGACY_WORK_IDENTITY_REJECTED'
+  | 'WORKSPACE_SCOPE_MISMATCH';
 
 export interface ResolvedExecutionIdentity {
   readonly schemaVersion: 1;
+  readonly authority?: 'repository' | 'ephemeral_workspace';
   readonly repositoryId: string;
   readonly checkoutId: string;
   readonly canonicalRoot: string;
@@ -40,8 +42,8 @@ export interface ResolvedExecutionIdentity {
 
 export interface GuardedExecutionIdentity extends ResolvedExecutionIdentity {
   readonly resolvedCwd: string;
-  readonly gitTopLevel: string;
-  readonly gitCommonDirectory: string;
+  readonly gitTopLevel?: string;
+  readonly gitCommonDirectory?: string;
   readonly currentBranch?: string;
   readonly currentHead?: string;
 }
@@ -204,6 +206,7 @@ export function executionIdentityFromCoordinates(input: {
   branch?: string;
   expectedHead?: string;
   allowArchived?: boolean;
+  authority?: 'repository' | 'ephemeral_workspace';
 }): ResolvedExecutionIdentity {
   if (!input.repositoryId.trim() || !input.checkoutId.trim() || !input.canonicalRoot.trim()) {
     fail('EXECUTION_IDENTITY_REQUIRED', 'repositoryId, checkoutId, and canonicalRoot are required');
@@ -278,6 +281,41 @@ export function assertExecutionIdentity(input: {
       actualCheckoutId: input.requestedCheckoutId,
       repoId: identity.repositoryId,
       workId: identity.workId,
+    });
+  }
+
+  if (identity.authority === 'ephemeral_workspace') {
+    const workspaceRoot = realpathOrFail(identity.canonicalRoot, 'WORKTREE_MISSING', 'ephemeral workspace root');
+    const requestedCwd = isAbsolute(input.cwd) ? input.cwd : resolve(workspaceRoot, input.cwd);
+    const resolvedCwd = realpathOrFail(requestedCwd, 'WORKTREE_MISSING', 'process cwd');
+    if (!statSync(resolvedCwd).isDirectory()) {
+      fail('WORKSPACE_SCOPE_MISMATCH', 'process cwd is not a directory', {
+        repoId: identity.repositoryId,
+        checkoutId: identity.checkoutId,
+        actual: resolvedCwd,
+      });
+    }
+    const cwdRelative = relative(workspaceRoot, resolvedCwd);
+    if (cwdRelative === '..' || cwdRelative.startsWith('../') || cwdRelative.startsWith('..\\')) {
+      fail('WORKSPACE_SCOPE_MISMATCH', 'process cwd escapes ephemeral workspace root', {
+        repoId: identity.repositoryId,
+        checkoutId: identity.checkoutId,
+        expected: workspaceRoot,
+        actual: resolvedCwd,
+      });
+    }
+    const gitTopLevel = gitPath(resolvedCwd, ['rev-parse', '--show-toplevel']);
+    const gitCommonDirectory = gitPath(resolvedCwd, ['rev-parse', '--git-common-dir']);
+    const currentBranch = gitTopLevel ? gitText(gitTopLevel, ['branch', '--show-current']) : undefined;
+    const currentHead = gitTopLevel ? gitText(gitTopLevel, ['rev-parse', '--verify', 'HEAD']) : undefined;
+    return Object.freeze({
+      ...identity,
+      canonicalRoot: workspaceRoot,
+      resolvedCwd,
+      gitTopLevel,
+      gitCommonDirectory,
+      currentBranch,
+      currentHead,
     });
   }
 

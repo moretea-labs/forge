@@ -1,4 +1,5 @@
 import type { ResourceClaimSpec } from '../../execution/jobs/types';
+import { ephemeralWorkspaceCoordinates } from '../../../cli/repositories/ephemeral-workspace';
 import {
   claimsForCheck,
   claimsForRepositoryCommand,
@@ -164,10 +165,12 @@ export function claimsForMcpOperation(name: string, args: Record<string, unknown
     return claims;
   }
   if (name === 'repository_command_execute' && args.command !== undefined) {
+    const workspaceRoot = typeof args.workspace_root === 'string' ? args.workspace_root.trim() : '';
+    const workspace = workspaceRoot ? ephemeralWorkspaceCoordinates(workspaceRoot) : undefined;
     return claimsForRepositoryCommand(
       args.command as string | string[],
-      repoId,
-      checkoutId,
+      workspace?.workspaceId ?? repoId,
+      workspace?.checkoutId ?? checkoutId,
       typeof args.default_branch === 'string' ? args.default_branch : undefined,
     );
   }

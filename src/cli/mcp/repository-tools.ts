@@ -1,5 +1,7 @@
 import { bindRepositoryEntities } from '../repositories/entity-migration';
 import { bootstrapLocalProject, diagnoseLatestLocalProjectSource } from '../repositories/local-project-onboarding';
+import { resolveEphemeralWorkspaceTarget } from '../repositories/ephemeral-workspace';
+import type { ResolvedExecutionIdentity } from '../../runtime/control-plane/execution/execution-identity';
 import { executeRepositoryCommand, previewRepositoryCommandExecution } from '../repositories/command-executor';
 import { withControllerLock } from '../repositories/locks';
 import {
@@ -252,13 +254,15 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
     command: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Legacy shell string or typed argv array. Typed argv executes without a shell.' },
-    cwd: { type: 'string', description: 'Optional repository-relative working directory.' },
+    cwd: { type: 'string', description: 'Optional root-relative working directory.' },
+    workspace_root: { type: 'string', description: 'Absolute existing local directory used as an ephemeral execution root. Mutually exclusive with repo_id/checkout_id; does not register or initialize the directory.' },
   }, ['command'], true),
   definition('repository_command_execute', 'Execute one repository-scoped local command through Full Access, Goal delegation, or a resumable approval request. Legacy preview-token callers remain compatible.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
     command: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Legacy shell string or typed argv array. Typed argv executes without a shell.' },
-    cwd: { type: 'string', description: 'Optional repository-relative working directory.' },
+    cwd: { type: 'string', description: 'Optional root-relative working directory.' },
+    workspace_root: { type: 'string', description: 'Absolute existing local directory used as an ephemeral execution root. Mutually exclusive with repo_id/checkout_id; does not register or initialize the directory.' },
     approval_token: { type: 'string', description: 'Exact approval token returned by repository_command_preview.' },
     approval_request_id: { type: 'string', description: 'Resolved approvalRequestId returned by approval_resolve.' },
     timeout_ms: { type: 'number', description: 'Optional execution timeout in milliseconds.' },
@@ -290,6 +294,52 @@ function withResponseMeta(payload: Record<string, unknown>, startedAt: number): 
   };
   response.responseMeta.structuredPayloadBytes = Buffer.byteLength(JSON.stringify(response), 'utf8');
   return response;
+}
+
+function resolveRepositoryCommandTarget(
+  controllerHome: string,
+  args: Record<string, unknown>,
+  repoIdValue: string,
+): {
+  repository: ReturnType<typeof resolveRepositorySelection>;
+  executionIdentity: ResolvedExecutionIdentity;
+  workspace?: { workspaceId: string; root: string; registered: false };
+} {
+  const workspaceRoot = typeof args.workspace_root === 'string' ? args.workspace_root.trim() : '';
+  const checkoutId = typeof args.checkout_id === 'string' ? args.checkout_id.trim() : '';
+  if (workspaceRoot) {
+    if (repoIdValue || checkoutId) {
+      throw new Error('EPHEMERAL_WORKSPACE_TARGET_CONFLICT: workspace_root cannot be combined with repo_id or checkout_id');
+    }
+    const target = resolveEphemeralWorkspaceTarget(workspaceRoot, controllerHome);
+    return {
+      repository: target.repository,
+      executionIdentity: {
+        schemaVersion: 1,
+        authority: 'ephemeral_workspace',
+        repositoryId: target.workspaceId,
+        checkoutId: target.checkoutId,
+        canonicalRoot: target.canonicalRoot,
+      },
+      workspace: { workspaceId: target.workspaceId, root: target.canonicalRoot, registered: false },
+    };
+  }
+  const repository = resolveRepositorySelection({
+    repoId: repoIdValue || undefined,
+    checkoutId: checkoutId || undefined,
+    controllerHome,
+    allowSoleRepository: true,
+  });
+  return {
+    repository,
+    executionIdentity: {
+      schemaVersion: 1,
+      authority: 'repository',
+      repositoryId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      canonicalRoot: repository.canonicalRoot,
+    },
+  };
 }
 
 export function summarizeEntityMigrationReport(
@@ -362,6 +412,7 @@ function compactProcessCommandPayload(input: {
   decision?: unknown;
   repoId: string;
   checkoutId?: string;
+  workspace?: { workspaceId: string; root: string; registered: false };
   processId?: string;
   process?: unknown;
   completed?: boolean;
@@ -398,6 +449,7 @@ function compactProcessCommandPayload(input: {
       reason,
       repoId: input.repoId,
       ...(input.checkoutId ? { checkoutId: input.checkoutId } : {}),
+      ...(input.workspace ? { workspace: input.workspace } : {}),
       ...(input.processId ? { processId: input.processId } : {}),
       ...(completed ? { exitCode: input.exitCode ?? (ok ? 0 : 1) } : {}),
       stdout: output.stdout ?? '',
@@ -433,6 +485,7 @@ function compactProcessCommandPayload(input: {
     reason,
     repoId: input.repoId,
     ...(input.checkoutId ? { checkoutId: input.checkoutId } : {}),
+    ...(input.workspace ? { workspace: input.workspace } : {}),
     ...(input.processId ? { processId: input.processId } : {}),
     ok: input.ok,
     exitCode: input.exitCode,
@@ -769,12 +822,8 @@ export async function callRepositoryTool(
         return ok ? result(payload) : { ...result(payload), isError: true };
       }
       case 'repository_command_preview': {
-        const repository = resolveRepositorySelection({
-          repoId: repoIdValue || undefined,
-          checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
-          controllerHome,
-          allowSoleRepository: true,
-        });
+        const target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue);
+        const { repository } = target;
         const execution = withControllerLock(
           controllerHome,
           { scope: 'repository', repoId: repository.repoId },
@@ -783,18 +832,18 @@ export async function callRepositoryTool(
             command: args.command as string | string[],
             cwd: typeof args.cwd === 'string' ? args.cwd : undefined,
             dryRun: true,
+            allowNonGitWorkspace: target.workspace !== undefined,
           }),
           60_000,
         );
-        return result(execution as unknown as Record<string, unknown>);
+        return result({
+          ...execution as unknown as Record<string, unknown>,
+          ...(target.workspace ? { workspace: target.workspace } : {}),
+        });
       }
       case 'repository_command_execute': {
-        const repository = resolveRepositorySelection({
-          repoId: repoIdValue || undefined,
-          checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
-          controllerHome,
-          allowSoleRepository: true,
-        });
+        const target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue);
+        const { repository, executionIdentity } = target;
         const timeoutMs = typeof args.timeout_ms === 'number'
           ? args.timeout_ms
           : typeof args.timeout_ms === 'string'
@@ -842,12 +891,7 @@ export async function callRepositoryTool(
                 timeoutMs,
                 maxOutputBytes,
                 requestId: typeof args.request_id === 'string' ? args.request_id : undefined,
-                executionIdentity: {
-                  schemaVersion: 1,
-                  repositoryId: repository.repoId,
-                  checkoutId: repository.activeCheckoutId,
-                  canonicalRoot: repository.canonicalRoot,
-                },
+                executionIdentity,
               });
               if (processResult.route === 'process_direct' || processResult.route === 'process_managed') {
                 const handle = processResult.process;
@@ -872,6 +916,7 @@ export async function callRepositoryTool(
                   decision: detailLevel === 'detail' ? routingDecision : undefined,
                   repoId: repository.repoId,
                   checkoutId: repository.activeCheckoutId,
+                  workspace: target.workspace,
                   processId: handle?.processId,
                   process: detailLevel === 'detail' ? handle : undefined,
                   completed,
@@ -914,6 +959,18 @@ export async function callRepositoryTool(
             }
             return failure(error);
           }
+        }
+        if (target.workspace && forceDurable) {
+          return result({
+            accepted: false,
+            mode: 'durable',
+            path: 'ephemeral_workspace_promotion_required',
+            repoId: repository.repoId,
+            checkoutId: repository.activeCheckoutId,
+            workspace: target.workspace,
+            message: 'Ephemeral workspaces support bounded local Direct/Managed execution only. Register the directory before durable, remote, release, or resumable Work.',
+            suggestedOperation: 'repository_register',
+          });
         }
         // Historical compatibility code is intentionally disabled. A typed
         // runtime flag preserves legacy branch compilation/narrowing without
@@ -1008,12 +1065,7 @@ export async function callRepositoryTool(
                 timeoutMs,
                 maxOutputBytes,
                 requestId: typeof args.request_id === 'string' ? args.request_id : undefined,
-                executionIdentity: {
-                  schemaVersion: 1,
-                  repositoryId: repository.repoId,
-                  checkoutId: repository.activeCheckoutId,
-                  canonicalRoot: repository.canonicalRoot,
-                },
+                executionIdentity,
               });
               if (processResult.route === 'process_direct') {
                 const execRecord = processResult.process as unknown as Record<string, unknown> | undefined;

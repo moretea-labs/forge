@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
-import { getRepository, registerRepository } from "../../src/cli/repositories/registry";
+import { getRepository, listRepositories, registerRepository } from "../../src/cli/repositories/registry";
 import { callMcpTool } from "../../src/cli/mcp/tools";
 import { callRepositoryTool } from "../../src/cli/mcp/repository-tools";
 import { createMcpToolContext } from "../../src/cli/mcp/multi-repository";
@@ -210,6 +210,82 @@ describe("repository MCP command tools", () => {
       }
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("executes against an unregistered non-Git ephemeral workspace without mutating the Repository Registry", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-ephemeral-workspace-"));
+    const controllerHome = join(workspace, "controller-home");
+    const localRoot = join(workspace, "plain-project");
+    try {
+      mkdirSync(controllerHome, { recursive: true });
+      mkdirSync(localRoot, { recursive: true });
+      writeFileSync(join(localRoot, "note.txt"), "ephemeral hello\n");
+      expect(listRepositories(controllerHome)).toHaveLength(0);
+      expect(existsSync(join(localRoot, ".git"))).toBe(false);
+
+      const preview = await json(callRepositoryTool(controllerHome, "repository_command_preview", {
+        workspace_root: localRoot,
+        command: ["cat", "note.txt"],
+      }));
+      expect(preview.status).toBe("preview");
+      expect(preview.workspace).toMatchObject({ registered: false, root: realpathSync(localRoot) });
+      expect(preview.workspace.workspaceId).toMatch(/^workspace_[a-f0-9]{24}$/);
+
+      const read = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        workspace_root: localRoot,
+        command: ["cat", "note.txt"],
+        request_id: "ephemeral-read-1",
+      }));
+      expect(read.accepted).toBe(true);
+      expect(read.ok).toBe(true);
+      expect(read.stdout).toContain("ephemeral hello");
+      expect(read.workspace).toEqual(preview.workspace);
+      expect(listRepositories(controllerHome)).toHaveLength(0);
+      expect(existsSync(join(localRoot, ".git"))).toBe(false);
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, localRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("ephemeral workspace refuses target ambiguity, root escape, and durable execution without promotion", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-ephemeral-scope-"));
+    const controllerHome = join(workspace, "controller-home");
+    const localRoot = join(workspace, "plain-project");
+    const outside = join(workspace, "outside");
+    try {
+      mkdirSync(controllerHome, { recursive: true });
+      mkdirSync(localRoot, { recursive: true });
+      mkdirSync(outside, { recursive: true });
+      writeFileSync(join(outside, "secret.txt"), "outside\n");
+
+      const conflict = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        workspace_root: localRoot,
+        repo_id: "repo_should_not_mix",
+        command: ["pwd"],
+      }));
+      expect(conflict.error.code).toBe("EPHEMERAL_WORKSPACE_TARGET_CONFLICT");
+
+      const escape = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        workspace_root: localRoot,
+        cwd: "../outside",
+        command: ["pwd"],
+      }));
+      expect(escape.error.code).toMatch(/WORKSPACE_SCOPE_MISMATCH|COMMAND_SCOPE_DENIED/);
+
+      const durable = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        workspace_root: localRoot,
+        command: ["cat", "missing.txt"],
+        apply_mode: "async",
+      }));
+      expect(durable.accepted).toBe(false);
+      expect(durable.path).toBe("ephemeral_workspace_promotion_required");
+      expect(durable.suggestedOperation).toBe("repository_register");
+      expect(listRepositories(controllerHome)).toHaveLength(0);
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, localRoot, outside]);
       rmSync(workspace, { recursive: true, force: true });
     }
   });
