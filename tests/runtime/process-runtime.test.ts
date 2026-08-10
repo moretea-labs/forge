@@ -1046,15 +1046,18 @@ describe('fine-grained resource claims', () => {
     ]);
   });
 
-  test('focused tests and typecheck can hold leases concurrently', () => {
+  test('focused tests and typed noEmit validation can hold leases concurrently', () => {
     const focusedTest = claimsForRepositoryCommand(
       ['bun', 'test', 'tests/runtime/process-runtime.test.ts'],
       'repo1',
       'co1',
     );
-    const typecheck = claimsForRepositoryCommand(['bun', 'run', 'check:type'], 'repo1', 'co1');
+    const typecheck = claimsForRepositoryCommand(['bun', 'x', 'tsc', '--noEmit'], 'repo1', 'co1');
     expect(focusedTest.some((claim) => claim.resourceKey === 'build-cache:repo1')).toBe(false);
-    expect(typecheck).toEqual([{ resourceKey: 'workspace:co1', mode: 'read' }]);
+    expect(typecheck).toEqual([
+      { resourceKey: 'workspace:co1', mode: 'read' },
+      { resourceKey: 'build-cache:repo1', mode: 'write' },
+    ]);
     expect(focusedTest.some((left) => typecheck.some((right) => resourceClaimsConflict(left, right)))).toBe(false);
   });
 

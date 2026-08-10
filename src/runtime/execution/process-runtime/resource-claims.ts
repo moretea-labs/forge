@@ -175,22 +175,27 @@ function looksLikeBuildOrTest(command: string | readonly string[]): boolean {
     && /\b(?:test|check|typecheck|lint|build|compile)\b/.test(lower);
 }
 
-function isReadOnlyTypeValidationCommand(command: string | readonly string[]): boolean {
-  const canonical = normalizeRepositoryCommand(command);
-  if (canonical.kind !== 'argv') return false;
-  const program = (canonical.executable ?? '').split(/[\\/]/).at(-1)?.toLowerCase() ?? '';
-  const args = (canonical.args ?? []).map((value) => value.toLowerCase());
-  const hasNoEmit = args.includes('--noemit');
-
-  if (program === 'tsc') return hasNoEmit;
-  if (program === 'bun' && args[0] === 'x' && args[1] === 'tsc') return hasNoEmit;
-  if (program === 'npx' && args[0] === 'tsc') return hasNoEmit;
-
-  if (['bun', 'npm', 'pnpm', 'yarn'].includes(program)) {
-    const script = args[0] === 'run' ? args[1] : args[0];
-    return script === 'check:type' || script === 'typecheck' || script === 'check:types';
+/**
+ * A typed argv TypeScript --noEmit invocation reads source/config and may still
+ * update incremental build metadata. Model that metadata as build-cache rather
+ * than claiming the whole checkout as a writer. Shell strings and package-script
+ * aliases remain conservative because their real effects are not proven here.
+ */
+function isTypedTypeScriptNoEmit(command: string | readonly string[]): boolean {
+  if (!Array.isArray(command) || command.length === 0) return false;
+  const words = command.map((value) => String(value));
+  const base = (value: string): string => value.replace(/\\/g, '/').split('/').at(-1)?.toLowerCase() ?? '';
+  let program = base(words[0] ?? '');
+  let args = words.slice(1);
+  if (program === 'bun' && args[0]?.toLowerCase() === 'x' && base(args[1] ?? '') === 'tsc') {
+    program = 'tsc';
+    args = args.slice(2);
+  } else if (program === 'npx' && base(args[0] ?? '') === 'tsc') {
+    program = 'tsc';
+    args = args.slice(1);
   }
-  return false;
+  if (program !== 'tsc') return false;
+  return args.some((arg) => arg === '--noEmit' || arg.toLowerCase() === '--noemit');
 }
 
 function focusedTestRequestsWorkspaceMutation(command: string | readonly string[]): boolean {
@@ -245,17 +250,13 @@ export function claimsForRepositoryCommand(
     ];
   }
 
-  // workspace_write — refine. Read-only type validation and focused tests are
-  // safe to share the checkout. They must not inherit a repository-wide write
-  // or shared build-cache write merely because they are validation commands.
-  if (isReadOnlyTypeValidationCommand(command)) {
-    return [claimWorkspaceRead(checkoutId)];
+  // workspace_write — refine. Typed noEmit may write only incremental metadata,
+  // while ordinary focused tests are observation unless snapshot-update mode is
+  // explicit. Both can share repository source reads without a workspace writer.
+  if (isTypedTypeScriptNoEmit(command)) {
+    return [claimWorkspaceRead(checkoutId), claimBuildCacheWrite(repoId)];
   }
   if (focused) {
-    // Ordinary focused tests are observation: they read source and emit process
-    // output outside repository content. Only explicit snapshot-update mode
-    // claims target paths as writes; otherwise independent tests/typechecks can
-    // share the checkout concurrently.
     if (!focusedTestRequestsWorkspaceMutation(command)) return [claimWorkspaceRead(checkoutId)];
     const claims: ResourceClaimSpec[] = [claimWorkspaceRead(checkoutId)];
     for (const path of extractLikelyPaths(command).slice(0, 16)) claims.push(claimPathWrite(path, checkoutId));

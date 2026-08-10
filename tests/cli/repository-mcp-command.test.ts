@@ -291,6 +291,24 @@ describe("repository MCP command tools", () => {
       expect(read.ok).toBe(true);
       expect(read.stdout).toContain("ephemeral hello");
       expect(read.workspace).toEqual(preview.workspace);
+
+      const writePreview = await json(callRepositoryTool(controllerHome, "repository_command_preview", {
+        workspace_root: localRoot,
+        command: ["touch", "created-by-ephemeral.txt"],
+      }));
+      expect(writePreview.status).toBe("preview");
+      expect(writePreview.approvalToken).toBeTruthy();
+      const write = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        workspace_root: localRoot,
+        command: ["touch", "created-by-ephemeral.txt"],
+        approval_token: writePreview.approvalToken,
+        request_id: "ephemeral-write-1",
+      }));
+      expect(write.accepted).toBe(true);
+      expect(write.ok).toBe(true);
+      expect(existsSync(join(localRoot, "created-by-ephemeral.txt"))).toBe(true);
+      expect(write.workspace).toEqual(preview.workspace);
+
       expect(listRepositories(controllerHome)).toHaveLength(0);
       expect(existsSync(join(localRoot, ".git"))).toBe(false);
     } finally {
