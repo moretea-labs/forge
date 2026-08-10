@@ -39,6 +39,9 @@ export interface RuntimeReleaseManifest {
   browserNodeBridgeArtifactIdentity?: string;
   browserHandoffEntrypoint?: 'browser-handoff-host.js';
   browserHandoffArtifactIdentity?: string;
+  browserAutomationHelperEntrypoint?: 'browser-automation-helper';
+  browserAutomationHelperArtifactIdentity?: string;
+  browserAutomationHelperContractIdentity?: string;
   codeGraphNodeEntrypoint?: 'codegraph-node';
   codeGraphNodeArtifactIdentity?: string;
   codeGraphSidecarEntrypoint?: 'codegraph-sidecar.cjs';

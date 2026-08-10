@@ -692,6 +692,9 @@ describe('browser plugin', () => {
   });
 
   test('native owned-tab foregrounding activates the exact plugin-owned tab without launching another browser', async () => {
+    // The stable helper boundary is covered separately below; existing native
+    // behavior tests keep using the script hook so they never touch the user's browser.
+
     const runtime = mockMacOsOwnedTabRuntime('chrome');
     setMacOsBrowserRuntimeHooksForTest(runtime.hooks);
     const discovered = await discoverMacOsBrowserAttachment(['chrome']);
@@ -705,6 +708,21 @@ describe('browser plugin', () => {
     const metadata = await activateMacOsBrowserOwnedTab('chrome', ref!);
     expect(runtime.events.activeTabId).toBe(ref!.tabId);
     expect(metadata.active).toBe(true);
+  });
+
+  test('native attach fails closed when the stable Browser Automation helper is unavailable', async () => {
+    repoFixture();
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+    });
+    const discovered = await discoverMacOsBrowserAttachment(['chrome'], 250);
+    expect(discovered.attachment).toBeUndefined();
+    expect(discovered.attempts).toHaveLength(1);
+    expect(discovered.attempts[0]?.status).toBe('unavailable');
+    expect(discovered.attempts[0]?.error).toContain('Stable macOS Browser Automation helper is unavailable');
+    expect(discovered.attempts[0]?.error).not.toContain('/usr/bin/osascript');
   });
 
   test('macOS active-browser discovery prefers the frontmost Chrome or Vivaldi window', async () => {

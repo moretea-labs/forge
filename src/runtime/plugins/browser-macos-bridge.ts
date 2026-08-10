@@ -1,6 +1,11 @@
 import { execFile } from 'child_process';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
+import {
+  callBrowserAutomationHelper,
+  captureBrowserAutomationRegion,
+  type BrowserAutomationHelperAction,
+} from './browser-automation-service';
 import { AssistantPluginError } from './errors';
 
 const RECORD_SEPARATOR = String.fromCharCode(30);
@@ -65,8 +70,10 @@ interface MacOsBrowserRuntimeHooks {
   platform: NodeJS.Platform;
   appExists(path: string): boolean;
   processRunning(processName: string, timeoutMs: number): Promise<boolean>;
-  runAppleScript(script: string, args: string[], timeoutMs: number): Promise<string>;
-  captureRegion(region: { x: number; y: number; width: number; height: number }, path: string, timeoutMs: number): Promise<Buffer>;
+  // Test-only escape hatches. Production intentionally leaves these undefined so
+  // Apple Events and screen capture are attributed to the stable helper process.
+  runAppleScript?: (script: string, args: string[], timeoutMs: number) => Promise<string>;
+  captureRegion?: (region: { x: number; y: number; width: number; height: number }, path: string, timeoutMs: number) => Promise<Buffer>;
 }
 
 function execFileText(file: string, args: string[], timeoutMs: number): Promise<string> {
@@ -104,16 +111,36 @@ const defaultRuntimeHooks: MacOsBrowserRuntimeHooks = {
       return false;
     }
   },
-  runAppleScript: async (script, args, timeoutMs) => execFileText('/usr/bin/osascript', ['-e', script, '--', ...args], timeoutMs),
-  captureRegion: async (region, path, timeoutMs) => {
-    const width = Math.max(1, Math.trunc(region.width));
-    const height = Math.max(1, Math.trunc(region.height));
-    const x = Math.trunc(region.x);
-    const y = Math.trunc(region.y);
-    await execFileText('/usr/sbin/screencapture', ['-x', '-R', `${x},${y},${width},${height}`, path], timeoutMs);
-    return readFileSync(path);
-  },
 };
+
+async function runBrowserAutomationText(
+  request: BrowserAutomationHelperAction,
+  testScript: string,
+  testArgs: string[],
+  timeoutMs: number,
+): Promise<string> {
+  if (runtimeHooks.runAppleScript) return await runtimeHooks.runAppleScript(testScript, testArgs, timeoutMs);
+  const result = await callBrowserAutomationHelper(request, timeoutMs);
+  if (typeof result.value !== 'string') {
+    throw new AssistantPluginError(
+      'PLUGIN_BROWSER_AUTOMATION_HELPER_PROTOCOL_ERROR',
+      'Stable macOS Browser Automation helper returned an invalid text result.',
+      { retryable: true },
+    );
+  }
+  return result.value;
+}
+
+async function captureBrowserAutomation(
+  region: { x: number; y: number; width: number; height: number },
+  path: string,
+  timeoutMs: number,
+): Promise<Buffer> {
+  if (runtimeHooks.captureRegion) return await runtimeHooks.captureRegion(region, path, timeoutMs);
+  const bytes = await captureBrowserAutomationRegion(region, timeoutMs);
+  writeFileSync(path, bytes);
+  return bytes;
+}
 
 let runtimeHooks: MacOsBrowserRuntimeHooks = { ...defaultRuntimeHooks };
 let lastAttachObservation: MacOsBrowserAttachObservation | undefined;
@@ -320,7 +347,12 @@ async function inspectBrowser(product: MacOsBrowserProduct, timeoutMs: number): 
     return { attempt: { ...base, status: 'not_running', error: `${browser.appName} is not running.` } };
   }
   try {
-    const metadata = parseMetadata(product, await runtimeHooks.runAppleScript(metadataScript(browser), [], timeoutMs));
+    const metadata = parseMetadata(product, await runBrowserAutomationText(
+      { action: 'metadata', product },
+      metadataScript(browser),
+      [],
+      timeoutMs,
+    ));
     return {
       metadata,
       attempt: {
@@ -443,9 +475,14 @@ export class MacOsAppleEventsPage {
     this.targetRef = targetRef;
   }
 
-  private async runAppleScript(script: string, args: string[] = [], timeoutMs = this.timeoutMs): Promise<string> {
+  private async runAutomation(
+    request: BrowserAutomationHelperAction,
+    script: string,
+    args: string[] = [],
+    timeoutMs = this.timeoutMs,
+  ): Promise<string> {
     try {
-      return await runtimeHooks.runAppleScript(script, args, timeoutMs);
+      return await runBrowserAutomationText(request, script, args, timeoutMs);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_OPERATION_FAILED', `${this.browser.appName} Apple Events operation failed: ${message}`, {
@@ -457,13 +494,21 @@ export class MacOsAppleEventsPage {
 
   private async refreshMetadata(): Promise<MacOsBrowserMetadata> {
     const script = this.targetRef ? targetMetadataScript(this.browser, this.targetRef) : metadataScript(this.browser);
-    this.metadata = parseMetadata(this.browser.product, await this.runAppleScript(script));
+    this.metadata = parseMetadata(this.browser.product, await this.runAutomation(
+      { action: 'metadata', product: this.browser.product, ...(this.targetRef ? { ref: this.targetRef } : {}) },
+      script,
+    ));
     return this.metadata;
   }
 
   private async executeJavaScriptRaw(source: string, timeoutMs = this.timeoutMs): Promise<string> {
     try {
-      return await this.runAppleScript(executeJavaScriptScript(this.browser, this.targetRef), [source], timeoutMs);
+      return await this.runAutomation(
+        { action: 'execute_javascript', product: this.browser.product, ...(this.targetRef ? { ref: this.targetRef } : {}), source },
+        executeJavaScriptScript(this.browser, this.targetRef),
+        [source],
+        timeoutMs,
+      );
     } catch (error) {
       if (macOsBrowserJavaScriptAutomationDisabled(error)) {
         throw new AssistantPluginError(
@@ -482,7 +527,12 @@ export class MacOsAppleEventsPage {
 
   async goto(url: string, options: Record<string, unknown> = {}): Promise<unknown> {
     const timeout = typeof options.timeout === 'number' ? Math.trunc(options.timeout) : this.timeoutMs;
-    await this.runAppleScript(navigateScript(this.browser, this.targetRef), [url], timeout);
+    await this.runAutomation(
+      { action: 'navigate', product: this.browser.product, ...(this.targetRef ? { ref: this.targetRef } : {}), url },
+      navigateScript(this.browser, this.targetRef),
+      [url],
+      timeout,
+    );
     await this.waitForLoadState(String(options.waitUntil ?? 'domcontentloaded'), { timeout });
     await this.refreshMetadata();
     return undefined;
@@ -490,7 +540,12 @@ export class MacOsAppleEventsPage {
 
   async reload(options: Record<string, unknown> = {}): Promise<unknown> {
     const timeout = typeof options.timeout === 'number' ? Math.trunc(options.timeout) : this.timeoutMs;
-    await this.runAppleScript(reloadScript(this.browser, this.targetRef), [], timeout);
+    await this.runAutomation(
+      { action: 'reload', product: this.browser.product, ...(this.targetRef ? { ref: this.targetRef } : {}) },
+      reloadScript(this.browser, this.targetRef),
+      [],
+      timeout,
+    );
     await this.waitForLoadState(String(options.waitUntil ?? 'domcontentloaded'), { timeout });
     await this.refreshMetadata();
     return undefined;
@@ -542,7 +597,7 @@ export class MacOsAppleEventsPage {
         details: { browserProduct: this.browser.product, windowId: this.targetRef.windowId, tabId: this.targetRef.tabId },
       });
     }
-    return await runtimeHooks.captureRegion(metadata.bounds, path, this.timeoutMs);
+    return await captureBrowserAutomation(metadata.bounds, path, this.timeoutMs);
   }
 
   async click(selector: string): Promise<void> {
@@ -670,7 +725,10 @@ export class MacOsAppleEventsPage {
       this.metadata = await activateMacOsBrowserOwnedTab(this.browser.product, this.targetRef, this.timeoutMs);
       return;
     }
-    await this.runAppleScript(activateScript(this.browser));
+    await this.runAutomation(
+      { action: 'activate', product: this.browser.product },
+      activateScript(this.browser),
+    );
   }
 
   keyboard = {
@@ -686,7 +744,12 @@ export async function readMacOsBrowserOwnedTabMetadata(
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
 ): Promise<MacOsBrowserMetadata> {
   const browser = browserDefinition(product);
-  return parseMetadata(product, await runtimeHooks.runAppleScript(targetMetadataScript(browser, ref), [], timeoutMs));
+  return parseMetadata(product, await runBrowserAutomationText(
+    { action: 'metadata', product, ref },
+    targetMetadataScript(browser, ref),
+    [],
+    timeoutMs,
+  ));
 }
 
 export async function activateMacOsBrowserOwnedTab(
@@ -695,7 +758,12 @@ export async function activateMacOsBrowserOwnedTab(
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
 ): Promise<MacOsBrowserMetadata> {
   const browser = browserDefinition(product);
-  await runtimeHooks.runAppleScript(activateTargetTabScript(browser, ref), [], timeoutMs);
+  await runBrowserAutomationText(
+    { action: 'activate', product, ref },
+    activateTargetTabScript(browser, ref),
+    [],
+    timeoutMs,
+  );
   return readMacOsBrowserOwnedTabMetadata(product, ref, timeoutMs);
 }
 
@@ -709,7 +777,12 @@ export async function createMacOsBrowserOwnedPage(
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
 ): Promise<MacOsAppleEventsPage> {
   const browser = browserDefinition(attachment.metadata.product);
-  const raw = await runtimeHooks.runAppleScript(createOwnedTabScript(browser), [url], timeoutMs);
+  const raw = await runBrowserAutomationText(
+    { action: 'create_tab', product: attachment.metadata.product, url },
+    createOwnedTabScript(browser),
+    [url],
+    timeoutMs,
+  );
   const parts = raw.split(RECORD_SEPARATOR);
   if (parts.length < 2) throw new Error(`Browser scripting returned incomplete owned-tab metadata for ${browser.appName}.`);
   const ref = { windowId: parseBrowserId(parts[0] ?? '', 'window id'), tabId: parseBrowserId(parts[1] ?? '', 'tab id') };
@@ -733,5 +806,10 @@ export async function closeMacOsBrowserOwnedTab(
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
 ): Promise<void> {
   const browser = browserDefinition(product);
-  await runtimeHooks.runAppleScript(closeOwnedTabScript(browser, ref), [], timeoutMs);
+  await runBrowserAutomationText(
+    { action: 'close_tab', product, ref },
+    closeOwnedTabScript(browser, ref),
+    [],
+    timeoutMs,
+  );
 }
