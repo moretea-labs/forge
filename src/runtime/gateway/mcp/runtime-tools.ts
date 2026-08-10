@@ -2491,7 +2491,10 @@ async function runFacadeRepair(
       ...(entry.error ? { error: entry.error.slice(0, 300) } : {}),
     }));
     const appliedCount = applied.applied.filter((entry) => entry.applied).length;
-    const remainingCandidateCount = applied.candidates.length;
+    // Protected stale runtime temp entries are intentionally non-blocking maintenance
+    // diagnostics. Keep repair completion semantics aligned with rh_status readiness so
+    // their presence does not falsely report a blocked repair after safe debt is cleared.
+    const remainingCandidateCount = applied.candidates.filter((candidate) => candidate.kind !== 'stale_runtime_temp_entry').length;
     const blocked = remainingCandidateCount > 0;
     const facade = buildFacadeResult({
       status: blocked ? 'blocked' : 'ok',
