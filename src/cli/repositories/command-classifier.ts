@@ -367,6 +367,20 @@ export function classifyRepositoryCommandReplay(
   };
 }
 
+function fixedShellWrapperCommand(argv: readonly string[]): string | undefined {
+  const program = argv[0]?.split(/[\\/]/).at(-1)?.toLowerCase();
+  if (!program || !['sh', 'bash', 'zsh'].includes(program)) return undefined;
+  for (let index = 1; index < argv.length; index += 1) {
+    const option = argv[index] ?? '';
+    if (option === '--') return undefined;
+    if (option === '-c' || /^-[^-]*c[^-]*$/.test(option)) {
+      const script = argv[index + 1];
+      return typeof script === 'string' && script.trim() ? script : undefined;
+    }
+  }
+  return undefined;
+}
+
 function classifyArgvCommand(
   command: CanonicalRepositoryCommand,
   defaultBranch?: string,
@@ -397,11 +411,12 @@ function classifyArgvCommand(
     return { risk: 'readonly', confirmation: 'none', reasons: ['the argv command is a recognized repository-local read operation'] };
   }
   // Explicit shell wrappers are common in generated diagnostics. Re-classify
-  // the fixed inner command instead of treating every `sh -c <readonly>` as a
-  // workspace mutation. Unsafe shell constructs are still rejected by the
+  // the fixed inner command instead of treating `sh -c` / `bash -lc` wrappers
+  // as workspace mutations. Unsafe shell constructs are still rejected by the
   // normal shell classifier.
-  if (['sh', 'bash', 'zsh'].includes(program) && subcommand === '-c' && typeof argv[2] === 'string') {
-    return classifyShellCommand(argv[2], defaultBranch);
+  const wrappedShellCommand = fixedShellWrapperCommand(argv);
+  if (wrappedShellCommand !== undefined) {
+    return classifyShellCommand(wrappedShellCommand, defaultBranch);
   }
   if (program === 'find' && !argv.some((word) => ['-delete', '-exec', '-execdir', '-ok', '-okdir'].includes(word))) {
     return { risk: 'readonly', confirmation: 'none', reasons: ['find is read-only without mutation or exec actions'] };

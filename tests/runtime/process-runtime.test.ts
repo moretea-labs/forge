@@ -1021,6 +1021,10 @@ describe('command classifier safe shell combinations', () => {
     expect(classifyRepositoryCommand(['launchctl', 'print', 'gui/501/com.moretea.forge.mcp-gateway']).risk).toBe('readonly');
     expect(classifyRepositoryCommand(['plutil', '-p', 'Info.plist']).risk).toBe('readonly');
     expect(classifyRepositoryCommand(['/usr/bin/log', 'show', '--last', '1m']).risk).toBe('readonly');
+    expect(classifyRepositoryCommand(['bash', '-lc', 'git status --short && git diff --stat']).risk).toBe('readonly');
+    expect(classifyRepositoryCommand(['zsh', '-lc', 'cat package.json && tail -n 5 README.md']).risk).toBe('readonly');
+    expect(classifyRepositoryCommand(['bash', '-lc', 'echo changed > generated.txt']).risk).toBe('workspace_write');
+    expect(classifyRepositoryCommand(['bash', '-lc', 'rm -rf .']).risk).toBe('destructive');
   });
 });
 
