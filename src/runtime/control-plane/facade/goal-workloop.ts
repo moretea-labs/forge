@@ -282,10 +282,6 @@ export function routeWorkStart(
   }
   const mode = applyForcedMode(selectedMode);
 
-  if (mode.mode === 'direct_control' && mode.createWorkContract) {
-    return startGoalWorkloop(ctx, input, policy, 'direct_control', mode.routeDecision);
-  }
-
   if (mode.mode === 'direct_control') {
     const available = ctx.availableChecks ?? [];
     const normalized = normalizeCheckIds(input.checks ?? [], available);

@@ -129,7 +129,7 @@ describe('policy gate access mode integration', () => {
 });
 
 describe('access-aware work routing', () => {
-  test('legacy request mode creates work without an approval handoff', () => {
+  test('legacy request mode keeps bounded direct work contract-free without an approval handoff', () => {
     const home = controllerHome();
     const ctx = workloopContext(home);
     writeRepositoryAccessPolicy(home, 'repo-test', 'request');
@@ -145,11 +145,12 @@ describe('access-aware work routing', () => {
     });
 
     expect(result.status).toBe('ok');
-    expect(result.data.workContractCreated).toBe(true);
+    expect(result.data.workContractCreated).toBe(false);
+    expect(result.data.policy).toMatchObject({ decision: 'allowed' });
     expect(listHandoffItems({ controllerHome: home, repoId: 'repo-test', status: 'pending' })).toHaveLength(0);
   });
 
-  test('legacy request mode does not require an approval hint', () => {
+  test('legacy request mode does not require an approval hint or WorkContract', () => {
     const home = controllerHome();
     const ctx = workloopContext(home);
     writeRepositoryAccessPolicy(home, 'repo-test', 'request');
@@ -165,11 +166,12 @@ describe('access-aware work routing', () => {
     });
 
     expect(result.status).toBe('ok');
-    expect(result.data.workContractCreated).toBe(true);
+    expect(result.data.workContractCreated).toBe(false);
+    expect(result.data.policy).toMatchObject({ decision: 'allowed' });
     expect(listHandoffItems({ controllerHome: home, repoId: 'repo-test', status: 'pending' })).toHaveLength(0);
   });
 
-  test('repository full access creates work and captures the permission snapshot', () => {
+  test('repository full access keeps bounded direct work contract-free', () => {
     const home = controllerHome();
     const ctx = workloopContext(home);
     writeRepositoryAccessPolicy(home, 'repo-test', 'full_access');
@@ -186,11 +188,8 @@ describe('access-aware work routing', () => {
     });
 
     expect(result.status).toBe('ok');
-    expect(result.data.workContractCreated).toBe(true);
-    const workId = String((result.data.work as { workId?: string }).workId ?? '');
-    const work = getWorkContract({ controllerHome: home, repoId: 'repo-test' }, workId);
-    expect(work?.constraints.accessMode).toBe('full_access');
-    expect(work?.policyDecisions[0]?.reason).toContain('host AI permission model');
+    expect(result.data.workContractCreated).toBe(false);
+    expect(result.data.policy).toMatchObject({ decision: 'allowed' });
   });
 
   test('rh_work constraints may override the repository default for one task', () => {
@@ -208,8 +207,8 @@ describe('access-aware work routing', () => {
     });
 
     expect(result.status).toBe('ok');
-    const workId = String((result.data.work as { workId?: string }).workId ?? '');
-    expect(getWorkContract({ controllerHome: home, repoId: 'repo-test' }, workId)?.constraints.accessMode).toBe('full_access');
+    expect(result.data.workContractCreated).toBe(false);
+    expect(result.data.policy).toMatchObject({ decision: 'allowed' });
     expect(readRepositoryAccessPolicy(home, 'repo-test').mode).toBe('request');
   });
   test('running work keeps its captured mode and current-workspace policy after repository settings change', () => {

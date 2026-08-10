@@ -363,7 +363,10 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
     selectedProviderId: selectedProvider?.providerId ?? null,
     workMode,
     executionPath,
-    requiresWork: mutation || complex,
+    // Direct Control is intentionally contract-free. Persistence belongs to
+    // Goal Workloop/Campaign/Agent tiers; bounded direct edits rely on the
+    // existing permission, patch, Process, and evidence boundaries instead.
+    requiresWork: executionMode !== 'direct_control',
     requiresApproval: approvalRequired,
     requiresIsolation,
     requiresRecovery,

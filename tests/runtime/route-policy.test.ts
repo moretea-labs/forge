@@ -75,11 +75,11 @@ describe('single Route Policy authority', () => {
     expect(JSON.parse(JSON.stringify(cli))).toEqual(cli);
   });
 
-  test('keeps simple mutation direct but requires lightweight Work lineage', () => {
+  test('keeps simple mutation direct without persistent Work lineage', () => {
     expect(decideRoute(sharedInput())).toMatchObject({
       executionMode: 'direct_control',
       executionPath: 'fast',
-      requiresWork: true,
+      requiresWork: false,
       requiresIsolation: false,
     });
     expect(decideRoute(sharedInput({
@@ -157,7 +157,7 @@ describe('single Route Policy authority', () => {
       },
       policy: { risk: 'local_repo_write' },
     }));
-    expect(decision).toMatchObject({ executionMode: 'direct_control', workMode: 'direct_edit', executionPath: 'fast', requiresWork: true, requiresIsolation: false });
+    expect(decision).toMatchObject({ executionMode: 'direct_control', workMode: 'direct_edit', executionPath: 'fast', requiresWork: false, requiresIsolation: false });
   });
 
   test('parallelism alone never implies isolation', () => {

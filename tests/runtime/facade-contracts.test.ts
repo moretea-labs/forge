@@ -25,7 +25,7 @@ describe('handoff and facade contracts', () => {
     expect(isTerminalHandoffStatus('expired')).toBe(true);
   });
 
-  test('selects direct control for small supervised mutation with Work lineage', () => {
+  test('selects contract-free direct control for small supervised mutation', () => {
     expect(
       selectExecutionMode({
         expectedFiles: 2,
@@ -36,7 +36,7 @@ describe('handoff and facade contracts', () => {
         requiresExternalEffect: false,
         requiresApproval: false,
       }),
-    ).toMatchObject({ mode: 'direct_control', missingContractFields: [], createWorkContract: true, requiresWork: true });
+    ).toMatchObject({ mode: 'direct_control', missingContractFields: [], createWorkContract: false, requiresWork: false });
   });
 
   test('routes unconfirmed approval-gated work to handoff', () => {
@@ -66,7 +66,7 @@ describe('handoff and facade contracts', () => {
         requiresExternalEffect: false,
         requiresApproval: false,
       }),
-    ).toMatchObject({ mode: 'direct_control', createWorkContract: true, createHandoff: false });
+    ).toMatchObject({ mode: 'direct_control', createWorkContract: false, createHandoff: false });
   });
 
   test('requires explicit user approval for architecture strategy conflicts', () => {
