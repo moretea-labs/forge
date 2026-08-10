@@ -233,6 +233,47 @@ describe('canonical single Runtime', () => {
     expect(secondGeneration?.generation).not.toBe(firstGeneration?.generation);
   });
 
+  test('self-reconciles the stable Browser Automation helper during Runtime startup', async () => {
+    const fixture = createFixture({ runtimeInstanceId: 'runtime-browser-helper-bootstrap' });
+    const observed: string[] = [];
+    const runtime = new CanonicalForgeRuntime(fixture.config, {
+      loadReleaseManifest: () => ({
+        schemaVersion: 1,
+        releaseId: 'release-test-1',
+        artifactIdentity: 'sha256:test-artifact',
+        entrypoint: 'forge-runtime',
+        browserAutomationHelperEntrypoint: 'browser-automation-helper',
+        browserAutomationHelperArtifactIdentity: `sha256:${'a'.repeat(64)}`,
+        browserAutomationHelperContractIdentity: `sha256:${'b'.repeat(64)}`,
+        arguments: [],
+        configurationSchemaVersion: 1,
+        controllerHome: resolve(fixture.controllerHome),
+        databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+        workerProtocolVersion: 1,
+        createdAt: '2026-08-05T00:00:00.000Z',
+      }),
+      ensureBrowserAutomationHelper: (controllerHome) => {
+        observed.push(`helper:${controllerHome}`);
+      },
+      startScheduler: () => {
+        observed.push('scheduler');
+        return inertScheduler();
+      },
+      startLocalBridge: async () => undefined,
+      startTransport: async () => ({
+        endpoint: 'http://127.0.0.1:9876/mcp',
+        host: '127.0.0.1',
+        port: 9876,
+        close: async () => undefined,
+      }),
+      runMcpProbe: async () => undefined,
+    });
+    cleanups.push(() => runtime.stop('TEST_CLEANUP'));
+    await runtime.start();
+    expect(observed[0]).toBe(`helper:${fixture.controllerHome}`);
+    expect(observed).toContain('scheduler');
+  });
+
   test('canonical Runtime owns the configured embedded Local Bridge lifecycle', async () => {
     const fixture = createFixture({ runtimeInstanceId: 'runtime-embedded-local-bridge' });
     let localBridgeStarted = false;

@@ -17,6 +17,7 @@ import { acquireRuntimeOwnership, type RuntimeOwnershipHandle } from './ownershi
 import { RuntimeReadinessState } from './readiness';
 import { loadRuntimeReleaseManifest } from './release-manifest';
 import { ensureActiveRuntimeRelease, type RuntimeReleaseAuthority } from './release-store';
+import { ensureBrowserAutomationLaunchAgentRunning } from './service';
 import { bindRuntimeWriteClaim, clearRuntimeWriteClaim } from './write-fence';
 import { startInProcessScheduler, type RuntimeSchedulerHandle } from './scheduler';
 import { startConfiguredRuntimeLocalBridge, type RuntimeLocalBridgeHandle } from './local-bridge';
@@ -31,6 +32,7 @@ import type {
 export interface CanonicalRuntimeDependencies {
   loadReleaseManifest(path: string, controllerHome: string): RuntimeReleaseManifest;
   ensureReleaseAuthority(controllerHome: string, manifestPath: string): RuntimeReleaseAuthority;
+  ensureBrowserAutomationHelper(controllerHome: string): void;
   bindWriteClaim(input: { controllerHome: string; owner: RuntimeOwnershipHandle['record']; authority: RuntimeReleaseAuthority }): void;
   acquireOwnership(controllerHome: string, runtimeInstanceId: string): RuntimeOwnershipHandle;
   inspectDatabase(controllerHome: string): ControlPlaneDatabaseInspection;
@@ -67,6 +69,7 @@ async function defaultMcpProbe(endpoint: string, authToken: string): Promise<voi
 const DEFAULT_DEPENDENCIES: CanonicalRuntimeDependencies = {
   loadReleaseManifest: loadRuntimeReleaseManifest,
   ensureReleaseAuthority: ensureActiveRuntimeRelease,
+  ensureBrowserAutomationHelper: (controllerHome) => { ensureBrowserAutomationLaunchAgentRunning({ controllerHome }); },
   bindWriteClaim: (input) => { bindRuntimeWriteClaim(input); },
   acquireOwnership: acquireRuntimeOwnership,
   inspectDatabase: inspectControlPlaneDatabase,
@@ -157,6 +160,14 @@ export class CanonicalForgeRuntime {
 
       stage = 'release';
       const releaseAuthority = this.dependencies.ensureReleaseAuthority(this.config.controllerHome, this.config.releaseManifestPath);
+      // The active Runtime self-reconciles the stable macOS Browser Automation
+      // helper as a bootstrap safety net. This makes the first Runtime release
+      // carrying the helper independent from the version of standalone Recovery
+      // that performed the cutover; later Recovery releases may reconcile it
+      // earlier, but an unchanged registered helper is not restarted.
+      if (this.release.browserAutomationHelperEntrypoint === 'browser-automation-helper') {
+        this.dependencies.ensureBrowserAutomationHelper(this.config.controllerHome);
+      }
 
       stage = 'source';
       // A materialized immutable release carries its frozen source identity in
