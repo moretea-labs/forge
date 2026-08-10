@@ -5530,7 +5530,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           taskLedgerStatus: taskLedger.status,
           next: process.completed === true
             ? 'Managed process is terminal; inspect the bounded digest above.'
-            : `Poll work_status_digest with work_ref ${workRef}; do not re-run the original operation.`,
+            : `Poll process_get or process_wait with process_id=${workRef}; do not re-run the original operation.`,
         }, digest.phase === 'failed' || digest.phase === 'timed_out');
       }
       case 'model_clients_summary': {

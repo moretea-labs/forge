@@ -1077,7 +1077,7 @@ export async function routeDurableMcpCall(
       durableSideEffects: facade.durableSideEffects,
       next: handle?.completed
         ? 'Check finished on Process Runtime without ExecutionJob / LocalBridgeJob / Worker.'
-        : `Check still running as managed process ${handle?.processId}. Poll work_status_digest with work_ref=${handle?.processId}; do not re-run the same check.`,
+        : `Check still running as managed process ${handle?.processId}. Poll process_get or process_wait with process_id=${handle?.processId}; do not re-run the same check.`,
     });
   }
 
