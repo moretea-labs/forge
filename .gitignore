@@ -109,8 +109,9 @@ _ops/
 *.log
 .ai/harness/controller/
 
-# forge plugin runtime state
+# forge plugin/personal-assistant runtime state
 .forge/plugins/*.json
+.forge/assistant/
 .forge/external-filesystem-grants.json
 .forge/**/*grants*.json
 .forge/**/*.local.json
