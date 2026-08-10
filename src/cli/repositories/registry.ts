@@ -158,6 +158,22 @@ function gitCommonDirectory(root: string): string | undefined {
   }
 }
 
+function gitDirectory(root: string): string | undefined {
+  const value = git(root, ['rev-parse', '--git-dir']);
+  if (!value) return undefined;
+  try {
+    return realpathSync(resolve(root, value));
+  } catch {
+    return undefined;
+  }
+}
+
+function isPrimaryGitWorktree(root: string): boolean {
+  const directory = gitDirectory(root);
+  const common = gitCommonDirectory(root);
+  return Boolean(directory && common && comparablePath(directory) === comparablePath(common));
+}
+
 export function repositoryCheckoutRootMatches(record: RepositoryRecord, root: string): boolean {
   if (!existsSync(root)) return false;
   if (git(root, ['rev-parse', '--is-inside-work-tree']) !== 'true') return false;
@@ -166,6 +182,40 @@ export function repositoryCheckoutRootMatches(record: RepositoryRecord, root: st
   const repositoryCommon = gitCommonDirectory(record.canonicalRoot);
   const checkoutCommon = gitCommonDirectory(root);
   return Boolean(repositoryCommon && checkoutCommon && comparablePath(repositoryCommon) === comparablePath(checkoutCommon));
+}
+
+function repositoryByGitCommonDirectory(records: RepositoryRecord[], root: string): RepositoryRecord | undefined {
+  const checkoutCommon = gitCommonDirectory(root);
+  if (!checkoutCommon) return undefined;
+  const comparableCommon = comparablePath(checkoutCommon);
+  let linkedWorktreeFallback: RepositoryRecord | undefined;
+  let historicalCheckoutFallback: RepositoryRecord | undefined;
+  for (const record of records) {
+    if (record.enabled === false || record.removedAt) continue;
+    // Multiple historical Repository records may point at linked/detached
+    // worktrees from the same Git repository. Prefer the record whose canonical
+    // root is the primary worktree; a linked-worktree canonical record is only a
+    // compatibility fallback and must not steal new worktrees from that primary.
+    if (record.canonicalRoot && existsSync(record.canonicalRoot)) {
+      const canonicalCommon = gitCommonDirectory(record.canonicalRoot);
+      if (canonicalCommon && comparablePath(canonicalCommon) === comparableCommon) {
+        if (isPrimaryGitWorktree(record.canonicalRoot)) return record;
+        linkedWorktreeFallback ??= record;
+        continue;
+      }
+      if (canonicalCommon) continue;
+    }
+    const fallbackRoots = Array.from(new Set(record.checkouts.map((checkout) => checkout.canonicalRoot)));
+    for (const candidateRoot of fallbackRoots) {
+      if (!candidateRoot || !existsSync(candidateRoot)) continue;
+      const common = gitCommonDirectory(candidateRoot);
+      if (common && comparablePath(common) === comparableCommon) {
+        historicalCheckoutFallback ??= record;
+        break;
+      }
+    }
+  }
+  return linkedWorktreeFallback ?? historicalCheckoutFallback;
 }
 
 function managedCheckoutMatchesRepository(record: RepositoryRecord, checkout: RepositoryCheckout): boolean {
@@ -538,16 +588,24 @@ export function registerRepository(input: RegisterRepositoryInput): RepositoryRe
   const timestamp = now();
   const registry = loadRepositoryRegistry(home);
   const existingByRoot = uniqueCanonicalRecord(registry.repositories, canonicalRoot);
+  const gitDirectory = git(canonicalRoot, ['rev-parse', '--git-dir']);
+  const commonDirectory = git(canonicalRoot, ['rev-parse', '--git-common-dir']);
+  const worktree = Boolean(commonDirectory && gitDirectory !== commonDirectory);
+  // Historical/controller-issued repository ids are allowed to differ from the
+  // later remote-derived hash. A Git worktree belongs to the repository that
+  // owns the same Git common directory; equal remotes alone are not sufficient
+  // because independent clones of one remote are separate checkout families.
+  const existingByCommonDirectory = !existingByRoot && worktree
+    ? repositoryByGitCommonDirectory(registry.repositories, canonicalRoot)
+    : undefined;
+  const existingIdentity = existingByRoot ?? existingByCommonDirectory;
   const derivedRepoId = input.repoIdOverride?.trim()
+    || existingIdentity?.repoId
     || localIdentity.repoId
     || (canonicalRemote ? stableRemoteRepoId(canonicalRemote) : newLocalRepoId());
-  const repoId = existingByRoot?.repoId ?? derivedRepoId;
+  const repoId = existingIdentity?.repoId ?? derivedRepoId;
   const checkoutId = stableCheckoutId(repoId, canonicalRoot);
-  const existing = existingByRoot ?? registry.repositories.find((record) => record.repoId === repoId);
-  const worktree = Boolean(
-    git(canonicalRoot, ['rev-parse', '--git-common-dir'])
-    && git(canonicalRoot, ['rev-parse', '--git-dir']) !== git(canonicalRoot, ['rev-parse', '--git-common-dir']),
-  );
+  const existing = existingIdentity ?? registry.repositories.find((record) => record.repoId === repoId);
   const checkout: RepositoryCheckout = {
     checkoutId,
     localRoot: canonicalRoot,

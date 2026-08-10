@@ -33,7 +33,7 @@ const ALLOWED_FACADE_OPERATIONS: Record<FacadeTool, readonly string[]> = {
   rh_access: ['get', 'preview', 'set'],
   rh_status: ['list', 'get', 'repair'],
   rh_inbox: ['list', 'get', 'ack', 'accept', 'resolve', 'dismiss', 'create'],
-  rh_context: ['list', 'get'],
+  rh_context: ['list', 'get', 'search'],
   rh_work: ['start', 'continue', 'verify', 'repair', 'finalize', 'stop', 'delegate', 'controller_claim', 'controller_release', 'controller_get_owner', 'launcher_start', 'plan_create', 'plan_get', 'plan_list', 'plan_approve', 'plan_supersede'],
 };
 

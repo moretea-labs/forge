@@ -129,6 +129,39 @@ describe('CodeGraph read provider', () => {
     expect(pack.structuralContext).toMatchObject({ requestedMode: 'off', status: 'disabled', requiredSatisfied: true });
   });
 
+  test('scans lexical candidates once for multiple Context Pack search terms', () => {
+    const root = contextRepo();
+    const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+      searchTerms: ['runService', 'return 42'],
+      includeGlobs: ['src/**'],
+      structuralContext: 'off',
+    });
+    expect(pack.files.some((file) => file.path === 'src/service.ts')).toBe(true);
+    expect(pack.files.find((file) => file.path === 'src/service.ts')?.reasons).toEqual(
+      expect.arrayContaining(['search:runService', 'search:return 42']),
+    );
+    expect(pack.search.scannedFiles).toBe(1);
+  });
+
+  test('ranks an exact code query before saturated broad-token decoys', () => {
+    const root = contextRepo();
+    for (let index = 0; index < 40; index += 1) {
+      writeFileSync(join(root, `src/a-decoy-${String(index).padStart(2, '0')}.ts`), `export const classifyCommandRoute${index} = true;\n`);
+    }
+    writeFileSync(join(root, 'src/z-target.ts'), 'export function classifyRepositoryCommandRoute() { return true; }\n');
+    const query = 'classifyRepositoryCommandRoute';
+    const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+      description: query,
+      searchTerms: [query],
+      includeGlobs: ['src/**/*.ts'],
+      maxFiles: 1,
+      maxSnippets: 2,
+    });
+    expect(pack.search.terms[0]).toBe(query);
+    expect(pack.files[0]?.path).toBe('src/z-target.ts');
+    expect(pack.files[0]?.reasons).toContain(`search:${query}`);
+  });
+
   test('merges ready structural candidates but still returns current raw source through Forge policy', () => {
     const root = contextRepo();
     const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {

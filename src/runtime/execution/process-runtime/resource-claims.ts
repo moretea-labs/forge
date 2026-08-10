@@ -101,6 +101,28 @@ export function claimHeavyCheck(repoId: string): ResourceClaimSpec {
   return { resourceKey: `heavy-check:${repoId}`, mode: 'exclusive' };
 }
 
+function claimHostService(serviceKey: string, mode: 'read' | 'write' = 'write'): ResourceClaimSpec {
+  const normalized = serviceKey.trim().replace(/\s+/g, '-').slice(0, 240) || 'global';
+  return { resourceKey: `host-service:${normalized}`, mode };
+}
+
+function hostOnlyCommandClaims(command: string | readonly string[]): ResourceClaimSpec[] | undefined {
+  const canonical = normalizeRepositoryCommand(command);
+  if (canonical.kind !== 'argv') return undefined;
+  const program = (canonical.executable ?? '').split(/[\\/]/).at(-1)?.toLowerCase();
+  const args = canonical.args ?? [];
+  if (program !== 'launchctl') return undefined;
+  const subcommand = args[0]?.toLowerCase() ?? '';
+  const target = [...args].reverse().find((arg) => arg && !arg.startsWith('-')) ?? subcommand ?? 'global';
+  if (['print', 'print-disabled', 'list', 'managerpid', 'manageruid'].includes(subcommand)) {
+    return [claimHostService(`launchctl:${target}`, 'read')];
+  }
+  // launchctl mutates launchd/service state, not the Git checkout. Serialize
+  // only operations that address the same host service/domain instead of taking
+  // the checkout-wide workspace lease.
+  return [claimHostService(`launchctl:${target}`, 'write')];
+}
+
 function claimTemp(checkId: string, repoId: string, scope: 'isolated' | 'shared'): ResourceClaimSpec {
   const identity = checkId.replace(/[^a-zA-Z0-9._-]+/g, '-');
   return { resourceKey: scope === 'shared' ? `temp:${repoId}` : `temp:${repoId}:${identity}`, mode: 'write' };
@@ -153,6 +175,34 @@ function looksLikeBuildOrTest(command: string | readonly string[]): boolean {
     && /\b(?:test|check|typecheck|lint|build|compile)\b/.test(lower);
 }
 
+function isReadOnlyTypeValidationCommand(command: string | readonly string[]): boolean {
+  const canonical = normalizeRepositoryCommand(command);
+  if (canonical.kind !== 'argv') return false;
+  const program = (canonical.executable ?? '').split(/[\\/]/).at(-1)?.toLowerCase() ?? '';
+  const args = (canonical.args ?? []).map((value) => value.toLowerCase());
+  const hasNoEmit = args.includes('--noemit');
+
+  if (program === 'tsc') return hasNoEmit;
+  if (program === 'bun' && args[0] === 'x' && args[1] === 'tsc') return hasNoEmit;
+  if (program === 'npx' && args[0] === 'tsc') return hasNoEmit;
+
+  if (['bun', 'npm', 'pnpm', 'yarn'].includes(program)) {
+    const script = args[0] === 'run' ? args[1] : args[0];
+    return script === 'check:type' || script === 'typecheck' || script === 'check:types';
+  }
+  return false;
+}
+
+function focusedTestRequestsWorkspaceMutation(command: string | readonly string[]): boolean {
+  const canonical = normalizeRepositoryCommand(command);
+  if (canonical.kind !== 'argv') return true;
+  const args = (canonical.args ?? []).map((value) => value.toLowerCase());
+  return args.includes('-u')
+    || args.includes('--update-snapshots')
+    || args.includes('--update-snapshot')
+    || args.some((value) => value.startsWith('--update-snapshots='));
+}
+
 function extractLikelyPaths(command: string | readonly string[]): string[] {
   const words = Array.isArray(command)
     ? command.map(String)
@@ -178,6 +228,8 @@ export function claimsForRepositoryCommand(
   const classification = classifyRepositoryCommand(command, defaultBranch);
   const canonical = normalizeRepositoryCommand(command);
   const focused = isFocusedCheckCommand(command);
+  const hostClaims = hostOnlyCommandClaims(command);
+  if (hostClaims) return hostClaims;
 
   if (classification.risk === 'readonly') {
     return [claimWorkspaceRead(checkoutId)];
@@ -193,16 +245,29 @@ export function claimsForRepositoryCommand(
     ];
   }
 
-  // workspace_write — refine
-  if (focused || looksLikeBuildOrTest(command)) {
+  // workspace_write — refine. Read-only type validation and focused tests are
+  // safe to share the checkout. They must not inherit a repository-wide write
+  // or shared build-cache write merely because they are validation commands.
+  if (isReadOnlyTypeValidationCommand(command)) {
+    return [claimWorkspaceRead(checkoutId)];
+  }
+  if (focused) {
+    // Ordinary focused tests are observation: they read source and emit process
+    // output outside repository content. Only explicit snapshot-update mode
+    // claims target paths as writes; otherwise independent tests/typechecks can
+    // share the checkout concurrently.
+    if (!focusedTestRequestsWorkspaceMutation(command)) return [claimWorkspaceRead(checkoutId)];
+    const claims: ResourceClaimSpec[] = [claimWorkspaceRead(checkoutId)];
+    for (const path of extractLikelyPaths(command).slice(0, 16)) claims.push(claimPathWrite(path, checkoutId));
+    return normalizeClaims(claims);
+  }
+  if (looksLikeBuildOrTest(command)) {
     const paths = extractLikelyPaths(command);
     if (paths.length === 0) {
-      // Unknown read/output scopes: fail closed to a single workspace write
-      // plus build-cache ownership. Do not request read+write on the same key.
+      // Broad or opaque build/test commands may create arbitrary artifacts.
       return [claimWorkspaceWrite(checkoutId), claimBuildCacheWrite(repoId)];
     }
     const claims: ResourceClaimSpec[] = [claimWorkspaceRead(checkoutId), claimBuildCacheWrite(repoId)];
-    // Focused tests may write snapshots next to sources.
     for (const path of paths.slice(0, 16)) claims.push(claimPathWrite(path, checkoutId));
     return normalizeClaims(claims);
   }

@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, readdirSync, statSync } from "fs";
-import { gitSnapshot, readRepositoryRange, searchRepository } from "../repository/inspector";
+import { gitSnapshot, readRepositoryRange, searchRepositoryMany } from "../repository/inspector";
 import { resolveMcpPath, globMatches } from "../mcp/paths";
 import type { McpPolicy } from "../mcp/types";
 import { redactMcpText } from "../mcp/redaction";
@@ -501,43 +501,41 @@ export function buildControllerContextPack(
     if (!includeGlobs.includes(glob)) includeGlobs.push(glob);
   }
 
-  // SearchRepository reports files scanned per query. Enforce one shared budget
-  // across all terms instead of allowing every token to rescan up to 10k files.
-  let remainingSearchFileBudget = MAX_TOTAL_SEARCHED_FILES;
-  for (const term of terms) {
-    if (candidates.size >= maxFiles && terms.length > 1) break;
-    if (remainingSearchFileBudget <= 0) {
-      searchTruncated = true;
-      break;
-    }
-    const search = searchRepository(repoRoot, policy, {
-      query: term,
+  // Lexical retrieval is one bounded pass across candidate files for all terms.
+  // The old per-term loop reread the same source files up to 14 times even
+  // though inventory itself was cached.
+  if (terms.length > 0 && candidates.size < maxFiles * 3) {
+    const search = searchRepositoryMany(repoRoot, policy, {
+      queries: terms,
       includeGlobs: searchIncludeGlobs,
       excludeGlobs,
-      maxResults: Math.max(maxFiles * 4, 12),
-      maxFiles: remainingSearchFileBudget,
+      maxResultsPerQuery: Math.max(maxFiles * 4, 12),
+      maxFiles: MAX_TOTAL_SEARCHED_FILES,
       caseSensitive: false,
       cacheKey: JSON.stringify({ head: git.head, status: git.status, diffStat: git.diffStat }),
     });
     scannedFiles += search.scannedFiles;
-    remainingSearchFileBudget = Math.max(0, remainingSearchFileBudget - search.scannedFiles);
     policyDeniedFiles += search.policyDeniedFiles;
     skippedLargeFiles += search.skippedLargeFiles;
     skippedBinaryFiles += search.skippedBinaryFiles;
     searchTruncated = searchTruncated || search.truncated;
     for (const hit of search.results) {
       if (!coveredByGlob(hit.path, searchIncludeGlobs) || excludeGlobs.some((glob) => globMatches(glob, hit.path))) continue;
-      addReason(candidates, hit.path, `search:${term}`, hit.line);
+      addReason(candidates, hit.path, `search:${hit.query}`, hit.line);
       if (candidates.size >= maxFiles * 3) break;
     }
   }
 
+  const primarySearchReason = terms.length > 0 ? `search:${terms[0]}` : undefined;
   const rankedCandidates = Array.from(candidates.entries())
     .map(([path, entry]) => ({ path, reasons: Array.from(entry.reasons), lines: Array.from(entry.lines) }))
     .sort((left, right) => {
       const leftExplicit = left.reasons.some((reason) => reason === "explicit-known-path" || reason.startsWith("explicit-known-directory:")) ? 1 : 0;
       const rightExplicit = right.reasons.some((reason) => reason === "explicit-known-path" || reason.startsWith("explicit-known-directory:")) ? 1 : 0;
       if (leftExplicit !== rightExplicit) return rightExplicit - leftExplicit;
+      const leftPrimary = primarySearchReason && left.reasons.includes(primarySearchReason) ? 1 : 0;
+      const rightPrimary = primarySearchReason && right.reasons.includes(primarySearchReason) ? 1 : 0;
+      if (leftPrimary !== rightPrimary) return rightPrimary - leftPrimary;
       if (left.reasons.length !== right.reasons.length) return right.reasons.length - left.reasons.length;
       if (left.lines.length !== right.lines.length) return right.lines.length - left.lines.length;
       return left.path.localeCompare(right.path);

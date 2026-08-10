@@ -60,7 +60,7 @@ test("keeps Core and Advanced on the same bounded default ChatGPT surface", () =
   for (const required of [
     "repository_command_execute",
     "run_check",
-    "search_repository",
+    "rh_context",
     "read_repository_file",
     "repository_safe_patch_apply",
     "process_get",
@@ -497,7 +497,8 @@ describe("MCP controller profile", () => {
         "forge",
       );
       expect(capabilities.value.expectedTools).toContain("repository_command_execute");
-      expect(capabilities.value.expectedTools).toContain("search_repository");
+      expect(capabilities.value.expectedTools).toContain("rh_context");
+      expect(capabilities.value.expectedTools).not.toContain("search_repository");
       expect(capabilities.value.expectedTools).toContain("read_repository_file");
       expect(capabilities.value.expectedTools).toContain("result_read");
       expect(capabilities.value.expectedTools).toContain("approval_resolve");
@@ -880,7 +881,8 @@ describe("MCP controller profile", () => {
       expect(defaultContext.toolset).toBe('advanced');
       expect(defaultNames).toEqual(coreNames);
       expect(coreNames).toEqual([...DEFAULT_CONTROLLER_TOOL_NAMES]);
-      expect(coreNames).toEqual(expect.arrayContaining(["rh_access", "rh_status", "rh_inbox", "rh_context", "rh_work", "repository_list", "repository_command_execute", "search_repository"]));
+      expect(coreNames).toEqual(expect.arrayContaining(["rh_access", "rh_status", "rh_inbox", "rh_context", "rh_work", "repository_list", "repository_command_execute", "read_repository_file"]));
+      expect(coreNames).not.toContain("search_repository");
       // Core is a compatibility label for the bounded default surface; heavy
       // atomic tools stay registered but are not exposed to ChatGPT by default.
       expect(coreNames).not.toContain("create_campaign");
@@ -1774,11 +1776,40 @@ describe("MCP controller profile", () => {
     });
   });
 
+  test("routes default code retrieval through rh_context.search without exposing a second search tool", async () => {
+    await withController(async (repoRoot, _ctx) => {
+      const multi = createMultiRepositoryContext({ repo: repoRoot, profile: "controller" });
+      const toolNames = exposedControllerToolDefinitions(multi).map((tool) => tool.name);
+      expect(toolNames).not.toContain("search_repository");
+      const raw = await callRuntimeTool(multi, "rh_context", {
+        operation: "search",
+        query: "value = 1",
+        include_globs: ["src/**"],
+        max_files: 2,
+      });
+      expect(raw).toBeTruthy();
+      const retrieved = JSON.parse(raw!.content[0].text);
+      expect(retrieved.data.files[0]).toMatchObject({ path: "src/example.ts" });
+      expect(retrieved.data.files[0].snippets[0].content).toContain("value = 1");
+      expect(retrieved.data.search.terms[0]).toBe("value = 1");
+      expect(retrieved.data.retrievalPolicy).toMatchObject({
+        defaultBackend: "bounded_lexical",
+        structuralBackend: "codegraph",
+        rawReadTool: "read_repository_file",
+        shellSearchFallbackOnly: true,
+      });
+    });
+  });
+
   test("searches code and refuses to unlock dependencies without completion evidence", async () => {
-    await withController(async (_repoRoot, ctx) => {
+    await withController(async (repoRoot, ctx) => {
+      // Regression: max_files is a budget over matching candidates, not the
+      // alphabetically first files in the whole repository.
+      writeFileSync(join(repoRoot, "aaa-decoy.txt"), "not source\n");
       const searched = await jsonTool(ctx, "search_repository", {
         query: "value = 1",
-        include_globs: ["src/**"]});
+        include_globs: ["src/**"],
+        max_files: 1});
       expect(searched.value.results[0]).toMatchObject({
         path: "src/example.ts",
         line: 1});

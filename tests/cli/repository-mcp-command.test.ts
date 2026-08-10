@@ -77,13 +77,21 @@ describe("repository MCP command tools", () => {
       writeFileSync(join(repoRoot, "README.md"), "# source\n");
       git(repoRoot, ["add", "README.md"]);
       git(repoRoot, ["commit", "-qm", "initial"]);
-      const canonical = registerRepository({ path: repoRoot, controllerHome, displayName: "canonical-name" });
+      const canonical = registerRepository({
+        path: repoRoot,
+        controllerHome,
+        displayName: "canonical-name",
+        // Regression: historical/controller-issued ids need not equal the
+        // remote-derived hash used by newer registrations.
+        repoIdOverride: "repo_123b7cf58b6b17b5cbe46a56",
+      });
       git(repoRoot, ["worktree", "add", "--detach", worktreeRoot, "HEAD"]);
 
       const selectedWorktree = registerRepository({ path: worktreeRoot, controllerHome, displayName: "must-not-replace" });
       const persisted = getRepository(canonical.repoId, controllerHome);
       const worktreeCheckout = persisted.checkouts.find((checkout) => checkout.checkoutId === selectedWorktree.activeCheckoutId);
 
+      expect(selectedWorktree.repoId).toBe(canonical.repoId);
       expect(selectedWorktree.canonicalRoot).toBe(realpathSync(worktreeRoot));
       expect(worktreeCheckout?.worktree).toBe(true);
       expect(persisted.canonicalRoot).toBe(realpathSync(repoRoot));
@@ -93,6 +101,47 @@ describe("repository MCP command tools", () => {
       expect(persisted.configurationPath).toBe(join(realpathSync(repoRoot), ".ai/harness/repository.json"));
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot, worktreeRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("worktree identity prefers the primary repository over an older linked-worktree alias", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-register-worktree-alias-"));
+    const controllerHome = join(workspace, "controller-home");
+    const repoRoot = join(workspace, "source");
+    const aliasRoot = join(workspace, "legacy-release-source");
+    const nextWorktreeRoot = join(workspace, "next-worktree");
+    try {
+      mkdirSync(controllerHome, { recursive: true });
+      mkdirSync(repoRoot, { recursive: true });
+      git(repoRoot, ["init", "-q"]);
+      git(repoRoot, ["config", "user.email", "forge@example.invalid"]);
+      git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
+      writeFileSync(join(repoRoot, "README.md"), "# source\n");
+      git(repoRoot, ["add", "README.md"]);
+      git(repoRoot, ["commit", "-qm", "initial"]);
+      git(repoRoot, ["worktree", "add", "--detach", aliasRoot, "HEAD"]);
+
+      const alias = registerRepository({
+        path: aliasRoot,
+        controllerHome,
+        displayName: "legacy-alias",
+        repoIdOverride: "repo_legacy_alias",
+      });
+      const primary = registerRepository({
+        path: repoRoot,
+        controllerHome,
+        displayName: "primary",
+        repoIdOverride: "repo_primary_authority",
+      });
+      expect(alias.repoId).not.toBe(primary.repoId);
+
+      git(repoRoot, ["worktree", "add", "--detach", nextWorktreeRoot, "HEAD"]);
+      const selected = registerRepository({ path: nextWorktreeRoot, controllerHome });
+      expect(selected.repoId).toBe(primary.repoId);
+      expect(selected.repoId).not.toBe(alias.repoId);
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot, aliasRoot, nextWorktreeRoot]);
       rmSync(workspace, { recursive: true, force: true });
     }
   });
@@ -846,6 +895,49 @@ describe("repository MCP command tools", () => {
 });
 
 describe("repository_register repeat fast path", () => {
+  test("first MCP registration of an existing legacy-id worktree attaches without historical migration", async () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-register-worktree-fastpath-"));
+    const controllerHome = join(root, "controller-home");
+    const repoRoot = join(root, "repo");
+    const worktreeRoot = join(root, "worktree");
+    try {
+      mkdirSync(controllerHome, { recursive: true });
+      mkdirSync(join(repoRoot, "tasks", "issues"), { recursive: true });
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.email", "forge@example.invalid"]);
+      git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
+      git(repoRoot, ["remote", "add", "origin", "https://github.com/moretea-labs/forge.git"]);
+      writeFileSync(join(repoRoot, "README.md"), "# fixture\n");
+      for (let index = 0; index < 25; index += 1) {
+        writeFileSync(join(repoRoot, "tasks", "issues", `ISS-WT-${index}.issue.json`),
+          `${JSON.stringify({ id: `ISS-WT-${index}`, status: "open", tasks: [] })}\n`);
+      }
+      git(repoRoot, ["add", "."]);
+      git(repoRoot, ["commit", "-qm", "initial"]);
+      const canonical = registerRepository({
+        path: repoRoot,
+        controllerHome,
+        repoIdOverride: "repo_123b7cf58b6b17b5cbe46a56",
+      });
+      git(repoRoot, ["worktree", "add", "--detach", worktreeRoot, "HEAD"]);
+
+      const response = await callRepositoryTool(controllerHome, "repository_register", {
+        path: worktreeRoot,
+        detail_level: "detail",
+      });
+      const value = JSON.parse(response?.content[0]?.text ?? "{}") as {
+        repository?: { repoId?: string };
+        migration?: { scanned?: number; unresolved?: number };
+      };
+      expect(value.repository?.repoId).toBe(canonical.repoId);
+      expect(value.migration?.scanned).toBe(0);
+      expect(value.migration?.unresolved).toBe(0);
+    } finally {
+      await cleanupWorkspace([root, controllerHome, repoRoot, worktreeRoot]);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("repeat returns the same identity without a historical migration scan", async () => {
     const root = mkdtempSync(join(tmpdir(), "forge-register-fastpath-"));
     try {

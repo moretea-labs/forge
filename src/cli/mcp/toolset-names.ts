@@ -20,8 +20,8 @@ export const DEFAULT_CONTROLLER_TOOL_NAMES = [
   // Generic repository-scoped command (readonly fast path, mutation, destructive gate).
   'repository_command_execute',
 
-  // Source inspection and bounded Direct Edit.
-  'search_repository',
+  // Source inspection and bounded Direct Edit. Code location is routed through
+  // rh_context.search; the low-level search_repository handler remains in full.
   'read_repository_file',
   'repository_safe_patch_apply',
 

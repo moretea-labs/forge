@@ -508,6 +508,24 @@ function compactProcessCommandPayload(input: {
   };
 }
 
+function emptyRepositoryMigration(repository: ReturnType<typeof registerRepository>) {
+  return {
+    repoId: repository.repoId,
+    checkoutId: repository.activeCheckoutId,
+    scanned: 0,
+    updated: 0,
+    unresolved: 0,
+    files: [] as string[],
+    errors: [] as Array<{ path: string; error: string }>,
+  };
+}
+
+function registrationOnlyAttachedExistingWorktree(repository: ReturnType<typeof registerRepository>): boolean {
+  const selected = repository.checkouts.find((checkout) => checkout.checkoutId === repository.activeCheckoutId);
+  return selected?.worktree === true
+    && repository.checkouts.some((checkout) => checkout.checkoutId !== selected.checkoutId);
+}
+
 export async function callRepositoryTool(
   controllerHome: string,
   name: string,
@@ -532,22 +550,20 @@ export async function callRepositoryTool(
           // Repeat registration with identical identity returns immediately.
           // No legacy migration / edit-session migration / historical issue
           // scan / old issue rebinding runs on this hot path.
-          const migration = {
-            repoId: repository.repoId,
-            checkoutId: repository.activeCheckoutId,
-            scanned: 0,
-            updated: 0,
-            unresolved: 0,
-            files: [] as string[],
-            errors: [] as Array<{ path: string; error: string }>,
-          };
+          const migration = emptyRepositoryMigration(repository);
           return result(withResponseMeta(
             summarizeRepositoryRegistration(repository, migration, args.detail_level === 'detail', true),
             startedAt,
           ));
         }
         const repository = registerRepository(registerInput);
-        const migration = bindRepositoryEntities(repository);
+        // Adding a worktree checkout to an already registered repository changes
+        // checkout inventory only. Existing Issue/Task entities are already
+        // bound to this repoId, so re-running historical migration is wasted work
+        // and can produce misleading cross-repository rebinding diagnostics.
+        const migration = registrationOnlyAttachedExistingWorktree(repository)
+          ? emptyRepositoryMigration(repository)
+          : bindRepositoryEntities(repository);
         return result(withResponseMeta(
           summarizeRepositoryRegistration(repository, migration, args.detail_level === 'detail'),
           startedAt,

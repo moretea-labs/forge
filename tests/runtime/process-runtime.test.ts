@@ -47,6 +47,7 @@ import { ensureControllerHome, repositoryControllerRoot } from '../../src/cli/re
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { routeExecution } from '../../src/runtime/execution/thin-harness';
 import { listActiveLeases, acquireExecutionLeases } from '../../src/runtime/resources/leases/store';
+import { resourceClaimsConflict } from '../../src/runtime/resources/claims/conflicts';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { ensureActiveRuntimeRelease, publishRuntimeRelease } from '../../src/runtime/root/release-store';
 import {
@@ -1012,6 +1013,15 @@ describe('command classifier safe shell combinations', () => {
   test('readonly argv still readonly', () => {
     expect(classifyRepositoryCommand(['git', 'status', '--short']).risk).toBe('readonly');
   });
+
+  test('recognizes common wrapped and host observation commands as readonly', () => {
+    expect(classifyRepositoryCommand(['git', 'check-ignore', '-q', '.codegraph']).risk).toBe('readonly');
+    expect(classifyRepositoryCommand(['find', 'src', '-type', 'f']).risk).toBe('readonly');
+    expect(classifyRepositoryCommand(['sh', '-c', 'grep -R needle src']).risk).toBe('readonly');
+    expect(classifyRepositoryCommand(['launchctl', 'print', 'gui/501/com.moretea.forge.mcp-gateway']).risk).toBe('readonly');
+    expect(classifyRepositoryCommand(['plutil', '-p', 'Info.plist']).risk).toBe('readonly');
+    expect(classifyRepositoryCommand(['/usr/bin/log', 'show', '--last', '1m']).risk).toBe('readonly');
+  });
 });
 
 describe('fine-grained resource claims', () => {
@@ -1019,6 +1029,42 @@ describe('fine-grained resource claims', () => {
     const claims = claimsForRepositoryCommand(['git', 'status'], 'repo1', 'co1');
     expect(claims.every((c) => c.mode === 'read')).toBe(true);
     expect(claims.some((c) => c.resourceKey.includes('heavy-check'))).toBe(false);
+  });
+
+  test('host service mutation does not claim the Git checkout workspace', () => {
+    const claims = claimsForRepositoryCommand(
+      ['launchctl', 'kickstart', '-k', 'gui/501/com.moretea.forge.mcp-gateway'],
+      'repo1',
+      'co1',
+    );
+    expect(claims.some((claim) => claim.resourceKey.startsWith('workspace:'))).toBe(false);
+    expect(claims).toEqual([
+      expect.objectContaining({
+        resourceKey: 'host-service:launchctl:gui/501/com.moretea.forge.mcp-gateway',
+        mode: 'write',
+      }),
+    ]);
+  });
+
+  test('focused tests and typecheck can hold leases concurrently', () => {
+    const focusedTest = claimsForRepositoryCommand(
+      ['bun', 'test', 'tests/runtime/process-runtime.test.ts'],
+      'repo1',
+      'co1',
+    );
+    const typecheck = claimsForRepositoryCommand(['bun', 'run', 'check:type'], 'repo1', 'co1');
+    expect(focusedTest.some((claim) => claim.resourceKey === 'build-cache:repo1')).toBe(false);
+    expect(typecheck).toEqual([{ resourceKey: 'workspace:co1', mode: 'read' }]);
+    expect(focusedTest.some((left) => typecheck.some((right) => resourceClaimsConflict(left, right)))).toBe(false);
+  });
+
+  test('snapshot update mode keeps a focused test mutation claim', () => {
+    const claims = claimsForRepositoryCommand(
+      ['bun', 'test', 'tests/ui/card.test.ts', '--update-snapshots'],
+      'repo1',
+      'co1',
+    );
+    expect(claims.some((claim) => claim.resourceKey === 'path:co1:tests/ui/card.test.ts' && claim.mode === 'write')).toBe(true);
   });
 
   test('typecheck check does not take heavy-check exclusive', () => {

@@ -275,9 +275,17 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     detail_level: { type: 'string', enum: ['summary', 'detail'] },
     limit: { type: 'number' },
   }),
-  definition('rh_context', 'Preferred ChatGPT facade: bounded repository context, checks, capabilities, and work contract summary.', {
+  definition('rh_context', 'Preferred ChatGPT facade: bounded repository context and the default code retrieval router, with optional CodeGraph structural augmentation.', {
     repo_id: repoId,
-    operation: { type: 'string', enum: ['list', 'get'], description: 'Defaults to get.' },
+    checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple worktrees.' },
+    operation: { type: 'string', enum: ['list', 'get', 'search'], description: 'Defaults to get. Use search as the default code-location path when an exact file is unknown.' },
+    query: { type: 'string', description: 'Code/content intent for operation=search.' },
+    known_paths: { type: 'array', items: { type: 'string' }, description: 'Optional exact paths or globs that should receive highest retrieval priority.' },
+    include_globs: { type: 'array', items: { type: 'string' } },
+    exclude_globs: { type: 'array', items: { type: 'string' } },
+    structural_context: { type: 'string', enum: ['off', 'auto', 'required'], description: 'Defaults to off. Use auto/required only when call graph, dependency, or impact evidence is useful.' },
+    max_files: { type: 'number' },
+    max_snippets: { type: 'number' },
     requested_check_ids: { type: 'array', items: { type: 'string' } },
     work_id: { type: 'string' },
     detail_level: { type: 'string', enum: ['summary', 'detail', 'raw'], description: 'Defaults to summary; raw is still bounded.' },
@@ -2933,6 +2941,66 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const operation = String(args.operation ?? 'get');
         if (!allowedFacadeOperations('rh_context').includes(operation)) {
           return invalidFacadeOperation('rh_context', operation);
+        }
+        if (operation === 'search') {
+          const query = typeof args.query === 'string' ? args.query.trim() : '';
+          if (!query) {
+            const facade = buildFacadeResult({
+              status: 'failed',
+              summary: 'rh_context.search requires a non-empty query.',
+              data: { operation, repoId: repository.repoId },
+              suggestedNextActions: [],
+            });
+            return result(facade as unknown as Record<string, unknown>, true);
+          }
+          const list = (value: unknown): string[] => Array.isArray(value)
+            ? value.map(String).map((entry) => entry.trim()).filter(Boolean)
+            : [];
+          const structuralContext = args.structural_context === 'auto' || args.structural_context === 'required'
+            ? args.structural_context
+            : 'off';
+          const pack = buildControllerContextPack(repository.canonicalRoot, ctx.policy, {
+            description: query,
+            searchTerms: [query],
+            knownPaths: list(args.known_paths),
+            includeGlobs: list(args.include_globs),
+            excludeGlobs: list(args.exclude_globs),
+            maxFiles: typeof args.max_files === 'number' ? args.max_files : undefined,
+            maxSnippets: typeof args.max_snippets === 'number' ? args.max_snippets : undefined,
+            structuralContext,
+          });
+          const warnings = structuralContext === 'required' && !pack.structuralContext.requiredSatisfied
+            ? [pack.structuralContext.fallbackReason ?? 'Required structural context is not ready; lexical retrieval results are returned as degraded evidence.']
+            : [];
+          const facade = buildFacadeResult({
+            status: 'ok',
+            summary: pack.files.length
+              ? `Retrieved ${pack.files.length} bounded code context file(s) for the query.`
+              : 'No bounded code context matched the query.',
+            data: {
+              operation,
+              repoId: repository.repoId,
+              goal: pack.goal,
+              search: pack.search,
+              structuralContext: pack.structuralContext,
+              files: pack.files,
+              deniedPaths: pack.deniedPaths,
+              omitted: pack.omitted,
+              limits: pack.limits,
+              contextContract: pack.contextContract,
+              retrievalPolicy: {
+                defaultBackend: 'bounded_lexical',
+                structuralBackend: 'codegraph',
+                rawReadTool: 'read_repository_file',
+                shellSearchFallbackOnly: true,
+              },
+            },
+            warnings,
+            suggestedNextActions: [],
+            detailLevel: 'summary',
+            rawAvailable: true,
+          });
+          return result(facade as unknown as Record<string, unknown>);
         }
         const checks = listControllerChecks(repository.canonicalRoot);
         const requested = Array.isArray(args.requested_check_ids) ? args.requested_check_ids.map(String) : [];

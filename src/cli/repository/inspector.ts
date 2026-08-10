@@ -199,6 +199,34 @@ function isIncluded(path: string, includes: string[]): boolean {
   return includes.length === 0 || includes.some((pattern) => globMatches(pattern, path));
 }
 
+const SEARCH_GIT_INVENTORY_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Prefer Git's own tracked+untracked inventory for Git worktrees. This avoids
+ * walking generated/runtime directories and, critically, lets include globs be
+ * applied before maxFiles is charged. Return null when Git is unavailable or
+ * output is truncated so non-Git/ephemeral workspaces retain the filesystem
+ * fallback below.
+ */
+function gitSearchFileInventory(repoRoot: string): string[] | null {
+  try {
+    const result = runProcess('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], {
+      cwd: repoRoot,
+      timeoutMs: 10_000,
+      maxOutputBytes: SEARCH_GIT_INVENTORY_MAX_OUTPUT_BYTES,
+    });
+    if (!result.ok || result.stdout.includes('[output truncated after')) return null;
+    return result.stdout
+      .split('\0')
+      // NUL framing already gives exact Git paths; do not trim because leading
+      // or trailing whitespace is legal in a repository filename.
+      .filter((path) => path.length > 0)
+      .sort((left, right) => left.localeCompare(right));
+  } catch {
+    return null;
+  }
+}
+
 function binary(bytes: Buffer): boolean {
   return bytes.subarray(0, Math.min(bytes.length, 8000)).includes(0);
 }
@@ -232,6 +260,140 @@ export interface SearchRepositoryOptions {
   caseSensitive?: boolean;
   /** Source fingerprint supplied by a caller that already sampled Git state. */
   cacheKey?: string;
+}
+
+export interface SearchRepositoryManyOptions {
+  queries: string[];
+  includeGlobs?: string[];
+  excludeGlobs?: string[];
+  maxResultsPerQuery?: number;
+  maxFiles?: number;
+  caseSensitive?: boolean;
+  cacheKey?: string;
+}
+
+export interface SearchRepositoryManyResult {
+  queries: string[];
+  results: Array<{ query: string; path: string; line: number; text: string }>;
+  scannedFiles: number;
+  policyDeniedFiles: number;
+  skippedLargeFiles: number;
+  skippedBinaryFiles: number;
+  truncated: boolean;
+  truncationReason?: 'max_results' | 'max_files';
+  cacheHit?: boolean;
+}
+
+function searchInventory(
+  repoRoot: string,
+  includes: string[],
+  excludes: string[],
+  maxFiles: number,
+  cacheKey?: string,
+): { files: string[]; candidateCount: number; cacheHit: boolean } {
+  const inventoryKey = JSON.stringify({ repoRoot, excludes, cacheKey });
+  const now = Date.now();
+  const cachedInventory = searchFileInventoryCache.get(inventoryKey);
+  const cacheHit = Boolean(cachedInventory && now - cachedInventory.createdAt < SEARCH_FILE_INVENTORY_CACHE_TTL_MS);
+  const inventory = cacheHit
+    ? cachedInventory!.files
+    : (() => {
+      const gitFiles = gitSearchFileInventory(repoRoot);
+      const files = gitFiles ?? (() => {
+        const walked: string[] = [];
+        walk(repoRoot, '', 20_000, excludes, walked);
+        return walked;
+      })();
+      searchFileInventoryCache.set(inventoryKey, { createdAt: now, files });
+      return files;
+    })();
+  const candidates = inventory.filter((path) => isIncluded(path, includes) && !isExcluded(path, excludes));
+  return { files: candidates.slice(0, maxFiles), candidateCount: candidates.length, cacheHit };
+}
+
+/**
+ * Internal Context Plane batch search. Every candidate file is policy-checked
+ * and read at most once while all lexical terms are matched in the same pass.
+ * The public search_repository tool remains the simpler single-query primitive.
+ */
+export function searchRepositoryMany(
+  repoRoot: string,
+  policy: McpPolicy,
+  opts: SearchRepositoryManyOptions,
+): SearchRepositoryManyResult {
+  const queries = Array.from(new Set(opts.queries.map((query) => query.trim()).filter(Boolean)));
+  if (queries.length === 0) throw new Error('at least one search query is required');
+  const maxResultsPerQuery = Math.min(Math.max(opts.maxResultsPerQuery ?? 100, 1), 500);
+  const maxFiles = Math.min(Math.max(opts.maxFiles ?? 5000, 1), 20_000);
+  const includes = opts.includeGlobs ?? [];
+  const excludes = [...(includes.length === 0 ? DEFAULT_EXCLUDES : []), ...(opts.excludeGlobs ?? [])];
+  const inventory = searchInventory(repoRoot, includes, excludes, maxFiles, opts.cacheKey);
+  const needles = queries.map((query) => ({ query, needle: opts.caseSensitive ? query : query.toLowerCase() }));
+  const counts = new Map(queries.map((query) => [query, 0]));
+  const results: SearchRepositoryManyResult['results'] = [];
+  let scannedFiles = 0;
+  let policyDeniedFiles = 0;
+  let skippedLargeFiles = 0;
+  let skippedBinaryFiles = 0;
+
+  for (const path of inventory.files) {
+    if (needles.every(({ query }) => (counts.get(query) ?? 0) >= maxResultsPerQuery)) break;
+    const decision = resolveMcpPath(repoRoot, path, policy, 'read');
+    if (!decision.ok || !decision.absolutePath) {
+      policyDeniedFiles += 1;
+      continue;
+    }
+    const size = statSync(decision.absolutePath).size;
+    if (size > policy.maxFileBytes) {
+      skippedLargeFiles += 1;
+      continue;
+    }
+    const bytes = readFileSync(decision.absolutePath);
+    if (binary(bytes)) {
+      skippedBinaryFiles += 1;
+      continue;
+    }
+    scannedFiles += 1;
+    const lines = bytes.toString('utf-8').split(/\r?\n/);
+    for (let index = 0; index < lines.length; index += 1) {
+      const text = lines[index]!;
+      const haystack = opts.caseSensitive ? text : text.toLowerCase();
+      for (const { query, needle } of needles) {
+        if ((counts.get(query) ?? 0) >= maxResultsPerQuery || !haystack.includes(needle)) continue;
+        results.push({ query, path, line: index + 1, text: text.slice(0, 500) });
+        counts.set(query, (counts.get(query) ?? 0) + 1);
+      }
+    }
+  }
+
+  // Consumers may bound distinct candidate files after this call. Preserve the
+  // caller's query priority so an exact symbol/phrase cannot be displaced by
+  // earlier alphabetic files that only matched broad recall tokens.
+  const queryPriority = new Map(queries.map((query, index) => [query, index]));
+  results.sort((left, right) => {
+    const priority = (queryPriority.get(left.query) ?? queries.length) - (queryPriority.get(right.query) ?? queries.length);
+    if (priority !== 0) return priority;
+    const pathOrder = left.path.localeCompare(right.path);
+    return pathOrder !== 0 ? pathOrder : left.line - right.line;
+  });
+
+  const hitResultLimit = needles.some(({ query }) => (counts.get(query) ?? 0) >= maxResultsPerQuery);
+  const truncationReason = hitResultLimit
+    ? 'max_results' as const
+    : inventory.candidateCount > inventory.files.length
+      ? 'max_files' as const
+      : undefined;
+  return {
+    queries,
+    results,
+    scannedFiles,
+    policyDeniedFiles,
+    skippedLargeFiles,
+    skippedBinaryFiles,
+    truncated: Boolean(truncationReason),
+    truncationReason,
+    cacheHit: inventory.cacheHit,
+  };
 }
 
 export function searchRepository(repoRoot: string, policy: McpPolicy, opts: SearchRepositoryOptions & {
@@ -269,20 +431,8 @@ export function searchRepository(repoRoot: string, policy: McpPolicy, opts: Sear
       return { ...(cached.result as ReturnType<typeof searchRepository>), cacheHit: true };
     }
   }
-  const inventoryKey = JSON.stringify({ repoRoot, includes, excludes, cacheKey: opts.cacheKey });
-  const now = Date.now();
-  const cachedInventory = searchFileInventoryCache.get(inventoryKey);
-  const inventory = cachedInventory && now - cachedInventory.createdAt < SEARCH_FILE_INVENTORY_CACHE_TTL_MS
-    ? cachedInventory.files
-    : (() => {
-      const files: string[] = [];
-      // Build one bounded ignore-aware inventory and reuse it for each search
-      // term in a Context Pack. File contents are still read fresh below.
-      walk(repoRoot, '', 20_000, excludes, files);
-      searchFileInventoryCache.set(inventoryKey, { createdAt: now, files });
-      return files;
-    })();
-  const files = inventory.slice(0, maxFiles);
+  const inventory = searchInventory(repoRoot, includes, excludes, maxFiles, opts.cacheKey);
+  const files = inventory.files;
   const needle = opts.caseSensitive ? query : query.toLowerCase();
   const results: Array<{ path: string; line: number; text: string }> = [];
   let scannedFiles = 0;
@@ -317,7 +467,7 @@ export function searchRepository(repoRoot: string, policy: McpPolicy, opts: Sear
   }
   const truncationReason = results.length >= maxResults
     ? 'max_results' as const
-    : files.length >= maxFiles
+    : inventory.candidateCount > files.length
       ? 'max_files' as const
       : undefined;
   const payload = {
@@ -327,9 +477,9 @@ export function searchRepository(repoRoot: string, policy: McpPolicy, opts: Sear
     policyDeniedFiles,
     skippedLargeFiles,
     skippedBinaryFiles,
-    truncated: Boolean(truncationReason) || inventory.length > files.length,
+    truncated: Boolean(truncationReason),
     truncationReason,
-    cacheHit: cachedInventory !== undefined && now - cachedInventory.createdAt < SEARCH_FILE_INVENTORY_CACHE_TTL_MS,
+    cacheHit: inventory.cacheHit,
   };
   if (sessionCache) {
     sessionCache.putSearch({

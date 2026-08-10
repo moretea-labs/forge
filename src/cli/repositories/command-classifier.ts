@@ -32,7 +32,7 @@ const READ_ONLY_GIT_SUBCOMMANDS = new Set([
   'status', 'log', 'show', 'diff', 'blame', 'grep', 'merge-base', 'rev-list',
   'rev-parse', 'for-each-ref', 'show-ref', 'ls-files', 'ls-tree', 'cat-file',
   'name-rev', 'describe', 'shortlog', 'reflog', 'fsck', 'ls-remote',
-  'count-objects', 'verify-pack',
+  'count-objects', 'verify-pack', 'check-ignore',
 ]);
 
 function shellSegments(command: string): string[] {
@@ -395,6 +395,28 @@ function classifyArgvCommand(
   if (program === 'git' && subcommand === 'push') return { risk: 'remote_write', confirmation: 'authorization', reasons: ['writes Git refs to a remote'] };
   if (program === 'git' && isReadOnlyGitCommand(argv)) {
     return { risk: 'readonly', confirmation: 'none', reasons: ['the argv command is a recognized repository-local read operation'] };
+  }
+  // Explicit shell wrappers are common in generated diagnostics. Re-classify
+  // the fixed inner command instead of treating every `sh -c <readonly>` as a
+  // workspace mutation. Unsafe shell constructs are still rejected by the
+  // normal shell classifier.
+  if (['sh', 'bash', 'zsh'].includes(program) && subcommand === '-c' && typeof argv[2] === 'string') {
+    return classifyShellCommand(argv[2], defaultBranch);
+  }
+  if (program === 'find' && !argv.some((word) => ['-delete', '-exec', '-execdir', '-ok', '-okdir'].includes(word))) {
+    return { risk: 'readonly', confirmation: 'none', reasons: ['find is read-only without mutation or exec actions'] };
+  }
+  if (program === 'sed' && !argv.slice(1).some((word) => word === '--in-place' || word.startsWith('--in-place=') || /^-[^-]*i/.test(word))) {
+    return { risk: 'readonly', confirmation: 'none', reasons: ['sed is read-only without in-place editing'] };
+  }
+  if (program === 'launchctl' && ['print', 'print-disabled', 'list', 'managerpid', 'manageruid'].includes(subcommand ?? '')) {
+    return { risk: 'readonly', confirmation: 'none', reasons: ['launchctl observation does not mutate repository or host service state'] };
+  }
+  if (program === 'plutil' && argv.slice(1).some((word) => word === '-p' || word === '-lint')) {
+    return { risk: 'readonly', confirmation: 'none', reasons: ['plutil print/lint is read-only'] };
+  }
+  if (program === 'log' && ['show', 'stream', 'stats', 'config'].includes(subcommand ?? '') && subcommand !== 'config') {
+    return { risk: 'readonly', confirmation: 'none', reasons: ['system log observation is read-only'] };
   }
   // Explicit readonly GitHub CLI observations (must not be treated as workspace write).
   if (program === 'gh') {
