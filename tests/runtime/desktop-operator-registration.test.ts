@@ -13,6 +13,7 @@ describe('Desktop Operator trusted external registration', () => {
     expect(input.displayName).toBe('Forge Desktop Operator');
     expect(input.capabilities.map((capability) => capability.capabilityId)).toEqual([
       'desktop.status',
+      'desktop.permissions',
       'desktop.session',
       'desktop.observe',
       'desktop.interact',
@@ -22,6 +23,7 @@ describe('Desktop Operator trusted external registration', () => {
     ]);
     expect(input.actions.map((action) => action.actionId)).toEqual([
       'desktop_status',
+      'desktop_permissions_request',
       'desktop_session_open',
       'desktop_observe',
       'desktop_press',
@@ -39,7 +41,7 @@ describe('Desktop Operator trusted external registration', () => {
     for (const action of input.actions.filter((action) => action.readOnly)) {
       expect(action.risk).toBe('readonly');
     }
-    for (const action of input.actions.filter((action) => ['desktop_press', 'desktop_type_text', 'desktop_key', 'desktop_clipboard_write', 'desktop_copy', 'desktop_paste', 'desktop_open_url', 'desktop_batch'].includes(action.actionId))) {
+    for (const action of input.actions.filter((action) => ['desktop_permissions_request', 'desktop_press', 'desktop_type_text', 'desktop_key', 'desktop_clipboard_write', 'desktop_copy', 'desktop_paste', 'desktop_open_url', 'desktop_batch'].includes(action.actionId))) {
       expect(action.risk).toBe('workspace_write');
       expect(action.confirmation).toBe('authorization');
     }
@@ -52,6 +54,14 @@ describe('Desktop Operator trusted external registration', () => {
       expect(action?.description).toContain('foregrounds the target application');
     }
     expect(input.permissions.some((permission) => permission.scope === 'desktop.clipboard' && permission.granted)).toBe(true);
+    const permissionRequest = input.actions.find((action) => action.actionId === 'desktop_permissions_request');
+    expect(permissionRequest).toMatchObject({ confirmation: 'authorization', scopes: ['desktop.permissions'], idempotent: true });
+    const permissionArgumentsSchema = permissionRequest?.argumentsSchema as {
+      properties?: { services?: { minItems?: number; maxItems?: number; uniqueItems?: boolean } };
+    } | undefined;
+    expect(permissionArgumentsSchema?.properties?.services).toMatchObject({ minItems: 1, maxItems: 2, uniqueItems: true });
+    expect(permissionRequest?.description).toContain('macOS may foreground');
+    expect(input.permissions.some((permission) => permission.scope === 'desktop.permissions' && permission.granted)).toBe(true);
   });
 
   test('binds optional provider lifecycle to one verified user LaunchAgent identity', () => {

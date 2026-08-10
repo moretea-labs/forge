@@ -40,6 +40,32 @@ function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
       },
     },
     {
+      actionId: 'desktop_permissions_request',
+      title: 'Request macOS desktop permissions',
+      description: 'Request only the official Accessibility and Screen Recording permissions for the stable Forge Desktop Operator app. macOS may foreground a consent prompt or System Settings.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: 30_000,
+      cancellable: true,
+      idempotent: true,
+      scopes: ['desktop.permissions'],
+      resourceClaims: CONTROLLER_WRITE,
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          services: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 2,
+            uniqueItems: true,
+            items: { type: 'string', enum: ['accessibility', 'screen_recording'] },
+          },
+        },
+        additionalProperties: false,
+      },
+    },
+    {
       actionId: 'desktop_session_open',
       title: 'Open desktop session',
       description: 'Launch or locate one application, optionally activate it, and create a bounded interaction session.',
@@ -340,6 +366,7 @@ export function createDesktopOperatorRegistrationInput(
 ): ExternalPluginRegistrationInput {
   const permissions = [
     { scope: 'desktop.status', mode: 'read' as const, description: 'Read provider health, sessions, and bounded application summaries.', granted: true, required: true },
+    { scope: 'desktop.permissions', mode: 'write' as const, description: 'Request only the official macOS Accessibility and Screen Recording permissions for the stable Desktop Operator app.', granted: true, required: false },
     { scope: 'desktop.session', mode: 'write' as const, description: 'Create and close bounded application interaction sessions.', granted: true, required: false },
     { scope: 'desktop.observe', mode: 'read' as const, description: 'Read bounded Accessibility snapshots and window metadata.', granted: true, required: false },
     { scope: 'desktop.interact', mode: 'write' as const, description: 'Press controls, type text, send keys, and open URLs on macOS.', granted: true, required: false },
@@ -373,6 +400,7 @@ export function createDesktopOperatorRegistrationInput(
     permissions,
     capabilities: [
       { capabilityId: 'desktop.status', title: 'Desktop status', description: 'Read Desktop Operator status.', scopes: ['desktop.status'], actions: ['desktop_status'] },
+      { capabilityId: 'desktop.permissions', title: 'Desktop permissions', description: 'Request the official macOS permissions required by Desktop Operator capabilities.', scopes: ['desktop.permissions'], actions: ['desktop_permissions_request'] },
       { capabilityId: 'desktop.session', title: 'Desktop sessions', description: 'Create and close application interaction sessions.', scopes: ['desktop.session'], actions: ['desktop_session_open', 'desktop_session_close'] },
       { capabilityId: 'desktop.observe', title: 'Desktop observation', description: 'Read bounded Accessibility and window state.', scopes: ['desktop.observe'], actions: ['desktop_observe'] },
       { capabilityId: 'desktop.interact', title: 'Desktop interaction', description: 'Press, type, send keys, and open URLs.', scopes: ['desktop.interact'], actions: ['desktop_press', 'desktop_type_text', 'desktop_key', 'desktop_open_url'] },
