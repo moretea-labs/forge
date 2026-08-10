@@ -169,10 +169,40 @@ function claimsForDeclaredCheckEffects(
 }
 
 function looksLikeBuildOrTest(command: string | readonly string[]): boolean {
-  const text = Array.isArray(command) ? command.join(' ') : String(command);
-  const lower = text.toLowerCase();
-  return /\b(?:bun|npm|pnpm|yarn|node|cargo|go|swift|pytest|xcodebuild|tsc|eslint|biome)\b/.test(lower)
-    && /\b(?:test|check|typecheck|lint|build|compile)\b/.test(lower);
+  const canonical = normalizeRepositoryCommand(command);
+  const buildScript = (value: string | undefined): boolean => /^(?:test(?::.*)?|check(?::.*)?|typecheck|lint(?::.*)?|build(?::.*)?|compile(?::.*)?)$/i.test(value ?? '');
+  const base = (value: string | undefined): string => (value ?? '').replace(/\\/g, '/').split('/').at(-1)?.toLowerCase() ?? '';
+
+  if (canonical.kind === 'argv') {
+    const program = base(canonical.executable);
+    const args = canonical.args ?? [];
+    const first = args[0]?.toLowerCase();
+    const second = args[1]?.toLowerCase();
+    if (program === 'bun') {
+      if (first === 'test') return true;
+      if (first === 'run') return buildScript(second);
+      if (first === 'x') return ['tsc', 'eslint', 'biome', 'pytest'].includes(base(args[1]));
+      // `bun <package-script>` is supported, but eval/print source must never be
+      // inspected as prose for words such as RegExp.prototype.test.
+      return buildScript(first);
+    }
+    if (program === 'npm' || program === 'pnpm' || program === 'yarn') {
+      if (first === 'test') return true;
+      if (first === 'run') return buildScript(second);
+      return program === 'yarn' && buildScript(first);
+    }
+    if (program === 'cargo' || program === 'go' || program === 'swift') {
+      return ['test', 'check', 'build', 'compile'].includes(first ?? '');
+    }
+    return ['pytest', 'xcodebuild', 'tsc', 'eslint', 'biome'].includes(program);
+  }
+
+  // Shell strings cannot be trusted structurally, so only recognize an actual
+  // command/subcommand sequence. Do not scan arbitrary quoted source text.
+  const lower = canonical.shellCommand?.toLowerCase() ?? '';
+  return /(?:^|[;&|]\s*)(?:bun|npm|pnpm|yarn)\s+(?:test\b|run\s+(?:test|check|typecheck|lint|build|compile)\b)/.test(lower)
+    || /(?:^|[;&|]\s*)(?:cargo|go|swift)\s+(?:test|check|build|compile)\b/.test(lower)
+    || /(?:^|[;&|]\s*)(?:pytest|xcodebuild|tsc|eslint|biome)\b/.test(lower);
 }
 
 /**
@@ -209,11 +239,27 @@ function focusedTestRequestsWorkspaceMutation(command: string | readonly string[
 }
 
 function extractLikelyPaths(command: string | readonly string[]): string[] {
-  const words = Array.isArray(command)
-    ? command.map(String)
-    : String(command).split(/\s+/);
+  const canonical = normalizeRepositoryCommand(command);
+  let words: string[];
+  if (canonical.kind === 'argv') {
+    const program = (canonical.executable ?? '').replace(/\\/g, '/').split('/').at(-1)?.toLowerCase() ?? '';
+    const args = [...(canonical.args ?? [])];
+    words = [];
+    for (let index = 0; index < args.length; index += 1) {
+      const word = String(args[index] ?? '');
+      if ((program === 'bun' || program === 'node') && ['-e', '--eval', '-p', '--print'].includes(word)) {
+        index += 1;
+        continue;
+      }
+      if ((program === 'bun' || program === 'node') && /^(?:--eval|--print)=/.test(word)) continue;
+      words.push(word);
+    }
+  } else {
+    words = String(canonical.shellCommand ?? command).split(/\s+/);
+  }
   return words.filter((word) => {
-    if (!word || word.startsWith('-')) return false;
+    if (!word || word.startsWith('-') || word.includes('\n') || word.includes('\r')) return false;
+    if (/\b(?:import|require|const|let|function|return)\b/.test(word) || word.includes('=>')) return false;
     return word.includes('/')
       || word.includes('\\')
       || /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|swift|test|spec|json|md)$/i.test(word);

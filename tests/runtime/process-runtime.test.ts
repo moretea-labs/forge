@@ -1070,6 +1070,24 @@ describe('fine-grained resource claims', () => {
     expect(claims.some((claim) => claim.resourceKey === 'path:co1:tests/ui/card.test.ts' && claim.mode === 'write')).toBe(true);
   });
 
+  test('bun eval source containing .test and import paths never becomes a fake test/path claim', () => {
+    const source = "import { callExternalUnixSocket } from './src/runtime/plugins/external-unix-socket.ts'; const nodes=[]; const hits=nodes.filter(n=>/OAuth/i.test(String(n.title||'')));";
+    const claims = claimsForRepositoryCommand(['bun', '-e', source], 'repo1', 'co1');
+    expect(claims).toEqual([{ resourceKey: 'workspace:co1', mode: 'write' }]);
+    expect(claims.some((claim) => claim.resourceKey.startsWith('path:'))).toBe(false);
+    expect(claims.some((claim) => claim.resourceKey === 'build-cache:repo1')).toBe(false);
+  });
+
+  test('structured build/test argv remains recognized after eval filtering', () => {
+    expect(claimsForRepositoryCommand(['bun', 'test', 'tests/runtime/process-runtime.test.ts'], 'repo1', 'co1')).toEqual([
+      { resourceKey: 'workspace:co1', mode: 'read' },
+    ]);
+    expect(claimsForRepositoryCommand(['bun', 'run', 'build'], 'repo1', 'co1')).toEqual(expect.arrayContaining([
+      { resourceKey: 'workspace:co1', mode: 'write' },
+      { resourceKey: 'build-cache:repo1', mode: 'write' },
+    ]));
+  });
+
   test('typecheck check does not take heavy-check exclusive', () => {
     const claims = claimsForCheck('package:check:type', ['bun', 'run', 'check:type'], 'repo1', 'co1');
     expect(claims.some((c) => c.resourceKey.startsWith('heavy-check:'))).toBe(false);
