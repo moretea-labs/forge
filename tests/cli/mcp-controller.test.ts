@@ -1787,6 +1787,10 @@ describe("MCP controller profile", () => {
       expect(payload.data.omittedCapabilityCount).toBe(
         Math.max(0, payload.data.capabilityCount - payload.data.capabilities.length),
       );
+      expect(payload.data.checks.length).toBeLessThanOrEqual(24);
+      expect(payload.data.omittedCheckCount).toBe(
+        Math.max(0, payload.data.counts.availableChecks - payload.data.checks.length),
+      );
     });
   });
 

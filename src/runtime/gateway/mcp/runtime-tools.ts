@@ -3065,9 +3065,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             updatedAt: item.updatedAt,
           }))
           : currentAttentionItems.map(summarizeHandoffItem);
-        const checkSummaries = isSummary
+        const detailCheckCandidates = requested.length > 0
           ? selectedChecks
           : checks.map((check) => ({ id: check.id, description: check.description, source: check.source }));
+        const checkSummaries = isSummary ? selectedChecks : detailCheckCandidates.slice(0, 24);
         const detailArguments = {
           repo_id: repository.repoId,
           operation,
@@ -3144,6 +3145,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           repoId: repository.repoId,
           repository: repositorySummary(repository),
           checks: checkSummaries,
+          omittedCheckCount: Math.max(0, checks.length - checkSummaries.length),
           selectedChecks,
           requestedCheckIds: requested,
           normalizedChecks,
