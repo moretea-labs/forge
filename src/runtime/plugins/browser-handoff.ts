@@ -4,6 +4,7 @@ import { closeSync, existsSync, openSync, readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { writeJsonAtomic } from '../shared/json-files';
+import { resolveBunExecutable } from '../shared/process-environment';
 import { AssistantPluginError } from './errors';
 import {
   interactionLaunchSpecPath,
@@ -79,6 +80,14 @@ function defaultPidAlive(pid: number | undefined): boolean {
   }
 }
 
+export function resolveBrowserHandoffHostExecutable(
+  execPath: string = process.execPath,
+  env: NodeJS.ProcessEnv = process.env,
+  bunRuntime = Boolean(process.versions.bun),
+): string {
+  return bunRuntime ? resolveBunExecutable(execPath, env) : execPath;
+}
+
 const defaultHooks: BrowserHandoffRuntimeHooks = {
   now: () => new Date().toISOString(),
   pidAlive: defaultPidAlive,
@@ -91,7 +100,7 @@ const defaultHooks: BrowserHandoffRuntimeHooks = {
     const logPath = specPath.replace(/\.json$/u, '.log');
     const logFd = openSync(logPath, 'a');
     try {
-      const child = spawn(process.execPath, args, {
+      const child = spawn(resolveBrowserHandoffHostExecutable(), args, {
         detached: true,
         stdio: ['ignore', logFd, logFd],
         cwd: process.cwd(),

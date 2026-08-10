@@ -990,14 +990,14 @@ async function selectPage(
   context: BrowserContextLike,
   target: BrowserActionTarget,
   options: { allowBlank?: boolean; allowNewPage?: boolean; bringToFront?: boolean; requireOwnedToken?: boolean } = {},
-): Promise<{ page: PageLike; matchedBy: BrowserTabMatchReason; inventory: BrowserTabInventoryEntry[]; sessionResume?: BrowserSessionResumeDiagnostic }> {
+): Promise<{ page: PageLike; matchedBy: BrowserTabMatchReason; inventory: BrowserTabInventoryEntry[]; selectedEntry?: BrowserTabInventoryEntry; sessionResume?: BrowserSessionResumeDiagnostic }> {
   const inventory = await inventoryTabs(context);
   const selection = chooseTab(inventory, target, { allowBlank: options.allowBlank, requireOwnedToken: options.requireOwnedToken });
   if (selection.entry) {
     const page = context.pages()[selection.entry.index];
     if (!page) throw new Error(`Browser tab inventory selected missing page index ${selection.entry.index}`);
     if (options.bringToFront === true && page.bringToFront) await page.bringToFront().catch(() => undefined);
-    return { page, matchedBy: selection.matchedBy, inventory, sessionResume: selection.sessionResume };
+    return { page, matchedBy: selection.matchedBy, inventory, selectedEntry: selection.entry, sessionResume: selection.sessionResume };
   }
   if (options.allowNewPage === false) {
     throw new AssistantPluginError(
@@ -1189,7 +1189,9 @@ async function openAttachedContext(
         },
         tabInventory: selected.inventory,
         sessionResume: selected.sessionResume,
-      }, normalizedUrl(selected.page.url()), title, selected.matchedBy);
+      }, normalizedUrl(selected.page.url()), title, selected.matchedBy, selected.selectedEntry?.ownerToken
+        ? { ownership: 'plugin_owned', ownerToken: selected.selectedEntry.ownerToken }
+        : undefined);
         return {
           attempts,
           handle: {

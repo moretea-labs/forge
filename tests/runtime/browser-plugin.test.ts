@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -16,7 +16,12 @@ import {
   resolveBrowserNodeBridgeHostPath,
   shouldUseBrowserNodeBridge,
 } from '../../src/runtime/plugins/browser-node-bridge';
-import { listBrowserHandoffs, resetBrowserHandoffRuntimeHooksForTest, setBrowserHandoffRuntimeHooksForTest } from '../../src/runtime/plugins/browser-handoff';
+import {
+  listBrowserHandoffs,
+  resetBrowserHandoffRuntimeHooksForTest,
+  resolveBrowserHandoffHostExecutable,
+  setBrowserHandoffRuntimeHooksForTest,
+} from '../../src/runtime/plugins/browser-handoff';
 import {
   discoverMacOsBrowserAttachment,
   resetMacOsBrowserRuntimeHooksForTest,
@@ -30,6 +35,12 @@ import {
 } from '../../src/runtime/plugins/store';
 
 const roots: string[] = [];
+
+beforeEach(() => {
+  // Unit tests must never attach to a real user browser just because Chrome/Vivaldi is running.
+  // Native-attach cases explicitly install darwin test hooks below.
+  setMacOsBrowserRuntimeHooksForTest({ platform: 'linux' });
+});
 
 afterEach(() => {
   resetBrowserPluginRuntimeHooksForTest();
@@ -131,7 +142,7 @@ function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?:
 }
 
 function mockAttachPlaywright(
-  initialPages: Array<{ url: string; title: string }> = [],
+  initialPages: Array<{ url: string; title: string; ownerToken?: string }> = [],
   options: { connectError?: string; managedTitle?: string } = {},
 ) {
   const events = {
@@ -143,7 +154,7 @@ function mockAttachPlaywright(
     broughtToFront: [] as string[],
   };
 
-  const makePage = (state: { url: string; title: string }) => ({
+  const makePage = (state: { url: string; title: string; ownerToken?: string }) => ({
     async goto(url: string) {
       state.url = url;
       events.gotos.push(url);
@@ -154,7 +165,8 @@ function mockAttachPlaywright(
     url() {
       return state.url;
     },
-    async evaluate<T>() {
+    async evaluate<T>(expression?: string) {
+      if (typeof expression === 'string' && expression.includes('window.name')) return (state.ownerToken ?? '') as T;
       return 'Attached page text' as T;
     },
     async screenshot(args: Record<string, unknown>) {
@@ -424,7 +436,7 @@ describe('browser plugin', () => {
 
     const manifest = buildBrowserPluginManifest(0, undefined, repoRoot);
     expect(manifest.health.state).toBe('error');
-    expect(manifest.health.errors[0]).toContain('Browser plugin requires playwright');
+    expect(manifest.health.errors[0]).toContain('Browser plugin requires Playwright for the configured browser mode');
 
     await expect(executeBrowserPluginAction({
       controllerHome: repoRoot,
@@ -435,7 +447,7 @@ describe('browser plugin', () => {
       requestId: 'browser-open-missing-dep',
       args: { url: 'https://example.com/' },
       origin: { surface: 'local-ui', actor: 'test' },
-    })).rejects.toThrow('PLUGIN_DEPENDENCY_MISSING');
+    })).rejects.toThrow('PLUGIN_BROWSER_DEPENDENCY_UNAVAILABLE');
   });
 
   test('reuses a hot cached manifest instead of probing browser readiness on every read', async () => {
@@ -618,10 +630,22 @@ describe('browser plugin', () => {
       browserMode: 'attach_preferred',
       cdpEndpoint: 'http://127.0.0.1:9223',
       cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'disabled',
       allowedDomains: ['example.com'],
     });
+    const ownerToken = 'forge-browser-owned:cdp-discovery';
+    const sessionId = 'cdp-discovery-session';
+    mkdirSync(join(repoRoot, '.forge/browser/sessions'), { recursive: true });
+    writeFileSync(join(repoRoot, '.forge/browser/sessions', `${sessionId}.json`), JSON.stringify({
+      schemaVersion: 1, sessionId, url: 'https://example.com/', title: 'Discovered',
+      createdAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:00:00.000Z',
+      browser: { mode: 'attach_preferred', activeMode: 'attach_preferred', provider: 'playwright-cdp', tab: {
+        key: 'seed', index: 0, url: 'https://example.com/', title: 'Discovered', matchedBy: 'owned_token',
+        inventoryCount: 1, capturedAt: '2026-08-10T00:00:00.000Z', ownership: 'plugin_owned', ownerToken,
+      } },
+    }), 'utf8');
     const runtime = mockAttachPlaywright([
-      { url: 'https://example.com/', title: 'Discovered' },
+      { url: 'https://example.com/', title: 'Discovered', ownerToken },
     ]) as unknown as {
       events: { connects: string[] };
     };
@@ -646,7 +670,7 @@ describe('browser plugin', () => {
       pluginId: 'browser',
       actionId: 'open_page',
       requestId: 'browser-attach-discover',
-      args: { url: 'https://example.com/' },
+      args: { session_id: sessionId, url: 'https://example.com/' },
       origin: { surface: 'local-ui', actor: 'test' },
     });
 
@@ -950,11 +974,23 @@ describe('browser plugin', () => {
       browserMode: 'attach_preferred',
       cdpEndpoint: 'ws://127.0.0.1:9222/devtools/browser/live',
       cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'disabled',
       allowedDomains: ['example.com'],
     });
+    const ownerToken = 'forge-browser-owned:reuse-session';
+    const sessionId = 'explicit-session-id';
+    mkdirSync(join(repoRoot, '.forge/browser/sessions'), { recursive: true });
+    writeFileSync(join(repoRoot, '.forge/browser/sessions', `${sessionId}.json`), JSON.stringify({
+      schemaVersion: 1, sessionId, url: 'https://example.com/', title: 'Target',
+      createdAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:00:00.000Z',
+      browser: { mode: 'attach_preferred', activeMode: 'attach_preferred', provider: 'playwright-cdp', tab: {
+        key: 'seed', index: 1, url: 'https://example.com/', title: 'Target', matchedBy: 'owned_token',
+        inventoryCount: 2, capturedAt: '2026-08-10T00:00:00.000Z', ownership: 'plugin_owned', ownerToken,
+      } },
+    }), 'utf8');
     const firstRuntime = mockAttachPlaywright([
       { url: 'https://example.com/other', title: 'Other' },
-      { url: 'https://example.com/', title: 'Target' },
+      { url: 'https://example.com/', title: 'Target', ownerToken },
     ]) as unknown as {
       events: { newPages: number; gotos: string[]; disconnects: number; broughtToFront: string[] };
     };
@@ -973,8 +1009,7 @@ describe('browser plugin', () => {
       args: { session_id: 'explicit-session-id', url: 'https://example.com/' },
       origin: { surface: 'local-ui', actor: 'test' },
     });
-    const sessionId = String((opened.session as Record<string, unknown>).sessionId);
-    expect(sessionId).toBe('explicit-session-id');
+    expect(String((opened.session as Record<string, unknown>).sessionId)).toBe(sessionId);
     const saved = JSON.parse(readFileSync(join(repoRoot, '.forge/browser/sessions', `${sessionId}.json`), 'utf8')) as Record<string, any>;
 
     expect(firstRuntime.events.newPages).toBe(0);
@@ -987,13 +1022,15 @@ describe('browser plugin', () => {
       tab: {
         url: 'https://example.com/',
         title: 'Target',
-        matchedBy: 'exact_url',
+        matchedBy: 'owned_token',
+        ownership: 'plugin_owned',
+        ownerToken,
       },
     });
 
     const secondRuntime = mockAttachPlaywright([
       { url: 'https://example.com/', title: 'Wrong Duplicate' },
-      { url: 'https://example.com/', title: 'Target' },
+      { url: 'https://example.com/', title: 'Target', ownerToken },
     ]) as unknown as {
       events: { newPages: number; gotos: string[]; broughtToFront: string[] };
     };
@@ -1453,6 +1490,11 @@ describe('browser plugin', () => {
     expect(resolveBrowserBridgeNodeExecutable({ FORGE_NODE_EXECUTABLE: executable })).toBe(executable);
     expect(() => resolveBrowserBridgeNodeExecutable({ FORGE_NODE_EXECUTABLE: join(root, 'missing') }))
       .toThrow('PLUGIN_BROWSER_NODE_UNAVAILABLE');
+  });
+
+  test('uses a real Bun executable for the browser handoff host inside compiled Bun runtime', () => {
+    expect(resolveBrowserHandoffHostExecutable('/opt/forge/forge-runtime', { FORGE_BUN_EXECUTABLE: 'bun' }, true)).toBe('bun');
+    expect(resolveBrowserHandoffHostExecutable('/usr/bin/node', {}, false)).toBe('/usr/bin/node');
   });
 
   test('resolves the Browser Node bridge host from the immutable compiled release before virtual bunfs source', () => {
