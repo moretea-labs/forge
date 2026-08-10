@@ -178,7 +178,7 @@ function senderAddress(value: string): string | undefined {
 }
 
 function protectedMessageSummary(message: GmailMessageSummary): boolean {
-  return /(security|authentication|password|login|billing|invoice|incident|production|quota|permission|dependabot|安全|登录|账单|故障|告警|权限)/i
+  return /(security|authentication|password|login|billing|invoice|incident|production|quota|permission|dependabot|gift[ -]?card|安全|登录|账单|故障|告警|权限|礼品卡|禮品卡)/i
     .test(`${message.subject} ${message.snippet}`);
 }
 

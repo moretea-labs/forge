@@ -79,6 +79,18 @@ describe('Gmail assistant routine promotional triage', () => {
     expect(proposals.some((proposal) => proposal.actionId === 'archive_message')).toBe(false);
   });
 
+  test('protects gift-card messages even when Gmail classifies them as Promotions', () => {
+    const proposals = buildDeterministicAssistantProposals([
+      message({
+        subject: 'A friend sent you an Apple Gift Card.',
+        snippet: 'Your gift card is ready to redeem.',
+        labelIds: ['INBOX', 'CATEGORY_PROMOTIONS'],
+      }),
+    ]);
+
+    expect(proposals.some((proposal) => proposal.actionId === 'archive_message')).toBe(false);
+  });
+
   test('keeps the lower-confidence marketing keyword fallback', () => {
     const proposals = buildDeterministicAssistantProposals([
       message({ subject: 'Monthly newsletter', snippet: 'Unsubscribe at any time.' }),
