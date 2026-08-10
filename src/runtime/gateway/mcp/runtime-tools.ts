@@ -2427,6 +2427,7 @@ async function runFacadeRepair(
   args: Record<string, unknown>,
 ): Promise<CallToolResult> {
   const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
+  let maintenanceSnapshot: ReturnType<typeof buildRuntimeMaintenanceStatus> | undefined;
   let maintenanceStatus: {
     readyForExecution?: boolean;
     recommendedActions?: string[];
@@ -2438,6 +2439,7 @@ async function runFacadeRepair(
       minAgeMinutes: typeof args.min_age_minutes === 'number' ? args.min_age_minutes : undefined,
       maxCandidates: typeof args.max_candidates === 'number' ? args.max_candidates : 20,
     });
+    maintenanceSnapshot = status;
     maintenanceStatus = {
       readyForExecution: status.readyForExecution,
       recommendedActions: status.recommendedActions,
@@ -2456,6 +2458,69 @@ async function runFacadeRepair(
       candidates: [],
       warnings: ['runtime_maintenance_status inspection failed; treating as infrastructure issue, not acceptance failure'],
     };
+  }
+
+  const repairOperation = args.repair_operation === 'repair' || args.repair_operation === 'verify' || args.repair_operation === 'handoff'
+    ? args.repair_operation
+    : 'diagnose';
+  const dryRun = args.dry_run === undefined ? true : args.dry_run === true;
+  const elevatedRepair = args.destructive === true || args.remote_write === true || args.remote_effect === true;
+
+  // The self-healing facade is a policy/planning surface; the authoritative
+  // maintenance executor owns mutations. Execute it here only for an explicit,
+  // non-dry-run repair whose entire observed candidate set is already classified
+  // safe. Unsafe/destructive/remote repair continues through the approval path.
+  if (
+    repairOperation === 'repair'
+    && !dryRun
+    && !elevatedRepair
+    && maintenanceSnapshot
+    && maintenanceSnapshot.candidates.length > 0
+    && maintenanceSnapshot.candidates.every((candidate) => candidate.safe)
+  ) {
+    const applied = applyRuntimeMaintenance(repository, ctx.controllerHome, {
+      actionId: 'full_maintenance_pass',
+      confirmMaintenance: true,
+      minAgeMinutes: typeof args.min_age_minutes === 'number' ? args.min_age_minutes : undefined,
+      maxCandidates: typeof args.max_candidates === 'number' ? args.max_candidates : 20,
+    });
+    const actions = applied.applied.slice(0, 20).map((entry) => ({
+      kind: entry.kind,
+      id: entry.id,
+      applied: entry.applied,
+      result: entry.result,
+      ...(entry.error ? { error: entry.error.slice(0, 300) } : {}),
+    }));
+    const appliedCount = applied.applied.filter((entry) => entry.applied).length;
+    const remainingCandidateCount = applied.candidates.length;
+    const blocked = remainingCandidateCount > 0;
+    const facade = buildFacadeResult({
+      status: blocked ? 'blocked' : 'ok',
+      summary: blocked
+        ? `Runtime maintenance applied ${appliedCount} candidate(s); ${remainingCandidateCount} candidate(s) remain after the authoritative executor pass.`
+        : `Runtime maintenance applied ${appliedCount} candidate(s); no maintenance candidates remain.`,
+      data: {
+        operation: 'repair',
+        dryRun: false,
+        applied: appliedCount > 0,
+        actionId: 'full_maintenance_pass',
+        appliedCount,
+        remainingCandidateCount,
+        actions,
+        classification: 'infrastructure_recovery',
+        isAcceptanceFailure: false,
+      },
+      warnings: applied.warnings.slice(0, 5),
+      suggestedNextActions: [{
+        label: 'Verify controller status after repair',
+        tool: 'rh_status',
+        operation: 'get',
+        risk: 'readonly',
+        confidence: 'high',
+      }],
+      rawAvailable: false,
+    });
+    return result(facade as unknown as Record<string, unknown>, blocked);
   }
 
   let watchdogSummary: string | undefined;
@@ -2483,10 +2548,8 @@ async function runFacadeRepair(
   const facade = runSelfHealingLoop(
     { repoId: repository.repoId, handoffStore: store },
     {
-      operation: args.repair_operation === 'repair' || args.repair_operation === 'verify' || args.repair_operation === 'handoff'
-        ? args.repair_operation
-        : 'diagnose',
-      dryRun: args.dry_run === undefined ? true : args.dry_run === true,
+      operation: repairOperation,
+      dryRun,
       approvalConfirmed: args.approval_confirmed === true,
       workId: typeof args.work_id === 'string' ? args.work_id : undefined,
       chatgptPullFailed: args.chatgpt_pull_failed === true,

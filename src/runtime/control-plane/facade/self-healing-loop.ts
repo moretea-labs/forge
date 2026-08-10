@@ -515,23 +515,26 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
     });
   }
 
-  // Safe maintenance path: mark applied in bounded form without raw logs.
-  const applied = issues
+  // This facade is policy/planning only. Never claim a mutation succeeded unless
+  // the Runtime caller has executed the authoritative maintenance executor.
+  const eligible = issues
     .filter((issue) => issue.safeToAutoRepair && !issue.requiresApproval)
     .map((issue) => ({
       kind: issue.kind,
       action: repairPlanFor(issue).action,
-      result: 'applied_bounded',
+      result: 'executor_required',
     }));
 
   return buildFacadeResult({
-    status: 'ok',
-    summary: `Applied ${applied.length} safe maintenance action(s). Verification suggested next.`,
+    status: eligible.length > 0 ? 'blocked' : 'ok',
+    summary: eligible.length > 0
+      ? `Safe repair has ${eligible.length} eligible maintenance action(s), but no maintenance executor result was provided; no mutation reported.`
+      : 'No safe maintenance mutation was required.',
     data: {
       operation: 'repair',
       dryRun: false,
-      applied: true,
-      actions: applied,
+      applied: false,
+      actions: eligible,
       isAcceptanceFailure: false,
       // Infrastructure recovery must not be framed as acceptance failure.
       classification: 'infrastructure_recovery',
