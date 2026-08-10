@@ -153,6 +153,26 @@ function looksLikeBuildOrTest(command: string | readonly string[]): boolean {
     && /\b(?:test|check|typecheck|lint|build|compile)\b/.test(lower);
 }
 
+/**
+ * A typed argv TypeScript --noEmit invocation reads source/config and may still
+ * update incremental build metadata. Model that metadata as build-cache rather
+ * than claiming the whole checkout as a writer. Shell strings are excluded so
+ * compound commands such as `tsc --noEmit && touch ...` remain conservative.
+ */
+function isTypedTypeScriptNoEmit(command: string | readonly string[]): boolean {
+  if (!Array.isArray(command) || command.length === 0) return false;
+  const words = command.map((value) => String(value));
+  const base = (value: string): string => value.replace(/\\/g, '/').split('/').at(-1)?.toLowerCase() ?? '';
+  let program = base(words[0] ?? '');
+  let args = words.slice(1);
+  if (program === 'bun' && args[0]?.toLowerCase() === 'x' && base(args[1] ?? '') === 'tsc') {
+    program = 'tsc';
+    args = args.slice(2);
+  }
+  if (program !== 'tsc') return false;
+  return args.some((arg) => arg === '--noEmit' || arg.toLowerCase() === '--noemit');
+}
+
 function extractLikelyPaths(command: string | readonly string[]): string[] {
   const words = Array.isArray(command)
     ? command.map(String)
@@ -194,6 +214,9 @@ export function claimsForRepositoryCommand(
   }
 
   // workspace_write — refine
+  if (isTypedTypeScriptNoEmit(command)) {
+    return [claimWorkspaceRead(checkoutId), claimBuildCacheWrite(repoId)];
+  }
   if (focused || looksLikeBuildOrTest(command)) {
     const paths = extractLikelyPaths(command);
     if (paths.length === 0) {

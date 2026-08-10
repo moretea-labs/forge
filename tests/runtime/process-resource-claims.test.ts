@@ -43,6 +43,28 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(claims.some((claim) => claim.resourceKey.startsWith('heavy-check:'))).toBe(false);
   });
 
+  test('raw typed tsc --noEmit uses workspace read plus cache instead of a workspace writer', () => {
+    for (const command of [
+      ['tsc', '--noEmit'],
+      ['bun', 'x', 'tsc', '--noEmit'],
+      ['/Users/example/.bun/bin/bun', 'x', '/repo/node_modules/.bin/tsc', '--noEmit', '--pretty', 'false'],
+    ]) {
+      const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
+      expect(claims).toContainEqual({ resourceKey: 'workspace:co1', mode: 'read' });
+      expect(claims).toContainEqual({ resourceKey: 'build-cache:repo1', mode: 'write' });
+      expect(claims.some((claim) => claim.resourceKey === 'workspace:co1' && claim.mode !== 'read')).toBe(false);
+    }
+  });
+
+  test('shell-composed tsc and emitting tsc remain conservative workspace writers', () => {
+    expect(claimsForRepositoryCommand('tsc --noEmit && touch generated.txt', 'repo1', 'co1')).toContainEqual({
+      resourceKey: 'workspace:co1', mode: 'write',
+    });
+    expect(claimsForRepositoryCommand(['bun', 'x', 'tsc'], 'repo1', 'co1')).toContainEqual({
+      resourceKey: 'workspace:co1', mode: 'write',
+    });
+  });
+
   test('a long static check remains compatible with an unrelated workspace reader', () => {
     const claims = claimsForCheck('package:check:type', ['bun', 'run', 'check:type'], 'repo1', 'co1');
     const reader = lease('workspace:co1', 'read');
