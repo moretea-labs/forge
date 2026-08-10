@@ -20,6 +20,7 @@ import {
   spawnManagedProcess,
   toProcessClaims,
   type CheckExecutionMode,
+  processCheckSemanticScopeKey,
   type RunCheckFacadeInput,
   type RunCheckFacadeResult,
 } from '../../execution/process-runtime';
@@ -64,18 +65,9 @@ export function resolveRuntimeCliEntry(controllerHome?: string): string {
 
 export function persistedCheckSemanticScopeKey(
   input: Pick<RunCheckFacadeInput, 'workId' | 'verificationBinding' | 'checkoutId'>,
-  reuseScope: string,
+  reuseScope: 'repository' | 'checkout',
 ): string {
-  const base = reuseScope === 'repository' ? 'repository' : `checkout:${input.checkoutId ?? 'unknown'}`;
-  const binding = input.verificationBinding;
-  const owner = [
-    input.workId ? `work:${input.workId}` : undefined,
-    binding?.executionSessionId ? `execution:${binding.executionSessionId}` : undefined,
-    binding?.editSessionId ? `edit:${binding.editSessionId}:r${binding.editRevision ?? 'unknown'}` : undefined,
-    binding?.issueId ? `issue:${binding.issueId}` : undefined,
-    binding?.taskId ? `task:${binding.taskId}` : undefined,
-  ].filter(Boolean).join('|') || 'unbound';
-  return `${base}|owner:${owner}`;
+  return processCheckSemanticScopeKey(input, reuseScope);
 }
 
 export function resolvePersistedCheckRuntimeExecutable(

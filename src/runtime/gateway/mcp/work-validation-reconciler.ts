@@ -8,6 +8,7 @@ import {
   type WorkHandleState,
 } from '../../control-plane/execution/work-handle-store';
 import { processCheckCompletionReceipt } from '../../execution/process-runtime/check-receipt';
+import { processCheckSemanticScopeKey } from '../../execution/process-runtime/check-facade';
 import { getProcessRecord } from '../../execution/process-runtime/store';
 import { controllerCheckExecutionIdentity } from '../../../cli/controller/check-runner';
 
@@ -181,9 +182,11 @@ export function reconcileWorkValidation(
             definitionDigest: currentIdentity.definitionDigest,
             environmentFingerprint: currentIdentity.environmentFingerprint,
             timeoutMs: currentIdentity.timeoutMs,
-            scopeKey: currentIdentity.reuseScope === 'repository'
-              ? 'repository'
-              : `checkout:${handle.checkoutId}`,
+            scopeKey: processCheckSemanticScopeKey({
+              checkoutId: handle.checkoutId,
+              workId: handle.workId,
+              verificationBinding: { executionSessionId: handle.sessionId },
+            }, currentIdentity.reuseScope),
           },
         } : {}),
       });

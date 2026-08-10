@@ -28,6 +28,7 @@ import {
   classifyRepositoryCommandRoute,
   getProcessRecord,
   processCheckCompletionReceipt,
+  processCheckSemanticScopeKey,
 } from '../../execution/process-runtime';
 import { runPersistedCheckViaProcessRuntime } from './persisted-check-process';
 import {
@@ -911,9 +912,15 @@ export async function routeDurableMcpCall(
             definitionDigest: currentIdentity.definitionDigest,
             environmentFingerprint: currentIdentity.environmentFingerprint,
             timeoutMs: currentIdentity.timeoutMs,
-            scopeKey: currentIdentity.reuseScope === 'repository'
-              ? 'repository'
-              : `checkout:${repository.activeCheckoutId}`,
+            scopeKey: processCheckSemanticScopeKey({
+              checkoutId: repository.activeCheckoutId,
+              verificationBinding: {
+                editSessionId: editSession.sessionId,
+                editRevision: editSession.currentRevision,
+                issueId: editSession.issueId,
+                taskId: editSession.taskId,
+              },
+            }, currentIdentity.reuseScope),
           },
         } : {}),
       });

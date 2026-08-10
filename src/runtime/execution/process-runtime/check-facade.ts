@@ -47,6 +47,22 @@ export interface RunCheckFacadeInput {
   };
 }
 
+export function processCheckSemanticScopeKey(
+  input: Pick<RunCheckFacadeInput, 'workId' | 'verificationBinding' | 'checkoutId'>,
+  reuseScope: 'repository' | 'checkout',
+): string {
+  const base = reuseScope === 'repository' ? 'repository' : `checkout:${input.checkoutId ?? 'unknown'}`;
+  const binding = input.verificationBinding;
+  const owner = [
+    input.workId ? `work:${input.workId}` : undefined,
+    binding?.executionSessionId ? `execution:${binding.executionSessionId}` : undefined,
+    binding?.editSessionId ? `edit:${binding.editSessionId}:r${binding.editRevision ?? 'unknown'}` : undefined,
+    binding?.issueId ? `issue:${binding.issueId}` : undefined,
+    binding?.taskId ? `task:${binding.taskId}` : undefined,
+  ].filter(Boolean).join('|') || 'unbound';
+  return `${base}|owner:${owner}`;
+}
+
 export interface RunCheckFacadeResult {
   mode: CheckExecutionMode;
   checkId: string;
@@ -172,9 +188,11 @@ export async function runCheckViaProcessRuntime(
     environmentFingerprint: semanticCheck.environmentFingerprint,
     timeoutMs: semanticCheck.timeoutMs,
     reuseScope: semanticCheck.reuseScope,
-    scopeKey: semanticCheck.reuseScope === 'repository'
-      ? 'repository'
-      : `checkout:${executionIdentity.checkoutId}`,
+    scopeKey: processCheckSemanticScopeKey({
+      checkoutId: executionIdentity.checkoutId,
+      workId: input.workId,
+      verificationBinding: input.verificationBinding,
+    }, semanticCheck.reuseScope),
   };
 
   const handle = await spawnManagedProcess({
