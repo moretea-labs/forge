@@ -161,21 +161,28 @@ export function resourceKeysOverlap(leftRaw: string, rightRaw: string): boolean 
   return false;
 }
 
-export function claimsConflict(claim: ResourceClaimSpec, lease: ExecutionLease): boolean {
-  const claimKey = normalizeResourceKey(claim.resourceKey);
-  const leaseKey = normalizeResourceKey(lease.resourceKey);
-  const claimRelease = claimKey.startsWith('release:');
-  const leaseRelease = leaseKey.startsWith('release:');
-  if (claimRelease || leaseRelease) {
-    if (claimRelease && leaseRelease) return true;
+export function resourceClaimsConflict(
+  left: Pick<ResourceClaimSpec, 'resourceKey' | 'mode'>,
+  right: Pick<ResourceClaimSpec, 'resourceKey' | 'mode'>,
+): boolean {
+  const leftKey = normalizeResourceKey(left.resourceKey);
+  const rightKey = normalizeResourceKey(right.resourceKey);
+  const leftRelease = leftKey.startsWith('release:');
+  const rightRelease = rightKey.startsWith('release:');
+  if (leftRelease || rightRelease) {
+    if (leftRelease && rightRelease) return true;
     // Release Freeze blocks mutations and external effects but intentionally
     // allows read-only observation and Schedule triage to remain available.
-    const nonReleaseMode = claimRelease ? lease.mode : claim.mode;
+    const nonReleaseMode = leftRelease ? right.mode : left.mode;
     return nonReleaseMode !== 'read';
   }
-  if (!resourceKeysOverlap(claimKey, leaseKey)) return false;
+  if (!resourceKeysOverlap(leftKey, rightKey)) return false;
   // Read + read may share; any write/exclusive conflicts.
-  return claim.mode !== 'read' || lease.mode !== 'read';
+  return left.mode !== 'read' || right.mode !== 'read';
+}
+
+export function claimsConflict(claim: ResourceClaimSpec, lease: ExecutionLease): boolean {
+  return resourceClaimsConflict(claim, lease);
 }
 
 export function normalizeClaims(claims: ResourceClaimSpec[], options: { readOnly?: boolean } = {}): ResourceClaimSpec[] {

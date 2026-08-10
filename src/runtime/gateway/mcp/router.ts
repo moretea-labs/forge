@@ -11,7 +11,7 @@ import { processToolDefinitions } from './process-tools';
 import { resolveRepositorySelection } from '../../../cli/repositories/registry';
 import { executionIdentityForRepository } from '../../control-plane/execution/execution-identity';
 import { getEditSession, recordEditSessionProcessCheckReceipts } from '../../../cli/editing/edit-session';
-import { controllerCheckExecutionIdentity } from '../../../cli/controller/check-runner';
+import { controllerCheckExecutionIdentity, listControllerChecks } from '../../../cli/controller/check-runner';
 import type {
   ExecutionOperationMetadata,
   ExecutionTimeoutPolicy,
@@ -25,6 +25,7 @@ import {
 } from '../../execution/thin-harness';
 import {
   checkRequiresDurableWorkflow,
+  claimsForCheck,
   classifyRepositoryCommandRoute,
   getProcessRecord,
   processCheckCompletionReceipt,
@@ -35,6 +36,7 @@ import {
   isProcessIsolatedReadDiagnostic,
   runReadOnlyDiagnosticViaProcessRuntime,
 } from '../../diagnostics/process-facade';
+import { resourceClaimsConflict } from '../../resources/claims/conflicts';
 
 const DIRECT_REPOSITORY_TOOLS = new Set(['repository_list', 'repository_get', 'repository_workbench', 'repository_command_preview']);
 export const RETIRED_AGENT_OPERATIONS = new Set([
@@ -840,35 +842,76 @@ export async function routeDurableMcpCall(
       });
       return result({ accepted: true, mode: 'direct', path: 'process_direct', completed: true, ok: true, session: checked, receipts: [] });
     }
-    // Parallel-first: submit every check concurrently and let Process Runtime
-    // arbitrate conflicts through Resource Claims / Leases. The bounded lease
-    // wait serializes genuinely conflicting checks instead of failing or
-    // building a Gateway-side conflict grouping.
+    // Parallel-first without a timeout-based correctness tradeoff. Build
+    // conflict-connected lanes from the same Resource Claim model used by the
+    // Lease store. Different lanes run concurrently; checks in one lane retain
+    // the historical managed-process behavior: once a check is still running,
+    // stop that lane and continue it on the caller's retry. This avoids turning
+    // a legitimate long serialization wait into PROCESS_LEASE_CONFLICT.
+    const availableChecks = new Map(listControllerChecks(repository.canonicalRoot).map((check) => [check.id, check] as const));
+    const claimSets = checkIds.map((checkId) => {
+      const check = availableChecks.get(checkId);
+      return claimsForCheck(
+        checkId,
+        check?.command,
+        repository.repoId,
+        repository.activeCheckoutId,
+        check?.effects,
+      );
+    });
+    const lanes: number[][] = [];
+    const assigned = new Set<number>();
+    for (let start = 0; start < checkIds.length; start += 1) {
+      if (assigned.has(start)) continue;
+      const lane: number[] = [];
+      const queue = [start];
+      assigned.add(start);
+      while (queue.length > 0) {
+        const current = queue.shift()!;
+        lane.push(current);
+        for (let candidate = 0; candidate < checkIds.length; candidate += 1) {
+          if (assigned.has(candidate)) continue;
+          const conflicts = claimSets[current]!.some((left) =>
+            claimSets[candidate]!.some((right) => resourceClaimsConflict(left, right)));
+          if (!conflicts) continue;
+          assigned.add(candidate);
+          queue.push(candidate);
+        }
+      }
+      lanes.push(lane.sort((left, right) => left - right));
+    }
     const leaseWaitMs = typeof args.lease_wait_ms === 'number' && Number.isFinite(args.lease_wait_ms)
       ? Math.max(0, Math.min(Math.trunc(args.lease_wait_ms), 15_000))
-      : 5_000;
-    const facades = await Promise.all(checkIds.map(async (checkId, index) => {
-      const checkRequestId = `${requestBase}:check:${index + 1}:${createHash('sha256').update(checkId).digest('hex').slice(0, 12)}`;
-      return runPersistedCheckViaProcessRuntime({
-        controllerHome: ctx.controllerHome,
-        repoId: repository.repoId,
-        checkoutId: repository.activeCheckoutId,
-        repoRoot: repository.canonicalRoot,
-        executionIdentity: executionIdentityForRepository(repository),
-        checkId,
-        timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
-        interactiveWaitMs: typeof args.interactive_wait_ms === 'number' ? args.interactive_wait_ms : undefined,
-        requestId: checkRequestId,
-        commandId: checkRequestId,
-        verificationBinding: {
-          editSessionId: editSession.sessionId,
-          editRevision: editSession.currentRevision,
-          issueId: editSession.issueId,
-          taskId: editSession.taskId,
-        },
-        leaseWaitMs,
-      });
+      : 0;
+    const facadesByIndex: Array<Awaited<ReturnType<typeof runPersistedCheckViaProcessRuntime>> | undefined> = new Array(checkIds.length);
+    await Promise.all(lanes.map(async (lane) => {
+      for (const index of lane) {
+        const checkId = checkIds[index]!;
+        const checkRequestId = `${requestBase}:check:${index + 1}:${createHash('sha256').update(checkId).digest('hex').slice(0, 12)}`;
+        const facade = await runPersistedCheckViaProcessRuntime({
+          controllerHome: ctx.controllerHome,
+          repoId: repository.repoId,
+          checkoutId: repository.activeCheckoutId,
+          repoRoot: repository.canonicalRoot,
+          executionIdentity: executionIdentityForRepository(repository),
+          checkId,
+          timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
+          interactiveWaitMs: typeof args.interactive_wait_ms === 'number' ? args.interactive_wait_ms : undefined,
+          requestId: checkRequestId,
+          commandId: checkRequestId,
+          verificationBinding: {
+            editSessionId: editSession.sessionId,
+            editRevision: editSession.currentRevision,
+            issueId: editSession.issueId,
+            taskId: editSession.taskId,
+          },
+          leaseWaitMs,
+        });
+        facadesByIndex[index] = facade;
+        if (facade.mode === 'durable' || !facade.process || !facade.process.completed) break;
+      }
     }));
+    const facades = facadesByIndex.filter((facade): facade is Awaited<ReturnType<typeof runPersistedCheckViaProcessRuntime>> => Boolean(facade));
     const durableFailure = facades.find((facade) => facade.mode === 'durable' || !facade.process);
     if (durableFailure) {
       return result({

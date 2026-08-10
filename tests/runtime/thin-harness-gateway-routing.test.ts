@@ -782,8 +782,8 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       checks: {
         probeA: sleepCheck('independent A', 'A', 1200, { reads: ['src/a.ts'] }),
         probeB: sleepCheck('independent B', 'B', 1200, { reads: ['src/b.ts'] }),
-        writeA: sleepCheck('conflicting A', 'WA', 800, { writes: ['src/shared.ts'] }),
-        writeB: sleepCheck('conflicting B', 'WB', 800, { writes: ['src/shared.ts'] }),
+        writeA: sleepCheck('conflicting A', 'WA', 800, { reads: [], writes: ['src/shared.ts'] }),
+        writeB: sleepCheck('conflicting B', 'WB', 800, { reads: [], writes: ['src/shared.ts'] }),
       },
     }, null, 2));
     const session = beginEditSession(fx.repoRoot, {
@@ -805,18 +805,32 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       check_ids: checkIds,
       request_id: requestId,
       interactive_wait_ms: interactiveWaitMs,
+      // Deliberately tiny: correctness must not depend on waiting long enough
+      // for a conflicting lease. The conflict lane should submit writeB only
+      // after writeA is already terminal on a later retry.
+      lease_wait_ms: 1,
     });
     const checkIds = ['probeA', 'probeB', 'writeA', 'writeB'];
     const first = await verify(checkIds, 'verify-parallel-evidence', 0);
-    const processes = (first?.structuredContent as { processes: Array<{ processId: string }> }).processes;
-    expect(processes.length).toBe(checkIds.length);
-    await Promise.all(processes.map((entry) => waitForProcess(
+    const firstProcesses = (first?.structuredContent as { processes: Array<{ processId: string }> }).processes;
+    // Independent A/B plus the first member of the write-conflict lane start now.
+    // writeB is intentionally not submitted while writeA remains active.
+    expect(firstProcesses.length).toBe(3);
+    await Promise.all(firstProcesses.map((entry) => waitForProcess(
       fx.controllerHome,
       fx.repository.repoId,
       entry.processId,
       { timeoutMs: 20_000 },
     )));
-    // Retry coalesces onto the same persisted Process records and completes.
+
+    // Retry reuses completed A/B/writeA and advances the conflict lane to writeB.
+    const second = await verify(checkIds, 'verify-parallel-evidence', 0);
+    const secondProcesses = (second?.structuredContent as { processes: Array<{ processId: string }> }).processes;
+    expect(secondProcesses.length).toBe(checkIds.length);
+    const writeBProcess = secondProcesses[3]!;
+    await waitForProcess(fx.controllerHome, fx.repository.repoId, writeBProcess.processId, { timeoutMs: 20_000 });
+
+    // Final retry coalesces onto all persisted Process records and completes.
     const retried = await verify(checkIds, 'verify-parallel-evidence', 50);
     const payload = retried?.structuredContent as Record<string, unknown>;
     expect(retried?.isError).not.toBe(true);
@@ -835,8 +849,9 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       Number(readFileSync(marker('WA'), 'utf8')),
       Number(readFileSync(marker('WB'), 'utf8')),
     ];
-    // Conflicting workspace-write claims serialize: the second 800ms check only
-    // starts after the first released its lease, so executions do not overlap.
+    // Conflicting workspace-write claims serialize without relying on the 1ms
+    // lease-wait budget, so long-running conflicting checks cannot fail merely
+    // because their predecessor legitimately takes longer than a fixed timeout.
     expect(Math.abs(conflictStart[0]! - conflictStart[1]!)).toBeGreaterThanOrEqual(700);
   });
 

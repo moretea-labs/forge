@@ -9,11 +9,12 @@ export function mcpServerInstructions(profile: McpProfileName): string {
   if (profile === 'controller') {
     return [
       ...common,
-      'Act as the project controller: inspect code and documents, choose the smallest valid work mode, execute bounded changes directly, and use durable Issues only for complex, investigative, dependency-aware, parallel, or long-running work.',
-      'Before creating an Issue for an ordinary change, assess whether the request is a bounded direct edit. Known small code, configuration, and documentation changes should use read_repository_file -> begin_edit_session -> apply_patch -> get_edit_session_diff -> finish_edit_session when tied to a Task, or verify_edit_session -> finalize_edit_session for session-only edits.',
-      'Bind direct edits to a purpose and narrow allowed paths, preserve SHA preconditions, persist the patch, run focused checks, and finish, finalize, or rollback the session. A created Issue is not a completed result.',
-      'Do not dispatch one large Issue as one agent prompt. Prefer small Tasks with explicit acceptance criteria, path scope, dependencies, and checks. Never accept a Task until the Verification Gate records passing checks and criterion-level evidence.',
-      'Do not commit, merge, push, alter credentials, or modify protected CI and lock files through controller tools.',
+      'Use the shortest valid execution path. Investigation or parallelism alone must not create durable Work, Issues, Plans, Agents, isolation, or worktrees; escalate only for actual recovery, dependency, risk, scope, external-effect, or long-running requirements.',
+      'For bounded work, gather only task-relevant context once, then act through the exposed surface. Prefer repository_command_execute for ordinary local Git and shell operations, repository_safe_patch_apply for bounded source changes, and rh_work only when the task genuinely requires durable orchestration.',
+      'Do not preflight unrelated Git history, prior Work, plugins, permissions, TCC, browser mode, maintenance, or recovery state. Inspect them only when the requested operation depends on them or a real failure points there.',
+      'Run independent reads, searches, diagnostics, checks, repositories, checkouts, and tasks concurrently by default. Serialize only on a real dependency or Resource Claim conflict, and reuse existing projections, process handles, and check evidence instead of repeating successful observations.',
+      'Validation must be proportional to the change: run focused checks first and expand only when risk or failure evidence justifies it. Do not perform maintenance or deep runtime diagnosis before ordinary work unless execution is actually blocked.',
+      'After a bounded successful change, finish the requested delivery directly. Avoid additional investigation whose result cannot change implementation or acceptance, and do not invoke hidden atomic compatibility tools merely because they exist in the full profile.',
     ].join(' ');
   }
   if (profile === 'orchestrator') {
