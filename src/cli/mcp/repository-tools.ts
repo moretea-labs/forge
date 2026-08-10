@@ -36,11 +36,9 @@ import {
   writeRepositoryGitStatusSample,
 } from '../../runtime/projections/git-status-sampler';
 import {
-  executeFast,
   executeLightweightLanes,
   executeRepositoryBatch,
   integratePatchProposals,
-  isFastEligibleTool,
   listFastReceipts,
   readFastReceipt,
   routeExecution,
@@ -987,79 +985,6 @@ export async function callRepositoryTool(
             message: 'Ephemeral workspaces support bounded local Direct/Managed execution only. Register the directory before durable, remote, release, or resumable Work.',
             suggestedOperation: 'repository_register',
           });
-        }
-        // Historical compatibility code is intentionally disabled. A typed
-        // runtime flag preserves legacy branch compilation/narrowing without
-        // permitting a second executor after Process Runtime failure.
-        const legacyFastFallbackEnabled: boolean = false;
-        if (legacyFastFallbackEnabled && !forceDurable && routingDecision.mode === 'fast' && isFastEligibleTool('repository_command_execute', {
-          command: args.command,
-          timeout_ms: timeoutMs,
-          mode: typeof args.mode === 'string' ? args.mode : 'auto',
-        })) {
-          const fast = await executeFast(
-            { controllerHome, repository, includeLatencyBreakdown: args.include_latency_breakdown === true },
-            {
-              operation: 'repository_command_execute',
-              mode: 'fast',
-              input: {
-                command: args.command,
-                cwd: typeof args.cwd === 'string' ? args.cwd : undefined,
-                approval_token: typeof args.approval_token === 'string' ? args.approval_token : undefined,
-                approval_request_id: typeof args.approval_request_id === 'string' ? args.approval_request_id : undefined,
-                timeout_ms: timeoutMs,
-              },
-              timeoutMs,
-            },
-          );
-          if (fast.escalation) {
-            return result({
-              mode: 'durable',
-              path: 'durable',
-              routing: {
-                path: 'durable',
-                reasons: fast.decision.reasons,
-                decision: fast.decision,
-              },
-              reason: fast.escalation.reason,
-              suggestedOperation: fast.escalation.suggestedOperation,
-              decision: fast.decision,
-              message: 'Fast Path declined before execution. Re-issue via Durable Work / Local Job explicitly.',
-              latency: { totalMs: fast.latency.totalMs },
-            });
-          }
-          const fastExecution = fast.result && typeof fast.result === 'object'
-            ? fast.result as Record<string, unknown>
-            : {};
-          const fastOutput = compactCommandOutput(
-            typeof fastExecution.stdout === 'string' ? fastExecution.stdout : undefined,
-            typeof fastExecution.stderr === 'string' ? fastExecution.stderr : undefined,
-            { ok: fast.ok },
-          );
-          const fastPayload = {
-            accepted: fast.ok,
-            mode: 'fast',
-            path: 'fast',
-            routing: compactRoutingSummary({ path: 'fast', mode: 'fast', reasons: fast.decision.reasons }),
-            repoId: repository.repoId,
-            checkoutId: repository.activeCheckoutId,
-            receiptId: (() => {
-              const receipt = fast.receipt as unknown as Record<string, unknown> | undefined;
-              return typeof receipt?.receiptId === 'string'
-                ? receipt.receiptId
-                : typeof receipt?.id === 'string'
-                  ? receipt.id
-                  : undefined;
-            })(),
-            ok: fast.ok,
-            exitCode: typeof fastExecution.exitCode === 'number' ? fastExecution.exitCode : undefined,
-            status: typeof fastExecution.status === 'string' ? fastExecution.status : undefined,
-            ...fastOutput,
-            durableSideEffects: fast.durableSideEffects,
-            latency: args.include_latency_breakdown === true ? fast.latency : { totalMs: fast.latency.totalMs },
-            next: 'Fast Path completed without Local Job / ExecutionJob / Worker.',
-          };
-          return fast.ok ? result(fastPayload) : { ...result(fastPayload), isError: true };
         }
         // Durable Worker calls skip Process/Fast above, then use the Local Bridge
         // compatibility projection below for writes/long commands so the worker
