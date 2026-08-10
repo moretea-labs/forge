@@ -17,6 +17,7 @@ describe('Desktop Operator trusted external registration', () => {
       'desktop.observe',
       'desktop.interact',
       'desktop.capture',
+      'desktop.clipboard',
       'desktop.batch',
     ]);
     expect(input.actions.map((action) => action.actionId)).toEqual([
@@ -26,6 +27,10 @@ describe('Desktop Operator trusted external registration', () => {
       'desktop_press',
       'desktop_type_text',
       'desktop_key',
+      'desktop_clipboard_read',
+      'desktop_clipboard_write',
+      'desktop_copy',
+      'desktop_paste',
       'desktop_open_url',
       'desktop_screenshot',
       'desktop_batch',
@@ -34,11 +39,19 @@ describe('Desktop Operator trusted external registration', () => {
     for (const action of input.actions.filter((action) => action.readOnly)) {
       expect(action.risk).toBe('readonly');
     }
-    for (const action of input.actions.filter((action) => ['desktop_press', 'desktop_type_text', 'desktop_key', 'desktop_open_url', 'desktop_batch'].includes(action.actionId))) {
+    for (const action of input.actions.filter((action) => ['desktop_press', 'desktop_type_text', 'desktop_key', 'desktop_clipboard_write', 'desktop_copy', 'desktop_paste', 'desktop_open_url', 'desktop_batch'].includes(action.actionId))) {
       expect(action.risk).toBe('workspace_write');
       expect(action.confirmation).toBe('authorization');
     }
     expect(input.actions.find((action) => action.actionId === 'desktop_screenshot')?.confirmation).toBe('authorization');
+    const clipboardRead = input.actions.find((action) => action.actionId === 'desktop_clipboard_read');
+    expect(clipboardRead).toMatchObject({ readOnly: true, risk: 'readonly', confirmation: 'authorization', scopes: ['desktop.clipboard'] });
+    for (const actionId of ['desktop_copy', 'desktop_paste']) {
+      const action = input.actions.find((candidate) => candidate.actionId === actionId);
+      expect(action?.argumentsSchema?.required).toEqual(['interaction_id']);
+      expect(action?.description).toContain('foregrounds the target application');
+    }
+    expect(input.permissions.some((permission) => permission.scope === 'desktop.clipboard' && permission.granted)).toBe(true);
   });
 
   test('binds optional provider lifecycle to one verified user LaunchAgent identity', () => {
