@@ -92,7 +92,7 @@ function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'desktop_observe',
       title: 'Observe desktop session',
-      description: 'Read a bounded Accessibility snapshot and window list for one interaction session.',
+      description: 'Read a bounded Accessibility snapshot and window list, optionally rooted at one previously observed or selector-matched subtree.',
       readOnly: true,
       risk: 'readonly',
       confirmation: 'none',
@@ -108,6 +108,7 @@ function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
           max_depth: { type: 'integer', minimum: 1, maximum: 20 },
           max_nodes: { type: 'integer', minimum: 1, maximum: 5_000 },
           include_values: { type: 'boolean' },
+          root_selector: SELECTOR_SCHEMA,
         },
         required: ['interaction_id'],
         additionalProperties: false,
