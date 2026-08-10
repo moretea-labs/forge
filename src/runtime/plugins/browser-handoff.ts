@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { spawn } from 'child_process';
 import { closeSync, existsSync, openSync, readFileSync } from 'fs';
-import { dirname, join } from 'path';
+import { basename, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { writeJsonAtomic } from '../shared/json-files';
 import { resolveBunExecutable } from '../shared/process-environment';
@@ -83,9 +83,10 @@ function defaultPidAlive(pid: number | undefined): boolean {
 export function resolveBrowserHandoffHostExecutable(
   execPath: string = process.execPath,
   env: NodeJS.ProcessEnv = process.env,
-  bunRuntime = Boolean(process.versions.bun),
 ): string {
-  return bunRuntime ? resolveBunExecutable(execPath, env) : execPath;
+  const executable = basename(execPath).toLowerCase();
+  if (executable === 'node' || executable === 'node.exe' || executable === 'nodejs') return execPath;
+  return resolveBunExecutable(execPath, env);
 }
 
 const defaultHooks: BrowserHandoffRuntimeHooks = {

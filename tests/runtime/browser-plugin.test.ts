@@ -1492,9 +1492,10 @@ describe('browser plugin', () => {
       .toThrow('PLUGIN_BROWSER_NODE_UNAVAILABLE');
   });
 
-  test('uses a real Bun executable for the browser handoff host inside compiled Bun runtime', () => {
-    expect(resolveBrowserHandoffHostExecutable('/opt/forge/forge-runtime', { FORGE_BUN_EXECUTABLE: 'bun' }, true)).toBe('bun');
-    expect(resolveBrowserHandoffHostExecutable('/usr/bin/node', {}, false)).toBe('/usr/bin/node');
+  test('uses a real Bun executable for the browser handoff host when the compiled executable is not Node', () => {
+    expect(resolveBrowserHandoffHostExecutable('/opt/forge/forge-runtime', { FORGE_BUN_EXECUTABLE: 'bun' })).toBe('bun');
+    expect(resolveBrowserHandoffHostExecutable('/usr/bin/node', {})).toBe('/usr/bin/node');
+    expect(resolveBrowserHandoffHostExecutable('/usr/bin/nodejs', {})).toBe('/usr/bin/nodejs');
   });
 
   test('resolves the Browser Node bridge host from the immutable compiled release before virtual bunfs source', () => {
