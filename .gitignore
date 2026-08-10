@@ -124,6 +124,7 @@ _ops/
 
 # forge local browser/runtime scratch
 .forge/browser/
+.forge/interactions/
 .forge/repair-backups/
 
 # forge hardening: runtime scratch, temp, review artifacts, watchdog state

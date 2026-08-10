@@ -87,6 +87,7 @@ describe("create-project-dirs runtime smoke", () => {
       expect(gitignore).toContain(".claude/.plan-state/");
       expect(gitignore).toContain(".ai/harness/chatgpt/bridge-extension/");
       expect(gitignore).toContain(".forge/chatgpt-browser.local.json");
+      expect(gitignore).toContain(".forge/interactions/");
       expect(gitignore).toContain("# forge generated helper wrappers");
       expect(gitignore).toContain("scripts/check-task-workflow.sh");
       expect(gitignore).toContain("scripts/prepare-codex-handoff.sh");

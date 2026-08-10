@@ -69,6 +69,7 @@ tasks/.current.md.tmp.*
 !.ai/harness/triage/.gitkeep
 .forge/chatgpt-browser.local.json
 .forge/chatgpt-browser.tokens.json
+.forge/interactions/
 .codex/*
 .claude/.active-plan
 .claude/.plan-state/
