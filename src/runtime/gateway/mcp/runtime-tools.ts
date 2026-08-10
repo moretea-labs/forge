@@ -2476,7 +2476,6 @@ async function runFacadeRepair(
     && !elevatedRepair
     && maintenanceSnapshot
     && maintenanceSnapshot.candidates.length > 0
-    && maintenanceSnapshot.candidates.every((candidate) => candidate.safe)
   ) {
     const applied = applyRuntimeMaintenance(repository, ctx.controllerHome, {
       actionId: 'full_maintenance_pass',
