@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { createHash } from 'crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import { assertRuntimeReleaseFiles, stageRuntimeRelease } from '../../src/runtime/root/release-materialize';
+import { assertRuntimeReleaseFiles, stageRuntimeRelease, stageRuntimeReleaseFromCandidateSource } from '../../src/runtime/root/release-materialize';
 import { loadRuntimeReleaseManifest } from '../../src/runtime/root/release-manifest';
 
 const roots: string[] = [];
@@ -17,12 +18,14 @@ function sourceFixture() {
   roots.push(root, controllerHome);
   mkdirSync(join(root, 'src/runtime/plugins'), { recursive: true });
   mkdirSync(join(root, 'bin'), { recursive: true });
+  mkdirSync(join(root, 'scripts'), { recursive: true });
   writeFileSync(join(root, 'README.md'), 'fixture\n');
   writeFileSync(join(root, 'src/runtime/plugins/browser-node-bridge-host.ts'), 'console.log("host");\n');
   writeFileSync(join(root, 'src/runtime/plugins/browser-handoff-host.ts'), 'console.log("handoff");\n');
   writeFileSync(join(root, 'src/runtime/plugins/browser-automation-helper.ts'), 'console.log("browser-automation-helper");\n');
   writeFileSync(join(root, 'src/runtime/plugins/external-unix-socket-probe.cjs'), 'console.log("probe");\n');
   writeFileSync(join(root, 'bin/forge-desktop-helper.mjs'), '#!/usr/bin/env node\nconsole.log("desktop-helper");\n');
+  writeFileSync(join(root, 'scripts/stage-runtime-release.ts'), '// candidate-owned stager fixture\n');
   spawnSync('git', ['init', '-b', 'main'], { cwd: root, stdio: 'ignore' });
   spawnSync('git', ['config', 'user.email', 'forge-test@example.invalid'], { cwd: root, stdio: 'ignore' });
   spawnSync('git', ['config', 'user.name', 'Forge Test'], { cwd: root, stdio: 'ignore' });
@@ -43,7 +46,41 @@ function materializeFakeCodeGraphRuntime(input: {
   return { ok: true };
 }
 
+function sha256Text(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
 describe('runtime release materialization', () => {
+  test('accepts a first-generation candidate release with a parent-unknown sidecar', () => {
+    const { root, controllerHome } = sourceFixture();
+    const sourceCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
+    const releaseId = `future-${sourceCommit}`, releasePath = join(controllerHome, 'runtime', 'releases', releaseId);
+    const runtime = 'candidate-runtime', artifactIdentity = `sha256:${sha256Text(runtime)}`;
+    mkdirSync(releasePath, { recursive: true });
+    writeFileSync(join(releasePath, 'forge-runtime'), runtime); writeFileSync(join(releasePath, 'future-sidecar-v2'), 'future');
+    const manifestPath = join(releasePath, 'manifest.json');
+    const manifestText = `${JSON.stringify({ schemaVersion: 1, releaseId, artifactIdentity, entrypoint: 'forge-runtime', futureSidecarEntrypoint: 'future-sidecar-v2', arguments: [], configurationSchemaVersion: 1, controllerHome, databaseSchemaCompatibility: { minimum: 1, maximum: 1 }, workerProtocolVersion: 1, sourceCommit, createdAt: '2026-08-10T00:00:00.000Z' })}\n`;
+    writeFileSync(manifestPath, manifestText);
+    const staged = stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root }, { runCandidateStager: (request) => {
+      expect([request.scriptPath, request.sourceRoot, request.expectedHead]).toEqual([join(root, 'scripts', 'stage-runtime-release.ts'), root, sourceCommit]);
+      return { ok: true, stdout: JSON.stringify({ schemaVersion: 1, releasePath, manifestPath, releaseId, artifactIdentity, manifestSha256: sha256Text(manifestText), sourceCommit, futureSidecarEntrypoint: 'future-sidecar-v2' }) };
+    } });
+    expect(existsSync(join(staged.releasePath, 'future-sidecar-v2'))).toBe(true);
+    expect(loadRuntimeReleaseManifest(staged.manifestPath, controllerHome).releaseId).toBe(releaseId);
+  });
+
+  test.each([
+    ['outside release root', 'RUNTIME_RELEASE_CANDIDATE_PATH_OUTSIDE_RELEASE_ROOT', false],
+    ['different source HEAD', 'RUNTIME_RELEASE_CANDIDATE_SOURCE_MISMATCH', true],
+  ])('rejects candidate receipt with %s', (_case, error, wrongHead) => {
+    const { root, controllerHome } = sourceFixture();
+    const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
+    const releaseId = wrongHead ? 'wrong-head' : 'outside-release';
+    const releasePath = wrongHead ? join(controllerHome, 'runtime', 'releases', releaseId) : mkdtempSync(join(tmpdir(), 'forge-runtime-release-outside-'));
+    if (!wrongHead) roots.push(releasePath);
+    expect(() => stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root }, { runCandidateStager: () => ({ ok: true, stdout: JSON.stringify({ schemaVersion: 1, releasePath, manifestPath: join(releasePath, 'manifest.json'), releaseId, artifactIdentity: `sha256:${'a'.repeat(64)}`, manifestSha256: 'c'.repeat(64), sourceCommit: wrongHead ? 'b'.repeat(40) : head }) }) })).toThrow(error);
+  });
+
   test('stages and hashes Browser and Desktop helper artifacts beside immutable runtime executables', () => {
     const { root, controllerHome } = sourceFixture();
     const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {

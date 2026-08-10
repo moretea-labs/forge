@@ -12,7 +12,7 @@ import { observeRuntimeStatus } from '../../runtime/root/status';
 import { readMcpServiceBearerToken } from '../mcp/auth';
 import { publishRuntimeRelease } from '../../runtime/root/release-store';
 import { installForgeRuntimeService } from '../../runtime/root/service';
-import { assertRuntimeReleaseFiles, stageRuntimeRelease } from '../../runtime/root/release-materialize';
+import { assertRuntimeReleaseFiles, stageRuntimeReleaseFromCandidateSource } from '../../runtime/root/release-materialize';
 
 function output(value: unknown, json = true): void {
   console.log(json ? JSON.stringify(value, null, 2) : String(value));
@@ -52,7 +52,7 @@ export function buildRuntimeCommand(): Command {
       const port = Number(opts.port);
       if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error('RUNTIME_SERVICE_PORT_INVALID');
 
-      const staged = stageRuntimeRelease({ controllerHome: home, sourceRoot: repoRoot });
+      const staged = stageRuntimeReleaseFromCandidateSource({ controllerHome: home, sourceRoot: repoRoot });
       assertRuntimeReleaseFiles(staged);
       if (opts.stageOnly === true) {
         output({

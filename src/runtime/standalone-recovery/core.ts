@@ -6,7 +6,7 @@ import { basename, dirname, isAbsolute, join, resolve } from 'path';
 import { observeRuntimeStatus } from '../root/status';
 import { ensureForgeRuntimeLaunchAgentContract, forgeRuntimeServicePaths, readForgeRuntimeServiceConfig } from '../root/service';
 import { loadRuntimeReleaseManifest } from '../root/release-manifest';
-import { assertRuntimeReleaseFiles, stageRuntimeRelease, type StagedRuntimeRelease } from '../root/release-materialize';
+import { assertRuntimeReleaseFiles, stageRuntimeReleaseFromCandidateSource, type StagedRuntimeRelease } from '../root/release-materialize';
 import {
   publishRuntimeRelease,
   readRuntimeReleaseAuthority,
@@ -1546,7 +1546,7 @@ export async function activateRuntimeRelease(
 }
 
 export interface ConfiguredRuntimeActivationDependencies {
-  stage?: typeof stageRuntimeRelease;
+  stage?: typeof stageRuntimeReleaseFromCandidateSource;
   activate?: (config: RecoveryConfig, manifestPath: string) => Promise<RuntimeReleaseActivationResult>;
 }
 
@@ -1560,7 +1560,7 @@ export async function stageAndActivateConfiguredRuntimeRelease(
   }
   let staged: StagedRuntimeRelease;
   try {
-    staged = (dependencies.stage ?? stageRuntimeRelease)({ controllerHome: config.controllerHome, sourceRoot });
+    staged = (dependencies.stage ?? stageRuntimeReleaseFromCandidateSource)({ controllerHome: config.controllerHome, sourceRoot });
     assertRuntimeReleaseFiles(staged);
   } catch (error) {
     const detail = error instanceof Error ? error.message : 'Runtime release staging failed';

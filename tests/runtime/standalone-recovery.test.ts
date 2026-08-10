@@ -294,15 +294,20 @@ test('standalone Recovery restarts only the configured primary Connector service
   expect(commands).toContainEqual(['launchctl', 'kickstart', '-k', 'gui/501/com.moretea.forge.mcp-gateway']);
 });
 
-test('standalone Recovery stages only its configured Runtime source and hands activation to the transaction', async () => {
+test('standalone Recovery stages only its configured Runtime source and hands a first-generation future sidecar release to activation', async () => {
   const home = controllerHome();
   const sourceRoot = join(home, 'source');
   mkdirSync(sourceRoot, { recursive: true });
   const releasePath = join(home, 'runtime', 'releases', 'release-new');
   mkdirSync(releasePath, { recursive: true });
   const manifestPath = join(releasePath, 'manifest.json');
-  writeFileSync(manifestPath, '{}');
+  writeFileSync(manifestPath, JSON.stringify({
+    schemaVersion: 1,
+    releaseId: 'release-new',
+    futureSidecarEntrypoint: 'future-sidecar-v2',
+  }));
   writeFileSync(join(releasePath, 'forge-runtime'), 'binary');
+  writeFileSync(join(releasePath, 'future-sidecar-v2'), 'future-sidecar');
   const config = createRecoveryConfig(home, { primaryRuntimeSourceRoot: sourceRoot });
   let stagedFrom = '';
   let activatedManifest = '';
@@ -320,6 +325,7 @@ test('standalone Recovery stages only its configured Runtime source and hands ac
     },
     activate: async (_config, path) => {
       activatedManifest = path;
+      expect(existsSync(join(dirname(path), 'future-sidecar-v2'))).toBe(true);
       return { ok: true, attempted: true, detail: 'activated' };
     },
   });

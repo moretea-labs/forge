@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'crypto';
 import { createRequire } from 'module';
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
+import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { resolveBunExecutable } from '../shared/process-environment';
@@ -49,6 +49,26 @@ export interface RuntimeReleaseMaterializerDependencies {
   }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
 }
 
+export interface CandidateRuntimeStageReceiptV1 {
+  schemaVersion: 1;
+  releasePath: string;
+  manifestPath: string;
+  releaseId: string;
+  artifactIdentity: string;
+  manifestSha256: string;
+  sourceCommit: string;
+}
+
+export interface CandidateRuntimeReleaseStagerDependencies {
+  runCandidateStager?: (input: {
+    bunExecutable: string;
+    scriptPath: string;
+    sourceRoot: string;
+    controllerHome: string;
+    expectedHead: string;
+  }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
+}
+
 function gitText(root: string, args: string[]): string {
   const result = runProcess('git', ['-C', root, ...args], { timeoutMs: 15_000, maxOutputBytes: 128 * 1024 });
   if (!result.ok) throw new Error(`RUNTIME_RELEASE_GIT_FAILED: ${result.stderr || result.stdout || result.error}`.slice(0, 2_000));
@@ -71,6 +91,128 @@ function sha256Directory(root: string): string {
   };
   visit(root);
   return hash.digest('hex');
+}
+
+function requireCandidateStageString(value: unknown, field: keyof CandidateRuntimeStageReceiptV1): string {
+  if (typeof value !== 'string' || !value.trim()) throw new Error(`RUNTIME_RELEASE_CANDIDATE_RECEIPT_INVALID: ${field} is required`);
+  return value.trim();
+}
+
+function parseCandidateStageReceipt(stdout: string): CandidateRuntimeStageReceiptV1 {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout.trim());
+  } catch (error) {
+    throw new Error(`RUNTIME_RELEASE_CANDIDATE_RECEIPT_INVALID: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('RUNTIME_RELEASE_CANDIDATE_RECEIPT_INVALID: root must be an object');
+  }
+  const value = parsed as Record<string, unknown>;
+  if (value.schemaVersion !== 1) throw new Error('RUNTIME_RELEASE_CANDIDATE_RECEIPT_INVALID: schemaVersion must be 1');
+  const receipt: CandidateRuntimeStageReceiptV1 = {
+    schemaVersion: 1,
+    releasePath: requireCandidateStageString(value.releasePath, 'releasePath'),
+    manifestPath: requireCandidateStageString(value.manifestPath, 'manifestPath'),
+    releaseId: requireCandidateStageString(value.releaseId, 'releaseId'),
+    artifactIdentity: requireCandidateStageString(value.artifactIdentity, 'artifactIdentity'),
+    manifestSha256: requireCandidateStageString(value.manifestSha256, 'manifestSha256'),
+    sourceCommit: requireCandidateStageString(value.sourceCommit, 'sourceCommit'),
+  };
+  if (!/^sha256:[a-f0-9]{64}$/i.test(receipt.artifactIdentity)) {
+    throw new Error('RUNTIME_RELEASE_CANDIDATE_RECEIPT_INVALID: artifactIdentity must be sha256:<64 hex>');
+  }
+  if (!/^[a-f0-9]{64}$/i.test(receipt.manifestSha256)) {
+    throw new Error('RUNTIME_RELEASE_CANDIDATE_RECEIPT_INVALID: manifestSha256 must be 64 hex');
+  }
+  if (!/^[a-f0-9]{40}$/i.test(receipt.sourceCommit)) {
+    throw new Error('RUNTIME_RELEASE_CANDIDATE_RECEIPT_INVALID: sourceCommit must be a Git commit');
+  }
+  return receipt;
+}
+
+/**
+ * Run the release materializer from the candidate source tree itself. The
+ * long-lived caller deliberately consumes only a stable, minimal receipt; it
+ * does not need to understand sidecars or optional manifest fields introduced
+ * by a newer candidate. This prevents release packaging from lagging one
+ * Runtime generation behind the source being activated.
+ */
+export function stageRuntimeReleaseFromCandidateSource(input: {
+  controllerHome: string;
+  sourceRoot: string;
+}, dependencies: CandidateRuntimeReleaseStagerDependencies = {}): StagedRuntimeRelease {
+  const controllerHome = resolve(input.controllerHome);
+  const sourceRoot = resolve(input.sourceRoot);
+  const expectedHead = gitText(sourceRoot, ['rev-parse', '--verify', 'HEAD']);
+  if (!/^[a-f0-9]{40}$/i.test(expectedHead)) throw new Error('RUNTIME_RELEASE_SOURCE_COMMIT_INVALID');
+  const dirtyBefore = gitText(sourceRoot, ['status', '--porcelain=v1', '--untracked-files=no']);
+  if (dirtyBefore) throw new Error(`RUNTIME_RELEASE_DIRTY_SOURCE: ${dirtyBefore.split(/\r?\n/).slice(0, 20).join(', ')}`);
+
+  const scriptPath = join(sourceRoot, 'scripts', 'stage-runtime-release.ts');
+  if (!existsSync(scriptPath) || lstatSync(scriptPath).isSymbolicLink() || !lstatSync(scriptPath).isFile()) {
+    throw new Error(`RUNTIME_RELEASE_CANDIDATE_STAGER_MISSING: ${scriptPath}`);
+  }
+  const configured = process.env.FORGE_BUN_BIN?.trim();
+  const bunExecutable = configured || resolveBunExecutable(process.execPath, process.env);
+  const runCandidateStager = dependencies.runCandidateStager ?? ((request) => runProcess(request.bunExecutable, [
+    request.scriptPath,
+    '--controller-home', request.controllerHome,
+    '--source-root', request.sourceRoot,
+    '--expected-head', request.expectedHead,
+  ], { cwd: request.sourceRoot, timeoutMs: 600_000, maxOutputBytes: 512 * 1024 }));
+  const executed = runCandidateStager({ bunExecutable, scriptPath, sourceRoot, controllerHome, expectedHead });
+  if (!executed.ok) {
+    throw new Error(`RUNTIME_RELEASE_CANDIDATE_STAGE_FAILED: ${executed.stderr || executed.stdout || executed.error}`.slice(0, 2_000));
+  }
+  const receipt = parseCandidateStageReceipt(executed.stdout ?? '');
+  if (receipt.sourceCommit !== expectedHead) {
+    throw new Error(`RUNTIME_RELEASE_CANDIDATE_SOURCE_MISMATCH: expected ${expectedHead}, got ${receipt.sourceCommit}`);
+  }
+
+  const headAfter = gitText(sourceRoot, ['rev-parse', '--verify', 'HEAD']);
+  const dirtyAfter = gitText(sourceRoot, ['status', '--porcelain=v1', '--untracked-files=no']);
+  if (headAfter !== expectedHead || dirtyAfter) {
+    throw new Error('RUNTIME_RELEASE_CANDIDATE_SOURCE_CHANGED_DURING_STAGE');
+  }
+
+  const releasesRoot = join(controllerHome, 'runtime', 'releases');
+  const releasePath = resolve(receipt.releasePath);
+  const manifestPath = resolve(receipt.manifestPath);
+  if (dirname(releasePath) !== releasesRoot || releasePath !== join(releasesRoot, receipt.releaseId)) {
+    throw new Error('RUNTIME_RELEASE_CANDIDATE_PATH_OUTSIDE_RELEASE_ROOT');
+  }
+  if (manifestPath !== join(releasePath, 'manifest.json')) {
+    throw new Error('RUNTIME_RELEASE_CANDIDATE_MANIFEST_PATH_INVALID');
+  }
+  const runtimePath = join(releasePath, 'forge-runtime');
+  if (!existsSync(releasePath) || !existsSync(manifestPath) || !existsSync(runtimePath)) {
+    throw new Error(`RUNTIME_RELEASE_FILES_MISSING: ${releasePath}`);
+  }
+  const physicalReleasePath = join(realpathSync(releasesRoot), receipt.releaseId);
+  const releaseStat = lstatSync(releasePath), manifestStat = lstatSync(manifestPath), runtimeStat = lstatSync(runtimePath);
+  if (releaseStat.isSymbolicLink() || !releaseStat.isDirectory()
+    || manifestStat.isSymbolicLink() || !manifestStat.isFile()
+    || runtimeStat.isSymbolicLink() || !runtimeStat.isFile()
+    || realpathSync(releasePath) !== physicalReleasePath) {
+    throw new Error('RUNTIME_RELEASE_CANDIDATE_PATH_NOT_PHYSICAL');
+  }
+  const runtimeIdentity = `sha256:${sha256(runtimePath)}`;
+  if (runtimeIdentity !== receipt.artifactIdentity) {
+    throw new Error('RUNTIME_RELEASE_CANDIDATE_ARTIFACT_IDENTITY_MISMATCH');
+  }
+  if (sha256(manifestPath) !== receipt.manifestSha256) {
+    throw new Error('RUNTIME_RELEASE_CANDIDATE_MANIFEST_IDENTITY_MISMATCH');
+  }
+
+  return {
+    releasePath,
+    manifestPath,
+    releaseId: receipt.releaseId,
+    artifactIdentity: receipt.artifactIdentity,
+    manifestSha256: receipt.manifestSha256,
+    sourceCommit: receipt.sourceCommit,
+  };
 }
 
 function defaultCompileBinary(input: { sourceRoot: string; outputPath: string; entryPath?: string }): { ok: boolean; stderr?: string; stdout?: string; error?: string } {
