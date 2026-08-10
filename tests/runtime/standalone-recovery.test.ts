@@ -108,12 +108,12 @@ function manifest(home: string, releaseId: string, artifactIdentity: string, wor
   return path;
 }
 
-function verifiedManifest(home: string, releaseId: string): { path: string; artifactIdentity: string } {
+function verifiedManifest(home: string, releaseId: string, runtimeMarker = releaseId): { path: string; artifactIdentity: string } {
   const releaseRoot = join(home, 'runtime', 'releases', releaseId);
   const path = join(releaseRoot, 'manifest.json');
   mkdirSync(releaseRoot, { recursive: true });
   const binaryPath = join(releaseRoot, 'forge-runtime');
-  writeFileSync(binaryPath, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+  writeFileSync(binaryPath, `#!/bin/sh\n# ${runtimeMarker}\nexit 0\n`, { mode: 0o700 });
   const artifactIdentity = `sha256:${createHash('sha256').update(readFileSync(binaryPath)).digest('hex')}`;
   writeFileSync(path, `${JSON.stringify({
     schemaVersion: 1,
@@ -608,6 +608,80 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
       expect(commands.some((args) => args.includes('bootout'))).toBe(true);
       expect(commands.some((args) => args.includes('kickstart'))).toBe(true);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('skips activation when a new release id has identical Runtime behavior', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const active = verifiedManifest(home, 'release-a', 'same-runtime');
+      const candidate = verifiedManifest(home, 'release-b', 'same-runtime');
+      ensureActiveRuntimeRelease(home, active.path);
+      runtimeServiceConfig(home);
+      const paths = forgeRuntimeServicePaths(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+      const commands: string[][] = [];
+
+      const result = await activateRuntimeRelease(createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd' } }), candidate.path, {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (name, args) => {
+          commands.push([name, ...args]);
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        verifyLocal: async () => healthyVerify(),
+      });
+
+      expect(result).toMatchObject({ ok: true, attempted: false, noOp: true });
+      expect(result.detail).toContain('restart skipped');
+      expect(commands).toEqual([]);
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('does not skip activation when Runtime behavior changes despite an identical executable', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const active = verifiedManifest(home, 'release-a', 'same-runtime');
+      const candidate = verifiedManifest(home, 'release-b', 'same-runtime');
+      const candidateManifest = JSON.parse(readFileSync(candidate.path, 'utf8')) as Record<string, unknown>;
+      candidateManifest.arguments = ['--changed-runtime-behavior'];
+      writeFileSync(candidate.path, `${JSON.stringify(candidateManifest, null, 2)}\n`);
+      ensureActiveRuntimeRelease(home, active.path);
+      runtimeServiceConfig(home);
+      const paths = forgeRuntimeServicePaths(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+      const commands: string[][] = [];
+
+      const result = await activateRuntimeRelease(createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd' } }), candidate.path, {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (name, args) => {
+          commands.push([name, ...args]);
+          if (args[0] === 'print') return { ok: true, status: 0, stdout: 'still loaded', stderr: '' };
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        runtimeRunning: () => false,
+        verifyLocal: async () => healthyVerify(),
+        now: (() => { let value = 0; return () => value += 1_000; })(),
+        sleep: async () => undefined,
+      });
+
+      expect(result).toMatchObject({ ok: false, attempted: true });
+      expect(commands.some((command) => command.includes('bootout'))).toBe(true);
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

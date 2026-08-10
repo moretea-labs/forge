@@ -1339,6 +1339,32 @@ export async function recoverPrimaryRuntime(
   return locked.value;
 }
 
+function canonicalRuntimeManifestValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalRuntimeManifestValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, canonicalRuntimeManifestValue(entry)]),
+  );
+}
+
+function runtimeBehaviorIdentity(manifestPath: string): string {
+  const parsed = JSON.parse(readFileSync(resolve(manifestPath), 'utf8')) as Record<string, unknown>;
+  const behavior = { ...parsed };
+  // These fields identify a build/release event but do not change the process or
+  // any co-located runtime helper. Every other manifest field participates by
+  // default so newly added sidecars cannot silently bypass restart detection.
+  for (const field of ['releaseId', 'sourceCommit', 'releaseRevision', 'cleanWorkspace', 'createdAt']) {
+    delete behavior[field];
+  }
+  return createHash('sha256').update(JSON.stringify(canonicalRuntimeManifestValue(behavior))).digest('hex');
+}
+
+function runtimeBehaviorEquivalent(leftManifestPath: string, rightManifestPath: string): boolean {
+  return runtimeBehaviorIdentity(leftManifestPath) === runtimeBehaviorIdentity(rightManifestPath);
+}
+
 function validateRuntimeReleaseCandidate(
   config: RecoveryConfig,
   manifestPath: string,
@@ -1439,6 +1465,28 @@ export async function activateRuntimeRelease(
         operationId,
         verify: await verifyLocal(config),
       } satisfies RuntimeReleaseActivationResult;
+    }
+    if (current) {
+      if (runtimeBehaviorEquivalent(current.active.manifestPath, candidate.manifestPath)) {
+        const verify = await verifyLocal(config);
+        audit(config, 'runtime_release_activation_behavior_identical', {
+          operationId,
+          requestId: lockRequestId,
+          activeRevision: current.active.releaseId,
+          candidateRevision: candidate.manifest.releaseId,
+          artifactIdentity: candidate.manifest.artifactIdentity,
+        });
+        return {
+          ok: verify.ok,
+          attempted: false,
+          noOp: true,
+          detail: verify.ok
+            ? 'candidate Runtime behavior is identical to the active release; restart skipped'
+            : 'candidate Runtime behavior is identical to the active release, but the active Runtime is unhealthy',
+          operationId,
+          verify,
+        } satisfies RuntimeReleaseActivationResult;
+      }
     }
     if (current?.previous?.releaseId === candidate.manifest.releaseId) {
       const detail = 'RUNTIME_RELEASE_REVERSE_ACTIVATION_REQUIRES_ROLLBACK: activate_runtime_release cannot replace the active release with current.previous; use rollback_previous or recover_primary_runtime';
