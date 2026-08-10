@@ -105,6 +105,8 @@ The provider requests strict structured JSON, validates the result locally, and 
 
 Email contents are untrusted input. Instructions in an email, quoted thread, signature, link, or attachment description cannot expand the action allowlist or request tools, credentials, files, commands, or additional permissions. Security, authentication, billing, incident, production, quota, and repository-permission messages are protected from model-generated archive actions.
 
+The deterministic fallback also uses Gmail's `CATEGORY_PROMOTIONS` label as a high-confidence archive signal (`0.98`) for non-protected messages. Marketing/newsletter keyword matches remain a lower-confidence fallback (`0.7`). The protected-message veto wins over both signals, so a security, authentication, billing, production, incident, quota, or permission-related message is never proposed for automatic archive merely because Gmail classified it as Promotions.
+
 Use `assistant_model_readiness` or `GET /api/assistant/model` to inspect the redacted configuration and budgets. Model credentials and raw secrets are never returned.
 
 ## Action proposals and approval

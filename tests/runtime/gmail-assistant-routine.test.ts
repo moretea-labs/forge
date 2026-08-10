@@ -1,0 +1,108 @@
+import { describe, expect, test } from 'bun:test';
+import type { AssistantActionProposal } from '../../src/runtime/assistant/action-proposals';
+import type { AssistantModelAnalysis } from '../../src/runtime/assistant/model-provider';
+import {
+  buildDeterministicAssistantProposals,
+  renderAssistantRoutineReport,
+  type GmailMessageSummary,
+} from '../../src/runtime/assistant/routine-runtime';
+
+function message(overrides: Partial<GmailMessageSummary> = {}): GmailMessageSummary {
+  return {
+    id: 'message-1',
+    from: 'offers@example.com',
+    subject: 'Weekend deals',
+    snippet: 'Save 30% this weekend.',
+    labelIds: ['INBOX'],
+    ...overrides,
+  };
+}
+
+function archiveProposal(overrides: Partial<AssistantActionProposal> = {}): AssistantActionProposal {
+  const timestamp = '2026-08-10T00:00:00.000Z';
+  return {
+    schemaVersion: 1,
+    proposalId: 'proposal-1',
+    routineId: 'routine-1',
+    runId: 'run-1',
+    pluginId: 'gmail',
+    actionId: 'archive_message',
+    arguments: { message_id: 'message-1' },
+    evidenceMessageIds: ['message-1'],
+    context: { sender: 'offers@example.com', subject: 'Weekend deals', protected: false },
+    reason: 'Archive Gmail Promotions candidate: “Weekend deals”.',
+    confidence: 0.98,
+    risk: 'remote_write',
+    executable: true,
+    status: 'proposed',
+    expiresAt: timestamp,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    ...overrides,
+  };
+}
+
+const rulesAnalysis: AssistantModelAnalysis = {
+  schemaVersion: 1,
+  usedModel: false,
+  provider: 'rules',
+  promptVersion: 'gmail-analysis-v1',
+  importantMessageIds: [],
+  proposals: [],
+  analyzedMessageIds: [],
+  warnings: [],
+};
+
+describe('Gmail assistant routine promotional triage', () => {
+  test('treats Gmail CATEGORY_PROMOTIONS as a high-confidence archive signal', () => {
+    const proposals = buildDeterministicAssistantProposals([
+      message({ labelIds: ['INBOX', 'CATEGORY_PROMOTIONS'] }),
+    ]);
+
+    expect(proposals).toContainEqual(expect.objectContaining({
+      pluginId: 'gmail',
+      actionId: 'archive_message',
+      confidence: 0.98,
+      arguments: { message_id: 'message-1' },
+    }));
+  });
+
+  test('never proposes archive for a protected message even in Promotions', () => {
+    const proposals = buildDeterministicAssistantProposals([
+      message({
+        subject: 'Security alert and billing verification',
+        snippet: 'Please verify your login and invoice.',
+        labelIds: ['INBOX', 'CATEGORY_PROMOTIONS'],
+      }),
+    ]);
+
+    expect(proposals.some((proposal) => proposal.actionId === 'archive_message')).toBe(false);
+  });
+
+  test('keeps the lower-confidence marketing keyword fallback', () => {
+    const proposals = buildDeterministicAssistantProposals([
+      message({ subject: 'Monthly newsletter', snippet: 'Unsubscribe at any time.' }),
+    ]);
+
+    expect(proposals).toContainEqual(expect.objectContaining({
+      actionId: 'archive_message',
+      confidence: 0.7,
+    }));
+  });
+
+  test('reports promotional, archive proposal, and automatic archive counts', () => {
+    const proposal = archiveProposal();
+    const report = renderAssistantRoutineReport(
+      [message({ labelIds: ['INBOX', 'CATEGORY_PROMOTIONS'] })],
+      [proposal],
+      '2026-08-09T00:00:00.000Z',
+      '2026-08-10T00:00:00.000Z',
+      rulesAnalysis,
+      [{ grantId: 'grant-1', proposalId: proposal.proposalId, status: 'submitted', executionJobId: 'job-1' }],
+    );
+
+    expect(report).toContain('推广候选：1 封');
+    expect(report).toContain('归档建议：1 项');
+    expect(report).toContain('自动归档：1 项');
+  });
+});

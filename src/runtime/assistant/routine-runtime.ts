@@ -53,7 +53,7 @@ interface GmailRoutineCursor {
   updatedAt: string;
 }
 
-interface GmailMessageSummary {
+export interface GmailMessageSummary {
   id: string;
   threadId?: string;
   from: string;
@@ -182,17 +182,25 @@ function protectedMessageSummary(message: GmailMessageSummary): boolean {
     .test(`${message.subject} ${message.snippet}`);
 }
 
-function proposalsFor(messages: GmailMessageSummary[]): AssistantActionProposalInput[] {
+function promotionalMessageSummary(message: GmailMessageSummary): boolean {
+  if (message.labelIds.includes('CATEGORY_PROMOTIONS')) return true;
+  return /(newsletter|digest|marketing|unsubscribe|推广|营销|周报)/i
+    .test(`${message.subject} ${message.snippet} ${message.bodyPreview ?? ''}`);
+}
+
+export function buildDeterministicAssistantProposals(messages: GmailMessageSummary[]): AssistantActionProposalInput[] {
   const proposals: AssistantActionProposalInput[] = [];
   for (const message of messages) {
     const text = `${message.subject} ${message.snippet} ${message.bodyPreview ?? ''}`.toLowerCase();
+    const protectedMessage = protectedMessageSummary(message);
+    const promotionsCategory = message.labelIds.includes('CATEGORY_PROMOTIONS');
     if (/(please reply|reply requested|请回复|需要回复|your response)/i.test(text)) {
       const to = senderAddress(message.from);
       proposals.push({
         pluginId: 'gmail', actionId: 'create_draft', evidenceMessageIds: [message.id],
         reason: `Prepare a reviewable reply draft for “${message.subject}”.`, confidence: 0.75,
         executable: false,
-        context: { sender: to ?? message.from, subject: message.subject, protected: protectedMessageSummary(message) },
+        context: { sender: to ?? message.from, subject: message.subject, protected: protectedMessage },
         arguments: to ? { to: [to], subject: message.subject.startsWith('Re:') ? message.subject : `Re: ${message.subject}`, body_text: '[Draft response pending review]' } : {},
       });
     }
@@ -200,14 +208,17 @@ function proposalsFor(messages: GmailMessageSummary[]): AssistantActionProposalI
       proposals.push({
         pluginId: 'google_tasks', actionId: 'create_task', evidenceMessageIds: [message.id],
         reason: `Create a task from “${message.subject}”.`, confidence: 0.8,
-        context: { sender: message.from, subject: message.subject, protected: protectedMessageSummary(message) },
+        context: { sender: message.from, subject: message.subject, protected: protectedMessage },
         arguments: { title: message.subject, notes: `${message.from}\n${message.snippet}`.slice(0, 2_000) },
       });
     }
-    if (/(newsletter|digest|marketing|unsubscribe|推广|营销|周报)/i.test(text) && !protectedMessageSummary(message)) {
+    if (promotionalMessageSummary(message) && !protectedMessage) {
       proposals.push({
         pluginId: 'gmail', actionId: 'archive_message', evidenceMessageIds: [message.id],
-        reason: `Archive candidate: “${message.subject}”.`, confidence: 0.7,
+        reason: promotionsCategory
+          ? `Archive Gmail Promotions candidate: “${message.subject}”.`
+          : `Archive marketing/newsletter candidate: “${message.subject}”.`,
+        confidence: promotionsCategory ? 0.98 : 0.7,
         context: { sender: message.from, subject: message.subject, protected: false },
         arguments: { message_id: message.id },
       });
@@ -216,18 +227,26 @@ function proposalsFor(messages: GmailMessageSummary[]): AssistantActionProposalI
   return proposals.slice(0, 50);
 }
 
-function renderReport(
+export function renderAssistantRoutineReport(
   messages: GmailMessageSummary[],
-  proposals: AssistantActionProposalInput[],
+  proposals: AssistantActionProposal[],
   windowStart: string,
   windowEnd: string,
   analysis: AssistantModelAnalysis,
   standingGrantResults: StandingGrantExecutionResult[],
 ): string {
   const important = messages.filter((message) => /(security|alert|billing|invoice|jira|github|production|incident|安全|账单|故障|告警)/i.test(`${message.subject} ${message.snippet}`));
+  const promotional = messages.filter(promotionalMessageSummary);
+  const archiveProposals = proposals.filter((proposal) => proposal.pluginId === 'gmail' && proposal.actionId === 'archive_message');
+  const proposalById = new Map(proposals.map((proposal) => [proposal.proposalId, proposal]));
+  const submitted = standingGrantResults.filter((entry) => entry.status === 'submitted');
+  const autoArchiveSubmitted = submitted.filter((entry) => {
+    const proposal = proposalById.get(entry.proposalId);
+    return proposal?.pluginId === 'gmail' && proposal.actionId === 'archive_message';
+  });
   const lines = [
     `窗口：${windowStart} — ${windowEnd}`,
-    `读取邮件：${messages.length} 封；重要候选：${important.length} 封；行动建议：${proposals.length} 项；自动提交：${standingGrantResults.filter((entry) => entry.status === 'submitted').length} 项。`,
+    `读取邮件：${messages.length} 封；重要候选：${important.length} 封；推广候选：${promotional.length} 封；归档建议：${archiveProposals.length} 项；自动归档：${autoArchiveSubmitted.length} 项；自动提交总计：${submitted.length} 项。`,
     `分析方式：${analysis.usedModel ? `${analysis.provider}${analysis.model ? ` (${analysis.model})` : ''}` : 'deterministic rules'}.`,
     ...(analysis.summary ? ['', '模型摘要：', analysis.summary] : []),
     '',
@@ -371,7 +390,7 @@ export async function executeAssistantRoutineRuntime(input: {
       messages.push(summarizeMessage(raw));
     }
     const modelAnalysis = await analyzeAssistantMessages({ messages, routineGoal: routine.naturalLanguageGoal });
-    const proposalInputs = modelAnalysis.usedModel ? modelAnalysis.proposals : proposalsFor(messages);
+    const proposalInputs = modelAnalysis.usedModel ? modelAnalysis.proposals : buildDeterministicAssistantProposals(messages);
     const proposals = createAssistantActionProposals(input.controllerHome, input.repository, { routineId: routine.routineId, runId, proposals: proposalInputs });
     const standingGrantApplication = await applyAssistantStandingGrants(input.controllerHome, input.repository, { routineId: routine.routineId, runId, proposals });
     const persistedProposals = listAssistantActionProposals(input.controllerHome, input.repository, { limit: 500 }).proposals
@@ -386,7 +405,7 @@ export async function executeAssistantRoutineRuntime(input: {
     const savedContinuation = truncated
       ? hydrationTruncated ? startingContinuation : nextContinuation
       : undefined;
-    const report = renderReport(messages, proposalInputs, windowStart, windowEnd, analysis, standingGrantApplication.results);
+    const report = renderAssistantRoutineReport(messages, persistedProposals, windowStart, windowEnd, analysis, standingGrantApplication.results);
     run = saveRun(input.repository.canonicalRoot, {
       ...run,
       status: 'completed',

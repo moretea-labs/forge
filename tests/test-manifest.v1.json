@@ -23,7 +23,7 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 105,
+    "maxTestFiles": 106,
     "maxTestLines": 41000,
     "maxPureFiles": 32,
     "maxTempIsolatedFiles": 45,
@@ -374,6 +374,10 @@
     "tests/runtime/git-executable-and-workspace.test.ts": {
       "module": "repository",
       "resource": "git-worktree"
+    },
+    "tests/runtime/gmail-assistant-routine.test.ts": {
+      "module": "controller",
+      "resource": "pure"
     },
     "tests/runtime/interactive-sync-router.test.ts": {
       "module": "routing",
