@@ -8,15 +8,16 @@ import { executionToolDefinitions } from '../src/runtime/gateway/mcp/execution-t
 import { processToolDefinitions } from '../src/runtime/gateway/mcp/process-tools';
 import {
   ADVANCED_CONTROLLER_TOOL_NAMES,
+  CORE_CONTROLLER_TOOL_NAMES,
   DEFAULT_CONTROLLER_TOOL_NAMES,
   PREFERRED_FACADE_TOOL_NAMES,
   STABLE_CONTROLLER_TOOL_NAMES,
 } from '../src/cli/mcp/toolset';
 
-// The stable Forge surface is defined by the authoritative tool-name registry.
-// Keep an upper schema budget so accidental additions remain visible without
-// coupling compatibility to an obsolete component version or exact tool count.
-const MAX_STABLE_TOOL_COUNT = 128;
+// The served ChatGPT schema is intentionally much smaller than the exhaustive
+// compatibility catalog. Keep a tight budget so accidental tool additions are
+// caught before they become discovery latency and schema-cache churn.
+const MAX_DEFAULT_TOOL_COUNT = 24;
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
@@ -33,36 +34,40 @@ const sourceGroups = {
   legacyCompatibility: buildMcpToolDefinitions(policy).map((tool) => tool.name),
 };
 const fullNames = [...new Set(Object.values(sourceGroups).flat())];
-const stableNames: string[] = [...STABLE_CONTROLLER_TOOL_NAMES];
 const defaultNames: string[] = [...DEFAULT_CONTROLLER_TOOL_NAMES];
+const coreNames: string[] = [...CORE_CONTROLLER_TOOL_NAMES];
 const advancedNames: string[] = [...ADVANCED_CONTROLLER_TOOL_NAMES];
+const catalogNames: string[] = [...STABLE_CONTROLLER_TOOL_NAMES];
 const preferredNames: string[] = [...PREFERRED_FACADE_TOOL_NAMES];
-const stableFingerprint = forgeToolSurfaceFingerprint(stableNames);
+const defaultFingerprint = forgeToolSurfaceFingerprint(defaultNames);
+const catalogFingerprint = forgeToolSurfaceFingerprint(catalogNames);
 const fullFingerprint = forgeToolSurfaceFingerprint(fullNames);
-const duplicateStable = stableNames.filter((name, index) => stableNames.indexOf(name) !== index);
-const missingStable = stableNames.filter((name) => !fullNames.includes(name));
+const duplicateDefault = defaultNames.filter((name, index) => defaultNames.indexOf(name) !== index);
+const missingDefault = defaultNames.filter((name) => !fullNames.includes(name));
+const missingCatalog = catalogNames.filter((name) => !fullNames.includes(name));
 const sourceCollisions = Object.entries(sourceGroups).flatMap(([group, names], groupIndex, entries) =>
   names.filter((name) => entries.slice(0, groupIndex).some(([, earlier]) => earlier.includes(name)))
     .map((name) => `${group}:${name}`));
 
 const failures: string[] = [];
-if (stableNames.length > MAX_STABLE_TOOL_COUNT) {
-  failures.push(`stable Forge tools/list exceeds the schema budget: ${stableNames.length} > ${MAX_STABLE_TOOL_COUNT}`);
+if (defaultNames.length > MAX_DEFAULT_TOOL_COUNT) {
+  failures.push(`default ChatGPT tools/list exceeds the schema budget: ${defaultNames.length} > ${MAX_DEFAULT_TOOL_COUNT}`);
 }
-if (duplicateStable.length) failures.push(`stable duplicate names: ${[...new Set(duplicateStable)].join(', ')}`);
-if (missingStable.length) failures.push(`stable tools missing from registered definitions: ${missingStable.join(', ')}`);
-if (defaultNames.join('\n') !== stableNames.join('\n')) {
-  failures.push('default/core surface must alias the stable Forge surface');
+if (duplicateDefault.length) failures.push(`default duplicate names: ${[...new Set(duplicateDefault)].join(', ')}`);
+if (missingDefault.length) failures.push(`default tools missing from registered definitions: ${missingDefault.join(', ')}`);
+if (missingCatalog.length) failures.push(`compatibility catalog tools missing from registered definitions: ${missingCatalog.join(', ')}`);
+if (coreNames.join('\n') !== defaultNames.join('\n')) {
+  failures.push('core surface must alias the bounded default ChatGPT surface');
 }
-if (advancedNames.join('\n') !== stableNames.join('\n')) {
-  failures.push('advanced surface must alias the stable Forge surface');
+if (advancedNames.join('\n') !== defaultNames.join('\n')) {
+  failures.push('advanced surface must alias the bounded default ChatGPT surface');
 }
 for (const name of ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work']) {
   if (!preferredNames.includes(name)) failures.push(`preferred facade surface missing: ${name}`);
-  if (!stableNames.includes(name)) failures.push(`stable surface missing facade tool: ${name}`);
+  if (!defaultNames.includes(name)) failures.push(`default surface missing facade tool: ${name}`);
 }
-if (fullNames.length < stableNames.length) {
-  failures.push(`full compatibility surface is smaller than stable surface: ${fullNames.length} < ${stableNames.length}`);
+if (fullNames.length < defaultNames.length) {
+  failures.push(`full compatibility surface is smaller than default surface: ${fullNames.length} < ${defaultNames.length}`);
 }
 
 if (failures.length) {
@@ -75,8 +80,11 @@ console.log(JSON.stringify({
   status: 'ok',
   toolSurface: FORGE_TOOL_SURFACE,
   version: FORGE_VERSION,
-  stableToolCount: stableNames.length,
-  stableFingerprint,
+  stableToolCount: defaultNames.length,
+  stableFingerprint: defaultFingerprint,
+  defaultToolBudget: MAX_DEFAULT_TOOL_COUNT,
+  compatibilityCatalogToolCount: catalogNames.length,
+  compatibilityCatalogFingerprint: catalogFingerprint,
   fullCompatibilityToolCount: fullNames.length,
   fullCompatibilityFingerprint: fullFingerprint,
   sourceToolCounts: Object.fromEntries(Object.entries(sourceGroups).map(([name, tools]) => [name, tools.length])),
