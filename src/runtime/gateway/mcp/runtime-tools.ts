@@ -3031,6 +3031,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const activeContracts = isSummary ? currentContractScan.slice(0, 3) : activeContractScan;
         const recentJobs = !isSummary && (operation === 'list' || !workId)
           ? listExecutionJobs(ctx.controllerHome, repository.repoId, 20)
+            .filter((job) => timestampIsCurrent(job.updatedAt, currentCutoffMs))
+            .slice(0, 5)
           : [];
         const manifests = listAssistantPluginManifests(ctx.controllerHome, repository, {
           preferStored: true,
