@@ -111,16 +111,28 @@ function hostOnlyCommandClaims(command: string | readonly string[]): ResourceCla
   if (canonical.kind !== 'argv') return undefined;
   const program = (canonical.executable ?? '').split(/[\\/]/).at(-1)?.toLowerCase();
   const args = canonical.args ?? [];
-  if (program !== 'launchctl') return undefined;
-  const subcommand = args[0]?.toLowerCase() ?? '';
-  const target = [...args].reverse().find((arg) => arg && !arg.startsWith('-')) ?? subcommand ?? 'global';
-  if (['print', 'print-disabled', 'list', 'managerpid', 'manageruid'].includes(subcommand)) {
-    return [claimHostService(`launchctl:${target}`, 'read')];
+  if (program === 'launchctl') {
+    const subcommand = args[0]?.toLowerCase() ?? '';
+    const target = [...args].reverse().find((arg) => arg && !arg.startsWith('-')) ?? subcommand ?? 'global';
+    if (['print', 'print-disabled', 'list', 'managerpid', 'manageruid'].includes(subcommand)) {
+      return [claimHostService(`launchctl:${target}`, 'read')];
+    }
+    // launchctl mutates launchd/service state, not the Git checkout. Serialize
+    // only operations that address the same host service/domain instead of taking
+    // the checkout-wide workspace lease.
+    return [claimHostService(`launchctl:${target}`, 'write')];
   }
-  // launchctl mutates launchd/service state, not the Git checkout. Serialize
-  // only operations that address the same host service/domain instead of taking
-  // the checkout-wide workspace lease.
-  return [claimHostService(`launchctl:${target}`, 'write')];
+  if (program === 'open') {
+    const positional = args.filter((arg) => arg && !arg.startsWith('-'));
+    const uriSchemes = positional.map((arg) => /^([a-z][a-z0-9+.-]*):/i.exec(arg)?.[1]?.toLowerCase());
+    if (positional.length > 0 && uriSchemes.every((scheme): scheme is string => Boolean(scheme))) {
+      // URI-only `open` targets mutate host application/UI state, not repository
+      // files. Persist only the scheme in the resource key so URL paths/queries
+      // never become lease metadata.
+      return [...new Set(uriSchemes)].map((scheme) => claimHostService(`open:${scheme}`, 'write'));
+    }
+  }
+  return undefined;
 }
 
 function claimTemp(checkId: string, repoId: string, scope: 'isolated' | 'shared'): ResourceClaimSpec {

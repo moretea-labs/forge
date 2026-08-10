@@ -1050,6 +1050,24 @@ describe('fine-grained resource claims', () => {
     ]);
   });
 
+  test('URI-only macOS open commands claim host UI instead of repository workspace', () => {
+    const settings = claimsForRepositoryCommand(
+      ['open', 'x-apple.systempreferences:com.apple.Lock-Screen-Settings.extension'],
+      'repo1',
+      'co1',
+    );
+    expect(settings).toEqual([{ resourceKey: 'host-service:open:x-apple.systempreferences', mode: 'write' }]);
+    expect(settings.some((claim) => claim.resourceKey.startsWith('workspace:'))).toBe(false);
+
+    const web = claimsForRepositoryCommand(['open', 'https://example.com/private?q=secret'], 'repo1', 'co1');
+    expect(web).toEqual([{ resourceKey: 'host-service:open:https', mode: 'write' }]);
+    expect(JSON.stringify(web)).not.toContain('private');
+    expect(JSON.stringify(web)).not.toContain('secret');
+
+    const localFile = claimsForRepositoryCommand(['open', 'README.md'], 'repo1', 'co1');
+    expect(localFile.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(true);
+  });
+
   test('focused tests and typed noEmit validation can hold leases concurrently', () => {
     const focusedTest = claimsForRepositoryCommand(
       ['bun', 'test', 'tests/runtime/process-runtime.test.ts'],
