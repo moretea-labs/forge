@@ -133,6 +133,9 @@ describe('runtime release materialization', () => {
     expect(manifest.codeGraphLibraryRoot).toBe('codegraph-lib');
     expect(manifest.codeGraphLibraryArtifactIdentity).toBe(staged.codeGraphLibraryArtifactIdentity);
     expect(loadRuntimeReleaseManifest(staged.manifestPath, controllerHome)).toMatchObject({
+      browserAutomationHelperEntrypoint: 'browser-automation-helper',
+      browserAutomationHelperArtifactIdentity: staged.browserAutomationHelperArtifactIdentity,
+      browserAutomationHelperContractIdentity: staged.browserAutomationHelperContractIdentity,
       codeGraphNodeEntrypoint: 'codegraph-node',
       codeGraphNodeArtifactIdentity: staged.codeGraphNodeArtifactIdentity,
       codeGraphSidecarEntrypoint: 'codegraph-sidecar.cjs',
@@ -141,6 +144,26 @@ describe('runtime release materialization', () => {
       codeGraphLibraryArtifactIdentity: staged.codeGraphLibraryArtifactIdentity,
     });
     assertRuntimeReleaseFiles(staged);
+  });
+
+  test('rejects a partial Browser Automation helper declaration in an immutable release manifest', () => {
+    const { root, controllerHome } = sourceFixture();
+    const manifestPath = join(root, 'partial-browser-automation-helper-manifest.json');
+    writeFileSync(manifestPath, `${JSON.stringify({
+      schemaVersion: 1,
+      releaseId: 'release-partial-browser-helper',
+      artifactIdentity: 'sha256:runtime',
+      entrypoint: 'forge-runtime',
+      browserAutomationHelperEntrypoint: 'browser-automation-helper',
+      arguments: [],
+      configurationSchemaVersion: 1,
+      controllerHome,
+      databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+      workerProtocolVersion: 1,
+      createdAt: new Date().toISOString(),
+    }, null, 2)}\n`);
+    expect(() => loadRuntimeReleaseManifest(manifestPath, controllerHome))
+      .toThrow('browserAutomationHelperArtifactIdentity is required');
   });
 
   test('rejects a partial CodeGraph runtime declaration in an immutable release manifest', () => {

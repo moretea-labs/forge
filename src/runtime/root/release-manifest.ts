@@ -57,6 +57,34 @@ export function loadRuntimeReleaseManifest(
   } else if (value.diagnosticArtifactIdentity !== undefined) {
     throw new Error('RELEASE_MANIFEST_INVALID: diagnosticArtifactIdentity requires diagnosticEntrypoint');
   }
+  const browserAutomationHelperFields = [
+    value.browserAutomationHelperEntrypoint,
+    value.browserAutomationHelperArtifactIdentity,
+    value.browserAutomationHelperContractIdentity,
+  ];
+  const hasBrowserAutomationHelper = browserAutomationHelperFields.some((entry) => entry !== undefined);
+  let browserAutomationHelper: Pick<RuntimeReleaseManifest,
+    'browserAutomationHelperEntrypoint' | 'browserAutomationHelperArtifactIdentity' | 'browserAutomationHelperContractIdentity'> | undefined;
+  if (hasBrowserAutomationHelper) {
+    const helperEntrypoint = requireString(value.browserAutomationHelperEntrypoint, 'browserAutomationHelperEntrypoint');
+    if (helperEntrypoint !== 'browser-automation-helper') {
+      throw new Error(`RELEASE_MANIFEST_INVALID: browserAutomationHelperEntrypoint must be browser-automation-helper, got ${helperEntrypoint}`);
+    }
+    const helperArtifactIdentity = requireString(value.browserAutomationHelperArtifactIdentity, 'browserAutomationHelperArtifactIdentity');
+    const helperContractIdentity = requireString(value.browserAutomationHelperContractIdentity, 'browserAutomationHelperContractIdentity');
+    if (!/^sha256:[a-f0-9]{64}$/i.test(helperArtifactIdentity)) {
+      throw new Error('RELEASE_MANIFEST_INVALID: browserAutomationHelperArtifactIdentity must be sha256:<64 hex>');
+    }
+    if (!/^sha256:[a-f0-9]{64}$/i.test(helperContractIdentity)) {
+      throw new Error('RELEASE_MANIFEST_INVALID: browserAutomationHelperContractIdentity must be sha256:<64 hex>');
+    }
+    browserAutomationHelper = {
+      browserAutomationHelperEntrypoint: 'browser-automation-helper',
+      browserAutomationHelperArtifactIdentity: helperArtifactIdentity,
+      browserAutomationHelperContractIdentity: helperContractIdentity,
+    };
+  }
+
   const codeGraphFields = [
     value.codeGraphNodeEntrypoint,
     value.codeGraphNodeArtifactIdentity,
@@ -104,6 +132,7 @@ export function loadRuntimeReleaseManifest(
     artifactIdentity: requireString(value.artifactIdentity, 'artifactIdentity'),
     entrypoint: 'forge-runtime',
     ...(diagnosticEntrypoint ? { diagnosticEntrypoint, diagnosticArtifactIdentity } : {}),
+    ...(browserAutomationHelper ?? {}),
     ...(codeGraphRuntime ?? {}),
     arguments: argumentsValue as string[],
     configurationSchemaVersion: 1,
