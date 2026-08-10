@@ -233,9 +233,9 @@ describe('canonical single Runtime', () => {
     expect(secondGeneration?.generation).not.toBe(firstGeneration?.generation);
   });
 
-  test('self-reconciles the stable Browser Automation helper during Runtime startup', async () => {
-    const fixture = createFixture({ runtimeInstanceId: 'runtime-browser-helper-bootstrap' });
-    const observed: string[] = [];
+  test('does not start a standalone Browser Automation helper even when a legacy release manifest declares one', async () => {
+    const fixture = createFixture({ runtimeInstanceId: 'runtime-browser-helper-retired' });
+    let schedulerStarted = false;
     const runtime = new CanonicalForgeRuntime(fixture.config, {
       loadReleaseManifest: () => ({
         schemaVersion: 1,
@@ -252,11 +252,8 @@ describe('canonical single Runtime', () => {
         workerProtocolVersion: 1,
         createdAt: '2026-08-05T00:00:00.000Z',
       }),
-      ensureBrowserAutomationHelper: (controllerHome) => {
-        observed.push(`helper:${controllerHome}`);
-      },
       startScheduler: () => {
-        observed.push('scheduler');
+        schedulerStarted = true;
         return inertScheduler();
       },
       startLocalBridge: async () => undefined,
@@ -270,8 +267,7 @@ describe('canonical single Runtime', () => {
     });
     cleanups.push(() => runtime.stop('TEST_CLEANUP'));
     await runtime.start();
-    expect(observed[0]).toBe(`helper:${fixture.controllerHome}`);
-    expect(observed).toContain('scheduler');
+    expect(schedulerStarted).toBe(true);
   });
 
   test('canonical Runtime owns the configured embedded Local Bridge lifecycle', async () => {

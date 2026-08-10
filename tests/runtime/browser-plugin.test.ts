@@ -30,6 +30,7 @@ import {
   setMacOsBrowserRuntimeHooksForTest,
 } from '../../src/runtime/plugins/browser-macos-bridge';
 import { interactionCommandPath, patchInteractionSession } from '../../src/runtime/plugins/interaction-session';
+import { resetMacOsCapabilityBrokerSocketPathForTest, setMacOsCapabilityBrokerSocketPathForTest } from '../../src/runtime/plugins/macos-capability-broker';
 import {
   clearAssistantPluginManifestCacheForTest,
   getAssistantPluginManifest,
@@ -42,12 +43,14 @@ beforeEach(() => {
   // Unit tests must never attach to a real user browser just because Chrome/Vivaldi is running.
   // Native-attach cases explicitly install darwin test hooks below.
   setMacOsBrowserRuntimeHooksForTest({ platform: 'linux' });
+  setMacOsCapabilityBrokerSocketPathForTest(join(tmpdir(), `forge-test-macos-broker-unavailable-${process.pid}.sock`));
 });
 
 afterEach(() => {
   resetBrowserPluginRuntimeHooksForTest();
   resetBrowserHandoffRuntimeHooksForTest();
   resetMacOsBrowserRuntimeHooksForTest();
+  resetMacOsCapabilityBrokerSocketPathForTest();
   clearAssistantPluginManifestCacheForTest();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   delete process.env.FORGE_CONTROLLER_HOME;
@@ -710,7 +713,7 @@ describe('browser plugin', () => {
     expect(metadata.active).toBe(true);
   });
 
-  test('native attach fails closed when the stable Browser Automation helper is unavailable', async () => {
+  test('native attach fails closed when the stable macOS capability broker is unavailable', async () => {
     repoFixture();
     setMacOsBrowserRuntimeHooksForTest({
       platform: 'darwin',
@@ -721,7 +724,7 @@ describe('browser plugin', () => {
     expect(discovered.attachment).toBeUndefined();
     expect(discovered.attempts).toHaveLength(1);
     expect(discovered.attempts[0]?.status).toBe('unavailable');
-    expect(discovered.attempts[0]?.error).toContain('Stable macOS Browser Automation helper is unavailable');
+    expect(discovered.attempts[0]?.error).toContain('Stable Forge macOS capability broker is unavailable');
     expect(discovered.attempts[0]?.error).not.toContain('/usr/bin/osascript');
   });
 

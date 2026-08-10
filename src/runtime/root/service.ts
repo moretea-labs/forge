@@ -3,19 +3,11 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSyn
 import { homedir } from 'os';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { resolveControllerHome } from '../../cli/repositories/controller-home';
-import { runProcess } from '../../effects/process-runner';
 import {
   bootstrapLaunchAgentWithRetryV2,
   bootoutLaunchAgentWithRetryV2,
-  currentUserLaunchdDomain,
   installLaunchAgent,
 } from '../../cli/controller/launch-agents';
-import {
-  BROWSER_AUTOMATION_HELPER_ENTRYPOINT,
-  browserAutomationServicePaths,
-  ensureBrowserAutomationServiceContract,
-  type BrowserAutomationServicePaths,
-} from '../plugins/browser-automation-service';
 
 export interface ForgeRuntimeServiceConfig {
   schemaVersion: 1;
@@ -126,24 +118,6 @@ interface ActiveRuntimeLaunchSpec {
   environment: Record<string, string>;
 }
 
-interface BrowserAutomationLaunchctlResult {
-  ok: boolean;
-  stdout: string;
-  stderr: string;
-  status?: number;
-}
-
-type BrowserAutomationLaunchctlRunner = (args: string[]) => BrowserAutomationLaunchctlResult;
-
-function defaultBrowserAutomationLaunchctl(args: string[]): BrowserAutomationLaunchctlResult {
-  const result = runProcess('launchctl', args, { timeoutMs: 15_000, maxOutputBytes: 64 * 1024 });
-  return { ok: result.ok, stdout: result.stdout, stderr: result.stderr, status: result.status };
-}
-
-function launchctlServiceAlreadyGone(result: BrowserAutomationLaunchctlResult): boolean {
-  return /not found|no such process|could not be found|could not find service|service is not loaded/i.test(`${result.stderr}\n${result.stdout}`);
-}
-
 function isInside(parent: string, child: string): boolean {
   const rel = relative(resolve(parent), resolve(child));
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
@@ -176,82 +150,22 @@ export function activeRuntimeEntrypoint(controllerHome: string): string | undefi
   return readActiveRuntimeRelease(controllerHome)?.entrypoint;
 }
 
-function activeBrowserAutomationHelper(controllerHome: string): { candidatePath: string; artifactIdentity: string; contractIdentity: string } | undefined {
-  const active = readActiveRuntimeRelease(controllerHome);
-  if (!active) return undefined;
-  const entrypoint = active.manifest.browserAutomationHelperEntrypoint;
-  const artifactIdentity = active.manifest.browserAutomationHelperArtifactIdentity;
-  const contractIdentity = active.manifest.browserAutomationHelperContractIdentity;
-  if (entrypoint === undefined && artifactIdentity === undefined && contractIdentity === undefined) return undefined;
-  if (
-    entrypoint !== BROWSER_AUTOMATION_HELPER_ENTRYPOINT
-      || typeof artifactIdentity !== 'string'
-      || !/^sha256:[a-f0-9]{64}$/i.test(artifactIdentity)
-      || typeof contractIdentity !== 'string'
-      || !/^sha256:[a-f0-9]{64}$/i.test(contractIdentity)
-  ) {
-    throw new Error('FORGE_RUNTIME_BROWSER_AUTOMATION_HELPER_MANIFEST_INVALID');
-  }
-  const candidatePath = resolve(active.releaseRoot, entrypoint);
-  if (!isInside(active.releaseRoot, candidatePath)) throw new Error('FORGE_RUNTIME_BROWSER_AUTOMATION_HELPER_OUTSIDE_RELEASE');
-  if (!existsSync(candidatePath)) throw new Error(`FORGE_RUNTIME_BROWSER_AUTOMATION_HELPER_MISSING: ${candidatePath}`);
-  return { candidatePath, artifactIdentity, contractIdentity };
+function legacyBrowserAutomationLaunchAgentPaths(controllerHome: string, accountHome = process.env.HOME ?? homedir()): { label: string; installedPlistPath: string } {
+  const home = resolveControllerHome(controllerHome);
+  const suffix = createHash('sha256').update(home).digest('hex').slice(0, 12);
+  const label = `com.moretea.forge.browser-automation.${suffix}`;
+  return {
+    label,
+    installedPlistPath: join(resolve(accountHome), 'Library', 'LaunchAgents', `${label}.plist`),
+  };
 }
 
-export function ensureBrowserAutomationLaunchAgentContract(input: {
-  controllerHome: string;
-  accountHome?: string;
-}): { paths: BrowserAutomationServicePaths; artifactChanged: boolean; plistChanged: boolean; changed: boolean } | undefined {
-  const candidate = activeBrowserAutomationHelper(input.controllerHome);
-  if (!candidate) return undefined;
-  return ensureBrowserAutomationServiceContract({
-    controllerHome: input.controllerHome,
-    candidatePath: candidate.candidatePath,
-    candidateArtifactIdentity: candidate.artifactIdentity,
-    candidateContractIdentity: candidate.contractIdentity,
-    accountHome: input.accountHome,
-  });
-}
-
-export function ensureBrowserAutomationLaunchAgentRunning(
-  input: { controllerHome: string; accountHome?: string },
-  dependencies: { runLaunchctl?: BrowserAutomationLaunchctlRunner; domain?: string } = {},
-): ({ paths: BrowserAutomationServicePaths; artifactChanged: boolean; plistChanged: boolean; changed: boolean } & { registered: boolean; restarted: boolean }) | undefined {
-  const contract = ensureBrowserAutomationLaunchAgentContract(input);
-  if (!contract) return undefined;
-  const runLaunchctl = dependencies.runLaunchctl ?? defaultBrowserAutomationLaunchctl;
-  const domain = dependencies.domain ?? currentUserLaunchdDomain();
-  const target = `${domain}/${contract.paths.label}`;
-  let registered = runLaunchctl(['print', target]).ok;
-  let restarted = false;
-
-  if (contract.changed && registered) {
-    const stopped = runLaunchctl(['bootout', target]);
-    if (!stopped.ok && !launchctlServiceAlreadyGone(stopped)) {
-      throw new Error(`FORGE_BROWSER_AUTOMATION_SERVICE_BOOTOUT_FAILED: ${(stopped.stderr || stopped.stdout || String(stopped.status ?? '')).trim()}`);
-    }
-    registered = false;
-    restarted = true;
-  }
-
-  if (!registered) {
-    const enabled = runLaunchctl(['enable', target]);
-    if (!enabled.ok) {
-      throw new Error(`FORGE_BROWSER_AUTOMATION_SERVICE_ENABLE_FAILED: ${(enabled.stderr || enabled.stdout || String(enabled.status ?? '')).trim()}`);
-    }
-    const bootstrapped = runLaunchctl(['bootstrap', domain, contract.paths.installedPlistPath]);
-    if (!bootstrapped.ok && !runLaunchctl(['print', target]).ok) {
-      throw new Error(`FORGE_BROWSER_AUTOMATION_SERVICE_BOOTSTRAP_FAILED: ${(bootstrapped.stderr || bootstrapped.stdout || String(bootstrapped.status ?? '')).trim()}`);
-    }
-    const kickstarted = runLaunchctl(['kickstart', '-k', target]);
-    registered = runLaunchctl(['print', target]).ok;
-    if (!registered) {
-      throw new Error(`FORGE_BROWSER_AUTOMATION_SERVICE_START_UNVERIFIED: ${(kickstarted.stderr || kickstarted.stdout || String(kickstarted.status ?? '')).trim()}`);
-    }
-    restarted = true;
-  }
-
-  return { ...contract, registered, restarted };
+async function retireLegacyBrowserAutomationLaunchAgent(controllerHome: string): Promise<void> {
+  const legacy = legacyBrowserAutomationLaunchAgentPaths(controllerHome);
+  if (!existsSync(legacy.installedPlistPath)) return;
+  const result = await bootoutLaunchAgentWithRetryV2({ label: legacy.label, plistPath: legacy.installedPlistPath });
+  if (!result.ok) throw new Error(`FORGE_BROWSER_AUTOMATION_LEGACY_RETIRE_FAILED: ${result.diagnostics.join('; ')}`);
+  rmSync(legacy.installedPlistPath, { force: true });
 }
 
 function activeRuntimeLaunchSpec(controllerHome: string): ActiveRuntimeLaunchSpec | undefined {
@@ -311,19 +225,12 @@ export function syncForgeRuntimeActiveEntrypoint(controllerHome: string): { path
 
 export function ensureForgeRuntimeLaunchAgentContract(
   input: { controllerHome: string; bootstrapNodeExecutable?: string; bootstrapRunnerPath?: string },
-  dependencies: { browserAutomationRunLaunchctl?: BrowserAutomationLaunchctlRunner; browserAutomationDomain?: string; browserAutomationAccountHome?: string } = {},
 ): { paths: ForgeRuntimeServicePaths; mode: 'release' | 'bootstrap'; changed: boolean } {
   const paths = forgeRuntimeServicePaths(input.controllerHome);
   const active = activeRuntimeEntrypoint(input.controllerHome);
   const useRelease = Boolean(active);
   const releaseLaunch = useRelease ? activeRuntimeLaunchSpec(input.controllerHome) : undefined;
-  if (useRelease) {
-    syncForgeRuntimeActiveEntrypoint(input.controllerHome);
-    ensureBrowserAutomationLaunchAgentRunning(
-      { controllerHome: input.controllerHome, accountHome: dependencies.browserAutomationAccountHome },
-      { runLaunchctl: dependencies.browserAutomationRunLaunchctl, domain: dependencies.browserAutomationDomain },
-    );
-  }
+  if (useRelease) syncForgeRuntimeActiveEntrypoint(input.controllerHome);
   if (!useRelease && (!input.bootstrapNodeExecutable || !input.bootstrapRunnerPath)) {
     throw new Error('FORGE_RUNTIME_BOOTSTRAP_RUNNER_REQUIRED');
   }
@@ -365,6 +272,7 @@ export async function installForgeRuntimeService(input: { config: ForgeRuntimeSe
     bootstrapNodeExecutable: input.nodeExecutable ?? process.execPath,
     bootstrapRunnerPath: input.runnerPath,
   });
+  await retireLegacyBrowserAutomationLaunchAgent(config.controllerHome);
   installLaunchAgent(paths.sourcePlistPath, paths.label);
   const result = await bootstrapLaunchAgentWithRetryV2({ label: paths.label, plistPath: paths.installedPlistPath });
   if (!result.ok) throw new Error(`FORGE_RUNTIME_SERVICE_BOOTSTRAP_FAILED: ${result.diagnostics.join('; ')}`);
@@ -378,12 +286,6 @@ export async function uninstallForgeRuntimeService(controllerHome: string): Prom
   if (!result.ok) throw new Error(`FORGE_RUNTIME_SERVICE_BOOTOUT_FAILED: ${result.diagnostics.join('; ')}`);
   rmSync(paths.installedPlistPath, { force: true });
 
-  const browserAutomation = browserAutomationServicePaths(controllerHome);
-  const helperResult = await bootoutLaunchAgentWithRetryV2({
-    label: browserAutomation.label,
-    plistPath: browserAutomation.installedPlistPath,
-  });
-  if (!helperResult.ok) throw new Error(`FORGE_BROWSER_AUTOMATION_SERVICE_BOOTOUT_FAILED: ${helperResult.diagnostics.join('; ')}`);
-  rmSync(browserAutomation.installedPlistPath, { force: true });
+  await retireLegacyBrowserAutomationLaunchAgent(controllerHome);
   return paths;
 }

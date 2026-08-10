@@ -22,7 +22,6 @@ function sourceFixture() {
   writeFileSync(join(root, 'README.md'), 'fixture\n');
   writeFileSync(join(root, 'src/runtime/plugins/browser-node-bridge-host.ts'), 'console.log("host");\n');
   writeFileSync(join(root, 'src/runtime/plugins/browser-handoff-host.ts'), 'console.log("handoff");\n');
-  writeFileSync(join(root, 'src/runtime/plugins/browser-automation-helper.ts'), 'console.log("browser-automation-helper");\n');
   writeFileSync(join(root, 'src/runtime/plugins/external-unix-socket-probe.cjs'), 'console.log("probe");\n');
   writeFileSync(join(root, 'bin/forge-desktop-helper.mjs'), '#!/usr/bin/env node\nconsole.log("desktop-helper");\n');
   writeFileSync(join(root, 'scripts/stage-runtime-release.ts'), '// candidate-owned stager fixture\n');
@@ -89,11 +88,9 @@ describe('runtime release materialization', () => {
       compileBinary: ({ outputPath, entryPath }) => {
         const kind = entryPath?.endsWith('check-runner-sidecar.ts')
           ? 'check-runner-binary'
-          : entryPath?.endsWith('browser-automation-helper.ts')
-            ? 'browser-automation-helper-binary'
-            : entryPath?.endsWith('cli-sidecar.ts')
-              ? 'cli-binary'
-              : 'runtime-binary';
+          : entryPath?.endsWith('cli-sidecar.ts')
+            ? 'cli-binary'
+            : 'runtime-binary';
         writeFileSync(outputPath, kind);
         return { ok: true };
       },
@@ -120,11 +117,7 @@ describe('runtime release materialization', () => {
     expect(existsSync(handoffHostPath)).toBe(true);
     expect(readFileSync(handoffHostPath, 'utf8')).toBe('handoff-host-bundle');
     expect(staged.browserHandoffArtifactIdentity).toMatch(/^sha256:/);
-    const browserAutomationHelperPath = join(staged.releasePath, 'browser-automation-helper');
-    expect(existsSync(browserAutomationHelperPath)).toBe(true);
-    expect(readFileSync(browserAutomationHelperPath, 'utf8')).toBe('browser-automation-helper-binary');
-    expect(staged.browserAutomationHelperArtifactIdentity).toMatch(/^sha256:/);
-    expect(staged.browserAutomationHelperContractIdentity).toMatch(/^sha256:/);
+    expect(existsSync(join(staged.releasePath, 'browser-automation-helper'))).toBe(false);
     const externalPluginProbePath = join(staged.releasePath, 'external-unix-socket-probe.cjs');
     expect(existsSync(externalPluginProbePath)).toBe(true);
     expect(readFileSync(externalPluginProbePath, 'utf8')).toContain('probe');
@@ -146,9 +139,6 @@ describe('runtime release materialization', () => {
     expect(manifest.browserNodeBridgeArtifactIdentity).toBe(staged.browserNodeBridgeArtifactIdentity);
     expect(manifest.browserHandoffEntrypoint).toBe('browser-handoff-host.js');
     expect(manifest.browserHandoffArtifactIdentity).toBe(staged.browserHandoffArtifactIdentity);
-    expect(manifest.browserAutomationHelperEntrypoint).toBe('browser-automation-helper');
-    expect(manifest.browserAutomationHelperArtifactIdentity).toBe(staged.browserAutomationHelperArtifactIdentity);
-    expect(manifest.browserAutomationHelperContractIdentity).toBe(staged.browserAutomationHelperContractIdentity);
     expect(manifest.desktopHelperEntrypoint).toBe('forge-desktop-helper.mjs');
     expect(manifest.desktopHelperArtifactIdentity).toBe(staged.desktopHelperArtifactIdentity);
     expect(manifest.processRunnerEntrypoint).toBe('process-runner.js');
@@ -170,9 +160,6 @@ describe('runtime release materialization', () => {
     expect(manifest.codeGraphLibraryRoot).toBe('codegraph-lib');
     expect(manifest.codeGraphLibraryArtifactIdentity).toBe(staged.codeGraphLibraryArtifactIdentity);
     expect(loadRuntimeReleaseManifest(staged.manifestPath, controllerHome)).toMatchObject({
-      browserAutomationHelperEntrypoint: 'browser-automation-helper',
-      browserAutomationHelperArtifactIdentity: staged.browserAutomationHelperArtifactIdentity,
-      browserAutomationHelperContractIdentity: staged.browserAutomationHelperContractIdentity,
       codeGraphNodeEntrypoint: 'codegraph-node',
       codeGraphNodeArtifactIdentity: staged.codeGraphNodeArtifactIdentity,
       codeGraphSidecarEntrypoint: 'codegraph-sidecar.cjs',
@@ -181,6 +168,22 @@ describe('runtime release materialization', () => {
       codeGraphLibraryArtifactIdentity: staged.codeGraphLibraryArtifactIdentity,
     });
     assertRuntimeReleaseFiles(staged);
+  });
+
+  test('keeps legacy Browser Automation helper fields parseable for rollback compatibility', () => {
+    const { root, controllerHome } = sourceFixture();
+    const manifestPath = join(root, 'legacy-browser-automation-helper-manifest.json');
+    writeFileSync(manifestPath, `${JSON.stringify({
+      schemaVersion: 1, releaseId: 'release-legacy-browser-helper', artifactIdentity: 'sha256:runtime', entrypoint: 'forge-runtime',
+      browserAutomationHelperEntrypoint: 'browser-automation-helper', browserAutomationHelperArtifactIdentity: `sha256:${'a'.repeat(64)}`,
+      browserAutomationHelperContractIdentity: `sha256:${'b'.repeat(64)}`, arguments: [], configurationSchemaVersion: 1, controllerHome,
+      databaseSchemaCompatibility: { minimum: 1, maximum: 1 }, workerProtocolVersion: 1, createdAt: new Date().toISOString(),
+    }, null, 2)}\n`);
+    expect(loadRuntimeReleaseManifest(manifestPath, controllerHome)).toMatchObject({
+      browserAutomationHelperEntrypoint: 'browser-automation-helper',
+      browserAutomationHelperArtifactIdentity: `sha256:${'a'.repeat(64)}`,
+      browserAutomationHelperContractIdentity: `sha256:${'b'.repeat(64)}`,
+    });
   });
 
   test('rejects a partial Browser Automation helper declaration in an immutable release manifest', () => {
@@ -242,27 +245,6 @@ describe('runtime release materialization', () => {
     });
     rmSync(join(staged.releasePath, 'browser-node-bridge-host.js'));
     expect(() => assertRuntimeReleaseFiles(staged)).toThrow('RUNTIME_RELEASE_BROWSER_NODE_HOST_MISSING');
-  });
-
-  test('release assertion fails closed when the declared Browser Automation helper is missing', () => {
-    const { root, controllerHome } = sourceFixture();
-    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
-      compileBinary: ({ outputPath }) => {
-        writeFileSync(outputPath, 'binary');
-        return { ok: true };
-      },
-      bundleNodeHost: ({ outputPath }) => {
-        writeFileSync(outputPath, 'node-host-bundle');
-        return { ok: true };
-      },
-      bundleProcessRunner: ({ outputPath }) => {
-        writeFileSync(outputPath, 'process-runner-bundle');
-        return { ok: true };
-      },
-      materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
-    });
-    rmSync(join(staged.releasePath, 'browser-automation-helper'));
-    expect(() => assertRuntimeReleaseFiles(staged)).toThrow('RUNTIME_RELEASE_BROWSER_AUTOMATION_HELPER_MISSING');
   });
 
   test('release assertion fails closed when the declared Browser handoff host is missing', () => {

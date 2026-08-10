@@ -1,12 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { createHash } from 'crypto';
 import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   activeRuntimeEntrypoint,
-  ensureBrowserAutomationLaunchAgentContract,
-  ensureBrowserAutomationLaunchAgentRunning,
   ensureForgeRuntimeLaunchAgentContract,
   forgeRuntimeServicePaths,
   renderForgeRuntimeLaunchAgent,
@@ -139,180 +136,26 @@ describe('Forge Runtime service', () => {
     expect(plist).not.toContain('forge-runtime-service.mjs');
   });
 
-  test('uses a short private Unix socket path while keeping the helper executable under Controller Home', () => {
+  test('does not materialize or reconcile a standalone Browser Automation helper from legacy manifest fields', () => {
     const fx = fixture();
-    const releasesRoot = join(fx.home, 'runtime', 'releases');
-    const releaseRoot = join(releasesRoot, 'release-socket');
-    const helper = join(releaseRoot, 'browser-automation-helper');
+    const releaseRoot = join(fx.home, 'runtime', 'releases', 'release-legacy-helper');
+    const entry = join(releaseRoot, 'forge-runtime');
     const manifestPath = join(releaseRoot, 'manifest.json');
     mkdirSync(releaseRoot, { recursive: true });
-    writeFileSync(join(releaseRoot, 'forge-runtime'), 'runtime');
-    writeFileSync(helper, 'helper');
-    const helperIdentity = `sha256:${createHash('sha256').update('helper').digest('hex')}`;
-    const helperContractIdentity = `sha256:${createHash('sha256').update('helper-source').digest('hex')}`;
+    writeFileSync(entry, 'runtime');
     writeFileSync(manifestPath, `${JSON.stringify({
-      schemaVersion: 1,
-      releaseId: 'release-socket',
-      entrypoint: 'forge-runtime',
-      controllerHome: fx.home,
-      artifactIdentity: 'sha256:runtime-socket',
-      arguments: [],
-      browserAutomationHelperEntrypoint: 'browser-automation-helper',
-      browserAutomationHelperArtifactIdentity: helperIdentity,
-      browserAutomationHelperContractIdentity: helperContractIdentity,
+      schemaVersion: 1, releaseId: 'release-legacy-helper', entrypoint: 'forge-runtime', controllerHome: fx.home,
+      artifactIdentity: 'sha256:runtime', arguments: [], browserAutomationHelperEntrypoint: 'browser-automation-helper',
+      browserAutomationHelperArtifactIdentity: `sha256:${'a'.repeat(64)}`, browserAutomationHelperContractIdentity: `sha256:${'b'.repeat(64)}`,
     })}\n`);
-    writeFileSync(join(releasesRoot, 'authority.json'), `${JSON.stringify({
-      schemaVersion: 1,
-      status: 'committed',
-      active: { releaseId: 'release-socket', manifestPath, artifactIdentity: 'sha256:runtime-socket' },
+    writeFileSync(join(fx.home, 'runtime', 'releases', 'authority.json'), `${JSON.stringify({
+      schemaVersion: 1, status: 'committed', active: { releaseId: 'release-legacy-helper', manifestPath, artifactIdentity: 'sha256:runtime' },
     })}\n`);
-    const contract = ensureBrowserAutomationLaunchAgentContract({ controllerHome: fx.home, accountHome: join(fx.root, 'account-home-socket') });
-    expect(contract).toBeDefined();
-    expect(contract!.paths.executablePath.startsWith(join(fx.home, 'runtime', 'browser-automation'))).toBe(true);
-    expect(contract!.paths.socketPath.startsWith('/tmp/forge-browser-automation-')).toBe(true);
-    expect(Buffer.byteLength(contract!.paths.socketPath)).toBeLessThan(100);
-    const plist = readFileSync(contract!.paths.installedPlistPath, 'utf8');
-    expect(plist).toContain('<string>--socket-path</string>');
-    expect(plist).toContain(`<string>${contract!.paths.socketPath}</string>`);
-  });
-
-  test('keeps Browser Automation helper identity stable across unrelated Runtime releases', () => {
-    const fx = fixture();
-    const accountHome = join(fx.root, 'account-home');
-    const releasesRoot = join(fx.home, 'runtime', 'releases');
-    mkdirSync(releasesRoot, { recursive: true });
-
-    const writeRelease = (releaseId: string, helperBytes: string, helperContractSource: string) => {
-      const releaseRoot = join(releasesRoot, releaseId);
-      mkdirSync(releaseRoot, { recursive: true });
-      const entry = join(releaseRoot, 'forge-runtime');
-      const helper = join(releaseRoot, 'browser-automation-helper');
-      const manifestPath = join(releaseRoot, 'manifest.json');
-      writeFileSync(entry, `runtime-${releaseId}`);
-      writeFileSync(helper, helperBytes);
-      const helperIdentity = `sha256:${createHash('sha256').update(helperBytes).digest('hex')}`;
-      const helperContractIdentity = `sha256:${createHash('sha256').update(helperContractSource).digest('hex')}`;
-      writeFileSync(manifestPath, `${JSON.stringify({
-        schemaVersion: 1,
-        releaseId,
-        entrypoint: 'forge-runtime',
-        controllerHome: fx.home,
-        artifactIdentity: `sha256:${releaseId}`,
-        arguments: [],
-        browserAutomationHelperEntrypoint: 'browser-automation-helper',
-        browserAutomationHelperArtifactIdentity: helperIdentity,
-        browserAutomationHelperContractIdentity: helperContractIdentity,
-      })}\n`);
-      writeFileSync(join(releasesRoot, 'authority.json'), `${JSON.stringify({
-        schemaVersion: 1,
-        status: 'committed',
-        active: { releaseId, manifestPath, artifactIdentity: `sha256:${releaseId}` },
-      })}\n`);
-      return { helperIdentity, helperContractIdentity };
-    };
-
-    const firstRelease = writeRelease('release-a', 'compiled-browser-helper-a', 'browser-helper-contract-v1');
-    const first = ensureBrowserAutomationLaunchAgentContract({ controllerHome: fx.home, accountHome });
-    expect(first).toBeDefined();
-    expect(first!.artifactChanged).toBe(true);
-    expect(first!.paths.executablePath).toBe(join(fx.home, 'runtime', 'browser-automation', 'browser-automation-helper'));
-    expect(first!.paths.socketPath.startsWith('/tmp/forge-browser-automation-')).toBe(true);
-    expect(Buffer.byteLength(first!.paths.socketPath, 'utf8')).toBeLessThan(80);
-    expect(readFileSync(first!.paths.executablePath, 'utf8')).toBe('compiled-browser-helper-a');
-    expect(readFileSync(first!.paths.installedPlistPath, 'utf8')).toContain(first!.paths.executablePath);
-
-    const secondRelease = writeRelease('release-b', 'compiled-browser-helper-b-nondeterministic', 'browser-helper-contract-v1');
-    expect(secondRelease.helperIdentity).not.toBe(firstRelease.helperIdentity);
-    expect(secondRelease.helperContractIdentity).toBe(firstRelease.helperContractIdentity);
-    const second = ensureBrowserAutomationLaunchAgentContract({ controllerHome: fx.home, accountHome });
-    expect(second).toBeDefined();
-    expect(second!.paths.executablePath).toBe(first!.paths.executablePath);
-    expect(second!.artifactChanged).toBe(false);
-    expect(second!.plistChanged).toBe(false);
-    expect(second!.changed).toBe(false);
-    expect(readFileSync(second!.paths.executablePath, 'utf8')).toBe('compiled-browser-helper-a');
-
-    const changedRelease = writeRelease('release-c', 'compiled-browser-helper-c', 'browser-helper-contract-v2');
-    expect(changedRelease.helperContractIdentity).not.toBe(firstRelease.helperContractIdentity);
-    const third = ensureBrowserAutomationLaunchAgentContract({ controllerHome: fx.home, accountHome });
-    expect(third!.artifactChanged).toBe(true);
-    expect(third!.paths.executablePath).toBe(first!.paths.executablePath);
-    expect(readFileSync(third!.paths.executablePath, 'utf8')).toBe('compiled-browser-helper-c');
-  });
-
-  test('starts the stable Browser Automation helper during release reconciliation and leaves an unchanged registered helper running', () => {
-    const fx = fixture();
-    const accountHome = join(fx.root, 'account-home-running');
-    const releasesRoot = join(fx.home, 'runtime', 'releases');
-    const releaseRoot = join(releasesRoot, 'release-helper-running');
-    const helper = join(releaseRoot, 'browser-automation-helper');
-    const runtime = join(releaseRoot, 'forge-runtime');
-    const manifestPath = join(releaseRoot, 'manifest.json');
-    mkdirSync(releaseRoot, { recursive: true });
-    writeFileSync(helper, 'stable-helper');
-    writeFileSync(runtime, 'runtime');
-    const helperIdentity = `sha256:${createHash('sha256').update('stable-helper').digest('hex')}`;
-    const helperContractIdentity = `sha256:${createHash('sha256').update('helper-source-v1').digest('hex')}`;
-    writeFileSync(manifestPath, `${JSON.stringify({
-      schemaVersion: 1,
-      releaseId: 'release-helper-running',
-      entrypoint: 'forge-runtime',
-      controllerHome: fx.home,
-      artifactIdentity: 'sha256:runtime-helper-running',
-      arguments: [],
-      browserAutomationHelperEntrypoint: 'browser-automation-helper',
-      browserAutomationHelperArtifactIdentity: helperIdentity,
-      browserAutomationHelperContractIdentity: helperContractIdentity,
-    })}\n`);
-    mkdirSync(join(fx.home, 'runtime', 'service'), { recursive: true });
-    writeFileSync(join(fx.home, 'runtime', 'service', 'config.json'), `${JSON.stringify({
-      schemaVersion: 1,
-      controllerHome: fx.home,
-      repositoryRoot: fx.repo,
-      host: '127.0.0.1',
-      port: 8765,
-      authTokenFile:fx.token,
-    })}\n`);
-    writeFileSync(join(releasesRoot, 'authority.json'), `${JSON.stringify({
-      schemaVersion: 1,
-      status: 'committed',
-      active: { releaseId: 'release-helper-running', manifestPath, artifactIdentity: 'sha256:runtime-helper-running' },
-    })}\n`);
-
-    let registered = false;
-    const calls: string[][] = [];
-    const runLaunchctl = (args: string[]) => {
-      calls.push(args);
-      if (args[0] === 'print') return { ok: registered, stdout: '', stderr: registered ? '' : 'not found', status: registered ? 0 : 1 };
-      if (args[0] === 'bootstrap') registered = true;
-      if (args[0] === 'bootout') registered = false;
-      return { ok: true, stdout: '', stderr: '', status: 0 };
-    };
-
-    const first = ensureBrowserAutomationLaunchAgentRunning(
-      { controllerHome: fx.home, accountHome },
-      { runLaunchctl, domain: 'gui/501' },
-    );
-    expect(first?.registered).toBe(true);
-    expect(first?.restarted).toBe(true);
-    expect(calls.some((args) => args[0] === 'bootstrap')).toBe(true);
-
-    calls.length = 0;
-    const second = ensureBrowserAutomationLaunchAgentRunning(
-      { controllerHome: fx.home, accountHome },
-      { runLaunchctl, domain: 'gui/501' },
-    );
-    expect(second?.registered).toBe(true);
-    expect(second?.changed).toBe(false);
-    expect(second?.restarted).toBe(false);
-    expect(calls).toEqual([['print', `gui/501/${second!.paths.label}`]]);
-
-    calls.length = 0;
-    ensureForgeRuntimeLaunchAgentContract(
-      { controllerHome: fx.home },
-      { browserAutomationRunLaunchctl: runLaunchctl, browserAutomationDomain: 'gui/501', browserAutomationAccountHome: accountHome },
-    );
-    expect(calls).toEqual([['print', `gui/501/${second!.paths.label}`]]);
+    const paths = forgeRuntimeServicePaths(fx.home);
+    mkdirSync(paths.serviceRoot, { recursive: true });
+    writeFileSync(paths.configPath, `${JSON.stringify({ schemaVersion: 1, controllerHome: fx.home, repositoryRoot: fx.repo, host: '127.0.0.1', port: 8765, authTokenFile: fx.token })}\n`);
+    expect(ensureForgeRuntimeLaunchAgentContract({ controllerHome: fx.home }).mode).toBe('release');
+    expect(readFileSync(paths.installedPlistPath, 'utf8')).not.toContain('browser-automation-helper');
   });
 
   test('validates the service config before installation', () => {

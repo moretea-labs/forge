@@ -13,7 +13,7 @@ const DEFAULT_MAX_RESPONSE_BYTES = 1_048_576;
 const MAX_TIMEOUT_MS = 120_000;
 const MAX_DIAGNOSTIC_CHARS = 4_000;
 
-export type ExternalUnixSocketMethod = 'handshake' | 'manifest' | 'health' | 'execute';
+export type ExternalUnixSocketMethod = 'handshake' | 'manifest' | 'health' | 'execute' | 'macos_browser_automation';
 
 export interface ExternalUnixSocketCallOptions {
   socketPath: string;

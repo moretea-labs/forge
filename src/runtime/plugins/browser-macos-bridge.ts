@@ -2,9 +2,9 @@ import { execFile } from 'child_process';
 import { existsSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import {
-  callBrowserAutomationHelper,
+  callBrowserAutomationBroker,
   captureBrowserAutomationRegion,
-  type BrowserAutomationHelperAction,
+  type BrowserAutomationBrokerAction,
 } from './browser-automation-service';
 import { AssistantPluginError } from './errors';
 
@@ -114,17 +114,17 @@ const defaultRuntimeHooks: MacOsBrowserRuntimeHooks = {
 };
 
 async function runBrowserAutomationText(
-  request: BrowserAutomationHelperAction,
+  request: BrowserAutomationBrokerAction,
   testScript: string,
   testArgs: string[],
   timeoutMs: number,
 ): Promise<string> {
   if (runtimeHooks.runAppleScript) return await runtimeHooks.runAppleScript(testScript, testArgs, timeoutMs);
-  const result = await callBrowserAutomationHelper(request, timeoutMs);
+  const result = await callBrowserAutomationBroker(request, timeoutMs);
   if (typeof result.value !== 'string') {
     throw new AssistantPluginError(
-      'PLUGIN_BROWSER_AUTOMATION_HELPER_PROTOCOL_ERROR',
-      'Stable macOS Browser Automation helper returned an invalid text result.',
+      'PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR',
+      'Stable Forge macOS capability broker returned an invalid text result.',
       { retryable: true },
     );
   }
@@ -476,7 +476,7 @@ export class MacOsAppleEventsPage {
   }
 
   private async runAutomation(
-    request: BrowserAutomationHelperAction,
+    request: BrowserAutomationBrokerAction,
     script: string,
     args: string[] = [],
     timeoutMs = this.timeoutMs,

@@ -22,8 +22,6 @@ export interface StagedRuntimeRelease {
   diagnosticArtifactIdentity?: string;
   browserNodeBridgeArtifactIdentity?: string;
   browserHandoffArtifactIdentity?: string;
-  browserAutomationHelperArtifactIdentity?: string;
-  browserAutomationHelperContractIdentity?: string;
   desktopHelperArtifactIdentity?: string;
   processRunnerArtifactIdentity?: string;
   checkRunnerArtifactIdentity?: string;
@@ -339,24 +337,6 @@ export function stageRuntimeRelease(input: {
     chmodSync(browserHandoffPath, 0o700);
     const browserHandoffArtifactIdentity = `sha256:${sha256(browserHandoffPath)}`;
 
-    const browserAutomationHelperEntrypoint = 'browser-automation-helper' as const;
-    const browserAutomationHelperSourcePath = join(sourceRoot, 'src/runtime/plugins/browser-automation-helper.ts');
-    if (!existsSync(browserAutomationHelperSourcePath)) {
-      throw new Error(`RUNTIME_RELEASE_BROWSER_AUTOMATION_HELPER_SOURCE_MISSING: ${browserAutomationHelperSourcePath}`);
-    }
-    const browserAutomationHelperContractIdentity = `sha256:${sha256(browserAutomationHelperSourcePath)}`;
-    const browserAutomationHelperPath = join(staging, browserAutomationHelperEntrypoint);
-    const browserAutomationHelperCompile = compileBinary({
-      sourceRoot,
-      outputPath: browserAutomationHelperPath,
-      entryPath: browserAutomationHelperSourcePath,
-    });
-    if (!browserAutomationHelperCompile.ok) {
-      throw new Error(`RUNTIME_RELEASE_BROWSER_AUTOMATION_HELPER_BUILD_FAILED: ${browserAutomationHelperCompile.stderr || browserAutomationHelperCompile.stdout || browserAutomationHelperCompile.error}`.slice(0, 2_000));
-    }
-    chmodSync(browserAutomationHelperPath, 0o700);
-    const browserAutomationHelperArtifactIdentity = `sha256:${sha256(browserAutomationHelperPath)}`;
-
     const processRunnerEntrypoint = 'process-runner.js' as const;
     const processRunnerPath = join(staging, processRunnerEntrypoint);
     const bundleProcessRunner = dependencies.bundleProcessRunner ?? defaultBundleNodeScript;
@@ -435,9 +415,6 @@ export function stageRuntimeRelease(input: {
       browserNodeBridgeArtifactIdentity,
       browserHandoffEntrypoint,
       browserHandoffArtifactIdentity,
-      browserAutomationHelperEntrypoint,
-      browserAutomationHelperArtifactIdentity,
-      browserAutomationHelperContractIdentity,
       desktopHelperEntrypoint,
       desktopHelperArtifactIdentity,
       processRunnerEntrypoint,
@@ -476,8 +453,6 @@ export function stageRuntimeRelease(input: {
       diagnosticArtifactIdentity,
       browserNodeBridgeArtifactIdentity,
       browserHandoffArtifactIdentity,
-      browserAutomationHelperArtifactIdentity,
-      browserAutomationHelperContractIdentity,
       desktopHelperArtifactIdentity,
       processRunnerArtifactIdentity,
       checkRunnerArtifactIdentity,
@@ -509,9 +484,6 @@ export function assertRuntimeReleaseFiles(release: StagedRuntimeRelease): void {
   }
   if (release.browserHandoffArtifactIdentity && !existsSync(join(release.releasePath, 'browser-handoff-host.js'))) {
     throw new Error(`RUNTIME_RELEASE_BROWSER_HANDOFF_HOST_MISSING: ${join(release.releasePath, 'browser-handoff-host.js')}`);
-  }
-  if (release.browserAutomationHelperArtifactIdentity && !existsSync(join(release.releasePath, 'browser-automation-helper'))) {
-    throw new Error(`RUNTIME_RELEASE_BROWSER_AUTOMATION_HELPER_MISSING: ${join(release.releasePath, 'browser-automation-helper')}`);
   }
   if (release.desktopHelperArtifactIdentity && !existsSync(join(release.releasePath, 'forge-desktop-helper.mjs'))) {
     throw new Error(`RUNTIME_RELEASE_DESKTOP_HELPER_MISSING: ${join(release.releasePath, 'forge-desktop-helper.mjs')}`);

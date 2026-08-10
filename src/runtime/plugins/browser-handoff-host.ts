@@ -41,28 +41,10 @@ function applicationName(channel?: string): string | undefined {
   return undefined;
 }
 
-function activateRunningApplication(pid: number): boolean {
-  const script = [
-    'ObjC.import("AppKit")',
-    `const app = $.NSRunningApplication.runningApplicationWithProcessIdentifier(${pid})`,
-    'if (!app) throw new Error("application not found")',
-    'const options = $.NSApplicationActivateIgnoringOtherApps | $.NSApplicationActivateAllWindows',
-    'if (!app.activateWithOptions(options)) throw new Error("activation rejected")',
-  ].join(';');
-  return spawnSync('/usr/bin/osascript', ['-l', 'JavaScript', '-e', script], { stdio: 'ignore' }).status === 0;
-}
-
 function presentForeground(channel?: string): boolean {
   if (process.platform !== 'darwin') return false;
   const app = applicationName(channel);
-  if (app && spawnSync('/usr/bin/open', ['-a', app], { stdio: 'ignore' }).status === 0) return true;
-  const children = spawnSync('/usr/bin/pgrep', ['-P', String(process.pid)], { encoding: 'utf8' });
-  if (children.status !== 0) return false;
-  return children.stdout
-    .split(/\s+/)
-    .map((value) => Number(value))
-    .filter((pid) => Number.isInteger(pid) && pid > 0)
-    .some(activateRunningApplication);
+  return Boolean(app && spawnSync('/usr/bin/open', ['-a', app], { stdio: 'ignore' }).status === 0);
 }
 
 async function runNativeHandoff(specPath: string, spec: BrowserHandoffLaunchSpec): Promise<void> {
