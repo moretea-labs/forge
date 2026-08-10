@@ -486,13 +486,13 @@ describe("repository MCP command tools", () => {
     }
   });
 
-  test("long-running command execution runs through the async MCP path and captures output", async () => {
-    const longCommand = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
-      "console.log('start'); setTimeout(() => console.log('ready'), 1000);",
-    )}`;
+  test("long-running command execution returns a non-terminal receipt without a false failure", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "forge-mcp-repo-command-async-"));
     const controllerHome = join(workspace, "controller-home");
     const repoRoot = join(workspace, "sample-repo");
+    const longCommand = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
+      "console.log('start'); setTimeout(() => console.log('ready'), 3000);",
+    )} ${JSON.stringify(repoRoot)}`;
     try {
       mkdirSync(controllerHome, { recursive: true });
       mkdirSync(repoRoot, { recursive: true });
@@ -518,14 +518,13 @@ describe("repository MCP command tools", () => {
       const executedValue = await json(executionPromise);
       expect(executedValue.accepted).toBe(true);
       expect(typeof executedValue.processId).toBe("string");
-      expect(["running", "succeeded"]).toContain(executedValue.status);
+      expect(executedValue.status).toBe("running");
       expect(executedValue.authorization).toMatchObject({ decision: "allow" });
-      // Long commands may complete inside the interactive wait budget; either way no Local Job is created.
+      expect(executedValue.ok).toBeUndefined();
+      expect(executedValue.exitCode).toBeUndefined();
+      expect(executedValue.error).toBeUndefined();
       expect(executedValue.jobId).toBeUndefined();
       expect(executedValue.localJob).toBeUndefined();
-      if (executedValue.status === "succeeded" || executedValue.ok === true) {
-        expect(String(executedValue.stdout ?? "")).toContain("ready");
-      }
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot]);
       rmSync(workspace, { recursive: true, force: true });

@@ -361,6 +361,7 @@ function compactProcessCommandPayload(input: {
   checkoutId?: string;
   processId?: string;
   process?: unknown;
+  completed?: boolean;
   ok?: boolean;
   exitCode?: number | null;
   stdout?: string;
@@ -383,10 +384,11 @@ function compactProcessCommandPayload(input: {
 
   // Default success/failure: one authoritative stdout/stderr pair, no nested process dump.
   if (!detail) {
+    const completed = input.completed !== false;
     const ok = input.ok === true;
     const payload: Record<string, unknown> = {
-      ok,
-      accepted: ok,
+      ...(completed ? { ok } : {}),
+      accepted: input.accepted ?? true,
       mode: input.mode,
       path: input.path,
       route: input.route ?? input.path,
@@ -394,13 +396,13 @@ function compactProcessCommandPayload(input: {
       repoId: input.repoId,
       ...(input.checkoutId ? { checkoutId: input.checkoutId } : {}),
       ...(input.processId ? { processId: input.processId } : {}),
-      exitCode: input.exitCode ?? (ok ? 0 : 1),
+      ...(completed ? { exitCode: input.exitCode ?? (ok ? 0 : 1) } : {}),
       stdout: output.stdout ?? '',
       stderr: output.stderr ?? '',
       ...(output.stdoutTruncated ? { stdoutTruncated: true, stdoutBytes: output.stdoutBytes } : {}),
       ...(output.stderrTruncated ? { stderrTruncated: true, stderrBytes: output.stderrBytes } : {}),
     };
-    if (!ok) {
+    if (completed && !ok) {
       payload.error = {
         code: 'PROCESS_COMMAND_FAILED',
         message: (output.stderr || 'process_direct command failed').slice(0, 800),
@@ -848,8 +850,9 @@ export async function callRepositoryTool(
                   checkoutId: repository.activeCheckoutId,
                   processId: handle?.processId,
                   process: detailLevel === 'detail' ? handle : undefined,
-                  ok: processResult.ok,
-                  exitCode: processResult.exitCode,
+                  completed,
+                  ok: completed ? processResult.ok : undefined,
+                  exitCode: completed ? processResult.exitCode : undefined,
                   stdout: processResult.stdout,
                   stderr: processResult.stderr,
                   durableSideEffects: processResult.durableSideEffects,
