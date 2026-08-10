@@ -225,13 +225,15 @@ export function createExternalPluginAdapter(
         if (input.actionId === 'provider_stop') return stopProvider(bound.label, bound.expectedProgramContains);
         return restartProvider(bound.label, bound.expectedProgramContains);
       }
-      const providerManifest = await call(callOptions(registration, {
-        requestId: `${input.requestId}:manifest`,
-        method: 'manifest',
-        timeoutMs: registration.transport.healthTimeoutMs,
-        signal: input.signal,
-      }));
-      parseProviderManifest(providerManifest, registration);
+      if (input.providerIdentityPrevalidated !== true) {
+        const providerManifest = await call(callOptions(registration, {
+          requestId: `${input.requestId}:manifest`,
+          method: 'manifest',
+          timeoutMs: registration.transport.healthTimeoutMs,
+          signal: input.signal,
+        }));
+        parseProviderManifest(providerManifest, registration);
+      }
       return await call(callOptions(registration, {
         requestId: input.requestId,
         method: 'execute',
@@ -239,6 +241,9 @@ export function createExternalPluginAdapter(
         timeoutMs: input.timeoutMs ?? registration.transport.actionTimeoutMs,
         signal: input.signal,
       }));
+    },
+    shouldRefreshManifestAfterAction(actionId) {
+      return EXTERNAL_PROVIDER_LIFECYCLE_ACTIONS.has(actionId);
     },
   };
 }

@@ -122,6 +122,8 @@ export interface AssistantPluginActionExecutionInput {
   signal?: AbortSignal;
   /** Internal absolute request deadline; propagated only across nested adapter actions. */
   deadlineAtMs?: number;
+  /** Internal proof that this exact adapter instance just built and validated the live provider manifest. */
+  providerIdentityPrevalidated?: boolean;
 }
 
 export type AssistantPluginScope = 'repository' | 'controller';
@@ -131,4 +133,6 @@ export interface AssistantPluginAdapter {
   scope?: AssistantPluginScope;
   buildManifest(previousRevision?: number, previousUpdatedAt?: string, repoRoot?: string): AssistantPluginManifest;
   executeAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>>;
+  /** Defaults to true. External providers can defer routine health refresh until the normal manifest cache expires. */
+  shouldRefreshManifestAfterAction?(actionId: string): boolean;
 }

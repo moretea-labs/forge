@@ -235,8 +235,13 @@ function cachedManifestForRepository(
     ?? readPluginManifestCache(pluginManifestItemCache, itemCacheKey(controllerHome, repoId, pluginId, false));
 }
 
-function computeManifest(controllerHome: string, repository: RepositoryRecord, pluginId: string): AssistantPluginManifest {
-  const adapter = resolvePluginAdapter(controllerHome, pluginId);
+function computeManifest(
+  controllerHome: string,
+  repository: RepositoryRecord,
+  pluginId: string,
+  resolvedAdapter?: AssistantPluginAdapter,
+): AssistantPluginManifest {
+  const adapter = resolvedAdapter ?? resolvePluginAdapter(controllerHome, pluginId);
   if (!adapter || !adapterMatchesRepository(adapter, repository)) throw new Error(`PLUGIN_NOT_FOUND: ${pluginId}`);
   const previous = readStoredManifest(controllerHome, repository.repoId, pluginId);
   const built = adapter.buildManifest(previous?.revision ?? 0, previous?.updatedAt, repository.canonicalRoot);
@@ -409,16 +414,30 @@ export function listAssistantPluginManifests(
   return writePluginManifestCache(pluginManifestListCache, cacheKey, manifests);
 }
 
+function getAssistantPluginManifestForExecution(
+  controllerHome: string,
+  repository: RepositoryRecord,
+  pluginId: string,
+  adapter: AssistantPluginAdapter,
+): { manifest: AssistantPluginManifest; providerIdentityPrevalidated: boolean } {
+  const cacheKey = itemCacheKey(controllerHome, repository.repoId, pluginId, false);
+  const cached = readPluginManifestCache(pluginManifestItemCache, cacheKey);
+  if (cached) return { manifest: cached, providerIdentityPrevalidated: false };
+  const manifest = computeManifest(controllerHome, repository, pluginId, adapter);
+  return {
+    manifest: writePluginManifestCache(pluginManifestItemCache, cacheKey, manifest),
+    providerIdentityPrevalidated: true,
+  };
+}
+
 export function getAssistantPluginManifest(
   controllerHome: string,
   repository: RepositoryRecord,
   pluginId: string,
 ): AssistantPluginManifest {
-  const cacheKey = itemCacheKey(controllerHome, repository.repoId, pluginId, false);
-  const cached = readPluginManifestCache(pluginManifestItemCache, cacheKey);
-  if (cached) return cached;
-  const manifest = computeManifest(controllerHome, repository, pluginId);
-  return writePluginManifestCache(pluginManifestItemCache, cacheKey, manifest);
+  const adapter = resolvePluginAdapter(controllerHome, pluginId);
+  if (!adapter || !adapterMatchesRepository(adapter, repository)) throw new Error(`PLUGIN_NOT_FOUND: ${pluginId}`);
+  return getAssistantPluginManifestForExecution(controllerHome, repository, pluginId, adapter).manifest;
 }
 
 export function syncAssistantPluginRegistry(
@@ -916,14 +935,21 @@ export async function executeAssistantPluginAction(
     canonicalRoot: input.repoRoot,
     activeCheckoutId: 'active',
   } as RepositoryRecord;
-  const manifest = getAssistantPluginManifest(input.controllerHome, repository, input.pluginId);
+  const manifestLookup = getAssistantPluginManifestForExecution(input.controllerHome, repository, input.pluginId, adapter);
+  const manifest = manifestLookup.manifest;
   const action = actionForManifest(manifest, input.actionId);
   denyAutomatedWrite(manifest, action, input.origin);
   const normalizedArgs = validateActionArguments(action, input.args);
   try {
-    const result = await adapter.executeAction({ ...input, args: normalizedArgs });
-    const synced = syncAssistantPluginManifest(input.controllerHome, repository, input.pluginId);
-    const nextManifest = synced.manifest;
+    const result = await adapter.executeAction({
+      ...input,
+      args: normalizedArgs,
+      providerIdentityPrevalidated: manifestLookup.providerIdentityPrevalidated,
+    });
+    const refreshManifest = adapter.shouldRefreshManifestAfterAction?.(input.actionId) ?? true;
+    const nextManifest = refreshManifest
+      ? syncAssistantPluginManifest(input.controllerHome, repository, input.pluginId).manifest
+      : manifest;
     appendRuntimeEvent(input.controllerHome, {
       repoId: input.repoId,
       entityType: 'plugin',

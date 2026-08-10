@@ -128,4 +128,21 @@ describe('external plugin adapter', () => {
     expect(calls.map((entry) => entry.method)).toEqual(['manifest', 'execute']);
     expect(calls[1]?.params).toEqual({ action: 'desktop_status', arguments: {} });
   });
+
+  test('reuses same-call live provider identity proof without a duplicate manifest round trip', async () => {
+    const calls: ExternalUnixSocketCallOptions[] = [];
+    const adapter = createExternalPluginAdapter(registration(), {
+      call: async (options) => {
+        calls.push(options);
+        return { observed: true };
+      },
+    });
+    const result = await adapter.executeAction({
+      controllerHome: '/tmp/home', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'desktop_operator', actionId: 'desktop_status', requestId: 'request-3', args: {}, origin: { surface: 'mcp' }, providerIdentityPrevalidated: true,
+    });
+    expect(result).toEqual({ observed: true });
+    expect(calls.map((entry) => entry.method)).toEqual(['execute']);
+    expect(adapter.shouldRefreshManifestAfterAction?.('desktop_status')).toBe(false);
+    expect(adapter.shouldRefreshManifestAfterAction?.('provider_restart')).toBe(true);
+  });
 });
