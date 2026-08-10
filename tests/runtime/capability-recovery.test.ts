@@ -257,7 +257,7 @@ describe('runtime maintenance executor', () => {
     return { root, controllerHome, localJobs, repository: { repoId: 'repo-test', canonicalRoot: root } };
   }
 
-  function editFixture(input: { workStatus?: 'cancelled' | 'running'; createWork?: boolean; applyEdit?: boolean } = {}) {
+  function editFixture(input: { workStatus?: 'cancelled' | 'running'; createWork?: boolean; applyEdit?: boolean; contractFree?: boolean } = {}) {
     const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-edit-session-'));
     temporaryRoots.push(root);
     const controllerHome = join(root, 'controller');
@@ -275,8 +275,8 @@ describe('runtime maintenance executor', () => {
 
     const repoId = 'repo-maintenance-edit';
     const checkoutId = 'checkout-maintenance-edit';
-    const workId = input.createWork === false ? 'work-missing' : `work-${input.workStatus ?? 'cancelled'}`;
-    if (input.createWork !== false) {
+    const workId = input.contractFree ? undefined : input.createWork === false ? 'work-missing' : `work-${input.workStatus ?? 'cancelled'}`;
+    if (input.createWork !== false && workId) {
       createWorkContract({ controllerHome, repoId }, {
         workId,
         repoId,
@@ -440,6 +440,26 @@ describe('runtime maintenance executor', () => {
     }));
     expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('dirty');
     expect(readFileSync(join(fx.repoRoot, 'src/session.ts'), 'utf8')).toBe('export const sessionValue = 1;\n');
+  });
+
+  it('reconciles a committed contract-free Direct Edit Session without inventing Work ownership', () => {
+    const fx = editFixture({ contractFree: true });
+    execFileSync('git', ['add', 'src/session.ts'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-qm', 'commit contract-free direct edit'], { cwd: fx.repoRoot });
+
+    const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
+    expect(status.candidates).toContainEqual(expect.objectContaining({
+      kind: 'stale_edit_session',
+      id: fx.sessionId,
+      safe: true,
+      ownershipStatus: 'explicit',
+      reason: expect.stringContaining('Contract-free Direct Edit Session'),
+    }));
+    const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
+      actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50,
+    });
+    expect(applied.applied).toContainEqual(expect.objectContaining({ id: fx.sessionId, applied: true, result: 'edit_session_finalized' }));
+    expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('finalized');
   });
 
   it('does not treat active or missing Work ownership as safe stale Edit Session candidates', () => {

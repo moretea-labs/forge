@@ -448,19 +448,21 @@ function scanStaleEditSessionCandidates(
         ? getWorkContract({ controllerHome, repoId: repository.repoId }, session.workId)
         : undefined;
       const terminalWork = Boolean(work && isTerminalWorkContractStatus(work.status));
+      const contractFreeDirect = !session.workId;
+      const safeToReconcile = terminalWork || contractFreeDirect;
       return {
         kind: 'stale_edit_session' as const,
         id: session.sessionId,
         status: session.status,
-        safe: terminalWork,
+        safe: safeToReconcile,
         reason: terminalWork
           ? 'Edit Session belongs to a terminal WorkContract; cleanup may reconcile metadata only and must refuse unique uncommitted source changes.'
-          : session.workId
-            ? 'Edit Session WorkContract is missing or still nonterminal; active-session ownership must remain fenced.'
-            : 'Edit Session has no durable WorkContract ownership evidence; maintenance fails closed.',
+          : contractFreeDirect
+            ? 'Contract-free Direct Edit Session has no WorkContract by design; cleanup may reconcile metadata only and must refuse unique uncommitted source changes.'
+            : 'Edit Session WorkContract is missing or still nonterminal; active-session ownership must remain fenced.',
         ageMinutes,
         suggestedAction: 'full_maintenance_pass' as const,
-        ownershipStatus: terminalWork ? 'explicit' as const : 'unknown' as const,
+        ownershipStatus: safeToReconcile ? 'explicit' as const : 'unknown' as const,
       };
     });
 }
@@ -781,7 +783,7 @@ export function applyRuntimeMaintenance(
       if (candidate.kind === 'stale_edit_session') {
         const cleaned = cleanupEditSession(repository.canonicalRoot, candidate.id, {
           reviewer: 'runtime-maintenance',
-          note: 'Reconciled by explicit full maintenance after the owning WorkContract reached a terminal state; source files were not rolled back.',
+          note: 'Reconciled by explicit full maintenance after durable ownership became inactive; source files were not rolled back.',
         });
         const closed = ['finalized', 'superseded', 'rolled_back'].includes(cleaned.status);
         return {
