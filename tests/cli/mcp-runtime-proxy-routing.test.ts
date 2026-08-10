@@ -1,7 +1,21 @@
 import { describe, expect, test } from 'bun:test';
-import { proxyCanonicalRuntimeToolIfOwned, shouldProxyRuntimeToolCall } from '../../src/cli/mcp/server';
+import { hasAuthoritativeRuntimeToolSurface, proxyCanonicalRuntimeToolIfOwned, shouldProxyRuntimeToolCall } from '../../src/cli/mcp/server';
 
 describe('MCP canonical Runtime per-tool proxy routing', () => {
+  test('accepts the bounded public Runtime surface as authoritative without hidden atomic markers', () => {
+    expect(hasAuthoritativeRuntimeToolSurface({ tools: [
+      { name: 'rh_status' },
+      { name: 'rh_context' },
+      { name: 'repository_list' },
+      { name: 'repository_command_execute' },
+    ] })).toBe(true);
+    expect(hasAuthoritativeRuntimeToolSurface({ tools: [
+      { name: 'repository_command_execute' },
+      { name: 'controller_ready' },
+      { name: 'capability_recovery_apply' },
+    ] })).toBe(false);
+  });
+
   test('proxies a Runtime-owned tool even when unrelated newer marker tools are absent', () => {
     const olderCanonicalRuntime = {
       tools: [

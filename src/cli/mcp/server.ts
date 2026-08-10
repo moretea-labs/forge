@@ -189,11 +189,17 @@ async function proxyRuntimeTools(ctx: MultiRepositoryMcpToolContext) {
   return withCanonicalRuntimeClient(ctx, (client) => client.listTools());
 }
 
-function hasAuthoritativeRuntimeToolSurface(tools: { tools: Array<{ name: string }> }): boolean {
+export function hasAuthoritativeRuntimeToolSurface(tools: { tools: Array<{ name: string }> }): boolean {
   const names = new Set(tools.tools.map((tool) => tool.name));
-  return names.has('repository_command_execute')
-    && names.has('capability_recovery_apply')
-    && names.has('controller_ready');
+  // Authority must be identified by the permanent bounded facade/bootstrap
+  // surface, never by atomic compatibility tools that may intentionally be
+  // hidden from ChatGPT. Otherwise a healthy reduced Runtime is mistaken for
+  // an old/incomplete Runtime and the public Gateway falls back to its own
+  // stale, much larger schema.
+  return names.has('rh_status')
+    && names.has('rh_context')
+    && names.has('repository_list')
+    && names.has('repository_command_execute');
 }
 
 export function shouldProxyRuntimeToolCall(
