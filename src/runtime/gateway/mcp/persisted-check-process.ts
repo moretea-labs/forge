@@ -62,6 +62,22 @@ export function resolveRuntimeCliEntry(controllerHome?: string): string {
   return resolveRuntimeCliTarget(controllerHome).entry;
 }
 
+export function persistedCheckSemanticScopeKey(
+  input: Pick<RunCheckFacadeInput, 'workId' | 'verificationBinding' | 'checkoutId'>,
+  reuseScope: string,
+): string {
+  const base = reuseScope === 'repository' ? 'repository' : `checkout:${input.checkoutId ?? 'unknown'}`;
+  const binding = input.verificationBinding;
+  const owner = [
+    input.workId ? `work:${input.workId}` : undefined,
+    binding?.executionSessionId ? `execution:${binding.executionSessionId}` : undefined,
+    binding?.editSessionId ? `edit:${binding.editSessionId}:r${binding.editRevision ?? 'unknown'}` : undefined,
+    binding?.issueId ? `issue:${binding.issueId}` : undefined,
+    binding?.taskId ? `task:${binding.taskId}` : undefined,
+  ].filter(Boolean).join('|') || 'unbound';
+  return `${base}|owner:${owner}`;
+}
+
 export function resolvePersistedCheckRuntimeExecutable(
   cliTarget: CliRuntimeTarget,
   runtimeExecutable = process.execPath,
@@ -186,9 +202,7 @@ export async function runPersistedCheckViaProcessRuntime(
     environmentFingerprint: semanticCheck.environmentFingerprint,
     timeoutMs: semanticCheck.timeoutMs,
     reuseScope: semanticCheck.reuseScope,
-    scopeKey: semanticCheck.reuseScope === 'repository'
-      ? 'repository'
-      : `checkout:${executionIdentity.checkoutId}`,
+    scopeKey: persistedCheckSemanticScopeKey(input, semanticCheck.reuseScope),
   };
   const cliTarget = resolveRuntimeCliTarget(input.controllerHome);
   const checkArgs = [

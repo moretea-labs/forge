@@ -41,6 +41,7 @@ import {
   shellCommandHasUnsafeConstructs,
 } from '../../src/cli/repositories/command-classifier';
 import { classifyGatewayExecutionPath } from '../../src/runtime/gateway/mcp/router';
+import { persistedCheckSemanticScopeKey, runPersistedCheckViaProcessRuntime } from '../../src/runtime/gateway/mcp/persisted-check-process';
 import { claimsForMcpOperation } from '../../src/runtime/gateway/mcp/resource-policy';
 import { ensureControllerHome, repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
@@ -893,6 +894,36 @@ describe('Unified Process Runtime', () => {
 });
 
 describe('run_check Process Runtime facade', () => {
+  test('semantic scope fences verification owners without disabling unbound reuse', () => {
+    const scope = (input: Parameters<typeof persistedCheckSemanticScopeKey>[0]) =>
+      persistedCheckSemanticScopeKey(input, 'checkout');
+    expect(scope({ checkoutId: 'checkout-a' })).toBe(scope({ checkoutId: 'checkout-a' }));
+    expect(scope({ checkoutId: 'checkout-a', workId: 'work-a', verificationBinding: { executionSessionId: 'session-a' } }))
+      .toBe(scope({ checkoutId: 'checkout-a', workId: 'work-a', verificationBinding: { executionSessionId: 'session-a' } }));
+    expect(scope({ checkoutId: 'checkout-a', workId: 'work-a', verificationBinding: { executionSessionId: 'session-a' } }))
+      .not.toBe(scope({ checkoutId: 'checkout-a', workId: 'work-b', verificationBinding: { executionSessionId: 'session-a' } }));
+    expect(scope({ checkoutId: 'checkout-a', workId: 'work-a', verificationBinding: { executionSessionId: 'session-a' } }))
+      .not.toBe(scope({ checkoutId: 'checkout-a', workId: 'work-a', verificationBinding: { executionSessionId: 'session-b' } }));
+    expect(scope({ checkoutId: 'checkout-a', verificationBinding: { editSessionId: 'edit-a', editRevision: 1 } }))
+      .not.toBe(scope({ checkoutId: 'checkout-a', verificationBinding: { editSessionId: 'edit-a', editRevision: 2 } }));
+  });
+
+  test('does not reuse Edit Session Process evidence for Work validation on the same checkout', async () => {
+    const fx = fixture();
+    const common = {
+      controllerHome: fx.controllerHome, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId,
+      repoRoot: fx.repoRoot, executionIdentity: executionIdentityForRepository(fx.repository), checkId: 'quick-ok', interactiveWaitMs: 5_000,
+    };
+    const edit = await runPersistedCheckViaProcessRuntime({ ...common, requestId: 'edit-check', commandId: 'edit-check', verificationBinding: { editSessionId: 'edit-a', editRevision: 1 } });
+    const work = await runPersistedCheckViaProcessRuntime({ ...common, requestId: 'work-check', commandId: 'work-check', workId: 'work-a', verificationBinding: { executionSessionId: 'session-a' } });
+    const repeat = await runPersistedCheckViaProcessRuntime({ ...common, requestId: 'work-check-repeat', commandId: 'work-check-repeat', workId: 'work-a', verificationBinding: { executionSessionId: 'session-a' } });
+    expect(edit.process?.completed).toBe(true);
+    expect(work.process?.completed).toBe(true);
+    expect(work.process?.processId).not.toBe(edit.process?.processId);
+    expect(repeat.process?.processId).toBe(work.process?.processId);
+    expect(repeat.process?.semanticDeduplicated).toBe(true);
+  });
+
   test('short check completes without ExecutionJob path', async () => {
     const fx = fixture();
     const result = await runCheckViaProcessRuntime({
