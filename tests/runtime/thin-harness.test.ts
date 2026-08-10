@@ -892,18 +892,18 @@ describe('Thin Harness fast execution', () => {
     }
   });
 
-  test('resourceKeysOverlap: workspace conflicts path and git-ref', () => {
+  test('resourceKeysOverlap: workspace stays checkout-local while refs remain repo-scoped', () => {
     const checkout = 'co_abc';
     expect(resourceKeysOverlap(`workspace:${checkout}`, `path:src/a.ts`)).toBe(true);
     expect(resourceKeysOverlap(`workspace:${checkout}`, `path:${checkout}:src/a.ts`)).toBe(true);
     expect(resourceKeysOverlap(`workspace:${checkout}`, `path:other:src/a.ts`)).toBe(false);
     expect(resourceKeysOverlap(`workspace:${checkout}`, `git-index:${checkout}`)).toBe(true);
-    expect(resourceKeysOverlap(`workspace:${checkout}`, 'git-ref:refs/heads/main')).toBe(true);
+    expect(resourceKeysOverlap(`workspace:${checkout}`, 'git-ref:refs/heads/main')).toBe(false);
     expect(resourceKeysOverlap(`workspace:${checkout}`, `workspace:${checkout}`)).toBe(true);
     expect(resourceKeysOverlap(`workspace:${checkout}`, 'workspace:other')).toBe(false);
   });
 
-  test('fast workspace lease blocks durable path lease', async () => {
+  test('fast workspace lease blocks checkout paths but not independent repo refs', async () => {
     const { controllerHome, repository, repoRoot } = fixture();
     const gate = await acquireCheckoutMutationGate({
       controllerHome,
@@ -914,6 +914,7 @@ describe('Thin Harness fast execution', () => {
       ttlMs: 15_000,
     });
     expect('acquired' in gate && gate.acquired).toBe(true);
+    let refLease: ReturnType<typeof acquireExecutionLeases> | undefined;
     try {
       const pathLease = acquireExecutionLeases(
         controllerHome,
@@ -923,15 +924,16 @@ describe('Thin Harness fast execution', () => {
         10_000,
       );
       expect(pathLease.acquired).toBe(false);
-      const refLease = acquireExecutionLeases(
+      refLease = acquireExecutionLeases(
         controllerHome,
         repository.repoId,
         'JOB-ref-writer',
         [{ resourceKey: 'git-ref:refs/heads/main', mode: 'write' }],
         10_000,
       );
-      expect(refLease.acquired).toBe(false);
+      expect(refLease.acquired).toBe(true);
     } finally {
+      if (refLease?.acquired) releaseExecutionLeases(controllerHome, repository.repoId, 'JOB-ref-writer');
       if ('acquired' in gate && gate.acquired) {
         releaseCheckoutMutationGateOwned(controllerHome, gate.gate);
       }

@@ -95,7 +95,9 @@ export function pathOverlaps(left: string, right: string): boolean {
 /**
  * Resource key overlap for mutation ownership.
  * workspace:<checkoutId> conflicts with same-checkout path/index/head and with
- * unscoped path:/git-ref claims (legacy keys lack checkout identity).
+ * unscoped path claims (legacy paths lack checkout identity). Repository-scoped
+ * Git refs are independent from checkout-local file mutations; commands that
+ * mutate both already claim their own workspace plus refs explicitly.
  *
  * Note: same-key overlap is true even when modes differ; mode policy lives in
  * claimsConflict (read+read allowed).
@@ -135,16 +137,17 @@ export function resourceKeysOverlap(leftRaw: string, rightRaw: string): boolean 
     return pathCheckout === undefined || pathCheckout === rightWs;
   }
 
-  // workspace vs git-index/head for same checkout
+  // workspace vs git-index/head for same checkout. Git refs themselves are
+  // repo-scoped but do not mutate another checkout's files; a command that
+  // touches refs and a checkout declares both claims, so same-checkout safety
+  // is still enforced by its workspace/index claim.
   if (leftWs) {
     const indexCheckout = gitIndexCheckoutId(right);
     if (indexCheckout !== undefined) return indexCheckout === leftWs;
-    if (isGitRefKey(right)) return true; // refs are repo-scoped; conflict with any checkout mutation
   }
   if (rightWs) {
     const indexCheckout = gitIndexCheckoutId(left);
     if (indexCheckout !== undefined) return indexCheckout === rightWs;
-    if (isGitRefKey(left)) return true;
   }
 
   const leftPath = pathValue(left);
