@@ -37,6 +37,8 @@ export interface RuntimeReleaseManifest {
   diagnosticArtifactIdentity?: string;
   browserNodeBridgeEntrypoint?: 'browser-node-bridge-host.js';
   browserNodeBridgeArtifactIdentity?: string;
+  browserHandoffEntrypoint?: 'browser-handoff-host.js';
+  browserHandoffArtifactIdentity?: string;
   codeGraphNodeEntrypoint?: 'codegraph-node';
   codeGraphNodeArtifactIdentity?: string;
   codeGraphSidecarEntrypoint?: 'codegraph-sidecar.cjs';

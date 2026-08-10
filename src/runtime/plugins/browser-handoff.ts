@@ -89,14 +89,27 @@ export function resolveBrowserHandoffHostExecutable(
   return resolveBunExecutable(execPath, env);
 }
 
+export function resolveBrowserHandoffHostPath(
+  execPath: string = process.execPath,
+  argvEntry: string | undefined = process.argv[1],
+  moduleUrl: string = import.meta.url,
+): string {
+  const releaseEntry = join(dirname(execPath), 'browser-handoff-host.js');
+  if (existsSync(releaseEntry)) return releaseEntry;
+  const argvReleaseEntry = argvEntry ? join(dirname(argvEntry), 'browser-handoff-host.js') : undefined;
+  if (argvReleaseEntry && existsSync(argvReleaseEntry)) return argvReleaseEntry;
+  const sourceEntry = fileURLToPath(new URL('./browser-handoff-host.ts', moduleUrl));
+  if (existsSync(sourceEntry)) return sourceEntry;
+  throw new AssistantPluginError('PLUGIN_BROWSER_HANDOFF_HOST_MISSING', 'Browser handoff host sidecar is unavailable in the active Runtime release.', { retryable: false });
+}
+
 const defaultHooks: BrowserHandoffRuntimeHooks = {
   now: () => new Date().toISOString(),
   pidAlive: defaultPidAlive,
   spawnHost: (specPath) => {
-    const releaseEntry = process.argv[1] ? join(dirname(process.argv[1]), 'browser-handoff-host.js') : undefined;
     const sourceEntry = fileURLToPath(new URL('./browser-handoff-host.ts', import.meta.url));
     const loader = fileURLToPath(new URL('../shared/node-ts-loader.mjs', import.meta.url));
-    const entry = releaseEntry && existsSync(releaseEntry) ? releaseEntry : sourceEntry;
+    const entry = resolveBrowserHandoffHostPath();
     const args = entry === sourceEntry && !process.versions.bun ? ['--loader', loader, entry, specPath] : [entry, specPath];
     const logPath = specPath.replace(/\.json$/u, '.log');
     const logFd = openSync(logPath, 'a');

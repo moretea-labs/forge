@@ -19,6 +19,7 @@ function sourceFixture() {
   mkdirSync(join(root, 'bin'), { recursive: true });
   writeFileSync(join(root, 'README.md'), 'fixture\n');
   writeFileSync(join(root, 'src/runtime/plugins/browser-node-bridge-host.ts'), 'console.log("host");\n');
+  writeFileSync(join(root, 'src/runtime/plugins/browser-handoff-host.ts'), 'console.log("handoff");\n');
   writeFileSync(join(root, 'src/runtime/plugins/external-unix-socket-probe.cjs'), 'console.log("probe");\n');
   writeFileSync(join(root, 'bin/forge-desktop-helper.mjs'), '#!/usr/bin/env node\nconsole.log("desktop-helper");\n');
   spawnSync('git', ['init', '-b', 'main'], { cwd: root, stdio: 'ignore' });
@@ -57,8 +58,10 @@ describe('runtime release materialization', () => {
         return { ok: true };
       },
       bundleNodeHost: ({ outputPath, entryPath }) => {
-        expect(entryPath.endsWith('src/runtime/plugins/browser-node-bridge-host.ts')).toBe(true);
-        writeFileSync(outputPath, 'node-host-bundle');
+        const nodeBridge = entryPath.endsWith('src/runtime/plugins/browser-node-bridge-host.ts');
+        const handoff = entryPath.endsWith('src/runtime/plugins/browser-handoff-host.ts');
+        expect(nodeBridge || handoff).toBe(true);
+        writeFileSync(outputPath, nodeBridge ? 'node-host-bundle' : 'handoff-host-bundle');
         return { ok: true };
       },
       bundleProcessRunner: ({ outputPath, entryPath }) => {
@@ -73,6 +76,10 @@ describe('runtime release materialization', () => {
     expect(existsSync(hostPath)).toBe(true);
     expect(readFileSync(hostPath, 'utf8')).toBe('node-host-bundle');
     expect(staged.browserNodeBridgeArtifactIdentity).toMatch(/^sha256:/);
+    const handoffHostPath = join(staged.releasePath, 'browser-handoff-host.js');
+    expect(existsSync(handoffHostPath)).toBe(true);
+    expect(readFileSync(handoffHostPath, 'utf8')).toBe('handoff-host-bundle');
+    expect(staged.browserHandoffArtifactIdentity).toMatch(/^sha256:/);
     const externalPluginProbePath = join(staged.releasePath, 'external-unix-socket-probe.cjs');
     expect(existsSync(externalPluginProbePath)).toBe(true);
     expect(readFileSync(externalPluginProbePath, 'utf8')).toContain('probe');
@@ -92,6 +99,8 @@ describe('runtime release materialization', () => {
     const manifest = JSON.parse(readFileSync(staged.manifestPath, 'utf8')) as Record<string, unknown>;
     expect(manifest.browserNodeBridgeEntrypoint).toBe('browser-node-bridge-host.js');
     expect(manifest.browserNodeBridgeArtifactIdentity).toBe(staged.browserNodeBridgeArtifactIdentity);
+    expect(manifest.browserHandoffEntrypoint).toBe('browser-handoff-host.js');
+    expect(manifest.browserHandoffArtifactIdentity).toBe(staged.browserHandoffArtifactIdentity);
     expect(manifest.desktopHelperEntrypoint).toBe('forge-desktop-helper.mjs');
     expect(manifest.desktopHelperArtifactIdentity).toBe(staged.desktopHelperArtifactIdentity);
     expect(manifest.processRunnerEntrypoint).toBe('process-runner.js');
@@ -162,5 +171,26 @@ describe('runtime release materialization', () => {
     });
     rmSync(join(staged.releasePath, 'browser-node-bridge-host.js'));
     expect(() => assertRuntimeReleaseFiles(staged)).toThrow('RUNTIME_RELEASE_BROWSER_NODE_HOST_MISSING');
+  });
+
+  test('release assertion fails closed when the declared Browser handoff host is missing', () => {
+    const { root, controllerHome } = sourceFixture();
+    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+      compileBinary: ({ outputPath }) => {
+        writeFileSync(outputPath, 'binary');
+        return { ok: true };
+      },
+      bundleNodeHost: ({ outputPath }) => {
+        writeFileSync(outputPath, 'node-host-bundle');
+        return { ok: true };
+      },
+      bundleProcessRunner: ({ outputPath }) => {
+        writeFileSync(outputPath, 'process-runner-bundle');
+        return { ok: true };
+      },
+      materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
+    });
+    rmSync(join(staged.releasePath, 'browser-handoff-host.js'));
+    expect(() => assertRuntimeReleaseFiles(staged)).toThrow('RUNTIME_RELEASE_BROWSER_HANDOFF_HOST_MISSING');
   });
 });

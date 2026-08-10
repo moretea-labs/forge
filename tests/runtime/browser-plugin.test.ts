@@ -20,6 +20,7 @@ import {
   listBrowserHandoffs,
   resetBrowserHandoffRuntimeHooksForTest,
   resolveBrowserHandoffHostExecutable,
+  resolveBrowserHandoffHostPath,
   setBrowserHandoffRuntimeHooksForTest,
 } from '../../src/runtime/plugins/browser-handoff';
 import {
@@ -1492,10 +1493,16 @@ describe('browser plugin', () => {
       .toThrow('PLUGIN_BROWSER_NODE_UNAVAILABLE');
   });
 
-  test('uses a real Bun executable for the browser handoff host when the compiled executable is not Node', () => {
+  test('uses a real Bun executable and immutable sibling sidecar for the browser handoff host', () => {
     expect(resolveBrowserHandoffHostExecutable('/opt/forge/forge-runtime', { FORGE_BUN_EXECUTABLE: 'bun' })).toBe('bun');
     expect(resolveBrowserHandoffHostExecutable('/usr/bin/node', {})).toBe('/usr/bin/node');
     expect(resolveBrowserHandoffHostExecutable('/usr/bin/nodejs', {})).toBe('/usr/bin/nodejs');
+    const root = mkdtempSync(join(tmpdir(), 'forge-browser-handoff-release-'));
+    roots.push(root);
+    const runtimeExecutable = join(root, 'forge-runtime');
+    const releaseHost = join(root, 'browser-handoff-host.js');
+    writeFileSync(releaseHost, 'host');
+    expect(resolveBrowserHandoffHostPath(runtimeExecutable, undefined)).toBe(releaseHost);
   });
 
   test('resolves the Browser Node bridge host from the immutable compiled release before virtual bunfs source', () => {

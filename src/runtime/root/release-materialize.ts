@@ -21,6 +21,7 @@ export interface StagedRuntimeRelease {
   artifactIdentity: string;
   diagnosticArtifactIdentity?: string;
   browserNodeBridgeArtifactIdentity?: string;
+  browserHandoffArtifactIdentity?: string;
   desktopHelperArtifactIdentity?: string;
   processRunnerArtifactIdentity?: string;
   checkRunnerArtifactIdentity?: string;
@@ -181,6 +182,19 @@ export function stageRuntimeRelease(input: {
     chmodSync(browserNodeBridgePath, 0o700);
     const browserNodeBridgeArtifactIdentity = `sha256:${sha256(browserNodeBridgePath)}`;
 
+    const browserHandoffEntrypoint = 'browser-handoff-host.js' as const;
+    const browserHandoffPath = join(staging, browserHandoffEntrypoint);
+    const browserHandoffBundle = bundleNodeHost({
+      sourceRoot,
+      outputPath: browserHandoffPath,
+      entryPath: join(sourceRoot, 'src/runtime/plugins/browser-handoff-host.ts'),
+    });
+    if (!browserHandoffBundle.ok) {
+      throw new Error(`RUNTIME_RELEASE_BROWSER_HANDOFF_HOST_BUILD_FAILED: ${browserHandoffBundle.stderr || browserHandoffBundle.stdout || browserHandoffBundle.error}`.slice(0, 2_000));
+    }
+    chmodSync(browserHandoffPath, 0o700);
+    const browserHandoffArtifactIdentity = `sha256:${sha256(browserHandoffPath)}`;
+
     const processRunnerEntrypoint = 'process-runner.js' as const;
     const processRunnerPath = join(staging, processRunnerEntrypoint);
     const bundleProcessRunner = dependencies.bundleProcessRunner ?? defaultBundleNodeScript;
@@ -257,6 +271,8 @@ export function stageRuntimeRelease(input: {
       diagnosticArtifactIdentity,
       browserNodeBridgeEntrypoint,
       browserNodeBridgeArtifactIdentity,
+      browserHandoffEntrypoint,
+      browserHandoffArtifactIdentity,
       desktopHelperEntrypoint,
       desktopHelperArtifactIdentity,
       processRunnerEntrypoint,
@@ -294,6 +310,7 @@ export function stageRuntimeRelease(input: {
       artifactIdentity,
       diagnosticArtifactIdentity,
       browserNodeBridgeArtifactIdentity,
+      browserHandoffArtifactIdentity,
       desktopHelperArtifactIdentity,
       processRunnerArtifactIdentity,
       checkRunnerArtifactIdentity,
@@ -322,6 +339,9 @@ export function assertRuntimeReleaseFiles(release: StagedRuntimeRelease): void {
   }
   if (release.browserNodeBridgeArtifactIdentity && !existsSync(join(release.releasePath, 'browser-node-bridge-host.js'))) {
     throw new Error(`RUNTIME_RELEASE_BROWSER_NODE_HOST_MISSING: ${join(release.releasePath, 'browser-node-bridge-host.js')}`);
+  }
+  if (release.browserHandoffArtifactIdentity && !existsSync(join(release.releasePath, 'browser-handoff-host.js'))) {
+    throw new Error(`RUNTIME_RELEASE_BROWSER_HANDOFF_HOST_MISSING: ${join(release.releasePath, 'browser-handoff-host.js')}`);
   }
   if (release.desktopHelperArtifactIdentity && !existsSync(join(release.releasePath, 'forge-desktop-helper.mjs'))) {
     throw new Error(`RUNTIME_RELEASE_DESKTOP_HELPER_MISSING: ${join(release.releasePath, 'forge-desktop-helper.mjs')}`);
