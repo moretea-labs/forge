@@ -45,6 +45,9 @@ describe('Desktop Operator trusted external registration', () => {
       expect(action.risk).toBe('workspace_write');
       expect(action.confirmation).toBe('authorization');
     }
+    const press = input.actions.find((action) => action.actionId === 'desktop_press');
+    const pressSchema = press?.argumentsSchema as { properties?: { force_coordinate?: { type?: string } } } | undefined;
+    expect(pressSchema?.properties?.force_coordinate).toEqual({ type: 'boolean' });
     expect(input.actions.find((action) => action.actionId === 'desktop_screenshot')?.confirmation).toBe('authorization');
     const clipboardRead = input.actions.find((action) => action.actionId === 'desktop_clipboard_read');
     expect(clipboardRead).toMatchObject({ readOnly: true, risk: 'readonly', confirmation: 'authorization', scopes: ['desktop.clipboard'] });

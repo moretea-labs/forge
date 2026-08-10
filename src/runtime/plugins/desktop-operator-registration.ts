@@ -131,6 +131,7 @@ function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
           interaction_id: { type: 'string' },
           selector: SELECTOR_SCHEMA,
           coordinate_fallback: { type: 'boolean' },
+          force_coordinate: { type: 'boolean' },
         },
         required: ['interaction_id', 'selector'],
         additionalProperties: false,
