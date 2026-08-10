@@ -3138,6 +3138,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           },
           bounded: true,
         };
+        const detailCapabilities = capabilities.slice(0, 24);
         const detailData = {
           operation,
           repoId: repository.repoId,
@@ -3148,7 +3149,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           normalizedChecks,
           invalidCheckIdsAreNotFailures: true,
           capabilityCount: capabilities.length,
-          capabilities,
+          capabilities: detailCapabilities,
+          omittedCapabilityCount: Math.max(0, capabilities.length - detailCapabilities.length),
           capabilityGroups,
           toolArchitecture: {
             facadeTools: ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'],
@@ -3176,7 +3178,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             recentExecutionJobs: recentJobs.length,
             activeAttention: attention.length,
           },
-          bounded: false,
+          bounded: true,
         };
         const facade = buildFacadeResult({
           status: 'ok',

@@ -1776,6 +1776,20 @@ describe("MCP controller profile", () => {
     });
   });
 
+  test("keeps rh_context detail capability payload bounded", async () => {
+    await withController(async (repoRoot, _ctx) => {
+      const multi = createMultiRepositoryContext({ repo: repoRoot, profile: "controller" });
+      const raw = await callRuntimeTool(multi, "rh_context", { detail_level: "detail" });
+      expect(raw).toBeTruthy();
+      const payload = JSON.parse(raw!.content[0].text);
+      expect(payload.data.bounded).toBe(true);
+      expect(payload.data.capabilities.length).toBeLessThanOrEqual(24);
+      expect(payload.data.omittedCapabilityCount).toBe(
+        Math.max(0, payload.data.capabilityCount - payload.data.capabilities.length),
+      );
+    });
+  });
+
   test("routes default code retrieval through rh_context.search without exposing a second search tool", async () => {
     await withController(async (repoRoot, _ctx) => {
       const multi = createMultiRepositoryContext({ repo: repoRoot, profile: "controller" });
