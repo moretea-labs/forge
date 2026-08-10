@@ -187,6 +187,20 @@ return (frontmost as text) & separator & (URL of targetTab as text) & separator 
 `);
 }
 
+function activateTargetTabScript(browser: MacOsBrowserDefinition, ref: MacOsBrowserTabRef): string {
+  return browserTellScript(browser, `
+${targetTabPreamble(ref)}
+set targetTabIndex to 1
+repeat with candidateTab in tabs of targetWindow
+  if ((id of candidateTab) as text) is ((id of targetTab) as text) then exit repeat
+  set targetTabIndex to targetTabIndex + 1
+end repeat
+set active tab index of targetWindow to targetTabIndex
+set index of targetWindow to 1
+activate
+`);
+}
+
 function createOwnedTabScript(browser: MacOsBrowserDefinition): string {
   return `on run argv
 set targetUrl to item 1 of argv
@@ -652,6 +666,10 @@ export class MacOsAppleEventsPage {
   }
 
   async bringToFront(): Promise<void> {
+    if (this.targetRef) {
+      this.metadata = await activateMacOsBrowserOwnedTab(this.browser.product, this.targetRef, this.timeoutMs);
+      return;
+    }
     await this.runAppleScript(activateScript(this.browser));
   }
 
@@ -660,6 +678,25 @@ export class MacOsAppleEventsPage {
       await this.evaluate(keyEventSource(undefined, key));
     },
   };
+}
+
+export async function readMacOsBrowserOwnedTabMetadata(
+  product: MacOsBrowserProduct,
+  ref: MacOsBrowserTabRef,
+  timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
+): Promise<MacOsBrowserMetadata> {
+  const browser = browserDefinition(product);
+  return parseMetadata(product, await runtimeHooks.runAppleScript(targetMetadataScript(browser, ref), [], timeoutMs));
+}
+
+export async function activateMacOsBrowserOwnedTab(
+  product: MacOsBrowserProduct,
+  ref: MacOsBrowserTabRef,
+  timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
+): Promise<MacOsBrowserMetadata> {
+  const browser = browserDefinition(product);
+  await runtimeHooks.runAppleScript(activateTargetTabScript(browser, ref), [], timeoutMs);
+  return readMacOsBrowserOwnedTabMetadata(product, ref, timeoutMs);
 }
 
 export function createMacOsBrowserPage(attachment: MacOsBrowserAttachment, timeoutMs?: number): MacOsAppleEventsPage {

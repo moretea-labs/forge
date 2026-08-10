@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import { writeJsonAtomic } from '../shared/json-files';
 import { resolveBunExecutable } from '../shared/process-environment';
 import { AssistantPluginError } from './errors';
+import type { MacOsBrowserProduct, MacOsBrowserTabRef } from './browser-macos-bridge';
 import {
   interactionLaunchSpecPath,
   isInteractionSessionActive,
@@ -39,6 +40,7 @@ export interface BrowserHandoffLaunchSpec {
   executablePath?: string;
   allowedDomains?: string[];
   defaultTimeoutMs: number;
+  nativeBrowser?: { product: MacOsBrowserProduct; ref: MacOsBrowserTabRef };
   expiresAt: string;
 }
 
@@ -57,6 +59,7 @@ export interface BrowserHandoffStartInput {
   executablePath?: string;
   allowedDomains?: string[];
   defaultTimeoutMs: number;
+  nativeBrowser?: { product: MacOsBrowserProduct; ref: MacOsBrowserTabRef };
   reason: string;
   instructions?: string;
   timeoutMs?: number;
@@ -325,6 +328,7 @@ export async function startBrowserHandoff(input: BrowserHandoffStartInput): Prom
     executablePath: input.executablePath,
     allowedDomains: input.allowedDomains,
     defaultTimeoutMs: input.defaultTimeoutMs,
+    nativeBrowser: input.nativeBrowser,
     expiresAt,
   };
   const specPath = interactionLaunchSpecPath(input.repoRoot, PROVIDER, interactionId);

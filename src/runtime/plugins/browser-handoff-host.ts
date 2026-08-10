@@ -10,6 +10,7 @@ import {
   removeInteractionCommand,
 } from './interaction-session';
 import type { BrowserHandoffLaunchSpec } from './browser-handoff';
+import { activateMacOsBrowserOwnedTab, readMacOsBrowserOwnedTabMetadata } from './browser-macos-bridge';
 
 const POLL_MS = 300;
 const HEARTBEAT_MS = 1_000;
@@ -64,11 +65,110 @@ function presentForeground(channel?: string): boolean {
     .some(activateRunningApplication);
 }
 
+async function runNativeHandoff(specPath: string, spec: BrowserHandoffLaunchSpec): Promise<void> {
+  const native = spec.nativeBrowser;
+  if (!native) throw new Error('native browser handoff metadata is required');
+  let terminalOutcome: {
+    status: 'completed' | 'closed' | 'failed';
+    error?: { code: string; message: string };
+    result?: { url?: string; title?: string };
+  } | undefined;
+  const terminate = (status: 'closed' | 'failed', code: string, message: string): void => {
+    if (terminalOutcome) return;
+    terminalOutcome = { status, ...(status === 'failed' ? { error: { code, message } } : {}) };
+    patchInteractionSession(spec.repoRoot, 'browser', spec.interactionId, {
+      status: 'closing',
+      error: terminalOutcome.error,
+    });
+  };
+  const onSignal = (): void => terminate('closed', 'HANDOFF_CANCELLED', 'The browser handoff was cancelled.');
+  process.once('SIGTERM', onSignal);
+  process.once('SIGINT', onSignal);
+
+  try {
+    let metadata = await activateMacOsBrowserOwnedTab(native.product, native.ref, spec.defaultTimeoutMs);
+    patchInteractionSession(spec.repoRoot, 'browser', spec.interactionId, {
+      status: 'waiting_for_user',
+      host: {
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        heartbeatAt: new Date().toISOString(),
+        foregroundPresented: metadata.frontmost && metadata.active === true,
+      },
+      result: { url: metadata.url, title: metadata.title },
+    });
+
+    let lastHeartbeat = 0;
+    while (!terminalOutcome) {
+      const nowMs = Date.now();
+      if (nowMs >= Date.parse(spec.expiresAt)) {
+        terminate('failed', 'HANDOFF_EXPIRED', 'The browser handoff expired before it was resumed.');
+        break;
+      }
+      if (nowMs - lastHeartbeat >= HEARTBEAT_MS) {
+        lastHeartbeat = nowMs;
+        metadata = await readMacOsBrowserOwnedTabMetadata(native.product, native.ref, spec.defaultTimeoutMs);
+        patchInteractionSession(spec.repoRoot, 'browser', spec.interactionId, {
+          host: { pid: process.pid, heartbeatAt: new Date(nowMs).toISOString() },
+          result: { url: metadata.url, title: metadata.title },
+        });
+      }
+      const cancel = readInteractionCommand(spec.repoRoot, 'browser', spec.interactionId, 'cancel');
+      if (cancel) {
+        removeInteractionCommand(spec.repoRoot, 'browser', spec.interactionId, 'cancel');
+        terminate('closed', 'HANDOFF_CANCELLED', 'The browser handoff was cancelled.');
+        break;
+      }
+      const resume = readInteractionCommand(spec.repoRoot, 'browser', spec.interactionId, 'resume');
+      if (resume) {
+        removeInteractionCommand(spec.repoRoot, 'browser', spec.interactionId, 'resume');
+        metadata = await readMacOsBrowserOwnedTabMetadata(native.product, native.ref, spec.defaultTimeoutMs);
+        assertAllowed(metadata.url, spec.allowedDomains);
+        const existing = existsSync(spec.sessionPath)
+          ? readJsonFile<Record<string, unknown>>(spec.sessionPath, {})
+          : {};
+        const timestamp = new Date().toISOString();
+        const result = { url: metadata.url, title: metadata.title };
+        writeJsonAtomic(spec.sessionPath, {
+          ...existing,
+          schemaVersion: 1,
+          sessionId: spec.sessionId,
+          ...result,
+          createdAt: typeof existing.createdAt === 'string' ? existing.createdAt : timestamp,
+          updatedAt: timestamp,
+        });
+        terminalOutcome = { status: 'completed', result };
+        patchInteractionSession(spec.repoRoot, 'browser', spec.interactionId, { status: 'closing', result });
+        break;
+      }
+      await delay(POLL_MS);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    terminate('failed', 'HANDOFF_HOST_FAILED', message);
+  } finally {
+    process.removeListener('SIGTERM', onSignal);
+    process.removeListener('SIGINT', onSignal);
+    rmSync(specPath, { force: true });
+    for (const kind of ['resume', 'cancel'] as const) {
+      rmSync(interactionCommandPath(spec.repoRoot, 'browser', spec.interactionId, kind), { force: true });
+    }
+    if (!terminalOutcome) {
+      terminate('failed', 'HANDOFF_HOST_EXITED', `Browser handoff host ${basename(specPath)} exited without a terminal result.`);
+    }
+    if (terminalOutcome) patchInteractionSession(spec.repoRoot, 'browser', spec.interactionId, terminalOutcome);
+  }
+}
+
 async function main(): Promise<void> {
   const specPath = process.argv[2];
   if (!specPath) throw new Error('browser handoff launch spec path is required');
   const spec = readJsonFile<BrowserHandoffLaunchSpec>(specPath);
   assertAllowed(spec.url, spec.allowedDomains);
+  if (spec.nativeBrowser) {
+    await runNativeHandoff(specPath, spec);
+    return;
+  }
   const playwright = createRequire(import.meta.url)('playwright') as {
     chromium: {
       launchPersistentContext(userDataDir: string, options: Record<string, unknown>): Promise<{

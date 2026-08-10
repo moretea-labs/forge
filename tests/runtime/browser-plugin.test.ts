@@ -24,6 +24,7 @@ import {
   setBrowserHandoffRuntimeHooksForTest,
 } from '../../src/runtime/plugins/browser-handoff';
 import {
+  activateMacOsBrowserOwnedTab,
   discoverMacOsBrowserAttachment,
   resetMacOsBrowserRuntimeHooksForTest,
   setMacOsBrowserRuntimeHooksForTest,
@@ -289,6 +290,12 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
             return JSON.stringify({ ok: true, value: { __forgeUndefined: true } });
           }
           return JSON.stringify({ ok: true, value: true });
+        }
+        if (script.includes('set targetTabIndex to 1')) {
+          const tabId = tabIdFromScript(script);
+          if (!tabId || !ownedTabs.has(tabId)) throw new Error('missing owned tab');
+          events.activeTabId = tabId;
+          return '';
         }
         if (script.includes('set targetIsActive')) {
           const tabId = tabIdFromScript(script);
@@ -682,6 +689,22 @@ describe('browser plugin', () => {
       endpoint: 'ws://127.0.0.1:9223/devtools/browser/live',
       browserVersion: 'Chrome/140.0.0.0',
     });
+  });
+
+  test('native owned-tab foregrounding activates the exact plugin-owned tab without launching another browser', async () => {
+    const runtime = mockMacOsOwnedTabRuntime('chrome');
+    setMacOsBrowserRuntimeHooksForTest(runtime.hooks);
+    const discovered = await discoverMacOsBrowserAttachment(['chrome']);
+    expect(discovered.attachment).toBeDefined();
+    const attachment = discovered.attachment!;
+    const page = await import('../../src/runtime/plugins/browser-macos-bridge').then(({ createMacOsBrowserOwnedPage }) =>
+      createMacOsBrowserOwnedPage(attachment, 'https://example.com/native-handoff'));
+    const ref = page.tabRef();
+    expect(ref).toBeDefined();
+    expect(runtime.events.activeTabId).toBe('501');
+    const metadata = await activateMacOsBrowserOwnedTab('chrome', ref!);
+    expect(runtime.events.activeTabId).toBe(ref!.tabId);
+    expect(metadata.active).toBe(true);
   });
 
   test('macOS active-browser discovery prefers the frontmost Chrome or Vivaldi window', async () => {

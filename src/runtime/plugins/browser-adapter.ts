@@ -2235,8 +2235,8 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           if (session.browser?.provider === 'macos-apple-events'
             && session.browser.browserProduct
             && tab?.ownership === 'plugin_owned'
-            && typeof tab.windowId === 'number'
-            && typeof tab.tabId === 'number') {
+            && typeof tab.windowId === 'string'
+            && typeof tab.tabId === 'string') {
             await closeMacOsBrowserOwnedTab(session.browser.browserProduct, { windowId: tab.windowId, tabId: tab.tabId }, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS)
               .catch(() => undefined);
           }
@@ -2247,9 +2247,24 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
       case 'request_human_handoff': {
         const target = resolveActionTarget(input.repoRoot, input.args);
         assertUrlAllowed(target.url, current);
+        const nativeSession = target.existingSession;
+        const nativeTab = nativeSession?.browser?.tab;
+        const nativeBrowser = nativeSession?.browser?.provider === 'macos-apple-events'
+          && nativeSession.browser.browserProduct
+          && nativeTab?.ownership === 'plugin_owned'
+          && typeof nativeTab.windowId === 'string'
+          && typeof nativeTab.tabId === 'string'
+          ? {
+              product: nativeSession.browser.browserProduct,
+              ref: { windowId: nativeTab.windowId, tabId: nativeTab.tabId },
+            }
+          : undefined;
         const handoffMode: BrowserMode = current.browserMode === 'isolated' ? 'isolated' : 'managed_persistent';
         const profile = selectedProfile(current, input.repoRoot, handoffMode, target.sessionId);
-        mkdirSync(profile.profileDir, { recursive: true });
+        if (!nativeBrowser) mkdirSync(profile.profileDir, { recursive: true });
+        const selectedProfilePath = nativeBrowser
+          ? `macos-apple-events:${nativeBrowser.product}:${nativeBrowser.ref.windowId}:${nativeBrowser.ref.tabId}`
+          : profile.selectedProfilePath;
         const handoff = await startBrowserHandoff({
           repoRoot: input.repoRoot,
           repoId: input.repoId,
@@ -2259,18 +2274,19 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           sessionPath: sessionPath(input.repoRoot, target.sessionId),
           url: target.url,
           profileDir: profile.profileDir,
-          selectedProfilePath: profile.selectedProfilePath,
+          selectedProfilePath,
           profileDirectory: profile.profileDirectory,
           browserChannel: current.browserChannel,
           executablePath: current.executablePath ? resolveConfiguredPath(input.repoRoot, current.executablePath) : undefined,
           allowedDomains: current.allowedDomains,
           defaultTimeoutMs: current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS,
+          nativeBrowser,
           reason: stringValue(input.args.reason) ?? 'manual_review',
           instructions: stringValue(input.args.instructions),
           timeoutMs: typeof input.args.handoff_timeout_ms === 'number' ? input.args.handoff_timeout_ms : undefined,
         });
         return {
-          provider: 'playwright-handoff-host',
+          provider: nativeBrowser ? 'macos-apple-events-handoff-host' : 'playwright-handoff-host',
           handoff,
           session: target.existingSession,
           nextAction: 'Complete the manual step, call resolve_handoff with resolution=resume, then poll get_handoff_status.',
@@ -2278,7 +2294,11 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
       }
       case 'get_handoff_status': {
         const interactionId = requiredString(input.args.interaction_id, 'interaction_id');
-        return { provider: 'playwright-handoff-host', handoff: getBrowserHandoff(input.repoRoot, interactionId) };
+        const handoff = getBrowserHandoff(input.repoRoot, interactionId);
+        return {
+          provider: handoff.targetId.startsWith('macos-apple-events:') ? 'macos-apple-events-handoff-host' : 'playwright-handoff-host',
+          handoff,
+        };
       }
       case 'resolve_handoff': {
         const interactionId = requiredString(input.args.interaction_id, 'interaction_id');
@@ -2289,7 +2309,11 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         const handoff = resolution === 'resume'
           ? resumeBrowserHandoff(input.repoRoot, interactionId, input.requestId)
           : cancelBrowserHandoff(input.repoRoot, interactionId, input.requestId);
-        return { provider: 'playwright-handoff-host', resolutionRequested: resolution, handoff };
+        return {
+          provider: handoff.targetId.startsWith('macos-apple-events:') ? 'macos-apple-events-handoff-host' : 'playwright-handoff-host',
+          resolutionRequested: resolution,
+          handoff,
+        };
       }
       case 'create_session':
       case 'open_page':
