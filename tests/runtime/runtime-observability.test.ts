@@ -6,7 +6,7 @@ import { tmpdir } from 'os';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { classifyFailure } from '../../src/runtime/recovery/classifier';
-import { evaluateRuntimeHealth, type RuntimeHealthObservations } from '../../src/runtime/health';
+import { classifyRuntimeReadinessSemantics, evaluateRuntimeHealth, type RuntimeHealthObservations } from '../../src/runtime/health';
 import {
   projectionBlocksReadiness,
   projectionObservation,
@@ -18,11 +18,15 @@ import { recordMcpIncident, recordMcpTiming } from '../../src/runtime/diagnostic
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { createMcpToolContext as createMultiRepositoryContext } from '../../src/cli/mcp/multi-repository';
 import { createForgeMcpServer } from '../../src/cli/mcp/server';
+import { registerRepository } from '../../src/cli/repositories/registry';
+import { callMultiRepositoryTool } from '../../src/cli/mcp/multi-repository';
+import { callRepositoryTool } from '../../src/cli/mcp/repository-tools';
+import { buildRuntimeMaintenanceStatus } from '../../src/runtime/recovery';
 import { writeJsonAtomic } from '../../src/runtime/shared/json-files';
 import { acquireRuntimeOwnership, type RuntimeOwnershipHandle } from '../../src/runtime/root/ownership';
 import { collectRuntimeSourceIdentity, rotateRuntimeGeneration } from '../../src/runtime/control-plane/runtime-generation';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
-import { STABLE_CONTROLLER_TOOL_NAMES } from '../../src/cli/mcp/toolset-names';
+import { DEFAULT_CONTROLLER_TOOL_NAMES } from '../../src/cli/mcp/toolset-names';
 import {
   PROCESS_RUNNER_RELEASE_CANARY_CHILD_ARG,
   processRunnerReleaseCanaryChildCommand,
@@ -335,7 +339,7 @@ describe('runtime observability', () => {
     }
   });
 
-  test('serves the bounded stable tools/list by default and retains explicit Advanced compatibility', async () => {
+  test('serves the bounded default tools/list and retains explicit Advanced compatibility plus full fallback', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-core-tools-'));
     const listNames = async (toolset?: 'core' | 'advanced') => {
       const server = createForgeMcpServer({ controllerHome, profile: 'controller', ...(toolset ? { toolset } : {}) });
@@ -352,17 +356,35 @@ describe('runtime observability', () => {
     };
     try {
       const defaultNames = await listNames();
-      expect(defaultNames).toEqual([...STABLE_CONTROLLER_TOOL_NAMES]);
+      expect(defaultNames).toEqual([...DEFAULT_CONTROLLER_TOOL_NAMES]);
       expect(defaultNames).toEqual(expect.arrayContaining(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work']));
       expect(defaultNames).toContain('repository_command_execute');
+      expect(defaultNames).not.toContain('repository_git_status');
+      expect(defaultNames).not.toContain('git_commit_paths');
 
       const coreNames = await listNames('core');
       expect(coreNames).toEqual(defaultNames);
 
       const advancedNames = await listNames('advanced');
       expect(advancedNames).toEqual(defaultNames);
-      expect(advancedNames).toEqual([...STABLE_CONTROLLER_TOOL_NAMES]);
       expect(advancedNames).toContain('repository_command_execute');
+      expect(advancedNames).not.toContain('verify_edit_session');
+      // Full compatibility profile still exposes the atomic Git handlers.
+      const fullServer = createForgeMcpServer({ controllerHome, profile: 'controller', toolset: 'full' });
+      const [fullClientTransport, fullServerTransport] = InMemoryTransport.createLinkedPair();
+      await fullServer.connect(fullServerTransport);
+      const fullClient = new Client({ name: 'runtime-tools-full', version: '1.0.0' }, { capabilities: {} });
+      await fullClient.connect(fullClientTransport);
+      try {
+        const fullNames = (await fullClient.listTools()).tools.map((tool) => tool.name);
+        expect(fullNames).toContain('repository_git_status');
+        expect(fullNames).toContain('git_commit_paths');
+        expect(fullNames).toContain('verify_edit_session');
+        expect(fullNames.length).toBeGreaterThan(defaultNames.length);
+      } finally {
+        await fullClient.close();
+        await fullServer.close();
+      }
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }
@@ -405,4 +427,72 @@ describe('runtime observability', () => {
     expect(command.executable).not.toBe(process.execPath);
   });
 
+  describe('executionReady / maintenanceHealthy / releaseReady semantics', () => {
+    test('maintenance debt never downgrades execution readiness', () => {
+      const health = evaluateRuntimeHealth(observations());
+      expect(health.ready).toBe(true);
+      expect(classifyRuntimeReadinessSemantics(health, { maintenanceHealthy: false })).toMatchObject({
+        executionReady: true, maintenanceHealthy: false, releaseReady: true,
+      });
+    });
+
+    test('durable queue debt downgrades release readiness but not ordinary execution', () => {
+      const health = evaluateRuntimeHealth({
+        ...observations(),
+        workers: { queueDepth: 2, runningWorkers: 0, activeLeases: 0, activeAttentionCount: 0 },
+      });
+      expect(health.ready).toBe(false);
+      const semantics = classifyRuntimeReadinessSemantics(health);
+      expect(semantics.executionReady).toBe(true);
+      expect(semantics.releaseReady).toBe(false);
+    });
+
+    test('real execution failures still downgrade execution readiness', () => {
+      const health = evaluateRuntimeHealth({ ...observations(), daemon: { status: 'not_ready', error: 'runtime down' } });
+      expect(health.ready).toBe(false);
+      const semantics = classifyRuntimeReadinessSemantics(health);
+      expect(semantics.executionReady).toBe(false);
+      expect(semantics.releaseReady).toBe(false);
+    });
+
+    test('stale legacy metadata does not block ordinary read and command execution', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'forge-readiness-semantics-'));
+      try {
+        const controllerHome = join(root, 'controller-home');
+        const repoRoot = join(root, 'repo');
+        mkdirSync(controllerHome, { recursive: true });
+        mkdirSync(repoRoot, { recursive: true });
+        const git = (args: string[]) => {
+          const result = spawnSync('git', ['-C', repoRoot, ...args], { encoding: 'utf-8' });
+          if (result.status !== 0) throw new Error(result.stderr);
+        };
+        git(['init', '-b', 'main']);
+        git(['config', 'user.email', 'forge@example.invalid']);
+        git(['config', 'user.name', 'Repo Harness Test']);
+        writeFileSync(join(repoRoot, 'README.md'), '# fixture\n');
+        git(['add', '.']);
+        git(['commit', '-qm', 'initial']);
+
+        const repository = registerRepository({ path: repoRoot, controllerHome });
+        mkdirSync(join(repoRoot, '.ai', 'harness', 'local-jobs', 'stale-job'), { recursive: true });
+        const maintenance = buildRuntimeMaintenanceStatus(repository, controllerHome, { maxCandidates: 10 });
+        expect(maintenance.candidates.length).toBeGreaterThan(0);
+        expect(maintenance.readyForExecution).toBe(false);
+
+        const ctx = createMultiRepositoryContext({ repo: repoRoot, profile: 'controller', controllerHome });
+        const read = await callMultiRepositoryTool(ctx, 'read_repository_file', { path: 'README.md' });
+        expect(JSON.parse(read.content[0].text).content).toContain('fixture');
+
+        const command = await callRepositoryTool(controllerHome, 'repository_command_execute', {
+          repo_id: repository.repoId,
+          command: ['git', 'status', '--short'],
+          timeout_ms: 5_000,
+        });
+        expect(command?.isError).not.toBe(true);
+        expect(JSON.parse(command?.content[0]?.text ?? '{}').accepted).toBe(true);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  });
 });

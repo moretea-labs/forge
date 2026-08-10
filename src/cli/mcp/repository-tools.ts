@@ -4,6 +4,7 @@ import { executeRepositoryCommand, previewRepositoryCommandExecution } from '../
 import { withControllerLock } from '../repositories/locks';
 import {
   disableRepository,
+  findIdenticalRepositoryRegistration,
   getRepository,
   listRepositories,
   refreshRepository,
@@ -318,9 +319,10 @@ export function summarizeRepositoryRegistration(
   repository: ReturnType<typeof registerRepository>,
   migration: ReturnType<typeof bindRepositoryEntities>,
   detail = false,
+  fastPath = false,
 ): Record<string, unknown> {
   if (detail) {
-    return { detailLevel: 'detail', repository, migration };
+    return { detailLevel: 'detail', repository, migration, fastPath };
   }
   const checkoutCounts = repository.checkouts.reduce<Record<string, number>>((counts, checkout) => {
     const lifecycle = checkout.lifecycle ?? 'active';
@@ -336,6 +338,7 @@ export function summarizeRepositoryRegistration(
       checkoutCounts,
     },
     migration: summarizeEntityMigrationReport(migration),
+    fastPath,
     next: 'Re-call with detail_level=detail only when full checkout or migration evidence is required.',
   };
 }
@@ -463,13 +466,34 @@ export async function callRepositoryTool(
     switch (name) {
       case 'repository_register': {
         const startedAt = performance.now();
-        const repository = registerRepository({
+        const registerInput = {
           path: String(args.path ?? ''),
           controllerHome,
           displayName: typeof args.display_name === 'string' ? args.display_name : undefined,
           remoteUrl: typeof args.remote_url === 'string' ? args.remote_url : undefined,
           defaultBranch: typeof args.default_branch === 'string' ? args.default_branch : undefined,
-        });
+        };
+        const identical = findIdenticalRepositoryRegistration(registerInput);
+        if (identical?.identical) {
+          const repository = identical.repository;
+          // Repeat registration with identical identity returns immediately.
+          // No legacy migration / edit-session migration / historical issue
+          // scan / old issue rebinding runs on this hot path.
+          const migration = {
+            repoId: repository.repoId,
+            checkoutId: repository.activeCheckoutId,
+            scanned: 0,
+            updated: 0,
+            unresolved: 0,
+            files: [] as string[],
+            errors: [] as Array<{ path: string; error: string }>,
+          };
+          return result(withResponseMeta(
+            summarizeRepositoryRegistration(repository, migration, args.detail_level === 'detail', true),
+            startedAt,
+          ));
+        }
+        const repository = registerRepository(registerInput);
         const migration = bindRepositoryEntities(repository);
         return result(withResponseMeta(
           summarizeRepositoryRegistration(repository, migration, args.detail_level === 'detail'),

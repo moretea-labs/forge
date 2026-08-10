@@ -97,7 +97,7 @@ import {
   formatDurationMs,
   normalizeAgentTimeoutMs,
 } from "../controller/runtime-config";
-import { PREFERRED_FACADE_TOOL_NAMES, STABLE_CONTROLLER_TOOL_NAMES } from "./toolset-names";
+import { DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES } from "./toolset-names";
 import { buildLocalConnectorStatusForRepo } from "../local-bridge/connector-freshness";
 import type {
   ControllerAgent,
@@ -2952,9 +2952,9 @@ export function controllerExpectedToolNames(
 ): string[] {
   const names = buildMcpToolDefinitions(policy, opts).map((tool) => tool.name);
   if (policy.profile !== "controller") return names;
-  // The Connector readiness expectation must match the stable default schema
+  // The Connector readiness expectation must match the bounded default schema
   // served by toolset.ts. Full compatibility tools are intentionally omitted.
-  return [...STABLE_CONTROLLER_TOOL_NAMES];
+  return [...DEFAULT_CONTROLLER_TOOL_NAMES];
 }
 
 const RETIRED_LEGACY_MUTATION_TOOLS = new Set([

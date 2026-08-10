@@ -30,17 +30,15 @@ import type { PlainStatusTone } from './console-view-models';
 export const EXPECTED_FACADE_TOOLS = [...PREFERRED_FACADE_TOOL_NAMES] as const;
 
 /**
- * Interactive development tools included in the stable default schema.
- * The historical core and advanced labels expose the same repair-capable tools.
+ * Interactive development tools in the bounded default schema. The historical
+ * core and advanced labels expose the same bounded default surface; git / issue /
+ * campaign atomics live in the `full` compatibility profile.
  */
 export const OPTIONAL_INTERACTIVE_DEVELOPMENT_TOOLS = [
-  'work_wait',
   'repository_safe_patch_apply',
-  'repository_git_create_branch',
-  'repository_git_switch_branch',
-  'repository_git_commit',
-  'get_job',
-  'work_get',
+  'run_check',
+  'process_get',
+  'process_wait',
 ] as const;
 
 /** @deprecated Prefer ADVANCED_CONTROLLER_TOOL_NAMES; kept for import stability. */

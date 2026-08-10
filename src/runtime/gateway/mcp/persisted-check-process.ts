@@ -148,6 +148,7 @@ export async function runPersistedCheckViaProcessRuntime(
   }
 
   const interactiveWaitMs = input.interactiveWaitMs ?? 800;
+  const leaseWaitMs = input.leaseWaitMs;
   const timeoutMs = Math.min(
     check.timeoutMs,
     typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs)
@@ -222,6 +223,7 @@ export async function runPersistedCheckViaProcessRuntime(
       cwd: executionIdentity.canonicalRoot,
     },
     interactiveWaitMs,
+    leaseWaitMs,
     timeoutMs: timeoutMs + 5_000,
     resourceClaims: toProcessClaims(claims),
     checkExecution: processCheckExecution,

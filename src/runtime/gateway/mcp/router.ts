@@ -840,10 +840,16 @@ export async function routeDurableMcpCall(
       });
       return result({ accepted: true, mode: 'direct', path: 'process_direct', completed: true, ok: true, session: checked, receipts: [] });
     }
-    const processes = [] as NonNullable<Awaited<ReturnType<typeof runPersistedCheckViaProcessRuntime>>['process']>[];
-    for (const [index, checkId] of checkIds.entries()) {
+    // Parallel-first: submit every check concurrently and let Process Runtime
+    // arbitrate conflicts through Resource Claims / Leases. The bounded lease
+    // wait serializes genuinely conflicting checks instead of failing or
+    // building a Gateway-side conflict grouping.
+    const leaseWaitMs = typeof args.lease_wait_ms === 'number' && Number.isFinite(args.lease_wait_ms)
+      ? Math.max(0, Math.min(Math.trunc(args.lease_wait_ms), 15_000))
+      : 5_000;
+    const facades = await Promise.all(checkIds.map(async (checkId, index) => {
       const checkRequestId = `${requestBase}:check:${index + 1}:${createHash('sha256').update(checkId).digest('hex').slice(0, 12)}`;
-      const facade = await runPersistedCheckViaProcessRuntime({
+      return runPersistedCheckViaProcessRuntime({
         controllerHome: ctx.controllerHome,
         repoId: repository.repoId,
         checkoutId: repository.activeCheckoutId,
@@ -860,20 +866,21 @@ export async function routeDurableMcpCall(
           issueId: editSession.issueId,
           taskId: editSession.taskId,
         },
+        leaseWaitMs,
       });
-      if (facade.mode === 'durable' || !facade.process) {
-        return result({
-          accepted: false,
-          mode: 'durable',
-          path: 'durable',
-          checkId,
-          message: facade.durable?.reason ?? 'check requires durable workflow',
-          suggestedOperation: facade.durable?.suggestedOperation,
-        });
-      }
-      processes.push(facade.process);
-      if (!facade.process.completed) break;
+    }));
+    const durableFailure = facades.find((facade) => facade.mode === 'durable' || !facade.process);
+    if (durableFailure) {
+      return result({
+        accepted: false,
+        mode: 'durable',
+        path: 'durable',
+        checkId: durableFailure.checkId,
+        message: durableFailure.durable?.reason ?? 'check requires durable workflow',
+        suggestedOperation: durableFailure.durable?.suggestedOperation,
+      });
     }
+    const processes = facades.map((facade) => facade.process!);
     const pending = processes.find((process) => !process.completed);
     if (pending || processes.length !== checkIds.length) {
       return result({

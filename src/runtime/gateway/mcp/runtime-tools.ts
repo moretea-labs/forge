@@ -32,6 +32,7 @@ import {
 import { rebuildRepositoryProjection, projectionObservation, readRepositoryProjectionSnapshot, reconcileProjectionWithTaskLedger } from '../../projections/materialized-view';
 import {
   buildRuntimeOperationalView,
+  classifyRuntimeReadinessSemantics,
   evaluateRuntimeHealth,
   RUNTIME_HEALTH_THRESHOLDS,
   type RuntimeHealthEvaluation,
@@ -1960,6 +1961,7 @@ export async function controllerReadinessEvidence(
     projectionSnapshot,
     taskLedger,
     projectionReconciliation,
+    semantics: classifyRuntimeReadinessSemantics(runtimeHealth),
   };
 }
 
@@ -2713,7 +2715,25 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const exposure = toolset.controllerExposureSnapshot(ctx);
         const localRegisteredToolNames = toolset.allControllerToolDefinitions(ctx).map((tool) => tool.name).sort();
         const toolSurfaceReady = exposure.ready && exposure.missingToolNames.length === 0;
-        const effectiveReady = readiness.ready && toolSurfaceReady && !sourceSnapshotStale;
+        // Ordinary interactive execution depends on the execution axis only.
+        // Maintenance debt / durable queue debt are reported as separate
+        // semantics and must not promote ordinary work into repair flows.
+        const executionReady = readiness.semantics.executionReady;
+        let maintenanceHealthy: boolean | null = null;
+        let maintenanceCandidateCount = 0;
+        if (args.detail_level === 'detail') {
+          try {
+            const maintenance = buildRuntimeMaintenanceStatus(repository, ctx.controllerHome, { maxCandidates: 20 });
+            // stale_runtime_temp_entry is non-blocking by design (the executor
+            // excludes it from readyForExecution), so it is not maintenance debt.
+            const blockingCandidates = maintenance.candidates.filter((candidate) => candidate.kind !== 'stale_runtime_temp_entry');
+            maintenanceHealthy = blockingCandidates.length === 0;
+            maintenanceCandidateCount = blockingCandidates.length;
+          } catch {
+            maintenanceHealthy = null;
+          }
+        }
+        const effectiveReady = executionReady && toolSurfaceReady && !sourceSnapshotStale;
         const readinessReasons = [...readiness.reasons];
         if (!toolSurfaceReady) {
           readinessReasons.push({
@@ -2754,6 +2774,14 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               duplicateTools: exposure.duplicateToolNames,
               fingerprint: exposure.fingerprint,
               schemaStableAcrossAccessModes: exposure.schemaStableAcrossAccessModes,
+            },
+            semantics: {
+              executionReady,
+              maintenanceHealthy,
+              maintenanceCandidateCount,
+              releaseReady: readiness.semantics.releaseReady,
+              executionBlockers: readiness.semantics.reasons.executionReady.map((reason) => reason.code),
+              releaseBlockers: readiness.semantics.reasons.releaseReady.map((reason) => reason.code),
             },
             sourceCoherence: {
               ready: !sourceSnapshotStale,

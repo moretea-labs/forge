@@ -715,7 +715,6 @@ export function selectExecutionMode(input: ExecutionModeSelectionInput): Executi
     },
     recovery: {
       required: input.requiresRecovery,
-      isolationRequired: input.requiresParallelism,
     },
   });
   return {

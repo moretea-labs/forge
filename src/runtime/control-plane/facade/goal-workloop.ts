@@ -445,7 +445,7 @@ export function startGoalWorkloop(
   const workspaceMode = input.constraints?.workspaceMode ?? 'auto';
   const needsWorktree = executionMode === 'goal_workloop' && (input.constraints?.requireWorktree
     ?? (workspaceMode === 'isolated'
-      || (workspaceMode === 'auto' && input.modeInput.requiresParallelism === true)));
+      || (workspaceMode === 'auto' && routeDecision.requiresIsolation === true)));
   const generatedWorkId = workIdFor(input.objective);
   if (input.planId || input.planStepId) {
     if (!input.planId || !input.planStepId || !ctx.planStore || !ctx.sourceRevision) {

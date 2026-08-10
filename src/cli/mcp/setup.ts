@@ -303,7 +303,7 @@ Authenticate with \`Authorization: Bearer <token>\` using the token stored under
 
 ## Verify the loaded tool surface
 
-Default \`--toolset core\` exposes the five-tool ChatGPT facade (\`rh_access\`, \`rh_status\`, \`rh_inbox\`, \`rh_context\`, \`rh_work\`) plus bounded repository discovery/edit escape hatches. Use \`--toolset advanced\` for the supervised typed controller menu or \`--toolset full\` for exhaustive legacy compatibility. Confirm all five \`rh_*\` tools appear after connect. If only legacy planning tools are visible, refresh or recreate the Connector so ChatGPT reloads the MCP tool schema.
+Default \`--toolset core\` and \`--toolset advanced\` expose the same bounded 20-tool ChatGPT surface: the five \`rh_*\` facades plus repository selection, \`repository_command_execute\`, search/read, safe patch, \`run_check\`, managed process lifecycle, result retrieval, and approval resolution. Use \`--toolset full\` for exhaustive legacy compatibility, which keeps every atomic handler (including Git) registered. Confirm all five \`rh_*\` tools appear after connect. If only legacy planning tools are visible, refresh or recreate the Connector so ChatGPT reloads the MCP tool schema.
 
 ## Refresh newly added repository tools
 

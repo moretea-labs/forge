@@ -633,6 +633,51 @@ export function registerRepository(input: RegisterRepositoryInput): RepositoryRe
   return record;
 }
 
+/**
+ * Fast path for repeat `repository_register`: when the canonical path, repo id,
+ * checkout identity, and registration identity (remote / default branch /
+ * display name) are unchanged, return the existing registration without any
+ * legacy migration / history scan. The caller decides whether to run
+ * bindRepositoryEntities (install / upgrade / explicit repair only).
+ */
+export function findIdenticalRepositoryRegistration(
+  input: RegisterRepositoryInput,
+): { repository: RepositoryRecord; identical: boolean; reasons: string[] } | undefined {
+  const home = ensureRegistryHome(input.controllerHome);
+  if (!input.path?.trim()) return undefined;
+  const canonicalRoot = resolveGitRoot(input.path);
+  const registry = loadRepositoryRegistry(home);
+  const existing = uniqueCanonicalRecord(registry.repositories, canonicalRoot);
+  if (!existing) return undefined;
+
+  const reasons: string[] = [];
+  if (existing.removedAt || existing.enabled === false) {
+    reasons.push('registration_is_disabled_or_removed');
+  }
+  const checkoutId = stableCheckoutId(existing.repoId, canonicalRoot);
+  if (existing.activeCheckoutId !== checkoutId) {
+    reasons.push('checkout_identity_changed');
+  }
+  const requestedRemote = input.remoteUrl?.trim();
+  const canonicalRemote = normalizeRemoteUrl(
+    requestedRemote || git(canonicalRoot, ['config', '--get', 'remote.origin.url']),
+  );
+  if (requestedRemote && canonicalRemote && existing.canonicalRemote !== canonicalRemote) {
+    reasons.push('remote_identity_changed');
+  }
+  if (input.defaultBranch?.trim() && existing.defaultBranch !== input.defaultBranch.trim()) {
+    reasons.push('default_branch_changed');
+  }
+  if (input.displayName?.trim() && existing.displayName !== input.displayName.trim()) {
+    reasons.push('display_name_changed');
+  }
+  return {
+    repository: existing,
+    identical: reasons.length === 0,
+    reasons,
+  };
+}
+
 export function addRepositoryCheckout(input: AddRepositoryCheckoutInput): RepositoryRecord {
   const home = ensureRegistryHome(input.controllerHome);
   const canonicalRoot = resolveGitRoot(input.path);

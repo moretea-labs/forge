@@ -136,6 +136,54 @@ export interface RuntimeHealthEvaluation {
   };
 }
 
+/**
+ * Three independent readiness axes. Ordinary interactive execution only
+ * depends on `executionReady`; maintenance debt and durable-queue health are
+ * separate signals and must not silently promote ordinary work into watchdog /
+ * deep-diagnose / maintenance / recovery flows.
+ */
+export interface RuntimeReadinessSemantics {
+  /** Ordinary read / search / command / patch / focused check reliability. */
+  executionReady: boolean;
+  /** Legacy debt / stale metadata / cleanup debt cleanliness (null = not evaluated). */
+  maintenanceHealthy: boolean | null;
+  /** Strict release / integration gate readiness. */
+  releaseReady: boolean;
+  reasons: {
+    executionReady: HealthReason[];
+    releaseReady: HealthReason[];
+  };
+}
+
+export function classifyRuntimeReadinessSemantics(
+  health: RuntimeHealthEvaluation,
+  options: { maintenanceHealthy?: boolean | null } = {},
+): RuntimeReadinessSemantics {
+  const executionBlockers = [
+    ...health.components.daemon.activeBlockers,
+    ...health.components.projection.activeBlockers.filter((item) => (
+      item.code === 'PROJECTION_UNREADABLE' || item.code === 'PROJECTION_BUILD_FAILED'
+    )),
+    ...health.components.localBridge.activeBlockers,
+    ...health.components.runtimeStorage.activeBlockers.filter((item) => (
+      item.code === 'RUNTIME_STORAGE_UNAVAILABLE'
+    )),
+  ];
+  const releaseBlockers = [
+    ...health.activeBlockers,
+    ...health.components.projection.activeBlockers,
+  ];
+  return {
+    executionReady: executionBlockers.length === 0,
+    maintenanceHealthy: options.maintenanceHealthy ?? null,
+    releaseReady: releaseBlockers.length === 0,
+    reasons: {
+      executionReady: executionBlockers,
+      releaseReady: releaseBlockers,
+    },
+  };
+}
+
 export const RUNTIME_HEALTH_THRESHOLDS = {
   schedulerHeartbeatStaleMs: 10_000,
   queueProgressStaleMs: 10_000,

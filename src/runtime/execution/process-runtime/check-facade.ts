@@ -29,6 +29,12 @@ export interface RunCheckFacadeInput {
   checkId: string;
   timeoutMs?: number;
   interactiveWaitMs?: number;
+  /**
+   * Bounded wait budget for lease conflicts (ms). 0 keeps the historical
+   * fail-fast PROCESS_LEASE_CONFLICT behavior; >0 lets Process Runtime wait
+   * for conflicting claims to release before acquiring and executing.
+   */
+  leaseWaitMs?: number;
   requestId?: string;
   workId?: string;
   commandId?: string;
@@ -209,6 +215,7 @@ export async function runCheckViaProcessRuntime(
       cwd,
     },
     interactiveWaitMs,
+    leaseWaitMs: input.leaseWaitMs,
     timeoutMs,
     resourceClaims: toProcessClaims(claims),
     checkExecution: processCheckExecution,

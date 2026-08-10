@@ -236,15 +236,14 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
   const explicitParallelMode = explicitMode === 'campaign' || explicitMode === 'scale';
   const requiresIsolation = explicitMode === 'direct'
     ? false
-    : input.recovery.isolationRequired === true || input.intent.requiresParallelism === true || explicitParallelMode;
+    : input.recovery.isolationRequired === true || explicitParallelMode;
   const requiresRecovery = input.recovery.required === true
     || input.intent.requiresLongRunningChecks === true
     || explicitMode === 'debug'
     || explicitMode === 'release'
     || explicitMode === 'scale';
   const campaignEligible = explicitParallelMode || input.intent.requiresIndependentDeliverables === true
-    || independentTaskCount >= 3
-    || (input.intent.requiresParallelism === true && independentTaskCount >= 2);
+    || independentTaskCount >= 3;
 
   if (input.policy.policyBlocked === true) {
     reasons.push({ code: 'policy_blocked', message: 'Policy blocks execution until authorization or scope changes.' });
@@ -320,14 +319,12 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
     || input.intent.agentRequested === true
     || input.capabilities.requiresWorker === true
     || input.capabilities.requiresExternalEffect === true
-    || input.intent.requiresInvestigation === true
     || input.intent.needsDependencies === true
     || protectedPath
     || destructive
     || remoteWrite
     || secretAccess
-    || expectedFiles > 4
-    || expectedChangedLines > 200;
+    || (mutation && (expectedFiles > 4 || expectedChangedLines > 200));
   const executionMode: RouteExecutionMode = complex ? 'goal_workloop' : 'direct_control';
   // Work topology is independent from executor/provider choice. Campaign is
   // selected only for genuinely independent/parallel deliverables; Agent

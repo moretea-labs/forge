@@ -48,14 +48,15 @@ export interface ControllerExposureSnapshot {
 }
 
 /**
- * Advanced and Core expose the same bounded stable capability surface. Full
- * remains the exhaustive compatibility surface for legacy integrations.
+ * Core and Advanced expose the same bounded default ChatGPT surface
+ * (DEFAULT_CONTROLLER_TOOL_NAMES). Full remains the exhaustive compatibility
+ * surface for legacy integrations; internal atomic handlers are never deleted.
  */
 
 /** Historical Advanced name retained for compatibility. */
-export const ADVANCED_CONTROLLER_TOOL_NAMES = STABLE_CONTROLLER_TOOL_NAMES;
+export const ADVANCED_CONTROLLER_TOOL_NAMES = DEFAULT_CONTROLLER_TOOL_NAMES;
 
-const DEFAULT_CONTROLLER_TOOL_SET = new Set<string>(STABLE_CONTROLLER_TOOL_NAMES);
+const DEFAULT_CONTROLLER_TOOL_SET = new Set<string>(DEFAULT_CONTROLLER_TOOL_NAMES);
 
 interface StaticControllerExposureSnapshot {
   definitions: McpToolDefinition[];
@@ -95,7 +96,7 @@ export function controllerToolNamesForToolset(
   _ctx?: MultiRepositoryMcpToolContext,
 ): readonly string[] | null {
   if (toolset === 'full') return null;
-  return STABLE_CONTROLLER_TOOL_NAMES;
+  return DEFAULT_CONTROLLER_TOOL_NAMES;
 }
 
 export function resolveControllerAccessStateForContext(

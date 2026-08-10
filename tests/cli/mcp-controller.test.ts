@@ -45,25 +45,54 @@ import {
   writeControllerContextProjection} from "../../src/runtime/projections/controller-context";
 import {
   controllerToolNamesForToolset,
+  DEFAULT_CONTROLLER_TOOL_NAMES,
   exposedControllerToolDefinitions,
   STABLE_CONTROLLER_TOOL_NAMES,
 } from "../../src/cli/mcp/toolset";
 
-test("keeps Core and Advanced on the same bounded stable capability surface", () => {
+test("keeps Core and Advanced on the same bounded default ChatGPT surface", () => {
   expect(parseMcpToolset(undefined, "controller")).toBe("advanced");
-  expect(controllerToolNamesForToolset("core")).toEqual(STABLE_CONTROLLER_TOOL_NAMES);
-  expect(controllerToolNamesForToolset("advanced")).toEqual(STABLE_CONTROLLER_TOOL_NAMES);
-  expect(STABLE_CONTROLLER_TOOL_NAMES.length).toBeLessThanOrEqual(128);
+  expect(controllerToolNamesForToolset("core")).toEqual(DEFAULT_CONTROLLER_TOOL_NAMES);
+  expect(controllerToolNamesForToolset("advanced")).toEqual(DEFAULT_CONTROLLER_TOOL_NAMES);
+  expect(DEFAULT_CONTROLLER_TOOL_NAMES.length).toBeLessThan(25);
+  expect(DEFAULT_CONTROLLER_TOOL_NAMES.length).toBeLessThanOrEqual(20);
 
   for (const required of [
     "repository_command_execute",
     "run_check",
+    "search_repository",
+    "read_repository_file",
+    "repository_safe_patch_apply",
+    "process_get",
+    "process_wait",
+    "process_logs",
+    "process_cancel",
+    "result_read",
+    "result_search",
+    "approval_resolve",
+  ]) {
+    expect(DEFAULT_CONTROLLER_TOOL_NAMES).toContain(required as never);
+  }
+  for (const hiddenFromDefault of [
+    "repository_git_status",
+    "repository_git_diff",
+    "repository_git_create_branch",
+    "repository_git_switch_branch",
+    "repository_git_merge_branch",
+    "repository_git_delete_branch",
+    "repository_git_commit",
+    "repository_git_finish_workflow",
+    "git_diff_paths",
+    "git_stage_paths",
     "git_commit_paths",
-    "quick_agent_session",
     "create_campaign",
+    "begin_edit_session",
+    "verify_edit_session",
+    "quick_agent_session",
     "runtime_maintenance_status",
   ]) {
-    expect(STABLE_CONTROLLER_TOOL_NAMES).toContain(required as never);
+    expect(DEFAULT_CONTROLLER_TOOL_NAMES).not.toContain(hiddenFromDefault as never);
+    expect(STABLE_CONTROLLER_TOOL_NAMES).toContain(hiddenFromDefault as never);
   }
   for (const compatibilityOnly of [
     "toolchain_plugin_summary",
@@ -459,7 +488,6 @@ describe("MCP controller profile", () => {
       expect(names).toContain("export_worklog");
       expect(names).toContain("get_github_plugin_status");
       expect(names).toContain("configure_github_plugin");
-      expect(controllerExpectedToolNames(ctx.policy)).toContain("repository_command_preview");
       expect(controllerExpectedToolNames(ctx.policy)).toContain("repository_command_execute");
       const capabilities = await jsonTool(
         { ...ctx, policy: overridden },
@@ -468,13 +496,23 @@ describe("MCP controller profile", () => {
       expect(capabilities.value.toolSurface).toBe(
         "forge",
       );
-      expect(capabilities.value.expectedTools).toContain("launch_issue");
-      expect(capabilities.value.expectedTools).toContain("work_submit");
-      expect(capabilities.value.expectedTools).toContain("quick_agent_session");
-      expect(capabilities.value.expectedTools).toContain("controller_context");
-      expect(capabilities.value.expectedTools).toContain("controller_context_pack");
-      expect(capabilities.value.expectedTools).toContain("repository_command_preview");
       expect(capabilities.value.expectedTools).toContain("repository_command_execute");
+      expect(capabilities.value.expectedTools).toContain("search_repository");
+      expect(capabilities.value.expectedTools).toContain("read_repository_file");
+      expect(capabilities.value.expectedTools).toContain("result_read");
+      expect(capabilities.value.expectedTools).toContain("approval_resolve");
+      for (const hiddenFromDefault of [
+        "launch_issue",
+        "work_submit",
+        "quick_agent_session",
+        "controller_context",
+        "controller_context_pack",
+        "repository_command_preview",
+        "verify_edit_session",
+        "finish_edit_session",
+      ]) {
+        expect(capabilities.value.expectedTools).not.toContain(hiddenFromDefault);
+      }
       expect(capabilities.value.expectedTools).toEqual(
         controllerExpectedToolNames(overridden),
       );
@@ -484,8 +522,6 @@ describe("MCP controller profile", () => {
       expect(capabilities.value.capabilities.directEditFirstRouting).toBe(true);
       expect(capabilities.value.capabilities.controllerContextAggregation).toBe(true);
       expect(capabilities.value.capabilities.persistedCheckReuse).toBe(true);
-      expect(capabilities.value.expectedTools).toContain("verify_edit_session");
-      expect(capabilities.value.expectedTools).toContain("finish_edit_session");
       const source = await jsonTool(
         { ...ctx, policy: overridden },
         "read_repository_file",
@@ -843,28 +879,30 @@ describe("MCP controller profile", () => {
       expect(parseMcpToolset(undefined, 'controller')).toBe('advanced');
       expect(defaultContext.toolset).toBe('advanced');
       expect(defaultNames).toEqual(coreNames);
-      expect(coreNames).toEqual([...STABLE_CONTROLLER_TOOL_NAMES]);
-      expect(coreNames).toEqual(expect.arrayContaining(["rh_access", "rh_status", "rh_inbox", "rh_context", "rh_work", "repository_list"]));
-      // Core is a compatibility label for the same bounded stable surface.
-      expect(coreNames).toContain("create_campaign");
+      expect(coreNames).toEqual([...DEFAULT_CONTROLLER_TOOL_NAMES]);
+      expect(coreNames).toEqual(expect.arrayContaining(["rh_access", "rh_status", "rh_inbox", "rh_context", "rh_work", "repository_list", "repository_command_execute", "search_repository"]));
+      // Core is a compatibility label for the bounded default surface; heavy
+      // atomic tools stay registered but are not exposed to ChatGPT by default.
+      expect(coreNames).not.toContain("create_campaign");
+      expect(coreNames).not.toContain("verify_edit_session");
       expect(coreNames).toContain("process_get");
       expect(coreNames).toContain("repository_command_execute");
       const advancedNames = exposedControllerToolDefinitions(advanced).map((tool) => tool.name);
       const fullNames = exposedControllerToolDefinitions(full).map((tool) => tool.name);
-      // Core and Advanced share the bounded 128-tool stable schema.
-      expect(advancedNames).toEqual([...STABLE_CONTROLLER_TOOL_NAMES]);
+      // Core and Advanced share the bounded default schema.
+      expect(advancedNames).toEqual([...DEFAULT_CONTROLLER_TOOL_NAMES]);
       expect(advancedNames).toEqual(expect.arrayContaining([
         'process_get',
         'process_wait',
         'process_logs',
         'process_cancel',
       ]));
-      expect(advancedNames).toContain("create_campaign");
-      expect(advancedNames).toContain("submit_campaign_review");
-      expect(advancedNames).toContain("finish_task_run");
-      expect(advancedNames).toContain("list_plugins");
-      expect(advancedNames).toContain("get_plugin");
-      expect(advancedNames).toContain("plugin_action_execute");
+      expect(advancedNames).not.toContain("create_campaign");
+      expect(advancedNames).not.toContain("finish_task_run");
+      expect(advancedNames).not.toContain("list_plugins");
+      expect(fullNames).toContain("repository_git_status");
+      expect(fullNames).toContain("git_commit_paths");
+      expect(fullNames).toContain("verify_edit_session");
       expect(fullNames.length).toBeGreaterThan(coreNames.length);
 
       let runtimePid: number | undefined;
@@ -1413,7 +1451,7 @@ describe("MCP controller profile", () => {
       const legacy = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", controllerHome });
       const legacyNames = exposedControllerToolDefinitions(legacy).map((tool) => tool.name);
       expect(legacy.toolset).toBe("advanced");
-      expect(legacyNames).toEqual([...STABLE_CONTROLLER_TOOL_NAMES]);
+      expect(legacyNames).toEqual([...DEFAULT_CONTROLLER_TOOL_NAMES]);
 
       persistControllerAccessMode(controllerHome, "request", repoRoot);
       const requestMode = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", controllerHome });

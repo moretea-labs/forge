@@ -1224,6 +1224,33 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
         );
       }
     }
+    // Minimal bounded queue behavior: when the caller opts in, wait for
+    // conflicting leases to release instead of failing immediately. The Lease
+    // store remains the single conflict authority; this loop only polls it.
+    const leaseWaitMs = Math.max(
+      0,
+      Math.min(Math.trunc(input.leaseWaitMs ?? 0), 30_000),
+    );
+    if (!acquisition.acquired && leaseWaitMs > 0) {
+      const leaseDeadline = Date.now() + leaseWaitMs;
+      while (!acquisition.acquired && Date.now() < leaseDeadline) {
+        if (input.signal?.aborted) break;
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+        acquisition = acquireExecutionLeases(
+          input.controllerHome,
+          input.repoId,
+          processOwnerJobId(processId),
+          toResourceClaimSpecs(resourceClaims),
+          {
+            ttlMs: Math.max(30_000, timeoutMs + 30_000),
+            visibility: 'ephemeral',
+            notifyScheduler: false,
+            invalidateProjection: false,
+            emitRuntimeEvent: false,
+          },
+        );
+      }
+    }
     if (!acquisition.acquired) {
       const blockers = acquisition.blockers
         .map((b) => `${b.resourceKey}@${b.ownerJobId}`)

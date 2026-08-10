@@ -277,6 +277,13 @@ export interface SpawnManagedProcessInput {
   commandId?: string;
   command: ProcessCommandSpec;
   interactiveWaitMs?: number;
+  /**
+   * Bounded lease-conflict wait budget (ms). 0 (default) keeps fail-fast
+   * PROCESS_LEASE_CONFLICT behavior; >0 polls lease acquisition until the
+   * conflicting claims release, then spawns. Never a second scheduler: the
+   * existing Lease store remains the single conflict authority.
+   */
+  leaseWaitMs?: number;
   timeoutMs?: number;
   maxOutputBytes?: number;
   resourceClaims?: ProcessResourceClaim[];

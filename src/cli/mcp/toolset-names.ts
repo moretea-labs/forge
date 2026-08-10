@@ -3,6 +3,43 @@ import { FACADE_TOOLS } from '../../runtime/control-plane/facade/types';
 /** Preferred ChatGPT-facing facade tools. Must stay small and stable. */
 export const PREFERRED_FACADE_TOOL_NAMES = [...FACADE_TOOLS] as const;
 
+/**
+ * Default ChatGPT-facing MCP surface. The Runtime keeps every internal atomic
+ * handler and the full compatibility profile; ChatGPT only needs this bounded
+ * execution surface. Atomic Git / issue-task / campaign / edit-session / plugin
+ * tools remain registered and reachable through `toolset=full`.
+ */
+export const DEFAULT_CONTROLLER_TOOL_NAMES = [
+  ...PREFERRED_FACADE_TOOL_NAMES,
+
+  // Repository selection / bootstrap.
+  'repository_list',
+  'repository_get',
+  'repository_register',
+
+  // Generic repository-scoped command (readonly fast path, mutation, destructive gate).
+  'repository_command_execute',
+
+  // Source inspection and bounded Direct Edit.
+  'search_repository',
+  'read_repository_file',
+  'repository_safe_patch_apply',
+
+  // Focused checks through Process Runtime.
+  'run_check',
+
+  // Managed Process Runtime lifecycle (attach / poll / cancel — never re-exec).
+  'process_get',
+  'process_wait',
+  'process_logs',
+  'process_cancel',
+
+  // Evidence and approval.
+  'result_read',
+  'result_search',
+  'approval_resolve',
+] as const;
+
 /** Minimal bootstrap subset retained for diagnostics and constrained clients. */
 export const BOOTSTRAP_CONTROLLER_TOOL_NAMES = [
   ...PREFERRED_FACADE_TOOL_NAMES,
@@ -14,6 +51,12 @@ export const BOOTSTRAP_CONTROLLER_TOOL_NAMES = [
   'repository_bootstrap_local_project',
 ] as const;
 
+/**
+ * Complete stable controller inventory. Historical Core/Advanced profiles used
+ * this whole list; the served default surface is now DEFAULT_CONTROLLER_TOOL_NAMES.
+ * This inventory remains the authoritative catalog for exposure classification
+ * and the `full` profile exposes every registered definition.
+ */
 export const STABLE_CONTROLLER_TOOL_NAMES = [
   ...PREFERRED_FACADE_TOOL_NAMES,
 
@@ -165,8 +208,5 @@ export const STABLE_CONTROLLER_TOOL_NAMES = [
   'workflow_watchdog_report',
 ] as const;
 
-/** Core is a compatibility label for the same stable repair-capable schema. */
-export const CORE_CONTROLLER_TOOL_NAMES = STABLE_CONTROLLER_TOOL_NAMES;
-
-/** Default Controller surface retained as a compatibility alias. */
-export const DEFAULT_CONTROLLER_TOOL_NAMES = STABLE_CONTROLLER_TOOL_NAMES;
+/** Core is a compatibility label for the bounded default Controller surface. */
+export const CORE_CONTROLLER_TOOL_NAMES = DEFAULT_CONTROLLER_TOOL_NAMES;

@@ -31,7 +31,7 @@ These features are part of the default local setup:
 
 ## Tool exposure
 
-The default `advanced` toolset exposes one stable, repair-capable schema capped at 128 tools. `core` is a compatibility alias for the same schema. `full` exposes every historical definition and should be reserved for legacy integrations or deep compatibility diagnosis. Five workflow facades sit above typed atomic tools and internal handlers; capability metadata groups the existing functions by domain. The current MCP transport does not dynamically load domain schemas, so grouping does not remove or hide the typed tools.
+The default `core` / `advanced` toolset exposes one bounded ChatGPT-facing schema of 20 tools: the five `rh_*` workflow facades, repository selection, `repository_command_execute`, source search/read, `repository_safe_patch_apply`, `run_check`, managed process lifecycle, result retrieval, and approval resolution. Git / issue-task / campaign / edit-session / plugin / browser / iOS / maintenance atomics remain registered as internal handlers and are reachable through the `full` compatibility profile, which exposes every historical definition. The MCP transport does not dynamically load domain schemas; hiding from the default surface is a static exposure decision, never a handler deletion.
 
 ## Execution choices
 

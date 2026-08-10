@@ -123,8 +123,11 @@ describe("repository MCP command tools", () => {
 
       expect(response.diagnosis.recommendedPath).toBe(canonicalRichRoot);
       expect(response.diagnosis.noMutation).toBe(true);
-      expect(capabilities.expectedTools).toContain("repository_latest_source_diagnose");
-      expect(capabilities.expectedTools).toContain("repository_bootstrap_local_project");
+      // The tool still works when invoked directly, but the default ChatGPT
+      // surface keeps source diagnostics / bootstrap behind explicit profiles.
+      expect(capabilities.expectedTools).not.toContain("repository_latest_source_diagnose");
+      expect(capabilities.expectedTools).not.toContain("repository_bootstrap_local_project");
+      expect(capabilities.expectedTools).toContain("repository_command_execute");
       expect(existsSync(join(richRoot, ".git"))).toBe(false);
     } finally {
       await cleanupWorkspace([workspace, controllerHome, staleRoot, richRoot]);
@@ -764,4 +767,51 @@ describe("repository MCP command tools", () => {
     }
   });
 
+});
+
+describe("repository_register repeat fast path", () => {
+  test("repeat returns the same identity without a historical migration scan", async () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-register-fastpath-"));
+    try {
+      const controllerHome = join(root, "controller-home");
+      const repoRoot = join(root, "repo");
+      mkdirSync(controllerHome, { recursive: true });
+      mkdirSync(join(repoRoot, "tasks", "issues"), { recursive: true });
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.email", "forge@example.invalid"]);
+      git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
+      writeFileSync(join(repoRoot, "README.md"), "# fixture\n");
+      for (let index = 0; index < 150; index += 1) {
+        writeFileSync(join(repoRoot, "tasks", "issues", `ISS-${index}.issue.json`),
+          `${JSON.stringify({ id: `ISS-${index}`, status: "open", tasks: [] })}\n`);
+      }
+      git(repoRoot, ["add", "."]);
+      git(repoRoot, ["commit", "-qm", "initial"]);
+
+      const register = async () => {
+        const result = await callRepositoryTool(controllerHome, "repository_register", { path: repoRoot, detail_level: "detail" });
+        return JSON.parse(result?.content[0]?.text ?? "{}") as {
+          fastPath?: boolean;
+          repository?: { repoId?: string; activeCheckoutId?: string };
+          migration?: { scanned?: number; updated?: number; unresolved?: number };
+          responseMeta?: { serverDurationMs?: number };
+        };
+      };
+      const first = await register();
+      expect(first.fastPath).toBe(false);
+      expect(first.migration?.scanned).toBeGreaterThanOrEqual(150);
+      const second = await register();
+      expect(second.fastPath).toBe(true);
+      expect(second.repository?.repoId).toBe(first.repository?.repoId);
+      expect(second.repository?.activeCheckoutId).toBe(first.repository?.activeCheckoutId);
+      expect(second.migration?.scanned).toBe(0);
+      expect(second.migration?.updated).toBe(0);
+      expect(second.migration?.unresolved).toBe(0);
+      expect(second.responseMeta?.serverDurationMs ?? 0).toBeLessThan(
+        (first.responseMeta?.serverDurationMs ?? 0) + 0.001,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

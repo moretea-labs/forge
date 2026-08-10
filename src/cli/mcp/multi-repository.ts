@@ -327,7 +327,14 @@ export function createMcpToolContext(opts: McpServerOptions): MultiRepositoryMcp
   const controllerHome = ensureRepoPreferredControllerHome(opts.repo, opts.controllerHome);
   const explicitRepository = opts.repo?.trim()
     ? repositoryForExplicitPath(opts.repo, controllerHome)
-      ?? registerRepository({ path: opts.repo, controllerHome })
+      ?? (() => {
+        // Fresh registration is an install-time migration boundary. Run the
+        // one-time legacy entity bind here; repeat connects and ordinary reads
+        // never rescan historical state.
+        const repository = registerRepository({ path: opts.repo, controllerHome });
+        bindRepositoryEntities(repository);
+        return repository;
+      })()
     : undefined;
   const policyRoot = explicitRepository?.canonicalRoot ?? controllerHome;
   const policy = runtimePolicy(policyRoot, { ...opts, controllerHome });
@@ -376,7 +383,11 @@ export async function callMultiRepositoryTool(
       throw new Error(`RUNTIME_STORAGE_NOT_READY: ${runtimeStorage.warnings.join('; ')}`);
     }
 
-    bindRepositoryEntities(repository);
+    // Legacy entity migration belongs to writes/registration, never to the
+    // ordinary read hot path (search / read / list / context). Only mutation
+    // tools rebind entities so newly created issues/tasks/sessions stay bound.
+    const rebindEntities = REPOSITORY_LOCKED_TOOLS.has(name);
+    if (rebindEntities) bindRepositoryEntities(repository);
     const scopedContext: McpToolContext = {
       repoRoot: repository.canonicalRoot,
       policy: runtimePolicy(repository.canonicalRoot, {
@@ -404,7 +415,7 @@ export async function callMultiRepositoryTool(
         60_000,
       )
       : await invoke();
-    bindRepositoryEntities(repository);
+    if (rebindEntities) bindRepositoryEntities(repository);
     return withRepositoryEnvelope(result, repository, runtimeStorage);
   } catch (error) {
     return errorResult(error);

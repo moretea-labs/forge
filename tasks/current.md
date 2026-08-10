@@ -1,10 +1,10 @@
 # Current Status Snapshot
 
-<!-- updated_at: 2026-08-09 -->
+<!-- updated_at: 2026-08-10 -->
 <!-- stale_after: 24h -->
 
 > **Status**: The canonical immutable Runtime runs the `68df28b8` code baseline and is ready with the embedded Local Bridge owned by the same process and no readiness warnings. Local System's complete authorize/use/concurrent-write/digest-pinned-script/delete/revoke lifecycle passed live acceptance without changing the Repository Registry. Explicit task modes and required Plan/Debug CodeGraph context passed authenticated live MCP acceptance from the self-contained immutable release. The 1,318 unknown-owned legacy Edit Sessions remain fail-closed. Live Resend delivery remains externally blocked until an API key, verified sending domain, and sender identity are configured.
-> **Updated At**: 2026-08-09
+> **Updated At**: 2026-08-10
 > **Source**: Source review, focused Runtime/MCP tests, authenticated `repo-harness6` session evidence, repeated 60-second Controller RPC timeouts, and connector/source schema comparison.
 > **Target**: Keep one canonical Forge Runtime release aligned with `main`, one Recovery service family, and the renamed `/Users/greyson/DevProjects/forge` paths.
 > **Stale After**: 24h
@@ -12,6 +12,11 @@
 This snapshot is a read model, not an execution gate.
 
 ## Current Focus
+- ✅ Default ChatGPT MCP surface converged from 123 tools to 20 (`rh_*` facades, repository selection, `repository_command_execute`, search/read, safe patch, `run_check`, process lifecycle, result retrieval, approval). Atomic Git / issue-task / campaign / edit-session / plugin / maintenance handlers remain registered and reachable through `toolset=full` (256 definitions, `ready=true`).
+- ✅ Route Policy no longer treats `requiresInvestigation` as durable: readonly investigation and small mutation + investigation route `direct_control`/`fast`; investigation + recovery or large mutation still routes bounded durable. `requiresParallelism` no longer implies isolation or worktree; `requiresIndependentDeliverables`/count remains the campaign authority.
+- ✅ `verify_edit_session` submits checks concurrently and Process Runtime arbitrates via existing Resource Claims/Leases; lease conflict gained a bounded opt-in wait (5s default for edit verification) instead of Gateway serialization. Evidence: independent checks overlap in wall-clock; conflicting workspace-write checks serialize without overlap; heavy/release exclusivity retained.
+- ✅ Repeat `repository_register` with identical path/repo/checkout/registration identity returns the existing registration with `fastPath=true`, `scanned=0`, no historical migration scan (benchmark: first 105ms/300 files vs repeat 9-11ms). Legacy entity bind moved to fresh registration / explicit repair; ordinary reads no longer rescan history.
+- ✅ Readiness split into `executionReady` / `maintenanceHealthy` / `releaseReady` on `rh_status` (detail evaluates maintenance). Ordinary read/search/command/patch/focused check depend only on `executionReady`; maintenance debt no longer promotes ordinary work into watchdog/repair flows, while real daemon/projection/local-bridge failures still block execution.
 
 - ✅ Explicit `-direct`, `-plan`, `-debug`, `-review`, `-campaign`, `-release`, and `-scale` modes now change Route Policy topology and publish executable workflow contracts; explicit topology never bypasses authorization, dirty-workspace, or remote/destructive gates.
 - ✅ `controller_context` always returns a non-null stable recommendation. Plan and Debug automatically acquire a bounded CodeGraph-backed `modeContextPack`; task-specific recommendations replace cached projection guidance so one request cannot inherit another task's mode.

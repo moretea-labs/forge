@@ -124,7 +124,7 @@ describe('single Route Policy authority', () => {
     expect(assessment.nextTools).toContain('rh_work(operation=start)');
   });
 
-  test('keeps complex readonly investigation Work-bound without promoting to Issue or Campaign', () => {
+  test('keeps readonly investigation on the direct fast path without durable Work', () => {
     const decision = decideRoute(sharedInput({
       intent: {
         objective: 'Investigate a cross-module regression without mutating yet',
@@ -137,11 +137,42 @@ describe('single Route Policy authority', () => {
       policy: { risk: 'readonly' },
     }));
     expect(decision).toMatchObject({
-      executionMode: 'goal_workloop',
-      workMode: 'bounded_work',
-      executionPath: 'durable',
-      requiresWork: true,
+      executionMode: 'direct_control',
+      workMode: 'direct_edit',
+      executionPath: 'fast',
+      requiresWork: false,
+      requiresIsolation: false,
     });
+  });
+
+  test('keeps small mutations with investigation on direct_edit fast', () => {
+    const decision = decideRoute(sharedInput({
+      intent: {
+        objective: 'Search call sites then fix one focused helper',
+        scopeClear: true,
+        mutation: true,
+        expectedFiles: 3,
+        expectedChangedLines: 120,
+        requiresInvestigation: true,
+      },
+      policy: { risk: 'local_repo_write' },
+    }));
+    expect(decision).toMatchObject({ executionMode: 'direct_control', workMode: 'direct_edit', executionPath: 'fast', requiresWork: true, requiresIsolation: false });
+  });
+
+  test('parallelism alone never implies isolation', () => {
+    const readonly = decideRoute(sharedInput({
+      intent: { objective: 'Search several independent areas in the same checkout', scopeClear: true, mutation: false, requiresParallelism: true },
+      policy: { risk: 'readonly' },
+    }));
+    expect(readonly).toMatchObject({ executionMode: 'direct_control', workMode: 'direct_edit', executionPath: 'fast', requiresIsolation: false, requiresWork: false });
+
+    const mutating = decideRoute(sharedInput({
+      intent: { objective: 'Apply two independent low-risk edits in the same checkout', scopeClear: true, mutation: true, expectedFiles: 2, expectedChangedLines: 60, requiresParallelism: true, independentTaskCount: 2 },
+      policy: { risk: 'local_repo_write' },
+    }));
+    expect(mutating).toMatchObject({ executionMode: 'direct_control', workMode: 'direct_edit', executionPath: 'fast', requiresIsolation: false });
+    expect(mutating.reasons.some((reason) => reason.code === 'independent_deliverables')).toBe(false);
   });
 
   test('gives every explicit task mode executable behavior instead of a label', () => {
