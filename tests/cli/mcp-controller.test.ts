@@ -2320,7 +2320,17 @@ describe("MCP controller profile", () => {
       ]);
       expect(Date.now() - readsStartedAt).toBeLessThan(2_500);
       expect(controllerContext.value.localBridge).toBeTruthy();
+      expect(repositoryGet.detailLevel).toBe("summary");
       expect(repositoryGet.repository.repoId).toBe(repository.repoId);
+      expect(repositoryGet.repository.activeCheckout.checkoutId).toBe(repository.activeCheckoutId);
+      expect(repositoryGet.repository.checkoutCount).toBe(repository.checkouts.length);
+      expect(repositoryGet.repository.checkouts).toBeUndefined();
+      const repositoryDetail = await callRepositoryTool(controllerHome, "repository_get", {
+        repo_id: repository.repoId,
+        detail_level: "detail",
+      }).then((result) => JSON.parse(result?.content[0]?.text ?? "{}"));
+      expect(repositoryDetail.detailLevel).toBe("detail");
+      expect(repositoryDetail.repository.checkouts.length).toBe(repository.checkouts.length);
       // Summary may leave endpoint null when no Local Bridge surface is configured.
       if (localStatus.value.endpoint != null) {
         expect(String(localStatus.value.endpoint)).toContain("127.0.0.1");

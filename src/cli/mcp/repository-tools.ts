@@ -107,6 +107,7 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
   definition('repository_get', 'Inspect one registered repository.', {
     repo_id: repoId,
     include_removed: { type: 'boolean' },
+    detail_level: { type: 'string', enum: ['summary', 'detail'], description: 'Defaults to summary; detail returns the complete checkout history.' },
   }, ['repo_id'], true),
   definition('repository_validate', 'Validate repository identity and migrate legacy ownership.', {
     repo_id: repoId,
@@ -391,6 +392,31 @@ export function summarizeRepositoryRegistration(
   };
 }
 
+export function summarizeRepositoryInspection(
+  repository: ReturnType<typeof getRepository>,
+  detail = false,
+): Record<string, unknown> {
+  if (detail) return { detailLevel: 'detail', repository };
+  const checkoutCounts = repository.checkouts.reduce<Record<string, number>>((counts, checkout) => {
+    const lifecycle = checkout.lifecycle ?? 'active';
+    counts[lifecycle] = (counts[lifecycle] ?? 0) + 1;
+    return counts;
+  }, {});
+  const activeCheckout = repository.checkouts.find((checkout) => checkout.checkoutId === repository.activeCheckoutId);
+  return {
+    detailLevel: 'summary',
+    repository: {
+      ...repositorySummary(repository),
+      activeCheckoutId: repository.activeCheckoutId,
+      ...(activeCheckout ? { activeCheckout } : {}),
+      checkoutCount: repository.checkouts.length,
+      checkoutCounts,
+    },
+    omittedCheckoutCount: Math.max(0, repository.checkouts.length - (activeCheckout ? 1 : 0)),
+    next: 'Re-call with detail_level=detail only when complete checkout history is required.',
+  };
+}
+
 function failure(error: unknown): RepositoryToolResult {
   const message = compactErrorMessage(error);
   const code = message.includes(':') ? message.slice(0, message.indexOf(':')) : 'REPOSITORY_TOOL_FAILED';
@@ -589,8 +615,10 @@ export async function callRepositoryTool(
         });
       case 'repository_list':
         return result({ repositories: listRepositories(controllerHome, { includeRemoved: args.include_removed === true }).map(repositorySummary) });
-      case 'repository_get':
-        return result({ repository: getRepository(repoIdValue, controllerHome, { includeRemoved: args.include_removed === true }) });
+      case 'repository_get': {
+        const repository = getRepository(repoIdValue, controllerHome, { includeRemoved: args.include_removed === true });
+        return result(summarizeRepositoryInspection(repository, args.detail_level === 'detail'));
+      }
       case 'repository_validate': {
         const startedAt = performance.now();
         const repository = getRepository(repoIdValue, controllerHome, { includeRemoved: true });
