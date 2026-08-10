@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { STABLE_CONTROLLER_TOOL_NAMES } from '../../src/cli/mcp/toolset-names';
+import { DEFAULT_CONTROLLER_TOOL_NAMES, STABLE_CONTROLLER_TOOL_NAMES } from '../../src/cli/mcp/toolset-names';
 import { runsAsInteractiveSyncWrite } from '../../src/runtime/gateway/mcp/router';
 
 describe('interactive sync routing policy', () => {
@@ -25,10 +25,11 @@ describe('interactive sync routing policy', () => {
     expect(runsAsInteractiveSyncWrite('dispatch_task')).toBe(false);
   });
 
-  test('stable controller surface exposes interactive development tools', () => {
+  test('stable connector surface stays identical to the bounded default surface', () => {
+    expect(STABLE_CONTROLLER_TOOL_NAMES).toEqual(DEFAULT_CONTROLLER_TOOL_NAMES);
     expect(STABLE_CONTROLLER_TOOL_NAMES).toContain('repository_safe_patch_apply');
-    expect(STABLE_CONTROLLER_TOOL_NAMES).toContain('repository_git_create_branch');
-    expect(STABLE_CONTROLLER_TOOL_NAMES).toContain('work_wait');
-    expect(STABLE_CONTROLLER_TOOL_NAMES).toContain('git_commit_paths');
+    expect(STABLE_CONTROLLER_TOOL_NAMES).not.toContain('repository_git_create_branch');
+    expect(STABLE_CONTROLLER_TOOL_NAMES).not.toContain('work_wait');
+    expect(STABLE_CONTROLLER_TOOL_NAMES).not.toContain('git_commit_paths');
   });
 });

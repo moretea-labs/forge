@@ -92,7 +92,7 @@ test("keeps Core and Advanced on the same bounded default ChatGPT surface", () =
     "runtime_maintenance_status",
   ]) {
     expect(DEFAULT_CONTROLLER_TOOL_NAMES).not.toContain(hiddenFromDefault as never);
-    expect(STABLE_CONTROLLER_TOOL_NAMES).toContain(hiddenFromDefault as never);
+    expect(STABLE_CONTROLLER_TOOL_NAMES).not.toContain(hiddenFromDefault as never);
   }
   for (const compatibilityOnly of [
     "toolchain_plugin_summary",
