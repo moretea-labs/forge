@@ -17,6 +17,7 @@ import {
 } from '../../src/runtime/safe-tooling/resend-oauth';
 import {
   assistantPluginScope,
+  clearAssistantPluginManifestCacheForTest,
   controllerPluginRepository,
   executeAssistantPluginAction,
   getAssistantPluginManifest,
@@ -51,13 +52,14 @@ function fixture(enabled = true) {
   return { controllerHome, socketPath, repository: controllerPluginRepository(controllerHome) };
 }
 
-async function startExternalProviderFixture(root: string, socketPath: string, logPath: string): Promise<void> {
+async function startExternalProviderFixture(root: string, socketPath: string, logPath: string, driftPath?: string): Promise<void> {
   const scriptPath = join(root, 'provider.cjs');
   writeFileSync(scriptPath, `
 const fs = require('fs');
 const net = require('net');
 const socketPath = process.argv[2];
 const logPath = process.argv[3];
+const driftPath = process.argv[4];
 try { fs.unlinkSync(socketPath); } catch (_) {}
 const server = net.createServer((socket) => {
   let buffer = '';
@@ -70,7 +72,7 @@ const server = net.createServer((socket) => {
     let result;
     if (request.method === 'manifest') {
       result = {
-        id: 'desktop_operator', name: 'Forge Desktop Operator', version: '0.1.0',
+        id: 'desktop_operator', name: 'Forge Desktop Operator', version: fs.existsSync(driftPath) ? '0.2.0' : '0.1.0',
         protocolVersion: '1.0', mode: 'external', scope: 'controller', provider: 'local-macos',
         capabilities: ['desktop-observe'], actions: ['desktop_status'],
       };
@@ -85,7 +87,7 @@ const server = net.createServer((socket) => {
 server.listen(socketPath, () => process.stdout.write('ready\\n'));
 process.on('SIGTERM', () => server.close(() => process.exit(0)));
 `);
-  const child = spawn(process.execPath, [scriptPath, socketPath, logPath], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [scriptPath, socketPath, logPath, ...(driftPath ? [driftPath] : [])], { stdio: ['ignore', 'pipe', 'pipe'] });
   children.push(child);
   await new Promise<void>((resolve, reject) => {
     let stdout = '';
@@ -177,7 +179,8 @@ describe('external plugin store integration', () => {
     roots.push(controllerHome);
     const socketPath = join(controllerHome, 'desktop.sock');
     const logPath = join(controllerHome, 'provider.log');
-    await startExternalProviderFixture(controllerHome, socketPath, logPath);
+    const driftPath = join(controllerHome, 'provider-drift');
+    await startExternalProviderFixture(controllerHome, socketPath, logPath, driftPath);
     installExternalPluginRegistration(controllerHome, {
       pluginId: 'desktop_operator', providerPluginId: 'desktop_operator', displayName: 'Forge Desktop Operator',
       provider: 'local-macos', pluginVersion: '0.1.0', protocolVersion: '1.0', scope: 'controller', enabled: true,
@@ -201,7 +204,17 @@ describe('external plugin store integration', () => {
       timeoutMs: 1_000,
     });
     expect(result.result).toMatchObject({ observed: true });
-    expect(readFileSync(logPath, 'utf8').trim().split('\n')).toEqual(['manifest', 'health', 'execute']);
+    await executeAssistantPluginAction({
+      controllerHome, repoId: repository.repoId, repoRoot: repository.canonicalRoot, pluginId: 'desktop_operator', actionId: 'desktop_status',
+      requestId: 'external-hotpath-2', args: {}, origin: { surface: 'mcp' }, timeoutMs: 1_000,
+    });
+    clearAssistantPluginManifestCacheForTest();
+    writeFileSync(driftPath, 'drift');
+    await expect(executeAssistantPluginAction({
+      controllerHome, repoId: repository.repoId, repoRoot: repository.canonicalRoot, pluginId: 'desktop_operator', actionId: 'desktop_status',
+      requestId: 'external-hotpath-drift', args: {}, origin: { surface: 'mcp' }, timeoutMs: 1_000,
+    })).rejects.toThrow('EXTERNAL_PLUGIN_VERSION_MISMATCH');
+    expect(readFileSync(logPath, 'utf8').trim().split('\n')).toEqual(['manifest', 'health', 'execute', 'execute', 'manifest', 'manifest', 'manifest']);
   });
 
   test('built-in adapters retain precedence over colliding external registration IDs in Phase 1', () => {
