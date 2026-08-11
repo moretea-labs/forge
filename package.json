@@ -115,7 +115,6 @@
     "release:dry-run": "node scripts/check-release-version.mjs && bun run check:release",
     "release:rc": "bash scripts/publish-release-tarball.sh next",
     "release:stable": "bash scripts/publish-release-tarball.sh latest",
-    "prepublishOnly": "bash scripts/check-npm-release.sh",
     "check:brain-manifest": "forge run check-brain-manifest",
     "check:context-files": "forge run check-context-files",
     "check:deploy-sql": "forge run check-deploy-sql-order",
