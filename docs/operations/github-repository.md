@@ -14,7 +14,7 @@ The README should keep a clear product statement, release/CI/license badges, npm
 
 ## Main branch protection
 
-`main` keeps linear history, blocks force-pushes and deletion, and requires the maintained CI checks (`Release readiness` and `windows-smoke`) to pass.
+`main` keeps linear history, blocks force-pushes and deletion, and requires the always-running `Main gate` check to pass. The Windows smoke workflow remains path-scoped: it runs when Windows/portable-runtime surfaces change and is additional evidence rather than a globally required check that would stay absent on documentation-only changes.
 
 Forge also uses maintainer automation that can legitimately integrate reviewed local work directly. Do not add a blanket mandatory human-review rule that disables that workflow without first migrating the automation to pull requests. External contributors should use pull requests; maintainer direct integration remains subject to required checks and release gates.
 
