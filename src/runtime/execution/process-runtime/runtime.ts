@@ -48,6 +48,7 @@ import {
   createProcessRecord,
   getProcessRecord,
   listProcessRecords,
+  listRecoverableProcessRecords,
   processLogDir,
   tryCompleteProcessRecord,
   updateProcessRecord,
@@ -1653,10 +1654,11 @@ export function recoverManagedProcesses(
   const completedUnknown: string[] = [];
   const completedFromReceipt: string[] = [];
   const leasesReleased: string[] = [];
-  // Terminal records are deliberately removed from active-index.json. Scan
-  // the bounded durable record set as well, otherwise a controller crash
-  // between terminal CAS and lease release leaks the process lease forever.
-  for (const record of listProcessRecords(controllerHome, repoId, 5_000)) {
+  // The v2 recovery index contains active records plus the narrow terminal
+  // subset whose leases still need exactly-once release. The first migration
+  // performs one full reconciliation; steady-state restarts no longer scan
+  // thousands of historical terminal Process records.
+  for (const record of listRecoverableProcessRecords(controllerHome, repoId)) {
     const processId = record.processId;
     if (liveMonitors.has(processId)) {
       recovered.push(processId);

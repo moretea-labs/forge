@@ -17,6 +17,7 @@ import {
   getProcessHandle,
   getProcessRecord,
   listActiveProcessIds,
+  listRecoverableProcessRecords,
   processCheckCompletionReceipt,
   processLogDir,
   reconcileAbandonedPreSpawnProcess,
@@ -1761,6 +1762,64 @@ describe('Process Runtime real lease contention', () => {
       exitCode: 0,
     });
     expect(listActiveProcessIds(fx.controllerHome, fx.repository.repoId)).not.toContain(processId);
+  });
+
+  test('v2 recovery index tracks only active and terminal lease-release work', () => {
+    const fx = fixture();
+    const processId = 'proc_recovery_index_membership';
+    createProcessRecord({
+      schemaVersion: 1,
+      processId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      controllerHome: fx.controllerHome,
+      status: 'starting',
+      route: 'managed',
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(0)'], cwd: fx.repoRoot },
+      resourceClaims: [{ resourceKey: `workspace:${fx.repository.activeCheckoutId}`, mode: 'read' }],
+      interactiveWaitMs: 0,
+      timeoutMs: 30_000,
+      maxOutputBytes: 1_024,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      terminalFenceToken: 1,
+      leaseRefs: [{
+        leaseId: 'LEASE-recovery-index-test',
+        resourceKey: `workspace:${fx.repository.activeCheckoutId}`,
+        fencingToken: 1,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        repoId: fx.repository.repoId,
+      }],
+    });
+    expect(listActiveProcessIds(fx.controllerHome, fx.repository.repoId)).toEqual([processId]);
+
+    const completed = tryCompleteProcessRecord(fx.controllerHome, fx.repository.repoId, processId, 1, {
+      status: 'succeeded',
+      exitCode: 0,
+    });
+    expect(completed.ok).toBe(true);
+    expect(listActiveProcessIds(fx.controllerHome, fx.repository.repoId)).toEqual([]);
+    expect(listRecoverableProcessRecords(fx.controllerHome, fx.repository.repoId).map((record) => record.processId)).toEqual([processId]);
+
+    updateProcessRecord(fx.controllerHome, fx.repository.repoId, processId, {
+      leasesReleased: true,
+      leaseReleaseState: 'released',
+    }, { allowTerminal: true });
+    expect(listRecoverableProcessRecords(fx.controllerHome, fx.repository.repoId)).toEqual([]);
+
+    const projectionPath = join(processLogDir(fx.controllerHome, fx.repository.repoId), '..', 'active-index.json');
+    const projection = JSON.parse(readFileSync(projectionPath, 'utf8')) as {
+      schemaVersion: number;
+      source?: string;
+      processIds?: string[];
+      pendingLeaseReleaseIds?: string[];
+    };
+    expect(projection).toMatchObject({
+      schemaVersion: 2,
+      source: 'sqlite_projection',
+      processIds: [],
+      pendingLeaseReleaseIds: [],
+    });
   });
 
   test('stale pre-spawn records reconcile only after proving no spawn artifacts or leases', () => {
