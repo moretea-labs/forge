@@ -8,7 +8,7 @@
 > **Safety:** This ledger is evidence, not lifecycle authority. Runtime release
 > mutation remains fail-closed and unique uncommitted source changes are never
 > maintenance-cleaned. `auth/` is unrelated untracked local state and remains
-> untouched.
+> untouched and ignored as local authentication state.
 
 ## Production baseline and live evidence
 
