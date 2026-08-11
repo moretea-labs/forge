@@ -517,7 +517,7 @@ export async function runtimeStatus(config: RecoveryConfig) {
 
 async function probe(transport: RecoveryHttpTransport, url: string, timeoutMs = 4_000): Promise<{ ok: boolean; detail: string; status?: number }> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(() => controller.abort('RECOVERY_HTTP_TIMEOUT'), timeoutMs);
   try {
     const response = await transport.request({ url, headers: { accept: 'application/json' }, timeoutMs, signal: controller.signal });
     return { ok: response.ok, detail: `HTTP ${response.status}`, status: response.status };
@@ -528,7 +528,7 @@ async function probe(transport: RecoveryHttpTransport, url: string, timeoutMs = 
 
 async function probeExternalMcp(transport: RecoveryHttpTransport, url: string): Promise<{ ok: boolean; detail: string; status?: number }> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 4_000);
+  const timer = setTimeout(() => controller.abort('RECOVERY_HTTP_TIMEOUT'), 4_000);
   try {
     // The MCP transport is POST-based. A GET on the MCP path returns 404 on
     // some gateway implementations, so probe with an initialize request and
@@ -592,7 +592,7 @@ async function mcpCall(
   sessionId?: string,
 ): Promise<RecoveryMcpCallResult> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8_000);
+  const timer = setTimeout(() => controller.abort('RECOVERY_HTTP_TIMEOUT'), 8_000);
   try {
     const response = await transport.request({
       url, method: 'POST', timeoutMs: 8_000, signal: controller.signal,
@@ -617,7 +617,7 @@ async function mcpCall(
 
 async function closeRecoveryMcpSession(transport: RecoveryHttpTransport, url: string, token: string, sessionId: string): Promise<{ ok: boolean; detail: string }> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 5_000);
+  const timer = setTimeout(() => controller.abort('RECOVERY_HTTP_TIMEOUT'), 5_000);
   try {
     const response = await transport.request({
       url,
