@@ -90,9 +90,15 @@ The remaining Process cost is OS spawn/tool work, and the intentional same-check
   non-mutating; the next authorized configuration write persists the migration.
   Immutable Runtime restart-budget and rollback behavior remain unchanged.
 - Source verification passed: TypeScript check plus 79 focused MCP-session,
-  HTTP, capability-recovery, and standalone-Recovery tests. Formal immutable
-  Runtime/Recovery activation and live acceptance are the remaining steps for
-  this remediation.
+  HTTP, capability-recovery, and standalone-Recovery tests. Immutable Recovery
+  release `1022c23a` and Runtime release
+  `1786433922556-1022c23a8b547a9bd3b86bb571a3b27b29816693` are active; their
+  previous complete releases remain retained. Whole-Runtime verification and
+  Recovery public OAuth/MCP verification both passed.
+- Live primary Connector acceptance after its controlled restart: `tools/list`
+  returned exactly 19 bounded tools, `repository_list {}` returned HTTP 200,
+  and a newly initialized session calling retired `controller_context` returned
+  HTTP 404 `MCP_TOOL_SURFACE_CHANGED` with `Mcp-Session-Reset: reinitialize`.
 
 ## Final debt classification
 
