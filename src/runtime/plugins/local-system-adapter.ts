@@ -9,6 +9,7 @@ import {
   readdirSync,
   renameSync,
   realpathSync,
+  rmdirSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -529,6 +530,7 @@ function actions(): AssistantPluginActionDescriptor[] {
     { actionId: 'read_text', title: 'Read text file', description: 'Read a bounded UTF-8 text file below an authorized target.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.files.read'], resourceClaims: controllerRead, argumentsSchema: { type: 'object', properties: { ...targetProperties, max_chars: { type: 'number' } }, required: ['target_key', 'path'], additionalProperties: false } },
     { actionId: 'write_text', title: 'Write text file', description: 'Create or explicitly overwrite one bounded UTF-8 text file below an authorized read-write target.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { ...targetProperties, content: { type: 'string' }, overwrite: { type: 'boolean' } }, required: ['target_key', 'path', 'content'], additionalProperties: false } },
     { actionId: 'delete_file', title: 'Delete file', description: 'Delete one exact regular file below an authorized read-write target. Arbitrary recursive or directory deletion is never exposed.', readOnly: false, risk: 'destructive', confirmation: 'strong_confirmation', requiredConfirmationText: 'delete-local-system-file', defaultTimeoutMs: 15_000, cancellable: true, idempotent: false, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: targetProperties, required: ['target_key', 'path'], additionalProperties: false } },
+    { actionId: 'delete_empty_directory', title: 'Delete empty directory', description: 'Delete one exact empty directory below an authorized read-write target. Target roots and recursive directory deletion are never allowed.', readOnly: false, risk: 'destructive', confirmation: 'strong_confirmation', requiredConfirmationText: 'delete-local-system-empty-directory', defaultTimeoutMs: 15_000, cancellable: true, idempotent: false, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: targetProperties, required: ['target_key', 'path'], additionalProperties: false } },
     { actionId: 'initialize_git', title: 'Initialize local Git repository', description: 'Run only git init inside an authorized read-write target without registering it in Repository Registry.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: true, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { target_key: { type: 'string' }, cwd: { type: 'string' }, initial_branch: { type: 'string' } }, required: ['target_key'], additionalProperties: false } },
     { actionId: 'execute_command', title: 'Execute target command', description: 'Execute one bounded typed-argv command inside an authorized target without repository registration. Shell strings, target escapes, destructive/remote writes, and Git mutations other than the dedicated initialize_git action are denied.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false, scopes: ['local-system.files.read', 'local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { target_key: { type: 'string' }, command: { type: 'array', items: { type: 'string' } }, cwd: { type: 'string' }, max_output_bytes: { type: 'number' } }, required: ['target_key', 'command'], additionalProperties: false } },
     { actionId: 'execute_project_script', title: 'Execute verified project script', description: 'Execute one exact script below an authorized read-write target through a fixed interpreter after its SHA-256 digest and strong confirmation match. Eval flags and shell command strings are never accepted.', readOnly: false, risk: 'destructive', confirmation: 'strong_confirmation', requiredConfirmationText: 'execute-local-system-project-script', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false, scopes: ['local-system.files.read', 'local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { target_key: { type: 'string' }, runtime: { type: 'string', enum: ['node', 'bun', 'python3', 'ruby', 'bash', 'sh'] }, script_path: { type: 'string' }, expected_sha256: { type: 'string' }, arguments: { type: 'array', items: { type: 'string' } }, cwd: { type: 'string' }, max_output_bytes: { type: 'number' } }, required: ['target_key', 'runtime', 'script_path', 'expected_sha256'], additionalProperties: false } },
@@ -565,7 +567,7 @@ function permissions(): AssistantPluginPermissionScope[] {
     { scope: 'local-system.process', mode: 'write', description: 'Terminate one verified PID or control one verified current-user LaunchAgent after explicit authorization.', granted: true, required: false },
     { scope: 'local-system.open', mode: 'write', description: 'Open applications or authorized files.', granted: true, required: false },
     { scope: 'local-system.files.read', mode: 'read', description: 'Read files only below active target grants.', granted: true, required: false },
-    { scope: 'local-system.files.write', mode: 'write', description: 'Create, copy, move, or rename files below active read-write target grants.', granted: true, required: false },
+    { scope: 'local-system.files.write', mode: 'write', description: 'Create, copy, move, rename, or explicitly delete bounded files and empty directories below active read-write target grants.', granted: true, required: false },
   ];
 }
 
@@ -574,7 +576,7 @@ function capabilities(): AssistantPluginCapability[] {
     { capabilityId: 'local-system-diagnostics', title: 'Local diagnostics', description: 'Inspect CPU, processes, and memory with bounded typed commands.', scopes: ['local-system.read'], actions: ['system_snapshot', 'process_detail'] },
     { capabilityId: 'local-system-process-control', title: 'Verified process lifecycle', description: 'Terminate one verified PID or stop/start/restart one verified macOS user LaunchAgent without exposing arbitrary shell execution.', scopes: ['local-system.process'], actions: ['terminate_process', 'restart_user_launch_agent', 'stop_user_launch_agent', 'start_user_launch_agent'] },
     { capabilityId: 'local-system-open', title: 'Open local applications and files', description: 'Open applications and authorized files without arbitrary shell access.', scopes: ['local-system.open'], actions: ['open_application', 'reveal_in_finder', 'open_file'] },
-    { capabilityId: 'local-system-files', title: 'Authorized local files', description: 'Use expiring target grants for bounded local file operations and typed-argv commands without repository registration.', scopes: ['local-system.files.read', 'local-system.files.write'], actions: ['list_targets', 'authorize_target', 'revoke_target', 'list_directory', 'read_text', 'write_text', 'delete_file', 'initialize_git', 'execute_command', 'execute_project_script', 'create_directory', 'copy_file', 'move_file', 'rename_file'] },
+    { capabilityId: 'local-system-files', title: 'Authorized local files', description: 'Use expiring target grants for bounded local file operations and typed-argv commands without repository registration.', scopes: ['local-system.files.read', 'local-system.files.write'], actions: ['list_targets', 'authorize_target', 'revoke_target', 'list_directory', 'read_text', 'write_text', 'delete_file', 'delete_empty_directory', 'initialize_git', 'execute_command', 'execute_project_script', 'create_directory', 'copy_file', 'move_file', 'rename_file'] },
   ];
 }
 
@@ -587,7 +589,7 @@ export function buildLocalSystemPluginManifest(previousRevision = 0, previousUpd
     pluginId: PLUGIN_ID,
     provider: 'local-macos',
     displayName: 'Local System Assistant',
-    pluginVersion: '1.5.0',
+    pluginVersion: '1.5.1',
     authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['controllerHome:system/local-system'] },
     enabled: true,
     lifecycle: { state: currentHealth.ready ? 'enabled' : 'degraded', reason: currentHealth.ready ? 'Local system capabilities are ready.' : currentHealth.warnings[0] },
@@ -703,6 +705,55 @@ export async function executeLocalSystemPluginAction(input: AssistantPluginActio
           operation: 'write',
         });
         unlinkSync(resolved.path);
+        return {
+          deleted: true,
+          targetKey: resolved.target.targetKey,
+          workspaceId: resolved.target.workspaceId,
+          identityFingerprint: resolved.target.identityFingerprint,
+          path: resolved.relativePath,
+          repositoryRegistered: false,
+        };
+      });
+    }
+    case 'delete_empty_directory': {
+      const targetKey = requiredString(input.args, 'target_key');
+      return await withTargetMutation(input, [targetKey], () => {
+        const resolved = resolveTargetPath(input, targetKey, requiredString(input.args, 'path'), {
+          mustExist: true,
+          directory: true,
+          operation: 'write',
+        });
+        if (resolved.path === resolved.root) {
+          throw new AssistantPluginError(
+            'LOCAL_SYSTEM_TARGET_ROOT_DELETE_DENIED',
+            'Deleting the authorized target root is not allowed.',
+            { retryable: false },
+          );
+        }
+        if (readdirSync(resolved.path).length > 0) {
+          throw new AssistantPluginError(
+            'LOCAL_SYSTEM_DIRECTORY_NOT_EMPTY',
+            'Only empty directories can be deleted.',
+            { retryable: false, details: { path: resolved.relativePath } },
+          );
+        }
+        try {
+          rmdirSync(resolved.path);
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException)?.code;
+          if (code === 'ENOTEMPTY' || code === 'EEXIST') {
+            throw new AssistantPluginError(
+              'LOCAL_SYSTEM_DIRECTORY_NOT_EMPTY',
+              'Only empty directories can be deleted.',
+              { retryable: false, details: { path: resolved.relativePath } },
+            );
+          }
+          throw new AssistantPluginError(
+            'LOCAL_SYSTEM_DIRECTORY_DELETE_FAILED',
+            error instanceof Error ? error.message : String(error),
+            { retryable: code === 'EBUSY', details: { path: resolved.relativePath } },
+          );
+        }
         return {
           deleted: true,
           targetKey: resolved.target.targetKey,

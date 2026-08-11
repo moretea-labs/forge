@@ -601,6 +601,7 @@ const LOCAL_SYSTEM_MUTATION_ACTIONS = new Set([
   'create_directory',
   'write_text',
   'delete_file',
+  'delete_empty_directory',
   'initialize_git',
   'execute_project_script',
   'copy_file',
