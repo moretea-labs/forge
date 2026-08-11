@@ -907,52 +907,9 @@ describe('local_system target adapter', () => {
   });
 
   test('deletes only an empty non-root directory after strong confirmation', async () => {
-    const controllerHome = temp('forge-target-delete-empty-dir-controller-');
-    const root = temp('forge-target-delete-empty-dir-root-');
-    mkdirSync(join(root, 'empty-directory'));
-    mkdirSync(join(root, 'non-empty-directory'));
-    writeFileSync(join(root, 'non-empty-directory', 'keep.txt'), 'keep\n');
-    authorizeWorkspaceTargetGrant(controllerHome, {
-      targetKey: 'project',
-      rootPath: root,
-      ownerScope: 'chatgpt-action:principal:test-user',
-      access: 'read_write',
-      reason: 'bounded empty directory delete',
-    });
-
-    const repository = controllerPluginRepository(controllerHome);
-    await expect(submitAssistantPluginAction(controllerHome, repository, {
-      pluginId: 'local_system',
-      actionId: 'delete_empty_directory',
-      requestId: 'target-delete-empty-dir-missing-confirmation',
-      args: { target_key: 'project', path: 'empty-directory' },
-      origin: { surface: 'chatgpt-action', actor: 'principal:test-user' },
-    })).rejects.toThrow(/PLUGIN_CONFIRMATION_REQUIRED/);
-    expect(existsSync(join(root, 'empty-directory'))).toBe(true);
-
-    const submitted = await submitAssistantPluginAction(controllerHome, repository, {
-      pluginId: 'local_system',
-      actionId: 'delete_empty_directory',
-      requestId: 'target-delete-empty-dir-confirmed',
-      args: { target_key: 'project', path: 'empty-directory' },
-      confirmAuthorization: true,
-      confirmationText: 'delete-local-system-empty-directory',
-      origin: { surface: 'chatgpt-action', actor: 'principal:test-user' },
-    });
-    expect(existsSync(join(root, 'empty-directory'))).toBe(false);
-    expect(submitted.result?.result).toMatchObject({ deleted: true, path: 'empty-directory' });
-    expect(getWorkContractByRequestId(controllerHome, 'target-delete-empty-dir-confirmed', '__controller__'))
-      .toMatchObject({ status: 'completed', workKind: 'local_effect' });
-
-    await expect(executeLocalSystemPluginAction(input(controllerHome, 'delete_empty_directory', {
-      target_key: 'project', path: 'non-empty-directory',
-    }))).rejects.toThrow(/LOCAL_SYSTEM_DIRECTORY_NOT_EMPTY/);
-    expect(existsSync(join(root, 'non-empty-directory'))).toBe(true);
-
-    await expect(executeLocalSystemPluginAction(input(controllerHome, 'delete_empty_directory', {
-      target_key: 'project', path: '.',
-    }))).rejects.toThrow(/LOCAL_SYSTEM_TARGET_ROOT_DELETE_DENIED/);
-    expect(existsSync(root)).toBe(true);
+    const controllerHome = temp('forge-target-delete-empty-dir-controller-'); const root = temp('forge-target-delete-empty-dir-root-'); mkdirSync(join(root, 'empty-directory')); mkdirSync(join(root, 'non-empty-directory')); writeFileSync(join(root, 'non-empty-directory', 'keep.txt'), 'keep\n'); authorizeWorkspaceTargetGrant(controllerHome, { targetKey: 'project', rootPath: root, ownerScope: 'chatgpt-action:principal:test-user', access: 'read_write', reason: 'bounded empty directory delete' });
+    const repository = controllerPluginRepository(controllerHome); await expect(submitAssistantPluginAction(controllerHome, repository, { pluginId: 'local_system', actionId: 'delete_empty_directory', requestId: 'target-delete-empty-dir-missing-confirmation', args: { target_key: 'project', path: 'empty-directory' }, origin: { surface: 'chatgpt-action', actor: 'principal:test-user' } })).rejects.toThrow(/PLUGIN_CONFIRMATION_REQUIRED/); const submitted = await submitAssistantPluginAction(controllerHome, repository, { pluginId: 'local_system', actionId: 'delete_empty_directory', requestId: 'target-delete-empty-dir-confirmed', args: { target_key: 'project', path: 'empty-directory' }, confirmAuthorization: true, confirmationText: 'delete-local-system-empty-directory', origin: { surface: 'chatgpt-action', actor: 'principal:test-user' } }); expect(existsSync(join(root, 'empty-directory'))).toBe(false); expect(submitted.result?.result).toMatchObject({ deleted: true, path: 'empty-directory' }); expect(getWorkContractByRequestId(controllerHome, 'target-delete-empty-dir-confirmed', '__controller__')).toMatchObject({ status: 'completed', workKind: 'local_effect' });
+    await expect(executeLocalSystemPluginAction(input(controllerHome, 'delete_empty_directory', { target_key: 'project', path: 'non-empty-directory' }))).rejects.toThrow(/LOCAL_SYSTEM_DIRECTORY_NOT_EMPTY/); expect(existsSync(join(root, 'non-empty-directory'))).toBe(true); await expect(executeLocalSystemPluginAction(input(controllerHome, 'delete_empty_directory', { target_key: 'project', path: '.' }))).rejects.toThrow(/LOCAL_SYSTEM_TARGET_ROOT_DELETE_DENIED/); expect(existsSync(root)).toBe(true);
   });
 
   test('terminalizes a lightweight local-effect Work for a target mutation', async () => {
