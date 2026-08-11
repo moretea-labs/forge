@@ -4,8 +4,8 @@
   "title": "主服务不可用时仍能远程恢复",
   "slug": "issue",
   "kind": "governance",
-  "status": "launch_blocked",
-  "summary": "保留为独立的 Recovery 用户需求。源码继续位于 monorepo，但安装后使用自包含不可变发布、独立 launchd、独立状态、独立公网入口和独立 tunnel，不依赖主 Gateway、Daemon、active runtime 或 worktree。实现由主运行时稳定性需求统一定义边界。",
+  "status": "in_progress",
+  "summary": "2026-08-11 restart storm incident 已 reopen：同一坏 Runtime release 在短暂 healthy 后清空 restart attempts，因而可无限重新获得 1/3。修复已由 immutable Recovery release 2dac48e5 部署；Runtime MCP surface fence 已由 339fe090 部署。保留独立 Recovery 用户需求，源码继续位于 monorepo，但安装后使用自包含不可变发布、独立 launchd、独立状态、独立公网入口和独立 tunnel，不依赖主 Gateway、Daemon、active runtime 或 worktree。",
   "goals": [
     "Preserve monorepo source ownership for Supervisor and standalone Recovery.",
     "Install Recovery Gateway and Watchdog as self-contained immutable versioned artifacts with atomic activation.",
@@ -69,7 +69,7 @@
       "id": "T2",
       "title": "Version and atomically activate Recovery artifacts",
       "objective": "Replace flat in-place Recovery binary installation with immutable release directories, manifest verification, and atomic current activation while retaining bounded cleanup.",
-      "status": "planned",
+      "status": "in_progress",
       "dependsOn": [
         "T1"
       ],
@@ -87,17 +87,21 @@
         "Previous verified Recovery release remains available for bounded fallback."
       ],
       "risk": "high",
-      "notes": [],
+      "notes": [
+        "2026-08-11 incident/root cause: successful but short-lived primary restart reset runtimeRestartAttempts to zero, so the next degraded tick again logged restart_primary_runtime attempt 1/3. Watchdog release handoff also reset runtime counters, allowing a watchdog restart to mint a new budget.",
+        "2026-08-11 deployed fix: commit 2dac48e5 scopes a persisted restart budget to immutable Runtime release identity (release id, artifact identity, manifest hash), preserves it across Watchdog restart, resets only after a five-minute continuous healthy window or a genuinely new Runtime release, and emits recovery_exhausted/operator handoff instead of another restart once exhausted. Focused standalone Recovery test suite passed (34 tests); live watchdog release 1786420371358-2dac48e569ee30fdbf2526c93f0f21f00399dea9 reached healthy with the active Runtime budget identity.",
+        "Remaining T3 evidence: a controlled bad-release exhaustion drill is covered deterministically in the focused suite; do not deliberately destabilize the shared live Runtime solely to recreate the incident. Repeated-degraded log rate limiting remains a follow-up if audit volume proves material."
+      ],
       "runIds": [],
       "createdAt": "2026-08-02T05:29:04.784Z",
-      "updatedAt": "2026-08-02T05:29:04.784Z",
+      "updatedAt": "2026-08-11T04:07:54.000Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     },
     {
       "id": "T3",
       "title": "Persist and harden Recovery Watchdog state",
       "objective": "Persist failure counters, first-failure timestamps, rollback-used state, tunnel cooldowns, and last decision across Watchdog restarts; debounce repeated degraded logs.",
-      "status": "planned",
+      "status": "in_progress",
       "dependsOn": [
         "T1"
       ],
@@ -173,15 +177,16 @@
       "risk": "medium",
       "notes": [
         "2026-08-02 P0 evidence: Gateway absence is handled as an incomplete active pair; Supervisor rollback accepts an explicitly selected targetReleasePath and restores the generated service definition with the installed service.",
-        "2026-08-02 P0 evidence: standalone Recovery refuses directory/PID/port-only releases and requires registered manifest, Controller Home, config revision/hash, and writer-fencing attestation. Focused checks passed: 77 tests, typecheck, and runtime architecture check. Full T5 smoke and launchd drills remain pending."
+        "2026-08-02 P0 evidence: standalone Recovery refuses directory/PID/port-only releases and requires registered manifest, Controller Home, config revision/hash, and writer-fencing attestation. Focused checks passed: 77 tests, typecheck, and runtime architecture check. Full T5 smoke and launchd drills remain pending.",
+        "2026-08-11 live evidence: Recovery verify passed all local/public/MCP probes after activation. Active Runtime 1786421020549-339fe090122a9e6d1f9f298d4427b2fbc90b19ad is coherent at authority revision 96; MCP initialize, initialized, tools/list (19), a listed repository_list call, and session close all returned 200/202 without TOOL_NOT_FOUND. The active Recovery release remains 1786420371358-2dac48e569ee30fdbf2526c93f0f21f00399dea9."
       ],
       "runIds": [],
       "createdAt": "2026-08-02T05:29:04.784Z",
-      "updatedAt": "2026-08-02T12:16:37.000Z",
+      "updatedAt": "2026-08-11T04:07:54.000Z",
       "repoId": "repo_123b7cf58b6b17b5cbe46a56"
     }
   ],
   "createdAt": "2026-08-02T05:29:04.784Z",
-  "updatedAt": "2026-08-02T06:25:19.727Z",
+  "updatedAt": "2026-08-11T04:07:54.000Z",
   "repoId": "repo_123b7cf58b6b17b5cbe46a56"
 }
