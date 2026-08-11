@@ -46,3 +46,10 @@
 - Mistake pattern: Treating every observed failure mode as a new persistent status or architectural layer, then adding recovery code for the added layer. Diagnostic dimensions became authorities, module boundaries became process/deployment boundaries, and local component health displaced whole-system MCP availability.
 - Prevention rule: Start from one local MCP Runtime, one active release, one lifecycle owner, and whole-system rollback. Readiness is one derived boolean with computed checks and reason codes; checks are not durable state machines. Before adding a process, daemon, proxy, watchdog, status, boolean, authority file, or fallback, prove it cannot be represented by existing facts and cannot be solved by deleting, merging, or correcting an existing layer. Require an explicit architecture decision, complete transition/cleanup contract, removal criterion, and failure-injection coverage.
 - Where to apply next time: Supervisor/Gateway/Daemon topology, `controller_ready`, runtime state schemas, launchd/bootstrap, rollout and rollback, watchdog/recovery tools, process ownership, SQLite migration compatibility, architecture reviews, and all incident fixes.
+
+## Restart budgets are release-scoped and recover only after sustained health
+- Date: 2026-08-11
+- Triggered by correction: Recovery Watchdog repeatedly logged `restart_primary_runtime` attempt `1/3` for one bad Runtime release because a short successful restart immediately reset the attempt counter.
+- Mistake pattern: Treating one healthy probe or a Watchdog binary handoff as proof that a Runtime release earned a fresh recovery budget.
+- Prevention rule: Persist recovery accounting against the immutable Runtime release identity; preserve it across Watchdog restart; reset it only on a genuinely new release or a configured continuous-health window. Exhaustion must hand off or perform the single attested recovery path, never loop back to a new first attempt.
+- Where to apply next time: `src/runtime/standalone-recovery/**`, release activation, watchdog state migrations, and failure-injection/live-recovery acceptance.
