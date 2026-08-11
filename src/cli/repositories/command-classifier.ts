@@ -233,6 +233,35 @@ function isReplaySafeValidationSegment(segment: string): boolean {
   return isReplaySafeValidationWords(firstWords(segment));
 }
 
+/** Mask shell-literal text that cannot activate operators/substitution.
+ * Single-quoted content and backslash-escaped characters are data, while
+ * double-quoted content remains active for $()/backtick expansion.
+ */
+function shellOperatorView(command: string): string {
+  let output = '';
+  let singleQuoted = false;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index] ?? '';
+    if (singleQuoted) {
+      if (char === "'") singleQuoted = false;
+      output += ' ';
+      continue;
+    }
+    if (char === "'") {
+      singleQuoted = true;
+      output += ' ';
+      continue;
+    }
+    if (char === '\\' && index + 1 < command.length) {
+      output += '  ';
+      index += 1;
+      continue;
+    }
+    output += char;
+  }
+  return output;
+}
+
 /**
  * Dangerous shell constructs that must never ride the Process Runtime / Fast Path
  * even when individual segments look like tests or readonly tools.
@@ -240,23 +269,24 @@ function isReplaySafeValidationSegment(segment: string): boolean {
 export function shellCommandHasUnsafeConstructs(command: string): { unsafe: boolean; reasons: string[] } {
   const reasons: string[] = [];
   const normalized = command.trim();
+  const operators = shellOperatorView(normalized);
   // Background jobs
-  if (/(?:^|[^&])&(?:[^&]|$)/.test(normalized.replace(/&&/g, ' '))) {
+  if (/(?:^|[^&])&(?:[^&]|$)/.test(operators.replace(/&&/g, ' '))) {
     reasons.push('background execution (&) is not allowed on the direct process path');
   }
   // Dynamic substitution / eval
-  if (/(?:^|[\s;|&])eval(?:\s|$)/i.test(normalized)) reasons.push('eval is not allowed');
-  if (/\$\([^)]*\)/.test(normalized) || /`[^`]+`/.test(normalized)) {
+  if (/(?:^|[\s;|&])eval(?:\s|$)/i.test(operators)) reasons.push('eval is not allowed');
+  if (/\$\([^)]*\)/.test(operators) || /`[^`]+`/.test(operators)) {
     reasons.push('command substitution is not allowed');
   }
-  if (/\$\{[^}]+\}/.test(normalized) && !/\$\{\w+\}/.test(normalized.replace(/\$\{\w+\}/g, ''))) {
+  if (/\$\{[^}]+\}/.test(operators) && !/\$\{\w+\}/.test(operators.replace(/\$\{\w+\}/g, ''))) {
     // keep simple ${VAR} allowed later; complex nested expansions flagged below
   }
   // Download-and-execute
-  if (/\b(?:curl|wget)\b[\s\S]*\|\s*(?:sh|bash|zsh|fish)\b/i.test(normalized)) {
+  if (/\b(?:curl|wget)\b[\s\S]*\|\s*(?:sh|bash|zsh|fish)\b/i.test(operators)) {
     reasons.push('download-and-execute pipelines are not allowed');
   }
-  if (/\b(?:curl|wget)\b[\s\S]*\b(?:-o|--output)\b[\s\S]*&&\s*(?:sh|bash|\.\/)/i.test(normalized)) {
+  if (/\b(?:curl|wget)\b[\s\S]*\b(?:-o|--output)\b[\s\S]*&&\s*(?:sh|bash|\.\/)/i.test(operators)) {
     reasons.push('download then execute is not allowed');
   }
   // Path escape hints
@@ -367,7 +397,7 @@ export function classifyRepositoryCommandReplay(
   };
 }
 
-function fixedShellWrapperCommand(argv: readonly string[]): string | undefined {
+export function fixedShellWrapperCommand(argv: readonly string[]): string | undefined {
   const program = argv[0]?.split(/[\\/]/).at(-1)?.toLowerCase();
   if (!program || !['sh', 'bash', 'zsh'].includes(program)) return undefined;
   for (let index = 1; index < argv.length; index += 1) {

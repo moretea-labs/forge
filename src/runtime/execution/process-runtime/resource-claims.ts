@@ -5,7 +5,7 @@
 
 import type { ResourceClaimSpec } from '../jobs/types';
 import type { ControllerCheckEffects } from '../../../cli/controller/check-runner';
-import { classifyRepositoryCommand } from '../../../cli/repositories/command-classifier';
+import { classifyRepositoryCommand, fixedShellWrapperCommand } from '../../../cli/repositories/command-classifier';
 import { normalizeRepositoryCommand } from '../../../cli/repositories/command-normalization';
 import { isFocusedCheckCommand } from '../thin-harness/execution-router';
 import type { ProcessResourceClaim } from './types';
@@ -106,9 +106,41 @@ function claimHostService(serviceKey: string, mode: 'read' | 'write' = 'write'):
   return { resourceKey: `host-service:${normalized}`, mode };
 }
 
+const BROWSER_APPLESCRIPT_TARGETS = new Set(['google chrome', 'vivaldi']);
+const UNSAFE_BROWSER_APPLESCRIPT = /\b(?:do\s+shell\s+script|open\s+for\s+access|set\s+eof|posix\s+file|path\s+to|load\s+script|run\s+script|use\s+framework|current\s+application)\b/i;
+
+function browserAppleScriptHeredocClaims(script: string): ResourceClaimSpec[] | undefined {
+  const lines = script.trim().split(/\r?\n/);
+  const first = lines[0]?.trim() ?? '';
+  const header = /^(?:\/usr\/bin\/)?osascript\s+<<-?\s*(?:['"]([a-zA-Z_][a-zA-Z0-9_-]*)['"]|([a-zA-Z_][a-zA-Z0-9_-]*))\s*$/.exec(first);
+  if (!header) return undefined;
+  const marker = header[1] ?? header[2];
+  if (!marker) return undefined;
+  let end = lines.length - 1;
+  while (end > 0 && !(lines[end] ?? '').trim()) end -= 1;
+  if ((lines[end] ?? '').trim() !== marker) return undefined;
+  const body = lines.slice(1, end).join('\n');
+  if (!body.trim() || UNSAFE_BROWSER_APPLESCRIPT.test(body)) return undefined;
+  const targets = [...body.matchAll(/\btell\s+application\s+"([^"]+)"/gi)]
+    .map((match) => match[1]?.trim().toLowerCase())
+    .filter((value): value is string => Boolean(value));
+  if (targets.length === 0 || targets.some((target) => !BROWSER_APPLESCRIPT_TARGETS.has(target))) return undefined;
+  const uniqueTargets = [...new Set(targets)];
+  if (uniqueTargets.length !== 1) return undefined;
+  return [claimHostService(`osascript:${uniqueTargets[0]}`, 'write')];
+}
+
 function hostOnlyCommandClaims(command: string | readonly string[]): ResourceClaimSpec[] | undefined {
   const canonical = normalizeRepositoryCommand(command);
-  if (canonical.kind !== 'argv') return undefined;
+  if (canonical.kind === 'shell') {
+    return browserAppleScriptHeredocClaims(canonical.shellCommand ?? '');
+  }
+  const argv = [canonical.executable ?? '', ...(canonical.args ?? [])];
+  const wrapped = fixedShellWrapperCommand(argv);
+  if (wrapped) {
+    const browserClaims = browserAppleScriptHeredocClaims(wrapped);
+    if (browserClaims) return browserClaims;
+  }
   const program = (canonical.executable ?? '').split(/[\\/]/).at(-1)?.toLowerCase();
   const args = canonical.args ?? [];
   if (program === 'launchctl') {
