@@ -942,6 +942,32 @@ export async function callRepositoryTool(
                   ? 'detail'
                   : 'summary';
                 const directWithoutHandle = processResult.route === 'process_direct' && !handle;
+                const directNotExecuted = directWithoutHandle
+                  && processResult.executionStatus !== undefined
+                  && processResult.executionStatus !== 'executed';
+                if (directNotExecuted) {
+                  const authorization = processResult.authorizationDecision ?? {
+                    decision: 'deny' as const,
+                    reason: 'Command was not executed because the required authorization was not satisfied.',
+                  };
+                  return result({
+                    accepted: false,
+                    mode: processResult.route,
+                    path: processResult.reason ?? routeClass.reason,
+                    route: processResult.route,
+                    repoId: repository.repoId,
+                    checkoutId: repository.activeCheckoutId,
+                    workspace: target.workspace,
+                    status: processResult.executionStatus,
+                    policyDecision: processResult.policyDecision ?? 'approval_required',
+                    authorization,
+                    ...(processResult.approvalRequestId ? { approvalRequestId: processResult.approvalRequestId } : {}),
+                    message: authorization.decision === 'user_confirmation_required'
+                      ? authorization.humanSummary
+                      : authorization.reason,
+                    suggestedOperation: 'repository_command_preview',
+                  });
+                }
                 const completed = directWithoutHandle || handle?.completed === true;
                 const status = directWithoutHandle
                   ? (processResult.ok === true ? 'succeeded' : 'failed')
@@ -969,7 +995,9 @@ export async function callRepositoryTool(
                   stderr: processResult.stderr,
                   durableSideEffects: processResult.durableSideEffects,
                   next: directWithoutHandle
-                    ? 'Bounded readonly execution completed without Process record / Lease / Local Job / ExecutionJob / Worker.'
+                    ? processResult.reason === 'readonly_fast_path'
+                      ? 'Bounded readonly execution completed without Process record / Lease / Local Job / ExecutionJob / Worker.'
+                      : 'Bounded ephemeral workspace execution completed without Process record / Lease / Local Job / ExecutionJob / Worker.'
                     : processResult.route === 'process_direct' || completed
                       ? 'Process Runtime completed without Local Job / ExecutionJob / Worker.'
                       : `Process Runtime is managing ${handle?.processId}; poll process_get/process_wait instead of creating a Local Job.`,
@@ -984,6 +1012,15 @@ export async function callRepositoryTool(
                     ? 'Readonly repository command executed through the bounded non-persistent direct path.'
                     : 'Repository command executed through Unified Process Runtime.',
                 };
+                if (directWithoutHandle && processResult.reason !== 'readonly_fast_path') {
+                  payload.authorization = processResult.authorizationDecision?.decision === 'allow'
+                    ? processResult.authorizationDecision
+                    : {
+                        decision: 'allow',
+                        source: 'ephemeral_workspace_direct',
+                        reason: 'Bounded ephemeral workspace command executed through the non-persistent direct path.',
+                      };
+                }
                 if (handle?.processId) {
                   payload.resultRef = { kind: 'process_logs', processId: handle.processId };
                 }

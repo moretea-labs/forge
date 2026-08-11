@@ -8,7 +8,11 @@
 
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { classifyRepositoryCommand } from '../../../cli/repositories/command-classifier';
-import { executeRepositoryCommandAsync, executeRepositoryReadOnlyCommandDirect } from '../../../cli/repositories/command-executor';
+import {
+  executeRepositoryCommandAsync,
+  executeRepositoryReadOnlyCommandDirect,
+  type RepositoryCommandExecution,
+} from '../../../cli/repositories/command-executor';
 import { normalizeRepositoryCommand } from '../../../cli/repositories/command-normalization';
 import { claimsForRepositoryCommand, scopeResourceClaims, toProcessClaims } from './resource-claims';
 import {
@@ -59,6 +63,10 @@ export interface RepositoryCommandProcessResult {
   exitCode?: number;
   stdout?: string;
   stderr?: string;
+  executionStatus?: RepositoryCommandExecution['status'];
+  policyDecision?: RepositoryCommandExecution['policyDecision'];
+  authorizationDecision?: RepositoryCommandExecution['authorizationDecision'];
+  approvalRequestId?: string;
   durableSideEffects: {
     executionJobCount: number;
     localJobCount: number;
@@ -209,6 +217,10 @@ export async function executeRepositoryCommandViaProcessRuntime(
       exitCode: direct.exitCode,
       stdout: direct.stdout,
       stderr: direct.stderr,
+      executionStatus: direct.status,
+      policyDecision: direct.policyDecision,
+      authorizationDecision: direct.authorizationDecision,
+      approvalRequestId: direct.approvalRequestId,
       durableSideEffects: emptyEffects,
     };
   }
@@ -235,6 +247,10 @@ export async function executeRepositoryCommandViaProcessRuntime(
       exitCode: direct.exitCode,
       stdout: direct.stdout,
       stderr: direct.stderr,
+      executionStatus: direct.status,
+      policyDecision: direct.policyDecision,
+      authorizationDecision: direct.authorizationDecision,
+      approvalRequestId: direct.approvalRequestId,
       durableSideEffects: emptyEffects,
     };
   }

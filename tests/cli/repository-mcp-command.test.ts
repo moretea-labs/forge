@@ -308,6 +308,17 @@ describe("repository MCP command tools", () => {
       expect(write.ok).toBe(true);
       expect(existsSync(join(localRoot, "created-by-ephemeral.txt"))).toBe(true);
       expect(write.workspace).toEqual(preview.workspace);
+      expect(write.authorization?.source).not.toBe("bounded_read_direct");
+
+      const deleteAttempt = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        workspace_root: localRoot,
+        command: ["rm", "-f", "created-by-ephemeral.txt"],
+        request_id: "ephemeral-delete-without-confirmation",
+      }));
+      expect(deleteAttempt.accepted).toBe(false);
+      expect(deleteAttempt.status).toBe("approval_required");
+      expect(deleteAttempt.authorization?.decision).toBe("user_confirmation_required");
+      expect(existsSync(join(localRoot, "created-by-ephemeral.txt"))).toBe(true);
 
       expect(listRepositories(controllerHome)).toHaveLength(0);
       expect(existsSync(join(localRoot, ".git"))).toBe(false);
