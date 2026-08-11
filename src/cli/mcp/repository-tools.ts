@@ -934,6 +934,7 @@ export async function callRepositoryTool(
                 maxOutputBytes,
                 requestId: typeof args.request_id === 'string' ? args.request_id : undefined,
                 executionIdentity,
+                allowNonGitWorkspace: target.workspace !== undefined,
               });
               if (processResult.route === 'process_direct' || processResult.route === 'process_managed') {
                 const handle = processResult.process;

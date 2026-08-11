@@ -1032,7 +1032,9 @@ export async function executeRepositoryCommandAsync(
     ...hooks,
     signal,
   });
-  const after = await repositorySnapshotAsync(root, signal?.aborted ? undefined : signal);
+  const after = input.allowNonGitWorkspace
+    ? before
+    : await repositorySnapshotAsync(root, signal?.aborted ? undefined : signal);
   const execution: RepositoryCommandExecution = {
     ...base,
     status: 'executed',

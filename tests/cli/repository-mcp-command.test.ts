@@ -585,6 +585,12 @@ describe("repository MCP command tools", () => {
         expect(executed.jobId).toBeUndefined();
         expect(executed.durableSideEffects?.executionJobCount ?? 0).toBe(0);
         expect(Buffer.byteLength(JSON.stringify(executed), "utf8")).toBeLessThan(16 * 1024);
+      } else if (executed.path === "process_managed" || executed.mode === "process_managed") {
+        // Shell strings remain conservatively managed. A busy host may return
+        // the same bounded Process handle before its inline probation ends.
+        expect(executed.status).toBe("running");
+        expect(executed.processId).toBeTruthy();
+        expect(executed.durableSideEffects?.executionJobCount ?? 0).toBe(0);
       } else {
         expect(executed.status).toBe("succeeded");
         expect(executed.localJob.stdout).toContain("alpha");

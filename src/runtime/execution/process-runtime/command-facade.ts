@@ -8,7 +8,7 @@
 
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { classifyRepositoryCommand } from '../../../cli/repositories/command-classifier';
-import { executeRepositoryReadOnlyCommandDirect } from '../../../cli/repositories/command-executor';
+import { executeRepositoryCommandAsync, executeRepositoryReadOnlyCommandDirect } from '../../../cli/repositories/command-executor';
 import { normalizeRepositoryCommand } from '../../../cli/repositories/command-normalization';
 import { claimsForRepositoryCommand, scopeResourceClaims, toProcessClaims } from './resource-claims';
 import {
@@ -44,6 +44,8 @@ export interface RepositoryCommandProcessInput {
   workId?: string;
   commandId?: string;
   signal?: AbortSignal;
+  /** Explicit unregistered local workspace authority; never inferred from cwd. */
+  allowNonGitWorkspace?: boolean;
   /** Immutable resolved identity — required; never inferred from main/active/cwd. */
   executionIdentity: ResolvedExecutionIdentity;
 }
@@ -203,6 +205,32 @@ export async function executeRepositoryCommandViaProcessRuntime(
     return {
       route: 'process_direct',
       reason: decision.reason,
+      ok: direct.ok,
+      exitCode: direct.exitCode,
+      stdout: direct.stdout,
+      stderr: direct.stderr,
+      durableSideEffects: emptyEffects,
+    };
+  }
+
+  // An explicitly resolved ephemeral workspace has no canonical Runtime-owned
+  // Process storage. Keep its bounded local source edits on the same direct
+  // executor used for bounded reads instead of manufacturing a Process lease
+  // that a separate Runtime authority can fence. Unknown commands remain
+  // conservatively classified/authorized by the command executor; durable,
+  // remote, and destructive routes never reach this branch.
+  if (executionIdentity.authority === 'ephemeral_workspace' && input.allowNonGitWorkspace === true) {
+    const direct = await executeRepositoryCommandAsync(input.controllerHome, input.repository, {
+      command: input.command,
+      cwd: input.cwd,
+      timeoutMs: Math.min(input.timeoutMs ?? 30_000, 30_000),
+      maxOutputBytes: input.maxOutputBytes,
+      signal: input.signal,
+      allowNonGitWorkspace: true,
+    });
+    return {
+      route: 'process_direct',
+      reason: 'ephemeral_workspace_bounded_direct',
       ok: direct.ok,
       exitCode: direct.exitCode,
       stdout: direct.stdout,
