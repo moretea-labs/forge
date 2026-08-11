@@ -242,8 +242,9 @@ function captureIdentity(pid: number | undefined): {
   if (!pid || pid <= 0) return {};
   const probe = defaultProcessIdentityProbe;
   if (!probe.isAlive(pid)) return {};
-  const command = probe.command(pid);
-  const startTime = probe.startTime(pid);
+  const inspected = probe.inspect?.(pid);
+  const command = inspected?.command ?? probe.command(pid);
+  const startTime = inspected?.startTime ?? probe.startTime(pid);
   if (!command || !startTime) {
     return {
       identity: {
@@ -1336,7 +1337,7 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
   }
 
   const captured = captureIdentity(runner.pid);
-  updateProcessRecord(input.controllerHome, input.repoId, processId, {
+  const runningRecord = updateProcessRecord(input.controllerHome, input.repoId, processId, {
     status: 'running',
     identity: captured.identity,
     identityUntrusted: captured.identityUntrusted === true,
@@ -1345,7 +1346,7 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     stdoutPath,
     stderrPath,
     leaseRefs,
-  });
+  })!;
 
   const monitor = attachRunnerMonitor(
     { ...record, status: 'running', identity: captured.identity, leaseRefs },
@@ -1362,9 +1363,9 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
   );
 
   if (input.returnHandleImmediately || interactiveWaitMs === 0) {
-    updateProcessRecord(input.controllerHome, input.repoId, processId, { route: 'managed' });
-    const current = getProcessRecord(input.controllerHome, input.repoId, processId)!;
-    return recordToHandle({ ...current, route: 'managed' }, { completed: false });
+    // The initial record already chose route=managed for this branch; reuse the
+    // running-state write above instead of performing another durable write+read.
+    return recordToHandle({ ...runningRecord, route: 'managed' }, { completed: false });
   }
 
   const completed = await new Promise<ManagedProcessRecord | 'timeout'>((resolve) => {

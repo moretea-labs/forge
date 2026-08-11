@@ -12,6 +12,12 @@ import { routeDurableMcpCall } from "../../src/runtime/gateway/mcp/router";
 import { getExecutionJob, listExecutionJobs } from "../../src/runtime/execution/jobs/store";
 import { applyExternalFilesystemGrant, previewExternalFilesystemGrant } from "../../src/runtime/safe-tooling/external-filesystem";
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from "../runtime/process-hygiene";
+import {
+  clearGitIdentityCacheForTest,
+  clearGitSnapshotCacheForTest,
+  gitSnapshot,
+  gitSnapshotPerformanceSnapshot,
+} from "../../src/cli/repository/inspector";
 
 function git(root: string, args: string[]): void {
   const result = spawnSync("git", ["-C", root, ...args], {
@@ -62,6 +68,36 @@ function writeLocalJobFixture(
 }
 
 describe("repository MCP command tools", () => {
+  test("git snapshot skips diff-stat subprocess when status cannot produce an unstaged diff", () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "forge-git-snapshot-fast-"));
+    try {
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.name", "Test"]);
+      git(repoRoot, ["config", "user.email", "test@example.com"]);
+      writeFileSync(join(repoRoot, "README.md"), "clean\n");
+      git(repoRoot, ["add", "README.md"]);
+      git(repoRoot, ["commit", "-m", "init"]);
+
+      clearGitIdentityCacheForTest();
+      clearGitSnapshotCacheForTest();
+      const clean = gitSnapshot(repoRoot);
+      expect(clean.dirty).toBe(false);
+      expect(clean.diffStat).toBe("");
+      expect(gitSnapshotPerformanceSnapshot().subprocesses).toBe(1);
+
+      writeFileSync(join(repoRoot, "README.md"), "dirty\n");
+      clearGitSnapshotCacheForTest();
+      const dirty = gitSnapshot(repoRoot);
+      expect(dirty.dirty).toBe(true);
+      expect(dirty.diffStat).toContain("README.md");
+      expect(gitSnapshotPerformanceSnapshot().subprocesses).toBe(2);
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+      clearGitIdentityCacheForTest();
+      clearGitSnapshotCacheForTest();
+    }
+  });
+
   test("registering an existing repository worktree preserves canonical repository authority", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "forge-register-worktree-"));
     const controllerHome = join(workspace, "controller-home");

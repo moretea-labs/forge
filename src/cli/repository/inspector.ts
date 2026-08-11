@@ -597,16 +597,30 @@ export function gitSnapshot(repoRoot: string, session?: RepositoryReadSession): 
   // Reuse the identity sampled by controller_context (or sample it once here)
   // and keep only the two outputs unique to the full snapshot.
   const identity = cachedGitIdentity(repoRoot);
-  gitSnapshotPerformance.subprocesses += 2;
+  gitSnapshotPerformance.subprocesses += 1;
   const statusResult = runProcess('git', ['status', '--short', '--branch'], { cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 64 * 1024 });
-  const diffResult = runProcess('git', ['diff', '--stat'], { cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 64 * 1024 });
   const status = statusResult.ok ? statusResult.stdout.trim() : statusResult.error || statusResult.stderr.trim();
+  const changeLines = status.split(/\r?\n/).filter((line) => line.trim() && !line.startsWith('##'));
+  const dirty = changeLines.length > 0;
+  // `git diff --stat` reports only worktree (unstaged/unmerged) changes. For a
+  // clean, untracked-only, or staged-only status its output is guaranteed empty,
+  // so avoid spawning a second Git process just to rediscover that fact.
+  const hasWorktreeDiff = changeLines.some((line) => {
+    const code = line.slice(0, 2);
+    return code !== '??' && code !== '!!' && code.length === 2 && code[1] !== ' ';
+  });
+  let diffStat = '';
+  if (hasWorktreeDiff) {
+    gitSnapshotPerformance.subprocesses += 1;
+    const diffResult = runProcess('git', ['diff', '--stat'], { cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 64 * 1024 });
+    diffStat = diffResult.ok ? diffResult.stdout.trim() : diffResult.error || diffResult.stderr.trim();
+  }
   const value: GitSnapshotResult = {
     branch: identity.branch,
     head: identity.head,
     status,
-    diffStat: diffResult.ok ? diffResult.stdout.trim() : diffResult.error || diffResult.stderr.trim(),
-    dirty: status.split(/\r?\n/).some((line) => line.trim() && !line.startsWith("##")),
+    diffStat,
+    dirty,
   };
   gitSnapshotCache.set(repoRoot, { createdAt: now, value });
   pruneGitSnapshotCache();

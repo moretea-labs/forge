@@ -6,6 +6,7 @@ export interface ProcessIdentityProbe {
   isAlive(pid: number): boolean;
   command(pid: number): string | undefined;
   startTime(pid: number): string | undefined;
+  inspect?(pid: number): { command?: string; startTime?: string };
   listProcesses?(): Array<{ pid: number; command: string }>;
 }
 
@@ -15,8 +16,16 @@ export interface ExpectedProcessIdentity {
   executableFingerprint: string;
 }
 
+function inspectProcess(pid: number): { command?: string; startTime?: string } {
+  const result = runProcess('ps', ['-o', 'lstart=', '-o', 'command=', '-p', String(pid)], { timeoutMs: 1_000, maxOutputBytes: 32 * 1024 });
+  if (!result.ok) return {};
+  const match = /^\s*(\S+\s+\S+\s+\S+\s+\S+\s+\S+)\s+([\s\S]+?)\s*$/.exec(result.stdout);
+  return match ? { startTime: match[1], command: match[2] } : {};
+}
+
 const defaultProbe: ProcessIdentityProbe = {
   isAlive: (pid) => isProcessAlive(pid),
+  inspect: inspectProcess,
   command: (pid) => {
     const result = runProcess('ps', ['-o', 'command=', '-p', String(pid)], { timeoutMs: 1_000, maxOutputBytes: 32 * 1024 });
     return result.ok ? result.stdout.trim() || undefined : undefined;
@@ -49,8 +58,9 @@ export function processIdentityMatches(
   if (!expected || !actualPid) return { matches: false, reason: 'identity_missing' };
   if (expected.pid !== actualPid) return { matches: false, reason: 'pid_changed' };
   if (!probe.isAlive(actualPid)) return { matches: false, reason: 'process_dead' };
-  const command = probe.command(actualPid);
-  const startTime = probe.startTime(actualPid);
+  const inspected = probe.inspect?.(actualPid);
+  const command = inspected?.command ?? probe.command(actualPid);
+  const startTime = inspected?.startTime ?? probe.startTime(actualPid);
   if (!command || !startTime) return { matches: false, reason: 'identity_probe_unavailable' };
   if (startTime !== expected.processStartTime) return { matches: false, reason: 'process_start_time_changed' };
   if (executableFingerprint(command) !== expected.executableFingerprint) {

@@ -157,6 +157,13 @@ function fixture() {
 }
 
 describe('Unified Process Runtime', () => {
+  test('default process identity probe reads command and start time together', () => {
+    if (process.platform === 'win32') return;
+    const inspected = defaultProcessIdentityProbe.inspect?.(process.pid);
+    expect(inspected?.command).toBeTruthy();
+    expect(inspected?.startTime).toBeTruthy();
+  });
+
   test('ephemeral Process leases enforce conflicts without polluting durable projection readiness', () => {
     const fx = fixture();
     bindCanonicalRuntime(fx.controllerHome);
