@@ -158,10 +158,7 @@ function fixture() {
 
 describe('Unified Process Runtime', () => {
   test('default process identity probe reads command and start time together', () => {
-    if (process.platform === 'win32') return;
-    const inspected = defaultProcessIdentityProbe.inspect?.(process.pid);
-    expect(inspected?.command).toBeTruthy();
-    expect(inspected?.startTime).toBeTruthy();
+    if (process.platform !== 'win32') expect(defaultProcessIdentityProbe.inspect?.(process.pid)).toMatchObject({ command: expect.any(String), startTime: expect.any(String) });
   });
 
   test('ephemeral Process leases enforce conflicts without polluting durable projection readiness', () => {

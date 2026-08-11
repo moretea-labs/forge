@@ -205,34 +205,15 @@ describe('MCP session lifecycle registry', () => {
   });
 
   test('detects stale tool-surface fingerprints while tolerating missing compatibility metadata', () => {
-    expect(mcpSessionToolSurfaceFingerprintIsCurrent('schema-a', 'schema-a')).toBe(true);
-    expect(mcpSessionToolSurfaceFingerprintIsCurrent('schema-a', 'schema-b')).toBe(false);
-    expect(mcpSessionToolSurfaceFingerprintIsCurrent(undefined, 'schema-b')).toBe(true);
-    expect(mcpSessionToolSurfaceFingerprintIsCurrent('schema-a', undefined)).toBe(true);
+    expect([mcpSessionToolSurfaceFingerprintIsCurrent('schema-a', 'schema-a'), mcpSessionToolSurfaceFingerprintIsCurrent('schema-a', 'schema-b'), mcpSessionToolSurfaceFingerprintIsCurrent(undefined, 'schema-b'), mcpSessionToolSurfaceFingerprintIsCurrent('schema-a', undefined)]).toEqual([true, false, true, true]);
   });
 
   test('preserves a stale tool-surface session until replacement initialize supersedes it', async () => {
     const registry = new McpSessionRegistry({ maximumSessions: 3 });
-    const transport = addSession(registry, 'stale-surface', {
-      principalId: 'oauth-client:chatgpt',
-      route: '/mcp',
-      toolSurfaceFingerprint: 'schema-old',
-    });
-
-    expect(mcpSessionToolSurfaceFingerprintIsCurrent('schema-old', 'schema-new')).toBe(false);
-    expect(registry.get('stale-surface')).toBeDefined();
-    expect(transport.closeCalls).toBe(0);
-
-    const reservation = await registry.reserveForInitialize({
-      principalId: 'oauth-client:chatgpt',
-      route: '/mcp',
-      supersedeSessionId: 'stale-surface',
-    });
-    expect(reservation).toBeDefined();
-    expect(registry.get('stale-surface')).toBeUndefined();
-    expect(transport.closeCalls).toBe(1);
-    expect(registry.snapshot().closed.superseded).toBe(1);
-    expect(registry.snapshot().closed.toolSurfaceChanged).toBe(0);
+    const transport = addSession(registry, 'stale-surface', { principalId: 'oauth-client:chatgpt', route: '/mcp', toolSurfaceFingerprint: 'schema-old' });
+    expect(mcpSessionToolSurfaceFingerprintIsCurrent('schema-old', 'schema-new')).toBe(false); expect(registry.get('stale-surface')).toBeDefined(); expect(transport.closeCalls).toBe(0);
+    expect(await registry.reserveForInitialize({ principalId: 'oauth-client:chatgpt', route: '/mcp', supersedeSessionId: 'stale-surface' })).toBeDefined();
+    expect(registry.get('stale-surface')).toBeUndefined(); expect(transport.closeCalls).toBe(1); expect(registry.snapshot().closed.superseded).toBe(1); expect(registry.snapshot().closed.toolSurfaceChanged).toBe(0);
   });
 
   test('enforces one global capacity pool across all MCP routes', () => {

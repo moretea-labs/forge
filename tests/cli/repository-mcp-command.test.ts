@@ -12,31 +12,19 @@ import { routeDurableMcpCall } from "../../src/runtime/gateway/mcp/router";
 import { getExecutionJob, listExecutionJobs } from "../../src/runtime/execution/jobs/store";
 import { applyExternalFilesystemGrant, previewExternalFilesystemGrant } from "../../src/runtime/safe-tooling/external-filesystem";
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from "../runtime/process-hygiene";
-import {
-  clearGitIdentityCacheForTest,
-  clearGitSnapshotCacheForTest,
-  gitSnapshot,
-  gitSnapshotPerformanceSnapshot,
-} from "../../src/cli/repository/inspector";
+import { clearGitIdentityCacheForTest, clearGitSnapshotCacheForTest, gitSnapshot, gitSnapshotPerformanceSnapshot } from "../../src/cli/repository/inspector";
 
 function git(root: string, args: string[]): void {
-  const result = spawnSync("git", ["-C", root, ...args], {
-    encoding: "utf-8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  if (result.status !== 0) {
-    throw new Error(result.stderr || `git ${args.join(" ")} failed`);
-  }
+  const result = spawnSync("git", ["-C", root, ...args], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
+  if (result.status !== 0) throw new Error(result.stderr || `git ${args.join(" ")} failed`);
 }
 
 async function json(result: ReturnType<typeof callRepositoryTool>) {
-  const resolved = await result;
-  return JSON.parse(resolved?.content[0]?.text ?? "{}");
+  return JSON.parse((await result)?.content[0]?.text ?? "{}");
 }
 
 async function cleanupWorkspace(paths: string[]): Promise<void> {
-  await terminateProcessesByCommand(paths);
-  await waitForNoProcessesByCommand(paths);
+  await terminateProcessesByCommand(paths); await waitForNoProcessesByCommand(paths);
 }
 
 function writeLocalJobFixture(
@@ -48,19 +36,10 @@ function writeLocalJobFixture(
   const dir = join(repoRoot, ".ai/harness/local-jobs", jobId);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "job.json"), `${JSON.stringify({
-    schemaVersion: 1,
-    jobId,
-    action: "repository-command",
-    payload: {
-      controllerHome: join(repoRoot, ".controller-home"),
-      repoId: "repo-test",
-      command: "printf 'hello\\n'",
-    },
-    requestedBy: "test",
-    approval: "auto",
-    status,
-    createdAt: "2026-07-05T00:00:00.000Z",
-    updatedAt: "2026-07-05T00:00:00.000Z",
+    schemaVersion: 1, jobId, action: "repository-command",
+    payload: { controllerHome: join(repoRoot, ".controller-home"), repoId: "repo-test", command: "printf 'hello\\n'" },
+    requestedBy: "test", approval: "auto", status,
+    createdAt: "2026-07-05T00:00:00.000Z", updatedAt: "2026-07-05T00:00:00.000Z",
     ...(status === "succeeded" || status === "failed" ? { finishedAt: "2026-07-05T00:00:01.000Z" } : {}),
   }, null, 2)}\n`);
   if (output.stdout !== undefined) writeFileSync(join(dir, "stdout.log"), output.stdout);
@@ -71,31 +50,12 @@ describe("repository MCP command tools", () => {
   test("git snapshot skips diff-stat subprocess when status cannot produce an unstaged diff", () => {
     const repoRoot = mkdtempSync(join(tmpdir(), "forge-git-snapshot-fast-"));
     try {
-      git(repoRoot, ["init", "-b", "main"]);
-      git(repoRoot, ["config", "user.name", "Test"]);
-      git(repoRoot, ["config", "user.email", "test@example.com"]);
-      writeFileSync(join(repoRoot, "README.md"), "clean\n");
-      git(repoRoot, ["add", "README.md"]);
-      git(repoRoot, ["commit", "-m", "init"]);
-
-      clearGitIdentityCacheForTest();
-      clearGitSnapshotCacheForTest();
-      const clean = gitSnapshot(repoRoot);
-      expect(clean.dirty).toBe(false);
-      expect(clean.diffStat).toBe("");
-      expect(gitSnapshotPerformanceSnapshot().subprocesses).toBe(1);
-
-      writeFileSync(join(repoRoot, "README.md"), "dirty\n");
-      clearGitSnapshotCacheForTest();
-      const dirty = gitSnapshot(repoRoot);
-      expect(dirty.dirty).toBe(true);
-      expect(dirty.diffStat).toContain("README.md");
-      expect(gitSnapshotPerformanceSnapshot().subprocesses).toBe(2);
-    } finally {
-      rmSync(repoRoot, { recursive: true, force: true });
-      clearGitIdentityCacheForTest();
-      clearGitSnapshotCacheForTest();
-    }
+      git(repoRoot, ["init", "-b", "main"]); git(repoRoot, ["config", "user.name", "Test"]); git(repoRoot, ["config", "user.email", "test@example.com"]);
+      writeFileSync(join(repoRoot, "README.md"), "clean\n"); git(repoRoot, ["add", "README.md"]); git(repoRoot, ["commit", "-m", "init"]); clearGitIdentityCacheForTest(); clearGitSnapshotCacheForTest();
+      const clean = gitSnapshot(repoRoot); expect([clean.dirty, clean.diffStat, gitSnapshotPerformanceSnapshot().subprocesses]).toEqual([false, "", 1]);
+      writeFileSync(join(repoRoot, "README.md"), "dirty\n"); clearGitSnapshotCacheForTest(); const dirty = gitSnapshot(repoRoot);
+      expect(dirty.dirty).toBe(true); expect(dirty.diffStat).toContain("README.md"); expect(gitSnapshotPerformanceSnapshot().subprocesses).toBe(2);
+    } finally { rmSync(repoRoot, { recursive: true, force: true }); clearGitIdentityCacheForTest(); clearGitSnapshotCacheForTest(); }
   });
 
   test("registering an existing repository worktree preserves canonical repository authority", async () => {
@@ -346,14 +306,8 @@ describe("repository MCP command tools", () => {
       expect(write.workspace).toEqual(preview.workspace);
       expect(write.authorization?.source).not.toBe("bounded_read_direct");
 
-      const deleteAttempt = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
-        workspace_root: localRoot,
-        command: ["rm", "-f", "created-by-ephemeral.txt"],
-        request_id: "ephemeral-delete-without-confirmation",
-      }));
-      expect(deleteAttempt.accepted).toBe(false);
-      expect(deleteAttempt.status).toBe("approval_required");
-      expect(deleteAttempt.authorization?.decision).toBe("user_confirmation_required");
+      const deleteAttempt = await json(callRepositoryTool(controllerHome, "repository_command_execute", { workspace_root: localRoot, command: ["rm", "-f", "created-by-ephemeral.txt"], request_id: "ephemeral-delete-without-confirmation" }));
+      expect([deleteAttempt.accepted, deleteAttempt.status, deleteAttempt.authorization?.decision]).toEqual([false, "approval_required", "user_confirmation_required"]);
       expect(existsSync(join(localRoot, "created-by-ephemeral.txt"))).toBe(true);
 
       expect(listRepositories(controllerHome)).toHaveLength(0);
