@@ -28,6 +28,7 @@ import { acquireRuntimeOwnership, type RuntimeOwnershipHandle } from '../../src/
 import { collectRuntimeSourceIdentity, rotateRuntimeGeneration } from '../../src/runtime/control-plane/runtime-generation';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { DEFAULT_CONTROLLER_TOOL_NAMES } from '../../src/cli/mcp/toolset-names';
+import { FORGE_VERSION } from '../../src/cli/controller/runtime-config';
 import {
   PROCESS_RUNNER_RELEASE_CANARY_CHILD_ARG,
   processRunnerReleaseCanaryChildCommand,
@@ -353,6 +354,7 @@ describe('runtime observability', () => {
       });
       await client.connect(clientTransport);
       try {
+        expect(client.getServerVersion()?.version).toBe(FORGE_VERSION);
         expect(client.getServerCapabilities()?.tools?.listChanged).toBe(true);
         expect(toolListChanged).toBe(1);
         return (await client.listTools()).tools.map((tool) => tool.name);

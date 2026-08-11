@@ -28,6 +28,7 @@ import { join } from 'path';
 import { observeRuntimeStatus } from '../../runtime/root/status';
 import { getRuntimeWriteClaim } from '../../runtime/root/write-fence';
 import { recordMcpIncident, recordMcpTiming } from '../../runtime/diagnostics/mcp-timing';
+import { FORGE_VERSION } from '../controller/runtime-config';
 
 export type { McpServerOptions } from './multi-repository';
 export { buildMultiRepositoryToolDefinitions, callMultiRepositoryTool } from './multi-repository';
@@ -242,7 +243,7 @@ async function proxyRuntimeToolCall(
 
 export function createForgeMcpServerFromContext(baseContext: ServerToolContext): Server {
   const server = new Server(
-    { name: 'forge-mcp', version: '1.4.0' },
+    { name: 'forge-mcp', version: FORGE_VERSION },
     { capabilities: { tools: { listChanged: true } }, instructions: mcpServerInstructions(baseContext.policy.profile) },
   );
   // The connector process can outlive the canonical Runtime release it proxies.
