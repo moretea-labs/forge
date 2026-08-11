@@ -34,6 +34,8 @@ export interface PrimaryRuntimeServiceConfig {
   minimumFailureDurationMs?: number;
   restartCooldownMs?: number;
   maximumRestartAttempts?: number;
+  /** Continuous healthy time required before the same release earns a fresh restart budget. */
+  restartBudgetStableDurationMs?: number;
   recoveryCooldownMs?: number;
   postRestartVerifyTimeoutMs?: number;
 }
@@ -129,7 +131,7 @@ export interface RollbackResult {
 }
 
 export interface WatchdogDecision {
-  action: 'healthy' | 'degraded' | 'repair_public_tunnel' | 'restart_recovery_gateway' | 'restart_primary_runtime' | 'rollback';
+  action: 'healthy' | 'degraded' | 'repair_public_tunnel' | 'restart_recovery_gateway' | 'restart_primary_runtime' | 'rollback' | 'recovery_exhausted';
   reason: string;
 }
 
@@ -140,6 +142,12 @@ export interface WatchdogState {
   runtimeRestartAttempts?: number;
   runtimeRestartFailures?: number;
   runtimeRestartLastAttemptAt?: number;
+  /** Exact active Runtime release for the persisted restart budget. */
+  runtimeRestartBudgetIdentity?: string;
+  /** First continuously healthy observation for the active Runtime release. */
+  runtimeHealthySince?: number;
+  /** First observation that exhausted the active release's automatic recovery budget. */
+  runtimeRestartBudgetExhaustedAt?: number;
   runtimeRecoveryFailures?: number;
   runtimeRecoveryLastAttemptAt?: number;
   publicTunnelFailures?: number;
@@ -823,6 +831,7 @@ function isExternalTunnelFailure(config: RecoveryConfig, verified: VerifyResult,
 }
 
 export const WATCHDOG_RUNTIME_STARTUP_GRACE_MS = 60_000;
+export const WATCHDOG_RUNTIME_RESTART_BUDGET_STABLE_MS = 5 * 60_000;
 
 export function watchdogRuntimeStartupGraceMs(
   config: Pick<RecoveryConfig, 'primaryRuntimeService'>,
@@ -847,6 +856,68 @@ export function runtimeWithinWatchdogStartupGrace(
     && nowMs >= startedAtMs
     && nowMs - startedAtMs < Math.max(0, graceMs),
   );
+}
+
+export function runtimeRestartBudgetIdentity(release: Pick<ReleaseEvidence, 'revision' | 'artifactIdentity' | 'manifestSha256'> | undefined): string | undefined {
+  if (!release?.revision || !release.artifactIdentity || !release.manifestSha256) return undefined;
+  return `${release.revision}:${release.artifactIdentity}:${release.manifestSha256}`;
+}
+
+/**
+ * Bind primary Runtime restart accounting to the exact immutable Runtime release.
+ * A missing identity is a legacy-state migration: retain its counters and bind
+ * them to the currently observed release so a watchdog upgrade cannot mint a
+ * fresh restart budget for an already failing Runtime.
+ */
+export function scopeWatchdogStateToRuntimeRelease(
+  state: WatchdogState,
+  release: Pick<ReleaseEvidence, 'revision' | 'artifactIdentity' | 'manifestSha256'> | undefined,
+): WatchdogState {
+  const identity = runtimeRestartBudgetIdentity(release);
+  if (!identity || state.runtimeRestartBudgetIdentity === identity) return state;
+  if (!state.runtimeRestartBudgetIdentity) return { ...state, runtimeRestartBudgetIdentity: identity };
+  return {
+    ...state,
+    failures: 0,
+    firstFailureAt: undefined,
+    rollbackUsed: false,
+    runtimeRestartAttempts: 0,
+    runtimeRestartFailures: 0,
+    runtimeRestartLastAttemptAt: undefined,
+    runtimeHealthySince: undefined,
+    runtimeRestartBudgetExhaustedAt: undefined,
+    runtimeRecoveryFailures: 0,
+    runtimeRecoveryLastAttemptAt: undefined,
+    runtimeRestartBudgetIdentity: identity,
+  };
+}
+
+export function recordWatchdogRuntimeHealthy(
+  state: WatchdogState,
+  nowMs: number,
+  stableDurationMs = WATCHDOG_RUNTIME_RESTART_BUDGET_STABLE_MS,
+): WatchdogState {
+  const runtimeHealthySince = state.runtimeHealthySince ?? nowMs;
+  if (nowMs - runtimeHealthySince < Math.max(0, stableDurationMs)) {
+    return { ...state, runtimeHealthySince };
+  }
+  return {
+    ...state,
+    runtimeHealthySince,
+    runtimeRestartAttempts: 0,
+    runtimeRestartFailures: 0,
+    runtimeRestartLastAttemptAt: undefined,
+    runtimeRestartBudgetExhaustedAt: undefined,
+  };
+}
+
+export function watchdogRuntimeRestartBudgetStableMs(
+  config: Pick<RecoveryConfig, 'primaryRuntimeService'>,
+): number {
+  const configured = config.primaryRuntimeService?.restartBudgetStableDurationMs;
+  return Number.isFinite(configured)
+    ? Math.max(0, configured ?? 0)
+    : WATCHDOG_RUNTIME_RESTART_BUDGET_STABLE_MS;
 }
 
 export function decideWatchdog(input: {
@@ -924,6 +995,15 @@ export function decideWatchdog(input: {
     && recoveryCooldownElapsed
   ) {
     return { action: 'rollback', reason: 'bounded primary Runtime restarts were exhausted and sustained multi-signal evidence permits previous whole-release recovery' };
+  }
+  if (
+    input.primaryRuntimeFailed
+    && restartAttempts >= maximumRestartAttempts
+    && input.failures >= restartMinimumFailures
+    && restartSustained
+    && recoveryCooldownElapsed
+  ) {
+    return { action: 'recovery_exhausted', reason: `automatic restart budget exhausted for the active Runtime release (${restartAttempts}/${maximumRestartAttempts}); holding for rollback eligibility or operator handoff` };
   }
   return { action: 'degraded', reason: 'restart or rollback threshold, duration, cooldown, or independent-evidence quorum not met' };
 }
@@ -1901,6 +1981,7 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
   primaryRuntimeRecovery?: PrimaryRuntimeRecoveryResult;
 }> {
   const now = Date.now();
+  const scopedPrior = scopeWatchdogStateToRuntimeRelease(prior, activeAuthorityRelease(config));
   const runtimeObservation = observeRuntimeStatus(config.controllerHome);
   const runtimeStartupGrace = runtimeWithinWatchdogStartupGrace(
     runtimeObservation,
@@ -1914,7 +1995,7 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
   // startup/reconciliation cannot itself trigger a Recovery restart storm.
   // Explicit verify/attest/release operations remain strict by default.
   const fullVerifyDue = !runtimeStartupGrace
-    && (prior.lastFullVerifyAt === undefined || now - prior.lastFullVerifyAt >= 60_000);
+    && (scopedPrior.lastFullVerifyAt === undefined || now - scopedPrior.lastFullVerifyAt >= 60_000);
   let fullVerificationPerformed = fullVerifyDue;
   let verified = await verifyStableRuntime(
     config,
@@ -1927,17 +2008,13 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
     localVerify = await verifyLocalRuntime(config);
     fullVerificationPerformed = true;
   }
-  const lastFullVerifyAt = fullVerificationPerformed ? now : prior.lastFullVerifyAt;
+  const lastFullVerifyAt = fullVerificationPerformed ? now : scopedPrior.lastFullVerifyAt;
   if (runtimeStartupGrace && !localVerify.ok) {
     const state: WatchdogState = {
-      ...prior,
+      ...scopedPrior,
       failures: 0,
       firstFailureAt: undefined,
-      runtimeRestartAttempts: 0,
-      runtimeRestartFailures: 0,
-      runtimeRestartLastAttemptAt: undefined,
-      runtimeRecoveryFailures: 0,
-      runtimeRecoveryLastAttemptAt: undefined,
+      runtimeHealthySince: undefined,
       lastFullVerifyAt,
       lastDecision: 'degraded',
     };
@@ -1949,19 +2026,23 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
   }
   const recoveryHealthy = verified.probes.recovery_gateway?.ok !== false
     && verified.probes.recovery_external_http?.ok !== false;
-  if (verified.ok && localVerify.ok && recoveryHealthy) {
+  const primaryRuntimeHealthy = verified.ok && localVerify.ok;
+  if (primaryRuntimeHealthy && recoveryHealthy) {
+    const stable = recordWatchdogRuntimeHealthy(
+      scopeWatchdogStateToRuntimeRelease(scopedPrior, verified.releases.active),
+      now,
+      watchdogRuntimeRestartBudgetStableMs(config),
+    );
     const state: WatchdogState = {
+      ...stable,
       failures: 0,
-      rollbackUsed: false,
-      runtimeRestartAttempts: 0,
-      runtimeRestartFailures: 0,
-      runtimeRestartLastAttemptAt: undefined,
+      firstFailureAt: undefined,
       runtimeRecoveryFailures: 0,
       runtimeRecoveryLastAttemptAt: undefined,
       publicTunnelFailures: 0,
+      publicTunnelFirstFailureAt: undefined,
       publicTunnelRepairFailures: 0,
       recoveryGatewayRestartUsed: false,
-      recoveryReleaseRevision: prior.recoveryReleaseRevision,
       lastFullVerifyAt,
       lastDecision: 'healthy',
     };
@@ -1974,23 +2055,31 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
   if (!localVerify.runtime.ok) evidenceClasses.push('runtime');
   const activeKnownGood = Boolean(matchingKnownGood(config, verified.releases.active));
   const previousKnownGood = Boolean(matchingKnownGood(config, verified.releases.previous));
+  const budgetPrior = primaryRuntimeHealthy
+    ? recordWatchdogRuntimeHealthy(
+      scopeWatchdogStateToRuntimeRelease(scopedPrior, verified.releases.active),
+      now,
+      watchdogRuntimeRestartBudgetStableMs(config),
+    )
+    : scopedPrior;
   const state: WatchdogState = publicTunnelFailed
     ? {
-      ...prior,
+      ...budgetPrior,
       lastFullVerifyAt,
-      failures: prior.failures + 1,
-      firstFailureAt: prior.firstFailureAt ?? now,
-      publicTunnelFailures: (prior.publicTunnelFailures ?? 0) + 1,
-      publicTunnelFirstFailureAt: prior.publicTunnelFirstFailureAt ?? now,
+      failures: budgetPrior.failures + 1,
+      firstFailureAt: budgetPrior.firstFailureAt ?? now,
+      publicTunnelFailures: (budgetPrior.publicTunnelFailures ?? 0) + 1,
+      publicTunnelFirstFailureAt: budgetPrior.publicTunnelFirstFailureAt ?? now,
     }
     : {
-      ...prior,
+      ...budgetPrior,
       lastFullVerifyAt,
-      failures: prior.failures + 1,
-      firstFailureAt: prior.firstFailureAt ?? now,
+      failures: budgetPrior.failures + 1,
+      firstFailureAt: budgetPrior.firstFailureAt ?? now,
       publicTunnelFailures: 0,
       publicTunnelFirstFailureAt: undefined,
     };
+  if (!localVerify.ok) state.runtimeHealthySince = undefined;
   const primaryConfig = configuredPrimaryRuntimeService(config);
   const decision = decideWatchdog({
     ...state,
@@ -2031,9 +2120,10 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
         ...state,
         failures: 0,
         firstFailureAt: undefined,
-        runtimeRestartAttempts: 0,
-        runtimeRestartFailures: 0,
+        runtimeRestartAttempts: attempts,
+        runtimeRestartFailures: state.runtimeRestartFailures ?? 0,
         runtimeRestartLastAttemptAt: now,
+        runtimeHealthySince: undefined,
       }
       : {
         ...state,
@@ -2060,6 +2150,23 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
       verify: verified,
       primaryRuntimeRecovery,
       ...(primaryRuntimeRecovery.rollback ? { rollback: primaryRuntimeRecovery.rollback } : {}),
+    };
+  }
+  if (decision.action === 'recovery_exhausted') {
+    if (state.runtimeRestartBudgetExhaustedAt === undefined) {
+      audit(config, 'primary_runtime_restart_budget_exhausted', {
+        runtimeRestartBudgetIdentity: state.runtimeRestartBudgetIdentity,
+        attempts: state.runtimeRestartAttempts ?? 0,
+        maximumRestartAttempts: primaryConfig.maximumRestartAttempts ?? 3,
+        activeKnownGood,
+        previousKnownGood,
+        evidenceClasses,
+      });
+    }
+    return {
+      state: { ...state, runtimeRestartBudgetExhaustedAt: state.runtimeRestartBudgetExhaustedAt ?? now },
+      decision,
+      verify: verified,
     };
   }
   return { state, decision, verify: verified };

@@ -134,13 +134,10 @@ export function resetWatchdogStateForRecoveryRelease(
 ): WatchdogState {
   if (state.recoveryReleaseRevision === releaseRevision) return state;
   return {
-    failures: 0,
-    rollbackUsed: false,
-    runtimeRestartAttempts: 0,
-    runtimeRestartFailures: 0,
-    runtimeRecoveryFailures: 0,
-    publicTunnelFailures: 0,
-    publicTunnelRepairFailures: 0,
+    ...state,
+    // Recovery binary handoff must never mint a new primary Runtime restart
+    // budget. Those counters are bound to the Runtime release and survive both
+    // watchdog process exits and immutable Recovery release activation.
     recoveryGatewayRestartUsed: false,
     recoveryReleaseRevision: releaseRevision,
   };
@@ -166,6 +163,9 @@ async function startWatchdog(config: RecoveryConfig): Promise<void> {
         publicTunnelFailures: state.publicTunnelFailures ?? 0,
         runtimeRestartAttempts: state.runtimeRestartAttempts ?? 0,
         runtimeRestartFailures: state.runtimeRestartFailures ?? 0,
+        runtimeRestartBudgetIdentity: state.runtimeRestartBudgetIdentity,
+        runtimeHealthySince: state.runtimeHealthySince,
+        runtimeRestartBudgetExhaustedAt: state.runtimeRestartBudgetExhaustedAt,
         primaryRuntimeRestartDetail: result.primaryRuntimeRestart?.detail,
         primaryRuntimeRecoveryDetail: result.primaryRuntimeRecovery?.detail,
         rollbackDetail: result.rollback?.detail,

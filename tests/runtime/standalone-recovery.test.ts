@@ -14,13 +14,17 @@ import {
   recoveryConfigPath,
   listReleases,
   recoverPrimaryRuntime,
+  recordWatchdogRuntimeHealthy,
   restartPrimaryConnector,
   restartPrimaryRuntime,
   restartRecoveryGateway,
+  scopeWatchdogStateToRuntimeRelease,
   stageAndActivateConfiguredRuntimeRelease,
   rollbackPrevious,
   runtimeStatus,
   runtimeWithinWatchdogStartupGrace,
+  WATCHDOG_RUNTIME_RESTART_BUDGET_STABLE_MS,
+  watchdogRuntimeRestartBudgetStableMs,
   watchdogRuntimeStartupGraceMs,
   verifyStableRuntime,
   type VerifyResult,
@@ -1366,7 +1370,7 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(persisted).not.toHaveProperty('agentRepair');
   });
 
-  test('resets inherited Watchdog failures when the Recovery release changes', () => {
+  test('does not reset primary Runtime recovery accounting when the Recovery release changes', () => {
     const stale = {
       failures: 7,
       firstFailureAt: 123,
@@ -1383,18 +1387,67 @@ describe('standalone recovery on canonical Runtime', () => {
       lastDecision: 'restart_primary_runtime' as const,
     };
     const reset = resetWatchdogStateForRecoveryRelease(stale, 'release-new');
-    expect(reset).toEqual({
-      failures: 0,
-      rollbackUsed: false,
-      runtimeRestartAttempts: 0,
-      runtimeRestartFailures: 0,
-      runtimeRecoveryFailures: 0,
-      publicTunnelFailures: 0,
-      publicTunnelRepairFailures: 0,
+    expect(reset).toMatchObject({
+      failures: 7,
+      rollbackUsed: true,
+      runtimeRestartAttempts: 3,
+      runtimeRestartFailures: 3,
+      runtimeRecoveryFailures: 2,
       recoveryGatewayRestartUsed: false,
       recoveryReleaseRevision: 'release-new',
     });
     expect(resetWatchdogStateForRecoveryRelease(reset, 'release-new')).toBe(reset);
+  });
+
+  test('binds restart budgets to immutable Runtime identity without losing legacy watchdog counters', () => {
+    const legacy = { failures: 2, rollbackUsed: false, runtimeRestartAttempts: 3, runtimeRestartFailures: 1 };
+    const releaseA = { revision: 'release-a', artifactIdentity: 'sha256:a', manifestSha256: 'manifest-a' };
+    const bound = scopeWatchdogStateToRuntimeRelease(legacy, releaseA);
+    expect(bound).toMatchObject({ runtimeRestartAttempts: 3 });
+    expect(bound.runtimeRestartBudgetIdentity).toContain('release-a');
+
+    const releaseB = { revision: 'release-b', artifactIdentity: 'sha256:b', manifestSha256: 'manifest-b' };
+    expect(scopeWatchdogStateToRuntimeRelease(bound, releaseB)).toMatchObject({
+      failures: 0,
+      runtimeRestartAttempts: 0,
+      runtimeRestartFailures: 0,
+      runtimeRestartBudgetIdentity: expect.stringContaining('release-b'),
+    });
+  });
+
+  test('restores a release restart budget only after continuous healthy time', () => {
+    const state = {
+      failures: 0,
+      rollbackUsed: false,
+      runtimeRestartAttempts: 3,
+      runtimeRestartFailures: 2,
+      runtimeRestartBudgetExhaustedAt: 10,
+    };
+    const firstHealthy = recordWatchdogRuntimeHealthy(state, 1_000);
+    expect(firstHealthy.runtimeRestartAttempts).toBe(3);
+    expect(recordWatchdogRuntimeHealthy(firstHealthy, 1_000 + WATCHDOG_RUNTIME_RESTART_BUDGET_STABLE_MS - 1).runtimeRestartAttempts).toBe(3);
+    expect(recordWatchdogRuntimeHealthy(firstHealthy, 1_000 + WATCHDOG_RUNTIME_RESTART_BUDGET_STABLE_MS)).toMatchObject({
+      runtimeRestartAttempts: 0,
+      runtimeRestartFailures: 0,
+      runtimeRestartBudgetExhaustedAt: undefined,
+    });
+    expect(watchdogRuntimeRestartBudgetStableMs({ primaryRuntimeService: { platform: 'launchd', restartBudgetStableDurationMs: 12_345 } })).toBe(12_345);
+  });
+
+  test('enters explicit operator handoff when the active release has exhausted its restart budget', () => {
+    const now = Date.parse('2026-08-09T06:20:00.000Z');
+    expect(decideWatchdog({
+      failures: 2,
+      firstFailureAt: now - 6_000,
+      evidenceClasses: ['runtime'],
+      activeKnownGood: true,
+      previousKnownGood: false,
+      rollbackUsed: false,
+      primaryRuntimeFailed: true,
+      runtimeRestartAttempts: 3,
+      runtimeMaximumRestartAttempts: 3,
+      nowMs: now,
+    })).toMatchObject({ action: 'recovery_exhausted' });
   });
 
   test('grants startup grace only to a live non-stale Runtime owner and never shorter than release verification', () => {
