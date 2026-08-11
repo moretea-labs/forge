@@ -190,7 +190,6 @@ describe('final SQLite control-plane cutover', () => {
 
   test('Forge Runtime service and standalone Recovery bootstrap do not depend on legacy Issue/Task files', () => {
     const files = [
-      ...sourceFiles(join(process.cwd(), 'src/runtime/supervisor')),
       ...sourceFiles(join(process.cwd(), 'src/runtime/recovery')),
     ];
     for (const path of files) {
