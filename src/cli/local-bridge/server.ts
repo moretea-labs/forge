@@ -474,24 +474,14 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
     profile: "controller",
   }) as MultiRepositoryMcpToolContext;
   const exposure = controllerExposureSnapshot(mcpExposureContext);
-  const runtimeSurface = mcpRuntime?.server?.toolSurface;
-  const runtimeSchemaVersion = mcpRuntime?.server?.schemaVersion;
-  const runtimeForgeVersion = mcpRuntime?.server?.forgeVersion;
-  const runtimeFingerprint = mcpRuntime?.server?.toolSurfaceFingerprint;
-  const runtimeToolset = mcpRuntime?.server?.toolset;
-  const runtimeToolFingerprint = mcpRuntime?.server?.runtimeToolSurfaceFingerprint;
+  // mcp.runtime.json is lifecycle diagnostics only. In particular, its server
+  // fields may describe a Gateway process from a prior Runtime release and
+  // must never be treated as the Connector's callable schema.
+  const CONNECTOR_SCHEMA_UNVERIFIED_MESSAGE = 'Connector schema is unverified until live MCP discovery completes.';
   const expectedFingerprint = exposure.fingerprint;
-  const expectedRuntimeFingerprint = expectedFingerprint;
-  const runtimeProfile = mcpRuntime?.server?.profile;
-  const connectorHealthy =
-    mcpRuntime?.server?.healthy === true &&
-    runtimeSurface === FORGE_TOOL_SURFACE &&
-    runtimeSchemaVersion === FORGE_MCP_SCHEMA_VERSION &&
-    runtimeForgeVersion === FORGE_VERSION &&
-    runtimeFingerprint === expectedFingerprint &&
-    runtimeToolFingerprint === expectedRuntimeFingerprint &&
-    runtimeToolset === exposure.access.effectiveToolset &&
-    runtimeProfile === "controller";
+  // Snapshot construction is synchronous. Do not infer connector health from
+  // mcp.runtime.json; only an async live MCP discovery can establish it.
+  const connectorHealthy = undefined;
   const runtimeProjection = "projection" in runtime ? runtime.projection : undefined;
   const recovery = buildCapabilityRecoverySnapshot({
     daemonStatus: runtime.daemon.status,
@@ -502,11 +492,11 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
     activeLeases: runtimeProjection?.activeLeases,
     localBridgeRunning: true,
     connectorHealthy,
-    connectorMismatch: mcpRuntime?.server?.healthMismatch,
+    connectorMismatch: CONNECTOR_SCHEMA_UNVERIFIED_MESSAGE,
     runtimeProjectionStale: false,
     runtimeProjectionPersisted: Boolean(runtimeProjection),
-    commandPreviewAvailable: connectorHealthy,
-    commandExecuteAvailable: connectorHealthy,
+    commandPreviewAvailable: true,
+    commandExecuteAvailable: true,
     issueToolsAvailable: !retiredLegacyControlPlane,
     jobToolsAvailable: true,
     checksAvailable: listControllerChecks(repoRoot).length > 0,
@@ -542,27 +532,23 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
       publicEndpoint:
         mcpConfig?.chatgpt?.endpoint ?? mcpRuntime?.tunnel?.publicEndpoint,
       runtimeStatus: mcpRuntime?.status ?? "not_started",
-      runtimeProfile,
-      runtimeSurface,
-      runtimeSchemaVersion,
-      runtimeForgeVersion,
-      runtimeFingerprint,
+      runtimeProfile: null,
+      runtimeSurface: null,
+      runtimeSchemaVersion: null,
+      runtimeForgeVersion: null,
+      runtimeFingerprint: null,
       expectedFingerprint,
-      runtimeToolset,
+      runtimeToolset: null,
       configuredToolset: exposure.access.effectiveToolset,
       configuredAccessMode: exposure.access.configuredAccessMode,
       effectiveAccessMode: exposure.access.effectiveAccessMode,
       exposureRevision: exposure.access.exposureRevision,
-      runtimeToolFingerprint,
-      expectedRuntimeFingerprint,
-      toolCount: mcpRuntime?.server?.toolCount,
+      runtimeToolFingerprint: null,
+      expectedRuntimeFingerprint: expectedFingerprint,
+      toolCount: null,
       healthy: connectorHealthy,
       needsReconnect: mcpRuntime?.tunnel?.connectorNeedsReconnect === true,
-      mismatch:
-        mcpRuntime?.server?.healthMismatch ??
-        (mcpRuntime && !connectorHealthy
-          ? `expected controller / ${FORGE_TOOL_SURFACE} / schema ${FORGE_MCP_SCHEMA_VERSION} / version ${FORGE_VERSION} / ${exposure.access.effectiveToolset} / ${expectedRuntimeFingerprint}`
-          : undefined),
+      mismatch: CONNECTOR_SCHEMA_UNVERIFIED_MESSAGE,
     },
     timeoutPolicy: localBridgeTimeoutPolicy(repoRoot),
     runtime,
@@ -875,7 +861,7 @@ function buildUserControllerExperienceSnapshot(repoRoot: string, controllerHome 
       chips: [
         { label: snapshot.execution.defaultMode === 'direct-edit' ? '直接执行模式' : '执行模式已设置', tone: 'green' },
         { label: snapshot.runtime.registered ? '环境就绪' : '仓库未注册', tone: snapshot.runtime.registered ? 'green' : 'amber' },
-        { label: snapshot.connector.healthy ? '权限充足' : '连接需检查', tone: snapshot.connector.healthy ? 'green' : 'amber' },
+        { label: snapshot.connector.healthy === true ? '权限充足' : snapshot.connector.healthy === false ? '连接异常' : '连接待验证', tone: snapshot.connector.healthy === true ? 'green' : 'amber' },
         { label: '安全防护已启用', tone: 'green' },
       ],
       primaryAction: recommendation.action,

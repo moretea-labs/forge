@@ -235,9 +235,24 @@ export interface RuntimeReleaseActivationResult {
   verify?: VerifyResult;
 }
 
+// This must be a bounded, stable tool that succeeds before a repository has
+// been selected. rh_status is repository-scoped in multi-repository homes, so
+// it can report REPOSITORY_AMBIGUOUS even when the Runtime is healthy.
+const STABLE_RECOVERY_READ_ONLY_TOOL = { name: 'repository_list', arguments: {} } as const;
+const RETIRED_RECOVERY_READ_ONLY_TOOLS = new Set(['controller_context', 'controller_ready']);
+
+function normalizeRecoveryReadOnlyTool(
+  input: RecoveryConfig['readOnlyTool'] | undefined,
+): NonNullable<RecoveryConfig['readOnlyTool']> {
+  if (!input || RETIRED_RECOVERY_READ_ONLY_TOOLS.has(input.name)) {
+    return { name: STABLE_RECOVERY_READ_ONLY_TOOL.name, arguments: { ...STABLE_RECOVERY_READ_ONLY_TOOL.arguments } };
+  }
+  return input;
+}
+
 const DEFAULT_CONFIG: Omit<RecoveryConfig, 'controllerHome'> = {
   schemaVersion: 1,
-  readOnlyTool: { name: 'controller_context' },
+  readOnlyTool: { name: STABLE_RECOVERY_READ_ONLY_TOOL.name, arguments: { ...STABLE_RECOVERY_READ_ONLY_TOOL.arguments } },
   primaryRuntimeService: { platform: 'launchd' },
 };
 
@@ -293,7 +308,9 @@ export function recoveryConfigPath(controllerHome: string): string {
 }
 
 export function loadRecoveryConfig(controllerHome: string, explicit?: string): RecoveryConfig {
-  const loaded = json<Partial<RecoveryConfig> & Record<string, unknown>>(explicit ?? recoveryConfigPath(controllerHome)) ?? {};
+  const configPath = explicit ?? recoveryConfigPath(controllerHome);
+  const loaded = json<Partial<RecoveryConfig> & Record<string, unknown>>(configPath) ?? {};
+  const readOnlyTool = normalizeRecoveryReadOnlyTool(loaded.readOnlyTool);
   const config: RecoveryConfig = {
     ...DEFAULT_CONFIG,
     schemaVersion: 1,
@@ -306,7 +323,7 @@ export function loadRecoveryConfig(controllerHome: string, explicit?: string): R
     ...(loaded.primaryConnectorService ? { primaryConnectorService: loaded.primaryConnectorService } : {}),
     ...(typeof loaded.mainMcpTokenFile === 'string' ? { mainMcpTokenFile: loaded.mainMcpTokenFile } : {}),
     ...(typeof loaded.expectedToolFingerprint === 'string' ? { expectedToolFingerprint: loaded.expectedToolFingerprint } : {}),
-    ...(loaded.readOnlyTool ? { readOnlyTool: loaded.readOnlyTool } : {}),
+    readOnlyTool,
     ...(loaded.gateway ? { gateway: loaded.gateway } : {}),
   };
   if (!config.controllerHome) throw new Error('RECOVERY_CONTROLLER_HOME_REQUIRED');
@@ -315,7 +332,13 @@ export function loadRecoveryConfig(controllerHome: string, explicit?: string): R
 
 export function createRecoveryConfig(controllerHome: string, input?: Partial<RecoveryConfig>): RecoveryConfig {
   const config = loadRecoveryConfig(controllerHome);
-  const next: RecoveryConfig = { ...config, ...input, schemaVersion: 1, controllerHome: resolve(controllerHome) };
+  const next: RecoveryConfig = {
+    ...config,
+    ...input,
+    schemaVersion: 1,
+    controllerHome: resolve(controllerHome),
+    readOnlyTool: normalizeRecoveryReadOnlyTool(input?.readOnlyTool ?? config.readOnlyTool),
+  };
   writeJson(recoveryConfigPath(controllerHome), next);
   return next;
 }
@@ -688,7 +711,7 @@ async function probeMcp(config: RecoveryConfig, transport: RecoveryHttpTransport
   const expected = config.expectedToolFingerprint;
   const expectedMatches = !expected || (expected.length === fingerprint.length && timingSafeEqual(Buffer.from(expected), Buffer.from(fingerprint)));
   const toolListOk = listed.ok && names.length > 0 && expectedMatches;
-  const readOnly = config.readOnlyTool ?? { name: 'controller_context' };
+  const readOnly = normalizeRecoveryReadOnlyTool(config.readOnlyTool);
   const called = toolListOk
     ? await mcpCall(transport, url, token, 3, 'tools/call', { name: readOnly.name, arguments: readOnly.arguments ?? {} }, sessionId)
     : undefined;
@@ -892,14 +915,14 @@ async function verifyLocalRuntime(
   options: VerifyStableRuntimeOptions = {},
 ): Promise<VerifyResult> {
   // Do not let an external tunnel outage masquerade as a local MCP failure.
-  // The canonical Runtime MCP gateway exposes only controller_ready; the public
-  // gateway additionally exposes controller_context, so local verification must
-  // probe the tool the Runtime actually serves.
+  // Local and public verification intentionally probe the same stable facade
+  // tool so Recovery cannot depend on retired atomic tools that are absent from
+  // the bounded default MCP surface.
   return verifyStableRuntime({
     ...config,
     publicMcpUrl: undefined,
     recoveryPublicUrl: undefined,
-    readOnlyTool: { name: 'controller_ready' },
+    readOnlyTool: { name: STABLE_RECOVERY_READ_ONLY_TOOL.name, arguments: { ...STABLE_RECOVERY_READ_ONLY_TOOL.arguments } },
   }, createRecoveryHttpTransport(config.controllerHome), options);
 }
 
@@ -2029,7 +2052,7 @@ export function gatewayToken(config: RecoveryConfig): string | undefined {
 export function initializeStandaloneRecovery(
   controllerHome: string,
   port = 8787,
-  extensions: Partial<Pick<RecoveryConfig, 'publicMcpUrl' | 'recoveryPublicUrl' | 'recoveryTunnelService' | 'primaryRuntimeService' | 'primaryRuntimeSourceRoot' | 'primaryConnectorService'>> = {},
+  extensions: Partial<Pick<RecoveryConfig, 'publicMcpUrl' | 'recoveryPublicUrl' | 'recoveryTunnelService' | 'primaryRuntimeService' | 'primaryRuntimeSourceRoot' | 'primaryConnectorService' | 'readOnlyTool'>> = {},
 ): RecoveryConfig {
   const root = resolve(controllerHome);
   const tokenPath = join(root, 'recovery', 'config', 'gateway-token.json');

@@ -75,6 +75,25 @@ The remaining Process cost is OS spawn/tool work, and the intentional same-check
 
 - **macOS Automation historical grants:** UI audit found the stable signed `Forge Desktop Operator` grant enabled only for Chrome and Vivaldi; preserve it. Historical `bash → Terminal`, `bootstrap → System Events/Chrome/Vivaldi`, `bun`, `repo-harness.js`, and multiple `forge-runtime` principals remain visible. Cleanup must be selector-bound in System Settings with readback; never edit TCC DB or run `tccutil reset`. Toggling these macOS security permissions requires the user's action-time confirmation.
 
+## Active remediation: live schema authority and Recovery probe (2026-08-11)
+
+- The active Canonical Runtime is the schema authority for every Gateway HTTP
+  MCP session: initialize reads its `tools/list`, session calls re-check its
+  fingerprint, and a tool name not in the initialized Runtime schema receives a
+  recoverable reinitialize response. Gateway status files and
+  `mcp.runtime.json` remain lifecycle diagnostics only.
+- Connector freshness now treats unavailable live discovery as unverified, not
+  as a healthy or callable schema. The local controller snapshot likewise does
+  not infer Connector health from persisted server metadata.
+- Standalone Recovery normalizes both retired probes (`controller_context` and
+  `controller_ready`) to bounded `repository_list {}`. Configuration reads are
+  non-mutating; the next authorized configuration write persists the migration.
+  Immutable Runtime restart-budget and rollback behavior remain unchanged.
+- Source verification passed: TypeScript check plus 79 focused MCP-session,
+  HTTP, capability-recovery, and standalone-Recovery tests. Formal immutable
+  Runtime/Recovery activation and live acceptance are the remaining steps for
+  this remediation.
+
 ## Final debt classification
 
 - P0: none known.

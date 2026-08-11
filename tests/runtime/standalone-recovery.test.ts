@@ -209,7 +209,7 @@ async function runtimeServer(options: { challengeUnauthenticatedMcp?: boolean } 
       }
       response.setHeader('content-type', 'application/json');
       if (rpc.method === 'tools/list') {
-        response.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { tools: [{ name: 'controller_context' }, { name: 'runtime_status' }] } }));
+        response.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { tools: [{ name: 'repository_list' }, { name: 'runtime_status' }] } }));
         return;
       }
       response.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { content: [] } }));
@@ -390,7 +390,6 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(RECOVERY_CLI_COMMANDS).toContain('recover-primary-runtime');
     expect(RECOVERY_CLI_COMMANDS).toContain('activate-runtime-release');
   });
-
   test('probes Runtime readiness at /ready and MCP with POST initialize while accepting a Bearer challenge', async () => {
     const home = controllerHome();
     const activeManifest = manifest(home, 'release-probe', 'artifact-probe');
@@ -1189,13 +1188,13 @@ describe('standalone recovery on canonical Runtime', () => {
     initializeStandaloneRecovery(home, 8787, {
       publicMcpUrl: 'https://mcp.example.test/mcp',
       recoveryPublicUrl: 'https://recovery.example.test/recovery/mcp',
+      readOnlyTool: { name: 'controller_context' },
       recoveryTunnelService: {
         platform: 'launchd',
         label: 'com.moretea.forge-recovery-tunnel',
         plistPath: '/tmp/forge-test-home/Library/LaunchAgents/com.moretea.forge-recovery-tunnel.plist',
       },
     });
-
     const descriptor = recoveryConnectorDescriptor(home, {
       pathExists: () => false,
       launchdPid: () => undefined,
@@ -1246,7 +1245,6 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(serialized).not.toContain('bearerToken');
     expect(serialized).not.toContain('gateway-token');
   });
-
   test('fails closed for ChatGPT readiness when only a loopback Recovery endpoint exists', () => {
     const home = controllerHome();
     initializeStandaloneRecovery(home, 8787);
@@ -1261,7 +1259,6 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(descriptor.readyForChatGPT).toBe(false);
     expect(descriptor.warnings).toContain('Recovery is loopback-only. Configure --recovery-public-url and a dedicated tunnel service before adding it to ChatGPT.');
   });
-
   test('requires RunAtLoad and unconditional KeepAlive for the Recovery tunnel launch agent', () => {
     const home = controllerHome();
     const plistPath = join(home, 'Library', 'LaunchAgents', 'com.moretea.forge-recovery-tunnel.plist');
@@ -1280,7 +1277,6 @@ describe('standalone recovery on canonical Runtime', () => {
       plistPath,
     })).toMatchObject({ plistInstalled: true, runAtLoad: true, keepAliveAlways: true, restartSafe: true });
   });
-
   test('accepts failure-triggered KeepAlive for the explicitly managed primary Connector', () => {
     const home = controllerHome();
     const plistPath = join(home, 'Library', 'LaunchAgents', 'com.moretea.forge.mcp-gateway.plist');
@@ -1298,7 +1294,6 @@ describe('standalone recovery on canonical Runtime', () => {
       restartSafe: true,
     });
   });
-
   test('retires stale Recovery launch agents before the Forge services are installed', () => {
     const home = controllerHome();
     const previousHome = process.env.HOME;
@@ -1330,7 +1325,6 @@ describe('standalone recovery on canonical Runtime', () => {
       else process.env.HOME = previousHome;
     }
   });
-
   test('drops retired Recovery configuration keys instead of persisting a compatibility surface', () => {
     const home = controllerHome();
     const path = recoveryConfigPath(home);
@@ -1344,20 +1338,29 @@ describe('standalone recovery on canonical Runtime', () => {
       publicMcpUrl: 'https://mcp.example.test/mcp',
       recoveryPublicUrl: 'https://recovery.example.test/recovery/mcp',
       recoveryTunnelService: { platform: 'launchd', label: 'com.moretea.forge-recovery-tunnel' },
+      readOnlyTool: { name: 'controller_ready' },
       gateway: { host: '127.0.0.1', port: 8787, bearerTokenFile: join(home, 'recovery', 'config', 'gateway-token.json') },
     }));
-
     const loaded = loadRecoveryConfig(home);
     expect(loaded).not.toHaveProperty('stableIngressUrl');
     expect(loaded).not.toHaveProperty('publicTunnelService');
     expect(loaded).not.toHaveProperty('agentRepair');
     expect(loaded.recoveryPublicUrl).toBe('https://recovery.example.test/recovery/mcp');
+    expect(loaded.readOnlyTool).toEqual({ name: 'repository_list', arguments: {} });
+    const migrated = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+    expect(migrated.readOnlyTool).toEqual({ name: 'controller_ready' });
+
+    writeFileSync(path, JSON.stringify({ ...migrated, readOnlyTool: { name: 'controller_context', arguments: { stale: true } } }));
+    expect(loadRecoveryConfig(home).readOnlyTool).toEqual({ name: 'repository_list', arguments: {} });
+    expect((JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>).readOnlyTool)
+      .toEqual({ name: 'controller_context', arguments: { stale: true } });
 
     createRecoveryConfig(home, {});
     const persisted = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
     expect(persisted).not.toHaveProperty('stableIngressUrl');
     expect(persisted).not.toHaveProperty('publicTunnelService');
     expect(persisted).not.toHaveProperty('agentRepair');
+    expect(persisted.readOnlyTool).toEqual({ name: 'repository_list', arguments: {} });
   });
 
   test('does not reset primary Runtime recovery accounting when the Recovery release changes', () => {

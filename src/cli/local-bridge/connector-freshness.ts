@@ -6,7 +6,7 @@
  * - ChatGPT connector tool snapshot (only when connector_tool_names is supplied)
  *
  * Never treat "unable to observe ChatGPT tools" as "missing facade tools".
- * Prefer live MCP /health over a stale mcp.runtime.json snapshot.
+ * The live MCP /health endpoint is the only schema observation source.
  */
 
 import {
@@ -17,11 +17,7 @@ import {
 } from '../controller/runtime-config';
 import {
   loadMcpLocalConfig,
-  loadMcpRuntimeState,
   loadMcpServiceLocalConfig,
-  loadMcpServiceRuntimeState,
-  writeMcpRuntimeState,
-  writeMcpServiceRuntimeState,
 } from '../mcp/auth';
 import { PREFERRED_FACADE_TOOL_NAMES, DEFAULT_CONTROLLER_TOOL_NAMES } from '../mcp/toolset-names';
 import { resolveRepoPreferredControllerHome } from '../repositories/controller-home';
@@ -62,8 +58,8 @@ export interface ConnectorRuntimeObservation {
   forgeVersion?: string;
   toolSurfaceFingerprint?: string;
   toolCount?: number;
-  /** Where this observation came from. Live health is preferred over runtime file. */
-  source?: 'live_health' | 'runtime_file';
+  /** This observation is sourced from live Gateway health. */
+  source?: 'live_health';
 }
 
 export interface EvaluateConnectorFreshnessInput {
@@ -207,14 +203,13 @@ async function fetchJsonHealth(url: string): Promise<Record<string, unknown> | n
 }
 
 /**
- * Prefer live MCP /health. Fall back to mcp.runtime.json only when it claims healthy.
- * Stale stopped snapshots are ignored so GUI does not cry "fingerprint mismatch" after restart.
+ * Schema freshness is observable only from the live Gateway. mcp.runtime.json
+ * is lifecycle diagnostics, not an MCP schema authority, so an unavailable
+ * live endpoint remains unverified instead of reviving an old tool snapshot.
  */
 export async function observeLocalMcpRuntime(
   repoRoot: string,
-  opts: { refreshRuntimeFile?: boolean } = {},
 ): Promise<ConnectorRuntimeObservation | null> {
-  const controllerHome = resolveRepoPreferredControllerHome(repoRoot);
   const healthUrl = localMcpHealthUrl(repoRoot);
   if (healthUrl) {
     const live = await fetchJsonHealth(healthUrl);
@@ -228,77 +223,10 @@ export async function observeLocalMcpRuntime(
         toolCount: typeof live.toolCount === 'number' ? live.toolCount : undefined,
         source: 'live_health',
       };
-      if (opts.refreshRuntimeFile !== false) {
-        try {
-          refreshRuntimeFileFromLive(repoRoot, controllerHome, live, observation);
-        } catch {
-          // Best-effort only; diagnostics must not fail on file write races.
-        }
-      }
       return observation;
     }
   }
-
-  const file = loadMcpServiceRuntimeState(controllerHome, repoRoot) ?? loadMcpRuntimeState(repoRoot);
-  if (!file?.server) return null;
-  // Ignore dead snapshots — they commonly lag behind a Runtime restart.
-  if (file.server.healthy !== true) return null;
-  return {
-    healthy: true,
-    toolSurface: file.server.toolSurface,
-    schemaVersion: file.server.schemaVersion,
-    forgeVersion: file.server.forgeVersion,
-    toolSurfaceFingerprint: file.server.toolSurfaceFingerprint,
-    toolCount: file.server.toolCount,
-    source: 'runtime_file',
-  };
-}
-
-function refreshRuntimeFileFromLive(
-  repoRoot: string,
-  controllerHome: string,
-  live: Record<string, unknown>,
-  observation: ConnectorRuntimeObservation,
-): void {
-  const existing = loadMcpServiceRuntimeState(controllerHome, repoRoot) ?? loadMcpRuntimeState(repoRoot);
-  if (!existing) return;
-  const now = new Date().toISOString();
-  const next = {
-    ...existing,
-    updatedAt: now,
-    status: 'running' as const,
-    server: {
-      ...existing.server,
-      running: true,
-      healthy: true,
-      lastHealthyAt: now,
-      profile: typeof live.profile === 'string' ? live.profile : existing.server.profile,
-      toolSurface: observation.toolSurface ?? existing.server.toolSurface,
-      schemaVersion: observation.schemaVersion ?? existing.server.schemaVersion,
-      forgeVersion: observation.forgeVersion ?? existing.server.forgeVersion,
-      toolSurfaceFingerprint: observation.toolSurfaceFingerprint ?? existing.server.toolSurfaceFingerprint,
-      runtimeToolSurfaceFingerprint:
-        typeof live.runtimeToolSurfaceFingerprint === 'string'
-          ? live.runtimeToolSurfaceFingerprint
-          : existing.server.runtimeToolSurfaceFingerprint,
-      toolset: live.toolset === 'core' || live.toolset === 'advanced' || live.toolset === 'full'
-        ? live.toolset
-        : existing.server.toolset,
-      toolCount: observation.toolCount ?? existing.server.toolCount,
-      healthMismatch: undefined,
-    },
-  };
-  // Only rewrite when the snapshot is clearly stale.
-  const stale =
-    existing.status === 'stopped'
-    || existing.server.healthy !== true
-    || existing.server.toolSurfaceFingerprint !== observation.toolSurfaceFingerprint;
-  if (!stale) return;
-  if (loadMcpServiceRuntimeState(controllerHome, repoRoot)) {
-    writeMcpServiceRuntimeState(controllerHome, next);
-    return;
-  }
-  writeMcpRuntimeState(repoRoot, next);
+  return null;
 }
 
 export function evaluateConnectorFreshness(input: EvaluateConnectorFreshnessInput): ConnectorFreshnessReport {
@@ -583,18 +511,15 @@ export function buildLocalConnectorStatus(input: {
 }
 
 /**
- * Repo-aware status: probes live MCP /health, then falls back to healthy runtime file only.
+ * Repo-aware status probes live MCP /health; unavailable discovery stays unverified.
  */
 export async function buildLocalConnectorStatusForRepo(input: {
   repoRoot: string;
   expectedTools: readonly string[];
   connectorToolNames?: readonly string[] | null;
-  refreshRuntimeFile?: boolean;
   callabilityProbe?: EvaluateConnectorFreshnessInput['callabilityProbe'];
 }): Promise<ConnectorFreshnessReport> {
-  const runtime = await observeLocalMcpRuntime(input.repoRoot, {
-    refreshRuntimeFile: input.refreshRuntimeFile,
-  });
+  const runtime = await observeLocalMcpRuntime(input.repoRoot);
   return buildLocalConnectorStatus({
     expectedTools: input.expectedTools,
     connectorToolNames: input.connectorToolNames,

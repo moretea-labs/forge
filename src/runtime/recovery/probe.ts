@@ -155,7 +155,9 @@ export function buildCapabilityRecoverySnapshot(input: CapabilityRecoveryInput):
 
   capabilities.push(input.connectorHealthy === false
     ? capability(at, 'chatgpt.connector', 'ChatGPT connector', 'degraded', 'local_recoverable', 'Connector runtime state does not match the expected tool surface.', [RECOVERY_ACTIONS.probeAgain], { mismatch: input.connectorMismatch })
-    : capability(at, 'chatgpt.connector', 'ChatGPT connector', 'ready', 'unknown', 'Connector runtime state matches expected configuration.', [], { healthy: input.connectorHealthy }));
+    : input.connectorHealthy === true
+      ? capability(at, 'chatgpt.connector', 'ChatGPT connector', 'ready', 'unknown', 'Connector runtime state matches expected configuration.', [], { healthy: true })
+      : capability(at, 'chatgpt.connector', 'ChatGPT connector', 'unknown', 'unknown', 'Connector schema has not been verified by live MCP discovery.', [RECOVERY_ACTIONS.probeAgain]));
 
   if (input.runtimeSourceCoherence) {
     const source = input.runtimeSourceCoherence;

@@ -29,6 +29,8 @@ export interface ManagedMcpSession<
   principalId: string;
   clientIdentity: string;
   toolSurfaceFingerprint?: string;
+  /** Exact tool names returned by the Canonical Runtime at initialize time. */
+  toolNames?: string[];
   createdAt: number;
   lastActivityAt: number;
   streamOpenedAt?: number;
@@ -85,6 +87,7 @@ interface RegisterMcpSession<TTransport extends ClosableMcpTransport, TContext> 
   principalId: string;
   clientIdentity: string;
   toolSurfaceFingerprint?: string;
+  toolNames?: string[];
   initialPost?: boolean;
 }
 

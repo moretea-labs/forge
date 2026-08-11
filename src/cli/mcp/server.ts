@@ -1,7 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from '@modelcontextprotocol/sdk/types.js';
 import { mcpServerInstructions } from './instructions';
 import { buildMcpToolDefinitions, callMcpTool, type CallToolResult, type McpToolContext } from './tools';
 import { createLegacyMcpToolContext } from './legacy-context';
@@ -25,12 +25,19 @@ import { join } from 'path';
 import { observeRuntimeStatus } from '../../runtime/root/status';
 import { getRuntimeWriteClaim } from '../../runtime/root/write-fence';
 import { recordMcpIncident, recordMcpTiming } from '../../runtime/diagnostics/mcp-timing';
-import { FORGE_VERSION } from '../controller/runtime-config';
+import { FORGE_VERSION, forgeToolSurfaceFingerprint } from '../controller/runtime-config';
 
 export type { McpServerOptions } from './multi-repository';
 export { buildMultiRepositoryToolDefinitions, callMultiRepositoryTool } from './multi-repository';
 
 type ServerToolContext = McpToolContext | MultiRepositoryMcpToolContext;
+
+/** A per-session schema read directly from the Canonical Runtime's tools/list. */
+export interface CanonicalRuntimeToolSchema {
+  definitions: Tool[];
+  toolNames: string[];
+  fingerprint: string;
+}
 
 function isMultiRepositoryContext(ctx: ServerToolContext): ctx is MultiRepositoryMcpToolContext {
   return 'controllerHome' in ctx;
@@ -162,33 +169,67 @@ function canonicalRuntimeToken(ctx: MultiRepositoryMcpToolContext): string {
   return token;
 }
 
+const CANONICAL_RUNTIME_MCP_TIMEOUT_MS = 5_000;
+
 async function withCanonicalRuntimeClient<T>(
   ctx: MultiRepositoryMcpToolContext,
   action: (client: Client) => Promise<T>,
 ): Promise<T> {
+  const abort = new AbortController();
+  const timeout = setTimeout(() => abort.abort(new Error('CANONICAL_RUNTIME_TIMEOUT')), CANONICAL_RUNTIME_MCP_TIMEOUT_MS);
   const headers: Record<string, string> = {
     Authorization: `Bearer ${canonicalRuntimeToken(ctx)}`,
   };
   if (ctx.principalId?.trim()) headers['x-forge-forwarded-principal-id'] = ctx.principalId.trim();
   if (ctx.sessionId?.trim()) headers['x-forge-forwarded-session-id'] = ctx.sessionId.trim();
   const transport = new StreamableHTTPClientTransport(canonicalRuntimeEndpoint(ctx), {
-    requestInit: { headers },
+    requestInit: { headers, signal: abort.signal },
   });
   const client = new Client({ name: 'forge-public-gateway-proxy', version: '1.0.0' });
   try {
     await client.connect(transport);
     return await action(client);
   } finally {
+    clearTimeout(timeout);
     await client.close().catch(() => undefined);
   }
+}
+
+/**
+ * The public Gateway has no schema cache authority. It obtains each Connector
+ * session's schema from the Runtime that will execute its calls.
+ */
+export async function readCanonicalRuntimeToolSchema(
+  ctx: MultiRepositoryMcpToolContext,
+): Promise<CanonicalRuntimeToolSchema> {
+  const response = await withCanonicalRuntimeClient(ctx, async (client) => await client.listTools());
+  const definitions = response.tools as Tool[];
+  const toolNames = definitions
+    .map((tool) => tool.name)
+    .filter((name): name is string => typeof name === 'string' && name.length > 0)
+    .sort();
+  return {
+    definitions,
+    toolNames,
+    fingerprint: forgeToolSurfaceFingerprint(definitions),
+  };
 }
 
 async function proxyRuntimeToolCall(
   ctx: MultiRepositoryMcpToolContext,
   name: string,
   args: Record<string, unknown>,
+  expectedSchema?: CanonicalRuntimeToolSchema,
 ): Promise<CallToolResult> {
   return withCanonicalRuntimeClient(ctx, async (client) => {
+    if (expectedSchema) {
+      const listed = await client.listTools();
+      const definitions = listed.tools as Tool[];
+      const fingerprint = forgeToolSurfaceFingerprint(definitions);
+      if (fingerprint !== expectedSchema.fingerprint || !definitions.some((tool) => tool.name === name)) {
+        return toolSurfaceMismatchResult();
+      }
+    }
     const response = await client.callTool({ name, arguments: args });
     return response as unknown as CallToolResult;
   });
@@ -213,7 +254,10 @@ function toolSurfaceMismatchResult(): CallToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value, isError: true };
 }
 
-export function createForgeMcpServerFromContext(baseContext: ServerToolContext): Server {
+export function createForgeMcpServerFromContext(
+  baseContext: ServerToolContext,
+  runtimeSchema?: CanonicalRuntimeToolSchema,
+): Server {
   const server = new Server(
     { name: 'forge-mcp', version: FORGE_VERSION },
     { capabilities: { tools: { listChanged: true } }, instructions: mcpServerInstructions(baseContext.policy.profile) },
@@ -225,13 +269,13 @@ export function createForgeMcpServerFromContext(baseContext: ServerToolContext):
     void server.sendToolListChanged().catch(() => undefined);
   };
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    if (isMultiRepositoryContext(baseContext) && !getRuntimeWriteClaim() && !canonicalRuntimeSchemaMatchesGateway(baseContext)) {
+    if (isMultiRepositoryContext(baseContext) && !runtimeSchema && !getRuntimeWriteClaim() && !canonicalRuntimeSchemaMatchesGateway(baseContext)) {
       throw new Error('MCP_TOOL_SURFACE_MISMATCH: Gateway source does not match the Canonical Runtime schema.');
     }
     return {
-      tools: isMultiRepositoryContext(baseContext)
+      tools: runtimeSchema?.definitions ?? (isMultiRepositoryContext(baseContext)
         ? controllerExposureSnapshot(baseContext).definitions
-        : buildMcpToolDefinitions(baseContext.policy, { enableChatgptBrowser: baseContext.enableChatgptBrowser === true }),
+        : buildMcpToolDefinitions(baseContext.policy, { enableChatgptBrowser: baseContext.enableChatgptBrowser === true })),
     };
   });
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
@@ -244,10 +288,13 @@ export function createForgeMcpServerFromContext(baseContext: ServerToolContext):
         // The public Gateway only exposes its stable facade schema. It may
         // proxy execution, but it never discovers one Runtime schema and
         // validates calls against another source checkout.
-        if (!getRuntimeWriteClaim() && !canonicalRuntimeSchemaMatchesGateway(ctx)) {
+        if (!getRuntimeWriteClaim() && !runtimeSchema && !canonicalRuntimeSchemaMatchesGateway(ctx)) {
           return toolSurfaceMismatchResult();
         }
-        if (!isControllerToolExposed(ctx, name)) {
+        if (runtimeSchema && !runtimeSchema.toolNames.includes(name)) {
+          return toolSurfaceMismatchResult();
+        }
+        if (!runtimeSchema && !isControllerToolExposed(ctx, name)) {
           const value = {
             error: {
               code: 'TOOL_NOT_FOUND',
@@ -262,6 +309,7 @@ export function createForgeMcpServerFromContext(baseContext: ServerToolContext):
         // Gateway processes from acquiring Process Runtime leases or evaluating
         // Runtime source coherence against their own checkout.
         if (!getRuntimeWriteClaim()) {
+          if (runtimeSchema) return proxyRuntimeToolCall(ctx, name, args, runtimeSchema);
           if (observeRuntimeStatus(ctx.controllerHome).ready) return proxyRuntimeToolCall(ctx, name, args);
         }
         const accessResult = callAccessTool(ctx, name, args);

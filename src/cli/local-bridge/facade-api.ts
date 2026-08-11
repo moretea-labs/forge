@@ -702,7 +702,7 @@ function controllerAccessStateView(ctx: ConsoleFacadeContext): AccessStateViewMo
  */
 export async function evaluateConsoleConnectorFreshness(
   ctx: ConsoleFacadeContext,
-  opts: { connectorToolNames?: readonly string[] | null; refreshRuntimeFile?: boolean } = {},
+  opts: { connectorToolNames?: readonly string[] | null } = {},
 ): Promise<ConnectorFreshnessReport> {
   const toolCtx = createMcpToolContext({
     repo: ctx.repository.canonicalRoot,
@@ -714,19 +714,17 @@ export async function evaluateConsoleConnectorFreshness(
     repoRoot: ctx.repository.canonicalRoot,
     expectedTools: expected,
     connectorToolNames: opts.connectorToolNames,
-    refreshRuntimeFile: opts.refreshRuntimeFile,
   });
 }
 
 export async function buildSystemReadiness(
   ctx: ConsoleFacadeContext,
-  opts: { connectorToolNames?: readonly string[] | null; refreshRuntimeFile?: boolean } = {},
+  opts: { connectorToolNames?: readonly string[] | null } = {},
 ): Promise<SystemReadinessViewModel> {
   const runtime = observeRuntimeStatus(ctx.controllerHome);
   const runtimeHealth = undefined;
   const freshness = await evaluateConsoleConnectorFreshness(ctx, {
     connectorToolNames: opts.connectorToolNames,
-    refreshRuntimeFile: opts.refreshRuntimeFile,
   });
   const handoffs = listHandoffItems({ ...store(ctx), status: 'all', limit: 100 });
   const pendingHandoffCount = handoffs.filter((item) => item.status === 'pending').length;
@@ -1864,8 +1862,8 @@ export function applyConsoleSafePatch(
 
 /** Keep advanced/debug payload separate from primary console models. */
 export async function buildAdvancedDiagnosticsEnvelope(rawSnapshot: unknown, ctx: ConsoleFacadeContext) {
-  const readiness = await buildSystemReadiness(ctx, { refreshRuntimeFile: false });
-  const connector = await evaluateConsoleConnectorFreshness(ctx, { refreshRuntimeFile: false });
+  const readiness = await buildSystemReadiness(ctx);
+  const connector = await evaluateConsoleConnectorFreshness(ctx);
   const connectivity = await buildConnectivityObservability(ctx, connector);
   return {
     schemaVersion: 1,
