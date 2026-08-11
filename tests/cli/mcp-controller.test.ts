@@ -993,7 +993,7 @@ describe("MCP controller profile", () => {
   test("adopts only an exact clean in-scope successor HEAD and preserves historical evidence", async () => {
     await withController(async (repoRoot, _ctx) => {
       const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
-      spawnSync("git", ["config", "user.name", "Repo Harness Test"], { cwd: repoRoot, stdio: "ignore" });
+      spawnSync("git", ["config", "user.name", "Forge Test"], { cwd: repoRoot, stdio: "ignore" });
       spawnSync("git", ["config", "user.email", "forge@example.test"], { cwd: repoRoot, stdio: "ignore" });
       writeFileSync(join(repoRoot, "seed.txt"), "seed\n");
       spawnSync("git", ["add", "."], { cwd: repoRoot, stdio: "ignore" });
@@ -1134,7 +1134,7 @@ describe("MCP controller profile", () => {
   test("rejects non-descendant and out-of-scope successor HEAD adoption", async () => {
     await withController(async (repoRoot, _ctx) => {
       const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
-      spawnSync("git", ["config", "user.name", "Repo Harness Test"], { cwd: repoRoot, stdio: "ignore" });
+      spawnSync("git", ["config", "user.name", "Forge Test"], { cwd: repoRoot, stdio: "ignore" });
       spawnSync("git", ["config", "user.email", "forge@example.test"], { cwd: repoRoot, stdio: "ignore" });
       writeFileSync(join(repoRoot, "seed.txt"), "seed\n");
       spawnSync("git", ["add", "."], { cwd: repoRoot, stdio: "ignore" });
@@ -1210,7 +1210,7 @@ describe("MCP controller profile", () => {
           },
         },
       }));
-      spawnSync("git", ["config", "user.name", "Repo Harness Test"], { cwd: repoRoot, stdio: "ignore" });
+      spawnSync("git", ["config", "user.name", "Forge Test"], { cwd: repoRoot, stdio: "ignore" });
       spawnSync("git", ["config", "user.email", "forge@example.test"], { cwd: repoRoot, stdio: "ignore" });
       spawnSync("git", ["add", "."], { cwd: repoRoot, stdio: "ignore" });
       expect(spawnSync("git", ["commit", "-m", "fixture"], { cwd: repoRoot, stdio: "ignore" }).status).toBe(0);
@@ -1284,7 +1284,7 @@ describe("MCP controller profile", () => {
           },
         },
       }));
-      spawnSync("git", ["config", "user.name", "Repo Harness Test"], { cwd: repoRoot, stdio: "ignore" });
+      spawnSync("git", ["config", "user.name", "Forge Test"], { cwd: repoRoot, stdio: "ignore" });
       spawnSync("git", ["config", "user.email", "forge@example.test"], { cwd: repoRoot, stdio: "ignore" });
       spawnSync("git", ["add", "."], { cwd: repoRoot, stdio: "ignore" });
       expect(spawnSync("git", ["commit", "-m", "fixture"], { cwd: repoRoot, stdio: "ignore" }).status).toBe(0);
@@ -1376,7 +1376,7 @@ describe("MCP controller profile", () => {
   test("failed Work cleanup checkpoints dirty content despite unrelated check failure", async () => {
     await withController(async (repoRoot, _ctx) => {
       const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
-      spawnSync("git", ["config", "user.name", "Repo Harness Test"], { cwd: repoRoot, stdio: "ignore" });
+      spawnSync("git", ["config", "user.name", "Forge Test"], { cwd: repoRoot, stdio: "ignore" });
       spawnSync("git", ["config", "user.email", "forge@example.test"], { cwd: repoRoot, stdio: "ignore" });
       spawnSync("git", ["add", "."], { cwd: repoRoot, stdio: "ignore" });
       expect(spawnSync("git", ["commit", "-m", "fixture"], { cwd: repoRoot, stdio: "ignore" }).status).toBe(0);

@@ -90,7 +90,7 @@ describe('typed CLI child invocation', () => {
 
   test('returns typed runtime identity and source revision in source and compiled modes', () => {
     const compiled = resolveCliChildInvocation('/$bunfs/root/forge.js', diagnosticArgs, {
-      runtimeExecutable: '/Applications/Repo Harness/forge',
+      runtimeExecutable: '/Applications/Forge Runtime/forge',
       sourceRevision: 'release-abc',
       env: {},
     });
@@ -112,7 +112,7 @@ describe('typed CLI child invocation', () => {
   });
 
   test('uses explicit package launcher identity for shims and paths containing spaces', () => {
-    const launcher = '/Applications/Repo Harness/bin/forge shim';
+    const launcher = '/Applications/Forge Runtime/bin/forge shim';
     const invocation = resolveCliChildInvocation('/ignored', diagnosticArgs, {
       runtimeExecutable: '/Applications/Node Runtime/bin/node',
       runtimeKind: 'package_launcher',
@@ -129,7 +129,7 @@ describe('typed CLI child invocation', () => {
   test('locates explicit source, compiled release, and package targets without extension guessing', () => {
     const existing = new Set([
       '/repo with spaces/src/cli/index.ts',
-      '/Applications/Repo Harness/lib/forge.js',
+      '/Applications/Forge Runtime/lib/forge.js',
     ]);
     const source = currentCliRuntimeTarget({
       argv: [],
@@ -166,9 +166,9 @@ describe('typed CLI child invocation', () => {
     })).toThrow(/missing forge-cli diagnostic sidecar/);
 
     const compiled = currentCliRuntimeTarget({
-      argv: ['/Applications/Repo Harness/forge', '/$bunfs/root/forge.js'],
+      argv: ['/Applications/Forge Runtime/forge', '/$bunfs/root/forge.js'],
       env: { FORGE_RUNTIME_EXECUTION: 'standalone-binary' },
-      runtimeExecutable: '/Applications/Repo Harness/forge',
+      runtimeExecutable: '/Applications/Forge Runtime/forge',
       sourceRevision: 'compiled-1',
       entryExists: () => false,
     });
@@ -184,7 +184,7 @@ describe('typed CLI child invocation', () => {
       entryExists: (path) => existing.has(path),
     });
     expect(installed.runtimeKind).toBe('package_launcher');
-    expect(installed.entry).toBe('/Applications/Repo Harness/lib/forge.js');
+    expect(installed.entry).toBe('/Applications/Forge Runtime/lib/forge.js');
   });
 
   test('fails closed when runtime identity cannot be resolved', () => {

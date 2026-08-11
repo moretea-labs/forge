@@ -477,7 +477,7 @@ describe('runtime observability', () => {
         };
         git(['init', '-b', 'main']);
         git(['config', 'user.email', 'forge@example.invalid']);
-        git(['config', 'user.name', 'Repo Harness Test']);
+        git(['config', 'user.name', 'Forge Test']);
         writeFileSync(join(repoRoot, 'README.md'), '# fixture\n');
         git(['add', '.']);
         git(['commit', '-qm', 'initial']);

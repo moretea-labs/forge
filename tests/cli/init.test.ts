@@ -135,7 +135,7 @@ function writeFakeCodegraph(fakeBin: string, logFile: string): void {
 }
 
 describe("init command", () => {
-  test("defaults --repo to cwd and applies the existing-repo harness", () => {
+  test("defaults --repo to cwd and applies Forge to the existing repo", () => {
     const tmp = join(tmpdir(), `forge-init-${Date.now()}`);
     const source = join(tmp, "source");
     const repo = join(tmp, "repo");
@@ -157,7 +157,7 @@ describe("init command", () => {
 
       expect(result.exitCode).toBe(0);
       expect(realpathSync(result.repoRoot)).toBe(realpathSync(repo));
-      expect(result.steps.map((step) => step.step)).toContain("apply repo harness");
+      expect(result.steps.map((step) => step.step)).toContain("apply Forge");
       expect(existsSync(join(repo, ".ai", "harness", "workflow-contract.json"))).toBe(true);
     } finally {
       process.chdir(previousCwd);
@@ -224,7 +224,7 @@ describe("init command", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.steps.find((step) => step.step === "refresh handoff packet")?.status).toBe("ok");
-      expect(result.steps.find((step) => step.step === "verify repo harness")?.status).toBe("ok");
+      expect(result.steps.find((step) => step.step === "verify Forge")?.status).toBe("ok");
       expect(readFileSync(join(repo, ".ai", "harness", "handoff", "refresh-marker"), "utf-8")).toContain("refreshed");
     } finally {
       process.chdir(previousCwd);
@@ -497,7 +497,7 @@ describe("init command", () => {
       expect(result.errors[0]).toEqual(
         expect.objectContaining({
           code: "invalid_repo_target",
-          message: expect.stringContaining("refusing to apply repo harness to HOME"),
+          message: expect.stringContaining("refusing to apply Forge to HOME"),
         }),
       );
       expect(result.operations).toEqual([]);

@@ -7,8 +7,10 @@ on:
       - "install.sh"
       - "bin/**"
       - "src/**"
-      - "tests/install-scripts.test.ts"
-      - "tests/cli/global-runtime-init.test.ts"
+      - "tests/cli/install.test.ts"
+      - "tests/cli/init.test.ts"
+      - "tests/runtime/process-environment.test.ts"
+      - "tests/windows-paths.test.ts"
       - "scripts/check-platform-support.mjs"
       - "docs/operations/platform-support.md"
       - ".github/workflows/windows-smoke.yml"
@@ -19,8 +21,10 @@ on:
       - "install.sh"
       - "bin/**"
       - "src/**"
-      - "tests/install-scripts.test.ts"
-      - "tests/cli/global-runtime-init.test.ts"
+      - "tests/cli/install.test.ts"
+      - "tests/cli/init.test.ts"
+      - "tests/runtime/process-environment.test.ts"
+      - "tests/windows-paths.test.ts"
       - "scripts/check-platform-support.mjs"
       - "docs/operations/platform-support.md"
       - ".github/workflows/windows-smoke.yml"
@@ -45,6 +49,6 @@ jobs:
       - name: Platform contract
         run: bun run check:platform-support
       - name: Installer and Windows policy tests
-        run: bun test tests/install-scripts.test.ts tests/cli/global-runtime-init.test.ts tests/process-runner.test.ts
+        run: bun test tests/cli/install.test.ts tests/cli/init.test.ts tests/runtime/process-environment.test.ts tests/windows-paths.test.ts
       - name: Node portable smoke
         run: bun run test:node-smoke

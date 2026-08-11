@@ -68,7 +68,7 @@ describe("repository MCP command tools", () => {
       mkdirSync(repoRoot, { recursive: true });
       git(repoRoot, ["init", "-q"]);
       git(repoRoot, ["config", "user.email", "forge@example.invalid"]);
-      git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
       git(repoRoot, ["remote", "add", "origin", "https://github.com/moretea-labs/forge.git"]);
       writeFileSync(join(repoRoot, "README.md"), "# source\n");
       git(repoRoot, ["add", "README.md"]);
@@ -112,7 +112,7 @@ describe("repository MCP command tools", () => {
       mkdirSync(repoRoot, { recursive: true });
       git(repoRoot, ["init", "-q"]);
       git(repoRoot, ["config", "user.email", "forge@example.invalid"]);
-      git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
       writeFileSync(join(repoRoot, "README.md"), "# source\n");
       git(repoRoot, ["add", "README.md"]);
       git(repoRoot, ["commit", "-qm", "initial"]);
@@ -214,7 +214,7 @@ describe("repository MCP command tools", () => {
       mkdirSync(controllerHome, { recursive: true });
       mkdirSync(repoRoot, { recursive: true });
       git(repoRoot, ["init", "-b", "main"]);
-      git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
       git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
       writeFileSync(join(repoRoot, "README.md"), "hello\n");
       git(repoRoot, ["add", "README.md"]);
@@ -366,7 +366,7 @@ describe("repository MCP command tools", () => {
       mkdirSync(controllerHome, { recursive: true });
       mkdirSync(repoRoot, { recursive: true });
       git(repoRoot, ["init", "-b", "main"]);
-      git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
       git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
       writeFileSync(join(repoRoot, "README.md"), "hello\n");
       git(repoRoot, ["add", "README.md"]);
@@ -403,7 +403,7 @@ describe("repository MCP command tools", () => {
       mkdirSync(repoRoot, { recursive: true });
       mkdirSync(externalRoot, { recursive: true });
       git(repoRoot, ["init", "-b", "main"]);
-      git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
       git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
       writeFileSync(join(repoRoot, "README.md"), "hello\n");
       git(repoRoot, ["add", "README.md"]);
@@ -483,7 +483,7 @@ describe("repository MCP command tools", () => {
       mkdirSync(externalRoot, { recursive: true });
       mkdirSync(fakeSsh, { recursive: true });
       git(repoRoot, ["init", "-b", "main"]);
-      git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
       git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
       writeFileSync(join(repoRoot, "README.md"), "hello\n");
       git(repoRoot, ["add", "README.md"]);
@@ -559,7 +559,7 @@ describe("repository MCP command tools", () => {
       mkdirSync(controllerHome, { recursive: true });
       mkdirSync(repoRoot, { recursive: true });
       git(repoRoot, ["init", "-b", "main"]);
-      git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
       git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
       writeFileSync(join(repoRoot, "README.md"), "hello\n");
       git(repoRoot, ["add", "README.md"]);
@@ -613,7 +613,7 @@ describe("repository MCP command tools", () => {
       mkdirSync(controllerHome, { recursive: true });
       mkdirSync(repoRoot, { recursive: true });
       git(repoRoot, ["init", "-b", "main"]);
-      git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
       git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
       writeFileSync(join(repoRoot, "README.md"), "hello\n");
       git(repoRoot, ["add", "README.md"]);
@@ -650,7 +650,7 @@ describe("repository MCP command tools", () => {
       mkdirSync(controllerHome, { recursive: true });
       mkdirSync(repoRoot, { recursive: true });
       git(repoRoot, ["init", "-b", "main"]);
-      git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
       git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
       writeFileSync(join(repoRoot, "README.md"), "hello\n");
       git(repoRoot, ["add", "README.md"]);
@@ -781,7 +781,7 @@ describe("repository MCP command tools", () => {
       mkdirSync(controllerHome, { recursive: true });
       mkdirSync(repoRoot, { recursive: true });
       git(repoRoot, ["init", "-b", "main"]);
-      git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
       git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
       writeFileSync(join(repoRoot, "app.txt"), "alpha\nbeta\n");
       git(repoRoot, ["add", "app.txt"]);
@@ -826,7 +826,7 @@ describe("repository MCP command tools", () => {
       mkdirSync(controllerHome, { recursive: true });
       mkdirSync(repoRoot, { recursive: true });
       git(repoRoot, ["init", "-b", "main"]);
-      git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
       git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
       writeFileSync(join(repoRoot, "README.md"), "hello\n");
       git(repoRoot, ["add", "README.md"]);
@@ -877,7 +877,7 @@ describe("repository MCP command tools", () => {
       mkdirSync(repoRoot, { recursive: true });
       mkdirSync(join(repoRoot, ".forge"), { recursive: true });
       git(repoRoot, ["init", "-b", "main"]);
-      git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
       git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
       writeFileSync(join(repoRoot, "README.md"), "hello\n");
       writeFileSync(join(repoRoot, ".forge/checks.json"), JSON.stringify({
@@ -893,7 +893,7 @@ describe("repository MCP command tools", () => {
       const goal = await json(callRepositoryTool(controllerHome, "repository_goal_upsert", {
         repo_id: repository.repoId,
         id: "reliability",
-        title: "Improve repo harness reliability",
+        title: "Improve Forge reliability",
         checks: ["git-clean"],
       }));
       expect(goal.goal.id).toBe("reliability");
@@ -930,7 +930,7 @@ describe("repository_register repeat fast path", () => {
       mkdirSync(join(repoRoot, "tasks", "issues"), { recursive: true });
       git(repoRoot, ["init", "-b", "main"]);
       git(repoRoot, ["config", "user.email", "forge@example.invalid"]);
-      git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
       git(repoRoot, ["remote", "add", "origin", "https://github.com/moretea-labs/forge.git"]);
       writeFileSync(join(repoRoot, "README.md"), "# fixture\n");
       for (let index = 0; index < 25; index += 1) {
@@ -972,7 +972,7 @@ describe("repository_register repeat fast path", () => {
       mkdirSync(join(repoRoot, "tasks", "issues"), { recursive: true });
       git(repoRoot, ["init", "-b", "main"]);
       git(repoRoot, ["config", "user.email", "forge@example.invalid"]);
-      git(repoRoot, ["config", "user.name", "Repo Harness Test"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
       writeFileSync(join(repoRoot, "README.md"), "# fixture\n");
       for (let index = 0; index < 150; index += 1) {
         writeFileSync(join(repoRoot, "tasks", "issues", `ISS-${index}.issue.json`),

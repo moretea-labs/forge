@@ -46,7 +46,7 @@ function initGitRepo(repoRoot: string, name: string): void {
   writeFileSync(join(repoRoot, 'src', 'index.ts'), 'export const ready = true;\n');
   git(repoRoot, 'init', '-b', 'main');
   git(repoRoot, 'config', 'user.email', 'test@example.com');
-  git(repoRoot, 'config', 'user.name', 'Repo Harness Test');
+  git(repoRoot, 'config', 'user.name', 'Forge Test');
   git(repoRoot, 'add', '.');
   git(repoRoot, 'commit', '-m', 'init');
 }

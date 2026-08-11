@@ -47,7 +47,7 @@ function seedRepo(controllerHome: string, repoRoot: string) {
   mkdirSync(controllerHome, { recursive: true });
   mkdirSync(repoRoot, { recursive: true });
   git(repoRoot, ['init', '-b', 'main']);
-  git(repoRoot, ['config', 'user.name', 'Repo Harness Test']);
+  git(repoRoot, ['config', 'user.name', 'Forge Test']);
   git(repoRoot, ['config', 'user.email', 'forge-test@example.com']);
   writeFileSync(join(repoRoot, 'README.md'), 'hello\n');
   git(repoRoot, ['add', 'README.md']);
