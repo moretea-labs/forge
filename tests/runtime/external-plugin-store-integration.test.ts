@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
+import { spawn, type ChildProcess } from 'child_process';
 import { join } from 'path';
 import { installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
 import { buildResendPluginManifest, executeResendPluginAction } from '../../src/runtime/plugins/resend-adapter';
@@ -23,7 +24,9 @@ import {
 } from '../../src/runtime/plugins/store';
 
 const roots: string[] = [];
+const children: ChildProcess[] = [];
 afterEach(() => {
+  for (const child of children.splice(0)) child.kill('SIGTERM');
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -46,6 +49,56 @@ function fixture(enabled = true) {
     actions: [{ actionId: 'desktop_status', title: 'Desktop status', description: 'Read status.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 500, cancellable: true, idempotent: true, scopes: ['desktop.observe'], resourceClaims: [], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } }],
   });
   return { controllerHome, socketPath, repository: controllerPluginRepository(controllerHome) };
+}
+
+async function startExternalProviderFixture(root: string, socketPath: string, logPath: string): Promise<void> {
+  const scriptPath = join(root, 'provider.cjs');
+  writeFileSync(scriptPath, `
+const fs = require('fs');
+const net = require('net');
+const socketPath = process.argv[2];
+const logPath = process.argv[3];
+try { fs.unlinkSync(socketPath); } catch (_) {}
+const server = net.createServer((socket) => {
+  let buffer = '';
+  socket.on('data', (chunk) => {
+    buffer += chunk.toString('utf8');
+    const newline = buffer.indexOf('\\n');
+    if (newline < 0) return;
+    const request = JSON.parse(buffer.slice(0, newline));
+    fs.appendFileSync(logPath, request.method + '\\n');
+    let result;
+    if (request.method === 'manifest') {
+      result = {
+        id: 'desktop_operator', name: 'Forge Desktop Operator', version: '0.1.0',
+        protocolVersion: '1.0', mode: 'external', scope: 'controller', provider: 'local-macos',
+        capabilities: ['desktop-observe'], actions: ['desktop_status'],
+      };
+    } else if (request.method === 'health') {
+      result = { state: 'ready', warnings: [] };
+    } else {
+      result = { observed: true };
+    }
+    socket.end(JSON.stringify({ id: request.id, ok: true, result }) + '\\n');
+  });
+});
+server.listen(socketPath, () => process.stdout.write('ready\\n'));
+process.on('SIGTERM', () => server.close(() => process.exit(0)));
+`);
+  const child = spawn(process.execPath, [scriptPath, socketPath, logPath], { stdio: ['ignore', 'pipe', 'pipe'] });
+  children.push(child);
+  await new Promise<void>((resolve, reject) => {
+    let stdout = '';
+    const timer = setTimeout(() => reject(new Error('external provider fixture did not start')), 5_000);
+    child.once('error', reject);
+    child.stdout?.on('data', (chunk) => {
+      stdout += chunk.toString('utf8');
+      if (stdout.includes('ready\n')) {
+        clearTimeout(timer);
+        resolve();
+      }
+    });
+  });
 }
 
 function resendFixture(): string {
@@ -116,6 +169,39 @@ describe('external plugin store integration', () => {
       origin: { surface: 'mcp' },
       timeoutMs: 500,
     })).rejects.toThrow('EXTERNAL_PLUGIN_DISABLED');
+  });
+
+  test('reuses a fresh live manifest validation on the external action hot path', async () => {
+    if (process.platform === 'win32') return;
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-external-hotpath-'));
+    roots.push(controllerHome);
+    const socketPath = join(controllerHome, 'desktop.sock');
+    const logPath = join(controllerHome, 'provider.log');
+    await startExternalProviderFixture(controllerHome, socketPath, logPath);
+    installExternalPluginRegistration(controllerHome, {
+      pluginId: 'desktop_operator', providerPluginId: 'desktop_operator', displayName: 'Forge Desktop Operator',
+      provider: 'local-macos', pluginVersion: '0.1.0', protocolVersion: '1.0', scope: 'controller', enabled: true,
+      transport: { kind: 'unix_socket_jsonl', socketPath, healthTimeoutMs: 1_000, actionTimeoutMs: 1_000 },
+      permissions: [{ scope: 'desktop.observe', mode: 'read', description: 'Observe desktop.', granted: true, required: true }],
+      capabilities: [{ capabilityId: 'desktop-observe', title: 'Desktop observe', description: 'Observe desktop.', scopes: ['desktop.observe'], actions: ['desktop_status'] }],
+      actions: [{ actionId: 'desktop_status', title: 'Desktop status', description: 'Read status.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 1_000, cancellable: true, idempotent: true, scopes: ['desktop.observe'], resourceClaims: [], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } }],
+    });
+    const repository = controllerPluginRepository(controllerHome);
+    const manifest = getAssistantPluginManifest(controllerHome, repository, 'desktop_operator');
+    expect(manifest.health.ready).toBe(true);
+    const result = await executeAssistantPluginAction({
+      controllerHome,
+      repoId: repository.repoId,
+      repoRoot: repository.canonicalRoot,
+      pluginId: 'desktop_operator',
+      actionId: 'desktop_status',
+      requestId: 'external-hotpath-1',
+      args: {},
+      origin: { surface: 'mcp' },
+      timeoutMs: 1_000,
+    });
+    expect(result.result).toMatchObject({ observed: true });
+    expect(readFileSync(logPath, 'utf8').trim().split('\n')).toEqual(['manifest', 'health', 'execute']);
   });
 
   test('built-in adapters retain precedence over colliding external registration IDs in Phase 1', () => {

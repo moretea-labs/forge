@@ -422,7 +422,11 @@ function getAssistantPluginManifestForExecution(
 ): { manifest: AssistantPluginManifest; providerIdentityPrevalidated: boolean } {
   const cacheKey = itemCacheKey(controllerHome, repository.repoId, pluginId, false);
   const cached = readPluginManifestCache(pluginManifestItemCache, cacheKey);
-  if (cached) return { manifest: cached, providerIdentityPrevalidated: false };
+  // The live item cache is populated only from computeManifest(), which already
+  // validates external provider identity/health. Its 5s TTL is therefore the
+  // bounded identity-validation window; do not repeat a manifest RPC on every
+  // hot action inside that same window. Stored-cache entries use a distinct key.
+  if (cached) return { manifest: cached, providerIdentityPrevalidated: true };
   const manifest = computeManifest(controllerHome, repository, pluginId, adapter);
   return {
     manifest: writePluginManifestCache(pluginManifestItemCache, cacheKey, manifest),
