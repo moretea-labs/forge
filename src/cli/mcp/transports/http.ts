@@ -747,12 +747,16 @@ async function handleMcpPost(
         const runtimeSchema = await resolveRuntimeSchema?.(managed.toolContext);
         const currentFingerprint = runtimeSchema?.fingerprint ?? currentToolSurfaceFingerprint();
         if (!mcpSessionToolSurfaceFingerprintIsCurrent(managed.toolSurfaceFingerprint, currentFingerprint)) {
-          await registry.close(sessionId, 'tool_surface_changed');
+          // Keep the transport/session alive long enough for the host to observe
+          // the recoverable reset and issue a replacement initialize request.
+          // The initialize path explicitly supersedes this session afterward.
           sendMcpToolSurfaceReset(res, managed.toolSurfaceFingerprint, currentFingerprint);
           return;
         }
         if (toolCallOutsideSessionSchema(body, managed.toolNames)) {
-          await registry.close(sessionId, 'tool_surface_changed');
+          // A call against a newer discovery surface is the same recoverable
+          // schema-fence condition. Closing here can make hosts unregister the
+          // entire MCP namespace before they can reinitialize it.
           sendMcpToolSurfaceReset(res, managed.toolSurfaceFingerprint, currentFingerprint);
           return;
         }
@@ -794,7 +798,8 @@ async function handleMcpGet(
     const runtimeSchema = await resolveRuntimeSchema?.(managed.toolContext);
     const currentFingerprint = runtimeSchema?.fingerprint ?? currentToolSurfaceFingerprint();
     if (!mcpSessionToolSurfaceFingerprintIsCurrent(managed.toolSurfaceFingerprint, currentFingerprint)) {
-      await registry.close(sessionId!, 'tool_surface_changed');
+      // Preserve the existing SSE transport while asking the host to
+      // reinitialize. The replacement initialize owns supersession/cleanup.
       sendMcpToolSurfaceReset(res, managed.toolSurfaceFingerprint, currentFingerprint);
       return;
     }

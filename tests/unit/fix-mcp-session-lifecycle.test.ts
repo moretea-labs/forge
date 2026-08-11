@@ -211,14 +211,28 @@ describe('MCP session lifecycle registry', () => {
     expect(mcpSessionToolSurfaceFingerprintIsCurrent('schema-a', undefined)).toBe(true);
   });
 
-  test('tracks tool-surface invalidation as a distinct close reason', async () => {
+  test('preserves a stale tool-surface session until replacement initialize supersedes it', async () => {
     const registry = new McpSessionRegistry({ maximumSessions: 3 });
-    const transport = addSession(registry, 'stale-surface', { toolSurfaceFingerprint: 'schema-old' });
+    const transport = addSession(registry, 'stale-surface', {
+      principalId: 'oauth-client:chatgpt',
+      route: '/mcp',
+      toolSurfaceFingerprint: 'schema-old',
+    });
 
-    expect(registry.get('stale-surface')?.toolSurfaceFingerprint).toBe('schema-old');
-    expect(await registry.close('stale-surface', 'tool_surface_changed')).toBe(true);
+    expect(mcpSessionToolSurfaceFingerprintIsCurrent('schema-old', 'schema-new')).toBe(false);
+    expect(registry.get('stale-surface')).toBeDefined();
+    expect(transport.closeCalls).toBe(0);
+
+    const reservation = await registry.reserveForInitialize({
+      principalId: 'oauth-client:chatgpt',
+      route: '/mcp',
+      supersedeSessionId: 'stale-surface',
+    });
+    expect(reservation).toBeDefined();
+    expect(registry.get('stale-surface')).toBeUndefined();
     expect(transport.closeCalls).toBe(1);
-    expect(registry.snapshot().closed.toolSurfaceChanged).toBe(1);
+    expect(registry.snapshot().closed.superseded).toBe(1);
+    expect(registry.snapshot().closed.toolSurfaceChanged).toBe(0);
   });
 
   test('enforces one global capacity pool across all MCP routes', () => {
