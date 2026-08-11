@@ -10,7 +10,7 @@ import {
 } from "fs";
 import { spawnSync } from "child_process";
 import { tmpdir } from "os";
-import { join } from "path";
+import { delimiter, join } from "path";
 import { PassThrough, Writable } from "stream";
 import {
   runInit,
@@ -259,7 +259,7 @@ describe("init command", () => {
         env: {
           ...process.env,
           HOME: home,
-          PATH: `${fakeBin}:${BASE_TEST_PATH}`,
+          PATH: `${fakeBin}${delimiter}${BASE_TEST_PATH}`,
         },
       });
 
@@ -342,14 +342,14 @@ describe("init command", () => {
         env: {
           ...process.env,
           HOME: home,
-          PATH: `${fakeBin}:${BASE_TEST_PATH}`,
+          PATH: `${fakeBin}${delimiter}${BASE_TEST_PATH}`,
         },
       });
 
       expect(result.exitCode).toBe(0);
       const installStep = result.steps.find((step) => step.step === "install gbrain CLI");
       expect(installStep?.status).toBe("ok");
-      expect(installStep?.command).toEqual(["bun", "install", "-g", "github:garrytan/gbrain"]);
+      expect(installStep?.command?.slice(1)).toEqual(["install", "-g", "github:garrytan/gbrain"]); expect(installStep?.command?.[0]?.toLowerCase()).toMatch(/bun(?:\.exe)?$/);
       const bunCommands = readFileSync(bunLog, "utf-8");
       expect(bunCommands).toContain("install -g github:garrytan/gbrain");
       expect(bunCommands).not.toContain("add -g gbrain");
@@ -535,7 +535,7 @@ describe("init command", () => {
         env: {
           ...process.env,
           HOME: home,
-          PATH: `${fakeBin}:${BASE_TEST_PATH}`,
+          PATH: `${fakeBin}${delimiter}${BASE_TEST_PATH}`,
           AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });
@@ -582,7 +582,7 @@ describe("init command", () => {
         env: {
           ...process.env,
           HOME: home,
-          PATH: `${fakeBin}:${BASE_TEST_PATH}`,
+          PATH: `${fakeBin}${delimiter}${BASE_TEST_PATH}`,
         },
       });
 
@@ -745,7 +745,7 @@ describe("init command", () => {
         env: {
           ...process.env,
           HOME: home,
-          PATH: `${fakeBin}:${BASE_TEST_PATH}`,
+          PATH: `${fakeBin}${delimiter}${BASE_TEST_PATH}`,
           AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });

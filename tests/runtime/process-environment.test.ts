@@ -15,7 +15,7 @@ describe('repository child process environment', () => {
     expect(resolveBunExecutable('/tmp/forge-runtime', {
       FORGE_BUN_EXECUTABLE: '/tmp/forge-runtime',
       HOME: '/Users/nonexistent-for-test',
-    })).toBe('bun');
+    })).toBe(process.platform === 'win32' ? 'bun.exe' : 'bun');
   });
 
   test('accepts an explicit Bun command name', () => {
@@ -37,7 +37,7 @@ describe('repository child process environment', () => {
     expect(resolveSchedulerWorkerExecutable(false, '/tmp/node', {})).toBe('/tmp/node');
   });
 
-  test('resolves ~/.bun/bin/bun from the OS account home when env -i removes HOME', () => {
+  test.skipIf(process.platform === 'win32')('resolves ~/.bun/bin/bun from the OS account home when env -i removes HOME', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-bun-home-'));
     homes.push(home);
     const bin = join(home, '.bun', 'bin');
