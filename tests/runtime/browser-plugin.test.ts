@@ -231,7 +231,7 @@ function mockAttachPlaywright(
   } as never;
 }
 
-function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', options: { javaScriptEnabled?: boolean } = {}) {
+function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', options: { javaScriptEnabled?: boolean; targetTitleMetadataFails?: boolean } = {}) {
   const javaScriptEnabled = options.javaScriptEnabled !== false;
   const separator = '\x1e';
   const userTab = { id: '501', url: 'https://example.com/user-work', title: 'User Work' };
@@ -289,6 +289,7 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
           if (!tabId || !entry) throw new Error('missing owned tab');
           const source = args[0] ?? '';
           if (source.includes('document.readyState')) return JSON.stringify({ ok: true, value: 'complete' });
+          if (source.includes('document.title')) return JSON.stringify({ ok: true, value: entry.title });
           if (source.includes('document.body ? document.body.innerText')) return JSON.stringify({ ok: true, value: 'Native page text' });
           if (source.includes('window.name =')) {
             const token = source.match(/forge-browser-owned:[a-f0-9]+/)?.[0];
@@ -304,6 +305,7 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
           return '';
         }
         if (script.includes('set targetIsActive')) {
+          if (options.targetTitleMetadataFails && script.includes('title of targetTab as text')) throw new Error('Can’t make name of background Chrome tab into type text. (-1700)');
           const tabId = tabIdFromScript(script);
           const entry = tabId ? ownedTabs.get(tabId) : undefined;
           if (!tabId || !entry) throw new Error('missing owned tab');
@@ -810,7 +812,8 @@ describe('browser plugin', () => {
       allowedDomains: ['example.com'],
     });
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
-    const native = mockMacOsOwnedTabRuntime('vivaldi');
+    const nativeOptions = { targetTitleMetadataFails: false };
+    const native = mockMacOsOwnedTabRuntime('vivaldi', nativeOptions);
     setMacOsBrowserRuntimeHooksForTest(native.hooks);
 
     const first = await executeBrowserPluginAction({
@@ -819,6 +822,7 @@ describe('browser plugin', () => {
       origin: { surface: 'local-ui', actor: 'test' },
     });
     const sessionId = String(first.sessionId);
+    nativeOptions.targetTitleMetadataFails = true;
     const second = await executeBrowserPluginAction({
       controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
       requestId: 'browser-owned-second', args: { session_id: sessionId, url: 'https://example.com/second' },

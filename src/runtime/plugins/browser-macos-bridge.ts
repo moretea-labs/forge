@@ -210,7 +210,7 @@ ${targetTabPreamble(ref)}
 set windowBounds to bounds of targetWindow
 set separator to ASCII character 30
 set targetIsActive to ((id of active tab of targetWindow) is (id of targetTab))
-return (frontmost as text) & separator & (URL of targetTab as text) & separator & (title of targetTab as text) & separator & ((item 1 of windowBounds) as text) & separator & ((item 2 of windowBounds) as text) & separator & ((item 3 of windowBounds) as text) & separator & ((item 4 of windowBounds) as text) & separator & "" & separator & "" & separator & (targetIsActive as text)
+return (frontmost as text) & separator & (URL of targetTab as text) & separator & "" & separator & ((item 1 of windowBounds) as text) & separator & ((item 2 of windowBounds) as text) & separator & ((item 3 of windowBounds) as text) & separator & ((item 4 of windowBounds) as text) & separator & "" & separator & "" & separator & (targetIsActive as text)
 `);
 }
 
@@ -559,6 +559,16 @@ export class MacOsAppleEventsPage {
   }
 
   async title(): Promise<string> {
+    if (this.targetRef) {
+      try {
+        const title = await this.evaluate<string>('document.title || ""');
+        this.metadata = { ...this.metadata, title };
+        return title;
+      } catch {
+        // Chrome can expose a valid background tab while refusing AppleScript title/name coercion.
+        // A missing tab still fails through the metadata fallback below.
+      }
+    }
     return (await this.refreshMetadata()).title;
   }
 
