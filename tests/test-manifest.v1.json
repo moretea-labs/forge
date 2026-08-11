@@ -23,10 +23,10 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 107,
-    "maxTestLines": 42200,
+    "maxTestFiles": 108,
+    "maxTestLines": 42432,
     "maxPureFiles": 33,
-    "maxTempIsolatedFiles": 45,
+    "maxTempIsolatedFiles": 46,
     "maxProcessTreeFiles": 17,
     "maxGitWorktreeFiles": 15,
     "maxFixedPortFiles": 6,
@@ -438,6 +438,10 @@
     "tests/runtime/runtime-cleanup.test.ts": {
       "module": "process-runtime",
       "resource": "process-tree"
+    },
+    "tests/runtime/release-retention.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
     },
     "tests/runtime/runtime-observability.test.ts": {
       "module": "process-runtime",
