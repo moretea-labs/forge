@@ -20,6 +20,7 @@ import {
 } from './runtime';
 import type { ProcessHandle, ProcessCommandSpec } from './types';
 import { DEFAULT_INTERACTIVE_WAIT_MS } from './types';
+import { durationAwareInteractiveWaitMs } from './interactive-admission';
 import { isFocusedCheckCommand } from '../thin-harness/execution-router';
 import { assertExecutionIdentity, type ResolvedExecutionIdentity } from '../../control-plane/execution/execution-identity';
 
@@ -210,9 +211,11 @@ export async function executeRepositoryCommandViaProcessRuntime(
     };
   }
 
-  const interactiveWaitMs = decision.route === 'process_direct'
-    ? (input.interactiveWaitMs ?? DEFAULT_INTERACTIVE_WAIT_MS)
-    : (input.interactiveWaitMs ?? Math.min(DEFAULT_INTERACTIVE_WAIT_MS, 2_000));
+  const interactiveWaitMs = durationAwareInteractiveWaitMs(
+    input.command,
+    input.interactiveWaitMs,
+    Math.min(DEFAULT_INTERACTIVE_WAIT_MS, 250),
+  );
   const timeoutMs = Math.max(
     interactiveWaitMs + 1,
     Math.min(input.timeoutMs ?? 15 * 60_000, 24 * 60 * 60_000),

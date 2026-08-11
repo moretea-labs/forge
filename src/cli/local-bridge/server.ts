@@ -474,14 +474,13 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
     profile: "controller",
   }) as MultiRepositoryMcpToolContext;
   const exposure = controllerExposureSnapshot(mcpExposureContext);
-  const expectedToolNames = exposure.toolNames;
   const runtimeSurface = mcpRuntime?.server?.toolSurface;
   const runtimeSchemaVersion = mcpRuntime?.server?.schemaVersion;
   const runtimeForgeVersion = mcpRuntime?.server?.forgeVersion;
   const runtimeFingerprint = mcpRuntime?.server?.toolSurfaceFingerprint;
   const runtimeToolset = mcpRuntime?.server?.toolset;
   const runtimeToolFingerprint = mcpRuntime?.server?.runtimeToolSurfaceFingerprint;
-  const expectedFingerprint = forgeToolSurfaceFingerprint(expectedToolNames);
+  const expectedFingerprint = exposure.fingerprint;
   const expectedRuntimeFingerprint = expectedFingerprint;
   const runtimeProfile = mcpRuntime?.server?.profile;
   const connectorHealthy =
@@ -1016,7 +1015,7 @@ export async function startLocalBridgeServer(
   });
   app.get("/health", (_request, response) => {
     const exposure = controllerExposureSnapshot(mcpExposureContext);
-    const fingerprint = forgeToolSurfaceFingerprint(exposure.toolNames);
+    const fingerprint = exposure.fingerprint;
     const runtime = readRuntimeGeneration(controllerHome);
     response.json({
       status: "ok",

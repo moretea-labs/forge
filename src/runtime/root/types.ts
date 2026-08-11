@@ -80,6 +80,8 @@ export interface RuntimeStatusSnapshot {
   pid: number;
   releaseId: string;
   artifactIdentity: string;
+  /** Actual MCP schema served by this Runtime, independent of release identity. */
+  toolSurfaceFingerprint?: string;
   endpoint?: string;
   readiness: RuntimeReadiness;
   startedAt: string;

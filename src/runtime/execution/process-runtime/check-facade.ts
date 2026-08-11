@@ -17,6 +17,7 @@ import { claimsForCheck, scopeResourceClaims, toProcessClaims } from './resource
 import { spawnManagedProcess, waitForProcess, getProcessHandle } from './runtime';
 import type { ProcessHandle } from './types';
 import { DEFAULT_INTERACTIVE_WAIT_MS } from './types';
+import { durationAwareInteractiveWaitMs } from './interactive-admission';
 import type { ResolvedExecutionIdentity } from '../../control-plane/execution/execution-identity';
 
 export type CheckExecutionMode = 'direct' | 'managed' | 'durable';
@@ -145,10 +146,13 @@ export async function runCheckViaProcessRuntime(
     };
   }
 
-  // Checks often outlive a short interactive window; default to a brief wait so
-  // MCP stays responsive and returns a Managed handle for the same OS process.
-  // Keep well under 2s so controller MCP tests and ChatGPT tool UX stay snappy.
-  const interactiveWaitMs = input.interactiveWaitMs ?? Math.min(800, DEFAULT_INTERACTIVE_WAIT_MS);
+  // Most checks are builds/tests; return their existing Process handle at once.
+  // Only predictable shell primitives keep a short synchronous admission.
+  const interactiveWaitMs = durationAwareInteractiveWaitMs(
+    check.command,
+    input.interactiveWaitMs,
+    Math.min(250, DEFAULT_INTERACTIVE_WAIT_MS),
+  );
   const timeoutMs = Math.min(
     check.timeoutMs,
     typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs)

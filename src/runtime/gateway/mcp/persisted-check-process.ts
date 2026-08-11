@@ -24,6 +24,7 @@ import {
   type RunCheckFacadeInput,
   type RunCheckFacadeResult,
 } from '../../execution/process-runtime';
+import { durationAwareInteractiveWaitMs } from '../../execution/process-runtime/interactive-admission';
 const PERSISTED_CHECK_SOURCE_ENTRY = 'src/runtime/execution/process-runtime/check-runner-sidecar.ts';
 
 export function resolvePersistedCheckCliInvocation(
@@ -147,7 +148,7 @@ export async function runPersistedCheckViaProcessRuntime(
     };
   }
 
-  const interactiveWaitMs = input.interactiveWaitMs ?? 800;
+  const interactiveWaitMs = durationAwareInteractiveWaitMs(check.command, input.interactiveWaitMs);
   const leaseWaitMs = input.leaseWaitMs;
   const timeoutMs = Math.min(
     check.timeoutMs,

@@ -11,7 +11,7 @@ import {
   rotateRuntimeGeneration,
 } from '../control-plane/runtime-generation';
 import { RuntimeControllerServices } from './controller-services';
-import { createRuntimeGatewayServer } from './gateway-adapter';
+import { createRuntimeGatewayServer, runtimeGatewayToolSurfaceFingerprint } from './gateway-adapter';
 import { startRuntimeMcpTransport, type RuntimeMcpTransportHandle } from './mcp-transport';
 import { acquireRuntimeOwnership, type RuntimeOwnershipHandle } from './ownership';
 import { RuntimeReadinessState } from './readiness';
@@ -86,6 +86,7 @@ export class CanonicalForgeRuntime {
   private ownership?: RuntimeOwnershipHandle;
   private scheduler?: RuntimeSchedulerHandle;
   private localBridge?: RuntimeLocalBridgeHandle;
+  private toolSurfaceFingerprint?: string;
   private transport?: RuntimeMcpTransportHandle;
   private controller?: RuntimeControllerServices;
   private release?: RuntimeReleaseManifest;
@@ -130,6 +131,7 @@ export class CanonicalForgeRuntime {
         pid: this.ownership.record.pid,
         releaseId: this.release.releaseId,
         artifactIdentity: this.release.artifactIdentity,
+        ...(this.toolSurfaceFingerprint ? { toolSurfaceFingerprint: this.toolSurfaceFingerprint } : {}),
         ...(this.transport?.endpoint ? { endpoint: this.transport.endpoint } : {}),
         readiness: this.readiness(),
         startedAt: this.ownership.record.acquiredAt,
@@ -216,6 +218,11 @@ export class CanonicalForgeRuntime {
       });
 
       stage = 'transport';
+      this.toolSurfaceFingerprint = runtimeGatewayToolSurfaceFingerprint({
+        controllerHome: this.config.controllerHome,
+        runtimeInstanceId: this.runtimeInstanceId,
+        runtimeSourceRoot,
+      });
       this.transport = await this.dependencies.startTransport({
         host: this.config.host,
         port: this.config.port,

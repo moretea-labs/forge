@@ -1,4 +1,3 @@
-import { createHash } from 'crypto';
 import type { McpToolDefinition } from './tools';
 import type { MultiRepositoryMcpToolContext } from './multi-repository';
 import { buildMultiRepositoryToolDefinitions } from './multi-repository';
@@ -14,6 +13,7 @@ import { processToolDefinitions } from '../../runtime/gateway/mcp/process-tools'
 import { DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES, STABLE_CONTROLLER_TOOL_NAMES } from './toolset-names';
 export { BOOTSTRAP_CONTROLLER_TOOL_NAMES, CORE_CONTROLLER_TOOL_NAMES, DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES, STABLE_CONTROLLER_TOOL_NAMES } from './toolset-names';
 import type { McpToolset } from './types';
+import { forgeToolSurfaceFingerprint } from '../controller/runtime-config';
 
 export type ToolExposureClass = 'facade' | 'advanced' | 'internal' | 'compatibility';
 export type ControllerToolProfile = 'core' | 'advanced' | 'full';
@@ -178,7 +178,7 @@ function buildStaticControllerExposureSnapshot(
   const expectedSet = new Set(expectedToolNames);
   const missingToolNames = expectedToolNames.filter((name) => !actualSet.has(name));
   const unexpectedToolNames = actualToolNames.filter((name) => !expectedSet.has(name));
-  const fingerprint = createHash('sha256').update(actualToolNames.join('\n')).digest('hex');
+  const fingerprint = forgeToolSurfaceFingerprint(definitions);
   return {
     definitions,
     toolNames: actualToolNames,

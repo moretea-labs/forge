@@ -30,6 +30,7 @@ import { readForgeRuntimeStatus } from '../../../runtime/control-plane/runtime-s
 import { runtimeIdentitySnapshot } from '../../../runtime/gateway/mcp/runtime-tools';
 import { projectionBlocksReadiness, readRepositoryProjectionSnapshot } from '../../../runtime/projections/materialized-view';
 import { readRuntimeGeneration } from '../../../runtime/control-plane/runtime-generation';
+import { readRuntimeStatusSnapshot } from '../../../runtime/root/status';
 import { getRepository, listRepositories } from '../../repositories/registry';
 import { buildControllerTaskLedgerProjection } from '../../controller/task-ledger';
 import { legacyIssueAuthorityRetired } from '../../controller/legacy-issue-cutover';
@@ -38,7 +39,6 @@ import {
   FORGE_MCP_SCHEMA_VERSION,
   FORGE_TOOL_SURFACE,
   FORGE_VERSION,
-  forgeToolSurfaceFingerprint,
   repositoryIdentity,
 } from '../../controller/runtime-config';
 import { McpSessionRegistry, type McpSessionRoute } from './session-registry';
@@ -143,6 +143,36 @@ export function sendMcpSessionLookupError(res: Response, sessionId: string | und
   res.setHeader('Mcp-Session-Reset', 'reinitialize');
   res.setHeader('x-forge-session-reset', 'reinitialize');
   res.status(response.status).json(response.body);
+}
+
+export function mcpSessionToolSurfaceFingerprintIsCurrent(
+  sessionFingerprint: string | undefined,
+  currentFingerprint: string | undefined,
+): boolean {
+  // Missing metadata is tolerated for compatibility and transient
+  // controller-home read failures. Once both sides are known, equality is the
+  // schema fence. Runtime generation remains diagnostic-only.
+  return !sessionFingerprint || !currentFingerprint || sessionFingerprint === currentFingerprint;
+}
+
+function sendMcpToolSurfaceReset(
+  res: Response,
+  sessionFingerprint: string | undefined,
+  currentFingerprint: string | undefined,
+): void {
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Mcp-Session-Reset', 'reinitialize');
+  res.setHeader('x-forge-session-reset', 'reinitialize');
+  res.setHeader('x-forge-session-reset-reason', 'tool_surface_changed');
+  res.status(404).json({
+    error: 'session_not_found',
+    code: 'MCP_TOOL_SURFACE_CHANGED',
+    message: 'MCP Runtime tool surface changed; initialize a new session so tools/list is refreshed.',
+    recoverable: true,
+    action: 'reinitialize',
+    previousFingerprint: sessionFingerprint,
+    currentFingerprint,
+  });
 }
 
 export function mcpRequestError(error: unknown) {
@@ -606,6 +636,7 @@ async function handleMcpPost(
   registry: HttpSessionRegistry,
   stats: McpRuntimeStats,
   route: McpSessionRoute,
+  currentToolSurfaceFingerprint: () => string | undefined,
 ): Promise<void> {
   let body: unknown;
   try {
@@ -661,6 +692,7 @@ async function handleMcpPost(
             route,
             principalId,
             clientIdentity,
+            toolSurfaceFingerprint: currentToolSurfaceFingerprint(),
           });
           initializedSessionId = newSessionId;
         },
@@ -683,6 +715,12 @@ async function handleMcpPost(
   if (sessionId) {
     const managed = registry.get(sessionId);
     if (managed && managed.route === route && managed.principalId === principalFromRequest(req)) {
+      const currentFingerprint = currentToolSurfaceFingerprint();
+      if (!mcpSessionToolSurfaceFingerprintIsCurrent(managed.toolSurfaceFingerprint, currentFingerprint)) {
+        await registry.close(sessionId, 'tool_surface_changed');
+        sendMcpToolSurfaceReset(res, managed.toolSurfaceFingerprint, currentFingerprint);
+        return;
+      }
       if (managed.inFlightPosts >= MAX_POSTS_PER_SESSION || stats.activePosts >= MAX_ACTIVE_POSTS) {
         stats.rejectedOverload += 1;
         res.setHeader('retry-after', '1');
@@ -703,11 +741,23 @@ async function handleMcpPost(
   sendMcpSessionLookupError(res, sessionId);
 }
 
-async function handleMcpGet(req: Request, res: Response, registry: HttpSessionRegistry, route: McpSessionRoute): Promise<void> {
+async function handleMcpGet(
+  req: Request,
+  res: Response,
+  registry: HttpSessionRegistry,
+  route: McpSessionRoute,
+  currentToolSurfaceFingerprint: () => string | undefined,
+): Promise<void> {
   const sessionId = req.headers['mcp-session-id'] as string | undefined;
   const managed = sessionId ? registry.get(sessionId) : undefined;
   if (!managed || managed.route !== route || managed.principalId !== principalFromRequest(req)) {
     sendMcpSessionLookupError(res, sessionId);
+    return;
+  }
+  const currentFingerprint = currentToolSurfaceFingerprint();
+  if (!mcpSessionToolSurfaceFingerprintIsCurrent(managed.toolSurfaceFingerprint, currentFingerprint)) {
+    await registry.close(sessionId!, 'tool_surface_changed');
+    sendMcpToolSurfaceReset(res, managed.toolSurfaceFingerprint, currentFingerprint);
     return;
   }
   registry.beginStream(sessionId!);
@@ -783,7 +833,10 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     devRunnerMaxTimeoutMs: opts.devRunnerMaxTimeoutMs,
   };
   const runtimeControllerHome = 'controllerHome' in toolContext ? toolContext.controllerHome : undefined;
-  const runtimeGeneration = runtimeControllerHome ? readRuntimeGeneration(runtimeControllerHome) : undefined;
+  const currentRuntimeGeneration = () => runtimeControllerHome ? readRuntimeGeneration(runtimeControllerHome) : undefined;
+  const currentRuntimeToolSurfaceFingerprint = () => runtimeControllerHome
+    ? readRuntimeStatusSnapshot(runtimeControllerHome)?.toolSurfaceFingerprint
+    : undefined;
   const localControllerConfig = {
     enabled: serviceConfig?.localController?.enabled ?? profile === 'controller',
     host: serviceConfig?.localController?.host ?? '127.0.0.1',
@@ -802,8 +855,10 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
 
   const controllerHealth = () => {
     if (!('controllerHome' in toolContext)) return null;
+    const runtimeGeneration = currentRuntimeGeneration();
     const exposure = controllerExposureSnapshot(toolContext);
-    const fingerprint = forgeToolSurfaceFingerprint(exposure.toolNames);
+    const fingerprint = exposure.fingerprint;
+    const runtimeFingerprint = currentRuntimeToolSurfaceFingerprint();
     return {
       configuredAccessMode: exposure.access.configuredAccessMode,
       effectiveAccessMode: exposure.access.effectiveAccessMode,
@@ -813,7 +868,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
       accessModeLastAppliedAt: exposure.access.lastAppliedAt,
       toolset: exposure.access.effectiveToolset,
       toolSurfaceFingerprint: fingerprint,
-      runtimeToolSurfaceFingerprint: fingerprint,
+      runtimeToolSurfaceFingerprint: runtimeFingerprint ?? fingerprint,
       toolCount: exposure.toolNames.length,
       generation: runtimeGeneration?.generation,
       source: runtimeGeneration?.source,
@@ -878,6 +933,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   });
 
   app.get('/ready', async (_req, res) => {
+    const runtimeGeneration = currentRuntimeGeneration();
     const sessionSnapshot = sessionRegistry.snapshot();
     const sessionCapacityReady = sessionSnapshot.acceptingNewSessions
       && runtimeStats.initializing < MAX_INITIALIZING_SESSIONS
@@ -1049,18 +1105,19 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     if (health?.toolset) res.setHeader('x-forge-toolset', health.toolset);
     if (health?.runtimeToolSurfaceFingerprint) res.setHeader('x-forge-runtime-tool-surface-fingerprint', health.runtimeToolSurfaceFingerprint);
     if (health?.toolSurfaceFingerprint) res.setHeader('x-forge-tool-surface-fingerprint', health.toolSurfaceFingerprint);
+    if (health?.generation) res.setHeader('x-forge-runtime-generation', health.generation);
     next();
   };
 
   // Primary MCP path: OAuth (or bearer when --auth bearer). Unchanged for ChatGPT.
   app.use('/mcp', setMcpResponseHeaders);
   app.post('/mcp', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin), express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
-    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp').catch((error: unknown) => {
+    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp', currentRuntimeToolSurfaceFingerprint).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
   app.get('/mcp', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin), (req, res) => {
-    handleMcpGet(req, res, sessionRegistry, '/mcp').catch((error: unknown) => {
+    handleMcpGet(req, res, sessionRegistry, '/mcp', currentRuntimeToolSurfaceFingerprint).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
@@ -1073,12 +1130,12 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   // Legacy Grok OAuth resource. New Grok connectors should use canonical /mcp.
   app.use('/mcp-grok', setMcpResponseHeaders);
   app.post('/mcp-grok', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp-grok'), express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
-    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp-grok').catch((error: unknown) => {
+    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp-grok', currentRuntimeToolSurfaceFingerprint).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
   app.get('/mcp-grok', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp-grok'), (req, res) => {
-    handleMcpGet(req, res, sessionRegistry, '/mcp-grok').catch((error: unknown) => {
+    handleMcpGet(req, res, sessionRegistry, '/mcp-grok', currentRuntimeToolSurfaceFingerprint).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
@@ -1091,12 +1148,12 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   // Bearer-only MCP path for clients that can send Authorization headers. Never advertises OAuth resource_metadata.
   app.use('/mcp-bearer', setMcpResponseHeaders);
   app.post('/mcp-bearer', requireMcpHttpAuth('bearer', authToken, null, configuredPublicOrigin), express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
-    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp-bearer').catch((error: unknown) => {
+    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp-bearer', currentRuntimeToolSurfaceFingerprint).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
   app.get('/mcp-bearer', requireMcpHttpAuth('bearer', authToken, null, configuredPublicOrigin), (req, res) => {
-    handleMcpGet(req, res, sessionRegistry, '/mcp-bearer').catch((error: unknown) => {
+    handleMcpGet(req, res, sessionRegistry, '/mcp-bearer', currentRuntimeToolSurfaceFingerprint).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });

@@ -18,10 +18,7 @@ import { callRuntimeTool } from '../../runtime/gateway/mcp/runtime-tools';
 import { callExecutionTool } from '../../runtime/gateway/mcp/execution-tools';
 import { callProcessTool } from '../../runtime/gateway/mcp/process-tools';
 import { injectDurableCommandFields, isGatewayIsolatedTool, routeDurableMcpCall } from '../../runtime/gateway/mcp/router';
-import {
-  controllerExposureSnapshot,
-  isControllerToolExposed,
-} from './toolset';
+import { controllerExposureSnapshot, isControllerToolExposed } from './toolset';
 import { randomUUID } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -186,50 +183,6 @@ async function withCanonicalRuntimeClient<T>(
   }
 }
 
-async function proxyRuntimeTools(ctx: MultiRepositoryMcpToolContext) {
-  return withCanonicalRuntimeClient(ctx, (client) => client.listTools());
-}
-
-export function hasAuthoritativeRuntimeToolSurface(tools: { tools: Array<{ name: string }> }): boolean {
-  const names = new Set(tools.tools.map((tool) => tool.name));
-  // Authority must be identified by the permanent bounded facade/bootstrap
-  // surface, never by atomic compatibility tools that may intentionally be
-  // hidden from ChatGPT. Otherwise a healthy reduced Runtime is mistaken for
-  // an old/incomplete Runtime and the public Gateway falls back to its own
-  // stale, much larger schema.
-  return names.has('rh_status')
-    && names.has('rh_context')
-    && names.has('repository_list')
-    && names.has('repository_command_execute');
-}
-
-export function shouldProxyRuntimeToolCall(
-  tools: { tools: Array<{ name: string }> },
-  name: string,
-): boolean {
-  return tools.tools.some((tool) => tool.name === name);
-}
-
-export async function proxyCanonicalRuntimeToolIfOwned<T>(input: {
-  name: string;
-  runtimeReady: boolean;
-  listTools: () => Promise<{ tools: Array<{ name: string }> }>;
-  callTool: () => Promise<T>;
-}): Promise<{ handled: false } | { handled: true; result: T }> {
-  let tools: { tools: Array<{ name: string }> };
-  try {
-    tools = await input.listTools();
-  } catch (error) {
-    if (input.runtimeReady) throw error;
-    return { handled: false };
-  }
-  if (!shouldProxyRuntimeToolCall(tools, input.name)) return { handled: false };
-  // Once canonical Runtime ownership of this tool is established, never replay
-  // the call locally. Transport/tool failures must propagate so mutations cannot
-  // execute twice and source Gateways cannot evaluate canonical writer fencing.
-  return { handled: true, result: await input.callTool() };
-}
-
 async function proxyRuntimeToolCall(
   ctx: MultiRepositoryMcpToolContext,
   name: string,
@@ -239,6 +192,25 @@ async function proxyRuntimeToolCall(
     const response = await client.callTool({ name, arguments: args });
     return response as unknown as CallToolResult;
   });
+}
+
+function canonicalRuntimeSchemaMatchesGateway(ctx: MultiRepositoryMcpToolContext): boolean {
+  const runtimeFingerprint = observeRuntimeStatus(ctx.controllerHome).snapshot?.toolSurfaceFingerprint;
+  // Older Runtime status records do not have a schema fence. Preserve a
+  // diagnosable compatibility path until the Runtime has been upgraded.
+  return !runtimeFingerprint || runtimeFingerprint === controllerExposureSnapshot(ctx).fingerprint;
+}
+
+function toolSurfaceMismatchResult(): CallToolResult {
+  const value = {
+    error: {
+      code: 'MCP_TOOL_SURFACE_MISMATCH',
+      message: 'Gateway and Canonical Runtime tool surfaces differ. The session must reinitialize against a matching Runtime release.',
+      recoverable: true,
+      action: 'reinitialize',
+    },
+  };
+  return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value, isError: true };
 }
 
 export function createForgeMcpServerFromContext(baseContext: ServerToolContext): Server {
@@ -253,11 +225,8 @@ export function createForgeMcpServerFromContext(baseContext: ServerToolContext):
     void server.sendToolListChanged().catch(() => undefined);
   };
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    if (isMultiRepositoryContext(baseContext) && !getRuntimeWriteClaim()) {
-      try {
-        const proxied = await proxyRuntimeTools(baseContext);
-        if (hasAuthoritativeRuntimeToolSurface(proxied)) return proxied;
-      } catch { /* Runtime-unavailable fallback keeps the connector diagnosable. */ }
+    if (isMultiRepositoryContext(baseContext) && !getRuntimeWriteClaim() && !canonicalRuntimeSchemaMatchesGateway(baseContext)) {
+      throw new Error('MCP_TOOL_SURFACE_MISMATCH: Gateway source does not match the Canonical Runtime schema.');
     }
     return {
       tools: isMultiRepositoryContext(baseContext)
@@ -272,6 +241,12 @@ export function createForgeMcpServerFromContext(baseContext: ServerToolContext):
     if (isMultiRepositoryContext(ctx)) {
       const rpcId = (request as unknown as { id?: unknown }).id;
       return traceControllerMcpRequest(ctx, name, args, typeof rpcId === 'string' || typeof rpcId === 'number' ? rpcId : undefined, async () => {
+        // The public Gateway only exposes its stable facade schema. It may
+        // proxy execution, but it never discovers one Runtime schema and
+        // validates calls against another source checkout.
+        if (!getRuntimeWriteClaim() && !canonicalRuntimeSchemaMatchesGateway(ctx)) {
+          return toolSurfaceMismatchResult();
+        }
         if (!isControllerToolExposed(ctx, name)) {
           const value = {
             error: {
@@ -287,13 +262,7 @@ export function createForgeMcpServerFromContext(baseContext: ServerToolContext):
         // Gateway processes from acquiring Process Runtime leases or evaluating
         // Runtime source coherence against their own checkout.
         if (!getRuntimeWriteClaim()) {
-          const routed = await proxyCanonicalRuntimeToolIfOwned({
-            name,
-            runtimeReady: observeRuntimeStatus(ctx.controllerHome).ready,
-            listTools: () => proxyRuntimeTools(ctx),
-            callTool: () => proxyRuntimeToolCall(ctx, name, args),
-          });
-          if (routed.handled) return routed.result;
+          if (observeRuntimeStatus(ctx.controllerHome).ready) return proxyRuntimeToolCall(ctx, name, args);
         }
         const accessResult = callAccessTool(ctx, name, args);
         if (accessResult) return accessResult;

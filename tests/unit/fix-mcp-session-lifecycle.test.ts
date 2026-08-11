@@ -4,6 +4,7 @@ import {
   type ClosableMcpTransport,
   type McpSessionRoute,
 } from '../../src/cli/mcp/transports/session-registry';
+import { mcpSessionToolSurfaceFingerprintIsCurrent } from '../../src/cli/mcp/transports/http';
 
 class FakeTransport implements ClosableMcpTransport {
   closeCalls = 0;
@@ -20,6 +21,7 @@ function addSession(
     route?: McpSessionRoute;
     principalId?: string;
     clientIdentity?: string;
+    toolSurfaceFingerprint?: string;
   } = {},
 ): FakeTransport {
   const transport = new FakeTransport();
@@ -30,6 +32,7 @@ function addSession(
     route: options.route ?? '/mcp',
     principalId: options.principalId ?? 'principal-a',
     clientIdentity: options.clientIdentity ?? `client-${sessionId}`,
+    toolSurfaceFingerprint: options.toolSurfaceFingerprint,
   });
   return transport;
 }
@@ -199,6 +202,23 @@ describe('MCP session lifecycle registry', () => {
     await registry.prune();
     expect(registry.get('working')).toBeUndefined();
     expect(working.closeCalls).toBe(1);
+  });
+
+  test('detects stale tool-surface fingerprints while tolerating missing compatibility metadata', () => {
+    expect(mcpSessionToolSurfaceFingerprintIsCurrent('schema-a', 'schema-a')).toBe(true);
+    expect(mcpSessionToolSurfaceFingerprintIsCurrent('schema-a', 'schema-b')).toBe(false);
+    expect(mcpSessionToolSurfaceFingerprintIsCurrent(undefined, 'schema-b')).toBe(true);
+    expect(mcpSessionToolSurfaceFingerprintIsCurrent('schema-a', undefined)).toBe(true);
+  });
+
+  test('tracks tool-surface invalidation as a distinct close reason', async () => {
+    const registry = new McpSessionRegistry({ maximumSessions: 3 });
+    const transport = addSession(registry, 'stale-surface', { toolSurfaceFingerprint: 'schema-old' });
+
+    expect(registry.get('stale-surface')?.toolSurfaceFingerprint).toBe('schema-old');
+    expect(await registry.close('stale-surface', 'tool_surface_changed')).toBe(true);
+    expect(transport.closeCalls).toBe(1);
+    expect(registry.snapshot().closed.toolSurfaceChanged).toBe(1);
   });
 
   test('enforces one global capacity pool across all MCP routes', () => {

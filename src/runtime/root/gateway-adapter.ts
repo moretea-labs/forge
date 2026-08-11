@@ -1,5 +1,6 @@
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { createForgeMcpServerFromContext, createMcpToolContext } from '../../cli/mcp/server';
+import { controllerExposureSnapshot } from '../../cli/mcp/toolset';
 import type { RuntimeControllerServices } from './controller-services';
 
 export interface RuntimeGatewayServerOptions {
@@ -31,4 +32,15 @@ export function createRuntimeGatewayServer(
     runtimeSourceRoot: options.runtimeSourceRoot,
   });
   return createForgeMcpServerFromContext(context);
+}
+
+/** The Canonical Runtime is the sole publisher of the MCP schema fence. */
+export function runtimeGatewayToolSurfaceFingerprint(options: Omit<RuntimeGatewayServerOptions, 'sessionId'>): string {
+  const context = createMcpToolContext({
+    controllerHome: options.controllerHome,
+    profile: 'controller',
+    controllerInstanceId: options.runtimeInstanceId,
+    runtimeSourceRoot: options.runtimeSourceRoot,
+  });
+  return controllerExposureSnapshot(context).fingerprint;
 }

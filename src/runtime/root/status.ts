@@ -49,6 +49,7 @@ function validSnapshot(value: unknown): value is RuntimeStatusSnapshot {
     && snapshot.releaseId.length > 0
     && typeof snapshot.artifactIdentity === 'string'
     && snapshot.artifactIdentity.length > 0
+    && (snapshot.toolSurfaceFingerprint === undefined || typeof snapshot.toolSurfaceFingerprint === 'string')
     && (snapshot.endpoint === undefined || typeof snapshot.endpoint === 'string')
     && typeof snapshot.startedAt === 'string'
     && typeof snapshot.updatedAt === 'string'

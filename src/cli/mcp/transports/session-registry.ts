@@ -11,6 +11,7 @@ export type McpSessionCloseReason =
   | 'idle_ttl'
   | 'stream_lease'
   | 'absolute_lifetime'
+  | 'tool_surface_changed'
   | 'shutdown';
 
 export interface ClosableMcpTransport {
@@ -27,6 +28,7 @@ export interface ManagedMcpSession<
   route: McpSessionRoute;
   principalId: string;
   clientIdentity: string;
+  toolSurfaceFingerprint?: string;
   createdAt: number;
   lastActivityAt: number;
   streamOpenedAt?: number;
@@ -45,6 +47,7 @@ export interface McpSessionCloseCounters {
   idleTtl: number;
   streamLease: number;
   absoluteLifetime: number;
+  toolSurfaceChanged: number;
   shutdown: number;
 }
 
@@ -81,6 +84,7 @@ interface RegisterMcpSession<TTransport extends ClosableMcpTransport, TContext> 
   route: McpSessionRoute;
   principalId: string;
   clientIdentity: string;
+  toolSurfaceFingerprint?: string;
   initialPost?: boolean;
 }
 
@@ -118,6 +122,7 @@ function emptyCloseCounters(): McpSessionCloseCounters {
     idleTtl: 0,
     streamLease: 0,
     absoluteLifetime: 0,
+    toolSurfaceChanged: 0,
     shutdown: 0,
   };
 }
@@ -132,6 +137,7 @@ function counterForReason(reason: McpSessionCloseReason): keyof McpSessionCloseC
     case 'idle_ttl': return 'idleTtl';
     case 'stream_lease': return 'streamLease';
     case 'absolute_lifetime': return 'absoluteLifetime';
+    case 'tool_surface_changed': return 'toolSurfaceChanged';
     case 'shutdown': return 'shutdown';
   }
 }

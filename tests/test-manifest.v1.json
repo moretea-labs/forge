@@ -23,9 +23,9 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 106,
-    "maxTestLines": 41350,
-    "maxPureFiles": 32,
+    "maxTestFiles": 107,
+    "maxTestLines": 42200,
+    "maxPureFiles": 33,
     "maxTempIsolatedFiles": 45,
     "maxProcessTreeFiles": 17,
     "maxGitWorktreeFiles": 15,
@@ -410,6 +410,10 @@
     "tests/runtime/process-resource-claims.test.ts": {
       "module": "process-runtime",
       "resource": "process-tree"
+    },
+    "tests/runtime/process-admission.test.ts": {
+      "module": "process-runtime",
+      "resource": "pure"
     },
     "tests/runtime/process-runtime.test.ts": {
       "module": "process-runtime",

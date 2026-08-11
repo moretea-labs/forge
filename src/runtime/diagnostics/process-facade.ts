@@ -20,7 +20,7 @@ import {
 } from '../execution/process-runtime';
 import { isReadOnlyDiagnosticTool, type ReadOnlyDiagnosticTool } from './read-only-tool';
 
-const DEFAULT_DIAGNOSTIC_INTERACTIVE_WAIT_MS = 2_000;
+const DEFAULT_DIAGNOSTIC_INTERACTIVE_WAIT_MS = 0;
 const DEFAULT_DIAGNOSTIC_TIMEOUT_MS = 120_000;
 const DEFAULT_DIAGNOSTIC_INLINE_MAX_BYTES = 16 * 1024;
 const DEFAULT_DIAGNOSTIC_MAX_OUTPUT_BYTES = 2 * 1024 * 1024;

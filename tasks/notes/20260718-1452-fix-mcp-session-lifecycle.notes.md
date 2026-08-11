@@ -32,6 +32,13 @@
 
 - None.
 
+## 2026-08-11 Tool-surface consistency follow-up
+
+- Replaced the experimental Runtime-generation session fence with a canonical MCP schema fingerprint. The fingerprint covers the bounded public tool definitions (name, description, input schema, and annotations) but intentionally excludes release/version identity, so a code-only Runtime release does not churn Connector sessions.
+- Canonical Runtime now publishes that fingerprint in its existing runtime-status projection. HTTP Gateway captures it at MCP initialization and returns the normal recoverable session-reset response before an old session can invoke a changed surface.
+- Gateway discovery is now its own stable bounded facade schema; it no longer proxies `tools/list` from Runtime and then validates calls against a separate source checkout. When the published Runtime fingerprint disagrees, both discovery and invocation fail closed instead of producing ghost tools.
+- Process admission now returns a managed handle immediately for unknown/build/test/shell commands; only predictable primitives retain a 250ms synchronous window unless a caller explicitly requests another wait.
+
 ## Evidence Links
 
 - Checks: `.ai/harness/checks/latest.json`
