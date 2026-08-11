@@ -230,7 +230,7 @@ export function createForgeMcpServerFromContext(baseContext: ServerToolContext):
     }
     return {
       tools: isMultiRepositoryContext(baseContext)
-        ? controllerExposureSnapshot(baseContext).definitions.map(injectDurableCommandFields)
+        ? controllerExposureSnapshot(baseContext).definitions
         : buildMcpToolDefinitions(baseContext.policy, { enableChatgptBrowser: baseContext.enableChatgptBrowser === true }),
     };
   });

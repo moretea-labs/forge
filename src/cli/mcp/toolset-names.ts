@@ -39,10 +39,11 @@ export const DEFAULT_CONTROLLER_TOOL_NAMES = [
   'process_logs',
   'process_cancel',
 
-  // Evidence and approval.
+  // Evidence. Approval resolution is available through rh_access/rh_work and
+  // the explicit full compatibility profile; it does not need a top-level
+  // default tool.
   'result_read',
   'result_search',
-  'approval_resolve',
 ] as const;
 
 /** Minimal bootstrap subset retained for diagnostics and constrained clients. */

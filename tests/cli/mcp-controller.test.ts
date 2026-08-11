@@ -55,7 +55,7 @@ test("keeps Core and Advanced on the same bounded default ChatGPT surface", () =
   expect(controllerToolNamesForToolset("core")).toEqual(DEFAULT_CONTROLLER_TOOL_NAMES);
   expect(controllerToolNamesForToolset("advanced")).toEqual(DEFAULT_CONTROLLER_TOOL_NAMES);
   expect(DEFAULT_CONTROLLER_TOOL_NAMES.length).toBeLessThan(25);
-  expect(DEFAULT_CONTROLLER_TOOL_NAMES.length).toBeLessThanOrEqual(20);
+  expect(DEFAULT_CONTROLLER_TOOL_NAMES.length).toBe(19);
 
   for (const required of [
     "repository_command_execute",
@@ -70,7 +70,6 @@ test("keeps Core and Advanced on the same bounded default ChatGPT surface", () =
     "process_cancel",
     "result_read",
     "result_search",
-    "approval_resolve",
   ]) {
     expect(DEFAULT_CONTROLLER_TOOL_NAMES).toContain(required as never);
   }
@@ -93,6 +92,7 @@ test("keeps Core and Advanced on the same bounded default ChatGPT surface", () =
     "runtime_maintenance_status",
     "get_plugin",
     "list_plugins",
+    "approval_resolve",
   ]) {
     expect(DEFAULT_CONTROLLER_TOOL_NAMES).not.toContain(hiddenFromDefault as never);
     expect(STABLE_CONTROLLER_TOOL_NAMES).not.toContain(hiddenFromDefault as never);
@@ -504,7 +504,7 @@ describe("MCP controller profile", () => {
       expect(capabilities.value.expectedTools).not.toContain("search_repository");
       expect(capabilities.value.expectedTools).toContain("read_repository_file");
       expect(capabilities.value.expectedTools).toContain("result_read");
-      expect(capabilities.value.expectedTools).toContain("approval_resolve");
+      expect(capabilities.value.expectedTools).not.toContain("approval_resolve");
       for (const hiddenFromDefault of [
         "launch_issue",
         "work_submit",
@@ -1804,7 +1804,7 @@ describe("MCP controller profile", () => {
       expect(toolNames).toContain("plugin_action_execute");
       expect(toolNames).not.toContain("get_plugin");
       expect(toolNames).not.toContain("list_plugins");
-      expect(toolNames).toHaveLength(20);
+      expect(toolNames).toHaveLength(19);
 
       const raw = await callRuntimeTool(multi, "rh_context", {
         capability_id: "plugin.browser.get_text",

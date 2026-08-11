@@ -10,6 +10,7 @@ import { repositoryToolDefinitions } from './repository-tools';
 import { runtimeToolDefinitions } from '../../runtime/gateway/mcp/runtime-tools';
 import { executionToolDefinitions } from '../../runtime/gateway/mcp/execution-tools';
 import { processToolDefinitions } from '../../runtime/gateway/mcp/process-tools';
+import { injectDurableCommandFields } from '../../runtime/gateway/mcp/router';
 import { DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES, STABLE_CONTROLLER_TOOL_NAMES } from './toolset-names';
 export { BOOTSTRAP_CONTROLLER_TOOL_NAMES, CORE_CONTROLLER_TOOL_NAMES, DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES, STABLE_CONTROLLER_TOOL_NAMES } from './toolset-names';
 import type { McpToolset } from './types';
@@ -172,7 +173,11 @@ function buildStaticControllerExposureSnapshot(
   const definitionByName = new Map(unique.definitions.map((definition) => [definition.name, definition]));
   const definitions = expectedToolNames
     .map((name) => definitionByName.get(name))
-    .filter((definition): definition is McpToolDefinition => Boolean(definition));
+    .filter((definition): definition is McpToolDefinition => Boolean(definition))
+    // Fingerprint the definitions that ListTools actually returns. The server
+    // adds durable command fields to every object schema, so calculating the
+    // fence from the pre-injection form would miss a change to those fields.
+    .map(injectDurableCommandFields);
   const actualToolNames = definitions.map((tool) => tool.name);
   const actualSet = new Set(actualToolNames);
   const expectedSet = new Set(expectedToolNames);
