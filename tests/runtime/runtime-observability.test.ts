@@ -5,6 +5,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import { classifyFailure } from '../../src/runtime/recovery/classifier';
 import { classifyRuntimeReadinessSemantics, evaluateRuntimeHealth, type RuntimeHealthObservations } from '../../src/runtime/health';
 import {
@@ -346,8 +347,14 @@ describe('runtime observability', () => {
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
       await server.connect(serverTransport);
       const client = new Client({ name: `runtime-tools-${toolset ?? 'default'}`, version: '1.0.0' }, { capabilities: {} });
+      let toolListChanged = 0;
+      client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+        toolListChanged += 1;
+      });
       await client.connect(clientTransport);
       try {
+        expect(client.getServerCapabilities()?.tools?.listChanged).toBe(true);
+        expect(toolListChanged).toBe(1);
         return (await client.listTools()).tools.map((tool) => tool.name);
       } finally {
         await client.close();

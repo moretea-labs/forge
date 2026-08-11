@@ -243,8 +243,14 @@ async function proxyRuntimeToolCall(
 export function createForgeMcpServerFromContext(baseContext: ServerToolContext): Server {
   const server = new Server(
     { name: 'forge-mcp', version: '1.4.0' },
-    { capabilities: { tools: {} }, instructions: mcpServerInstructions(baseContext.policy.profile) },
+    { capabilities: { tools: { listChanged: true } }, instructions: mcpServerInstructions(baseContext.policy.profile) },
   );
+  // The connector process can outlive the canonical Runtime release it proxies.
+  // Refresh tools after every MCP session initialization so clients do not keep
+  // a stale schema when the bounded Runtime surface changes behind the gateway.
+  server.oninitialized = () => {
+    void server.sendToolListChanged().catch(() => undefined);
+  };
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     if (isMultiRepositoryContext(baseContext) && !getRuntimeWriteClaim()) {
       try {

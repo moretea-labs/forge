@@ -3,6 +3,7 @@ import { spawn, spawnSync, type ChildProcess } from 'child_process';
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { capProcessOutput, redactProcessOutput } from '../../effects/process-runner';
+import { repositoryChildProcessEnvironment } from '../../runtime/shared/process-environment';
 import { terminateProcessTree } from '../../runtime/shared/process-tree';
 import { MAX_AGENT_TIMEOUT_MS, MIN_AGENT_TIMEOUT_MS } from '../controller/runtime-config';
 import { repositoryControllerRoot } from './controller-home';
@@ -162,7 +163,7 @@ function commandEnvironment(): NodeJS.ProcessEnv {
   for (const key of allowed) if (process.env[key] !== undefined) env[key] = process.env[key];
   env.GIT_TERMINAL_PROMPT = '0';
   env.CI = '1';
-  return env;
+  return repositoryChildProcessEnvironment(env);
 }
 
 function truncatedOutput(chunks: Buffer[], truncated: boolean, maxOutputBytes: number): string {
