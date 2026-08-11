@@ -108,6 +108,8 @@ function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
           max_depth: { type: 'integer', minimum: 1, maximum: 20 },
           max_nodes: { type: 'integer', minimum: 1, maximum: 5_000 },
           include_values: { type: 'boolean' },
+          include_actions: { type: 'boolean', description: 'Include AX action names. Focused root_selector observations default to false; full observations default to true.' },
+          include_windows: { type: 'boolean', description: 'Include CGWindow metadata. Focused root_selector observations default to false; full observations default to true.' },
           root_selector: SELECTOR_SCHEMA,
         },
         required: ['interaction_id'],
