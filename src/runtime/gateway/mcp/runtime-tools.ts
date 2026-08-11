@@ -178,6 +178,7 @@ import {
   dismissHandoffItem,
   getHandoffItem,
   listCapabilityDescriptors,
+  getPluginActionCapabilitySchema,
   summarizeCapabilityGroups,
   listHandoffItems,
   normalizeCheckIds,
@@ -287,6 +288,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     max_files: { type: 'number' },
     max_snippets: { type: 'number' },
     requested_check_ids: { type: 'array', items: { type: 'string' } },
+    capability_id: { type: 'string', description: 'Optional capability identity. For plugin.<pluginId>.<actionId>, returns the exact typed action schema/policy for plugin_action_execute.' },
     work_id: { type: 'string' },
     detail_level: { type: 'string', enum: ['summary', 'detail', 'raw'], description: 'Defaults to summary; raw is still bounded.' },
   }),
@@ -3099,11 +3101,31 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             .filter((job) => timestampIsCurrent(job.updatedAt, currentCutoffMs))
             .slice(0, 5)
           : [];
-        const manifests = listAssistantPluginManifests(ctx.controllerHome, repository, {
+        const repositoryManifests = listAssistantPluginManifests(ctx.controllerHome, repository, {
           preferStored: true,
         });
+        const controllerRepository = controllerPluginRepository(ctx.controllerHome);
+        const controllerManifests = repository.repoId === controllerRepository.repoId
+          ? []
+          : listAssistantPluginManifests(ctx.controllerHome, controllerRepository, { preferStored: true });
+        const manifests = [...new Map(
+          [...repositoryManifests, ...controllerManifests].map((manifest) => [manifest.pluginId, manifest] as const),
+        ).values()];
         const capabilities = listCapabilityDescriptors(manifests);
         const capabilityGroups = summarizeCapabilityGroups(manifests);
+        const requestedCapabilityId = typeof args.capability_id === 'string' ? args.capability_id.trim() : '';
+        const selectedCapability = requestedCapabilityId
+          ? capabilities.find((descriptor) => descriptor.capabilityId === requestedCapabilityId)
+          : undefined;
+        const pluginActionSchema = requestedCapabilityId
+          ? getPluginActionCapabilitySchema(requestedCapabilityId, manifests)
+          : undefined;
+        const capabilityLookup = requestedCapabilityId ? {
+          requestedCapabilityId,
+          found: Boolean(selectedCapability),
+          descriptor: selectedCapability,
+          pluginAction: pluginActionSchema,
+        } : undefined;
         const selectedChecks = normalizedChecks.validCheckIds
           .map((id) => checks.find((check) => check.id === id))
           .filter((check): check is (typeof checks)[number] => Boolean(check))
@@ -3156,6 +3178,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           invalidCheckIdsAreNotFailures: true,
           capabilityCount: capabilities.length,
           capabilityGroups: capabilityGroups.map((group) => ({ group: group.group, capabilityCount: group.capabilityCount })),
+          capabilityLookup,
           toolArchitecture: {
             facadeTools: ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'],
             domainSchemaLoading: 'static_stable_surface',
@@ -3219,6 +3242,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           capabilities: detailCapabilities,
           omittedCapabilityCount: Math.max(0, capabilities.length - detailCapabilities.length),
           capabilityGroups,
+          capabilityLookup,
           toolArchitecture: {
             facadeTools: ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'],
             atomicTypedToolsRetained: true,
@@ -5350,13 +5374,14 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             scope: repository.repoId === '__controller__' ? 'controller' : 'repository',
             result: direct.result,
             detail: {
-              tool: 'get_plugin',
+              tool: 'rh_context',
               arguments: {
                 ...(repository.repoId === '__controller__' ? {} : { repo_id: repository.repoId }),
-                plugin_id: pluginId,
+                capability_id: `plugin.${pluginId}.${actionId}`,
+                detail_level: 'detail',
               },
             },
-            next: 'Continue with the returned bounded result; use detail only when the full plugin manifest is needed.',
+            next: 'Continue with the returned bounded result; use rh_context capability detail only when the typed action schema/policy is needed.',
           });
         }
         const submitted = await submitAssistantPluginAction(ctx.controllerHome, repository, request);
@@ -5377,13 +5402,14 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           requestId: submitted.receipt.requestId,
           result: submitted.result,
           detail: {
-            tool: 'get_plugin',
+            tool: 'rh_context',
             arguments: {
               ...(repository.repoId === '__controller__' ? {} : { repo_id: repository.repoId }),
-              plugin_id: pluginId,
+              capability_id: `plugin.${pluginId}.${actionId}`,
+              detail_level: 'detail',
             },
           },
-          next: 'Continue with the returned bounded plugin result; use detail only when the full plugin manifest is needed.',
+          next: 'Continue with the returned bounded plugin result; use rh_context capability detail only when the typed action schema/policy is needed.',
         });
       }
       case 'toolchain_plugin_summary': {

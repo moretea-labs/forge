@@ -60,6 +60,7 @@ test("keeps Core and Advanced on the same bounded default ChatGPT surface", () =
   for (const required of [
     "repository_command_execute",
     "run_check",
+    "plugin_action_execute",
     "rh_context",
     "read_repository_file",
     "repository_safe_patch_apply",
@@ -90,6 +91,8 @@ test("keeps Core and Advanced on the same bounded default ChatGPT surface", () =
     "verify_edit_session",
     "quick_agent_session",
     "runtime_maintenance_status",
+    "get_plugin",
+    "list_plugins",
   ]) {
     expect(DEFAULT_CONTROLLER_TOOL_NAMES).not.toContain(hiddenFromDefault as never);
     expect(STABLE_CONTROLLER_TOOL_NAMES).not.toContain(hiddenFromDefault as never);
@@ -621,8 +624,8 @@ describe("MCP controller profile", () => {
       expect(desktopConfiguredValue.accepted).toBe(true);
       expect(desktopConfiguredValue.scope).toBe("controller");
       expect(desktopConfiguredValue.detail).toEqual({
-        tool: "get_plugin",
-        arguments: { plugin_id: "desktop" }});
+        tool: "rh_context",
+        arguments: { capability_id: "plugin.desktop.configure", detail_level: "detail" }});
 
       const desktopStatus = await callRuntimeTool(runtimeCtx, "plugin_action_execute", {
         plugin_id: "desktop",
@@ -652,8 +655,8 @@ describe("MCP controller profile", () => {
       expect(acceptedValue.plugin.capabilities).toBeUndefined();
       expect(acceptedValue.plugin.health.ready).toBeBoolean();
       expect(acceptedValue.detail).toEqual({
-        tool: "get_plugin",
-        arguments: { repo_id: expect.any(String), plugin_id: "github" }});
+        tool: "rh_context",
+        arguments: { repo_id: expect.any(String), capability_id: "plugin.github.configure", detail_level: "detail" }});
       expect(Buffer.byteLength(JSON.stringify(acceptedValue))).toBeLessThan(16_000);
 
       registerRepository({ path: repoRoot, controllerHome });
@@ -1791,6 +1794,51 @@ describe("MCP controller profile", () => {
       expect(payload.data.omittedCheckCount).toBe(
         Math.max(0, payload.data.counts.availableChecks - payload.data.checks.length),
       );
+    });
+  });
+
+  test("loads one plugin action schema through rh_context and keeps plugin atomics bounded", async () => {
+    await withController(async (repoRoot, _ctx) => {
+      const multi = createMultiRepositoryContext({ repo: repoRoot, profile: "controller" });
+      const toolNames = exposedControllerToolDefinitions(multi).map((tool) => tool.name);
+      expect(toolNames).toContain("plugin_action_execute");
+      expect(toolNames).not.toContain("get_plugin");
+      expect(toolNames).not.toContain("list_plugins");
+      expect(toolNames).toHaveLength(20);
+
+      const raw = await callRuntimeTool(multi, "rh_context", {
+        capability_id: "plugin.browser.get_text",
+      });
+      expect(raw).toBeTruthy();
+      const payload = JSON.parse(raw!.content[0].text);
+      expect(payload.data.capabilityLookup).toMatchObject({
+        requestedCapabilityId: "plugin.browser.get_text",
+        found: true,
+        descriptor: { capabilityId: "plugin.browser.get_text", group: "browser" },
+        pluginAction: {
+          pluginId: "browser",
+          actionId: "get_text",
+          executeWith: "plugin_action_execute",
+          readOnly: true,
+          confirmation: "none",
+        },
+      });
+      expect(payload.data.capabilityLookup.pluginAction.argumentsSchema).toHaveProperty("type", "object");
+
+      const controllerRaw = await callRuntimeTool(multi, "rh_context", {
+        capability_id: "plugin.desktop.status",
+      });
+      expect(controllerRaw).toBeTruthy();
+      const controllerPayload = JSON.parse(controllerRaw!.content[0].text);
+      expect(controllerPayload.data.capabilityLookup).toMatchObject({
+        requestedCapabilityId: "plugin.desktop.status",
+        found: true,
+        pluginAction: {
+          pluginId: "desktop",
+          actionId: "status",
+          executeWith: "plugin_action_execute",
+        },
+      });
     });
   });
 

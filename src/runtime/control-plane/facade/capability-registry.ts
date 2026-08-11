@@ -239,6 +239,41 @@ export function summarizeCapabilityGroups(manifests: readonly AssistantPluginMan
     }));
 }
 
+export function getPluginActionCapabilitySchema(
+  capabilityId: string,
+  manifests: readonly AssistantPluginManifest[] = [],
+): Record<string, unknown> | undefined {
+  for (const manifest of manifests) {
+    for (const action of manifest.actions) {
+      if (`plugin.${manifest.pluginId}.${action.actionId}` !== capabilityId) continue;
+      return {
+        capabilityId,
+        pluginId: manifest.pluginId,
+        pluginDisplayName: manifest.displayName,
+        pluginVersion: manifest.pluginVersion,
+        pluginEnabled: manifest.enabled,
+        lifecycleState: manifest.lifecycle.state,
+        healthState: manifest.health.state,
+        actionId: action.actionId,
+        title: action.title,
+        description: action.description,
+        readOnly: action.readOnly,
+        risk: action.risk,
+        confirmation: action.confirmation,
+        ...(action.requiredConfirmationText ? { requiredConfirmationText: action.requiredConfirmationText } : {}),
+        defaultTimeoutMs: action.defaultTimeoutMs,
+        cancellable: action.cancellable,
+        idempotent: action.idempotent,
+        scopes: [...action.scopes],
+        resourceClaims: structuredClone(action.resourceClaims),
+        argumentsSchema: structuredClone(action.argumentsSchema),
+        executeWith: 'plugin_action_execute',
+      };
+    }
+  }
+  return undefined;
+}
+
 export function getCapabilityDescriptor(capabilityId: string, manifests: readonly AssistantPluginManifest[] = []): CapabilityDescriptor | undefined {
   return listCapabilityDescriptors(manifests).find((descriptor) => descriptor.capabilityId === capabilityId);
 }

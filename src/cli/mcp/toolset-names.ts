@@ -28,6 +28,11 @@ export const DEFAULT_CONTROLLER_TOOL_NAMES = [
   // Focused checks through Process Runtime.
   'run_check',
 
+  // One typed plugin dispatcher. Plugin discovery/action schemas stay routed
+  // through rh_context(capability_id=plugin.<plugin>.<action>) to avoid widening
+  // the default surface with list/get plugin atomics.
+  'plugin_action_execute',
+
   // Managed Process Runtime lifecycle (attach / poll / cancel — never re-exec).
   'process_get',
   'process_wait',
