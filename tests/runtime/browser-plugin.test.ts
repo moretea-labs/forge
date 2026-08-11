@@ -78,7 +78,7 @@ function writeBrowserConfig(repoRoot: string, value: Record<string, unknown>) {
   writeFileSync(join(repoRoot, '.forge/plugins/browser.json'), `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
 }
 
-function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?: string } = {}) {
+function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?: string; evaluate?: (expression?: unknown) => unknown } = {}) {
   let currentUrl = 'https://example.com/';
   let currentTitle = options.title ?? 'Example';
   const routeDecisions: string[] = [];
@@ -94,7 +94,8 @@ function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?:
     url() {
       return currentUrl;
     },
-    async evaluate<T>() {
+    async evaluate<T>(expression?: unknown) {
+      if (options.evaluate) return options.evaluate(expression) as T;
       return 'Example page text' as T;
     },
     async screenshot(args: Record<string, unknown>) {
@@ -287,6 +288,7 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
           if (!tabId || !entry) throw new Error('missing owned tab');
           const source = args[0] ?? '';
           if (source.includes('document.readyState')) return JSON.stringify({ ok: true, value: 'complete' });
+          if (source.includes('document.body ? document.body.innerText')) return JSON.stringify({ ok: true, value: 'Native page text' });
           if (source.includes('window.name =')) {
             const token = source.match(/forge-browser-owned:[a-f0-9]+/)?.[0];
             if (token) entry.ownerToken = token;
@@ -1220,6 +1222,125 @@ describe('browser plugin', () => {
       args: { url: 'https://example.com/', selector: '#cta', post_action_wait_ms: 1 },
       origin: { surface: 'local-ui', actor: 'test' },
     })).rejects.toThrow('PLUGIN_POLICY_BLOCKED');
+  });
+
+  test('persists direct-url read sessions so the returned session id is actually reusable', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      allowedDomains: ['example.com'],
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => mockPlaywright() });
+
+    const read = await executeBrowserPluginAction({
+      controllerHome: repoRoot,
+      repoId: 'repo',
+      repoRoot,
+      pluginId: 'browser',
+      actionId: 'get_text',
+      requestId: 'browser-direct-read-session',
+      args: { url: 'https://example.com/' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const sessionId = String(read.sessionId);
+    expect(existsSync(join(repoRoot, '.forge/browser/sessions', `${sessionId}.json`))).toBe(true);
+
+    const waited = await executeBrowserPluginAction({
+      controllerHome: repoRoot,
+      repoId: 'repo',
+      repoRoot,
+      pluginId: 'browser',
+      actionId: 'wait_for_selector',
+      requestId: 'browser-direct-read-session-resume',
+      args: { session_id: sessionId, selector: '#ready' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect((waited.action as Record<string, unknown>).actionId).toBe('wait_for_selector');
+  });
+
+  test('direct-url native reads persist the owned tab and reuse it on the returned session id', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+      allowedDomains: ['example.com'],
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('chrome');
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+
+    const first = await executeBrowserPluginAction({
+      controllerHome: repoRoot,
+      repoId: 'repo',
+      repoRoot,
+      pluginId: 'browser',
+      actionId: 'get_text',
+      requestId: 'browser-native-direct-read',
+      args: { url: 'https://example.com/read' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const sessionId = String(first.sessionId);
+    await executeBrowserPluginAction({
+      controllerHome: repoRoot,
+      repoId: 'repo',
+      repoRoot,
+      pluginId: 'browser',
+      actionId: 'get_text',
+      requestId: 'browser-native-direct-read-resume',
+      args: { session_id: sessionId },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+
+    expect(native.events.created).toEqual(['9001']);
+    const saved = JSON.parse(readFileSync(join(repoRoot, '.forge/browser/sessions', `${sessionId}.json`), 'utf8')) as Record<string, any>;
+    expect(saved.browser).toMatchObject({
+      provider: 'macos-apple-events',
+      tab: { ownership: 'plugin_owned', tabId: '9001' },
+      sessionResume: { status: 'matched' },
+    });
+  });
+
+  test('snapshot selector hints prefer durable attributes and descendant anchors over result-order nth-of-type', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      allowedDomains: ['example.com'],
+    });
+    let evaluated = '';
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      loadPlaywright: () => mockPlaywright({
+        evaluate: (expression) => {
+          evaluated = String(expression ?? '');
+          return [];
+        },
+      }),
+    });
+
+    await executeBrowserPluginAction({
+      controllerHome: repoRoot,
+      repoId: 'repo',
+      repoRoot,
+      pluginId: 'browser',
+      actionId: 'snapshot_interactive',
+      requestId: 'browser-stable-selector-script',
+      args: { url: 'https://example.com/' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+
+    expect(evaluated).toContain('data-legacy-thread-id');
+    expect(evaluated).toContain(':has(');
+    expect(evaluated).toContain('previousElementSibling');
+    expect(evaluated).not.toContain('(index + 1)');
   });
 
   test('supports session reuse, fill, selector extraction, and diagnostics capture', async () => {

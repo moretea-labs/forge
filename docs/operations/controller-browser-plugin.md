@@ -35,19 +35,19 @@ Interactions that can mutate remote state still require `confirm_authorization=t
 The browser mode is explicit:
 
 - `managed_persistent` is the default and preserves the previous behavior: each action launches a visible persistent Playwright context, restores the target URL, performs one bounded operation, persists session metadata, then closes the context.
-- `attach_preferred` uses a strict order: configured loopback CDP endpoints; then the active tab of an already-running, scriptable macOS Vivaldi or Google Chrome instance; then `cdpAttachFallback`. CDP inventory reuses the best URL/title match. Apple Events reuses only the front browser's active tab and never closes the user's browser.
+- `attach_preferred` uses a strict order: configured loopback CDP endpoints; then an already-running, scriptable macOS Vivaldi or Google Chrome instance; then `cdpAttachFallback`. CDP inventory reuses a previously owned matching tab. Apple Events creates one plugin-owned tab for a new session, preserves the user's active tab, and reattaches to that exact owned tab on later actions.
 - `isolated` launches a visible persistent context with a per-session repo-local profile under `.forge/browser/profiles/isolated/<session_id>`. It does not share the default plugin profile or a configured custom profile.
 
-Session metadata is reusable across actions via `session_id`. Transient navigation failures can retry with `retries` (1–3).
+Session metadata is reusable across actions via `session_id`. Any action that returns a generated `sessionId` persists that session before returning, so the identifier is immediately valid for follow-up actions. Transient navigation failures can retry with `retries` (1–3).
 
 ### Reliability and safety notes
 
 - Domain allowlist is checked before navigation and after interactive URL changes.
-- Selector failures include repair hints (`repairHint`) when possible.
+- Selector failures include repair hints (`repairHint`) when possible. Selector snapshots prefer unique `data-*`, role/ARIA, name, and non-generated id anchors; structural `nth-of-type` paths are only a last resort and are derived from the actual DOM sibling position rather than result order.
 - Console errors and failed requests are captured for Playwright/CDP cycles. Apple Events attachment reports empty console/network diagnostics because those streams are not exposed by the browser scripting dictionary.
 - Artifacts stay under `.forge/browser/**` (not arbitrary local paths).
 - CDP attach is bounded to configured loopback endpoints only; the plugin does not scan arbitrary ports or remote hosts. Native discovery checks only the configured Chrome/Vivaldi candidates and does not launch them.
-- CDP browsers are disconnected after the action; Apple Events leaves the active browser/tab open; managed contexts are closed after the action.
+- CDP browsers are disconnected after the action; Apple Events keeps plugin-owned session tabs open until `close_session`/`close_page` while preserving user-owned tabs; managed contexts are closed after the action.
 - Health `userFacingStatus` reports `ready`, `domain restricted`, `session active`, or setup states.
 
 ## Configuration
@@ -157,7 +157,7 @@ Use native attachment when the target session is already logged in:
 }
 ```
 
-The attach order is CDP, then Apple Events, then managed fallback. macOS may require Automation permission for the controller/Node process to control Vivaldi or Google Chrome. The browser must also permit JavaScript from Apple Events for DOM extraction and interaction. If either permission is unavailable or the browser has no window, the attempt is recorded and fallback policy applies. The provider operates on the active tab only, does not read cookies or storage, and re-checks the active URL against `allowedDomains` before and after actions.
+The attach order is CDP, then Apple Events, then managed fallback. macOS may require Automation permission for the controller/Node process to control Vivaldi or Google Chrome. The browser must also permit JavaScript from Apple Events for DOM extraction and interaction. If either permission is unavailable or the browser has no window, the attempt is recorded and fallback policy applies. The provider uses the active browser only for discovery, then operates on a plugin-owned tab identified by stable window/tab metadata. It does not read cookies or storage and re-checks the target URL against `allowedDomains` before and after actions.
 
 Native limitations are explicit: console/network event capture is unavailable, element screenshots fall back to the visible browser-window region, and native file-input/download semantics are not equivalent to Playwright. Use CDP or a managed context for workflows that require those capabilities.
 

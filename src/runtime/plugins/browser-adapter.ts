@@ -1359,6 +1359,7 @@ async function withPage<T>(
   target: BrowserActionTarget,
   args: Record<string, unknown>,
   run: (page: PageLike, diagnostics: PageDiagnostics, connection: BrowserConnectionSummary) => Promise<T>,
+  options: { persistSession?: boolean } = {},
 ): Promise<T> {
   assertUrlAllowed(target.url, config);
   const retries = Math.min(Math.max(positiveNumber(args.retries, 1), 1), 3);
@@ -1367,7 +1368,14 @@ async function withPage<T>(
     let handle: BrowserOpenHandle | undefined;
     try {
       handle = await openBrowser(repoRoot, config, target, args);
-      return await run(handle.page, handle.diagnostics, handle.connection);
+      const result = await run(handle.page, handle.diagnostics, handle.connection);
+      if (options.persistSession) {
+        const pageUrl = normalizedUrl(handle.page.url());
+        const title = await handle.page.title();
+        assertUrlAllowed(pageUrl, config);
+        saveSession(repoRoot, sessionFromPage(target, pageUrl, title, handle.connection));
+      }
+      return result;
     } catch (error) {
       lastError = error;
       const message = error instanceof Error ? error.message : String(error);
@@ -1394,18 +1402,89 @@ function listSavedSessions(repoRoot: string): BrowserSessionState[] {
   }
 }
 
+const STABLE_SELECTOR_HELPERS = `
+    const forgeUnique = (selector) => {
+      try { return document.querySelectorAll(selector).length === 1; } catch { return false; }
+    };
+    const forgeAttributeSelector = (el, attribute) => {
+      const value = el.getAttribute(attribute);
+      if (!value) return '';
+      const tag = el.tagName.toLowerCase();
+      const attr = '[' + attribute + '=' + JSON.stringify(value) + ']';
+      if (forgeUnique(attr)) return attr;
+      const tagged = tag + attr;
+      return forgeUnique(tagged) ? tagged : '';
+    };
+    const forgeDirectSelector = (el) => {
+      for (const attribute of ['data-testid', 'data-test', 'data-qa', 'data-thread-id', 'data-legacy-thread-id', 'data-legacy-message-id']) {
+        const candidate = forgeAttributeSelector(el, attribute);
+        if (candidate) return candidate;
+      }
+      const tag = el.tagName.toLowerCase();
+      const role = el.getAttribute('role');
+      const ariaLabel = el.getAttribute('aria-label');
+      if (role && ariaLabel) {
+        const candidate = tag + '[role=' + JSON.stringify(role) + '][aria-label=' + JSON.stringify(ariaLabel) + ']';
+        if (forgeUnique(candidate)) return candidate;
+      }
+      const name = forgeAttributeSelector(el, 'name');
+      if (name) return name;
+      if (el.id && !/^:/.test(el.id) && !/^elptr_/.test(el.id)) {
+        const candidate = '#' + CSS.escape(el.id);
+        if (forgeUnique(candidate)) return candidate;
+      }
+      if (ariaLabel) {
+        const candidate = tag + '[aria-label=' + JSON.stringify(ariaLabel) + ']';
+        if (forgeUnique(candidate)) return candidate;
+      }
+      return '';
+    };
+    const forgeDescendantSelector = (el) => {
+      const descendants = Array.from(el.querySelectorAll('[data-testid],[data-test],[data-qa],[data-thread-id],[data-legacy-thread-id],[data-legacy-message-id]')).slice(0, 12);
+      for (const descendant of descendants) {
+        const inner = forgeDirectSelector(descendant);
+        if (!inner) continue;
+        const role = el.getAttribute('role');
+        const base = el.tagName.toLowerCase() + (role ? '[role=' + JSON.stringify(role) + ']' : '');
+        const candidate = base + ':has(' + inner + ')';
+        if (forgeUnique(candidate)) return candidate;
+      }
+      return '';
+    };
+    const forgeStructuralSelector = (el) => {
+      let current = el;
+      const tail = [];
+      for (let depth = 0; current && current.nodeType === 1 && depth < 8; depth += 1) {
+        const direct = forgeDirectSelector(current);
+        if (direct) {
+          const candidate = tail.length ? direct + ' > ' + tail.join(' > ') : direct;
+          if (forgeUnique(candidate)) return candidate;
+        }
+        const tag = current.tagName.toLowerCase();
+        let siblingIndex = 1;
+        let sibling = current.previousElementSibling;
+        while (sibling) {
+          if (sibling.tagName === current.tagName) siblingIndex += 1;
+          sibling = sibling.previousElementSibling;
+        }
+        tail.unshift(tag + ':nth-of-type(' + siblingIndex + ')');
+        const candidate = tail.join(' > ');
+        if (forgeUnique(candidate)) return candidate;
+        current = current.parentElement;
+      }
+      return tail.join(' > ');
+    };
+    const forgeSelectorHint = (el) => forgeDirectSelector(el) || forgeDescendantSelector(el) || forgeStructuralSelector(el);
+`;
+
 const EXTRACTION_SCRIPTS = {
   query: (selector: string, limit: number) => `(() => {
+    ${STABLE_SELECTOR_HELPERS}
     const nodes = Array.from(document.querySelectorAll(${JSON.stringify(selector)})).slice(0, ${limit});
-    return nodes.map((el, index) => {
-      const id = el.id ? '#' + CSS.escape(el.id) : '';
-      const name = el.getAttribute('name');
-      const testId = el.getAttribute('data-testid');
+    return nodes.map((el) => {
       const role = el.getAttribute('role');
       const text = (el.innerText || el.textContent || '').trim().slice(0, 120);
-      const stable = testId ? '[data-testid=' + JSON.stringify(testId) + ']'
-        : id || (name ? el.tagName.toLowerCase() + '[name=' + JSON.stringify(name) + ']' : el.tagName.toLowerCase() + ':nth-of-type(' + (index + 1) + ')');
-      return { tag: el.tagName.toLowerCase(), text, href: el.getAttribute('href'), name, id: el.id || undefined, role, selectorHint: stable };
+      return { tag: el.tagName.toLowerCase(), text, href: el.getAttribute('href'), name: el.getAttribute('name'), id: el.id || undefined, role, selectorHint: forgeSelectorHint(el) };
     });
   })()`,
   attribute: (selector: string, attribute: string) => `(() => {
@@ -1415,35 +1494,39 @@ const EXTRACTION_SCRIPTS = {
   html: (selector?: string) => selector
     ? `(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el ? el.outerHTML : ''; })()`
     : 'document.documentElement ? document.documentElement.outerHTML : ""',
-  links: (limit: number) => `(() => Array.from(document.querySelectorAll('a[href]')).slice(0, ${limit}).map((a) => ({
-    href: a.href, text: (a.innerText || a.textContent || '').trim().slice(0, 120), selectorHint: a.id ? '#' + CSS.escape(a.id) : 'a[href=' + JSON.stringify(a.getAttribute('href')) + ']'
-  })))()`,
+  links: (limit: number) => `(() => {
+    ${STABLE_SELECTOR_HELPERS}
+    return Array.from(document.querySelectorAll('a[href]')).slice(0, ${limit}).map((a) => ({
+      href: a.href, text: (a.innerText || a.textContent || '').trim().slice(0, 120), selectorHint: forgeSelectorHint(a)
+    }));
+  })()`,
   tables: (limit: number) => `(() => Array.from(document.querySelectorAll('table')).slice(0, ${limit}).map((table, tableIndex) => ({
     index: tableIndex,
     headers: Array.from(table.querySelectorAll('th')).map((th) => (th.innerText || '').trim().slice(0, 80)),
     rows: Array.from(table.querySelectorAll('tr')).slice(0, 50).map((tr) => Array.from(tr.querySelectorAll('td,th')).map((cell) => (cell.innerText || '').trim().slice(0, 80)))
   })))()`,
-  forms: (limit: number) => `(() => Array.from(document.querySelectorAll('form')).slice(0, ${limit}).map((form, index) => ({
-    index,
-    action: form.getAttribute('action') || '',
-    method: (form.getAttribute('method') || 'get').toLowerCase(),
-    fields: Array.from(form.querySelectorAll('input,select,textarea,button')).slice(0, 40).map((el) => ({
-      tag: el.tagName.toLowerCase(),
-      type: el.getAttribute('type') || undefined,
-      name: el.getAttribute('name') || undefined,
-      id: el.id || undefined,
-      selectorHint: el.id ? '#' + CSS.escape(el.id) : (el.getAttribute('name') ? el.tagName.toLowerCase() + '[name=' + JSON.stringify(el.getAttribute('name')) + ']' : el.tagName.toLowerCase())
-    }))
-  })))()`,
-  interactive: (limit: number) => `(() => Array.from(document.querySelectorAll('a,button,input,select,textarea,[role="button"],[role="link"]')).slice(0, ${limit}).map((el, index) => {
-    const testId = el.getAttribute('data-testid');
-    const id = el.id ? '#' + CSS.escape(el.id) : '';
-    const name = el.getAttribute('name');
-    const text = (el.innerText || el.getAttribute('aria-label') || el.getAttribute('value') || el.textContent || '').trim().slice(0, 100);
-    const selectorHint = testId ? '[data-testid=' + JSON.stringify(testId) + ']'
-      : id || (name ? el.tagName.toLowerCase() + '[name=' + JSON.stringify(name) + ']' : el.tagName.toLowerCase() + ':nth-of-type(' + (index + 1) + ')');
-    return { tag: el.tagName.toLowerCase(), text, type: el.getAttribute('type') || undefined, href: el.getAttribute('href') || undefined, selectorHint };
-  }))()`,
+  forms: (limit: number) => `(() => {
+    ${STABLE_SELECTOR_HELPERS}
+    return Array.from(document.querySelectorAll('form')).slice(0, ${limit}).map((form, index) => ({
+      index,
+      action: form.getAttribute('action') || '',
+      method: (form.getAttribute('method') || 'get').toLowerCase(),
+      fields: Array.from(form.querySelectorAll('input,select,textarea,button')).slice(0, 40).map((el) => ({
+        tag: el.tagName.toLowerCase(),
+        type: el.getAttribute('type') || undefined,
+        name: el.getAttribute('name') || undefined,
+        id: el.id || undefined,
+        selectorHint: forgeSelectorHint(el)
+      }))
+    }));
+  })()`,
+  interactive: (limit: number) => `(() => {
+    ${STABLE_SELECTOR_HELPERS}
+    return Array.from(document.querySelectorAll('a,button,input,select,textarea,[role="button"],[role="link"]')).slice(0, ${limit}).map((el) => {
+      const text = (el.innerText || el.getAttribute('aria-label') || el.getAttribute('value') || el.textContent || '').trim().slice(0, 100);
+      return { tag: el.tagName.toLowerCase(), text, type: el.getAttribute('type') || undefined, href: el.getAttribute('href') || undefined, selectorHint: forgeSelectorHint(el) };
+    });
+  })()`,
 };
 
 function selectorRepairHint(selector: string, errorMessage: string): string {
@@ -2380,7 +2463,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           ...(await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => ({
             ...(await extractText(page, stringValue(input.args.selector), positiveNumber(input.args.max_chars, DEFAULT_MAX_TEXT_CHARS))),
             browserConnection: connection,
-          }))),
+          }), { persistSession: true })),
         };
       }
       case 'get_html': {
@@ -2394,7 +2477,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             browserConnection: connection,
             ...truncateText(raw, positiveNumber(input.args.max_chars, DEFAULT_MAX_TEXT_CHARS)),
           };
-        });
+        }, { persistSession: true });
       }
       case 'query_selector':
       case 'query_all': {
@@ -2413,7 +2496,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
               ? { match: matches[0] ?? null, found: matches.length > 0 }
               : { matches, count: matches.length }),
           };
-        });
+        }, { persistSession: true });
       }
       case 'get_attribute': {
         const target = resolveActionTarget(input.repoRoot, input.args);
@@ -2427,7 +2510,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           attribute,
           browserConnection: connection,
           value: await page.evaluate<string | null>(EXTRACTION_SCRIPTS.attribute(selector, attribute)),
-        }));
+        }), { persistSession: true });
       }
       case 'screenshot': {
         const target = resolveActionTarget(input.repoRoot, input.args);
@@ -2476,7 +2559,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             data,
             browserConnection: connection,
           };
-        });
+        }, { persistSession: true });
       }
       case 'get_console_errors':
       case 'get_failed_requests': {
@@ -2490,7 +2573,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           ...(input.actionId === 'get_console_errors'
             ? { consoleErrors: diagnostics.consoleErrors.slice(0, 50) }
             : { failedRequests: diagnostics.failedRequests.slice(0, 50) }),
-        }));
+        }), { persistSession: true });
       }
       case 'click':
       case 'double_click':
