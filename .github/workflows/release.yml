@@ -53,7 +53,18 @@ jobs:
       - name: Run release gate and create one tarball
         run: bun run check:release
 
+      - name: Check exact npm version
+        id: registry
+        shell: bash
+        run: |
+          if npm view "@moretea-labs/forge@${RELEASE_VERSION}" version --json >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish the verified tarball
+        if: steps.registry.outputs.exists != 'true'
         shell: bash
         run: |
           TARBALL_PATH="$(cat .ai/harness/artifacts/release/latest-tarball.txt)"

@@ -34,7 +34,7 @@ bun bin/forge.mjs --help
 
 main 门禁复用 focused task receipt，不执行全量测试。release 门禁复用该 receipt，检查 package 身份、公开文档、许可证与 notices、tracked 文件卫生和公开导出内容，然后只在 `.ai/harness/artifacts/release/` 生成一个 tarball；隔离安装与发布都复用这个 tarball。`test:full` 仅作为人工诊断命令。
 
-## 首次 npm 发布
+## npm 首次发布（仅 package 尚不存在时）
 
 一个尚不存在的 package 不能预先配置 npm Trusted Publishing。因此首次发布需要拥有 `@moretea-labs` scope 权限并开启双因素认证的 npm maintainer。
 
@@ -68,7 +68,7 @@ npm run check:release-published
 3. 保护 `main` 与 release tags。
 4. 只有完整门禁通过后，才 push 精确的 `v<package-version>` tag。
 
-Tag workflow 使用 GitHub OIDC，不需要 `NODE_AUTH_TOKEN` 或仓库内 npm token。它会校验 tag、RC 到 `next`、稳定版到 `latest`，然后发布 package 并创建对应 GitHub Release。
+Tag workflow 使用 GitHub OIDC，不需要 `NODE_AUTH_TOKEN` 或仓库内 npm token。它会校验 tag、RC 到 `next`、稳定版到 `latest`。如果精确版本已经由首次 bootstrap 发布到 npm，workflow 会跳过重复 publish 并继续创建 GitHub Release；后续新版本则通过 Trusted Publishing 正常发布。
 
 ## 稳定版要求
 

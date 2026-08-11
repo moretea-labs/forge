@@ -42,36 +42,38 @@ function runFixture(
 }
 
 describe("release version contract", () => {
-  test("infers the current 1.4.0-rc.6 package as next", () => {
+  test("infers the current package channel from package.json", () => {
+    const pkg = JSON.parse(require("node:fs").readFileSync(join(ROOT, "package.json"), "utf8"));
+    const expectedChannel = String(pkg.version).includes("-rc.") ? "next" : "latest";
     const result = runCurrent();
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("1.4.0-rc.6 -> next");
+    expect(result.stdout).toContain(`${pkg.version} -> ${expectedChannel}`);
   });
 
   test("rejects RC publication to latest", () => {
-    const result = runFixture("1.4.0-rc.6", ["--channel", "latest"]);
+    const result = runFixture("2.0.0-rc.3", ["--channel", "latest"]);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("must publish to next");
   });
 
   test("rejects stable publication to next", () => {
-    const result = runFixture("1.4.0", ["--channel", "next"]);
+    const result = runFixture("2.0.0", ["--channel", "next"]);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("must publish to latest");
   });
 
   test("requires an exact v-prefixed package tag", () => {
-    const missing = runFixture("1.4.0-rc.6", ["--channel", "next", "--require-tag"]);
+    const missing = runFixture("2.0.0-rc.3", ["--channel", "next", "--require-tag"]);
     expect(missing.status).toBe(1);
-    expect(missing.stderr).toContain("set RELEASE_TAG=v1.4.0-rc.6");
+    expect(missing.stderr).toContain("set RELEASE_TAG=v2.0.0-rc.3");
 
-    const mismatch = runFixture("1.4.0-rc.6", ["--tag", "v1.4.0-rc.5"]);
+    const mismatch = runFixture("2.0.0-rc.3", ["--tag", "v2.0.0-rc.2"]);
     expect(mismatch.status).toBe(1);
-    expect(mismatch.stderr).toContain("does not match package version v1.4.0-rc.6");
+    expect(mismatch.stderr).toContain("does not match package version v2.0.0-rc.3");
   });
 
   test("fails closed when publishConfig.tag exists", () => {
-    const result = runFixture("1.4.0-rc.6", [], {
+    const result = runFixture("2.0.0-rc.3", [], {
       access: "public",
       provenance: true,
       tag: "next",
@@ -82,18 +84,18 @@ describe("release version contract", () => {
 
   test("accepts the correct RC tag on next", () => {
     const result = runFixture(
-      "1.4.0-rc.6",
+      "2.0.0-rc.3",
       ["--channel", "next", "--require-tag"],
       { access: "public", provenance: true },
-      { RELEASE_TAG: "v1.4.0-rc.6" },
+      { RELEASE_TAG: "v2.0.0-rc.3" },
     );
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("v1.4.0-rc.6");
+    expect(result.stdout).toContain("v2.0.0-rc.3");
   });
 
   test("accepts the correct stable tag on latest", () => {
-    const result = runFixture("1.4.0", ["--channel", "latest", "--tag", "v1.4.0", "--require-tag"]);
+    const result = runFixture("2.0.0", ["--channel", "latest", "--tag", "v2.0.0", "--require-tag"]);
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("1.4.0 -> latest (v1.4.0)");
+    expect(result.stdout).toContain("2.0.0 -> latest (v2.0.0)");
   });
 });

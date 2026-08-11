@@ -34,7 +34,7 @@ bun bin/forge.mjs --help
 
 The main gate reuses the focused task receipt and does not run the full suite. The release gate reuses that receipt, verifies package identity, documentation, licenses and notices, tracked-file hygiene and public export contents, then creates one tarball under `.ai/harness/artifacts/release/`. Isolated installation and publication consume that same tarball. `test:full` is a manual diagnostic only.
 
-## First npm publication
+## Bootstrap npm publication (only while the package does not exist)
 
 npm Trusted Publishing cannot be configured for a package that does not exist yet. The bootstrap publication therefore requires an npm maintainer for the `@moretea-labs` scope with two-factor authentication.
 
@@ -68,7 +68,7 @@ After the package exists:
 3. Protect release tags and the `main` branch.
 4. Push only an exact `v<package-version>` tag after the release gate passes.
 
-The tag workflow uses GitHub OIDC and does not require `NODE_AUTH_TOKEN` or a stored npm token. It validates the exact tag, uses npm `next` for RCs and `latest` for stable versions, publishes the package, and creates the matching GitHub Release.
+The tag workflow uses GitHub OIDC and does not require `NODE_AUTH_TOKEN` or a stored npm token. It validates the exact tag and channel. If the exact version was already published by the one-time bootstrap path, the workflow skips duplicate npm publication and still creates the matching GitHub Release; later versions publish normally through Trusted Publishing.
 
 ## Stable release
 

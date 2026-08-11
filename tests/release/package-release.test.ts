@@ -9,7 +9,7 @@ describe("public package release contract", () => {
   test("uses one scoped package identity and explicit release channels", () => {
     const pkg = JSON.parse(read("package.json"));
     expect(pkg.name).toBe("@moretea-labs/forge");
-    expect(pkg.version).toBe("1.4.0-rc.6");
+    expect(pkg.version).toMatch(/^\d+\.\d+\.\d+(?:-rc\.\d+)?$/);
     expect(pkg.author).toBe("Moretea Labs contributors");
     expect(pkg.publishConfig).toEqual({ access: "public", provenance: true });
     expect(pkg.publishConfig.tag).toBeUndefined();
@@ -78,6 +78,8 @@ describe("public package release contract", () => {
     expect(workflow).toContain('RELEASE_TAG="${GITHUB_REF_NAME}" node scripts/check-release-version.mjs --require-tag');
     expect(workflow).toContain("bun run check:release");
     expect(workflow).toContain('TARBALL_PATH="$(cat .ai/harness/artifacts/release/latest-tarball.txt)"');
+    expect(workflow).toContain('npm view "@moretea-labs/forge@${RELEASE_VERSION}" version');
+    expect(workflow).toContain("if: steps.registry.outputs.exists != 'true'");
     expect(workflow).toContain('npm publish "$TARBALL_PATH" --tag "${RELEASE_CHANNEL}" --access public');
     expect(workflow).not.toContain("npm pack");
     expect(workflow).toContain("gh release create");
@@ -86,7 +88,7 @@ describe("public package release contract", () => {
     expect(existsSync(join(ROOT, ".github/workflows/release-rc.yml"))).toBe(false);
   });
 
-  test("documents current source install and future npm/Bun/Homebrew channels honestly", () => {
+  test("documents source fallback and npm/Bun/Homebrew channels honestly", () => {
     for (const path of [
       "README.md",
       "README.zh-CN.md",
@@ -97,7 +99,8 @@ describe("public package release contract", () => {
       expect(content).toContain("npm install -g .");
       expect(content).toContain("@moretea-labs/forge@next");
     }
-    expect(read("docs/operations/releasing.md")).toContain("not public yet");
+    expect(read("docs/operations/releasing.md")).toContain("`next`");
+    expect(read("docs/operations/releasing.md")).toContain("`latest`");
     expect(read("docs/operations/releasing.md")).toContain("Bun");
     expect(read("docs/operations/homebrew.md")).toContain("after the first stable release");
   });
