@@ -87,9 +87,9 @@ describe('runtime command surface', () => {
   test('MCP command surface exposes no KeepAlive or restart lifecycle owner', () => {
     const help = spawnSync('bun', [CLI, 'mcp', '--help'], { cwd: ROOT, encoding: 'utf-8' });
     expect(help.status).toBe(0);
-    expect(help.stdout).toContain('serve');
-    expect(help.stdout).toContain('doctor');
-    expect(help.stdout).toContain('setup');
+    for (const expected of ['serve', 'doctor', 'setup']) expect(help.stdout).toContain(expected);
+    const nodeHelp = spawnSync('node', ['--loader', join(ROOT, 'src/runtime/shared/node-ts-loader.mjs'), CLI, 'mcp', '--help'], { cwd: ROOT, encoding: 'utf-8' });
+    expect(nodeHelp.status).toBe(0);
     expect(help.stdout).not.toMatch(/^\s+keepalive\b/m);
     expect(help.stdout).not.toMatch(/^\s+restart\b/m);
     expect(existsSync(join(ROOT, 'src/cli/mcp/keepalive.ts'))).toBe(false);

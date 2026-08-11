@@ -63,8 +63,8 @@ for (const name of EXPECTED_FACADE_TOOLS) {
   assert(coreExposed.includes(name), `exposed core tools missing ${name}`);
 }
 assert(coreExposed.includes('repository_list'), 'default surface missing repository_list');
-assert(coreExposed.includes('repository_bootstrap_local_project'), 'stable surface missing bootstrap tool');
-assert(advancedExposed.includes('repository_bootstrap_local_project'), 'advanced alias missing bootstrap tool');
+assert(!coreExposed.includes('repository_bootstrap_local_project'), 'default stable surface must not expose legacy bootstrap tool');
+assert(!advancedExposed.includes('repository_bootstrap_local_project'), 'advanced stable alias must not expose legacy bootstrap tool');
 assert(coreExposed.length === DEFAULT_CONTROLLER_TOOL_NAMES.length, `core stable tool count changed: ${coreExposed.length}`);
 assert(advancedExposed.length === DEFAULT_CONTROLLER_TOOL_NAMES.length, `advanced stable tool count changed: ${advancedExposed.length}`);
 assert(

@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { existsSync, writeFileSync } from 'fs';
-import { join, resolve } from 'path';
+import { dirname, join, resolve } from 'path';
+import { fileURLToPath } from 'url';
 import { resolveControllerHome } from '../repositories/controller-home';
 import { findExecutionJob, listActiveExecutionJobs, listExecutionJobs } from '../../runtime/execution/jobs/store';
 import { readJobEvents } from '../../runtime/evidence/event-ledger';
@@ -34,7 +35,7 @@ export function buildRuntimeCommand(): Command {
     .option('--auth-token-file <path>', 'Raw bearer token file (defaults to controllerHome/mcp/runtime-token, created from the MCP bearer token when missing)')
     .option('--exclusive-work-id <id>', 'Persistently admit only this P0 Work while migration is active')
     .option('--node-executable <path>', 'Executable launchd uses to run the Forge Runtime service runner', process.execPath)
-    .option('--runner-path <path>', 'Forge Runtime service runner entry', join(resolve(import.meta.dir, '..', '..', '..'), 'bin', 'forge-runtime-service.mjs'))
+    .option('--runner-path <path>', 'Forge Runtime service runner entry', join(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'), 'bin', 'forge-runtime-service.mjs'))
     .action(async (opts: {
       controllerHome: string;
       repo: string;

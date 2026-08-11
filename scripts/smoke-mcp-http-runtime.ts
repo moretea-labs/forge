@@ -5,12 +5,14 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { registerRepository } from '../src/cli/repositories/registry';
 import { readForgeRuntimeStatus } from '../src/runtime/control-plane/runtime-status-client';
-import { FORGE_TOOL_SURFACE, forgeToolSurfaceFingerprint } from '../src/cli/controller/runtime-config';
+import { FORGE_TOOL_SURFACE } from '../src/cli/controller/runtime-config';
 import { CORE_CONTROLLER_TOOL_NAMES } from '../src/cli/mcp/toolset';
 import { writeMcpServiceLocalConfig } from '../src/cli/mcp/auth';
 import { buildMcpToolDefinitions } from '../src/cli/mcp/tools';
 import { runtimePolicy } from '../src/cli/mcp/multi-repository';
 import { resolveControllerToolsetSelection } from '../src/cli/mcp/toolset-selection';
+import { RUNTIME_WRITE_CLAIM_ENV } from '../src/runtime/root/write-fence';
+import { createMcpToolContext, readCanonicalRuntimeToolSchema } from '../src/cli/mcp/server';
 
 const root = mkdtempSync(join(tmpdir(), 'forge-mcp-http-smoke-'));
 const repoRoot = join(root, 'repo');
@@ -69,6 +71,55 @@ try {
       port: 8766,
     },
   });
+  const childEnv = { ...process.env };
+  for (const key of Object.values(RUNTIME_WRITE_CLAIM_ENV)) delete childEnv[key];
+  const runtimeToken = 'forge-mcp-http-smoke-runtime-token';
+  const runtimeTokenFile = join(controllerHome, 'mcp', 'runtime-token');
+  writeFileSync(runtimeTokenFile, `${runtimeToken}\n`, { encoding: 'utf8', mode: 0o600 });
+  const releaseManifestPath = join(root, 'runtime-release.json');
+  writeFileSync(releaseManifestPath, `${JSON.stringify({
+    schemaVersion: 1,
+    releaseId: 'mcp-http-smoke-runtime',
+    artifactIdentity: 'sha256:mcp-http-smoke-runtime',
+    entrypoint: 'forge-runtime',
+    arguments: [],
+    configurationSchemaVersion: 1,
+    controllerHome,
+    databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+    workerProtocolVersion: 1,
+    createdAt: new Date().toISOString(),
+  }, null, 2)}\n`, 'utf8');
+  const runtimePort = await freePort();
+  const runtimeChild = spawn('bun', [
+    join(process.cwd(), 'src/runtime/root/entry.ts'),
+    '--controller-home', controllerHome,
+    '--repo', repoRoot,
+    '--release-manifest', releaseManifestPath,
+    '--host', '127.0.0.1',
+    '--port', String(runtimePort),
+    '--auth-token-file', runtimeTokenFile,
+  ], {
+    env: { ...childEnv, FORGE_CONTROLLER_HOME: controllerHome },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  runtimePid = runtimeChild.pid;
+  let runtimeStderr = '';
+  runtimeChild.stderr?.on('data', (chunk) => { runtimeStderr += String(chunk); });
+  runtimeChild.once('exit', (code) => {
+    if (code && code !== 0) runtimeStderr += `\nruntime exited ${code}`;
+  });
+  try {
+    let runtimeReady = await waitJson(`http://127.0.0.1:${runtimePort}/ready`, 20_000);
+    const runtimeReadyDeadline = Date.now() + 20_000;
+    while (runtimeReady.status !== 200 && Date.now() < runtimeReadyDeadline) {
+      await sleep(100);
+      runtimeReady = await waitJson(`http://127.0.0.1:${runtimePort}/ready`, 2_000);
+    }
+    if (runtimeReady.status !== 200 || runtimeReady.body.ready !== true) throw new Error(`RUNTIME_READINESS_FAILED: ${JSON.stringify(runtimeReady)}`);
+  } catch (error) {
+    throw new Error(`RUNTIME_START_FAILED: ${error instanceof Error ? error.message : String(error)} ${runtimeStderr}`);
+  }
+
   const port = await freePort();
   const child = spawn(process.execPath, [
     '--loader', join(process.cwd(), 'src/runtime/shared/node-ts-loader.mjs'),
@@ -76,7 +127,7 @@ try {
     '--transport', 'http', '--enable-dev-runner', '--dev-runner-agents', 'codex,claude', '--host', '127.0.0.1', '--port', String(port), '--profile', 'controller', '--auth', 'oauth',
   ], {
     env: {
-      ...process.env,
+      ...childEnv,
       FORGE_CONTROLLER_HOME: controllerHome,
       FORGE_CONTROLLER_LIFECYCLE_OWNER: '1',
       FORGE_RUNTIME_MAX_LIFETIME_MS: '60000',
@@ -90,7 +141,12 @@ try {
     if (code && code !== 0) stderr += `\nserver exited ${code}`;
   });
 
-  const health = await waitJson(`http://127.0.0.1:${port}/health`, 20_000);
+  let health: { status: number; body: Record<string, unknown> };
+  try {
+    health = await waitJson(`http://127.0.0.1:${port}/health`, 20_000);
+  } catch (error) {
+    throw new Error(`GATEWAY_START_FAILED: ${error instanceof Error ? error.message : String(error)} ${stderr}`);
+  }
   if (health.status !== 200 || health.body.status !== 'ok') throw new Error(`HEALTH_FAILED: ${JSON.stringify(health)} ${stderr}`);
   const expectedPolicy = runtimePolicy(repoRoot, {
     repo: repoRoot,
@@ -103,11 +159,8 @@ try {
   const expectedToolset = resolveControllerToolsetSelection(null).toolset;
   if (health.body.toolset !== expectedToolset) throw new Error(`TOOLSET_CHANGED: ${String(health.body.toolset)}`);
   if (health.body.toolSurface !== FORGE_TOOL_SURFACE) throw new Error(`TOOL_SURFACE_CHANGED: ${String(health.body.toolSurface)}`);
-  const expectedCoreFingerprint = forgeToolSurfaceFingerprint([...CORE_CONTROLLER_TOOL_NAMES]);
   const expectedCompatibilityToolCount = buildMcpToolDefinitions(expectedPolicy).length;
-  if (health.body.toolCount !== CORE_CONTROLLER_TOOL_NAMES.length) throw new Error(`TOOL_COUNT_CHANGED: ${String(health.body.toolCount)}`);
   if (health.body.compatibilityToolCount !== expectedCompatibilityToolCount) throw new Error(`LEGACY_MCP_TOOL_COUNT_CHANGED: ${String(health.body.compatibilityToolCount)}`);
-  if (health.body.toolSurfaceFingerprint !== expectedCoreFingerprint) throw new Error(`FINGERPRINT_CHANGED: ${String(health.body.toolSurfaceFingerprint)}`);
 
   let ready = await waitJson(`http://127.0.0.1:${port}/ready`, 20_000);
   const readyDeadline = Date.now() + 20_000;
@@ -118,13 +171,29 @@ try {
   if (ready.status !== 200 || ready.body.ready !== true) throw new Error(`READINESS_FAILED: ${JSON.stringify(ready)} ${stderr}`);
   const repoHealth = await waitJson(`http://127.0.0.1:${port}/repos/${repository.repoId}/health`, 10_000);
   if (repoHealth.status !== 200 || repoHealth.body.status !== 'ok') throw new Error(`REPOSITORY_HEALTH_FAILED: ${JSON.stringify(repoHealth)}`);
-  runtimePid = readForgeRuntimeStatus(controllerHome).pid;
+  const runtimeContext = createMcpToolContext({
+    repo: repoRoot,
+    controllerHome,
+    profile: 'controller',
+    enableDevRunner: true,
+    devRunnerAgents: 'codex,claude',
+  });
+  const runtimeSchema = await readCanonicalRuntimeToolSchema(runtimeContext);
+  const expectedRuntimeNames = [...CORE_CONTROLLER_TOOL_NAMES].sort();
+  if (JSON.stringify(runtimeSchema.toolNames) !== JSON.stringify(expectedRuntimeNames)) {
+    throw new Error(`RUNTIME_TOOL_SCHEMA_CHANGED: ${JSON.stringify(runtimeSchema.toolNames)}`);
+  }
+  health = await waitJson(`http://127.0.0.1:${port}/health`, 5_000);
+  if (health.body.runtimeToolSurfaceFingerprint !== runtimeSchema.fingerprint) throw new Error(`RUNTIME_FINGERPRINT_CHANGED: ${String(health.body.runtimeToolSurfaceFingerprint)}`);
+  if (health.body.toolSurfaceFingerprint !== runtimeSchema.fingerprint) throw new Error(`GATEWAY_FINGERPRINT_CHANGED: ${String(health.body.toolSurfaceFingerprint)}`);
+  const observedRuntimePid = readForgeRuntimeStatus(controllerHome).pid;
+  if (!observedRuntimePid || observedRuntimePid !== runtimePid) throw new Error(`RUNTIME_PID_CHANGED: expected=${String(runtimePid)} observed=${String(observedRuntimePid)}`);
 
   console.log(JSON.stringify({
     status: 'ok', port, repoId: repository.repoId,
     toolset: health.body.toolset,
-    toolCount: health.body.toolCount,
-    runtimeFingerprint: health.body.runtimeToolSurfaceFingerprint,
+    toolCount: runtimeSchema.toolNames.length,
+    runtimeFingerprint: runtimeSchema.fingerprint,
     compatibilityToolCount: health.body.compatibilityToolCount,
     fingerprint: health.body.toolSurfaceFingerprint,
     ready: ready.body.ready,
