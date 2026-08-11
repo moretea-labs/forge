@@ -60,7 +60,7 @@ export const accessToolDefinitions: McpToolDefinition[] = [
       },
       confirm_authorization: {
         type: 'boolean',
-        description: 'Deprecated compatibility field. Normal mode changes use the host AI permission decision and do not require a second Repo Harness confirmation.',
+        description: 'Deprecated compatibility field. Normal mode changes use the host AI permission decision and do not require a second Forge confirmation.',
       },
       confirmation_text: {
         type: 'string',

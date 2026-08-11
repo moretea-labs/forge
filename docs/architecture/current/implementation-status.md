@@ -24,8 +24,8 @@ One Runtime Root owns lifecycle, readiness, scheduling, process fencing, and the
 | --- | --- | --- |
 | Thin MCP Gateway | Implemented | `src/runtime/gateway/mcp/router.ts`, `src/cli/mcp/server.ts`, `src/cli/mcp/transports/http.ts` |
 | Thin Harness V1 Fast Path | Implemented | `src/runtime/execution/thin-harness/` router, fast executor, receipts, typed batch, lightweight lanes; eligible short repository commands skip Local Job / ExecutionJob; docs in `thin-harness-v1.md` |
-| Deterministic MCP transport lifecycle | Implemented | global `McpSessionRegistry`, three-path DELETE support, stream leases, active-POST protection, capacity-aware `/ready`, and reconnect regression coverage |
-| Persist-before-execute durable commands | Implemented | `src/runtime/execution/jobs/store.ts`, global request index and semantic conflict detection |
+| Deterministic MCP transport lifecycle | Implemented | global `McpSessionRegistry`, stream leases, active-POST protection, capacity-aware `/ready`, and recoverable tool-surface fencing that keeps the stale transport alive until replacement initialize supersedes it |
+| Unified Process Runtime | Implemented | `src/runtime/execution/process-runtime/`; repository commands and checks spawn once, return stable Process handles, preserve output/completion state, and attach later status/wait/log/cancel calls without re-execution |
 | Independent daemon lifecycle | Deleted | `runtime-status-client.ts` is read-only observation over Canonical Forge Runtime state and cannot start, replace, recover, or fence Workers |
 | Canonical Single Runtime | Implemented in source; live activation separately authorized | `src/runtime/root/` starts Controller Services, SQLite, Scheduler, Gateway Adapter, and MCP Transport under one lifecycle owner |
 | Legacy Supervisor/Ingress/slot lifecycle | Deleted | Supervisor, Stable Ingress, slots, bootstrap authority, restart coordinator, component rollout/rollback, and repository lifecycle scripts are absent and guarded against reintroduction |
@@ -58,17 +58,15 @@ One Runtime Root owns lifecycle, readiness, scheduling, process fencing, and the
 
 ## Public Contract and Tool Surface
 
-The public MCP surface is stable and profile-compatible:
+The normal ChatGPT-facing MCP surface is a bounded **19-tool** schema. The five preferred orchestration facades are `rh_status`, `rh_access`, `rh_inbox`, `rh_context`, and `rh_work`. Repository selection, `repository_command_execute`, bounded source read/patch, focused checks, typed plugin dispatch, Process lifecycle, and bounded result access complete the default surface defined by `src/cli/mcp/toolset-names.ts`.
 
-- `advanced` is the default repair-capable schema, capped at 128 high-value tools;
-- `core` is retained as an alias for that same schema so legacy config cannot accidentally remove capabilities;
-- `full` exposes every historical definition for exhaustive compatibility diagnosis.
+The Runtime keeps internal atomic handlers and an exhaustive `full` compatibility profile without advertising them to ordinary ChatGPT discovery. `core` remains a compatibility label for the same bounded default surface. Request/Full Access changes execution authorization, not tool discovery.
 
-The five preferred orchestration facades are `rh_status`, `rh_access`, `rh_inbox`, `rh_context`, and `rh_work`. Direct Edit, command, Git, Work/Job, Agent, Campaign, plugin, browser, iOS, artifact, and recovery entry points are also available in the stable schema. Request/Full Access changes execution approval only and never changes `tools/list` or requires reconnecting.
+Small understood work is Direct-first. Repository commands and checks use Unified Process Runtime and return one stable Process lifecycle; known-long calls can return a handle immediately, while later `process_get`, `process_wait`, `process_logs`, and `process_cancel` attach to that same physical execution. Durable Work, isolated worktrees, workers, or campaigns are introduced when recovery, dependency tracking, isolation, parallelism, or a longer lifecycle actually requires them.
 
-Capability descriptors now identify domain group, operation class, risk, facade route, and schema source. `rh_status`, `rh_context`, and `controller_capabilities` report grouped metadata for controller, repository-core, Git, Issue/Task, Campaign, Browser, iOS, plugin, evidence, and runtime-maintenance capabilities. This is a three-layer contract—workflow facade, typed atomic tools, internal handlers—not dynamic tool loading. The current MCP transport still exposes a static schema, so reconnecting is only necessary when tool names or input schemas change.
+Tool names and input schemas are fingerprinted. A stale MCP session receives `MCP_TOOL_SURFACE_CHANGED` with a reinitialize instruction while its transport remains available for the host to observe the reset. Replacement initialize then supersedes and closes the old session; schema rotation must not unregister the Forge namespace from the host conversation.
 
-Potentially long or mutating calls acknowledge a durable Job, and their result remains available through `get_job` or bounded artifacts.
+Capability descriptors identify domain group, operation class, risk, facade route, and schema source. Plugin completeness is separate from the core Runtime baseline: optional plugin health does not redefine repository execution or Runtime readiness unless the requested operation explicitly depends on that plugin.
 
 ## Runtime Truth
 

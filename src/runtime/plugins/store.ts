@@ -335,7 +335,7 @@ function validateActionArguments(action: AssistantPluginActionDescriptor, args: 
 
 function enforceConfirmation(action: AssistantPluginActionDescriptor, request: AssistantPluginActionRequest): void {
   // Ordinary authorization is delegated to the host AI/tool permission model.
-  // Repo Harness keeps only the explicit strong-confirmation boundary for
+  // Forge keeps only the explicit strong-confirmation boundary for
   // destructive or irreversible plugin operations.
   if (action.confirmation === 'none' || action.confirmation === 'authorization') return;
   if (action.confirmation === 'strong_confirmation') {

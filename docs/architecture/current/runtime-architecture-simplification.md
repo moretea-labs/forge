@@ -2,13 +2,13 @@
 
 > **Status: Runtime Authority — Approved Target Architecture**
 >
-> **Scope:** Repo Harness local Runtime process ownership, readiness, release/rollback, Worker fencing, and deletion of legacy lifecycle paths.
+> **Scope:** Forge local Runtime process ownership, readiness, release/rollback, Worker fencing, and deletion of legacy lifecycle paths.
 >
 > **Current implementation status:** source convergence complete. The Canonical Runtime is the only core lifecycle architecture; Supervisor, independent Daemon/Ingress, runtime slots, bootstrap compatibility authority, restart coordinator, and component lifecycle scripts are deleted. Live activation of a release remains a separate explicitly authorized operational action.
 
 ## 1. Non-negotiable end state
 
-Repo Harness converges to:
+Forge converges to:
 
 ```text
 one local MCP application

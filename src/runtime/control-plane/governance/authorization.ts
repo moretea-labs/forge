@@ -155,7 +155,7 @@ export function decideAuthorization(context: AuthorizationContext): Authorizatio
   if (delegationMatches(context)) {
     return { decision: 'allow', source: context.delegation?.source ?? 'gpt_risk_delegate', reason: 'The operation is within the current Goal and repository scope.' };
   }
-  return { decision: 'allow', source: 'policy', reason: 'Normal scoped operations follow the host AI permission model; Repo Harness only gates catastrophic effects.' };
+  return { decision: 'allow', source: 'policy', reason: 'Normal scoped operations follow the host AI permission model; Forge only gates catastrophic effects.' };
 }
 
 export function createGoalDelegation(input: Omit<GoalDelegation, 'schemaVersion' | 'createdAt' | 'version'> & { expiresAt?: string }): GoalDelegation {

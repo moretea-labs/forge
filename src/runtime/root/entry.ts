@@ -22,7 +22,7 @@ function readAuthToken(path: string): string {
 
 export async function runCanonicalRuntimeCli(argv = process.argv): Promise<void> {
   const command = new Command('forge-runtime')
-    .description('Run the canonical single Repo Harness Runtime root process')
+    .description('Run the canonical single Forge Runtime root process')
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
     .requiredOption('--repo <path>', 'Explicit repository root')
     .requiredOption('--release-manifest <path>', 'Complete immutable release manifest')

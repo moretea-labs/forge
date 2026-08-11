@@ -64,7 +64,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          args=("${GITHUB_REF_NAME}" --verify-tag --generate-notes --title "Matea ${RELEASE_VERSION}")
+          args=("${GITHUB_REF_NAME}" --verify-tag --generate-notes --title "Forge ${RELEASE_VERSION}")
           if [[ "${RELEASE_CHANNEL}" == "next" ]]; then
             args+=(--prerelease)
           fi

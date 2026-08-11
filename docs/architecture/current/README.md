@@ -151,7 +151,7 @@ The architecture baseline is complete only when:
 See [Architecture Governance Contract](governance.md).
 
 
-- [Repo Harness + ChatGPT current comprehensive architecture (zh-CN)](chatgpt-Forge-current-architecture.zh-CN.md)
+- [Forge + ChatGPT current comprehensive architecture (zh-CN)](chatgpt-Forge-current-architecture.zh-CN.md)
 - [Approved target architecture (zh-CN)](approved-target-architecture.zh-CN.md)
 - [Personal assistant/plugin baseline](personal-assistant-plugin-baseline.md)
 - [Target requirements traceability](target-requirements-traceability.md)

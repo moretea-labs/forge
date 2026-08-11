@@ -1,5 +1,5 @@
 /**
- * Existing-repo harness bootstrap/update implementation.
+ * Existing-repository Forge bootstrap/update implementation.
  *
  * This backs the public `forge adopt` command and the legacy
  * `forge-init` skill facade: default the target repo to cwd,
@@ -190,7 +190,7 @@ export function validateRepoAdoptionTarget(
       step: "validate repo target",
       status: "failed",
       detail:
-        `refusing to apply repo harness to HOME (${repoRoot}); run forge adopt --repo <git-repo> from an intended project`,
+        `refusing to apply Forge to HOME (${repoRoot}); run forge adopt --repo <git-repo> from an intended project`,
     };
   }
 
@@ -460,7 +460,7 @@ export function runInit(opts: InitCommandOptions = {}): InitCommandResult {
     sourceRoot,
     commandEnv,
   );
-  steps.push(withStepName(migrate, apply ? "apply repo harness" : "plan repo harness", repoRoot));
+  steps.push(withStepName(migrate, apply ? "apply Forge" : "plan Forge", repoRoot));
 
   if (externalSkills && apply && migrate.status === "ok") {
     steps.push(...installExternalSkills(sourceRoot, target, commandEnv));
@@ -471,7 +471,7 @@ export function runInit(opts: InitCommandOptions = {}): InitCommandResult {
       detail: !externalSkills
         ? "disabled"
         : apply
-          ? "repo harness did not apply cleanly"
+          ? "Forge did not apply cleanly"
           : "dry-run",
     });
   }
@@ -559,7 +559,7 @@ export function runInit(opts: InitCommandOptions = {}): InitCommandResult {
     steps.push({
       step: "sync brain docs",
       status: "skipped",
-      detail: brainMode === "skip" ? "disabled" : apply ? "repo harness did not apply cleanly" : "dry-run",
+      detail: brainMode === "skip" ? "disabled" : apply ? "Forge did not apply cleanly" : "dry-run",
     });
   }
 
@@ -589,9 +589,9 @@ export function runInit(opts: InitCommandOptions = {}): InitCommandResult {
       }
     }
     const verifyStep = runProcess("bash", ["scripts/check-task-workflow.sh", "--strict"], repoRoot, verifyEnv);
-    steps.push(withStepName(verifyStep, "verify repo harness", "scripts/check-task-workflow.sh --strict"));
+    steps.push(withStepName(verifyStep, "verify Forge", "scripts/check-task-workflow.sh --strict"));
   } else {
-    steps.push({ step: "verify repo harness", status: "skipped" });
+    steps.push({ step: "verify Forge", status: "skipped" });
   }
 
   const failed = steps.some((step) => step.status === "failed");

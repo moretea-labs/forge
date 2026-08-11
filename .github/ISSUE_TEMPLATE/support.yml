@@ -6,7 +6,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: repo-harness version or commit
+      label: Forge version or commit
     validations:
       required: true
   - type: input

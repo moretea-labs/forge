@@ -223,7 +223,7 @@ export function buildProgram(): Command {
     .option('--repo <path>', 'Target repository path (defaults to cwd)')
     .option('--archive <path>', 'Runtime reclaim archive to restore when action is rollback')
     .option('--transaction <path>', 'Adoption transaction manifest to restore when action is rollback')
-    .option('--dry-run', 'Plan repo harness changes without applying them')
+    .option('--dry-run', 'Plan Forge changes without applying them')
     .option('--target <target>', `Host target for readiness checks and optional global bootstrap: ${VALID_TARGETS.join('|')}`, 'both')
     .option('--no-sync-skill', 'Compatibility no-op; adopt never refreshes user-level skill aliases')
     .option('--no-host-adapters', 'Compatibility no-op; adopt never writes global Codex/Claude hook adapters')

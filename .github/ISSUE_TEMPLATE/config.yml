@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security report
-    url: https://github.com/moretea-labs/matea/security
+    url: https://github.com/moretea-labs/forge/security
     about: Report vulnerabilities privately; do not disclose exploit details in a public issue.
   - name: Documentation index
-    url: https://github.com/moretea-labs/matea/blob/main/docs/README.md
+    url: https://github.com/moretea-labs/forge/blob/main/docs/README.md
     about: Check installation, platform, connector, and troubleshooting guides first.

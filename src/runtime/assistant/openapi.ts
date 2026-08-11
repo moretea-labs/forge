@@ -2,7 +2,7 @@ export function assistantOpenApiSchema(baseUrl = 'http://127.0.0.1:8766'): Recor
   return {
     openapi: '3.1.0',
     info: {
-      title: 'Repo Harness Local Personal Assistant API',
+      title: 'Forge Local Personal Assistant API',
       version: '0.2.0',
       description: 'High-level ChatGPT Action surface for natural-language intents, routines, inbox, guarded proposals, and local execution.',
     },

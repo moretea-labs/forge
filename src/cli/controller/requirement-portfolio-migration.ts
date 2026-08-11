@@ -49,14 +49,14 @@ interface CanonicalRequirementDefinition {
 export const CANONICAL_REQUIREMENTS: readonly CanonicalRequirementDefinition[] = [
   {
     requirementId: 'REQ-CONTROL-PLANE',
-    title: '让 Repo Harness 只展示清晰需求并自动管理执行细节',
+    title: '让 Forge 只展示清晰需求并自动管理执行细节',
     outcomeStatement: '用户默认只管理清晰的 Requirement，技术计划、执行尝试和维护证据按需查看。',
     state: 'active',
     activePlanIssueId: 'ISS-20260802-7E1D69',
   },
   {
     requirementId: 'REQ-RUNTIME-AVAILABILITY',
-    title: '让 Repo Harness 升级和重启时保持可用',
+    title: '让 Forge 升级和重启时保持可用',
     outcomeStatement: '升级、切换和重启期间保持可恢复、可验证且不中断控制能力。',
     state: 'active',
     activePlanIssueId: 'ISS-20260802-539E7F',
@@ -87,7 +87,7 @@ export const CANONICAL_REQUIREMENTS: readonly CanonicalRequirementDefinition[] =
   },
   {
     requirementId: 'REQ-PHYSICAL-IOS',
-    title: '让 Repo Harness 稳定、快速地操作物理 iPhone',
+    title: '让 Forge 稳定、快速地操作物理 iPhone',
     outcomeStatement: '物理 iPhone连接、交互、恢复和自动化在真实设备上稳定可用。',
     state: 'active',
     activePlanIssueId: 'ISS-20260720-66E25D',

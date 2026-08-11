@@ -4,7 +4,7 @@
 
 ## 1. System Definition
 
-forge Controller Runtime is an Agent Engineering Control Plane for one or more local Git repositories. ChatGPT, Local UI, CLI and optional GitHub integrations submit decisions and commands. The runtime persists accepted work, schedules it under repository-owned conflict rules, executes it outside the Gateway process and records evidence for recovery, acceptance and release.
+Forge Controller Runtime is an Agent Engineering Control Plane for one or more local Git repositories. ChatGPT, Local UI, CLI and optional GitHub integrations submit decisions and commands. The runtime persists accepted work, schedules it under repository-owned conflict rules, executes it outside the Gateway process and records evidence for recovery, acceptance and release.
 
 ## 2. Canonical Runtime Topology
 
@@ -40,9 +40,9 @@ Implemented as a module under:
 - `src/runtime/gateway/mcp/router.ts`
 - `src/runtime/gateway/mcp/runtime-tools.ts`
 
-The Gateway Adapter performs authentication, schema validation, repository selection, compact reads and Job admission inside the Canonical Runtime. Mutating or potentially long legacy tools are converted to durable execution records and acknowledged immediately. It does not own process lifecycle, start an Agent directly, or wait for a full check in the MCP request stack.
+The Gateway Adapter performs authentication, schema validation, explicit repository selection, bounded context/results, and routing inside the Canonical Runtime. Eligible reads and bounded actions may complete Direct; repository commands and checks enter Unified Process Runtime; durable Work is admitted only when lifecycle, recovery, dependency, or isolation requirements justify it. The Gateway does not make the HTTP request the owner of a long-running process.
 
-Bounded direct reads include health, Controller context, Job/Run status and bounded logs. Overload is rejected with explicit 429/503 responses instead of unbounded accumulation.
+Bounded direct reads include health, Controller context, repository state, Process/Work status, and bounded results. Overload is rejected with explicit 429/503 responses instead of unbounded accumulation.
 
 The three MCP HTTP paths share one global session registry. SSE streams are bounded transport leases, not work ownership. Client DELETE, explicit prior-session replacement, lease expiry, absolute lifetime and oldest-safe capacity eviction may close a session with no active POST; capacity management never evicts active POST work. `/health` reports the global pool, while `/ready` reports whether a new initialize can be admitted safely.
 
@@ -81,21 +81,15 @@ Long work runs after the Actor releases its short transaction lock.
 
 ## 6. Execution Plane
 
-`ExecutionJob` is the common asynchronous protocol for:
+Forge uses three execution depths rather than forcing every operation through one durable protocol:
 
-- MCP operations;
-- Agent dispatch;
-- checks;
-- Edit verification;
-- repository commands;
-- integration;
-- release gates;
-- reconciliation;
-- Schedule occurrences.
+1. **Direct** — bounded readonly observations, Direct Edit, and explicitly authorized ephemeral workspace actions can complete without manufacturing Work, Process, Lease, or Worker state when none is required.
+2. **Unified Process Runtime** — repository commands and checks spawn one physical process, persist a stable Process identity and lifecycle, and support status/wait/log/cancel attachment without re-execution. Resource Claims and Leases protect conflicting effects.
+3. **Durable Work / Scheduler** — long-lived, dependency-aware, recoverable, isolated, or parallel objectives use Work contracts, repository actors, workers, and optional worktrees.
 
-Every Job has `requestId`, `semanticKey`, repository identity, deadline, attempts, Claims, Lease references and evidence IDs. Repeated request IDs return the same Job unless the semantic key differs, in which case admission fails explicitly. Repository command input has one canonical boundary: typed argv arrays preserve executable and argument boundaries end to end and execute without a shell; legacy command strings remain supported only through an explicit compatibility shell boundary. Preview, policy classification, scope checks, approval digests, durable payloads, Workers and the executor consume the same representation.
+Repository command input has one canonical boundary: typed argv arrays preserve executable and argument boundaries end to end and execute without a shell; legacy command strings remain supported only through an explicit compatibility shell boundary. Policy classification, path scope, authorization, Process execution, and result receipts consume the same representation.
 
-Worker processes heartbeat the Job and renew Leases. Fenced writes reject stale ownership. Result bodies are bounded; oversized results become addressable Artifacts.
+Process records and durable Work are both idempotently addressable by their caller-visible identities. Fenced writes reject stale ownership. Result bodies are bounded; oversized results become addressable Artifacts. Legacy ExecutionJob records remain readable as compatibility state but are not the ordinary command/check hot path.
 
 ## 7. Resource Plane
 

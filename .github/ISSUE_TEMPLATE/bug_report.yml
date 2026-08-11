@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible repo-harness defect
+description: Report a reproducible Forge defect
 title: "[Bug]: "
 labels: ["bug", "needs-triage"]
 body:
@@ -9,7 +9,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: repo-harness version or commit
+      label: Forge version or commit
       placeholder: 1.4.0-rc.6 or commit SHA
     validations:
       required: true
