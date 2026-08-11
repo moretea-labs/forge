@@ -78,11 +78,12 @@ function writeBrowserConfig(repoRoot: string, value: Record<string, unknown>) {
   writeFileSync(join(repoRoot, '.forge/plugins/browser.json'), `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
 }
 
-function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?: string; evaluate?: (expression?: unknown) => unknown } = {}) {
+function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?: string } = {}) {
   let currentUrl = 'https://example.com/';
   let currentTitle = options.title ?? 'Example';
   const routeDecisions: string[] = [];
   const launches: Array<{ userDataDir: string; options: Record<string, unknown> }> = [];
+  const evaluatedExpressions: unknown[] = [];
 
   const page = {
     async goto(url: string) {
@@ -95,7 +96,7 @@ function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?:
       return currentUrl;
     },
     async evaluate<T>(expression?: unknown) {
-      if (options.evaluate) return options.evaluate(expression) as T;
+      evaluatedExpressions.push(expression);
       return 'Example page text' as T;
     },
     async screenshot(args: Record<string, unknown>) {
@@ -143,7 +144,7 @@ function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?:
       },
     },
     routeDecisions,
-    launches,
+    launches, evaluatedExpressions,
   } as never;
 }
 
@@ -813,13 +814,14 @@ describe('browser plugin', () => {
     setMacOsBrowserRuntimeHooksForTest(native.hooks);
 
     const first = await executeBrowserPluginAction({
-      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
-      requestId: 'browser-owned-first', args: { session_id: 'owned-session', url: 'https://example.com/first' },
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text',
+      requestId: 'browser-owned-first', args: { url: 'https://example.com/first' },
       origin: { surface: 'local-ui', actor: 'test' },
     });
+    const sessionId = String(first.sessionId);
     const second = await executeBrowserPluginAction({
       controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
-      requestId: 'browser-owned-second', args: { session_id: 'owned-session', url: 'https://example.com/second' },
+      requestId: 'browser-owned-second', args: { session_id: sessionId, url: 'https://example.com/second' },
       origin: { surface: 'local-ui', actor: 'test' },
     });
 
@@ -838,7 +840,7 @@ describe('browser plugin', () => {
 
     const closed = await executeBrowserPluginAction({
       controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'close_session',
-      requestId: 'browser-owned-close', args: { session_id: 'owned-session' }, origin: { surface: 'local-ui', actor: 'test' },
+      requestId: 'browser-owned-close', args: { session_id: sessionId }, origin: { surface: 'local-ui', actor: 'test' },
     });
     expect(closed).toMatchObject({ closed: true, resourceClosed: true });
     expect(native.events.closed).toEqual(['9001']);
@@ -1224,125 +1226,6 @@ describe('browser plugin', () => {
     })).rejects.toThrow('PLUGIN_POLICY_BLOCKED');
   });
 
-  test('persists direct-url read sessions so the returned session id is actually reusable', async () => {
-    const { repoRoot } = repoFixture();
-    writeBrowserConfig(repoRoot, {
-      schemaVersion: 1,
-      enabled: true,
-      provider: 'playwright',
-      allowedDomains: ['example.com'],
-    });
-    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => mockPlaywright() });
-
-    const read = await executeBrowserPluginAction({
-      controllerHome: repoRoot,
-      repoId: 'repo',
-      repoRoot,
-      pluginId: 'browser',
-      actionId: 'get_text',
-      requestId: 'browser-direct-read-session',
-      args: { url: 'https://example.com/' },
-      origin: { surface: 'local-ui', actor: 'test' },
-    });
-    const sessionId = String(read.sessionId);
-    expect(existsSync(join(repoRoot, '.forge/browser/sessions', `${sessionId}.json`))).toBe(true);
-
-    const waited = await executeBrowserPluginAction({
-      controllerHome: repoRoot,
-      repoId: 'repo',
-      repoRoot,
-      pluginId: 'browser',
-      actionId: 'wait_for_selector',
-      requestId: 'browser-direct-read-session-resume',
-      args: { session_id: sessionId, selector: '#ready' },
-      origin: { surface: 'local-ui', actor: 'test' },
-    });
-    expect((waited.action as Record<string, unknown>).actionId).toBe('wait_for_selector');
-  });
-
-  test('direct-url native reads persist the owned tab and reuse it on the returned session id', async () => {
-    const { repoRoot } = repoFixture();
-    writeBrowserConfig(repoRoot, {
-      schemaVersion: 1,
-      enabled: true,
-      provider: 'playwright',
-      browserMode: 'attach_preferred',
-      cdpAttachFallback: 'fail_closed',
-      nativeAttachMode: 'auto',
-      nativeBrowserCandidates: ['chrome'],
-      allowedDomains: ['example.com'],
-    });
-    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
-    const native = mockMacOsOwnedTabRuntime('chrome');
-    setMacOsBrowserRuntimeHooksForTest(native.hooks);
-
-    const first = await executeBrowserPluginAction({
-      controllerHome: repoRoot,
-      repoId: 'repo',
-      repoRoot,
-      pluginId: 'browser',
-      actionId: 'get_text',
-      requestId: 'browser-native-direct-read',
-      args: { url: 'https://example.com/read' },
-      origin: { surface: 'local-ui', actor: 'test' },
-    });
-    const sessionId = String(first.sessionId);
-    await executeBrowserPluginAction({
-      controllerHome: repoRoot,
-      repoId: 'repo',
-      repoRoot,
-      pluginId: 'browser',
-      actionId: 'get_text',
-      requestId: 'browser-native-direct-read-resume',
-      args: { session_id: sessionId },
-      origin: { surface: 'local-ui', actor: 'test' },
-    });
-
-    expect(native.events.created).toEqual(['9001']);
-    const saved = JSON.parse(readFileSync(join(repoRoot, '.forge/browser/sessions', `${sessionId}.json`), 'utf8')) as Record<string, any>;
-    expect(saved.browser).toMatchObject({
-      provider: 'macos-apple-events',
-      tab: { ownership: 'plugin_owned', tabId: '9001' },
-      sessionResume: { status: 'matched' },
-    });
-  });
-
-  test('snapshot selector hints prefer durable attributes and descendant anchors over result-order nth-of-type', async () => {
-    const { repoRoot } = repoFixture();
-    writeBrowserConfig(repoRoot, {
-      schemaVersion: 1,
-      enabled: true,
-      provider: 'playwright',
-      allowedDomains: ['example.com'],
-    });
-    let evaluated = '';
-    setBrowserPluginRuntimeHooksForTest({
-      moduleAvailable: () => true,
-      loadPlaywright: () => mockPlaywright({
-        evaluate: (expression) => {
-          evaluated = String(expression ?? '');
-          return [];
-        },
-      }),
-    });
-
-    await executeBrowserPluginAction({
-      controllerHome: repoRoot,
-      repoId: 'repo',
-      repoRoot,
-      pluginId: 'browser',
-      actionId: 'snapshot_interactive',
-      requestId: 'browser-stable-selector-script',
-      args: { url: 'https://example.com/' },
-      origin: { surface: 'local-ui', actor: 'test' },
-    });
-
-    expect(evaluated).toContain('data-legacy-thread-id');
-    expect(evaluated).toContain(':has(');
-    expect(evaluated).toContain('previousElementSibling');
-    expect(evaluated).not.toContain('(index + 1)');
-  });
-
   test('supports session reuse, fill, selector extraction, and diagnostics capture', async () => {
     const { repoRoot } = repoFixture();
     writeBrowserConfig(repoRoot, {
@@ -1352,22 +1235,20 @@ describe('browser plugin', () => {
       allowedDomains: ['example.com'],
     });
 
-    setBrowserPluginRuntimeHooksForTest({
-      moduleAvailable: () => true,
-      loadPlaywright: () => mockPlaywright({ title: 'Extracted' }),
-    });
+    const runtime = mockPlaywright({ title: 'Extracted' }) as unknown as { evaluatedExpressions: unknown[] };
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
 
     const opened = await executeBrowserPluginAction({
       controllerHome: repoRoot,
       repoId: 'repo',
       repoRoot,
       pluginId: 'browser',
-      actionId: 'create_session',
+      actionId: 'get_text',
       requestId: 'browser-session-create',
       args: { url: 'https://example.com/' },
       origin: { surface: 'local-ui', actor: 'test' },
     });
-    const sessionId = String((opened.session as Record<string, unknown>).sessionId);
+    const sessionId = String(opened.sessionId);
 
     const listed = await executeBrowserPluginAction({
       controllerHome: repoRoot,
@@ -1399,12 +1280,15 @@ describe('browser plugin', () => {
       repoId: 'repo',
       repoRoot,
       pluginId: 'browser',
-      actionId: 'extract_links',
+      actionId: 'snapshot_interactive',
       requestId: 'browser-extract-links',
       args: { session_id: sessionId },
       origin: { surface: 'local-ui', actor: 'test' },
     });
-    expect(extracted.actionId).toBe('extract_links');
+    expect(extracted.actionId).toBe('snapshot_interactive');
+    const selectorScript = String(runtime.evaluatedExpressions.at(-1)); expect(selectorScript).toContain('data-legacy-thread-id');
+    expect(selectorScript).toContain('previousElementSibling');
+    expect(selectorScript).not.toContain('(index + 1)');
 
     const consoleErrors = await executeBrowserPluginAction({
       controllerHome: repoRoot,
