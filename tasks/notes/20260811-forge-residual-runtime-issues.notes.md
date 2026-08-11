@@ -1,235 +1,82 @@
 # Forge residual runtime / execution issues (2026-08-11)
 
-> **Status**: Closed baseline record; historical sections below are retained only as evidence.
-> **Purpose**: Single repository-readable handoff for future ChatGPT / repo-harness sessions. Read this before opening new performance/runtime work so already-fixed items are not rediscovered.
-> **Scope**: Runtime/MCP execution latency, false serialization, tool-surface coherence, Desktop Operator hot paths, and operational baseline state found during the 2026-08-10/11 optimization sessions.
-> **Authority note**: This is a source-tree issue ledger, not permission to activate/roll out a Runtime release. The user explicitly requires **no Runtime rollout**; stage/verify inactive candidates only unless that constraint is changed.
-
-## Final closeout (2026-08-11)
-
-- Live Registry identity is correct and stable: `repo_123b7cf58b6b17b5cbe46a56` maps to canonical root `/Users/greyson/DevProjects/forge`, canonical remote `github.com/moretea-labs/matea`, and GitHub routing `moretea-labs/matea`. Forge is the product/package name; `matea` is the GitHub repository and historical source name. No registry remap is needed.
-- The deployed Runtime is healthy with the bounded 19-tool default surface. The Recovery watchdog has zero counted Runtime restarts/failures and no rollback or recovery exhaustion. Historical single-tick degraded audit entries lacked failed-probe provenance; source now persists a bounded (32), deduplicated probe record with component attribution before recording the audit event, without changing the existing recovery budget.
-- Typed readonly claim coverage and the real multi-repository/different-checkout acceptance show no source/Git false serialization. Ambiguous shell, Python, and Node commands remain conservative by design.
-- Normal Direct completion is reconciled to its exact commit receipt; maintenance discovery also reconciles committed/superseded session metadata before creating candidates. The live audit reduced stale Edit Session candidates from 15 dirty plus 6 empty-open sessions to zero; unique uncommitted changes and 100 ownership-unproven temp entries were explicitly retained.
-- The normal Process create/terminal path now maintains its active recovery index incrementally. Full rebuild remains the corruption/recovery fallback, so historical Process volume no longer imposes a normal-path directory scan.
-- The self-host source repository intentionally has no tracked `.ai/harness/workflow-contract.json`; the package asset is authoritative and downstream adoption generates the runtime copy. The strict checker therefore reports only the documented bootstrap advisory, not a missing source contract.
-- Test-line budget remains `42200`; redundant runner/environment tests were removed rather than raising the limit. The replacement recovery-index and watchdog diagnostic coverage keeps the manifest within budget.
-
-Do not reopen a historical item below without new reproduction evidence. No Runtime rollout is implied by this source closeout.
-
-## Current baseline snapshot
-
-- Repository: `repo_123b7cf58b6b17b5cbe46a56` (`/Users/greyson/DevProjects/forge`).
-- The in-progress single-`ps` change was started from source around `1d04859b`; while this ledger was being written, `main` advanced concurrently to `088864ba` (`docs(lessons): scope restart budgets to releases`). Re-read/review the three dirty single-`ps` files against current `main` before committing them.
-- Active Runtime is still release `1786407449264-6e0dd52179b3104ca24ff9b1ecf952c8fc344344`; active MCP reports **19/19** tools.
-- Inactive candidate `1786419530424-1d04859bdee73f6e4d3aad43c875d09007b3d0fa` was successfully staged and validated only; it was **not published or activated**.
-- Desktop Operator external registration is live at revision **11**. Stable provider health at last check: `ready`, Accessibility=`true`, Screen Recording=`true`, activeSessionCount=`0`.
-- Unrelated local state must not be swept into commits: `auth/` is untracked.
-
-## 2026-08-11 reconciliation (authoritative after `ff9fac14`)
-
-- **Main:** `ff9fac14` (`merge: close residual runtime reliability issues`).
-- **Active Runtime:** `1786421020549-339fe090122a9e6d1f9f298d4427b2fbc90b19ad`, source `339fe090`; it contains `285e3e0e`, so external-provider validation reuse is present in the active artifact. Runtime activation was not performed for this reconciliation.
-- **Recovery:** current installed release remains source `5aff75a7` until the new main-based Recovery-only release is activated; Runtime and Recovery release identities must not be conflated.
-- **Tool surface:** live public MCP `tools/list` returned exactly 19 names with fingerprint `682741764164c5fa79681055bc2ef0d65fb6abb67cfa2855a5be6ccb14059745` after a prior bounded public probe timeout. Do not reopen surface-coherence work without a real discovery/invoke mismatch.
-- **Watchdog flap:** exact failed probe is public `mcp_tools_list` timing out at its bounded deadline; local Runtime, runtime gateway, Recovery gateway, and Recovery tunnel were healthy. `watchdog-diagnostics.json` now holds bounded/deduplicated, release-scoped `public_mcp` evidence. No Runtime restart or rollback occurred.
-- **Process active index:** resolved in main: normal create/terminal changes maintain the v2 recoverable index incrementally; one full rebuild remains only for missing/corrupt index recovery. This is the single Process-record authority, not a second authority.
-- **Direct-edit maintenance:** resolved in main for committed/mismatched sessions; unique uncommitted changes remain protected. Live reconciliation reduced stale edit sessions to zero; ownership-unproven temp entries are retained, not deleted.
-- **Combined single-`ps` experiment:** reviewed and functionally passed 65 focused tests plus typecheck, but clean same-machine A/B was not stable enough to attribute a benefit (baseline/candidate/repeated baseline process-start p50: 102.49/184.19/225.50 ms). The uncommitted experiment was reverted and must not be revived without a controlled benchmark.
-- **Runtime authority fence for ordinary bounded source writes:** **resolved** by `5c881848`. Explicit ephemeral-workspace authority now uses the existing bounded direct executor for local source writes, so it does not mint a Runtime-fenced Process lease or a Git snapshot. Unknown shell/Python/Node remains conservatively managed; release, remote, and destructive effects remain fail-closed.
-- **External-provider reuse live acceptance:** source inclusion is proven; repeated real plugin-action evidence and identity-change/staleness failure evidence are **still open**.
-- **macOS Automation historical principal cleanup:** **operational follow-up**. Preserve the signed Forge Desktop Operator grant; use selector-bound System Settings readback only. Never edit TCC DB or use `tccutil reset`.
-
-## P0 — Client/server MCP tool-surface coherence is still broken on the active Runtime
-
-**Status:** fixed/strengthened in source candidate; active Runtime still reproduces the problem.
-
-### Evidence
-
-- Active server truth is 19/19 tools.
-- ChatGPT connector discovery in existing sessions still advertises hidden/legacy atomics such as `list_issues`, `get_project_board`, `search_repository`, etc.; calling them returns `TOOL_NOT_FOUND`.
-- Conversely, server-supported process lifecycle tools have intermittently been missing from client discovery.
-- This causes wasted tool-selection round trips and pushes other sessions toward shell fallbacks.
-
-### Relevant source work
-
-- `c1b44e8b fix(mcp): fence sessions by tool surface`
-- `ef217778 feat(mcp): expose bounded typed plugin execution`
-- Source default surface is now intended to be **20 tools**, adding only `plugin_action_execute`; plugin action schemas are loaded through `rh_context(capability_id=plugin.<plugin>.<action>)`.
-
-### Acceptance
-
-1. A newly connected ChatGPT session sees exactly the server-advertised bounded surface.
-2. Existing session/tool-list change handling cannot invoke tools absent from current server fingerprint.
-3. Server-supported bounded process/plugin tools are discoverable without reconnect hacks.
-4. No `TOOL_NOT_FOUND` caused solely by stale client schema during normal session lifetime.
-
-## P0 — Legacy shell/localbridge plugin operations still acquire false repository write locks
-
-**Status:** partially fixed in source; still reproduced on active Runtime and old call paths.
-
-### Evidence
-
-Observed host/localbridge requests such as:
-
-- `bash -lc -> osascript -> Chrome/Vivaldi`
-- `bash -lc -> bun -e -> submitAssistantPluginAction(...)`
-- `bash -lc -> curl localhost local-bridge -> Gmail/plugin self-test`
-
-have acquired combinations of:
-
-- `workspace:<checkout> write`
-- `git-index:<checkout> exclusive`
-- `git-refs:<repo> exclusive`
-
-even though they do not mutate Forge source/Git. These claims blocked unrelated source edits and benchmarks. One localbridge self-test also failed in its shell/curl/python plumbing, demonstrating that the fallback is both slower and more fragile than typed plugin execution.
-
-### Relevant source work
-
-- `84ecef84 perf(runtime): avoid false host-operation serialization`
-  - respects single-quoted JS when detecting shell substitutions;
-  - recognizes strict browser AppleScript wrappers as host/browser operations.
-- `ef217778` provides the intended typed plugin dispatcher so Browser/Desktop/Gmail/etc. do not need repository-command shell wrappers.
-
-### Acceptance
-
-1. Normal Browser/Desktop/Gmail typed actions execute through plugin capability claims, not repo workspace/Git claims.
-2. Host/localbridge diagnostics that do not touch repository state cannot block source writers.
-3. Mixed/ambiguous shell remains fail-closed; do not teach the shell classifier arbitrary JavaScript semantics.
-
-## P1 — Runtime authority fencing can still block ordinary source-tree writes
-
-**Status:** reproduced on the active Runtime; root cause not yet isolated.
-
-### Evidence
-
-While persisting this ledger, a repository-scoped Python write request was admitted but failed with `PROCESS_LEASE_CONFLICT: runtime-authority@runtime-fence`. The same source checkout has also accepted normal direct/safe-patch writes at other times, so this is intermittent rather than a blanket policy.
-
-### Direction / acceptance
-
-1. Determine whether the blocker was a legitimate concurrent release/runtime authority transition or an over-broad fence applied to ordinary source writes.
-2. Normal bounded repository edits must not be blocked by Runtime release authority unless they truly conflict with an active source/release transition.
-3. Preserve fail-closed fencing for actual Runtime activation/release mutation; do not weaken release authority to improve latency.
-4. Add a regression that distinguishes source-workspace claims from runtime-release authority claims.
-
-## P1 — Process admission/start has ~60–90 ms fixed tax
-
-**Status:** in progress; uncommitted single-`ps` optimization exists in the working tree and has correctness tests, but clean A/B benchmark is still required before commit.
-
-### Baseline benchmark (7 iterations, isolated temp repositories)
-
-- durable Process admission/persistence: **60.12 ms p50 / 62.10 ms p95**
-- tiny Process start+complete: **89.95 ms p50 / 91.87 ms p95**
-- simple Check completion: **101.41 ms p50**
-- two-repository concurrency: successRate=1, contentionRate=0
-- same-repository/different-checkout concurrency: successRate=1, contentionRate=0
-- check coalescing, cross-checkout reuse, dirty invalidation: all succeeded
-
-### Root cause under active investigation
-
-`captureIdentity()` currently obtains process identity through OS process inspection. The old implementation synchronously spawned two `ps` processes per managed Process (`command` and `lstart`). The in-progress change adds one combined identity probe so the same fencing identity can be captured with one `ps`, retaining compatibility fallback for custom probes.
-
-### Current validation of the uncommitted change
-
-- `tests/runtime/process-runtime.test.ts`: **65/65 pass**
-- `bun x tsc --noEmit`: pass
-- Added regression verifies process identity matching prefers one combined probe.
-- First post-change benchmark was contaminated/truncated by concurrent host/localbridge tests; do **not** claim a speedup until a clean same-machine A/B is recorded.
-
-### Acceptance
-
-1. Preserve `processStartTime`, executable fingerprint, PID/fencing semantics and recovery behavior.
-2. Demonstrate a clean same-command 7x A/B with lower Process admission/start p50 without concurrency/correctness regression.
-3. Commit only after benchmark evidence is trustworthy.
-
-## P1 — Process active-index maintenance is O(N) in historical Process count
-
-**Status:** confirmed design debt; not yet fixed.
-
-### Evidence
-
-- `createProcessRecord()` writes the record and calls `rebuildActiveIndex()`.
-- `rebuildActiveIndex()` scans every Process JSON record under the repository Process root to discover active records.
-- terminal completion can rebuild the index again.
-- The real Forge Controller Home currently contains a very large historical Process population; therefore Process creation/completion cost can grow with history even when only a few processes are active.
-
-### Direction
-
-Replace normal create/terminal hot-path full-directory rebuilds with safe incremental index maintenance/CAS, while retaining full rebuild as corruption/recovery fallback. Do not introduce a second process authority.
-
-### Acceptance
-
-1. Normal Process create/terminal paths are O(1) or O(active) with respect to historical records.
-2. Crash/corruption recovery can still rebuild from authoritative Process records.
-3. Concurrency tests prove no lost active Process IDs.
-4. Benchmark both fresh and history-heavy Controller Homes.
-
-## P1 — External plugin live identity preflight was repeated on every action
-
-**Status:** fixed in source; pending active Runtime adoption.
-
-### Evidence / fix
-
-- Active external adapter previously performed a provider `manifest` RPC before every action and could hit the exact `EXTERNAL_PLUGIN_TIMEOUT` at 2000 ms even when the provider socket itself was responsive.
-- `285e3e0e perf(runtime): reuse fresh external provider validation` reuses a recently validated provider identity for a bounded 5-second window rather than repeating manifest RPC on every hot action.
-- Focused external-adapter tests passed 17/17 when implemented.
-
-### Acceptance
-
-Validate after a future permitted Runtime activation that repeated Desktop/plugin actions no longer pay redundant manifest preflight while provider identity remains fail-closed on staleness/change.
-
-## P1 — Fixed interactive wait should remain duration-aware
-
-**Status:** source fix exists; verify after future active Runtime adoption.
-
-Older behavior imposed fixed synchronous windows (roughly 800 ms for checks / 2 s for generic diagnostics) before returning a managed handle. Source commit `c1b44e8b` includes duration-aware Process admission logic so known long-running operations can return handles earlier while tiny predictable work remains direct.
-
-### Acceptance
-
-- history/policy-predicted long work returns a handle promptly;
-- tiny work still completes inline where beneficial;
-- unknown work gets only a short bounded probation;
-- no return to retired ExecutionJob routing.
-
-## P2 — Cold Git observation is the main remaining context-read cost
-
-**Status:** measured; optimize only after Process fixed costs.
-
-Baseline 7x benchmark:
-
-- cold context read: **29.44 ms p50 / 39.17 ms p95**, almost entirely Git observation/projection;
-- warm context read: **0.12 ms p50**.
-
-Warm path is already effectively free. Prefer reducing how often cold observation is needed through precise invalidation/generation signals rather than adding another cache layer.
-
-## P2 — Legacy macOS Automation permission cleanup is incomplete
-
-**Status:** operational cleanup remaining; Desktop stable identity must be preserved.
-
-- Accessibility legacy rows were disabled; stable `Forge Desktop Operator` remains enabled.
-- Screen Recording legacy `bun`/`forge-runtime` rows were disabled; stable app remains enabled and screenshot still works.
-- Automation contains historical `bootstrap`, `bun`, and multiple `forge-runtime` principals. Some visible children were audited/disabled, but not every collapsed historical `forge-runtime` group was safely scrolled/verified.
-- Do not edit the TCC database and do not run `tccutil reset`. Preserve the stable signed app grant.
+> **Status:** Final reconciliation record. Historical issues are closed unless this
+> ledger explicitly says `operational follow-up`; do not reopen an item without a
+> new reproduction and current Runtime evidence.
+> **Scope:** Runtime/MCP execution, Recovery, Process/Lease, Direct maintenance,
+> registry identity, generated contracts, and macOS Desktop Operator operations.
+> **Safety:** This ledger is evidence, not lifecycle authority. Runtime release
+> mutation remains fail-closed and unique uncommitted source changes are never
+> maintenance-cleaned. `auth/` is unrelated untracked local state and remains
+> untouched.
+
+## Production baseline and live evidence
+
+- Code baseline: `e79896a2` (`fix(plugins): fail closed after stale provider validation`), containing the earlier residual closeout commits `3f2d9cbb`, `b456019d`, `cd049225`, `3046820d`, `5c881848`, and `3a991e1a`.
+- Canonical Runtime: `1786427833613-e79896a2ace5bfff72ae37a905f2d34677148664`, artifact `sha256:2639e1ffa9112f290d2c37042cc920a49fa6c8f0ccebe092abce169051b0de23`.
+- Recovery: `1786427972869-e79896a2ace5bfff72ae37a905f2d34677148664`; Gateway and Watchdog were cleanly handed over, with the prior complete Recovery release retained.
+- Live acceptance after activation: Runtime/release authority coherent and ready; Recovery verify passed; public MCP initialize/notification/close passed; `tools/list` returned exactly **19** tools with fingerprint `682741764164c5fa79681055bc2ef0d65fb6abb67cfa2855a5be6ccb14059745`; the bounded read-only call passed.
 
 ## Resolved / do not reopen without regression evidence
 
-- Desktop socket server health no longer blocks behind a slow AX action (`ff650fd`).
-- Desktop locks are scoped per session/UI/browser rather than one global action lock (`67e9e40`).
-- AX traversal deduplicates cycles/self-links (`6d91310`).
-- Focused Desktop observe skips per-node action names and CGWindow enumeration by default (`92b3820`): live Finder 355-node median improved from 98.45 ms to 87.17 ms (~13%); Chrome small subtree improved ~21%.
-- Desktop coordinate fallback now fails closed on stale refs after activation (`305137e`); live Finder AXPress E2E passed.
-- Desktop focused observe registration schema (`include_actions`, `include_windows`) is live at external registration revision 11 (`1d04859b`).
-- Current multi-repository and same-repo/different-checkout Process concurrency benchmark shows 100% success with zero contention; concurrency architecture is not the current primary bottleneck.
+### Recovery Watchdog degraded diagnostics
 
-## Historical recommended execution order
+- The real intermittent failure is a bounded public `mcp_tools_list` deadline (`RECOVERY_HTTP_TIMEOUT`), followed by the dependent read-only-call failure. It is public ingress/MCP, not a local Runtime, Recovery Gateway, or tunnel failure.
+- `watchdog-diagnostics.json` now keeps at most 32 release-scoped, deduplicated records with failed-probe component attribution (`runtime`, `gateway`, `public_mcp`, `recovery_gateway`, `recovery_tunnel`) before audit emission. Release-scoped restart budget and `recovery_exhausted` semantics were not changed.
+- Observation included one failed full verification followed by a successful full verification. The current watchdog decision is healthy; no rollback, restart storm, or PID churn occurred during the final Runtime/Recovery activation. Historical restart counters are retained as evidence and are not reset by a Recovery release handoff.
 
-1. Finish clean A/B for the in-progress combined process-identity probe; commit only if evidence is positive.
-2. Remove O(N) Process active-index rebuild from normal create/terminal hot path.
-3. Re-run route/session benchmark and compare Process admission/start, concurrency, check reuse.
-4. Only then optimize cold Git observation.
-5. Separately verify tool-surface and typed-plugin fixes when Runtime activation is permitted; **do not rollout under the current user constraint**.
-6. Continue macOS Automation cleanup only with selector-bound UI actions and readback; preserve stable Desktop Operator grants.
+### Resource claims and ordinary source writes
 
-## Source history / context
+- Typed host/system/browser/plugin/repository readonly actions carry host/read claims rather than workspace/Git write claims. Real multi-repository and same-repository/different-checkout acceptance had success rate 1 and contention rate 0; same-checkout write contention remains intentionally exclusive.
+- `5c881848` routes an explicit ephemeral non-Git source workspace write through the existing bounded direct executor. It no longer mints a Runtime-fenced Process lease or Git snapshot. Runtime activation/release mutation remains fail-closed; unknown shell, Python, and Node remain conservative managed operations.
 
-Earlier baseline analysis documented the pre-optimization state (large tool surface, source-coherence/runtime-governance debt, incomplete concurrency/check-reuse validation). The later hourly optimization summary documented the transition to the 19-tool coherent active baseline and identified shell-wrapped plugin claims, schema-cache drift, fixed waits, Process startup, and cold Git observation as the residual latency set. This ledger supersedes those snapshots for future implementation work; use the older notes only as historical comparison.
+### Process index and latency experiment
+
+- Normal Process create/terminal recovery index updates are incremental (`O(1)`/`O(active)`); authoritative Process records remain the only authority. A full rebuild is retained solely for missing/corrupt-index crash recovery.
+- The uncommitted single-`ps` experiment was reviewed, passed 65 focused tests plus typecheck, then was rejected: clean same-machine A/B was not attributable (baseline/candidate/repeated baseline process-start p50: 102.49/184.19/225.50 ms). Its changes were reverted and must not be revived without controlled evidence.
+- Cold Git observation is an accepted fixed OS/Git cost, not a reason to add a cache layer. Latest cold/warm context p50: 15.90/0.12 ms.
+
+### Direct Edit maintenance lifecycle
+
+- Committed exact-after-image Direct sessions reconcile to completed; mismatches supersede; unique uncommitted source remains dirty and untouched. Cleanup is idempotent.
+- Earlier reconciliation moved 15 dirty plus 6 empty-open sessions to zero. A final full maintenance pass found and reconciled a separate 32 historical contract-free Direct metadata records; the post-pass status is again **0 stale Edit Sessions** and no safe/actionable candidates. All **163** ownership-unproven temp entries remain explicitly retained rather than guessed/deleted.
+
+### External provider validation reuse
+
+- `285e3e0e` is in the active Runtime ancestry. Two real active-Runtime `desktop_operator/desktop_status` actions in one MCP session both returned 200 without RPC errors.
+- The only live proof cache is the existing bounded 5-second manifest item cache. Integration evidence is `manifest, health, execute, execute`; after cache invalidation and provider version drift it performs manifest validation and rejects with `EXTERNAL_PLUGIN_VERSION_MISMATCH`. A degraded/unprobed manifest is no longer incorrectly treated as provider-identity-prevalidated.
+
+### Registry, MCP surface, and generated contracts
+
+- Registry identity is correct: stable `repo_123b7cf58b6b17b5cbe46a56` is `/Users/greyson/DevProjects/forge`, remote/GitHub `moretea-labs/matea`. Forge is the product/package name and `matea` the repository/historical source name; plugin and Issue routing agree. No remap is required.
+- Tool discovery/invocation coherence is closed at the 19-tool default surface above. Do not reopen old legacy-schema reports without a current discovery/invoke mismatch.
+- The test budget remains **42200** (no baseline increase); redundant tests were removed instead. Self-host strict workflow advisory is expected: `.ai/harness/workflow-contract.json` is a generated downstream runtime artifact, while `assets/workflow-contract.v1.json` is the tracked source contract. It is documented, not an unknown missing-contract blocker.
+
+### Requirement / Issue / Task authority
+
+- The SQLite Requirement Board is the only current authority: 11 requirements (5 active, 3 planned, 3 done), zero Execution Queue entries, and zero completion-backlog or stuck-state findings. The active/planned Apple, physical-iOS, user-Chrome, experiment, and broader recovery outcomes are separate product work and were not falsely closed by this Runtime closeout.
+- The old Route Integrity maintenance text is superseded by the exact-HEAD benchmark and acceptance in this ledger, but its frozen legacy Issue/Task adapter cannot mutate it after SQLite cutover. No semantic duplicate Runtime Issue/Task was created; this ledger is the durable evidence pointer.
+
+## Latest measured benchmark (7 iterations, 2026-08-11T06:00Z)
+
+| Scenario | p50 / p95 |
+| --- | --- |
+| Cold / warm context read | 15.90 / 26.76 ms; 0.12 / 0.13 ms |
+| Readonly Direct / Direct edit claim | 1.83 / 14.17 ms; 11.19 / 13.41 ms |
+| Durable Process submit | 39.45 / 49.91 ms |
+| Known-long handle return | 36.64 / 48.52 ms |
+| Tiny Process start / focused check | 86.75 / 101.06 ms; 82.80 / 105.55 ms |
+| Multi-repo / same-repo different checkout | 196.75 / 262.42 ms; 202.99 / 313.98 ms |
+| Check coalesce/reuse | 445.18 / 476.67 ms; 7 coalesced, 7 cache hits, 7 cross-checkout reuses, 14 physical / 28 logical |
+
+The remaining Process cost is OS spawn/tool work, and the intentional same-checkout conflict has a 1.0 contention rate. There is no measured false Lease contention or justified new caching/coordination layer.
+
+## Operational follow-up (P2; no correctness debt)
+
+- **macOS Automation historical grants:** UI audit found the stable signed `Forge Desktop Operator` grant enabled only for Chrome and Vivaldi; preserve it. Historical `bash → Terminal`, `bootstrap → System Events/Chrome/Vivaldi`, `bun`, `repo-harness.js`, and multiple `forge-runtime` principals remain visible. Cleanup must be selector-bound in System Settings with readback; never edit TCC DB or run `tccutil reset`. Toggling these macOS security permissions requires the user's action-time confirmation.
+
+## Final debt classification
+
+- P0: none known.
+- P1: none known.
+- P2: one user-confirmed operational Automation cleanup only; it is not a Runtime correctness/reliability blocker.
