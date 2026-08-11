@@ -90,7 +90,7 @@ for (const [name, target] of Object.entries(expectedBins)) {
 for (const forbidden of ["matea", "matea-hook", "repo-harness", "repo-harness-hook", "repo-harness-runtime"]) {
   if (Object.prototype.hasOwnProperty.call(bin, forbidden)) fail(`forbidden compatibility bin remains: ${forbidden}`);
 }
-if (pkg.scripts?.prepublishOnly !== "bash scripts/check-npm-release.sh") fail("prepublishOnly gate changed");
+if (pkg.scripts?.prepublishOnly !== undefined) fail("prepublishOnly must remain unset; explicit release scripts own publication gating");
 if (pkg.scripts?.["check:release-version"] !== "node scripts/check-release-version.mjs") {
   fail("release version check changed");
 }
