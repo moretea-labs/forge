@@ -1,4 +1,4 @@
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { existsSync, statSync } from 'fs';
 import { dirname, isAbsolute, resolve } from 'path';
 import { AssistantPluginError } from './errors';
@@ -149,6 +149,70 @@ function redactDiagnostic(value: string): string {
   return value
     .replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]')
     .replace(/(token|secret|password|authorization)\s*[=:]\s*\S+/gi, '$1=[REDACTED]');
+}
+
+export function executeManagedPluginProcessSync(
+  spec: ManagedPluginProcessSpec,
+  request: Omit<ManagedPluginProcessRequest, 'signal'>,
+): Record<string, unknown> {
+  const runtimeExecutable = isAbsolute(spec.runtimeExecutable ?? process.execPath)
+    ? (spec.runtimeExecutable ?? process.execPath)
+    : resolve(spec.runtimeExecutable ?? process.execPath);
+  const helperPath = isAbsolute(spec.helperPath) ? spec.helperPath : resolve(spec.helperPath);
+  if (!existsSync(runtimeExecutable) || !statSync(runtimeExecutable).isFile()) {
+    throw managedError('PLUGIN_MANAGED_PROCESS_RUNTIME_UNAVAILABLE', 'Managed plugin runtime executable is unavailable.', { retryable: false });
+  }
+  if (!existsSync(helperPath) || !statSync(helperPath).isFile()) {
+    throw managedError('PLUGIN_MANAGED_PROCESS_HELPER_UNAVAILABLE', 'Managed plugin helper is unavailable.', { retryable: false });
+  }
+  const requestEnvelope = JSON.stringify({
+    schemaVersion: MANAGED_PLUGIN_PROTOCOL_VERSION,
+    type: 'execute',
+    requestId: request.requestId,
+    actionId: request.actionId,
+    input: request.input,
+  });
+  const maxRequestBytes = spec.maxRequestBytes ?? DEFAULT_MAX_REQUEST_BYTES;
+  const maxResponseBytes = spec.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+  if (Buffer.byteLength(requestEnvelope, 'utf8') > maxRequestBytes) {
+    throw managedError('PLUGIN_MANAGED_PROCESS_REQUEST_TOO_LARGE', 'Managed plugin request exceeded the bounded input limit.', { retryable: false });
+  }
+  const child = spawnSync(runtimeExecutable, [...(spec.runtimeArgs ?? []), helperPath], {
+    cwd: spec.cwd ?? dirname(helperPath),
+    env: minimalEnvironment(runtimeExecutable),
+    input: `${requestEnvelope}\n`,
+    encoding: 'utf8',
+    timeout: boundedTimeout(spec, request),
+    maxBuffer: maxResponseBytes + (spec.maxStderrChars ?? DEFAULT_MAX_STDERR_CHARS) + 64 * 1024,
+    shell: false,
+    windowsHide: true,
+  });
+  if (child.error) {
+    const timedOut = (child.error as NodeJS.ErrnoException).code === 'ETIMEDOUT';
+    throw managedError(timedOut ? 'PLUGIN_MANAGED_PROCESS_TIMEOUT' : 'PLUGIN_MANAGED_PROCESS_LAUNCH_FAILED', timedOut
+      ? 'Managed plugin helper timed out.'
+      : `Managed plugin helper failed to launch: ${redactDiagnostic(child.error.message)}`, { retryable: true });
+  }
+  const stdout = String(child.stdout ?? '');
+  if (Buffer.byteLength(stdout, 'utf8') > maxResponseBytes) {
+    throw managedError('PLUGIN_MANAGED_PROCESS_RESPONSE_TOO_LARGE', 'Managed plugin helper exceeded the bounded output limit.', { retryable: false });
+  }
+  const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length < 2) {
+    throw managedError('PLUGIN_MANAGED_PROCESS_PROTOCOL_ERROR', `Managed plugin helper returned an incomplete protocol response.${child.stderr ? ` ${redactDiagnostic(String(child.stderr)).slice(-500)}` : ''}`, { retryable: true });
+  }
+  validateHandshake(parseProtocolLine(lines[0]), spec);
+  const response = validateResult(parseProtocolLine(lines[lines.length - 1]), request.requestId);
+  if (!response.ok) {
+    throw new AssistantPluginError(response.error.code, response.error.message, {
+      retryable: response.error.retryable,
+      details: response.error.details,
+    });
+  }
+  if (child.status !== 0 && child.status !== null) {
+    throw managedError('PLUGIN_MANAGED_PROCESS_EXITED', `Managed plugin helper exited with code ${child.status}.`, { retryable: true });
+  }
+  return response.result;
 }
 
 export async function executeManagedPluginProcess(

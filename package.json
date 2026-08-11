@@ -1,6 +1,6 @@
 {
   "name": "@moretea-labs/forge",
-  "version": "1.4.0-rc.6",
+  "version": "1.5.0-rc.1",
   "description": "Local-first action assistant for software work with resumable execution, bounded tools, and reviewable evidence",
   "license": "MIT",
   "author": "Moretea Labs contributors",
@@ -55,6 +55,7 @@
     "docs/forge-runtime-self-healing-loop.md",
     "docs/forge-autonomous-goal-loop.md",
     "docs/forge-provider-configuration.md",
+    "docs/forge-plugin-management.md",
     "README.en.md",
     "README.zh-CN.md",
     "install.sh",

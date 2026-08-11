@@ -16,6 +16,7 @@ import { formatDoctor, runDoctor } from './commands/doctor';
 import { buildInitHookCommand, buildSetupCommand, formatInitHook, runInitHook } from './commands/init-hook';
 import { formatMigratePlan, runMigrate } from './commands/migrate';
 import { buildToolsCommand } from './commands/tools';
+import { buildPluginCommand } from './commands/plugin';
 import { buildBrainCommand } from './commands/brain';
 import { buildCapabilityContextCommand } from './commands/capability-context';
 import { buildDocsCommand } from './commands/docs';
@@ -54,6 +55,7 @@ export const SUBCOMMANDS = [
   'run',
   'setup',
   'tools',
+  'plugin',
   'brain',
   'capability-context',
   'docs',
@@ -526,6 +528,7 @@ export function buildProgram(): Command {
     });
 
   program.addCommand(buildToolsCommand());
+  program.addCommand(buildPluginCommand());
   program.addCommand(buildBrainCommand());
   program.addCommand(buildCapabilityContextCommand());
   program.addCommand(buildDocsCommand());

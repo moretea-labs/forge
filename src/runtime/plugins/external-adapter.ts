@@ -1,6 +1,7 @@
 import { AssistantPluginError } from './errors';
 import { getExternalPluginRegistration, listExternalPluginRegistrations, type ExternalPluginRegistration } from './external-registration';
 import { callExternalUnixSocket, probeExternalUnixSocketSync, type ExternalUnixSocketCallOptions } from './external-unix-socket';
+import { executeManagedPluginProcess, executeManagedPluginProcessSync, type ManagedPluginProcessSpec } from './managed-process-adapter';
 import { restartVerifiedUserLaunchAgent, startVerifiedUserLaunchAgent, stopVerifiedUserLaunchAgent } from './local-system-adapter';
 import type { AssistantPluginActionDescriptor, AssistantPluginAdapter, AssistantPluginCapability, AssistantPluginHealth, AssistantPluginManifest, AssistantPluginPermissionScope } from './types';
 
@@ -25,6 +26,8 @@ interface ProviderHealth {
 export interface ExternalPluginAdapterDependencies {
   probe?: (options: ExternalUnixSocketCallOptions) => Record<string, unknown>;
   call?: (options: ExternalUnixSocketCallOptions) => Promise<Record<string, unknown>>;
+  managedProbe?: typeof executeManagedPluginProcessSync;
+  managedCall?: typeof executeManagedPluginProcess;
   startVerifiedUserLaunchAgent?: (label: unknown, expectedProgram: unknown) => Record<string, unknown>;
   stopVerifiedUserLaunchAgent?: (label: unknown, expectedProgram: unknown) => Record<string, unknown>;
   restartVerifiedUserLaunchAgent?: (label: unknown, expectedProgram: unknown) => Record<string, unknown>;
@@ -112,13 +115,78 @@ function lifecyclePolicy(registration: ExternalPluginRegistration): {
   };
 }
 
-function callOptions(registration: ExternalPluginRegistration, input: Omit<ExternalUnixSocketCallOptions, 'socketPath' | 'maxRequestBytes' | 'maxResponseBytes'>): ExternalUnixSocketCallOptions {
+function socketCallOptions(registration: ExternalPluginRegistration, input: Omit<ExternalUnixSocketCallOptions, 'socketPath' | 'maxRequestBytes' | 'maxResponseBytes'>): ExternalUnixSocketCallOptions {
+  if (registration.transport.kind !== 'unix_socket_jsonl') throw providerError('EXTERNAL_PLUGIN_TRANSPORT_MISMATCH', 'Expected Unix socket transport.', false);
   return {
     ...input,
     socketPath: registration.transport.socketPath,
     maxRequestBytes: registration.transport.maxRequestBytes,
     maxResponseBytes: registration.transport.maxResponseBytes,
   };
+}
+
+function managedSpec(registration: ExternalPluginRegistration): ManagedPluginProcessSpec {
+  if (registration.transport.kind !== 'managed_cli_json') throw providerError('EXTERNAL_PLUGIN_TRANSPORT_MISMATCH', 'Expected managed CLI transport.', false);
+  return {
+    pluginId: registration.providerPluginId,
+    runtimeExecutable: registration.transport.runtimeExecutable,
+    runtimeArgs: registration.transport.runtimeArgs,
+    helperPath: registration.transport.helperPath,
+    cwd: registration.transport.cwd,
+    requiredCapabilities: registration.transport.requiredCapabilities,
+    timeoutMs: registration.transport.actionTimeoutMs,
+    maxRequestBytes: registration.transport.maxRequestBytes,
+    maxResponseBytes: registration.transport.maxResponseBytes,
+  };
+}
+
+function probeProvider(
+  registration: ExternalPluginRegistration,
+  requestId: string,
+  method: 'manifest' | 'health',
+  dependencies: ExternalPluginAdapterDependencies,
+): Record<string, unknown> {
+  if (registration.transport.kind === 'unix_socket_jsonl') {
+    return (dependencies.probe ?? probeExternalUnixSocketSync)(socketCallOptions(registration, {
+      requestId,
+      method,
+      timeoutMs: registration.transport.healthTimeoutMs,
+    }));
+  }
+  return (dependencies.managedProbe ?? executeManagedPluginProcessSync)(managedSpec(registration), {
+    requestId,
+    actionId: method,
+    input: {},
+    timeoutMs: registration.transport.healthTimeoutMs,
+  });
+}
+
+async function callProvider(
+  registration: ExternalPluginRegistration,
+  requestId: string,
+  actionId: string,
+  args: Record<string, unknown>,
+  timeoutMs: number | undefined,
+  signal: AbortSignal | undefined,
+  dependencies: ExternalPluginAdapterDependencies,
+): Promise<Record<string, unknown>> {
+  if (registration.transport.kind === 'unix_socket_jsonl') {
+    const isProviderMethod = actionId === 'manifest' || actionId === 'health';
+    return await (dependencies.call ?? callExternalUnixSocket)(socketCallOptions(registration, {
+      requestId,
+      method: isProviderMethod ? actionId : 'execute',
+      params: isProviderMethod ? undefined : { action: actionId, arguments: args },
+      timeoutMs: timeoutMs ?? (isProviderMethod ? registration.transport.healthTimeoutMs : registration.transport.actionTimeoutMs),
+      signal,
+    }));
+  }
+  return await (dependencies.managedCall ?? executeManagedPluginProcess)(managedSpec(registration), {
+    requestId,
+    actionId,
+    input: args,
+    timeoutMs: timeoutMs ?? (actionId === 'manifest' || actionId === 'health' ? registration.transport.healthTimeoutMs : registration.transport.actionTimeoutMs),
+    signal,
+  });
 }
 
 export function getExternalPluginAdapter(controllerHome: string, pluginId: string): AssistantPluginAdapter | undefined {
@@ -134,8 +202,6 @@ export function createExternalPluginAdapter(
   registration: ExternalPluginRegistration,
   dependencies: ExternalPluginAdapterDependencies = {},
 ): AssistantPluginAdapter {
-  const probe = dependencies.probe ?? probeExternalUnixSocketSync;
-  const call = dependencies.call ?? callExternalUnixSocket;
   const startProvider = dependencies.startVerifiedUserLaunchAgent ?? startVerifiedUserLaunchAgent;
   const stopProvider = dependencies.stopVerifiedUserLaunchAgent ?? stopVerifiedUserLaunchAgent;
   const restartProvider = dependencies.restartVerifiedUserLaunchAgent ?? restartVerifiedUserLaunchAgent;
@@ -170,16 +236,18 @@ export function createExternalPluginAdapter(
       let providerManifest: ProviderManifest | undefined;
       let health: AssistantPluginHealth;
       try {
-        providerManifest = parseProviderManifest(probe(callOptions(registration, {
-          requestId: `forge-manifest-${registration.pluginId}-${registration.revision}`,
-          method: 'manifest',
-          timeoutMs: registration.transport.healthTimeoutMs,
-        })), registration);
-        health = healthFromProvider(probe(callOptions(registration, {
-          requestId: `forge-health-${registration.pluginId}-${registration.revision}`,
-          method: 'health',
-          timeoutMs: registration.transport.healthTimeoutMs,
-        })), checkedAt);
+        providerManifest = parseProviderManifest(probeProvider(
+          registration,
+          `forge-manifest-${registration.pluginId}-${registration.revision}`,
+          'manifest',
+          dependencies,
+        ), registration);
+        health = healthFromProvider(probeProvider(
+          registration,
+          `forge-health-${registration.pluginId}-${registration.revision}`,
+          'health',
+          dependencies,
+        ), checkedAt);
       } catch (error) {
         health = failedHealth(error, checkedAt);
       }
@@ -226,21 +294,26 @@ export function createExternalPluginAdapter(
         return restartProvider(bound.label, bound.expectedProgramContains);
       }
       if (input.providerIdentityPrevalidated !== true) {
-        const providerManifest = await call(callOptions(registration, {
-          requestId: `${input.requestId}:manifest`,
-          method: 'manifest',
-          timeoutMs: registration.transport.healthTimeoutMs,
-          signal: input.signal,
-        }));
+        const providerManifest = await callProvider(
+          registration,
+          `${input.requestId}:manifest`,
+          'manifest',
+          {},
+          undefined,
+          input.signal,
+          dependencies,
+        );
         parseProviderManifest(providerManifest, registration);
       }
-      return await call(callOptions(registration, {
-        requestId: input.requestId,
-        method: 'execute',
-        params: { action: input.actionId, arguments: input.args },
-        timeoutMs: input.timeoutMs ?? registration.transport.actionTimeoutMs,
-        signal: input.signal,
-      }));
+      return await callProvider(
+        registration,
+        input.requestId,
+        input.actionId,
+        input.args,
+        input.timeoutMs,
+        input.signal,
+        dependencies,
+      );
     },
     shouldRefreshManifestAfterAction(actionId) {
       return EXTERNAL_PROVIDER_LIFECYCLE_ACTIONS.has(actionId);

@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "plugins": [
+    {"id":"desktop_operator","name":"Forge Desktop Operator","version":"0.2.0","description":"Native macOS desktop automation provider for Forge.","repository":"https://github.com/moretea-labs/forge-desktop-operator.git","ref":"v0.2.0","installer":"forge-plugin-install.mjs","platforms":["darwin"]},
+    {"id":"design","name":"Forge Design","version":"0.3.0","description":"Repository-native deterministic design workspace and design.md provider.","repository":"https://github.com/moretea-labs/forge-design.git","ref":"v0.3.0","installer":"forge-plugin-install.mjs","platforms":["darwin","linux","win32"]},
+    {"id":"personal_knowledge","name":"Personal Knowledge Assistant","version":"0.2.1","description":"Local-first personal knowledge retrieval, memory, safe-write and analysis provider.","repository":"https://github.com/moretea-labs/personal-knowledge-assistant.git","ref":"v0.2.1","installer":"forge-plugin-install.mjs","platforms":["darwin","linux","win32"]}
+  ]
+}

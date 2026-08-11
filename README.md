@@ -21,7 +21,7 @@ Forge connects ChatGPT to your real local development environment so it can insp
 - **Inspect explicit unregistered folders** — bounded one-off local workspace actions do not silently register a repository or initialize Git.
 - **Recover execution state** — repository identity, work, processes, verification, release state, and recovery facts survive individual chat turns.
 - **Keep hard boundaries explicit** — remote writes, destructive effects, outside-workspace access, and secrets remain policy-gated.
-- **Extend through typed plugins** — optional capabilities reuse the same local Controller without widening the normal ChatGPT surface.
+- **Extend through typed plugins** — use `forge plugin catalog/install/list`; official providers reuse the same Controller and trusted policy path. [Plugin guide](docs/forge-plugin-management.md).
 
 ## How ChatGPT uses Forge
 
@@ -52,7 +52,7 @@ Examples:
 
 ## Release status
 
-The current source version is `1.4.0-rc.6`. The npm package `@moretea-labs/forge` is **not public yet**. Source version, release readiness, GitHub Release, and npm publication are separate facts; an immutable revision must pass the release gate before publication.
+The current source version is `1.5.0-rc.1`. The npm package `@moretea-labs/forge` is **not public yet**. Source version, release readiness, GitHub Release, and npm publication are separate facts; an immutable revision must pass the release gate before publication.
 
 ## Quick start
 
@@ -142,7 +142,7 @@ forge setup next && forge setup close && forge doctor
 ```
 接入仓库：`forge adopt --repo /path/to/your-project`。首次使用可按[安装并启动](docs/tutorials/01-install-and-start.zh-CN.md) → [连接 ChatGPT](docs/tutorials/02-connect-chatgpt.zh-CN.md) → [完成第一个仓库任务](docs/tutorials/03-first-repository-task.zh-CN.md)进行。
 ### 发布、文档与支持
-当前源码版本为 `1.4.0-rc.6`，npm 包 `@moretea-labs/forge` **尚未公开**；发布后使用 `npm install -g @moretea-labs/forge@next`。
+当前源码版本为 `1.5.0-rc.1`，npm 包 `@moretea-labs/forge` **尚未公开**；发布后使用 `npm install -g @moretea-labs/forge@next`。
 [文档中心](docs/README.md) · [Wiki](docs/wiki/Home.md) · [完整中文 README](README.zh-CN.md) · [公开使用指南](docs/public-usage-guide.zh-CN.md)
 Bug/文档：[GitHub Issues](https://github.com/moretea-labs/forge/issues) · 使用：[SUPPORT.md](SUPPORT.md) · 安全：[SECURITY.md](SECURITY.md) · 贡献：[CONTRIBUTING.md](CONTRIBUTING.md) · 版本：[CHANGELOG.md](CHANGELOG.md)
 项目采用 [MIT License](LICENSE)，上游版权与许可声明见 [NOTICE](NOTICE) 与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

@@ -81,6 +81,19 @@ describe('external plugin registration store', () => {
     expect(updated.pluginVersion).toBe('0.2.0');
   });
 
+  test('accepts only absolute managed CLI runtime/helper paths', () => {
+    const controllerHome = home();
+    const stored = installExternalPluginRegistration(controllerHome, registration({
+      transport: { kind: 'managed_cli_json', runtimeExecutable: process.execPath, helperPath: '/tmp/forge-provider.mjs', cwd: '/tmp', requiredCapabilities: ['echo'] },
+    }));
+    expect(stored.transport.kind).toBe('managed_cli_json');
+    if (stored.transport.kind !== 'managed_cli_json') throw new Error('expected managed transport');
+    expect(stored.transport.runtimeExecutable).toBe(process.execPath);
+    expect(() => installExternalPluginRegistration(controllerHome, registration({
+      transport: { kind: 'managed_cli_json', runtimeExecutable: 'node', helperPath: 'provider.mjs' },
+    }))).toThrow('EXTERNAL_PLUGIN_MANAGED_RUNTIME_INVALID');
+  });
+
   test('rejects relative sockets and policy-incomplete capability/action contracts', () => {
     const controllerHome = home();
     expect(() => installExternalPluginRegistration(controllerHome, registration({

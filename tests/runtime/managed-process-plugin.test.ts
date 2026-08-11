@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { AssistantPluginError } from '../../src/runtime/plugins/errors';
-import { executeManagedPluginProcess } from '../../src/runtime/plugins/managed-process-adapter';
+import { executeManagedPluginProcess, executeManagedPluginProcessSync } from '../../src/runtime/plugins/managed-process-adapter';
 
 const roots: string[] = [];
 
@@ -44,6 +44,24 @@ async function expectPluginError(promise: Promise<unknown>, code: string): Promi
 }
 
 describe('managed plugin process adapter', () => {
+  test('supports synchronous manifest/health probing for external provider discovery', () => {
+    const path = protocolHelper(`
+      write({ schemaVersion: 1, type: 'result', requestId: request.requestId, ok: true, result: { state: 'ready', action: request.actionId } });
+      lines.close();
+    `);
+    const result = executeManagedPluginProcessSync({
+      pluginId: 'fixture',
+      helperPath: path,
+      requiredCapabilities: ['echo'],
+      timeoutMs: 2_000,
+    }, {
+      requestId: 'managed-sync-health',
+      actionId: 'health',
+      input: {},
+    });
+    expect(result).toEqual({ state: 'ready', action: 'health' });
+  });
+
   test('validates the handshake and routes one bounded request', async () => {
     const path = protocolHelper(`
       write({ schemaVersion: 1, type: 'result', requestId: request.requestId, ok: true, result: { echoed: request.input.value } });

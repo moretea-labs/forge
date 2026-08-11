@@ -23,6 +23,21 @@ export interface ExternalPluginUnixSocketTransport {
   actionTimeoutMs?: number;
 }
 
+export interface ExternalPluginManagedCliTransport {
+  kind: 'managed_cli_json';
+  runtimeExecutable: string;
+  helperPath: string;
+  runtimeArgs?: string[];
+  cwd?: string;
+  requiredCapabilities?: string[];
+  maxRequestBytes?: number;
+  maxResponseBytes?: number;
+  healthTimeoutMs?: number;
+  actionTimeoutMs?: number;
+}
+
+export type ExternalPluginTransport = ExternalPluginUnixSocketTransport | ExternalPluginManagedCliTransport;
+
 export interface ExternalPluginVerifiedUserLaunchAgentLifecycle {
   kind: 'verified_user_launch_agent';
   label: string;
@@ -42,7 +57,7 @@ export interface ExternalPluginRegistration {
   protocolVersion: string;
   scope: AssistantPluginScope;
   enabled: boolean;
-  transport: ExternalPluginUnixSocketTransport;
+  transport: ExternalPluginTransport;
   lifecycle?: ExternalPluginLifecycle;
   permissions: AssistantPluginPermissionScope[];
   capabilities: AssistantPluginCapability[];
@@ -62,7 +77,7 @@ export interface ExternalPluginRegistrationInput {
   protocolVersion: string;
   scope: AssistantPluginScope;
   enabled?: boolean;
-  transport: ExternalPluginUnixSocketTransport;
+  transport: ExternalPluginTransport;
   lifecycle?: ExternalPluginLifecycle;
   permissions: AssistantPluginPermissionScope[];
   capabilities: AssistantPluginCapability[];
@@ -84,20 +99,44 @@ function boundedInteger(value: number | undefined, fallback: number, min: number
   return Math.min(Math.max(Math.trunc(value), min), max);
 }
 
-function normalizedTransport(input: ExternalPluginUnixSocketTransport): ExternalPluginUnixSocketTransport {
-  if (input.kind !== 'unix_socket_jsonl') throw new Error(`EXTERNAL_PLUGIN_TRANSPORT_UNSUPPORTED: ${String(input.kind)}`);
-  const socketPath = input.socketPath.trim();
-  if (!socketPath || !isAbsolute(socketPath)) {
-    throw new Error('EXTERNAL_PLUGIN_SOCKET_PATH_INVALID: trusted registrations require an absolute Unix socket path');
+function normalizedTransport(input: ExternalPluginTransport): ExternalPluginTransport {
+  if (input.kind === 'unix_socket_jsonl') {
+    const socketPath = input.socketPath.trim();
+    if (!socketPath || !isAbsolute(socketPath)) {
+      throw new Error('EXTERNAL_PLUGIN_SOCKET_PATH_INVALID: trusted registrations require an absolute Unix socket path');
+    }
+    return {
+      kind: 'unix_socket_jsonl',
+      socketPath,
+      maxRequestBytes: boundedInteger(input.maxRequestBytes, 1_048_576, 1_024, 4 * 1_048_576),
+      maxResponseBytes: boundedInteger(input.maxResponseBytes, 1_048_576, 1_024, 16 * 1_048_576),
+      healthTimeoutMs: boundedInteger(input.healthTimeoutMs, 2_000, 100, 10_000),
+      actionTimeoutMs: boundedInteger(input.actionTimeoutMs, 30_000, 100, 120_000),
+    };
   }
-  return {
-    kind: 'unix_socket_jsonl',
-    socketPath,
-    maxRequestBytes: boundedInteger(input.maxRequestBytes, 1_048_576, 1_024, 4 * 1_048_576),
-    maxResponseBytes: boundedInteger(input.maxResponseBytes, 1_048_576, 1_024, 4 * 1_048_576),
-    healthTimeoutMs: boundedInteger(input.healthTimeoutMs, 2_000, 100, 10_000),
-    actionTimeoutMs: boundedInteger(input.actionTimeoutMs, 30_000, 100, 120_000),
-  };
+  if (input.kind === 'managed_cli_json') {
+    const runtimeExecutable = input.runtimeExecutable.trim();
+    const helperPath = input.helperPath.trim();
+    const cwd = input.cwd?.trim();
+    if (!runtimeExecutable || !isAbsolute(runtimeExecutable)) throw new Error('EXTERNAL_PLUGIN_MANAGED_RUNTIME_INVALID: trusted registrations require an absolute runtime executable');
+    if (!helperPath || !isAbsolute(helperPath)) throw new Error('EXTERNAL_PLUGIN_MANAGED_HELPER_INVALID: trusted registrations require an absolute helper path');
+    if (cwd && !isAbsolute(cwd)) throw new Error('EXTERNAL_PLUGIN_MANAGED_CWD_INVALID: trusted registrations require an absolute cwd');
+    const runtimeArgs = (input.runtimeArgs ?? []).map((value) => value.trim()).filter(Boolean);
+    if (runtimeArgs.length > 20 || runtimeArgs.some((value) => value.length > 1_000)) throw new Error('EXTERNAL_PLUGIN_MANAGED_RUNTIME_ARGS_INVALID');
+    const requiredCapabilities = Array.from(new Set((input.requiredCapabilities ?? []).map((value) => value.trim()).filter(Boolean)));
+    if (requiredCapabilities.length > 100 || requiredCapabilities.some((value) => value.length > 128)) throw new Error('EXTERNAL_PLUGIN_MANAGED_CAPABILITIES_INVALID');
+    return {
+      kind: 'managed_cli_json', runtimeExecutable, helperPath,
+      runtimeArgs,
+      cwd,
+      requiredCapabilities,
+      maxRequestBytes: boundedInteger(input.maxRequestBytes, 1_048_576, 1_024, 16 * 1_048_576),
+      maxResponseBytes: boundedInteger(input.maxResponseBytes, 1_048_576, 1_024, 16 * 1_048_576),
+      healthTimeoutMs: boundedInteger(input.healthTimeoutMs, 2_000, 100, 10_000),
+      actionTimeoutMs: boundedInteger(input.actionTimeoutMs, 30_000, 100, 120_000),
+    };
+  }
+  throw new Error(`EXTERNAL_PLUGIN_TRANSPORT_UNSUPPORTED: ${String((input as { kind?: unknown }).kind)}`);
 }
 
 function normalizedString(value: string, field: string, max = 256): string {

@@ -50,7 +50,7 @@ Forge 把 ChatGPT 连接到真实的本地开发环境，让它读取当前项�
 
 ## 发布状态
 
-源码当前版本是 `1.4.0-rc.6`。npm 包 `@moretea-labs/forge` **目前尚未公开**。源码版本、release-ready、GitHub Release 和 npm 发布是不同事实；只有不可变 revision 通过 release gate 后才进入对外发布。
+源码当前版本是 `1.5.0-rc.1`。npm 包 `@moretea-labs/forge` **目前尚未公开**。源码版本、release-ready、GitHub Release 和 npm 发布是不同事实；只有不可变 revision 通过 release gate 后才进入对外发布。
 
 ## 快速开始
 
@@ -115,3 +115,17 @@ Forge 仍处于 RC 收敛阶段；发布只能来自通过公开 release gate �
 ## 许可证与归属
 
 项目采用 [MIT License](LICENSE)。上游版权与许可声明依法保留，详见 [NOTICE](NOTICE) 与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+## 官方插件
+
+Forge 保持核心控制面精简，同时允许独立发布的 Provider 通过同一套类型化插件策略和证据链扩展能力。官方插件来自固定版本目录，不会扫描用户本机的 sibling 仓库。
+
+```bash
+forge plugin catalog
+forge plugin install design
+forge plugin install personal_knowledge
+forge plugin install desktop_operator   # macOS
+forge plugin list --refresh
+```
+
+当前官方外部 Provider 包括 **Forge Desktop Operator**、**Forge Design** 和 **Personal Knowledge Assistant**。它们保持独立仓库和发布历史；Forge 负责可信安装、注册、授权、资源声明、健康状态和执行证据。详见 [`docs/forge-plugin-management.md`](docs/forge-plugin-management.md)。

@@ -164,9 +164,9 @@ A registration must include:
 
 Transport v1 supports:
 
-1. `unix_socket_jsonl` for Desktop Operator;
-2. later `managed_cli_json` for bounded one-shot providers;
-3. later `localhost_http_json` only when a provider genuinely needs it.
+1. `unix_socket_jsonl` for long-lived native providers such as Desktop Operator;
+2. `managed_cli_json` for trusted bounded one-shot product providers such as Forge Design and Personal Knowledge Assistant;
+3. `localhost_http_json` remains deferred until a provider genuinely needs it.
 
 Do not add a generic shell transport.
 
@@ -218,7 +218,7 @@ macOS TCC trust remains attached to the stable installed user-service identity. 
 
 ## Design provider decision
 
-`forge-design` remains a separate product/repository. Its deterministic design assets and CLI/API are product authority.
+`forge-design` remains a separate product/repository. The public `design` provider is installable through the official pinned catalog and uses `managed_cli_json` without becoming Controller source. Its deterministic design assets and CLI/API are product authority.
 
 Forge integration should expose bounded design context/read/validate/edit/render actions through the broker or a thin repository adapter, not duplicate design storage or rendering logic in Forge.
 

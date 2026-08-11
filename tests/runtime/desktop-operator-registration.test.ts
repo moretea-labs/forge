@@ -98,6 +98,8 @@ describe('Desktop Operator trusted external registration', () => {
     );
     expect(installed.revision).toBe(1);
     expect(installed.registrationFingerprint).toHaveLength(64);
+    expect(installed.transport.kind).toBe('unix_socket_jsonl');
+    if (installed.transport.kind !== 'unix_socket_jsonl') throw new Error('expected unix socket transport');
     expect(installed.transport.socketPath).toBe('/tmp/forge-desktop-operator.sock');
     expect(installed.legacyIdentities).toContain('Repo Harness Desktop Operator');
   });
