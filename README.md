@@ -1,3 +1,5 @@
+<a id="english"></a>
+
 # Forge
 
 <p align="center">
@@ -5,7 +7,7 @@
 </p>
 
 <p align="center"><strong>Your local-first action assistant for software work.</strong></p>
-<p align="center"><a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a></p>
+<p align="center"><a href="https://github.com/moretea-labs/forge#english">English</a> · <a href="https://github.com/moretea-labs/forge#zh-cn">简体中文</a></p>
 
 Forge connects ChatGPT to your real local development environment so it can inspect current project state, make bounded changes, run checks, manage long-running commands, and return reviewable evidence instead of relying only on chat memory.
 
@@ -115,3 +117,32 @@ Forge remains in release-candidate hardening; releases are created only from a r
 ## License and attribution
 
 Licensed under the [MIT License](LICENSE). Upstream copyright and permission notices remain part of the distribution; see [NOTICE](NOTICE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+---
+
+<a id="zh-cn"></a>
+## 简体中文
+<p align="center"><img src="docs/images/forge-banner-cn.svg" alt="Forge——本地优先的行动型助手" width="1280"></p>
+<p align="center"><strong>面向软件工作的本地优先行动型助手。</strong></p>
+<p align="center"><a href="https://github.com/moretea-labs/forge#english">English</a> · <a href="https://github.com/moretea-labs/forge#zh-cn">简体中文</a></p>
+Forge 把 ChatGPT 连接到真实本地开发环境，让它读取当前项目状态、执行有边界的修改、运行检查、复用 Process，并返回可审查证据。
+### 主要能力
+- **Direct-first**：范围明确的小任务直接读取、修改、验证和提交，不因调查自动创建 Plan、Issue、Agent 或 worktree。
+- **真实并发与身份隔离**：多个仓库可并行；`repoId + checkoutId` 明确执行目标；确有隔离需求时才使用 worktree。
+- **可恢复执行**：长命令只启动一次，后续 status/wait/log/cancel 连接同一个 Process；检查证据可复用并在代码或环境变化后失效。
+- **本地控制与硬边界**：Canonical Runtime、Recovery 与状态留在本机；远程写入、破坏性操作、工作区外访问和密钥仍受策略限制。
+### 快速开始
+需要 Git、Node.js 20.10+、npm 和可写用户目录；Bun 1.0+ 推荐用于源码开发和完整测试。
+```bash
+git clone https://github.com/moretea-labs/forge.git && cd forge
+npm ci --ignore-scripts --no-audit --no-fund
+npm install -g . --omit=optional --no-audit --no-fund
+forge setup open --target both
+forge setup next && forge setup close && forge doctor
+```
+接入仓库：`forge adopt --repo /path/to/your-project`。首次使用可按[安装并启动](docs/tutorials/01-install-and-start.zh-CN.md) → [连接 ChatGPT](docs/tutorials/02-connect-chatgpt.zh-CN.md) → [完成第一个仓库任务](docs/tutorials/03-first-repository-task.zh-CN.md)进行。
+### 发布、文档与支持
+当前源码版本为 `1.4.0-rc.6`，npm 包 `@moretea-labs/forge` **尚未公开**；发布后使用 `npm install -g @moretea-labs/forge@next`。
+[文档中心](docs/README.md) · [Wiki](docs/wiki/Home.md) · [完整中文 README](README.zh-CN.md) · [公开使用指南](docs/public-usage-guide.zh-CN.md)
+Bug/文档：[GitHub Issues](https://github.com/moretea-labs/forge/issues) · 使用：[SUPPORT.md](SUPPORT.md) · 安全：[SECURITY.md](SECURITY.md) · 贡献：[CONTRIBUTING.md](CONTRIBUTING.md) · 版本：[CHANGELOG.md](CHANGELOG.md)
+项目采用 [MIT License](LICENSE)，上游版权与许可声明见 [NOTICE](NOTICE) 与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

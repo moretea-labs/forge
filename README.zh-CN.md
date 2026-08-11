@@ -5,7 +5,7 @@
 </p>
 
 <p align="center"><strong>面向软件工作的本地优先行动型助手。</strong></p>
-<p align="center"><a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a></p>
+<p align="center"><a href="https://github.com/moretea-labs/forge#english">English</a> · <a href="https://github.com/moretea-labs/forge#zh-cn">简体中文</a></p>
 
 Forge 把 ChatGPT 连接到真实的本地开发环境，让它读取当前项目状态、执行有边界的修改、运行检查、管理长时间命令，并返回可审查证据，而不是只依赖聊天上下文。
 
