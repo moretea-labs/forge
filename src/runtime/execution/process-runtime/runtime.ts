@@ -106,6 +106,8 @@ interface LiveMonitor {
 }
 
 const liveMonitors = new Map<string, LiveMonitor>();
+const PROCESS_RECOVERY_RECEIPT_GRACE_MS = 500;
+const PROCESS_RECOVERY_RECEIPT_POLL_MS = 25;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -1501,10 +1503,32 @@ export async function waitForProcess(
     const fromReceipt = applyReceiptIfPresent(controllerHome, repoId, processId, current);
     if (fromReceipt) return recordToHandle(fromReceipt, { completed: true });
     if (!identityStillMatches(current.identity, current.identityUntrusted)) {
-      // PID gone and no receipt → completed_unknown.
-      const completed = completeProcessFromEvidence(controllerHome, repoId, processId, current.terminalFenceToken, {
+      // The independent Runner atomically writes its durable receipt before it
+      // exits, but process identity observation and filesystem visibility can
+      // cross during restart attach. Give the receipt a short bounded grace
+      // window before committing the irreversible completed_unknown fallback.
+      const receiptGraceDeadline = Math.min(deadline, Date.now() + PROCESS_RECOVERY_RECEIPT_GRACE_MS);
+      let identityRecovered = false;
+      while (Date.now() < receiptGraceDeadline) {
+        await new Promise((r) => setTimeout(r, PROCESS_RECOVERY_RECEIPT_POLL_MS));
+        const latest = getProcessRecord(controllerHome, repoId, processId);
+        if (!latest) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
+        if (latest.terminalWritten) return recordToHandle(latest, { completed: true });
+        const delayedReceipt = applyReceiptIfPresent(controllerHome, repoId, processId, latest);
+        if (delayedReceipt) return recordToHandle(delayedReceipt, { completed: true });
+        if (identityStillMatches(latest.identity, latest.identityUntrusted)) {
+          identityRecovered = true;
+          break;
+        }
+      }
+      if (identityRecovered) continue;
+      const latest = getProcessRecord(controllerHome, repoId, processId)!;
+      const delayedReceipt = applyReceiptIfPresent(controllerHome, repoId, processId, latest);
+      if (delayedReceipt) return recordToHandle(delayedReceipt, { completed: true });
+      if (identityStillMatches(latest.identity, latest.identityUntrusted)) continue;
+      const completed = completeProcessFromEvidence(controllerHome, repoId, processId, latest.terminalFenceToken, {
         status: 'completed_unknown',
-        errorMessage: 'process exited while controller was offline and no exit receipt was found',
+        errorMessage: 'process exited while controller was offline and no exit receipt was found after receipt grace period',
       });
       return recordToHandle(completed!, { completed: true });
     }

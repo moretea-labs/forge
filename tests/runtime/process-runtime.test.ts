@@ -815,29 +815,23 @@ describe('Unified Process Runtime', () => {
     expect(cancelled.cancelled === true || cancelled.status === 'cancelled' || cancelled.completed).toBe(true);
   });
 
-  test('recover marks missing process as orphaned after monitor drop', async () => {
+  test('restart attach preserves a recovered runner success after monitor drop', async () => {
     const fx = fixture();
     const handle = await spawnManagedProcess({
-      controllerHome: fx.controllerHome,
-      repoId: fx.repository.repoId,
+      controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
       executionIdentity: executionIdentityForRepository(fx.repository),
       command: {
-        kind: 'argv',
-        executable: 'node',
-        args: ['-e', 'setTimeout(() => process.exit(0), 50)'],
-        cwd: fx.repoRoot,
+        kind: 'argv', executable: 'node',
+        args: ['-e', 'setTimeout(() => process.exit(0), 250)'], cwd: fx.repoRoot,
       },
-      interactiveWaitMs: 5_000,
-      timeoutMs: 10_000,
+      interactiveWaitMs: 0, timeoutMs: 10_000, returnHandleImmediately: true,
     });
-    // Ensure finished then drop monitors and recover active list is empty/orphaned path works.
-    if (!handle.completed) {
-      await waitForProcess(fx.controllerHome, fx.repository.repoId, handle.processId, { timeoutMs: 5_000 });
-    }
+    expect(handle.completed).toBe(false);
     __resetLiveMonitorsForTests();
     const recovery = recoverManagedProcesses(fx.controllerHome, fx.repository.repoId);
-    expect(Array.isArray(recovery.recovered)).toBe(true);
-    expect(Array.isArray(recovery.orphaned)).toBe(true);
+    expect(recovery.recovered.includes(handle.processId) || recovery.completedFromReceipt.includes(handle.processId)).toBe(true);
+    const completed = await waitForProcess(fx.controllerHome, fx.repository.repoId, handle.processId, { timeoutMs: 5_000 });
+    expect(completed).toMatchObject({ completed: true, ok: true, status: 'succeeded', exitCode: 0 });
   });
 });
 
