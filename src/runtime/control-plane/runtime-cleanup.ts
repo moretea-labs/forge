@@ -11,6 +11,7 @@ import {
 import { join, relative, resolve } from 'path';
 import { ensureControllerHome } from '../../cli/repositories/controller-home';
 import { appendJsonLine, readJsonFile, writeJsonAtomic } from '../shared/json-files';
+import { cleanupControllerReleaseHistory } from './release-retention';
 
 function numericSetting(value: string | undefined, fallback: number, minimum: number): number {
   const parsed = Number(value);
@@ -129,6 +130,10 @@ export interface RuntimeCleanupOptions {
   maxEntries?: number;
   /** Global removal budget for one cycle; automatic cleanup defaults to 50. */
   maxRemovals?: number;
+  /** Minimum age before an unreferenced finalized release/backup can be reclaimed. */
+  releaseRetentionGraceMs?: number;
+  /** Minimum age before an abandoned runtime .staging-* directory can be reclaimed. */
+  stagingReleaseRetentionGraceMs?: number;
   inspectProcess?: (pid: number) => RuntimeProcessSnapshot;
 }
 
@@ -139,6 +144,7 @@ export interface RuntimeCleanupReport {
   skippedPidFiles: string[];
   removedWorktrees: string[];
   removedTemporaryPaths: string[];
+  removedReleasePaths: string[];
   skippedActiveWorktrees: string[];
   inspectedPaths: number;
   budgetExhausted: boolean;
@@ -626,7 +632,8 @@ function shouldPersistCleanupAudit(report: RuntimeCleanupReport): boolean {
   const hadMutations = Boolean(
     report.removedPidFiles.length
     || report.removedWorktrees.length
-    || report.removedTemporaryPaths.length,
+    || report.removedTemporaryPaths.length
+    || report.removedReleasePaths.length,
   );
   if (hadMutations || report.errors.length) return true;
   // Startup/manual may record defensive skips (live PID protected, budget).
@@ -658,7 +665,20 @@ export function cleanupControllerRuntimeState(
   const worktrees = cleanupOrphanWorktrees(home, references, worktreeBudget, nowMs, errors, removalBudget);
   Object.entries(worktrees.skippedByReason).forEach(([key, value]) => { skippedByReason[key] = (skippedByReason[key] ?? 0) + value; });
   const removedTemporaryPaths = cleanupTemporaryStatePaths(home, tempBudget, nowMs, errors, removalBudget, skippedByReason).sort();
-  const inspectedPaths = referenceBudget.inspected + worktreeBudget.inspected + tempBudget.inspected;
+  const releaseRetention = cleanupControllerReleaseHistory(home, {
+    nowMs,
+    graceMs: options.releaseRetentionGraceMs,
+    stagingGraceMs: options.stagingReleaseRetentionGraceMs,
+    maxRemovals: removalBudget.remaining,
+  });
+  removalBudget.remaining = Math.max(0, removalBudget.remaining - releaseRetention.attempted);
+  if (releaseRetention.budgetExhausted) removalBudget.exhausted = true;
+  Object.entries(releaseRetention.skippedByReason).forEach(([key, value]) => {
+    skippedByReason[key] = (skippedByReason[key] ?? 0) + value;
+  });
+  errors.push(...releaseRetention.errors);
+  const removedReleasePaths = releaseRetention.removedPaths;
+  const inspectedPaths = referenceBudget.inspected + worktreeBudget.inspected + tempBudget.inspected + releaseRetention.inspected;
   const budgetExhausted = referenceBudget.exhausted || worktreeBudget.exhausted || tempBudget.exhausted || removalBudget.exhausted;
   if (pidFiles.skipped.length > 0 && removalBudget.exhausted) skippedByReason.cleanup_budget_exhausted = (skippedByReason.cleanup_budget_exhausted ?? 0) + pidFiles.skipped.length;
   if (pidFiles.skipped.length > 0 && !removalBudget.exhausted) skippedByReason.active_owner = (skippedByReason.active_owner ?? 0) + pidFiles.skipped.length;
@@ -669,6 +689,7 @@ export function cleanupControllerRuntimeState(
     skippedPidFiles: pidFiles.skipped.sort(),
     removedWorktrees: worktrees.removed.sort(),
     removedTemporaryPaths,
+    removedReleasePaths,
     skippedActiveWorktrees: worktrees.skippedActive.sort(),
     inspectedPaths,
     budgetExhausted,
@@ -676,11 +697,11 @@ export function cleanupControllerRuntimeState(
     logPath: runtimeCleanupLogPath(home),
     cycle: {
       scanned: inspectedPaths,
-      eligible: pidFiles.removed.length + worktrees.removed.length + removedTemporaryPaths.length,
-      attempted: pidFiles.removed.length + worktrees.removed.length + removedTemporaryPaths.length + errors.length,
-      removed: pidFiles.removed.length + worktrees.removed.length + removedTemporaryPaths.length,
-      retained: pidFiles.skipped.length + worktrees.skippedActive.length,
-      skipped: Math.max(0, inspectedPaths - pidFiles.removed.length - worktrees.removed.length - removedTemporaryPaths.length - errors.length),
+      eligible: pidFiles.removed.length + worktrees.removed.length + removedTemporaryPaths.length + releaseRetention.eligible,
+      attempted: pidFiles.removed.length + worktrees.removed.length + removedTemporaryPaths.length + releaseRetention.attempted + errors.length,
+      removed: pidFiles.removed.length + worktrees.removed.length + removedTemporaryPaths.length + removedReleasePaths.length,
+      retained: pidFiles.skipped.length + worktrees.skippedActive.length + releaseRetention.retained,
+      skipped: Math.max(0, inspectedPaths - pidFiles.removed.length - worktrees.removed.length - removedTemporaryPaths.length - removedReleasePaths.length - errors.length),
       failed: errors.length,
       truncated: budgetExhausted,
       budgetExhausted,
