@@ -18,9 +18,18 @@ npm --version
 
 See [Platform Support](../operations/platform-support.md) for the exact matrix.
 
-## 2. Install the CLI today
+## 2. Install the CLI
 
-The npm package `@moretea-labs/forge` is not public yet. Install from a reviewed source checkout:
+Release candidates are published on npm's `next` channel:
+
+```bash
+npm install -g @moretea-labs/forge@next
+# or
+bun add -g @moretea-labs/forge@next
+forge --version
+```
+
+For Forge source development, install from the repository instead:
 
 ```bash
 git clone https://github.com/moretea-labs/forge.git
@@ -29,22 +38,7 @@ npm ci --ignore-scripts --no-audit --no-fund
 npm install -g . --omit=optional --no-audit --no-fund
 ```
 
-Bun can use the same source package:
-
-```bash
-bun install
-bun add -g .
-```
-
-After the RC is published, the registry commands will be:
-
-```bash
-npm install -g @moretea-labs/forge@next
-# or
-bun add -g @moretea-labs/forge@next
-```
-
-The package exposes exactly `forge`, `forge-hook`, and `forge-runtime`. Previous product aliases are not published; do not install an unscoped substitute.
+The package exposes exactly `forge`, `forge-hook`, and `forge-runtime`. Release candidates use `next`; stable releases use `latest`.
 
 ## 3. Open the guided setup session
 

@@ -2,9 +2,9 @@
 
 The public package is `@moretea-labs/forge`. It exposes exactly `forge`, `forge-hook`, and `forge-runtime`; previous product aliases are not published.
 
-## Current state
+## Release model
 
-The npm package is not public yet. The next candidate is `1.4.0-rc.6`; the first stable target is `1.4.0`. Until the first npm publication, public documentation must present source installation as the working path and label registry commands as upcoming.
+`@moretea-labs/forge` publishes release candidates to npm `next` and stable releases to `latest`. Release documentation does not hard-code the “next version”; package version, Git tag, npm channel, and GitHub Release must be derived from the current `package.json` and agree exactly.
 
 ## Distribution model
 
@@ -44,8 +44,9 @@ npm whoami
 npm access ls-packages @moretea-labs
 
 # Create and inspect the local tag, but do not push it before publication succeeds.
-git tag -a v1.4.0-rc.6 -m "Forge 1.4.0-rc.6"
-RELEASE_TAG=v1.4.0-rc.6 npm run release:rc
+VERSION="$(node -p "require('./package.json').version")"
+git tag -a "v${VERSION}" -m "Forge ${VERSION}"
+RELEASE_TAG="v${VERSION}" npm run release:rc
 ```
 
 If publication fails, remove the unpushed local tag, correct the problem, rerun the focused and release gates, and create a new release commit when repository content changes. Never reuse a published package version or move a pushed release tag.
@@ -53,8 +54,8 @@ If publication fails, remove the unpushed local tag, correct the problem, rerun 
 After npm confirms the package:
 
 ```bash
-git push origin v1.4.0-rc.6
-gh release create v1.4.0-rc.6 --verify-tag --generate-notes --prerelease
+git push origin "v${VERSION}"
+gh release create "v${VERSION}" --verify-tag --generate-notes --prerelease
 npm run check:release-published
 ```
 
@@ -76,7 +77,7 @@ Before `1.4.0`:
 - install the exact packed artifact on macOS, Linux, WSL2, and the supported Windows path;
 - verify `forge init`, `forge doctor`, repository registration/adoption, and the ChatGPT MCP connection;
 - confirm no RC-only warning or unstable install command remains in the stable docs;
-- change `package.json` to `1.4.0`; the package identity gate will require `latest`;
+- change `package.json` from an RC version to the intended stable `X.Y.Z`; the package identity gate will require `latest`;
 - publish from tag `v1.4.0` through the protected environment;
 - only then create or update the Homebrew tap formula.
 

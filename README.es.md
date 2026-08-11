@@ -4,7 +4,7 @@ Forge es un asistente de acción local-first para trabajo de software que conect
 
 La documentación completa y mantenida está en [README.md](README.md). También puedes consultar la [Wiki](docs/wiki/Home.md), la [arquitectura](docs/wiki/Architecture.md) y el [mapa de implementación](docs/wiki/Implementation.md).
 
-La versión fuente actual es `1.4.0-rc.6`. El paquete npm `@moretea-labs/forge` todavía no es público; la publicación solo se realiza desde una revisión inmutable que supera las verificaciones de release.
+La versión candidata actual es `1.5.0-rc.1`. Las versiones candidatas de `@moretea-labs/forge` usan el canal npm `next`; las versiones estables usan `latest`.
 
 - Uso y soporte: [SUPPORT.md](SUPPORT.md)
 - Seguridad: [SECURITY.md](SECURITY.md)

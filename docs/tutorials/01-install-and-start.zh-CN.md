@@ -18,9 +18,18 @@ npm --version
 
 详细范围见[平台支持说明](../operations/platform-support.zh-CN.md)。
 
-## 2. 当前安装方式
+## 2. 安装 CLI
 
-npm 包 `@moretea-labs/forge` 目前尚未公开，请从经过审查的源码 checkout 安装：
+发布候选版本使用 npm 的 `next` channel：
+
+```bash
+npm install -g @moretea-labs/forge@next
+# 或
+bun add -g @moretea-labs/forge@next
+forge --version
+```
+
+需要参与 Forge 源码开发时，再从仓库安装：
 
 ```bash
 git clone https://github.com/moretea-labs/forge.git
@@ -29,22 +38,7 @@ npm ci --ignore-scripts --no-audit --no-fund
 npm install -g . --omit=optional --no-audit --no-fund
 ```
 
-也可以让 Bun 使用同一个源码 package：
-
-```bash
-bun install
-bun add -g .
-```
-
-RC 发布后，registry 安装命令会是：
-
-```bash
-npm install -g @moretea-labs/forge@next
-# 或
-bun add -g @moretea-labs/forge@next
-```
-
-该 package 只提供 `forge`、`forge-hook` 与 `forge-runtime`。不再发布此前产品的命令别名，也不要使用未加 scope 的替代包。
+该 package 只提供 `forge`、`forge-hook` 与 `forge-runtime`。候选版本使用 `next`，稳定版本使用 `latest`。
 
 ## 3. 打开引导式配置会话
 

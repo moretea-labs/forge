@@ -2,7 +2,7 @@
 
 ## Release channels
 
-- `next`: release candidates; `1.4.0-rc.6` is the current GitHub prerelease
+- `next`: release candidates
 - `latest`: stable releases only
 
 The package version, Git tag, npm channel, GitHub prerelease state, and release notes must agree. GitHub Releases and npm publication are separate facts.

@@ -4,7 +4,7 @@ Forge は、ChatGPT を実際のローカルリポジトリ、コマンド、検
 
 完全かつ継続的に更新される説明は [README.md](README.md) を参照してください。[Wiki](docs/wiki/Home.md)、[アーキテクチャ](docs/wiki/Architecture.md)、[実装マップ](docs/wiki/Implementation.md) も利用できます。
 
-現在のソース版は `1.4.0-rc.6` です。npm パッケージ `@moretea-labs/forge` はまだ公開されていません。公開は、release gate を通過した不変 revision からのみ行います。
+現在のリリース候補は `1.5.0-rc.1` です。`@moretea-labs/forge` の RC は npm の `next`、安定版は `latest` チャネルを使用します。
 
 - 利用・サポート: [SUPPORT.md](SUPPORT.md)
 - セキュリティ: [SECURITY.md](SECURITY.md)

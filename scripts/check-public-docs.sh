@@ -57,8 +57,8 @@ done
 
 grep -q 'docs/tutorials/01-install-and-start.md' README.md || { echo "[public-docs] English README missing tutorial link" >&2; exit 1; }
 grep -q 'docs/tutorials/01-install-and-start.zh-CN.md' README.zh-CN.md || { echo "[public-docs] Chinese README missing tutorial link" >&2; exit 1; }
-grep -q 'not public yet' README.md || { echo "[public-docs] English README must state npm availability honestly" >&2; exit 1; }
-grep -q '尚未公开' README.zh-CN.md || { echo "[public-docs] Chinese README must state npm availability honestly" >&2; exit 1; }
+grep -q 'npm `next`' README.md || { echo "[public-docs] English README must state the RC npm channel" >&2; exit 1; }
+grep -q 'npm 使用 `next`' README.zh-CN.md || { echo "[public-docs] Chinese README must state the RC npm channel" >&2; exit 1; }
 grep -q 'See \[README.md\](README.md)' README.en.md || { echo "[public-docs] README.en.md must point to the maintained English README" >&2; exit 1; }
 
 for path in docs/tutorials/01-install-and-start.md docs/tutorials/01-install-and-start.zh-CN.md; do
@@ -74,7 +74,9 @@ for path in docs/operations/releasing.md docs/operations/releasing.zh-CN.md; do
     echo "[public-docs] forbidden legacy product identity remains: $path" >&2
     exit 1
   fi
-  grep -q 'v1.4.0-rc.6' "$path" || { echo "[public-docs] missing next release baseline: $path" >&2; exit 1; }
+  grep -q 'package.json' "$path" || { echo "[public-docs] release version must be derived from package.json: $path" >&2; exit 1; }
+  grep -q 'next' "$path" || { echo "[public-docs] missing RC channel: $path" >&2; exit 1; }
+  grep -q 'latest' "$path" || { echo "[public-docs] missing stable channel: $path" >&2; exit 1; }
   grep -q 'Bun' "$path" || { echo "[public-docs] missing Bun distribution role: $path" >&2; exit 1; }
   grep -q 'Homebrew' "$path" || { echo "[public-docs] missing Homebrew distribution role: $path" >&2; exit 1; }
 done

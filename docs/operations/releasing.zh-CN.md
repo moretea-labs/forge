@@ -2,9 +2,9 @@
 
 公开 npm 包名为 `@moretea-labs/forge`，只发布 `forge`、`forge-hook` 与 `forge-runtime`，不再发布此前产品的命令别名。
 
-## 当前状态
+## 当前发布模型
 
-npm 包目前尚未公开。下一条候选基线是 `1.4.0-rc.6`，首个稳定版目标是 `1.4.0`。首次 npm 发布前，公开文档必须把源码安装作为当前可用路径，并明确标注 registry 安装命令尚未开放。
+`@moretea-labs/forge` 的候选版本发布到 npm `next`，稳定版本发布到 `latest`。发布文档不硬编码“下一版本”；版本、Git tag、npm channel 和 GitHub Release 必须从 `package.json` 的当前版本推导并保持一致。
 
 ## 分发模型
 
@@ -44,8 +44,9 @@ npm whoami
 npm access ls-packages @moretea-labs
 
 # 先创建并检查本地 tag，发布成功前不要 push。
-git tag -a v1.4.0-rc.6 -m "Forge 1.4.0-rc.6"
-RELEASE_TAG=v1.4.0-rc.6 npm run release:rc
+VERSION="$(node -p "require('./package.json').version")"
+git tag -a "v${VERSION}" -m "Forge ${VERSION}"
+RELEASE_TAG="v${VERSION}" npm run release:rc
 ```
 
 发布失败时，删除尚未 push 的本地 tag，修复后重新跑完整门禁。仓库内容变化后必须产生新的 release commit。已经发布的 npm 版本不能覆盖，已经 push 的 release tag 不能移动。
@@ -53,8 +54,8 @@ RELEASE_TAG=v1.4.0-rc.6 npm run release:rc
 npm 确认发布成功后：
 
 ```bash
-git push origin v1.4.0-rc.6
-gh release create v1.4.0-rc.6 --verify-tag --generate-notes --prerelease
+git push origin "v${VERSION}"
+gh release create "v${VERSION}" --verify-tag --generate-notes --prerelease
 npm run check:release-published
 ```
 
@@ -76,7 +77,7 @@ Tag workflow 使用 GitHub OIDC，不需要 `NODE_AUTH_TOKEN` 或仓库内 npm t
 - 在 macOS、Linux、WSL2 和已声明的 Windows 路径安装精确 packed artifact；
 - 验证 `forge init`、`forge doctor`、仓库注册/接入和 ChatGPT MCP 连接；
 - 确认稳定文档中没有 RC 专属警告或不稳定安装命令；
-- 把 `package.json` 改为 `1.4.0`，package identity gate 会要求 `latest`；
+- 把 `package.json` 从 RC 版本改为目标稳定版 `X.Y.Z`，package identity gate 会要求 `latest`；
 - 从受保护环境发布 tag `v1.4.0`；
 - 完成后才创建或更新 Homebrew tap formula。
 

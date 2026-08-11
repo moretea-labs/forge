@@ -1,78 +1,37 @@
 <a id="english"></a>
 
-# Forge
+<p align="center"><img src="docs/images/forge-banner.svg" alt="Forge — local-first action runtime" width="1280"></p>
+<p align="center"><strong>Local-first action runtime for ChatGPT and AI coding assistants.</strong></p>
+<p align="center"><a href="#english">English</a> · <a href="#zh-cn">简体中文</a> · <a href="docs/README.md">Docs</a> · <a href="docs/forge-plugin-management.md">Plugins</a> · <a href="https://github.com/moretea-labs/forge/releases">Releases</a></p>
+<p align="center"><img alt="CI" src="https://github.com/moretea-labs/forge/actions/workflows/ci.yml/badge.svg"> <img alt="Release" src="https://img.shields.io/github/v/release/moretea-labs/forge?include_prereleases&sort=semver"> <img alt="npm next" src="https://img.shields.io/npm/v/%40moretea-labs%2Fforge?tag=next&label=npm%20next"> <img alt="License" src="https://img.shields.io/github/license/moretea-labs/forge"></p>
 
-<p align="center">
-  <img src="docs/images/forge-banner.svg" alt="Forge — local-first action assistant" width="1280">
-</p>
-
-<p align="center"><strong>Your local-first action assistant for software work.</strong></p>
-<p align="center"><a href="https://github.com/moretea-labs/forge#english">English</a> · <a href="https://github.com/moretea-labs/forge#zh-cn">简体中文</a></p>
-
-Forge connects ChatGPT to your real local development environment so it can inspect current project state, make bounded changes, run checks, manage long-running commands, and return reviewable evidence instead of relying only on chat memory.
-
-## What Forge can do
-
-- **Work with real local repositories** — register multiple repositories once, then bind every operation to an explicit repository and checkout.
-- **Keep small work lightweight** — understood, bounded changes use the Direct path; inspection alone does not force a Plan, Issue, Agent, or worktree.
-- **Manage long commands without re-running them** — builds and tests use one stable Process lifecycle that can be queried, waited on, inspected, or cancelled.
-- **Run independent work concurrently** — unrelated repositories can progress in parallel; one repository can use separate worktrees when isolation is actually needed; the same checkout remains single-writer.
-- **Reuse valid verification** — equivalent checks can coalesce or reuse evidence while content or environment changes invalidate stale results.
-- **Inspect explicit unregistered folders** — bounded one-off local workspace actions do not silently register a repository or initialize Git.
-- **Recover execution state** — repository identity, work, processes, verification, release state, and recovery facts survive individual chat turns.
-- **Keep hard boundaries explicit** — remote writes, destructive effects, outside-workspace access, and secrets remain policy-gated.
-- **Extend through typed plugins** — use `forge plugin catalog/install/list`; official providers reuse the same Controller and trusted policy path. [Plugin guide](docs/forge-plugin-management.md).
-
-## How ChatGPT uses Forge
-
-The normal ChatGPT connector exposes a bounded **19-tool** MCP surface. Five stable facades — `rh_status`, `rh_access`, `rh_inbox`, `rh_context`, and `rh_work` — cover most orchestration; repository, source/patch, check, Process, plugin-dispatch, and result tools complete the default surface.
-
-You normally do not choose tools yourself. Ask for the outcome in natural language; Forge is designed to choose the shortest valid execution path.
-
-```text
-Small task:  inspect -> relevant context -> Direct Edit -> focused check -> commit
-Long task:   resolve identity -> durable work only if needed -> Process/worktree -> verify -> integrate -> clean
-```
-
-Examples:
-- “Use Forge to find why this test fails, fix it, run the focused tests, and commit.”
-- “Compare these two registered repositories and update them independently.”
-- “Run the build; if it takes time, keep using the same Process instead of starting it again.”
-- “Inspect this local folder without registering it.”
-- “Check the current Runtime and tell me what actually blocks release.”
+Forge gives ChatGPT a bounded, auditable way to work with **real local repositories, processes, plugins, and recovery state**. It keeps durable execution facts outside the chat, uses the lightest valid path for small work, and preserves explicit safety boundaries for remote, destructive, secret, and outside-workspace effects.
 
 ## Why Forge
 
-- **Real state lives outside the chat** — Git state, repository identity, execution state, checks, and evidence remain locally addressable.
-- **Direct-first execution** — heavier workflow machinery is reserved for recovery, isolation, dependencies, long-running work, or real risk.
-- **Explicit execution identity** — `repoId` plus `checkoutId` prevents one session from silently acting on another checkout.
-- **Reviewable effects** — localized diffs, exact checks, Process receipts, and release evidence show what actually happened.
-- **Local control** — the Canonical Runtime and recovery authority stay on the local machine.
-- **Stable client contract** — tool-schema changes are fenced as recoverable reinitialization instead of silently using a stale schema.
-
-## Release status
-
-The current source version is `1.5.0-rc.1`. The npm package `@moretea-labs/forge` is **not public yet**. Source version, release readiness, GitHub Release, and npm publication are separate facts; an immutable revision must pass the release gate before publication.
+| Need | Forge behavior |
+| --- | --- |
+| Work on real code | Stable `repoId + checkoutId` identity binds every repository operation to the intended checkout. |
+| Keep small tasks fast | Direct-first execution avoids Plan/Issue/Agent/worktree overhead when the change is already understood. |
+| Run long work once | Process Runtime owns build/test/process lifecycle; status, wait, logs, and cancel attach to the same process. |
+| Work concurrently | Independent repositories run in parallel; worktrees are introduced only when isolation is actually needed. |
+| Trust the result | Focused checks, diffs, receipts, evidence, immutable runtime releases, and Recovery make outcomes reviewable. |
+| Extend safely | Typed external providers install through Forge's pinned catalog and reuse the same authorization/evidence path. |
 
 ## Quick start
 
-Requirements: Git, Node.js 20.10 or newer, npm, and a writable home directory. Bun 1.0+ is optional for installed use and recommended for source development and the complete test suite.
+Requirements: Git, Node.js 20.10+, npm, and a writable home directory. Bun 1.0+ is recommended for source development and the full test suite.
 
 ```bash
-git clone https://github.com/moretea-labs/forge.git
-cd forge
-npm ci --ignore-scripts --no-audit --no-fund
-npm install -g . --omit=optional --no-audit --no-fund
-
+npm install -g @moretea-labs/forge@next
 forge --version
 forge setup open --target both
-# complete the printed action, then continue:
-forge setup next
+forge setup next     # repeat until ready
 forge setup close
 forge doctor
 ```
 
-Register or adopt a repository:
+Connect ChatGPT with [Tutorial 2](docs/tutorials/02-connect-chatgpt.md), then adopt a repository:
 
 ```bash
 forge adopt --repo /path/to/your-project --dry-run
@@ -80,69 +39,94 @@ forge adopt --repo /path/to/your-project
 forge repo list --json
 ```
 
-Maintained first-use path:
-1. [Install and start](docs/tutorials/01-install-and-start.md)
-2. [Connect ChatGPT](docs/tutorials/02-connect-chatgpt.md)
-3. [Complete the first repository task](docs/tutorials/03-first-repository-task.md)
+For source development, follow [Install and start](docs/tutorials/01-install-and-start.md) or install the reviewed checkout directly:
 
-When the npm RC is published:
-
-```bash
-npm install -g @moretea-labs/forge@next
-# or consume the same package with Bun:
-bun add -g @moretea-labs/forge@next
-```
-
-## Execution model
-
-**Direct** is the default for bounded, understood work. **Process Runtime** owns commands and checks that need a process lifecycle: a command is spawned once and later status/wait/log/cancel operations attach to that same execution. **Durable work and worktrees** are used when recovery, isolation, dependencies, concurrency, or a longer lifecycle actually requires them. **Canonical Runtime + Recovery** provide one active local Runtime authority and an independent recovery boundary.
-
-See [Core Concepts](docs/wiki/Core-Concepts.md), [Work Lifecycle](docs/wiki/Work-Lifecycle.md), [Runtime Architecture](docs/wiki/Runtime-Architecture.md), and [Implementation](docs/wiki/Implementation.md).
-
-## Safety and product identity
-
-Forge separates observation, normal local changes, remote effects, destructive actions, outside-workspace access, and secrets. Full Access removes repetitive approval for ordinary local repository work; it does not weaken destructive, remote, or secret boundaries. See [Security Model](docs/wiki/Security-Model.md).
-
-The active product identity is **Forge**. Public commands are `forge`, `forge-hook`, and `forge-runtime`. Historical legal attribution and explicit read-only migration fallbacks may retain former upstream identifiers because rewriting historical evidence would be incorrect.
-
-## Documentation and support
-
-- [Documentation hub](docs/README.md) · [Wiki](docs/wiki/Home.md) · [Architecture](docs/wiki/Architecture.md) · [Implementation](docs/wiki/Implementation.md)
-- [Public usage guide](docs/public-usage-guide.md) · [Platform support](docs/operations/platform-support.md) · [Troubleshooting](docs/operations/troubleshooting.md) · [Release process](docs/operations/releasing.md)
-- Bugs/docs: [GitHub Issues](https://github.com/moretea-labs/forge/issues) · Usage: [SUPPORT.md](SUPPORT.md) · Security: [SECURITY.md](SECURITY.md)
-- Contributions: [CONTRIBUTING.md](CONTRIBUTING.md) · Releases: [CHANGELOG.md](CHANGELOG.md)
-
-Forge remains in release-candidate hardening; releases are created only from a revision that passes the published release gate.
-
-## License and attribution
-
-Licensed under the [MIT License](LICENSE). Upstream copyright and permission notices remain part of the distribution; see [NOTICE](NOTICE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
----
-
-<a id="zh-cn"></a>
-## 简体中文
-<p align="center"><img src="docs/images/forge-banner-cn.svg" alt="Forge——本地优先的行动型助手" width="1280"></p>
-<p align="center"><strong>面向软件工作的本地优先行动型助手。</strong></p>
-<p align="center"><a href="https://github.com/moretea-labs/forge#english">English</a> · <a href="https://github.com/moretea-labs/forge#zh-cn">简体中文</a></p>
-Forge 把 ChatGPT 连接到真实本地开发环境，让它读取当前项目状态、执行有边界的修改、运行检查、复用 Process，并返回可审查证据。
-### 主要能力
-- **Direct-first**：范围明确的小任务直接读取、修改、验证和提交，不因调查自动创建 Plan、Issue、Agent 或 worktree。
-- **真实并发与身份隔离**：多个仓库可并行；`repoId + checkoutId` 明确执行目标；确有隔离需求时才使用 worktree。
-- **可恢复执行**：长命令只启动一次，后续 status/wait/log/cancel 连接同一个 Process；检查证据可复用并在代码或环境变化后失效。
-- **本地控制与硬边界**：Canonical Runtime、Recovery 与状态留在本机；远程写入、破坏性操作、工作区外访问和密钥仍受策略限制。
-### 快速开始
-需要 Git、Node.js 20.10+、npm 和可写用户目录；Bun 1.0+ 推荐用于源码开发和完整测试。
 ```bash
 git clone https://github.com/moretea-labs/forge.git && cd forge
 npm ci --ignore-scripts --no-audit --no-fund
 npm install -g . --omit=optional --no-audit --no-fund
-forge setup open --target both
-forge setup next && forge setup close && forge doctor
 ```
-接入仓库：`forge adopt --repo /path/to/your-project`。首次使用可按[安装并启动](docs/tutorials/01-install-and-start.zh-CN.md) → [连接 ChatGPT](docs/tutorials/02-connect-chatgpt.zh-CN.md) → [完成第一个仓库任务](docs/tutorials/03-first-repository-task.zh-CN.md)进行。
-### 发布、文档与支持
-当前源码版本为 `1.5.0-rc.1`，npm 包 `@moretea-labs/forge` **尚未公开**；发布后使用 `npm install -g @moretea-labs/forge@next`。
-[文档中心](docs/README.md) · [Wiki](docs/wiki/Home.md) · [完整中文 README](README.zh-CN.md) · [公开使用指南](docs/public-usage-guide.zh-CN.md)
-Bug/文档：[GitHub Issues](https://github.com/moretea-labs/forge/issues) · 使用：[SUPPORT.md](SUPPORT.md) · 安全：[SECURITY.md](SECURITY.md) · 贡献：[CONTRIBUTING.md](CONTRIBUTING.md) · 版本：[CHANGELOG.md](CHANGELOG.md)
-项目采用 [MIT License](LICENSE)，上游版权与许可声明见 [NOTICE](NOTICE) 与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+## How ChatGPT uses Forge
+
+The normal ChatGPT connector exposes a bounded **19-tool MCP surface**. Five preferred facades—`rh_status`, `rh_access`, `rh_inbox`, `rh_context`, and `rh_work`—cover most orchestration; repository, source/patch, check, Process, plugin-dispatch, and result tools complete the default surface.
+
+```text
+Small task  → inspect → relevant context → Direct Edit → focused check → commit
+Long task   → resolve identity → durable work only if needed → Process/worktree → verify → integrate → clean
+```
+
+<p align="center"><img src="docs/images/forge-controller-flow.svg" alt="Forge canonical runtime flow" width="980"></p>
+
+Ask for the outcome, not the tool: “fix this failing test and commit”, “compare these repositories in parallel”, or “run the build and keep using the same Process”.
+
+## Official providers
+
+| Provider | Purpose | Install |
+| --- | --- | --- |
+| [Forge Desktop Operator](https://github.com/moretea-labs/forge-desktop-operator) | Native macOS desktop automation | `forge plugin install desktop_operator` |
+| [Forge Design](https://github.com/moretea-labs/forge-design) | Repository-native design workspace and `design.md` provider | `forge plugin install design` |
+| [Personal Knowledge Assistant](https://github.com/moretea-labs/personal-knowledge-assistant) | Local-first personal knowledge retrieval, memory, and safe writes | `forge plugin install personal_knowledge` |
+
+See [Plugin Management](docs/forge-plugin-management.md) for trust, distribution, update, and transport boundaries. Investment Decision System remains an independent product rather than a Forge plugin.
+
+## Safety model
+
+Forge distinguishes observation, normal local changes, remote effects, destructive actions, outside-workspace access, and secrets. Full Access reduces repetitive approval for ordinary local work; it does **not** weaken destructive, remote, or secret boundaries. See [Security Model](docs/wiki/Security-Model.md) and [SECURITY.md](SECURITY.md).
+
+## Documentation
+
+- **Start:** [Documentation hub](docs/README.md) · [Wiki](docs/wiki/Home.md) · [Quick Start](docs/wiki/Quick-Start.md) · [Public usage guide](docs/public-usage-guide.md)
+- **Understand:** [Core Concepts](docs/wiki/Core-Concepts.md) · [Architecture](docs/wiki/Architecture.md) · [Work Lifecycle](docs/wiki/Work-Lifecycle.md)
+- **Operate:** [Operations](docs/wiki/Operations.md) · [Troubleshooting](docs/operations/troubleshooting.md) · [Platform support](docs/operations/platform-support.md)
+- **Maintain:** [Contributing](CONTRIBUTING.md) · [Release process](docs/operations/releasing.md) · [Changelog](CHANGELOG.md) · [Support](SUPPORT.md)
+
+**Current release candidate:** `1.5.0-rc.1` on the npm `next` channel. Stable releases use `latest`. Forge is MIT licensed; see [LICENSE](LICENSE), [NOTICE](NOTICE), and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+---
+<a id="zh-cn"></a>
+
+<p align="center"><img src="docs/images/forge-banner-cn.svg" alt="Forge——本地优先的行动运行时" width="1280"></p>
+<p align="center"><strong>面向 ChatGPT 与 AI 编程助手的本地优先行动运行时。</strong></p>
+<p align="center"><a href="#english">English</a> · <a href="#zh-cn">简体中文</a> · <a href="docs/README.zh-CN.md">中文文档</a> · <a href="docs/forge-plugin-management.md">插件</a> · <a href="https://github.com/moretea-labs/forge/releases">版本</a></p>
+
+Forge 让 ChatGPT 在**真实本地仓库、进程、插件与恢复状态**上执行有边界、可审查的工作。小任务默认走最短路径；长任务复用同一个 Process；远程、破坏性、密钥和工作区外访问继续保持明确安全边界。
+
+## 核心能力
+
+- **Direct-first**：范围明确的小修改不因调查自动创建 Plan、Issue、Agent 或 worktree。
+- **真实并发**：不同仓库可并行；需要隔离时再建立 worktree；同一 checkout 保持单写者。
+- **可恢复执行**：build/test 只启动一次，后续 status/wait/log/cancel 连接同一个 Process。
+- **明确身份**：`repoId + checkoutId` 防止一个会话误操作另一个 checkout。
+- **可验证结果**：diff、focused check、receipt、evidence、不可变 Runtime release 与 Recovery 都可追溯。
+- **类型化插件**：官方 Provider 从固定版本目录安装，并复用 Forge 的授权、资源声明与证据链。
+
+## 快速开始
+
+```bash
+npm install -g @moretea-labs/forge@next
+forge setup open --target both
+forge setup next     # 重复直到 ready
+forge setup close
+forge doctor
+```
+
+接入仓库：
+
+```bash
+forge adopt --repo /path/to/your-project --dry-run
+forge adopt --repo /path/to/your-project
+forge repo list --json
+```
+
+普通 ChatGPT Connector 默认收敛为 **19 个 MCP 工具**，其中 `rh_status`、`rh_access`、`rh_inbox`、`rh_context`、`rh_work` 五个 facade 覆盖主要编排。正常使用时直接描述目标，不需要自己挑工具。
+
+## 官方 Provider
+
+`forge plugin catalog` 可查看当前目录；官方 Provider 包括 [Forge Desktop Operator](https://github.com/moretea-labs/forge-desktop-operator)、[Forge Design](https://github.com/moretea-labs/forge-design) 与 [Personal Knowledge Assistant](https://github.com/moretea-labs/personal-knowledge-assistant)。详见[插件管理](docs/forge-plugin-management.md)。
+
+## 文档与维护
+
+[中文文档中心](docs/README.zh-CN.md) · [安装教程](docs/tutorials/01-install-and-start.zh-CN.md) · [公开使用指南](docs/public-usage-guide.zh-CN.md) · [架构](docs/wiki/Architecture.md) · [故障排查](docs/operations/troubleshooting.zh-CN.md) · [贡献](CONTRIBUTING.md) · [安全](SECURITY.md)
+
+**当前候选版本：** `1.5.0-rc.1`，npm 使用 `next`；稳定版使用 `latest`。项目采用 [MIT License](LICENSE)。
