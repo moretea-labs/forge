@@ -79,7 +79,7 @@ describe("repository MCP command tools", () => {
         displayName: "canonical-name",
         // Regression: historical/controller-issued ids need not equal the
         // remote-derived hash used by newer registrations.
-        repoIdOverride: "repo_123b7cf58b6b17b5cbe46a56",
+        repoIdOverride: "repo_fixture_legacy_controller_id",
       });
       git(repoRoot, ["worktree", "add", "--detach", worktreeRoot, "HEAD"]);
 
@@ -942,7 +942,7 @@ describe("repository_register repeat fast path", () => {
       const canonical = registerRepository({
         path: repoRoot,
         controllerHome,
-        repoIdOverride: "repo_123b7cf58b6b17b5cbe46a56",
+        repoIdOverride: "repo_fixture_legacy_controller_id",
       });
       git(repoRoot, ["worktree", "add", "--detach", worktreeRoot, "HEAD"]);
 

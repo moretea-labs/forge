@@ -595,7 +595,7 @@ describe('local_system target adapter', () => {
       runCommand: (command, args) => {
         expect(command).toBe('ps');
         expect(args).toEqual(['-p', '96834', '-o', 'command=']);
-        return { ok: true, status: 0, stdout: '/Users/greyson/investment-decision-system/.venv/bin/python -m app.mcp.server\n', stderr: '', command: [command, ...args] };
+        return { ok: true, status: 0, stdout: '/opt/forge-fixtures/investment-decision-system/.venv/bin/python -m app.mcp.server\n', stderr: '', command: [command, ...args] };
       },
       signalProcess: (pid, signal) => { signals.push({ pid, signal }); },
     });
@@ -621,7 +621,7 @@ describe('local_system target adapter', () => {
       runCommand: (command, args) => {
         commands.push([command, ...args]);
         if (args[0] === 'print') {
-          return { ok: true, status: 0, stdout: 'path = /Users/greyson/DevProjects/investment-decision-system/scripts/run-mcp-daemon.sh\n', stderr: '', command: [command, ...args] };
+          return { ok: true, status: 0, stdout: 'path = /opt/forge-fixtures/investment-decision-system/scripts/run-mcp-daemon.sh\n', stderr: '', command: [command, ...args] };
         }
         return { ok: true, status: 0, stdout: '', stderr: '', command: [command, ...args] };
       },
@@ -645,7 +645,7 @@ describe('local_system target adapter', () => {
     const launchAgents = join(home, 'Library', 'LaunchAgents');
     mkdirSync(launchAgents, { recursive: true });
     const label = 'com.greyson.forge-recovery-watchdog';
-    const program = '/Users/greyson/DevProjects/forge/recovery/current/forge-recovery-watchdog';
+    const program = '/opt/forge-fixtures/forge/recovery/current/forge-recovery-watchdog';
     writeFileSync(join(launchAgents, `${label}.plist`), `<plist><dict><key>Label</key><string>${label}</string><key>Program</key><string>${program}</string></dict></plist>`);
     const previousHome = process.env.HOME;
     process.env.HOME = home;

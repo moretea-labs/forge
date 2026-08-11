@@ -7,7 +7,7 @@ The repository has a real persisted CodeGraph index at `.codegraph/`; it is not 
 - CodeGraph: `1.0.1`, extraction version `24`, SQLite WAL backend.
 - Main checkout after the final full rebuild and incremental sync: 1,064 files, 22,895 nodes, 93,284 edges, zero Git-visible pending changes.
 - Incremental sync: 84 changed files (22 added, 62 modified), 2,883 parsed nodes in 2.4 seconds.
-- Persistent index path: `/Users/greyson/DevProjects/forge/.codegraph`.
+- Persistent index path: `<repo-root>/.codegraph`.
 
 ## Required structural queries
 

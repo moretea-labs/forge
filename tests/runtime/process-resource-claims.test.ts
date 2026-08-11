@@ -47,7 +47,7 @@ describe('Process Runtime fine-grained resource claims', () => {
     for (const command of [
       ['tsc', '--noEmit'],
       ['bun', 'x', 'tsc', '--noEmit'],
-      ['/Users/example/.bun/bin/bun', 'x', '/repo/node_modules/.bin/tsc', '--noEmit', '--pretty', 'false'],
+      ['/opt/bun/bin/bun', 'x', '/repo/node_modules/.bin/tsc', '--noEmit', '--pretty', 'false'],
     ]) {
       const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
       expect(claims).toContainEqual({ resourceKey: 'workspace:co1', mode: 'read' });
