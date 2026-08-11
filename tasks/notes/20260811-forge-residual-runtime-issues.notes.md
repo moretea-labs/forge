@@ -26,6 +26,20 @@ Do not reopen a historical item below without new reproduction evidence. No Runt
 - Desktop Operator external registration is live at revision **11**. Stable provider health at last check: `ready`, Accessibility=`true`, Screen Recording=`true`, activeSessionCount=`0`.
 - Unrelated local state must not be swept into commits: `auth/` is untracked.
 
+## 2026-08-11 reconciliation (authoritative after `ff9fac14`)
+
+- **Main:** `ff9fac14` (`merge: close residual runtime reliability issues`).
+- **Active Runtime:** `1786421020549-339fe090122a9e6d1f9f298d4427b2fbc90b19ad`, source `339fe090`; it contains `285e3e0e`, so external-provider validation reuse is present in the active artifact. Runtime activation was not performed for this reconciliation.
+- **Recovery:** current installed release remains source `5aff75a7` until the new main-based Recovery-only release is activated; Runtime and Recovery release identities must not be conflated.
+- **Tool surface:** live public MCP `tools/list` returned exactly 19 names with fingerprint `682741764164c5fa79681055bc2ef0d65fb6abb67cfa2855a5be6ccb14059745` after a prior bounded public probe timeout. Do not reopen surface-coherence work without a real discovery/invoke mismatch.
+- **Watchdog flap:** exact failed probe is public `mcp_tools_list` timing out at its bounded deadline; local Runtime, runtime gateway, Recovery gateway, and Recovery tunnel were healthy. `watchdog-diagnostics.json` now holds bounded/deduplicated, release-scoped `public_mcp` evidence. No Runtime restart or rollback occurred.
+- **Process active index:** resolved in main: normal create/terminal changes maintain the v2 recoverable index incrementally; one full rebuild remains only for missing/corrupt index recovery. This is the single Process-record authority, not a second authority.
+- **Direct-edit maintenance:** resolved in main for committed/mismatched sessions; unique uncommitted changes remain protected. Live reconciliation reduced stale edit sessions to zero; ownership-unproven temp entries are retained, not deleted.
+- **Combined single-`ps` experiment:** reviewed and functionally passed 65 focused tests plus typecheck, but clean same-machine A/B was not stable enough to attribute a benefit (baseline/candidate/repeated baseline process-start p50: 102.49/184.19/225.50 ms). The uncommitted experiment was reverted and must not be revived without a controlled benchmark.
+- **Runtime authority fence for ordinary bounded source writes:** **still open**. Existing source proves readonly direct commands bypass the fence, but managed workspace-write admission still calls the Runtime-fenced lease path. Keep release mutation and remote/destructive effects fail-closed; add a narrow source-workspace regression before changing this behavior.
+- **External-provider reuse live acceptance:** source inclusion is proven; repeated real plugin-action evidence and identity-change/staleness failure evidence are **still open**.
+- **macOS Automation historical principal cleanup:** **operational follow-up**. Preserve the signed Forge Desktop Operator grant; use selector-bound System Settings readback only. Never edit TCC DB or use `tccutil reset`.
+
 ## P0 — Client/server MCP tool-surface coherence is still broken on the active Runtime
 
 **Status:** fixed/strengthened in source candidate; active Runtime still reproduces the problem.
