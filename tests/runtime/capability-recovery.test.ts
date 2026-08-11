@@ -401,18 +401,13 @@ describe('runtime maintenance executor', () => {
     expect(getWorkContract({ controllerHome, repoId: repository.repoId }, 'work-stale-ready')?.status).toBe('cancelled');
   });
 
-  it('finalizes a terminal Work edit session whose source was committed', () => {
+  it('reconciles committed Direct Edit metadata during maintenance discovery', () => {
     const fx = editFixture();
     execFileSync('git', ['add', 'src/session.ts'], { cwd: fx.repoRoot });
     execFileSync('git', ['commit', '-qm', 'commit edit session'], { cwd: fx.repoRoot });
 
     const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
-    expect(status.summary.staleEditSessions).toBe(1);
-    expect(status.candidates).toContainEqual(expect.objectContaining({ kind: 'stale_edit_session', id: fx.sessionId, safe: true }));
-    const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
-      actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50,
-    });
-    expect(applied.applied).toContainEqual(expect.objectContaining({ id: fx.sessionId, applied: true, result: 'edit_session_finalized' }));
+    expect(status.summary.staleEditSessions).toBe(0);
     expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('finalized');
   });
 
@@ -420,10 +415,7 @@ describe('runtime maintenance executor', () => {
     const fx = editFixture();
     writeFileSync(join(fx.repoRoot, 'src/session.ts'), 'export const sessionValue = 2;\n');
 
-    const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
-      actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50,
-    });
-    expect(applied.applied).toContainEqual(expect.objectContaining({ id: fx.sessionId, applied: true, result: 'edit_session_superseded' }));
+    expect(buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 }).summary.staleEditSessions).toBe(0);
     expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('superseded');
     expect(readFileSync(join(fx.repoRoot, 'src/session.ts'), 'utf8')).toBe('export const sessionValue = 2;\n');
   });
@@ -448,17 +440,7 @@ describe('runtime maintenance executor', () => {
     execFileSync('git', ['commit', '-qm', 'commit contract-free direct edit'], { cwd: fx.repoRoot });
 
     const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
-    expect(status.candidates).toContainEqual(expect.objectContaining({
-      kind: 'stale_edit_session',
-      id: fx.sessionId,
-      safe: true,
-      ownershipStatus: 'explicit',
-      reason: expect.stringContaining('Contract-free Direct Edit Session'),
-    }));
-    const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
-      actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50,
-    });
-    expect(applied.applied).toContainEqual(expect.objectContaining({ id: fx.sessionId, applied: true, result: 'edit_session_finalized' }));
+    expect(status.summary.staleEditSessions).toBe(0);
     expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('finalized');
   });
 

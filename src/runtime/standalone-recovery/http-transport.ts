@@ -185,7 +185,7 @@ async function runCurl(
       signalChild('SIGTERM');
       killTimer = setTimeout(() => signalChild('SIGKILL'), termGraceMs);
     };
-    const onAbort = () => stop('RECOVERY_HTTP_ABORTED');
+    const onAbort = () => stop(signal?.reason === 'RECOVERY_HTTP_TIMEOUT' ? 'RECOVERY_HTTP_TIMEOUT' : 'RECOVERY_HTTP_ABORTED');
     const timeout = setTimeout(() => stop('RECOVERY_HTTP_TIMEOUT'), timeoutMs);
 
     if (signal?.aborted) onAbort();

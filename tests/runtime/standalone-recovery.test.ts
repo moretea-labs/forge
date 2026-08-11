@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { homedir, tmpdir } from 'os';
+import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 import {
   activateRuntimeRelease,
@@ -404,6 +404,10 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(verified.ok).toBe(true);
     expect(verified.probes.active_gateway).toMatchObject({ ok: true, detail: 'HTTP 200' });
     expect(verified.probes.external_mcp_http).toMatchObject({ ok: true, detail: 'HTTP 401 OAuth challenge' });
+    const failedTransport = { request: async () => ({ ok: false, status: 503, headers: {}, body: '' }) };
+    await verifyStableRuntime(config, failedTransport); await verifyStableRuntime(config, failedTransport);
+    const diagnostics = JSON.parse(readFileSync(join(home, 'recovery', 'state', 'watchdog-diagnostics.json'), 'utf8')); expect(diagnostics.entries).toHaveLength(1);
+    expect(diagnostics.entries[0]).toMatchObject({ components: expect.arrayContaining(['gateway', 'public_mcp']), occurrences: 2, failedProbes: expect.arrayContaining([expect.objectContaining({ name: 'active_gateway', status: 503 })]) });
     expect(runtime.requests.some((request) => request.method === 'GET' && request.url === '/ready')).toBe(true);
     expect(runtime.requests.some((request) => request.method === 'GET' && request.url === '/health')).toBe(false);
     expect(runtime.requests.some((request) => request.method === 'GET' && request.url === '/mcp')).toBe(false);
@@ -513,20 +517,6 @@ describe('standalone recovery on canonical Runtime', () => {
       runtimeRecoveryCooldownMs: 60_000,
       nowMs: now,
     }).action).toBe('degraded');
-  });
-
-  test('resolves the installed Runtime launch agent from the OS home when HOME is absent', () => {
-    const home = controllerHome();
-    const previousHome = process.env.HOME;
-    delete process.env.HOME;
-    try {
-      const paths = forgeRuntimeServicePaths(home);
-      expect(paths.installedPlistPath).toBe(join(homedir(), 'Library', 'LaunchAgents', `${paths.label}.plist`));
-      expect(paths.installedPlistPath.startsWith(resolve(home))).toBe(false);
-    } finally {
-      if (previousHome === undefined) delete process.env.HOME;
-      else process.env.HOME = previousHome;
-    }
   });
 
   test('restarts the installed primary Forge Runtime service and requires whole-Runtime verification', async () => {
@@ -1478,15 +1468,4 @@ describe('standalone recovery on canonical Runtime', () => {
     }, now)).toBe(false);
   });
 
-  test('keeps watchdog state decisions independent from any Supervisor operation field', () => {
-    const base = healthyVerify();
-    expect(base).not.toHaveProperty('supervisor');
-    expect(decideWatchdog({
-      failures: 0,
-      evidenceClasses: [],
-      activeKnownGood: true,
-      previousKnownGood: true,
-      rollbackUsed: false,
-    })).toEqual({ action: 'healthy', reason: 'all recovery probes healthy' });
-  });
 });

@@ -21,6 +21,7 @@ import { mutateControlPlaneRecord, readOrImportControlPlaneRecord } from '../../
 import { isSensitiveOutputKey, redactSensitiveText } from '../../evidence/sensitive-output';
 import {
   isManagedProcessActive,
+  isManagedProcessTerminal,
   type ManagedProcessRecord,
   type ProcessCheckExecutionBinding,
   type ProcessInvocationBinding,
@@ -88,6 +89,143 @@ function checkExecutionBindingPath(controllerHome: string, repoId: string, scope
 
 function indexPath(controllerHome: string, repoId: string): string {
   return join(processesRoot(controllerHome, repoId), 'active-index.json');
+}
+
+interface ProcessRecoveryIndex {
+  schemaVersion: 2;
+  updatedAt: string;
+  activeProcessIds: string[];
+  pendingLeaseReleaseIds: string[];
+}
+
+const PROCESS_RECOVERY_INDEX_NAMESPACE = 'process_recovery_index';
+const PROCESS_RECOVERY_INDEX_KEY = 'v2';
+
+function normalizedProcessIds(values: readonly string[]): string[] {
+  return [...new Set(values.filter((value) => typeof value === 'string' && value.length > 0))].sort();
+}
+
+function needsPendingLeaseRelease(record: ManagedProcessRecord): boolean {
+  return isManagedProcessTerminal(record)
+    && record.leasesReleased !== true
+    && (record.leaseRefs?.length ?? 0) > 0;
+}
+
+function processRecoveryMembership(record: ManagedProcessRecord): { active: boolean; pendingLeaseRelease: boolean } {
+  return {
+    active: isManagedProcessActive(record),
+    pendingLeaseRelease: needsPendingLeaseRelease(record),
+  };
+}
+
+function projectRecoveryIndex(controllerHome: string, repoId: string, index: ProcessRecoveryIndex): void {
+  // Compatibility/readability projection only. SQLite is authoritative; the
+  // projection is never read by Process Runtime after v2 migration.
+  atomicWrite(indexPath(controllerHome, repoId), {
+    schemaVersion: 2,
+    source: 'sqlite_projection',
+    updatedAt: index.updatedAt,
+    processIds: index.activeProcessIds,
+    pendingLeaseReleaseIds: index.pendingLeaseReleaseIds,
+  });
+}
+
+function readRecoveryIndex(controllerHome: string, repoId: string): ProcessRecoveryIndex | undefined {
+  return readOrImportControlPlaneRecord<ProcessRecoveryIndex>(controllerHome, {
+    namespace: PROCESS_RECOVERY_INDEX_NAMESPACE,
+    scope: repoId,
+    key: PROCESS_RECOVERY_INDEX_KEY,
+    schemaVersion: 2,
+    // Deliberately do not import active-index.json. Historical v1 projections
+    // can be stale after concurrent rebuilds; the first v2 read performs one
+    // authoritative full reconciliation instead.
+    readLegacy: () => undefined,
+  })?.value;
+}
+
+function replaceRecoveryIndex(
+  controllerHome: string,
+  repoId: string,
+  activeProcessIds: readonly string[],
+  pendingLeaseReleaseIds: readonly string[],
+  action: string,
+): ProcessRecoveryIndex {
+  const value = mutateControlPlaneRecord<ProcessRecoveryIndex>(controllerHome, {
+    namespace: PROCESS_RECOVERY_INDEX_NAMESPACE,
+    scope: repoId,
+    key: PROCESS_RECOVERY_INDEX_KEY,
+    schemaVersion: 2,
+    action,
+    mutate: () => ({
+      schemaVersion: 2,
+      updatedAt: new Date().toISOString(),
+      activeProcessIds: normalizedProcessIds(activeProcessIds),
+      pendingLeaseReleaseIds: normalizedProcessIds(pendingLeaseReleaseIds),
+    }),
+  }).value;
+  projectRecoveryIndex(controllerHome, repoId, value);
+  return value;
+}
+
+function rebuildRecoveryIndex(controllerHome: string, repoId: string): ProcessRecoveryIndex {
+  const root = processesRoot(controllerHome, repoId);
+  const active: string[] = [];
+  const pendingLeaseRelease: string[] = [];
+  for (const entry of readdirSync(root)) {
+    if (!entry.endsWith('.json') || entry === 'active-index.json') continue;
+    const record = readProcessRecord(join(root, entry));
+    if (!record) continue;
+    const membership = processRecoveryMembership(record);
+    if (membership.active) active.push(record.processId);
+    if (membership.pendingLeaseRelease) pendingLeaseRelease.push(record.processId);
+  }
+  return replaceRecoveryIndex(
+    controllerHome,
+    repoId,
+    active,
+    pendingLeaseRelease,
+    'process_recovery_index_rebuild',
+  );
+}
+
+function ensureRecoveryIndex(controllerHome: string, repoId: string): ProcessRecoveryIndex {
+  return readRecoveryIndex(controllerHome, repoId) ?? rebuildRecoveryIndex(controllerHome, repoId);
+}
+
+function updateRecoveryIndexMembership(
+  controllerHome: string,
+  repoId: string,
+  processId: string,
+  membership: { active: boolean; pendingLeaseRelease: boolean },
+): ProcessRecoveryIndex {
+  const existing = readRecoveryIndex(controllerHome, repoId);
+  if (!existing) {
+    // The record mutation has already been persisted, so the one-time rebuild
+    // includes its current state and establishes an exact v2 baseline.
+    return rebuildRecoveryIndex(controllerHome, repoId);
+  }
+  const value = mutateControlPlaneRecord<ProcessRecoveryIndex>(controllerHome, {
+    namespace: PROCESS_RECOVERY_INDEX_NAMESPACE,
+    scope: repoId,
+    key: PROCESS_RECOVERY_INDEX_KEY,
+    schemaVersion: 2,
+    action: 'process_recovery_index_update',
+    mutate: (current) => {
+      const base = current?.value ?? existing;
+      const active = new Set(base.activeProcessIds);
+      const pending = new Set(base.pendingLeaseReleaseIds);
+      if (membership.active) active.add(processId); else active.delete(processId);
+      if (membership.pendingLeaseRelease) pending.add(processId); else pending.delete(processId);
+      return {
+        schemaVersion: 2,
+        updatedAt: new Date().toISOString(),
+        activeProcessIds: [...active].sort(),
+        pendingLeaseReleaseIds: [...pending].sort(),
+      };
+    },
+  }).value;
+  projectRecoveryIndex(controllerHome, repoId, value);
+  return value;
 }
 
 function atomicWrite(path: string, value: unknown): void {
@@ -370,23 +508,6 @@ export function claimProcessInvocation(input: {
   return { status: existed ? 'existing' : 'claimed', binding: existing };
 }
 
-function rebuildActiveIndex(controllerHome: string, repoId: string): string[] {
-  const root = processesRoot(controllerHome, repoId);
-  const active: string[] = [];
-  for (const entry of readdirSync(root)) {
-    if (!entry.endsWith('.json') || entry === 'active-index.json') continue;
-    const record = readProcessRecord(join(root, entry));
-    if (record && isManagedProcessActive(record)) active.push(record.processId);
-  }
-  active.sort();
-  atomicWrite(indexPath(controllerHome, repoId), {
-    schemaVersion: 1,
-    updatedAt: new Date().toISOString(),
-    processIds: active,
-  });
-  return active;
-}
-
 export function processLogDir(controllerHome: string, repoId: string): string {
   return join(processesRoot(controllerHome, repoId), 'logs');
 }
@@ -398,7 +519,12 @@ export function createProcessRecord(record: ManagedProcessRecord): ManagedProces
   }
   const sanitized = sanitizeProcessRecord(record).record;
   atomicWrite(path, sanitized);
-  rebuildActiveIndex(record.controllerHome, record.repoId);
+  updateRecoveryIndexMembership(
+    record.controllerHome,
+    record.repoId,
+    record.processId,
+    processRecoveryMembership(sanitized),
+  );
   return sanitized;
 }
 
@@ -443,7 +569,7 @@ export function tryCompleteProcessRecord(
   };
   const sanitized = sanitizeProcessRecord(next).record;
   atomicWrite(path, sanitized);
-  rebuildActiveIndex(controllerHome, repoId);
+  updateRecoveryIndexMembership(controllerHome, repoId, processId, processRecoveryMembership(sanitized));
   return { ok: true, record: sanitized };
 }
 
@@ -471,24 +597,57 @@ export function updateProcessRecord(
   };
   const sanitized = sanitizeProcessRecord(next).record;
   atomicWrite(path, sanitized);
-  if (isManagedProcessActive(current) !== isManagedProcessActive(sanitized)) {
-    rebuildActiveIndex(controllerHome, repoId);
+  const previousMembership = processRecoveryMembership(current);
+  const nextMembership = processRecoveryMembership(sanitized);
+  if (
+    previousMembership.active !== nextMembership.active
+    || previousMembership.pendingLeaseRelease !== nextMembership.pendingLeaseRelease
+  ) {
+    updateRecoveryIndexMembership(controllerHome, repoId, processId, nextMembership);
   }
   return sanitized;
 }
 
-export function listActiveProcessIds(controllerHome: string, repoId: string): string[] {
-  const index = readJson<{ processIds?: string[] }>(indexPath(controllerHome, repoId));
-  if (!Array.isArray(index?.processIds)) return rebuildActiveIndex(controllerHome, repoId);
-  const indexed = [...new Set(index.processIds.filter((value): value is string => typeof value === 'string' && value.length > 0))].sort();
-  const verified = indexed.filter((processId) => {
+export function listRecoverableProcessRecords(controllerHome: string, repoId: string): ManagedProcessRecord[] {
+  const index = ensureRecoveryIndex(controllerHome, repoId);
+  const indexedIds = normalizedProcessIds([
+    ...index.activeProcessIds,
+    ...index.pendingLeaseReleaseIds,
+  ]);
+  const records: ManagedProcessRecord[] = [];
+  const active: string[] = [];
+  const pendingLeaseRelease: string[] = [];
+  for (const processId of indexedIds) {
     const record = getProcessRecord(controllerHome, repoId, processId);
-    return record !== undefined && isManagedProcessActive(record);
-  });
-  if (verified.length !== indexed.length || verified.some((value, indexValue) => value !== indexed[indexValue])) {
-    return rebuildActiveIndex(controllerHome, repoId);
+    if (!record) continue;
+    const membership = processRecoveryMembership(record);
+    if (!membership.active && !membership.pendingLeaseRelease) continue;
+    records.push(record);
+    if (membership.active) active.push(processId);
+    if (membership.pendingLeaseRelease) pendingLeaseRelease.push(processId);
   }
-  return verified;
+  const normalizedActive = normalizedProcessIds(active);
+  const normalizedPending = normalizedProcessIds(pendingLeaseRelease);
+  if (
+    normalizedActive.join('\0') !== normalizedProcessIds(index.activeProcessIds).join('\0')
+    || normalizedPending.join('\0') !== normalizedProcessIds(index.pendingLeaseReleaseIds).join('\0')
+  ) {
+    replaceRecoveryIndex(
+      controllerHome,
+      repoId,
+      normalizedActive,
+      normalizedPending,
+      'process_recovery_index_reconcile',
+    );
+  }
+  return records;
+}
+
+export function listActiveProcessIds(controllerHome: string, repoId: string): string[] {
+  return listRecoverableProcessRecords(controllerHome, repoId)
+    .filter((record) => isManagedProcessActive(record))
+    .map((record) => record.processId)
+    .sort();
 }
 
 export function listProcessRecords(
@@ -516,7 +675,10 @@ export function deleteProcessRecord(
   const path = processPath(controllerHome, repoId, processId);
   if (!existsSync(path)) return false;
   unlinkSync(path);
-  rebuildActiveIndex(controllerHome, repoId);
+  updateRecoveryIndexMembership(controllerHome, repoId, processId, {
+    active: false,
+    pendingLeaseRelease: false,
+  });
   return true;
 }
 

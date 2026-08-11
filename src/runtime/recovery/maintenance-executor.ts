@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { basename, dirname, join, relative, resolve } from 'path';
 import { tmpdir } from 'os';
-import { cleanupEditSession, getEditSession, listEditSessions } from '../../cli/editing/edit-session';
+import { cleanupEditSession, getEditSession, listEditSessions, reconcileEditSession } from '../../cli/editing/edit-session';
 import { ensureRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } from '../../cli/repositories/runtime-storage';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { rebuildRepositoryProjection } from '../projections/materialized-view';
@@ -432,7 +432,11 @@ function scanStaleEditSessionCandidates(
     .filter((summary) => ['open', 'dirty', 'checked', 'check_failed'].includes(summary.status))
     .flatMap((summary) => {
       try {
-        const session = getEditSession(repository.canonicalRoot, summary.sessionId);
+        const session = reconcileEditSession(repository.canonicalRoot, summary.sessionId, {
+          reviewer: 'runtime-maintenance',
+          note: 'Reconciled during maintenance discovery; source files were not modified.',
+        });
+        if (['finalized', 'superseded', 'rolled_back'].includes(session.status)) return [];
         const updatedMs = Date.parse(session.updatedAt);
         const ageMinutes = Number.isFinite(updatedMs) ? Math.max(0, Math.floor((nowMs - updatedMs) / 60_000)) : 0;
         return [{ session, ageMinutes }];
@@ -816,4 +820,3 @@ export function applyRuntimeMaintenance(
     projection,
   };
 }
-

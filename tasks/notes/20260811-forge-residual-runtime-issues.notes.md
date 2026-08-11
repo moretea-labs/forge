@@ -1,9 +1,21 @@
 # Forge residual runtime / execution issues (2026-08-11)
 
-> **Status**: Active residual-issue ledger
+> **Status**: Closed baseline record; historical sections below are retained only as evidence.
 > **Purpose**: Single repository-readable handoff for future ChatGPT / repo-harness sessions. Read this before opening new performance/runtime work so already-fixed items are not rediscovered.
 > **Scope**: Runtime/MCP execution latency, false serialization, tool-surface coherence, Desktop Operator hot paths, and operational baseline state found during the 2026-08-10/11 optimization sessions.
 > **Authority note**: This is a source-tree issue ledger, not permission to activate/roll out a Runtime release. The user explicitly requires **no Runtime rollout**; stage/verify inactive candidates only unless that constraint is changed.
+
+## Final closeout (2026-08-11)
+
+- Live Registry identity is correct and stable: `repo_123b7cf58b6b17b5cbe46a56` maps to canonical root `/Users/greyson/DevProjects/forge`, canonical remote `github.com/moretea-labs/matea`, and GitHub routing `moretea-labs/matea`. Forge is the product/package name; `matea` is the GitHub repository and historical source name. No registry remap is needed.
+- The deployed Runtime is healthy with the bounded 19-tool default surface. The Recovery watchdog has zero counted Runtime restarts/failures and no rollback or recovery exhaustion. Historical single-tick degraded audit entries lacked failed-probe provenance; source now persists a bounded (32), deduplicated probe record with component attribution before recording the audit event, without changing the existing recovery budget.
+- Typed readonly claim coverage and the real multi-repository/different-checkout acceptance show no source/Git false serialization. Ambiguous shell, Python, and Node commands remain conservative by design.
+- Normal Direct completion is reconciled to its exact commit receipt; maintenance discovery also reconciles committed/superseded session metadata before creating candidates. The live audit reduced stale Edit Session candidates from 15 dirty plus 6 empty-open sessions to zero; unique uncommitted changes and 100 ownership-unproven temp entries were explicitly retained.
+- The normal Process create/terminal path now maintains its active recovery index incrementally. Full rebuild remains the corruption/recovery fallback, so historical Process volume no longer imposes a normal-path directory scan.
+- The self-host source repository intentionally has no tracked `.ai/harness/workflow-contract.json`; the package asset is authoritative and downstream adoption generates the runtime copy. The strict checker therefore reports only the documented bootstrap advisory, not a missing source contract.
+- Test-line budget remains `42200`; redundant runner/environment tests were removed rather than raising the limit. The replacement recovery-index and watchdog diagnostic coverage keeps the manifest within budget.
+
+Do not reopen a historical item below without new reproduction evidence. No Runtime rollout is implied by this source closeout.
 
 ## Current baseline snapshot
 
@@ -195,7 +207,7 @@ Warm path is already effectively free. Prefer reducing how often cold observatio
 - Desktop focused observe registration schema (`include_actions`, `include_windows`) is live at external registration revision 11 (`1d04859b`).
 - Current multi-repository and same-repo/different-checkout Process concurrency benchmark shows 100% success with zero contention; concurrency architecture is not the current primary bottleneck.
 
-## Recommended execution order for future sessions
+## Historical recommended execution order
 
 1. Finish clean A/B for the in-progress combined process-identity probe; commit only if evidence is positive.
 2. Remove O(N) Process active-index rebuild from normal create/terminal hot path.

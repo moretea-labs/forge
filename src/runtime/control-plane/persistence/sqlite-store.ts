@@ -67,6 +67,13 @@ function now(): string {
   return new Date().toISOString();
 }
 
+function sqliteBusyError(path: string, error: unknown): Error | undefined {
+  const message = error instanceof Error ? error.message : String(error);
+  return /database is locked|SQLITE_BUSY/i.test(message)
+    ? new Error(`CONTROL_PLANE_SQLITE_BUSY: ${path}: ${message}`)
+    : undefined;
+}
+
 function sqliteConstructor(): new (path: string) => SqliteDatabase {
   const runtimeModule = process.versions.bun ? 'bun:sqlite' : 'node:sqlite';
   const sqlite = require(runtimeModule) as SqliteModule;
@@ -80,6 +87,8 @@ function openRawDatabase(path: string): SqliteDatabase {
   try {
     return new Constructor(path);
   } catch (error) {
+    const busy = sqliteBusyError(path, error);
+    if (busy) throw busy;
     throw new Error(`CONTROL_PLANE_SQLITE_CORRUPT: ${path}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
@@ -168,6 +177,9 @@ function openDatabase(controllerHome: string): SqliteDatabase {
   const existed = existsSync(path);
   const database = openRawDatabase(path);
   try {
+    // Configure waiting before the first schema read. A concurrent Runtime
+    // writer is normal; it must not be reclassified as database corruption.
+    database.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;');
     // Ordinary control-plane reads/writes reopen SQLite frequently. A PRAGMA
     // quick_check here turns every bounded metadata access into a full B-tree
     // scan. Runtime startup and explicit backup/restore inspection already call
@@ -178,12 +190,14 @@ function openDatabase(controllerHome: string): SqliteDatabase {
       try {
         assertSupportedSchema(database, path);
       } catch (error) {
+        const busy = sqliteBusyError(path, error);
+        if (busy) throw busy;
         const message = error instanceof Error ? error.message : String(error);
         if (message.startsWith('CONTROL_PLANE_')) throw error;
         throw new Error(`CONTROL_PLANE_SQLITE_CORRUPT: ${path}: ${message}`);
       }
     }
-    database.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+    database.exec('PRAGMA journal_mode = WAL;');
     initializeSchema(database);
     assertSupportedSchema(database, path, true);
     return database;

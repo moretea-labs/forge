@@ -319,6 +319,31 @@ async function main(): Promise<void> {
         return { phases: timing, outcome: completed.ok ? 'success' : completed.timedOut ? 'timeout' : 'failed' };
       });
 
+      await run('known_long_process_handle_return', async () => {
+        const timing = phases();
+        const started = performance.now();
+        const handle = await spawnManagedProcess({
+          controllerHome,
+          repoId: first.repository.repoId,
+          checkoutId: first.repository.activeCheckoutId,
+          executionIdentity: executionIdentityForRepository(first.repository),
+          commandId: `benchmark-long-${index}`,
+          origin: { surface: 'system', requestId: `benchmark-long-${index}` },
+          command: {
+            kind: 'argv',
+            executable: process.execPath,
+            args: ['-e', 'setTimeout(() => process.exit(0), 250)'],
+            cwd: first.repoRoot,
+          },
+          interactiveWaitMs: 1,
+          timeoutMs: 5_000,
+          returnHandleImmediately: true,
+        });
+        timing.wallClockMs = elapsed(started);
+        const completed = await waitForProcess(controllerHome, first.repository.repoId, handle.processId, { timeoutMs: 5_000 });
+        return { phases: timing, outcome: handle.completed === false && completed.ok ? 'success' : 'failed' };
+      });
+
       await run('process_start', async () => {
         const timing = phases();
         const started = performance.now();
