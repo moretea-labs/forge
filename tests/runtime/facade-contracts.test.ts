@@ -311,10 +311,13 @@ describe('handoff and facade contracts', () => {
 
 
 describe('Thin Launcher external Controller invocation', () => {
-  const request = (overrides: Partial<ThinLauncherRequest> = {}): ThinLauncherRequest => ({ controllerType: 'chatgpt', workId: 'WORK-1', cwd: '/tmp/repo', ...overrides });
+  const request = (overrides: Partial<ThinLauncherRequest> = {}): ThinLauncherRequest => ({ controllerType: 'chatgpt', workId: 'WORK-1', cwd: '/tmp/repo', controllerHome: '/tmp/controller', repoId: 'repo-1', ...overrides });
   test('builds safe ChatGPT browser continuation invocations', () => {
-    expect(buildSuperControllerInvocation(request({ browserSessionId: 'browser-session-123' }), 'forge', 'continue bounded work')).toEqual({ executable: 'forge', args: ['chatgpt', 'browser-followup', '--repo', '/tmp/repo', '--session', 'browser-session-123', '--prompt', 'continue bounded work', '--keep-browser'] });
-    expect(buildSuperControllerInvocation(request({ conversationUrl: 'https://chatgpt.com/c/example' }), 'forge', 'continue bounded work').args).toEqual(expect.arrayContaining(['browser-consult', '--chatgpt-url', 'https://chatgpt.com/c/example']));
+    expect(buildSuperControllerInvocation(request({ browserSessionId: 'browser-session-123' }), 'forge', 'continue bounded work')).toEqual({ executable: 'forge', args: ['chatgpt', 'work-continue', '--repo', '/tmp/repo', '--controller-home', '/tmp/controller', '--repo-id', 'repo-1', '--work-id', 'WORK-1', '--prompt', 'continue bounded work', '--session', 'browser-session-123'] });
+    const byUrl = buildSuperControllerInvocation(request({ conversationUrl: 'https://chatgpt.com/c/example' }), 'forge', 'continue bounded work').args;
+    expect(byUrl).toEqual(expect.arrayContaining(['work-continue', '--conversation-url', 'https://chatgpt.com/c/example']));
+    expect(byUrl).not.toContain('browser-consult');
+    expect(byUrl).not.toContain('oracle');
     expect(() => buildSuperControllerInvocation(request({ conversationUrl: 'https://example.com/c/example' }), 'forge', 'continue bounded work')).toThrow('LAUNCHER_CHATGPT_CONVERSATION_URL_INVALID');
   });
   test('uses non-interactive provider modes and requires Forge MCP bootstrap for detached CLI controllers', () => {

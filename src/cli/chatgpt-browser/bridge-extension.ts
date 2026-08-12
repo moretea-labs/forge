@@ -176,7 +176,7 @@ async function forgeRunTask(task) {
 
 async function forgePoll() {
   await forgeHeartbeat();
-  const task = await forgeJson('/api/extension/task');
+  const task = await forgeJson('/api/extension/task?pageUrl=' + encodeURIComponent(location.href));
   if (task && task.kind === 'consult' && task.id && task.prompt) {
     await forgeRunTask(task);
   }

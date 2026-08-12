@@ -12,6 +12,8 @@ import {
   runBrowserSetup,
 } from '../chatgpt-browser/engine';
 import type { BrowserProviderName, BrowserSessionStatus, NativeBrowserChannel, ThinkingLevel } from '../chatgpt-browser/types';
+import { durableControllerHome } from '../repositories/controller-home';
+import { runWorkChatgptContinuation } from '../../runtime/control-plane/launcher/chatgpt-work-continuation';
 
 interface BrowserCommonOptions {
   repo?: string;
@@ -72,6 +74,17 @@ interface BrowserConsultOptions extends BrowserCommonOptions {
   browserChannel?: string;
   keepBrowser?: boolean;
   headless?: boolean;
+}
+
+interface WorkChatgptContinueOptions extends BrowserCommonOptions {
+  controllerHome?: string;
+  repoId: string;
+  workId: string;
+  prompt: string;
+  title?: string;
+  session?: string;
+  conversationUrl?: string;
+  timeoutMs?: string;
 }
 
 interface BrowserFollowupOptions extends BrowserCommonOptions {
@@ -362,6 +375,44 @@ export function buildChatgptCommand(): Command {
         }, null, 2));
       });
     });
+
+  const workContinue = new Command('work-continue')
+    .description('Internal: continue one Forge Work in its bound ChatGPT Web conversation')
+    .option('--repo <path>', 'Repository root for the Work browser session', '.')
+    .option('--controller-home <path>', 'Controller Home containing the Work conversation binding')
+    .requiredOption('--repo-id <repo-id>', 'Stable Forge repository id')
+    .requiredOption('--work-id <work-id>', 'Stable Forge Work id')
+    .requiredOption('--prompt <text>', 'Bounded continuation prompt')
+    .option('--title <title>', 'Human-readable local conversation alias')
+    .option('--session <session-id>', 'Legacy saved browser session to seed the binding')
+    .option('--conversation-url <url>', 'Explicit ChatGPT conversation URL to seed the binding')
+    .option('--timeout-ms <ms>', 'Assistant timeout in milliseconds')
+    .action((rawOpts: WorkChatgptContinueOptions) => {
+      void runChatgptAction(async () => {
+        const result = await runWorkChatgptContinuation({
+          controllerHome: durableControllerHome(rawOpts.controllerHome),
+          repoId: rawOpts.repoId,
+          repoRoot: resolveRepoRoot(rawOpts.repo),
+          workId: rawOpts.workId,
+          prompt: rawOpts.prompt,
+          title: rawOpts.title,
+          browserSessionId: rawOpts.session,
+          conversationUrl: rawOpts.conversationUrl,
+          timeoutMs: parsePositiveInteger('timeout-ms', rawOpts.timeoutMs),
+        });
+        console.log(JSON.stringify({
+          status: result.status,
+          provider: result.provider,
+          sessionId: result.browserSessionId,
+          conversationUrl: result.conversationUrl,
+          conversationId: result.conversationId,
+          localAlias: result.localAlias,
+          resumedFromBinding: result.resumedFromBinding,
+          error: result.error,
+        }, null, 2));
+      });
+    });
+  chatgpt.addCommand(workContinue, { hidden: true });
 
   chatgpt
     .command('browser-open')

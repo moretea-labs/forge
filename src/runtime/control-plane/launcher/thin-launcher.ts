@@ -12,6 +12,7 @@ import {
 } from './launch-reservation-store';
 import type { ControllerType } from '../facade/types';
 import { codexMcpConfigArgs, resolveProviderMcpBootstrap, type ProviderMcpBootstrap } from './provider-mcp-bootstrap';
+import { getChatgptWorkConversationBinding } from './chatgpt-work-binding-store';
 
 export interface ThinLauncherRequest {
   controllerType: Exclude<ControllerType, 'human'>;
@@ -28,6 +29,9 @@ export interface ThinLauncherRequest {
   /** Additional bounded continuation instruction, for example a Schedule occurrence. */
   continuationPrompt?: string;
   cwd: string;
+  /** Internal launch context; populated by launchSuperController, not by callers. */
+  controllerHome?: string;
+  repoId?: string;
 }
 
 export interface ThinLauncherResult {
@@ -108,27 +112,18 @@ export function buildSuperControllerInvocation(
   }
   const browserSessionId = request.browserSessionId?.trim();
   const conversationUrl = assertChatgptConversationUrl(request.conversationUrl);
-  if (browserSessionId) {
-    return {
-      executable,
-      args: [
-        'chatgpt', 'browser-followup',
-        '--repo', request.cwd,
-        '--session', browserSessionId,
-        '--prompt', prompt,
-        '--keep-browser',
-        ...(request.args ?? []),
-      ],
-    };
-  }
+  if (!request.controllerHome || !request.repoId) throw new Error('LAUNCHER_CHATGPT_WORK_BINDING_CONTEXT_REQUIRED');
   return {
     executable,
     args: [
-      'chatgpt', 'browser-consult',
+      'chatgpt', 'work-continue',
       '--repo', request.cwd,
+      '--controller-home', request.controllerHome,
+      '--repo-id', request.repoId,
+      '--work-id', request.workId,
       '--prompt', prompt,
-      ...(conversationUrl ? ['--chatgpt-url', conversationUrl] : []),
-      '--keep-browser',
+      ...(browserSessionId ? ['--session', browserSessionId] : []),
+      ...(conversationUrl ? ['--conversation-url', conversationUrl] : []),
       ...(request.args ?? []),
     ],
   };
@@ -155,20 +150,30 @@ export function launchSuperController(
     ttlMs: request.launchReservationMs,
   });
   const handoff = request.handoffId ? getHandoffItem(stores.handoff, request.handoffId) : undefined;
-  const prompt = [
-    `Work: ${work.workId}`,
-    `Objective: ${work.objective}`,
-    `Acceptance: ${work.acceptanceCriteria.join('; ') || 'none declared'}`,
-    `Current status: ${work.status}`,
-    handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
-    request.continuationPrompt?.trim() ? `Continuation: ${request.continuationPrompt.trim()}` : '',
-    `No Controller ownership was preclaimed for you. First call rh_work continue with repo_id=${work.repoId} and work_id=${work.workId} through your authenticated MCP session; do not invent controller_id/session_id. If that claim does not succeed, do not mutate the repository: create no patch, command, commit, or test run until ownership is established. Then use the repository MCP facade, record verification evidence, finalize only when acceptance passes, and create a HandoffItem when judgement is required.`,
-  ].filter(Boolean).join('\n');
+  const chatgptBinding = request.controllerType === 'chatgpt'
+    ? getChatgptWorkConversationBinding(stores.work, work.workId)
+    : undefined;
+  const prompt = (request.controllerType === 'chatgpt' && chatgptBinding)
+    ? [
+      `Continue Forge Work ${work.workId} in repo ${work.repoId}.`,
+      handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
+      request.continuationPrompt?.trim() ? `Continuation: ${request.continuationPrompt.trim()}` : '',
+      `First call rh_work continue with repo_id=${work.repoId} and work_id=${work.workId}. Treat Forge Work/Plan/evidence as source of truth; do not invent new scope from chat history. If the claim fails, do not mutate. Continue the next safe action, finalize only when acceptance passes, and create a HandoffItem when judgement is required.`,
+    ].filter(Boolean).join('\n')
+    : [
+      `Work: ${work.workId}`,
+      `Objective: ${work.objective}`,
+      `Acceptance: ${work.acceptanceCriteria.join('; ') || 'none declared'}`,
+      `Current status: ${work.status}`,
+      handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
+      request.continuationPrompt?.trim() ? `Continuation: ${request.continuationPrompt.trim()}` : '',
+      `No Controller ownership was preclaimed for you. First call rh_work continue with repo_id=${work.repoId} and work_id=${work.workId} through your authenticated MCP session; do not invent controller_id/session_id. If that claim does not succeed, do not mutate the repository: create no patch, command, commit, or test run until ownership is established. Then use the repository MCP facade, record verification evidence, finalize only when acceptance passes, and create a HandoffItem when judgement is required.`,
+    ].filter(Boolean).join('\n');
   try {
     const mcpBootstrap = request.controllerType === 'codex'
       ? resolveProviderMcpBootstrap(stores.work.controllerHome, 'codex', reservation.reservationId)
       : undefined;
-    const invocation = buildSuperControllerInvocation(request, executable, prompt, mcpBootstrap);
+    const invocation = buildSuperControllerInvocation({ ...request, controllerHome: stores.work.controllerHome, repoId: work.repoId }, executable, prompt, mcpBootstrap);
     const child = spawn(invocation.executable, invocation.args, {
       cwd: request.cwd,
       detached: true,

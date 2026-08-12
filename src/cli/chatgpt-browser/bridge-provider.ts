@@ -28,6 +28,7 @@ interface ExtensionTask {
   kind: 'consult';
   prompt: string;
   timeoutMs: number;
+  targetUrl?: string;
 }
 
 interface ExtensionResult {
@@ -83,6 +84,31 @@ function isStatusOnlyOutput(output: string): boolean {
   return STATUS_ONLY_OUTPUTS.has(output.trim().toLowerCase());
 }
 
+
+function normalizeTargetPage(value: string): { path: string; conversationId?: string } | undefined {
+  try {
+    const url = new URL(value);
+    if (!['chatgpt.com', 'www.chatgpt.com', 'chat.openai.com'].includes(url.hostname)) return undefined;
+    const parts = url.pathname.split('/').filter(Boolean);
+    const c = parts.lastIndexOf('c');
+    const conversationId = c >= 0 ? parts[c + 1] : undefined;
+    const path = `/${parts.join('/')}`.replace(/\/$/, '') || '/';
+    return { path, conversationId };
+  } catch {
+    return undefined;
+  }
+}
+
+export function chatgptBridgeTargetMatchesPage(targetUrl: string | undefined, pageUrl: string | undefined): boolean {
+  if (!targetUrl) return true;
+  if (!pageUrl) return false;
+  const target = normalizeTargetPage(targetUrl);
+  const page = normalizeTargetPage(pageUrl);
+  if (!target || !page) return false;
+  if (target.conversationId) return page.conversationId === target.conversationId;
+  return page.path === target.path;
+}
+
 function bridgePort(): number {
   const raw = process.env.FORGE_CHATGPT_BRIDGE_PORT;
   if (!raw) return CHATGPT_BRIDGE_DEFAULT_PORT;
@@ -115,6 +141,7 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
     kind: 'consult',
     prompt: bundle.rendered,
     timeoutMs,
+    targetUrl: input.chatgptUrl,
   };
   const state: {
     heartbeat?: ExtensionHeartbeat;
@@ -155,6 +182,8 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
         }
         if (request.method === 'GET' && url.pathname === '/api/extension/task') {
           if (state.result || state.claimed) return jsonResponse({ kind: 'idle' });
+          const pageUrl = url.searchParams.get('pageUrl') ?? undefined;
+          if (!chatgptBridgeTargetMatchesPage(task.targetUrl, pageUrl)) return jsonResponse({ kind: 'idle' });
           state.claimed = true;
           return jsonResponse(task);
         }

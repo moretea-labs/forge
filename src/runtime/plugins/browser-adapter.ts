@@ -383,6 +383,11 @@ function loadConfig(repoRoot: string): BrowserPluginConfig {
   return normalizeConfig(readJson<Partial<BrowserPluginConfig>>(configPath(repoRoot)) ?? {});
 }
 
+export function readBrowserPluginConfiguration(repoRoot: string): { enabled: boolean; allowedDomains: string[] } {
+  const config = loadConfig(repoRoot);
+  return { enabled: config.enabled, allowedDomains: [...(config.allowedDomains ?? [])] };
+}
+
 function saveConfig(repoRoot: string, patch: Partial<BrowserPluginConfig>): BrowserPluginConfig {
   const next = normalizeConfig({ ...loadConfig(repoRoot), ...patch });
   writeJson(configPath(repoRoot), next);
