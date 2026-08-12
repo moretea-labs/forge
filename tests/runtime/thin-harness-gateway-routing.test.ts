@@ -716,6 +716,78 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
   });
 
+  test('safe patch starts opt-in validation and joins later without replaying the edit', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    writeFileSync(join(fx.repoRoot, '.forge', 'checks.json'), JSON.stringify({
+      version: 1,
+      checks: {
+        verify: {
+          description: 'managed direct-edit validation',
+          command: [process.execPath, '-e', 'setTimeout(() => process.exit(0), 250)'],
+          timeoutMs: 10_000,
+          effects: { reads: ['src/lib.ts'] },
+        },
+      },
+    }, null, 2));
+    const sourcePath = join(fx.repoRoot, 'src', 'lib.ts');
+    const before = readFileSync(sourcePath, 'utf8');
+    const validationRequestId = 'safe-patch-validation-smoke';
+
+    const started = await routeDurableMcpCall(fx.ctx, 'repository_safe_patch_apply', {
+      repo_id: fx.repository.repoId,
+      checkout_id: fx.repository.activeCheckoutId,
+      purpose: 'safe patch with opt-in validation',
+      allowed_paths: ['src/**'],
+      operations: [{
+        type: 'replace',
+        path: 'src/lib.ts',
+        expected_sha256: createHash('sha256').update(before).digest('hex'),
+        old_text: 'n = 1',
+        new_text: 'n = 2',
+      }],
+      check_ids: ['verify'],
+      validation_request_id: validationRequestId,
+      interactive_wait_ms: 0,
+    });
+    expect(started?.isError).not.toBe(true);
+    const startedPayload = started?.structuredContent as Record<string, unknown>;
+    expect(startedPayload.status).toBe('applied');
+    expect(startedPayload.validationStarted).toBe(true);
+    expect(startedPayload.validationCompleted).toBe(false);
+    expect(startedPayload.acceptanceReady).toBe(false);
+    expect(startedPayload.reviewEvidence).toEqual(expect.objectContaining({
+      source: 'edit_session',
+      semanticReviewAuthority: 'chatgpt',
+    }));
+    expect(startedPayload.validationRequestId).toBe(validationRequestId);
+    const validation = startedPayload.validation as { processes: Array<{ processId: string }> };
+    expect(validation.processes).toHaveLength(1);
+    await waitForProcess(fx.controllerHome, fx.repository.repoId, validation.processes[0]!.processId, { timeoutMs: 10_000 });
+    const afterEdit = readFileSync(sourcePath, 'utf8');
+    expect(afterEdit).toContain('n = 2');
+    const sessionId = String((startedPayload.session as { sessionId: string }).sessionId);
+
+    const joined = await routeDurableMcpCall(fx.ctx, 'repository_safe_patch_apply', {
+      repo_id: fx.repository.repoId,
+      checkout_id: fx.repository.activeCheckoutId,
+      session_id: sessionId,
+      validation_only: true,
+      check_ids: ['verify'],
+      validation_request_id: validationRequestId,
+      interactive_wait_ms: 0,
+    });
+    expect(joined?.isError).not.toBe(true);
+    const joinedPayload = joined?.structuredContent as Record<string, unknown>;
+    expect(joinedPayload.validationOnly).toBe(true);
+    expect(joinedPayload.completed).toBe(true);
+    expect(joinedPayload.ok).toBe(true);
+    expect(joinedPayload.acceptanceReady).toBe(true);
+    expect((joinedPayload.validation as Record<string, unknown>).validationRequestId).toBe(validationRequestId);
+    expect(getEditSession(fx.repoRoot, sessionId).status).toBe('checked');
+    expect(readFileSync(sourcePath, 'utf8')).toBe(afterEdit);
+  });
+
   test('run_check preserves Process Runtime request conflicts instead of masking them', async () => {
     const fx = fixture();
     roots.push(fx.root);

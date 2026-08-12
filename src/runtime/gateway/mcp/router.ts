@@ -4,7 +4,7 @@ import {
   buildMultiRepositoryToolDefinitions,
   type MultiRepositoryMcpToolContext,
 } from '../../../cli/mcp/multi-repository';
-import { repositoryToolDefinitions } from '../../../cli/mcp/repository-tools';
+import { callRepositoryTool, repositoryToolDefinitions } from '../../../cli/mcp/repository-tools';
 import { runtimeToolDefinitions } from './runtime-tools';
 import { executionToolDefinitions } from './execution-tools';
 import { processToolDefinitions } from './process-tools';
@@ -678,6 +678,200 @@ export function injectDurableCommandFields(tool: McpToolDefinition): McpToolDefi
   };
 }
 
+async function runEditSessionValidationViaProcessRuntime(
+  ctx: MultiRepositoryMcpToolContext,
+  repository: NonNullable<ReturnType<typeof resolveRepositorySelection>>,
+  editSessionId: string,
+  args: Record<string, unknown>,
+): Promise<CallToolResult> {
+  const editSession = getEditSession(repository.canonicalRoot, editSessionId);
+  const checkIds = Array.from(new Set(
+    (Array.isArray(args.check_ids) ? args.check_ids.map(String) : editSession.requestedChecks)
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+  ));
+  const requestBase = typeof args.validation_request_id === 'string' && args.validation_request_id.trim()
+    ? args.validation_request_id.trim()
+    : typeof args.request_id === 'string' && args.request_id.trim()
+      ? args.request_id.trim()
+      : `verify-edit:${editSession.sessionId}:r${editSession.currentRevision}:${createHash('sha256').update(JSON.stringify(checkIds)).digest('hex').slice(0, 16)}`;
+  if (checkIds.length === 0) {
+    const checked = recordEditSessionProcessCheckReceipts(repository.canonicalRoot, editSession.sessionId, {
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      receipts: [],
+      reviewer: typeof args.reviewer === 'string' ? args.reviewer : undefined,
+      note: typeof args.note === 'string' ? args.note : undefined,
+    });
+    return result({
+      accepted: true,
+      mode: 'direct',
+      path: 'process_direct',
+      completed: true,
+      ok: true,
+      session: checked,
+      receipts: [],
+      validationRequestId: requestBase,
+    });
+  }
+
+  // Parallel-first without a timeout-based correctness tradeoff. Build
+  // conflict-connected lanes from the same Resource Claim model used by the
+  // Lease store. Different lanes run concurrently; checks in one lane remain
+  // serialized and are resumed through the same deterministic request ids.
+  const availableChecks = new Map(listControllerChecks(repository.canonicalRoot).map((check) => [check.id, check] as const));
+  const claimSets = checkIds.map((checkId) => {
+    const check = availableChecks.get(checkId);
+    return claimsForCheck(
+      checkId,
+      check?.command,
+      repository.repoId,
+      repository.activeCheckoutId,
+      check?.effects,
+    );
+  });
+  const lanes: number[][] = [];
+  const assigned = new Set<number>();
+  for (let start = 0; start < checkIds.length; start += 1) {
+    if (assigned.has(start)) continue;
+    const lane: number[] = [];
+    const queue = [start];
+    assigned.add(start);
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      lane.push(current);
+      for (let candidate = 0; candidate < checkIds.length; candidate += 1) {
+        if (assigned.has(candidate)) continue;
+        const conflicts = claimSets[current]!.some((left) =>
+          claimSets[candidate]!.some((right) => resourceClaimsConflict(left, right)));
+        if (!conflicts) continue;
+        assigned.add(candidate);
+        queue.push(candidate);
+      }
+    }
+    lanes.push(lane.sort((left, right) => left - right));
+  }
+  const leaseWaitMs = typeof args.lease_wait_ms === 'number' && Number.isFinite(args.lease_wait_ms)
+    ? Math.max(0, Math.min(Math.trunc(args.lease_wait_ms), 15_000))
+    : 0;
+  const timeoutMs = typeof args.check_timeout_ms === 'number'
+    ? args.check_timeout_ms
+    : typeof args.timeout_ms === 'number'
+      ? args.timeout_ms
+      : undefined;
+  const facadesByIndex: Array<Awaited<ReturnType<typeof runPersistedCheckViaProcessRuntime>> | undefined> = new Array(checkIds.length);
+  await Promise.all(lanes.map(async (lane) => {
+    for (const index of lane) {
+      const checkId = checkIds[index]!;
+      const checkRequestId = `${requestBase}:check:${index + 1}:${createHash('sha256').update(checkId).digest('hex').slice(0, 12)}`;
+      const facade = await runPersistedCheckViaProcessRuntime({
+        controllerHome: ctx.controllerHome,
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        repoRoot: repository.canonicalRoot,
+        executionIdentity: executionIdentityForRepository(repository),
+        checkId,
+        timeoutMs,
+        interactiveWaitMs: typeof args.interactive_wait_ms === 'number' ? args.interactive_wait_ms : undefined,
+        requestId: checkRequestId,
+        commandId: checkRequestId,
+        verificationBinding: {
+          editSessionId: editSession.sessionId,
+          editRevision: editSession.currentRevision,
+          issueId: editSession.issueId,
+          taskId: editSession.taskId,
+        },
+        leaseWaitMs,
+      });
+      facadesByIndex[index] = facade;
+      if (facade.mode === 'durable' || !facade.process || !facade.process.completed) break;
+    }
+  }));
+  const facades = facadesByIndex.filter((facade): facade is Awaited<ReturnType<typeof runPersistedCheckViaProcessRuntime>> => Boolean(facade));
+  const durableFailure = facades.find((facade) => facade.mode === 'durable' || !facade.process);
+  if (durableFailure) {
+    return result({
+      accepted: false,
+      mode: 'durable',
+      path: 'durable',
+      checkId: durableFailure.checkId,
+      validationRequestId: requestBase,
+      message: durableFailure.durable?.reason ?? 'check requires durable workflow',
+      suggestedOperation: durableFailure.durable?.suggestedOperation,
+    });
+  }
+  const processes = facades.map((facade) => facade.process!);
+  const pending = processes.find((process) => !process.completed);
+  if (pending || processes.length !== checkIds.length) {
+    return result({
+      accepted: true,
+      mode: 'managed',
+      path: 'process_managed',
+      completed: false,
+      sessionId: editSession.sessionId,
+      editRevision: editSession.currentRevision,
+      validationRequestId: requestBase,
+      processes,
+      next: `Validation is running. Continue independent read/review work, then join once with repository_safe_patch_apply(validation_only=true, session_id=${editSession.sessionId}, validation_request_id=${requestBase}).`,
+      durableSideEffects: { executionJobCount: 0, localJobCount: 0, workerSpawnCount: 0, projectionUpdateCount: 0 },
+    });
+  }
+  const receipts = processes.map((handle, index) => {
+    const record = getProcessRecord(ctx.controllerHome, repository.repoId, handle.processId);
+    if (!record) throw new Error(`PROCESS_CHECK_RECEIPT_MISSING: process record not found: ${handle.processId}`);
+    const checkId = checkIds[index]!;
+    const currentIdentity = record.checkExecution
+      ? controllerCheckExecutionIdentity(repository.canonicalRoot, checkId, record.checkExecution.timeoutMs)
+      : undefined;
+    return processCheckCompletionReceipt(record, {
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      editSessionId: editSession.sessionId,
+      editRevision: editSession.currentRevision,
+      issueId: editSession.issueId,
+      taskId: editSession.taskId,
+      checkId,
+      processId: handle.processId,
+      ...(currentIdentity ? {
+        checkExecution: {
+          cacheKey: currentIdentity.cacheKey,
+          revision: currentIdentity.revision,
+          definitionDigest: currentIdentity.definitionDigest,
+          environmentFingerprint: currentIdentity.environmentFingerprint,
+          timeoutMs: currentIdentity.timeoutMs,
+          scopeKey: processCheckSemanticScopeKey({
+            checkoutId: repository.activeCheckoutId,
+            verificationBinding: {
+              editSessionId: editSession.sessionId,
+              editRevision: editSession.currentRevision,
+              issueId: editSession.issueId,
+              taskId: editSession.taskId,
+            },
+          }, currentIdentity.reuseScope),
+        },
+      } : {}),
+    });
+  });
+  const checked = recordEditSessionProcessCheckReceipts(repository.canonicalRoot, editSession.sessionId, {
+    repoId: repository.repoId,
+    checkoutId: repository.activeCheckoutId,
+    receipts,
+    reviewer: typeof args.reviewer === 'string' ? args.reviewer : undefined,
+    note: typeof args.note === 'string' ? args.note : undefined,
+  });
+  return result({
+    accepted: true,
+    mode: 'direct',
+    path: 'process_direct',
+    completed: true,
+    ok: receipts.every((receipt) => receipt.ok),
+    session: checked,
+    receipts,
+    validationRequestId: requestBase,
+    durableSideEffects: { executionJobCount: 0, localJobCount: 0, workerSpawnCount: 0, projectionUpdateCount: 0 },
+  });
+}
+
 export async function routeDurableMcpCall(
   ctx: MultiRepositoryMcpToolContext,
   name: string,
@@ -805,9 +999,8 @@ export async function routeDurableMcpCall(
     }
   }
 
-  // Edit-session verification uses the same persisted Process Runtime checks as run_check.
-  // The deterministic per-revision request IDs make retries collect the original process
-  // instead of launching a duplicate command.
+  // Edit-session verification uses the same resource-aware Process Runtime
+  // coordinator as the stable Direct Edit composite below.
   if (name === 'verify_edit_session' && classification.path === 'fast') {
     const repository = resolveRepositorySelection({
       repoId: typeof args.repo_id === 'string' ? args.repo_id : undefined,
@@ -823,175 +1016,77 @@ export async function routeDurableMcpCall(
     if (!editSessionId) {
       return result({ accepted: false, mode: 'reject', path: 'reject', message: 'verify_edit_session requires session_id' });
     }
-    const editSession = getEditSession(repository.canonicalRoot, editSessionId);
-    const checkIds = Array.from(new Set(
-      (Array.isArray(args.check_ids) ? args.check_ids.map(String) : editSession.requestedChecks)
-        .map((entry) => entry.trim())
-        .filter(Boolean),
-    ));
-    const requestBase = typeof args.request_id === 'string' && args.request_id.trim()
-      ? args.request_id.trim()
-      : `verify-edit:${editSession.sessionId}:r${editSession.currentRevision}:${createHash('sha256').update(JSON.stringify(checkIds)).digest('hex').slice(0, 16)}`;
-    if (checkIds.length === 0) {
-      const checked = recordEditSessionProcessCheckReceipts(repository.canonicalRoot, editSession.sessionId, {
-        repoId: repository.repoId,
-        checkoutId: repository.activeCheckoutId,
-        receipts: [],
-        reviewer: typeof args.reviewer === 'string' ? args.reviewer : undefined,
-        note: typeof args.note === 'string' ? args.note : undefined,
-      });
-      return result({ accepted: true, mode: 'direct', path: 'process_direct', completed: true, ok: true, session: checked, receipts: [] });
-    }
-    // Parallel-first without a timeout-based correctness tradeoff. Build
-    // conflict-connected lanes from the same Resource Claim model used by the
-    // Lease store. Different lanes run concurrently; checks in one lane retain
-    // the historical managed-process behavior: once a check is still running,
-    // stop that lane and continue it on the caller's retry. This avoids turning
-    // a legitimate long serialization wait into PROCESS_LEASE_CONFLICT.
-    const availableChecks = new Map(listControllerChecks(repository.canonicalRoot).map((check) => [check.id, check] as const));
-    const claimSets = checkIds.map((checkId) => {
-      const check = availableChecks.get(checkId);
-      return claimsForCheck(
-        checkId,
-        check?.command,
-        repository.repoId,
-        repository.activeCheckoutId,
-        check?.effects,
-      );
+    return runEditSessionValidationViaProcessRuntime(ctx, repository, editSessionId, args);
+  }
+
+  // Stable Direct Edit composite: checks are opt-in. Without check_ids this
+  // tool remains the ordinary synchronous patch path. With check_ids, the same
+  // call applies one coherent edit batch, returns its review evidence, and
+  // starts revision-bound validation without waiting on long checks.
+  if (name === 'repository_safe_patch_apply' && classification.path === 'direct'
+    && (args.validation_only === true || (Array.isArray(args.check_ids) && args.check_ids.length > 0))) {
+    const repository = resolveRepositorySelection({
+      repoId: typeof args.repo_id === 'string' ? args.repo_id : undefined,
+      checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
+      explicitPath: ctx.explicitRepository?.canonicalRoot,
+      controllerHome: ctx.controllerHome,
+      allowSoleRepository: true,
     });
-    const lanes: number[][] = [];
-    const assigned = new Set<number>();
-    for (let start = 0; start < checkIds.length; start += 1) {
-      if (assigned.has(start)) continue;
-      const lane: number[] = [];
-      const queue = [start];
-      assigned.add(start);
-      while (queue.length > 0) {
-        const current = queue.shift()!;
-        lane.push(current);
-        for (let candidate = 0; candidate < checkIds.length; candidate += 1) {
-          if (assigned.has(candidate)) continue;
-          const conflicts = claimSets[current]!.some((left) =>
-            claimSets[candidate]!.some((right) => resourceClaimsConflict(left, right)));
-          if (!conflicts) continue;
-          assigned.add(candidate);
-          queue.push(candidate);
-        }
+    if (!repository) {
+      return result({ accepted: false, mode: 'reject', path: 'reject', message: 'repository_safe_patch_apply requires a resolvable repository' }, true);
+    }
+
+    if (args.validation_only === true) {
+      const editSessionId = String(args.session_id ?? '').trim();
+      if (!editSessionId) {
+        return result({ accepted: false, mode: 'reject', path: 'reject', message: 'validation_only requires session_id' }, true);
       }
-      lanes.push(lane.sort((left, right) => left - right));
-    }
-    const leaseWaitMs = typeof args.lease_wait_ms === 'number' && Number.isFinite(args.lease_wait_ms)
-      ? Math.max(0, Math.min(Math.trunc(args.lease_wait_ms), 15_000))
-      : 0;
-    const facadesByIndex: Array<Awaited<ReturnType<typeof runPersistedCheckViaProcessRuntime>> | undefined> = new Array(checkIds.length);
-    await Promise.all(lanes.map(async (lane) => {
-      for (const index of lane) {
-        const checkId = checkIds[index]!;
-        const checkRequestId = `${requestBase}:check:${index + 1}:${createHash('sha256').update(checkId).digest('hex').slice(0, 12)}`;
-        const facade = await runPersistedCheckViaProcessRuntime({
-          controllerHome: ctx.controllerHome,
-          repoId: repository.repoId,
-          checkoutId: repository.activeCheckoutId,
-          repoRoot: repository.canonicalRoot,
-          executionIdentity: executionIdentityForRepository(repository),
-          checkId,
-          timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
-          interactiveWaitMs: typeof args.interactive_wait_ms === 'number' ? args.interactive_wait_ms : undefined,
-          requestId: checkRequestId,
-          commandId: checkRequestId,
-          verificationBinding: {
-            editSessionId: editSession.sessionId,
-            editRevision: editSession.currentRevision,
-            issueId: editSession.issueId,
-            taskId: editSession.taskId,
-          },
-          leaseWaitMs,
-        });
-        facadesByIndex[index] = facade;
-        if (facade.mode === 'durable' || !facade.process || !facade.process.completed) break;
-      }
-    }));
-    const facades = facadesByIndex.filter((facade): facade is Awaited<ReturnType<typeof runPersistedCheckViaProcessRuntime>> => Boolean(facade));
-    const durableFailure = facades.find((facade) => facade.mode === 'durable' || !facade.process);
-    if (durableFailure) {
+      const validation = await runEditSessionValidationViaProcessRuntime(ctx, repository, editSessionId, args);
+      const validationPayload = (validation.structuredContent ?? {}) as Record<string, unknown>;
       return result({
-        accepted: false,
-        mode: 'durable',
-        path: 'durable',
-        checkId: durableFailure.checkId,
-        message: durableFailure.durable?.reason ?? 'check requires durable workflow',
-        suggestedOperation: durableFailure.durable?.suggestedOperation,
-      });
+        operation: 'repository_safe_patch_apply',
+        validationOnly: true,
+        sessionId: editSessionId,
+        validation: validationPayload,
+        validationRequestId: validationPayload.validationRequestId,
+        completed: validationPayload.completed === true,
+        ok: validationPayload.ok,
+        acceptanceReady: validationPayload.completed === true && validationPayload.ok === true,
+        next: validationPayload.completed === true
+          ? validationPayload.ok === true
+            ? 'Validation passed for the exact edit revision; delivery may proceed if policy and semantic review are satisfied.'
+            : 'Validation completed with failures; return the failure evidence to ChatGPT for repair reasoning.'
+          : validationPayload.next,
+      }, validation.isError === true);
     }
-    const processes = facades.map((facade) => facade.process!);
-    const pending = processes.find((process) => !process.completed);
-    if (pending || processes.length !== checkIds.length) {
-      return result({
-        accepted: true,
-        mode: 'managed',
-        path: 'process_managed',
-        completed: false,
-        sessionId: editSession.sessionId,
-        editRevision: editSession.currentRevision,
-        requestId: requestBase,
-        processes,
-        next: `Re-run verify_edit_session with request_id=${requestBase}; Process Runtime will reuse the same process records.`,
-        durableSideEffects: { executionJobCount: 0, localJobCount: 0, workerSpawnCount: 0, projectionUpdateCount: 0 },
-      });
-    }
-    const receipts = processes.map((handle, index) => {
-      const record = getProcessRecord(ctx.controllerHome, repository.repoId, handle.processId);
-      if (!record) throw new Error(`PROCESS_CHECK_RECEIPT_MISSING: process record not found: ${handle.processId}`);
-      const checkId = checkIds[index]!;
-      const currentIdentity = record.checkExecution
-        ? controllerCheckExecutionIdentity(repository.canonicalRoot, checkId, record.checkExecution.timeoutMs)
-        : undefined;
-      return processCheckCompletionReceipt(record, {
-        repoId: repository.repoId,
-        checkoutId: repository.activeCheckoutId,
-        editSessionId: editSession.sessionId,
-        editRevision: editSession.currentRevision,
-        issueId: editSession.issueId,
-        taskId: editSession.taskId,
-        checkId,
-        processId: handle.processId,
-        ...(currentIdentity ? {
-          checkExecution: {
-            cacheKey: currentIdentity.cacheKey,
-            revision: currentIdentity.revision,
-            definitionDigest: currentIdentity.definitionDigest,
-            environmentFingerprint: currentIdentity.environmentFingerprint,
-            timeoutMs: currentIdentity.timeoutMs,
-            scopeKey: processCheckSemanticScopeKey({
-              checkoutId: repository.activeCheckoutId,
-              verificationBinding: {
-                editSessionId: editSession.sessionId,
-                editRevision: editSession.currentRevision,
-                issueId: editSession.issueId,
-                taskId: editSession.taskId,
-              },
-            }, currentIdentity.reuseScope),
-          },
-        } : {}),
-      });
-    });
-    const checked = recordEditSessionProcessCheckReceipts(repository.canonicalRoot, editSession.sessionId, {
-      repoId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-      receipts,
-      reviewer: typeof args.reviewer === 'string' ? args.reviewer : undefined,
-      note: typeof args.note === 'string' ? args.note : undefined,
-    });
+
+    const applied = await callRepositoryTool(ctx.controllerHome, name, args);
+    if (!applied || applied.isError === true) return applied;
+    const patchPayload = (applied.structuredContent ?? {}) as Record<string, unknown>;
+    if (patchPayload.status !== 'applied') return applied;
+    const session = patchPayload.session && typeof patchPayload.session === 'object'
+      ? patchPayload.session as Record<string, unknown>
+      : undefined;
+    const editSessionId = typeof session?.sessionId === 'string' ? session.sessionId : '';
+    if (!editSessionId) return applied;
+    const validation = await runEditSessionValidationViaProcessRuntime(ctx, repository, editSessionId, args);
+    const validationPayload = (validation.structuredContent ?? {}) as Record<string, unknown>;
+    const validationCompleted = validationPayload.completed === true;
+    const validationPassed = validationCompleted && validationPayload.ok === true;
     return result({
-      accepted: true,
-      mode: 'direct',
-      path: 'process_direct',
-      completed: true,
-      ok: receipts.every((receipt) => receipt.ok),
-      session: checked,
-      receipts,
-      durableSideEffects: { executionJobCount: 0, localJobCount: 0, workerSpawnCount: 0, projectionUpdateCount: 0 },
-    });
+      ...patchPayload,
+      validation: validationPayload,
+      validationStarted: true,
+      validationCompleted,
+      validationPassed,
+      acceptanceReady: validationPassed,
+      validationRequestId: validationPayload.validationRequestId,
+      next: validationCompleted
+        ? validationPassed
+          ? 'Patch review evidence and requested validation are complete; proceed to delivery only after ChatGPT semantic review is satisfied.'
+          : 'Patch applied but validation failed; return the failure evidence to ChatGPT before any delivery.'
+        : validationPayload.next,
+    }, validation.isError === true);
   }
 
   // run_check Process Runtime facade — execute here so legacy LocalBridgeJob path is skipped.
@@ -1077,7 +1172,7 @@ export async function routeDurableMcpCall(
       durableSideEffects: facade.durableSideEffects,
       next: handle?.completed
         ? 'Check finished on Process Runtime without ExecutionJob / LocalBridgeJob / Worker.'
-        : `Check still running as managed process ${handle?.processId}. Poll process_get or process_wait with process_id=${handle?.processId}; do not re-run the same check.`,
+        : `Check still running as managed process ${handle?.processId}. Continue independent work; use process_wait once when this result becomes a real dependency. Do not re-run or repeatedly poll the same check.`,
     });
   }
 
