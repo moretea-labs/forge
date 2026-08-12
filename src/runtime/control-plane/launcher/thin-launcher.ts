@@ -162,7 +162,7 @@ export function launchSuperController(
     `Current status: ${work.status}`,
     handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
     request.continuationPrompt?.trim() ? `Continuation: ${request.continuationPrompt.trim()}` : '',
-    'No Controller ownership was preclaimed for you. First call rh_work continue for this Work through your authenticated MCP session; do not invent controller_id/session_id. Then use the repository MCP facade, record verification evidence, finalize only when acceptance passes, and create a HandoffItem when judgement is required.',
+    `No Controller ownership was preclaimed for you. First call rh_work continue with repo_id=${work.repoId} and work_id=${work.workId} through your authenticated MCP session; do not invent controller_id/session_id. If that claim does not succeed, do not mutate the repository: create no patch, command, commit, or test run until ownership is established. Then use the repository MCP facade, record verification evidence, finalize only when acceptance passes, and create a HandoffItem when judgement is required.`,
   ].filter(Boolean).join('\n');
   try {
     const mcpBootstrap = request.controllerType === 'codex'
