@@ -6,7 +6,7 @@ import { createWorkContract, getWorkContract, updateWorkContract } from '../../s
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import type { ManagedProcessRecord } from '../../src/runtime/execution/process-runtime/types';
-import { hasCurrentWorkValidationAuthority, markWorkValidationPending, reconcileWorkValidation } from '../../src/runtime/gateway/mcp/work-validation-reconciler';
+import { hasCurrentWorkValidationAuthority, markWorkValidationPending, reconcilePendingWorkValidations, reconcileWorkValidation } from '../../src/runtime/gateway/mcp/work-validation-reconciler';
 import {
   effectiveVerificationEvidence,
   verificationInputFingerprint,
@@ -124,6 +124,23 @@ describe('Work validation receipt convergence', () => {
 
     const repeated = reconcileWorkValidation(fx.controllerHome, result.handle);
     expect(repeated).toMatchObject({ outcome: 'not_validating', changed: false, handle: { state: 'editing' } });
+    expect(contractFor(fx)).toMatchObject({ status: 'running', phase: 'delivery', evidenceState: 'valid' });
+  });
+
+
+  test('background reconciliation settles completed long-check receipts without a polling tool call', () => {
+    const fx = fixture('succeeded');
+    const summary = reconcilePendingWorkValidations(fx.controllerHome, fx.repoId);
+    expect(summary).toMatchObject({
+      repositoryId: fx.repoId,
+      validating: 1,
+      changed: 1,
+      passed: 1,
+      running: 0,
+      failed: 0,
+      infrastructureFailure: 0,
+      errors: [],
+    });
     expect(contractFor(fx)).toMatchObject({ status: 'running', phase: 'delivery', evidenceState: 'valid' });
   });
 

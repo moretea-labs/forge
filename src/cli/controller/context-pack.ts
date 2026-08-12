@@ -13,7 +13,7 @@ import {
   type CodeGraphReadProviderResponse,
 } from "../../runtime/context/codegraph-read-provider";
 
-const CONTEXT_PACK_SCHEMA_VERSION = 4;
+const CONTEXT_PACK_SCHEMA_VERSION = 5;
 const DEFAULT_MAX_FILES = 8;
 const DEFAULT_MAX_SNIPPETS = 20;
 const DEFAULT_SNIPPET_CONTEXT_BEFORE = 12;
@@ -38,6 +38,7 @@ const STOPWORDS = new Set([
 ]);
 
 export type StructuralContextMode = "off" | "auto" | "required";
+export type ControllerContextRetrievalMode = "implementation" | "plan" | "debug" | "review";
 
 export interface ControllerContextPackOptions {
   description?: string;
@@ -51,6 +52,7 @@ export interface ControllerContextPackOptions {
   maxSnippets?: number;
   maxCharsPerSnippet?: number;
   structuralContext?: StructuralContextMode;
+  retrievalMode?: ControllerContextRetrievalMode;
 }
 
 export interface ControllerContextPackDependencies {
@@ -132,7 +134,10 @@ export interface ControllerContextPackProjection {
   };
   contextContract: {
     strategy: string;
-    rawCodeRequiredForImplementation: true;
+    retrievalMode: ControllerContextRetrievalMode;
+    semanticSufficiencyAuthority: "chatgpt";
+    rawCodeRequiredForImplementation: boolean;
+    expansionSignals: string[];
     notes: string[];
   };
   next: string[];
@@ -364,6 +369,7 @@ export function buildControllerContextPack(
   options: ControllerContextPackOptions = {},
   dependencies: ControllerContextPackDependencies = {},
 ): ControllerContextPackProjection {
+  const retrievalMode = options.retrievalMode ?? "implementation";
   const maxFiles = clamp(options.maxFiles, DEFAULT_MAX_FILES, 1, 30);
   const maxSnippets = clamp(options.maxSnippets, DEFAULT_MAX_SNIPPETS, 1, 80);
   const maxCharsPerSnippet = clamp(options.maxCharsPerSnippet, DEFAULT_MAX_CHARS_PER_SNIPPET, 500, 50_000);
@@ -595,6 +601,21 @@ export function buildControllerContextPack(
     omitted.push({ path: "<none>", reason: "No description, search_terms, issue/task focus, or known_paths produced search terms." });
   }
 
+  const rawSnippetTruncated = files.some((file) => file.snippets.some((snippet) => snippet.truncated));
+  const expansionSignals = [
+    ...(files.length === 0 ? ["no_current_raw_source"] : []),
+    ...(rawSnippetTruncated ? ["raw_snippet_truncated"] : []),
+    ...(searchTruncated ? ["candidate_search_truncated"] : []),
+    ...(structuralContext.truncated ? ["structural_context_truncated"] : []),
+    ...(structuralContext.status === "stale" ? ["structural_context_stale"] : []),
+    ...(structuralMode === "required" && !structuralContext.requiredSatisfied ? ["required_structural_context_unavailable"] : []),
+    ...(policyDeniedFiles > 0 || deniedPaths.length > 0 ? ["policy_denied_candidates"] : []),
+    ...(skippedLargeFiles > 0 ? ["large_candidates_skipped"] : []),
+  ];
+  const rawCodeRequiredForImplementation = retrievalMode !== "implementation"
+    || files.length === 0
+    || rawSnippetTruncated;
+
   return {
     schemaVersion: CONTEXT_PACK_SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
@@ -628,13 +649,21 @@ export function buildControllerContextPack(
       checks: taskChecks,
     },
     contextContract: {
-      strategy: "Use this pack for scoped investigation only. Do not treat search ranking or summaries as proof of the correct implementation.",
-      rawCodeRequiredForImplementation: true,
+      strategy: retrievalMode === "implementation"
+        ? "Use the returned current raw snippets plus bounded impact evidence as the implementation decision input. ChatGPT owns semantic sufficiency; do not re-read source solely because it arrived through search."
+        : "Use this pack as investigation evidence and deliberately expand the evidence surface when the selected mode requires planning, debugging, or review.",
+      retrievalMode,
+      semanticSufficiencyAuthority: "chatgpt",
+      rawCodeRequiredForImplementation,
+      expansionSignals,
       notes: [
-        "The pack includes bounded raw snippets around explicit paths, text search hits, and any policy-approved structural candidates; expand exact files/ranges before editing important code.",
+        retrievalMode === "implementation"
+          ? "The pack already contains policy-approved current raw source snippets with file SHA identities. Request wider/exact ranges only when ChatGPT judges the impact surface ambiguous or an expansion signal makes the raw evidence mechanically incomplete."
+          : "Investigation modes may intentionally expand exact ranges, structural relationships, tests, and neighboring modules before any implementation decision.",
+        "Search/CodeGraph ranking is discovery evidence, not a business-semantics authority. Forge never decides that the returned files are the complete semantic impact surface.",
         "CodeGraph structural evidence is discovery evidence. Raw source access still passes through Forge repository policy and current-file reads.",
         structuralContext.status === "stale" ? "CodeGraph reports stale structural evidence. Treat graph relationships as hints and prefer the returned current raw source for changed files." : structuralContext.status === "unavailable" || structuralContext.status === "degraded" ? "Structural context was unavailable or degraded; bounded text search remains the fallback." : structuralContext.status === "ready" ? "CodeGraph structural context was queried read-only with index sync disabled." : "Structural context was not requested.",
-        "Run focused validation after patching; a context pack is not a substitute for tests, typecheck, diff review, or source review.",
+        "Run focused validation after a coherent edit batch; expensive full-suite checks belong at candidate/release boundaries unless debugging specifically needs them earlier.",
         taskChecks.length > 0 ? `Task checks advertised by the board: ${taskChecks.join(", ")}.` : "No task-specific checks were found in the compact ledger.",
       ],
     },
@@ -643,10 +672,12 @@ export function buildControllerContextPack(
         ? ["Structural context was required but is not current/ready. Refresh CodeGraph explicitly or continue only with the degraded-plan warning visible."]
         : []),
       files.length > 0
-        ? "Inspect the returned snippets and request exact wider ranges for files that will be edited."
+        ? retrievalMode === "implementation"
+          ? "ChatGPT should decide whether the impact coverage is sufficient; if yes, edit directly from the returned current raw snippets and SHA identities instead of issuing a mandatory second read."
+          : "Expand exact ranges or neighboring evidence when that investigation can materially change the plan, diagnosis, or review conclusion."
         : "Provide known_paths or narrower search_terms before attempting implementation.",
-      "After editing, review diff projection plus the raw diff for the edited files.",
-      "Use targeted validation before accepting or merging the change.",
+      "After editing, review the bounded diff/evidence for the coherent edit batch.",
+      "Use targeted validation before acceptance; defer expensive full-suite validation to a stable candidate or release boundary unless the task specifically requires it earlier.",
     ],
   };
 }

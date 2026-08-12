@@ -863,7 +863,11 @@ describe("MCP controller profile", () => {
         max_files: 2,
         max_snippets: 4});
       expect(pack.value.source).toBe("controller-context-pack");
-      expect(pack.value.contextContract.rawCodeRequiredForImplementation).toBe(true);
+      expect(pack.value.contextContract).toMatchObject({
+        retrievalMode: "implementation",
+        semanticSufficiencyAuthority: "chatgpt",
+        rawCodeRequiredForImplementation: false,
+      });
       expect(pack.value.files[0].path).toBe("src/example.ts");
       expect(pack.value.files[0].snippets[0].content).toContain("value = 1");
     });
@@ -1838,6 +1842,28 @@ describe("MCP controller profile", () => {
         rawReadTool: "read_repository_file",
         shellSearchFallbackOnly: true,
       });
+      expect(retrieved.data.contextContract).toMatchObject({
+        retrievalMode: "implementation",
+        semanticSufficiencyAuthority: "chatgpt",
+        rawCodeRequiredForImplementation: false,
+      });
+      expect(retrieved.data.structuralContext.requestedMode).toBe("auto");
+
+      const planRaw = await callRuntimeTool(multi, "rh_context", {
+        operation: "search",
+        query: "value = 1",
+        retrieval_mode: "plan",
+        include_globs: ["src/**"],
+        max_files: 2,
+      });
+      expect(planRaw).toBeTruthy();
+      const planned = JSON.parse(planRaw!.content[0].text);
+      expect(planned.data.contextContract).toMatchObject({
+        retrievalMode: "plan",
+        semanticSufficiencyAuthority: "chatgpt",
+        rawCodeRequiredForImplementation: true,
+      });
+      expect(planned.data.structuralContext.requestedMode).toBe("required");
     });
   });
 

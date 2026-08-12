@@ -382,6 +382,7 @@ describe('runtime cleanup', () => {
       runtimeCleanup: () => void;
       terminalWorkCleanup: () => Promise<void>;
       processGc: (options: { repoId: string }) => { ok: boolean };
+      workValidationReconcile: (controllerHome: string, repoId: string, limit: number) => { errors: unknown[] };
       repositoryList: () => Array<{ repoId: string; enabled: boolean; removedAt?: string }>;
       lastSourceScanAt: number;
       lastGitStatusSampleAt: number;
@@ -391,6 +392,11 @@ describe('runtime cleanup', () => {
     internal.processGc = (options) => {
       processGcRepos.push(options.repoId);
       return { ok: true };
+    };
+    const validationRepos: string[] = [];
+    internal.workValidationReconcile = (_controllerHome, repoId) => {
+      validationRepos.push(repoId);
+      return { errors: [] };
     };
     internal.repositoryList = () => [
       { repoId: 'repo-a', enabled: true },
@@ -403,6 +409,7 @@ describe('runtime cleanup', () => {
     await scheduler.tick();
     expect(processGcRepos).toHaveLength(1);
     expect(['repo-a', 'repo-b']).toContain(processGcRepos[0]!);
+    expect(validationRepos.sort()).toEqual(['repo-a', 'repo-b']);
   });
 
   test('a cleanup failure does not interrupt the scheduler tick', async () => {

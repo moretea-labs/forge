@@ -3,7 +3,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import { readJsonFile, sanitizeFileComponent } from '../../shared/json-files';
-import { listControlPlaneRecords, readOrImportControlPlaneRecord, writeControlPlaneRecord } from '../persistence/sqlite-store';
+import { listControlPlaneRecords, mutateControlPlaneRecord, readOrImportControlPlaneRecord, writeControlPlaneRecord } from '../persistence/sqlite-store';
 
 export const WORK_HANDLE_STATES = [
   'prepared',
@@ -102,6 +102,33 @@ export interface WorkValidationRunState {
   processes: Record<string, { processId: string; requestId: string }>;
 }
 
+interface WorkValidationIndex {
+  schemaVersion: 1;
+  updatedAt: string;
+  workIds: string[];
+}
+
+const WORK_VALIDATION_INDEX_NAMESPACE = 'execution_work_validation_index';
+const WORK_VALIDATION_INDEX_KEY = 'v1';
+
+function normalizedWorkIds(values: readonly string[]): string[] {
+  return [...new Set(values.filter((value) => typeof value === 'string' && value.length > 0))].sort();
+}
+
+function isValidationPending(handle: Pick<WorkHandleState, 'state' | 'validationRun'>): boolean {
+  return handle.state === 'validating' && Boolean(handle.validationRun);
+}
+
+function readValidationIndex(controllerHome: string, repositoryId: string): WorkValidationIndex | undefined {
+  return readOrImportControlPlaneRecord<WorkValidationIndex>(controllerHome, {
+    namespace: WORK_VALIDATION_INDEX_NAMESPACE,
+    scope: repositoryId,
+    key: WORK_VALIDATION_INDEX_KEY,
+    schemaVersion: 1,
+    readLegacy: () => undefined,
+  })?.value;
+}
+
 export interface WorkHandleState {
   schemaVersion: 1;
   /** SQLite envelope revision used for compare-and-swap lifecycle writes. */
@@ -173,6 +200,100 @@ export function listWorkHandles(controllerHome: string, repositoryId: string, li
   }).map((record) => ({ ...record.value, recordRevision: record.revision }));
 }
 
+function replaceValidationIndex(
+  controllerHome: string,
+  repositoryId: string,
+  workIds: readonly string[],
+  action: string,
+): WorkValidationIndex {
+  return mutateControlPlaneRecord<WorkValidationIndex>(controllerHome, {
+    namespace: WORK_VALIDATION_INDEX_NAMESPACE,
+    scope: repositoryId,
+    key: WORK_VALIDATION_INDEX_KEY,
+    schemaVersion: 1,
+    action,
+    mutate: () => ({
+      schemaVersion: 1,
+      updatedAt: now(),
+      workIds: normalizedWorkIds(workIds),
+    }),
+  }).value;
+}
+
+function rebuildValidationIndex(controllerHome: string, repositoryId: string): WorkValidationIndex {
+  const workIds = listWorkHandles(controllerHome, repositoryId, 5_000)
+    .filter(isValidationPending)
+    .map((handle) => handle.workId);
+  return replaceValidationIndex(
+    controllerHome,
+    repositoryId,
+    workIds,
+    'work_validation_index_rebuild',
+  );
+}
+
+function ensureValidationIndex(controllerHome: string, repositoryId: string): WorkValidationIndex {
+  return readValidationIndex(controllerHome, repositoryId) ?? rebuildValidationIndex(controllerHome, repositoryId);
+}
+
+function updateValidationIndexMembership(
+  controllerHome: string,
+  repositoryId: string,
+  workId: string,
+  validating: boolean,
+): void {
+  const existing = readValidationIndex(controllerHome, repositoryId);
+  if (!existing) {
+    // The WorkHandle write is already durable. Rebuild once from authoritative
+    // handles so legacy repositories establish an exact index without a scan
+    // on every scheduler tick.
+    rebuildValidationIndex(controllerHome, repositoryId);
+    return;
+  }
+  mutateControlPlaneRecord<WorkValidationIndex>(controllerHome, {
+    namespace: WORK_VALIDATION_INDEX_NAMESPACE,
+    scope: repositoryId,
+    key: WORK_VALIDATION_INDEX_KEY,
+    schemaVersion: 1,
+    action: 'work_validation_index_update',
+    mutate: (current) => {
+      const base = current?.value ?? existing;
+      const workIds = new Set(base.workIds);
+      if (validating) workIds.add(workId); else workIds.delete(workId);
+      return { schemaVersion: 1, updatedAt: now(), workIds: [...workIds].sort() };
+    },
+  });
+}
+
+export function listValidatingWorkHandles(
+  controllerHome: string,
+  repositoryId: string,
+  limit = 500,
+): WorkHandleState[] {
+  const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 5_000));
+  const index = ensureValidationIndex(controllerHome, repositoryId);
+  const handles: WorkHandleState[] = [];
+  const staleIds: string[] = [];
+  for (const workId of index.workIds.slice(0, boundedLimit)) {
+    const handle = readWorkHandle(controllerHome, repositoryId, workId);
+    if (!handle || !isValidationPending(handle)) {
+      staleIds.push(workId);
+      continue;
+    }
+    handles.push(handle);
+  }
+  if (staleIds.length > 0) {
+    const stale = new Set(staleIds);
+    replaceValidationIndex(
+      controllerHome,
+      repositoryId,
+      index.workIds.filter((workId) => !stale.has(workId)),
+      'work_validation_index_reconcile',
+    );
+  }
+  return handles;
+}
+
 export function writeWorkHandle(controllerHome: string, handle: WorkHandleState): WorkHandleState {
   const { recordRevision, ...persistedHandle } = handle;
   const updated: Omit<WorkHandleState, 'recordRevision'> = { ...persistedHandle, updatedAt: now() };
@@ -185,6 +306,12 @@ export function writeWorkHandle(controllerHome: string, handle: WorkHandleState)
     action: 'work_handle_write',
     ...(recordRevision !== undefined ? { expectedRevision: recordRevision } : {}),
   });
+  updateValidationIndexMembership(
+    controllerHome,
+    record.value.repositoryId,
+    record.value.workId,
+    isValidationPending(record.value),
+  );
   return { ...record.value, recordRevision: record.revision };
 }
 

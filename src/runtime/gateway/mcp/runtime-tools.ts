@@ -283,7 +283,8 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     known_paths: { type: 'array', items: { type: 'string' }, description: 'Optional exact paths or globs that should receive highest retrieval priority.' },
     include_globs: { type: 'array', items: { type: 'string' } },
     exclude_globs: { type: 'array', items: { type: 'string' } },
-    structural_context: { type: 'string', enum: ['off', 'auto', 'required'], description: 'Defaults to off. Use auto/required only when call graph, dependency, or impact evidence is useful.' },
+    retrieval_mode: { type: 'string', enum: ['implementation', 'plan', 'debug', 'review'], description: 'Defaults to implementation. Implementation returns current raw impact evidence for ChatGPT to judge; plan/debug/review intentionally widen evidence.' },
+    structural_context: { type: 'string', enum: ['off', 'auto', 'required'], description: 'Optional override. Defaults to auto for implementation/review and required for plan/debug.' },
     max_files: { type: 'number' },
     max_snippets: { type: 'number' },
     requested_check_ids: { type: 'array', items: { type: 'string' } },
@@ -2930,9 +2931,14 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           const list = (value: unknown): string[] => Array.isArray(value)
             ? value.map(String).map((entry) => entry.trim()).filter(Boolean)
             : [];
-          const structuralContext = args.structural_context === 'auto' || args.structural_context === 'required'
+          const retrievalMode = args.retrieval_mode === 'plan' || args.retrieval_mode === 'debug' || args.retrieval_mode === 'review'
+            ? args.retrieval_mode
+            : 'implementation';
+          const structuralContext = args.structural_context === 'off' || args.structural_context === 'auto' || args.structural_context === 'required'
             ? args.structural_context
-            : 'off';
+            : retrievalMode === 'plan' || retrievalMode === 'debug'
+              ? 'required'
+              : 'auto';
           const pack = buildControllerContextPack(repository.canonicalRoot, ctx.policy, {
             description: query,
             searchTerms: [query],
@@ -2942,6 +2948,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             maxFiles: typeof args.max_files === 'number' ? args.max_files : undefined,
             maxSnippets: typeof args.max_snippets === 'number' ? args.max_snippets : undefined,
             structuralContext,
+            retrievalMode,
           });
           const warnings = structuralContext === 'required' && !pack.structuralContext.requiredSatisfied
             ? [pack.structuralContext.fallbackReason ?? 'Required structural context is not ready; lexical retrieval results are returned as degraded evidence.']

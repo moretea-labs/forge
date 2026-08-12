@@ -36,6 +36,7 @@ import { readSchedulerWakeSignal, waitForSchedulerWakeSignal } from './wake-sign
 import { cleanupControllerRuntimeState } from '../runtime-cleanup';
 import { reconcileTerminalWorkCleanups } from '../execution/work-terminal-cleanup';
 import { gcTerminalProcesses } from '../../execution/process-runtime/gc';
+import { reconcilePendingWorkValidations } from '../execution/work-validation-reconciler';
 import { schedulerDispatchAllowed } from '../facade/work-admission-policy';
 import { rebuildRepositoryProjection, refreshRepositoryProjectionForRepository } from '../../projections/materialized-view';
 import { readRepositoryGitStatusSample, sampleRepositoryGitStatusForRepositories } from '../../projections/git-status-sampler';
@@ -232,6 +233,7 @@ export class GlobalScheduler {
   private runtimeCleanup = cleanupControllerRuntimeState;
   private terminalWorkCleanup = reconcileTerminalWorkCleanups;
   private processGc = gcTerminalProcesses;
+  private workValidationReconcile = reconcilePendingWorkValidations;
   private repositoryList = listRepositories;
   private lastDarwinMemorySampleAt = 0;
   private cachedDarwinAvailableMemoryMb: number | undefined;
@@ -641,6 +643,14 @@ export class GlobalScheduler {
     }
     if (now - this.lastReconcile >= 5_000) {
       await reconcileExecutionJobsAsync(this.controllerHome);
+      for (const repository of repositories) {
+        const validation = this.workValidationReconcile(this.controllerHome, repository.repoId, 500);
+        if (validation.errors.length > 0) {
+          console.error(
+            `[forge validation] background reconciliation reported ${validation.errors.length} error(s) for ${repository.repoId}`,
+          );
+        }
+      }
       this.lastReconcile = now;
       this.lastReconcileAt = new Date(now).toISOString();
     }
