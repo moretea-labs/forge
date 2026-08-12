@@ -41,9 +41,6 @@ const READ_ONLY_TOOLS = new Set([
   'get_task_run_log',
   'get_task_diff',
   'get_worklog_timeline',
-  'list_campaigns',
-  'get_campaign',
-  'get_campaign_review_packet',
   'capability_recovery_probe',
   'capability_recovery_plan',
   'runtime_maintenance_status',
@@ -69,8 +66,6 @@ const REPO_STATE_TOOLS = new Set([
   'record_candidate_finding', 'repository_register', 'repository_refresh', 'repository_validate',
   'repository_update', 'repository_disable', 'repository_remove', 'create_edit_savepoint',
   'begin_edit_session', 'set_current_issue', 'archive_issue', 'restore_issue', 'reconcile_project_governance',
-  'create_campaign', 'add_campaign_task', 'pause_campaign', 'resume_campaign', 'cancel_campaign',
-  'submit_campaign_review', 'accept_campaign', 'reconcile_campaign',
   'capability_recovery_apply', 'runtime_maintenance_apply', 'external_filesystem_grant_apply',
   'goal_create', 'goal_start', 'goal_continue', 'goal_stop', 'goal_finalize', 'goal_tick_once',
   'goal_handoff_packet_create', 'executor_dispatch', 'repair_continue',
@@ -115,10 +110,6 @@ function isolatedWorktreeKey(args: Record<string, unknown>): string {
 
 export function claimsForMcpOperation(name: string, args: Record<string, unknown>, repoId: string, checkoutId?: string): ResourceClaimSpec[] {
   if (READ_ONLY_TOOLS.has(name)) return [];
-  if (name === 'create_campaign') return [
-    { resourceKey: 'repo-state', mode: 'write' },
-    { resourceKey: `git-refs:${repoId}`, mode: 'exclusive' },
-  ];
   if (REPO_STATE_TOOLS.has(name)) return [{ resourceKey: 'repo-state', mode: 'write' }];
   // run_check: only true heavy/release checks take exclusive heavy-check lock.
   // Ordinary typecheck / lint / package scripts use fine-grained claims.

@@ -47,7 +47,7 @@ Every registered-repository execution is bound to a stable `repoId` and an expli
 
 ### Direct versus durable work
 
-Investigation is not itself a reason to create Work. A small, understood change can stay Direct. Durable Work, worktrees, campaigns, or workers are introduced when recovery, dependency tracking, isolation, long-running execution, or real risk requires them.
+Investigation is not itself a reason to create Work. A small, understood change can stay Direct. Durable Work, worktrees, or workers are introduced when recovery, dependency tracking, isolation, long-running execution, or real risk requires them.
 
 ### Process Runtime
 

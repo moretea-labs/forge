@@ -22,7 +22,6 @@ import {
   type ProjectionRefreshOwner,
 } from './invalidation';
 import { readRepositoryGitStatusSample } from './git-status-sampler';
-import { listCampaigns } from '../workflow/campaigns/store';
 import { listAssistantPluginManifests } from '../plugins/store';
 import type { ProjectionObservation, ProjectionSourceReconciliation } from '../health';
 import { RUNTIME_HEALTH_THRESHOLDS } from '../health/evaluator';
@@ -59,12 +58,6 @@ export interface RepositoryRuntimeProjection {
     ready: number;
     degraded: number;
     error: number;
-  };
-  campaigns?: {
-    active: number;
-    waitingForSupervisor: number;
-    pendingReviews: number;
-    readyForHumanAcceptance: number;
   };
 }
 
@@ -111,12 +104,6 @@ function emptyProjection(repoId: string, reason?: string): RepositoryRuntimeProj
       ready: 0,
       degraded: 0,
       error: 0,
-    },
-    campaigns: {
-      active: 0,
-      waitingForSupervisor: 0,
-      pendingReviews: 0,
-      readyForHumanAcceptance: 0,
     },
   };
 }
@@ -191,7 +178,7 @@ function projectionWithExecutionIndexOverlay(
 }
 
 function dirtyReasonImpliesActiveRisk(reason: string | undefined): boolean {
-  return Boolean(reason && /^(job:|leases-|campaign:|schedule:|worker:|process:|cleanup:)/.test(reason));
+  return Boolean(reason && /^(job:|leases-|schedule:|worker:|process:|cleanup:)/.test(reason));
 }
 
 function buildRepositoryProjection(
@@ -210,8 +197,6 @@ function buildRepositoryProjection(
   // Terminal attention records remain in history for diagnosis and audit, but only
   // active/unresolved records should influence "current readiness" decisions.
   const currentAttentionJobs = attentionJobs.filter((job) => !job.finishedAt || activeJobIds.has(job.jobId));
-  const campaigns = listCampaigns(controllerHome, repoId, 1_000);
-  const reviewableCampaigns = campaigns.filter((campaign) => ['active', 'waiting_for_supervisor'].includes(campaign.status));
   const repository = listRepositories(controllerHome).find((entry) => entry.repoId === repoId);
   const plugins = repository ? listAssistantPluginManifests(controllerHome, repository, {
     preferStored: true,
@@ -251,12 +236,6 @@ function buildRepositoryProjection(
       degraded: plugins.filter((plugin) => plugin.health.state === 'degraded').length,
       error: plugins.filter((plugin) => plugin.health.state === 'error').length,
     },
-    campaigns: {
-      active: campaigns.filter((campaign) => campaign.status === 'active').length,
-      waitingForSupervisor: campaigns.filter((campaign) => campaign.status === 'waiting_for_supervisor').length,
-      pendingReviews: reviewableCampaigns.reduce((count, campaign) => count + campaign.checkpoints.filter((checkpoint) => checkpoint.status === 'open').length, 0),
-      readyForHumanAcceptance: campaigns.filter((campaign) => campaign.status === 'ready_for_human_acceptance').length,
-    },
   };
   projection.metadata = {
     ...projection.metadata!,
@@ -270,7 +249,6 @@ function buildRepositoryProjection(
       currentAttention: projection.currentAttention,
       attention: projection.attention,
       plugins: projection.plugins,
-      campaigns: projection.campaigns,
     })).digest('hex'),
   };
   return projection;

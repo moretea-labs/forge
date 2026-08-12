@@ -13,7 +13,7 @@ Priority order:
 1. Direct edit
 2. Requirement/workflow
 3. Issue/task orchestration
-4. Campaign
+4. Durable Goal Workloop / PlanContract coordination
 
 ## Architecture strategy changes
 

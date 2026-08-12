@@ -76,7 +76,6 @@ const TEMP_SCAN_LEAF_DIR_NAMES = new Set([
   'audit',
   'local-jobs',
   'runs',
-  'campaigns',
   'schedules',
   'leases',
   'projections',

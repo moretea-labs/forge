@@ -28,7 +28,6 @@ import { RepoActorRegistry } from '../repo-actor/registry';
 import { reconcileExecutionJobsAsync } from './reconciliation';
 import { tickSchedules } from '../../workflow/schedules/engine';
 import { tickPortfolioWorkflows } from '../../workflow/portfolio/engine';
-import { tickCampaigns } from '../../workflow/campaigns/engine';
 import { tickGoalLoopsForController } from '../goal-loop';
 import { readJsonFile, writeJsonAtomic } from '../../shared/json-files';
 import { resolveBunExecutable } from '../../shared/process-environment';
@@ -215,7 +214,6 @@ export class GlobalScheduler {
   private readonly fatalOnTickError: boolean;
   private lastScheduleTick = 0;
   private lastPortfolioTick = 0;
-  private lastCampaignTick = 0;
   private lastGoalLoopTick = 0;
   private lastReconcile = 0;
   private lastPersistedAt = 0;
@@ -843,12 +841,9 @@ export class GlobalScheduler {
       this.spawnWorker(pending.repoId, pending.jobId);
     }
     // Dispatch is latency-sensitive. Run repository workflow maintenance only
-    // after queued Jobs have had a chance to claim capacity. Campaign and Goal
+    // after queued Jobs have had a chance to claim capacity. Goal
     // state transitions still wake the scheduler immediately when they enqueue work.
-    if (now - this.lastCampaignTick >= 1_000) {
-      tickCampaigns(this.controllerHome, repositories.map((repo) => repo.repoId));
-      this.lastCampaignTick = now;
-    }
+
     if (now - this.lastGoalLoopTick >= 5_000) {
       try {
         tickGoalLoopsForController(

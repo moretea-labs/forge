@@ -253,7 +253,6 @@ describe('handoff and facade contracts', () => {
     expect(new Set(capabilities.map((entry) => entry.exposedVia))).toEqual(new Set(['rh_context', 'rh_inbox', 'rh_status', 'rh_work']));
     expect(new Set(capabilities.map((entry) => entry.group))).toEqual(new Set([
       'browser',
-      'campaign',
       'controller',
       'evidence',
       'git',

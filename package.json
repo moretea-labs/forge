@@ -130,7 +130,6 @@
     "check:forge-runtime": "bash scripts/verify-forge-runtime.sh",
     "repo:registry": "bun src/cli/v81-entry.ts repo",
     "smoke:schedule-engine": "node --loader ./src/runtime/shared/node-ts-loader.mjs scripts/smoke-schedule-engine.ts",
-    "smoke:supervised-automation": "node --loader ./src/runtime/shared/node-ts-loader.mjs scripts/smoke-chatgpt-supervised-automation.ts",
     "check:env": "node scripts/check-runtime-env.mjs",
     "test:bun": "bun -e 'console.error(\"[tests] test:bun is deprecated; running explicit test:full\")' && bun run test:full",
     "test:node-smoke": "node --test tests/node/*.test.mjs",

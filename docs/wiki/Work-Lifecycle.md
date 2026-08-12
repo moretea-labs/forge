@@ -6,7 +6,7 @@ Resolve the repository and checkout, read current status, and check whether an I
 
 ## 2. Plan the smallest safe unit
 
-Use direct edits for bounded changes. Use durable Tasks, isolated worktrees, or campaigns when work is long-running, parallel, dependency-aware, or high risk.
+Use direct edits for bounded changes. Use durable Tasks, isolated worktrees, or Goal Workloop coordination when work is long-running, parallel, dependency-aware, or high risk.
 
 ## 3. Execute with ownership
 

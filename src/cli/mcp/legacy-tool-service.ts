@@ -1616,7 +1616,7 @@ export function buildMcpToolDefinitions(
           type: "object",
           properties: {
             description: { type: "string" },
-            mode: { type: "string", enum: ["direct", "plan", "debug", "review", "campaign", "release", "scale", "-direct", "-plan", "-debug", "-review", "-campaign", "-release", "-scale"] },
+            mode: { type: "string", enum: ["direct", "plan", "debug", "review", "release", "scale", "-direct", "-plan", "-debug", "-review", "-release", "-scale"] },
             known_paths: { type: "array", items: { type: "string" } },
             expected_files: { type: "number" },
             expected_changed_lines: { type: "number" },
@@ -2147,7 +2147,7 @@ export function buildMcpToolDefinitions(
           type: "object",
           properties: {
             description: { type: "string" },
-            mode: { type: "string", enum: ["direct", "plan", "debug", "review", "campaign", "release", "scale", "-direct", "-plan", "-debug", "-review", "-campaign", "-release", "-scale"] },
+            mode: { type: "string", enum: ["direct", "plan", "debug", "review", "release", "scale", "-direct", "-plan", "-debug", "-review", "-release", "-scale"] },
             known_paths: { type: "array", items: { type: "string" } },
             expected_files: { type: "number" },
             expected_changed_lines: { type: "number" },
@@ -3174,7 +3174,7 @@ export async function callMcpTool(
           },
           toolExposure: {
             preferred: preferredTools,
-            note: "Prefer the five rh_* workflow facades for orchestration. Typed repository, Git, Issue/Task, Campaign, plugin, browser, iOS, artifact, and recovery tools remain available because the current MCP transport cannot load domain schemas per conversation.",
+            note: "Prefer the five rh_* workflow facades for orchestration. Typed repository, Git, Issue/Task, plugin, browser, iOS, artifact, and recovery tools remain available because the current MCP transport cannot load domain schemas per conversation.",
             advanced: expectedTools.filter((tool) => !preferredTools.includes(tool)).slice(0, 40),
             compatibilityRetained: true,
           },

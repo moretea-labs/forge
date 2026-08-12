@@ -48,10 +48,3 @@ export function validateBranchName(raw: unknown, options: BranchNamePolicyOption
 export function branchRef(branch: unknown, options: BranchNamePolicyOptions = {}): string {
   return `refs/heads/${validateBranchName(branch, options)}`;
 }
-
-export function campaignBranchName(input: { readonly title: string; readonly identity: string }): string {
-  return validateBranchName(
-    `campaign/${branchSlugSegment(input.title)}-${input.identity}`,
-    { purpose: 'CAMPAIGN_WORKSPACE_BRANCH' },
-  );
-}

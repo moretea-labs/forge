@@ -136,7 +136,7 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
     operation: {
       type: 'string',
       enum: ['summary', 'batch_execute', 'lanes_execute', 'lanes_integrate', 'fast_receipt_get', 'fast_receipt_list', 'execution_route', 'assess_work_mode'],
-      description: 'Defaults to summary. Use batch_execute for multi-step Fast Path (one parent receipt). Use lanes_execute for limited parallel reads. Use assess_work_mode for Fast/Durable/Campaign routing advice.',
+      description: 'Defaults to summary. Use batch_execute for multi-step Fast Path (one parent receipt). Use lanes_execute for limited parallel reads. Use assess_work_mode for Fast/Durable routing advice.',
     },
     payload: {
       type: 'object',
@@ -688,7 +688,6 @@ export async function callRepositoryTool(
               reasons: assessment.reasons,
               recommendedMode: assessment.recommendedMode,
               issueRequired: assessment.issueRequired,
-              campaignRequired: assessment.campaignRequired,
             },
             nextTools: assessment.nextTools,
           });

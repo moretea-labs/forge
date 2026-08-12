@@ -6,7 +6,7 @@ export const PREFERRED_FACADE_TOOL_NAMES = [...FACADE_TOOLS] as const;
 /**
  * Default ChatGPT-facing MCP surface. The Runtime keeps every internal atomic
  * handler and the full compatibility profile; ChatGPT only needs this bounded
- * execution surface. Atomic Git / issue-task / campaign / edit-session / plugin
+ * execution surface. Atomic Git / issue-task / edit-session / plugin
  * tools remain registered and reachable through `toolset=full`.
  */
 export const DEFAULT_CONTROLLER_TOOL_NAMES = [

@@ -18,7 +18,7 @@ import { processLogDir } from '../../src/runtime/execution/process-runtime';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import type { ManagedProcessRecord } from '../../src/runtime/execution/process-runtime/types';
 import { selectDefaultWorkValidationChecks } from '../../src/runtime/gateway/mcp/execution-tools';
-import { ensureManagedWorkspace } from '../../src/runtime/workflow/campaigns/workspace';
+import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
 
 const roots: string[] = [];
 
@@ -59,7 +59,7 @@ function fixture(label: string) {
   git(repositoryRoot, ['add', '.']);
   git(repositoryRoot, ['commit', '-m', 'fixture']);
   const repository = registerRepository({ path: repositoryRoot, controllerHome, displayName: `cleanup-${label}` });
-  const branch = `campaign/terminal-cleanup-${label}`;
+  const branch = `work/terminal-cleanup-${label}`;
   const workspace = ensureManagedWorkspace(controllerHome, repository, {
     requestId: `terminal-cleanup-${label}`,
     title: `Terminal Cleanup ${label}`,
@@ -621,7 +621,7 @@ describe('terminal Work cleanup', () => {
       const workspace = ensureManagedWorkspace(fx.controllerHome, getRepository(fx.repository.repoId, fx.controllerHome), {
         requestId: `terminal-cleanup-${label}`,
         title: `Terminal Cleanup ${label}`,
-        branchName: `campaign/terminal-cleanup-${label}`,
+        branchName: `work/terminal-cleanup-${label}`,
       });
       const now = new Date().toISOString();
       const handle = writeWorkHandle(fx.controllerHome, {

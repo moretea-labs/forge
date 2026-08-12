@@ -18,7 +18,7 @@ import { repositoryGitCommit, repositoryGitDeleteBranch, repositoryGitFinishWork
 import { previewRepositoryCommandExecution } from '../../../cli/repositories/command-executor';
 import { classifyRepositoryCommand } from '../../../cli/repositories/command-classifier';
 import { globMatches } from '../../../cli/mcp/paths';
-import { ensureManagedWorkspace } from '../../workflow/campaigns/workspace';
+import { ensureManagedWorkspace } from '../../execution/managed-workspace';
 import { listControllerChecks } from '../../../cli/controller/check-runner';
 import { readRepositoryAccessPolicy } from '../../control-plane/governance/access-policy';
 import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkCompletionReceipt, updateWorkContract, appendVerificationRecord } from '../../control-plane/facade/work-contract-store';

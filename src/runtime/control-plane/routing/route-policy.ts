@@ -3,11 +3,11 @@ import { createHash } from 'crypto';
 export const ROUTE_POLICY_VERSION = 'route-policy-v3' as const;
 
 export type RouteExecutionMode = 'direct_control' | 'goal_workloop' | 'handoff_only';
-export type RouteWorkMode = 'direct_edit' | 'bounded_work' | 'quick_agent' | 'issue_task' | 'campaign';
-export type RouteExecutionPath = 'fast' | 'durable' | 'campaign';
+export type RouteWorkMode = 'direct_edit' | 'bounded_work' | 'quick_agent' | 'issue_task';
+export type RouteExecutionPath = 'fast' | 'durable';
 export type RouteExecutorKind = 'direct_edit' | 'local_cli' | 'remote_api' | 'cloud_agent' | 'external_controller' | 'handoff_only';
 export type RouteApprovalState = 'approval_not_required' | 'normal_authorization_required' | 'strong_confirmation_required' | 'blocked_by_policy';
-export type ExplicitTaskMode = 'direct' | 'plan' | 'debug' | 'review' | 'campaign' | 'release' | 'scale';
+export type ExplicitTaskMode = 'direct' | 'plan' | 'debug' | 'review' | 'release' | 'scale';
 
 export interface RouteReason {
   code: string;
@@ -233,7 +233,7 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
   const approvalConfirmed = input.policy.approvalConfirmed === true;
   const protectedPath = paths.some((path) => PROTECTED_PATH.test(path));
   const explicitMode = input.intent.explicitMode;
-  const explicitParallelMode = explicitMode === 'campaign' || explicitMode === 'scale';
+  const explicitParallelMode = explicitMode === 'scale';
   const requiresIsolation = explicitMode === 'direct'
     ? false
     : input.recovery.isolationRequired === true || explicitParallelMode;
@@ -242,7 +242,7 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
     || explicitMode === 'debug'
     || explicitMode === 'release'
     || explicitMode === 'scale';
-  const campaignEligible = explicitParallelMode || input.intent.requiresIndependentDeliverables === true
+  const coordinationRequired = explicitParallelMode || input.intent.requiresIndependentDeliverables === true
     || independentTaskCount >= 3;
 
   if (input.policy.policyBlocked === true) {
@@ -304,7 +304,7 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
   if (input.intent.requiresLongRunningChecks) reasons.push({ code: 'long_checks', message: 'Long-running checks require durable continuation.' });
   if (input.intent.requiresInvestigation) reasons.push({ code: 'investigation', message: 'Investigation is required before or during implementation.' });
   if (input.intent.needsDependencies) reasons.push({ code: 'dependencies', message: 'Dependency ordering requires durable Work.' });
-  if (campaignEligible) reasons.push({ code: 'independent_deliverables', message: 'Multiple independent deliverables require campaign-level coordination.' });
+  if (coordinationRequired) reasons.push({ code: 'independent_deliverables', message: 'Multiple independent deliverables require durable PlanContract/Work coordination.' });
 
   const explicitBoundedMode = explicitMode === 'plan'
     || explicitMode === 'debug'
@@ -312,7 +312,7 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
     || explicitMode === 'release';
   const complex = explicitMode === 'direct'
     ? false
-    : campaignEligible
+    : coordinationRequired
     || explicitBoundedMode
     || requiresRecovery
     || requiresIsolation
@@ -326,19 +326,19 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
     || secretAccess
     || (mutation && (expectedFiles > 4 || expectedChangedLines > 200));
   const executionMode: RouteExecutionMode = complex ? 'goal_workloop' : 'direct_control';
-  // Work topology is independent from executor/provider choice. Campaign is
-  // selected only for genuinely independent/parallel deliverables; Agent
-  // preference may choose an executor inside a tier but must not create the tier.
+  // Work topology is independent from executor/provider choice. Independent or
+  // parallel deliverables stay in the durable Goal Workloop and are decomposed by
+  // PlanContract/Work rather than introducing another project-level lifecycle.
   const workMode: RouteWorkMode = explicitMode === 'direct'
     ? 'direct_edit'
-    : campaignEligible
-    ? 'campaign'
+    : coordinationRequired
+    ? 'bounded_work'
     : input.intent.agentRequested
       ? expectedFiles > 10 || expectedChangedLines > 1_500 ? 'issue_task' : 'quick_agent'
       : complex
         ? 'bounded_work'
         : 'direct_edit';
-  const executionPath: RouteExecutionPath = workMode === 'campaign' ? 'campaign' : complex ? 'durable' : 'fast';
+  const executionPath: RouteExecutionPath = complex ? 'durable' : 'fast';
   const providerSelection = selectProvider(input);
   const providersWereSupplied = input.capabilities.providers !== undefined;
   if (providersWereSupplied && !providerSelection.provider) {
@@ -364,7 +364,7 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
     workMode,
     executionPath,
     // Direct Control is intentionally contract-free. Persistence belongs to
-    // Goal Workloop/Campaign/Agent tiers; bounded direct edits rely on the
+    // Goal Workloop/Agent tiers; bounded direct edits rely on the
     // existing permission, patch, Process, and evidence boundaries instead.
     requiresWork: executionMode !== 'direct_control',
     requiresApproval: approvalRequired,

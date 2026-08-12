@@ -85,7 +85,6 @@ test("keeps Core and Advanced on the same bounded default ChatGPT surface", () =
     "git_diff_paths",
     "git_stage_paths",
     "git_commit_paths",
-    "create_campaign",
     "begin_edit_session",
     "verify_edit_session",
     "quick_agent_session",
@@ -888,7 +887,6 @@ describe("MCP controller profile", () => {
       expect(coreNames).not.toContain("search_repository");
       // Core is a compatibility label for the bounded default surface; heavy
       // atomic tools stay registered but are not exposed to ChatGPT by default.
-      expect(coreNames).not.toContain("create_campaign");
       expect(coreNames).not.toContain("verify_edit_session");
       expect(coreNames).toContain("process_get");
       expect(coreNames).toContain("repository_command_execute");
@@ -902,7 +900,6 @@ describe("MCP controller profile", () => {
         'process_logs',
         'process_cancel',
       ]));
-      expect(advancedNames).not.toContain("create_campaign");
       expect(advancedNames).not.toContain("finish_task_run");
       expect(advancedNames).not.toContain("list_plugins");
       expect(fullNames).toContain("repository_git_status");
@@ -1476,31 +1473,6 @@ describe("MCP controller profile", () => {
       expect(explicitAdvanced.toolset).toBe("advanced");
       expect(exposedControllerToolDefinitions(explicitAdvanced).map((tool) => tool.name))
         .toContain("repository_command_execute");
-    });
-  });
-
-  test("create_campaign is retired in favor of PlanContract + WorkContract", async () => {
-    await withController(async (repoRoot, _ctx) => {
-      const controllerHome = join(repoRoot, ".controller-home");
-      const repository = registerRepository({ path: repoRoot, controllerHome });
-      const advanced = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", toolset: "advanced", controllerHome });
-      const created = await callRuntimeTool(advanced, "create_campaign", {
-        repo_id: repository.repoId,
-        request_id: "campaign-normalization-via-core",
-        title: "Controller-surface campaign",
-        goal: "Normalize campaign inputs before dispatch.",
-        workspace: { mode: "current" },
-        tasks: [
-          {
-            task_id: "T1",
-            title: "First",
-            operation: "launch-task",
-            arguments: { issue_id: "ISS-1", task_id: "T1", agent: "codex" }},
-        ]});
-      const value = JSON.parse(created!.content[0].text);
-      expect(created?.isError).toBe(true);
-      expect(value.error.code).toBe("CAMPAIGN_DEPRECATED");
-      expect(value.migration).toEqual(expect.arrayContaining(["rh_work.plan_create", "rh_work.controller_claim"]));
     });
   });
 

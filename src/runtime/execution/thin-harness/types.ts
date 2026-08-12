@@ -295,7 +295,6 @@ export interface LightweightLanesResult {
   latency: LatencyBreakdown;
   appliedByIntegrator: false;
   createdIssue: false;
-  createdCampaign: false;
   createdWorktree: false;
   concurrent: boolean;
 }

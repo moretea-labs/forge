@@ -22,7 +22,6 @@ export const CAPABILITY_GROUPS = [
   'repository-core',
   'git',
   'issue-task',
-  'campaign',
   'browser',
   'ios',
   'plugin',

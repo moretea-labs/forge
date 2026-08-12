@@ -13,7 +13,7 @@ The missing capability is not another top-level MCP tool. It is a Context Plane 
 ## Constraints
 
 1. The default workflow remains unchanged. No explicit mode directive still uses the existing automatic Direct-first routing.
-2. `-plan`, `-debug`, and `-campaign` are opt-in routing instructions. CodeGraph must not add latency to ordinary Direct edits by default.
+2. `-plan` and `-debug` are opt-in routing instructions. CodeGraph must not add latency to ordinary Direct edits by default.
 3. Forge continues to support Node.js `>=20.10.0`.
 4. CodeGraph's embedded SDK requires Node.js `>=22.5` to open its SQLite database through `node:sqlite`.
 5. CodeGraph's CLI/MCP server uses its own bundled runtime and may auto-sync the index. Planning must not silently mutate source files or silently refresh derived indexes.
@@ -102,7 +102,7 @@ Expected mode usage:
 - ordinary Direct: `off`
 - explicit `-debug`: `auto`
 - explicit `-plan`: `required` when a CodeGraph index is present; otherwise return a clear degraded-plan warning and use bounded text search
-- Campaign planning/review: `auto` or `required` depending on the campaign contract
+- Goal/Plan planning and review: `auto` or `required` when structural evidence materially improves the decision
 
 When enabled, graph results augment candidate ranking. They do not replace raw source reads. Important files selected through CodeGraph still pass through `resolveMcpPath` and `readRepositoryRange` before implementation.
 

@@ -62,7 +62,7 @@ The normal ChatGPT-facing MCP surface is a bounded **19-tool** schema. The five 
 
 The Runtime keeps internal atomic handlers and an exhaustive `full` compatibility profile without advertising them to ordinary ChatGPT discovery. `core` remains a compatibility label for the same bounded default surface. Request/Full Access changes execution authorization, not tool discovery.
 
-Small understood work is Direct-first. Repository commands and checks use Unified Process Runtime and return one stable Process lifecycle; known-long calls can return a handle immediately, while later `process_get`, `process_wait`, `process_logs`, and `process_cancel` attach to that same physical execution. Durable Work, isolated worktrees, workers, or campaigns are introduced when recovery, dependency tracking, isolation, parallelism, or a longer lifecycle actually requires them.
+Small understood work is Direct-first. Repository commands and checks use Unified Process Runtime and return one stable Process lifecycle; known-long calls can return a handle immediately, while later `process_get`, `process_wait`, `process_logs`, and `process_cancel` attach to that same physical execution. Durable Work, isolated worktrees, or workers are introduced when recovery, dependency tracking, isolation, parallelism, or a longer lifecycle actually requires them.
 
 Tool names and input schemas are fingerprinted. A stale MCP session receives `MCP_TOOL_SURFACE_CHANGED` with a reinitialize instruction while its transport remains available for the host to observe the reset. Replacement initialize then supersedes and closes the old session; schema rotation must not unregister the Forge namespace from the host conversation.
 

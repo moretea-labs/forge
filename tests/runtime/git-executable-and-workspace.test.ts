@@ -14,8 +14,8 @@ import {
   assertExecutionIdentity,
   executionIdentityForRepository,
 } from '../../src/runtime/control-plane/execution/execution-identity';
-import { branchRef, campaignBranchName, validateBranchName } from '../../src/cli/repositories/branch-name-policy';
-import { ensureManagedWorkspace } from '../../src/runtime/workflow/campaigns/workspace';
+import { branchRef, branchSlugSegment, validateBranchName } from '../../src/cli/repositories/branch-name-policy';
+import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
 
 const roots: string[] = [];
 
@@ -37,19 +37,16 @@ afterEach(() => {
 describe('Git executable and managed workspace guards', () => {
 
 
-  test('uses one BranchNamePolicy for generated campaign branches and refs', () => {
-    const branch = campaignBranchName({
-      title: 'Comprehensively audit model property test fault!!',
-      identity: '6b3219db2a69',
-    });
-    expect(branch).toBe('campaign/comprehensively-audit-model-property-test-fault-6b3219db2a69');
-    expect(validateBranchName(branch, { purpose: 'CAMPAIGN_WORKSPACE_BRANCH' })).toBe(branch);
-    expect(branchRef(branch, { purpose: 'CAMPAIGN_WORKSPACE_BRANCH' })).toBe(`refs/heads/${branch}`);
+  test('uses one BranchNamePolicy for generated managed-work branches and refs', () => {
+    const branch = `work/${branchSlugSegment('Comprehensively audit model property test fault!!')}-6b3219db2a69`;
+    expect(branch).toBe('work/comprehensively-audit-model-property-test-fault-6b3219db2a69');
+    expect(validateBranchName(branch, { purpose: 'MANAGED_WORKSPACE_BRANCH' })).toBe(branch);
+    expect(branchRef(branch, { purpose: 'MANAGED_WORKSPACE_BRANCH' })).toBe(`refs/heads/${branch}`);
   });
 
-  test('rejects invalid campaign branch metadata before cleanup-style ref construction', () => {
-    expect(() => validateBranchName('campaign/bad branch', { purpose: 'CAMPAIGN_WORKSPACE_BRANCH' })).toThrow(/CAMPAIGN_WORKSPACE_BRANCH_INVALID/);
-    expect(() => branchRef('refs/heads/campaign/full-ref', { purpose: 'CAMPAIGN_WORKSPACE_BRANCH' })).toThrow(/CAMPAIGN_WORKSPACE_BRANCH_INVALID/);
+  test('rejects invalid managed-work branch metadata before cleanup-style ref construction', () => {
+    expect(() => validateBranchName('work/bad branch', { purpose: 'MANAGED_WORKSPACE_BRANCH' })).toThrow(/MANAGED_WORKSPACE_BRANCH_INVALID/);
+    expect(() => branchRef('refs/heads/work/full-ref', { purpose: 'MANAGED_WORKSPACE_BRANCH' })).toThrow(/MANAGED_WORKSPACE_BRANCH_INVALID/);
   });
   test('resolves an absolute Git executable without depending solely on service PATH', () => {
     const git = resolveGitExecutable();
@@ -79,7 +76,7 @@ describe('Git executable and managed workspace guards', () => {
     const workspace = ensureManagedWorkspace(controllerHome, repository, {
       requestId: 'git-runtime-workspace',
       title: 'Git Runtime Workspace',
-      branchName: 'campaign/git-runtime-workspace',
+      branchName: 'work/git-runtime-workspace',
     });
     expect(workspace.root).toBeTruthy();
     expect(workspace.checkoutId).toBeTruthy();
@@ -97,6 +94,6 @@ describe('Git executable and managed workspace guards', () => {
 
     expect(guarded.gitTopLevel).toBe(workspaceRoot);
     expect(guarded.gitCommonDirectory).toBeTruthy();
-    expect(guarded.currentBranch).toBe('campaign/git-runtime-workspace');
+    expect(guarded.currentBranch).toBe('work/git-runtime-workspace');
   });
 });

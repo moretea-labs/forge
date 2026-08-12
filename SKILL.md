@@ -36,15 +36,14 @@ Treat ChatGPT as the controller and Forge as its repository execution layer. Cha
 - Hard runtime boundaries remain for secrets, credentials, Git internals, concurrent write conflicts, out-of-scope writes when a scope is declared, and remote or irreversible side effects.
 ## Explicit mode directives
 
-Automatic routing remains authoritative when the user does not provide a mode directive. In particular, understood bounded work still defaults to Direct Edit; adding explicit modes must not make ordinary requests Plan-first, Agent-first, Issue-first, or Campaign-first.
+Automatic routing remains authoritative when the user does not provide a mode directive. In particular, understood bounded work still defaults to Direct Edit; adding explicit modes must not make ordinary requests Plan-first, Agent-first, Issue-first.
 
 A leading mode directive is an opt-in instruction to ChatGPT's Forge router. It applies only to the current request, is removed from the objective before execution, and never bypasses permissions, Runtime authority, protected-path rules, approvals, or destructive/remote-write confirmation.
 
 - `-plan` or `/plan`: force the reviewed planning path. Planning is read-only: inspect repository state and call `controller_context_pack` with `structural_context=required` so CodeGraph symbol/reference/dependency/impact evidence is used when the index is ready; load only relevant architecture/ADR/design/README material, then create or revise the existing PlanContract. Review the PlanContract before approval. Do not start mutation until the reviewed plan is approved and execution is explicitly bound to an approved plan step. If CodeGraph is unavailable or stale, keep the degraded evidence warning visible and use bounded current-source context instead of pretending graph coverage exists.
-- `-debug` or `/debug`: force evidence-first debugging. Reproduce or characterize the failure, then prefer `controller_context_pack` with `structural_context=auto` to isolate callers, dependencies, and the smallest causal surface before patching and focused verification. The directive does not force an Agent or Campaign; existing routing still chooses Direct, bounded Work, or an optional worker from the actual scope and risk.
-- `-campaign` or `/campaign`: force the durable Campaign topology for the current request. Use Campaign review checkpoints and independent task coordination even when automatic routing would otherwise choose Direct or bounded Work. This is an explicit user override of topology, not a permission override.
+- `-debug` or `/debug`: force evidence-first debugging. Reproduce or characterize the failure, then prefer `controller_context_pack` with `structural_context=auto` to isolate callers, dependencies, and the smallest causal surface before patching and focused verification. The directive does not force an Agent or durable Work; existing routing still chooses Direct, bounded Work, or an optional worker from the actual scope and risk.
 
-A bare directive with no objective should return/explain that mode's working contract and must not mutate repository state. Mode directives are not sticky across turns unless the user repeats them or explicitly asks to continue the same active Plan/Campaign.
+A bare directive with no objective should return/explain that mode's working contract and must not mutate repository state. Mode directives are not sticky across turns unless the user repeats them or explicitly asks to continue the same active Plan/Work.
 
 ## When to use
 

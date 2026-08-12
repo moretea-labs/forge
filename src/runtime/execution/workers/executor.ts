@@ -22,7 +22,7 @@ import {
 import { markOperationDelegated } from '../jobs/receipt-store';
 import { assertAutomatedOperationAllowed } from '../../control-plane/governance/external-effects';
 import { recordCandidateFinding, updateCandidateFinding } from '../../workflow/findings/store';
-import { triggerWorkspaceAgent } from '../../workflow/campaigns/workspace-agent';
+import { triggerWorkspaceAgent } from '../workspace-agent';
 import { executeAssistantPluginAction } from '../../plugins/store';
 import { CONTROLLER_SCOPE_REPO_ID, controllerSystemRoot, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import { writeExecutionArtifact } from '../../evidence/artifact-store';

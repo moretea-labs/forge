@@ -419,7 +419,7 @@ function ownershipOptionsFor(
 }
 
 /**
- * Execute one Fast Path operation without ExecutionJob / Local Job / Worker / Campaign.
+ * Execute one Fast Path operation without ExecutionJob / Local Job / Worker.
  */
 export async function executeFast(
   ctx: FastExecutorContext,

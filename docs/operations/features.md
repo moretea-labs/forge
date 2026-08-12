@@ -31,7 +31,7 @@ These features are part of the default local setup:
 
 ## Tool exposure
 
-The default `core` / `advanced` toolset exposes one bounded ChatGPT-facing schema of 20 tools: the five `rh_*` workflow facades (with code retrieval routed through `rh_context.search`), repository selection, `repository_command_execute`, exact source read, `repository_safe_patch_apply`, `run_check`, one typed `plugin_action_execute` dispatcher with plugin schemas routed through `rh_context`, managed process lifecycle, result retrieval, and approval resolution. Git / issue-task / campaign / edit-session / other plugin / browser / iOS / maintenance atomics remain registered as internal handlers and are reachable through the `full` compatibility profile, which exposes every historical definition. The MCP transport does not dynamically load domain schemas; hiding from the default surface is a static exposure decision, never a handler deletion.
+The default `core` / `advanced` toolset exposes one bounded ChatGPT-facing schema of 19 tools: the five `rh_*` workflow facades (with code retrieval routed through `rh_context.search`), repository selection, `repository_command_execute`, exact source read, `repository_safe_patch_apply`, `run_check`, one typed `plugin_action_execute` dispatcher with plugin schemas routed through `rh_context`, managed process lifecycle, result retrieval, and approval resolution. Git / issue-task / edit-session / other plugin / browser / iOS / maintenance atomics remain registered as internal handlers and are reachable through the `full` compatibility profile when still supported. Retired lifecycles are removed rather than kept as dormant compatibility handlers. The MCP transport does not dynamically load domain schemas.
 
 ## Execution choices
 

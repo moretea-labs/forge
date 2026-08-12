@@ -14,7 +14,7 @@ Core principle:
 Default to direct Fast Path execution.
 Escalate to Durable Work only when recovery, background, isolation,
 concurrent writes, or high-risk control is required.
-Use Campaign only for multiple truly independent, long-lived deliverables.
+Use durable Goal Workloop plus PlanContract/Work only when multiple independent, long-lived deliverables need resumable coordination.
 ```
 
 ## Current Implementation
@@ -53,11 +53,11 @@ interface ExecutionDecision {
 
 The sole Route Policy exposes three task-shape tiers. These are routing labels over existing execution primitives, not separate engines:
 
-1. **Direct** — `direct_edit` + `direct_control` + `fast`. Use for small, scope-clear, low-risk work. Readonly work creates no Work; small mutations may retain lightweight Work lineage without Issue, Plan, Campaign, or isolated worktree by default.
+1. **Direct** — `direct_edit` + `direct_control` + `fast`. Use for small, scope-clear, low-risk work. Readonly work creates no Work; small mutations may retain lightweight Work lineage without Issue, Plan, or isolated worktree by default.
 2. **Bounded Work** — `bounded_work` + `goal_workloop` + `durable`. Use for one-owner work that needs investigation, recovery, isolation, protected-path handling, or broader bounded scope. It uses the existing WorkContract / `rh_work` lifecycle and does **not** require an Issue or Plan.
-3. **Campaign** — `campaign` + `goal_workloop` + `campaign`. Use only when the task explicitly contains multiple independent deliverables or parallel independent tasks that need coordination. Campaign selection is based on task topology, not on whether an Agent/provider was requested.
+3. **Coordinated durable Work** — `bounded_work` + `goal_workloop` + `durable`. Use when multiple independent deliverables need resumable coordination; decompose them with PlanContract/Work instead of a separate project-level lifecycle.
 
-`quick_agent` and `issue_task` remain executor/delegation-oriented modes when an Agent is explicitly requested and Campaign topology is absent. Provider choice never promotes a small task into Campaign by itself. An explicit approved Plan may still bind dependent Work steps, but Plan is optional and is never a prerequisite for Bounded Work or Campaign routing.
+`quick_agent` and `issue_task` remain executor/delegation-oriented modes when an Agent is explicitly requested. Provider choice never promotes a small task into a heavier lifecycle by itself. An explicit approved Plan may bind dependent Work steps, but Plan is optional for ordinary Bounded Work.
 
 ### Fast Path eligibility (default)
 
@@ -141,7 +141,6 @@ For short **typed-argv** readonly repository commands, the bounded direct reader
 - Local Job
 - Scheduler record
 - Worker process
-- Campaign state
 - Issue Task
 - Project Board records
 - full projection rebuild per step
@@ -252,7 +251,7 @@ Rules:
 ### Read-only Analysis Lane
 
 - max concurrency 4
-- shared checkout, no branch / worktree / Issue / Campaign
+- shared checkout, no branch / worktree / Issue
 - parent receipt only; child lanes use `receiptMode: none`
 - real overlap via async primitives; `concurrent` flag reports start/finish overlap
 - fail-fast optional (default continue)
@@ -264,12 +263,11 @@ Rules:
 - never writes the main checkout
 - Integrator rechecks revision, conflicts, writePaths subset, digests before apply
 
-## Campaign boundary
+## Durable coordination boundary
 
-- Fast Path never depends on Campaign
-- Campaign remains **opt-in** long orchestration
-- ordinary Direct Edit must not auto-upgrade to Campaign
-- this slice does **not** rewrite Campaign completion, merge, cleanup, or workspace models
+- Fast Path never depends on a project-level orchestration lifecycle.
+- Independent deliverables use Goal Workloop plus PlanContract/Work only when durable coordination is needed.
+- ordinary Direct Edit must not auto-upgrade merely because parallel analysis is possible.
 
 ## Latency measurement
 

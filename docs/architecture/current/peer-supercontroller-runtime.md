@@ -20,7 +20,7 @@ Status: active on `codex/supercontroller-refactor`
 ## Semantic / external paths
 
 - Non-deterministic schedules record occurrence + Handoff only
-- Campaign reconcile migrates unfinished tasks into Work + Handoff
+- Long-lived work persists as Work + Handoff and can be resumed by an external SuperController
 - Legacy Agent dispatch tools return structured retirement responses
 
 ## Failure policy

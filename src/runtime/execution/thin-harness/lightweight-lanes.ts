@@ -157,7 +157,7 @@ function digest(value: unknown): string {
 }
 
 /**
- * Lightweight concurrent lanes without Campaign/Issue/worktree.
+ * Lightweight concurrent lanes without Issue/worktree.
  * Read lanes use async Fast primitives. Proposal lanes only validate conflicts (no Agent analysis).
  */
 export async function executeLightweightLanes(
@@ -429,7 +429,6 @@ export async function executeLightweightLanes(
     latency,
     appliedByIntegrator: false,
     createdIssue: false,
-    createdCampaign: false,
     createdWorktree: false,
     concurrent,
   };

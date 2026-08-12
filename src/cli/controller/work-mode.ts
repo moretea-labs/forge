@@ -6,8 +6,8 @@ import {
   type RoutePolicyInput,
 } from '../../runtime/control-plane/routing/route-policy';
 
-export type WorkMode = 'direct_edit' | 'bounded_work' | 'quick_agent' | 'issue_task' | 'campaign';
-export type ExecutionPathPreference = 'fast' | 'durable' | 'campaign';
+export type WorkMode = 'direct_edit' | 'bounded_work' | 'quick_agent' | 'issue_task';
+export type ExecutionPathPreference = 'fast' | 'durable';
 export type EffectiveTaskMode = ExplicitTaskMode | 'bounded';
 
 export interface WorkModeAssessmentInput {
@@ -38,7 +38,6 @@ export interface WorkModeAssessment {
   reasons: string[];
   nextTools: string[];
   issueRequired: boolean;
-  campaignRequired: boolean;
   taskMode: EffectiveTaskMode;
   explicitMode: ExplicitTaskMode | null;
   modeBehavior: {
@@ -57,7 +56,7 @@ export function parseExplicitTaskMode(value: unknown): ExplicitTaskMode | undefi
   if (typeof value !== 'string') return undefined;
   if (!value) return undefined;
   const normalized = value.replace(/^-/, '') as ExplicitTaskMode;
-  return ['direct', 'plan', 'debug', 'review', 'campaign', 'release', 'scale'].includes(normalized)
+  return ['direct', 'plan', 'debug', 'review', 'release', 'scale'].includes(normalized)
     ? normalized
     : undefined;
 }
@@ -80,10 +79,6 @@ function behaviorFor(mode: EffectiveTaskMode): WorkModeAssessment['modeBehavior'
       structuralContext: 'off', mutationPhase: 'read_only', issueRequired: false, planRequired: false, worktreeRequired: false,
       workflow: ['read diff and affected source', 'review correctness and regressions', 'review lifecycle, concurrency, and security', 'report test gaps without mutation'],
     };
-    case 'campaign': return {
-      structuralContext: 'off', mutationPhase: 'coordinate', issueRequired: false, planRequired: false, worktreeRequired: true,
-      workflow: ['decompose independent deliverables', 'create campaign', 'schedule isolated Tasks', 'reconcile and review campaign evidence'],
-    };
     case 'release': return {
       structuralContext: 'off', mutationPhase: 'release_gate', issueRequired: false, planRequired: false, worktreeRequired: false,
       workflow: ['verify checks and changelog', 'build immutable complete release', 'run integration and deployment gates', 'activate through Recovery', 'verify rollback evidence'],
@@ -100,7 +95,6 @@ function behaviorFor(mode: EffectiveTaskMode): WorkModeAssessment['modeBehavior'
 }
 
 function nextTools(decision: RouteDecision, investigation: boolean): string[] {
-  if (decision.workMode === 'campaign') return ['create_campaign', 'add_campaign_task', 'reconcile_campaign', 'get_campaign_review_packet'];
   if (decision.workMode === 'issue_task') return ['inspect_issue_readiness', 'create_issue or append_task', 'dispatch_task', 'verify_task', 'accept_task'];
   if (decision.workMode === 'quick_agent') return ['search_repository', 'rh_work(operation=delegate)', 'rh_work(operation=continue)', 'rh_work(operation=verify)'];
   if (decision.workMode === 'bounded_work') return [
@@ -129,7 +123,7 @@ export function assessWorkMode(input: WorkModeAssessmentInput): WorkModeAssessme
   const explicitMode = parseExplicitTaskMode(input.explicitMode);
   const investigationMode = explicitMode === 'plan' || explicitMode === 'debug' || explicitMode === 'review';
   const readonlyMode = investigationMode;
-  const parallelMode = explicitMode === 'campaign' || explicitMode === 'scale';
+  const parallelMode = explicitMode === 'scale';
   const routeDecision = decideRoute(input.routePolicyInput ?? {
     intent: {
       objective: input.description,
@@ -160,7 +154,7 @@ export function assessWorkMode(input: WorkModeAssessmentInput): WorkModeAssessme
     },
   });
   const taskMode: EffectiveTaskMode = explicitMode
-    ?? (routeDecision.workMode === 'campaign' ? 'campaign' : routeDecision.workMode === 'direct_edit' ? 'direct' : 'bounded');
+    ?? (routeDecision.workMode === 'direct_edit' ? 'direct' : 'bounded');
   const modeBehavior = behaviorFor(taskMode);
   return {
     recommendedMode: routeDecision.workMode,
@@ -174,10 +168,9 @@ export function assessWorkMode(input: WorkModeAssessmentInput): WorkModeAssessme
         : explicitMode === 'release'
           ? ['run_check', 'request_release_gate', 'capability_recovery_plan', 'capability_recovery_apply', 'controller_ready']
           : explicitMode === 'scale'
-            ? ['create_campaign', 'process_start', 'process_wait', 'benchmark evidence']
+            ? ['rh_work(operation=plan_create)', 'rh_work(operation=start)', 'process_get', 'process_wait', 'benchmark evidence']
             : nextTools(routeDecision, input.requiresInvestigation === true || investigationMode || (input.knownPaths?.length ?? 0) === 0),
     issueRequired: routeDecision.workMode === 'issue_task',
-    campaignRequired: routeDecision.workMode === 'campaign',
     taskMode,
     explicitMode: explicitMode ?? null,
     modeBehavior,

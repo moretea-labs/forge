@@ -10,7 +10,7 @@
 
 ## Forge 是什么
 
-Forge 是一个本地执行桥，让 ChatGPT 通过固定且有边界的工具 schema 处理一个或多个仓库。日常编排优先使用 `rh_status`、`rh_access`、`rh_context`、`rh_work` 和 `rh_inbox`；默认工具面同时提供 Direct Edit、命令、Git、Agent、Campaign、iOS、插件、artifact 和恢复能力。
+Forge 是一个本地执行桥，让 ChatGPT 通过固定且有边界的工具 schema 处理一个或多个仓库。日常编排优先使用 `rh_status`、`rh_access`、`rh_context`、`rh_work` 和 `rh_inbox`；默认工具面同时提供 Direct Edit、命令、Git、Agent、Goal/Work、iOS、插件、artifact 和恢复能力。
 
 小而确定的修改默认走 Direct Edit；`quick_agent_session` 可以直接调用本地 Codex/Claude，不强制先创建 Issue 或 Task。需要跨会话恢复、带依赖拆分或保留正式审查证据的工作，仍可进入 durable 的 Issue → Task → Run 路径。Request/Full Access 只改变审批行为，不会要求重连 MCP Connector。
 

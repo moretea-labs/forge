@@ -1122,7 +1122,6 @@ describe('Thin Harness lightweight lanes', () => {
     const elapsed = performance.now() - started;
     expect(lanes.readLanes).toHaveLength(4);
     expect(lanes.readLanes.every((lane) => lane.ok)).toBe(true);
-    expect(lanes.createdCampaign).toBe(false);
     expect(lanes.createdIssue).toBe(false);
     expect(lanes.createdWorktree).toBe(false);
     expect(lanes.appliedByIntegrator).toBe(false);

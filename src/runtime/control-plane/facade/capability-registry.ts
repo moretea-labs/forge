@@ -143,16 +143,6 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     summary: 'Plan, dispatch, review, verify, retry, and accept durable Issue and Task work through existing typed handlers.',
   },
   {
-    capabilityId: 'workflow.campaign',
-    domain: 'controller',
-    group: 'campaign',
-    operationClass: 'execute',
-    risk: 'workspace_write',
-    exposedVia: 'rh_work',
-    schemaExposure: 'stable_static',
-    summary: 'Coordinate multi-step campaign DAGs and review checkpoints while keeping integration and final acceptance explicit.',
-  },
-  {
     capabilityId: 'plugin.browser',
     domain: 'plugin',
     group: 'browser',

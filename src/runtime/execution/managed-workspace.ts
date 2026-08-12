@@ -1,36 +1,38 @@
 import { createHash } from 'crypto';
 import { existsSync, mkdirSync, realpathSync } from 'fs';
 import { dirname, join, resolve } from 'path';
-import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
-import type { RepositoryRecord } from '../../../cli/repositories/types';
+import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
+import type { RepositoryRecord } from '../../cli/repositories/types';
 import {
   addRepositoryCheckout,
   listRepositories,
   repositoryCheckoutRootMatches,
   selectRepositoryCheckout,
-} from '../../../cli/repositories/registry';
-import { managedWorktreePath } from '../../../cli/repositories/worktree-storage';
-import { campaignBranchName, validateBranchName } from '../../../cli/repositories/branch-name-policy';
-import { withControllerLock } from '../../../cli/repositories/locks';
-import { resolveGitExecutable } from '../../../effects/git-executable';
-import { runProcess } from '../../../effects/process-runner';
-import { readJsonFile, writeJsonAtomic } from '../../shared/json-files';
-import type { CampaignWorkspace } from './types';
+} from '../../cli/repositories/registry';
+import { managedWorktreePath } from '../../cli/repositories/worktree-storage';
+import { branchSlugSegment, validateBranchName } from '../../cli/repositories/branch-name-policy';
+import { withControllerLock } from '../../cli/repositories/locks';
+import { resolveGitExecutable } from '../../effects/git-executable';
+import { runProcess } from '../../effects/process-runner';
+import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 
-export interface EnsureCampaignWorkspaceInput {
+export interface EnsureManagedWorkspaceInput {
   requestId: string;
   title: string;
   baseRef?: string;
   branchName?: string;
 }
 
-/**
- * Neutral worktree contract used by WorkContract and legacy Campaign views.
- * The persistence location remains compatible with existing Campaign records.
- */
-export type EnsureManagedWorkspaceInput = EnsureCampaignWorkspaceInput;
+export interface ManagedWorkspace {
+  mode: 'current' | 'isolated';
+  checkoutId?: string;
+  root?: string;
+  branch?: string | null;
+  baseRevision?: string | null;
+  managed: boolean;
+}
 
-interface CampaignWorkspaceManifest {
+interface ManagedWorkspaceManifest {
   schemaVersion: 1;
   repoId: string;
   requestId: string;
@@ -51,7 +53,7 @@ function git(root: string, args: string[], timeoutMs = 30_000): string {
   });
   if (!result.ok) {
     const detail = result.stderr || result.error || `exit ${result.status}`;
-    throw new Error(`CAMPAIGN_WORKSPACE_GIT_FAILED: git ${args.join(' ')}: ${detail}`);
+    throw new Error(`MANAGED_WORKSPACE_GIT_FAILED: git ${args.join(' ')}: ${detail}`);
   }
   return result.stdout.trim();
 }
@@ -64,9 +66,9 @@ function gitSucceeds(root: string, args: string[]): boolean {
 }
 
 function assertBranch(root: string, branch: string): string {
-  const normalized = validateBranchName(branch, { purpose: 'CAMPAIGN_WORKSPACE_BRANCH' });
+  const normalized = validateBranchName(branch, { purpose: 'MANAGED_WORKSPACE_BRANCH' });
   if (!gitSucceeds(root, ['check-ref-format', '--branch', normalized])) {
-    throw new Error(`CAMPAIGN_WORKSPACE_BRANCH_INVALID: ${normalized}`);
+    throw new Error(`MANAGED_WORKSPACE_BRANCH_INVALID: ${normalized}`);
   }
   return normalized;
 }
@@ -77,22 +79,22 @@ function existingWorkspace(path: string, branch: string): boolean {
     timeoutMs: 15_000,
     maxOutputBytes: 8 * 1024,
   });
-  if (!root.ok) throw new Error(`CAMPAIGN_WORKSPACE_PATH_OCCUPIED: ${path}`);
+  if (!root.ok) throw new Error(`MANAGED_WORKSPACE_PATH_OCCUPIED: ${path}`);
   if (realpathSync(root.stdout.trim()) !== realpathSync(path)) {
-    throw new Error(`CAMPAIGN_WORKSPACE_PATH_MISMATCH: ${path}`);
+    throw new Error(`MANAGED_WORKSPACE_PATH_MISMATCH: ${path}`);
   }
   const currentBranch = git(path, ['branch', '--show-current']);
   if (currentBranch !== branch) {
-    throw new Error(`CAMPAIGN_WORKSPACE_BRANCH_MISMATCH: expected ${branch}, found ${currentBranch || 'detached'}`);
+    throw new Error(`MANAGED_WORKSPACE_BRANCH_MISMATCH: expected ${branch}, found ${currentBranch || 'detached'}`);
   }
   return true;
 }
 
 function manifestPath(controllerHome: string, repoId: string, identity: string): string {
-  return join(repositoryControllerRoot(controllerHome, repoId), 'campaigns', 'workspaces', `${identity}.json`);
+  return join(repositoryControllerRoot(controllerHome, repoId), 'managed-workspaces', `${identity}.json`);
 }
 
-export function currentCampaignWorkspace(repository: RepositoryRecord): CampaignWorkspace {
+export function currentManagedWorkspace(repository: RepositoryRecord): ManagedWorkspace {
   return {
     mode: 'current',
     checkoutId: repository.activeCheckoutId,
@@ -106,41 +108,40 @@ export function currentCampaignWorkspace(repository: RepositoryRecord): Campaign
 export function ensureManagedWorkspace(
   controllerHome: string,
   repository: RepositoryRecord,
-  input: EnsureCampaignWorkspaceInput,
-): CampaignWorkspace {
+  input: EnsureManagedWorkspaceInput,
+): ManagedWorkspace {
   const requestId = input.requestId.trim();
-  if (!requestId) throw new Error('CAMPAIGN_REQUEST_ID_REQUIRED');
+  if (!requestId) throw new Error('MANAGED_WORKSPACE_REQUEST_ID_REQUIRED');
   const identity = suffix(repository.repoId, requestId);
   const sourceRoot = repository.canonicalRoot;
   const requestedBranch = assertBranch(
     sourceRoot,
-    input.branchName?.trim() || campaignBranchName({ title: input.title, identity }),
+    input.branchName?.trim() || `work/${branchSlugSegment(input.title)}-${identity}`,
   );
   const requestedBaseRef = input.baseRef?.trim() || 'HEAD';
   const requestedPath = managedWorktreePath(
     controllerHome,
     repository.repoId,
-    `campaign-${identity}`,
+    `work-${identity}`,
     listRepositories(controllerHome, { includeRemoved: true }),
   );
   const statePath = manifestPath(controllerHome, repository.repoId, identity);
 
   return withControllerLock(
     controllerHome,
-    { scope: 'worktree', repoId: repository.repoId, worktreeId: `campaign-${identity}` },
-    `ensure-campaign-workspace:${requestId}`,
+    { scope: 'worktree', repoId: repository.repoId, worktreeId: `work-${identity}` },
+    `ensure-managed-workspace:${requestId}`,
     () => {
-      const manifest = existsSync(statePath) ? readJsonFile<CampaignWorkspaceManifest>(statePath) : undefined;
+      const manifest = existsSync(statePath) ? readJsonFile<ManagedWorkspaceManifest>(statePath) : undefined;
       if (manifest && (
         manifest.repoId !== repository.repoId
         || manifest.requestId !== requestId
         || manifest.branch !== requestedBranch
       )) {
-        throw new Error(`CAMPAIGN_WORKSPACE_REQUEST_CONFLICT: ${requestId}`);
+        throw new Error(`MANAGED_WORKSPACE_REQUEST_CONFLICT: ${requestId}`);
       }
       const branch = manifest?.branch ?? requestedBranch;
-      // Existing manifests are authoritative compatibility evidence. They may
-      // point at legacy nested worktrees; never move an active worktree in place.
+      // Persisted manifests are authoritative evidence; never move an active worktree in place.
       const path = manifest?.path ? resolve(manifest.path) : requestedPath;
       const baseRevision = manifest?.baseRevision ?? git(sourceRoot, ['rev-parse', '--verify', `${requestedBaseRef}^{commit}`]);
 
@@ -156,7 +157,7 @@ export function ensureManagedWorkspace(
         }
       }
       if (!repositoryCheckoutRootMatches(repository, path)) {
-        throw new Error(`CAMPAIGN_WORKSPACE_REPOSITORY_MISMATCH: ${path}`);
+        throw new Error(`MANAGED_WORKSPACE_REPOSITORY_MISMATCH: ${path}`);
       }
 
       const record = addRepositoryCheckout({
@@ -170,7 +171,7 @@ export function ensureManagedWorkspace(
         existsSync(candidate.canonicalRoot)
         && realpathSync(candidate.canonicalRoot) === canonicalWorkspacePath,
       );
-      if (!checkout) throw new Error(`CAMPAIGN_WORKSPACE_CHECKOUT_NOT_REGISTERED: ${path}`);
+      if (!checkout) throw new Error(`MANAGED_WORKSPACE_CHECKOUT_NOT_REGISTERED: ${path}`);
       const selected = selectRepositoryCheckout(record, checkout.checkoutId);
       if (!manifest) {
         writeJsonAtomic(statePath, {
@@ -181,7 +182,7 @@ export function ensureManagedWorkspace(
           path: selected.canonicalRoot,
           baseRevision,
           createdAt: new Date().toISOString(),
-        } satisfies CampaignWorkspaceManifest);
+        } satisfies ManagedWorkspaceManifest);
       }
       return {
         mode: 'isolated',
@@ -190,11 +191,8 @@ export function ensureManagedWorkspace(
         branch,
         baseRevision,
         managed: true,
-      } satisfies CampaignWorkspace;
+      } satisfies ManagedWorkspace;
     },
     120_000,
   );
 }
-
-/** @deprecated Campaign compatibility alias. New Work paths use ensureManagedWorkspace. */
-export const ensureCampaignWorkspace = ensureManagedWorkspace;

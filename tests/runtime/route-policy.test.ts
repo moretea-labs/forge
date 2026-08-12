@@ -99,7 +99,7 @@ describe('single Route Policy authority', () => {
     }
   });
 
-  test('labels complex single-owner durable work as bounded_work without Issue, Plan, or Campaign', () => {
+  test('labels complex single-owner durable work as bounded_work without Issue or Plan', () => {
     const assessment = assessWorkMode({
       description: 'Refactor one routing subsystem with investigation and resumable checks',
       knownPaths: ['src/runtime/control-plane/routing/route-policy.ts'],
@@ -113,7 +113,6 @@ describe('single Route Policy authority', () => {
       recommendedMode: 'bounded_work',
       executionPath: 'durable',
       issueRequired: false,
-      campaignRequired: false,
     });
     expect(assessment.routeDecision).toMatchObject({
       executionMode: 'goal_workloop',
@@ -181,9 +180,8 @@ describe('single Route Policy authority', () => {
       plan: { workMode: 'bounded_work', executionPath: 'durable', mutationPhase: 'plan_only', structuralContext: 'required' },
       debug: { workMode: 'bounded_work', executionPath: 'durable', mutationPhase: 'diagnose_first', structuralContext: 'required' },
       review: { workMode: 'bounded_work', executionPath: 'durable', mutationPhase: 'read_only', structuralContext: 'off' },
-      campaign: { workMode: 'campaign', executionPath: 'campaign', mutationPhase: 'coordinate', structuralContext: 'off' },
       release: { workMode: 'bounded_work', executionPath: 'durable', mutationPhase: 'release_gate', structuralContext: 'off' },
-      scale: { workMode: 'campaign', executionPath: 'campaign', mutationPhase: 'benchmark', structuralContext: 'off' },
+      scale: { workMode: 'bounded_work', executionPath: 'durable', mutationPhase: 'benchmark', structuralContext: 'off' },
     } as const;
 
     for (const mode of Object.keys(expected) as Array<keyof typeof expected>) {
@@ -233,7 +231,7 @@ describe('single Route Policy authority', () => {
     expect(dirty).toMatchObject({ executionMode: 'handoff_only', requiresIsolation: true });
   });
 
-  test('selects Campaign from independent deliverable topology even without an Agent request', () => {
+  test('routes independent deliverables through durable bounded Work without a separate lifecycle', () => {
     const decision = decideRoute(sharedInput({
       intent: {
         objective: 'Deliver three independent migration slices',
@@ -248,13 +246,13 @@ describe('single Route Policy authority', () => {
     }));
     expect(decision).toMatchObject({
       executionMode: 'goal_workloop',
-      workMode: 'campaign',
-      executionPath: 'campaign',
+      workMode: 'bounded_work',
+      executionPath: 'durable',
       requiresWork: true,
     });
   });
 
-  test('keeps Campaign on Goal Workloop even when independent deliverables are individually tiny', () => {
+  test('keeps independent deliverables on Goal Workloop even when individually tiny', () => {
     expect(decideRoute(sharedInput({
       intent: {
         objective: 'Coordinate two tiny independent deliverables',
@@ -267,8 +265,8 @@ describe('single Route Policy authority', () => {
       },
     }))).toMatchObject({
       executionMode: 'goal_workloop',
-      workMode: 'campaign',
-      executionPath: 'campaign',
+      workMode: 'bounded_work',
+      executionPath: 'durable',
     });
   });
 

@@ -31,13 +31,12 @@ describe("Bootstrap Script Contracts", () => {
     expect(skill).toContain("understood bounded work still defaults to Direct Edit");
     expect(skill).toContain("`-plan` or `/plan`");
     expect(skill).toContain("`-debug` or `/debug`");
-    expect(skill).toContain("`-campaign` or `/campaign`");
     expect(skill).toContain("Planning is read-only");
     expect(skill).toContain("`structural_context=required`");
     expect(skill).toContain("`structural_context=auto`");
     expect(skill).toContain("existing PlanContract");
-    expect(skill).toContain("does not force an Agent or Campaign");
-    expect(skill).toContain("explicit user override of topology, not a permission override");
+    expect(skill).toContain("does not force an Agent or durable Work");
+    expect(skill).toContain("never bypasses permissions");
     expect(skill).toContain("Mode directives are not sticky across turns");
   });
 
@@ -85,7 +84,7 @@ describe("Bootstrap Script Contracts", () => {
     const pkg = JSON.parse(read("package.json"));
     const cliEntry = read("src/cli/index.ts");
     expect(pkg.name).toBe("@moretea-labs/forge");
-    expect(pkg.version).toMatch(/^1\.4\.0(?:-rc\.\d+)?$/);
+    expect(pkg.version).toMatch(/^1\.5\.0(?:-rc\.\d+)?$/);
     expect(pkg.private).toBeUndefined();
     expect(pkg.bin).toEqual({
       forge: "bin/forge.mjs",

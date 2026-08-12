@@ -10,7 +10,7 @@ Use this page when you want the shortest current path through Forge without read
 
 ## What Forge is
 
-Forge is a local execution bridge that lets ChatGPT work on one or more repositories through a stable, bounded tool schema. The preferred orchestration tools are `rh_status`, `rh_access`, `rh_context`, `rh_work`, and `rh_inbox`, while the default schema also exposes practical Direct Edit, command, Git, Agent, Campaign, iOS, plugin, artifact, and recovery entry points.
+Forge is a local execution bridge that lets ChatGPT work on one or more repositories through a stable, bounded tool schema. The preferred orchestration tools are `rh_status`, `rh_access`, `rh_context`, `rh_work`, and `rh_inbox`, while the default schema also exposes practical Direct Edit, command, Git, Agent, Goal/Work, iOS, plugin, artifact, and recovery entry points.
 
 Direct Edit is the default for small known changes. `quick_agent_session` provides a direct local Codex/Claude path without requiring an Issue or Task. Durable Issue → Task → Run flows remain available for work that must survive sessions, carry dependencies, or preserve formal review evidence. Request/Full Access changes approval behavior only and never requires reconnecting the MCP Connector.
 

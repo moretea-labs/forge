@@ -22,7 +22,7 @@ export function controllerCapabilityGroupForTool(name: string): ControllerCapabi
   if (name.startsWith('plugin_') || name === 'list_plugins') return 'plugins';
   if (name.startsWith('runtime_') || name.startsWith('controller_')) return 'runtime';
   if (name.startsWith('work_') || name.startsWith('session_') || name.startsWith('approval_') || name.startsWith('result_')) return 'workflow';
-  if (name.startsWith('admin_') || name.startsWith('campaign_')) return 'admin';
+  if (name.startsWith('admin_')) return 'admin';
   return 'legacy';
 }
 

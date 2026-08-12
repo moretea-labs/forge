@@ -254,9 +254,6 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
         const contextCapability = capabilities.find((capability) => capability.id === 'context.projection');
         expect(typeof contextCapability?.evidence?.[0]?.details?.stale).toBe('boolean');
       }
-      if (tool === 'runtime_cleanup_preview') {
-        expect((payload.diagnosticExecution as { path?: string } | undefined)?.path).toBe('process_direct');
-      }
 
       const retry = await routeDurableMcpCall(fx.ctx, tool, { ...args, request_id: requestId }, {
         allowReadOnly: true,
@@ -959,7 +956,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(classifyRepositoryCommandRoute(['git', 'reset', '--hard', 'HEAD']).route).toBe('process_managed');
   });
 
-  test('small multi-file work stays direct while independent deliverables become a Campaign', () => {
+  test('small multi-file work stays direct while independent deliverables use durable bounded Work', () => {
     const assessment = assessWorkMode({
       description: 'Update three TypeScript helpers and a focused unit test',
       knownPaths: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'tests/a.test.ts'],
@@ -969,28 +966,25 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(assessment.recommendedMode).toBe('direct_edit');
     expect(assessment.executionPath).toBe('fast');
     expect(assessment.issueRequired).toBe(false);
-    expect(assessment.campaignRequired).toBe(false);
 
-    const directCampaign = assessWorkMode({
+    const coordinated = assessWorkMode({
       description: 'Ship three independent product workstreams in parallel',
       requiresIndependentDeliverables: true,
       independentTaskCount: 3,
       requiresParallelism: true,
     });
-    expect(directCampaign.recommendedMode).toBe('campaign');
-    expect(directCampaign.executionPath).toBe('campaign');
-    expect(directCampaign.campaignRequired).toBe(true);
+    expect(coordinated.recommendedMode).toBe('bounded_work');
+    expect(coordinated.executionPath).toBe('durable');
 
-    const campaign = assessWorkMode({
+    const delegated = assessWorkMode({
       description: 'Use Agents to ship three independent product workstreams in parallel',
       requiresIndependentDeliverables: true,
       independentTaskCount: 3,
       requiresParallelism: true,
       agentRequested: true,
     });
-    expect(campaign.recommendedMode).toBe('campaign');
-    expect(campaign.executionPath).toBe('campaign');
-    expect(campaign.campaignRequired).toBe(true);
+    expect(delegated.recommendedMode).toBe('bounded_work');
+    expect(delegated.executionPath).toBe('durable');
   });
 
   test('keeps bounded Work agent-free and reserves Agent modes for explicit opt-in', () => {

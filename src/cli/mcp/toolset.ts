@@ -213,7 +213,6 @@ function staticControllerExposureSnapshot(
 function capabilityForToolName(name: string): string {
   if (name.startsWith('rh_')) return 'facade';
   if (name.startsWith('git_') || name.startsWith('repository_git_')) return 'git';
-  if (name.includes('campaign')) return 'campaign';
   if (/(^|_)(issue|task|project|worklog)(_|$)/.test(name)) return 'issue-task';
   if (name.startsWith('repository_') || name.startsWith('search_') || name.startsWith('read_')) return 'repository';
   if (name.startsWith('ios_')) return 'ios';

@@ -1,7 +1,6 @@
 export type ResourceOwnerKind =
   | 'execution_job'
   | 'agent_run'
-  | 'campaign'
   | 'work_contract'
   | 'edit_session'
   | 'controller_generation'

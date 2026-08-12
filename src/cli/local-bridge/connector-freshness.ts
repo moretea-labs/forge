@@ -28,7 +28,7 @@ export const EXPECTED_FACADE_TOOLS = [...PREFERRED_FACADE_TOOL_NAMES] as const;
 /**
  * Interactive development tools in the bounded default schema. The historical
  * core and advanced labels expose the same bounded default surface; git / issue /
- * campaign atomics live in the `full` compatibility profile.
+ * legacy atomics live in the `full` compatibility profile.
  */
 export const OPTIONAL_INTERACTIVE_DEVELOPMENT_TOOLS = [
   'repository_safe_patch_apply',

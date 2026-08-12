@@ -675,7 +675,6 @@ function durableSuggestion(operation: string): string {
   if (operation.includes('patch')) return 'repository_safe_patch_apply with apply_mode=async or Durable Work';
   if (operation.includes('command')) return 'repository_command_execute through Durable Work / Local Job';
   if (operation.includes('agent') || operation === 'quick_agent_session') return 'quick_agent_session / dispatch_task';
-  if (operation.includes('campaign')) return 'Campaign (opt-in long orchestration only)';
   return 'Durable Work (ExecutionJob path)';
 }
 

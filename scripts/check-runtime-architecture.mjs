@@ -364,11 +364,6 @@ forbid(
   'Portfolio definitions are planning records; Kernel-owned Portfolio execution is retired',
 );
 forbid(
-  'src/runtime/workflow/campaigns/engine.ts',
-  /\bcreateExecutionJob\b|\bfindExecutionJob\b|\bgetExecutionJob\b|\bdispatchTask\b|\btriggerSupervisor\b/,
-  'Campaign Engine is migration-only and must not retain automatic Job dispatch, retry, or supervisor trigger code',
-);
-forbid(
   'src/cli/local-bridge/server.ts',
   /\bsubmitLocalBridgeJob\b|\bdispatchLocalBridgeJob\b|\basyncExecute\b/,
   'Local Bridge HTTP creation routes must return retirement handoffs without dormant Job submission or dispatch code',
@@ -428,11 +423,6 @@ forbid(
   'src/cli/mcp/legacy-tool-service.ts',
   /\bretryAgentJob\b/,
   'Legacy MCP must not call Agent Run retry',
-);
-forbid(
-  'src/runtime/workflow/campaigns/engine.ts',
-  /\bacceptTaskJob\b|\bstartTaskJob\b|\bretryAgentJob\b|\blaunchAgent\b/,
-  'Campaign Engine must not start or retry Kernel-managed Agent Runs',
 );
 forbid(
   'src/runtime/workflow/portfolio/engine.ts',

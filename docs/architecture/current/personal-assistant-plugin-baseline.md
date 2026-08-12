@@ -18,7 +18,7 @@ Current implementation:
   adapters under `src/runtime/plugins/`, all surfaced through Controller CLI,
   Local Bridge APIs, and MCP compatibility tools.
 - ChatGPT browser automation exists under `src/cli/chatgpt-browser/` and the
-  campaign/runtime control plane. It is an execution channel, not a plugin
+  runtime control plane. It is an execution channel, not a plugin
   registry entry.
 - Calendar support exists both as a runtime Schedule trigger under
   `src/runtime/workflow/schedules/` and as a separate Google Calendar account
@@ -43,7 +43,7 @@ Compatibility rule:
 ChatGPT / Local UI / CLI
   -> MCP Gateway + Local Bridge
      -> Controller Runtime
-        -> durable Jobs / campaigns / schedules / evidence
+        -> durable Jobs / Goal/Work / schedules / evidence
            -> optional provider adapters
               -> GitHub plugin (implemented)
               -> Gmail adapter (implemented)
@@ -63,7 +63,6 @@ operations on top of that runtime, not as a second orchestrator.
 | --- | --- | --- | --- | --- |
 | GitHub Issue/Project sync | `src/cli/github/plugin.ts`, `src/cli/commands/controller.ts`, `src/cli/local-bridge/server.ts` | `.Forge/plugins/github.json` plus repository registry mapping | GitHub issue/project mutation | Implemented |
 | Durable assistant work submission | `src/runtime/gateway/mcp/runtime-tools.ts`, `src/runtime/execution/jobs/` | Controller Home `execution-jobs/`, events, artifacts, projections | Repository-local work and approved provider actions | Implemented |
-| ChatGPT-supervised campaigns | `src/runtime/workflow/campaigns/`, `src/cli/chatgpt-browser/` | Campaign records, review packets, workspaces, evidence | Browser-visible ChatGPT session or delegated local work | Implemented and opt-in |
 | Calendar time-based triggering | `src/runtime/workflow/schedules/store.ts`, `engine.ts` | Schedule, Decision, Occurrence records | Launches bounded runtime Jobs only | Implemented |
 | Calendar account read/write | `src/runtime/plugins/google-calendar-adapter.ts` | `.Forge/plugins/google-calendar.json`, derived manifest/index, env-only credentials | Google Calendar event read/write | Implemented |
 | Gmail mailbox read/write | `src/runtime/plugins/gmail-adapter.ts` | `.Forge/plugins/gmail.json`, derived manifest/index, env-only credentials | Gmail read/send/trash | Implemented |
@@ -155,7 +154,7 @@ Current implementation:
 
 The current source-aligned assistant baseline is:
 
-- Controller Runtime plus durable Jobs/campaigns/schedules are the assistant
+- Controller Runtime plus durable Jobs/Goal/Work/schedules are the assistant
   execution substrate.
 - GitHub, Gmail, Google Calendar, and Google Tasks are implemented persisted
   plugin adapters behind the generic plugin runtime contract.
