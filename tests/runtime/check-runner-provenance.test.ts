@@ -67,6 +67,22 @@ describe('controller check provenance and failure classification', () => {
     expect(() => runControllerCheck(repoRoot, 'effects', undefined, tampered)).toThrow(/CHECK_SNAPSHOT_INVALID/);
   });
 
+  test('normalizes declared host service effects and rejects unusable keys', () => {
+    const repoRoot = fixture({ host_check: {
+      command: [process.execPath, '-e', 'process.exit(0)'],
+      effects: { reads: ['.'], hostServices: [' iOS Simulator Test ', 'ios-simulator-test'] },
+    } });
+    const check = snapshotControllerCheck(repoRoot, 'host_check');
+    expect(check.effects?.hostServices).toEqual(['ios-simulator-test']);
+
+    const invalidRoot = mkdtempSync(join(tmpdir(), 'forge-check-host-invalid-'));
+    roots.push(invalidRoot);
+    writeFileSync(join(invalidRoot, 'package.json'), '{"name":"fixture","version":"1.0.0"}');
+    mkdirSync(join(invalidRoot, '.forge'), { recursive: true });
+    writeFileSync(join(invalidRoot, '.forge', 'checks.json'), JSON.stringify({ version: 1, checks: { bad: { command: [process.execPath, '-e', 'process.exit(0)'], effects: { reads: ['.'], hostServices: ['!!!'] } } } }));
+    expect(() => snapshotControllerCheck(invalidRoot, 'bad')).toThrow(/invalid service key/);
+  });
+
   test('infers read plus cache effects only for known static package checks', () => {
     const repoRoot = fixture({});
     writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({

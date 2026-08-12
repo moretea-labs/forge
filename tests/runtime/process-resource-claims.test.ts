@@ -73,6 +73,27 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(claims.some((claim) => claimsConflict(claim, reader))).toBe(false);
   });
 
+  test('xcodebuild simulator tests serialize host-wide without taking a workspace writer', () => {
+    const claims = claimsForRepositoryCommand([
+      '/Applications/Xcode-beta.app/Contents/Developer/usr/bin/xcodebuild',
+      'test', '-project', 'App.xcodeproj', '-destination', 'id=SIM-1',
+    ], 'repo1', 'co1');
+    expect(claims).toContainEqual({ resourceKey: 'host-service:ios-simulator-test', mode: 'write' });
+    expect(claims).toContainEqual({ resourceKey: 'workspace:co1', mode: 'read' });
+    expect(claims).toContainEqual({ resourceKey: 'build-cache:repo1', mode: 'write' });
+    expect(claims.some((claim) => claim.resourceKey === 'workspace:co1' && claim.mode !== 'read')).toBe(false);
+  });
+
+  test('shell-wrapped xcodebuild simulator tests use the same host-wide lease', () => {
+    const claims = claimsForRepositoryCommand(
+      ['bash', '-lc', "xcodebuild test -project App.xcodeproj -destination 'platform=iOS Simulator,name=iPhone 17 Pro'"],
+      'repo2', 'co2',
+    );
+    expect(claims).toContainEqual({ resourceKey: 'host-service:ios-simulator-test', mode: 'write' });
+    expect(claims).toContainEqual({ resourceKey: 'workspace:co2', mode: 'read' });
+    expect(claims.some((claim) => claim.resourceKey === 'workspace:co2' && claim.mode !== 'read')).toBe(false);
+  });
+
   test('declared check effects map to bounded resources', () => {
     const claims = claimsForCheck('custom:report', ['node', 'report.js'], 'repo1', 'co1', {
       reads: ['src'],
@@ -81,6 +102,7 @@ describe('Process Runtime fine-grained resource claims', () => {
       temp: 'isolated',
       git: 'read',
       network: 'read',
+      hostServices: ['ios-simulator-test'],
     });
     expect(claims).toContainEqual({ resourceKey: 'path:co1:src', mode: 'read' });
     expect(claims).toContainEqual({ resourceKey: 'path:co1:reports', mode: 'write' });
@@ -89,6 +111,7 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(claims).toContainEqual({ resourceKey: 'git-index:co1', mode: 'read' });
     expect(claims).toContainEqual({ resourceKey: 'git-refs:repo1', mode: 'read' });
     expect(claims).toContainEqual({ resourceKey: 'network:repo1', mode: 'read' });
+    expect(claims).toContainEqual({ resourceKey: 'host-service:ios-simulator-test', mode: 'write' });
     expect(claims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
   });
 
