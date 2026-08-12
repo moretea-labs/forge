@@ -1,33 +1,40 @@
 # 公开使用指南
 
-如果你只想用最短路径理解并开始使用 Forge，先看这一页。
+这是当前最短的 Forge 使用路径。
 
-## 最短路径
+## 1. 安装并选择外部主控
 
-1. [安装并启动](tutorials/01-install-and-start.zh-CN.md)
-2. [连接 ChatGPT](tutorials/02-connect-chatgpt.zh-CN.md)
-3. [完成第一个仓库任务](tutorials/03-first-repository-task.zh-CN.md)
+```bash
+npm install -g @moretea-labs/forge@next
+forge setup
+```
 
-## Forge 是什么
+Forge 自己没有 AI 大脑。选择一个 primary 外部主控；推荐 ChatGPT，也可以明确选择 Codex、Claude 或其他 MCP 客户端。可以配置多个控制入口，但没被选择的客户端不会变成依赖。
 
-Forge 是一个本地执行桥，让 ChatGPT 通过固定且有边界的工具 schema 处理一个或多个仓库。日常编排优先使用 `rh_status`、`rh_access`、`rh_context`、`rh_work` 和 `rh_inbox`；默认工具面同时提供 Direct Edit、命令、Git、Agent、Goal/Work、iOS、插件、artifact 和恢复能力。
+```bash
+forge setup configure --controller chatgpt --tunnel auto
+forge setup next
+```
 
-小而确定的修改默认走 Direct Edit；`quick_agent_session` 可以直接调用本地 Codex/Claude，不强制先创建 Issue 或 Task。需要跨会话恢复、带依赖拆分或保留正式审查证据的工作，仍可进入 durable 的 Issue → Task → Run 路径。Request/Full Access 只改变审批行为，不会要求重连 MCP Connector。
+## 2. 按 Next 完成所选路径
 
-## 当前运行时事实
+远程主控会继续配置 Package Runtime 和远程连接。有权限时优先 OpenAI Secure MCP Tunnel；也可以选择 Cloudflare Tunnel、Tailscale Funnel、已有 HTTPS `/mcp`，或暂缓远程连接。
 
-- Controller Home 是 MCP service 配置、认证和运行态的主存储位置；`controllerHome/mcp/` 下保存 `mcp.local.json`、`mcp.tokens.json`、`mcp.oauth.json`、`mcp.oauth-tokens.json` 和 `mcp.runtime.json`。
-- 对应的 repo-local `.Forge/mcp.local.json`、`.Forge/mcp.tokens.json`、`.Forge/mcp.oauth.json`、`.Forge/mcp.oauth-tokens.json`、`.Forge/mcp.runtime.json` 只用于 legacy fallback；仓库级 `.Forge/mcp.policy.json` 仍是访问策略文件。
-- Controller 是跨已注册仓库的全局服务，但仓库工作仍通过显式 `repoId` 和 `checkoutId` 路由。
-- 公网 MCP endpoint 与 `127.0.0.1:8766` 上仅限本机访问的 Local Controller UI 是不同入口。当前 UI 是执行助手控制台，包含指挥中心、审批与决定、当前任务、能力 / 插件、模型与工具、系统状态、仓库和高级诊断。
-- 长任务默认返回 durable Job / Run 的摘要和有界预览；看到 `502`、重连或大结果截断时，先确认 Job / Run 状态，不要直接假定写入失败。
+普通 package Runtime 是 `forge runtime service install-package`。源码 immutable Runtime 与 Standalone Recovery 属于高级维护路径。
 
-## 按目标继续阅读
+## 3. 只增加需要的能力
 
-- 需要安装和 Connector 细节：看 [教程目录](tutorials/README.zh-CN.md)
-- 需要 MCP / 隧道 / OAuth 手动配置：看 [Forge ChatGPT MCP 配置](Forge-chatgpt-mcp-setup.md)
-- 需要 provider 或 executor 路由：看 [Provider 配置与路由](operations/provider-configuration.md)
-- 需要浏览器、Gmail/Calendar 或其他插件：看持续维护的 [文档中心](README.md)
-- 需要故障排查或 runtime-storage 恢复：看 [故障排查](operations/troubleshooting.zh-CN.md) 和 [自修复闭环](Forge-runtime-self-healing-loop.md)
+首次 setup 不要求 Git 仓库。需要软件开发时再接入：
 
-更完整的导航请回到持续维护的[文档中心](README.md)。
+```bash
+forge adopt --repo /path/to/project --dry-run
+forge adopt --repo /path/to/project
+```
+
+也可以之后授权普通目录，或配置 Browser、Desktop、Gmail、Calendar、Apple、GitHub 等类型化 Provider。Git、Codex、Claude、服务凭证和 tunnel CLI 都是按能力出现的依赖。
+
+## 4. 用真实主控调用验收
+
+ChatGPT 用户继续阅读[连接 ChatGPT](tutorials/02-connect-chatgpt.zh-CN.md)，先做只读 `rh_status`。本机进程在运行或 endpoint 已保存不等于真正完成；第一次主控到 Forge 的真实工具调用成功才是有意义的 setup 里程碑。
+
+更多内容见[功能清单](operations/features.zh-CN.md)、[平台支持](operations/platform-support.zh-CN.md)、[插件管理](forge-plugin-management.md)和[故障排查](operations/troubleshooting.zh-CN.md)。

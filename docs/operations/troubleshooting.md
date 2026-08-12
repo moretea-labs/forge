@@ -15,7 +15,7 @@ forge --version
 
 ## Doctor reports missing Git or Node
 
-Install Git and Node.js 20.10 or newer, then open a new terminal. Node is required even when the package was installed with Bun because the published launcher uses Node.
+Node.js 20.10 or newer is a base requirement even when the package was installed with Bun. Git is **not** a base installation requirement; install Git when you enable repository/software-work features. If plain `forge setup` is blocked only by an unselected Codex/Claude/CodeGraph check, update Forge—the controller-first setup path should filter unrelated host tooling.
 
 ## Native Windows stops at a shell-owned step
 
@@ -23,7 +23,12 @@ Use WSL2 for repository adoption, Bash hooks, source release checks, or shell li
 
 ## MCP works locally but ChatGPT cannot connect
 
-`http://127.0.0.1:8765/mcp` is local-only. ChatGPT needs a stable public HTTPS URL ending in `/mcp`. Check the tunnel, the exact path, and `forge mcp doctor`. Do not expose the local Controller UI port publicly.
+`http://127.0.0.1:8765/mcp` is intentionally local-only. Run `forge setup next` and inspect the selected remote provider.
+
+- **OpenAI Secure MCP Tunnel:** run `tunnel-client runtimes status forge --json`; do not claim success unless the runtime is running, healthy, and ready. Keep `CONTROL_PLANE_API_KEY` outside Forge state.
+- **Cloudflare/Tailscale/existing HTTPS:** verify the stable `/mcp` address and OAuth discovery with `forge mcp doctor` plus the provider's own status tools.
+
+Do not expose the local Utility Console port publicly.
 
 ## MCP config seems to be in the wrong place
 
@@ -35,11 +40,11 @@ Current service-level MCP config lives under Controller Home, not as the primary
 - `controllerHome/mcp/mcp.oauth-tokens.json`
 - `controllerHome/mcp/mcp.runtime.json`
 
-Controller Home is the sole authority for service-level MCP configuration. Repository-scoped `.forge/mcp.policy.json` remains the repository access policy; repository-local service configuration is unsupported. Rerun `forge mcp setup chatgpt --repo /path/to/your-project`, then verify the active endpoint and server name from Controller Home.
+Controller Home is the sole authority for service-level MCP configuration. Repository-scoped `.forge/mcp.policy.json` remains repository access policy. For the normal ChatGPT path rerun `forge mcp setup chatgpt --user-level` or simply `forge setup next`; repository-scoped setup remains a compatibility path.
 
 ## Only some tools appear in ChatGPT
 
-The default controller uses a stable repair-capable schema (normally 100–128 tools). Request/Full Access never changes that schema. Compare `expectedToolCount`, `actualToolCount`, `missingTools`, `unexpectedTools`, and the fingerprint from `rh_status` or `controller_ready`. Reconnect only when the Connector snapshot itself is stale, not after a permission change.
+The default controller intentionally exposes a bounded stable facade rather than every atomic internal handler. Request/Full Access changes authorization, not the tool schema. Compare the current fingerprint and missing/unexpected tools from `rh_status`; refresh/recreate the ChatGPT app only when the connector snapshot itself is stale or tool definitions changed.
 
 ## Runtime storage is not ready or the Local UI looks stale
 
@@ -59,9 +64,9 @@ If you are using the operator surfaces, inspect the runtime-maintenance path bef
 
 A `502`, reconnect, or truncated response does not prove a durable write failed. Confirm the Job, Run, or evidence summary before retrying the mutation.
 
-## Agent delegation is unavailable
+## Codex or Claude controller entry is unavailable
 
-Core Direct Edit and repository workflows still work. Install and authenticate Codex or Claude, then restart MCP with the dev runner explicitly enabled. Do not enable agent flags in the basic setup unless the CLI is present.
+Forge has no internal agent that must be repaired. If Codex/Claude was not selected, ignore its absence. If it was explicitly selected as a controller entry, install/authenticate that client and run `forge mcp setup codex --scope user --profile controller` or `forge mcp setup claude --scope user --profile controller`, then continue with `forge setup next`.
 
 ## Repository paths behave differently between Windows and WSL2
 

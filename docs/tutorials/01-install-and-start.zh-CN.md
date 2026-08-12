@@ -1,26 +1,26 @@
-# 教程 1：安装并启动
+# 教程 1：安装并选择主控
 
-本教程完成 CLI 安装、用户级运行时初始化、环境检查和第一个仓库注册。
+本教程把 Forge 从 package 安装带到可恢复的初始化流程。Forge **自己没有 AI 大脑**：始终由一个外部主控判断下一步，Forge 负责有边界的执行、持久状态、权限与证据。
 
-## 1. 平台与基础环境
+## 1. 选择平台路径
 
-- macOS / Linux：完整支持。
-- Windows：完整工作流推荐 WSL2。
-- Windows 原生 PowerShell：预览支持安装、doctor、仓库注册/读取和可移植 Controller 操作。
+- **macOS：** 支持；Package Runtime 使用 launchd 做用户级持久运行。
+- **现代 Linux：** 支持；优先使用 `systemd --user`，不可用时会明确退化为当前会话的 portable 模式。
+- **Windows + WSL2：** Windows 推荐路径；在 WSL2 内按 Linux 流程运行。
+- **Windows 原生：** 预览；支持 CLI、setup、portable Runtime、MCP 和有边界的可移植能力，但暂不宣称重启后 Runtime 持久化与所有 Provider 组合都完整支持。
 
-需要 Git、Node.js 20.10 或更高版本、npm 和可写的用户目录。Bun 1.0+ 是可选项，推荐用于源码开发和完整测试。
+基础安装只需要 **Node.js 20.10 或更高版本**、npm（或 Bun）和可写用户目录。**Git 只在启用仓库/软件开发能力时才需要。** Codex、Claude、`gh`、Cloudflare、Tailscale、CodeGraph 和各服务账号都是按能力选装，不是 Forge 的安装前置条件。
 
 ```bash
-git --version
 node --version
 npm --version
 ```
 
 详细范围见[平台支持说明](../operations/platform-support.zh-CN.md)。
 
-## 2. 安装 CLI
+## 2. 安装 Forge
 
-发布候选版本使用 npm 的 `next` channel：
+Release Candidate 使用 npm `next`：
 
 ```bash
 npm install -g @moretea-labs/forge@next
@@ -29,7 +29,7 @@ bun add -g @moretea-labs/forge@next
 forge --version
 ```
 
-需要参与 Forge 源码开发时，再从仓库安装：
+只有参与 Forge 源码开发时才需要源码安装：
 
 ```bash
 git clone https://github.com/moretea-labs/forge.git
@@ -38,56 +38,77 @@ npm ci --ignore-scripts --no-audit --no-fund
 npm install -g . --omit=optional --no-audit --no-fund
 ```
 
-该 package 只提供 `forge`、`forge-hook` 与 `forge-runtime`。候选版本使用 `next`，稳定版本使用 `latest`。
+发布 package 提供 `forge`、`forge-hook`、`forge-runtime`。普通 package 用户启动用户级 Runtime **不需要** Forge Git checkout、Bun 编译、CodeGraph 或 Standalone Recovery。
 
-## 3. 打开引导式配置会话
+## 3. 开始引导式 setup
 
 ```bash
-forge --version
-forge setup open --target both
+forge setup
 ```
 
-`forge setup open` 会在 `~/.forge/setup/` 下创建或恢复同一个用户级配置会话，执行就绪检查，并且每次只给出一个下一步配置动作。完成该动作后继续执行：
+首次执行会先选择外部主控。推荐 ChatGPT，但不是强制：
+
+```bash
+forge setup configure --controller chatgpt --tunnel auto
+# 也可以：
+# forge setup configure --controller codex
+# forge setup configure --controller claude
+# forge setup configure --controller mcp
+```
+
+可以预配置多个控制入口，但只有一个 primary controller：
+
+```bash
+forge setup configure \
+  --controller chatgpt \
+  --add-controller codex \
+  --add-controller claude \
+  --tunnel auto
+```
+
+机器上即使已经安装 Codex/Claude，只要没有明确选择，Forge 就不会把它们当成 readiness 依赖。
+
+## 4. 每次只完成一个 Next 动作
 
 ```bash
 forge setup next
 ```
 
-反复执行 `forge setup next`，直到状态变成 `ready`，然后关闭会话：
+setup 进度保存在用户级 Forge 目录，可以退出终端后继续。根据主控类型，流程会依次处理：
+
+1. 主控注册；
+2. Package Runtime；
+3. 远程主控需要的安全 HTTPS；
+4. 只能由用户完成的登录/浏览器认证；
+5. 连接验证。
+
+`forge setup status` 查看持久化进度；`forge setup check` 只读检查；ready 后使用 `forge setup close`。
+
+普通用户的 Runtime 路径是：
 
 ```bash
-forge setup close
+forge runtime service install-package
 ```
 
-可使用 `forge setup status` 查看持久化进度，使用 `forge setup check` 获取一次性只读报告。只使用一个 host 时可改为 `--target codex` 或 `--target claude`。配置会话不会静默执行远程写入、读取秘密、破坏性操作或服务安装。
+旧的 `forge runtime service install --repo ...` 会构建 Git/source immutable Runtime，属于**高级维护路径**；Standalone Recovery 同样不是普通用户初始化的前置条件。
 
-## 4. 接入或注册仓库
+## 5. 首次 setup 不要求仓库
 
-macOS、Linux、WSL2 先预览再执行完整接入：
+只使用授权目录、浏览器/桌面或服务插件时，不需要先 adopt Git 仓库。需要软件开发能力时再接入项目：
 
 ```bash
 forge adopt --repo /path/to/your-project --dry-run
 forge adopt --repo /path/to/your-project
-```
-
-所有平台均可显式注册：
-
-```bash
-forge repo register /path/to/your-project --name my-project --json
 forge repo list --json
 ```
 
-保存返回的 `repoId`，它是 ChatGPT 和 Controller 使用的稳定仓库身份。
+从这一步开始，仓库工作流才需要 Git。
 
-## 5. 确认环境就绪
+## 6. 验证基础环境
 
 ```bash
 forge setup status
 forge doctor
-forge status --json
-forge repo list --json
 ```
 
-运行态应保存在 Controller Home 和被忽略的仓库链接中，不应进入公开源码。不要提交 token、MCP runtime 文件、Local Job、日志或 worktree。
-
-下一步阅读[教程 2：连接 ChatGPT](02-connect-chatgpt.zh-CN.md)，出现问题时看[故障排查](../operations/troubleshooting.zh-CN.md)。
+选择 ChatGPT 做主控时，继续阅读[教程 2：连接 ChatGPT](02-connect-chatgpt.zh-CN.md)。出现问题时看[故障排查](../operations/troubleshooting.zh-CN.md)。

@@ -34,8 +34,9 @@ mkdir -p "$APP_DIR" "$TARGET_REPO"
 git -C "$TARGET_REPO" init -q
 
 cd "$APP_DIR"
-bun init -y >/dev/null
-bun add "$TARBALL_PATH" >/dev/null
+printf '{"private":true,"name":"forge-tarball-smoke","version":"0.0.0"}
+' > package.json
+npm install "$TARBALL_PATH" --omit=optional --ignore-scripts --no-audit --no-fund >/dev/null
 
 CLI="$APP_DIR/node_modules/.bin/forge"
 HOOK="$APP_DIR/node_modules/.bin/forge-hook"

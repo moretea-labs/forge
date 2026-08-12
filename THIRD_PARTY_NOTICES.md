@@ -20,5 +20,5 @@ License values come from `package-lock.json` where available. For lock entries w
 | `@types/react` | `19.2.18` | development | `MIT` | package metadata |
 | `@types/react-dom` | `19.2.4` | development | `MIT` | package metadata |
 | `@vitejs/plugin-react` | `5.2.0` | development | `MIT` | package metadata |
-| `typescript` | `6.0.3` | development | `Apache-2.0` | package metadata |
+| `typescript` | `6.0.3` | runtime | `Apache-2.0` | package metadata |
 | `vite` | `7.3.6` | development | `MIT` | package metadata |

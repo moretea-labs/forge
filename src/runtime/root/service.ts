@@ -113,7 +113,7 @@ interface ActiveRuntimeReleaseRecord {
   manifest: RuntimeReleaseManifestRecord;
 }
 
-interface ActiveRuntimeLaunchSpec {
+export interface ActiveRuntimeLaunchSpec {
   args: string[];
   environment: Record<string, string>;
 }
@@ -168,7 +168,7 @@ async function retireLegacyBrowserAutomationLaunchAgent(controllerHome: string):
   rmSync(legacy.installedPlistPath, { force: true });
 }
 
-function activeRuntimeLaunchSpec(controllerHome: string): ActiveRuntimeLaunchSpec | undefined {
+export function activeRuntimeLaunchSpec(controllerHome: string): ActiveRuntimeLaunchSpec | undefined {
   const home = resolveControllerHome(controllerHome);
   const active = readActiveRuntimeRelease(home);
   if (!active) return undefined;
@@ -261,12 +261,17 @@ export function renderForgeRuntimeLaunchAgent(input: { paths: ForgeRuntimeServic
   return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${xml(input.paths.label)}</string>\n  <key>ProgramArguments</key>\n  <array>\n${args.map((arg) => `    <string>${xml(arg)}</string>`).join('\n')}\n  </array>\n${environmentXml}  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <dict>\n    <key>SuccessfulExit</key>\n    <false/>\n  </dict>\n  <key>ThrottleInterval</key>\n  <integer>5</integer>\n  <key>ProcessType</key>\n  <string>Interactive</string>\n  <key>StandardOutPath</key>\n  <string>${xml(input.paths.stdoutPath)}</string>\n  <key>StandardErrorPath</key>\n  <string>${xml(input.paths.stderrPath)}</string>\n</dict>\n</plist>\n`;
 }
 
-export async function installForgeRuntimeService(input: { config: ForgeRuntimeServiceConfig; runnerPath: string; nodeExecutable?: string }): Promise<ForgeRuntimeServicePaths> {
-  if (process.platform !== 'darwin') throw new Error('FORGE_RUNTIME_SERVICE_PLATFORM_UNSUPPORTED: launchd requires macOS');
-  const config = validateForgeRuntimeServiceConfig(input.config);
+export function writeForgeRuntimeServiceConfig(input: ForgeRuntimeServiceConfig): { config: ForgeRuntimeServiceConfig; paths: ForgeRuntimeServicePaths } {
+  const config = validateForgeRuntimeServiceConfig(input);
   const paths = forgeRuntimeServicePaths(config.controllerHome);
   mkdirSync(join(paths.serviceRoot, 'logs'), { recursive: true, mode: 0o700 });
   atomicWrite(paths.configPath, `${JSON.stringify(config, null, 2)}\n`);
+  return { config, paths };
+}
+
+export async function installForgeRuntimeService(input: { config: ForgeRuntimeServiceConfig; runnerPath: string; nodeExecutable?: string }): Promise<ForgeRuntimeServicePaths> {
+  if (process.platform !== 'darwin') throw new Error('FORGE_RUNTIME_SERVICE_PLATFORM_UNSUPPORTED: launchd requires macOS');
+  const { config, paths } = writeForgeRuntimeServiceConfig(input.config);
   ensureForgeRuntimeLaunchAgentContract({
     controllerHome: config.controllerHome,
     bootstrapNodeExecutable: input.nodeExecutable ?? process.execPath,

@@ -16,9 +16,22 @@ import { fileURLToPath } from 'url';
 import { Command } from 'commander';
 import { runDoctor, type CheckStatus, type DoctorReport } from './doctor';
 import { runStatus, type StatusReport } from './status';
-import type { InstallTargetSpec } from './install';
+import { runMcpSetupChatgpt } from '../mcp/setup';
+import {
+  configureSetupProfile,
+  detectSetupPlatform,
+  formatSetupProfile,
+  readSetupProfile,
+  resolveControllerGuidance,
+  resolveRuntimeGuidance,
+  resolveTunnelGuidance,
+  setupHostTarget,
+  type SetupHostTarget,
+  type SetupPlatformSnapshot,
+  type SetupProfile,
+} from './setup-profile';
 
-export type InitHookTarget = InstallTargetSpec;
+export type InitHookTarget = SetupHostTarget;
 export type InitHookStatus = 'ok' | 'attention' | 'blocked';
 export type InitHookCheckStatus = CheckStatus | 'needs_agent';
 export type InitHookCheckSource =
@@ -108,7 +121,7 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, '..', '..', '..');
 const UPDATE_CHECK_ENV = 'FORGE_CHECK_UPDATES';
 const GLOBAL_RULES_BEGIN = '<!-- BEGIN: forge global-working-rules -->';
-const VALID_TARGETS: readonly InitHookTarget[] = ['codex', 'claude', 'both'];
+const VALID_TARGETS: readonly InitHookTarget[] = ['none', 'codex', 'claude', 'both'];
 
 function withProcessEnv<T>(env: NodeJS.ProcessEnv | undefined, fn: () => T): T {
   if (!env) return fn();
@@ -129,6 +142,7 @@ function withProcessEnv<T>(env: NodeJS.ProcessEnv | undefined, fn: () => T): T {
 }
 
 function selectedTargets(target: InitHookTarget): Array<'codex' | 'claude'> {
+  if (target === 'none') return [];
   if (target === 'both') return ['codex', 'claude'];
   return [target];
 }
@@ -230,6 +244,19 @@ function parseActionCommand(detail: string): string | undefined {
   return run?.[1]?.trim();
 }
 
+function doctorEntryRelevant(id: string, target: InitHookTarget): boolean {
+  if (id === 'cli-on-path' || id === 'cli-version' || id === 'cli-update' || id === 'security-config') return true;
+  if (target === 'none') return false;
+  if (id === 'repo-hook-scripts' || id === 'codegraph-readiness' || id === 'codegraph-index') return true;
+  if (target === 'codex' || target === 'both') {
+    if (id === 'codex-adapter' || id === 'codex-trust-state' || id === 'codex-codegraph-mcp') return true;
+  }
+  if (target === 'claude' || target === 'both') {
+    if (id === 'claude-adapter' || id === 'claude-codegraph-mcp') return true;
+  }
+  return false;
+}
+
 function doctorChecks(
   report: DoctorReport,
   target: InitHookTarget,
@@ -238,6 +265,7 @@ function doctorChecks(
 ): InitHookCheck[] {
   const checks: InitHookCheck[] = [];
   for (const entry of report.checks) {
+    if (!doctorEntryRelevant(entry.id, target)) continue;
     const source: InitHookCheckSource = entry.id === 'security-config' ? 'security' : 'doctor';
     let checkStatus: InitHookCheckStatus = entry.status;
 
@@ -579,24 +607,26 @@ function overallStatus(summary: InitHookReport['summary']): InitHookStatus {
 export function runInitHook(opts: InitHookOptions = {}): InitHookReport {
   const cwd = resolve(opts.cwd ?? process.cwd());
   const sourceRoot = resolve(opts.sourceRoot ?? REPO_ROOT);
-  const target = opts.target ?? 'both';
+  const target = opts.target ?? 'none';
   const checkUpdates = opts.checkUpdates === true;
   const actions: InitHookAction[] = [];
 
   const statusReport = opts.statusReport ?? withProcessEnv(opts.env, () => runStatus(cwd));
   const doctorEnv = { ...(opts.env ?? {}), [UPDATE_CHECK_ENV]: checkUpdates ? '1' : undefined };
   const doctorReport = opts.doctorReport ?? withProcessEnv(doctorEnv, () => runDoctor(cwd));
-  const toolingProbe = opts.toolingReport
-    ? { report: opts.toolingReport, error: undefined }
-    : collectToolingReport(sourceRoot, cwd, target, checkUpdates, opts.env);
+  const toolingProbe = target === 'none'
+    ? { report: undefined, error: undefined }
+    : opts.toolingReport
+      ? { report: opts.toolingReport, error: undefined }
+      : collectToolingReport(sourceRoot, cwd, target, checkUpdates, opts.env);
 
   const checks: InitHookCheck[] = [
-    ...statusChecks(statusReport, target, checkUpdates, actions),
+    ...(target === 'none' ? [] : statusChecks(statusReport, target, checkUpdates, actions)),
     ...doctorChecks(doctorReport, target, checkUpdates, actions),
-    ...globalRulesChecks(target, opts.env, checkUpdates, actions),
-    ...runtimeCapabilityChecks(toolingProbe.report, target, checkUpdates, actions),
-    ...toolingChecks(toolingProbe.report, target, checkUpdates, actions, toolingProbe.error),
-    ...legacyChecks(cwd, target, checkUpdates, actions),
+    ...(target === 'none' ? [] : globalRulesChecks(target, opts.env, checkUpdates, actions)),
+    ...(target === 'none' ? [] : runtimeCapabilityChecks(toolingProbe.report, target, checkUpdates, actions)),
+    ...(target === 'none' ? [] : toolingChecks(toolingProbe.report, target, checkUpdates, actions, toolingProbe.error)),
+    ...(target === 'none' ? [] : legacyChecks(cwd, target, checkUpdates, actions)),
   ];
 
   const summary = summarize(checks);
@@ -617,7 +647,7 @@ export function formatInitHook(report: InitHookReport, asJson = false): string {
   lines.push(`forge setup check: ${report.status}`);
   lines.push(`target=${report.target}; check-updates=${report.checkUpdates ? 'on' : 'off'}`);
   lines.push(
-    `summary: ${report.summary.ok} ok, ${report.summary.warn} warn, ${report.summary.fail} fail, ${report.summary.na} n/a, ${report.summary.needs_agent} needs-agent`,
+    `summary: ${report.summary.ok} ok, ${report.summary.warn} warn, ${report.summary.fail} fail, ${report.summary.na} n/a, ${report.summary.needs_agent} needs-action`,
   );
   lines.push('');
   lines.push('Checks:');
@@ -625,7 +655,7 @@ export function formatInitHook(report: InitHookReport, asJson = false): string {
     lines.push(`  [${check.status}] ${check.id}: ${check.detail}`);
   }
   lines.push('');
-  lines.push('Agent actions:');
+  lines.push('Actions:');
   if (report.agent_actions.length === 0) {
     lines.push('  none');
   } else {
@@ -648,6 +678,8 @@ export interface SetupSession {
   status: SetupSessionStatus;
   target: InitHookTarget;
   checkUpdates: boolean;
+  profile?: SetupProfile;
+  platform?: SetupPlatformSnapshot;
   createdAt: string;
   updatedAt: string;
   closedAt?: string;
@@ -657,6 +689,10 @@ export interface SetupSession {
 
 export interface SetupSessionOptions extends InitHookOptions {
   setupRoot?: string;
+  profile?: SetupProfile;
+  platform?: SetupPlatformSnapshot;
+  controllerHome?: string;
+  accountHome?: string;
   report?: InitHookReport;
   now?: () => Date;
   uuid?: () => string;
@@ -690,28 +726,85 @@ export function readSetupSession(options: Pick<SetupSessionOptions, 'setupRoot' 
   return readSetupSessionAt(setupSessionPath(options));
 }
 
-function setupStatus(report: InitHookReport): SetupSessionStatus {
+function setupStatus(report: InitHookReport, nextAction?: InitHookAction): SetupSessionStatus {
   if (report.status === 'blocked') return 'blocked';
-  if (report.status === 'ok' && report.agent_actions.length === 0) return 'ready';
+  if (report.status === 'ok' && report.agent_actions.length === 0 && !nextAction) return 'ready';
   return 'open';
+}
+
+function profileNextAction(profile: SetupProfile | undefined, platform: SetupPlatformSnapshot, options: { controllerHome?: string; accountHome?: string } = {}): InitHookAction | undefined {
+  if (!profile) {
+    return {
+      id: 'controller.select',
+      status: 'needs_agent',
+      reason: 'Choose the external controller that will act as Forge’s brain. ChatGPT is recommended; Codex, Claude, or another MCP client can be primary instead.',
+      requires_agent: true,
+      risk: 'Writes only the local Forge setup profile. It does not install or authenticate third-party software.',
+      command: 'forge setup configure --controller chatgpt',
+      verification: 'forge setup next',
+    };
+  }
+  const controller = resolveControllerGuidance(profile, { controllerHome: options.controllerHome, home: options.accountHome });
+  if (controller && !controller.ready) {
+    return {
+      id: `controller.${controller.controller}.configure`,
+      status: 'needs_agent',
+      reason: `${controller.title}: ${controller.detail}`,
+      requires_agent: true,
+      risk: 'Configures only the explicitly selected external controller entry. Unselected Codex/Claude providers remain untouched.',
+      ...(controller.command ? { command: controller.command } : {}),
+      verification: 'forge setup next',
+    };
+  }
+  const runtime = resolveRuntimeGuidance(profile, { controllerHome: options.controllerHome });
+  if (runtime && !runtime.ready) {
+    return {
+      id: 'runtime.package.install',
+      status: 'needs_agent',
+      reason: `${runtime.title}: ${runtime.detail}`,
+      requires_agent: true,
+      risk: 'Installs or diagnoses the user-level Forge Runtime only. Standalone Recovery and source-release activation are not part of normal setup.',
+      ...(runtime.command ? { command: runtime.command } : {}),
+      verification: 'forge setup next',
+    };
+  }
+  const tunnel = resolveTunnelGuidance(profile, platform, { controllerHome: options.controllerHome });
+  if (!tunnel.ready) {
+    return {
+      id: `tunnel.${tunnel.provider}.configure`,
+      status: 'needs_agent',
+      reason: `${tunnel.title}: ${tunnel.detail}`,
+      requires_agent: true,
+      risk: 'Remote connectivity is provider-owned. Forge keeps its MCP listener on loopback; credentials, authentication, and account changes remain explicit.',
+      ...(tunnel.command ? { command: tunnel.command } : {}),
+      verification: 'forge setup next',
+    };
+  }
+  return undefined;
 }
 
 export function openSetupSession(options: SetupSessionOptions = {}): SetupSession {
   const path = setupSessionPath(options);
   const previous = readSetupSessionAt(path);
-  const report = options.report ?? runInitHook(options);
+  const profile = options.profile ?? readSetupProfile(options);
+  const platform = options.platform ?? detectSetupPlatform({ env: options.env });
+  const target = options.target ?? setupHostTarget(profile);
+  const report = options.report ?? runInitHook({ ...options, target });
+  const nextAction = profileNextAction(profile, platform, { controllerHome: options.controllerHome, accountHome: options.accountHome }) ?? report.agent_actions[0];
   const now = (options.now ?? (() => new Date()))().toISOString();
   const reuse = previous && previous.status !== 'closed';
   return writeSetupSessionAt(path, {
     schemaVersion: 1,
     sessionId: reuse ? previous.sessionId : (options.uuid ?? randomUUID)(),
-    status: setupStatus(report),
+    status: setupStatus(report, nextAction),
     target: report.target,
     checkUpdates: report.checkUpdates,
+    ...(profile ? { profile } : {}),
+    platform,
     createdAt: reuse ? previous.createdAt : now,
     updatedAt: now,
     lastReport: report,
-    ...(report.agent_actions[0] ? { nextAction: report.agent_actions[0] } : {}),
+    ...(nextAction ? { nextAction } : {}),
   });
 }
 
@@ -732,8 +825,9 @@ export function formatSetupSession(session: SetupSession, asJson = false): strin
   if (asJson) return JSON.stringify(session, null, 2);
   const lines = [
     `forge setup: ${session.status}`,
-    `session=${session.sessionId}; target=${session.target}; updated=${session.updatedAt}`,
-    `summary: ${session.lastReport.summary.ok} ok, ${session.lastReport.summary.warn} warn, ${session.lastReport.summary.fail} fail, ${session.lastReport.summary.needs_agent} needs-agent`,
+    `session=${session.sessionId}; controller=${session.profile?.primaryController ?? 'not-selected'}; host-tooling=${session.target}; updated=${session.updatedAt}`,
+    `summary: ${session.lastReport.summary.ok} ok, ${session.lastReport.summary.warn} warn, ${session.lastReport.summary.fail} fail, ${session.lastReport.summary.needs_agent} needs-action`,
+    ...(session.profile ? ['', formatSetupProfile(session.profile, session.platform)] : []),
   ];
   if (session.nextAction) {
     lines.push('', `Next: ${session.nextAction.reason}`);
@@ -747,17 +841,50 @@ export function formatSetupSession(session: SetupSession, asJson = false): strin
   return lines.join('\n');
 }
 
-function setupTarget(value: string, surface: string): InitHookTarget {
+function setupTarget(value: string | undefined, surface: string): InitHookTarget | undefined {
+  if (value === undefined) return undefined;
   if (!VALID_TARGETS.includes(value as InitHookTarget)) {
     throw new Error(`${surface}: invalid --target "${value}" (expected: ${VALID_TARGETS.join(', ')})`);
   }
   return value as InitHookTarget;
 }
 
-function setupCycle(rawOpts: { target: string; checkUpdates?: boolean; json?: boolean }, surface: string): void {
+interface SetupCycleRawOptions {
+  target?: string;
+  controller?: string;
+  addController?: string[];
+  tunnel?: string;
+  endpoint?: string;
+  tunnelId?: string;
+  checkUpdates?: boolean;
+  json?: boolean;
+}
+
+function collectOption(value: string, previous: string[] = []): string[] {
+  return [...previous, value];
+}
+
+function syncExplicitRemoteControllerEndpoint(profile: SetupProfile | undefined, endpoint: string | undefined): void {
+  if (!profile || !endpoint || !profile.controllers.some((controller) => controller === 'chatgpt' || controller === 'mcp')) return;
+  runMcpSetupChatgpt({ userLevel: true, endpoint });
+}
+
+function setupCycle(rawOpts: SetupCycleRawOptions, surface: string): void {
   try {
+    let profile = readSetupProfile();
+    if (rawOpts.controller || rawOpts.addController?.length || rawOpts.tunnel || rawOpts.endpoint || rawOpts.tunnelId) {
+      profile = configureSetupProfile({
+        controller: rawOpts.controller,
+        addControllers: rawOpts.addController,
+        tunnel: rawOpts.tunnel,
+        endpoint: rawOpts.endpoint,
+        tunnelId: rawOpts.tunnelId,
+      });
+      syncExplicitRemoteControllerEndpoint(profile, rawOpts.endpoint);
+    }
     const session = openSetupSession({
-      target: setupTarget(rawOpts.target, surface),
+      profile,
+      target: setupTarget(rawOpts.target, surface) ?? setupHostTarget(profile),
       checkUpdates: rawOpts.checkUpdates === true,
     });
     console.log(formatSetupSession(session, rawOpts.json === true));
@@ -768,33 +895,69 @@ function setupCycle(rawOpts: { target: string; checkUpdates?: boolean; json?: bo
   }
 }
 
+function addSetupSelectionOptions(command: Command): Command {
+  return command
+    .option('--controller <controller>', 'Primary external controller: chatgpt|codex|claude|mcp')
+    .option('--add-controller <controller>', 'Also configure another external controller entry (repeatable)', collectOption, [])
+    .option('--tunnel <provider>', 'Remote connection: auto|openai|cloudflare|tailscale|existing|none')
+    .option('--tunnel-id <id>', 'OpenAI Secure MCP Tunnel id (non-secret tunnel_...)')
+    .option('--endpoint <url>', 'Existing/stable public HTTPS URL ending in /mcp')
+    .option('--target <target>', `Deprecated host-tooling override: ${VALID_TARGETS.join('|')}`)
+    .option('--check-updates', 'Include network-backed version update advisories')
+    .option('--json', 'Output JSON instead of human-readable text');
+}
+
 export function buildSetupCommand(): Command {
   const command = new Command('setup');
   command
-    .description('Open or continue one resumable Forge setup session')
-    .option('--target <target>', `Host target to configure: ${VALID_TARGETS.join('|')}`, 'both')
+    .description('Configure Forge around one external controller brain and optional additional controller entries')
     .option('--check-updates', 'Include network-backed version update advisories')
     .option('--json', 'Output JSON instead of human-readable text')
-    .action((rawOpts: { target: string; checkUpdates?: boolean; json?: boolean }) => setupCycle(rawOpts, 'forge setup'));
+    .action((rawOpts: SetupCycleRawOptions) => setupCycle(rawOpts, 'forge setup'));
 
   for (const name of ['open', 'next'] as const) {
-    command
+    addSetupSelectionOptions(command
       .command(name)
-      .description(name === 'open' ? 'Start or resume the verified setup session' : 'Re-check configuration and advance to the next action')
-      .option('--target <target>', `Host target to configure: ${VALID_TARGETS.join('|')}`, 'both')
-      .option('--check-updates', 'Include network-backed version update advisories')
-      .option('--json', 'Output JSON instead of human-readable text')
-      .action((rawOpts: { target: string; checkUpdates?: boolean; json?: boolean }) => setupCycle(rawOpts, `forge setup ${name}`));
+      .description(name === 'open' ? 'Start or resume the guided Forge setup session' : 'Re-check configuration and advance to the next action'))
+      .action((rawOpts: SetupCycleRawOptions) => setupCycle(rawOpts, `forge setup ${name}`));
   }
 
   command
+    .command('configure')
+    .description('Choose the primary external controller, optional additional controllers, and public access provider')
+    .requiredOption('--controller <controller>', 'Primary external controller: chatgpt|codex|claude|mcp')
+    .option('--add-controller <controller>', 'Also configure another external controller entry (repeatable)', collectOption, [])
+    .option('--tunnel <provider>', 'Remote connection: auto|openai|cloudflare|tailscale|existing|none')
+    .option('--tunnel-id <id>', 'OpenAI Secure MCP Tunnel id (non-secret tunnel_...)')
+    .option('--endpoint <url>', 'Existing/stable public HTTPS URL ending in /mcp')
+    .option('--json', 'Output JSON instead of human-readable text')
+    .action((rawOpts: { controller: string; addController?: string[]; tunnel?: string; tunnelId?: string; endpoint?: string; json?: boolean }) => {
+      try {
+        const profile = configureSetupProfile({
+          controller: rawOpts.controller,
+          addControllers: rawOpts.addController,
+          tunnel: rawOpts.tunnel,
+          endpoint: rawOpts.endpoint,
+          tunnelId: rawOpts.tunnelId,
+        });
+        syncExplicitRemoteControllerEndpoint(profile, rawOpts.endpoint);
+        console.log(rawOpts.json ? JSON.stringify(profile, null, 2) : `${formatSetupProfile(profile)}\n\nNext: forge setup next`);
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : String(error));
+        process.exitCode = 2;
+      }
+    });
+
+  command
     .command('status')
-    .description('Read the persisted setup session without changing host configuration')
+    .description('Read the persisted setup session and external-controller profile')
     .option('--json', 'Output JSON instead of human-readable text')
     .action((rawOpts: { json?: boolean }) => {
       const session = readSetupSession();
+      const profile = readSetupProfile();
       if (!session) {
-        console.log(rawOpts.json ? JSON.stringify({ status: 'not_started' }) : 'forge setup: not started\nRun: forge setup open');
+        if (rawOpts.json) console.log(JSON.stringify({ status: 'not_started', profile }, null, 2));
+        else console.log(profile ? `forge setup: not started\n${formatSetupProfile(profile)}\nRun: forge setup open` : 'forge setup: not started\nRun: forge setup');
         return;
       }
       console.log(formatSetupSession(session, rawOpts.json === true));
@@ -802,15 +965,16 @@ export function buildSetupCommand(): Command {
 
   command
     .command('close')
-    .description('Close setup after all checks pass')
-    .option('--target <target>', `Host target to verify: ${VALID_TARGETS.join('|')}`, 'both')
+    .description('Close setup after the selected external controller path is ready')
     .option('--check-updates', 'Include network-backed version update advisories')
     .option('--force', 'Close even when checks still need attention')
     .option('--json', 'Output JSON instead of human-readable text')
-    .action((rawOpts: { target: string; checkUpdates?: boolean; force?: boolean; json?: boolean }) => {
+    .action((rawOpts: { checkUpdates?: boolean; force?: boolean; json?: boolean }) => {
       try {
+        const profile = readSetupProfile();
         const session = closeSetupSession({
-          target: setupTarget(rawOpts.target, 'forge setup close'),
+          profile,
+          target: setupHostTarget(profile),
           checkUpdates: rawOpts.checkUpdates === true,
           force: rawOpts.force === true,
         });
@@ -824,14 +988,15 @@ export function buildSetupCommand(): Command {
 
   command
     .command('check')
-    .description('Run the complete read-only setup checklist without opening a session')
-    .option('--target <target>', `Host target to inspect: ${VALID_TARGETS.join('|')}`, 'both')
+    .description('Run the read-only readiness checklist for the configured external controller set')
+    .option('--target <target>', `Host-tooling override: ${VALID_TARGETS.join('|')}`)
     .option('--check-updates', 'Include network-backed version update advisories')
     .option('--json', 'Output JSON instead of human-readable text')
-    .action((rawOpts: { target: string; checkUpdates?: boolean; json?: boolean }) => {
+    .action((rawOpts: { target?: string; checkUpdates?: boolean; json?: boolean }) => {
       try {
+        const profile = readSetupProfile();
         const report = runInitHook({
-          target: setupTarget(rawOpts.target, 'forge setup check'),
+          target: setupTarget(rawOpts.target, 'forge setup check') ?? setupHostTarget(profile),
           checkUpdates: rawOpts.checkUpdates === true,
         });
         console.log(formatInitHook(report, rawOpts.json === true));

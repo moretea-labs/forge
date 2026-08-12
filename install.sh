@@ -13,7 +13,6 @@ HOME_DIR="${HOME:-}"
 [ -n "$HOME_DIR" ] || die "HOME is not set"
 BUN_INSTALL_DIR="${BUN_INSTALL:-$HOME_DIR/.bun}"
 
-ensure_git() { has_command git || die "Git is required. Install Git and reopen the terminal."; }
 ensure_node() {
   has_command node || die "Node.js 20.10 or newer is required because the published Forge launcher uses Node."
   node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 20 || (major === 20 && minor >= 10) ? 0 : 1)' \
@@ -51,16 +50,15 @@ verify_forge() {
 }
 
 if [ "${FORGE_DRY_RUN:-0}" = "1" ]; then
-  log "DRY RUN: would require Git and Node.js 20.10 or newer, choose runtime (${INSTALL_RUNTIME}), install ${PACKAGE_NAME}@${PACKAGE_VERSION}, and verify the Forge CLI."
+  log "DRY RUN: would require Node.js 20.10 or newer and npm/Bun, install ${PACKAGE_NAME}@${PACKAGE_VERSION}, and verify the Forge CLI. Git is optional until repository features are enabled."
   exit 0
 fi
-ensure_git
 ensure_node
 runtime="$(choose_runtime)"
 install_forge "$runtime"
 verify_forge
 log ""
 log "Next:"
-log "  forge install --no-cli"
-log "  forge doctor"
-log "  forge adopt --repo /path/to/your-project --dry-run"
+log "  forge setup"
+log ""
+log "Git is only needed when you enable repository/software-work features."

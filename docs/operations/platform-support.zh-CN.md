@@ -1,61 +1,63 @@
-# 平台支持说明
+# 平台支持
 
-本文定义项目当前真正承诺的平台范围。代码中存在 Windows 分支并不等于所有流程都已在 Windows 原生环境验证；只有安装、主要工作流和发布检查均覆盖的范围才称为支持。
+本文描述 Forge **普通 package 用户路径**的真实支持范围，并把源码/维护者基础设施与首次使用依赖分开，避免用户为了使用 Forge 被迫安装开发工具链。
 
 ## 支持矩阵
 
-| 平台 | 状态 | 建议用途 |
+| 平台 | 状态 | 普通用户路径 |
 | --- | --- | --- |
-| macOS | 支持 | 完整本地 Controller、仓库接入、MCP、Direct Edit、Agent、浏览器能力和发布检查。 |
-| 现代 Linux | 支持 | 完整本地 Controller 工作流，需要 Bash、Git、Node.js 和常见进程工具。 |
-| Windows + WSL2 | 支持，且是 Windows 推荐方案 | 在 WSL2 内按 Linux 流程运行，仓库建议放在 WSL 文件系统。 |
-| Windows 原生 PowerShell | 预览支持 | 支持安装、CLI、doctor、仓库注册/读取和可移植运行时路径；依赖 Bash 的流程仍有限制。 |
+| macOS | 支持 | Package 安装、主控优先 setup、launchd Package Runtime、仓库/普通目录、MCP、Browser/Desktop 与插件。 |
+| 现代 Linux | 支持 | Package 安装、主控优先 setup、优先 `systemd --user` 的 Package Runtime、仓库/普通目录、MCP 与可移植 Provider。 |
+| Windows + WSL2 | 支持且为 Windows 推荐路径 | Forge Runtime 在 WSL2 内按 Linux 方式运行；Windows 仍可承载 ChatGPT/浏览器客户端。 |
+| Windows 原生 | 预览 | Package 安装、setup、portable Runtime/MCP、仓库注册/读取和可移植能力；暂不宣称重启后 Runtime 自动持久化和所有外部 Provider 组合都完整。 |
 
-## 基础环境
+## 基础安装依赖
 
-所有安装方式都需要：
+普通安装只要求：
 
-- Git 已加入 `PATH`；
-- Node.js 20.10 或更高版本，因为发布后的 `forge` 启动器由 Node 执行；
-- npm（随 Node.js 安装）或 Bun 1.0+，用于安装 package；
-- 可写的用户主目录。
+- Node.js 20.10 或更高；
+- npm（Node 自带）或 Bun；
+- 可写用户目录。
 
-Bun 是开发和完整测试的推荐执行器，但不再是唯一安装器。
+**Git 只在启用仓库/软件开发能力时才需要。** 普通 package 用户不要求 Bun、Forge 源码 checkout、CodeGraph、Codex、Claude、Standalone Recovery、Cloudflare、Tailscale 或 OpenAI tunnel-client。
 
-以下环境按功能选装：
+按能力才出现的依赖包括：Git 仓库操作；明确选择的 Codex/Claude 主控或执行入口；GitHub CLI；Browser/Desktop 平台依赖；Google/Apple 等账号凭证；以及远程主控连接本机 MCP 时选择的 tunnel/provider。
 
-- Codex 或 Claude CLI：委派复杂代码实现；
-- GitHub CLI `gh`：GitHub Issue、Project 和云端 Agent；
-- Tailscale Funnel 或 `cloudflared`：稳定公网 HTTPS `/mcp` 地址；
-- Playwright 浏览器依赖：浏览器自动化；
-- CodeGraph：额外代码导航；
-- Google Workspace 凭据：Gmail、Calendar 插件。
+## 各平台 Runtime owner
 
-## Windows 原生支持范围
+普通用户使用：
 
-Windows PowerShell 路径当前发布验证覆盖：
+```bash
+forge runtime service install-package
+```
 
-- 前置环境检查和 CLI 安装；
-- `forge --version`、命令加载与 `forge doctor`；
-- 仓库注册表；
-- 可移植测试覆盖的 Windows 路径、进程、junction 和命令处理；
-- 不依赖 Bash helper 的默认 MCP facade 与有边界仓库操作。
+它会对已安装 `@moretea-labs/forge` 的 Runtime 表面做内容指纹；package 内容与记录身份不一致时拒绝启动，而不是静默跨版本执行。
 
-暂不宣称完整原生支持：
+- **macOS：** launchd 用户服务。
+- **Linux / WSL2 且 user systemd 可用：** `systemd --user`，异常退出自动重启。
+- **Linux 无 user systemd：** 明确退化为 portable detached-session，并提示不具备重启持久化。
+- **Windows 原生：** 当前是 portable user-process 预览，不宣称重启持久化。
 
-- Bash 编写的仓库迁移和 Hook 脚本；
-- 完整源码发布 Bash 门禁；
-- CodeGraph 自动配置；
-- 所有 Agent CLI 与隧道组合。
+`forge runtime service install --repo ...` 的 Git/source immutable release 路径和 Standalone Recovery 都属于高级维护能力，不是普通用户初始化依赖。
 
-这些场景请使用 WSL2。原生安装流程会主动跳过 Bash skill 同步和未验证的 CodeGraph 自动配置，而不是让整体安装失败。
+## ChatGPT / 远程 MCP 连接方式
 
-## WSL2 使用建议
+Forge MCP 始终保持 loopback。远程主控明确选择一种连接方式：
 
-在 WSL2 内安装 Git、Node.js 和可选的 Bun，并将仓库放在 Linux 主目录，例如 `~/src/project`。不要让同一个 checkout 交替由 Windows 和 WSL 操作，否则文件权限、符号链接、换行符和运行时路径可能漂移。
+| Provider | 是否需要公网入站 | 典型用途 |
+| --- | --- | --- |
+| OpenAI Secure MCP Tunnel | 不需要 | OpenAI 组织有 tunnel 权限时优先；使用官方 `tunnel-client`，Forge 只记录非秘密 tunnel ID。 |
+| Cloudflare Tunnel | 是 / HTTPS 互联网可达 | 用户管理 Cloudflare 账号/域名，需要稳定 named HTTPS endpoint。 |
+| Tailscale Funnel | 是 / HTTPS 互联网可达 | 已有兼容 Tailscale 环境。 |
+| 已有 HTTPS `/mcp` | 取决于用户基础设施 | 用户已有反代或 tunnel。 |
+| None | 不需要 | 本地主控，或稍后再接远程。 |
 
-ChatGPT 客户端和浏览器仍可运行在 Windows 主机；Controller 与 MCP 运行在 WSL2，只通过受控 HTTPS 隧道公开 MCP endpoint。
+setup 会检测操作系统与 provider CLI，不会假定所有用户都是 macOS + Homebrew。第三方登录始终由用户明确完成，Forge 不要求把账号密码/API key 粘贴进 setup。
+
+## Windows 原生范围
+
+PowerShell 路径会检查安装器/CLI、doctor、setup/profile、仓库 Registry、Windows 路径/进程和 portable Node 行为。依赖 Bash 的仓库迁移、所有 Browser/Provider 组合，以及 Windows 持久 Service owner 仍不属于完整支持；这些场景优先使用 WSL2。
 
 ## 验证边界
 
-仓库提供 `windows-latest` smoke workflow，验证 PowerShell dry-run、安装契约、Windows 默认策略和 Node 可移植测试。它证明的是上述有边界范围，不代表所有 Bash 或外部 Provider 集成都已原生 Windows 验证。
+仓库有平台/public-doc 检查和 Windows smoke。这里的“支持”只代表列出的主路径有验证证据，不表示每台机器都已安装每个第三方 Provider。

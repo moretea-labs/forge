@@ -1,33 +1,40 @@
 # Public Usage Guide
 
-Use this page when you want the shortest current path through Forge without reading the entire docs tree first.
+Use this page for the shortest current Forge path.
 
-## Fast path
+## 1. Install and choose the external controller
 
-1. [Install and start](tutorials/01-install-and-start.md)
-2. [Connect ChatGPT](tutorials/02-connect-chatgpt.md)
-3. [Complete the first repository task](tutorials/03-first-repository-task.md)
+```bash
+npm install -g @moretea-labs/forge@next
+forge setup
+```
 
-## What Forge is
+Forge has no internal AI brain. Choose one primary external controller; ChatGPT is recommended, while Codex, Claude, or another MCP client can be selected explicitly. Multiple controller entries may be configured without turning unselected clients into dependencies.
 
-Forge is a local execution bridge that lets ChatGPT work on one or more repositories through a stable, bounded tool schema. The preferred orchestration tools are `rh_status`, `rh_access`, `rh_context`, `rh_work`, and `rh_inbox`, while the default schema also exposes practical Direct Edit, command, Git, Agent, Goal/Work, iOS, plugin, artifact, and recovery entry points.
+```bash
+forge setup configure --controller chatgpt --tunnel auto
+forge setup next
+```
 
-Direct Edit is the default for small known changes. `quick_agent_session` provides a direct local Codex/Claude path without requiring an Issue or Task. Durable Issue → Task → Run flows remain available for work that must survive sessions, carry dependencies, or preserve formal review evidence. Request/Full Access changes approval behavior only and never requires reconnecting the MCP Connector.
+## 2. Follow setup until the selected path is usable
 
-## Current runtime facts
+For a hosted controller, setup guides the user-level Package Runtime and a remote connection. Prefer OpenAI Secure MCP Tunnel when eligible; Cloudflare Tunnel, Tailscale Funnel, an existing HTTPS `/mcp` endpoint, or deferred remote access are alternatives.
 
-- Controller Home is primary for MCP service config, authentication, and runtime state under `controllerHome/mcp/`: `mcp.local.json`, `mcp.tokens.json`, `mcp.oauth.json`, `mcp.oauth-tokens.json`, and `mcp.runtime.json`.
-- The matching repo-local `.Forge/mcp.local.json`, `.Forge/mcp.tokens.json`, `.Forge/mcp.oauth.json`, `.Forge/mcp.oauth-tokens.json`, and `.Forge/mcp.runtime.json` files are legacy fallback only. Repository-scoped `.Forge/mcp.policy.json` remains the access policy.
-- The controller is global across registered repositories, but repository work still routes by explicit `repoId` and `checkoutId`.
-- The public MCP endpoint is separate from the localhost-only Local Controller UI on `127.0.0.1:8766`. The UI is an execution-assistant console with Command Center, Approvals and Decisions, Current Work, Capabilities / Plugins, Models / Tools, System Status, Repositories, and Advanced Diagnostics.
-- Long-running work returns durable Jobs/Runs with bounded previews. Check those records before assuming a `502`, reconnect, or truncated response means the write failed.
+The normal package Runtime is `forge runtime service install-package`. Source immutable Runtime and Standalone Recovery are advanced maintainer paths.
 
-## Choose the next guide by goal
+## 3. Add only the capabilities you need
 
-- Need install and connector setup: [Tutorials](tutorials/README.md)
-- Need manual MCP/tunnel details: [Forge ChatGPT MCP setup](Forge-chatgpt-mcp-setup.md)
-- Need provider or executor routing: [Provider configuration and routing](operations/provider-configuration.md)
-- Need browser, Gmail/Calendar, or other plugins: [Documentation hub](README.md)
-- Need troubleshooting or runtime-storage recovery: [Troubleshooting](operations/troubleshooting.md), [Self-healing loop](Forge-runtime-self-healing-loop.md)
+A Git repository is optional during first setup. Adopt one for software work:
 
-For the broader map, use the maintained [documentation hub](README.md).
+```bash
+forge adopt --repo /path/to/project --dry-run
+forge adopt --repo /path/to/project
+```
+
+Or authorize a normal folder / configure Browser, Desktop, Gmail, Calendar, Apple, GitHub, or other typed providers later. Git, Codex, Claude, service credentials, and tunnel CLIs are capability-specific dependencies.
+
+## 4. Verify with a real controller call
+
+For ChatGPT, follow [Connect ChatGPT](tutorials/02-connect-chatgpt.md), then start with a read-only `rh_status` call. A running local process or saved endpoint is not enough; the first successful controller-to-Forge tool call is the useful setup milestone.
+
+See [Features](operations/features.md), [Platform Support](operations/platform-support.md), [Plugin Management](forge-plugin-management.md), and [Troubleshooting](operations/troubleshooting.md) for deeper paths.

@@ -1,26 +1,26 @@
-# Tutorial 1: Install and start
+# Tutorial 1: Install and choose your controller
 
-This tutorial installs the CLI, initializes the user-level runtime, checks the host, and registers one repository.
+This tutorial gets Forge from a package install to a resumable setup session. Forge has **no internal AI brain**: one external controller decides what should happen, while Forge owns bounded execution, durable state, permissions, and evidence.
 
-## 1. Platform and prerequisites
+## 1. Pick the platform path
 
-- macOS or Linux: full supported workflow.
-- Windows: use WSL2 for the full workflow.
-- Native Windows PowerShell: preview support for installation, doctor, repository registration/inspection, and portable controller operations.
+- **macOS:** supported; the packaged Runtime can persist through launchd.
+- **Modern Linux:** supported; the packaged Runtime uses `systemd --user` when available and otherwise reports a portable-session fallback.
+- **Windows + WSL2:** recommended Windows path; follow the Linux flow inside WSL2.
+- **Native Windows:** preview; CLI, setup, portable Runtime, MCP, and bounded portable capabilities work, but reboot-persistent Runtime ownership and every provider combination are not yet claimed.
 
-Install Git, Node.js 20.10 or newer, npm, and a writable home directory. Bun 1.0+ is optional and recommended for source development and the complete test suite.
+Base installation needs **Node.js 20.10 or newer**, npm (or Bun), and a writable user home. **Git is optional until you enable repository/software-work features.** Codex, Claude, `gh`, Cloudflare, Tailscale, CodeGraph, and service credentials are capability-specific dependencies, not Forge installation prerequisites.
 
 ```bash
-git --version
 node --version
 npm --version
 ```
 
 See [Platform Support](../operations/platform-support.md) for the exact matrix.
 
-## 2. Install the CLI
+## 2. Install Forge
 
-Release candidates are published on npm's `next` channel:
+Release candidates use npm `next`:
 
 ```bash
 npm install -g @moretea-labs/forge@next
@@ -29,7 +29,7 @@ bun add -g @moretea-labs/forge@next
 forge --version
 ```
 
-For Forge source development, install from the repository instead:
+For Forge source development only:
 
 ```bash
 git clone https://github.com/moretea-labs/forge.git
@@ -38,56 +38,77 @@ npm ci --ignore-scripts --no-audit --no-fund
 npm install -g . --omit=optional --no-audit --no-fund
 ```
 
-The package exposes exactly `forge`, `forge-hook`, and `forge-runtime`. Release candidates use `next`; stable releases use `latest`.
+The published package exposes `forge`, `forge-hook`, and `forge-runtime`. Normal package users do **not** need a Forge source checkout, Bun compilation, CodeGraph, or Standalone Recovery to start the user-level Runtime.
 
-## 3. Open the guided setup session
+## 3. Start guided setup
 
 ```bash
-forge --version
-forge setup open --target both
+forge setup
 ```
 
-`forge setup open` creates or resumes one user-level setup session below `~/.forge/setup/`. It runs the readiness checks and prints exactly one next configuration action. Complete that action, then continue with the same command loop:
+On a fresh install the first action is to choose the external controller. ChatGPT is recommended, but it is not mandatory:
+
+```bash
+forge setup configure --controller chatgpt --tunnel auto
+# Alternatives:
+# forge setup configure --controller codex
+# forge setup configure --controller claude
+# forge setup configure --controller mcp
+```
+
+You can preconfigure additional controller entries while keeping one primary controller:
+
+```bash
+forge setup configure \
+  --controller chatgpt \
+  --add-controller codex \
+  --add-controller claude \
+  --tunnel auto
+```
+
+Forge does not install or check Codex/Claude merely because they exist on the machine. Their readiness becomes relevant only when you explicitly select them.
+
+## 4. Follow one Next action at a time
 
 ```bash
 forge setup next
 ```
 
-Repeat `forge setup next` until the session reports `ready`, then close it:
+The setup session is stored below the user-level Forge directory, so you can close the terminal and resume later. Depending on the selected controller, the flow may ask for:
+
+1. controller registration;
+2. the packaged user-level Runtime;
+3. secure public HTTPS for a remote controller;
+4. account/browser authentication that only you can complete;
+5. a connection verification.
+
+`forge setup status` shows persisted progress. `forge setup check` is read-only. `forge setup close` closes a ready setup session.
+
+The normal Runtime action is:
 
 ```bash
-forge setup close
+forge runtime service install-package
 ```
 
-Use `forge setup status` to inspect the persisted session and `forge setup check` for a one-shot read-only report. `--target codex` or `--target claude` limits host-specific configuration. The setup session never silently performs remote, secret-bearing, destructive, or service-installing actions.
+The older `forge runtime service install --repo ...` path builds an immutable Git/source Runtime and is an **advanced maintainer path**, not normal onboarding. Standalone Recovery is likewise optional advanced infrastructure.
 
-## 4. Adopt or register a repository
+## 5. Repositories are optional at first
 
-For macOS, Linux, or WSL2, preview adoption first:
+Forge can be useful for authorized files, browser/desktop actions, and service plugins without adopting a Git repository. Add a project when you need software-work capabilities:
 
 ```bash
 forge adopt --repo /path/to/your-project --dry-run
 forge adopt --repo /path/to/your-project
-```
-
-All platforms can register explicitly:
-
-```bash
-forge repo register /path/to/your-project --name my-project --json
 forge repo list --json
 ```
 
-Keep the returned `repoId`; it is the stable repository identity used by ChatGPT and the Controller.
+Git becomes required for that repository workflow.
 
-## 5. Confirm readiness
+## 6. Verify the base install
 
 ```bash
 forge setup status
 forge doctor
-forge status --json
-forge repo list --json
 ```
 
-Runtime state belongs in Controller Home and ignored repository links, not in public source control. Never commit tokens, MCP runtime files, local jobs, logs, or generated worktrees.
-
-Continue with [Tutorial 2: Connect ChatGPT](02-connect-chatgpt.md). For errors, use [Troubleshooting](../operations/troubleshooting.md).
+If ChatGPT is your controller, continue with [Tutorial 2: Connect ChatGPT](02-connect-chatgpt.md). For errors, use [Troubleshooting](../operations/troubleshooting.md).

@@ -42,8 +42,8 @@ for (const path of ["install.sh", "install.ps1"]) {
   requireText(path, "FORGE_INSTALL_RUNTIME");
   requireText(path, "FORGE_INSTALL_RUNTIME");
   requireText(path, "Node.js 20.10");
-  requireText(path, "Git is required");
-  requireText(path, "forge install --no-cli");
+  requireText(path, "Git is optional");
+  requireText(path, "forge setup");
 }
 requireText("install.sh", "npm install -g");
 requireText("install.ps1", "npm install -g");
