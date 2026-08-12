@@ -16,7 +16,7 @@ export async function requestJson<T>(path: string, init: RequestInit = {}): Prom
 }
 export const api = {
   commandCenter: () => requestJson<CommandCenterView>('/api/console/command-center'),
-  work: () => requestJson<WorkResponse>('/api/console/work'),
+  work: () => requestJson<WorkResponse>('/api/console/requirements'),
   automations: () => requestJson<AutomationsResponse>('/api/console/automations'),
   automationSettings: () => requestJson<AutomationSettingsView>('/api/console/automation-settings'),
   connector: () => requestJson<Dict>('/api/console/connector/status'),

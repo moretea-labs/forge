@@ -915,6 +915,7 @@ describe("Local Execution Bridge", () => {
     const uiScript = await fetch(new URL("/console-assets/app.js", handle.url)).then((response) => response.text());
     expect(uiScript).toContain("Automations");
     expect(uiScript).toContain("Capabilities");
+    expect(uiScript).toContain("/api/console/requirements");
     expect(uiScript).toContain("/api/console/automations");
     expect(uiScript).toContain("/api/repositories/register");
   });
@@ -1084,13 +1085,19 @@ describe("Local Execution Bridge", () => {
     expect(uiScript).toContain("Settings");
     expect(uiScript).toContain("System");
     expect(uiScript).toContain("/api/console/command-center");
+    expect(uiScript).toContain("/api/console/requirements");
     expect(uiScript).toContain("/api/console/automations");
 
-    const trackedWork = await fetch(new URL("/api/console/work", handle.url), {
+    const trackedWork = await fetch(new URL("/api/console/requirements", handle.url), {
       headers: { "x-forge-local-token": handle.token },
     }).then((response) => response.json());
     expect(Array.isArray(trackedWork.requirements)).toBe(true);
     expect(typeof trackedWork.requirementCount).toBe("number");
+
+    const executionWork = await fetch(new URL("/api/console/work", handle.url), {
+      headers: { "x-forge-local-token": handle.token },
+    }).then((response) => response.json());
+    expect(Array.isArray(executionWork.items)).toBe(true);
 
     const automations = await fetch(new URL("/api/console/automations", handle.url), {
       headers: { "x-forge-local-token": handle.token },

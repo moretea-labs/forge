@@ -26,7 +26,7 @@ async function requestJson(path, init = {}) {
 }
 var api = {
   commandCenter: () => requestJson("/api/console/command-center"),
-  work: () => requestJson("/api/console/work"),
+  work: () => requestJson("/api/console/requirements"),
   automations: () => requestJson("/api/console/automations"),
   automationSettings: () => requestJson("/api/console/automation-settings"),
   connector: () => requestJson("/api/console/connector/status"),
@@ -154,6 +154,7 @@ if (!root)
 var data;
 var busy = false;
 var selectedCapability = "";
+var loadError = "";
 function route() {
   const id = location.hash.replace(/^#\/?/, "").split("/")[0];
   return routeItems.some((r) => r.id === id) ? id : "overview";
@@ -169,7 +170,7 @@ function shell(content) {
 }
 function view() {
   if (!data)
-    return '<div class="boot-state">正在读取 Forge 配置…</div>';
+    return loadError ? `<div class="boot-state"><strong>Forge console unavailable</strong><div>${esc(loadError)}</div><button class="btn" data-refresh>Retry</button></div>` : '<div class="boot-state">正在读取 Forge 配置…</div>';
   switch (route()) {
     case "work":
       return renderWork(data);
@@ -195,12 +196,16 @@ async function refresh() {
   if (busy)
     return;
   busy = true;
+  loadError = "";
   render();
   try {
     const [commandCenter, work, automations, automationSettings, connector] = await Promise.all([api.commandCenter(), api.work(), api.automations(), api.automationSettings().catch(() => ({})), api.connector().catch(() => ({}))]);
     data = { commandCenter, work, automations, automationSettings, connector };
   } catch (error) {
-    root.innerHTML = `<div class="boot-state"><strong>Forge console unavailable</strong><div>${esc(error instanceof Error ? error.message : error)}</div><button class="btn" data-refresh>Retry</button></div>`;
+    if (!data)
+      loadError = error instanceof Error ? error.message : String(error);
+    else
+      alert(error instanceof Error ? error.message : String(error));
   } finally {
     busy = false;
     render();

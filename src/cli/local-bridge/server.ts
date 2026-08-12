@@ -1276,7 +1276,7 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.get("/api/console/work", (_request, response) => {
+  app.get("/api/console/requirements", (_request, response) => {
     try {
       response.json(buildRequirementBoard({ controllerHome }));
     } catch (error) {
