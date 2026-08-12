@@ -228,11 +228,12 @@ export class CanonicalForgeRuntime {
         port: this.config.port,
         authToken: this.config.authToken,
         readiness: () => this.readiness(),
-        createServer: (principalId, sessionId) => createRuntimeGatewayServer(this.controller!, principalId, {
+        createServer: (principalId, sessionId, controllerType) => createRuntimeGatewayServer(this.controller!, principalId, {
           controllerHome: this.config.controllerHome,
           runtimeInstanceId: this.runtimeInstanceId,
           runtimeSourceRoot,
           sessionId,
+          controllerType,
         }),
         onFatal: (error) => this.failCore('MCP_TRANSPORT_FAILED', error.message),
       });

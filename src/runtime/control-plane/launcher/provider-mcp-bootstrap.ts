@@ -51,6 +51,7 @@ export function codexMcpConfigArgs(bootstrap: ProviderMcpBootstrap): string[] {
   const headers = {
     'X-Forge-Forwarded-Principal-Id': bootstrap.principalId,
     'X-Forge-Forwarded-Session-Id': bootstrap.sessionId,
+    'X-Forge-Forwarded-Controller-Type': 'codex',
   };
   const headerTable = `{${Object.entries(headers)
     .map(([key, value]) => `${JSON.stringify(key)}=${JSON.stringify(value)}`)

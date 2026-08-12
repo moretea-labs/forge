@@ -1510,7 +1510,7 @@ function compactControllerContextSummaryPayload(payload: Record<string, unknown>
 function authenticatedFacadeControllerIdentity(
   ctx: MultiRepositoryMcpToolContext,
   args: Record<string, unknown>,
-): { controllerId: string; principalId: string; sessionId: string; controllerInstanceId: string } {
+): { controllerId: string; principalId: string; sessionId: string; controllerInstanceId: string; controllerType: 'chatgpt' | 'codex' | 'claude' | 'grok' | 'human' } {
   const principalId = ctx.principalId?.trim();
   const sessionId = ctx.sessionId?.trim();
   if (!principalId || !sessionId) {
@@ -1524,10 +1524,18 @@ function authenticatedFacadeControllerIdentity(
   if (requestedSessionId && requestedSessionId !== sessionId) {
     throw new Error('CONTROLLER_SESSION_CONTEXT_MISMATCH: session_id must match the authenticated MCP session');
   }
+  const requestedControllerType = typeof args.controller_type === 'string' && ['chatgpt', 'codex', 'claude', 'grok', 'human'].includes(args.controller_type)
+    ? args.controller_type as 'chatgpt' | 'codex' | 'claude' | 'grok' | 'human'
+    : undefined;
+  const transportControllerType = ctx.controllerType;
+  if (transportControllerType && requestedControllerType && requestedControllerType !== transportControllerType) {
+    throw new Error('CONTROLLER_TYPE_CONTEXT_MISMATCH: controller_type must match the authenticated transport provider');
+  }
   return {
     controllerId: principalId,
     principalId,
     sessionId,
+    controllerType: transportControllerType ?? requestedControllerType ?? 'chatgpt',
     controllerInstanceId: ctx.controllerInstanceId?.trim() || currentControllerInstanceId(),
   };
 }
@@ -2901,7 +2909,15 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             recommendedContinuationPrompt: typeof args.recommended_continuation_prompt === 'string' ? args.recommended_continuation_prompt : undefined,
             suggestedNextActions: [],
           });
-          return result(buildFacadeResult({ summary: `Created handoff ${item.id}.`, data: { item: summarizeHandoffItem(item) } }) as unknown as Record<string, unknown>);
+          let ownershipReleased = false;
+          if (item.workId && ctx.principalId?.trim() && ctx.sessionId?.trim()) {
+            const owner = getControllerSession(store, item.workId);
+            if (owner && owner.controllerId === ctx.principalId.trim() && owner.sessionId === ctx.sessionId.trim()) {
+              releaseControllerSession(store, item.workId, owner.controllerId);
+              ownershipReleased = true;
+            }
+          }
+          return result(buildFacadeResult({ summary: `Created handoff ${item.id}.`, data: { item: summarizeHandoffItem(item), ownershipReleased } }) as unknown as Record<string, unknown>);
         }
         // Default list: pending summary only.
         const items = listHandoffItems({ ...store, status: 'pending', limit: typeof args.limit === 'number' ? args.limit : 50 });
@@ -3536,7 +3552,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               resumedControllerSession = resumeControllerSession(store, {
                 workId,
                 controllerId: identity.controllerId,
-                controllerType: currentOwner?.controllerType ?? 'chatgpt',
+                controllerType: identity.controllerType,
                 sessionId: identity.sessionId,
                 principalId: identity.principalId,
                 controllerInstanceId: identity.controllerInstanceId,
