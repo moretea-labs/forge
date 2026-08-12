@@ -81,6 +81,7 @@
     "benchmark:skills": "bun scripts/run-skill-evals.ts",
     "benchmark:route-session-concurrency": "bun scripts/benchmark-route-session-concurrency.ts",
     "test": "bun scripts/test-governance.ts affected",
+    "test:browser-live": "bun tests/live/browser-native-silent.e2e.ts",
     "test:core": "bun scripts/test-governance.ts core",
     "test:integration": "bun scripts/test-governance.ts integration",
     "test:infrastructure": "bun scripts/test-governance.ts infrastructure",

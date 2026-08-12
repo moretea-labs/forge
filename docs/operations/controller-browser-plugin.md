@@ -35,7 +35,7 @@ Interactions that can mutate remote state still require `confirm_authorization=t
 The browser mode is explicit:
 
 - `managed_persistent` is the default and preserves the previous behavior: each action launches a visible persistent Playwright context, restores the target URL, performs one bounded operation, persists session metadata, then closes the context.
-- `attach_preferred` uses a strict order: configured loopback CDP endpoints; then an already-running, scriptable macOS Vivaldi or Google Chrome instance; then `cdpAttachFallback`. CDP inventory reuses a previously owned matching tab. Apple Events creates one plugin-owned tab for a new session, preserves the user's active tab, and reattaches to that exact owned tab on later actions.
+- `attach_preferred` uses a strict order: configured loopback CDP endpoints; then an already-running, scriptable macOS Vivaldi or Google Chrome instance; then `cdpAttachFallback`. CDP inventory reuses a previously owned matching tab. Apple Events uses the active browser only for discovery, creates a plugin-owned background tab for a new session, preserves the user's active tab, and reattaches directly to the saved window/tab identity on later actions.
 - `isolated` launches a visible persistent context with a per-session repo-local profile under `.forge/browser/profiles/isolated/<session_id>`. It does not share the default plugin profile or a configured custom profile.
 
 Session metadata is reusable across actions via `session_id`. Any action that returns a generated `sessionId` persists that session before returning, so the identifier is immediately valid for follow-up actions. Transient navigation failures can retry with `retries` (1–3).
@@ -47,7 +47,7 @@ Session metadata is reusable across actions via `session_id`. Any action that re
 - Console errors and failed requests are captured for Playwright/CDP cycles. Apple Events attachment reports empty console/network diagnostics because those streams are not exposed by the browser scripting dictionary.
 - Artifacts stay under `.forge/browser/**` (not arbitrary local paths).
 - CDP attach is bounded to configured loopback endpoints only; the plugin does not scan arbitrary ports or remote hosts. Native discovery checks only the configured Chrome/Vivaldi candidates and does not launch them.
-- CDP browsers are disconnected after the action; Apple Events keeps plugin-owned session tabs open until `close_session`/`close_page` while preserving user-owned tabs; managed contexts are closed after the action.
+- CDP browsers are disconnected after the action; Apple Events keeps plugin-owned session tabs open until `close_session`/`close_page` while preserving user-owned tabs; managed contexts are closed after the action. Standard native DOM reads/interactions do not foreground the owned tab and return DOM evidence instead of attempting a screenshot.
 - Health `userFacingStatus` reports `ready`, `domain restricted`, `session active`, or setup states.
 
 ## Configuration
@@ -115,7 +115,7 @@ Additional browser/profile fields:
   - if multiple candidates are running and scriptable, the frontmost browser wins; otherwise candidate order wins
   - discovery checks installation, process state, and active-tab metadata without launching the browser
 
-For an already-running signed-in browser on macOS, prefer `browserMode=attach_preferred` with `nativeAttachMode=auto`. The plugin can reuse the active Vivaldi or Google Chrome tab without copying profile data. `profileMode=custom` remains the explicit path for launching a separate Playwright context against a selected Chromium-family profile.
+For an already-running signed-in browser on macOS, prefer `browserMode=attach_preferred` with `nativeAttachMode=auto`. The plugin reuses the running browser process and login state without copying profile data, but does not reuse the user's active tab as an automation target. It creates and owns a separate background tab. `profileMode=custom` remains the explicit path for launching a separate Playwright context against a selected Chromium-family profile.
 
 Example custom Chrome automation-profile binding:
 
@@ -159,7 +159,26 @@ Use native attachment when the target session is already logged in:
 
 The attach order is CDP, then Apple Events, then managed fallback. macOS may require Automation permission for the controller/Node process to control Vivaldi or Google Chrome. The browser must also permit JavaScript from Apple Events for DOM extraction and interaction. If either permission is unavailable or the browser has no window, the attempt is recorded and fallback policy applies. The provider uses the active browser only for discovery, then operates on a plugin-owned tab identified by stable window/tab metadata. It does not read cookies or storage and re-checks the target URL against `allowedDomains` before and after actions.
 
-Native limitations are explicit: console/network event capture is unavailable, element screenshots fall back to the visible browser-window region, and native file-input/download semantics are not equivalent to Playwright. Use CDP or a managed context for workflows that require those capabilities.
+Native limitations are explicit: console/network event capture is unavailable and native file-input/download semantics are not equivalent to Playwright. A screenshot of a plugin-owned background tab fails closed with `PLUGIN_BROWSER_FOREGROUND_REQUIRED`; Forge does not silently activate the tab just to capture evidence. Use explicit foreground/human handoff, CDP, or a managed context for workflows that require screenshots or capabilities not available through background DOM automation.
+
+### Silent native tab semantics
+
+Apple Events attachment treats silence as the default execution contract:
+
+- new sessions create a background plugin-owned tab and leave the browser's active tab unchanged;
+- saved native sessions reattach directly by stable `windowId` + `tabId`, without rediscovering or borrowing the user's active tab;
+- DOM reads, form fill, click, reload, page-owned navigation, and history back remain in the owned background tab when Chrome/Vivaldi supports them;
+- explicit cross-URL `open_page`/`navigate` on an existing native session uses a replacement transaction: create and validate a new background owned tab, then close the old owned tab. This avoids unreliable in-place background navigation and preserves the user's foreground tab;
+- if replacement validation fails, the new tab is closed and the prior owned tab remains authoritative;
+- native tab ownership is the stable window/tab reference itself. CDP keeps its separate owner-token mechanism;
+- only explicitly foreground-dependent operations such as screenshot capture or human handoff may require visible foreground presentation. They fail closed rather than activating implicitly.
+
+The live macOS acceptance test covers background replacement, DOM fill/click, click-driven navigation, session URL refresh, `go_back`, `reload`, explicit screenshot refusal, session close, and verifies both the user's active Chrome tab and the system frontmost application remain unchanged.
+Run it explicitly on a macOS workstation with a running Chrome instance:
+
+```bash
+bun run test:browser-live
+```
 
 ## Tab Resume And Diagnostics
 

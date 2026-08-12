@@ -36,16 +36,13 @@ import {
   getAssistantPluginManifest,
   submitAssistantPluginAction,
 } from '../../src/runtime/plugins/store';
-
 const roots: string[] = [];
-
 beforeEach(() => {
   // Unit tests must never attach to a real user browser just because Chrome/Vivaldi is running.
   // Native-attach cases explicitly install darwin test hooks below.
   setMacOsBrowserRuntimeHooksForTest({ platform: 'linux' });
   setMacOsCapabilityBrokerSocketPathForTest(join(tmpdir(), `forge-test-macos-broker-unavailable-${process.pid}.sock`));
 });
-
 afterEach(() => {
   resetBrowserPluginRuntimeHooksForTest();
   resetBrowserHandoffRuntimeHooksForTest();
@@ -57,7 +54,6 @@ afterEach(() => {
   delete process.env.FORGE_BROWSER_NODE_BRIDGE_HOST;
   delete process.env.FORGE_NODE_EXECUTABLE;
 });
-
 function repoFixture() {
   const repoRoot = mkdtempSync(join(tmpdir(), 'forge-browser-plugin-'));
   const controllerHome = mkdtempSync(join(tmpdir(), 'forge-browser-plugin-controller-'));
@@ -73,7 +69,6 @@ function repoFixture() {
   const repository = registerRepository({ path: repoRoot, controllerHome });
   return { repoRoot, controllerHome, repository };
 }
-
 function writeBrowserConfig(repoRoot: string, value: Record<string, unknown>) {
   writeFileSync(join(repoRoot, '.forge/plugins/browser.json'), `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
 }
@@ -829,25 +824,26 @@ describe('browser plugin', () => {
       origin: { surface: 'local-ui', actor: 'test' },
     });
 
-    expect(native.events.created).toEqual(['9001']);
+    expect(native.events.created).toEqual(['9001', '9002']);
     expect(native.events.activeTabId).toBe('501');
-    expect(native.events.navigated).toEqual([{ tabId: '9001', url: 'https://example.com/second' }]);
+    expect(native.events.navigated).toEqual([]);
     expect(first.browserConnection).toMatchObject({
       provider: 'macos-apple-events',
       tab: { ownership: 'plugin_owned', windowId: 'window-77', tabId: '9001' },
     });
     expect(second.browserConnection).toMatchObject({
       provider: 'macos-apple-events',
-      tab: { ownership: 'plugin_owned', windowId: 'window-77', tabId: '9001' },
+      tab: { ownership: 'plugin_owned', windowId: 'window-77', tabId: '9002' },
       sessionResume: { status: 'matched' },
     });
+
 
     const closed = await executeBrowserPluginAction({
       controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'close_session',
       requestId: 'browser-owned-close', args: { session_id: sessionId }, origin: { surface: 'local-ui', actor: 'test' },
     });
     expect(closed).toMatchObject({ closed: true, resourceClosed: true });
-    expect(native.events.closed).toEqual(['9001']);
+    expect(native.events.closed).toEqual(['9001', '9002']);
     expect(native.events.activeTabId).toBe('501');
   });
 

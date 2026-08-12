@@ -38,6 +38,7 @@ export interface MacOsBrowserMetadata {
   windowId?: string;
   tabId?: string;
   active?: boolean;
+  loading?: boolean;
 }
 
 export interface MacOsBrowserAttachAttempt {
@@ -210,7 +211,7 @@ ${targetTabPreamble(ref)}
 set windowBounds to bounds of targetWindow
 set separator to ASCII character 30
 set targetIsActive to ((id of active tab of targetWindow) is (id of targetTab))
-return (frontmost as text) & separator & (URL of targetTab as text) & separator & "" & separator & ((item 1 of windowBounds) as text) & separator & ((item 2 of windowBounds) as text) & separator & ((item 3 of windowBounds) as text) & separator & ((item 4 of windowBounds) as text) & separator & "" & separator & "" & separator & (targetIsActive as text)
+return (frontmost as text) & separator & (URL of targetTab as text) & separator & "" & separator & ((item 1 of windowBounds) as text) & separator & ((item 2 of windowBounds) as text) & separator & ((item 3 of windowBounds) as text) & separator & ((item 4 of windowBounds) as text) & separator & "" & separator & "" & separator & (targetIsActive as text) & separator & (loading of targetTab as text)
 `);
 }
 
@@ -331,6 +332,7 @@ function parseMetadata(product: MacOsBrowserProduct, raw: string): MacOsBrowserM
     windowId: parts[7] ? parseBrowserId(parts[7], 'window id') : undefined,
     tabId: parts[8] ? parseBrowserId(parts[8], 'tab id') : undefined,
     active: parts[9] ? (parts[9] ?? '').toLowerCase() === 'true' : undefined,
+    loading: parts[10] ? (parts[10] ?? '').toLowerCase() === 'true' : undefined,
   };
 }
 
@@ -527,9 +529,16 @@ export class MacOsAppleEventsPage {
 
   async goto(url: string, options: Record<string, unknown> = {}): Promise<unknown> {
     const timeout = typeof options.timeout === 'number' ? Math.trunc(options.timeout) : this.timeoutMs;
+    if (this.targetRef) {
+      throw new AssistantPluginError(
+        'PLUGIN_BROWSER_BACKGROUND_NAVIGATION_REQUIRES_REPLACEMENT',
+        'Chrome/Vivaldi background tabs cannot be navigated reliably in place through Apple Events; create a replacement plugin-owned tab instead.',
+        { retryable: true, details: { browserProduct: this.browser.product, windowId: this.targetRef.windowId, tabId: this.targetRef.tabId } },
+      );
+    }
     await this.runAutomation(
-      { action: 'navigate', product: this.browser.product, ...(this.targetRef ? { ref: this.targetRef } : {}), url },
-      navigateScript(this.browser, this.targetRef),
+      { action: 'navigate', product: this.browser.product, url },
+      navigateScript(this.browser),
       [url],
       timeout,
     );
@@ -574,6 +583,24 @@ export class MacOsAppleEventsPage {
 
   url(): string {
     return this.metadata.url;
+  }
+
+  async identity(): Promise<{ url: string; title: string }> {
+    try {
+      const identity = await this.evaluate<{ url: string; title: string }>(
+        '({ url: String(document.location.href || ""), title: String(document.title || "") })',
+      );
+      if (identity && typeof identity.url === 'string' && identity.url) {
+        const normalized = { url: identity.url, title: typeof identity.title === 'string' ? identity.title : '' };
+        this.metadata = { ...this.metadata, ...normalized };
+        return normalized;
+      }
+    } catch (error) {
+      if (!macOsBrowserJavaScriptAutomationDisabled(error)
+        && !(error instanceof AssistantPluginError && error.code === 'PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED')) throw error;
+    }
+    const metadata = await this.refreshMetadata();
+    return { url: metadata.url, title: metadata.title };
   }
 
   async content(): Promise<string> {
@@ -705,6 +732,14 @@ export class MacOsAppleEventsPage {
     const timeout = typeof options.timeout === 'number' ? Math.trunc(options.timeout) : this.timeoutMs;
     const deadline = Date.now() + timeout;
     while (Date.now() <= deadline) {
+      if (this.targetRef) {
+        try {
+          const metadata = await this.refreshMetadata();
+          if (metadata.loading === false) return;
+        } catch {
+          // Fall through to DOM readiness when native loading metadata is unavailable.
+        }
+      }
       try {
         const readyState = await this.evaluate<string>('document.readyState');
         if (state === 'load' || state === 'networkidle') {
@@ -802,12 +837,17 @@ export async function createMacOsBrowserOwnedPage(
   }, timeoutMs, ref);
 }
 
-export function createMacOsBrowserOwnedPageFromRef(
-  attachment: MacOsBrowserAttachment,
+export async function reattachMacOsBrowserOwnedPage(
+  product: MacOsBrowserProduct,
   ref: MacOsBrowserTabRef,
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
-): MacOsAppleEventsPage {
-  return new MacOsAppleEventsPage(attachment, timeoutMs, ref);
+): Promise<{ page: MacOsAppleEventsPage; attachment: MacOsBrowserAttachment }> {
+  const metadata = await readMacOsBrowserOwnedTabMetadata(product, ref, timeoutMs);
+  const attachment: MacOsBrowserAttachment = {
+    metadata,
+    attempts: [{ product, appName: metadata.appName, bundleId: metadata.bundleId, status: 'selected', frontmost: metadata.frontmost }],
+  };
+  return { page: new MacOsAppleEventsPage(attachment, timeoutMs, ref), attachment };
 }
 
 export async function closeMacOsBrowserOwnedTab(

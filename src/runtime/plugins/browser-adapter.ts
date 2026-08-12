@@ -15,7 +15,7 @@ import { executeBrowserActionThroughNode, shouldUseBrowserNodeBridge } from './b
 import {
   closeMacOsBrowserOwnedTab,
   createMacOsBrowserOwnedPage,
-  createMacOsBrowserOwnedPageFromRef,
+  reattachMacOsBrowserOwnedPage,
   discoverMacOsBrowserAttachment,
   getMacOsBrowserAttachObservation,
   macOsActiveBrowserAttachSupported,
@@ -146,6 +146,7 @@ type PageLike = {
   goBack?(options?: Record<string, unknown>): Promise<unknown>;
   title(): Promise<string>;
   url(): string;
+  identity?(): Promise<{ url: string; title: string }>;
   content?(): Promise<string>;
   evaluate<T>(expression: string | ((...args: unknown[]) => unknown), arg?: unknown): Promise<T>;
   screenshot(options: Record<string, unknown>): Promise<Buffer>;
@@ -1232,28 +1233,19 @@ async function openNativeAttachedContext(
     && typeof savedTab.tabId === 'string'
     ? target.existingSession.browser.browserProduct
     : undefined;
-  const candidates = savedProduct ? [savedProduct] : (config.nativeBrowserCandidates ?? ['vivaldi', 'chrome']);
-  let discovered = await discoverMacOsBrowserAttachment(candidates, Math.min(timeout, MAX_CDP_DISCOVERY_TIMEOUT_MS));
-  if (!discovered.attachment && savedProduct) {
-    discovered = await discoverMacOsBrowserAttachment(config.nativeBrowserCandidates ?? ['vivaldi', 'chrome'], Math.min(timeout, MAX_CDP_DISCOVERY_TIMEOUT_MS));
-  }
-  if (!discovered.attachment) return { attempts: discovered.attempts };
-
-  const ownerToken = ownerTokenForSession(target.sessionId);
   let page: PageLike | undefined;
+  let discovered: Awaited<ReturnType<typeof discoverMacOsBrowserAttachment>> | undefined;
   let sessionResume: BrowserSessionResumeDiagnostic;
   let matchedBy: BrowserTabMatchReason = 'new_page';
-  if (savedTab?.ownership === 'plugin_owned'
-    && typeof savedTab.windowId === 'string'
-    && typeof savedTab.tabId === 'string'
-    && target.existingSession?.browser?.browserProduct === discovered.attachment.metadata.product) {
+
+  if (savedProduct && savedTab && typeof savedTab.windowId === 'string' && typeof savedTab.tabId === 'string') {
     const ref: MacOsBrowserTabRef = { windowId: savedTab.windowId, tabId: savedTab.tabId };
-    const candidate = createMacOsBrowserOwnedPageFromRef(discovered.attachment, ref, timeout) as unknown as PageLike;
     try {
-      await candidate.title();
-      page = candidate;
+      const reattached = await reattachMacOsBrowserOwnedPage(savedProduct, ref, timeout);
+      page = reattached.page as unknown as PageLike;
+      discovered = { attachment: reattached.attachment, attempts: reattached.attachment.attempts };
       matchedBy = 'owned_token';
-      sessionResume = { sessionId: target.sessionId, status: 'matched', reason: 'Reattached to the saved plugin-owned macOS browser tab.', savedTab };
+      sessionResume = { sessionId: target.sessionId, status: 'matched', reason: 'Reattached directly to the saved plugin-owned macOS browser tab.', savedTab };
     } catch {
       sessionResume = { sessionId: target.sessionId, status: 'stale_tab', reason: 'Saved plugin-owned macOS tab no longer exists; one replacement tab was created.', savedTab };
     }
@@ -1262,43 +1254,71 @@ async function openNativeAttachedContext(
       ? { sessionId: target.sessionId, status: 'stale_tab', reason: 'Legacy or user-owned tab metadata is never reused for plugin actions; one plugin-owned tab was created.', savedTab }
       : { sessionId: target.sessionId, status: 'no_saved_tab', reason: 'Created one plugin-owned tab while preserving the user active tab.' };
   }
-  if (!page) page = await createMacOsBrowserOwnedPage(discovered.attachment, target.url, timeout) as unknown as PageLike;
-  if (comparableUrl(page.url()) !== comparableUrl(target.url)) {
-    await page.goto(target.url, { waitUntil: waitUntil(args.wait_until), timeout });
-  } else if (page.waitForLoadState) {
-    await page.waitForLoadState(waitUntil(args.wait_until), { timeout });
+
+  if (!discovered?.attachment) {
+    const candidates = savedProduct ? [savedProduct, ...(config.nativeBrowserCandidates ?? ['vivaldi', 'chrome']).filter((product) => product !== savedProduct)] : (config.nativeBrowserCandidates ?? ['vivaldi', 'chrome']);
+    discovered = await discoverMacOsBrowserAttachment(candidates, Math.min(timeout, MAX_CDP_DISCOVERY_TIMEOUT_MS));
   }
+  if (!discovered.attachment) return { attempts: discovered.attempts };
+
+  let createdThisCallRef: MacOsBrowserTabRef | undefined;
+  let replacedRef: MacOsBrowserTabRef | undefined;
   try {
-    await page.evaluate(`window.name = ${JSON.stringify(ownerToken)}`);
+    if (!page) {
+      page = await createMacOsBrowserOwnedPage(discovered.attachment, target.url, timeout) as unknown as PageLike;
+      createdThisCallRef = (page as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
+    }
+    if (comparableUrl(page.url()) !== comparableUrl(target.url)) {
+      const currentRef = (page as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
+      if (!currentRef) {
+        await page.goto(target.url, { waitUntil: waitUntil(args.wait_until), timeout });
+      } else {
+        const replacement = await createMacOsBrowserOwnedPage(discovered.attachment, target.url, timeout) as unknown as PageLike;
+        const createdRef = (replacement as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
+        if (!createdRef) throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_OWNERSHIP_MISSING', 'Replacement native browser tab did not return a stable plugin-owned tab reference.', { retryable: true });
+        replacedRef = currentRef;
+        createdThisCallRef = createdRef;
+        page = replacement;
+        matchedBy = 'new_page';
+        sessionResume = { sessionId: target.sessionId, status: 'matched', reason: 'Reattached to the saved session by replacing its previous plugin-owned background tab.', savedTab };
+      }
+    }
+    if (matchedBy !== 'owned_token' && page.waitForLoadState) {
+      await page.waitForLoadState(waitUntil(args.wait_until), { timeout });
+    }
+    const pageUrl = normalizedUrl(page.url());
+    assertUrlAllowed(pageUrl, config);
+    const nativeRef = (page as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
+    if (!nativeRef) throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_OWNERSHIP_MISSING', 'Native browser did not return a stable plugin-owned tab reference.', { retryable: true });
+    const title = matchedBy === 'owned_token' ? (target.existingSession?.title ?? '') : '';
+    const inventory: BrowserTabInventoryEntry[] = [{ index: 0, key: tabKey(pageUrl, title), url: pageUrl, title }];
+    const metadata = discovered.attachment.metadata;
+    const connection = refreshConnectionTab({
+      requestedMode: 'attach_preferred',
+      mode: 'attach_preferred',
+      provider: 'macos-apple-events',
+      attached: true,
+      browserProduct: metadata.product,
+      profile: {
+        profileMode: config.profileMode,
+        profileDirectory: config.profileDirectory,
+        selectedProfilePath: `macos:${metadata.product}:owned-tab`,
+      },
+      tabInventory: inventory,
+      sessionResume,
+    }, pageUrl, title, matchedBy, {
+      ownership: 'plugin_owned', windowId: nativeRef.windowId, tabId: nativeRef.tabId,
+    });
+    const diagnostics: PageDiagnostics = { consoleErrors: [], failedRequests: [], navigation: { url: pageUrl } };
+    if (replacedRef) await closeMacOsBrowserOwnedTab(metadata.product, replacedRef, timeout);
+    createdThisCallRef = undefined;
+    return { attempts: discovered.attempts, handle: { page, diagnostics, connection, close: async () => undefined } };
   } catch (error) {
-    if (!macOsBrowserJavaScriptAutomationDisabled(error)
-      && !(error instanceof AssistantPluginError && error.code === 'PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED')) throw error;
+    if (createdThisCallRef) {
+      await closeMacOsBrowserOwnedTab(discovered.attachment.metadata.product, createdThisCallRef, timeout).catch(() => undefined);
+    }
+    throw error;
   }
-  const title = await page.title();
-  const pageUrl = normalizedUrl(page.url());
-  assertUrlAllowed(pageUrl, config);
-  const nativeRef = (page as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
-  if (!nativeRef) throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_OWNERSHIP_MISSING', 'Native browser did not return a stable plugin-owned tab reference.', { retryable: true });
-  const inventory: BrowserTabInventoryEntry[] = [{ index: 0, key: tabKey(pageUrl, title), url: pageUrl, title, ownerToken }];
-  const metadata = discovered.attachment.metadata;
-  const connection = refreshConnectionTab({
-    requestedMode: 'attach_preferred',
-    mode: 'attach_preferred',
-    provider: 'macos-apple-events',
-    attached: true,
-    browserProduct: metadata.product,
-    profile: {
-      profileMode: config.profileMode,
-      profileDirectory: config.profileDirectory,
-      selectedProfilePath: `macos:${metadata.product}:owned-tab`,
-    },
-    tabInventory: inventory,
-    sessionResume,
-  }, pageUrl, title, matchedBy, {
-    ownership: 'plugin_owned', ownerToken, windowId: nativeRef.windowId, tabId: nativeRef.tabId,
-  });
-  const diagnostics: PageDiagnostics = { consoleErrors: [], failedRequests: [], navigation: { url: pageUrl } };
-  return { attempts: discovered.attempts, handle: { page, diagnostics, connection, close: async () => undefined } };
 }
 
 async function openBrowser(
@@ -1370,10 +1390,9 @@ async function withPage<T>(
       handle = await openBrowser(repoRoot, config, target, args);
       const result = await run(handle.page, handle.diagnostics, handle.connection);
       if (options.persistSession) {
-        const pageUrl = normalizedUrl(handle.page.url());
-        const title = await handle.page.title();
-        assertUrlAllowed(pageUrl, config);
-        saveSession(repoRoot, sessionFromPage(target, pageUrl, title, handle.connection));
+        const identity = await readPageIdentity(handle.page, handle.connection);
+        assertUrlAllowed(identity.url, config);
+        saveSession(repoRoot, sessionFromPage(target, identity.url, identity.title, handle.connection));
       }
       return result;
     } catch (error) {
@@ -1544,6 +1563,14 @@ async function extractText(page: PageLike, selector: string | undefined, maxChar
   return truncateText(raw, maxChars);
 }
 
+async function readPageIdentity(page: PageLike, connection?: BrowserConnectionSummary): Promise<{ url: string; title: string }> {
+  if (connection?.provider === 'macos-apple-events' && typeof page.identity === 'function') {
+    const identity = await page.identity();
+    return { url: normalizedUrl(identity.url), title: identity.title };
+  }
+  return { url: normalizedUrl(page.url()), title: await page.title() };
+}
+
 async function finalizeInteractiveAction(
   repoRoot: string,
   config: BrowserPluginConfig,
@@ -1555,20 +1582,25 @@ async function finalizeInteractiveAction(
   extra: Record<string, unknown> = {},
 ): Promise<Record<string, unknown>> {
   const warnings: string[] = [];
-  const title = await page.title();
-  const pageUrl = normalizedUrl(page.url());
+  const identity = await readPageIdentity(page, connection);
+  const title = identity.title;
+  const pageUrl = identity.url;
   assertUrlAllowed(pageUrl, config);
   const session = sessionFromPage(target, pageUrl, title, connection);
   saveSession(repoRoot, session);
   let screenshot: BrowserActionScreenshot | undefined;
-  try {
-    screenshot = await captureActionScreenshot(page, repoRoot, actionId, session.sessionId, session.url);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    warnings.push(`Screenshot capture failed: ${message}`);
+  const silentNativeEvidence = connection.provider === 'macos-apple-events' && connection.tab?.ownership === 'plugin_owned';
+  if (!silentNativeEvidence) {
+    try {
+      screenshot = await captureActionScreenshot(page, repoRoot, actionId, session.sessionId, session.url);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      warnings.push(`Screenshot capture failed: ${message}`);
+    }
   }
   return {
     ...interactionResult(actionId, session, summary, screenshot, warnings, extra),
+    evidenceMode: silentNativeEvidence ? 'dom' : screenshot ? 'screenshot' : 'summary',
     browserConnection: {
       ...connection,
       tab: session.browser?.tab,
@@ -2407,7 +2439,8 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           ? { sessionId: existingSessionId, url, existingSession: findSession(input.repoRoot, existingSessionId) }
           : { sessionId: sessionIdFor(url), url };
         return await withPage(input.repoRoot, current, target, input.args, async (page, diagnostics, connection) => {
-          const session = sessionFromPage(target, normalizedUrl(page.url()), await page.title(), connection);
+          const identity = await readPageIdentity(page, connection);
+          const session = sessionFromPage(target, identity.url, identity.title, connection);
           saveSession(input.repoRoot, session);
           return {
             provider: 'playwright',
@@ -2439,7 +2472,8 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
               timeout: positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS),
             });
           }
-          const session = sessionFromPage(target, normalizedUrl(page.url()), await page.title(), connection);
+          const identity = await readPageIdentity(page, connection);
+          const session = sessionFromPage(target, identity.url, identity.title, connection);
           saveSession(input.repoRoot, session);
           return {
             provider: 'playwright',
