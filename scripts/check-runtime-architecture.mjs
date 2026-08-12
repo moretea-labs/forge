@@ -96,6 +96,17 @@ for (const path of required) text(path);
 requireText('src/runtime/control-plane/routing/route-policy.ts', "export function decideRoute");
 requireText('src/runtime/control-plane/routing/route-policy.ts', 'inputFingerprint');
 requireText('src/runtime/control-plane/routing/route-policy.ts', 'policyVersion');
+requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'runPersistedCheckViaProcessRuntime({');
+requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'interactiveWaitMs: 0');
+requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'checkContentRevision');
+requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'observedGitHead');
+forbidBetween(
+  'src/runtime/gateway/mcp/runtime-tools.ts',
+  'async function runFacadeVerify(',
+  'export async function callRuntimeTool',
+  /runControllerCheck\s*\(/,
+  'route rh_work verify through persisted Process Runtime instead of synchronous check execution',
+);
 for (const adapter of [
   'src/cli/controller/work-mode.ts',
   'src/runtime/control-plane/facade/types.ts',

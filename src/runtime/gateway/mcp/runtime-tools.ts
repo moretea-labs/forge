@@ -14,9 +14,10 @@ import { repositoryControllerRoot } from '../../../cli/repositories/controller-h
 import { cancelExecutionJob, findExecutionJob, getExecutionJob, getExecutionJobByRequestId, listExecutionJobs } from '../../execution/jobs/store';
 import { waitForExecutionJob } from '../../execution/jobs/wait';
 import type { ExecutionJob } from '../../execution/jobs/types';
-import { getProcessHandle, processRuntimeResourceDiagnostics, waitForProcess } from '../../execution/process-runtime';
+import { getProcessHandle, getProcessRecord, processCheckCompletionReceipt, processRuntimeResourceDiagnostics, runPersistedCheckViaProcessRuntime, waitForProcess } from '../../execution/process-runtime';
 import { buildJobOperationDigest } from '../../control-plane/facade/operation-digest';
 import { readWorkHandle, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
+import { executionIdentityForRepository } from '../../control-plane/execution/execution-identity';
 import { reconcileFinalizedDirectEditWorksAfterCommit } from '../../control-plane/execution/direct-edit-work-completion';
 import { readJobEvents } from '../../evidence/event-ledger';
 import { readExecutionArtifact } from '../../evidence/artifact-store';
@@ -74,7 +75,7 @@ import {
 import { buildControllerContextPack, CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain } from '../../../cli/controller/context-pack';
 import { legacyIssueAuthorityRetired } from '../../../cli/controller/legacy-issue-cutover';
 import { buildControllerOperationalPlan } from '../../../cli/controller/operational-plan';
-import { listControllerChecks, readLatestControllerCheckEvidence, runControllerCheck } from '../../../cli/controller/check-runner';
+import { listControllerChecks, readLatestControllerCheckEvidence } from '../../../cli/controller/check-runner';
 import { repositoryChangeVerify } from '../../../cli/controller/composite-operations';
 import { listActiveAgentJobSnapshots } from '../../../cli/agent-jobs/job-manager';
 import { readAgentExecutableReadinessSnapshot } from '../../../cli/agent-jobs/executable-resolver';
@@ -2492,11 +2493,11 @@ async function runFacadeRepair(
   return result(facade as unknown as Record<string, unknown>, facade.status === 'blocked' || facade.status === 'approval_required' || facade.status === 'failed');
 }
 
-function runFacadeVerify(
+async function runFacadeVerify(
   ctx: MultiRepositoryMcpToolContext,
   repository: ReturnType<typeof selected>,
   args: Record<string, unknown>,
-): CallToolResult {
+): Promise<CallToolResult> {
   const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
   const checks = listControllerChecks(repository.canonicalRoot);
   const workloopCtx = {
@@ -2561,16 +2562,144 @@ function runFacadeVerify(
     return result(facade as unknown as Record<string, unknown>, facade.status === 'failed');
   }
 
-  // Real registered check execution path.
+  // Real checks share the same persisted Process Runtime path as run_check and
+  // work_validate. Never synchronously block the MCP facade on long native tests.
   try {
-    const executed = runControllerCheck(repository.canonicalRoot, classified.normalizedCheckId!);
-    const infrastructureFailed = executed.failureClass === 'infrastructure_failure'
-      || executed.timedOut === true;
-    const checkFailed = !executed.ok && !infrastructureFailed;
+    const normalizedCheckId = classified.normalizedCheckId!;
+    const requestId = typeof args.request_id === 'string' && args.request_id.trim()
+      ? args.request_id.trim()
+      : undefined;
+    const observedGitHead = repositoryGitStatus(repository).head;
+    const executed = await runPersistedCheckViaProcessRuntime({
+      controllerHome: ctx.controllerHome,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      repoRoot: repository.canonicalRoot,
+      executionIdentity: executionIdentityForRepository(repository, workId ? { workId } : {}),
+      checkId: normalizedCheckId,
+      timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
+      // rh_work.verify is a control-plane continuation primitive: callers should
+      // be able to keep working and later reattach to the exact same Process.
+      interactiveWaitMs: 0,
+      requestId,
+      workId: workId || undefined,
+      commandId: requestId,
+    });
+
+    if (executed.mode === 'durable') {
+      return result(buildFacadeResult({
+        status: 'blocked',
+        summary: `Check ${normalizedCheckId} requires an explicit durable workflow; no acceptance result was recorded.`,
+        data: {
+          verification: {
+            checkId: normalizedCheckId,
+            outcome: 'deferred',
+            isAcceptanceFailure: false,
+            isInfrastructureIssue: false,
+            durable: executed.durable,
+            observedGitHead,
+          },
+        },
+        suggestedNextActions: [{
+          label: 'Continue Work with the durable check requirement',
+          tool: 'rh_work',
+          operation: 'continue',
+          payload: { work_id: workId || undefined },
+          risk: 'workspace_write',
+          confidence: 'high',
+        }],
+      }) as unknown as Record<string, unknown>, true);
+    }
+
+    const handle = executed.process;
+    if (!handle) throw new Error(`PROCESS_CHECK_HANDLE_MISSING: ${normalizedCheckId}`);
+    const record = getProcessRecord(ctx.controllerHome, repository.repoId, handle.processId);
+    const checkContentRevision = record?.checkExecution?.revision;
+
+    if (!handle.completed) {
+      return result(buildFacadeResult({
+        status: 'ok',
+        summary: `Check ${normalizedCheckId} is running through Process Runtime; continue other work and reattach to ${handle.processId}.`,
+        data: {
+          verification: {
+            checkId: normalizedCheckId,
+            outcome: 'running',
+            isAcceptanceFailure: false,
+            isInfrastructureIssue: false,
+            executed: true,
+            completed: false,
+            processId: handle.processId,
+            processStatus: handle.status,
+            deduplicated: handle.deduplicated === true,
+            semanticDeduplicated: handle.semanticDeduplicated === true,
+            checkContentRevision,
+            observedGitHead,
+            revisionSemantics: 'checkContentRevision is a content-bound Check identity; observedGitHead is Git HEAD and is not interchangeable.',
+          },
+        },
+        rawAvailable: false,
+      }) as unknown as Record<string, unknown>);
+    }
+
+    if (!record) throw new Error(`PROCESS_CHECK_RECORD_MISSING: ${handle.processId}`);
+    const receipt = processCheckCompletionReceipt(record, {
+      repoId: repository.repoId,
+      checkId: normalizedCheckId,
+      processId: handle.processId,
+      ...(record.checkExecution ? {
+        checkoutId: repository.activeCheckoutId,
+        workId: workId || undefined,
+        requestId,
+        checkExecution: {
+          cacheKey: record.checkExecution.cacheKey,
+          revision: record.checkExecution.revision,
+          definitionDigest: record.checkExecution.definitionDigest,
+          environmentFingerprint: record.checkExecution.environmentFingerprint,
+          timeoutMs: record.checkExecution.timeoutMs,
+          scopeKey: record.checkExecution.scopeKey,
+        },
+      } : {}),
+    });
+    const evidence = readLatestControllerCheckEvidence(repository.canonicalRoot, normalizedCheckId);
+    const evidenceMatchesProcess = Boolean(
+      evidence?.cacheKey
+      && record.checkExecution?.cacheKey
+      && evidence.cacheKey === record.checkExecution.cacheKey,
+    );
+    const failureClass = evidenceMatchesProcess ? evidence?.failureClass : undefined;
+    const infrastructureFailed = receipt.timedOut
+      || receipt.cancelled
+      || !evidenceMatchesProcess
+      || (!receipt.ok && failureClass !== 'acceptance_failure');
+    const checkFailed = !receipt.ok && !infrastructureFailed;
+    const boundedStatus = receipt.ok ? 'pass' : infrastructureFailed ? 'infrastructure_failure' : 'fail';
+    const commonVerification = {
+      checkId: normalizedCheckId,
+      outcome: infrastructureFailed ? 'infrastructure_failure' : receipt.ok ? 'valid_pass' : 'valid_fail',
+      isAcceptanceFailure: checkFailed,
+      isInfrastructureIssue: infrastructureFailed,
+      executed: true,
+      completed: true,
+      processId: receipt.processId,
+      processStatus: receipt.runtimeStatus,
+      ok: receipt.ok,
+      timedOut: receipt.timedOut,
+      cancelled: receipt.cancelled,
+      failureClass: infrastructureFailed ? 'infrastructure_failure' : failureClass,
+      deduplicated: handle.deduplicated === true,
+      semanticDeduplicated: handle.semanticDeduplicated === true,
+      checkContentRevision: receipt.checkRevision,
+      observedGitHead,
+      revisionSemantics: 'checkContentRevision is a content-bound Check identity; observedGitHead is Git HEAD and is not interchangeable.',
+      evidenceArtifactPath: receipt.artifactPath,
+      evidenceReceiptId: receipt.receiptId,
+      boundedStatus,
+    };
+
     if (workId) {
       const facade = verifyGoalWorkloop(workloopCtx, {
         workId,
-        checkId: classified.normalizedCheckId!,
+        checkId: normalizedCheckId,
         infrastructureFailed,
         checkFailed,
       });
@@ -2581,46 +2710,26 @@ function runFacadeVerify(
           ...data,
           verification: {
             ...(typeof data.verification === 'object' && data.verification ? data.verification as Record<string, unknown> : {}),
-            executed: true,
-            registeredCheckId: classified.normalizedCheckId,
-            ok: executed.ok,
-            timedOut: executed.timedOut,
-            failureClass: executed.failureClass,
-            cacheHit: executed.cacheHit,
-            validatedRevision: executed.validatedRevision,
-            originalExecutedAt: executed.originalExecutedAt,
-            // Never return raw stdout/stderr to ChatGPT by default.
-            evidenceArtifactPath: executed.artifactPath,
-            boundedStatus: executed.ok ? 'pass' : infrastructureFailed ? 'infrastructure_failure' : 'fail',
+            ...commonVerification,
           },
         },
+        warnings: infrastructureFailed
+          ? [...facade.warnings, evidenceMatchesProcess ? 'infrastructure_failure is distinct from acceptance failure' : 'check evidence did not match the terminal Process semantic identity']
+          : facade.warnings,
       } as unknown as Record<string, unknown>, facade.status === 'failed');
     }
+
     return result(buildFacadeResult({
       status: checkFailed ? 'failed' : 'ok',
       summary: infrastructureFailed
-        ? `Infrastructure failure while running ${classified.normalizedCheckId}; not an acceptance failure.`
-        : executed.ok
-          ? `Check ${classified.normalizedCheckId} passed.`
-          : `Check ${classified.normalizedCheckId} failed acceptance.`,
-      data: {
-        verification: {
-          checkId: classified.normalizedCheckId,
-          outcome: infrastructureFailed ? 'infrastructure_failure' : executed.ok ? 'valid_pass' : 'valid_fail',
-          isAcceptanceFailure: checkFailed,
-          isInfrastructureIssue: infrastructureFailed,
-          executed: true,
-          evidenceArtifactPath: executed.artifactPath,
-          cacheHit: executed.cacheHit,
-          validatedRevision: executed.validatedRevision,
-          originalExecutedAt: executed.originalExecutedAt,
-          failureClass: executed.failureClass,
-        },
-      },
-      warnings: infrastructureFailed ? ['infrastructure_failure is distinct from acceptance failure'] : [],
-      suggestedNextActions: executed.ok
-        ? [{ label: 'Continue work', tool: 'rh_work', operation: 'continue', payload: { work_id: workId || undefined }, risk: 'readonly' }]
-        : [{ label: 'Diagnose if infrastructure', tool: 'rh_work', operation: 'repair', payload: { repair_operation: 'diagnose', dry_run: true }, risk: 'readonly' }],
+        ? `Infrastructure failure while running ${normalizedCheckId}; not an acceptance failure.`
+        : receipt.ok
+          ? `Check ${normalizedCheckId} passed with persisted Process evidence.`
+          : `Check ${normalizedCheckId} failed acceptance.`,
+      data: { verification: commonVerification },
+      warnings: infrastructureFailed
+        ? [evidenceMatchesProcess ? 'infrastructure_failure is distinct from acceptance failure' : 'check evidence did not match the terminal Process semantic identity']
+        : [],
       rawAvailable: false,
     }) as unknown as Record<string, unknown>, checkFailed);
   } catch (error) {
@@ -2642,7 +2751,7 @@ function runFacadeVerify(
     }
     return result(buildFacadeResult({
       status: 'ok',
-      summary: `Infrastructure failure invoking check runner for ${classified.normalizedCheckId}; not acceptance failure.`,
+      summary: `Infrastructure failure invoking Process Runtime for ${classified.normalizedCheckId}; not acceptance failure.`,
       data: {
         verification: {
           checkId: classified.normalizedCheckId,
@@ -3457,7 +3566,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         }
 
         if (operation === 'verify') {
-          return runFacadeVerify(ctx, repository, args);
+          return await runFacadeVerify(ctx, repository, args);
         }
 
         if (operation === 'delegate') {

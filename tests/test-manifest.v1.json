@@ -23,15 +23,15 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 110,
-    "maxTestLines": 43485,
+    "maxTestFiles": 114,
+    "maxTestLines": 43746,
     "maxPureFiles": 33,
     "maxTempIsolatedFiles": 46,
     "maxProcessTreeFiles": 17,
     "maxGitWorktreeFiles": 15,
     "maxFixedPortFiles": 6,
     "maxRuntimeSingletonFiles": 6,
-    "maxControllerHomeIsolatedFiles": 13,
+    "maxControllerHomeIsolatedFiles": 17,
     "maxDestructiveFiles": 0
   },
   "pathModuleRules": [
@@ -595,6 +595,22 @@
     "tests/runtime/runtime-root-release.test.ts": {
       "module": "release",
       "resource": "git-worktree"
+    },
+    "tests/runtime/chatgpt-work-continuation.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/external-controller-launch-reservation.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/pending-continuation-activation.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/provider-mcp-bootstrap.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
     }
   }
 }
