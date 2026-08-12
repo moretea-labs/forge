@@ -52,8 +52,8 @@ fi
 codex_home="${CODEX_HOME:-$HOME/.codex}"
 global_dir="$codex_home/handoffs"
 global_file="$global_dir/handoff-$(date '+%y%m%d').md"
-repo_handoff=".ai/harness/handoff/current.md"
-resume_file=".ai/harness/handoff/resume.md"
+repo_handoff=".ai/harness/session/continuation.md"
+resume_file=".ai/harness/session/resume.md"
 
 mkdir -p "$global_dir"
 

@@ -200,8 +200,8 @@ latest_global_handoff() {
   find "$codex_home/handoffs" -maxdepth 1 -type f -name 'handoff-*.md' 2>/dev/null | sort | tail -1
 }
 
-resume_file="$(safe_repo_file "$(policy_get '.handoff_resume.resume_packet_file' '.ai/harness/handoff/resume.md')" '.ai/harness/handoff/resume.md' '.ai/harness/')"
-repo_handoff="$(safe_repo_file "$(policy_get '.harness.handoff_file' '.ai/harness/handoff/current.md')" '.ai/harness/handoff/current.md' '.ai/harness/')"
+resume_file="$(safe_repo_file "$(policy_get '.session.resume_file' '.ai/harness/session/resume.md')" '.ai/harness/session/resume.md' '.ai/harness/')"
+repo_handoff="$(safe_repo_file "$(policy_get '.session.continuation_file' '.ai/harness/session/continuation.md')" '.ai/harness/session/continuation.md' '.ai/harness/')"
 checks_file="$(safe_repo_file "$(policy_get '.harness.checks_file' '.ai/harness/checks/latest.json')" '.ai/harness/checks/latest.json' '.ai/harness/')"
 research_dir="$(safe_repo_file "$(policy_get '.tasks.research_dir' 'docs/researches')" 'docs/researches' 'docs/researches')"
 todo_file="$(safe_repo_file "$(policy_get '.tasks.todo_file' 'tasks/todos.md')" 'tasks/todos.md' 'tasks/')"
@@ -222,7 +222,7 @@ cat > "$resume_file" <<EOF_RESUME
 
 ## Resume Prompt
 
-You are starting a fresh Codex session for an existing long-running task. Do not rely on prior chat history or Codex auto-compact. First read the source artifacts listed below, then continue from the exact next step in the repo handoff.
+You are starting a fresh Codex session for an existing long-running task. Do not rely on prior chat history or Codex auto-compact. First read the current user input and Canonical Runtime state when available, then source/evidence artifacts, and use the session continuation cache only to recover the exact next step.
 
 Current prompt files first:
 - If the current user message lists files under \`# Files mentioned by the user\`, references \`pasted-text.txt\`, or includes an explicit attachment/file path, read those current-input files before the repo recovery artifacts below.
@@ -243,7 +243,7 @@ Conditional first reads:
 - Global handoff: ${global_handoff:-(none)}
 
 Execution rules:
-- Treat filesystem artifacts as the source of truth.
+- Treat Canonical Runtime lifecycle state as authoritative for migrated Requirement/Plan/Work state; treat Git source/evidence as authoritative in their own domains and session Markdown as rebuildable cache only.
 - Decide in the main agent whether to use subagents, parallel sidecars, sidecar \`codex exec --json\`, or a bounded main-thread trace for broad research/log scans based on context impact and callable tools; do not ask the user for spawn confirmation.
 - Keep deep research conclusions in \`${research_dir}/\`, not only in chat.
 - Do not run \`/compact\` as the primary recovery path.
@@ -251,7 +251,7 @@ Execution rules:
 
 ## Source Artifacts
 
-- Repo handoff: ${repo_handoff}
+- Session continuation: ${repo_handoff}
 - Resume packet: ${resume_file}
 - Checks: ${checks_file}
 - Todo: ${todo_file}

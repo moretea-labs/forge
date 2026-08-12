@@ -308,7 +308,7 @@ pr_body_for_branch() {
 Automated forge ship for \`${branch}\`.
 
 Checks:
-- Waza /check review artifact recommends pass.
+- Forge /review review artifact recommends pass.
 - External acceptance is recorded in the sprint review.
 - \`bash scripts/verify-sprint.sh\` passed before \`contract-worktree.sh finish --no-merge\`.
 

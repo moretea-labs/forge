@@ -342,7 +342,7 @@ Complete this inventory before implementation. If any line is unknown, keep the 
 ## Handoff
 
 - Checks file: `.ai/harness/checks/latest.json`
-- Session handoff: `.ai/harness/handoff/current.md`
+- Session continuation: `.ai/harness/session/continuation.md`
 
 ## Evidence Contract
 
@@ -489,7 +489,7 @@ CONTRACT_TEMPLATE_EOF
 
 ## Verification Evidence
 
-- Waza /check run:
+- Forge /review run:
 - Commands run:
 - Manual checks:
 - Supporting artifacts:
@@ -625,7 +625,7 @@ CURRENT_STATUS_EOF
 }
 
 ensure_auxiliary_files() {
-  mkdir -p plans plans/archive plans/prds plans/sprints tasks/issues tasks/archive tasks/contracts tasks/reviews tasks/notes tasks/workstreams docs/architecture/domains docs/architecture/modules docs/architecture/requests docs/architecture/snapshots docs/architecture/diagrams scripts .ai/context .ai/harness/checks .ai/harness/handoff .ai/harness/scripts .ai/harness/failures .ai/harness/security .ai/harness/planning .ai/harness/architecture .ai/harness/worktrees .ai/harness/runs .ai/harness/jobs .ai/harness/local-jobs .ai/harness/controller .ai/harness/edit-sessions
+  mkdir -p plans plans/archive plans/prds plans/sprints tasks/issues tasks/archive tasks/contracts tasks/reviews tasks/notes tasks/workstreams docs/architecture/domains docs/architecture/modules docs/architecture/requests docs/architecture/snapshots docs/architecture/diagrams scripts .ai/context .ai/harness/checks .ai/harness/session .ai/harness/handoff .ai/harness/scripts .ai/harness/failures .ai/harness/security .ai/harness/planning .ai/harness/architecture .ai/harness/worktrees .ai/harness/runs .ai/harness/jobs .ai/harness/local-jobs .ai/harness/controller .ai/harness/edit-sessions
 
   if [[ ! -f "docs/spec.md" ]]; then
     cat > docs/spec.md <<'SPEC_EOF'
@@ -669,16 +669,16 @@ RESEARCH_README_EOF
     echo "{}" > ".ai/harness/checks/latest.json"
   fi
 
-  if [[ ! -f ".ai/harness/handoff/current.md" ]]; then
-    cat > ".ai/harness/handoff/current.md" <<'HANDOFF_EOF'
-# Harness Handoff
+  if [[ ! -f ".ai/harness/session/continuation.md" ]]; then
+    cat > ".ai/harness/session/continuation.md" <<'HANDOFF_EOF'
+# Forge Session Continuation Snapshot
 
 > **Reason**: bootstrap
 HANDOFF_EOF
   fi
 
-  if [[ ! -f ".ai/harness/handoff/resume.md" ]]; then
-    cat > ".ai/harness/handoff/resume.md" <<'RESUME_EOF'
+  if [[ ! -f ".ai/harness/session/resume.md" ]]; then
+    cat > ".ai/harness/session/resume.md" <<'RESUME_EOF'
 # Codex Resume Packet
 
 > **Reason**: bootstrap
@@ -833,7 +833,6 @@ ARCHITECTURE_INDEX_EOF
   "harness": {
     "policy_file": ".ai/harness/policy.json",
     "checks_file": ".ai/harness/checks/latest.json",
-    "handoff_file": ".ai/harness/handoff/current.md",
     "failure_log_file": ".ai/harness/failures/latest.jsonl",
     "events_file": ".ai/harness/events.jsonl",
     "architecture_events_file": ".ai/harness/architecture/events.jsonl",
@@ -899,19 +898,21 @@ ARCHITECTURE_INDEX_EOF
       "sync_rule": "only explicitly opted-in repo-to-brain manifest entries may be written to the default brain vault; pointer-only externalized stubs remain check-only"
     }
   },
-  "handoff_resume": {
-    "resume_packet_file": ".ai/harness/handoff/resume.md",
-    "global_handoff_dir": "~/.codex/handoffs",
-    "auto_start_new_session": false
+  "session": {
+    "continuation_file": ".ai/harness/session/continuation.md",
+    "resume_file": ".ai/harness/session/resume.md",
+    "global_resume_dir": "~/.codex/handoffs",
+    "auto_start_new_session": false,
+    "authority": "rebuildable-host-session-cache-only"
   },
   "plan_capture": {
     "script": "scripts/capture-plan.sh",
-    "sources": ["codex-plan-mode", "waza-think", "forge-plan"],
+    "sources": ["host-plan-mode", "forge-plan"],
     "rule": "Codex Plan mode and Waza think planning should capture decision-complete plans into plans/plan-*.md; implementation approval then projects the active approved plan through scripts/plan-to-todo.sh"
   },
   "planning": {
     "pending_orchestration_file": ".ai/harness/planning/pending.json",
-    "source_of_truth": "transient host planning bridge only; plans/ and .ai/harness/active-plan remain authoritative"
+    "source_of_truth": "transient host planning bridge only; captured plans are source artifacts, while migrated Runtime Plan/Work lifecycle state is authoritative in the Canonical Runtime"
   },
   "guards": {
     "edit_plan_gate": "advice",
@@ -956,7 +957,7 @@ ARCHITECTURE_INDEX_EOF
       "existing_changes_unrelated_but_would_block_review",
       "task_requires_clean_validation_surface"
     ],
-    "validation_route": "waza:check",
+    "validation_route": "forge:/review",
     "merge_back": {
       "target": "main",
       "requires_clean_check": true,
@@ -995,17 +996,18 @@ ARCHITECTURE_INDEX_EOF
   },
   "external_tooling": {
     "routing": {
-      "complex": "gstack",
-      "simple": "waza",
-      "knowledge": "gbrain"
+      "primary": "forge",
+      "optional_complex_helper": "gstack",
+      "optional_daily_helper": "waza",
+      "optional_knowledge_helper": "gbrain"
     },
     "hosts": [
       "claude-code",
       "codex"
     ],
-    "mode": "agent-readiness-required",
+    "mode": "optional-enhancements",
     "detection": "init-migrate",
-    "readiness_gate": "scripts/check-agent-tooling.sh --host codex --strict-readiness",
+    "readiness_report": "scripts/check-agent-tooling.sh --host codex",
     "waza": {
       "source_repo": "tw93/Waza",
       "source_url": "https://github.com/tw93/Waza.git",
@@ -1017,14 +1019,14 @@ ARCHITECTURE_INDEX_EOF
       "host_drift_policy": "report-per-host-version-staging-and-upstream-drift"
     },
     "codex_automation_profile": {
-      "required_skills": ["health", "check", "mermaid"],
-      "optional_skills": [],
-      "mode": "codex-runtime-reference",
+      "required_skills": [],
+      "optional_skills": ["health", "check", "mermaid"],
+      "mode": "optional-codex-runtime-reference",
       "source": "~/.codex/skills",
       "routes": {
-        "workflow_health": "waza:health",
-        "review_gate": "waza:check",
-        "architecture_diagram": "mermaid"
+        "workflow_health_optional": "waza:health",
+        "review_helper_optional": "waza:check",
+        "architecture_diagram_optional": "mermaid"
       },
       "vendoring_policy": "do-not-vendor-skill-body"
     },
@@ -1045,7 +1047,7 @@ ARCHITECTURE_INDEX_EOF
       "codex_config_path": "~/.codex/config.toml",
       "claude_config_path": "~/.claude.json",
       "index_dir": ".codegraph",
-      "readiness": "required-for-agent-code-navigation",
+      "readiness": "forge-bundled-backend; host-mcp-optional",
       "hook_policy": "do-not-block-hooks",
       "install_command": "bun add -g @colbymchenry/codegraph && forge tools configure codegraph --target codex --location global",
       "project_init_command": "codegraph init -i .",
@@ -1055,16 +1057,16 @@ ARCHITECTURE_INDEX_EOF
   },
   "agentic_development": {
     "routing": {
-      "product_discovery": "gstack:office-hours",
-      "complex_engineering_plan": "gstack:plan-eng-review",
-      "design_plan": "gstack:plan-design-review",
-      "small_or_medium_plan": "waza:think",
-      "bug_or_regression": "waza:hunt",
-      "post_implementation_review": "waza:check"
+      "direct": "forge:/direct",
+      "plan": "forge:/plan",
+      "debug": "forge:/debug",
+      "review": "forge:/review",
+      "release": "forge:/release",
+      "scale": "forge:/scale"
     },
     "due_diligence": {
       "levels": ["P1_GLOBAL_ARCHITECTURE", "P2_DATA_FLOW_TRACE", "P3_DESIGN_DECISION"],
-      "explicit_report_required_for": ["plan-eng-review", "hunt", "risky_refactor", "deployment", "auth_payment_data", "shared_contract"]
+      "explicit_report_required_for": ["architecture", "debug", "risky_refactor", "deployment", "auth_payment_data", "shared_contract"]
     }
   },
   "enforcement": {

@@ -1,18 +1,22 @@
-# Handoff Protocol
+# Session Continuation Protocol
 
-Handoffs make long-running work resumable without trusting chat history.
+This compatibility document describes **host-session recovery only**. It does not define Forge's Runtime `HandoffItem` lifecycle.
 
-## When Handoff Is Required
+A session continuation snapshot lets a fresh Codex/Claude session recover bounded context without trusting chat history or auto-compact. It is ignored, rebuildable cache state under `.ai/harness/session/`.
 
-- Verification fails and the work is not resolved in-session
-- The active sprint changes
-- The session is ending
-- The user or agent needs a durable checkpoint before switching sessions or worktrees
+## When A Session Snapshot Is Useful
 
-## Required Sections
+- a host session is ending or approaching context limits;
+- verification is incomplete and a fresh model session will continue the same bounded work;
+- the active source plan/slice changes and a concise recovery snapshot is useful;
+- the agent switches worktrees or host sessions.
+
+A decision that actually requires ChatGPT/user judgement, authorization, or durable attention must be represented as a Runtime `HandoffItem` and surfaced through `rh_inbox`; writing Markdown does not create or resolve that handoff.
+
+## Snapshot Sections
 
 - Goal
-- Decisions
+- Decisions already evidenced by current source/runtime state
 - Files touched
 - Commands run
 - Checks
@@ -23,16 +27,17 @@ Handoffs make long-running work resumable without trusting chat history.
 
 ## Restore Flow
 
-1. Start a fresh Codex session instead of relying on auto-compact or `codex resume` when the old session is near the limit.
-2. If the current user message lists files under `# Files mentioned by the user`, references `pasted-text.txt`, or includes an explicit attachment/file path, read those current-input files before repo recovery artifacts.
-3. Read source artifacts first: active plan, active contract, review file, latest checks trace, and any user-mentioned files.
-4. Read `.ai/harness/handoff/resume.md`.
-5. Read `.ai/harness/handoff/current.md`.
-6. Read `tasks/current.md` as an orientation snapshot only; in a non-target worktree, compare it with `git show <target>:tasks/current.md`.
-7. Resume from the exact next step.
+1. Read the current user message first.
+2. Read Canonical Runtime state for the active Repository/Requirement/Plan/Work when available.
+3. Read authoritative source artifacts and current Git/check evidence.
+4. Read `.ai/harness/session/resume.md` and `.ai/harness/session/continuation.md` only as bounded recovery context.
+5. Treat `tasks/current.md` and other generated ledgers as orientation projections only.
+6. Resume from the verified next step; if state disagrees, Runtime/current user input/source/evidence wins over the session cache.
 
-## Source Of Truth
+## Authority
 
-- Markdown, JSON, and JSONL files remain the canonical handoff surface.
-- SQLite, Codex thread state, and chat history are read models only.
-- `tasks/current.md` is a tracked derived snapshot. It helps branch/worktree orientation, but stale or surprising state must be checked against plans, workstreams, handoff, and checks.
+- Migrated Requirement/Plan/Work lifecycle state is owned by the Canonical Runtime control plane as defined in `docs/architecture/current/control-plane-authority-inventory.md`.
+- Git owns source code and accepted source artifacts; evidence records own their recorded observations.
+- `.ai/harness/session/*` is non-authoritative and rebuildable.
+- Runtime `HandoffItem`/`rh_inbox` is the durable decision/attention handoff surface.
+- Browser login/CAPTCHA foreground handoff is a separate human-interaction-plane concept.

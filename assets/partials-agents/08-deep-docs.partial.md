@@ -3,7 +3,7 @@
 ### Always Read First
 - `docs/spec.md`: stable product truth
 - `tasks/todos.md`: deferred-goal ledger only
-- `.ai/harness/handoff/current.md`: resumable session state
+- `.ai/harness/session/continuation.md`: resumable session state
 - `.ai/harness/policy.json`: machine-readable workflow contract
 
 ### Load On Demand

@@ -23,7 +23,7 @@ checkoutId when applicable
 
 A repository has independent:
 
-- Issue and Task state;
+- Requirement and Work state;
 - Jobs and Runs;
 - Claims and Leases;
 - Workspaces and Worktrees;

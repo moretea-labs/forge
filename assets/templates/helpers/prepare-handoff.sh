@@ -45,13 +45,13 @@ if [[ -f ".ai/hooks/lib/workflow-state.sh" ]]; then
     echo "Active plan: $(get_active_plan || printf '(none)')"
     echo "Active contract: $(workflow_active_contract || printf '(none)')"
     echo "Review file: $(workflow_active_review || printf '(none)')"
-    echo "Handoff: $(workflow_handoff_file)"
+    echo "Handoff: $(workflow_session_continuation_file)"
     echo "Resume packet: $(workflow_resume_packet_file)"
     echo "Checks: $(workflow_checks_file)"
     exit 0
   fi
-  workflow_write_handoff "$reason"
-  echo "Updated $(workflow_handoff_file)"
+  workflow_write_session_continuation "$reason"
+  echo "Updated $(workflow_session_continuation_file)"
   if [[ "${FORGE_SKIP_RESUME_REFRESH:-0}" != "1" && -f "scripts/codex-handoff-resume.sh" ]]; then
     bash scripts/codex-handoff-resume.sh --cwd "$(pwd -P)" --reason "$reason" >/dev/null
   fi
@@ -62,20 +62,20 @@ if [[ "$mode" == "status" ]]; then
   echo "Active plan: (none)"
   echo "Active contract: (none)"
   echo "Review file: (none)"
-  echo "Handoff: .ai/harness/handoff/current.md"
-  echo "Resume packet: .ai/harness/handoff/resume.md"
+  echo "Handoff: .ai/harness/session/continuation.md"
+  echo "Resume packet: .ai/harness/session/resume.md"
   echo "Checks: .ai/harness/checks/latest.json"
   exit 0
 fi
 
 mkdir -p .ai/harness/handoff
-cat > .ai/harness/handoff/current.md <<EOF_HANDOFF
-# Harness Handoff
+cat > .ai/harness/session/continuation.md <<EOF_HANDOFF
+# Forge Session Continuation Snapshot
 
 > **Generated**: $(date '+%Y-%m-%d %H:%M:%S')
 > **Reason**: ${reason}
 EOF_HANDOFF
-echo "Updated .ai/harness/handoff/current.md"
+echo "Updated .ai/harness/session/continuation.md"
 if [[ "${FORGE_SKIP_RESUME_REFRESH:-0}" != "1" && -f "scripts/codex-handoff-resume.sh" ]]; then
   bash scripts/codex-handoff-resume.sh --cwd "$(pwd -P)" --reason "$reason" >/dev/null
 fi

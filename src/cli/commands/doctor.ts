@@ -162,7 +162,7 @@ function checkCliUpdate(): DoctorCheckResult {
       id,
       describe,
       status: 'warn',
-      detail: `current=${CLI_VERSION}; latest=${latest.version}; agent_action=bun add -g ${PACKAGE_NAME}@latest && forge init`,
+      detail: `current=${CLI_VERSION}; latest=${latest.version}; agent_action=bun add -g ${PACKAGE_NAME}@latest && forge install`,
     };
   }
   return { id, describe, status: 'ok', detail: `current=${CLI_VERSION}; latest=${latest.version}` };

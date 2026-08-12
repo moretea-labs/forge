@@ -32,12 +32,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 if command -v forge >/dev/null 2>&1; then
-  exec forge init "${args[@]}"
+  exec forge install "${args[@]}"
 fi
 
 if command -v bun >/dev/null 2>&1; then
-  exec bun "$ROOT_DIR/src/cli/index.ts" init "${args[@]}"
+  exec bun "$ROOT_DIR/src/cli/index.ts" install "${args[@]}"
 fi
 
-echo "[setup-plugins] forge or bun is required to run the modern init path." >&2
+echo "[setup-plugins] forge or bun is required to run the modern install path." >&2
 exit 1

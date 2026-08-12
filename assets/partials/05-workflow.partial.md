@@ -22,7 +22,7 @@ PLAN_LOOP:
   NOTES_DIR: tasks/notes/
   POLICY_FILE: .ai/harness/policy.json
   CHECKS_FILE: .ai/harness/checks/latest.json
-  HANDOFF_FILE: .ai/harness/handoff/current.md
+  HANDOFF_FILE: .ai/harness/session/continuation.md
   EVENTS_FILE: .ai/harness/events.jsonl
   RUNS_DIR: .ai/harness/runs/
   LESSONS_FILE: tasks/lessons.md
@@ -30,7 +30,7 @@ PLAN_LOOP:
   ANNOTATION_GUARD: do not implement until plan Status is "Approved"
   CONTRACT_GUARD: do not mark done until contract exit criteria pass and review recommends pass
   EXECUTION_CONTEXT: contract-level work starts in a linked codex/<slug> worktree when policy enables it; primary worktree warning by default; enforce via .claude/.require-worktree
-  CONTRACT_WORKTREE_FINISH: run Waza /check, fill the review artifact from that verdict, then .ai/harness/scripts/contract-worktree.sh finish
+  CONTRACT_WORKTREE_FINISH: run Forge /review, fill the review artifact from that verdict, then .ai/harness/scripts/contract-worktree.sh finish
   COMMIT_POLICY: explicit commits after green checks; no automatic checkpoint hook
 ```
 
@@ -39,12 +39,12 @@ PLAN_LOOP:
 - Product discovery, early demand shaping, or "is this worth building" -> gstack `office-hours`.
 - Complex engineering plans, architecture lock-in, or cross-module refactors -> gstack `plan-eng-review`.
 - UI/UX or design-system plans -> gstack `plan-design-review`.
-- Small or medium feature plans -> Waza `/think`.
-- Bugs, regressions, crashes, errors, or failing tests -> Waza `/hunt`.
-- Implemented diffs, pre-merge checks, or release follow-through -> Waza `/check`.
+- Small or medium feature plans -> Forge `/plan`.
+- Bugs, regressions, crashes, errors, or failing tests -> Forge `/debug`.
+- Implemented diffs, pre-merge checks, or release follow-through -> Forge `/review`.
 - Architecture diagrams or system-flow diagrams -> Markdown Mermaid first, `mermaid` for optional human HTML.
 - Use P1/P2/P3 as the shared due-diligence protocol; report it explicitly for `plan-eng-review`, `/hunt`, risky refactors, deployments, auth/payment/data work, and shared contracts.
-- Hooks may emit advisory Waza `/check` and `/health` route hints, but must not auto-run skills or vendor skill bodies.
+- Hooks may emit advisory Forge `/review` and `/health` route hints, but must not auto-run skills or vendor skill bodies.
 
 ### Task Management Protocol
 

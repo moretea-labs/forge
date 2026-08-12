@@ -104,8 +104,8 @@ describe("create-project-dirs runtime smoke", () => {
       expect(existsSync(join(cwd, ".ai/harness/architecture/events.jsonl"))).toBe(true);
       expect(existsSync(join(cwd, ".ai/harness/workstreams/events.jsonl"))).toBe(false);
       expect(existsSync(join(cwd, ".ai/harness/failures/latest.jsonl"))).toBe(true);
-      expect(existsSync(join(cwd, ".ai/harness/handoff/current.md"))).toBe(true);
-      expect(existsSync(join(cwd, ".ai/harness/handoff/resume.md"))).toBe(true);
+      expect(existsSync(join(cwd, ".ai/harness/session/continuation.md"))).toBe(true);
+      expect(existsSync(join(cwd, ".ai/harness/session/resume.md"))).toBe(true);
       expect(existsSync(join(cwd, ".ai/harness/context-budget/latest.json"))).toBe(false);
       expect(existsSync(join(cwd, ".ai/harness/planning"))).toBe(true);
       expect(existsSync(join(cwd, ".ai/harness/runs/.gitkeep"))).toBe(true);
@@ -217,11 +217,11 @@ describe("create-project-dirs runtime smoke", () => {
       expect(workflowContract.helpers.scripts).toContain("context-contract-sync.sh");
       expect(workflowContract.helpers.scripts).toContain("workstream-sync.sh");
       expect(workflowContract.artifacts.requiredFiles).not.toContain(".ai/harness/context-budget/latest.json");
-      expect(workflowContract.artifacts.requiredFiles).not.toContain(".ai/harness/handoff/resume.md");
+      expect(workflowContract.artifacts.requiredFiles).not.toContain(".ai/harness/session/resume.md");
       expect(workflowContract.artifacts.requiredFiles).not.toContain(".claude/settings.json");
       expect(workflowContract.artifacts.requiredFiles).not.toContain(".codex/hooks.json");
       expect(workflowContract.artifacts.runtimeFiles).not.toContain(".ai/harness/context-budget/latest.json");
-      expect(workflowContract.artifacts.runtimeFiles).toContain(".ai/harness/handoff/resume.md");
+      expect(workflowContract.artifacts.runtimeFiles).toContain(".ai/harness/session/resume.md");
       expect(workflowContract.artifacts.runtimeFiles).toContain(".ai/harness/planning/");
       expect(workflowContract.artifacts.runtimeFiles).toContain(".ai/harness/architecture/events.jsonl");
       expect(workflowContract.artifacts.runtimeFiles).toContain(".ai/harness/active-plan");
@@ -270,29 +270,31 @@ describe("create-project-dirs runtime smoke", () => {
       expect(policy.harness.helper_compat_dir).toBe("scripts");
       expect(policy.sprints.helper_script).toBe("scripts/sprint-backlog.sh");
       expect(policy.external_tooling.routing).toEqual({
-        complex: "gstack",
-        simple: "waza",
-        knowledge: "gbrain",
+        primary: "forge",
+        optional_complex_helper: "gstack",
+        optional_daily_helper: "waza",
+        optional_knowledge_helper: "gbrain",
       });
       expect(policy.external_tooling.hosts).toEqual(["claude-code", "codex"]);
-      expect(policy.external_tooling.mode).toBe("agent-readiness-required");
-      expect(policy.external_tooling.readiness_gate).toBe("forge run check-agent-tooling --host codex --strict-readiness");
+      expect(policy.external_tooling.mode).toBe("optional-enhancements");
+      expect(policy.external_tooling.readiness_report).toBe("forge run check-agent-tooling --host codex");
       expect(policy.external_tooling.waza.primary_host).toBe("codex");
       expect(policy.external_tooling.waza.managed_skills).toEqual(["think", "hunt", "check", "health"]);
       expect(policy.external_tooling.waza.codex_primary_path).toBe("~/.codex/skills");
-      expect(policy.external_tooling.codex_automation_profile.required_skills).toEqual(["health", "check", "mermaid"]);
-      expect(policy.external_tooling.codex_automation_profile.mode).toBe("codex-runtime-reference");
+      expect(policy.external_tooling.codex_automation_profile.required_skills).toEqual([]);
+      expect(policy.external_tooling.codex_automation_profile.optional_skills).toEqual(["health", "check", "mermaid"]);
+      expect(policy.external_tooling.codex_automation_profile.mode).toBe("optional-codex-runtime-reference");
       expect(policy.external_tooling.codex_automation_profile.source).toBe("~/.codex/skills");
       expect(policy.external_tooling.codex_automation_profile.routes).toEqual({
-        workflow_health: "waza:health",
-        review_gate: "waza:check",
-        architecture_diagram: "mermaid",
+        workflow_health_optional: "waza:health",
+        review_helper_optional: "waza:check",
+        architecture_diagram_optional: "mermaid",
       });
       expect(policy.external_tooling.codex_automation_profile.vendoring_policy).toBe("do-not-vendor-skill-body");
       expect(policy.external_tooling.gbrain.mcp).toBe("candidate-disabled");
       expect(policy.external_tooling.codegraph.primary_host).toBe("both");
       expect(policy.external_tooling.codegraph.index_dir).toBe(".codegraph");
-      expect(policy.external_tooling.codegraph.readiness).toBe("required-for-agent-code-navigation");
+      expect(policy.external_tooling.codegraph.readiness).toBe("forge-bundled-backend; host-mcp-optional");
       expect(policy.external_tooling.codegraph.hook_policy).toBe("do-not-block-hooks");
       expect(policy.external_tooling.codegraph.vendoring_policy).toBe("do-not-add-package-dependency");
       expect(policy.tasks.notes_dir).toBe("tasks/notes");
@@ -312,12 +314,12 @@ describe("create-project-dirs runtime smoke", () => {
       expect(policy.information_lifecycle.external_knowledge.drift_check).toBe("scripts/check-brain-manifest.sh");
       expect(policy.information_lifecycle.external_knowledge.sync_script).toBe("scripts/sync-brain-docs.sh");
       expect(policy.agentic_development.routing).toEqual({
-        product_discovery: "gstack:office-hours",
-        complex_engineering_plan: "gstack:plan-eng-review",
-        design_plan: "gstack:plan-design-review",
-        small_or_medium_plan: "waza:think",
-        bug_or_regression: "waza:hunt",
-        post_implementation_review: "waza:check",
+        direct: "forge:/direct",
+        plan: "forge:/plan",
+        debug: "forge:/debug",
+        review: "forge:/review",
+        release: "forge:/release",
+        scale: "forge:/scale",
       });
       expect(policy.agentic_development.due_diligence.levels).toEqual([
         "P1_GLOBAL_ARCHITECTURE",
@@ -347,9 +349,12 @@ describe("create-project-dirs runtime smoke", () => {
       expect(policy.worktree_strategy.start_script).toBe("scripts/contract-worktree.sh start --plan <plan-file>");
       expect(policy.worktree_strategy.finish_script).toBe("scripts/contract-worktree.sh finish");
       expect(policy.worktree_strategy.cleanup_script).toBe("scripts/contract-worktree.sh cleanup --slug <slug>");
-      expect(policy.worktree_strategy.validation_route).toBe("waza:check");
+      expect(policy.worktree_strategy.validation_route).toBe("forge:/review");
       expect(policy.context_budget).toBeUndefined();
-      expect(policy.handoff_resume.auto_start_new_session).toBe(false);
+      expect(policy.session.continuation_file).toBe(".ai/harness/session/continuation.md");
+      expect(policy.session.resume_file).toBe(".ai/harness/session/resume.md");
+      expect(policy.session.authority).toBe("rebuildable-host-session-cache-only");
+      expect(policy.session.auto_start_new_session).toBe(false);
       expect(policy.planning.pending_orchestration_file).toBe(".ai/harness/planning/pending.json");
       expect(policy.planning.source_of_truth).toContain("transient host planning bridge");
       expect(policy.sidecar_research.output_dir).toBe("docs/researches");

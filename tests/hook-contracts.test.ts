@@ -178,7 +178,7 @@ describe("Hook contracts", () => {
     expect(script).toContain("PlanCompletenessGate");
     expect(script).toContain("last_assistant_message");
     expect(script).toContain("stop_hook_active");
-    expect(script).toContain("workflow_write_handoff");
+    expect(script).toContain("workflow_write_session_continuation");
     expect(script).toContain("decision:\"block\"");
     expect(script).not.toContain('HOOK_HOST:-claude}" != "codex"');
   });
@@ -189,11 +189,11 @@ describe("Hook contracts", () => {
     expect(script).toContain("wrangler.*\\.toml");
   });
 
-  test("post-edit guard should combine doc drift and task handoff", () => {
+  test("post-edit guard should combine doc drift and session continuation", () => {
     const script = read("assets/hooks/post-edit-guard.sh");
     expect(script).toContain("[DocDrift]");
     expect(script).toContain("[DeployAsset]");
-    expect(script).toContain("[TaskHandoff]");
+    expect(script).toContain("[SessionContinuation]");
     expect(script).toContain("architecture-queue.sh");
     expect(script).toContain("context-contract-sync.sh");
     expect(script).toContain("sync-brain-docs.sh");

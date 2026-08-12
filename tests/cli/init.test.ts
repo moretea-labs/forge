@@ -187,14 +187,14 @@ describe("init command", () => {
           "    *) shift ;;",
           "  esac",
           "done",
-          "mkdir -p \"$repo/scripts\" \"$repo/.ai/harness/handoff\"",
+          "mkdir -p \"$repo/scripts\" \"$repo/.ai/harness/handoff\" \"$repo/.ai/harness/session\"",
           "cat > \"$repo/scripts/prepare-codex-handoff.sh\" <<'EOF'",
           "#!/bin/bash",
           "set -euo pipefail",
-          "mkdir -p .ai/harness/handoff",
+          "mkdir -p .ai/harness/handoff .ai/harness/session",
           "printf 'refreshed\\n' > .ai/harness/handoff/refresh-marker",
-          "printf '# Harness Handoff\\n' > .ai/harness/handoff/current.md",
-          "printf '# Codex Resume Packet\\n' > .ai/harness/handoff/resume.md",
+          "printf '# Forge Session Continuation Snapshot\\n' > .ai/harness/session/continuation.md",
+          "printf '# Codex Resume Packet\\n' > .ai/harness/session/resume.md",
           "EOF",
           "chmod +x \"$repo/scripts/prepare-codex-handoff.sh\"",
           "cat > \"$repo/scripts/check-task-workflow.sh\" <<'EOF'",
@@ -223,7 +223,7 @@ describe("init command", () => {
       });
 
       expect(result.exitCode).toBe(0);
-      expect(result.steps.find((step) => step.step === "refresh handoff packet")?.status).toBe("ok");
+      expect(result.steps.find((step) => step.step === "refresh session continuation")?.status).toBe("ok");
       expect(result.steps.find((step) => step.step === "verify Forge")?.status).toBe("ok");
       expect(readFileSync(join(repo, ".ai", "harness", "handoff", "refresh-marker"), "utf-8")).toContain("refreshed");
     } finally {

@@ -764,7 +764,7 @@ render_prompt_guard_action() {
       echo "[PlanCaptureGate] Approval detected before an active plan artifact exists."
       echo "[PlanCaptureGate] Let the agent run the approved-plan capture path now:"
       echo "  git status --short --branch -uall"
-      echo "  printf '%s\n' '<approved plan body>' | bash scripts/capture-plan.sh --slug <slug> --title <title> --status Approved --source waza-think --route planning --execute"
+      echo "  printf '%s\n' '<approved plan body>' | bash scripts/capture-plan.sh --slug <slug> --title <title> --status Approved --source forge-plan --route planning --execute"
       exit 0
       ;;
     plan_status_no_active_block)

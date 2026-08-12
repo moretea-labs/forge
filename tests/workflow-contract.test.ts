@@ -136,9 +136,9 @@ describe("workflow contract manifest", () => {
     expect(contract.artifacts.requiredFiles).toContain("docs/reference-configs/agentic-development-flow.md");
     expect(contract.artifacts.requiredFiles).toContain("docs/reference-configs/global-working-rules.md");
     expect(contract.artifacts.requiredFiles).toContain("docs/reference-configs/heartbeat-triage.md");
-    expect(contract.artifacts.requiredFiles).not.toContain(".ai/harness/handoff/resume.md");
+    expect(contract.artifacts.requiredFiles).not.toContain(".ai/harness/session/resume.md");
     expect(contract.artifacts.requiredFiles).not.toContain(".ai/harness/context-budget/latest.json");
-    expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/handoff/resume.md");
+    expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/session/resume.md");
     expect(contract.artifacts.runtimeFiles).not.toContain(".ai/harness/context-budget/latest.json");
     expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/capability-context/");
     expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/planning/");
@@ -252,7 +252,7 @@ describe("workflow contract manifest", () => {
     expect(gitignore).toContain(".claude/.plan-state/");
     expect(gitignore).toContain(".ai/harness/checks/latest.json");
     expect(gitignore).toContain(".ai/harness/archive/");
-    expect(gitignore).toContain(".ai/harness/handoff/current.md");
+    expect(gitignore).toContain(".ai/harness/session/continuation.md");
     expect(gitignore).toContain(".ai/harness/planning/");
     expect(gitignore).toContain("!.ai/harness/planning/.gitkeep");
     expect(gitignore).toContain(".ai/harness/worktrees/");

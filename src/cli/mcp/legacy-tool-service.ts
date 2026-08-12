@@ -5057,7 +5057,8 @@ export async function callMcpTool(
       }
       case "latest_handoff": {
         const paths = [
-          ".ai/harness/handoff/resume.md",
+          ".ai/harness/session/resume.md",
+          ".ai/harness/session/continuation.md",
           ".ai/harness/handoff/controller-current.md",
           ".ai/harness/handoff/codex-goal.md",
           ".ai/harness/handoff/chatgpt-plan.md",

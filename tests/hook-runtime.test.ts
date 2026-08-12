@@ -1194,15 +1194,15 @@ describe("Hook runtime behavior", () => {
     const cwd = tmpWorkspace("session-start-context");
     try {
       installHooks(cwd);
-      mkdirSync(join(cwd, ".ai/harness/handoff"), { recursive: true });
+      mkdirSync(join(cwd, ".ai/harness/session"), { recursive: true });
 
-      writeFileSync(join(cwd, ".ai/harness/handoff/resume.md"), "# Codex Resume Packet\n\n> **Reason**: bootstrap\n");
+      writeFileSync(join(cwd, ".ai/harness/session/resume.md"), "# Codex Resume Packet\n\n> **Reason**: bootstrap\n");
       const bootstrapRes = runHook("session-start-context.sh", cwd);
       expect(bootstrapRes.status).toBe(0);
       expect(bootstrapRes.stdout.trim()).toBe("");
 
       writeFileSync(
-        join(cwd, ".ai/harness/handoff/resume.md"),
+        join(cwd, ".ai/harness/session/resume.md"),
         [
           "# Codex Resume Packet",
           "<!-- generated-by: forge codex-handoff-resume v1 -->",
@@ -1227,9 +1227,9 @@ describe("Hook runtime behavior", () => {
       expect(idleCodexRes.stdout.trim()).toBe("");
 
       writeFileSync(
-        join(cwd, ".ai/harness/handoff/current.md"),
+        join(cwd, ".ai/harness/session/continuation.md"),
         [
-          "# Harness Handoff",
+          "# Forge Session Continuation Snapshot",
           "",
           "## Changed Files",
           "",
@@ -1238,7 +1238,7 @@ describe("Hook runtime behavior", () => {
           "```",
         ].join("\n")
       );
-      appendFileSync(join(cwd, ".ai/harness/handoff/resume.md"), "\n");
+      appendFileSync(join(cwd, ".ai/harness/session/resume.md"), "\n");
 
       const res = runHook("session-start-context.sh", cwd, { env: { HOOK_HOST: "codex" } });
       expect(res.status).toBe(0);
@@ -1258,14 +1258,14 @@ describe("Hook runtime behavior", () => {
     }
   });
 
-  test("session-start-context skips resume packets older than current handoff", () => {
+  test("session-start-context skips resume packets older than current continuation snapshot", () => {
     const cwd = tmpWorkspace("session-start-stale-resume");
     try {
       installHooks(cwd);
-      mkdirSync(join(cwd, ".ai/harness/handoff"), { recursive: true });
+      mkdirSync(join(cwd, ".ai/harness/session"), { recursive: true });
 
       writeFileSync(
-        join(cwd, ".ai/harness/handoff/resume.md"),
+        join(cwd, ".ai/harness/session/resume.md"),
         [
           "# Codex Resume Packet",
           "<!-- generated-by: forge codex-handoff-resume v1 -->",
@@ -1277,12 +1277,12 @@ describe("Hook runtime behavior", () => {
           "Old resume packet that must not be injected.",
         ].join("\n")
       );
-      writeFileSync(join(cwd, ".ai/harness/handoff/current.md"), "# Harness Handoff\n\n## Changed Files\n\n```\nsrc/newer.ts\n```\n");
+      writeFileSync(join(cwd, ".ai/harness/session/continuation.md"), "# Forge Session Continuation Snapshot\n\n## Changed Files\n\n```\nsrc/newer.ts\n```\n");
 
       const oldTime = new Date("2026-05-25T09:00:00Z");
       const newTime = new Date("2026-05-29T09:00:00Z");
-      utimesSync(join(cwd, ".ai/harness/handoff/resume.md"), oldTime, oldTime);
-      utimesSync(join(cwd, ".ai/harness/handoff/current.md"), newTime, newTime);
+      utimesSync(join(cwd, ".ai/harness/session/resume.md"), oldTime, oldTime);
+      utimesSync(join(cwd, ".ai/harness/session/continuation.md"), newTime, newTime);
 
       const res = runHook("session-start-context.sh", cwd);
       expect(res.status).toBe(0);
@@ -1296,10 +1296,10 @@ describe("Hook runtime behavior", () => {
     const cwd = tmpWorkspace("session-start-retired-marker");
     try {
       installHooks(cwd);
-      mkdirSync(join(cwd, ".ai/harness/handoff"), { recursive: true });
+      mkdirSync(join(cwd, ".ai/harness/session"), { recursive: true });
 
       writeFileSync(
-        join(cwd, ".ai/harness/handoff/resume.md"),
+        join(cwd, ".ai/harness/session/resume.md"),
         [
           "# Codex Resume Packet",
           "<!-- generated-by: project-initializer codex-handoff-resume v1 -->",
@@ -2211,7 +2211,7 @@ describe("Hook runtime behavior", () => {
       });
 
       expect(first.status).toBe(0);
-      expect(first.stderr).toContain("[FinalizeHandoff]");
+      expect(first.stderr).toContain("[SessionContinuation]");
       const decision = JSON.parse(first.stdout);
       expect(decision.decision).toBe("block");
       expect(decision.reason).toContain("[PlanCompletenessGate]");
@@ -2228,7 +2228,7 @@ describe("Hook runtime behavior", () => {
       expect(decision.reason).toContain("external dependency/API key requirements");
       expect(decision.reason).toContain("phase independence");
       expect(decision.reason).not.toContain("Before stopping, run one self-review pass");
-      expect(existsSync(join(cwd, ".ai/harness/handoff/current.md"))).toBe(true);
+      expect(existsSync(join(cwd, ".ai/harness/session/continuation.md"))).toBe(true);
       expect(existsSync(join(cwd, ".ai/harness/planning/plan-completeness.json"))).toBe(true);
 
       const second = runHook("stop-orchestrator.sh", cwd, {
@@ -2242,7 +2242,7 @@ describe("Hook runtime behavior", () => {
 
       expect(second.status).toBe(0);
       expect(second.stdout).toBe("");
-      expect(second.stderr).toContain("[FinalizeHandoff]");
+      expect(second.stderr).toContain("[SessionContinuation]");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -3830,8 +3830,8 @@ describe("Hook runtime behavior", () => {
         stdin: JSON.stringify({ tool_input: { file_path: "tasks/todos.md" } }),
       });
       expect(handoffRes.status).toBe(0);
-      expect(handoffRes.stdout).toContain("[TaskHandoff]");
-      expect(existsSync(join(cwd, ".claude/.task-handoff.md"))).toBe(true);
+      expect(handoffRes.stdout).toContain("[SessionContinuation]");
+      expect(existsSync(join(cwd, ".claude/.task-handoff.md"))).toBe(false);
       expect(readFileSync(join(cwd, ".claude/.task-state.json"), "utf-8")).toContain('"status":"in_progress"');
     } finally {
       rmSync(cwd, { recursive: true, force: true });
@@ -3889,7 +3889,7 @@ describe("Hook runtime behavior", () => {
     }
   });
 
-  test("post-edit-guard: creates handoff summary when completed tasks increase", () => {
+  test("post-edit-guard: refreshes session continuation when task progress changes", () => {
     const cwd = tmpWorkspace("task-handoff");
     try {
       initGitRepo(cwd);
@@ -3920,15 +3920,14 @@ describe("Hook runtime behavior", () => {
       });
 
       expect(res.status).toBe(0);
-      expect(res.stdout).toContain("[TaskHandoff]");
-      expect(existsSync(join(cwd, ".claude/.task-handoff.md"))).toBe(true);
+      expect(res.stdout).toContain("[SessionContinuation]");
+      expect(existsSync(join(cwd, ".claude/.task-handoff.md"))).toBe(false);
       expect(existsSync(join(cwd, ".claude/.task-state.json"))).toBe(true);
-      const handoff = readFileSync(join(cwd, ".claude/.task-handoff.md"), "utf-8");
-      expect(handoff).toContain("second task");
-      expect(handoff).toContain("stage its coherent diff first");
-      expect(handoff).toContain("Stage: task");
-      expect(handoff).toContain("Progress");
-      expect(handoff).toContain("plans/plan-20260304-1410-demo.md");
+      const continuation = readFileSync(join(cwd, ".ai/harness/session/continuation.md"), "utf-8");
+      expect(continuation).toContain("second task");
+      expect(continuation).toContain("Canonical Runtime control-plane state is authoritative");
+      expect(continuation).toContain("## Current Status");
+      expect(continuation).toContain("plans/plan-20260304-1410-demo.md");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

@@ -15,7 +15,7 @@
 - Evaluator verdicts: `tasks/reviews/`.
 - Implementation notes: `tasks/notes/`.
 - Structured checks: `.ai/harness/checks/latest.json`.
-- Session handoff: `.ai/harness/handoff/current.md`.
+- Session continuation: `.ai/harness/session/continuation.md`.
 - Harness policy: `.ai/harness/policy.json`.
 - Context map: `.ai/context/context-map.json`.
 - Lessons contract: `tasks/lessons.md`.
@@ -28,7 +28,7 @@
 - External reference cache: `_ref/` is an occasional ignored external checkout cache, read/refresh-only comparison material, and must stay out of commits; decisions based on it must cite repo+commit/tag+path in notes or research.
 - Deployment operations workspace: `deploy/` is commit-ready for runbooks, submission materials, release checklists, helper scripts, ordered SQL files under `deploy/sql/`, and env examples.
 - Local operations state: `_ops/` is ignored and private for secrets, real env files, provider state, artifacts, logs, and scratch files; do not commit or agent-edit `_ops/*`.
-- Agentic skill routing: product discovery -> gstack `office-hours`; complex engineering plans -> gstack `plan-eng-review`; design plans -> gstack `plan-design-review`; daily small/medium planning, bug hunts, and checks -> Waza `/think`, `/hunt`, `/check`.
+- Agentic skill routing: product discovery -> gstack `office-hours`; complex engineering plans -> gstack `plan-eng-review`; design plans -> gstack `plan-design-review`; daily small/medium planning, bug hunts, and checks -> Forge `/plan`, `/hunt`, `/check`.
 - Knowledge sync and handoff retrieval -> `gbrain`.
 - Codex automation profile: required `health`, `check`, and `mermaid` from `~/.codex/skills`; do not vendor skill bodies.
 - CodeGraph readiness: required for agent code navigation; keep `.codegraph/` ignored and use `codegraph sync/context/query/callers/callees/impact` for P1/P2 discovery.
@@ -37,8 +37,8 @@
 - Environment check: `bash .ai/harness/scripts/check-agent-tooling.sh --host both --check-updates`.
 - After substantive repo changes, run `bash .ai/harness/scripts/check-task-sync.sh` and `bash .ai/harness/scripts/check-task-workflow.sh --strict`.
 - Primary worktree warns by default; enforce via `.claude/.require-worktree`.
-- Contract-level execution is worktree-first: `.ai/harness/scripts/plan-to-todo.sh --plan <approved-plan>` starts a linked `codex/<slug>` worktree when policy enables it, and `.ai/harness/scripts/contract-worktree.sh finish` merges back only after Waza `/check` and sprint verification pass.
-- After Codex Plan mode, Waza `/think`, or `forge-plan` produces a decision-complete plan, capture it with `.ai/harness/scripts/capture-plan.sh --slug <slug> --title <title>`; if implementation is already approved, capture with `--status Approved --execute` or run `.ai/harness/scripts/plan-to-todo.sh --plan <active-plan>`.
-- If repo state conflicts with the task, use an isolated `codex/<task-slug>` worktree, validate with Waza `/check`, and merge back to `main` without unrelated dirty changes.
+- Contract-level execution is worktree-first: `.ai/harness/scripts/plan-to-todo.sh --plan <approved-plan>` starts a linked `codex/<slug>` worktree when policy enables it, and `.ai/harness/scripts/contract-worktree.sh finish` merges back only after Forge `/review` and sprint verification pass.
+- After Codex Plan mode, Forge `/plan`, or `forge-plan` produces a decision-complete plan, capture it with `.ai/harness/scripts/capture-plan.sh --slug <slug> --title <title>`; if implementation is already approved, capture with `--status Approved --execute` or run `.ai/harness/scripts/plan-to-todo.sh --plan <active-plan>`.
+- If repo state conflicts with the task, use an isolated `codex/<task-slug>` worktree, validate with Forge `/review`, and merge back to `main` without unrelated dirty changes.
 
 ---

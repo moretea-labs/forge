@@ -325,8 +325,8 @@ EOF
     # - .ai/harness/checks/latest.json
     # - .ai/harness/events.jsonl
     # - .ai/harness/architecture/events.jsonl
-    # - .ai/harness/handoff/current.md
-    # - .ai/harness/handoff/resume.md
+    # - .ai/harness/session/continuation.md
+    # - .ai/harness/session/resume.md
     # - .ai/harness/failures/latest.jsonl
     # - .ai/harness/security/.gitkeep
     # - .ai/harness/worktrees/.gitkeep
@@ -493,7 +493,7 @@ main() {
     echo "  1. cd $PROJECT_NAME"
     echo "  2. Copy .env.example to .env and configure"
     echo "  3. Run: $PKG_MANAGER run dev"
-    echo "  4. Use Codex Plan mode or Waza /think, then capture it with: bash scripts/capture-plan.sh --slug first-feature --title \"First Feature\""
+    echo "  4. Use Codex Plan mode or Forge /plan, then capture it with: bash scripts/capture-plan.sh --slug first-feature --title \"First Feature\""
     echo "  5. After approval, run: bash scripts/plan-to-todo.sh --plan <active-plan>"
     echo ""
     pi_print_external_tooling_report "$PWD" "apply" "$SCRIPT_DIR/check-agent-tooling.sh"

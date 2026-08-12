@@ -91,7 +91,7 @@ workflow_runs_dir() {
 }
 
 workflow_resume_packet_file() {
-  workflow_repo_relative_path "$(workflow_policy_get '.handoff_resume.resume_packet_file' '.ai/harness/handoff/resume.md')" '.ai/harness/handoff/resume.md' '.ai/harness/'
+  workflow_repo_relative_path "$(workflow_policy_get '.session.resume_file' '.ai/harness/session/resume.md')" '.ai/harness/session/resume.md' '.ai/harness/'
 }
 
 workflow_pending_orchestration_file() {
@@ -104,14 +104,14 @@ workflow_ensure_harness_surface() {
     "$(dirname "$(workflow_context_map_file)")" \
     "$(dirname "$(workflow_policy_file)")" \
     "$(dirname "$(workflow_checks_file)")" \
-    "$(dirname "$(workflow_handoff_file)")" \
+    "$(dirname "$(workflow_session_continuation_file)")" \
     "$(dirname "$(workflow_resume_packet_file)")" \
     "$(dirname "$(workflow_failure_log_file)")" \
     "$(dirname "$(workflow_pending_orchestration_file)")" \
     "$(workflow_runs_dir)"
 
   [[ -f "$(workflow_checks_file)" ]] || printf "{}\n" > "$(workflow_checks_file)"
-  [[ -f "$(workflow_handoff_file)" ]] || printf "# Harness Handoff\n\n> **Reason**: bootstrap\n" > "$(workflow_handoff_file)"
+  [[ -f "$(workflow_session_continuation_file)" ]] || printf "# Forge Session Continuation Snapshot\n\n> **Reason**: bootstrap\n" > "$(workflow_session_continuation_file)"
   [[ -f "$(workflow_resume_packet_file)" ]] || printf "# Codex Resume Packet\n\n> **Reason**: bootstrap\n" > "$(workflow_resume_packet_file)"
   [[ -f "$(workflow_failure_log_file)" ]] || : > "$(workflow_failure_log_file)"
   [[ -f "$(workflow_events_file)" ]] || : > "$(workflow_events_file)"
@@ -1111,8 +1111,8 @@ workflow_checks_file() {
   workflow_repo_relative_path "$(workflow_policy_get '.harness.checks_file' '.ai/harness/checks/latest.json')" '.ai/harness/checks/latest.json' '.ai/harness/'
 }
 
-workflow_handoff_file() {
-  workflow_repo_relative_path "$(workflow_policy_get '.harness.handoff_file' '.ai/harness/handoff/current.md')" '.ai/harness/handoff/current.md' '.ai/harness/'
+workflow_session_continuation_file() {
+  workflow_repo_relative_path "$(workflow_policy_get '.session.continuation_file' '.ai/harness/session/continuation.md')" '.ai/harness/session/continuation.md' '.ai/harness/'
 }
 
 # mkdir-based mutual exclusion (macOS ships no flock). Spins ~2s, breaks locks
@@ -1258,7 +1258,7 @@ workflow_write_run_summary() {
       --arg active_review "${active_review:-}" \
       --arg active_notes "${active_notes:-}" \
       --arg checks_file "$(workflow_checks_file)" \
-      --arg handoff_file "$(workflow_handoff_file)" \
+      --arg handoff_file "$(workflow_session_continuation_file)" \
       --arg policy_file "$(workflow_policy_file)" \
       --arg context_map_file "$(workflow_context_map_file)" \
       '{
@@ -1278,7 +1278,7 @@ workflow_write_run_summary() {
   fi
 
   cat > "$output_file" <<EOF_RUN
-{"generated_at":"$(workflow_json_escape "$(date '+%Y-%m-%dT%H:%M:%S%z')")","run_id":"$(workflow_json_escape "$run_id")","reason":"$(workflow_json_escape "$reason")","checks_file":"$(workflow_json_escape "$(workflow_checks_file)")","handoff_file":"$(workflow_json_escape "$(workflow_handoff_file)")"}
+{"generated_at":"$(workflow_json_escape "$(date '+%Y-%m-%dT%H:%M:%S%z')")","run_id":"$(workflow_json_escape "$run_id")","reason":"$(workflow_json_escape "$reason")","checks_file":"$(workflow_json_escape "$(workflow_checks_file)")","handoff_file":"$(workflow_json_escape "$(workflow_session_continuation_file)")"}
 EOF_RUN
 }
 
@@ -1531,16 +1531,17 @@ workflow_contract_allows_path() {
 
   return 1
 }
-workflow_write_handoff() {
+workflow_write_session_continuation() {
+  # This file is a rebuildable host-session cache. Runtime HandoffItem/rh_inbox owns decisions that require ChatGPT or user judgement.
   local reason="${1:-session-stop}"
-  local handoff_file active_plan active_contract active_review active_notes checks_file next_task changed_files diff_stat spec_file source_plan parent_run_id supersedes
+  local continuation_file active_plan active_contract active_review active_notes checks_file next_task changed_files diff_stat spec_file source_plan parent_run_id supersedes
   local next_action next_stage next_command next_message
   local resume_file trace_file recent_commands blockers decisions goal latest_trace_file
   local active_sprint active_sprint_row
   local changed_count untracked_count
 
   workflow_ensure_harness_surface
-  handoff_file="$(workflow_handoff_file)"
+  continuation_file="$(workflow_session_continuation_file)"
   checks_file="$(workflow_checks_file)"
   resume_file="$(workflow_resume_packet_file)"
   spec_file="docs/spec.md"
@@ -1637,7 +1638,7 @@ workflow_write_handoff() {
   else
     goal="No active plan. Continue from the latest user request and filesystem state."
   fi
-  decisions="Use filesystem artifacts as source of truth; treat SQLite/thread state as a rebuildable read model only."
+  decisions="Canonical Runtime control-plane state is authoritative for migrated repositories. This snapshot is a non-authoritative, rebuildable session continuation cache derived from current source artifacts and evidence."
   blockers="(none recorded)"
   if [[ -f "$checks_file" ]] && command -v jq >/dev/null 2>&1; then
     latest_trace_file="$(jq -r '.run_file // empty' "$checks_file" 2>/dev/null || true)"
@@ -1646,8 +1647,8 @@ workflow_write_handoff() {
   fi
   latest_trace_file="${latest_trace_file:-$checks_file}"
 
-  cat > "$handoff_file" <<EOF_HANDOFF
-# Harness Handoff
+  cat > "$continuation_file" <<EOF_HANDOFF
+# Forge Session Continuation Snapshot
 
 > **Generated**: $(date '+%Y-%m-%d %H:%M:%S')
 > **Reason**: ${reason}
@@ -1695,7 +1696,7 @@ ${recent_commands}
 ## Resume Prompt
 
 - Resume packet: ${resume_file}
-- Start a fresh Codex session and read source artifacts first, then this handoff, before continuing; do not rely on auto-compact.
+- Start a fresh host session and read the current user input and Canonical Runtime state first. Use this snapshot only as bounded recovery context; do not treat it as lifecycle authority.
 
 ## Source Artifacts
 

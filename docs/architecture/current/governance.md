@@ -109,7 +109,7 @@ rule
 observed implementation
 risk
 temporary behavior
-owner Issue/Task
+owner Requirement/Work item or ADR
 target closure condition
 verification
 ```

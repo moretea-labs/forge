@@ -132,8 +132,8 @@ emit_stop_block_json() {
 }
 
 refresh_handoff() {
-  workflow_write_handoff "session-stop"
-  echo "[FinalizeHandoff] Refreshed $(workflow_handoff_file)." >&2
+  workflow_write_session_continuation "session-stop"
+  echo "[SessionContinuation] Refreshed $(workflow_session_continuation_file)." >&2
 }
 
 should_run_plan_completeness_gate() {

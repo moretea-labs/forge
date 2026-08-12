@@ -75,7 +75,7 @@ The tag workflow uses GitHub OIDC and does not require `NODE_AUTH_TOKEN` or a st
 Before `1.4.0`:
 
 - install the exact packed artifact on macOS, Linux, WSL2, and the supported Windows path;
-- verify `forge init`, `forge doctor`, repository registration/adoption, and the ChatGPT MCP connection;
+- verify `forge install`, `forge doctor`, repository registration/adoption, and the ChatGPT MCP connection;
 - confirm no RC-only warning or unstable install command remains in the stable docs;
 - change `package.json` from an RC version to the intended stable `X.Y.Z`; the package identity gate will require `latest`;
 - publish from tag `v1.4.0` through the protected environment;

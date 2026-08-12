@@ -103,7 +103,7 @@ extract_task_breakdown() {
 slug=""
 title=""
 status="Draft"
-source_name="codex-plan-or-waza-think"
+source_name="host-plan-or-forge-plan"
 route="planning"
 orchestration_kind="host-plan"
 source_ref=""
@@ -296,7 +296,7 @@ See captured planning output.
 ## Handoff
 
 - Checks file: \`.ai/harness/checks/latest.json\`
-- Session handoff: \`.ai/harness/handoff/current.md\`
+- Session continuation: \`.ai/harness/session/continuation.md\`
 
 ## Evidence Contract
 

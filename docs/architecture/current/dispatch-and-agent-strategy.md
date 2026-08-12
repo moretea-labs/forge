@@ -66,14 +66,14 @@ search/read
   -> inspect aggregate diff
   -> focused checks
   -> finalize or rollback
-  -> Task verification when linked
+  -> Work verification when linked
 ```
 
 Direct Edit MUST use the same Workspace single-writer resource boundary as a Workspace Agent.
 
 ### 3.2 Quick Agent
 
-Quick Agent is used when the objective is clear but implementation requires meaningful exploration or repeated local edit/test cycles, without needing a durable multi-Task dependency graph.
+Quick Agent is used when the objective is clear but implementation requires meaningful exploration or repeated local edit/test cycles, without needing a durable multi-Work dependency graph.
 
 Preferred characteristics:
 
@@ -84,11 +84,11 @@ Preferred characteristics:
 - retry can replace the whole attempt;
 - Agent autonomy provides clear value over Direct Edit.
 
-Quick Agent work may use ephemeral Issue metadata, but Job and Run evidence remain durable.
+Quick Agent work may carry ephemeral diagnostic metadata, but Job and Run evidence remain durable.
 
-### 3.3 Issue and Task
+### 3.3 Requirement, Plan, and Work
 
-A durable Issue/Task graph is required when work has one or more of:
+A durable Requirement/Plan/Work graph is required when work has one or more of:
 
 - multiple independently verifiable objectives;
 - dependencies or ordered migration phases;
@@ -101,7 +101,7 @@ A durable Issue/Task graph is required when work has one or more of:
 - a need for review and recovery across multiple sessions;
 - release or rollout coordination.
 
-A durable Task is not ceremony. It is the unit that owns scope, dependencies, evidence, retry history, and acceptance.
+A durable Work contract is not ceremony. It owns bounded execution scope, dependencies, evidence, retry history, and completion receipts; Requirement owns user-visible intent and acceptance outcome.
 
 ## 4. Decision Order
 
@@ -111,7 +111,7 @@ The Controller applies this order:
 1. Is the request read-only?
 2. Can bounded Direct Edit safely satisfy it?
 3. Is one scoped Agent attempt sufficient?
-4. Does the work require a durable Task graph?
+4. Does the work require durable Requirement/Plan/Work state?
 5. Does it cross repositories or require a Schedule?
 6. Does any external or destructive boundary require human authorization?
 ```
@@ -234,15 +234,15 @@ Response policy:
 | Acceptance | Refine implementation, not the criteria unless product intent changed |
 | Integration | Preserve Worktree; repair from current target state |
 | Capability mismatch | Select a more suitable Agent/provider |
-| Controller contract | Re-plan Task before another Run |
+| Controller contract | Re-plan Work before another Run |
 
-## 8. Task Execution Contract
+## 8. Work Execution Contract
 
 Every Agent Run receives a generated contract containing:
 
 ```text
 repository and checkout identity
-Issue and Task objective
+Requirement and Work objective
 current implementation context
 allowed and forbidden paths
 required outputs
@@ -347,7 +347,7 @@ The dispatch layer MUST avoid:
 
 ## 13. Current Implementation
 
-The repository implements Direct Edit, Quick Agent and Issue/Task assessment; runtime Agent selection; bounded Task scope; persistent Runs; Workspace/Worktree placement; and risk-adaptive verification.
+The repository implements Direct Edit, Quick Agent and Requirement/Work assessment; runtime Agent selection; bounded Task scope; persistent Runs; Workspace/Worktree placement; and risk-adaptive verification.
 
 The Thin Gateway keeps deterministic local commands on Direct Edit or Process Runtime paths. Agent dispatch is now an explicit external-Controller handoff; the Kernel no longer creates Execution Jobs for ordinary Agent launches. Work ownership, repository placement, and resource claims remain durable Controller state, while provider selection and model execution belong to the claimed external Controller.
 

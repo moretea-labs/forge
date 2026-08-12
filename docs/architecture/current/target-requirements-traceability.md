@@ -60,7 +60,7 @@ Verification: `tests/runtime/canonical-single-runtime.test.ts`, `scripts/smoke-m
 
 ## 5. Work-mode and Agent strategy
 
-The original Direct Edit, Quick Agent and Issue/Task assessment remains available. Runtime dispatch persists the chosen operation and preserves allowed Agent providers, timeout and browser permissions. Explorer/Implementer/Verifier policy remains a planning concern; deterministic integration and release checks remain program-owned rather than LLM-owned.
+Direct Edit and Quick Agent remain available; historical Issue/Task assessment is compatibility/read-only after Requirement/Work cutover. Runtime dispatch persists the chosen operation and preserves allowed Agent providers, timeout and browser permissions. Explorer/Implementer/Verifier policy remains a planning concern; deterministic integration and release checks remain program-owned rather than LLM-owned.
 
 Evidence: `src/cli/controller/work-mode.ts`, `src/runtime/gateway/mcp/router.ts`, `src/runtime/execution/workers/executor.ts`.
 
@@ -185,7 +185,7 @@ Detailed evidence: [`migration-roadmap.md`](migration-roadmap.md).
 Resolve Repository
 -> read compact projection
 -> classify work mode
--> select/create Issue and Task when required
+-> select/create Requirement and Work when required
 -> declare Scope and Claims
 -> persist requestId and ExecutionJob
 -> return Job ID

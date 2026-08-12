@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Forge CLI entry with forge compatibility aliases.
+ * Forge CLI entry. Public commands expose product workflows; compatibility and host-dispatch commands stay hidden.
  *
  * Wires commander.js to the global runtime bootstrap, repo-local update,
  * hook adapter, status, doctor, migrate, security, and tool command bodies.
@@ -13,7 +13,7 @@ import { runInit, runInteractiveInit, type InitBrainMode } from './commands/init
 import { runHook } from './commands/hook';
 import { CLI_VERSION, formatStatus, runStatus } from './commands/status';
 import { formatDoctor, runDoctor } from './commands/doctor';
-import { buildInitHookCommand, buildSetupCommand, formatInitHook, runInitHook } from './commands/init-hook';
+import { buildSetupCommand, formatInitHook, runInitHook } from './commands/init-hook';
 import { formatMigratePlan, runMigrate } from './commands/migrate';
 import { buildToolsCommand } from './commands/tools';
 import { buildPluginCommand } from './commands/plugin';
@@ -41,8 +41,6 @@ import { bootstrapManagedRuntimeEnv } from '../runtime/shared/managed-env';
 bootstrapManagedRuntimeEnv();
 
 export const SUBCOMMANDS = [
-  'init',
-  'init-hook',
   'install',
   'uninstall',
   'hook',
@@ -114,21 +112,6 @@ export function buildProgram(): Command {
     .addHelpText('after', '\nGlobal shortcuts:\n  -V, --version  output the version number')
     .exitOverride();
 
-  program
-    .command('init')
-    .description('Install the Forge CLI, global hook adapters, and required runtime dependencies')
-    .option('--target <target>', `Host target for adapters and runtime skills: ${VALID_TARGETS.join('|')}`, 'both')
-    .option('--no-cli', 'Skip installing the Forge CLI globally')
-    .option('--no-sync-skill', 'Skip refreshing legacy forge skill aliases under host skill roots')
-    .option('--no-hooks', 'Skip global hook adapter installation')
-    .option('--with-external-skills', 'Also install optional third-party Waza/Mermaid skills and Forge cross-review helpers')
-    .option('--no-codegraph', 'Skip CodeGraph CLI/MCP configuration')
-    .option('--brain-root <path>', 'Brain vault root to persist for Forge brain commands')
-    .option('--refresh', 'Compatibility no-op; init already refreshes the idempotent user-level runtime')
-    .option('--json', 'Output JSON instead of human-readable text')
-    .action((rawOpts: GlobalRuntimeCommandOptions & { refresh?: boolean }) => {
-      runGlobalRuntimeBootstrap('init', rawOpts);
-    });
 
   program
     .command('update')
@@ -140,7 +123,7 @@ export function buildProgram(): Command {
     .option('--check-updates', 'Include network-backed version update advisories in setup check output')
     .option('--no-runtime-refresh', 'Skip runtime refresh and run the read-only setup check only')
     .option('--no-cli', 'Skip installing the Forge CLI globally')
-    .option('--no-sync-skill', 'Skip refreshing legacy forge skill aliases under host skill roots')
+    .option('--no-sync-skill', 'Skip refreshing Forge host skill aliases')
     .option('--no-hooks', 'Skip global hook adapter installation')
     .option('--with-external-skills', 'Also bootstrap third-party Waza, Mermaid, and cross-review skills')
     .option('--no-external-skills', 'Compatibility no-op; update no longer bootstraps third-party skills by default')
@@ -219,7 +202,7 @@ export function buildProgram(): Command {
 
   program
     .command('adopt')
-    .description('Install or refresh the repo-local harness workflow in an existing repo')
+    .description('Install or refresh the repo-local Forge workflow in an existing repo')
     .argument('[action]', 'Optional action: rollback')
     .option('--repo <path>', 'Target repository path (defaults to cwd)')
     .option('--archive <path>', 'Runtime reclaim archive to restore when action is rollback')
@@ -408,7 +391,7 @@ export function buildProgram(): Command {
     .option('--target <target>', `Target host: ${VALID_TARGETS.join('|')}`, 'both')
     .option('--location <location>', `Adapter-only install location: ${VALID_LOCATIONS.join('|')}`)
     .option('--no-cli', 'Skip installing the Forge CLI globally')
-    .option('--no-sync-skill', 'Skip refreshing legacy forge skill aliases under host skill roots')
+    .option('--no-sync-skill', 'Skip refreshing Forge host skill aliases')
     .option('--no-hooks', 'Skip global hook adapter installation during full runtime install')
     .option('--with-external-skills', 'Also install optional third-party Waza/Mermaid skills and Forge cross-review helpers')
     .option('--no-codegraph', 'Skip CodeGraph CLI/MCP configuration')
@@ -465,7 +448,7 @@ export function buildProgram(): Command {
     });
 
   program
-    .command('hook')
+    .command('hook', { hidden: true })
     .description('Dispatch a hook event to opt-in repo .ai/hooks/<script>')
     .argument('<event>', 'Hook event name')
     .requiredOption('--route <route>', 'Route id (default, edit, bash, always)')
@@ -497,11 +480,10 @@ export function buildProgram(): Command {
       process.exit(report.summary.fail > 0 ? 1 : 0);
     });
 
-  program.addCommand(buildInitHookCommand());
   program.addCommand(buildSetupCommand());
 
   program
-    .command('migrate')
+    .command('migrate', { hidden: true })
     .description('Migrate legacy project-level hook adapters to the global CLI (dry-run by default)')
     .option('--apply', 'Commit changes (default is dry-run)')
     .option('--json', 'Output JSON plan')
@@ -528,13 +510,13 @@ export function buildProgram(): Command {
 
   program.addCommand(buildToolsCommand());
   program.addCommand(buildPluginCommand());
-  program.addCommand(buildBrainCommand());
-  program.addCommand(buildCapabilityContextCommand());
+  program.addCommand(buildBrainCommand(), { hidden: true });
+  program.addCommand(buildCapabilityContextCommand(), { hidden: true });
   program.addCommand(buildDocsCommand());
   program.addCommand(buildMcpCommand());
   program.addCommand(buildChatgptCommand());
-  program.addCommand(buildRunCommand());
-  program.addCommand(buildControllerCommand());
+  program.addCommand(buildRunCommand(), { hidden: true });
+  program.addCommand(buildControllerCommand(), { hidden: true });
   program.addCommand(buildRepositoryCommand());
   program.addCommand(buildRuntimeCommand());
   program.addCommand(buildRecoveryCommand());

@@ -214,7 +214,7 @@ next_plan_task() {
 
 handoff_next_step() {
   local handoff_file
-  handoff_file="$(json_get '.harness.handoff_file' '.ai/harness/handoff/current.md')"
+  handoff_file="$(json_get '.session.continuation_file' '.ai/harness/session/continuation.md')"
   [[ -f "$handoff_file" ]] || { printf '(none)'; return 0; }
   awk '
     /^## Exact Next Step[[:space:]]*$/ { in_section = 1; next }
@@ -451,7 +451,7 @@ $(git_status_files)
 - Sprints: \`$(json_get '.sprints.dir' 'plans/sprints')/*.sprint.md\`
 - Active sprint marker: \`.ai/harness/sprint/active-sprint\`
 - Workstreams: \`tasks/workstreams/**/*.md\`
-- Handoff: \`.ai/harness/handoff/current.md\`
+- Handoff: \`.ai/harness/session/continuation.md\`
 - Checks: \`.ai/harness/checks/latest.json\`
 EOF_STATUS
 }

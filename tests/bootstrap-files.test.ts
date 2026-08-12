@@ -235,11 +235,11 @@ describe("Bootstrap Script Contracts", () => {
     expect(contract.artifacts.requiredFiles).toContain(".ai/harness/brain-manifest.json");
     expect(contract.artifacts.requiredFiles).toContain(".ai/context/capabilities.json");
     expect(contract.artifacts.requiredFiles).toContain(".ai/context/capability-source-map.json");
-    expect(contract.artifacts.requiredFiles).not.toContain(".ai/harness/handoff/resume.md");
+    expect(contract.artifacts.requiredFiles).not.toContain(".ai/harness/session/resume.md");
     expect(contract.artifacts.requiredFiles).not.toContain(".ai/harness/context-budget/latest.json");
     expect(read("assets/templates/review.template.md")).toContain("## External Acceptance Advice");
     expect(sharedLib).toContain("## External Acceptance Advice");
-    expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/handoff/resume.md");
+    expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/session/resume.md");
     expect(contract.artifacts.runtimeFiles).not.toContain(".ai/harness/context-budget/latest.json");
     expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/capability-context/");
     expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/planning/");
@@ -461,10 +461,10 @@ describe("Bootstrap Script Contracts", () => {
     expect(settings).not.toContain("\"$PROMPT\"");
   });
 
-  test("setup script should delegate to the typed global init path", () => {
+  test("setup script should delegate to the canonical install path", () => {
     const setup = read("scripts/setup-plugins.sh");
-    expect(setup).toContain("forge init");
-    expect(setup).toContain('bun "$ROOT_DIR/src/cli/index.ts" init');
+    expect(setup).toContain("forge install");
+    expect(setup).toContain('bun "$ROOT_DIR/src/cli/index.ts" install');
     expect(setup).not.toContain("ESSENTIAL_PLUGINS");
     expect(setup).not.toContain("feature-dev");
   });

@@ -280,3 +280,31 @@ describe('install command (Phase 1B)', () => {
     });
   });
 });
+
+describe('public CLI governance', () => {
+  test('root help exposes product workflows and hides compatibility machinery', () => {
+    const res = spawnSync('bun', [CLI, '--help'], { cwd: ROOT, encoding: 'utf8' });
+    expect(res.status).toBe(0);
+    const commandLines = res.stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => /^[a-z][a-z-]*(?:\s|$)/.test(line));
+    const names = commandLines.map((line) => line.split(/\s+/)[0]);
+    for (const command of ['install', 'update', 'setup', 'adopt', 'repo', 'runtime', 'recovery', 'plugin', 'chatgpt', 'mcp', 'tools']) {
+      expect(names).toContain(command);
+    }
+    for (const command of ['init', 'init-hook', 'hook', 'run', 'controller', 'migrate', 'brain', 'capability-context']) {
+      expect(names).not.toContain(command);
+    }
+  });
+
+  test('retired init entrypoint is rejected while hidden run remains callable', () => {
+    const retired = spawnSync('bun', [CLI, 'init'], { cwd: ROOT, encoding: 'utf8' });
+    expect(retired.status).not.toBe(0);
+    expect(`${retired.stdout}\n${retired.stderr}`).toContain("unknown command 'init'");
+
+    const hidden = spawnSync('bun', [CLI, 'run', '--help'], { cwd: ROOT, encoding: 'utf8' });
+    expect(hidden.status).toBe(0);
+    expect(hidden.stdout).toContain('Usage: forge run');
+  });
+});

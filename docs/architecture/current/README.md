@@ -73,7 +73,9 @@ Read the architecture in this order:
 18. `session-aware-execution-and-authorization.md` — Session Context, Work Handle, Goal delegation, and resumable approval boundaries.
 19. `runtime-health-and-resource-lifecycle.md` — shared health evaluation, projection freshness, capability status, attention/history, and bounded ownership-aware cleanup.
 20. `runtime-architecture-simplification.md` — canonical single Runtime lifecycle, release and recovery boundary.
-21. `human-interaction-plane.md` — foreground provider sessions, durable human handoff, profile fencing, and safe resumption.
+21. `human-interaction-plane.md` — foreground provider sessions, bounded human-interaction handoff, profile fencing, and safe resumption.
+22. `control-plane-authority-inventory.md` — single-writer persistence families and frozen legacy writers.
+23. `legacy-governance.md` — RepoHarness inheritance, session-continuation boundary, CLI governance, and deletion rules.
 
 
 ## Architecture Layers
@@ -85,7 +87,7 @@ The approved top-level layers are:
 | Thin Gateway | Authentication, validation, routing, compact reads, durable command acceptance | Long execution, Agent lifetime, heavy checks |
 | Global Control Plane | Repository registry, global quotas, portfolio scheduling | Repository-local workflow mutation |
 | Per-Repository Actor | Repository-local ordering, claims, conflict decisions, integration and release coordination | Cross-repository global locks |
-| Workflow Plane | Issue, Task, Schedule, Occurrence intent and dependency state | Process lifetime and raw logs |
+| Workflow Plane | Requirement, PlanStep, Work, Schedule, Occurrence intent and dependency state | Process lifetime and raw logs |
 | Durable Execution Plane | Job acceptance, dispatch, Run attempts, commands, checks, workers | Product acceptance decisions |
 | Workspace Plane | Workspace/worktree allocation, Git integration, resource leases | Business intent |
 | Evidence Plane | Diffs, checks, logs, artifacts, verification and release evidence | Scheduling policy |
@@ -93,14 +95,13 @@ The approved top-level layers are:
 
 ## Source-of-Truth Rules
 
-- Issue and Task files own durable work intent.
-- Jobs own asynchronous system-operation state.
-- Runs own individual Agent execution attempts.
+- Migrated Requirement, ExecutionPlan/PlanStep, Work, dependency, receipt, validation, and approval lifecycle state is single-writer state in `<durable-controller-home>/control-plane.sqlite` as defined by `control-plane-authority-inventory.md`.
+- Git owns source code and accepted source artifacts such as specs, design notes, and captured plans; those artifacts are not a second lifecycle writer after migration.
+- Jobs own asynchronous system-operation state and Runs own individual Agent execution attempts.
 - Edit Sessions own transactional direct modifications.
-- Verification records own exact-revision completion evidence.
-- Event logs own audit history.
-- Atomic snapshots and indexes are projections optimized for reads and recovery.
-- The controller task ledger projection (`.ai/harness/controller/task-ledger.json` and `.ai/harness/handoff/controller-current.md`) is a compact recovery/read model derived from durable Issue, Task, Run, and worklog state; its `status` field is a deterministic continuation hint for controller recovery, not a competing mutable task source.
+- Verification records own exact-revision completion evidence; event logs own audit history.
+- Atomic snapshots, indexes, task-ledger files, historical Issue/Task aliases, `tasks/current.md`, and `.ai/harness/session/*` are projections or compatibility/session caches only.
+- The legacy controller task-ledger projection is read-only after control-plane cutover and cannot mutate Requirement/Plan/Work state.
 - The controller context pack is a transient Projection Plane read model for scoped code investigation. It may return live Git metadata, validation hints, ranked candidate files, and bounded raw snippets, but it must not become source-of-truth for implementation decisions or replace exact source, diff, and validation review.
 - Chat history, UI state, worker self-reports, and in-memory maps are never durable truth.
 

@@ -713,7 +713,7 @@ else
 
 ## Verification Evidence
 
-- Waza /check run:
+- Forge /review run:
 - Commands run:
 - Manual checks:
 - Supporting artifacts:

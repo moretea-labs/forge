@@ -80,3 +80,11 @@ The final cutover tests prove:
 Any later non-critical compatibility residue is recorded as a
 MaintenanceFinding. It does not reopen a completed Requirement unless the user
 outcome itself regresses.
+
+## Session continuation versus HandoffItem
+
+The frozen `handoff artifact writes` rule refers to lifecycle/decision handoff state. Current hooks may write only the ignored, rebuildable host-session cache under `.ai/harness/session/`; those files are projections for fresh-session context and are never control-plane writers.
+
+A decision requiring ChatGPT or user judgement is represented by Runtime `HandoffItem` and surfaced through `rh_inbox`. Session Markdown cannot create, acknowledge, resolve, dismiss, supersede, or expire a `HandoffItem`.
+
+See `docs/architecture/current/legacy-governance.md` for the RepoHarness-to-Forge disposition rules.

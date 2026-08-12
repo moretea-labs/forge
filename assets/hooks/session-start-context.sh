@@ -56,18 +56,18 @@ file_mtime() {
   stat -c '%Y' "$file" 2>/dev/null
 }
 
-resume_current_for_handoff() {
-  local handoff_file resume_mtime handoff_mtime
+resume_current_for_continuation() {
+  local continuation_file resume_mtime continuation_mtime
   resume_available || return 1
 
-  handoff_file="$(workflow_handoff_file)"
-  [[ -f "$handoff_file" ]] || return 0
+  continuation_file="$(workflow_session_continuation_file)"
+  [[ -f "$continuation_file" ]] || return 0
 
   resume_mtime="$(file_mtime "$resume_file" || true)"
-  handoff_mtime="$(file_mtime "$handoff_file" || true)"
-  [[ -n "$resume_mtime" && -n "$handoff_mtime" ]] || return 0
+  continuation_mtime="$(file_mtime "$continuation_file" || true)"
+  [[ -n "$resume_mtime" && -n "$continuation_mtime" ]] || return 0
 
-  [[ "$resume_mtime" -ge "$handoff_mtime" ]]
+  [[ "$resume_mtime" -ge "$continuation_mtime" ]]
 }
 
 active_plan_exists() {
@@ -246,11 +246,11 @@ tooling_update_advisory_context() {
   fi
 }
 
-handoff_section_has_signal() {
+continuation_section_has_signal() {
   local header="$1"
-  local handoff_file
-  handoff_file="$(workflow_handoff_file)"
-  [[ -f "$handoff_file" ]] || return 1
+  local continuation_file
+  continuation_file="$(workflow_session_continuation_file)"
+  [[ -f "$continuation_file" ]] || return 1
 
   awk -v header="$header" '
     $0 == header { in_section = 1; next }
@@ -265,7 +265,7 @@ handoff_section_has_signal() {
       found = 1
     }
     END { exit found ? 0 : 1 }
-  ' "$handoff_file"
+  ' "$continuation_file"
 }
 
 capability_context_pending() {
@@ -489,8 +489,8 @@ active_sprint_context() {
 
 - Sprint: \`${sprint_file}\` status=${status:-unknown} backlog=${progress}
 - Next sprint task: ${next_task}
-- Rule: a Sprint is a long-task container. Use \`\$think\` to expand the next sprint task into a detailed \`plans/plan-*.md\`, then run the existing plan -> contract -> worktree flow. \`tasks/todos.md\` stays the deferred-goal ledger.
-- Entrypoint: inspect with \`${sprint_script} next\`; after \`\$think\` produces an approved plan, capture it with \`${capture_script} --source waza-think --source-ref sprint:${sprint_file}#${next_task}\`.
+- Rule: a Sprint is a long-task container. Use \`/plan\` to expand the next sprint task into a detailed \`plans/plan-*.md\`, then run the existing plan -> contract -> worktree flow. \`tasks/todos.md\` stays the deferred-goal ledger.
+- Entrypoint: inspect with \`${sprint_script} next\`; after \`/plan\` produces an approved plan, capture it with \`${capture_script} --source forge-plan --source-ref sprint:${sprint_file}#${next_task}\`.
 EOF_CONTEXT
 }
 
@@ -503,11 +503,11 @@ EOF_CONTEXT
 }
 
 context=""
-if resume_current_for_handoff; then
+if resume_current_for_continuation; then
   if active_plan_exists \
     || active_todo_exists \
-    || handoff_section_has_signal "## Blockers" \
-    || handoff_section_has_signal "## Changed Files"; then
+    || continuation_section_has_signal "## Blockers" \
+    || continuation_section_has_signal "## Changed Files"; then
     context="$(awk 'length(total) < 12000 { total = total $0 "\n" } END { printf "%s", total }' "$resume_file")"
   fi
 fi

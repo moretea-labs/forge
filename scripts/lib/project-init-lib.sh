@@ -36,7 +36,6 @@ PI_DEFAULT_RUNTIME_ENTRIES=$(cat <<'EOF_RUNTIME'
 .claude/.trace.jsonl
 .claude/.session-handoff.md
 .claude/.task-state.json
-.claude/.task-handoff.md
 .claude/.codegraph-state/
 .claude/*.tmp
 .claude/*.bak
@@ -48,8 +47,8 @@ tasks/.current.md.tmp.*
 .ai/harness/events.jsonl
 .ai/harness/archive/
 .ai/harness/failures/latest.jsonl
-.ai/harness/handoff/current.md
-.ai/harness/handoff/resume.md
+.ai/harness/session/continuation.md
+.ai/harness/session/resume.md
 .ai/harness/capability-context/
 .ai/harness/security/*
 !.ai/harness/security/.gitkeep
@@ -203,7 +202,7 @@ Complete this inventory before implementation. If any line is unknown, keep the 
 ## Handoff
 
 - Checks file: `.ai/harness/checks/latest.json`
-- Session handoff: `.ai/harness/handoff/current.md`
+- Session continuation: `.ai/harness/session/continuation.md`
 
 ## Evidence Contract
 
@@ -346,7 +345,7 @@ PI_TEMPLATE_REVIEW=$(cat <<'EOF_TEMPLATE_REVIEW'
 
 ## Verification Evidence
 
-- Waza /check run:
+- Forge /review run:
 - Commands run:
 - Manual checks:
 - Supporting artifacts:
@@ -1311,15 +1310,13 @@ pi_external_tooling_gbrain_mcp() {
 
 pi_external_tooling_defaults_summary() {
   cat <<'EOF_EXTERNAL_TOOLING_DEFAULTS'
-- Policy defaults: routing complex->gstack, simple->waza, knowledge->gbrain
+- Primary routing: Forge /direct, /plan, /debug, /review, /release, /scale
 - Hosts: claude-code, codex
-- Mode: agent-readiness-required
-- Detection: init-migrate
-- Waza: Codex-first, managed skills think/hunt/check/health, stage upstream in ~/.agents/skills, sync verified copies into ~/.codex/skills
-- Codex automation profile: required health/check/mermaid from ~/.codex/skills; do not vendor skill bodies
-- gbrain MCP: candidate-disabled
-- CodeGraph: required agent code-navigation readiness tool, target-aware MCP configure by explicit user command or authorized agent action, per-repo ignored .codegraph/ index; generated repos do not add it as a package dependency unless local policy opts in
-- Auto-actions: never install, upgrade, serve, sync, or enable MCP automatically
+- Mode: optional-enhancements
+- Detection: setup/readiness only
+- Waza/gstack/gbrain/Mermaid: optional host enhancements; never required for Forge correctness
+- CodeGraph: Forge bundled structural backend; global CLI/MCP is optional host integration
+- Auto-actions: never install, upgrade, serve, sync, or enable unrelated third-party tooling automatically
 EOF_EXTERNAL_TOOLING_DEFAULTS
 }
 
@@ -1936,7 +1933,6 @@ pi_write_harness_policy() {
   "harness": {
     "policy_file": ".ai/harness/policy.json",
     "checks_file": ".ai/harness/checks/latest.json",
-    "handoff_file": ".ai/harness/handoff/current.md",
     "failure_log_file": ".ai/harness/failures/latest.jsonl",
     "events_file": ".ai/harness/events.jsonl",
     "architecture_events_file": ".ai/harness/architecture/events.jsonl",
@@ -2003,19 +1999,21 @@ pi_write_harness_policy() {
       "sync_rule": "only explicitly opted-in repo-to-brain manifest entries may be written to the default brain vault; pointer-only externalized stubs remain check-only"
     }
   },
-  "handoff_resume": {
-    "resume_packet_file": ".ai/harness/handoff/resume.md",
-    "global_handoff_dir": "~/.codex/handoffs",
-    "auto_start_new_session": false
+  "session": {
+    "continuation_file": ".ai/harness/session/continuation.md",
+    "resume_file": ".ai/harness/session/resume.md",
+    "global_resume_dir": "~/.codex/handoffs",
+    "auto_start_new_session": false,
+    "authority": "rebuildable-host-session-cache-only"
   },
   "plan_capture": {
     "script": "scripts/capture-plan.sh",
-    "sources": ["codex-plan-mode", "waza-think", "forge-plan", "forge-sprint"],
-    "rule": "Codex Plan mode and Waza think planning should capture decision-complete plans into plans/plan-*.md; implementation approval then projects the active approved plan through scripts/plan-to-todo.sh; sprint backlog rows are long-task waypoints and should be expanded with \$think before capture/execution"
+    "sources": ["host-plan-mode", "forge-plan", "forge-sprint"],
+    "rule": "Forge /plan or host planning mode may capture decision-complete source plans into plans/plan-*.md; migrated lifecycle execution remains owned by Runtime Plan/Work state"
   },
   "planning": {
     "pending_orchestration_file": ".ai/harness/planning/pending.json",
-    "source_of_truth": "transient host planning bridge only; plans/ and .ai/harness/active-plan remain authoritative"
+    "source_of_truth": "transient host planning bridge only; captured plans are source artifacts, while migrated Runtime Plan/Work lifecycle state is authoritative in the Canonical Runtime"
   },
   "guards": {
     "edit_plan_gate": "advice",
@@ -2060,7 +2058,7 @@ pi_write_harness_policy() {
       "existing_changes_unrelated_but_would_block_review",
       "task_requires_clean_validation_surface"
     ],
-    "validation_route": "waza:check",
+    "validation_route": "forge:/review",
     "merge_back": {
       "target": "main",
       "requires_clean_check": true,
@@ -2099,14 +2097,15 @@ pi_write_harness_policy() {
   },
   "external_tooling": {
     "routing": {
-      "complex": "gstack",
-      "simple": "waza",
-      "knowledge": "gbrain"
+      "primary": "forge",
+      "optional_complex_helper": "gstack",
+      "optional_daily_helper": "waza",
+      "optional_knowledge_helper": "gbrain"
     },
     "hosts": $(pi_external_tooling_hosts_json),
-    "mode": "agent-readiness-required",
+    "mode": "optional-enhancements",
     "detection": "init-migrate",
-    "readiness_gate": "forge run check-agent-tooling --host codex --strict-readiness",
+    "readiness_report": "forge run check-agent-tooling --host codex",
     "waza": {
       "source_repo": "tw93/Waza",
       "source_url": "https://github.com/tw93/Waza.git",
@@ -2118,14 +2117,14 @@ pi_write_harness_policy() {
       "host_drift_policy": "report-per-host-version-staging-and-upstream-drift"
     },
     "codex_automation_profile": {
-      "required_skills": ["health", "check", "mermaid"],
-      "optional_skills": [],
-      "mode": "codex-runtime-reference",
+      "required_skills": [],
+      "optional_skills": ["health", "check", "mermaid"],
+      "mode": "optional-codex-runtime-reference",
       "source": "~/.codex/skills",
       "routes": {
-        "workflow_health": "waza:health",
-        "review_gate": "waza:check",
-        "architecture_diagram": "mermaid"
+        "workflow_health_optional": "waza:health",
+        "review_helper_optional": "waza:check",
+        "architecture_diagram_optional": "mermaid"
       },
       "vendoring_policy": "do-not-vendor-skill-body"
     },
@@ -2146,7 +2145,7 @@ pi_write_harness_policy() {
       "codex_config_path": "~/.codex/config.toml",
       "claude_config_path": "~/.claude.json",
       "index_dir": ".codegraph",
-      "readiness": "required-for-agent-code-navigation",
+      "readiness": "forge-bundled-backend; host-mcp-optional",
       "hook_policy": "do-not-block-hooks",
       "install_command": "bun add -g @colbymchenry/codegraph && forge tools configure codegraph --target codex --location global",
       "project_init_command": "codegraph init -i .",
@@ -2156,16 +2155,16 @@ pi_write_harness_policy() {
   },
   "agentic_development": {
     "routing": {
-      "product_discovery": "gstack:office-hours",
-      "complex_engineering_plan": "gstack:plan-eng-review",
-      "design_plan": "gstack:plan-design-review",
-      "small_or_medium_plan": "waza:think",
-      "bug_or_regression": "waza:hunt",
-      "post_implementation_review": "waza:check"
+      "direct": "forge:/direct",
+      "plan": "forge:/plan",
+      "debug": "forge:/debug",
+      "review": "forge:/review",
+      "release": "forge:/release",
+      "scale": "forge:/scale"
     },
     "due_diligence": {
       "levels": ["P1_GLOBAL_ARCHITECTURE", "P2_DATA_FLOW_TRACE", "P3_DESIGN_DECISION"],
-      "explicit_report_required_for": ["plan-eng-review", "hunt", "risky_refactor", "deployment", "auth_payment_data", "shared_contract"]
+      "explicit_report_required_for": ["architecture", "debug", "risky_refactor", "deployment", "auth_payment_data", "shared_contract"]
     }
   },
   "enforcement": {
@@ -2400,6 +2399,7 @@ pi_ensure_harness_state_surface() {
     "$target_dir/tasks/workstreams" \
     "$target_dir/.ai/context" \
     "$target_dir/.ai/harness/checks" \
+    "$target_dir/.ai/harness/session" \
     "$target_dir/.ai/harness/handoff" \
     "$target_dir/.ai/harness/scripts" \
     "$target_dir/.ai/harness/failures" \
@@ -2419,8 +2419,8 @@ pi_ensure_harness_state_surface() {
     "$target_dir/.ai/harness/runs"
 
   [[ -f "$target_dir/.ai/harness/checks/latest.json" ]] || printf "{}\n" > "$target_dir/.ai/harness/checks/latest.json"
-  [[ -f "$target_dir/.ai/harness/handoff/current.md" ]] || printf "# Harness Handoff\n\n> **Reason**: bootstrap\n" > "$target_dir/.ai/harness/handoff/current.md"
-  [[ -f "$target_dir/.ai/harness/handoff/resume.md" ]] || printf "# Codex Resume Packet\n\n> **Reason**: bootstrap\n" > "$target_dir/.ai/harness/handoff/resume.md"
+  [[ -f "$target_dir/.ai/harness/session/continuation.md" ]] || printf "# Forge Session Continuation Snapshot\n\n> **Reason**: bootstrap\n" > "$target_dir/.ai/harness/session/continuation.md"
+  [[ -f "$target_dir/.ai/harness/session/resume.md" ]] || printf "# Codex Resume Packet\n\n> **Reason**: bootstrap\n" > "$target_dir/.ai/harness/session/resume.md"
   [[ -f "$target_dir/.ai/context/capability-source-map.json" ]] || printf '{\n  "version": 1,\n  "capabilities": {}\n}\n' > "$target_dir/.ai/context/capability-source-map.json"
   [[ -f "$target_dir/.ai/harness/events.jsonl" ]] || : > "$target_dir/.ai/harness/events.jsonl"
   [[ -f "$target_dir/.ai/harness/architecture/events.jsonl" ]] || : > "$target_dir/.ai/harness/architecture/events.jsonl"

@@ -1569,11 +1569,13 @@ describe("MCP controller profile", () => {
       const handoffValue = JSON.parse(handoff!.content[0].text);
       expect(handoffValue.usedScript).toBe(false);
       expect(handoffValue.fallbackUsed).toBe(true);
-      expect(handoffValue.artifacts[0].path).toBe(".ai/harness/handoff/current.md");
+      expect(handoffValue.artifacts[0].path).toBe(".ai/harness/session/continuation.md");
       expect(handoffValue.artifacts[0].preview).toContain("controller-test");
-      expect(handoffValue.artifacts[1].path).toBe(".ai/harness/handoff/resume.md");
-      expect(existsSync(join(repoRoot, ".ai", "harness", "handoff", "current.md"))).toBe(true);
-      expect(existsSync(join(repoRoot, ".ai", "harness", "handoff", "resume.md"))).toBe(true);
+      expect(handoffValue.artifacts[1].path).toBe(".ai/harness/session/resume.md");
+      expect(existsSync(join(repoRoot, ".ai", "harness", "session", "continuation.md"))).toBe(true);
+      expect(existsSync(join(repoRoot, ".ai", "harness", "session", "resume.md"))).toBe(true);
+      expect(existsSync(join(repoRoot, ".ai", "harness", "handoff", "current.md"))).toBe(false);
+      expect(existsSync(join(repoRoot, ".ai", "harness", "handoff", "resume.md"))).toBe(false);
     });
   });
 

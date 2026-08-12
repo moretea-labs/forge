@@ -1,8 +1,7 @@
 /**
  * Existing-repository Forge bootstrap/update implementation.
  *
- * This backs the public `forge adopt` command and the legacy
- * `forge-init` skill facade: default the target repo to cwd,
+ * This backs the public `forge adopt` command and reusable bootstrap primitives: default the target repo to cwd,
  * install/refresh the machine runtime pieces, apply the repo-local workflow
  * migration, then verify the installed harness.
  */
@@ -576,15 +575,15 @@ export function runInit(opts: InitCommandOptions = {}): InitCommandResult {
         steps.push(
           withStepName(
             handoff,
-            "refresh handoff packet",
+            "refresh session continuation",
             "scripts/prepare-codex-handoff.sh --reason forge-adopt-verify",
           ),
         );
       } else {
         steps.push({
-          step: "refresh handoff packet",
+          step: "refresh session continuation",
           status: "skipped",
-          detail: "scripts/prepare-codex-handoff.sh missing",
+          detail: "session continuation helper missing (legacy filename scripts/prepare-codex-handoff.sh)",
         });
       }
     }

@@ -1,5 +1,5 @@
 /**
- * `forge init-hook` -- read-only Agent bootstrap checklist.
+ * Readiness model behind `forge setup check` and resumable `forge setup`.
  *
  * This command intentionally does not install hooks, write user-owned markdown,
  * or mutate repo-local runtime files. It gathers the existing readiness probes
@@ -425,7 +425,7 @@ function commandForToolGap(toolName: string, tool: ToolingTool, target: InitHook
     return normalizeToolCommand(tool.install_command, target);
   }
   if (toolName === 'codex_automation_profile') {
-    return 'forge init --target codex --no-cli --no-hooks --no-codegraph';
+    return 'forge install --target codex --no-cli --no-hooks --no-codegraph';
   }
   return normalizeToolCommand(
     tool.sync_command ?? tool.ensure_command ?? tool.mcp_install_command ?? tool.install_command ?? tool.upgrade_command,
@@ -638,30 +638,6 @@ export function formatInitHook(report: InitHookReport, asJson = false): string {
     }
   }
   return lines.join('\n');
-}
-
-export function buildInitHookCommand(): Command {
-  const command = new Command('init-hook');
-  command
-    .description('Run a read-only Agent bootstrap checklist for user-level Forge readiness')
-    .option('--target <target>', `Host target to inspect: ${VALID_TARGETS.join('|')}`, 'both')
-    .option('--check-updates', 'Include network-backed version update advisories')
-    .option('--json', 'Output JSON instead of human-readable text')
-    .action((rawOpts: { target: string; checkUpdates?: boolean; json?: boolean }) => {
-      if (!VALID_TARGETS.includes(rawOpts.target as InitHookTarget)) {
-        console.error(
-          `forge init-hook: invalid --target "${rawOpts.target}" (expected: ${VALID_TARGETS.join(', ')})`,
-        );
-        process.exit(2);
-      }
-      const report = runInitHook({
-        target: rawOpts.target as InitHookTarget,
-        checkUpdates: rawOpts.checkUpdates === true,
-      });
-      console.log(formatInitHook(report, rawOpts.json === true));
-      process.exit(report.status === 'blocked' ? 1 : 0);
-    });
-  return command;
 }
 
 export type SetupSessionStatus = 'open' | 'blocked' | 'ready' | 'closed';

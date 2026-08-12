@@ -17,7 +17,7 @@ Requirements: Git, Node.js 20.10+, npm, and a writable user directory. Bun is re
 
 ```bash
 forge --version
-forge init --target both
+forge install --target both
 forge doctor
 ```
 

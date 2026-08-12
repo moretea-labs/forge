@@ -745,7 +745,7 @@ Before editing code, use \`\$think\` to expand this sprint row into a decision-c
 ## Task Breakdown
 
 - [ ] Run \`\$think\` for backlog task \`${target_task}\` using sprint \`${sprint_file}\` and acceptance: ${target_acceptance}
-- [ ] Capture the approved \`\$think\` output with \`scripts/capture-plan.sh --source waza-think --source-ref sprint:${sprint_file}#${target_task}\`
+- [ ] Capture the approved Forge \`/plan\` output with \`scripts/capture-plan.sh --source forge-plan --source-ref sprint:${sprint_file}#${target_task}\`
 - [ ] Verify acceptance: ${target_acceptance}
 BODY_EOF
 

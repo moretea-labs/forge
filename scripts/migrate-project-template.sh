@@ -8,8 +8,8 @@
 # - Harness state: .ai/harness/checks/latest.json, .ai/harness/policy.json,
 #   .ai/harness/brain-manifest.json,
 #   .ai/harness/events.jsonl, .ai/harness/architecture/events.jsonl,
-#   .ai/harness/handoff/current.md,
-#   .ai/harness/handoff/resume.md,
+#   .ai/harness/session/continuation.md,
+#   .ai/harness/session/resume.md,
 #   .ai/harness/failures/latest.jsonl, .ai/harness/security/.gitkeep,
 #   .ai/harness/worktrees/.gitkeep, .ai/harness/runs/.gitkeep
 #

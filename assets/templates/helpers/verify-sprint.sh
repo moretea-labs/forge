@@ -366,7 +366,7 @@ contract_command="bash scripts/verify-contract.sh --contract $contract_file --st
 if [[ -f "scripts/sync-brain-docs.sh" && -f ".ai/harness/brain-manifest.json" ]]; then
   bash scripts/sync-brain-docs.sh --all >/dev/null || true
 fi
-if [[ -f "scripts/prepare-codex-handoff.sh" && ( -f ".ai/harness/handoff/current.md" || -f ".ai/harness/handoff/resume.md" ) ]]; then
+if [[ -f "scripts/prepare-codex-handoff.sh" && ( -f ".ai/harness/session/continuation.md" || -f ".ai/harness/session/resume.md" ) ]]; then
   bash scripts/prepare-codex-handoff.sh --reason "forge-verify-sprint" >/dev/null || true
 fi
 set +e
@@ -473,8 +473,8 @@ else
 fi
 handoff_current_exists=false
 handoff_resume_exists=false
-[[ -f ".ai/harness/handoff/current.md" ]] && handoff_current_exists=true
-[[ -f ".ai/harness/handoff/resume.md" ]] && handoff_resume_exists=true
+[[ -f ".ai/harness/session/continuation.md" ]] && handoff_current_exists=true
+[[ -f ".ai/harness/session/resume.md" ]] && handoff_resume_exists=true
 
 if command -v jq >/dev/null 2>&1 && jq -e . "$contract_report" >/dev/null 2>&1; then
   jq -n \
@@ -543,8 +543,8 @@ if command -v jq >/dev/null 2>&1 && jq -e . "$contract_report" >/dev/null 2>&1; 
         {name: "allowed_paths", status: ($allowed_paths_check.status // "unavailable")}
       ],
       handoffs: [
-        {file: ".ai/harness/handoff/current.md", exists: $handoff_current_exists},
-        {file: ".ai/harness/handoff/resume.md", exists: $handoff_resume_exists}
+        {file: ".ai/harness/session/continuation.md", exists: $handoff_current_exists},
+        {file: ".ai/harness/session/resume.md", exists: $handoff_resume_exists}
       ],
       files_changed: $files_changed,
       allowed_paths_check: $allowed_paths_check,
@@ -622,8 +622,8 @@ else
     {"name": "allowed_paths", "status": "$(json_escape "$allowed_paths_status")"}
   ],
   "handoffs": [
-    {"file": ".ai/harness/handoff/current.md", "exists": $handoff_current_exists},
-    {"file": ".ai/harness/handoff/resume.md", "exists": $handoff_resume_exists}
+    {"file": ".ai/harness/session/continuation.md", "exists": $handoff_current_exists},
+    {"file": ".ai/harness/session/resume.md", "exists": $handoff_resume_exists}
   ],
   "files_changed": [],
   "allowed_paths_check": {

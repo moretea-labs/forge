@@ -162,7 +162,7 @@ src/cli/agent-jobs/*
 
 Repo Actor 负责：
 
-当前仓库的 Issue/Task 状态
+当前仓库的 Requirement/Work 状态
 任务依赖
 资源占用
 工作区写入权
@@ -1462,7 +1462,7 @@ Push/Publish
 1. Resolve Repository
 2. Read compact snapshot
 3. Classify work mode
-4. Create or select Issue/Task
+4. Create or select Requirement/Work
 5. Declare scope and resources
 6. Persist requestId
 7. Repo Actor schedules work

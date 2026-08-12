@@ -172,85 +172,16 @@ esac
 
 active_plan="$(get_active_plan || true)"
 if [[ "$FILE_PATH" == "tasks/todos.md" && -z "$active_plan" ]] && grep -Eq '^> \*\*Status\*\*:[[:space:]]*Backlog[[:space:]]*$' tasks/todos.md; then
-  rm -f "$(workflow_task_state_file)" ".claude/.task-handoff.md"
-  echo "[TaskHandoff] Deferred-goal ledger updated; active execution remains in the plan Task Breakdown."
+  rm -f "$(workflow_task_state_file)"
+  echo "[SessionContinuation] Deferred-goal ledger updated; no active execution state was created."
   exit 0
 fi
 
-mkdir -p .claude
-
-STATE_FILE="$(workflow_task_state_file)"
-HANDOFF_FILE=".claude/.task-handoff.md"
-
 if [[ "$FILE_PATH" == "tasks/todos.md" ]] && [[ -f "tasks/todos.md" ]] && ! grep -Eq '^> \*\*Status\*\*:[[:space:]]*Backlog[[:space:]]*$' tasks/todos.md; then
-  workflow_sync_task_state_from_todo "tasks/todos.md" "$STATE_FILE"
+  workflow_sync_task_state_from_todo "tasks/todos.md" "$(workflow_task_state_file)"
 fi
 
-task_state="$(workflow_plan_task_state "$active_plan")"
-IFS=$'\t' read -r total_tasks done_tasks next_pending <<< "$task_state"
-done_tasks="${done_tasks:-0}"
-total_tasks="${total_tasks:-0}"
-next_pending="${next_pending:-"(none)"}"
-
-next_action="$(workflow_next_action)"
-next_stage="$(printf '%s\n' "$next_action" | cut -f1)"
-next_command="$(printf '%s\n' "$next_action" | cut -f2)"
-next_message="$(printf '%s\n' "$next_action" | cut -f3-)"
-[[ "${next_command:-}" == "-" ]] && next_command=""
-next_stage="${next_stage:-none}"
-next_message="${next_message:-(none)}"
-
-diff_stat="$(git diff --shortstat HEAD 2>/dev/null | tr -d '\n')"
-diff_stat="${diff_stat:-no uncommitted diff against HEAD}"
-
-if [[ -z "$active_plan" ]]; then
-  active_plan="(none)"
-fi
-
-plan_status="(unknown)"
-if [[ "$active_plan" != "(none)" && -f "$active_plan" ]]; then
-  plan_status="$(awk '/^\> \*\*Status\*\*:/ {sub(/^.*\> \*\*Status\*\*: */, ""); gsub(/\r/, ""); print; exit}' "$active_plan" | xargs)"
-  plan_status="${plan_status:-(unknown)}"
-fi
-
-changed_files="$(git diff --name-only HEAD 2>/dev/null | head -10)"
-changed_files="${changed_files:-(none)}"
-
-cat > "$HANDOFF_FILE" <<EOF_HANDOFF
-# Task Handoff Summary
-
-> **Generated**: $(date '+%Y-%m-%d %H:%M:%S')
-> **Progress**: ${done_tasks}/${total_tasks}
-> **Active Plan**: ${active_plan}
-
-## Plan Status
-
-- ${plan_status}
-
-## Current Task
-
-- ${next_pending}
-
-## Next Actions
-
-- Stage: ${next_stage}
-- Action: ${next_message}
-- Command: ${next_command:-(none)}
-
-## Key Artifacts
-
-\`\`\`
-${changed_files}
-\`\`\`
-
-## Working Tree Snapshot
-
-- ${diff_stat}
-EOF_HANDOFF
-
-echo "[TaskHandoff] Workflow next action is ${next_stage}. Wrote ${HANDOFF_FILE}."
-
-workflow_write_handoff "task-progress" || true
-if [[ -f "$(workflow_handoff_file)" ]]; then
-  echo "[HarnessHandoff] Refreshed $(workflow_handoff_file)."
+workflow_write_session_continuation "task-progress" || true
+if [[ -f "$(workflow_session_continuation_file)" ]]; then
+  echo "[SessionContinuation] Refreshed non-authoritative session cache $(workflow_session_continuation_file)."
 fi

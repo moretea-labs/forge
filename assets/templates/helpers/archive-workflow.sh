@@ -283,7 +283,6 @@ fi
 plan_key="$(basename "$plan_file" .md)"
 rm -f ".claude/.plan-state/${plan_key}.todo.md.bak"
 rm -f ".claude/.plan-state/${plan_key}.task-state.json.bak"
-rm -f ".claude/.plan-state/${plan_key}.task-handoff.md.bak"
 
 if [[ -x "scripts/refresh-current-status.sh" ]]; then
   bash "scripts/refresh-current-status.sh" --clear --write --reason "archive-workflow" || true

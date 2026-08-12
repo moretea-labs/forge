@@ -103,7 +103,7 @@ extract_task_breakdown() {
 slug=""
 title=""
 status="Draft"
-source_name="codex-plan-or-waza-think"
+source_name="host-plan-or-forge-plan"
 route="planning"
 orchestration_kind="host-plan"
 source_ref=""
@@ -296,13 +296,13 @@ See captured planning output.
 ## Handoff
 
 - Checks file: \`.ai/harness/checks/latest.json\`
-- Session handoff: \`.ai/harness/handoff/current.md\`
+- Session continuation: \`.ai/harness/session/continuation.md\`
 
 ## Evidence Contract
 
 - **State/progress path**: \`${plan_file}\` task breakdown, \`tasks/todos.md\` deferred-goal ledger, \`tasks/contracts/${artifact_stem}.contract.md\`, \`tasks/reviews/${artifact_stem}.review.md\`, and \`tasks/notes/${artifact_stem}.notes.md\`
 - **Verification evidence**: \`.ai/harness/checks/latest.json\`, \`.ai/harness/runs/\`, and the commands named in the captured planning output
-- **Evaluator rubric**: \`tasks/reviews/${artifact_stem}.review.md\` must record a passing Waza /check style recommendation
+- **Evaluator rubric**: \`tasks/reviews/${artifact_stem}.review.md\` must record a passing Forge /review style recommendation
 - **Stop condition**: all task breakdown items are complete, sprint verification passes, and the review recommends pass
 - **Rollback surface**: before execution remove \`${plan_file}\`; after execution revert branch \`codex/${slug}\` or the generated task artifacts
 

@@ -120,7 +120,7 @@ Triage inputs should be bounded:
 ```text
 repository health
 active Jobs and Runs
-current Issue/Task queue
+current Requirement/Work queue
 recent failed checks
 recent accepted work
 Git summary and dirty ownership
@@ -326,7 +326,7 @@ Notify on:
 - human review requirement;
 - release readiness;
 - budget exhaustion that changes expected outcome;
-- newly promoted Issue/Task.
+- newly promoted Requirement/Work.
 
 Do not notify repeatedly for unchanged no-op or unchanged blocker state.
 

@@ -235,7 +235,7 @@ if [[ ! -f "$workstream_file" ]]; then
 > **Architecture Module**: \`${architecture_module}\`
 > **Source Plan**: ${source_plan}
 > **Current Slice**: ${current_slice}
-> **Last Handoff**: \`.ai/harness/handoff/current.md\`
+> **Last Handoff**: \`.ai/harness/session/continuation.md\`
 > **Architecture Request**: ${request_file}
 
 ## Purpose

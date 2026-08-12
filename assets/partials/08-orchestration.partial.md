@@ -14,7 +14,7 @@
 ### 3. Plan Node Default
 - Enter plan mode for non-trivial tasks.
 - If no stable product truth exists, run `bash .ai/harness/scripts/new-spec.sh`.
-- When Codex Plan mode or Waza `/think` reaches a decision-complete plan, capture it with `bash .ai/harness/scripts/capture-plan.sh --slug <slug> --title <title>` and the plan text on stdin.
+- When Codex Plan mode or Forge `/plan` reaches a decision-complete plan, capture it with `bash .ai/harness/scripts/capture-plan.sh --slug <slug> --title <title>` and the plan text on stdin.
 - If no captured active execution plan exists, run `bash .ai/harness/scripts/new-plan.sh --slug <slug> --title <title>` or capture a finished planning note with `bash .ai/harness/scripts/capture-plan.sh`.
 - If the user asks for a Sprint backlog, run `bash .ai/harness/scripts/new-sprint.sh --slug <slug> --title <title>`; it writes `plans/sprints/*.sprint.md`, not `plans/plan-*.md`.
 - When the user approves implementation, run `bash .ai/harness/scripts/plan-to-todo.sh --plan <active-plan>` or capture the approved plan with `--status Approved --execute`; this creates contract/review/notes scaffolding and leaves plan tasks in `## Task Breakdown`.
@@ -36,7 +36,7 @@
 ### 6b. Contract Verification
 - Define per-sprint contract files in `tasks/contracts/`.
 - Verify contract exit criteria before claiming completion.
-- Require Waza `/check` to produce the matching evaluator review before any done/completed response.
+- Require Forge `/review` to produce the matching evaluator review before any done/completed response.
 - Use `.ai/harness/scripts/verify-contract.sh --contract tasks/contracts/{plan-stem}.contract.md --strict`.
 
 ### 7. Balanced Elegance

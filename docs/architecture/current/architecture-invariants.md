@@ -267,7 +267,7 @@ A valid outcome may be `nothing_to_do`.
 
 **Current Implementation — MUST**
 
-Automated triage may create a Candidate Finding. It may create or update a formal Issue/Task only when evidence and configured policy justify it.
+Automated triage may create a Candidate Finding. It may promote a formal Requirement/Work only when evidence and configured policy justify it; legacy Issue/Task records are read-only after control-plane cutover.
 
 The same semantic problem must deduplicate across occurrences. “The Agent suggests an optimization” is not sufficient evidence by itself.
 
@@ -289,7 +289,7 @@ Versioned design documents cannot override the current set.
 
 **Current Implementation — MUST**
 
-A capability may be labeled implemented only when a repository path and an executable check support the claim. Future gaps or regressions must be linked to an Issue/Task or ADR rather than hidden by documentation wording. The completed migration record is not permission to weaken a boundary without updating code, tests and the current architecture set.
+A capability may be labeled implemented only when a repository path and an executable check support the claim. Future gaps or regressions must be linked to a Requirement/Work item or ADR rather than hidden by documentation wording. The completed migration record is not permission to weaken a boundary without updating code, tests and the current architecture set.
 
 ## Invariant 26 — Runtime Source Identity Is Controller-Scoped
 

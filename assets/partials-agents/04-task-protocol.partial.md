@@ -10,7 +10,7 @@ TASK_SOURCES:
   - tasks/notes/
   - tasks/lessons.md
   - .ai/harness/checks/latest.json
-  - .ai/harness/handoff/current.md
+  - .ai/harness/session/continuation.md
   - plans/
 
 PHASES: research -> spec -> plan -> contract -> implement -> verify -> check -> review -> handoff
@@ -30,7 +30,7 @@ RULES:
   - Process annotation notes before implementing
   - Project approved plans with .ai/harness/scripts/plan-to-todo.sh; the execution checklist stays in the plan ## Task Breakdown
   - Define task contracts in tasks/contracts/{plan-stem}.contract.md
-  - Fill tasks/reviews/{plan-stem}.review.md from Waza /check after verification
+  - Fill tasks/reviews/{plan-stem}.review.md from Forge /review after verification
   - Record only non-obvious implementation decisions, deviations, tradeoffs, and open questions in tasks/notes/{plan-stem}.notes.md
   - Verify contracts before claiming completion
   - Require review pass before claiming completion
@@ -44,7 +44,7 @@ RULES:
   - Treat `.ai/hooks/` as the shared automation entrypoint when repo scripts reference hook-backed workflow checks
   - Treat user-level `~/.claude/settings.json` and `~/.codex/hooks.json` as host adapters; do not add repo-local project hook adapters unless explicitly migrating legacy config
   - For Codex sessions, treat `bash .ai/harness/scripts/check-task-sync.sh` and `bash .ai/harness/scripts/check-task-workflow.sh --strict` as required repo-local checks
-  - Before ending a session, refresh `.ai/harness/handoff/current.md` when the task state changed
+  - Before ending a session, refresh `.ai/harness/session/continuation.md` when the task state changed
   - Update `tasks/workstreams/` only when durable capability progress changes
   - Archive completed/abandoned plans and todos with metadata
 {{#IF FACTOR_FACTORY_ENABLED}}

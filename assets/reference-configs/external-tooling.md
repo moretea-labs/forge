@@ -1,56 +1,23 @@
 # External Tooling
 
-Generated repos route external tooling by host/runtime shape. Task-level
-skill routing lives in `docs/reference-configs/agentic-development-flow.md`.
+Forge core correctness does not depend on third-party host skills. The default workflow is owned by Forge `/direct`, `/plan`, `/debug`, `/review`, `/release`, and `/scale`, plus Runtime repository/process/context primitives.
 
-- `gstack` supplies `office-hours`, `plan-eng-review`, and `plan-design-review`
-- `Waza` supplies `/think`, `/hunt`, and `/check` for daily small/medium work
-- Codex automation requires `health`, `check`, and `mermaid` from `~/.codex/skills`
-- `gbrain` supports knowledge capture, repo sync, and handoff retrieval
-- `CodeGraph` is required agent readiness for code navigation and impact tracing
+Optional enhancements:
 
-Waza is Codex-first in this contract. `~/.codex/skills` is the Codex runtime
-source, while `~/.agents/skills` is only the skills CLI staging/cache path used
-to receive upstream `tw93/Waza` updates before syncing verified copies into
-Codex.
+- `gstack`: product discovery and deeper engineering/design-plan review;
+- `Waza`: optional `/think`, `/hunt`, `/check`, `/health` host skills;
+- `gbrain`: optional knowledge tooling;
+- `Mermaid` host skill: optional rendered diagrams; Markdown Mermaid remains sufficient;
+- Forge peer-review helpers (`codex-review`, `claude-review`): optional cross-model acceptance evidence;
+- CodeGraph host MCP/CLI: optional direct host integration. Forge's own `rh_context` structural backend uses the bundled CodeGraph runtime when available.
 
-`forge install` is allowed to bootstrap the workflow-owned global runtime
-in one pass: the `forge` CLI, forge runtime aliases, user-level
-Codex/Claude hook adapters, Waza (`think`, `hunt`, `check`, `health`), brain
-root persistence, Mermaid, and CodeGraph CLI/MCP configuration.
-`forge init` remains the explicit legacy bootstrap command for existing Forge automation, while `forge setup open/next/close` is the preferred first-run workflow. Neither path may silently install unrelated toolchains or Claude marketplace plugins.
+`forge install` installs the Forge CLI/runtime and managed host adapters. It does **not** install Waza, Mermaid, or cross-review skills unless `--with-external-skills` is explicitly supplied. `forge setup` is the guided readiness workflow; `forge setup check` is the one-shot read-only report.
 
-`forge uninstall` removes forge managed Codex/Claude hook
-adapters. It intentionally does not uninstall Waza, Mermaid, CodeGraph, gbrain,
-brain config, package-manager globals, or user-authored sibling hook entries.
+`forge uninstall` removes Forge-managed Codex/Claude hook adapters only. It does not remove unrelated third-party tooling or user-authored sibling configuration.
 
-`forge update` refreshes only the CLI and forge-owned user-level
-runtime by default. Third-party tooling and CodeGraph registration stay
-readiness findings from `forge setup check` unless the update command is
-run with an explicit opt-in such as `--with-external-skills` or
-`--configure-codegraph`.
+`forge update` refreshes Forge-owned user-level runtime by default. Third-party skill updates remain explicit opt-in work.
 
-The cross-review skills are **harness-owned and self-contained** — their source
-lives in `assets/skills/<skill>/` and they wrap the peer CLI (`codex exec` /
-`claude -p`) in a read-only sandbox with no gstack dependency, so installing them
-is a workflow-owned runtime concern, not an unrelated toolchain. They install
-host-aware during `forge install`/`init` and explicit external-skill refreshes:
-`codex-review` only into `~/.claude/skills` (a Claude session asking
-Codex for an independent review) and `claude-review` only into `~/.codex/skills`
-(a Codex session asking Claude). When gstack is present, its `/codex` and
-`gstack-claude` skills are a more featureful superset; the harness skills are the
-zero-dependency baseline that always ships with `init` and the peer acceptance
-gate surface for `## External Acceptance Advice`.
-
-The review scope is the current reviewable diff, not just committed branch
-history: branch diff against the default base, staged changes, unstaged tracked
-changes, and untracked files are all in scope. A timeout or missing peer CLI is
-reported as unavailable review evidence, not as a pass.
-
-The Codex automation profile is a runtime reference, not a vendored copy. It
-requires Waza `health`, Waza `check`, and the standalone `mermaid` skill to
-exist under `~/.codex/skills`; the skill bodies stay owned by their original
-installations.
+External tools are never lifecycle authorities. Missing or stale optional tooling may reduce the named enhancement, but must not block ordinary Forge planning, debugging, review, or execution.
 
 ## Detect Safely
 
@@ -153,16 +120,9 @@ create Agent repair/update actions or change the setup readiness result.
 
 ### CodeGraph
 
-`CodeGraph` is required readiness for agent code navigation. It speeds up
-Codex and Claude exploration for indexed TypeScript and other supported languages, but it
-does not replace `.ai/context/capabilities.json`, workflow checks, tests,
-architecture drift events, or shell-script review.
+`CodeGraph` has two integration levels. Forge-internal structural retrieval is provided through `rh_context` and the bundled CodeGraph runtime when available. A global `codegraph` CLI or host MCP entry is optional and exists only for direct Codex/Claude use. Neither replaces workflow checks, tests, architecture evidence, or raw source reads.
 
-This self-host repo vendors CodeGraph as a dev dependency so `bun install`
-materializes `node_modules/.bin/codegraph`; its source-only
-`scripts/ensure-codegraph.sh` can manage the local index. Generated downstream
-repos keep the global MCP installer default and should use the `codegraph`
-command directly unless local policy explicitly opts into vendoring.
+Forge packages a CodeGraph runtime for its own structural context provider and can ensure the repository index without requiring a user-global CLI. `forge tools configure codegraph` remains an explicit optional host integration.
 
 ### Runtime Ownership Boundary
 
@@ -214,7 +174,7 @@ bun add -g @colbymchenry/codegraph && forge tools configure codegraph --target c
 
 This delegates host-specific MCP config to CodeGraph's target adapters for
 Codex and Claude, so do not run CodeGraph setup automatically from
-`forge init`, `migrate`, or `upgrade`. Restart Codex after the installer
+`forge install`, `forge adopt`, or explicit tooling configuration. Restart Codex after the installer
 finishes so the MCP server is discovered; Claude Code should pick up its config
 according to its own settings reload behavior. If a launch environment still
 cannot find `codegraph`, an authorized agent should diagnose `PATH` and the

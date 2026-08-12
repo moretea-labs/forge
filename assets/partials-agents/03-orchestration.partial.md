@@ -12,7 +12,7 @@
 ### 3. Plan Node Default
 - Enter plan mode for non-trivial tasks.
 - If `docs/spec.md` is missing, run `bash .ai/harness/scripts/new-spec.sh` first.
-- Capture decision-complete Codex Plan mode or Waza `/think` output with `bash .ai/harness/scripts/capture-plan.sh --slug <slug> --title <title>`; if no captured active execution plan exists, use `new-plan.sh`; after approval, run `plan-to-todo.sh` or capture with `--status Approved --execute`.
+- Capture decision-complete Codex Plan mode or Forge `/plan` output with `bash .ai/harness/scripts/capture-plan.sh --slug <slug> --title <title>`; if no captured active execution plan exists, use `new-plan.sh`; after approval, run `plan-to-todo.sh` or capture with `--status Approved --execute`.
 - Use `new-sprint.sh` only for Sprint backlogs; it writes `plans/sprints/*.sprint.md`, while PRDs stay in `plans/prds/`.
 - Keep active checklist items in the active plan's `## Task Breakdown`; record only deferred goals in `tasks/todos.md`.
 
@@ -23,7 +23,7 @@
 
 ### 4b. Durable Handoff
 - Treat auto-compact as an unreliable fallback.
-- Before switching sessions or worktrees, refresh `.ai/harness/handoff/current.md` and `.ai/harness/handoff/resume.md`, then resume from the filesystem artifacts.
+- Before switching sessions or worktrees, refresh `.ai/harness/session/continuation.md` and `.ai/harness/session/resume.md`, then resume from the filesystem artifacts.
 
 ### 5. Self-Improvement Loop
 - After correction, append prevention rule to `tasks/lessons.md`.
@@ -34,7 +34,7 @@
 ### 6b. Contract Verification
 - Use task contracts in `tasks/contracts/` as completion gates.
 - Use implementation notes in `tasks/notes/` for task-local decisions that should not automatically become memory.
-- Validate exit criteria and the Waza `/check` review recommendation before any done/completed response.
+- Validate exit criteria and the Forge `/review` review recommendation before any done/completed response.
 
 ### 7. Balanced Elegance
 - Redesign hacky non-trivial fixes before shipping.

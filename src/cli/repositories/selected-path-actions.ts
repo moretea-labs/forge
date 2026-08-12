@@ -171,14 +171,16 @@ function writePatchHandoffArtifact(repository: RepositoryRecord, handoffDir: str
 
 function ensureFallbackArtifact(repository: RepositoryRecord, reason: string): HandoffArtifactPreview {
   const handoffDir = join(repository.canonicalRoot, '.ai', 'harness', 'handoff');
+  const sessionDir = join(repository.canonicalRoot, '.ai', 'harness', 'session');
   mkdirSync(handoffDir, { recursive: true });
+  mkdirSync(sessionDir, { recursive: true });
   const patchArtifact = writePatchHandoffArtifact(repository, handoffDir, reason);
   const timestamp = new Date().toISOString();
-  const currentPath = join(handoffDir, 'current.md');
-  const resumePath = join(handoffDir, 'resume.md');
+  const currentPath = join(sessionDir, 'continuation.md');
+  const resumePath = join(sessionDir, 'resume.md');
   if (!existsSync(currentPath)) {
     writeFileSync(currentPath, [
-      '# Harness Handoff',
+      '# Forge Session Continuation Snapshot',
       '',
       `> **Generated**: ${timestamp}`,
       `> **Reason**: ${reason}`,
@@ -198,7 +200,7 @@ function ensureFallbackArtifact(repository: RepositoryRecord, reason: string): H
       `- Repository: \`${repository.canonicalRoot}\``,
       `- Reason: \`${reason}\``,
       '- Patch artifact: `.ai/harness/handoff/patch.json`',
-      '- Next: open `.ai/harness/handoff/current.md` and continue from the recorded state.',
+      '- Next: open `.ai/harness/session/continuation.md` and continue from the recorded state.',
       '',
     ].join('\n'), 'utf-8');
   }
@@ -333,8 +335,8 @@ export function prepareFallbackHandoffArtifacts(
     ok: usedScript ? ok : true,
     ...(usedScript ? { exitCode, stdout, stderr } : {}),
     artifacts: [
-      artifactPreview(repository, '.ai/harness/handoff/current.md'),
-      artifactPreview(repository, '.ai/harness/handoff/resume.md'),
+      artifactPreview(repository, '.ai/harness/session/continuation.md'),
+      artifactPreview(repository, '.ai/harness/session/resume.md'),
       patchArtifact,
     ],
   };

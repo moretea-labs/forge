@@ -6,7 +6,7 @@ CLAUDE.md is a routing card. Keep context minimal and load only what the current
 
 - `docs/spec.md`: stable product truth
 - `tasks/todos.md`: deferred-goal ledger (tradeoff + revisit trigger); the active checklist lives in the plan's `## Task Breakdown`
-- `.ai/harness/handoff/current.md`: resumable cross-session state
+- `.ai/harness/session/continuation.md`: resumable cross-session state
 
 ### Load On Demand
 

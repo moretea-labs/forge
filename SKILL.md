@@ -267,7 +267,7 @@ specific model providers, vector DBs, workflow engines, tracing vendors, or
 sidecar languages mandatory defaults.
 
 Scaffold is not an existing-repo adoption path. If the target already has a
-product tree, use `forge init`, `forge migrate`,
+product tree, use `forge adopt`, `forge setup`,
 `forge upgrade`, or `forge repair` and preserve the existing app
 shape. `create-project-dirs`, `hooks-init`, and `docs-init` remain internal
 steps behind public commands, not standalone user-facing scaffold aliases.
@@ -302,7 +302,7 @@ Migration defaults:
 - distill repeated corrections into `tasks/lessons.md`
 - merge missing `external_tooling` defaults into `.ai/harness/policy.json` without overwriting explicit user values
 - keep Waza, gstack, gbrain, Mermaid, and cross-review host skills optional; detect them but never make normal Forge execution depend on them
-- `forge init` / `forge install` bootstrap only Forge-owned runtime, hook adapters, and the bundled CodeGraph read backend by default; install third-party host skills only with `--with-external-skills`
+- `forge install` bootstraps only Forge-owned runtime and host adapters by default; install third-party host skills only with `--with-external-skills`
 - Forge task routing uses `/direct`, `/plan`, `/debug`, `/review`, `/release`, and `/scale`; optional host skills may refine those workflows when already installed
 - distinguish the bundled CodeGraph read backend used by `rh_context` from an optional global CodeGraph CLI/MCP integration; missing global CLI is not Runtime unready
 
