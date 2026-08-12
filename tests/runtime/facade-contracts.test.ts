@@ -4,6 +4,7 @@ import { listCapabilityDescriptors, summarizeCapabilityGroups } from '../../src/
 import { evaluatePolicyGate } from '../../src/runtime/control-plane/facade/policy-gate';
 import { buildFacadeResult } from '../../src/runtime/control-plane/facade/facade-result';
 import { validateSuggestedNextActions } from '../../src/runtime/control-plane/facade/suggested-actions';
+import { buildSuperControllerInvocation, type ThinLauncherRequest } from '../../src/runtime/control-plane/launcher/thin-launcher';
 import {
   FACADE_TOOLS,
   HANDOFF_STATUSES,
@@ -294,4 +295,15 @@ describe('handoff and facade contracts', () => {
     expect(classified.outcome).toBe('invalid_check_id');
     expect(classified.isAcceptanceFailure).toBe(false);
   });
+});
+
+
+describe('Thin Launcher external Controller invocation', () => {
+  const request = (overrides: Partial<ThinLauncherRequest> = {}): ThinLauncherRequest => ({ controllerType: 'chatgpt', workId: 'WORK-1', controllerId: 'controller-1', sessionId: 'session-1', cwd: '/tmp/repo', ...overrides });
+  test('builds safe ChatGPT browser continuation invocations', () => {
+    expect(buildSuperControllerInvocation(request({ browserSessionId: 'browser-session-123' }), 'forge', 'continue bounded work')).toEqual({ executable: 'forge', args: ['chatgpt', 'browser-followup', '--repo', '/tmp/repo', '--session', 'browser-session-123', '--prompt', 'continue bounded work', '--keep-browser'] });
+    expect(buildSuperControllerInvocation(request({ conversationUrl: 'https://chatgpt.com/c/example' }), 'forge', 'continue bounded work').args).toEqual(expect.arrayContaining(['browser-consult', '--chatgpt-url', 'https://chatgpt.com/c/example']));
+    expect(() => buildSuperControllerInvocation(request({ conversationUrl: 'https://example.com/c/example' }), 'forge', 'continue bounded work')).toThrow('LAUNCHER_CHATGPT_CONVERSATION_URL_INVALID');
+  });
+  test('keeps provider-specific CLI controllers native', () => expect(buildSuperControllerInvocation(request({ controllerType: 'codex', args: ['exec', '--full-auto'] }), 'codex', 'continue bounded work')).toEqual({ executable: 'codex', args: ['exec', '--full-auto', 'continue bounded work'] }));
 });

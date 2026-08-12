@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { readForgeRuntimeStatus, schedulerHeartbeatSnapshotHealthy } from '../../src/runtime/control-plane/runtime-status-client';
@@ -8,6 +9,12 @@ import { operationReceiptMatchesJobOwnership, type OperationReceipt } from '../.
 import { TERMINAL_JOB_STATUSES, type ExecutionJob } from '../../src/runtime/execution/jobs/types';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
+import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
+import { registerRepository } from '../../src/cli/repositories/registry';
+import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { getControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
+import { evaluateSchedule } from '../../src/runtime/workflow/schedules/engine';
+import { createSchedule } from '../../src/runtime/workflow/schedules/store';
 
 const roots: string[] = [];
 
@@ -192,5 +199,21 @@ describe('control-plane hardening', () => {
       resourceClaims: [],
     })).toThrow(/EXECUTION_JOB_RETIRED/);
     expect(TERMINAL_JOB_STATUSES.has('waiting_for_approval')).toBe(false);
+  });
+});
+
+
+describe('scheduled external Controller wake', () => {
+  test('launches one bounded Work and suppresses duplicate active ownership', async () => {
+    const root = temp('forge-schedule-wake-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'wake@example.test'], ['config', 'user.name', 'Wake Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'wake\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'schedule-wake' }), workId = 'WORK-SCHEDULE-WAKE';
+    createWorkContract({ controllerHome, repoId: repository.repoId }, { workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop', objective: 'Continue a bounded goal from a scheduled external Controller wake.', acceptanceCriteria: ['external controller was launched'], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running' });
+    const schedule = createSchedule(controllerHome, { requestId: 'schedule-wake-request', repoId: repository.repoId, name: 'continue bounded work', enabled: true, trigger: { type: 'manual' }, policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 0, dailyBudgetMinutes: 60, shadowMode: false }, action: { operation: 'external_controller_wake', target: 'runtime', arguments: { work_id: workId, controller_type: 'codex', executable: '/usr/bin/true' } }, stopConditions: [] });
+    expect(await evaluateSchedule(controllerHome, schedule, true, { source: 'manual' })).toMatchObject({ status: 'succeeded', decision: 'execute' });
+    expect(getControllerSession({ controllerHome, repoId: repository.repoId }, workId)?.controllerType).toBe('codex');
+    const duplicate = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'second' }); expect(duplicate).toMatchObject({ decision: 'nothing_to_do' }); expect(duplicate?.reason).toContain('already has an active Controller');
   });
 });
