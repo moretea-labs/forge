@@ -1,1 +1,26 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="320" viewBox="0 0 1280 320" role="img" aria-labelledby="title desc"><title id="title">Forge</title><desc id="desc">Forge local-first action runtime</desc><rect width="1280" height="320" rx="36" fill="#111827"/><path d="M136 224V96h190v38H180v22h126v36H180v32h146v38H136Z" fill="#f9fafb"/><text x="376" y="190" fill="#f9fafb" font-family="system-ui, sans-serif" font-size="112" font-weight="700">Forge</text><text x="382" y="238" fill="#d1d5db" font-family="system-ui, sans-serif" font-size="28">local-first action runtime</text></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="420" viewBox="0 0 1280 420" role="img" aria-labelledby="title desc">
+  <title id="title">Forge</title><desc id="desc">Forge gives ChatGPT a controlled action layer for local files, commands, code, browsers, Apple workflows, and plugins.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0b0d12"/><stop offset="1" stop-color="#171b24"/></linearGradient>
+    <linearGradient id="forge" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffb15c"/><stop offset="1" stop-color="#ff6b35"/></linearGradient>
+    <radialGradient id="glow" cx="0.18" cy="0.5" r="0.55"><stop offset="0" stop-color="#ff7a3d" stop-opacity="0.22"/><stop offset="1" stop-color="#ff7a3d" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect width="1280" height="420" rx="38" fill="url(#bg)"/><rect width="1280" height="420" rx="38" fill="url(#glow)"/>
+  <g opacity="0.12" stroke="#ffffff"><path d="M0 70H1280M0 140H1280M0 210H1280M0 280H1280M0 350H1280"/><path d="M160 0V420M320 0V420M480 0V420M640 0V420M800 0V420M960 0V420M1120 0V420"/></g>
+  <rect x="74" y="75" width="126" height="126" rx="28" fill="url(#forge)"/>
+  <path d="M108 170V106h67v18h-46v10h39v17h-39v19z" fill="#111318"/>
+  <text x="74" y="258" fill="#f8fafc" font-family="ui-sans-serif,system-ui,sans-serif" font-size="72" font-weight="760">Forge</text>
+  <text x="74" y="305" fill="#ff9b55" font-family="ui-sans-serif,system-ui,sans-serif" font-size="24" font-weight="700" letter-spacing="1">CHATGPT DECIDES. FORGE ACTS.</text>
+  <text x="74" y="344" fill="#b8c0cc" font-family="ui-sans-serif,system-ui,sans-serif" font-size="22">A local-first action layer for your computer, code &amp; services.</text>
+  <g font-family="ui-sans-serif,system-ui,sans-serif">
+    <rect x="700" y="78" width="190" height="72" rx="18" fill="#202631" stroke="#3b4556"/><text x="795" y="107" text-anchor="middle" fill="#9ba7b8" font-size="13" font-weight="700" letter-spacing="1.5">CONTROLLER</text><text x="795" y="134" text-anchor="middle" fill="#f8fafc" font-size="22" font-weight="700">ChatGPT</text>
+    <path d="M895 114H945" stroke="#ff8a45" stroke-width="3"/><path d="M936 106l12 8-12 8" fill="none" stroke="#ff8a45" stroke-width="3"/>
+    <rect x="955" y="78" width="250" height="72" rx="18" fill="#27251f" stroke="#a65c2c"/><text x="1080" y="107" text-anchor="middle" fill="#ff9b55" font-size="13" font-weight="700" letter-spacing="1.5">ACTION LAYER</text><text x="1080" y="134" text-anchor="middle" fill="#f8fafc" font-size="22" font-weight="700">Forge</text>
+    <g fill="#151a22" stroke="#343d4c">
+      <rect x="700" y="188" width="150" height="58" rx="16"/><rect x="866" y="188" width="150" height="58" rx="16"/><rect x="1032" y="188" width="173" height="58" rx="16"/>
+      <rect x="700" y="262" width="150" height="58" rx="16"/><rect x="866" y="262" width="150" height="58" rx="16"/><rect x="1032" y="262" width="173" height="58" rx="16"/>
+    </g>
+    <g fill="#e7ebf0" font-size="17" font-weight="650" text-anchor="middle"><text x="775" y="224">LOCAL FILES</text><text x="941" y="224">COMMANDS</text><text x="1118" y="224">GIT &amp; CODE</text><text x="775" y="298">BROWSER</text><text x="941" y="298">APPLE</text><text x="1118" y="298">PLUGINS</text></g>
+    <text x="700" y="363" fill="#8e99aa" font-size="15">Bounded permissions · durable execution · reviewable evidence</text>
+  </g>
+</svg>
