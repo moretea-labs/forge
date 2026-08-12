@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { basename, join } from 'path';
 import {
   controllerCheckExecutionIdentity,
   listControllerChecks,
@@ -222,11 +222,11 @@ describe('controller check provenance and failure classification', () => {
   });
 
   test('uses Bun rather than a compiled CLI executable for the synchronous bridge', () => {
-    expect(resolveSyncSupervisorBridgeRuntime('/opt/releases/forge.js', {})).toBe('bun');
+    expect(basename(resolveSyncSupervisorBridgeRuntime('/opt/releases/forge.js', {}))).toBe(process.platform === 'win32' ? 'bun.exe' : 'bun');
     expect(resolveSyncSupervisorBridgeRuntime('/opt/bun/bin/bun', {})).toBe('/opt/bun/bin/bun');
-    expect(resolveSyncSupervisorBridgeRuntime('/opt/releases/forge.js', {
+    expect(basename(resolveSyncSupervisorBridgeRuntime('/opt/releases/forge.js', {
       FORGE_BUN_EXECUTABLE: '/custom/bun',
-    })).toBe('/custom/bun');
+    }))).toBe(process.platform === 'win32' ? 'bun.exe' : 'bun');
   });
 
   test('launches persisted checks directly from standalone Bun releases', () => {
@@ -249,7 +249,7 @@ describe('controller check provenance and failure classification', () => {
     const repoRoot = fixture({ bridge_failure: { command } });
     const fakeRuntimeRoot = mkdtempSync(join(tmpdir(), 'forge-check-bridge-runtime-'));
     roots.push(fakeRuntimeRoot);
-    const fakeRuntime = join(fakeRuntimeRoot, 'fake-bun');
+    const fakeRuntime = join(fakeRuntimeRoot, process.platform === 'win32' ? 'bun.exe' : 'bun');
     writeFileSync(fakeRuntime, '#!/bin/sh\necho bridge-runtime-broken >&2\nexit 17\n');
     chmodSync(fakeRuntime, 0o755);
     const previousRuntime = process.env.FORGE_BUN_EXECUTABLE;
