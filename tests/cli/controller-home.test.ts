@@ -4,11 +4,11 @@ import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import {
   ensureControllerHomeStorage,
-  ensureMacosSpotlightOperationalExclusion,
+  migrateStoppedRepoLocalControllerHomeStorage,
+  repoLocalControllerHomeStorageNeedsMigration,
   repoLocalNoIndexControllerHome,
-  resetMacosSpotlightExclusionForTests,
   resolveRepoPreferredControllerHome,
-  spotlightOperationalExclusionRoot,
+  rollbackStoppedRepoLocalControllerHomeStorage,
 } from '../../src/cli/repositories/controller-home';
 
 const roots: string[] = [];
@@ -18,31 +18,6 @@ afterEach(() => {
   if (originalControllerHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
   else process.env.FORGE_CONTROLLER_HOME = originalControllerHome;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-  resetMacosSpotlightExclusionForTests();
-});
-
-describe('macOS Controller Home Spotlight exclusion', () => {
-  test('repo-local controller home excludes only the _ops operational root', () => {
-    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-spotlight-'));
-    roots.push(repoRoot);
-    const controllerHome = join(repoRoot, '_ops', 'controller-home');
-    expect(spotlightOperationalExclusionRoot(controllerHome)).toBe(join(repoRoot, '_ops'));
-    const first = ensureMacosSpotlightOperationalExclusion(controllerHome, 'darwin');
-    const second = ensureMacosSpotlightOperationalExclusion(controllerHome, 'darwin');
-    expect(first).toMatchObject({ attempted: true, excludedRoot: join(repoRoot, '_ops'), created: true });
-    expect(second).toMatchObject({ attempted: false, excludedRoot: join(repoRoot, '_ops') });
-    expect(existsSync(join(repoRoot, '_ops', '.metadata_never_index'))).toBe(true);
-    expect(existsSync(join(repoRoot, '.metadata_never_index'))).toBe(false);
-  });
-
-  test('global controller home excludes only itself and other platforms are no-op', () => {
-    const home = mkdtempSync(join(tmpdir(), 'forge-global-controller-'));
-    roots.push(home);
-    expect(spotlightOperationalExclusionRoot(home)).toBe(resolve(home));
-    expect(ensureMacosSpotlightOperationalExclusion(home, 'linux')).toEqual({ attempted: false });
-    expect(existsSync(join(home, '.metadata_never_index'))).toBe(false);
-    expect(ensureMacosSpotlightOperationalExclusion(home, 'darwin')).toMatchObject({ created: true, excludedRoot: resolve(home) });
-  });
 });
 
 describe('repo-preferred controller home', () => {
@@ -77,6 +52,28 @@ describe('repo-preferred controller home', () => {
     expect(lstatSync(logical).isSymbolicLink()).toBe(true);
     expect(realpathSync(logical)).toBe(realpathSync(physical));
     expect(resolveRepoPreferredControllerHome(repoRoot)).toBe(resolve(logical));
+  });
+
+  test('migrates an existing repo-local directory only through the stopped-runtime helper and can roll it back', () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-controller-home-'));
+    roots.push(repoRoot);
+    const logical = join(repoRoot, '_ops', 'controller-home');
+    const physical = `${logical}.noindex`;
+    mkdirSync(logical, { recursive: true });
+    writeFileSync(join(logical, 'sentinel.json'), '{}\n');
+
+    expect(repoLocalControllerHomeStorageNeedsMigration(logical, 'darwin')).toBe(true);
+    const migration = migrateStoppedRepoLocalControllerHomeStorage(logical, 'darwin');
+    expect(migration.migrated).toBe(true);
+    expect(lstatSync(logical).isSymbolicLink()).toBe(true);
+    expect(realpathSync(logical)).toBe(realpathSync(physical));
+    expect(existsSync(join(logical, 'sentinel.json'))).toBe(true);
+    expect(repoLocalControllerHomeStorageNeedsMigration(logical, 'darwin')).toBe(false);
+
+    rollbackStoppedRepoLocalControllerHomeStorage(migration);
+    expect(lstatSync(logical).isDirectory()).toBe(true);
+    expect(existsSync(physical)).toBe(false);
+    expect(existsSync(join(logical, 'sentinel.json'))).toBe(true);
   });
 
   test('does not migrate an existing repo-local directory while it may be live', () => {

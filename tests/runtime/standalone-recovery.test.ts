@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 import {
@@ -70,6 +70,15 @@ afterEach(async () => {
 function controllerHome(): string {
   const home = mkdtempSync(join(tmpdir(), 'standalone-recovery-canonical-'));
   roots.push(home);
+  inspectControlPlaneDatabase(home);
+  return home;
+}
+
+function repoLocalControllerHome(): string {
+  const root = mkdtempSync(join(tmpdir(), 'standalone-recovery-repo-local-'));
+  roots.push(root);
+  const home = join(root, '_ops', 'controller-home');
+  mkdirSync(home, { recursive: true });
   inspectControlPlaneDatabase(home);
   return home;
 }
@@ -641,6 +650,58 @@ describe('standalone recovery on canonical Runtime', () => {
     }
   });
 
+  test('does not skip behavior-identical activation when an existing repo-local Controller Home needs .noindex migration', async () => {
+    const home = repoLocalControllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = dirname(dirname(home));
+    try {
+      const active = verifiedManifest(home, 'release-a', 'same-runtime');
+      const candidate = verifiedManifest(home, 'release-b', 'same-runtime');
+      ensureActiveRuntimeRelease(home, active.path);
+      runtimeServiceConfig(home);
+      const paths = forgeRuntimeServicePaths(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+      let launchdLoaded = true;
+
+      const result = await activateRuntimeRelease(createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd' } }), candidate.path, {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (name, args) => {
+          if (name === 'lsof') return { ok: false, status: 1, stdout: '', stderr: '' };
+          if (args[0] === 'bootout') launchdLoaded = false;
+          if (args[0] === 'print') return launchdLoaded
+            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+          if (args[0] === 'bootstrap') launchdLoaded = true;
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        runtimeRunning: () => false,
+        verifyLocal: async () => {
+          const authority = readRuntimeReleaseAuthority(home)!;
+          return {
+            ...healthyVerify(),
+            releases: {
+              active: { path: authority.active.manifestPath, revision: authority.active.releaseId, artifactIdentity: authority.active.artifactIdentity, manifestSha256: 'test-sha', workerProtocolVersion: 1 },
+              coherent: true,
+            },
+          };
+        },
+        now: (() => { let value = 0; return () => value += 1_000; })(),
+        sleep: async () => undefined,
+      });
+
+      expect(result).toMatchObject({ ok: true, attempted: true });
+      expect(result.detail).toContain('.noindex');
+      expect(lstatSync(home).isSymbolicLink()).toBe(true);
+      expect(realpathSync(home)).toBe(realpathSync(`${home}.noindex`));
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-b');
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
   test('does not skip activation when Runtime behavior changes despite an identical executable', async () => {
     const home = controllerHome();
     const previousHome = process.env.HOME;
@@ -1032,6 +1093,64 @@ describe('standalone recovery on canonical Runtime', () => {
         previous: { releaseId: candidateReleaseId, artifactIdentity },
       });
       expect(commands.filter((args) => args.includes('kickstart')).length).toBeGreaterThanOrEqual(2);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('rolls back Controller Home layout together with the previous whole Runtime when activation verification fails', async () => {
+    const home = repoLocalControllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = dirname(dirname(home));
+    try {
+      const first = manifest(home, 'release-a', 'artifact-a');
+      const candidate = verifiedManifest(home, 'release-failed-noindex');
+      ensureActiveRuntimeRelease(home, first);
+      runtimeServiceConfig(home);
+      const paths = forgeRuntimeServicePaths(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+
+      let launchdLoaded = true;
+      let kickstarts = 0;
+      const result = await activateRuntimeRelease(createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 5_000 } }), candidate.path, {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (name, args) => {
+          if (name === 'lsof') return { ok: false, status: 1, stdout: '', stderr: '' };
+          if (args[0] === 'bootout') launchdLoaded = false;
+          if (args[0] === 'print') return launchdLoaded
+            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+          if (args[0] === 'bootstrap') launchdLoaded = true;
+          if (args[0] === 'kickstart') kickstarts += 1;
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        runtimeRunning: () => false,
+        verifyLocal: async () => {
+          if (kickstarts === 0 || kickstarts >= 2) {
+            const authority = readRuntimeReleaseAuthority(home)!;
+            return {
+              ...healthyVerify(),
+              releases: {
+                active: { path: authority.active.manifestPath, revision: authority.active.releaseId, artifactIdentity: authority.active.artifactIdentity, manifestSha256: 'test-sha', workerProtocolVersion: 1 },
+                coherent: true,
+              },
+            };
+          }
+          return { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } };
+        },
+        now: (() => { let value = 0; return () => value += 1_000; })(),
+        sleep: async () => undefined,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.rollback).toMatchObject({ ok: true });
+      expect(lstatSync(home).isDirectory()).toBe(true);
+      expect(existsSync(`${home}.noindex`)).toBe(false);
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
+      expect(kickstarts).toBeGreaterThanOrEqual(2);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, symlinkSync, writeFileSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, readlinkSync, renameSync, rmSync, symlinkSync } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, join, relative, resolve } from 'path';
 
@@ -60,58 +60,80 @@ export function ensureControllerHomeStorage(
   return home;
 }
 
-const SPOTLIGHT_EXCLUSION_MARKER = '.metadata_never_index';
-const spotlightExclusionAttempted = new Set<string>();
-
-export interface SpotlightExclusionResult {
-  attempted: boolean;
-  excludedRoot?: string;
-  created?: boolean;
-  warning?: string;
+export interface ControllerHomeStorageMigration {
+  migrated: boolean;
+  logicalHome: string;
+  physicalHome?: string;
 }
 
-/**
- * macOS honours .metadata_never_index on a directory without disabling
- * Spotlight for its parent volume. Controller Home changes frequently, so a
- * repo-local home excludes _ops as a whole while a global home excludes only
- * itself. This is deliberately a lifecycle helper: callers cache attempts
- * and never invoke mdutil or alter any broader indexing policy.
- */
-export function spotlightOperationalExclusionRoot(controllerHome: string): string {
-  const home = resolve(controllerHome);
-  const parts = home.split('/');
-  const ops = parts.lastIndexOf('_ops');
-  return ops >= 0 && parts[ops + 1] === 'controller-home'
-    ? parts.slice(0, ops + 1).join('/') || '/'
-    : home;
+function symlinkTargetPath(path: string): string {
+  return resolve(dirname(path), readlinkSync(path));
 }
 
-export function ensureMacosSpotlightOperationalExclusion(
+export function repoLocalControllerHomeStorageNeedsMigration(
   controllerHome: string,
-  platform = process.platform,
-): SpotlightExclusionResult {
-  if (platform !== 'darwin') return { attempted: false };
-  const excludedRoot = spotlightOperationalExclusionRoot(controllerHome);
-  if (spotlightExclusionAttempted.has(excludedRoot)) return { attempted: false, excludedRoot };
-  spotlightExclusionAttempted.add(excludedRoot);
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const logicalHome = resolve(controllerHome);
+  const physicalHome = repoLocalNoIndexControllerHome(logicalHome, platform);
+  if (!physicalHome) return false;
+  let stat;
   try {
-    mkdirSync(excludedRoot, { recursive: true });
-    const marker = join(excludedRoot, SPOTLIGHT_EXCLUSION_MARKER);
-    if (existsSync(marker)) return { attempted: true, excludedRoot, created: false };
-    writeFileSync(marker, '', { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-    return { attempted: true, excludedRoot, created: true };
+    stat = lstatSync(logicalHome);
   } catch (error) {
-    return {
-      attempted: true,
-      excludedRoot,
-      warning: `SPOTLIGHT_EXCLUSION_UNAVAILABLE: ${error instanceof Error ? error.message : String(error)}`,
-    };
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+  if (stat.isSymbolicLink()) {
+    if (symlinkTargetPath(logicalHome) !== physicalHome) {
+      throw new Error(`CONTROLLER_HOME_NOINDEX_SYMLINK_CONFLICT: ${logicalHome}`);
+    }
+    if (!existsSync(physicalHome)) {
+      throw new Error(`CONTROLLER_HOME_NOINDEX_TARGET_MISSING: ${physicalHome}`);
+    }
+    return false;
+  }
+  if (!stat.isDirectory()) throw new Error(`CONTROLLER_HOME_STORAGE_UNSUPPORTED: ${logicalHome}`);
+  if (existsSync(physicalHome)) throw new Error(`CONTROLLER_HOME_NOINDEX_TARGET_EXISTS: ${physicalHome}`);
+  return true;
+}
+
+/** Caller must prove the Canonical Runtime is fully stopped before invoking. */
+export function migrateStoppedRepoLocalControllerHomeStorage(
+  controllerHome: string,
+  platform: NodeJS.Platform = process.platform,
+): ControllerHomeStorageMigration {
+  const logicalHome = resolve(controllerHome);
+  const physicalHome = repoLocalNoIndexControllerHome(logicalHome, platform);
+  if (!physicalHome || !repoLocalControllerHomeStorageNeedsMigration(logicalHome, platform)) {
+    return { migrated: false, logicalHome, physicalHome };
+  }
+  renameSync(logicalHome, physicalHome);
+  try {
+    const target = relative(dirname(logicalHome), physicalHome) || basename(physicalHome);
+    symlinkSync(target, logicalHome, 'dir');
+    if (!lstatSync(logicalHome).isSymbolicLink() || symlinkTargetPath(logicalHome) !== physicalHome || !existsSync(physicalHome)) {
+      throw new Error(`CONTROLLER_HOME_NOINDEX_POSTCHECK_FAILED: ${logicalHome}`);
+    }
+    return { migrated: true, logicalHome, physicalHome };
+  } catch (error) {
+    try { rmSync(logicalHome, { force: true }); } catch { /* best effort */ }
+    if (!existsSync(logicalHome) && existsSync(physicalHome)) renameSync(physicalHome, logicalHome);
+    throw error;
   }
 }
 
-/** Test-only cache reset; production attempts are once per Runtime lifecycle. */
-export function resetMacosSpotlightExclusionForTests(): void {
-  spotlightExclusionAttempted.clear();
+/** Caller must prove the Canonical Runtime is fully stopped before invoking. */
+export function rollbackStoppedRepoLocalControllerHomeStorage(migration: ControllerHomeStorageMigration): void {
+  if (!migration.migrated || !migration.physicalHome) return;
+  const { logicalHome, physicalHome } = migration;
+  const stat = lstatSync(logicalHome);
+  if (!stat.isSymbolicLink() || symlinkTargetPath(logicalHome) !== physicalHome) {
+    throw new Error(`CONTROLLER_HOME_NOINDEX_ROLLBACK_CONFLICT: ${logicalHome}`);
+  }
+  if (!existsSync(physicalHome)) throw new Error(`CONTROLLER_HOME_NOINDEX_ROLLBACK_TARGET_MISSING: ${physicalHome}`);
+  rmSync(logicalHome, { force: true });
+  renameSync(physicalHome, logicalHome);
 }
 
 export function ensureControllerHome(explicit?: string): string {
@@ -119,8 +141,6 @@ export function ensureControllerHome(explicit?: string): string {
   for (const child of ['', 'repositories', 'system', 'locks', 'indexes', 'audit', 'mcp', 'sessions', 'work-handles']) {
     mkdirSync(join(home, child), { recursive: true });
   }
-  // Best effort only. Indexing policy must never prevent Controller startup.
-  ensureMacosSpotlightOperationalExclusion(home);
   return home;
 }
 

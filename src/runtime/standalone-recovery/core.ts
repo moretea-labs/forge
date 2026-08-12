@@ -16,6 +16,12 @@ import {
 } from '../root/release-store';
 import type { RuntimeReleaseManifest } from '../root/types';
 import { createRecoveryHttpTransport, type RecoveryHttpTransport } from './http-transport';
+import {
+  migrateStoppedRepoLocalControllerHomeStorage,
+  repoLocalControllerHomeStorageNeedsMigration,
+  rollbackStoppedRepoLocalControllerHomeStorage,
+  type ControllerHomeStorageMigration,
+} from '../../cli/repositories/controller-home';
 
 /** Standalone recovery reads only canonical Runtime observation and whole-release authority. */
 export interface PublicTunnelServiceConfig {
@@ -1590,7 +1596,8 @@ export async function activateRuntimeRelease(
     audit(config, 'runtime_release_activation_candidate_invalid', { detail, ...(guard.requestId ? { requestId: guard.requestId } : {}) });
     return { ok: false, attempted: false, noOp: true, detail };
   }
-  if ((dependencies.platform ?? process.platform) !== 'darwin') {
+  const platform = dependencies.platform ?? process.platform;
+  if (platform !== 'darwin') {
     return { ok: false, attempted: false, noOp: true, detail: 'Runtime release activation currently requires the configured macOS launchd service' };
   }
   const uid = await (dependencies.currentUid ?? currentUid)();
@@ -1638,7 +1645,19 @@ export async function activateRuntimeRelease(
       });
       return { ok: false, attempted: false, noOp: true, detail, operationId } satisfies RuntimeReleaseActivationResult;
     }
+    let storageMigrationRequired = false;
+    try {
+      storageMigrationRequired = repoLocalControllerHomeStorageNeedsMigration(config.controllerHome, platform);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'Controller Home storage migration preflight failed';
+      audit(config, 'runtime_release_activation_storage_preflight_failed', { operationId, requestId: lockRequestId, detail });
+      return { ok: false, attempted: false, noOp: true, detail, operationId } satisfies RuntimeReleaseActivationResult;
+    }
     if (current && current.active.releaseId === candidate.manifest.releaseId) {
+      if (storageMigrationRequired) {
+        const detail = 'CONTROLLER_HOME_STORAGE_MIGRATION_REQUIRES_STAGED_RELEASE: stage a fresh immutable Runtime release so Recovery can migrate storage inside the activation transaction';
+        return { ok: false, attempted: false, noOp: true, detail, operationId } satisfies RuntimeReleaseActivationResult;
+      }
       return {
         ok: true,
         attempted: false,
@@ -1649,7 +1668,7 @@ export async function activateRuntimeRelease(
       } satisfies RuntimeReleaseActivationResult;
     }
     if (current) {
-      if (runtimeBehaviorEquivalent(current.active.manifestPath, candidate.manifestPath)) {
+      if (runtimeBehaviorEquivalent(current.active.manifestPath, candidate.manifestPath) && !storageMigrationRequired) {
         const verify = await verifyLocal(config);
         audit(config, 'runtime_release_activation_behavior_identical', {
           operationId,
@@ -1727,24 +1746,44 @@ export async function activateRuntimeRelease(
       audit(config, 'runtime_release_activation_launchd_contract_failed', { serviceTarget: service.target, operationId, detail });
       return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: await verifyLocal(config) } satisfies RuntimeReleaseActivationResult;
     }
-    const started = await ensureLaunchdServiceStarted(service, runCommand);
+    let storageMigration: ControllerHomeStorageMigration | undefined;
     let after: VerifyResult;
     let activationFailureDetail: string | undefined;
-    if (!started.ok) {
-      activationFailureDetail = started.detail;
-      audit(config, 'runtime_release_activation_start_failed', { serviceTarget: service.target, operationId, detail: started.detail });
+    try {
+      storageMigration = migrateStoppedRepoLocalControllerHomeStorage(config.controllerHome, platform);
+      if (storageMigration.migrated) {
+        audit(config, 'runtime_controller_home_noindex_migrated', {
+          serviceTarget: service.target,
+          operationId,
+          logicalHome: storageMigration.logicalHome,
+          physicalHome: storageMigration.physicalHome,
+        });
+      }
+    } catch (error) {
+      activationFailureDetail = `Controller Home .noindex migration failed: ${error instanceof Error ? error.message : String(error)}`;
+      audit(config, 'runtime_controller_home_noindex_migration_failed', { serviceTarget: service.target, operationId, detail: activationFailureDetail });
+    }
+
+    if (activationFailureDetail) {
       after = await verifyLocal(config);
     } else {
-      after = await verifyPrimaryRuntimeAfterStart({
-        config,
-        timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
-        now,
-        wait,
-        verifyLocal,
-      });
-      if (after.ok && after.releases.active?.revision === candidate.manifest.releaseId) {
-        audit(config, 'runtime_release_activation_succeeded', { serviceTarget: service.target, operationId, requestId: lockRequestId, activeRevision: after.releases.active?.revision, expectedAuthorityRevision: guard.expectedAuthorityRevision, expectedActiveReleaseId: guard.expectedActiveReleaseId });
-        return { ok: true, attempted: true, detail: 'requested Runtime release activated and passed whole-Runtime verification', serviceTarget: service.target, operationId, verify: after } satisfies RuntimeReleaseActivationResult;
+      const started = await ensureLaunchdServiceStarted(service, runCommand);
+      if (!started.ok) {
+        activationFailureDetail = started.detail;
+        audit(config, 'runtime_release_activation_start_failed', { serviceTarget: service.target, operationId, detail: started.detail });
+        after = await verifyLocal(config);
+      } else {
+        after = await verifyPrimaryRuntimeAfterStart({
+          config,
+          timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
+          now,
+          wait,
+          verifyLocal,
+        });
+        if (after.ok && after.releases.active?.revision === candidate.manifest.releaseId) {
+          audit(config, 'runtime_release_activation_succeeded', { serviceTarget: service.target, operationId, requestId: lockRequestId, activeRevision: after.releases.active?.revision, expectedAuthorityRevision: guard.expectedAuthorityRevision, expectedActiveReleaseId: guard.expectedActiveReleaseId, controllerHomeStorageMigrated: storageMigration?.migrated === true });
+          return { ok: true, attempted: true, detail: storageMigration?.migrated ? 'requested Runtime release activated, Controller Home migrated to .noindex storage, and whole-Runtime verification passed' : 'requested Runtime release activated and passed whole-Runtime verification', serviceTarget: service.target, operationId, verify: after } satisfies RuntimeReleaseActivationResult;
+        }
       }
     }
 
@@ -1772,6 +1811,16 @@ export async function activateRuntimeRelease(
       try {
         const rollbackOperationId = `recovery-activate-runtime-rollback-${Date.now()}-${randomUUID().slice(0, 8)}`;
         const restored = rollbackRuntimeRelease(config.controllerHome, rollbackOperationId);
+        if (storageMigration?.migrated) {
+          rollbackStoppedRepoLocalControllerHomeStorage(storageMigration);
+          audit(config, 'runtime_controller_home_noindex_migration_rolled_back', {
+            serviceTarget: service.target,
+            operationId,
+            rollbackOperationId,
+            logicalHome: storageMigration.logicalHome,
+            physicalHome: storageMigration.physicalHome,
+          });
+        }
         ensureForgeRuntimeLaunchAgentContract({ controllerHome: config.controllerHome });
         const previousRevision = previousActive?.releaseId ?? '';
         const previousIdentity = previousActive?.artifactIdentity;
