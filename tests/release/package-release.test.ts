@@ -19,11 +19,8 @@ describe("public package release contract", () => {
       "forge-runtime": "bin/forge-runtime.mjs",
     });
     expect(pkg.scripts.prepublishOnly).toBeUndefined();
-    expect(pkg.scripts["release:rc"]).toBe("bash scripts/publish-release-tarball.sh next");
-    expect(pkg.scripts["release:stable"]).toBe("bash scripts/publish-release-tarball.sh latest");
-    const publishScript = read("scripts/publish-release-tarball.sh");
-    expect(publishScript).toContain('NPM_RELEASE_REGISTRY="${NPM_RELEASE_REGISTRY:-https://registry.npmjs.org/}"');
-    expect(publishScript).toContain('--registry "$NPM_RELEASE_REGISTRY"');
+    expect([pkg.scripts["release:rc"], pkg.scripts["release:stable"]]).toEqual(["bash scripts/publish-release-tarball.sh next", "bash scripts/publish-release-tarball.sh latest"]);
+    expect(read("scripts/publish-release-tarball.sh")).toMatch(/NPM_RELEASE_REGISTRY="\$\{NPM_RELEASE_REGISTRY:-https:\/\/registry\.npmjs\.org\/\}"[\s\S]*--registry "\$NPM_RELEASE_REGISTRY"/);
   });
 
   test("ships maintained public docs and excludes internal reports", () => {
