@@ -23,11 +23,9 @@ export type ContinuationControllerType = 'chatgpt' | 'codex' | 'claude' | 'grok'
 export interface WorkContinuationScheduleInput {
   workId: string;
   controllerType?: ContinuationControllerType;
-  controllerId?: string;
-  sessionId?: string;
   executable?: string;
   launchArgs?: string[];
-  leaseMs?: number;
+  launchReservationMs?: number;
   handoffId?: string;
   browserSessionId?: string;
   conversationUrl?: string;
@@ -97,11 +95,9 @@ function wakeArguments(input: WorkContinuationScheduleInput, controllerType: Con
   return {
     work_id: input.workId.trim(),
     controller_type: controllerType,
-    ...(input.controllerId?.trim() ? { controller_id: input.controllerId.trim() } : {}),
-    ...(input.sessionId?.trim() ? { session_id: input.sessionId.trim() } : {}),
     ...(input.executable?.trim() ? { executable: input.executable.trim() } : {}),
     ...(input.launchArgs ? { launch_args: input.launchArgs.map(String) } : {}),
-    ...(input.leaseMs !== undefined ? { lease_ms: input.leaseMs } : {}),
+    ...(input.launchReservationMs !== undefined ? { launch_reservation_ms: input.launchReservationMs } : {}),
     ...(input.handoffId?.trim() ? { handoff_id: input.handoffId.trim() } : {}),
     ...(input.browserSessionId?.trim() ? { browser_session_id: input.browserSessionId.trim() } : {}),
     ...(input.conversationUrl?.trim() ? { conversation_url: input.conversationUrl.trim() } : {}),

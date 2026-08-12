@@ -302,7 +302,8 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     controller_id: { type: 'string', description: 'Stable external SuperController identity for controller_claim/release.' },
     controller_type: { type: 'string', enum: ['chatgpt', 'codex', 'grok', 'claude', 'human'], description: 'Controller kind for claims and launcher_start.' },
     session_id: { type: 'string', description: 'Controller-owned session identity used for an exclusive Work lease.' },
-    lease_ms: { type: 'number', description: 'Controller lease duration, bounded to one hour.' },
+    lease_ms: { type: 'number', description: 'Authenticated Controller ownership lease duration, bounded to one hour. Legacy launcher callers may still use this as a launch-reservation TTL.' },
+    launch_reservation_ms: { type: 'number', description: 'Short duplicate-spawn reservation TTL for launcher_start or schedule_create; does not grant Work ownership.' },
     executable: { type: 'string', description: 'External controller executable for launcher_start. This is owned by the Launcher, not the Kernel.' },
     launch_args: { type: 'array', items: { type: 'string' }, description: 'Provider-specific arguments for launcher_start.' },
     browser_session_id: { type: 'string', description: 'Saved Forge ChatGPT browser session to continue when controller_type=chatgpt.' },
@@ -3240,11 +3241,9 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               const created = createWorkContinuationSchedule(ctx.controllerHome, repository.repoId, {
                 workId,
                 controllerType: controllerType as ContinuationControllerType,
-                controllerId: typeof args.controller_id === 'string' ? args.controller_id : undefined,
-                sessionId: typeof args.session_id === 'string' ? args.session_id : undefined,
                 executable: typeof args.executable === 'string' ? args.executable : undefined,
                 launchArgs: Array.isArray(args.launch_args) ? args.launch_args.map(String) : undefined,
-                leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
+                launchReservationMs: typeof args.launch_reservation_ms === 'number' ? args.launch_reservation_ms : typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
                 handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
                 browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
                 conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
@@ -3346,16 +3345,14 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               executable: typeof args.executable === 'string' && args.executable.trim() ? args.executable.trim() : undefined,
               args: Array.isArray(args.launch_args) ? args.launch_args.map(String) : [],
               workId: String(args.work_id ?? '').trim(),
-              controllerId: String(args.controller_id ?? '').trim(),
-              sessionId: String(args.session_id ?? '').trim(),
-              leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
+              launchReservationMs: typeof args.launch_reservation_ms === 'number' ? args.launch_reservation_ms : typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
               handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
               browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
               conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
               continuationPrompt: typeof args.continuation_prompt === 'string' ? args.continuation_prompt : undefined,
               cwd: repository.canonicalRoot,
             });
-            return result(buildFacadeResult({ summary: `Thin Launcher started ${launched.controllerType}.`, data: { pid: launched.pid, executable: launched.executable, workId: String(args.work_id ?? ''), controllerId: launched.controllerId, sessionId: launched.sessionId } }) as unknown as Record<string, unknown>);
+            return result(buildFacadeResult({ summary: `Thin Launcher started ${launched.controllerType}.`, data: { pid: launched.pid, executable: launched.executable, workId: String(args.work_id ?? ''), reservationId: launched.reservationId } }) as unknown as Record<string, unknown>);
           } catch (error) {
             return result(buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Launcher failed.', data: {} }) as unknown as Record<string, unknown>, true);
           }

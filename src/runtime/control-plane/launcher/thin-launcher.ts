@@ -1,12 +1,15 @@
 import { spawn, spawnSync } from 'child_process';
 import {
-  claimControllerSession,
   getHandoffItem,
   getWorkContract,
-  releaseControllerSession,
   type HandoffInboxStoreOptions,
   type WorkContractStoreOptions,
 } from '../facade';
+import {
+  attachExternalControllerLaunchPid,
+  releaseExternalControllerLaunchReservation,
+  reserveExternalControllerLaunch,
+} from './launch-reservation-store';
 import type { ControllerType } from '../facade/types';
 
 export interface ThinLauncherRequest {
@@ -14,9 +17,8 @@ export interface ThinLauncherRequest {
   executable?: string;
   args?: string[];
   workId: string;
-  controllerId: string;
-  sessionId: string;
-  leaseMs?: number;
+  /** Short reservation only prevents duplicate spawns; the external MCP session claims Work with its authenticated identity. */
+  launchReservationMs?: number;
   handoffId?: string;
   /** Saved Forge ChatGPT browser session to continue. */
   browserSessionId?: string;
@@ -29,8 +31,7 @@ export interface ThinLauncherRequest {
 
 export interface ThinLauncherResult {
   controllerType: ThinLauncherRequest['controllerType'];
-  controllerId: string;
-  sessionId: string;
+  reservationId: string;
   pid: number | undefined;
   prompt: string;
   executable: string;
@@ -74,6 +75,18 @@ function assertChatgptConversationUrl(value: string | undefined): string | undef
 }
 
 export function buildSuperControllerInvocation(request: ThinLauncherRequest, executable: string, prompt: string): { executable: string; args: string[] } {
+  if (request.controllerType === 'codex') {
+    return {
+      executable,
+      args: ['--ask-for-approval', 'never', 'exec', '--sandbox', 'workspace-write', ...(request.args ?? []), prompt],
+    };
+  }
+  if (request.controllerType === 'claude') {
+    return {
+      executable,
+      args: ['--print', '--permission-mode', 'auto', ...(request.args ?? []), prompt],
+    };
+  }
   if (request.controllerType !== 'chatgpt') {
     return { executable, args: [...(request.args ?? []), prompt] };
   }
@@ -117,16 +130,13 @@ export function launchSuperController(
   },
   request: ThinLauncherRequest,
 ): ThinLauncherResult {
-  if (!request.controllerId.trim() || !request.sessionId.trim()) throw new Error('LAUNCHER_CONTROLLER_SESSION_REQUIRED');
   const executable = resolveLauncherExecutable(request);
   const work = getWorkContract(stores.work, request.workId);
   if (!work) throw new Error(`WORK_NOT_FOUND: ${request.workId}`);
-  const session = claimControllerSession(stores.work, {
+  const reservation = reserveExternalControllerLaunch(stores.work, {
     workId: work.workId,
-    controllerId: request.controllerId,
     controllerType: request.controllerType,
-    sessionId: request.sessionId,
-    leaseMs: request.leaseMs,
+    ttlMs: request.launchReservationMs,
   });
   const handoff = request.handoffId ? getHandoffItem(stores.handoff, request.handoffId) : undefined;
   const prompt = [
@@ -136,7 +146,7 @@ export function launchSuperController(
     `Current status: ${work.status}`,
     handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
     request.continuationPrompt?.trim() ? `Continuation: ${request.continuationPrompt.trim()}` : '',
-    'Use the repository MCP facade directly. Claim the Work before mutation and create a handoff when control changes.',
+    'No Controller ownership was preclaimed for you. First call rh_work continue for this Work through your authenticated MCP session; do not invent controller_id/session_id. Then use the repository MCP facade, record verification evidence, finalize only when acceptance passes, and create a HandoffItem when judgement is required.',
   ].filter(Boolean).join('\n');
   try {
     const invocation = buildSuperControllerInvocation(request, executable, prompt);
@@ -146,9 +156,10 @@ export function launchSuperController(
       stdio: 'ignore',
     });
     child.unref();
-    return { controllerType: request.controllerType, controllerId: session.controllerId, sessionId: session.sessionId, pid: child.pid, prompt, executable };
+    attachExternalControllerLaunchPid(stores.work, work.workId, reservation.reservationId, child.pid);
+    return { controllerType: request.controllerType, reservationId: reservation.reservationId, pid: child.pid, prompt, executable };
   } catch (error) {
-    releaseControllerSession(stores.work, work.workId, request.controllerId);
+    releaseExternalControllerLaunchReservation(stores.work, work.workId, reservation.reservationId, 'spawn_failed');
     throw error;
   }
 }

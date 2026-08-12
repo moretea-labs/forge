@@ -12,6 +12,7 @@ import {
 import { listCandidateFindings } from '../findings/store';
 import { getControllerSession, getWorkContract, isTerminalWorkContractStatus } from '../../control-plane/facade';
 import { launchSuperController } from '../../control-plane/launcher/thin-launcher';
+import { getExternalControllerLaunchReservation } from '../../control-plane/launcher/launch-reservation-store';
 import {
   getOccurrence,
   getSchedule,
@@ -541,6 +542,11 @@ export async function evaluateSchedule(
       saveSchedule(controllerHome, { ...schedule, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
       return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} already has an active Controller ${existingOwner.controllerId}.`);
     }
+    const launchReservation = getExternalControllerLaunchReservation(workStore, workId);
+    if (launchReservation) {
+      saveSchedule(controllerHome, { ...schedule, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
+      return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} already has a pending external Controller launch ${launchReservation.reservationId}.`);
+    }
     const wakeDecision = decideOccurrence(
       controllerHome,
       schedule,
@@ -552,12 +558,6 @@ export async function evaluateSchedule(
     );
     try {
       const repository = getRepository(schedule.repoId, controllerHome, { includeRemoved: true });
-      const controllerId = typeof args.controller_id === 'string' && args.controller_id.trim()
-        ? args.controller_id.trim()
-        : `schedule:${schedule.scheduleId}:${controllerType}`;
-      const sessionId = typeof args.session_id === 'string' && args.session_id.trim()
-        ? args.session_id.trim()
-        : `${occurrence.occurrenceId}:${controllerType}`;
       const launched = launchSuperController({
         work: { controllerHome, repoId: schedule.repoId },
         handoff: { controllerHome, repoId: schedule.repoId },
@@ -566,12 +566,10 @@ export async function evaluateSchedule(
         executable: typeof args.executable === 'string' ? args.executable : undefined,
         args: Array.isArray(args.launch_args) ? args.launch_args.map(String) : [],
         workId,
-        controllerId,
-        sessionId,
-        leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
         handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
         browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
         conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
+        launchReservationMs: typeof args.launch_reservation_ms === 'number' ? args.launch_reservation_ms : typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
         continuationPrompt: typeof args.continuation_prompt === 'string'
           ? args.continuation_prompt
           : `Scheduled continuation ${occurrence.occurrenceId} from ${schedule.scheduleId}. Read current Forge state and continue only the bounded Work objective.`,
