@@ -13,6 +13,7 @@ import { ensureControllerHome } from '../../src/cli/repositories/controller-home
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { getControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
+import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { evaluateSchedule } from '../../src/runtime/workflow/schedules/engine';
 import { createSchedule } from '../../src/runtime/workflow/schedules/store';
 
@@ -213,7 +214,9 @@ describe('scheduled external Controller wake', () => {
     createWorkContract({ controllerHome, repoId: repository.repoId }, { workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop', objective: 'Continue a bounded goal from a scheduled external Controller wake.', acceptanceCriteria: ['external controller was launched'], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running' });
     const schedule = createSchedule(controllerHome, { requestId: 'schedule-wake-request', repoId: repository.repoId, name: 'continue bounded work', enabled: true, trigger: { type: 'manual' }, policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 0, dailyBudgetMinutes: 60, shadowMode: false }, action: { operation: 'external_controller_wake', target: 'runtime', arguments: { work_id: workId, controller_type: 'codex', executable: '/usr/bin/true' } }, stopConditions: [] });
     expect(await evaluateSchedule(controllerHome, schedule, true, { source: 'manual' })).toMatchObject({ status: 'succeeded', decision: 'execute' });
-    expect(getControllerSession({ controllerHome, repoId: repository.repoId }, workId)?.controllerType).toBe('codex');
-    const duplicate = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'second' }); expect(duplicate).toMatchObject({ decision: 'nothing_to_do' }); expect(duplicate?.reason).toContain('already has an active Controller');
+    expect(getControllerSession({ controllerHome, repoId: repository.repoId }, workId)).toBeUndefined();
+    expect(getExternalControllerLaunchReservation({ controllerHome, repoId: repository.repoId }, workId)?.controllerType).toBe('codex');
+    expect(await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'duplicate-wake' })).toMatchObject({ decision: 'nothing_to_do', status: 'skipped' });
+    const duplicate = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'second' }); expect(duplicate).toMatchObject({ decision: 'nothing_to_do' }); expect(duplicate?.reason).toContain('pending external Controller launch');
   });
 });

@@ -8,6 +8,7 @@ import { ensureControllerHome } from '../../src/cli/repositories/controller-home
 import { addRepositoryCheckout, registerRepository, setRepositoryCheckoutLifecycle } from '../../src/cli/repositories/registry';
 import { callExecutionTool } from '../../src/runtime/gateway/mcp/execution-tools';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { ensureActiveRuntimeRelease } from '../../src/runtime/root/release-store';
 import { bindRuntimeWriteClaim, clearRuntimeWriteClaimForTests } from '../../src/runtime/root/write-fence';
@@ -220,7 +221,7 @@ describe('rh_work managed lifecycle closure', () => {
     expect(resumedPayload.data?.schedule?.pausedReason).toBeUndefined();
   });
 
-  test('non-shadow continuation trigger wakes exactly one external Controller owner', async () => {
+  test('non-shadow continuation trigger reserves one launch while authenticated MCP retains Work ownership authority', async () => {
     const fx = fixture('schedule-live-wake');
     const work = await prepareManagedWork(fx, 'Wake one external Controller for this bounded Work');
     const created = await callRuntimeTool(fx.ctx, 'rh_work', {
@@ -248,9 +249,12 @@ describe('rh_work managed lifecycle closure', () => {
     const occurrence = (triggered?.structuredContent as { data?: { occurrence?: { decision?: string; status?: string } } })?.data?.occurrence;
     expect(occurrence).toMatchObject({ decision: 'execute', status: 'succeeded' });
 
-    const owner = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'controller_get_owner', work_id: work.workId });
-    const ownerPayload = owner?.structuredContent as { data?: { owner?: { controllerType?: string } } };
-    expect(ownerPayload.data?.owner?.controllerType).toBe('codex');
+    const ownerBeforeMcp = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'controller_get_owner', work_id: work.workId });
+    const ownerBeforeMcpPayload = ownerBeforeMcp?.structuredContent as { data?: { owner?: unknown } };
+    expect(ownerBeforeMcpPayload.data?.owner).toBeUndefined();
+    const reservation = getExternalControllerLaunchReservation({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, work.workId);
+    expect(reservation?.controllerType).toBe('codex');
+    expect(reservation?.pid).toBeTruthy();
 
     const second = await callRuntimeTool(fx.ctx, 'rh_work', {
       repo_id: fx.repository.repoId,
@@ -261,7 +265,17 @@ describe('rh_work managed lifecycle closure', () => {
     });
     const secondOccurrence = (second?.structuredContent as { data?: { occurrence?: { decision?: string; reason?: string } } })?.data?.occurrence;
     expect(secondOccurrence?.decision).toBe('nothing_to_do');
-    expect(secondOccurrence?.reason).toContain('already has an active Controller');
+    expect(secondOccurrence?.reason).toContain('pending external Controller launch');
+
+    const continued = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'continue', work_id: work.workId });
+    const continuedPayload = continued?.structuredContent as { data?: { ownershipResumed?: boolean; controllerSession?: { controllerId?: string; sessionId?: string } } };
+    expect(continuedPayload.data?.ownershipResumed).toBe(true);
+    expect(continuedPayload.data?.controllerSession?.controllerId).toBe(`principal-lifecycle-schedule-live-wake`);
+    expect(continuedPayload.data?.controllerSession?.sessionId).toBe(`mcp-lifecycle-schedule-live-wake`);
+    const ownerAfterMcp = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'controller_get_owner', work_id: work.workId });
+    const ownerAfterMcpPayload = ownerAfterMcp?.structuredContent as { data?: { owner?: { controllerId?: string; sessionId?: string } } };
+    expect(ownerAfterMcpPayload.data?.owner?.controllerId).toBe(`principal-lifecycle-schedule-live-wake`);
+    expect(ownerAfterMcpPayload.data?.owner?.sessionId).toBe(`mcp-lifecycle-schedule-live-wake`);
   });
 
   test('continuation schedule disables itself instead of waking a terminal Work', async () => {
