@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 CHANNEL="${1:-latest}"
+NPM_RELEASE_REGISTRY="${NPM_RELEASE_REGISTRY:-https://registry.npmjs.org/}"
 if [[ "$CHANNEL" != "latest" && "$CHANNEL" != "next" ]]; then
   echo "usage: $0 latest|next" >&2
   exit 2
@@ -17,4 +18,5 @@ if [[ ! -f "$TARBALL_PATH" ]]; then
   echo "[release] reusable tarball missing: $TARBALL_PATH" >&2
   exit 1
 fi
-npm publish "$TARBALL_PATH" --tag "$CHANNEL" --access public
+echo "[release] publish registry: ${NPM_RELEASE_REGISTRY}"
+npm publish "$TARBALL_PATH" --tag "$CHANNEL" --access public --registry "$NPM_RELEASE_REGISTRY"

@@ -21,6 +21,9 @@ describe("public package release contract", () => {
     expect(pkg.scripts.prepublishOnly).toBeUndefined();
     expect(pkg.scripts["release:rc"]).toBe("bash scripts/publish-release-tarball.sh next");
     expect(pkg.scripts["release:stable"]).toBe("bash scripts/publish-release-tarball.sh latest");
+    const publishScript = read("scripts/publish-release-tarball.sh");
+    expect(publishScript).toContain('NPM_RELEASE_REGISTRY="${NPM_RELEASE_REGISTRY:-https://registry.npmjs.org/}"');
+    expect(publishScript).toContain('--registry "$NPM_RELEASE_REGISTRY"');
   });
 
   test("ships maintained public docs and excludes internal reports", () => {
