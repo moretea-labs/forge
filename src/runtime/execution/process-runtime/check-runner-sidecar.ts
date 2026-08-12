@@ -2,7 +2,7 @@
 import { createHash } from 'crypto';
 import { resolve } from 'path';
 import {
-  runControllerCheck,
+  runControllerCheckAsync,
   snapshotControllerCheck,
 } from '../../../cli/controller/check-runner';
 
@@ -34,7 +34,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   };
 }
 
-export function runPersistedCheckSidecar(argv = process.argv.slice(2)): number {
+export async function runPersistedCheckSidecar(argv = process.argv.slice(2)): Promise<number> {
   const args = parseArgs(argv);
   const root = resolve(args.repo);
   const snapshot = snapshotControllerCheck(root, args.checkId);
@@ -42,7 +42,7 @@ export function runPersistedCheckSidecar(argv = process.argv.slice(2)): number {
   if (actualFingerprint !== args.expectedCheckFingerprint) {
     throw new Error('CHECK_SNAPSHOT_CHANGED: registered check changed before Process Runtime execution');
   }
-  const result = runControllerCheck(root, args.checkId, args.timeoutMs, snapshot);
+  const result = await runControllerCheckAsync(root, args.checkId, { requestedTimeoutMs: args.timeoutMs, snapshot });
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr.endsWith('\n') ? result.stderr : `${result.stderr}\n`);
   return result.ok ? 0 : Math.max(1, result.status || 1);
@@ -51,10 +51,10 @@ export function runPersistedCheckSidecar(argv = process.argv.slice(2)): number {
 const direct = typeof process.argv[1] === 'string'
   && (process.argv[1].includes('check-runner-sidecar') || process.argv[1].endsWith('/forge-check-runner'));
 if (direct) {
-  try {
-    process.exitCode = runPersistedCheckSidecar();
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  }
+  void runPersistedCheckSidecar()
+    .then((code) => { process.exitCode = code; })
+    .catch((error) => {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    });
 }
