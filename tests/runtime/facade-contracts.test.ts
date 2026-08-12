@@ -317,14 +317,41 @@ describe('Thin Launcher external Controller invocation', () => {
     expect(buildSuperControllerInvocation(request({ conversationUrl: 'https://chatgpt.com/c/example' }), 'forge', 'continue bounded work').args).toEqual(expect.arrayContaining(['browser-consult', '--chatgpt-url', 'https://chatgpt.com/c/example']));
     expect(() => buildSuperControllerInvocation(request({ conversationUrl: 'https://example.com/c/example' }), 'forge', 'continue bounded work')).toThrow('LAUNCHER_CHATGPT_CONVERSATION_URL_INVALID');
   });
-  test('uses non-interactive provider modes for detached CLI controllers', () => {
-    expect(buildSuperControllerInvocation(request({ controllerType: 'codex', args: ['--color', 'never'] }), 'codex', 'continue bounded work')).toEqual({
-      executable: 'codex',
-      args: ['--ask-for-approval', 'never', 'exec', '--sandbox', 'workspace-write', '--color', 'never', 'continue bounded work'],
-    });
-    expect(buildSuperControllerInvocation(request({ controllerType: 'claude', args: ['--max-budget-usd', '1'] }), 'claude', 'continue bounded work')).toEqual({
+  test('uses non-interactive provider modes and requires Forge MCP bootstrap for detached CLI controllers', () => {
+    const bootstrap = {
+      url: 'http://127.0.0.1:8765/mcp',
+      bearerTokenEnvVar: 'FORGE_RUNTIME_MCP_TOKEN' as const,
+      principalId: 'external:codex:reservation-1',
+      sessionId: 'external-session:codex:reservation-1',
+      env: { FORGE_RUNTIME_MCP_TOKEN: 'secret-not-for-argv' },
+    };
+    const codex = buildSuperControllerInvocation(
+      request({ controllerType: 'codex', args: ['--color', 'never'] }),
+      'codex',
+      'continue bounded work',
+      bootstrap,
+    );
+    expect(codex.executable).toBe('codex');
+    expect(codex.args.slice(0, 2)).toEqual(['--ask-for-approval', 'never']);
+    expect(codex.args).toContain('exec');
+    expect(codex.args).toContain('workspace-write');
+    expect(codex.args.join(' ')).toContain('mcp_servers.forge.url=');
+    expect(codex.args.join(' ')).toContain('X-Forge-Forwarded-Principal-Id');
+    expect(codex.args.join(' ')).toContain('external:codex:reservation-1');
+    expect(codex.args.join(' ')).not.toContain('secret-not-for-argv');
+
+    expect(() => buildSuperControllerInvocation(
+      request({ controllerType: 'claude', args: ['--max-budget-usd', '1'] }),
+      'claude',
+      'continue bounded work',
+    )).toThrow('LAUNCHER_CLAUDE_FORGE_MCP_CONFIG_REQUIRED');
+    expect(buildSuperControllerInvocation(
+      request({ controllerType: 'claude', args: ['--mcp-config', '{\"mcpServers\":{}}', '--max-budget-usd', '1'] }),
+      'claude',
+      'continue bounded work',
+    )).toEqual({
       executable: 'claude',
-      args: ['--print', '--permission-mode', 'auto', '--max-budget-usd', '1', 'continue bounded work'],
+      args: ['--print', '--permission-mode', 'auto', '--mcp-config', '{"mcpServers":{}}', '--max-budget-usd', '1', 'continue bounded work'],
     });
   });
 });

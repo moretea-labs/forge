@@ -11,6 +11,7 @@ import {
   reserveExternalControllerLaunch,
 } from './launch-reservation-store';
 import type { ControllerType } from '../facade/types';
+import { codexMcpConfigArgs, resolveProviderMcpBootstrap, type ProviderMcpBootstrap } from './provider-mcp-bootstrap';
 
 export interface ThinLauncherRequest {
   controllerType: Exclude<ControllerType, 'human'>;
@@ -74,14 +75,29 @@ function assertChatgptConversationUrl(value: string | undefined): string | undef
   return url.toString();
 }
 
-export function buildSuperControllerInvocation(request: ThinLauncherRequest, executable: string, prompt: string): { executable: string; args: string[] } {
+export function buildSuperControllerInvocation(
+  request: ThinLauncherRequest,
+  executable: string,
+  prompt: string,
+  mcpBootstrap?: ProviderMcpBootstrap,
+): { executable: string; args: string[] } {
   if (request.controllerType === 'codex') {
+    if (!mcpBootstrap) throw new Error('LAUNCHER_CODEX_FORGE_MCP_REQUIRED');
     return {
       executable,
-      args: ['--ask-for-approval', 'never', 'exec', '--sandbox', 'workspace-write', ...(request.args ?? []), prompt],
+      args: [
+        '--ask-for-approval', 'never',
+        ...codexMcpConfigArgs(mcpBootstrap),
+        'exec', '--sandbox', 'workspace-write',
+        ...(request.args ?? []),
+        prompt,
+      ],
     };
   }
   if (request.controllerType === 'claude') {
+    if (!(request.args ?? []).includes('--mcp-config')) {
+      throw new Error('LAUNCHER_CLAUDE_FORGE_MCP_CONFIG_REQUIRED');
+    }
     return {
       executable,
       args: ['--print', '--permission-mode', 'auto', ...(request.args ?? []), prompt],
@@ -149,11 +165,15 @@ export function launchSuperController(
     'No Controller ownership was preclaimed for you. First call rh_work continue for this Work through your authenticated MCP session; do not invent controller_id/session_id. Then use the repository MCP facade, record verification evidence, finalize only when acceptance passes, and create a HandoffItem when judgement is required.',
   ].filter(Boolean).join('\n');
   try {
-    const invocation = buildSuperControllerInvocation(request, executable, prompt);
+    const mcpBootstrap = request.controllerType === 'codex'
+      ? resolveProviderMcpBootstrap(stores.work.controllerHome, 'codex', reservation.reservationId)
+      : undefined;
+    const invocation = buildSuperControllerInvocation(request, executable, prompt, mcpBootstrap);
     const child = spawn(invocation.executable, invocation.args, {
       cwd: request.cwd,
       detached: true,
       stdio: 'ignore',
+      env: mcpBootstrap?.env ?? process.env,
     });
     child.unref();
     attachExternalControllerLaunchPid(stores.work, work.workId, reservation.reservationId, child.pid);
