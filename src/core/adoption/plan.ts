@@ -26,7 +26,10 @@ const MINIMAL_DIRS = [
   "tasks/notes",
   "docs",
   ".ai/harness/checks",
-  ".ai/harness/handoff",
+  ".ai/harness/session",
+  ".ai/harness/controller/packets",
+  ".ai/harness/projections",
+  ".ai/harness/transfers",
 ] as const;
 
 const STANDARD_EXTRA_DIRS = [

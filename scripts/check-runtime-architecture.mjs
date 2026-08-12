@@ -83,7 +83,6 @@ const required = [
   'src/runtime/standalone-recovery/entry.ts',
   'src/cli/commands/init-hook.ts',
   'src/cli/commands/runtime.ts',
-  'src/cli/commands/controller.ts',
   'src/cli/index.ts',
   'docs/architecture/current/runtime-architecture-simplification.md',
   'docs/architecture/current/implementation-status.md',
@@ -254,12 +253,7 @@ forbid(
   /buildSupervisorCommand|addCommand\(buildSupervisorCommand\(\)\)/,
   'the public root CLI must not expose the legacy Supervisor lifecycle',
 );
-forbid(
-  'src/cli/commands/controller.ts',
-  /controller\/lifecycle|restart-coordinator|bluegreen-rollout|controllerRestartVerify|controllerFeatureVerify|command\.command\(['"](?:start|stop|status|restart|logs|rollout|rollback|restart-verify|feature-verify)['"]\)/,
-  'the public controller CLI must not expose component lifecycle, restart, blue-green rollout, rollback, or green-gate commands',
-);
-requireText('src/cli/commands/controller.ts', 'repositoryChangeVerify');
+requireMissing('src/cli/commands/controller.ts');
 requireText('src/runtime/root/release-manifest.ts', "entrypoint must be forge-runtime");
 requireText('src/runtime/root/release-manifest.ts', 'databaseSchemaCompatibility');
 requireText('src/runtime/root/release-manifest.ts', 'workerProtocolVersion');
@@ -367,11 +361,6 @@ forbid(
   'src/cli/local-bridge/server.ts',
   /\bsubmitLocalBridgeJob\b|\bdispatchLocalBridgeJob\b|\basyncExecute\b/,
   'Local Bridge HTTP creation routes must return retirement handoffs without dormant Job submission or dispatch code',
-);
-forbid(
-  'src/cli/commands/controller.ts',
-  /\bsubmitLocalBridgeJob\b|\bdispatchLocalBridgeJob\b/,
-  'Controller CLI launch must return an external-Controller handoff without dormant Local Bridge Job code',
 );
 forbid(
   'src/cli/mcp/repository-tools.ts',

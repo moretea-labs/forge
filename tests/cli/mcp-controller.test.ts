@@ -1521,7 +1521,7 @@ describe("MCP controller profile", () => {
       expect(toolNames).toContain("git_diff_paths");
       expect(toolNames).toContain("git_stage_paths");
       expect(toolNames).toContain("git_commit_paths");
-      expect(toolNames).toContain("prepare_handoff_artifacts");
+      expect(toolNames).toContain("prepare_transfer_artifacts");
 
       expect(spawnSync("git", ["config", "user.email", "test@example.com"], { cwd: repoRoot }).status).toBe(0);
       expect(spawnSync("git", ["config", "user.name", "Test"], { cwd: repoRoot }).status).toBe(0);
@@ -1563,15 +1563,15 @@ describe("MCP controller profile", () => {
       const cachedAfterCommit = spawnSync("git", ["diff", "--cached", "--name-only"], { cwd: repoRoot, encoding: "utf-8" });
       expect(cachedAfterCommit.stdout.trim()).toBe("src/other.ts");
 
-      const handoff = await callRuntimeTool(full, "prepare_handoff_artifacts", {
+      const transfer = await callRuntimeTool(full, "prepare_transfer_artifacts", {
         repo_id: repository.repoId,
         reason: "controller-test"});
-      const handoffValue = JSON.parse(handoff!.content[0].text);
-      expect(handoffValue.usedScript).toBe(false);
-      expect(handoffValue.fallbackUsed).toBe(true);
-      expect(handoffValue.artifacts[0].path).toBe(".ai/harness/session/continuation.md");
-      expect(handoffValue.artifacts[0].preview).toContain("controller-test");
-      expect(handoffValue.artifacts[1].path).toBe(".ai/harness/session/resume.md");
+      const transferValue = JSON.parse(transfer!.content[0].text);
+      expect(transferValue.usedScript).toBe(false);
+      expect(transferValue.fallbackUsed).toBe(true);
+      expect(transferValue.artifacts[0].path).toBe(".ai/harness/session/continuation.md");
+      expect(transferValue.artifacts[0].preview).toContain("controller-test");
+      expect(transferValue.artifacts[1].path).toBe(".ai/harness/session/resume.md");
       expect(existsSync(join(repoRoot, ".ai", "harness", "session", "continuation.md"))).toBe(true);
       expect(existsSync(join(repoRoot, ".ai", "harness", "session", "resume.md"))).toBe(true);
       expect(existsSync(join(repoRoot, ".ai", "harness", "handoff", "current.md"))).toBe(false);

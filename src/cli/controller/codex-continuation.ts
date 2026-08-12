@@ -79,10 +79,10 @@ ${packet.allowedActions.map((action) => `- ${action}`).join('\n')}
 ${packet.stopConditions.map((condition) => `- ${condition}`).join('\n')}
 
 ## Instructions
-1. Prefer \`forge controller completion-backlog --json\` before starting new work.
-2. Run \`forge controller finish-ready-runs --apply --json\` only for low/medium auto-finishable runs.
+1. Read current Runtime state through \`rh_status\`, pending decisions through \`rh_inbox\`, and bounded Work through \`rh_work\` before starting new work.
+2. Use \`rh_work.verify/finalize/repair\` for current Work lifecycle changes; do not mutate legacy Issue/Task state.
 3. For high/destructive work, prepare a concise review summary instead of auto-approving it.
-4. If a command fails because of tool/platform limitations, write a small patch or a continuation note rather than retrying the same blocked path repeatedly.
+4. If a command fails because of tool/platform limitations, create a Runtime HandoffItem or bounded continuation note rather than retrying the same blocked path repeatedly.
 5. Finish with checks, a short status summary, and explicit remaining blockers.
 `;
 }
@@ -101,7 +101,7 @@ export function prepareCodexContinuation(repoRoot: string, options: CodexContinu
     controller: 'codex-cli',
     allowedActions: [
       'inspect compact backlog and stuck-state reports',
-      'finish low/medium successful runs using forge controller finish-ready-runs',
+      'finish validated bounded Work through rh_work.finalize when policy allows',
       'prepare patches for remaining blocker classes',
       'run declared checks and summarize failures',
     ],
@@ -123,9 +123,6 @@ export function prepareCodexContinuation(repoRoot: string, options: CodexContinu
       recommendations: stuckStates.recommendations,
     },
     nextCommands: [
-      'forge controller completion-backlog --json',
-      'forge controller stuck-states --json',
-      ...(backlog.finishableRunIds.length ? ['forge controller finish-ready-runs --apply --json'] : []),
       'npm run check:type',
       'npm run check:mcp-compatibility',
     ],

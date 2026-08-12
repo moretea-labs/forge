@@ -31,7 +31,7 @@ trace, review, and handoff.
 
 - Durable truth lives in repo files: `plans/`, `tasks/issues/`, `tasks/contracts/`,
   `tasks/reviews/`, `tasks/notes/`, `.ai/harness/checks/latest.json`,
-  `.ai/harness/runs/*.json`, and `.ai/harness/handoff/`.
+  `.ai/harness/runs/*.json`, `.ai/harness/session/`, `.ai/harness/controller/packets/`, `.ai/harness/projections/`, and `.ai/harness/transfers/`.
 - `tasks/current.md` is a generated orientation snapshot, not a kanban board,
   live lock, or implementation gate.
 - Agents may only widen scope by editing the active contract and leaving
@@ -55,7 +55,10 @@ trace, review, and handoff.
 | `.ai/harness/jobs/` | Controller | Local agent Task Run metadata, prompts, logs, and result evidence |
 | `.ai/harness/local-jobs/` | Local Controller | Approval-aware local Job Tickets that bridge ChatGPT, the visual UI, and agent Runs |
 | `.ai/harness/edit-sessions/` | Controller | Bounded direct-edit metadata, hashes, backups, and rollback evidence |
-| `.ai/harness/handoff/` | Session owner | Resume packets and exact next step |
+| `.ai/harness/session/` | Session adapter | Rebuildable continuation and resume cache |
+| `.ai/harness/controller/packets/` | External-controller adapter | Bounded Codex/ChatGPT continuation packets |
+| `.ai/harness/projections/` | Runtime projection layer | Read-only compatibility/status projections |
+| `.ai/harness/transfers/` | Recovery/selected-path layer | Bounded patch transfer artifacts |
 
 ## Safety Boundaries
 

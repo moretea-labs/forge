@@ -87,4 +87,8 @@ The frozen `handoff artifact writes` rule refers to lifecycle/decision handoff s
 
 A decision requiring ChatGPT or user judgement is represented by Runtime `HandoffItem` and surfaced through `rh_inbox`. Session Markdown cannot create, acknowledge, resolve, dismiss, supersede, or expire a `HandoffItem`.
 
+`HandoffItem` persistence intentionally remains Controller-owned JSON at `Controller Home/repositories/<repoId>/handoff-inbox/index.json`, written atomically under the repository handoff-inbox lock. It is the sole authority for the attention/decision inbox. It is not moved into the Requirement/Plan/Work SQLite tables merely for storage uniformity: those tables own transactional delivery lifecycle, while the inbox owns bounded human/controller judgement points. Runtime restart recovery reopens this Controller Home record; repo-local session, projection, controller-packet, and transfer files are never replayed into it.
+
+Repo-local recovery artifacts now have disjoint namespaces: `.ai/harness/session/` for rebuildable host-session context, `.ai/harness/controller/packets/` for bounded external-controller packets, `.ai/harness/projections/` for read-only compatibility/status views, and `.ai/harness/transfers/` for patch-transfer artifacts. The generic `.ai/harness/handoff/` namespace is retired.
+
 See `docs/architecture/current/legacy-governance.md` for the RepoHarness-to-Forge disposition rules.

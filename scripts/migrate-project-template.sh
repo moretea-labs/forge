@@ -607,7 +607,10 @@ create_task_files_if_missing() {
     "$repo/docs/architecture/diagrams" \
     "$repo/.ai/context" \
     "$repo/.ai/harness/checks" \
-    "$repo/.ai/harness/handoff" \
+    "$repo/.ai/harness/session" \
+    "$repo/.ai/harness/controller/packets" \
+    "$repo/.ai/harness/projections" \
+    "$repo/.ai/harness/transfers" \
     "$repo/.ai/harness/failures" \
     "$repo/.ai/harness/architecture" \
     "$repo/.ai/harness/runs" \
@@ -1011,7 +1014,7 @@ migrate_workflow() {
   run_or_echo mkdir -p "$repo/tasks/workstreams"
   run_or_echo mkdir -p "$repo/docs/reference-configs"
   run_or_echo mkdir -p "$repo/.ai/harness/checks"
-  run_or_echo mkdir -p "$repo/.ai/harness/handoff"
+  run_or_echo mkdir -p "$repo/.ai/harness/session" "$repo/.ai/harness/controller/packets" "$repo/.ai/harness/projections" "$repo/.ai/harness/transfers"
   migrate_active_plan_marker "$repo"
 
   install_templates "$repo"

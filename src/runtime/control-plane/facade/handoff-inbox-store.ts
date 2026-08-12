@@ -1,6 +1,7 @@
 import { mkdirSync } from 'fs';
 import { join } from 'path';
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
+import { withControllerLock } from '../../../cli/repositories/locks';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
 import {
   type HandoffCreationReason,
@@ -65,6 +66,20 @@ function nowIso(options: HandoffInboxStoreOptions): string {
   return options.now?.() ?? new Date().toISOString();
 }
 
+function withHandoffInboxWriteLock<T>(
+  options: HandoffInboxStoreOptions,
+  owner: string,
+  operation: () => T,
+): T {
+  if (!options.controllerHome || !options.repoId || options.root) return operation();
+  return withControllerLock(
+    options.controllerHome,
+    { scope: 'task', repoId: options.repoId, taskId: 'handoff-inbox' },
+    owner,
+    operation,
+  );
+}
+
 export function handoffInboxRoot(location: HandoffInboxStoreLocation): string {
   if (location.root) {
     mkdirSync(location.root, { recursive: true });
@@ -117,17 +132,19 @@ export function createHandoffItem(options: HandoffInboxStoreOptions, input: Crea
     createdAt: at,
     updatedAt: input.updatedAt ?? at,
   };
-  const store = readHandoffInboxStore(options);
-  if (store.items.some((existing) => existing.id === item.id)) {
-    throw new Error(`handoff already exists: ${item.id}`);
-  }
-  const nextStore: HandoffInboxStore = {
-    schemaVersion: 1,
-    updatedAt: item.updatedAt,
-    items: [item, ...store.items],
-  };
-  writeHandoffInboxStore(options, nextStore);
-  return item;
+  return withHandoffInboxWriteLock(options, `create-handoff:${item.id}`, () => {
+    const store = readHandoffInboxStore(options);
+    if (store.items.some((existing) => existing.id === item.id)) {
+      throw new Error(`handoff already exists: ${item.id}`);
+    }
+    const nextStore: HandoffInboxStore = {
+      schemaVersion: 1,
+      updatedAt: item.updatedAt,
+      items: [item, ...store.items],
+    };
+    writeHandoffInboxStore(options, nextStore);
+    return item;
+  });
 }
 
 export function listHandoffItems(options: ListHandoffOptions): HandoffItem[] {
@@ -171,20 +188,22 @@ function setHandoffStatus(
   patch: Partial<Pick<HandoffItem, 'decision' | 'resolver'>> = {},
 ): HandoffItem {
   const sanitizedId = sanitizeFileComponent(id);
-  const store = readHandoffInboxStore(options);
-  const index = store.items.findIndex((item) => item.id === sanitizedId);
-  if (index < 0) throw new Error(`handoff not found: ${sanitizedId}`);
-  const at = nowIso(options);
-  const item: HandoffItem = {
-    ...store.items[index],
-    ...patch,
-    status,
-    updatedAt: at,
-  };
-  const items = [...store.items];
-  items[index] = item;
-  writeHandoffInboxStore(options, { schemaVersion: 1, updatedAt: at, items });
-  return item;
+  return withHandoffInboxWriteLock(options, `update-handoff:${sanitizedId}`, () => {
+    const store = readHandoffInboxStore(options);
+    const index = store.items.findIndex((item) => item.id === sanitizedId);
+    if (index < 0) throw new Error(`handoff not found: ${sanitizedId}`);
+    const at = nowIso(options);
+    const item: HandoffItem = {
+      ...store.items[index],
+      ...patch,
+      status,
+      updatedAt: at,
+    };
+    const items = [...store.items];
+    items[index] = item;
+    writeHandoffInboxStore(options, { schemaVersion: 1, updatedAt: at, items });
+    return item;
+  });
 }
 
 export function acknowledgeHandoffItem(options: HandoffInboxStoreOptions, id: string): HandoffItem {

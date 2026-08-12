@@ -51,10 +51,28 @@
       "path": ".ai/harness/checks"
     },
     {
-      "id": "mkdir:.ai/harness/handoff",
+      "id": "mkdir:.ai/harness/session",
       "kind": "mkdir",
       "status": "planned",
-      "path": ".ai/harness/handoff"
+      "path": ".ai/harness/session"
+    },
+    {
+      "id": "mkdir:.ai/harness/controller/packets",
+      "kind": "mkdir",
+      "status": "planned",
+      "path": ".ai/harness/controller/packets"
+    },
+    {
+      "id": "mkdir:.ai/harness/projections",
+      "kind": "mkdir",
+      "status": "planned",
+      "path": ".ai/harness/projections"
+    },
+    {
+      "id": "mkdir:.ai/harness/transfers",
+      "kind": "mkdir",
+      "status": "planned",
+      "path": ".ai/harness/transfers"
     },
     {
       "id": "writeFile:docs/spec.md:ifMissing",

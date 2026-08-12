@@ -36,7 +36,7 @@ export interface McpSetupResult {
 const REQUIRED_CODEX_TOOLS = [
   "harness_status",
   "read_workflow_file",
-  "latest_handoff",
+  "latest_session_context",
   "latest_checks",
   "prepare_codex_goal_from_sprint",
   "write_codex_goal",

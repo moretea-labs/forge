@@ -71,7 +71,7 @@ export interface ControllerOperationalPlan {
     source: "task-recovery-loop";
     continuationState: string;
     nextActions: string[];
-    handoffArtifacts: string[];
+    recoveryArtifacts: string[];
   };
 }
 
@@ -173,7 +173,7 @@ export function buildControllerOperationalPlan(repoRoot: string, ledger: TaskLed
           label: "Fresh-session recovery",
           when: "A controller session restarts or loses conversation state.",
           steps: ["load task ledger", "read operational plan", "select continuation state", "expand only needed context", "resume or ask for the one missing decision"],
-          requiredEvidence: ["taskLedger", "operationalPlan", "handoffArtifacts"],
+          requiredEvidence: ["taskLedger", "operationalPlan", "recoveryArtifacts"],
         },
       ],
     },
@@ -195,7 +195,7 @@ export function buildControllerOperationalPlan(repoRoot: string, ledger: TaskLed
     },
     mcpToolSchemaConvergence: {
       source: "mcp-tool-schema-convergence",
-      readModels: ["controller_context", "controller_context_pack", "work_status_digest", "prepare_handoff_artifacts"],
+      readModels: ["controller_context", "controller_context_pack", "work_status_digest", "prepare_transfer_artifacts"],
       commandModels: ["work_submit", "run_check", "dispatch_task", "verify_task", "accept_task", "repository_safe_patch_apply"],
       compatibilityRules: [
         "compact reads are default",
@@ -220,7 +220,7 @@ export function buildControllerOperationalPlan(repoRoot: string, ledger: TaskLed
       source: "task-recovery-loop",
       continuationState: ledger.status.kind,
       nextActions: ledger.suggestedNextActions.slice(0, 6),
-      handoffArtifacts: [".ai/harness/controller/task-ledger.json", ".ai/harness/handoff/controller-current.md"],
+      recoveryArtifacts: [".ai/harness/controller/task-ledger.json", ".ai/harness/projections/controller-task-ledger.md"],
     },
   };
 }

@@ -71,7 +71,7 @@ import { listActiveAgentJobSnapshots } from '../../../cli/agent-jobs/job-manager
 import { readAgentExecutableReadinessSnapshot } from '../../../cli/agent-jobs/executable-resolver';
 import {
   commitSelectedPaths,
-  prepareFallbackHandoffArtifacts,
+  prepareTransferArtifacts,
   selectedPathDiff,
   stageSelectedPaths,
 } from '../../../cli/repositories/selected-path-actions';
@@ -398,7 +398,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     paths: { type: 'array', items: { type: 'string' } },
     message: { type: 'string' },
   }, ['paths', 'message'], false),
-  definition('prepare_handoff_artifacts', 'Refresh repo-local handoff artifacts and fall back to minimal current/resume files when helper scripts are unavailable.', {
+  definition('prepare_transfer_artifacts', 'Refresh rebuildable session continuation plus a selected-path patch transfer artifact when recovery context is needed.', {
     repo_id: repoId,
     reason: { type: 'string' },
   }, [], false),
@@ -3776,17 +3776,17 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           ...(directEditWorkCompletion ? { directEditWorkCompletion } : {}),
         }, Boolean(committed.error));
       }
-      case 'prepare_handoff_artifacts': {
+      case 'prepare_transfer_artifacts': {
         const repository = selected(ctx, args);
-        const handoff = prepareFallbackHandoffArtifacts(repository, { reason: args.reason });
+        const transfer = prepareTransferArtifacts(repository, { reason: args.reason });
         const taskLedger = writeControllerTaskLedgerArtifacts(repository.canonicalRoot, { reason: args.reason });
         return result({
           repoId: repository.repoId,
           checkoutId: repository.activeCheckoutId,
-          ...handoff,
+          ...transfer,
           taskLedger: taskLedger.projection,
           artifacts: [
-            ...handoff.artifacts,
+            ...transfer.artifacts,
             ...taskLedger.artifacts,
           ],
         });
@@ -4989,8 +4989,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             break;
           }
           case 'recovery.create_patch_handoff':
-            payload = prepareFallbackHandoffArtifacts(repository, { reason }) as unknown as Record<string, unknown>;
-            affectedPaths = ['.ai/handoff'];
+            payload = prepareTransferArtifacts(repository, { reason }) as unknown as Record<string, unknown>;
+            affectedPaths = ['.ai/harness/transfers', '.ai/harness/session'];
             break;
           case 'recovery.workspace_auth_login_prepare':
             payload = { skipped: true, nextTool: 'workspace_auth_login_prepare', reason: 'Auth login is a non-secret handoff and should be prepared through the dedicated typed tool.' };

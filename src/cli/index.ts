@@ -23,7 +23,6 @@ import { buildDocsCommand } from './commands/docs';
 import { buildMcpCommand } from './commands/mcp';
 import { buildChatgptCommand } from './commands/chatgpt';
 import { buildRunCommand } from './commands/run';
-import { buildControllerCommand } from './commands/controller';
 import { buildRepositoryCommand } from './commands/repository';
 import { buildRuntimeCommand } from './commands/runtime';
 import { buildRecoveryCommand } from './commands/recovery';
@@ -516,7 +515,6 @@ export function buildProgram(): Command {
   program.addCommand(buildMcpCommand());
   program.addCommand(buildChatgptCommand());
   program.addCommand(buildRunCommand(), { hidden: true });
-  program.addCommand(buildControllerCommand(), { hidden: true });
   program.addCommand(buildRepositoryCommand());
   program.addCommand(buildRuntimeCommand());
   program.addCommand(buildRecoveryCommand());

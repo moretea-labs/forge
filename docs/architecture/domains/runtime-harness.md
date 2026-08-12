@@ -19,7 +19,7 @@ instead of becoming separate hook sources of truth.
 - User-level `~/.claude/settings.json` and `~/.codex/hooks.json` are the host adapter surfaces.
 - Repo-local `.claude/settings.json` and `.codex/hooks.json` hook adapters are retired legacy config, not required contract files.
 - Other repo-local `.codex/*` files are runtime residue unless promoted by an explicit contract change.
-- Runtime files under `.ai/harness/checks`, `.ai/harness/handoff`, `.ai/harness/failures`, `.ai/harness/architecture/events.jsonl`, `.ai/harness/worktrees`, and `.ai/harness/runs` are ignored state, not durable deliverables.
+- Runtime files under `.ai/harness/checks`, `.ai/harness/session`, `.ai/harness/controller/packets`, `.ai/harness/projections`, `.ai/harness/transfers`, `.ai/harness/failures`, `.ai/harness/architecture/events.jsonl`, `.ai/harness/worktrees`, and `.ai/harness/runs` are ignored state, not durable deliverables.
 
 ## Verification Surface
 

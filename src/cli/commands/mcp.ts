@@ -308,7 +308,7 @@ export function buildMcpCommand(): Command {
 
   mcp
     .command('prepare-goal')
-    .description('Prepare .ai/harness/handoff/codex-goal.md and print a host-native /goal prompt from a PRD and checklist Sprint')
+    .description('Prepare .ai/harness/controller/packets/codex-goal.md and print a host-native /goal prompt from a PRD and checklist Sprint')
     .option('--repo <path>', 'Repository root to configure', '.')
     .requiredOption('--prd <path>', 'PRD path to read')
     .requiredOption('--sprint <path>', 'Checklist Sprint path to execute')

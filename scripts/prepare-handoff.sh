@@ -68,7 +68,7 @@ if [[ "$mode" == "status" ]]; then
   exit 0
 fi
 
-mkdir -p .ai/harness/handoff
+mkdir -p .ai/harness/session .ai/harness/controller/packets .ai/harness/projections .ai/harness/transfers
 cat > .ai/harness/session/continuation.md <<EOF_HANDOFF
 # Forge Session Continuation Snapshot
 

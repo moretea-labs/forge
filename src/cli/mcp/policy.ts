@@ -35,7 +35,9 @@ export const PLANNER_READ_GLOBS = [
   'tasks/reviews/**',
   'tasks/notes/**',
   '.ai/context/**',
-  '.ai/harness/handoff/**',
+  '.ai/harness/session/**',
+  '.ai/harness/controller/packets/**',
+  '.ai/harness/projections/**',
   '.ai/harness/checks/**',
 ];
 
@@ -43,8 +45,8 @@ export const PLANNER_WRITE_GLOBS = [
   'plans/prds/**',
   'plans/sprints/**',
   'plans/plan-*.md',
-  '.ai/harness/handoff/codex-goal.md',
-  '.ai/harness/handoff/chatgpt-plan.md',
+  '.ai/harness/controller/packets/codex-goal.md',
+  '.ai/harness/controller/packets/chatgpt-plan.md',
 ];
 
 export interface McpPolicyOptions {
@@ -164,7 +166,7 @@ export function getMcpPolicy(profile: McpProfileName, opts: McpPolicyOptions = {
     return applyPolicyOverrides({
       profile,
       readGlobs: ['plans/**', 'tasks/**', 'docs/spec.md', '.ai/context/**', '.ai/harness/**'],
-      writeGlobs: ['tasks/reviews/**', '.ai/harness/checks/**', '.ai/harness/handoff/**'],
+      writeGlobs: ['tasks/reviews/**', '.ai/harness/checks/**', '.ai/harness/session/**', '.ai/harness/controller/packets/**'],
       denyGlobs: COMMON_DENY_GLOBS,
       maxFileBytes: 512 * 1024,
       execution: executionPolicy({
@@ -207,7 +209,7 @@ export function getMcpPolicy(profile: McpProfileName, opts: McpPolicyOptions = {
     const devRunner = opts.devAgentRunner === true;
     return applyPolicyOverrides({
       profile,
-      readGlobs: devRunner ? ['.ai/harness/handoff/codex-goal.md'] : [],
+      readGlobs: devRunner ? ['.ai/harness/controller/packets/codex-goal.md'] : [],
       writeGlobs: [],
       denyGlobs: devRunner ? COMMON_DENY_GLOBS : ['**'],
       maxFileBytes: devRunner ? 512 * 1024 : 0,

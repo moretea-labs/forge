@@ -31,13 +31,13 @@ export interface SelectedPathCommitResult {
   error?: { code: string; message: string };
 }
 
-export interface HandoffArtifactPreview {
+export interface TransferArtifactPreview {
   path: string;
   exists: boolean;
   preview?: string;
 }
 
-export interface PreparedHandoffArtifacts {
+export interface PreparedTransferArtifacts {
   reason: string;
   usedScript: boolean;
   fallbackUsed: boolean;
@@ -45,7 +45,7 @@ export interface PreparedHandoffArtifacts {
   exitCode?: number;
   stdout?: string;
   stderr?: string;
-  artifacts: HandoffArtifactPreview[];
+  artifacts: TransferArtifactPreview[];
 }
 
 function boundedOutputBytes(value: number | undefined): number {
@@ -129,7 +129,7 @@ function stagedPaths(repository: RepositoryRecord, paths: string[]): string[] {
     .filter(Boolean);
 }
 
-function artifactPreview(repository: RepositoryRecord, path: string): HandoffArtifactPreview {
+function artifactPreview(repository: RepositoryRecord, path: string): TransferArtifactPreview {
   const absolute = join(repository.canonicalRoot, path);
   if (!existsSync(absolute)) return { path, exists: false };
   const content = redactProcessOutput(readFileSync(absolute, 'utf-8'));
@@ -147,7 +147,7 @@ function repositoryChangedPaths(repository: RepositoryRecord): string[] {
   return [...new Set([tracked, staged, untracked].join('\n').split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean))].sort();
 }
 
-function writePatchHandoffArtifact(repository: RepositoryRecord, handoffDir: string, reason: string): HandoffArtifactPreview {
+function writePatchTransferArtifact(repository: RepositoryRecord, transferDir: string, reason: string): TransferArtifactPreview {
   const diff = runGit(repository, ['diff', '--binary'], 512 * 1024).stdout;
   const stagedDiff = runGit(repository, ['diff', '--cached', '--binary'], 512 * 1024).stdout;
   const touchedPaths = repositoryChangedPaths(repository);
@@ -158,23 +158,23 @@ function writePatchHandoffArtifact(repository: RepositoryRecord, handoffDir: str
     touchedPaths,
     checks: [],
     actor: 'forge',
-    source: `fallback-handoff:${reason}`,
+    source: `patch-transfer:${reason}`,
     notes: [
       'Integration must use selected-path review gates.',
       'Do not overwrite unrelated dirty files; rerun conflict detection before applying this patch.',
     ],
   });
-  const patchPath = join(handoffDir, 'patch.json');
+  const patchPath = join(transferDir, 'patch.json');
   writeFileSync(patchPath, `${JSON.stringify(artifact, null, 2)}\n`, 'utf-8');
-  return artifactPreview(repository, '.ai/harness/handoff/patch.json');
+  return artifactPreview(repository, '.ai/harness/transfers/patch.json');
 }
 
-function ensureFallbackArtifact(repository: RepositoryRecord, reason: string): HandoffArtifactPreview {
-  const handoffDir = join(repository.canonicalRoot, '.ai', 'harness', 'handoff');
+function ensureFallbackArtifact(repository: RepositoryRecord, reason: string): TransferArtifactPreview {
+  const transferDir = join(repository.canonicalRoot, '.ai', 'harness', 'transfers');
   const sessionDir = join(repository.canonicalRoot, '.ai', 'harness', 'session');
-  mkdirSync(handoffDir, { recursive: true });
+  mkdirSync(transferDir, { recursive: true });
   mkdirSync(sessionDir, { recursive: true });
-  const patchArtifact = writePatchHandoffArtifact(repository, handoffDir, reason);
+  const patchArtifact = writePatchTransferArtifact(repository, transferDir, reason);
   const timestamp = new Date().toISOString();
   const currentPath = join(sessionDir, 'continuation.md');
   const resumePath = join(sessionDir, 'resume.md');
@@ -189,7 +189,7 @@ function ensureFallbackArtifact(repository: RepositoryRecord, reason: string): H
       '## Exact Next Step',
       '',
       '- Inspect the selected-path Git diff and continue from this repository state.',
-      '- Review `.ai/harness/handoff/patch.json` before any integration attempt.',
+      '- Review `.ai/harness/transfers/patch.json` before any integration attempt.',
       '',
     ].join('\n'), 'utf-8');
   }
@@ -199,7 +199,7 @@ function ensureFallbackArtifact(repository: RepositoryRecord, reason: string): H
       '',
       `- Repository: \`${repository.canonicalRoot}\``,
       `- Reason: \`${reason}\``,
-      '- Patch artifact: `.ai/harness/handoff/patch.json`',
+      '- Patch artifact: `.ai/harness/transfers/patch.json`',
       '- Next: open `.ai/harness/session/continuation.md` and continue from the recorded state.',
       '',
     ].join('\n'), 'utf-8');
@@ -292,10 +292,10 @@ export function commitSelectedPaths(
   };
 }
 
-export function prepareFallbackHandoffArtifacts(
+export function prepareTransferArtifacts(
   repository: RepositoryRecord,
   input: { reason?: unknown },
-): PreparedHandoffArtifacts {
+): PreparedTransferArtifacts {
   const reason = String(input.reason ?? 'manual').trim() || 'manual';
   const script = join(repository.canonicalRoot, 'scripts', 'prepare-handoff.sh');
   const usedScript = existsSync(script);
@@ -323,8 +323,8 @@ export function prepareFallbackHandoffArtifacts(
     ok = exitCode === 0 && !result.error;
   }
 
-  const beforeCurrent = existsSync(join(repository.canonicalRoot, '.ai', 'harness', 'handoff', 'current.md'));
-  const beforeResume = existsSync(join(repository.canonicalRoot, '.ai', 'harness', 'handoff', 'resume.md'));
+  const beforeCurrent = existsSync(join(repository.canonicalRoot, '.ai', 'harness', 'session', 'continuation.md'));
+  const beforeResume = existsSync(join(repository.canonicalRoot, '.ai', 'harness', 'session', 'resume.md'));
   const patchArtifact = ensureFallbackArtifact(repository, reason);
   const fallbackUsed = !usedScript || !ok || !beforeCurrent || !beforeResume;
 

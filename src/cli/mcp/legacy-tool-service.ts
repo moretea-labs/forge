@@ -790,7 +790,9 @@ function workflowFileCandidates(repoRoot: string): string[] {
     "plans",
     "tasks",
     ".ai/context",
-    ".ai/harness/handoff",
+    ".ai/harness/session",
+    ".ai/harness/controller/packets",
+    ".ai/harness/projections",
     ".ai/harness/checks",
   ];
   const files: string[] = [];
@@ -1466,8 +1468,8 @@ export function buildMcpToolDefinitions(
       annotations: readOnly,
     },
     {
-      name: "latest_handoff",
-      description: "Return latest forge handoff artifacts.",
+      name: "latest_session_context",
+      description: "Return the latest rebuildable Forge session continuation context.",
       inputSchema: EMPTY_SCHEMA,
       annotations: readOnly,
     },
@@ -1530,14 +1532,14 @@ export function buildMcpToolDefinitions(
     {
       name: "prepare_codex_goal_from_sprint",
       description:
-        "Prepare .ai/harness/handoff/codex-goal.md and a host-native /goal prompt from PRD + checklist Sprint.",
+        "Prepare .ai/harness/controller/packets/codex-goal.md and a host-native /goal prompt from PRD + checklist Sprint.",
       inputSchema: goalFromSprintSchema,
       annotations: write,
     },
     {
       name: "write_codex_goal",
       description:
-        "Write .ai/harness/handoff/codex-goal.md after required section validation.",
+        "Write .ai/harness/controller/packets/codex-goal.md after required section validation.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1550,8 +1552,8 @@ export function buildMcpToolDefinitions(
       annotations: write,
     },
     {
-      name: "append_handoff_note",
-      description: "Append a timestamped planner handoff note.",
+      name: "append_controller_plan_note",
+      description: "Append a timestamped ChatGPT planning note to the controller packet cache.",
       inputSchema: {
         type: "object",
         properties: { actor: { type: "string" }, body: { type: "string" } },
@@ -2996,7 +2998,9 @@ export async function callMcpTool(
           "docs/spec.md",
           "plans",
           "tasks/current.md",
-          ".ai/harness/handoff",
+          ".ai/harness/session",
+    ".ai/harness/controller/packets",
+    ".ai/harness/projections",
           ".ai/harness/checks",
         ];
         audit(ctx, name, "ok", args);
@@ -5055,13 +5059,10 @@ export async function callMcpTool(
           redactions: payload.redactions,
         });
       }
-      case "latest_handoff": {
+      case "latest_session_context": {
         const paths = [
           ".ai/harness/session/resume.md",
           ".ai/harness/session/continuation.md",
-          ".ai/harness/handoff/controller-current.md",
-          ".ai/harness/handoff/codex-goal.md",
-          ".ai/harness/handoff/chatgpt-plan.md",
         ];
         const handoff = paths.map((path) => {
           const decision = resolveMcpPath(
@@ -5086,7 +5087,7 @@ export async function callMcpTool(
           };
         });
         audit(ctx, name, "ok", args);
-        return textResult({ handoff });
+        return textResult({ sessionContext: handoff });
       }
       case "latest_checks": {
         const files = workflowFileCandidates(ctx.repoRoot)
@@ -5270,7 +5271,7 @@ export async function callMcpTool(
             name,
             "blocked",
             args,
-            ".ai/harness/handoff/codex-goal.md",
+            ".ai/harness/controller/packets/codex-goal.md",
             `missing required goal sections: ${missing.join(", ")}`,
           );
           return errorResult(
@@ -5282,7 +5283,7 @@ export async function callMcpTool(
         return writeMarkdownArtifact(
           ctx,
           name,
-          ".ai/harness/handoff/codex-goal.md",
+          ".ai/harness/controller/packets/codex-goal.md",
           "Codex Goal",
           "codex-goal",
           goal.body,
@@ -5302,7 +5303,7 @@ export async function callMcpTool(
             name,
             "blocked",
             args,
-            ".ai/harness/handoff/codex-goal.md",
+            ".ai/harness/controller/packets/codex-goal.md",
             `missing required goal sections: ${missing.join(", ")}`,
           );
           return errorResult(
@@ -5314,7 +5315,7 @@ export async function callMcpTool(
         return writeMarkdownArtifact(
           ctx,
           name,
-          ".ai/harness/handoff/codex-goal.md",
+          ".ai/harness/controller/packets/codex-goal.md",
           "Codex Goal",
           "codex-goal",
           body,
@@ -5322,8 +5323,8 @@ export async function callMcpTool(
           args,
         );
       }
-      case "append_handoff_note": {
-        const path = ".ai/harness/handoff/chatgpt-plan.md";
+      case "append_controller_plan_note": {
+        const path = ".ai/harness/controller/packets/chatgpt-plan.md";
         const decision = resolveMcpPath(
           ctx.repoRoot,
           path,

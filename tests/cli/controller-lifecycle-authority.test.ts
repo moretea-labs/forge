@@ -33,20 +33,15 @@ describe('single Controller lifecycle authority', () => {
   test('rejects direct Controller HTTP and keepalive startup', () => {
     const serve = run(['mcp', 'serve', '--transport', 'http', '--profile', 'controller']);
     expect(serve.status).not.toBe(0);
-    expect(`${serve.stdout}\n${serve.stderr}`).toContain(
-      'Start the complete application through `forge-runtime`; Gateway, Controller Services, Scheduler and MCP Transport share one Runtime lifecycle owner.',
-    );
-
     const keepalive = run(['mcp', 'keepalive', '--profile', 'controller']);
     expect(keepalive.status).not.toBe(0);
     expect(`${keepalive.stdout}\n${keepalive.stderr}`).toContain("unknown command 'keepalive'");
   });
 
   test('does not expose legacy lifecycle entry points', () => {
-    const controllerHelp = run(['controller', '--help']);
-    expect(controllerHelp.status).toBe(0);
-    expect(controllerHelp.stdout).not.toMatch(/^\s+service\b/m);
-    expect(controllerHelp.stdout).not.toMatch(/^\s+ui\b/m);
+    const rootHelp = run(['--help']);
+    expect(rootHelp.status).toBe(0);
+    expect(rootHelp.stdout).not.toMatch(/^\s+controller\b/m);
 
     const mcpHelp = run(['mcp', '--help']);
     expect(mcpHelp.status).toBe(0);

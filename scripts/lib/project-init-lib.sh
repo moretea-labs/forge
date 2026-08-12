@@ -2400,7 +2400,9 @@ pi_ensure_harness_state_surface() {
     "$target_dir/.ai/context" \
     "$target_dir/.ai/harness/checks" \
     "$target_dir/.ai/harness/session" \
-    "$target_dir/.ai/harness/handoff" \
+    "$target_dir/.ai/harness/controller/packets" \
+    "$target_dir/.ai/harness/projections" \
+    "$target_dir/.ai/harness/transfers" \
     "$target_dir/.ai/harness/scripts" \
     "$target_dir/.ai/harness/failures" \
     "$target_dir/.ai/harness/security" \

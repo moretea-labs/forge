@@ -213,7 +213,7 @@ create_structure() {
     mkdir -p plans/archive
     mkdir -p .ai/context
     mkdir -p .ai/harness/checks
-    mkdir -p .ai/harness/handoff
+    mkdir -p .ai/harness/session .ai/harness/controller/packets .ai/harness/projections .ai/harness/transfers
     mkdir -p .ai/harness/failures
     mkdir -p .ai/harness/runs
     mkdir -p .claude/templates

@@ -160,15 +160,15 @@ describe('mcp policy and paths', () => {
   test('orchestrator dev runner is opt-in and reads only the fixed goal handoff', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'forge-mcp-orchestrator-'));
     try {
-      mkdirSync(join(tmp, '.ai/harness/handoff'), { recursive: true });
+      mkdirSync(join(tmp, '.ai/harness/controller/packets'), { recursive: true });
       mkdirSync(join(tmp, 'src'), { recursive: true });
-      writeFileSync(join(tmp, '.ai/harness/handoff/codex-goal.md'), '# Codex Goal\n');
+      writeFileSync(join(tmp, '.ai/harness/controller/packets/codex-goal.md'), '# Codex Goal\n');
       writeFileSync(join(tmp, 'src/index.ts'), 'export const value = 1;\n');
 
       const disabled = getMcpPolicy('orchestrator');
       expect(disabled.execution.agentRunner).toBe(false);
       expect(buildMcpToolDefinitions(disabled).some((tool) => tool.name === 'run_agent_goal')).toBe(false);
-      expect(resolveMcpPath(tmp, '.ai/harness/handoff/codex-goal.md', disabled, 'read')).toMatchObject({ ok: false });
+      expect(resolveMcpPath(tmp, '.ai/harness/controller/packets/codex-goal.md', disabled, 'read')).toMatchObject({ ok: false });
 
       const defaults = getMcpPolicy('orchestrator', { devAgentRunner: true, runnerTimeoutMs: 5000 });
       expect(defaults.execution.allowedAgents).toEqual(['codex', 'claude']);
@@ -178,7 +178,7 @@ describe('mcp policy and paths', () => {
       expect(enabled.execution.allowedAgents).toEqual(['codex']);
       // Tool remains unregistered; stale callers hit the deprecation handler only.
       expect(buildMcpToolDefinitions(enabled).some((tool) => tool.name === 'run_agent_goal')).toBe(false);
-      expect(resolveMcpPath(tmp, '.ai/harness/handoff/codex-goal.md', enabled, 'read')).toMatchObject({ ok: true });
+      expect(resolveMcpPath(tmp, '.ai/harness/controller/packets/codex-goal.md', enabled, 'read')).toMatchObject({ ok: true });
       expect(resolveMcpPath(tmp, 'src/index.ts', enabled, 'read')).toMatchObject({ ok: false });
     } finally {
       rmSync(tmp, { recursive: true, force: true });

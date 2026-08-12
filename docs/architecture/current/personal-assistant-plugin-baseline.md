@@ -61,7 +61,7 @@ operations on top of that runtime, not as a second orchestrator.
 
 | Capability | Source of truth | Persistence and boundary | External side effect | Status |
 | --- | --- | --- | --- | --- |
-| GitHub Issue/Project sync | `src/cli/github/plugin.ts`, `src/cli/commands/controller.ts`, `src/cli/local-bridge/server.ts` | `.Forge/plugins/github.json` plus repository registry mapping | GitHub issue/project mutation | Implemented |
+| GitHub Issue/Project sync | `src/cli/github/plugin.ts`, `src/cli/local-bridge/server.ts` | `.Forge/plugins/github.json` plus repository registry mapping | GitHub issue/project mutation | Implemented |
 | Durable assistant work submission | `src/runtime/gateway/mcp/runtime-tools.ts`, `src/runtime/execution/jobs/` | Controller Home `execution-jobs/`, events, artifacts, projections | Repository-local work and approved provider actions | Implemented |
 | Calendar time-based triggering | `src/runtime/workflow/schedules/store.ts`, `engine.ts` | Schedule, Decision, Occurrence records | Launches bounded runtime Jobs only | Implemented |
 | Calendar account read/write | `src/runtime/plugins/google-calendar-adapter.ts` | `.Forge/plugins/google-calendar.json`, derived manifest/index, env-only credentials | Google Calendar event read/write | Implemented |

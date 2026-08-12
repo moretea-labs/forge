@@ -7,7 +7,7 @@ import { resolveRepoPreferredControllerHome } from "../repositories/controller-h
 import { buildRequirementBoard } from "../../runtime/control-plane/facade/requirement-board";
 
 const LEDGER_JSON_PATH = ".ai/harness/controller/task-ledger.json";
-const LEDGER_HANDOFF_PATH = ".ai/harness/handoff/controller-current.md";
+const LEDGER_PROJECTION_PATH = ".ai/harness/projections/controller-task-ledger.md";
 const LEDGER_SCHEMA_VERSION = 2;
 
 export interface TaskLedgerTaskProjection {
@@ -539,7 +539,7 @@ function renderTaskRow(task: TaskLedgerTaskProjection): string {
   return `| ${tableEscape(task.issueId)} | ${tableEscape(task.taskId)} | ${tableEscape(task.title)} | ${tableEscape(task.effectiveStatus)} | ${tableEscape(task.verificationStatus)} | ${tableEscape(task.latestRunStatus ?? task.activeRunStatus ?? "")} |`;
 }
 
-export function renderControllerTaskLedgerHandoff(projection: TaskLedgerProjection, reason: string): string {
+export function renderControllerTaskLedgerProjection(projection: TaskLedgerProjection, reason: string): string {
   const current = projection.currentIssueId
     ? projection.issues.find((issue) => issue.id === projection.currentIssueId)
     : undefined;
@@ -547,7 +547,7 @@ export function renderControllerTaskLedgerHandoff(projection: TaskLedgerProjecti
     ? projection.attention.map(renderTaskRow)
     : ["| - | - | No attention tasks | - | - | - |"];
   return [
-    "# Controller Task Ledger Handoff",
+    "# Controller Task Ledger Projection",
     "",
     `> **Generated**: ${projection.generatedAt}`,
     `> **Reason**: ${reason}`,
@@ -608,25 +608,25 @@ function artifactPreview(repoRoot: string, path: string): TaskLedgerArtifactPrev
 
 export function writeControllerTaskLedgerArtifacts(repoRoot: string, input: { reason?: unknown } = {}): WrittenTaskLedgerArtifacts {
   if (legacyIssueCutoverState(repoRoot).retired) {
-    throw new Error("LEGACY_TASK_LEDGER_WRITES_RETIRED: task-ledger and handoff files are frozen after SQLite cutover.");
+    throw new Error("LEGACY_TASK_LEDGER_WRITES_RETIRED: task-ledger projection files are frozen after SQLite cutover.");
   }
   const reason = String(input.reason ?? "manual").trim() || "manual";
   const projection = buildControllerTaskLedgerProjection(repoRoot);
   const jsonPath = join(repoRoot, LEDGER_JSON_PATH);
-  const handoffPath = join(repoRoot, LEDGER_HANDOFF_PATH);
+  const projectionPath = join(repoRoot, LEDGER_PROJECTION_PATH);
   mkdirSync(dirname(jsonPath), { recursive: true });
-  mkdirSync(dirname(handoffPath), { recursive: true });
+  mkdirSync(dirname(projectionPath), { recursive: true });
   writeFileSync(jsonPath, `${JSON.stringify(projection, null, 2)}\n`, "utf-8");
-  writeFileSync(handoffPath, renderControllerTaskLedgerHandoff(projection, reason), "utf-8");
+  writeFileSync(projectionPath, renderControllerTaskLedgerProjection(projection, reason), "utf-8");
   return {
     projection,
     artifacts: [
       artifactPreview(repoRoot, LEDGER_JSON_PATH),
-      artifactPreview(repoRoot, LEDGER_HANDOFF_PATH),
+      artifactPreview(repoRoot, LEDGER_PROJECTION_PATH),
     ],
   };
 }
 
-export function controllerTaskLedgerArtifactPaths(): { json: string; handoff: string } {
-  return { json: LEDGER_JSON_PATH, handoff: LEDGER_HANDOFF_PATH };
+export function controllerTaskLedgerArtifactPaths(): { json: string; projection: string } {
+  return { json: LEDGER_JSON_PATH, projection: LEDGER_PROJECTION_PATH };
 }
