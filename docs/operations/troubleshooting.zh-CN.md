@@ -13,7 +13,7 @@ forge --version
 
 ## Doctor 提示缺少 Git 或 Node
 
-安装 Git 和 Node.js 20.10+ 后重新打开终端。即使 package 由 Bun 安装，发布后的启动器仍由 Node 执行，因此 Node 是基础依赖。
+Node.js 20.10+ 是基础依赖，即使 package 由 Bun 安装也需要 Node。Git **不是**基础安装依赖；只有启用仓库/软件开发能力时才需要。如果普通 `forge setup` 只是被未选择的 Codex/Claude/CodeGraph 检查挡住，应更新 Forge——主控优先 setup 会过滤无关 host tooling。
 
 ## Windows 原生流程停在 shell 步骤
 
@@ -21,7 +21,12 @@ forge --version
 
 ## 本机 MCP 正常，但 ChatGPT 无法连接
 
-`http://127.0.0.1:8765/mcp` 只能本机访问。ChatGPT 需要稳定的公网 HTTPS `/mcp` 地址。检查隧道、路径和 `forge mcp doctor`。不要把本地 Controller UI 端口暴露到公网。
+`http://127.0.0.1:8765/mcp` 本来就只允许本机访问。执行 `forge setup next` 并检查当前选择的远程 provider。
+
+- **OpenAI Secure MCP Tunnel：** 执行 `tunnel-client runtimes status forge --json`；只有 runtime 同时 running、healthy、ready 才算成功。`CONTROL_PLANE_API_KEY` 不进入 Forge state。
+- **Cloudflare/Tailscale/已有 HTTPS：** 检查稳定 `/mcp` 地址、Provider 状态以及 `forge mcp doctor`。
+
+不要把本地 Utility Console 端口暴露到公网。
 
 ## MCP 配置看起来写到了错误的位置
 
@@ -33,11 +38,11 @@ forge --version
 - `controllerHome/mcp/mcp.oauth-tokens.json`
 - `controllerHome/mcp/mcp.runtime.json`
 
-Controller Home 是 service-level MCP 配置的唯一权威来源；仓库级 `.forge/mcp.policy.json` 仍是仓库访问策略。仓库内的 service 配置不再受支持。重新执行 `forge mcp setup chatgpt --repo /path/to/your-project` 后，从 Controller Home 核对当前 endpoint 与 server name。
+Controller Home 是 service-level MCP 配置的唯一权威来源；仓库级 `.forge/mcp.policy.json` 仍是仓库访问策略。普通 ChatGPT 路径重新执行 `forge mcp setup chatgpt --user-level`，或直接继续 `forge setup next`；repo-scoped setup 仅保留兼容入口。
 
 ## ChatGPT 只显示少量工具
 
-默认 Controller 使用固定、可修复的工具 schema（通常 100–128 个工具）。Request/Full Access 不会改变 schema。请从 `rh_status` 或 `controller_ready` 对比 `expectedToolCount`、`actualToolCount`、缺失/意外工具和 fingerprint；只有 Connector 快照本身过期时才需要重连，权限切换不需要。
+默认 Controller 故意暴露收敛后的稳定 facade，而不是所有内部原子 handler。Request/Full Access 改变授权，不改变工具 schema。通过 `rh_status` 检查 fingerprint 和缺失/意外工具；只有 ChatGPT app 的工具快照过期或定义发生变化时才刷新/重建。
 
 ## runtime storage 未就绪，或本地 UI 看起来是旧状态
 
@@ -57,9 +62,9 @@ forge repo list --json
 
 看到 `502`、重连或大结果截断，不代表 durable 写入一定失败；先回到 Job、Run 或证据摘要确认真实状态。
 
-## 无法委派 Agent
+## Codex 或 Claude 控制入口不可用
 
-核心 Direct Edit 和仓库工作流仍可使用。安装并登录 Codex 或 Claude 后，再显式开启 dev runner。基础配置不应默认加入 Agent 参数。
+Forge 没有一个必须修复的内部 Agent。没有选择 Codex/Claude 时直接忽略它们；明确选择为主控后，才安装/登录对应客户端，并执行 `forge mcp setup codex --scope user --profile controller` 或 `forge mcp setup claude --scope user --profile controller`，随后继续 `forge setup next`。
 
 ## Windows 与 WSL2 路径行为不一致
 

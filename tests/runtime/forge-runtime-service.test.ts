@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'fs';
+import { spawnSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -10,6 +11,8 @@ import {
   syncForgeRuntimeActiveEntrypoint,
   validateForgeRuntimeServiceConfig,
 } from '../../src/runtime/root/service';
+import { materializePackageRuntimeRelease } from '../../src/runtime/root/package-runtime-release';
+import { renderForgeRuntimeSystemdUserUnit } from '../../src/runtime/root/package-runtime-service';
 
 const roots: string[] = [];
 function fixture(): { root: string; home: string; repo: string; token: string } {
@@ -158,6 +161,21 @@ describe('Forge Runtime service', () => {
     expect(readFileSync(paths.installedPlistPath, 'utf8')).not.toContain('browser-automation-helper');
   });
 
+  test('materializes an npm/package Runtime release without Git or Bun compilation and fences package drift', () => {
+    const fx = fixture(), packageRoot = join(fx.root, 'package');
+    for (const dir of ['src', 'bin', 'assets', 'scripts']) mkdirSync(join(packageRoot, dir), { recursive: true });
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' })); writeFileSync(join(packageRoot, 'src', 'runtime.ts'), 'export const runtime = 1;\n'); writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(0);\n');
+    const release = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'package-test' });
+    expect(release.releaseId).toStartWith('package-9.9.9-test-'); expect(activeRuntimeEntrypoint(fx.home)).toBe(release.entrypointPath);
+    const manifest = JSON.parse(readFileSync(release.manifestPath, 'utf8')); expect(manifest.releaseRevision).toBe(`package:9.9.9-test:${release.packageFingerprint}`); expect(manifest.sourceCommit).toBeUndefined();
+    writeFileSync(join(packageRoot, 'src', 'runtime.ts'), 'export const runtime = 2;\n');
+    const rejected = spawnSync(release.entrypointPath, [], { encoding: 'utf8' }); expect(rejected.status).toBe(78); expect(rejected.stderr).toContain('FORGE_PACKAGE_RUNTIME_SOURCE_CHANGED');
+  });
+
+  test('renders a systemd user owner with restart and release environment', () => {
+    const unit = renderForgeRuntimeSystemdUserUnit({ executable: '/var/tmp/forge-user/.forge/runtime/service/active-forge-runtime', args: ['--port', '8765'], environment: { FORGE_RELEASE_ID: 'package-test', FORGE_CONTROLLER_HOME: '/var/tmp/forge-user/.forge' } });
+    for (const expected of ['WantedBy=default.target', 'Restart=on-failure', 'ExecStart="/var/tmp/forge-user/.forge/runtime/service/active-forge-runtime" "--port" "8765"', 'Environment="FORGE_RELEASE_ID=package-test"']) expect(unit).toContain(expected);
+  });
   test('validates the service config before installation', () => {
     const fx = fixture();
     const config = validateForgeRuntimeServiceConfig({

@@ -1,62 +1,70 @@
 # Platform Support
 
-This document defines what the project currently supports. It is intentionally narrower than “the code contains Windows branches.” A platform is called supported only when the installation path, primary workflow, and release checks are covered.
+This document defines the currently claimed Forge user experience. It distinguishes the **normal packaged setup path** from source/maintainer infrastructure so users are not required to install development-only dependencies.
 
 ## Support matrix
 
-| Platform | Status | Recommended use |
+| Platform | Status | Normal user path |
 | --- | --- | --- |
-| macOS | Supported | Full local Controller, repository adoption, MCP, Direct Edit, agents, browser tooling, and release checks. |
-| Modern Linux | Supported | Full local Controller workflow. A system with Bash, Git, Node.js, and standard process tools is expected. |
-| WSL2 on Windows | Supported and recommended for Windows | Run the Linux workflow inside WSL2. Keep the repository inside the WSL filesystem for predictable permissions and performance. |
-| Native Windows | Preview | PowerShell installation, CLI loading, doctor, repository registration/inspection, and the portable runtime paths are supported. Shell-heavy workflow helpers remain limited. |
+| macOS | Supported | Package install, controller-first setup, Package Runtime via launchd, repositories, local files, MCP, browser/desktop providers, and plugins. |
+| Modern Linux | Supported | Package install, controller-first setup, Package Runtime via `systemd --user` when available, repositories, local files, MCP, and portable providers. |
+| WSL2 on Windows | Supported and recommended for Windows | Run the Linux Forge Runtime inside WSL2; Windows can still host ChatGPT/browser clients. |
+| Native Windows | Preview | Package install, setup, portable Runtime/MCP, repository registration/inspection, and portable capabilities. Automatic reboot-persistent Runtime ownership and every external provider combination are not yet claimed. |
 
-## Required environment
+## Base installation requirements
 
-All installations require:
+All normal installations require:
 
-- Git available on `PATH`;
-- Node.js 20.10 or newer, because the published `forge` launcher is a Node executable;
-- either npm, which ships with Node.js, or Bun 1.0 or newer as the package installer;
+- Node.js 20.10 or newer;
+- npm (bundled with Node.js) or Bun as package installer;
 - a writable user home directory.
 
-Bun is recommended for development and the full test suite, but it is not the only supported package installer.
+**Git is optional until repository/software-work capabilities are enabled.** Bun is optional for ordinary package users. A Forge source checkout, CodeGraph, Codex, Claude, Standalone Recovery, Cloudflare, Tailscale, or OpenAI tunnel-client is not a base dependency.
 
-The following dependencies are optional and enable additional capabilities:
+Capability-specific dependencies include:
 
-- Codex or Claude CLI for delegated implementation;
-- GitHub CLI (`gh`) for GitHub Issue, Project, and cloud-agent operations;
-- Tailscale Funnel or `cloudflared` for a stable public HTTPS `/mcp` endpoint;
-- Playwright browser dependencies for browser automation;
-- CodeGraph for additional repository navigation;
-- Google Workspace credentials for Gmail or Calendar plugins.
+- Git for repository adoption, Git operations, worktrees, commits, and source development;
+- Codex or Claude only when explicitly configured as an external controller/execution entry;
+- GitHub CLI for GitHub workflows that require it;
+- browser/OS provider prerequisites for browser or desktop automation;
+- Google/Apple/service credentials for their respective plugins;
+- one remote connection provider when a hosted controller must reach the loopback MCP endpoint.
+
+## Runtime ownership by platform
+
+Normal package users use:
+
+```bash
+forge runtime service install-package
+```
+
+This path fingerprints the installed `@moretea-labs/forge` runtime surface and refuses to launch if that package content drifts from the recorded release identity.
+
+- **macOS:** launchd user service.
+- **Linux / WSL2 with user systemd:** `systemd --user` service with restart-on-failure.
+- **Linux without user systemd:** explicit portable detached-session fallback with a persistence warning.
+- **Native Windows:** portable user-process mode is preview. Forge does not currently claim automatic reboot persistence there.
+
+The source-oriented `forge runtime service install --repo ...` immutable-release command and Standalone Recovery remain advanced maintainer operations. They are not normal installation prerequisites.
+
+## Remote ChatGPT/MCP connection providers
+
+Forge keeps its MCP listener on loopback. A remote controller chooses one of these explicit connection methods:
+
+| Provider | Inbound public exposure | Typical use |
+| --- | --- | --- |
+| OpenAI Secure MCP Tunnel | No | Preferred for ChatGPT/OpenAI-hosted clients when the organization has tunnel permission. Uses official `tunnel-client`; Forge stores only the non-secret tunnel ID. |
+| Cloudflare Tunnel | Yes / internet-reachable HTTPS | Stable named HTTPS endpoint when the user manages Cloudflare account/domain. |
+| Tailscale Funnel | Yes / internet-reachable HTTPS | Convenient when the user already operates a compatible Tailscale setup. |
+| Existing HTTPS `/mcp` | Depends on user infrastructure | Reverse proxy or tunnel already owned by the user. |
+| None | No | Local controller only, or remote connectivity configured later. |
+
+Setup detects the OS and available provider CLI. It does not assume Homebrew or macOS. Third-party authentication remains explicit and is never completed with credentials pasted into Forge setup.
 
 ## Native Windows scope
 
-The native PowerShell path is release-tested for:
-
-- prerequisite checks and CLI package installation;
-- `forge --version` and command loading;
-- `forge doctor`;
-- repository registry operations;
-- Windows path, process, junction, and command handling covered by the portable test suite;
-- the default MCP facade and bounded repository operations that do not depend on Bash helpers.
-
-The following are not yet claimed as complete native Windows workflows:
-
-- Bash-owned repository migration and hook scripts;
-- the full source-release Bash gate;
-- automatic CodeGraph configuration;
-- every external agent CLI and tunnel combination.
-
-For those workflows, use WSL2. The native installer intentionally skips Bash skill synchronization and automatic CodeGraph setup instead of failing the whole installation.
-
-## WSL2 guidance
-
-Install Git, Node.js, and optionally Bun inside WSL2, then clone repositories under the Linux home directory, for example `~/src/project`. Avoid running one checkout alternately from Windows and WSL because file modes, symlinks, line endings, and runtime paths can diverge.
-
-The Windows host can still provide the browser and ChatGPT client. The Controller and MCP process run inside WSL2; expose only the MCP endpoint through a controlled HTTPS tunnel.
+The native PowerShell path is release-tested for installer/CLI loading, doctor, setup/profile persistence, repository registry operations, Windows path/process behavior, and portable Node tests. Shell-heavy repository migration, every browser/provider integration, and persistent Windows service ownership remain outside the full-support claim; use WSL2 when those workflows are required.
 
 ## Verification boundary
 
-The repository contains a `windows-latest` smoke workflow covering the PowerShell dry run, installer contracts, native-Windows policy behavior, and portable Node tests. That smoke workflow is evidence for the bounded native scope above; it is not evidence that every Bash- or provider-dependent integration works natively.
+The repository has platform/public-doc checks and a Windows smoke workflow. A platform claim means its named path is tested; it does not imply that every optional third-party provider is installed or available on every machine.

@@ -5,16 +5,16 @@
 <p align="center"><a href="https://github.com/moretea-labs/forge#english">English</a> · <a href="https://github.com/moretea-labs/forge#zh-cn">仓库首页中文</a> · <a href="docs/README.zh-CN.md">中文文档</a> · <a href="docs/operations/features.zh-CN.md">功能清单</a> · <a href="https://github.com/moretea-labs/forge/releases">版本发布</a></p>
 <p align="center"><img alt="CI" src="https://github.com/moretea-labs/forge/actions/workflows/ci.yml/badge.svg"> <img alt="Release" src="https://img.shields.io/github/v/release/moretea-labs/forge?include_prereleases&sort=semver"> <img alt="npm next" src="https://img.shields.io/npm/v/%40moretea-labs%2Fforge?tag=next&label=npm%20next"> <img alt="License" src="https://img.shields.io/github/license/moretea-labs/forge"></p>
 
-**ChatGPT 是主控，Forge 是行动层。** ChatGPT 负责理解目标、判断下一步和与你沟通；Forge 负责把这些决定安全地落到真实世界：本机文件、命令、仓库、浏览器、macOS、Apple 开发流程以及你的外部服务。
+**Forge 自己没有 AI 大脑。** 每次语义决策都由一个外部主控负责，Forge 负责执行、持久状态、权限和恢复。默认推荐 ChatGPT，也可以明确选择 Codex、Claude 或其他 MCP 客户端；可以配置多个控制入口，但同一时刻只有一个主控拥有语义控制权。
 
-正常的 ChatGPT Connector 路径**不要求单独配置 OpenAI API Key，也不需要额外准备一套按 token 计费的模型预算**；仍受你自己的 ChatGPT 套餐和会话限制。Codex、Claude、OpenAI API 或其他模型只是可选的委派/自动化后端，不是使用 Forge 的前置条件。
+选择 ChatGPT 时**不要求单独配置 OpenAI API Key，也不需要额外准备一套按 token 计费的模型预算**；仍受你的 ChatGPT 套餐和会话限制。没有选择 Codex/Claude，就不会把它们当成安装或就绪依赖。
 
 ## 为什么这和普通 Coding Agent 不一样
 
-- **对话就是主工作台**：不用切到另一个 Agent 产品里重新解释上下文；ChatGPT 直接做主控。
+- **外部主控就是大脑**：推荐把 ChatGPT 对话作为主工作台；也可明确让 Codex、Claude 或其他 MCP 客户端担任主控，Forge 本身不参与语义决策。
 - **不只会写代码**：同一个对话可以处理目录文件、命令、浏览器、桌面、邮件、日历、GitHub、iOS 与 App Store Connect。
 - **真实执行状态在聊天之外**：长命令、检查、仓库身份、授权和恢复状态可以继续接上；定时/周期任务也可以持久化，在需要判断时再交回 ChatGPT。
-- **需要时才委派 Agent**：明确的小任务直接完成；Codex/Claude 等只在确实有价值时作为执行者加入。
+- **没选就不依赖**：Codex/Claude 不会因为安装在机器上就进入 Forge readiness；只有你明确配置它们为主控或外部执行入口时才检查。
 - **权限不是全有或全无**：本机目录授权可过期；远程、破坏性、密钥和工作区外访问有独立边界。
 
 ## 你可以直接这样说
@@ -42,30 +42,19 @@
 
 ## 快速开始
 
-需要 **Git、Node.js 20.10+、npm** 和可写用户目录；源码开发建议 Bun 1.0+。
+基础安装只需要 **Node.js 20.10+、npm（或 Bun）和可写用户目录**；Git 只在启用仓库/软件开发能力时需要，源码开发建议 Bun 1.0+。
 
 ```bash
 npm install -g @moretea-labs/forge@next
 forge --version
-forge setup open --target both
-forge setup next     # 重复直到 ready
-forge setup close
-forge doctor
+forge setup
+forge setup configure --controller chatgpt --tunnel auto
+forge setup next     # 按每次显示的 Next 动作继续
 ```
 
-接着阅读：
+`forge setup` 会持久化进度。远程主控会继续经过 Package Runtime、远程连接、主控配置和连接验证；ChatGPT 在组织支持时优先 **OpenAI Secure MCP Tunnel**，也可选择 Cloudflare Tunnel、Tailscale Funnel、已有 HTTPS `/mcp` 或暂缓远程连接。本地主控 Codex/Claude 不需要 tunnel。
 
-1. [安装与启动](docs/tutorials/01-install-and-start.zh-CN.md)
-2. [连接 ChatGPT](docs/tutorials/02-connect-chatgpt.zh-CN.md)
-3. [完成第一个仓库任务](docs/tutorials/03-first-repository-task.zh-CN.md)
-
-接入项目：
-
-```bash
-forge adopt --repo /path/to/your-project --dry-run
-forge adopt --repo /path/to/your-project
-forge repo list --json
-```
+接着阅读：[安装与启动](docs/tutorials/01-install-and-start.zh-CN.md) · [连接 ChatGPT](docs/tutorials/02-connect-chatgpt.zh-CN.md) · [第一个仓库任务](docs/tutorials/03-first-repository-task.zh-CN.md)。仓库不是首次 setup 的前置条件；需要时再 `forge adopt --repo /path/to/your-project`。
 
 从源码安装已审查 checkout：
 

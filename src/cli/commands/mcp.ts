@@ -12,6 +12,7 @@ import {
   runMcpPrintGuide,
   runMcpSetupChatgpt,
   runMcpSetupCodex,
+  runMcpSetupClaude,
 } from '../mcp/setup';
 
 export interface McpServeOptions {
@@ -42,15 +43,19 @@ interface McpAccessOptions {
 
 interface McpSetupChatgptOptions {
   repo?: string;
+  controllerHome?: string;
+  userLevel?: boolean;
   host?: string;
   port?: string;
   endpoint?: string;
   serverName?: string;
+  localControllerPort?: string;
 }
 
-interface McpSetupCodexOptions {
+interface McpSetupLocalControllerOptions {
   repo?: string;
   scope?: string;
+  profile?: string;
   dryRun?: boolean;
 }
 
@@ -221,14 +226,17 @@ export function buildMcpCommand(): Command {
       });
     });
 
-  const setup = new Command('setup').description('Generate MCP setup files for ChatGPT or Codex');
+  const setup = new Command('setup').description('Configure an external controller connection to Forge');
 
   setup
     .command('chatgpt')
     .description('Generate ChatGPT Connector local config and manual setup guide')
     .option('--repo <path>', 'Repository root to configure', '.')
+    .option('--controller-home <path>', 'User Controller Home (used with --user-level)')
+    .option('--user-level', 'Configure the user-level Controller without writing repository guide/gitignore files')
     .option('--host <host>', 'Local MCP HTTP bind host', '127.0.0.1')
     .option('--port <port>', 'Local MCP HTTP bind port', '8765')
+    .option('--local-controller-port <port>', 'Local-only Utility Console port; defaults to MCP port + 1')
     .option('--endpoint <url>', 'Stable public HTTPS /mcp endpoint to store in ignored local config')
     .option('--server-name <name>', 'ChatGPT Connector/MCP server name to record in ignored local config')
     .action((rawOpts: McpSetupChatgptOptions) => {
@@ -240,13 +248,29 @@ export function buildMcpCommand(): Command {
 
   setup
     .command('codex')
-    .description('Patch Codex MCP config for forge')
+    .description('Configure Codex as an explicit Forge controller or executor')
     .option('--repo <path>', 'Repository root to configure', '.')
     .option('--scope <scope>', 'Config scope: project|user', 'project')
+    .option('--profile <profile>', 'Forge MCP role: controller|executor', 'executor')
     .option('--dry-run', 'Print planned changes without writing files')
-    .action((rawOpts: McpSetupCodexOptions) => {
+    .action((rawOpts: McpSetupLocalControllerOptions) => {
       void runMcpAction(() => {
         const result = runMcpSetupCodex(rawOpts);
+        console.log(result.lines.join('\n'));
+      });
+    });
+
+
+  setup
+    .command('claude')
+    .description('Configure Claude Code as an explicit Forge controller or executor through the Claude CLI')
+    .option('--repo <path>', 'Repository root to expose initially', '.')
+    .option('--scope <scope>', 'Claude MCP scope: local|project|user', 'user')
+    .option('--profile <profile>', 'Forge MCP role: controller|executor', 'controller')
+    .option('--dry-run', 'Print the Claude MCP command without changing Claude config')
+    .action((rawOpts: McpSetupLocalControllerOptions) => {
+      void runMcpAction(() => {
+        const result = runMcpSetupClaude(rawOpts);
         console.log(result.lines.join('\n'));
       });
     });

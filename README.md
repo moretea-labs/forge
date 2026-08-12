@@ -5,9 +5,9 @@
 <p align="center"><a href="#english">English</a> · <a href="#zh-cn">简体中文</a> · <a href="docs/README.md">Docs</a> · <a href="docs/operations/features.md">Features</a> · <a href="docs/forge-plugin-management.md">Plugins</a> · <a href="https://github.com/moretea-labs/forge/releases">Releases</a></p>
 <p align="center"><img alt="CI" src="https://github.com/moretea-labs/forge/actions/workflows/ci.yml/badge.svg"> <img alt="Release" src="https://img.shields.io/github/v/release/moretea-labs/forge?include_prereleases&sort=semver"> <img alt="npm next" src="https://img.shields.io/npm/v/%40moretea-labs%2Fforge?tag=next&label=npm%20next"> <img alt="License" src="https://img.shields.io/github/license/moretea-labs/forge"></p>
 
-**ChatGPT is the controller. Forge is the action layer.** Keep the conversation as your primary workspace, then let Forge perform the parts chat alone cannot: read and write authorized local files, execute commands, work across repositories, operate browsers and macOS, call service plugins, keep long-running work attached, and bring back evidence you can review.
+**Forge has no internal AI brain.** One external controller owns semantic decisions; Forge provides the controlled execution, state, permissions, and recovery layer. ChatGPT is the recommended controller, but you can choose Codex, Claude, or another MCP client instead, and you may configure several controller entries while keeping one primary controller at a time.
 
-For the normal ChatGPT Connector path, Forge does **not** require a separate OpenAI API key or a second per-token model budget. Your existing ChatGPT plan/session limits still apply. Optional Codex, Claude, OpenAI API, or other model providers are separate delegation paths—not a requirement for using Forge.
+With ChatGPT as the controller, Forge does **not** require a separate OpenAI API key or a second per-token model budget. Your existing ChatGPT plan/session limits still apply. Codex and Claude are not Forge dependencies unless you explicitly choose or configure them.
 
 ## What Forge gives ChatGPT
 
@@ -30,21 +30,23 @@ For the normal ChatGPT Connector path, Forge does **not** require a separate Ope
 “Check the latest TestFlight build and tell me what blocks release.”
 ```
 
-Forge deliberately keeps the tool mechanics below the conversation. You describe the goal; ChatGPT chooses the next action, Forge enforces scope and execution policy, and optional specialist agents can be delegated only when they add value.
+Forge deliberately keeps the tool mechanics below the conversation. You describe the goal to your chosen external controller; that controller decides, while Forge enforces scope, persistence, execution policy, and evidence. Forge never invents an internal agent just because Codex or Claude happens to be installed.
 
 ## Start in minutes
 
-Requirements: **Git, Node.js 20.10+, npm**, and a writable home directory. Bun 1.0+ is recommended for source development.
+Base install: **Node.js 20.10+, npm (or Bun), and a writable home directory**. Git is only required when you enable repository/software-work features; Codex and Claude are optional.
 
 ```bash
 npm install -g @moretea-labs/forge@next
-forge setup open --target both
-forge setup next     # repeat until ready
-forge setup close
-forge doctor
+forge setup
+# Recommended path; then follow one Next action at a time:
+forge setup configure --controller chatgpt --tunnel auto
+forge setup next
 ```
 
-Then follow [Install and start](docs/tutorials/01-install-and-start.md) and [Connect ChatGPT](docs/tutorials/02-connect-chatgpt.md). To adopt a project: `forge adopt --repo /path/to/your-project`.
+Setup persists progress and guides the selected path through the user-level Package Runtime, remote connectivity, controller registration, and connection verification. For ChatGPT, prefer **OpenAI Secure MCP Tunnel** when your organization supports it; Cloudflare Tunnel, Tailscale Funnel, an existing HTTPS `/mcp` URL, or deferred remote access remain alternatives. Local Codex/Claude controllers do not need a tunnel.
+
+Then follow [Install and start](docs/tutorials/01-install-and-start.md) and [Connect ChatGPT](docs/tutorials/02-connect-chatgpt.md). A repository is optional during initial setup; add one later with `forge adopt --repo /path/to/your-project`.
 
 For a reviewed source checkout: `git clone https://github.com/moretea-labs/forge.git && cd forge && npm ci --ignore-scripts --no-audit --no-fund && npm install -g . --omit=optional --no-audit --no-fund`.
 
@@ -65,9 +67,9 @@ Local read/write grants are explicit and expiring; remote or destructive effects
 <p align="center"><strong>让 ChatGPT 真正、安全地操作你的电脑、代码、浏览器和外部服务。</strong></p>
 <p align="center"><a href="#english">English</a> · <a href="#zh-cn">简体中文</a> · <a href="docs/README.zh-CN.md">中文文档</a> · <a href="docs/operations/features.zh-CN.md">功能</a> · <a href="docs/forge-plugin-management.md">插件</a></p>
 
-**ChatGPT 是主控，Forge 是行动层。** 你仍然把 ChatGPT 对话当作主要工作入口，但 Forge 能把“聊天”扩展成真实执行：读写授权的本机目录、运行命令、修改代码和 Git、操作浏览器与 macOS、调用邮件/日历/Apple 等插件，并把长任务状态和验证证据保存在聊天之外。
+**Forge 自己没有 AI 大脑。** 语义判断始终由一个外部主控负责，Forge 负责受控执行、持久状态、权限和恢复。推荐 ChatGPT，也可以明确选择 Codex、Claude 或其他 MCP 客户端；可以预配置多个入口，但同一时刻只有一个主控负责决策。
 
-正常的 ChatGPT Connector 路径**不要求你再为 Forge 配一份 OpenAI API Key，也不需要额外准备一套按 token 计费的模型预算**；仍然受你自己的 ChatGPT 套餐和会话限制。Codex、Claude、OpenAI API 等只是可选委派能力，不是 Forge 的前置条件。
+选择 ChatGPT 时**不要求再配置一份 OpenAI API Key，也不需要额外准备一套按 token 计费的模型预算**；仍受你的 ChatGPT 套餐和会话限制。Codex、Claude 没被选中时就不是 Forge 的依赖。
 
 ## Forge 能让 ChatGPT 做什么
 
@@ -90,17 +92,18 @@ Local read/write grants are explicit and expiring; remote or destructive effects
 
 ## 快速开始
 
-需要 **Git、Node.js 20.10+、npm**；源码开发建议 Bun 1.0+。
+基础安装只需要 **Node.js 20.10+、npm（或 Bun）和可写用户目录**。Git 只在启用仓库/软件开发能力时需要；Codex、Claude 都是可选项。
 
 ```bash
 npm install -g @moretea-labs/forge@next
-forge setup open --target both
-forge setup next     # 重复直到 ready
-forge setup close
-forge doctor
+forge setup
+forge setup configure --controller chatgpt --tunnel auto
+forge setup next     # 按每次显示的 Next 动作继续
 ```
 
-继续阅读[安装与启动](docs/tutorials/01-install-and-start.zh-CN.md)和[连接 ChatGPT](docs/tutorials/02-connect-chatgpt.zh-CN.md)。源码安装：`git clone https://github.com/moretea-labs/forge.git && cd forge && npm ci --ignore-scripts --no-audit --no-fund && npm install -g . --omit=optional --no-audit --no-fund`。
+远程主控的 setup 会继续引导 Package Runtime、远程连接、主控配置和连接验证；ChatGPT 在组织支持时优先 **OpenAI Secure MCP Tunnel**，也可选 Cloudflare Tunnel、Tailscale Funnel、已有 HTTPS `/mcp`，或暂缓远程连接。本地 Codex/Claude 主控不需要 tunnel，也不会配置未选择的 CLI。
+
+继续阅读[安装与启动](docs/tutorials/01-install-and-start.zh-CN.md)和[连接 ChatGPT](docs/tutorials/02-connect-chatgpt.zh-CN.md)。仓库不是首次 setup 的前置条件，需要开发能力时再运行 `forge adopt --repo /path/to/your-project`。源码安装：`git clone https://github.com/moretea-labs/forge.git && cd forge && npm ci --ignore-scripts --no-audit --no-fund && npm install -g . --omit=optional --no-audit --no-fund`。
 
 Forge 内置本机、Browser、Desktop、iOS、GitHub、Gmail、Calendar、Tasks、App Store Connect、Resend 等类型化能力；公开 Provider 目录还有 **Forge Desktop Operator / Forge Design / Personal Knowledge Assistant**。详见[功能清单](docs/operations/features.zh-CN.md)与[插件管理](docs/forge-plugin-management.md)。
 

@@ -83,6 +83,13 @@ function isolatedMcpProcessEnv(
     'FORGE_RUNTIME_SLOT',
     'FORGE_WRITER_SLOT',
     'FORGE_WRITER_GENERATION',
+    'FORGE_RUNTIME_INSTANCE_ID',
+    'FORGE_RUNTIME_OWNER_PID',
+    'FORGE_RELEASE_AUTHORITY_REVISION',
+    'FORGE_RELEASE_FENCING_TOKEN',
+    'FORGE_RELEASE_ID',
+    'FORGE_ARTIFACT_IDENTITY',
+    'FORGE_WORKER_PROTOCOL_VERSION',
   ]) {
     delete env[key];
   }
@@ -709,6 +716,9 @@ describe('mcp http transport', () => {
         mkdirSync(join(repoRoot, '.ai/harness'), { recursive: true });
         writeFileSync(join(repoRoot, '.ai/harness/policy.json'), '{}\n');
         const result = runMcpSetupChatgpt({ repo: repoRoot, port: '8765' });
+        const config = JSON.parse(readFileSync(join(_controllerHome, 'mcp', 'mcp.local.json'), 'utf8'));
+        expect(config.devMode).toMatchObject({ agentRunner: false, allowedAgents: [] });
+        expect(config.localController).toMatchObject({ enabled: true, host: '127.0.0.1' });
         const next = result.lines.find((line) => line.startsWith('Next: forge '));
         expect(next).toBeDefined();
         expect(next).not.toContain('keepalive');
@@ -724,7 +734,7 @@ describe('mcp http transport', () => {
         const guide = readFileSync(join(repoRoot, 'docs', 'forge-chatgpt-mcp-setup.md'), 'utf8');
         expect(guide).not.toContain('forge mcp keepalive');
         expect(guide).not.toContain('forge mcp serve --repo');
-        expect(guide).toContain('forge runtime service install');
+        expect(guide).toContain('forge runtime service install-package');
       });
     } finally {
       rmSync(repoRoot, { recursive: true, force: true });

@@ -16,7 +16,6 @@ function Add-PathEntry([string]$PathEntry) { if ($PathEntry -and (Test-Path $Pat
 function Refresh-InstallerPath { Add-PathEntry $BunBin; if ($env:APPDATA) { Add-PathEntry (Join-Path $env:APPDATA "npm") }; if (Test-Command "npm") { $npmPrefix = (& npm config get prefix 2>$null | Select-Object -First 1).Trim(); Add-PathEntry $npmPrefix } }
 function Assert-Prerequisites {
   if ($PSVersionTable.PSVersion -lt [version]"5.1") { throw "PowerShell 5.1 or newer is required. PowerShell 7 is recommended." }
-  if (-not (Test-Command "git")) { throw "Git is required. Install Git for Windows, reopen PowerShell, and rerun this installer." }
   if (-not (Test-Command "node")) { throw "Node.js 20.10 or newer is required because the published Forge launcher uses Node." }
   $nodeText = (& node -p "process.versions.node").Trim(); if ($LASTEXITCODE -ne 0 -or -not $nodeText) { throw "Node.js is present, but its version could not be read." }
   if ([version]$nodeText -lt $MinimumNodeVersion) { throw "Node.js 20.10 or newer is required; found $nodeText." }
@@ -30,7 +29,7 @@ function Select-InstallRuntime {
     default { throw "Invalid FORGE_INSTALL_RUNTIME=$InstallRuntime. Expected auto, bun, or node." }
   }
 }
-if ($DryRun -or $env:FORGE_DRY_RUN -eq "1") { Write-Host "DRY RUN: would require Git and Node.js 20.10+, choose runtime ($InstallRuntime), install $PackageName@$PackageVersion, and verify the Forge CLI."; exit 0 }
+if ($DryRun -or $env:FORGE_DRY_RUN -eq "1") { Write-Host "DRY RUN: would require Node.js 20.10+ and npm/Bun, install $PackageName@$PackageVersion, and verify the Forge CLI. Git is optional until repository features are enabled."; exit 0 }
 Refresh-InstallerPath
 Assert-Prerequisites
 $Runtime = Select-InstallRuntime
@@ -43,6 +42,6 @@ $Version = (& forge --version | Select-Object -First 1).Trim(); if ($LASTEXITCOD
 & forge doctor --help *> $null; if ($LASTEXITCODE -ne 0) { throw "Forge installed, but the doctor command could not be loaded." }
 Write-Host "Forge $Version installed."
 Write-Host "Next:"
-Write-Host "  forge install --no-cli"
-Write-Host "  forge doctor"
-Write-Host "  forge adopt --repo C:\path\to\your-project --dry-run"
+Write-Host "  forge setup"
+Write-Host ""
+Write-Host "Git is only needed when you enable repository/software-work features."

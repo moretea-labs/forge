@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { existsSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { resolveControllerHome } from '../repositories/controller-home';
@@ -13,6 +13,7 @@ import { observeRuntimeStatus } from '../../runtime/root/status';
 import { readMcpServiceBearerToken } from '../mcp/auth';
 import { publishRuntimeRelease } from '../../runtime/root/release-store';
 import { installForgeRuntimeService } from '../../runtime/root/service';
+import { installPackageRuntimeService } from '../../runtime/root/package-runtime-service';
 import { assertRuntimeReleaseFiles, stageRuntimeReleaseFromCandidateSource } from '../../runtime/root/release-materialize';
 
 function output(value: unknown, json = true): void {
@@ -23,10 +24,57 @@ export function buildRuntimeCommand(): Command {
   const command = new Command('runtime').description('Inspect the canonical Runtime and durable execution state');
 
   const service = command.command('service')
-    .description('Install the macOS launchd owner for the single Forge Runtime root process');
+    .description('Install or inspect the user-level Forge Runtime owner');
+
+  service.command('install-package')
+    .description('Install the current packaged Forge Runtime without requiring a Git checkout, Bun compilation, CodeGraph, or Standalone Recovery')
+    .option('--controller-home <path>', 'Controller Home; defaults to the user-level Forge Controller Home')
+    .option('--host <host>', 'MCP listener host', '127.0.0.1')
+    .option('--port <port>', 'MCP listener port', '8765')
+    .option('--auth-token-file <path>', 'Raw bearer token file (created from user-level MCP config when missing)')
+    .option('--portable', 'Force a detached session process instead of launchd/systemd user persistence')
+    .action(async (opts: { controllerHome?: string; host: string; port: string; authTokenFile?: string; portable?: boolean }) => {
+      const home = resolveControllerHome(opts.controllerHome);
+      const port = Number(opts.port);
+      if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error('RUNTIME_SERVICE_PORT_INVALID');
+      const tokenPath = resolve(opts.authTokenFile ?? join(home, 'mcp', 'runtime-token'));
+      if (!existsSync(tokenPath)) {
+        const token = readMcpServiceBearerToken(home);
+        if (!token) throw new Error('RUNTIME_SERVICE_AUTH_TOKEN_UNAVAILABLE: run forge mcp setup chatgpt --user-level first');
+        mkdirSync(dirname(tokenPath), { recursive: true, mode: 0o700 });
+        writeFileSync(tokenPath, `${token}\n`, { mode: 0o600 });
+      }
+      const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+      const result = await installPackageRuntimeService({
+        controllerHome: home,
+        packageRoot,
+        host: opts.host,
+        port,
+        authTokenFile: tokenPath,
+        forcePortable: opts.portable === true,
+      });
+      output({
+        status: result.status,
+        mode: result.mode,
+        persistent: result.persistent,
+        controllerHome: result.controllerHome,
+        release: {
+          releaseId: result.release.releaseId,
+          packageVersion: result.release.packageVersion,
+          packageFingerprint: result.release.packageFingerprint,
+          artifactIdentity: result.release.artifactIdentity,
+          manifestPath: result.release.manifestPath,
+          fileCount: result.release.fileCount,
+        },
+        servicePath: result.servicePath,
+        pid: result.pid,
+        warnings: result.warnings,
+        next: `forge runtime status --controller-home ${home}`,
+      });
+    });
 
   service.command('install')
-    .description('Build an immutable Runtime release and install the single launchd Runtime service owner')
+    .description('Advanced/source mode: build an immutable Git Runtime release and install the macOS launchd owner')
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
     .requiredOption('--repo <path>', 'Repository root used as the immutable release source')
     .option('--host <host>', 'MCP listener host', '127.0.0.1')
