@@ -479,6 +479,14 @@ describe('Unified Process Runtime', () => {
         ...baseRecord,
         processId: ordinaryProcessId,
       });
+      const ordinaryLogDir = processLogDir(fx.controllerHome, fx.repository.repoId);
+      const ordinaryArtifacts = [
+        `${ordinaryProcessId}.stdout.log`,
+        `${ordinaryProcessId}.stderr.log`,
+        `${ordinaryProcessId}.exit.json`,
+        `${ordinaryProcessId}.exit.json.started.json`,
+      ].map((name) => join(ordinaryLogDir, name));
+      for (const path of ordinaryArtifacts) writeFileSync(path, 'terminal-artifact');
 
       const ageGc = gcTerminalProcesses({
         controllerHome: fx.controllerHome,
@@ -489,6 +497,7 @@ describe('Unified Process Runtime', () => {
       expect(ageGc.ok).toBe(true);
       expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, ordinaryProcessId)).toBeUndefined();
       expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, semanticProcessId)).toBeTruthy();
+      for (const path of ordinaryArtifacts) expect(existsSync(path)).toBe(false);
 
       const budgetGc = gcTerminalProcesses({
         controllerHome: fx.controllerHome,
@@ -581,6 +590,15 @@ describe('Unified Process Runtime', () => {
     expect(completed.completed).toBe(true);
     expect(JSON.stringify(completed)).not.toContain(syntheticSecret);
     expect(completed.stdout).toContain('SAFE_STATE => running');
+    const terminalRecord = getProcessRecord(fx.controllerHome, fx.repository.repoId, started.processId)!;
+    expect(terminalRecord.terminalWritten).toBe(true);
+    expect(terminalRecord.leasesReleased).toBe(true);
+    expect(terminalRecord.exitReceiptPath).toBeTruthy();
+    expect(existsSync(terminalRecord.exitReceiptPath!)).toBe(false);
+    expect(existsSync(`${terminalRecord.exitReceiptPath!}.started.json`)).toBe(false);
+    expect(terminalRecord.stdoutPath && existsSync(terminalRecord.stdoutPath)).toBe(true);
+    expect(readProcessLogs(fx.controllerHome, fx.repository.repoId, started.processId, 32 * 1024)?.stdout)
+      .toContain('SAFE_STATE => running');
 
     const ctx = { controllerHome: fx.controllerHome, repo: fx.repoRoot } as unknown as MultiRepositoryMcpToolContext;
     const got = await callProcessTool(ctx, 'process_get', { repo_id: fx.repository.repoId, process_id: started.processId });
@@ -1744,18 +1762,7 @@ describe('Process Runtime real lease contention', () => {
     expect(listRecoverableProcessRecords(fx.controllerHome, fx.repository.repoId)).toEqual([]);
 
     const projectionPath = join(processLogDir(fx.controllerHome, fx.repository.repoId), '..', 'active-index.json');
-    const projection = JSON.parse(readFileSync(projectionPath, 'utf8')) as {
-      schemaVersion: number;
-      source?: string;
-      processIds?: string[];
-      pendingLeaseReleaseIds?: string[];
-    };
-    expect(projection).toMatchObject({
-      schemaVersion: 2,
-      source: 'sqlite_projection',
-      processIds: [],
-      pendingLeaseReleaseIds: [],
-    });
+    expect(existsSync(projectionPath)).toBe(false);
   });
 
   test('stale pre-spawn records reconcile only after proving no spawn artifacts or leases', () => {

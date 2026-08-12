@@ -35,6 +35,7 @@ import { isProcessAlive, terminateProcessTree } from '../../shared/process-tree'
 import { readSchedulerWakeSignal, waitForSchedulerWakeSignal } from './wake-signal';
 import { cleanupControllerRuntimeState } from '../runtime-cleanup';
 import { reconcileTerminalWorkCleanups } from '../execution/work-terminal-cleanup';
+import { gcTerminalProcesses } from '../../execution/process-runtime/gc';
 import { schedulerDispatchAllowed } from '../facade/work-admission-policy';
 import { rebuildRepositoryProjection, refreshRepositoryProjectionForRepository } from '../../projections/materialized-view';
 import { readRepositoryGitStatusSample, sampleRepositoryGitStatusForRepositories } from '../../projections/git-status-sampler';
@@ -230,6 +231,8 @@ export class GlobalScheduler {
   private sourceScansAvoided = 0;
   private runtimeCleanup = cleanupControllerRuntimeState;
   private terminalWorkCleanup = reconcileTerminalWorkCleanups;
+  private processGc = gcTerminalProcesses;
+  private repositoryList = listRepositories;
   private lastDarwinMemorySampleAt = 0;
   private cachedDarwinAvailableMemoryMb: number | undefined;
   private darwinMemorySampleInFlight: Promise<void> | undefined;
@@ -610,6 +613,7 @@ export class GlobalScheduler {
     this.lastHeartbeatAt = new Date(now).toISOString();
     this.lastTickAt = this.lastHeartbeatAt;
     this.persistState();
+    const repositories = this.repositoryList(this.controllerHome).filter((repo) => repo.enabled && !repo.removedAt);
     if (now - this.lastCleanupAt >= RUNTIME_CLEANUP_INTERVAL_MS) {
       // Advance the interval before cleanup so a failing pass cannot create a
       // tight retry loop on every scheduler tick.
@@ -628,13 +632,18 @@ export class GlobalScheduler {
       } catch (error) {
         console.error('[forge cleanup] terminal Work cleanup failed:', error);
       }
+      if (repositories.length > 0) {
+        const slot = Math.floor(now / RUNTIME_CLEANUP_INTERVAL_MS) % repositories.length;
+        const repo = repositories[slot]!;
+        const result = this.processGc({ controllerHome: this.controllerHome, repoId: repo.repoId });
+        if (!result.ok) console.error('[forge cleanup] Process GC failed:', result.error ?? 'unknown error');
+      }
     }
     if (now - this.lastReconcile >= 5_000) {
       await reconcileExecutionJobsAsync(this.controllerHome);
       this.lastReconcile = now;
       this.lastReconcileAt = new Date(now).toISOString();
     }
-    const repositories = listRepositories(this.controllerHome).filter((repo) => repo.enabled && !repo.removedAt);
     const activeJobSnapshot = listActiveExecutionJobs(this.controllerHome);
     const hasActiveWork = activeJobSnapshot.length > 0;
     const sourceScanDue = hasActiveWork || now - this.lastSourceScanAt >= IDLE_REPOSITORY_SCAN_INTERVAL_MS;

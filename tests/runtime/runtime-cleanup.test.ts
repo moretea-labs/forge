@@ -373,12 +373,45 @@ describe('runtime cleanup', () => {
     expect(preview.truncated.candidates).toBe(true);
   });
 
+  test('periodic scheduler cleanup runs Process GC for only one enabled repository', async () => {
+    const home = controllerHome();
+    const scheduler = new GlobalScheduler(home, { pollIntervalMs: 1 });
+    const processGcRepos: string[] = [];
+    const now = Date.now();
+    const internal = scheduler as unknown as {
+      runtimeCleanup: () => void;
+      terminalWorkCleanup: () => Promise<void>;
+      processGc: (options: { repoId: string }) => { ok: boolean };
+      repositoryList: () => Array<{ repoId: string; enabled: boolean; removedAt?: string }>;
+      lastSourceScanAt: number;
+      lastGitStatusSampleAt: number;
+    };
+    internal.runtimeCleanup = () => undefined;
+    internal.terminalWorkCleanup = async () => undefined;
+    internal.processGc = (options) => {
+      processGcRepos.push(options.repoId);
+      return { ok: true };
+    };
+    internal.repositoryList = () => [
+      { repoId: 'repo-a', enabled: true },
+      { repoId: 'repo-b', enabled: true },
+      { repoId: 'repo-disabled', enabled: false },
+    ];
+    internal.lastSourceScanAt = now;
+    internal.lastGitStatusSampleAt = now;
+
+    await scheduler.tick();
+    expect(processGcRepos).toHaveLength(1);
+    expect(['repo-a', 'repo-b']).toContain(processGcRepos[0]!);
+  });
+
   test('a cleanup failure does not interrupt the scheduler tick', async () => {
     const home = controllerHome();
     const scheduler = new GlobalScheduler(home, { pollIntervalMs: 1 });
     const internal = scheduler as unknown as {
       runtimeCleanup: () => never;
       terminalWorkCleanup: () => Promise<never>;
+      processGc: () => { ok: boolean; error?: string };
     };
     internal.runtimeCleanup = () => {
       throw new Error('synthetic cleanup failure');
@@ -386,6 +419,7 @@ describe('runtime cleanup', () => {
     internal.terminalWorkCleanup = async () => {
       throw new Error('synthetic terminal Work cleanup failure');
     };
+    internal.processGc = () => ({ ok: false, error: 'synthetic Process GC failure' });
     const originalError = console.error;
     console.error = () => undefined;
     try {

@@ -121,6 +121,21 @@ function safeProcessText(value: string): string {
   return redactSensitiveText(value).text;
 }
 
+function cleanupTerminalRunnerReceipts(record: ManagedProcessRecord): void {
+  if (!isManagedProcessTerminal(record) || record.terminalWritten !== true || record.leasesReleased !== true) return;
+  const exitReceiptPath = record.exitReceiptPath
+    ?? receiptPathFor(record.controllerHome, record.repoId, record.processId);
+  for (const path of [exitReceiptPath, `${exitReceiptPath}.started.json`]) {
+    if (!path || !existsSync(path)) continue;
+    try {
+      rmSync(path, { force: true });
+    } catch {
+      // Best-effort only. The durable terminal record is authoritative and
+      // fallback Process GC reconciles stale runner artifacts later.
+    }
+  }
+}
+
 function sanitizeTerminalProcessArtifacts(record: ManagedProcessRecord): ManagedProcessRecord {
   if (!isManagedProcessTerminal(record)) return record;
   let filesExamined = 0;
@@ -555,7 +570,9 @@ export function completeProcessFromEvidence(
   // already-terminal races (second caller still needs to clear leases once).
   const afterTerminal = completion.record ?? getProcessRecord(controllerHome, repoId, processId);
   if (afterTerminal && (completion.ok || completion.reason === 'already_terminal' || afterTerminal.terminalWritten === true)) {
-    return releaseProcessLeasesOnce(controllerHome, repoId, processId) ?? afterTerminal;
+    const released = releaseProcessLeasesOnce(controllerHome, repoId, processId) ?? afterTerminal;
+    cleanupTerminalRunnerReceipts(released);
+    return released;
   }
   return afterTerminal;
 }

@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, symlinkSync } from 'fs';
 import { homedir } from 'os';
-import { join, resolve } from 'path';
+import { basename, dirname, join, relative, resolve } from 'path';
 
 export function resolveControllerHome(explicit?: string): string {
   const configured = explicit?.trim()
@@ -29,8 +29,39 @@ export function resolveRepoPreferredControllerHome(repoRoot?: string, explicit?:
   return resolveControllerHome();
 }
 
+export function repoLocalNoIndexControllerHome(
+  controllerHome: string,
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  const home = resolve(controllerHome);
+  if (platform !== 'darwin' || basename(home) !== 'controller-home' || basename(dirname(home)) !== '_ops') return undefined;
+  return `${home}.noindex`;
+}
+
+export function ensureControllerHomeStorage(
+  controllerHome: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const home = resolve(controllerHome);
+  const physical = repoLocalNoIndexControllerHome(home, platform);
+  if (!physical || existsSync(home)) return home;
+
+  let logicalEntryExists = false;
+  try { logicalEntryExists = lstatSync(home).isSymbolicLink(); } catch { /* absent */ }
+  mkdirSync(physical, { recursive: true });
+  if (!logicalEntryExists) {
+    const target = relative(dirname(home), physical) || basename(physical);
+    try {
+      symlinkSync(target, home, 'dir');
+    } catch (error) {
+      if (!existsSync(home)) throw error;
+    }
+  }
+  return home;
+}
+
 export function ensureControllerHome(explicit?: string): string {
-  const home = resolveControllerHome(explicit);
+  const home = ensureControllerHomeStorage(resolveControllerHome(explicit));
   for (const child of ['', 'repositories', 'system', 'locks', 'indexes', 'audit', 'mcp', 'sessions', 'work-handles']) {
     mkdirSync(join(home, child), { recursive: true });
   }

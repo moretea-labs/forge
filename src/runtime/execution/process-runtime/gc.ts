@@ -134,7 +134,7 @@ export function gcTerminalProcesses(options: ProcessGcOptions): ProcessGcResult 
     for (const victim of victims) {
       if (safeUnlink(victim.path)) removedRecords += 1;
       if (options.deleteLogs !== false) {
-        for (const suffix of ['.stdout.log', '.stderr.log', '.exit.json']) {
+        for (const suffix of ['.stdout.log', '.stderr.log', '.exit.json', '.exit.json.started.json']) {
           if (safeUnlink(join(logs, `${victim.processId}${suffix}`))) removedLogs += 1;
         }
       }

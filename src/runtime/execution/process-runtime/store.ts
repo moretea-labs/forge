@@ -1,7 +1,7 @@
 /**
  * Durable Managed Process records under controller-home repositories.
  * Layout: repositories/<repoId>/processes/<processId>.json
- * Index: repositories/<repoId>/processes/active-index.json
+ * Recovery membership authority: SQLite process_recovery_index/v2.
  */
 
 import { createHash } from 'crypto';
@@ -87,10 +87,6 @@ function checkExecutionBindingPath(controllerHome: string, repoId: string, scope
   return join(checkExecutionBindingsRoot(controllerHome, repoId), `${checkExecutionBindingKey(repoId, scopeKey, cacheKey)}.json`);
 }
 
-function indexPath(controllerHome: string, repoId: string): string {
-  return join(processesRoot(controllerHome, repoId), 'active-index.json');
-}
-
 interface ProcessRecoveryIndex {
   schemaVersion: 2;
   updatedAt: string;
@@ -116,18 +112,6 @@ function processRecoveryMembership(record: ManagedProcessRecord): { active: bool
     active: isManagedProcessActive(record),
     pendingLeaseRelease: needsPendingLeaseRelease(record),
   };
-}
-
-function projectRecoveryIndex(controllerHome: string, repoId: string, index: ProcessRecoveryIndex): void {
-  // Compatibility/readability projection only. SQLite is authoritative; the
-  // projection is never read by Process Runtime after v2 migration.
-  atomicWrite(indexPath(controllerHome, repoId), {
-    schemaVersion: 2,
-    source: 'sqlite_projection',
-    updatedAt: index.updatedAt,
-    processIds: index.activeProcessIds,
-    pendingLeaseReleaseIds: index.pendingLeaseReleaseIds,
-  });
 }
 
 function readRecoveryIndex(controllerHome: string, repoId: string): ProcessRecoveryIndex | undefined {
@@ -163,7 +147,6 @@ function replaceRecoveryIndex(
       pendingLeaseReleaseIds: normalizedProcessIds(pendingLeaseReleaseIds),
     }),
   }).value;
-  projectRecoveryIndex(controllerHome, repoId, value);
   return value;
 }
 
@@ -224,7 +207,6 @@ function updateRecoveryIndexMembership(
       };
     },
   }).value;
-  projectRecoveryIndex(controllerHome, repoId, value);
   return value;
 }
 
