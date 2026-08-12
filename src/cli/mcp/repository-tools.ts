@@ -928,24 +928,31 @@ export async function callRepositoryTool(
         // nested ExecutionJob. Local Job remains the worker settlement surface.
         const fromDurableWorker = args.__from_durable_worker === true
           || typeof args.__execution_job_id === 'string';
-        // Thin Harness: short readonly / focused-check commands skip Local Job when eligible.
-        const forceDurable = fromDurableWorker
-          || args.apply_mode === 'async'
-          || args.mode === 'durable'
+        // Process Runtime owns local async execution. apply_mode=async means
+        // return its Process handle immediately; it must not promote a local
+        // command into the retired ExecutionJob path. Explicit mode=durable
+        // remains a separate external-Controller boundary.
+        const returnHandleImmediately = args.apply_mode === 'async'
+          || args.mode === 'async'
           || args.async === true
           || args.background === true;
+        const forceDurable = fromDurableWorker
+          || args.mode === 'durable'
+          || args.force_durable === true;
         const routingDecision = routeExecution({
           operation: 'repository_command_execute',
           mode: forceDurable ? 'durable' : args.mode === 'fast' ? 'fast' : 'auto',
           command: args.command as string | string[] | undefined,
           timeoutMs,
-          background: args.background === true || args.async === true,
+          background: forceDurable && (args.background === true || args.async === true),
           defaultBranch: repository.defaultBranch,
           approvalContinuation: typeof args.approval_request_id === 'string'
             || typeof args.approval_token === 'string',
         });
         // Unified Process Runtime for local commands (Direct/Managed) when not forced durable.
-        if (!forceDurable && !fromDurableWorker) {
+        // Ephemeral workspaces cannot persist a recoverable async Process handle,
+        // so their async requests remain promotion-required below.
+        if (!forceDurable && !fromDurableWorker && !(target.workspace && returnHandleImmediately)) {
           try {
             const routeClass = classifyRepositoryCommandRoute(args.command as string | string[], {
               forceDurable: false,
@@ -959,7 +966,11 @@ export async function callRepositoryTool(
                 command: args.command as string | string[],
                 cwd: typeof args.cwd === 'string' ? args.cwd : undefined,
                 timeoutMs,
+                interactiveWaitMs: returnHandleImmediately
+                  ? 0
+                  : typeof args.interactive_wait_ms === 'number' ? args.interactive_wait_ms : undefined,
                 maxOutputBytes,
+                returnHandleImmediately,
                 requestId: typeof args.request_id === 'string' ? args.request_id : undefined,
                 executionIdentity,
                 allowNonGitWorkspace: target.workspace !== undefined,
@@ -1068,7 +1079,7 @@ export async function callRepositoryTool(
             return failure(error);
           }
         }
-        if (target.workspace && forceDurable) {
+        if (target.workspace && (forceDurable || returnHandleImmediately)) {
           return result({
             accepted: false,
             mode: 'durable',

@@ -127,27 +127,36 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     }).path).toBe('durable');
   });
 
-  test('async / durable request still forces durable', () => {
-    expect(classifyGatewayExecutionPath('repository_command_execute', {
-      command: ['git', 'status'],
-      apply_mode: 'async',
-    }).path).toBe('durable');
-    expect(classifyGatewayExecutionPath('repository_command_execute', {
-      command: ['bun', 'test'],
-      mode: 'durable',
-    }).path).toBe('durable');
-    // Ordinary run_check uses Process Runtime (fast classification) — not Durable Job.
-    expect(classifyGatewayExecutionPath('run_check', {
-      check_id: 'typecheck',
-    }).path).toBe('fast');
-    // Explicit durable / release checks remain durable.
-    expect(classifyGatewayExecutionPath('run_check', {
-      check_id: 'typecheck',
-      mode: 'durable',
-    }).path).toBe('durable');
-    expect(classifyGatewayExecutionPath('run_check', {
-      check_id: 'check:release',
-    }).path).toBe('durable');
+  test('Process Runtime async stays local while explicit durable / release work remains durable', () => {
+    const cases = [
+      ['repository_command_execute', { command: ['git', 'status'], apply_mode: 'async' }, 'fast'],
+      ['repository_command_execute', { command: ['bun', 'test'], mode: 'durable' }, 'durable'],
+      ['run_check', { check_id: 'typecheck' }, 'fast'],
+      ['run_check', { check_id: 'typecheck', apply_mode: 'async' }, 'fast'],
+      ['run_check', { check_id: 'typecheck', mode: 'durable' }, 'durable'],
+      ['run_check', { check_id: 'check:release', apply_mode: 'async' }, 'durable'],
+    ] as const;
+    for (const [name, args, expected] of cases) expect(classifyGatewayExecutionPath(name, args).path).toBe(expected);
+  });
+
+  test('registered async command returns one idempotent Process handle without retired jobs', async () => {
+    const fx = fixture(); roots.push(fx.root);
+    const jobsBefore = listExecutionJobs(fx.controllerHome, fx.repository.repoId).length;
+    const localBefore = listLocalBridgeJobSnapshots(fx.repoRoot).length;
+    const processesBefore = listProcessRecords(fx.controllerHome, fx.repository.repoId).length;
+    const args = { repo_id: fx.repository.repoId, command: ['bun', '-e', 'await Bun.sleep(250); console.log("async-ok")'], apply_mode: 'async', timeout_ms: 5_000, request_id: 'registered-async-process' } as const;
+    const first = await callRepositoryTool(fx.controllerHome, 'repository_command_execute', args);
+    const firstPayload = first?.structuredContent as Record<string, unknown>;
+    expect(first?.isError).not.toBe(true); expect(firstPayload.path).toBe('process_managed'); expect(firstPayload.status).toBe('running');
+    const processId = String(firstPayload.processId ?? ''); expect(processId).toBeTruthy();
+    const sideEffects = firstPayload.durableSideEffects as { executionJobCount?: number; localJobCount?: number; workerSpawnCount?: number } | undefined;
+    expect([sideEffects?.executionJobCount ?? 0, sideEffects?.localJobCount ?? 0, sideEffects?.workerSpawnCount ?? 0]).toEqual([0, 0, 0]);
+    const retry = await callRepositoryTool(fx.controllerHome, 'repository_command_execute', args);
+    expect(retry?.isError).not.toBe(true); expect(String((retry?.structuredContent as Record<string, unknown>).processId ?? '')).toBe(processId);
+    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId).length).toBe(processesBefore + 1);
+    const terminal = await waitForProcess(fx.controllerHome, fx.repository.repoId, processId, { timeoutMs: 10_000 });
+    expect(terminal).toMatchObject({ completed: true, ok: true }); expect(terminal.stdout).toContain('async-ok');
+    expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore); expect(listLocalBridgeJobSnapshots(fx.repoRoot).length).toBe(localBefore);
   });
 
   test('MCP routeDurableMcpCall does not create ExecutionJob for Fast git status', async () => {

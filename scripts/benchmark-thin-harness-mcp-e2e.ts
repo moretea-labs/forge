@@ -36,6 +36,7 @@ import {
   resetLeaseSideEffectMetrics,
 } from '../src/runtime/resources/leases/store';
 import type { MultiRepositoryMcpToolContext } from '../src/cli/mcp/multi-repository';
+import { waitForProcess } from '../src/runtime/execution/process-runtime/runtime';
 
 function git(root: string, args: string[]): void {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8' });
@@ -104,7 +105,7 @@ interface PhaseSample {
   receiptMs: number;
   serializationMs: number;
   totalMs: number;
-  path: 'direct' | 'fast' | 'durable' | 'reject';
+  path: 'direct' | 'fast' | 'process_direct' | 'process_managed' | 'durable' | 'reject';
   ok: boolean;
   executionJobDelta: number;
   localJobDelta: number;
@@ -157,7 +158,8 @@ async function dispatchMcpLike(
     // Durable accepted path (queued). Measure only accept latency; do not wait for workers.
     payload = (durableResult.structuredContent ?? {}) as Record<string, unknown>;
     const reported = String(payload.path ?? payload.mode ?? 'durable');
-    path = reported === 'fast' || reported === 'direct' || reported === 'reject' || reported === 'durable'
+    path = reported === 'fast' || reported === 'direct' || reported === 'process_direct'
+      || reported === 'process_managed' || reported === 'reject' || reported === 'durable'
       ? reported
       : 'durable';
     queueDelayMs = thinRoutingMs;
@@ -175,7 +177,8 @@ async function dispatchMcpLike(
     operationMs = Math.round((performance.now() - opStart) * 100) / 100;
     payload = (toolResult?.structuredContent ?? {}) as Record<string, unknown>;
     const reported = String(payload.path ?? payload.mode ?? classification.path);
-    path = reported === 'fast' || reported === 'direct' || reported === 'reject' || reported === 'durable'
+    path = reported === 'fast' || reported === 'direct' || reported === 'process_direct'
+      || reported === 'process_managed' || reported === 'reject' || reported === 'durable'
       || reported === 'durable_worker_inline'
       ? (reported === 'durable_worker_inline' ? 'durable' : reported as PhaseSample['path'])
       : classification.path;
@@ -237,6 +240,13 @@ async function sampleCase(
   };
 
   const acceptedJob = typeof payload.jobId === 'string' && payload.jobId.trim() ? 1 : 0;
+  const processId = typeof payload.processId === 'string' ? payload.processId.trim() : '';
+  // Admission latency was already captured above. Settle a managed Process before
+  // the next sample so a correct same-checkout resource claim is not misreported
+  // as a benchmark regression.
+  if (phases.path === 'process_managed' && processId) {
+    await waitForProcess(fixture.controllerHome, fixture.repository.repoId, processId, { timeoutMs: 10_000 });
+  }
   return {
     ...phases,
     executionJobDelta: Math.max(
@@ -394,19 +404,15 @@ async function main() {
       },
     })));
 
-    cases.push(await runCase(fixture, 'async_command_durable', 'repository_command_execute', () => ({
-      command: ['git', 'status', '--short'],
+    cases.push(await runCase(fixture, 'async_command_process_handle', 'repository_command_execute', () => ({
+      command: ['bun', '-e', 'await Bun.sleep(250); console.log("async-bench")'],
       apply_mode: 'async',
+      request_id: `mcp-e2e-async-${Date.now()}-${Math.random()}`,
       timeout_ms: 8_000,
     })));
 
-    cases.push(await runCase(fixture, 'full_test_durable', 'repository_command_execute', () => ({
-      command: ['bun', 'test'],
-      timeout_ms: 120_000,
-    })));
-
-    const fastCases = cases.filter((entry) => !['async_command_durable', 'full_test_durable'].includes(entry.name));
-    const durableCases = cases.filter((entry) => ['async_command_durable', 'full_test_durable'].includes(entry.name));
+    const processCases = cases.filter((entry) => entry.name === 'async_command_process_handle');
+    const fastCases = cases.filter((entry) => entry.name !== 'async_command_process_handle');
 
     const report = {
       schemaVersion: 1,
@@ -421,7 +427,10 @@ async function main() {
         fastZeroWorkers: fastCases.every((entry) => entry.workerSpawnCount === 0),
         fastZeroSchedulerWakes: fastCases.every((entry) => entry.schedulerWakeDelta === 0),
         fastZeroProjectionInvalidations: fastCases.every((entry) => entry.projectionInvalidationDelta === 0),
-        durableStillRoutesDurable: durableCases.every((entry) => entry.path === 'durable' || String(entry.samples?.[0]?.path) === 'durable'),
+        processRuntimeAsyncAccepted: processCases.every((entry) => entry.ok && entry.path === 'process_managed'),
+        processRuntimeAsyncZeroExecutionJobs: processCases.every((entry) => entry.executionJobDelta === 0),
+        processRuntimeAsyncZeroLocalJobs: processCases.every((entry) => entry.localJobDelta === 0),
+        processRuntimeAsyncZeroWorkers: processCases.every((entry) => entry.workerSpawnCount === 0),
         allOk: cases.every((entry) => entry.ok),
       },
       leaseFiles: countLeaseFiles(fixture.controllerHome, fixture.repository.repoId),
@@ -465,8 +474,12 @@ async function main() {
 
     const failed = !report.acceptance.allOk
       || !report.acceptance.fastZeroExecutionJobs
+      || !report.acceptance.fastZeroLocalJobs
       || !report.acceptance.fastZeroWorkers
-      || !report.acceptance.durableStillRoutesDurable;
+      || !report.acceptance.processRuntimeAsyncAccepted
+      || !report.acceptance.processRuntimeAsyncZeroExecutionJobs
+      || !report.acceptance.processRuntimeAsyncZeroLocalJobs
+      || !report.acceptance.processRuntimeAsyncZeroWorkers;
     process.exitCode = failed ? 1 : 0;
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });

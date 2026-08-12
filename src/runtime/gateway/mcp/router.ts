@@ -347,7 +347,21 @@ export function classifyGatewayExecutionPath(
       reasons: opts.forceDurable ? ['force_durable'] : ['gateway_isolated_tool'],
     };
   }
-  if (wantsAsyncExecution(args)) {
+  const selfManagedProcessAsync = (
+    name === 'repository_command_execute'
+    || name === 'run_check'
+    || name === 'verify_edit_session'
+  ) && (
+    args.apply_mode === 'async'
+    || args.mode === 'async'
+    || args.async === true
+    || args.background === true
+  );
+  // Async on Process-Runtime-owned tools means return the managed Process
+  // handle immediately. It must not promote local work into the retired
+  // ExecutionJob path. Explicit durable mode still crosses the external
+  // Controller boundary.
+  if (wantsAsyncExecution(args) && !selfManagedProcessAsync) {
     return {
       path: 'durable',
       reasons: ['caller_requested_async_or_durable'],
@@ -356,7 +370,7 @@ export function classifyGatewayExecutionPath(
   // run_check: Process Runtime for ordinary checks; Durable only for release/multi-phase.
   if (name === 'run_check') {
     const checkId = String(args.check_id ?? args.checkId ?? '').trim();
-    if (args.apply_mode === 'async' || args.mode === 'durable' || args.force_durable === true) {
+    if (args.mode === 'durable' || args.force_durable === true) {
       return { path: 'durable', reasons: ['caller_requested_durable_check'] };
     }
     if (checkId && checkRequiresDurableWorkflow(checkId)) {
@@ -388,7 +402,7 @@ export function classifyGatewayExecutionPath(
   // return a managed handle, but it must never be promoted to a retired
   // ExecutionJob/LocalJob merely because the edit session has checks.
   if (name === 'verify_edit_session') {
-    if (args.apply_mode === 'async' || args.mode === 'durable' || args.force_durable === true) {
+    if (args.mode === 'durable' || args.force_durable === true) {
       return { path: 'durable', reasons: ['caller_requested_durable_edit_verification'] };
     }
     const checkIds = Array.isArray(args.check_ids)
@@ -418,8 +432,9 @@ export function classifyGatewayExecutionPath(
   }
 
   // repository_command_execute has one authoritative classifier. Process Runtime
-  // owns every local single-process command regardless of timeout; explicit
-  // async/durable requests were handled above and remain external-controller work.
+  // owns every local single-process command regardless of timeout. Async requests
+  // stay here and return a handle; explicit durable mode remains an external-
+  // Controller boundary.
   if (name === 'repository_command_execute') {
     const command = args.command;
     if (!(typeof command === 'string' || Array.isArray(command))) {
@@ -948,9 +963,11 @@ export async function routeDurableMcpCall(
       executionIdentity: executionIdentityForRepository(repository),
       checkId,
       timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
-      interactiveWaitMs: typeof args.interactive_wait_ms === 'number' ? args.interactive_wait_ms : undefined,
+      interactiveWaitMs: args.apply_mode === 'async' || args.mode === 'async' || args.async === true || args.background === true
+        ? 0
+        : typeof args.interactive_wait_ms === 'number' ? args.interactive_wait_ms : undefined,
       requestId: typeof args.request_id === 'string' ? args.request_id : undefined,
-      forceDurable: args.force_durable === true,
+      forceDurable: args.force_durable === true || args.mode === 'durable',
     });
     if (facade.mode === 'durable') {
       // Multi-phase/release should already be classified durable. Remaining durable

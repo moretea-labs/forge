@@ -42,8 +42,10 @@ export interface RepositoryCommandProcessInput {
   timeoutMs?: number;
   interactiveWaitMs?: number;
   maxOutputBytes?: number;
-  /** Force durable workflow (async apply, release, remote). */
+  /** Force an explicit external/durable workflow boundary. */
   forceDurable?: boolean;
+  /** Return a Process handle immediately without changing execution architecture. */
+  returnHandleImmediately?: boolean;
   requestId?: string;
   workId?: string;
   commandId?: string;
@@ -297,7 +299,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
       correlationId: input.workId,
     },
     signal: input.signal,
-    returnHandleImmediately: input.forceDurable === true,
+    returnHandleImmediately: input.returnHandleImmediately === true,
   });
 
   const route: RepositoryCommandRoute = handle.completed ? 'process_direct' : 'process_managed';
