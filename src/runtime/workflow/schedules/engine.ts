@@ -10,7 +10,7 @@ import {
   type RuntimeMaintenanceActionId,
 } from '../../recovery/maintenance-executor';
 import { listCandidateFindings } from '../findings/store';
-import { getControllerSession } from '../../control-plane/facade';
+import { getControllerSession, getWorkContract, isTerminalWorkContractStatus } from '../../control-plane/facade';
 import { launchSuperController } from '../../control-plane/launcher/thin-launcher';
 import {
   getOccurrence,
@@ -526,7 +526,17 @@ export async function evaluateSchedule(
     if (!['chatgpt', 'codex', 'claude', 'grok'].includes(controllerType)) {
       return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', 'EXTERNAL_CONTROLLER_WAKE_TYPE_INVALID');
     }
-    const existingOwner = getControllerSession({ controllerHome, repoId: schedule.repoId }, workId);
+    const workStore = { controllerHome, repoId: schedule.repoId };
+    const work = getWorkContract(workStore, workId);
+    if (!work) {
+      saveSchedule(controllerHome, { ...schedule, enabled: false, pausedReason: `Work ${workId} no longer exists.`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
+      return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', `EXTERNAL_CONTROLLER_WAKE_WORK_NOT_FOUND:${workId}`);
+    }
+    if (isTerminalWorkContractStatus(work.status)) {
+      saveSchedule(controllerHome, { ...schedule, enabled: false, pausedReason: `Work ${workId} is terminal (${work.status}).`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
+      return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} is terminal (${work.status}); automatic continuation stopped.`);
+    }
+    const existingOwner = getControllerSession(workStore, workId);
     if (existingOwner) {
       saveSchedule(controllerHome, { ...schedule, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
       return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} already has an active Controller ${existingOwner.controllerId}.`);

@@ -162,6 +162,10 @@ Semantic analysis remains external-controller-owned. Forge does not invent the n
 
 `external_controller_wake` accepts a `work_id`, `controller_type`, and optional launcher/session metadata. For ChatGPT, Thin Launcher prefers a saved Forge browser session (`browser_session_id`), then an explicit `https://chatgpt.com/...` conversation URL, then a new browser consult. Codex/Claude remain external CLI controllers. If the Work already has an active Controller lease, the Occurrence is a deterministic no-op rather than spawning a competing controller.
 
+The stable ChatGPT tool surface manages this policy through `rh_work` rather than exposing another Schedule tool. `rh_work.schedule_create/list/get/pause/resume/trigger` binds only an existing non-terminal Work to `external_controller_wake`; callers cannot use the facade to schedule an arbitrary MCP or repository operation. Creation is idempotent by a stable schedule request identity, defaults to `shadow_mode=true`, limits active occurrences to one, and carries explicit failure/cooldown/daily-budget/backoff policy.
+
+A Work continuation Schedule is acceptance-driven, not perpetual. Before every wake, Forge re-reads the bound Work. A missing Work pauses the Schedule; a terminal Work (`completed`, `cancelled`, or another terminal Work state) deterministically disables the Schedule and returns `nothing_to_do`. An active Controller lease also returns `nothing_to_do`. Therefore the recurring trigger is only a wake policy for unfinished bounded Work, never a forever-running agent.
+
 ## 9. Candidate Finding Governance
 
 Automation does not immediately convert every observation into an Issue.

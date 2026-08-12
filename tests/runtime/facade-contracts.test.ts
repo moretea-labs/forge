@@ -3,7 +3,7 @@ import { normalizeCheckIds, classifyVerificationOutcome } from '../../src/runtim
 import { listCapabilityDescriptors, summarizeCapabilityGroups } from '../../src/runtime/control-plane/facade/capability-registry';
 import { evaluatePolicyGate } from '../../src/runtime/control-plane/facade/policy-gate';
 import { buildFacadeResult } from '../../src/runtime/control-plane/facade/facade-result';
-import { validateSuggestedNextActions } from '../../src/runtime/control-plane/facade/suggested-actions';
+import { allowedFacadeOperations, validateSuggestedNextActions } from '../../src/runtime/control-plane/facade/suggested-actions';
 import { buildSuperControllerInvocation, type ThinLauncherRequest } from '../../src/runtime/control-plane/launcher/thin-launcher';
 import {
   FACADE_TOOLS,
@@ -17,6 +17,18 @@ import {
 describe('handoff and facade contracts', () => {
   test('keeps the ChatGPT-facing facade small and stable', () => {
     expect(FACADE_TOOLS).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work']);
+  });
+
+  test('keeps Work continuation scheduling inside rh_work instead of expanding the tool surface', () => {
+    expect(allowedFacadeOperations('rh_work')).toEqual(expect.arrayContaining([
+      'schedule_create',
+      'schedule_list',
+      'schedule_get',
+      'schedule_pause',
+      'schedule_resume',
+      'schedule_trigger',
+    ]));
+    expect(FACADE_TOOLS).toHaveLength(5);
   });
 
   test('classifies terminal handoff statuses', () => {

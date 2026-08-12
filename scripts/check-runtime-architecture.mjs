@@ -67,6 +67,7 @@ const required = [
   'src/runtime/projections/controller-context.ts',
   'src/runtime/projections/invalidation.ts',
   'src/runtime/workflow/schedules/engine.ts',
+  'src/runtime/workflow/schedules/work-continuation.ts',
   'scripts/smoke-runtime-recovery.ts',
   'scripts/smoke-schedule-engine.ts',
   'src/runtime/workflow/portfolio/engine.ts',
@@ -550,6 +551,7 @@ for (const path of [
   'src/runtime/control-plane/global-scheduler/scheduler.ts',
   'src/runtime/control-plane/repo-actor/actor.ts',
   'src/runtime/workflow/schedules/engine.ts',
+  'src/runtime/workflow/schedules/work-continuation.ts',
   'src/cli/mcp/transports/http.ts',
 ]) {
   forbid(path, /\b(?:spawnSync|execSync|execFileSync)\s*\(/, 'the non-blocking Gateway/Controller hot-path rule');

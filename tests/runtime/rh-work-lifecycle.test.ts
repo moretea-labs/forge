@@ -168,4 +168,141 @@ describe('rh_work managed lifecycle closure', () => {
     expect(existsSync(work.worktreePath)).toBe(false);
     expect(branchExists(fx.repoRoot, work.branch)).toBe(false);
   });
+
+  test('rh_work manages one idempotent continuation schedule for bounded Work', async () => {
+    const fx = fixture('schedule-management');
+    const work = await prepareManagedWork(fx, 'Continue this bounded Work without repeated user prompts');
+
+    const created = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'schedule_create',
+      work_id: work.workId,
+      controller_type: 'codex',
+      executable: '/usr/bin/true',
+      trigger_type: 'interval',
+      every_minutes: 60,
+      schedule_request_id: 'schedule-management-stable',
+    });
+    expect(created?.isError).not.toBe(true);
+    const createdPayload = created?.structuredContent as { status?: string; data?: { schedule?: { scheduleId: string; policy: { shadowMode: boolean }; action: { operation: string; arguments?: Record<string, unknown> } } } };
+    expect(createdPayload.status).toBe('ok');
+    const scheduleId = createdPayload.data?.schedule?.scheduleId ?? '';
+    expect(scheduleId).toBeTruthy();
+    expect(createdPayload.data?.schedule?.policy.shadowMode).toBe(true);
+    expect(createdPayload.data?.schedule?.action.operation).toBe('external_controller_wake');
+    expect(createdPayload.data?.schedule?.action.arguments?.work_id).toBe(work.workId);
+
+    const duplicate = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'schedule_create',
+      work_id: work.workId,
+      controller_type: 'codex',
+      executable: '/usr/bin/true',
+      trigger_type: 'interval',
+      every_minutes: 60,
+      schedule_request_id: 'schedule-management-stable',
+    });
+    const duplicatePayload = duplicate?.structuredContent as { data?: { schedule?: { scheduleId: string } } };
+    expect(duplicatePayload.data?.schedule?.scheduleId).toBe(scheduleId);
+
+    const listed = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'schedule_list', work_id: work.workId });
+    const listedPayload = listed?.structuredContent as { data?: { schedules?: Array<{ scheduleId: string }> } };
+    expect(listedPayload.data?.schedules?.map((entry) => entry.scheduleId)).toEqual([scheduleId]);
+
+    const paused = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'schedule_pause', schedule_id: scheduleId, reason: 'test pause' });
+    const pausedPayload = paused?.structuredContent as { data?: { schedule?: { enabled: boolean; pausedReason?: string } } };
+    expect(pausedPayload.data?.schedule?.enabled).toBe(false);
+    expect(pausedPayload.data?.schedule?.pausedReason).toBe('test pause');
+
+    const resumed = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'schedule_resume', schedule_id: scheduleId });
+    const resumedPayload = resumed?.structuredContent as { data?: { schedule?: { enabled: boolean; pausedReason?: string } } };
+    expect(resumedPayload.data?.schedule?.enabled).toBe(true);
+    expect(resumedPayload.data?.schedule?.pausedReason).toBeUndefined();
+  });
+
+  test('non-shadow continuation trigger wakes exactly one external Controller owner', async () => {
+    const fx = fixture('schedule-live-wake');
+    const work = await prepareManagedWork(fx, 'Wake one external Controller for this bounded Work');
+    const created = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'schedule_create',
+      work_id: work.workId,
+      controller_type: 'codex',
+      executable: '/usr/bin/true',
+      trigger_type: 'manual',
+      shadow_mode: false,
+      schedule_request_id: 'schedule-live-wake-stable',
+    });
+    const scheduleId = ((created?.structuredContent as { data?: { schedule?: { scheduleId?: string } } })?.data?.schedule?.scheduleId ?? '');
+    expect(scheduleId).toBeTruthy();
+
+    const released = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'controller_release',
+      work_id: work.workId,
+    });
+    expect(released?.isError).not.toBe(true);
+
+    const triggered = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'schedule_trigger', schedule_id: scheduleId });
+    expect(triggered?.isError).not.toBe(true);
+    const occurrence = (triggered?.structuredContent as { data?: { occurrence?: { decision?: string; status?: string } } })?.data?.occurrence;
+    expect(occurrence).toMatchObject({ decision: 'execute', status: 'succeeded' });
+
+    const owner = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'controller_get_owner', work_id: work.workId });
+    const ownerPayload = owner?.structuredContent as { data?: { owner?: { controllerType?: string } } };
+    expect(ownerPayload.data?.owner?.controllerType).toBe('codex');
+
+    const second = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'schedule_trigger',
+      schedule_id: scheduleId,
+      event_name: 'manual-second-window',
+      event_id: 'manual-second-window-1',
+    });
+    const secondOccurrence = (second?.structuredContent as { data?: { occurrence?: { decision?: string; reason?: string } } })?.data?.occurrence;
+    expect(secondOccurrence?.decision).toBe('nothing_to_do');
+    expect(secondOccurrence?.reason).toContain('already has an active Controller');
+  });
+
+  test('continuation schedule disables itself instead of waking a terminal Work', async () => {
+    const fx = fixture('schedule-terminal-stop');
+    const work = await prepareManagedWork(fx, 'Stop automatic continuation once acceptance is terminal');
+    const created = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'schedule_create',
+      work_id: work.workId,
+      controller_type: 'codex',
+      executable: '/usr/bin/true',
+      trigger_type: 'manual',
+      shadow_mode: false,
+      schedule_request_id: 'schedule-terminal-stop-stable',
+    });
+    const createdPayload = created?.structuredContent as { data?: { schedule?: { scheduleId: string } } };
+    const scheduleId = createdPayload.data?.schedule?.scheduleId ?? '';
+    expect(scheduleId).toBeTruthy();
+
+    const stopped = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'stop',
+      work_id: work.workId,
+      reason: 'acceptance is terminal',
+    });
+    expect(stopped?.isError).not.toBe(true);
+
+    const triggered = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'schedule_trigger',
+      schedule_id: scheduleId,
+    });
+    expect(triggered?.isError).not.toBe(true);
+    const triggeredPayload = triggered?.structuredContent as { data?: { occurrence?: { decision: string; status: string; reason?: string } } };
+    expect(triggeredPayload.data?.occurrence?.decision).toBe('nothing_to_do');
+    expect(triggeredPayload.data?.occurrence?.status).toBe('skipped');
+    expect(triggeredPayload.data?.occurrence?.reason).toContain('automatic continuation stopped');
+
+    const fetched = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'schedule_get', schedule_id: scheduleId });
+    const fetchedPayload = fetched?.structuredContent as { data?: { schedule?: { enabled: boolean; pausedReason?: string } } };
+    expect(fetchedPayload.data?.schedule?.enabled).toBe(false);
+    expect(fetchedPayload.data?.schedule?.pausedReason).toContain('terminal');
+  });
 });
