@@ -10,6 +10,8 @@ import {
   type RuntimeMaintenanceActionId,
 } from '../../recovery/maintenance-executor';
 import { listCandidateFindings } from '../findings/store';
+import { getControllerSession } from '../../control-plane/facade';
+import { launchSuperController } from '../../control-plane/launcher/thin-launcher';
 import {
   getOccurrence,
   getSchedule,
@@ -31,11 +33,13 @@ import type {
 
 const execFileAsync = promisify(execFile);
 const LIVE_MAINTENANCE_OPERATION = 'runtime_maintenance_apply';
+const EXTERNAL_CONTROLLER_WAKE_OPERATION = 'external_controller_wake';
 
 function isDeterministicSchedule(schedule: RepositorySchedule): boolean {
   // Kernel may execute only fully deterministic, allowlisted schedule operations.
   // Semantic / model-backed schedules remain external-controller handoffs.
-  return schedule.action.operation === LIVE_MAINTENANCE_OPERATION;
+  return schedule.action.operation === LIVE_MAINTENANCE_OPERATION
+    || schedule.action.operation === EXTERNAL_CONTROLLER_WAKE_OPERATION;
 }
 
 function normalizedWindow(minutes: number, at = Date.now()): string {
@@ -513,6 +517,95 @@ export async function evaluateSchedule(
   }
 
   const args = schedule.action.arguments ?? {};
+  if (schedule.action.operation === EXTERNAL_CONTROLLER_WAKE_OPERATION) {
+    const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+    const controllerType = typeof args.controller_type === 'string' ? args.controller_type.trim() : 'chatgpt';
+    if (!workId) {
+      return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', 'EXTERNAL_CONTROLLER_WAKE_WORK_ID_REQUIRED');
+    }
+    if (!['chatgpt', 'codex', 'claude', 'grok'].includes(controllerType)) {
+      return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', 'EXTERNAL_CONTROLLER_WAKE_TYPE_INVALID');
+    }
+    const existingOwner = getControllerSession({ controllerHome, repoId: schedule.repoId }, workId);
+    if (existingOwner) {
+      saveSchedule(controllerHome, { ...schedule, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
+      return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} already has an active Controller ${existingOwner.controllerId}.`);
+    }
+    const wakeDecision = decideOccurrence(
+      controllerHome,
+      schedule,
+      occurrence,
+      'execute',
+      'running',
+      'Deterministic external Controller wake is starting through Thin Launcher.',
+      occurrenceDecisionEvidence({ operation: schedule.action.operation, workId, controllerType }),
+    );
+    try {
+      const repository = getRepository(schedule.repoId, controllerHome, { includeRemoved: true });
+      const controllerId = typeof args.controller_id === 'string' && args.controller_id.trim()
+        ? args.controller_id.trim()
+        : `schedule:${schedule.scheduleId}:${controllerType}`;
+      const sessionId = typeof args.session_id === 'string' && args.session_id.trim()
+        ? args.session_id.trim()
+        : `${occurrence.occurrenceId}:${controllerType}`;
+      const launched = launchSuperController({
+        work: { controllerHome, repoId: schedule.repoId },
+        handoff: { controllerHome, repoId: schedule.repoId },
+      }, {
+        controllerType: controllerType as 'chatgpt' | 'codex' | 'claude' | 'grok',
+        executable: typeof args.executable === 'string' ? args.executable : undefined,
+        args: Array.isArray(args.launch_args) ? args.launch_args.map(String) : [],
+        workId,
+        controllerId,
+        sessionId,
+        leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
+        handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
+        browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
+        conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
+        continuationPrompt: typeof args.continuation_prompt === 'string'
+          ? args.continuation_prompt
+          : `Scheduled continuation ${occurrence.occurrenceId} from ${schedule.scheduleId}. Read current Forge state and continue only the bounded Work objective.`,
+        cwd: repository.canonicalRoot,
+      });
+      const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
+      saveSchedule(controllerHome, {
+        ...latest,
+        lastTriggeredAt: timestamp,
+        lastOccurrenceId: occurrenceId,
+        consecutiveFailures: 0,
+        nextEligibleAt: undefined,
+        pausedReason: undefined,
+      });
+      return saveOccurrence(controllerHome, {
+        ...wakeDecision,
+        status: 'succeeded',
+        reason: `External Controller wake started ${launched.controllerType} pid=${String(launched.pid ?? 'unknown')} for Work ${workId}.`,
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      const failed = applyScheduleFailure(controllerHome, schedule.scheduleId, schedule.repoId, occurrence.occurrenceId, {
+        outcome: 'failed',
+        decision: 'execute',
+        reason,
+        handoff: {
+          title: `External Controller wake ${occurrence.occurrenceId} failed`,
+          summary: 'Forge recorded the schedule trigger but could not wake the configured external Controller.',
+          reason,
+          creationReason: 'repeated_infrastructure_failure',
+          blockingDecision: 'Repair the external Controller/browser launch path or update the saved session reference.',
+          recommendedDecision: 'Inspect launcher/browser readiness, then retrigger this bounded continuation.',
+          recommendedPrompt: `Resume Work ${workId} manually, inspect failed wake occurrence ${occurrence.occurrenceId}, and repair the configured external Controller launch path before unattended continuation resumes.`,
+          statusSummary: 'Scheduled external Controller wake failed.',
+          blockedBy: ['external_controller_wake_failed'],
+          attemptedActions: [`schedule:${schedule.scheduleId}`, `work:${workId}`, `controller:${controllerType}`],
+        },
+      });
+      const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
+      saveSchedule(controllerHome, { ...latest, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
+      return failed.occurrence ?? saveOccurrence(controllerHome, { ...wakeDecision, status: 'failed', reason });
+    }
+  }
+
   const actionIdRaw = typeof args.action_id === 'string'
     ? args.action_id
     : typeof args.actionId === 'string'

@@ -382,7 +382,7 @@ export function runInit(opts: InitCommandOptions = {}): InitCommandResult {
   const verify = opts.verify !== false;
   const syncSkill = opts.syncSkill !== false;
   const hostAdapters = opts.hostAdapters !== false;
-  const externalSkills = opts.externalSkills !== false;
+  const externalSkills = opts.externalSkills === true;
   const codegraph = opts.codegraph !== false;
   const configureCgMcp = opts.configureCodegraphMcp === true;
   const syncCodegraph = opts.syncCodegraph === true;

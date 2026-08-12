@@ -92,11 +92,11 @@ describe("Hook contracts", () => {
 
   test("prompt-guard shell layer keeps route hints, gates, and rendering without emoji", () => {
     const script = read("assets/hooks/prompt-guard.sh");
-    expect(script).toContain("emit_waza_route_hint");
-    expect(script).toContain("[WazaRoute]");
-    expect(script).toContain("Waza /check");
-    expect(script).toContain("Waza /health");
-    expect(script).toContain("Waza /think");
+    expect(script).toContain("emit_forge_route_hint");
+    expect(script).toContain("[ForgeRoute]");
+    expect(script).toContain("Forge /review");
+    expect(script).toContain("Forge /debug");
+    expect(script).toContain("/plan for plan-only work");
     expect(script).toContain("emit_agentic_packaging_hint");
     expect(script).toContain("[AgenticDevRoute]");
     expect(script).toContain("forge-autoplan after user authorization");

@@ -1203,7 +1203,18 @@ function codeGraphPlatformPackageName() {
 
 function codeGraphPlatformBundleBin() {
   if (process.platform === "win32") return null;
-  return path.join(REPO_ROOT, "node_modules", codeGraphPlatformPackageName(), "bin", "codegraph");
+  const direct = path.join(REPO_ROOT, "node_modules", codeGraphPlatformPackageName(), "bin", "codegraph");
+  if (fileIsExecutable(direct)) return direct;
+  // Git worktrees commonly reuse the canonical checkout's dependencies. Resolve
+  // the platform package through Node/Bun module lookup instead of declaring the
+  // bundled Runtime missing just because this worktree has no local node_modules.
+  try {
+    const packageJson = require.resolve(`${codeGraphPlatformPackageName()}/package.json`, { paths: [REPO_ROOT] });
+    const resolved = path.join(path.dirname(packageJson), "bin", "codegraph");
+    return fileIsExecutable(resolved) ? resolved : direct;
+  } catch {
+    return direct;
+  }
 }
 
 function resolveCodeGraphBinary() {

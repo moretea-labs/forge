@@ -265,7 +265,6 @@ describe('install command (Phase 1B)', () => {
           'codex',
           '--no-cli',
           '--no-sync-skill',
-          '--no-external-skills',
           '--no-codegraph',
         ],
         {

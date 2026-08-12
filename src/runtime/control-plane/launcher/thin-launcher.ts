@@ -18,6 +18,12 @@ export interface ThinLauncherRequest {
   sessionId: string;
   leaseMs?: number;
   handoffId?: string;
+  /** Saved Forge ChatGPT browser session to continue. */
+  browserSessionId?: string;
+  /** Explicit ChatGPT conversation URL used when no saved Forge browser session exists. */
+  conversationUrl?: string;
+  /** Additional bounded continuation instruction, for example a Schedule occurrence. */
+  continuationPrompt?: string;
   cwd: string;
 }
 
@@ -37,7 +43,9 @@ function resolveLauncherExecutable(request: ThinLauncherRequest): string {
     ? 'codex'
     : request.controllerType === 'claude'
       ? 'claude'
-      : '';
+      : request.controllerType === 'chatgpt'
+        ? process.env.FORGE_CLI_EXECUTABLE?.trim() || 'forge'
+        : '';
   if (!executable) throw new Error(`LAUNCHER_EXECUTABLE_REQUIRED: ${request.controllerType} requires an external launcher executable`);
   const probe = spawnSync(executable, ['--version'], {
     cwd: request.cwd,
@@ -48,6 +56,53 @@ function resolveLauncherExecutable(request: ThinLauncherRequest): string {
     throw new Error(`LAUNCHER_EXECUTABLE_UNAVAILABLE: ${executable}`);
   }
   return executable;
+}
+
+function assertChatgptConversationUrl(value: string | undefined): string | undefined {
+  const raw = value?.trim();
+  if (!raw) return undefined;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error('LAUNCHER_CHATGPT_CONVERSATION_URL_INVALID');
+  }
+  if (url.protocol !== 'https:' || !['chatgpt.com', 'www.chatgpt.com'].includes(url.hostname)) {
+    throw new Error('LAUNCHER_CHATGPT_CONVERSATION_URL_INVALID');
+  }
+  return url.toString();
+}
+
+export function buildSuperControllerInvocation(request: ThinLauncherRequest, executable: string, prompt: string): { executable: string; args: string[] } {
+  if (request.controllerType !== 'chatgpt') {
+    return { executable, args: [...(request.args ?? []), prompt] };
+  }
+  const browserSessionId = request.browserSessionId?.trim();
+  const conversationUrl = assertChatgptConversationUrl(request.conversationUrl);
+  if (browserSessionId) {
+    return {
+      executable,
+      args: [
+        'chatgpt', 'browser-followup',
+        '--repo', request.cwd,
+        '--session', browserSessionId,
+        '--prompt', prompt,
+        '--keep-browser',
+        ...(request.args ?? []),
+      ],
+    };
+  }
+  return {
+    executable,
+    args: [
+      'chatgpt', 'browser-consult',
+      '--repo', request.cwd,
+      '--prompt', prompt,
+      ...(conversationUrl ? ['--chatgpt-url', conversationUrl] : []),
+      '--keep-browser',
+      ...(request.args ?? []),
+    ],
+  };
 }
 
 /**
@@ -80,10 +135,12 @@ export function launchSuperController(
     `Acceptance: ${work.acceptanceCriteria.join('; ') || 'none declared'}`,
     `Current status: ${work.status}`,
     handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
+    request.continuationPrompt?.trim() ? `Continuation: ${request.continuationPrompt.trim()}` : '',
     'Use the repository MCP facade directly. Claim the Work before mutation and create a handoff when control changes.',
   ].filter(Boolean).join('\n');
   try {
-    const child = spawn(executable, [...(request.args ?? []), prompt], {
+    const invocation = buildSuperControllerInvocation(request, executable, prompt);
+    const child = spawn(invocation.executable, invocation.args, {
       cwd: request.cwd,
       detached: true,
       stdio: 'ignore',

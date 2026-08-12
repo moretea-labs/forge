@@ -301,12 +301,10 @@ Migration defaults:
 - move hidden contracts and deep findings into topic-scoped `docs/researches/*.md`
 - distill repeated corrections into `tasks/lessons.md`
 - merge missing `external_tooling` defaults into `.ai/harness/policy.json` without overwriting explicit user values
-- keep gstack/gbrain/CodeGraph detection advisory-only; do not auto-install, auto-upgrade, auto-sync, or auto-enable MCP
-- let `forge init` bootstrap the required global runtime in one pass:
-  CLI install, forge runtime alias sync, user-level hook adapters, Waza
-  (`think`, `hunt`, `check`, `health`), Mermaid, brain root persistence, and
-  CodeGraph CLI/MCP configuration
-- treat Waza as Codex-first: `~/.codex/skills` is the Codex runtime source, `~/.agents/skills` is only skills CLI staging/cache, and updates require stage -> copy to Codex -> `cmp` verification
+- keep Waza, gstack, gbrain, Mermaid, and cross-review host skills optional; detect them but never make normal Forge execution depend on them
+- `forge init` / `forge install` bootstrap only Forge-owned runtime, hook adapters, and the bundled CodeGraph read backend by default; install third-party host skills only with `--with-external-skills`
+- Forge task routing uses `/direct`, `/plan`, `/debug`, `/review`, `/release`, and `/scale`; optional host skills may refine those workflows when already installed
+- distinguish the bundled CodeGraph read backend used by `rh_context` from an optional global CodeGraph CLI/MCP integration; missing global CLI is not Runtime unready
 
 ## Repo-Local Contract
 

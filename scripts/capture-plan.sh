@@ -266,7 +266,7 @@ Use the captured planning output below as the execution source of truth.
 ### Trade-offs
 | Option | Pros | Cons | Decision |
 |--------|------|------|----------|
-| Captured plan | Preserves the approved Codex Plan or Waza think decision | Requires the captured text to be concrete enough to execute | Use |
+| Captured plan | Preserves the approved Forge /plan, Codex Plan, or optional external planning decision | Requires the captured text to be concrete enough to execute | Use |
 
 ## Detailed Design
 ### File Changes
@@ -302,7 +302,7 @@ See captured planning output.
 
 - **State/progress path**: \`${plan_file}\` task breakdown, \`tasks/todos.md\` deferred-goal ledger, \`tasks/contracts/${artifact_stem}.contract.md\`, \`tasks/reviews/${artifact_stem}.review.md\`, and \`tasks/notes/${artifact_stem}.notes.md\`
 - **Verification evidence**: \`.ai/harness/checks/latest.json\`, \`.ai/harness/runs/\`, and the commands named in the captured planning output
-- **Evaluator rubric**: \`tasks/reviews/${artifact_stem}.review.md\` must record a passing Waza /check style recommendation
+- **Evaluator rubric**: \`tasks/reviews/${artifact_stem}.review.md\` must record a passing Forge /review recommendation
 - **Stop condition**: all task breakdown items are complete, sprint verification passes, and the review recommends pass
 - **Rollback surface**: before execution remove \`${plan_file}\`; after execution revert branch \`codex/${slug}\` or the generated task artifacts
 

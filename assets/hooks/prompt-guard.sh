@@ -557,9 +557,22 @@ emit_agentic_packaging_hint() {
 }
 
 resolve_codegraph_bin() {
+  local common_git_dir canonical_root candidate
   if [[ -x "node_modules/.bin/codegraph" ]]; then
     printf '%s\n' "node_modules/.bin/codegraph"
     return 0
+  fi
+
+  # Linked worktrees normally reuse the canonical checkout's dependency tree.
+  # Resolve it before falling back to a user-global CodeGraph installation.
+  common_git_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  if [[ -n "$common_git_dir" ]]; then
+    canonical_root="$(dirname "$common_git_dir")"
+    candidate="$canonical_root/node_modules/.bin/codegraph"
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
   fi
 
   command -v codegraph 2>/dev/null || return 1
@@ -625,25 +638,24 @@ emit_codegraph_route_hint() {
   fi
 }
 
-emit_waza_route_hint() {
+emit_forge_route_hint() {
   if pg_fact AGENTIC_PACKAGING; then
     return
   fi
 
   if pg_fact THINK_PLAN_START; then
-    echo "[WazaRoute] Planning intent detected. Default route: Waza /think."
+    echo "[ForgeRoute] Planning intent detected. Use /plan for plan-only work; optional external skills may refine the plan when installed."
     return
   fi
 
-  # /health needs a health/audit/diagnostic verb plus a tooling noun (joint
-  # condition lives in the TypeScript classifier); reviews fall to /check.
+  # Workflow/tooling health problems route through Forge /debug; reviews route through /review.
   if pg_fact HEALTH_ROUTE; then
-    echo "[WazaRoute] Agent workflow/tooling intent detected. Default route: Waza /health."
+    echo "[ForgeRoute] Agent workflow/tooling issue detected. Use /debug to diagnose before mutation."
     return
   fi
 
   if pg_fact REVIEW_RELEASE; then
-    echo "[WazaRoute] Review/release intent detected. Default route: Waza /check."
+    echo "[ForgeRoute] Review/release intent detected. Use /review first; use /release only after review evidence is clear."
     emit_external_acceptance_prompt review
     emit_cross_review_hint merge
   fi
@@ -689,7 +701,7 @@ emit_external_acceptance_prompt() {
   review_file="$(workflow_active_review || true)"
   checks_file="$(workflow_checks_file)"
 
-  echo "[ExternalAcceptance] Review/release intent detected. Start peer acceptance in parallel with local /check."
+  echo "[ExternalAcceptance] Review/release intent detected. Start peer acceptance in parallel with local /review and focused checks."
   echo "[ExternalAcceptance] Mode: $mode"
   echo "[ExternalAcceptance] Current active plan: ${active_plan_local:-"(none)"}"
   echo "[ExternalAcceptance] Current contract: ${contract_file_local:-"(none)"}"
@@ -699,7 +711,7 @@ emit_external_acceptance_prompt() {
   echo "[ExternalAcceptance] Diff scope for peer: branch diff against target, staged diff, unstaged diff, and untracked files."
   cat <<EOF_EXTERNAL_ACCEPTANCE
 [ExternalAcceptance] Prompt to send with $command:
-Review the current sprint for acceptance only. Do not run /check. Do not edit files. Do not write files. Inspect the diff scope, contract, review evidence, and checks evidence, then return only a Markdown block that can be pasted into ${review_file:-tasks/reviews/<slug>.review.md}.
+Review the current sprint for acceptance only. Do not run Forge /review or local checks. Do not edit files. Do not write files. Inspect the diff scope, contract, review evidence, and checks evidence, then return only a Markdown block that can be pasted into ${review_file:-tasks/reviews/<slug>.review.md}.
 
 ## External Acceptance Advice
 > **External Acceptance**: pass
@@ -880,7 +892,7 @@ if [[ "$PG_ENGINE_STATE" != "ok" ]]; then
 fi
 
 emit_agentic_packaging_hint
-emit_waza_route_hint
+emit_forge_route_hint
 emit_codegraph_route_hint
 emit_pending_orchestration_discussion
 
@@ -956,7 +968,7 @@ if [ "$done_intent" -eq 1 ]; then
     hook_structured_error \
       "ReviewGuard" \
       "Done intent detected without a sprint review artifact." \
-      "Run Waza /check after verification and record its evaluator recommendation in tasks/reviews/<slug>.review.md before marking work done." \
+      "Run Forge /review after verification and record the evaluator recommendation in tasks/reviews/<slug>.review.md before marking work done." \
       "quality_gate"
     exit 2
   fi
@@ -966,7 +978,7 @@ if [ "$done_intent" -eq 1 ]; then
     hook_structured_error \
       "ReviewGuard" \
       "Sprint review is missing a passing recommendation." \
-      "Run Waza /check with fresh verification evidence and record a pass recommendation before marking work done." \
+      "Run Forge /review with fresh verification evidence and record a pass recommendation before marking work done." \
       "quality_gate"
     exit 2
   fi

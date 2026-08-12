@@ -158,7 +158,9 @@ Deterministic rules are preferred for:
 - release gate status;
 - repository disabled/frozen state.
 
-An Agent may assist when semantic analysis is required, such as grouping related failures or proposing a bounded improvement. Its output remains a proposal evaluated by deterministic policy.
+Semantic analysis remains external-controller-owned. Forge does not invent the next product or code decision inside the Schedule Engine. A Schedule may use the deterministic `external_controller_wake` action to resume an already bounded Work through Thin Launcher. The wake operation only transports the persisted Work/Handoff context to an external Controller; it does not interpret the model response inside the Kernel.
+
+`external_controller_wake` accepts a `work_id`, `controller_type`, and optional launcher/session metadata. For ChatGPT, Thin Launcher prefers a saved Forge browser session (`browser_session_id`), then an explicit `https://chatgpt.com/...` conversation URL, then a new browser consult. Codex/Claude remain external CLI controllers. If the Work already has an active Controller lease, the Occurrence is a deterministic no-op rather than spawning a competing controller.
 
 ## 9. Candidate Finding Governance
 

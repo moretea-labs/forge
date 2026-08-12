@@ -76,7 +76,7 @@ interface GlobalRuntimeCommandOptions {
   cli?: boolean;
   syncSkill?: boolean;
   hooks?: string | false;
-  externalSkills?: boolean;
+  withExternalSkills?: boolean;
   codegraph?: boolean;
   brainRoot?: string;
   json?: boolean;
@@ -94,7 +94,7 @@ function runGlobalRuntimeBootstrap(commandName: 'init' | 'install', rawOpts: Glo
     installCli: rawOpts.cli !== false,
     syncSkill: rawOpts.syncSkill !== false,
     hostAdapters: rawOpts.hooks !== false,
-    externalSkills: rawOpts.externalSkills !== false,
+    externalSkills: rawOpts.withExternalSkills === true,
     codegraph: rawOpts.codegraph !== false,
     brainRoot: rawOpts.brainRoot,
   });
@@ -121,7 +121,7 @@ export function buildProgram(): Command {
     .option('--no-cli', 'Skip installing the Forge CLI globally')
     .option('--no-sync-skill', 'Skip refreshing legacy forge skill aliases under host skill roots')
     .option('--no-hooks', 'Skip global hook adapter installation')
-    .option('--no-external-skills', 'Skip Waza, Mermaid, and cross-review (codex-review/claude-review) skill bootstrap')
+    .option('--with-external-skills', 'Also install optional third-party Waza/Mermaid skills and Forge cross-review helpers')
     .option('--no-codegraph', 'Skip CodeGraph CLI/MCP configuration')
     .option('--brain-root <path>', 'Brain vault root to persist for Forge brain commands')
     .option('--refresh', 'Compatibility no-op; init already refreshes the idempotent user-level runtime')
@@ -164,7 +164,6 @@ export function buildProgram(): Command {
       syncSkill?: boolean;
       hooks?: string | false;
       withExternalSkills?: boolean;
-      externalSkills?: boolean;
       codegraph?: boolean;
       configureCodegraph?: boolean;
       brainRoot?: string;
@@ -250,7 +249,7 @@ export function buildProgram(): Command {
       target: string;
       syncSkill?: boolean;
       hostAdapters?: boolean;
-      externalSkills?: boolean;
+      withExternalSkills?: boolean;
       verify?: boolean;
       codegraph?: boolean;
       reclaimRuntime?: boolean;
@@ -411,7 +410,7 @@ export function buildProgram(): Command {
     .option('--no-cli', 'Skip installing the Forge CLI globally')
     .option('--no-sync-skill', 'Skip refreshing legacy forge skill aliases under host skill roots')
     .option('--no-hooks', 'Skip global hook adapter installation during full runtime install')
-    .option('--no-external-skills', 'Skip Waza, Mermaid, and cross-review (codex-review/claude-review) skill bootstrap')
+    .option('--with-external-skills', 'Also install optional third-party Waza/Mermaid skills and Forge cross-review helpers')
     .option('--no-codegraph', 'Skip CodeGraph CLI/MCP configuration')
     .option('--brain-root <path>', 'Brain vault root to persist for Forge brain commands')
     .option('--json', 'Output JSON instead of human-readable text')

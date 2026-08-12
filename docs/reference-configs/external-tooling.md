@@ -3,21 +3,17 @@
 Generated repos route external tooling by host/runtime shape. Task-level
 skill routing lives in `docs/reference-configs/agentic-development-flow.md`.
 
-- `gstack` supplies `office-hours`, `plan-eng-review`, and `plan-design-review`
-- `Waza` supplies `/think`, `/hunt`, and `/check` for daily small/medium work
-- Codex automation requires `health`, `check`, and `mermaid` from `~/.codex/skills`
-- `gbrain` supports knowledge capture, repo sync, and handoff retrieval
-- `CodeGraph` is required agent readiness for code navigation and impact tracing
+Forge itself owns task routing and correctness. The following integrations are optional host enhancements:
 
-Waza is Codex-first in this contract. `~/.codex/skills` is the Codex runtime
-source, while `~/.agents/skills` is only the skills CLI staging/cache path used
-to receive upstream `tw93/Waza` updates before syncing verified copies into
-Codex.
+- `gstack` can add `office-hours`, `plan-eng-review`, and `plan-design-review` second-opinion workflows
+- `Waza` can add `/think`, `/hunt`, `/check`, and `/health` host skills
+- `gbrain` can add knowledge capture and retrieval
+- Mermaid can add rendered diagrams
+- a global `CodeGraph` CLI/MCP can add developer-facing commands, while Forge Runtime uses its own bundled read-only CodeGraph backend behind `rh_context`
 
-`forge install` is allowed to bootstrap the workflow-owned global runtime
-in one pass: the `forge` CLI, forge runtime aliases, user-level
-Codex/Claude hook adapters, Waza (`think`, `hunt`, `check`, `health`), brain
-root persistence, Mermaid, and CodeGraph CLI/MCP configuration.
+Missing Waza, gstack, gbrain, Mermaid, or global CodeGraph CLI must not block normal Forge planning, debugging, review, execution, or structural retrieval.
+
+`forge init` and `forge install` bootstrap Forge-owned runtime and adapters by default. Use `--with-external-skills` only when Waza/Mermaid/cross-review host skills are desired. Global CodeGraph CLI/MCP setup is a separate developer integration; the bundled Runtime read backend does not depend on it.
 `forge init` remains the explicit legacy bootstrap command for existing Forge automation, while `forge setup open/next/close` is the preferred first-run workflow. Neither path may silently install unrelated toolchains or Claude marketplace plugins.
 
 `forge uninstall` removes forge managed Codex/Claude hook
@@ -47,10 +43,7 @@ history: branch diff against the default base, staged changes, unstaged tracked
 changes, and untracked files are all in scope. A timeout or missing peer CLI is
 reported as unavailable review evidence, not as a pass.
 
-The Codex automation profile is a runtime reference, not a vendored copy. It
-requires Waza `health`, Waza `check`, and the standalone `mermaid` skill to
-exist under `~/.codex/skills`; the skill bodies stay owned by their original
-installations.
+The optional Codex host-skill profile is a runtime reference, not a vendored copy. Missing Waza or Mermaid changes only optional host assistance; it does not change Forge Runtime readiness.
 
 ## Detect Safely
 

@@ -225,32 +225,32 @@ describe("Hook runtime behavior", () => {
         stdin: JSON.stringify({ prompt: "这个登录 bug 报错了，帮我修复" }),
       });
       expect(bugRes.status).toBe(0);
-      expect(bugRes.stdout).not.toContain("[WazaRoute]");
+      expect(bugRes.stdout).not.toContain("[ForgeRoute]");
       expect(bugRes.stdout).toContain("[TDD] Bug-fix intent detected");
 
       const healthRes = runHook("prompt-guard.sh", cwd, {
         stdin: JSON.stringify({ prompt: "检查一下 Codex hook 和 AGENTS.md 配置健康度" }),
       });
       expect(healthRes.status).toBe(0);
-      expect(healthRes.stdout).toContain("[WazaRoute] Agent workflow/tooling intent detected");
-      expect(healthRes.stdout).toContain("Waza /health");
+      expect(healthRes.stdout).toContain("[ForgeRoute] Agent workflow/tooling issue detected");
+      expect(healthRes.stdout).toContain("/debug");
 
       const reviewRes = runHook("prompt-guard.sh", cwd, {
         stdin: JSON.stringify({ prompt: "验收一下当前改动，然后提交推送" }),
       });
       expect(reviewRes.status).toBe(0);
-      expect(reviewRes.stdout).toContain("[WazaRoute] Review/release intent detected");
-      expect(reviewRes.stdout).toContain("Waza /check");
+      expect(reviewRes.stdout).toContain("[ForgeRoute] Review/release intent detected");
+      expect(reviewRes.stdout).toContain("/review");
 
       for (const prompt of [
         "验收开始：基于 active plan 执行 checklist，告诉对方模型验收什么。",
-        "请执行 Waza /check 验收当前改动。",
+        "请执行 /review 验收当前改动。",
       ]) {
         const reviewExecuteRes = runHook("prompt-guard.sh", cwd, {
           stdin: JSON.stringify({ prompt }),
         });
         expect(reviewExecuteRes.status).toBe(0);
-        expect(reviewExecuteRes.stdout).toContain("[WazaRoute] Review/release intent detected");
+        expect(reviewExecuteRes.stdout).toContain("[ForgeRoute] Review/release intent detected");
         expect(reviewExecuteRes.stdout).not.toContain("[PlanStatusGuard]");
         expect(reviewExecuteRes.stdout).not.toContain("[BDD] Feature intent detected");
       }
@@ -276,8 +276,8 @@ describe("Hook runtime behavior", () => {
       expect(auditRes.status).toBe(0);
       expect(auditRes.stdout).not.toContain("[TDD] Bug-fix intent detected");
       expect(auditRes.stdout).not.toContain("Hard bug");
-      expect(auditRes.stdout).not.toContain("Waza /health");
-      expect(auditRes.stdout).toContain("Waza /check");
+      expect(auditRes.stdout).not.toContain("/debug");
+      expect(auditRes.stdout).toContain("/review");
 
       // Bare bug nouns in find/diagnose requests stay silent on TDD.
       const findBugs = runHook("prompt-guard.sh", cwd, {
@@ -307,7 +307,7 @@ describe("Hook runtime behavior", () => {
         stdin: JSON.stringify({ prompt: "审计一下 agent hook 配置环境健康度" }),
       });
       expect(healthRes.status).toBe(0);
-      expect(healthRes.stdout).toContain("Waza /health");
+      expect(healthRes.stdout).toContain("/debug");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -370,7 +370,7 @@ describe("Hook runtime behavior", () => {
       expect(mergeClaude.status).toBe(0);
       expect(mergeClaude.stdout).toContain("[ExternalAcceptance]");
       expect(mergeClaude.stdout).toContain("Peer reviewer: Codex via codex-review");
-      expect(mergeClaude.stdout).toContain("Do not run /check");
+      expect(mergeClaude.stdout).toContain("Do not run Forge /review or local checks");
       expect(mergeClaude.stdout).toContain("## External Acceptance Advice");
       expect(mergeClaude.stdout).toContain("[CrossReview]");
       expect(mergeClaude.stdout).toContain("codex-review");
@@ -602,7 +602,7 @@ describe("Hook runtime behavior", () => {
       expect(packagingRes.stdout).toContain("[AgenticDevRoute] Reusable workflow packaging intent detected");
       expect(packagingRes.stdout).toContain("forge-autoplan after user authorization");
       expect(packagingRes.stdout).toContain("hook will not plan or create assets");
-      expect(packagingRes.stdout).not.toContain("[WazaRoute]");
+      expect(packagingRes.stdout).not.toContain("[ForgeRoute]");
 
       const hookTriggerRes = runHook("prompt-guard.sh", cwd, {
         stdin: JSON.stringify({ prompt: "这是不是适合做成 hook 来触发用户授权去 plan 一个改进方案" }),
@@ -610,7 +610,7 @@ describe("Hook runtime behavior", () => {
       expect(hookTriggerRes.status).toBe(0);
       expect(hookTriggerRes.stdout).toContain("[AgenticDevRoute]");
       expect(hookTriggerRes.stdout).toContain("forge-autoplan");
-      expect(hookTriggerRes.stdout).not.toContain("[WazaRoute]");
+      expect(hookTriggerRes.stdout).not.toContain("[ForgeRoute]");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -2040,7 +2040,7 @@ describe("Hook runtime behavior", () => {
       });
 
       expect(res.status).toBe(0);
-      expect(res.stdout).toContain("[WazaRoute] Agent workflow/tooling intent detected");
+      expect(res.stdout).toContain("[ForgeRoute] Agent workflow/tooling issue detected");
       expect(res.stdout).not.toContain("[ResearchGate]");
       expect(res.stdout).not.toContain("[PlanStartGate]");
       expect(existsSync(join(cwd, "plans"))).toBe(false);
@@ -2405,8 +2405,8 @@ describe("Hook runtime behavior", () => {
       });
 
       expect(res.status).toBe(0);
-      expect(res.stdout).toContain("[WazaRoute] Planning intent detected. Default route: Waza /think.");
-      expect(res.stdout).not.toContain("Default route: Waza /health");
+      expect(res.stdout).toContain("[ForgeRoute] Planning intent detected. Use /plan for plan-only work; optional external skills may refine the plan when installed.");
+      expect(res.stdout).not.toContain("Default route: /debug");
       expect(res.stdout).toContain("[PlanStartGate]");
       expect(res.stdout).not.toContain("[PlanStatusGuard]");
       const pending = JSON.parse(readFileSync(join(cwd, ".ai/harness/planning/pending.json"), "utf-8"));

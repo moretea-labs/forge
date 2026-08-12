@@ -489,7 +489,7 @@ CONTRACT_TEMPLATE_EOF
 
 ## Verification Evidence
 
-- Waza /check run:
+- Forge /review run:
 - Commands run:
 - Manual checks:
 - Supporting artifacts:
@@ -907,7 +907,7 @@ ARCHITECTURE_INDEX_EOF
   "plan_capture": {
     "script": "scripts/capture-plan.sh",
     "sources": ["codex-plan-mode", "waza-think", "forge-plan"],
-    "rule": "Codex Plan mode and Waza think planning should capture decision-complete plans into plans/plan-*.md; implementation approval then projects the active approved plan through scripts/plan-to-todo.sh"
+    "rule": "Forge /plan, Codex Plan mode, and optional external planning skills should capture decision-complete plans into plans/plan-*.md; implementation approval then projects the active approved plan through scripts/plan-to-todo.sh"
   },
   "planning": {
     "pending_orchestration_file": ".ai/harness/planning/pending.json",
@@ -995,17 +995,18 @@ ARCHITECTURE_INDEX_EOF
   },
   "external_tooling": {
     "routing": {
-      "complex": "gstack",
-      "simple": "waza",
-      "knowledge": "gbrain"
+      "primary": "forge",
+      "optional_complex_helper": "gstack",
+      "optional_small_helper": "waza",
+      "optional_knowledge_helper": "gbrain"
     },
     "hosts": [
       "claude-code",
       "codex"
     ],
-    "mode": "agent-readiness-required",
+    "mode": "optional-enhancement",
     "detection": "init-migrate",
-    "readiness_gate": "scripts/check-agent-tooling.sh --host codex --strict-readiness",
+    "readiness_gate": "scripts/check-agent-tooling.sh --host codex",
     "waza": {
       "source_repo": "tw93/Waza",
       "source_url": "https://github.com/tw93/Waza.git",
@@ -1017,14 +1018,14 @@ ARCHITECTURE_INDEX_EOF
       "host_drift_policy": "report-per-host-version-staging-and-upstream-drift"
     },
     "codex_automation_profile": {
-      "required_skills": ["health", "check", "mermaid"],
-      "optional_skills": [],
+      "required_skills": [],
+      "optional_skills": ["health", "check", "mermaid"],
       "mode": "codex-runtime-reference",
       "source": "~/.codex/skills",
       "routes": {
-        "workflow_health": "waza:health",
-        "review_gate": "waza:check",
-        "architecture_diagram": "mermaid"
+        "workflow_health": "forge:/debug",
+        "review_gate": "forge:/review",
+        "architecture_diagram": "mermaid-if-installed"
       },
       "vendoring_policy": "do-not-vendor-skill-body"
     },
@@ -1045,7 +1046,7 @@ ARCHITECTURE_INDEX_EOF
       "codex_config_path": "~/.codex/config.toml",
       "claude_config_path": "~/.claude.json",
       "index_dir": ".codegraph",
-      "readiness": "required-for-agent-code-navigation",
+      "readiness": "optional-global-cli-mcp; bundled-rh-context-backend-is-runtime-owned",
       "hook_policy": "do-not-block-hooks",
       "install_command": "bun add -g @colbymchenry/codegraph && forge tools configure codegraph --target codex --location global",
       "project_init_command": "codegraph init -i .",
@@ -1055,6 +1056,14 @@ ARCHITECTURE_INDEX_EOF
   },
   "agentic_development": {
     "routing": {
+      "small_bounded_change": "forge:/direct",
+      "planning": "forge:/plan",
+      "bug_or_regression": "forge:/debug",
+      "post_implementation_review": "forge:/review",
+      "release": "forge:/release",
+      "scale": "forge:/scale"
+    },
+    "optional_enhancements": {
       "product_discovery": "gstack:office-hours",
       "complex_engineering_plan": "gstack:plan-eng-review",
       "design_plan": "gstack:plan-design-review",
@@ -1064,7 +1073,7 @@ ARCHITECTURE_INDEX_EOF
     },
     "due_diligence": {
       "levels": ["P1_GLOBAL_ARCHITECTURE", "P2_DATA_FLOW_TRACE", "P3_DESIGN_DECISION"],
-      "explicit_report_required_for": ["plan-eng-review", "hunt", "risky_refactor", "deployment", "auth_payment_data", "shared_contract"]
+      "explicit_report_required_for": ["forge:/plan", "forge:/debug", "risky_refactor", "deployment", "auth_payment_data", "shared_contract"]
     }
   },
   "enforcement": {

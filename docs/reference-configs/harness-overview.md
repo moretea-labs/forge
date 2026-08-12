@@ -26,7 +26,7 @@ with the project.
 
 - **Planner** updates `docs/spec.md`, researches constraints, and writes or approves `plans/plan-*.md`.
 - **Generator** implements only against the active sprint contract and the plan's `## Task Breakdown`, leaving `tasks/todos.md` as a deferred-goal ledger, and records task-local implementation judgments in `tasks/notes/<plan-stem>.notes.md`.
-- **Evaluator** runs Waza `/check`, then writes `tasks/reviews/<plan-stem>.review.md` using fresh evidence from `.ai/harness/checks/latest.json` and `.ai/harness/runs/*.json`.
+- **Evaluator** runs Forge `/review`, then writes `tasks/reviews/<plan-stem>.review.md` using fresh evidence from `.ai/harness/checks/latest.json` and `.ai/harness/runs/*.json`.
 
 ## State Flow
 
@@ -45,7 +45,7 @@ with the project.
 13. `.ai/context/context-map.json` indexes stable root context and discoverable capability context derived from the registry.
 14. `documentation` inside `.ai/harness/policy.json` keeps generated docs minimal and moves optional docs to agent-created, evidence-backed output.
 15. `lsp_profiles` inside policy and context-map files select tooling hints per capability.
-16. `worktree_strategy` inside policy tells agents when to isolate contract-level work in `codex/<slug>` worktrees, start execution through `.ai/harness/scripts/contract-worktree.sh start --plan <plan>`, and finish with Waza `/check` plus `.ai/harness/scripts/contract-worktree.sh finish`.
+16. `worktree_strategy` inside policy tells agents when to isolate contract-level work in `codex/<slug>` worktrees, start execution through `.ai/harness/scripts/contract-worktree.sh start --plan <plan>`, and finish with Forge `/review` plus `.ai/harness/scripts/contract-worktree.sh finish`.
 17. `.ai/harness/handoff/current.md` preserves resumable state across sessions.
 18. `.ai/harness/events.jsonl` and `.ai/harness/runs/*.json` retain lightweight execution traces.
 
@@ -54,7 +54,7 @@ with the project.
 - Exploration and planning are allowed before a contract exists.
 - Before implementation, the plan and contract should both expose a concrete workflow inventory so the agent does not rediscover or guess active artifacts.
 - Implementation should prefer `docs/spec.md`, an approved plan, and an active sprint contract.
-- Claiming completion should include contract verification evidence, a run snapshot, implementation notes, and a passing Waza `/check` review artifact.
+- Claiming completion should include contract verification evidence, a run snapshot, implementation notes, and a passing Forge `/review` review artifact.
 - Stopping a session should refresh `.ai/harness/handoff/current.md` for easier resume; while pending planning orchestration is open, Stop may block once to force a plan completeness self-review before execution.
 - Refresh `tasks/current.md` with `.ai/harness/scripts/refresh-current-status.sh --write --reason <reason>` only at explicit lifecycle boundaries or as a deliberate maintainer action; ordinary hooks should not dirty tracked files.
 - In non-target worktrees, read the target branch snapshot with `git show <target>:tasks/current.md` and verify stale or surprising state against the source artifacts before acting.
@@ -119,7 +119,7 @@ Maintainer-facing detail on how the initializer and runtime defaults are wired.
 - Question-pack source of truth: `assets/initializer-question-pack.v4.json`.
 - Generated repos default to the repo-local harness flow: `docs/spec.md -> plans/ -> tasks/contracts/ -> tasks/reviews/ -> .ai/context/context-map.json -> .ai/harness/*`.
 - Generated and self-hosted repos install `.ai/harness/workflow-contract.json` and `.ai/harness/policy.json`.
-- Generated and migrated repos default `external_tooling` to: `complex -> gstack`; `simple -> Waza` with Codex-first runtime copies in `~/.codex/skills`; `knowledge -> gbrain`.
+- Generated and migrated repos route through Forge by default. gstack, Waza, and gbrain are optional host enhancements used only when already installed or explicitly requested.
 - `forge install` bootstraps the Codex/Claude runtime pieces for the default workflow: refreshes `forge` skill aliases, installs global Codex/Claude hook adapters, installs Waza skills (`think`, `hunt`, `check`, `health`) and Mermaid through the skills CLI, persists the brain root in `~/.forge/config.json`, and configures CodeGraph MCP for selected host agents. `forge init` remains the explicit legacy bootstrap command for existing Forge automation; `forge setup open/next/close` is the preferred first-run workflow.
 - Other external tooling stays advisory-only: `bash scripts/check-agent-tooling.sh --host both --check-updates`; Waza update checks compare upstream `tw93/Waza` `SKILL.md` hashes without running `npx skills check`; no automatic gstack, gbrain MCP, CodeGraph daemon, or provider setup.
 - Manual distillation stays repo-local: repeated corrections -> `tasks/lessons.md`; deep findings and hidden contracts -> topic-scoped `docs/researches/*.md`; sprint verification evidence -> `tasks/reviews/*.review.md`; durable capability progress -> `tasks/workstreams/`; release history -> `docs/CHANGELOG.md`.

@@ -294,6 +294,9 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     lease_ms: { type: 'number', description: 'Controller lease duration, bounded to one hour.' },
     executable: { type: 'string', description: 'External controller executable for launcher_start. This is owned by the Launcher, not the Kernel.' },
     launch_args: { type: 'array', items: { type: 'string' }, description: 'Provider-specific arguments for launcher_start.' },
+    browser_session_id: { type: 'string', description: 'Saved Forge ChatGPT browser session to continue when controller_type=chatgpt.' },
+    conversation_url: { type: 'string', description: 'Explicit https://chatgpt.com conversation URL used when no saved Forge browser session exists.' },
+    continuation_prompt: { type: 'string', description: 'Additional bounded continuation instruction appended to the Work/Handoff prompt.' },
     plan_id: { type: 'string' },
     plan_step_id: { type: 'string', description: 'Approved PlanContract step to bind to a complex Goal Workloop start.' },
     scope_key: { type: 'string', description: 'Stable normalized scope identity used to prevent overlapping active plans.' },
@@ -3232,6 +3235,9 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               sessionId: String(args.session_id ?? '').trim(),
               leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
               handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
+              browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
+              conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
+              continuationPrompt: typeof args.continuation_prompt === 'string' ? args.continuation_prompt : undefined,
               cwd: repository.canonicalRoot,
             });
             return result(buildFacadeResult({ summary: `Thin Launcher started ${launched.controllerType}.`, data: { pid: launched.pid, executable: launched.executable, workId: String(args.work_id ?? ''), controllerId: launched.controllerId, sessionId: launched.sessionId } }) as unknown as Record<string, unknown>);

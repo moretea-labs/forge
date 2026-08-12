@@ -606,17 +606,17 @@ workflow_next_action() {
     checks_file="$(workflow_checks_file)"
 
     if [[ -z "$review_file" || ! -f "$review_file" ]]; then
-      printf 'check\t/check\tStage the completed module diff first; then run /check and record a sprint review before finishing this worktree.\n'
+      printf 'review\t/review\tStage the completed module diff first; then run /review and record a sprint review before finishing this worktree.\n'
       return 0
     fi
 
     if ! workflow_review_recommends_pass "$review_file"; then
-      printf 'check\t/check\tStage the completed module diff first; then run /check until %s records Recommendation: pass.\n' "$review_file"
+      printf 'review\t/review\tStage the completed module diff first; then run /review until %s records Recommendation: pass.\n' "$review_file"
       return 0
     fi
 
     if [[ -z "$contract_file" || ! -f "$contract_file" ]]; then
-      printf 'check\t/check\tStage the completed module diff first; then regenerate the active sprint contract and run /check.\n'
+      printf 'check\t/check\tStage the completed module diff first; then regenerate the active sprint contract and run /review.\n'
       return 0
     fi
 
@@ -629,7 +629,7 @@ workflow_next_action() {
     fi
 
     if [[ ! -f "$checks_file" ]]; then
-      printf 'check\t/check\tStage the completed module diff first; then run /check and verify-sprint so %s exists.\n' "$checks_file"
+      printf 'review\t/review\tStage the completed module diff first; then run /review and verify-sprint so %s exists.\n' "$checks_file"
       return 0
     fi
 
