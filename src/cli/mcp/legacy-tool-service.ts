@@ -164,6 +164,8 @@ export interface McpToolContext {
   sessionId?: string;
   /** Authenticated or controller-issued principal used to scope session state. */
   principalId?: string;
+  /** Authenticated transport controller/provider type. */
+  controllerType?: 'chatgpt' | 'codex' | 'claude' | 'grok' | 'human';
   controllerInstanceId?: string;
   /** Bound repository identity for session cache keys. */
   repoId?: string;

@@ -31,6 +31,7 @@ export interface McpServerOptions {
   toolset?: McpToolset | string;
   sessionId?: string;
   principalId?: string;
+  controllerType?: McpToolContext['controllerType'];
   controllerInstanceId?: string;
   /** Canonical Runtime source authority. Internal Runtime MCP only; never an execution repository. */
   runtimeSourceRoot?: string;
@@ -359,6 +360,7 @@ export function createMcpToolContext(opts: McpServerOptions): MultiRepositoryMcp
     enableChatgptBrowser: opts.enableChatgptBrowser === true,
     sessionId: opts.sessionId,
     principalId: opts.principalId,
+    controllerType: opts.controllerType,
     controllerInstanceId: opts.controllerInstanceId,
     runtimeSourceRoot: opts.runtimeSourceRoot,
   };

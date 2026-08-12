@@ -69,6 +69,8 @@ describe('provider MCP bootstrap', () => {
       expect(rendered).toContain('mcp_servers.forge.url=');
       expect(rendered).toContain('bearer_token_env_var');
       expect(rendered).toContain('X-Forge-Forwarded-Principal-Id');
+      expect(rendered).toContain('X-Forge-Forwarded-Controller-Type');
+      expect(rendered).toContain('codex');
       expect(rendered).toContain('external:codex:reservation:abc');
       expect(rendered).not.toContain('test-runtime-secret-token');
     } finally {

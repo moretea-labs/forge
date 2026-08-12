@@ -8,6 +8,7 @@ export interface RuntimeGatewayServerOptions {
   runtimeInstanceId: string;
   runtimeSourceRoot: string;
   sessionId?: string;
+  controllerType?: 'chatgpt' | 'codex' | 'claude' | 'grok';
 }
 
 /**
@@ -28,6 +29,7 @@ export function createRuntimeGatewayServer(
     profile: 'controller',
     principalId,
     sessionId: options.sessionId,
+    controllerType: options.controllerType,
     controllerInstanceId: options.runtimeInstanceId,
     runtimeSourceRoot: options.runtimeSourceRoot,
   });

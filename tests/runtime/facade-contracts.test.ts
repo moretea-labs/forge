@@ -337,6 +337,7 @@ describe('Thin Launcher external Controller invocation', () => {
     expect(codex.args).toContain('workspace-write');
     expect(codex.args.join(' ')).toContain('mcp_servers.forge.url=');
     expect(codex.args.join(' ')).toContain('X-Forge-Forwarded-Principal-Id');
+    expect(codex.args.join(' ')).toContain('X-Forge-Forwarded-Controller-Type');
     expect(codex.args.join(' ')).toContain('external:codex:reservation-1');
     expect(codex.args.join(' ')).not.toContain('secret-not-for-argv');
 

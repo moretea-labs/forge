@@ -17,12 +17,14 @@ export interface RuntimeMcpTransportHandle {
   close(): Promise<void>;
 }
 
+export type ForwardedControllerType = 'chatgpt' | 'codex' | 'claude' | 'grok';
+
 export interface StartRuntimeMcpTransportOptions {
   host: string;
   port: number;
   authToken: string;
   readiness: () => RuntimeReadiness;
-  createServer: (principalId: string, sessionId?: string) => Server;
+  createServer: (principalId: string, sessionId?: string, controllerType?: ForwardedControllerType) => Server;
   onFatal?: (error: Error) => void;
 }
 
@@ -99,8 +101,14 @@ export async function startRuntimeMcpTransport(
         const forwardedSessionId = typeof req.headers['x-forge-forwarded-session-id'] === 'string'
           ? req.headers['x-forge-forwarded-session-id'].trim().slice(0, 512)
           : '';
+        const forwardedControllerTypeRaw = typeof req.headers['x-forge-forwarded-controller-type'] === 'string'
+          ? req.headers['x-forge-forwarded-controller-type'].trim().toLowerCase()
+          : '';
+        const forwardedControllerType = ['chatgpt', 'codex', 'claude', 'grok'].includes(forwardedControllerTypeRaw)
+          ? forwardedControllerTypeRaw as ForwardedControllerType
+          : undefined;
         const principal = forwardedPrincipalId || principalId(options.authToken);
-        const server = options.createServer(principal, forwardedSessionId || undefined);
+        const server = options.createServer(principal, forwardedSessionId || undefined, forwardedControllerType);
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (createdSessionId) => {
