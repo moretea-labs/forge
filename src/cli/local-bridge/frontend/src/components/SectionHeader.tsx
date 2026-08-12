@@ -1,0 +1,1 @@
+import type{ReactNode}from'react';export function SectionHeader({title,meta,actions}:{title:string;meta?:ReactNode;actions?:ReactNode}){return <div className="section-header"><div><h2>{title}</h2>{meta&&<span>{meta}</span>}</div>{actions&&<div>{actions}</div>}</div>}

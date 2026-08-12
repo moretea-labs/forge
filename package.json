@@ -137,20 +137,27 @@
     "check:env": "node scripts/check-runtime-env.mjs",
     "test:bun": "bun -e 'console.error(\"[tests] test:bun is deprecated; running explicit test:full\")' && bun run test:full",
     "test:node-smoke": "node --test tests/node/*.test.mjs",
-    "check:ci:portable": "FORGE_ALLOW_NODE_ONLY=1 bash scripts/check-ci.sh"
+    "check:ci:portable": "FORGE_ALLOW_NODE_ONLY=1 bash scripts/check-ci.sh",
+    "dev:controller-ui": "vite --config src/cli/local-bridge/frontend/vite.config.ts"
   },
   "devDependencies": {
     "@colbymchenry/codegraph": "1.0.1",
     "@types/bun": "latest",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
-    "typescript": "^6.0.3"
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "typescript": "^6.0.3",
+    "vite": "^7.3.0"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.28.0",
     "commander": "^14.0.3",
     "express": "^5.2.1",
-    "playwright": "^1.54.1"
+    "playwright": "^1.54.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
   },
   "packageManager": "npm@10.0.0",
   "optionalDependencies": {

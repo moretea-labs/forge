@@ -1,0 +1,1 @@
+import type{PropsWithChildren}from'react';import type{RouteId}from'../types';import{Sidebar}from'./Sidebar';export function AppShell({route,children}:PropsWithChildren<{route:RouteId}>){return <div className="app-shell"><Sidebar route={route}/><main className="workspace">{children}</main></div>}

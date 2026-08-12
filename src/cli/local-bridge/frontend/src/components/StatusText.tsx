@@ -1,0 +1,3 @@
+export type StatusTone='success'|'warning'|'danger'|'info'|'neutral';
+export function toneFor(value?:string):StatusTone{const s=(value??'').toLowerCase();if(/ready|enabled|healthy|success|done|completed|active/.test(s))return'success';if(/attention|blocked|error|fail|danger/.test(s))return'danger';if(/pause|waiting|warn|degrad|stale|planned/.test(s))return'warning';if(/info|running/.test(s))return'info';return'neutral';}
+export function StatusText({label,tone}:{label:string;tone?:StatusTone|string}){const t=(tone&&['success','warning','danger','info','neutral'].includes(tone)?tone:toneFor(tone??label))as StatusTone;return <span className="status-text"><i className={`status-dot ${t}`}/>{label}</span>}

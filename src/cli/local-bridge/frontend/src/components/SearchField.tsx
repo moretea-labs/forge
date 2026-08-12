@@ -1,0 +1,1 @@
+import{SearchIcon}from'../design/icons';export function SearchField({value,onChange,placeholder='Search…'}:{value:string;onChange:(v:string)=>void;placeholder?:string}){return <label className="search-field"><SearchIcon/><input value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder}/></label>}

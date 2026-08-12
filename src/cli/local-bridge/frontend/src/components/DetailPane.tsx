@@ -1,0 +1,3 @@
+import type{PropsWithChildren,ReactNode}from'react';
+export function DetailPane({title,subtitle,actions,children,empty}:{title?:string;subtitle?:string;actions?:ReactNode;empty?:string}&PropsWithChildren){return <aside className="detail-pane">{title?<><div className="detail-head"><div><div className="eyebrow">DETAIL</div><h2>{title}</h2>{subtitle&&<p>{subtitle}</p>}</div>{actions&&<div className="detail-actions">{actions}</div>}</div><div className="detail-body">{children}</div></>:<div className="detail-empty">{empty??'选择一项查看详细配置'}</div>}</aside>}
+export function DefinitionList({items}:{items:Array<[string,ReactNode]>}){return <dl className="definition-list">{items.map(([k,v])=><div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}</dl>}

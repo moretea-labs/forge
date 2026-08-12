@@ -1,0 +1,8 @@
+:root{
+  --canvas:#F5F5F3;--surface:#FFFFFF;--surface-subtle:#F0F0EE;--surface-strong:#E8E8E5;
+  --rail:#19191B;--rail-hover:#242427;--rail-selected:#303037;--ink:#1D1D20;--muted:#646469;--faint:#909096;--inverse:#F7F7F8;
+  --border:#E1E1DE;--border-strong:#CECECA;--accent:#5E54E8;--accent-hover:#5046D9;--accent-soft:#EFEEFF;
+  --success:#237A57;--success-soft:#EAF5EF;--warning:#946200;--warning-soft:#FFF4D8;--danger:#B44444;--danger-soft:#FBECEC;--info:#3567B7;--focus:#786FF7;
+  --font-sans:Inter,-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Segoe UI",sans-serif;--font-mono:"SFMono-Regular",Consolas,"Liberation Mono",monospace;
+  --r-xs:4px;--r-sm:6px;--r-md:8px;--r-lg:10px;--rail-width:224px;--content-max:1280px;
+}
