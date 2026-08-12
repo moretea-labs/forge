@@ -116,10 +116,7 @@ function ledgerWithRunningTask(): TaskLedgerProjection {
     suggestedNextActions: [],
     contextContract: {
       strategy: 'fixture',
-      retrievalMode: 'implementation',
-      semanticSufficiencyAuthority: 'chatgpt',
       rawCodeRequiredForImplementation: true,
-      expansionSignals: [],
       notes: [],
     },
   };
