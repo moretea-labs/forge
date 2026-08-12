@@ -3,7 +3,7 @@ import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { basename, join } from 'path';
 import {
   controllerCheckExecutionIdentity,
   listControllerChecks,
@@ -240,11 +240,36 @@ describe('controller check provenance and failure classification', () => {
   });
 
   test('uses Bun rather than a compiled CLI executable for the synchronous bridge', () => {
-    expect(resolveSyncSupervisorBridgeRuntime('/opt/releases/forge.js', {})).toBe('bun');
+    expect(basename(resolveSyncSupervisorBridgeRuntime('/opt/releases/forge.js', {}))).toBe(process.platform === 'win32' ? 'bun.exe' : 'bun');
     expect(resolveSyncSupervisorBridgeRuntime('/opt/bun/bin/bun', {})).toBe('/opt/bun/bin/bun');
-    expect(resolveSyncSupervisorBridgeRuntime('/opt/releases/forge.js', {
+    expect(basename(resolveSyncSupervisorBridgeRuntime('/opt/releases/forge.js', {
       FORGE_BUN_EXECUTABLE: '/custom/bun',
-    })).toBe('/custom/bun');
+    }))).toBe(process.platform === 'win32' ? 'bun.exe' : 'bun');
+  });
+
+  test('persisted check sidecar uses bounded async supervision without the legacy TypeScript bridge', async () => {
+    const command = [process.execPath, '-e', 'process.exit(0)'];
+    const repoRoot = fixture({ persisted_no_bridge: { command } });
+    const snapshot = snapshotControllerCheck(repoRoot, 'persisted_no_bridge');
+    const fingerprint = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
+    const fakeRuntimeRoot = mkdtempSync(join(tmpdir(), 'forge-check-sidecar-no-bridge-'));
+    roots.push(fakeRuntimeRoot);
+    const fakeRuntime = join(fakeRuntimeRoot, 'fake-bun');
+    writeFileSync(fakeRuntime, '#!/bin/sh\necho legacy-bridge-must-not-run >&2\nexit 17\n');
+    chmodSync(fakeRuntime, 0o755);
+    const previousRuntime = process.env.FORGE_BUN_EXECUTABLE;
+    try {
+      process.env.FORGE_BUN_EXECUTABLE = fakeRuntime;
+      const code = await runPersistedCheckSidecar([
+        '--repo', repoRoot,
+        '--check-id', 'persisted_no_bridge',
+        '--expected-check-fingerprint', fingerprint,
+      ]);
+      expect(code).toBe(0);
+    } finally {
+      if (previousRuntime === undefined) delete process.env.FORGE_BUN_EXECUTABLE;
+      else process.env.FORGE_BUN_EXECUTABLE = previousRuntime;
+    }
   });
 
   test('persisted check sidecar uses bounded async supervision without the legacy TypeScript bridge', async () => {
@@ -292,7 +317,7 @@ describe('controller check provenance and failure classification', () => {
     const repoRoot = fixture({ bridge_failure: { command } });
     const fakeRuntimeRoot = mkdtempSync(join(tmpdir(), 'forge-check-bridge-runtime-'));
     roots.push(fakeRuntimeRoot);
-    const fakeRuntime = join(fakeRuntimeRoot, 'fake-bun');
+    const fakeRuntime = join(fakeRuntimeRoot, process.platform === 'win32' ? 'bun.exe' : 'bun');
     writeFileSync(fakeRuntime, '#!/bin/sh\necho bridge-runtime-broken >&2\nexit 17\n');
     chmodSync(fakeRuntime, 0o755);
     const previousRuntime = process.env.FORGE_BUN_EXECUTABLE;

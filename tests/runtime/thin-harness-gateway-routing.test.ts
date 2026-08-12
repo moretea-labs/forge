@@ -292,6 +292,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       args: {
         include_temp_dirs: false,
         request_id: 'diagnostic-oversized',
+        interactive_wait_ms: 5_000,
       },
       inlineMaxBytes: 1,
     });
@@ -651,13 +652,19 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
 
     const localBefore = listLocalBridgeJobSnapshots(fx.repoRoot).length;
     const jobsBefore = listExecutionJobs(fx.controllerHome, fx.repository.repoId).length;
-    await expect(routeDurableMcpCall(fx.ctx, 'verify_edit_session', {
+    const emptyBypass = await routeDurableMcpCall(fx.ctx, 'verify_edit_session', {
       repo_id: fx.repository.repoId,
       checkout_id: fx.repository.activeCheckoutId,
       session_id: session.sessionId,
       check_ids: [],
       request_id: 'verify-edit-empty-bypass',
-    })).rejects.toThrow(/EDIT_CHECK_RECEIPT_REQUIRED_CHECK_MISSING/);
+    });
+    expect(emptyBypass?.isError).toBe(true);
+    const emptyBypassPayload = emptyBypass?.structuredContent as {
+      error?: { code?: string; message?: string };
+    };
+    expect(emptyBypassPayload.error?.code).toBe('EDIT_VALIDATION_EMPTY_RECEIPT_REJECTED');
+    expect(emptyBypassPayload.error?.message).toContain('EDIT_CHECK_RECEIPT_REQUIRED_CHECK_MISSING');
     const requestId = 'verify-edit-receipt-smoke';
     let response = await routeDurableMcpCall(fx.ctx, 'verify_edit_session', {
       repo_id: fx.repository.repoId,
