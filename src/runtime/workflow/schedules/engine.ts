@@ -10,7 +10,7 @@ import {
   type RuntimeMaintenanceActionId,
 } from '../../recovery/maintenance-executor';
 import { listCandidateFindings } from '../findings/store';
-import { getControllerSession, getWorkContract, isTerminalWorkContractStatus } from '../../control-plane/facade';
+import { getControllerSession, getWorkContract, isTerminalWorkContractStatus, listHandoffItems } from '../../control-plane/facade';
 import { launchSuperController } from '../../control-plane/launcher/thin-launcher';
 import { getExternalControllerLaunchReservation } from '../../control-plane/launcher/launch-reservation-store';
 import {
@@ -234,9 +234,34 @@ async function triggerDue(
   }
 }
 
+function continuationWorkId(schedule: RepositorySchedule): string | undefined {
+  if (schedule.action.operation !== EXTERNAL_CONTROLLER_WAKE_OPERATION) return undefined;
+  const value = schedule.action.arguments?.work_id;
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function executionJobBelongsToWork(job: ReturnType<typeof listExecutionJobs>[number], workId: string): boolean {
+  if (job.resourceClaims.some((claim) => claim.workId === workId)) return true;
+  const payload = job.payload as Record<string, unknown>;
+  const args = payload.arguments && typeof payload.arguments === 'object' && !Array.isArray(payload.arguments)
+    ? payload.arguments as Record<string, unknown>
+    : undefined;
+  return [payload.workId, payload.work_id, args?.workId, args?.work_id].some((value) => value === workId);
+}
+
 async function stopReason(controllerHome: string, schedule: RepositorySchedule): Promise<string | undefined> {
   const projection = readRepositoryProjection(controllerHome, schedule.repoId);
-  if (schedule.stopConditions.includes('human_review_required') && projection.currentAttention.length > 0) return 'Repository has jobs requiring human attention.';
+  const workId = continuationWorkId(schedule);
+  const work = workId ? getWorkContract({ controllerHome, repoId: schedule.repoId }, workId) : undefined;
+  if (schedule.stopConditions.includes('human_review_required')) {
+    if (workId) {
+      const activeHandoff = listHandoffItems({ controllerHome, repoId: schedule.repoId, status: 'active', limit: 100 })
+        .find((item) => item.workId === workId);
+      if (activeHandoff) return `Work ${workId} has active Handoff ${activeHandoff.id} requiring review.`;
+    } else if (projection.currentAttention.length > 0) {
+      return 'Repository has jobs requiring human attention.';
+    }
+  }
   if (schedule.stopConditions.includes('release_ready') && projection.releaseFrozen) return 'Repository is in release freeze.';
   if (schedule.stopConditions.includes('external_blocker')) {
     try {
@@ -247,6 +272,10 @@ async function stopReason(controllerHome: string, schedule: RepositorySchedule):
     }
     const recentInfrastructureFailure = listExecutionJobs(controllerHome, schedule.repoId, 20).find((job) => {
       if (!['failed', 'timed_out', 'orphaned'].includes(job.status) || !job.error) return false;
+      if (workId) {
+        if (!work || Date.parse(job.createdAt) < Date.parse(work.createdAt)) return false;
+        if (!executionJobBelongsToWork(job, workId)) return false;
+      }
       if (job.error.retryable) return true;
       return /(?:network|connection|upstream|external|remote|github|tunnel|502|503|timeout)/i.test(`${job.error.code} ${job.error.message}`);
     });
