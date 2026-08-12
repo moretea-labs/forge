@@ -13,7 +13,7 @@ import {
   type CodeGraphReadProviderResponse,
 } from "../../runtime/context/codegraph-read-provider";
 
-const CONTEXT_PACK_SCHEMA_VERSION = 5;
+const CONTEXT_PACK_SCHEMA_VERSION = 6;
 const DEFAULT_MAX_FILES = 8;
 const DEFAULT_MAX_SNIPPETS = 20;
 const DEFAULT_SNIPPET_CONTEXT_BEFORE = 12;
@@ -39,6 +39,21 @@ const STOPWORDS = new Set([
 
 export type StructuralContextMode = "off" | "auto" | "required";
 export type ControllerContextRetrievalMode = "implementation" | "plan" | "debug" | "review";
+export const CONTROLLER_CONTEXT_IMPACT_DOMAINS = [
+  "persistence", "scheduler", "notification", "timeline", "events", "cache", "api", "concurrency",
+] as const;
+export type ControllerContextImpactDomain = (typeof CONTROLLER_CONTEXT_IMPACT_DOMAINS)[number];
+
+const IMPACT_DOMAIN_TERMS: Record<ControllerContextImpactDomain, readonly string[]> = {
+  persistence: ["persist", "database", "repository"],
+  scheduler: ["scheduler", "schedule", "reminder"],
+  notification: ["notification", "notify", "push"],
+  timeline: ["timeline", "history", "activity"],
+  events: ["event", "publish", "subscribe"],
+  cache: ["cache", "invalidate", "memo"],
+  api: ["api", "dto", "controller"],
+  concurrency: ["transaction", "lock", "atomic"],
+};
 
 export interface ControllerContextPackOptions {
   description?: string;
@@ -53,6 +68,8 @@ export interface ControllerContextPackOptions {
   maxCharsPerSnippet?: number;
   structuralContext?: StructuralContextMode;
   retrievalMode?: ControllerContextRetrievalMode;
+  /** GPT-selected cross-cutting evidence dimensions. Forge expands mechanically and never treats them as semantic completeness proof. */
+  impactDomains?: ControllerContextImpactDomain[];
 }
 
 export interface ControllerContextPackDependencies {
@@ -99,6 +116,15 @@ export interface ControllerContextPackProjection {
   };
   search: {
     terms: string[];
+    impactDomains: ControllerContextImpactDomain[];
+    impactCoverage: Array<{
+      domain: ControllerContextImpactDomain;
+      queries: string[];
+      matchedFiles: string[];
+      selectedFiles: string[];
+      omittedFileCount: number;
+      status: "selected" | "matched_not_selected" | "no_evidence";
+    }>;
     includeGlobs: string[];
     excludeGlobs: string[];
     scannedFiles: number;
@@ -401,6 +427,23 @@ export function buildControllerContextPack(
   ].filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
   const goal = goalParts.join("\n").trim();
   const terms = cleanList([...(options.searchTerms ?? []), ...textTokens(goal)]).slice(0, 14);
+  const impactDomains = cleanList(options.impactDomains)
+    .filter((domain): domain is ControllerContextImpactDomain => CONTROLLER_CONTEXT_IMPACT_DOMAINS.includes(domain as ControllerContextImpactDomain))
+    .slice(0, 6);
+  const impactTermDomains = new Map<string, ControllerContextImpactDomain[]>();
+  for (const domain of impactDomains) {
+    for (const term of IMPACT_DOMAIN_TERMS[domain]) {
+      const existing = impactTermDomains.get(term) ?? [];
+      if (!existing.includes(domain)) existing.push(domain);
+      impactTermDomains.set(term, existing);
+    }
+  }
+  const searchQueries = cleanList([
+    ...(terms[0] ? [terms[0]] : []),
+    ...impactDomains.flatMap((domain) => IMPACT_DOMAIN_TERMS[domain]),
+    ...terms.slice(1),
+  ]).slice(0, 32);
+  const impactCandidatePaths = new Map<ControllerContextImpactDomain, Set<string>>(impactDomains.map((domain) => [domain, new Set<string>()]));
   const candidates = new Map<string, { reasons: Set<string>; lines: Set<number> }>();
   const deniedPaths: Array<{ path: string; reason: string }> = [];
   const omitted: Array<{ path: string; reason: string }> = [];
@@ -421,7 +464,7 @@ export function buildControllerContextPack(
   };
 
   if (structuralMode !== "off") {
-    const structuralQuery = goal || terms.join(" ");
+    const structuralQuery = [goal || terms.join(" "), ...impactDomains].filter(Boolean).join(" ");
     if (!structuralQuery) {
       structuralContext = {
         ...structuralContext,
@@ -510,9 +553,9 @@ export function buildControllerContextPack(
   // Lexical retrieval is one bounded pass across candidate files for all terms.
   // The old per-term loop reread the same source files up to 14 times even
   // though inventory itself was cached.
-  if (terms.length > 0 && candidates.size < maxFiles * 3) {
+  if (searchQueries.length > 0 && candidates.size < maxFiles * 3) {
     const search = searchRepositoryMany(repoRoot, policy, {
-      queries: terms,
+      queries: searchQueries,
       includeGlobs: searchIncludeGlobs,
       excludeGlobs,
       maxResultsPerQuery: Math.max(maxFiles * 4, 12),
@@ -527,7 +570,16 @@ export function buildControllerContextPack(
     searchTruncated = searchTruncated || search.truncated;
     for (const hit of search.results) {
       if (!coveredByGlob(hit.path, searchIncludeGlobs) || excludeGlobs.some((glob) => globMatches(glob, hit.path))) continue;
-      addReason(candidates, hit.path, `search:${hit.query}`, hit.line);
+      if (terms.includes(hit.query)) {
+        addReason(candidates, hit.path, `search:${hit.query}`, hit.line);
+      } else {
+        const domains = impactTermDomains.get(hit.query) ?? [];
+        if (domains.length === 0) addReason(candidates, hit.path, `search:${hit.query}`, hit.line);
+        for (const domain of domains) {
+          impactCandidatePaths.get(domain)?.add(hit.path);
+          addReason(candidates, hit.path, `impact:${domain}:${hit.query}`, hit.line);
+        }
+      }
       if (candidates.size >= maxFiles * 3) break;
     }
   }
@@ -547,6 +599,19 @@ export function buildControllerContextPack(
       return left.path.localeCompare(right.path);
     });
   const selected = rankedCandidates.slice(0, maxFiles);
+  const selectedPaths = new Set(selected.map((entry) => entry.path));
+  const impactCoverage = impactDomains.map((domain) => {
+    const matchedFiles = [...(impactCandidatePaths.get(domain) ?? new Set<string>())].sort();
+    const selectedFiles = matchedFiles.filter((path) => selectedPaths.has(path));
+    return {
+      domain,
+      queries: [...IMPACT_DOMAIN_TERMS[domain]],
+      matchedFiles: matchedFiles.slice(0, 20),
+      selectedFiles: selectedFiles.slice(0, 20),
+      omittedFileCount: Math.max(0, matchedFiles.length - selectedFiles.length),
+      status: selectedFiles.length > 0 ? "selected" as const : matchedFiles.length > 0 ? "matched_not_selected" as const : "no_evidence" as const,
+    };
+  });
   for (const entry of rankedCandidates.slice(maxFiles)) omitted.push({ path: entry.path, reason: "max_files" });
 
   let remainingSnippets = maxSnippets;
@@ -611,6 +676,11 @@ export function buildControllerContextPack(
     ...(structuralMode === "required" && !structuralContext.requiredSatisfied ? ["required_structural_context_unavailable"] : []),
     ...(policyDeniedFiles > 0 || deniedPaths.length > 0 ? ["policy_denied_candidates"] : []),
     ...(skippedLargeFiles > 0 ? ["large_candidates_skipped"] : []),
+    ...impactCoverage.flatMap((coverage) => coverage.status === "no_evidence"
+      ? [`impact_domain_without_evidence:${coverage.domain}`]
+      : coverage.status === "matched_not_selected"
+        ? [`impact_domain_not_selected:${coverage.domain}`]
+        : []),
   ];
   const rawCodeRequiredForImplementation = retrievalMode !== "implementation"
     || files.length === 0
@@ -630,7 +700,9 @@ export function buildControllerContextPack(
     goal,
     git,
     search: {
-      terms,
+      terms: searchQueries,
+      impactDomains,
+      impactCoverage,
       includeGlobs: searchIncludeGlobs,
       excludeGlobs,
       scannedFiles,
@@ -661,6 +733,7 @@ export function buildControllerContextPack(
           ? "The pack already contains policy-approved current raw source snippets with file SHA identities. Request wider/exact ranges only when ChatGPT judges the impact surface ambiguous or an expansion signal makes the raw evidence mechanically incomplete."
           : "Investigation modes may intentionally expand exact ranges, structural relationships, tests, and neighboring modules before any implementation decision.",
         "Search/CodeGraph ranking is discovery evidence, not a business-semantics authority. Forge never decides that the returned files are the complete semantic impact surface.",
+        impactDomains.length > 0 ? `Impact domains were selected by ChatGPT and expanded mechanically in this same retrieval call: ${impactDomains.join(", ")}. Missing or omitted domain evidence is an ambiguity signal, not proof that the domain is irrelevant.` : "No explicit cross-cutting impact domains were requested; ChatGPT may add them when state, scheduling, notifications, events, caching, API, or concurrency could materially change the implementation.",
         "CodeGraph structural evidence is discovery evidence. Raw source access still passes through Forge repository policy and current-file reads.",
         structuralContext.status === "stale" ? "CodeGraph reports stale structural evidence. Treat graph relationships as hints and prefer the returned current raw source for changed files." : structuralContext.status === "unavailable" || structuralContext.status === "degraded" ? "Structural context was unavailable or degraded; bounded text search remains the fallback." : structuralContext.status === "ready" ? "CodeGraph structural context was queried read-only with index sync disabled." : "Structural context was not requested.",
         "Run focused validation after a coherent edit batch; expensive full-suite checks belong at candidate/release boundaries unless debugging specifically needs them earlier.",

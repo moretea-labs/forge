@@ -71,7 +71,7 @@ import {
   buildControllerTaskLedgerProjection,
   writeControllerTaskLedgerArtifacts,
 } from '../../../cli/controller/task-ledger';
-import { buildControllerContextPack } from '../../../cli/controller/context-pack';
+import { buildControllerContextPack, CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain } from '../../../cli/controller/context-pack';
 import { legacyIssueAuthorityRetired } from '../../../cli/controller/legacy-issue-cutover';
 import { buildControllerOperationalPlan } from '../../../cli/controller/operational-plan';
 import { listControllerChecks, readLatestControllerCheckEvidence, runControllerCheck } from '../../../cli/controller/check-runner';
@@ -284,6 +284,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     include_globs: { type: 'array', items: { type: 'string' } },
     exclude_globs: { type: 'array', items: { type: 'string' } },
     retrieval_mode: { type: 'string', enum: ['implementation', 'plan', 'debug', 'review'], description: 'Defaults to implementation. Implementation returns current raw impact evidence for ChatGPT to judge; plan/debug/review intentionally widen evidence.' },
+    impact_domains: { type: 'array', items: { type: 'string', enum: [...CONTROLLER_CONTEXT_IMPACT_DOMAINS] }, description: 'Optional GPT-selected cross-cutting evidence dimensions. Forge expands these mechanically in the same retrieval call; it never treats them as proof of semantic completeness.' },
     structural_context: { type: 'string', enum: ['off', 'auto', 'required'], description: 'Optional override. Defaults to auto for implementation/review and required for plan/debug.' },
     max_files: { type: 'number' },
     max_snippets: { type: 'number' },
@@ -2934,6 +2935,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           const retrievalMode = args.retrieval_mode === 'plan' || args.retrieval_mode === 'debug' || args.retrieval_mode === 'review'
             ? args.retrieval_mode
             : 'implementation';
+          const impactDomains = list(args.impact_domains)
+            .filter((domain): domain is ControllerContextImpactDomain => CONTROLLER_CONTEXT_IMPACT_DOMAINS.includes(domain as ControllerContextImpactDomain));
           const structuralContext = args.structural_context === 'off' || args.structural_context === 'auto' || args.structural_context === 'required'
             ? args.structural_context
             : retrievalMode === 'plan' || retrievalMode === 'debug'
@@ -2949,6 +2952,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             maxSnippets: typeof args.max_snippets === 'number' ? args.max_snippets : undefined,
             structuralContext,
             retrievalMode,
+            impactDomains,
           });
           const warnings = structuralContext === 'required' && !pack.structuralContext.requiredSatisfied
             ? [pack.structuralContext.fallbackReason ?? 'Required structural context is not ready; lexical retrieval results are returned as degraded evidence.']

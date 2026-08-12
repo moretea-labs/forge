@@ -143,6 +143,30 @@ describe('CodeGraph read provider', () => {
     expect(pack.search.scannedFiles).toBe(1);
   });
 
+  test('expands GPT-selected impact domains in one bounded lexical pass without claiming semantic completeness', () => {
+    const root = contextRepo();
+    writeFileSync(join(root, 'src/medication-plan.ts'), 'export const medicationPlan = { time: "09:30" };\n');
+    writeFileSync(join(root, 'src/reminder-scheduler.ts'), 'export function scheduleReminder() { return medicationPlanTime; }\n');
+    writeFileSync(join(root, 'src/notification.ts'), 'export function pushNotification() { return true; }\n');
+    const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+      description: 'change medicationPlan effective time',
+      searchTerms: ['medicationPlan'],
+      includeGlobs: ['src/**'],
+      impactDomains: ['scheduler', 'notification', 'concurrency'],
+      structuralContext: 'off',
+      maxFiles: 6,
+    });
+    expect(pack.search.impactDomains).toEqual(['scheduler', 'notification', 'concurrency']);
+    expect(pack.search.terms[0]).toBe('medicationPlan');
+    expect(pack.search.impactCoverage.find((entry) => entry.domain === 'scheduler')).toMatchObject({ status: 'selected' });
+    expect(pack.search.impactCoverage.find((entry) => entry.domain === 'notification')).toMatchObject({ status: 'selected' });
+    expect(pack.search.impactCoverage.find((entry) => entry.domain === 'concurrency')).toMatchObject({ status: 'no_evidence' });
+    expect(pack.files.find((file) => file.path === 'src/reminder-scheduler.ts')?.reasons.some((reason) => reason.startsWith('impact:scheduler:'))).toBe(true);
+    expect(pack.files.find((file) => file.path === 'src/notification.ts')?.reasons.some((reason) => reason.startsWith('impact:notification:'))).toBe(true);
+    expect(pack.contextContract.semanticSufficiencyAuthority).toBe('chatgpt');
+    expect(pack.contextContract.expansionSignals).toContain('impact_domain_without_evidence:concurrency');
+  });
+
   test('ranks an exact code query before saturated broad-token decoys', () => {
     const root = contextRepo();
     for (let index = 0; index < 40; index += 1) {
