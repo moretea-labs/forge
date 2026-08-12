@@ -32,6 +32,7 @@ import {
   getEditSession,
 } from '../../src/cli/editing/edit-session';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
+import { reconcilePendingEditValidations } from '../../src/runtime/control-plane/execution/edit-validation-coordinator';
 
 function git(root: string, args: string[]): void {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8' });
@@ -829,7 +830,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(listLocalBridgeJobSnapshots(fx.repoRoot).length).toBe(localBefore);
   });
 
-  test('verify_edit_session overlaps independent checks and serializes conflicting checks', async () => {
+  test('edit validation overlaps independent checks and Scheduler advances conflicting checks without GPT retries', async () => {
     const fx = fixture();
     roots.push(fx.root);
     const markersDir = join(fx.root, 'markers');
@@ -875,8 +876,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       request_id: requestId,
       interactive_wait_ms: interactiveWaitMs,
       // Deliberately tiny: correctness must not depend on waiting long enough
-      // for a conflicting lease. The conflict lane should submit writeB only
-      // after writeA is already terminal on a later retry.
+      // for a conflicting lease. Scheduler continuation owns the next lane item.
       lease_wait_ms: 1,
     });
     const checkIds = ['probeA', 'probeB', 'writeA', 'writeB'];
@@ -892,17 +892,26 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       { timeoutMs: 20_000 },
     )));
 
-    // Retry reuses completed A/B/writeA and advances the conflict lane to writeB.
-    const second = await verify(checkIds, 'verify-parallel-evidence', 0);
-    const secondProcesses = (second?.structuredContent as { processes: Array<{ processId: string }> }).processes;
-    expect(secondProcesses.length).toBe(checkIds.length);
-    const writeBProcess = secondProcesses[3]!;
-    await waitForProcess(fx.controllerHome, fx.repository.repoId, writeBProcess.processId, { timeoutMs: 20_000 });
+    // Background Scheduler reconciliation, not a second MCP call, advances the
+    // write-conflict lane after writeA becomes terminal.
+    const advanced = await reconcilePendingEditValidations(fx.controllerHome, fx.repository, 20);
+    expect(advanced.errors).toEqual([]);
+    expect(advanced.running).toBe(1);
+    const writeBRecord = listProcessRecords(fx.controllerHome, fx.repository.repoId)
+      .find((record) => record.checkExecution?.checkId === 'writeB');
+    expect(writeBRecord?.processId).toBeTruthy();
+    await waitForProcess(fx.controllerHome, fx.repository.repoId, writeBRecord!.processId, { timeoutMs: 20_000 });
 
-    // Final retry coalesces onto all persisted Process records and completes.
-    const retried = await verify(checkIds, 'verify-parallel-evidence', 50);
-    const payload = retried?.structuredContent as Record<string, unknown>;
-    expect(retried?.isError).not.toBe(true);
+    // A later Scheduler tick settles all receipts into the EditSession. GPT only
+    // needs a single final join/read when the validation result becomes a dependency.
+    const settled = await reconcilePendingEditValidations(fx.controllerHome, fx.repository, 20);
+    expect(settled.errors).toEqual([]);
+    expect(settled.completed).toBe(1);
+    expect(getEditSession(fx.repoRoot, session.sessionId).status).toBe('checked');
+
+    const joined = await verify(checkIds, 'verify-parallel-evidence', 0);
+    const payload = joined?.structuredContent as Record<string, unknown>;
+    expect(joined?.isError).not.toBe(true);
     expect(payload.path).toBe('process_direct');
     expect(payload.completed).toBe(true);
     expect(payload.ok).toBe(true);

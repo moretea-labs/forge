@@ -37,6 +37,7 @@ import { cleanupControllerRuntimeState } from '../runtime-cleanup';
 import { reconcileTerminalWorkCleanups } from '../execution/work-terminal-cleanup';
 import { gcTerminalProcesses } from '../../execution/process-runtime/gc';
 import { reconcilePendingWorkValidations } from '../execution/work-validation-reconciler';
+import { reconcilePendingEditValidations } from '../execution/edit-validation-coordinator';
 import { schedulerDispatchAllowed } from '../facade/work-admission-policy';
 import { rebuildRepositoryProjection, refreshRepositoryProjectionForRepository } from '../../projections/materialized-view';
 import { readRepositoryGitStatusSample, sampleRepositoryGitStatusForRepositories } from '../../projections/git-status-sampler';
@@ -234,6 +235,7 @@ export class GlobalScheduler {
   private terminalWorkCleanup = reconcileTerminalWorkCleanups;
   private processGc = gcTerminalProcesses;
   private workValidationReconcile = reconcilePendingWorkValidations;
+  private editValidationReconcile = reconcilePendingEditValidations;
   private repositoryList = listRepositories;
   private lastDarwinMemorySampleAt = 0;
   private cachedDarwinAvailableMemoryMb: number | undefined;
@@ -647,7 +649,13 @@ export class GlobalScheduler {
         const validation = this.workValidationReconcile(this.controllerHome, repository.repoId, 500);
         if (validation.errors.length > 0) {
           console.error(
-            `[forge validation] background reconciliation reported ${validation.errors.length} error(s) for ${repository.repoId}`,
+            `[forge validation] background Work reconciliation reported ${validation.errors.length} error(s) for ${repository.repoId}`,
+          );
+        }
+        const editValidation = await this.editValidationReconcile(this.controllerHome, repository, 200);
+        if (editValidation.errors.length > 0) {
+          console.error(
+            `[forge validation] background EditSession reconciliation reported ${editValidation.errors.length} error(s) for ${repository.repoId}`,
           );
         }
       }

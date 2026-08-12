@@ -7,3 +7,4 @@ export * from './check-receipt';
 export * from './command-facade';
 export * from './gc';
 export type { ProcessCommandDescriptor, ProcessRunnerExitReceipt } from './process-runner-entry';
+export * from './persisted-check';
