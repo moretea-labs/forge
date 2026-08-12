@@ -19,4 +19,9 @@ if [[ ! -f "$TARBALL_PATH" ]]; then
   exit 1
 fi
 echo "[release] publish registry: ${NPM_RELEASE_REGISTRY}"
-npm publish "$TARBALL_PATH" --tag "$CHANNEL" --access public --registry "$NPM_RELEASE_REGISTRY"
+if [[ "${NPM_RELEASE_BOOTSTRAP:-0}" == "1" ]]; then
+  echo "[release] bootstrap publication: disabling provenance for this one-time local publish"
+  npm publish "$TARBALL_PATH" --tag "$CHANNEL" --access public --registry "$NPM_RELEASE_REGISTRY" --provenance=false
+else
+  npm publish "$TARBALL_PATH" --tag "$CHANNEL" --access public --registry "$NPM_RELEASE_REGISTRY"
+fi

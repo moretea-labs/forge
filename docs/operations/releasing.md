@@ -36,7 +36,7 @@ The main gate reuses the focused task receipt and does not run the full suite. T
 
 ## Bootstrap npm publication (only while the package does not exist)
 
-npm Trusted Publishing cannot be configured for a package that does not exist yet. The bootstrap publication therefore requires an npm maintainer for the `@moretea-labs` scope with two-factor authentication.
+npm Trusted Publishing cannot be configured for a package that does not exist yet. The bootstrap publication therefore requires an npm maintainer for the `@moretea-labs` scope with two-factor authentication. Because this one-time local path has no OIDC provider, `NPM_RELEASE_BOOTSTRAP=1` disables provenance only for that bootstrap publish; `publishConfig.provenance` remains `true` for normal GitHub OIDC releases.
 
 ```bash
 npm login
@@ -46,7 +46,7 @@ npm access ls-packages @moretea-labs
 # Create and inspect the local tag, but do not push it before publication succeeds.
 VERSION="$(node -p "require('./package.json').version")"
 git tag -a "v${VERSION}" -m "Forge ${VERSION}"
-RELEASE_TAG="v${VERSION}" npm run release:rc
+NPM_RELEASE_BOOTSTRAP=1 RELEASE_TAG="v${VERSION}" npm run release:rc
 ```
 
 If publication fails, remove the unpushed local tag, correct the problem, rerun the focused and release gates, and create a new release commit when repository content changes. Never reuse a published package version or move a pushed release tag.

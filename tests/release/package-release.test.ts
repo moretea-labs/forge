@@ -20,7 +20,7 @@ describe("public package release contract", () => {
     });
     expect(pkg.scripts.prepublishOnly).toBeUndefined();
     expect([pkg.scripts["release:rc"], pkg.scripts["release:stable"]]).toEqual(["bash scripts/publish-release-tarball.sh next", "bash scripts/publish-release-tarball.sh latest"]);
-    expect(read("scripts/publish-release-tarball.sh")).toMatch(/NPM_RELEASE_REGISTRY="\$\{NPM_RELEASE_REGISTRY:-https:\/\/registry\.npmjs\.org\/\}"[\s\S]*--registry "\$NPM_RELEASE_REGISTRY"/);
+    expect(read("scripts/publish-release-tarball.sh")).toMatch(/NPM_RELEASE_REGISTRY="\$\{NPM_RELEASE_REGISTRY:-https:\/\/registry\.npmjs\.org\/\}"[\s\S]*NPM_RELEASE_BOOTSTRAP[\s\S]*--registry "\$NPM_RELEASE_REGISTRY" --provenance=false/);
   });
 
   test("ships maintained public docs and excludes internal reports", () => {

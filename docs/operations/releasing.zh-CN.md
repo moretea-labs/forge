@@ -36,7 +36,7 @@ main 门禁复用 focused task receipt，不执行全量测试。release 门禁�
 
 ## npm 首次发布（仅 package 尚不存在时）
 
-一个尚不存在的 package 不能预先配置 npm Trusted Publishing。因此首次发布需要拥有 `@moretea-labs` scope 权限并开启双因素认证的 npm maintainer。
+一个尚不存在的 package 不能预先配置 npm Trusted Publishing。因此首次发布需要拥有 `@moretea-labs` scope 权限并开启双因素认证的 npm maintainer。由于这条一次性的本机 bootstrap 路径没有 OIDC provider，`NPM_RELEASE_BOOTSTRAP=1` 只对这次首发关闭 provenance；正常 GitHub OIDC 发布仍保持 `publishConfig.provenance=true`。
 
 ```bash
 npm login
@@ -46,7 +46,7 @@ npm access ls-packages @moretea-labs
 # 先创建并检查本地 tag，发布成功前不要 push。
 VERSION="$(node -p "require('./package.json').version")"
 git tag -a "v${VERSION}" -m "Forge ${VERSION}"
-RELEASE_TAG="v${VERSION}" npm run release:rc
+NPM_RELEASE_BOOTSTRAP=1 RELEASE_TAG="v${VERSION}" npm run release:rc
 ```
 
 发布失败时，删除尚未 push 的本地 tag，修复后重新跑完整门禁。仓库内容变化后必须产生新的 release commit。已经发布的 npm 版本不能覆盖，已经 push 的 release tag 不能移动。
