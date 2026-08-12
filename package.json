@@ -30,6 +30,7 @@
   },
   "files": [
     "LICENSE",
+    "DESIGN.md",
     "CHANGELOG.md",
     "CONTRIBUTING.md",
     "SECURITY.md",
@@ -78,6 +79,9 @@
     "bun": ">=1.0.0"
   },
   "scripts": {
+    "build:controller-ui": "bun scripts/build-controller-ui.ts",
+    "check:controller-ui": "bun scripts/build-controller-ui.ts --check",
+    "check:design": "npx -y @google/design.md@0.4.0 lint DESIGN.md",
     "benchmark:skills": "bun scripts/run-skill-evals.ts",
     "benchmark:route-session-concurrency": "bun scripts/benchmark-route-session-concurrency.ts",
     "test": "bun scripts/test-governance.ts affected",

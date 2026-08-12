@@ -1,4 +1,5 @@
 import { randomBytes } from "crypto";
+import { readFileSync } from "fs";
 import { spawn } from "child_process";
 import { createServer, type Server } from "http";
 import express, {
@@ -72,6 +73,7 @@ import {
   verifyEditSession,
 } from "../editing/edit-session";
 import { localBridgeDashboardHtml } from "./dashboard";
+import { applyConsoleAutomationAction, listConsoleAutomations, summarizeConsoleAutomations } from "./console-automations";
 import {
   ackConsoleHandoff,
   approveConsoleHandoff,
@@ -987,6 +989,14 @@ export async function startLocalBridgeServer(
     next();
   };
 
+  app.get("/console-assets/:asset", (request, response) => {
+    const asset = String(request.params.asset ?? "");
+    if (asset !== "app.js" && asset !== "app.css") { response.status(404).end(); return; }
+    response.setHeader("Cache-Control", "no-cache");
+    response.type(asset.endsWith(".css") ? "text/css" : "application/javascript");
+    response.send(readFileSync(new URL(`./ui-dist/${asset}`, import.meta.url), "utf8"));
+  });
+
   app.get("/", (_request, response) => {
     response.setHeader("Cache-Control", "no-store, max-age=0");
     response.setHeader("Pragma", "no-cache");
@@ -1261,6 +1271,40 @@ export async function startLocalBridgeServer(
           return mapRepositoryCard(record, entry.current);
         });
       response.json(await buildCommandCenter(ctx, repositories));
+    } catch (error) {
+      response.status(400).json({ error: errorMessage(error) });
+    }
+  });
+
+  app.get("/api/console/work", (_request, response) => {
+    try {
+      response.json(buildRequirementBoard({ controllerHome }));
+    } catch (error) {
+      response.status(400).json({ error: errorMessage(error) });
+    }
+  });
+
+  app.get("/api/console/automations", (_request, response) => {
+    try {
+      const repositories = loadRepositoryRegistry(controllerHome).repositories;
+      const automations = listConsoleAutomations(controllerHome, repositories);
+      response.json({ schemaVersion: 1, generatedAt: new Date().toISOString(), summary: summarizeConsoleAutomations(automations), automations });
+    } catch (error) {
+      response.status(400).json({ error: errorMessage(error) });
+    }
+  });
+
+  app.post("/api/console/automations/:source/:repoId/:automationId/:action", async (request, response) => {
+    try {
+      const result = await applyConsoleAutomationAction(
+        controllerHome,
+        loadRepositoryRegistry(controllerHome).repositories,
+        String(request.params.source ?? ""),
+        String(request.params.repoId ?? ""),
+        String(request.params.automationId ?? ""),
+        String(request.params.action ?? ""),
+      );
+      response.json({ result });
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }

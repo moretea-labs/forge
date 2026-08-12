@@ -704,6 +704,12 @@ describe("Local Execution Bridge", () => {
     const routines = await fetch(new URL("/api/assistant/routines", handle.url), { headers }).then((response) => response.json());
     expect(routines.routines.map((routine: { routineId: string }) => routine.routineId)).toContain(createdRoutine.routine.routineId);
 
+    const consoleAutomations = await fetch(new URL("/api/console/automations", handle.url), { headers }).then((response) => response.json());
+    const projectedRoutine = consoleAutomations.automations.filter((automation: { name: string }) => automation.name === "每日邮件整理");
+    expect(projectedRoutine).toHaveLength(1);
+    expect(projectedRoutine[0].source).toBe("routine");
+    expect(consoleAutomations.automations.some((automation: { name: string }) => automation.name === "Assistant Routine: 每日邮件整理")).toBe(false);
+
     const memory = await fetch(new URL("/api/assistant/memory", handle.url), {
       method: "POST",
       headers,
@@ -902,14 +908,15 @@ describe("Local Execution Bridge", () => {
     }).then((response) => response.json());
     expect(finalized.status).toBe("finalized");
     const dashboard = await fetch(handle.url).then((response) => response.text());
-    expect(dashboard).toContain("执行助手控制台");
-    expect(dashboard).toContain("指挥中心");
-    expect(dashboard).toContain("需要处理");
-    expect(dashboard).toContain("当前任务");
-    expect(dashboard).toContain("selectRepo");
-    expect(dashboard).toContain("removeRepo");
-    expect(dashboard).toContain("删除注册");
-    expect(dashboard).toContain("/api/repositories/");
+    expect(dashboard).toContain("Forge · Utility Console");
+    expect(dashboard).toContain("/console-assets/app.css");
+    expect(dashboard).toContain("/console-assets/app.js");
+    expect(dashboard).not.toContain("你想让它完成什么");
+    const uiScript = await fetch(new URL("/console-assets/app.js", handle.url)).then((response) => response.text());
+    expect(uiScript).toContain("Automations");
+    expect(uiScript).toContain("Capabilities");
+    expect(uiScript).toContain("/api/console/automations");
+    expect(uiScript).toContain("/api/repositories/register");
   });
 
   test("preserves executable mode when an Edit Session replaces a shebang file", () => {
@@ -1060,19 +1067,36 @@ describe("Local Execution Bridge", () => {
     const dashboard = await dashboardResponse.text();
     expect(dashboard).not.toContain(handle.token);
     expect(dashboard).not.toContain("?token=");
-    expect(dashboard).toContain("forge · 执行助手控制台");
-    expect(dashboard).toContain("指挥中心");
-    expect(dashboard).toContain("能力 / 插件");
-    expect(dashboard).toContain("/api/console/plugins");
-    expect(dashboard).toContain("正在读取控制台状态");
-    expect(dashboard).toContain("/api/console/command-center");
-    expect(dashboard).toContain("你正在批准 / 决定什么");
-    expect(dashboard).toContain("是否有必要");
-    expect(dashboard).toContain("批准并创建任务");
-    expect(dashboard).toContain("查看审批详情");
-    expect(dashboard).toContain("kind==='approve'");
-    expect(dashboard).toContain("removeRepo");
-    expect(dashboard).toContain("删除注册");
+    expect(dashboard).toContain("Forge · Utility Console");
+    expect(dashboard).toContain("正在读取 Forge 配置");
+    expect(dashboard).toContain("/console-assets/app.js");
+    expect(dashboard).not.toContain("你想让它完成什么");
+
+    const uiScriptResponse = await fetch(new URL("/console-assets/app.js", handle.url));
+    expect(uiScriptResponse.status).toBe(200);
+    expect(uiScriptResponse.headers.get("content-type")).toContain("javascript");
+    const uiScript = await uiScriptResponse.text();
+    expect(uiScript).toContain("Overview");
+    expect(uiScript).toContain("Work");
+    expect(uiScript).toContain("Automations");
+    expect(uiScript).toContain("Capabilities");
+    expect(uiScript).toContain("Repositories");
+    expect(uiScript).toContain("Settings");
+    expect(uiScript).toContain("System");
+    expect(uiScript).toContain("/api/console/command-center");
+    expect(uiScript).toContain("/api/console/automations");
+
+    const trackedWork = await fetch(new URL("/api/console/work", handle.url), {
+      headers: { "x-forge-local-token": handle.token },
+    }).then((response) => response.json());
+    expect(Array.isArray(trackedWork.requirements)).toBe(true);
+    expect(typeof trackedWork.requirementCount).toBe("number");
+
+    const automations = await fetch(new URL("/api/console/automations", handle.url), {
+      headers: { "x-forge-local-token": handle.token },
+    }).then((response) => response.json());
+    expect(Array.isArray(automations.automations)).toBe(true);
+    expect(typeof automations.summary.total).toBe("number");
 
     const plugins = await fetch(new URL("/api/console/plugins", handle.url), {
       headers: { "x-forge-local-token": handle.token },
