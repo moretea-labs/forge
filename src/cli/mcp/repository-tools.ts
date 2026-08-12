@@ -19,6 +19,7 @@ import {
 } from '../repositories/registry';
 import { buildControllerWorkbench } from '../repositories/workbench';
 import { applySafePatch, buildSafePatchPlan } from '../repositories/safe-patch';
+import { getEditSessionDiff } from '../editing/edit-session';
 import { buildSyncOperationDigest, classifyUserFacingError } from '../../runtime/control-plane/facade/operation-digest';
 import { diagnoseRepositoryStuckState, listRepositoryGoalRuns, readRepositoryGoalRegistry, runRepositoryGoal, upsertRepositoryGoal } from '../repositories/goal-registry';
 import {
@@ -50,6 +51,7 @@ import {
 import { assessWorkMode, parseExplicitTaskMode } from '../controller/work-mode';
 import type { CallToolResult, McpToolDefinition } from './tools';
 import {
+  boundUtf8,
   compactCommandOutput,
   compactErrorMessage,
   compactRoutingSummary,
@@ -832,6 +834,27 @@ export async function callRepositoryTool(
         ];
         const ok = applied.status === 'applied';
         const firstFailure = applied.failures?.[0];
+        const editDiff = applied.appliedChunks.length > 0
+          ? getEditSessionDiff(repository.canonicalRoot, applied.session.sessionId)
+          : undefined;
+        const boundedEditDiff = editDiff
+          ? boundUtf8(editDiff.patch, RESPONSE_BUDGET.inlineOutputBytes)
+          : undefined;
+        const reviewEvidence = editDiff && boundedEditDiff
+          ? {
+              source: 'edit_session' as const,
+              sessionId: editDiff.sessionId,
+              revision: editDiff.revision,
+              sha256: editDiff.sha256,
+              patchPreview: boundedEditDiff.text,
+              truncated: boundedEditDiff.truncated,
+              byteLength: boundedEditDiff.byteLength,
+              semanticReviewAuthority: 'chatgpt' as const,
+              next: boundedEditDiff.truncated
+                ? 'The edit diff exceeds the inline budget. Expand only the affected ranges or diff needed for semantic review.'
+                : 'Review this exact edit-session diff before deciding whether more edits or focused validation are needed.',
+            }
+          : undefined;
         const digest = buildSyncOperationDigest({
           ok,
           operation: 'repository_safe_patch_apply',
@@ -858,6 +881,7 @@ export async function callRepositoryTool(
           terminal: true,
           applyMode: 'sync',
           digest,
+          ...(reviewEvidence ? { reviewEvidence } : {}),
           suggestedNextActions: digest.suggestedNextActions,
         };
         return ok ? result(payload) : { ...result(payload), isError: true };

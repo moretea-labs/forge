@@ -800,6 +800,16 @@ describe("repository MCP command tools", () => {
       expect(applied.status).toBe("applied");
       expect(applied.appliedChunks.length).toBe(2);
       expect(applied.session.currentRevision).toBe(2);
+      expect(applied.reviewEvidence).toMatchObject({
+        source: "edit_session",
+        revision: 2,
+        truncated: false,
+        semanticReviewAuthority: "chatgpt",
+      });
+      expect(applied.reviewEvidence.patchPreview).toContain("-alpha");
+      expect(applied.reviewEvidence.patchPreview).toContain("+alpha-1");
+      expect(applied.reviewEvidence.patchPreview).toContain("-beta");
+      expect(applied.reviewEvidence.patchPreview).toContain("+beta-1");
       expect(readFileSync(join(repoRoot, "app.txt"), "utf-8")).toBe("alpha-1\nbeta-1\n");
 
       const failed = await json(callRepositoryTool(controllerHome, "repository_safe_patch_apply", {

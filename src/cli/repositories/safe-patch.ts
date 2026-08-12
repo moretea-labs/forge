@@ -415,7 +415,7 @@ export function applySafePatch(repository: RepositoryRecord, input: {
     failures,
     plan,
     next: status === 'applied'
-      ? 'Run repository_git_diff or repository_git_status, then repository_git_commit when ready.'
+      ? 'Review the returned edit-session diff evidence. Run focused validation only after the coherent edit batch is stable, then commit when acceptance evidence is sufficient.'
       : 'Inspect failures[].context, refresh the operation text, and re-run only the failed chunk or remaining operations.',
   };
 }
