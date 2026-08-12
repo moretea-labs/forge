@@ -10,6 +10,8 @@ import { callExecutionTool } from '../../src/runtime/gateway/mcp/execution-tools
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
+import { forgeRuntimeServicePaths } from '../../src/runtime/root/service';
+import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { ensureActiveRuntimeRelease } from '../../src/runtime/root/release-store';
 import { bindRuntimeWriteClaim, clearRuntimeWriteClaimForTests } from '../../src/runtime/root/write-fence';
 
@@ -60,6 +62,41 @@ function fixture(label: string) {
   const owner = acquireRuntimeOwnership(controllerHome, `runtime-lifecycle-${label}`);
   const authority = ensureActiveRuntimeRelease(controllerHome, runtimeManifest(controllerHome));
   bindRuntimeWriteClaim({ controllerHome, owner: owner.record, authority });
+  const runtimeService = forgeRuntimeServicePaths(controllerHome);
+  mkdirSync(runtimeService.serviceRoot, { recursive: true });
+  const runtimeTokenPath = join(controllerHome, 'mcp', 'runtime-token');
+  mkdirSync(join(controllerHome, 'mcp'), { recursive: true });
+  writeFileSync(runtimeTokenPath, `fixture-token-${label}\n`, { mode: 0o600 });
+  writeFileSync(runtimeService.configPath, JSON.stringify({
+    schemaVersion: 1,
+    controllerHome,
+    repositoryRoot: repoRoot,
+    host: '127.0.0.1',
+    port: 9876,
+    authTokenFile: runtimeTokenPath,
+  }));
+  const runtimeObservedAt = new Date().toISOString();
+  writeRuntimeStatusSnapshot(controllerHome, {
+    schemaVersion: 1,
+    runtimeInstanceId: owner.record.runtimeInstanceId,
+    pid: owner.record.pid,
+    releaseId: authority.active.releaseId,
+    artifactIdentity: authority.active.artifactIdentity,
+    endpoint: 'http://127.0.0.1:9876/mcp',
+    readiness: {
+      ready: true,
+      reasonCodes: [],
+      diagnostics: {
+        database: { outcome: 'pass' },
+        scheduler: { outcome: 'pass' },
+        releaseCoherence: { outcome: 'pass' },
+        mcpEndToEnd: { outcome: 'pass' },
+      },
+      observedAt: runtimeObservedAt,
+    },
+    startedAt: runtimeObservedAt,
+    updatedAt: runtimeObservedAt,
+  });
   const ctx = createMcpToolContext({
     controllerHome,
     profile: 'controller',
@@ -68,7 +105,7 @@ function fixture(label: string) {
     principalId: `principal-lifecycle-${label}`,
     controllerInstanceId: `runtime-lifecycle-${label}`,
   });
-  return { root, controllerHome, repoRoot, repository, ctx };
+  return { root, controllerHome, repoRoot, repository, ctx, owner, authority };
 }
 
 async function prepareManagedWork(fx: ReturnType<typeof fixture>, objective: string) {
@@ -243,6 +280,21 @@ describe('rh_work managed lifecycle closure', () => {
       work_id: work.workId,
     });
     expect(released?.isError).not.toBe(true);
+    const runtimeObservedAt = new Date().toISOString();
+    writeRuntimeStatusSnapshot(fx.controllerHome, {
+      schemaVersion: 1,
+      runtimeInstanceId: fx.owner.record.runtimeInstanceId,
+      pid: fx.owner.record.pid,
+      releaseId: fx.authority.active.releaseId,
+      artifactIdentity: fx.authority.active.artifactIdentity,
+      endpoint: 'http://127.0.0.1:9876/mcp',
+      readiness: {
+        ready: true, reasonCodes: [],
+        diagnostics: { database: { outcome: 'pass' }, scheduler: { outcome: 'pass' }, releaseCoherence: { outcome: 'pass' }, mcpEndToEnd: { outcome: 'pass' } },
+        observedAt: runtimeObservedAt,
+      },
+      startedAt: runtimeObservedAt, updatedAt: runtimeObservedAt,
+    });
 
     const triggered = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'schedule_trigger', schedule_id: scheduleId });
     expect(triggered?.isError).not.toBe(true);
