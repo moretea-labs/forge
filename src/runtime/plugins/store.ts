@@ -265,13 +265,21 @@ function writeRegistry(controllerHome: string, repoId: string, manifests: Assist
   return index;
 }
 
-function mapResourceClaims(action: AssistantPluginActionDescriptor, repository: RepositoryRecord): ResourceClaimSpec[] {
+export function claimsForAssistantPluginAction(
+  action: AssistantPluginActionDescriptor,
+  repository: RepositoryRecord,
+  trustedPluginId: string,
+): ResourceClaimSpec[] {
   const controllerScoped = repository.repoId === CONTROLLER_SCOPE_REPO_ID;
+  const pluginId = trustedPluginId.trim().replace(/[^a-zA-Z0-9._-]+/g, '-');
+  if (!pluginId) throw new Error('PLUGIN_ID_REQUIRED_FOR_RESOURCE_CLAIMS');
   return action.resourceClaims.map((claim) => ({
-    resourceKey: controllerScoped
-      ? `controller-system:${claim.resource}`
-      : claim.resource === 'remote'
-        ? `remote:${repository.repoId}`
+    resourceKey: claim.resource === 'remote' || claim.resource === 'provider-state'
+      // The manifest/plugin id was resolved from the trusted registration; a
+      // provider never supplies arbitrary resource-key text.
+      ? `provider-state:${pluginId}`
+      : controllerScoped
+        ? `controller-system:${claim.resource}`
         : claim.resource === 'workspace'
           ? `workspace:${repository.activeCheckoutId}`
           : claim.resource === 'git-refs'
@@ -764,7 +772,7 @@ export async function submitAssistantPluginAction(
           mode: 'mutating',
           idempotent: action.idempotent,
           replayable: action.idempotent,
-          resourceClaims: mapResourceClaims(action, repository),
+          resourceClaims: claimsForAssistantPluginAction(action, repository, manifest.pluginId),
         },
         objective: `Execute bounded controller-local effect ${request.pluginId}/${request.actionId}`,
         mode: 'direct_control',

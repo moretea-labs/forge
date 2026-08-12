@@ -7,6 +7,8 @@ import {
 import { claimsForMcpOperation } from '../../src/runtime/gateway/mcp/resource-policy';
 import { claimsConflict } from '../../src/runtime/resources/claims/conflicts';
 import type { ExecutionLease } from '../../src/runtime/resources/leases/types';
+import { claimsForAssistantPluginAction } from '../../src/runtime/plugins/store';
+import type { AssistantPluginActionDescriptor } from '../../src/runtime/plugins/types';
 
 function lease(resourceKey: string, mode: 'read' | 'write' | 'exclusive'): ExecutionLease {
   return { resourceKey, mode } as ExecutionLease;
@@ -114,5 +116,22 @@ describe('Process Runtime fine-grained resource claims', () => {
 
     const releaseClaims = claimsForMcpOperation('run_check', { check_id: 'check:release' }, 'repo1', 'co1');
     expect(releaseClaims).toContainEqual({ resourceKey: 'heavy-check:repo1', mode: 'exclusive' });
+  });
+
+  test('trusted provider state serializes only the same provider, never repository workspace state', () => {
+    const action = {
+      actionId: 'mutate_provider', title: 'Mutate provider', description: 'test', readOnly: false,
+      risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 1_000,
+      cancellable: true, idempotent: false, scopes: [], resourceClaims: [{ resource: 'remote', mode: 'write' }], argumentsSchema: {},
+    } as AssistantPluginActionDescriptor;
+    const repository = { repoId: 'repo1', activeCheckoutId: 'co1' } as Parameters<typeof claimsForAssistantPluginAction>[1];
+    const providerA = claimsForAssistantPluginAction(action, repository, 'provider_a');
+    const providerB = claimsForAssistantPluginAction(action, repository, 'provider_b');
+    expect(providerA).toEqual([{ resourceKey: 'provider-state:provider_a', mode: 'write' }]);
+    expect(providerA.some((claim) => claim.resourceKey.startsWith('workspace:'))).toBe(false);
+    expect(claimsConflict(providerA[0]!, lease('provider-state:provider_a', 'write'))).toBe(true);
+    expect(claimsConflict(providerA[0]!, lease('provider-state:provider_b', 'write'))).toBe(false);
+    expect(claimsConflict(providerA[0]!, lease('workspace:co1', 'write'))).toBe(false);
+    expect(providerB).toEqual([{ resourceKey: 'provider-state:provider_b', mode: 'write' }]);
   });
 });

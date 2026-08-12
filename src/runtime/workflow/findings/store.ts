@@ -1,55 +1,84 @@
 import { createHash, randomUUID } from 'crypto';
-import { existsSync, readdirSync } from 'fs';
+import { readdirSync } from 'fs';
 import { join } from 'path';
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
-import { withControllerLock } from '../../../cli/repositories/locks';
+import {
+  listControlPlaneRecords,
+  mutateControlPlaneRecord,
+  readOrImportControlPlaneRecord,
+} from '../../control-plane/persistence/sqlite-store';
 import { appendRuntimeEvent } from '../../evidence/event-ledger';
-import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
+import { readJsonFile, sanitizeFileComponent } from '../../shared/json-files';
 import type { CandidateFinding, RecordCandidateFindingInput } from './types';
 
-interface FindingIndex {
-  schemaVersion: 1;
-  updatedAt: string;
-  candidates: Array<{ findingId: string; semanticKey: string; severity: CandidateFinding['severity']; lastSeenAt: string }>;
-  recent: Array<{ findingId: string; semanticKey: string; status: CandidateFinding['status']; lastSeenAt: string }>;
-}
+const FINDING_NAMESPACE = 'candidate_finding';
+const FINDING_SCHEMA_VERSION = 1;
+const MAX_EVIDENCE = 100;
+const MAX_FINDINGS = 5_000;
 
-function root(controllerHome: string, repoId: string): string {
+function legacyRoot(controllerHome: string, repoId: string): string {
   return join(repositoryControllerRoot(controllerHome, repoId), 'candidate-findings');
 }
-function recordPath(controllerHome: string, repoId: string, findingId: string): string {
-  return join(root(controllerHome, repoId), 'records', `${sanitizeFileComponent(findingId)}.json`);
+function legacyRecordPath(controllerHome: string, repoId: string, findingId: string): string {
+  return join(legacyRoot(controllerHome, repoId), 'records', `${sanitizeFileComponent(findingId)}.json`);
 }
-function semanticPath(controllerHome: string, repoId: string, semanticKey: string): string {
-  return join(root(controllerHome, repoId), 'indexes', 'semantic', `${createHash('sha256').update(semanticKey).digest('hex')}.json`);
+function legacySemanticPath(controllerHome: string, repoId: string, semanticKey: string): string {
+  return join(legacyRoot(controllerHome, repoId), 'indexes', 'semantic', `${findingKey(semanticKey)}.json`);
 }
-function indexPath(controllerHome: string, repoId: string): string {
-  return join(root(controllerHome, repoId), 'indexes', 'findings.json');
+function findingKey(semanticKey: string): string {
+  return createHash('sha256').update(semanticKey).digest('hex');
 }
-function emptyIndex(): FindingIndex {
-  return { schemaVersion: 1, updatedAt: new Date().toISOString(), candidates: [], recent: [] };
+function legacyFinding(controllerHome: string, repoId: string, findingId: string): CandidateFinding | undefined {
+  try { return readJsonFile<CandidateFinding>(legacyRecordPath(controllerHome, repoId, findingId)); } catch { return undefined; }
 }
-function readIndex(controllerHome: string, repoId: string): FindingIndex {
-  return readJsonFile<FindingIndex>(indexPath(controllerHome, repoId), emptyIndex());
-}
-function upsertIndexUnlocked(controllerHome: string, finding: CandidateFinding): void {
-  const index = readIndex(controllerHome, finding.repoId);
-  index.candidates = index.candidates.filter((entry) => entry.findingId !== finding.findingId);
-  index.recent = index.recent.filter((entry) => entry.findingId !== finding.findingId);
-  if (finding.status === 'candidate') {
-    index.candidates.push({ findingId: finding.findingId, semanticKey: finding.semanticKey, severity: finding.severity, lastSeenAt: finding.lastSeenAt });
+function legacyFindingForSemanticKey(controllerHome: string, repoId: string, semanticKey: string): CandidateFinding | undefined {
+  try {
+    const reference = readJsonFile<{ findingId?: string }>(legacySemanticPath(controllerHome, repoId, semanticKey));
+    return typeof reference.findingId === 'string' ? legacyFinding(controllerHome, repoId, reference.findingId) : undefined;
+  } catch {
+    return undefined;
   }
-  index.recent.push({ findingId: finding.findingId, semanticKey: finding.semanticKey, status: finding.status, lastSeenAt: finding.lastSeenAt });
-  index.candidates.sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt));
-  index.recent.sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt));
-  index.candidates = index.candidates.slice(0, 5000);
-  index.recent = index.recent.slice(0, 5000);
-  index.updatedAt = new Date().toISOString();
-  writeJsonAtomic(indexPath(controllerHome, finding.repoId), index);
+}
+function records(controllerHome: string, repoId: string): CandidateFinding[] {
+  return listControlPlaneRecords<CandidateFinding>(controllerHome, {
+    namespace: FINDING_NAMESPACE,
+    scope: repoId,
+    limit: MAX_FINDINGS,
+  }).map((record) => record.value);
+}
+function importLegacyFinding(controllerHome: string, repoId: string, finding: CandidateFinding): CandidateFinding {
+  return readOrImportControlPlaneRecord<CandidateFinding>(controllerHome, {
+    namespace: FINDING_NAMESPACE,
+    scope: repoId,
+    key: findingKey(finding.semanticKey),
+    schemaVersion: FINDING_SCHEMA_VERSION,
+    readLegacy: () => finding,
+  })!.value;
+}
+function importLegacyFindings(controllerHome: string, repoId: string): CandidateFinding[] {
+  const directory = join(legacyRoot(controllerHome, repoId), 'records');
+  try {
+    for (const name of readdirSync(directory).filter((entry) => entry.endsWith('.json')).slice(0, MAX_FINDINGS)) {
+      const finding = legacyFinding(controllerHome, repoId, name.slice(0, -'.json'.length));
+      if (finding?.repoId === repoId && finding.semanticKey) importLegacyFinding(controllerHome, repoId, finding);
+    }
+  } catch {
+    // No legacy records is the normal v2 path.
+  }
+  return records(controllerHome, repoId);
+}
+function existingFinding(controllerHome: string, repoId: string, findingId: string): CandidateFinding | undefined {
+  return records(controllerHome, repoId).find((finding) => finding.findingId === findingId)
+    ?? (() => {
+      const legacy = legacyFinding(controllerHome, repoId, findingId);
+      return legacy?.repoId === repoId ? importLegacyFinding(controllerHome, repoId, legacy) : undefined;
+    })();
 }
 
 export function getCandidateFinding(controllerHome: string, repoId: string, findingId: string): CandidateFinding {
-  return readJsonFile<CandidateFinding>(recordPath(controllerHome, repoId, findingId));
+  const finding = existingFinding(controllerHome, repoId, findingId);
+  if (!finding) throw new Error(`CANDIDATE_FINDING_NOT_FOUND: ${findingId}`);
+  return finding;
 }
 
 export function recordCandidateFinding(controllerHome: string, input: RecordCandidateFindingInput): CandidateFinding {
@@ -59,31 +88,38 @@ export function recordCandidateFinding(controllerHome: string, input: RecordCand
   if (!semanticKey) throw new Error('CANDIDATE_SEMANTIC_KEY_REQUIRED');
   if (!title) throw new Error('CANDIDATE_TITLE_REQUIRED');
   if (!requestId) throw new Error('CANDIDATE_REQUEST_ID_REQUIRED');
-  const lockId = createHash('sha256').update(semanticKey).digest('hex').slice(0, 20);
-  return withControllerLock(controllerHome, { scope: 'task', repoId: input.repoId, taskId: `candidate-${lockId}` }, `record-candidate:${lockId}`, () => {
-    const semanticIndex = semanticPath(controllerHome, input.repoId, semanticKey);
-    const timestamp = input.evidence?.observedAt ?? new Date().toISOString();
-    let finding: CandidateFinding;
-    if (existsSync(semanticIndex)) {
-      const reference = readJsonFile<{ findingId: string }>(semanticIndex);
-      const current = getCandidateFinding(controllerHome, input.repoId, reference.findingId);
+  const timestamp = input.evidence?.observedAt ?? new Date().toISOString();
+  const record = mutateControlPlaneRecord<CandidateFinding>(controllerHome, {
+    namespace: FINDING_NAMESPACE,
+    scope: input.repoId,
+    key: findingKey(semanticKey),
+    schemaVersion: FINDING_SCHEMA_VERSION,
+    action: 'candidate_finding_observed',
+    readLegacy: () => legacyFindingForSemanticKey(controllerHome, input.repoId, semanticKey),
+    mutate: (current) => {
+      const previous = current?.value;
       const evidence = input.evidence
-        ? [...current.evidence, { ...input.evidence, observedAt: timestamp }].slice(-100)
-        : current.evidence;
-      finding = {
-        ...current,
-        revision: current.revision + 1,
+        ? [...(previous?.evidence ?? []), { ...input.evidence, observedAt: timestamp }].slice(-MAX_EVIDENCE)
+        : previous?.evidence ?? [];
+      return previous ? {
+        ...previous,
+        revision: previous.revision + 1,
         title,
-        summary: input.summary ?? current.summary,
-        severity: input.severity ?? current.severity,
-        status: current.status === 'dismissed' ? 'candidate' : current.status,
-        observationCount: current.observationCount + 1,
+        summary: input.summary ?? previous.summary,
+        severity: input.severity ?? previous.severity,
+        status: previous.status === 'dismissed' ? 'candidate' : previous.status,
+        observationCount: previous.observationCount + 1,
         evidence,
         lastSeenAt: timestamp,
-        dismissedReason: current.status === 'dismissed' ? undefined : current.dismissedReason,
-      };
-    } else {
-      finding = {
+        dismissedReason: previous.status === 'dismissed' ? undefined : previous.dismissedReason,
+        requirementId: input.requirementId ?? previous.requirementId,
+        kind: input.kind ?? previous.kind,
+        sourceRepoId: input.sourceRepoId ?? previous.sourceRepoId,
+        sourceWorkId: input.sourceWorkId ?? previous.sourceWorkId,
+        sourceProcessId: input.sourceProcessId ?? previous.sourceProcessId,
+        sourcePluginId: input.sourcePluginId ?? previous.sourcePluginId,
+        externalRefs: input.externalRefs ?? previous.externalRefs,
+      } : {
         schemaVersion: 1,
         revision: 1,
         findingId: `FIND-${Date.now()}-${randomUUID().slice(0, 8)}`,
@@ -94,25 +130,30 @@ export function recordCandidateFinding(controllerHome: string, input: RecordCand
         severity: input.severity ?? 'medium',
         status: 'candidate',
         observationCount: 1,
-        evidence: input.evidence ? [{ ...input.evidence, observedAt: timestamp }] : [],
+        evidence,
         firstSeenAt: timestamp,
         lastSeenAt: timestamp,
+        requirementId: input.requirementId,
+        kind: input.kind,
+        sourceRepoId: input.sourceRepoId,
+        sourceWorkId: input.sourceWorkId,
+        sourceProcessId: input.sourceProcessId,
+        sourcePluginId: input.sourcePluginId,
+        externalRefs: input.externalRefs,
       };
-      writeJsonAtomic(semanticIndex, { semanticKey, findingId: finding.findingId, createdAt: timestamp });
-    }
-    writeJsonAtomic(recordPath(controllerHome, finding.repoId, finding.findingId), finding);
-    upsertIndexUnlocked(controllerHome, finding);
-    appendRuntimeEvent(controllerHome, {
-      repoId: finding.repoId,
-      entityType: 'candidate-finding',
-      entityId: finding.findingId,
-      eventType: finding.observationCount === 1 ? 'candidate_finding_created' : 'candidate_finding_observed',
-      requestId,
-      revision: finding.revision,
-      data: { semanticKey, observationCount: finding.observationCount, severity: finding.severity },
-    });
-    return finding;
-  }, 10_000);
+    },
+  });
+  const finding = record.value;
+  appendRuntimeEvent(controllerHome, {
+    repoId: finding.repoId,
+    entityType: 'candidate-finding',
+    entityId: finding.findingId,
+    eventType: finding.observationCount === 1 ? 'candidate_finding_created' : 'candidate_finding_observed',
+    requestId,
+    revision: finding.revision,
+    data: { semanticKey, observationCount: finding.observationCount, severity: finding.severity },
+  });
+  return finding;
 }
 
 export function updateCandidateFinding(
@@ -123,43 +164,41 @@ export function updateCandidateFinding(
   requestId: string,
   eventType: string,
 ): CandidateFinding {
-  return withControllerLock(controllerHome, { scope: 'task', repoId, taskId: `candidate-${findingId}` }, `update-candidate:${findingId}`, () => {
-    const current = getCandidateFinding(controllerHome, repoId, findingId);
-    const next = updater(structuredClone(current));
-    if (next.findingId !== current.findingId || next.repoId !== current.repoId || next.semanticKey !== current.semanticKey) {
-      throw new Error('CANDIDATE_IDENTITY_IMMUTABLE');
-    }
-    next.revision = current.revision + 1;
-    next.lastSeenAt = new Date().toISOString();
-    writeJsonAtomic(recordPath(controllerHome, repoId, findingId), next);
-    upsertIndexUnlocked(controllerHome, next);
-    appendRuntimeEvent(controllerHome, {
-      repoId,
-      entityType: 'candidate-finding',
-      entityId: findingId,
-      eventType,
-      requestId,
-      revision: next.revision,
-      data: { status: next.status, promotedJobId: next.promotedJobId },
-    });
-    return next;
-  }, 10_000);
+  const existing = getCandidateFinding(controllerHome, repoId, findingId);
+  const record = mutateControlPlaneRecord<CandidateFinding>(controllerHome, {
+    namespace: FINDING_NAMESPACE,
+    scope: repoId,
+    key: findingKey(existing.semanticKey),
+    schemaVersion: FINDING_SCHEMA_VERSION,
+    action: eventType,
+    mutate: (current) => {
+      const previous = current?.value ?? existing;
+      const next = updater(structuredClone(previous));
+      if (next.findingId !== previous.findingId || next.repoId !== previous.repoId || next.semanticKey !== previous.semanticKey) {
+        throw new Error('CANDIDATE_IDENTITY_IMMUTABLE');
+      }
+      return { ...next, revision: previous.revision + 1, lastSeenAt: new Date().toISOString() };
+    },
+  });
+  const finding = record.value;
+  appendRuntimeEvent(controllerHome, {
+    repoId,
+    entityType: 'candidate-finding',
+    entityId: findingId,
+    eventType,
+    requestId,
+    revision: finding.revision,
+    data: { status: finding.status, promotedJobId: finding.promotedJobId },
+  });
+  return finding;
 }
 
 export function listCandidateFindings(controllerHome: string, repoId: string, options: { includeTerminal?: boolean; limit?: number } = {}): CandidateFinding[] {
   const bounded = Math.max(1, Math.min(options.limit ?? 100, 1000));
-  const index = readIndex(controllerHome, repoId);
-  const entries = options.includeTerminal ? index.recent : index.candidates;
-  const indexed = entries.slice(0, bounded).flatMap((entry) => {
-    try { return [getCandidateFinding(controllerHome, repoId, entry.findingId)]; } catch { return []; }
-  });
-  if (indexed.length > 0) return indexed;
-  try {
-    return readdirSync(join(root(controllerHome, repoId), 'records'))
-      .filter((name) => name.endsWith('.json'))
-      .map((name) => readJsonFile<CandidateFinding>(join(root(controllerHome, repoId), 'records', name)))
-      .filter((finding) => options.includeTerminal || finding.status === 'candidate')
-      .sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt))
-      .slice(0, bounded);
-  } catch { return []; }
+  const stored = records(controllerHome, repoId);
+  const all = stored.length > 0 ? stored : importLegacyFindings(controllerHome, repoId);
+  return all
+    .filter((finding) => options.includeTerminal || finding.status === 'candidate')
+    .sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt))
+    .slice(0, bounded);
 }

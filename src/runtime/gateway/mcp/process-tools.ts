@@ -96,6 +96,10 @@ export const processToolDefinitions: McpToolDefinition[] = [
 ];
 
 const processToolNames = new Set(processToolDefinitions.map((tool) => tool.name));
+// Public MCP clients commonly detach around one minute. Return a normal attach
+// snapshot before that deadline rather than allowing transport timeout to turn
+// a healthy Process into an error-shaped response.
+export const DEFAULT_PROCESS_WAIT_ATTACH_BUDGET_MS = 55_000;
 
 function result(value: Record<string, unknown>, isError = false): CallToolResult {
   const safe = redactSensitiveValue(value).value;
@@ -181,14 +185,23 @@ export async function callProcessTool(
         });
       }
       case 'process_wait': {
-        const timeoutMs = typeof args.timeout_ms === 'number' && Number.isFinite(args.timeout_ms)
+        const requestedWaitMs = typeof args.timeout_ms === 'number' && Number.isFinite(args.timeout_ms)
           ? Math.max(1, Math.trunc(args.timeout_ms))
           : 15_000;
-        const handle = await waitForProcess(ctx.controllerHome, repoId, processId, { timeoutMs });
+        const testBudget = (ctx as MultiRepositoryMcpToolContext & { processWaitAttachBudgetMs?: unknown }).processWaitAttachBudgetMs;
+        const attachBudgetMs = typeof testBudget === 'number' && Number.isFinite(testBudget)
+          ? Math.max(1, Math.trunc(testBudget))
+          : DEFAULT_PROCESS_WAIT_ATTACH_BUDGET_MS;
+        const startedAt = Date.now();
+        const handle = await waitForProcess(ctx.controllerHome, repoId, processId, {
+          timeoutMs: Math.min(requestedWaitMs, attachBudgetMs),
+        });
         return result({
           repoId,
           process: handleToPayload(handle),
-          waitedMs: timeoutMs,
+          waitedMs: Date.now() - startedAt,
+          requestedWaitMs,
+          attachBudgetMs,
           reExecuted: false,
         });
       }

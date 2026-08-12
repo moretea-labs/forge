@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import {
   ensureControllerHomeStorage,
+  ensureMacosSpotlightOperationalExclusion,
   repoLocalNoIndexControllerHome,
+  resetMacosSpotlightExclusionForTests,
   resolveRepoPreferredControllerHome,
+  spotlightOperationalExclusionRoot,
 } from '../../src/cli/repositories/controller-home';
 
 const roots: string[] = [];
@@ -15,6 +18,31 @@ afterEach(() => {
   if (originalControllerHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
   else process.env.FORGE_CONTROLLER_HOME = originalControllerHome;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  resetMacosSpotlightExclusionForTests();
+});
+
+describe('macOS Controller Home Spotlight exclusion', () => {
+  test('repo-local controller home excludes only the _ops operational root', () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-spotlight-'));
+    roots.push(repoRoot);
+    const controllerHome = join(repoRoot, '_ops', 'controller-home');
+    expect(spotlightOperationalExclusionRoot(controllerHome)).toBe(join(repoRoot, '_ops'));
+    const first = ensureMacosSpotlightOperationalExclusion(controllerHome, 'darwin');
+    const second = ensureMacosSpotlightOperationalExclusion(controllerHome, 'darwin');
+    expect(first).toMatchObject({ attempted: true, excludedRoot: join(repoRoot, '_ops'), created: true });
+    expect(second).toMatchObject({ attempted: false, excludedRoot: join(repoRoot, '_ops') });
+    expect(existsSync(join(repoRoot, '_ops', '.metadata_never_index'))).toBe(true);
+    expect(existsSync(join(repoRoot, '.metadata_never_index'))).toBe(false);
+  });
+
+  test('global controller home excludes only itself and other platforms are no-op', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-global-controller-'));
+    roots.push(home);
+    expect(spotlightOperationalExclusionRoot(home)).toBe(resolve(home));
+    expect(ensureMacosSpotlightOperationalExclusion(home, 'linux')).toEqual({ attempted: false });
+    expect(existsSync(join(home, '.metadata_never_index'))).toBe(false);
+    expect(ensureMacosSpotlightOperationalExclusion(home, 'darwin')).toMatchObject({ created: true, excludedRoot: resolve(home) });
+  });
 });
 
 describe('repo-preferred controller home', () => {

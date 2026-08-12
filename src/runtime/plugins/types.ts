@@ -4,7 +4,7 @@ export type AssistantPluginLifecycleState = 'enabled' | 'disabled' | 'degraded' 
 export type AssistantPluginHealthState = 'ready' | 'disabled' | 'degraded' | 'error';
 export type AssistantPluginActionRisk = 'readonly' | 'workspace_write' | 'remote_write' | 'destructive';
 export type AssistantPluginActionConfirmation = 'none' | 'authorization' | 'strong_confirmation';
-export type AssistantPluginResource = 'repo-state' | 'workspace' | 'remote' | 'git-refs';
+export type AssistantPluginResource = 'repo-state' | 'workspace' | 'remote' | 'git-refs' | 'provider-state';
 
 export interface AssistantPluginPermissionScope {
   scope: string;

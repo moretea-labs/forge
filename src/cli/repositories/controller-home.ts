@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, symlinkSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, symlinkSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, join, relative, resolve } from 'path';
 
@@ -60,11 +60,67 @@ export function ensureControllerHomeStorage(
   return home;
 }
 
+const SPOTLIGHT_EXCLUSION_MARKER = '.metadata_never_index';
+const spotlightExclusionAttempted = new Set<string>();
+
+export interface SpotlightExclusionResult {
+  attempted: boolean;
+  excludedRoot?: string;
+  created?: boolean;
+  warning?: string;
+}
+
+/**
+ * macOS honours .metadata_never_index on a directory without disabling
+ * Spotlight for its parent volume. Controller Home changes frequently, so a
+ * repo-local home excludes _ops as a whole while a global home excludes only
+ * itself. This is deliberately a lifecycle helper: callers cache attempts
+ * and never invoke mdutil or alter any broader indexing policy.
+ */
+export function spotlightOperationalExclusionRoot(controllerHome: string): string {
+  const home = resolve(controllerHome);
+  const parts = home.split('/');
+  const ops = parts.lastIndexOf('_ops');
+  return ops >= 0 && parts[ops + 1] === 'controller-home'
+    ? parts.slice(0, ops + 1).join('/') || '/'
+    : home;
+}
+
+export function ensureMacosSpotlightOperationalExclusion(
+  controllerHome: string,
+  platform = process.platform,
+): SpotlightExclusionResult {
+  if (platform !== 'darwin') return { attempted: false };
+  const excludedRoot = spotlightOperationalExclusionRoot(controllerHome);
+  if (spotlightExclusionAttempted.has(excludedRoot)) return { attempted: false, excludedRoot };
+  spotlightExclusionAttempted.add(excludedRoot);
+  try {
+    mkdirSync(excludedRoot, { recursive: true });
+    const marker = join(excludedRoot, SPOTLIGHT_EXCLUSION_MARKER);
+    if (existsSync(marker)) return { attempted: true, excludedRoot, created: false };
+    writeFileSync(marker, '', { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    return { attempted: true, excludedRoot, created: true };
+  } catch (error) {
+    return {
+      attempted: true,
+      excludedRoot,
+      warning: `SPOTLIGHT_EXCLUSION_UNAVAILABLE: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+/** Test-only cache reset; production attempts are once per Runtime lifecycle. */
+export function resetMacosSpotlightExclusionForTests(): void {
+  spotlightExclusionAttempted.clear();
+}
+
 export function ensureControllerHome(explicit?: string): string {
   const home = ensureControllerHomeStorage(resolveControllerHome(explicit));
   for (const child of ['', 'repositories', 'system', 'locks', 'indexes', 'audit', 'mcp', 'sessions', 'work-handles']) {
     mkdirSync(join(home, child), { recursive: true });
   }
+  // Best effort only. Indexing policy must never prevent Controller startup.
+  ensureMacosSpotlightOperationalExclusion(home);
   return home;
 }
 

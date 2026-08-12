@@ -19,6 +19,7 @@ import {
   type RuntimeStorageRepairApplyResult,
   type RuntimeStorageRepairPreview,
 } from './local-jobs-repair';
+import { gcTerminalProcesses, type ProcessGcResult } from '../execution/process-runtime/gc';
 
 export type RuntimeMaintenanceActionId =
   | 'local_jobs_reconcile'
@@ -118,6 +119,8 @@ export interface RuntimeMaintenanceApplyResult extends Omit<RuntimeMaintenanceSt
   actionId: RuntimeMaintenanceActionId;
   applied: Array<RuntimeMaintenanceCandidate & { applied: boolean; result?: string; error?: string }>;
   runtimeStorageRepairApply?: RuntimeStorageRepairApplyResult;
+  /** Existing bounded terminal-process retention, run only during explicit full maintenance. */
+  processGc?: ProcessGcResult;
   projection?: unknown;
 }
 
@@ -801,6 +804,11 @@ export function applyRuntimeMaintenance(
       return { ...candidate, applied: false, error: error instanceof Error ? error.message : String(error) };
     }
   });
+  // Reuse the existing Process GC within the explicit full-maintenance cadence.
+  // No scheduler, per-tool-call cleanup, or database compaction is introduced.
+  const processGc = options.actionId === 'full_maintenance_pass'
+    ? gcTerminalProcesses({ controllerHome, repoId: repository.repoId })
+    : undefined;
 
   if (options.actionId === 'runtime_storage_finalize_relocation' || options.actionId === 'full_maintenance_pass' || applied.some((candidate) => candidate.applied) || runtimeStorageRepairApply) {
     rebuildActiveIndex(repository.canonicalRoot);
@@ -817,6 +825,7 @@ export function applyRuntimeMaintenance(
     runtimeStorageError: after.runtimeStorageError ?? storage.error,
     applied,
     runtimeStorageRepairApply,
+    processGc,
     projection,
   };
 }

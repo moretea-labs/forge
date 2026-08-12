@@ -1762,6 +1762,8 @@ describe('Process Runtime real lease contention', () => {
     expect(listRecoverableProcessRecords(fx.controllerHome, fx.repository.repoId)).toEqual([]);
 
     const projectionPath = join(processLogDir(fx.controllerHome, fx.repository.repoId), '..', 'active-index.json');
+    // SQLite is recovery authority. Ordinary lifecycle writes must not create
+    // or refresh the historical readability projection.
     expect(existsSync(projectionPath)).toBe(false);
   });
 
@@ -2118,5 +2120,50 @@ describe('process MCP live surface', () => {
     });
     expect(logs?.isError).not.toBe(true);
     expect(String((logs?.structuredContent as { stdout?: string })?.stdout ?? '')).toContain('mcp-ok');
+  });
+
+  test('process_wait returns a normal running attach result before its transport budget and later attaches to the same execution', async () => {
+    const fx = fixture();
+    const marker = join(fx.root, 'physical-execution-count.txt');
+    const started = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', `require('fs').appendFileSync(${JSON.stringify(marker)}, '1'); setTimeout(() => process.exit(0), 250)`],
+        cwd: fx.repoRoot,
+      },
+      interactiveWaitMs: 1,
+      timeoutMs: 5_000,
+    });
+    const ctx = {
+      controllerHome: fx.controllerHome,
+      repo: fx.repoRoot,
+      processWaitAttachBudgetMs: 25,
+    } as unknown as MultiRepositoryMcpToolContext;
+    const first = await callProcessTool(ctx, 'process_wait', {
+      repo_id: fx.repository.repoId,
+      process_id: started.processId,
+      timeout_ms: 1_000,
+    });
+    expect(first?.isError).not.toBe(true);
+    const firstPayload = first?.structuredContent as { process?: { status?: string; completed?: boolean }; requestedWaitMs?: number; attachBudgetMs?: number };
+    expect(firstPayload.process).toMatchObject({ status: 'running', completed: false });
+    expect(firstPayload).toMatchObject({ requestedWaitMs: 1_000, attachBudgetMs: 25 });
+
+    const terminalAttachCtx = {
+      ...ctx,
+      processWaitAttachBudgetMs: 1_000,
+    } as MultiRepositoryMcpToolContext;
+    const second = await callProcessTool(terminalAttachCtx, 'process_wait', {
+      repo_id: fx.repository.repoId,
+      process_id: started.processId,
+      timeout_ms: 2_000,
+    });
+    expect(second?.isError).not.toBe(true);
+    expect((second?.structuredContent as { process?: { completed?: boolean } }).process?.completed).toBe(true);
+    expect(readFileSync(marker, 'utf8')).toBe('1');
   });
 });

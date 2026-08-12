@@ -23,15 +23,15 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 108,
-    "maxTestLines": 42475,
+    "maxTestFiles": 109,
+    "maxTestLines": 42706,
     "maxPureFiles": 33,
     "maxTempIsolatedFiles": 46,
     "maxProcessTreeFiles": 17,
     "maxGitWorktreeFiles": 15,
     "maxFixedPortFiles": 6,
     "maxRuntimeSingletonFiles": 6,
-    "maxControllerHomeIsolatedFiles": 11,
+    "maxControllerHomeIsolatedFiles": 12,
     "maxDestructiveFiles": 0
   },
   "pathModuleRules": [
@@ -337,6 +337,10 @@
     },
     "tests/runtime/canonical-single-runtime.test.ts": {
       "module": "controller",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/candidate-findings-store.test.ts": {
+      "module": "workflow",
       "resource": "controller-home-isolated"
     },
     "tests/runtime/control-plane-hardening.test.ts": {

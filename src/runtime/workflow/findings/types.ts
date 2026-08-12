@@ -7,6 +7,13 @@ export interface CandidateFindingEvidence {
   details?: Record<string, unknown>;
 }
 
+export interface CandidateFindingExternalRef {
+  kind: string;
+  url?: string;
+  number?: number;
+  label?: string;
+}
+
 export interface CandidateFinding {
   schemaVersion: 1;
   revision: number;
@@ -23,6 +30,14 @@ export interface CandidateFinding {
   lastSeenAt: string;
   promotedJobId?: string;
   dismissedReason?: string;
+  /** Optional Requirement/operational provenance; repoId remains the owner. */
+  requirementId?: string;
+  kind?: 'defect' | 'performance' | 'reliability' | 'usability';
+  sourceRepoId?: string;
+  sourceWorkId?: string;
+  sourceProcessId?: string;
+  sourcePluginId?: string;
+  externalRefs?: CandidateFindingExternalRef[];
 }
 
 export interface RecordCandidateFindingInput {
@@ -32,5 +47,12 @@ export interface RecordCandidateFindingInput {
   summary?: string;
   severity?: CandidateFinding['severity'];
   evidence?: Omit<CandidateFindingEvidence, 'observedAt'> & { observedAt?: string };
+  requirementId?: string;
+  kind?: CandidateFinding['kind'];
+  sourceRepoId?: string;
+  sourceWorkId?: string;
+  sourceProcessId?: string;
+  sourcePluginId?: string;
+  externalRefs?: CandidateFindingExternalRef[];
   requestId: string;
 }
