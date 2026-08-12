@@ -58,6 +58,21 @@ describe('pending continuation activation', () => {
     expect(applyPendingContinuationActivations(fx.controllerHome)).toEqual([]);
   });
 
+  test('keeps a mismatched marker pending and leaves the schedule shadowed', () => {
+    const fx = fixture('mismatch');
+    const queued = queuePendingContinuationActivation(fx.controllerHome, fx.repoId, fx.schedule.scheduleId);
+    const current = getSchedule(fx.controllerHome, fx.repoId, fx.schedule.scheduleId);
+    saveSchedule(fx.controllerHome, {
+      ...current,
+      action: { ...current.action, arguments: { ...current.action.arguments, work_id: 'work-replanned' } },
+    });
+
+    const applied = applyPendingContinuationActivations(fx.controllerHome);
+    expect(applied).toEqual([{ ...queued, status: 'failed', reason: 'Schedule no longer targets the queued Work continuation.' }]);
+    expect(getSchedule(fx.controllerHome, fx.repoId, fx.schedule.scheduleId).policy.shadowMode).toBe(true);
+    expect(listPendingContinuationActivations(fx.controllerHome)).toEqual([queued]);
+  });
+
   test('does not reactivate a schedule that was explicitly disabled before restart', () => {
     const fx = fixture('paused');
     const queued = queuePendingContinuationActivation(fx.controllerHome, fx.repoId, fx.schedule.scheduleId);
