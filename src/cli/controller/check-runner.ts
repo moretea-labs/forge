@@ -21,6 +21,8 @@ export interface ControllerCheckEffects {
   temp?: 'isolated' | 'shared';
   git?: 'read' | 'index' | 'refs' | 'write';
   network?: 'read' | 'write';
+  /** Host-wide coordination resources used by checks that exercise shared local services/devices. */
+  hostServices?: string[];
 }
 
 export interface ControllerCheck {
@@ -131,7 +133,7 @@ function normalizeCwd(repoRoot: string, value: string | undefined): string {
   return back || '.';
 }
 
-const CHECK_EFFECT_KEYS = new Set(['reads', 'writes', 'cache', 'temp', 'git', 'network']);
+const CHECK_EFFECT_KEYS = new Set(['reads', 'writes', 'cache', 'temp', 'git', 'network', 'hostServices']);
 
 function normalizeEffectPaths(repoRoot: string, field: 'reads' | 'writes', value: unknown): string[] | undefined {
   if (value === undefined) return undefined;
@@ -139,6 +141,16 @@ function normalizeEffectPaths(repoRoot: string, field: 'reads' | 'writes', value
     throw new Error(`check effects.${field} must be an array of non-empty repository-relative paths`);
   }
   return [...new Set(value.map((entry) => normalizeCwd(repoRoot, String(entry))))].sort();
+}
+
+function normalizeHostServices(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string' || entry.trim().length === 0)) {
+    throw new Error('check effects.hostServices must be an array of non-empty strings');
+  }
+  const normalized = value.map((entry) => String(entry).trim().toLowerCase().replace(/[^a-z0-9._:-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 120));
+  if (normalized.some((entry) => !entry)) throw new Error('check effects.hostServices contains an invalid service key');
+  return [...new Set(normalized)].sort();
 }
 
 function normalizeEffectMode<T extends string>(field: string, value: unknown, allowed: readonly T[]): T | undefined {
@@ -164,6 +176,7 @@ function normalizeCheckEffects(repoRoot: string, value: unknown): ControllerChec
     ...(raw.temp !== undefined ? { temp: normalizeEffectMode('temp', raw.temp, ['isolated', 'shared'] as const)! } : {}),
     ...(raw.git !== undefined ? { git: normalizeEffectMode('git', raw.git, ['read', 'index', 'refs', 'write'] as const)! } : {}),
     ...(raw.network !== undefined ? { network: normalizeEffectMode('network', raw.network, ['read', 'write'] as const)! } : {}),
+    ...(raw.hostServices !== undefined ? { hostServices: normalizeHostServices(raw.hostServices)! } : {}),
   };
 }
 
@@ -396,6 +409,7 @@ function checkEffectsAllowCrossCheckoutReuse(check: ControllerCheck): boolean {
   if ((effects.writes?.length ?? 0) > 0) return false;
   if (effects.git !== undefined && effects.git !== 'read') return false;
   if (effects.network !== undefined) return false;
+  if ((effects.hostServices?.length ?? 0) > 0) return false;
   if (effects.temp === 'shared') return false;
   return true;
 }

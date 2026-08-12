@@ -130,6 +130,33 @@ function browserAppleScriptHeredocClaims(script: string): ResourceClaimSpec[] | 
   return [claimHostService(`osascript:${uniqueTargets[0]}`, 'write')];
 }
 
+function iosSimulatorTestCommandClaims(
+  command: string | readonly string[],
+  repoId: string,
+  checkoutId?: string,
+): ResourceClaimSpec[] | undefined {
+  const canonical = normalizeRepositoryCommand(command);
+  const isTestAction = (text: string): boolean => /(?:^|\s)(?:test|test-without-building)(?:\s|$)/i.test(text);
+  let matches = false;
+  if (canonical.kind === 'argv') {
+    const program = (canonical.executable ?? '').split(/[\\/]/).at(-1)?.toLowerCase();
+    if (program === 'xcodebuild') matches = (canonical.args ?? []).some((arg) => /^(?:test|test-without-building)$/i.test(arg));
+    if (!matches) {
+      const wrapped = fixedShellWrapperCommand([canonical.executable ?? '', ...(canonical.args ?? [])]);
+      matches = Boolean(wrapped && /\bxcodebuild\b/i.test(wrapped) && isTestAction(wrapped));
+    }
+  } else {
+    const shell = canonical.shellCommand ?? '';
+    matches = /\bxcodebuild\b/i.test(shell) && isTestAction(shell);
+  }
+  if (!matches) return undefined;
+  return normalizeClaims([
+    claimWorkspaceRead(checkoutId),
+    claimBuildCacheWrite(repoId),
+    claimHostService('ios-simulator-test', 'write'),
+  ]);
+}
+
 function hostOnlyCommandClaims(command: string | readonly string[]): ResourceClaimSpec[] | undefined {
   const canonical = normalizeRepositoryCommand(command);
   if (canonical.kind === 'shell') {
@@ -208,6 +235,7 @@ function claimsForDeclaredCheckEffects(
   if (effects.git === 'refs') claims.push(claimGitRefs(repoId));
   if (effects.git === 'write') claims.push(claimWorkspaceWrite(checkoutId), claimGitIndex(checkoutId), claimGitRefs(repoId));
   if (effects.network) claims.push(claimNetwork(repoId, effects.network));
+  for (const service of effects.hostServices ?? []) claims.push(claimHostService(service, 'write'));
 
   return normalizeClaims(claims, { readOnly: claims.every((claim) => claim.mode === 'read') });
 }
@@ -323,6 +351,8 @@ export function claimsForRepositoryCommand(
   const classification = classifyRepositoryCommand(command, defaultBranch);
   const canonical = normalizeRepositoryCommand(command);
   const focused = isFocusedCheckCommand(command);
+  const iosSimulatorClaims = iosSimulatorTestCommandClaims(command, repoId, checkoutId);
+  if (iosSimulatorClaims) return iosSimulatorClaims;
   const hostClaims = hostOnlyCommandClaims(command);
   if (hostClaims) return hostClaims;
 
