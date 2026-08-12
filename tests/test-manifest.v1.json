@@ -23,15 +23,15 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 109,
-    "maxTestLines": 42706,
+    "maxTestFiles": 110,
+    "maxTestLines": 43485,
     "maxPureFiles": 33,
     "maxTempIsolatedFiles": 46,
     "maxProcessTreeFiles": 17,
     "maxGitWorktreeFiles": 15,
     "maxFixedPortFiles": 6,
     "maxRuntimeSingletonFiles": 6,
-    "maxControllerHomeIsolatedFiles": 12,
+    "maxControllerHomeIsolatedFiles": 13,
     "maxDestructiveFiles": 0
   },
   "pathModuleRules": [
@@ -438,6 +438,10 @@
     "tests/runtime/repository-command-lifecycle.test.ts": {
       "module": "repository",
       "resource": "git-worktree"
+    },
+    "tests/runtime/handoff-inbox-authority.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
     },
     "tests/runtime/runtime-cleanup.test.ts": {
       "module": "process-runtime",
