@@ -24,18 +24,12 @@ bun run check:public-export
 
 ARTIFACT_DIR="${FORGE_RELEASE_ARTIFACT_DIR:-$ROOT/.ai/harness/artifacts/release}"
 mkdir -p "$ARTIFACT_DIR"
-PACK_JSON="$ARTIFACT_DIR/pack.json"
-echo "[release-readiness] create one reusable tarball"
-npm pack --json --pack-destination "$ARTIFACT_DIR" >"$PACK_JSON"
-TARBALL="$(bun - "$PACK_JSON" <<'JS_EOF'
-const [, , path] = process.argv;
-const value = await Bun.file(path).json();
-const entry = Array.isArray(value) ? value[0] : value;
-if (!entry?.filename) throw new Error('npm pack did not report a filename');
-console.log(entry.filename);
-JS_EOF
-)"
+TARBALL="$(node -e 'const p=require("./package.json"); process.stdout.write(`${p.name.replace(/^@/, "").replace(/\//g, "-")}-${p.version}.tgz`)')"
 TARBALL_PATH="$ARTIFACT_DIR/$TARBALL"
+echo "[release-readiness] create one reusable tarball"
+rm -f "$TARBALL_PATH"
+npm pack --pack-destination "$ARTIFACT_DIR" >/dev/null
+[[ -f "$TARBALL_PATH" ]] || { echo "[release-readiness] ERROR: npm pack did not create $TARBALL_PATH" >&2; exit 1; }
 printf '%s\n' "$TARBALL_PATH" >"$ARTIFACT_DIR/latest-tarball.txt"
 
 echo "[release-readiness] smoke the same tarball"
