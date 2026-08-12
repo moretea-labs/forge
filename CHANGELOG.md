@@ -13,6 +13,7 @@ No unreleased public changes are currently recorded.
 - Added the pinned official plugin catalog and `forge plugin catalog`, `forge plugin list`, and `forge plugin install` commands.
 - Added trusted `managed_cli_json` external-provider transport for bounded cross-platform product providers.
 - Published and pinned Forge Desktop Operator `v0.2.0`, Forge Design `v0.3.0`, and Personal Knowledge Assistant `v0.2.1` as independent repositories.
+- Updated the Desktop Operator pin to `v0.2.1`, adding silent background Chrome/Vivaldi sessions, stable native tab reattachment, and fail-closed foreground-only screenshot behavior.
 - Official installs validate the package manifest, clone only the fixed Moretea Labs HTTPS repository at an immutable tag, and write through the existing Controller Home external-registration authority.
 - Investment Decision System remains an independent product and is intentionally absent from the Forge plugin catalog.
 
