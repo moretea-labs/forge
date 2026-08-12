@@ -447,3 +447,7 @@ Schedules may perform bounded repository work but cannot push, merge, publish, d
 ## 25. Rollout Rule
 
 New mutation Schedules begin in Shadow Mode until their decisions are reviewed. This is an operational rollout rule, not an implementation gap.
+
+### Deferred activation across a natural Runtime restart
+
+A continuation Schedule may be deliberately created with `shadowMode=true` while the currently running immutable Runtime predates the Controller-wake implementation required by that Schedule. Forge can persist a one-time pending continuation activation marker in Controller Home. Old Runtime releases do not read this marker. The first naturally restarted Runtime containing the pending-activation implementation consumes the marker before starting its sole Scheduler, verifies that the Schedule is still enabled and still targets the same `external_controller_wake` Work, flips only `shadowMode` to `false`, and removes the marker. If the Schedule was explicitly disabled in the meantime, the marker is cancelled instead. This preserves one Scheduler authority and avoids introducing a second cron/LaunchAgent or forcing a rollout solely to enable continuation.
