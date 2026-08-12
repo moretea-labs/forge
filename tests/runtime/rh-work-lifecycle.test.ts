@@ -8,7 +8,10 @@ import { ensureControllerHome } from '../../src/cli/repositories/controller-home
 import { addRepositoryCheckout, registerRepository, setRepositoryCheckoutLifecycle } from '../../src/cli/repositories/registry';
 import { callExecutionTool } from '../../src/runtime/gateway/mcp/execution-tools';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
+import { forgeRuntimeServicePaths } from '../../src/runtime/root/service';
+import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { ensureActiveRuntimeRelease } from '../../src/runtime/root/release-store';
 import { bindRuntimeWriteClaim, clearRuntimeWriteClaimForTests } from '../../src/runtime/root/write-fence';
 
@@ -59,6 +62,41 @@ function fixture(label: string) {
   const owner = acquireRuntimeOwnership(controllerHome, `runtime-lifecycle-${label}`);
   const authority = ensureActiveRuntimeRelease(controllerHome, runtimeManifest(controllerHome));
   bindRuntimeWriteClaim({ controllerHome, owner: owner.record, authority });
+  const runtimeService = forgeRuntimeServicePaths(controllerHome);
+  mkdirSync(runtimeService.serviceRoot, { recursive: true });
+  const runtimeTokenPath = join(controllerHome, 'mcp', 'runtime-token');
+  mkdirSync(join(controllerHome, 'mcp'), { recursive: true });
+  writeFileSync(runtimeTokenPath, `fixture-token-${label}\n`, { mode: 0o600 });
+  writeFileSync(runtimeService.configPath, JSON.stringify({
+    schemaVersion: 1,
+    controllerHome,
+    repositoryRoot: repoRoot,
+    host: '127.0.0.1',
+    port: 9876,
+    authTokenFile: runtimeTokenPath,
+  }));
+  const runtimeObservedAt = new Date().toISOString();
+  writeRuntimeStatusSnapshot(controllerHome, {
+    schemaVersion: 1,
+    runtimeInstanceId: owner.record.runtimeInstanceId,
+    pid: owner.record.pid,
+    releaseId: authority.active.releaseId,
+    artifactIdentity: authority.active.artifactIdentity,
+    endpoint: 'http://127.0.0.1:9876/mcp',
+    readiness: {
+      ready: true,
+      reasonCodes: [],
+      diagnostics: {
+        database: { outcome: 'pass' },
+        scheduler: { outcome: 'pass' },
+        releaseCoherence: { outcome: 'pass' },
+        mcpEndToEnd: { outcome: 'pass' },
+      },
+      observedAt: runtimeObservedAt,
+    },
+    startedAt: runtimeObservedAt,
+    updatedAt: runtimeObservedAt,
+  });
   const ctx = createMcpToolContext({
     controllerHome,
     profile: 'controller',
@@ -67,7 +105,7 @@ function fixture(label: string) {
     principalId: `principal-lifecycle-${label}`,
     controllerInstanceId: `runtime-lifecycle-${label}`,
   });
-  return { root, controllerHome, repoRoot, repository, ctx };
+  return { root, controllerHome, repoRoot, repository, ctx, owner, authority };
 }
 
 async function prepareManagedWork(fx: ReturnType<typeof fixture>, objective: string) {
@@ -220,7 +258,7 @@ describe('rh_work managed lifecycle closure', () => {
     expect(resumedPayload.data?.schedule?.pausedReason).toBeUndefined();
   });
 
-  test('non-shadow continuation trigger wakes exactly one external Controller owner', async () => {
+  test('non-shadow continuation trigger reserves one launch while authenticated MCP retains Work ownership authority', async () => {
     const fx = fixture('schedule-live-wake');
     const work = await prepareManagedWork(fx, 'Wake one external Controller for this bounded Work');
     const created = await callRuntimeTool(fx.ctx, 'rh_work', {
@@ -242,15 +280,33 @@ describe('rh_work managed lifecycle closure', () => {
       work_id: work.workId,
     });
     expect(released?.isError).not.toBe(true);
+    const runtimeObservedAt = new Date().toISOString();
+    writeRuntimeStatusSnapshot(fx.controllerHome, {
+      schemaVersion: 1,
+      runtimeInstanceId: fx.owner.record.runtimeInstanceId,
+      pid: fx.owner.record.pid,
+      releaseId: fx.authority.active.releaseId,
+      artifactIdentity: fx.authority.active.artifactIdentity,
+      endpoint: 'http://127.0.0.1:9876/mcp',
+      readiness: {
+        ready: true, reasonCodes: [],
+        diagnostics: { database: { outcome: 'pass' }, scheduler: { outcome: 'pass' }, releaseCoherence: { outcome: 'pass' }, mcpEndToEnd: { outcome: 'pass' } },
+        observedAt: runtimeObservedAt,
+      },
+      startedAt: runtimeObservedAt, updatedAt: runtimeObservedAt,
+    });
 
     const triggered = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'schedule_trigger', schedule_id: scheduleId });
     expect(triggered?.isError).not.toBe(true);
     const occurrence = (triggered?.structuredContent as { data?: { occurrence?: { decision?: string; status?: string } } })?.data?.occurrence;
     expect(occurrence).toMatchObject({ decision: 'execute', status: 'succeeded' });
 
-    const owner = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'controller_get_owner', work_id: work.workId });
-    const ownerPayload = owner?.structuredContent as { data?: { owner?: { controllerType?: string } } };
-    expect(ownerPayload.data?.owner?.controllerType).toBe('codex');
+    const ownerBeforeMcp = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'controller_get_owner', work_id: work.workId });
+    const ownerBeforeMcpPayload = ownerBeforeMcp?.structuredContent as { data?: { owner?: unknown } };
+    expect(ownerBeforeMcpPayload.data?.owner).toBeUndefined();
+    const reservation = getExternalControllerLaunchReservation({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, work.workId);
+    expect(reservation?.controllerType).toBe('codex');
+    expect(reservation?.pid).toBeTruthy();
 
     const second = await callRuntimeTool(fx.ctx, 'rh_work', {
       repo_id: fx.repository.repoId,
@@ -261,7 +317,46 @@ describe('rh_work managed lifecycle closure', () => {
     });
     const secondOccurrence = (second?.structuredContent as { data?: { occurrence?: { decision?: string; reason?: string } } })?.data?.occurrence;
     expect(secondOccurrence?.decision).toBe('nothing_to_do');
-    expect(secondOccurrence?.reason).toContain('already has an active Controller');
+    expect(secondOccurrence?.reason).toContain('pending external Controller launch');
+
+    const externalPrincipal = `external:codex:${reservation!.reservationId}`;
+    const externalSession = `external-session:codex:${reservation!.reservationId}`;
+    const externalCtx = createMcpToolContext({
+      repo: fx.repoRoot,
+      controllerHome: fx.controllerHome,
+      profile: 'controller',
+      principalId: externalPrincipal,
+      sessionId: externalSession,
+      controllerType: 'codex',
+      controllerInstanceId: fx.owner.record.runtimeInstanceId,
+    });
+    const continued = await callRuntimeTool(externalCtx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'continue', work_id: work.workId });
+    const continuedPayload = continued?.structuredContent as { data?: { ownershipResumed?: boolean; controllerSession?: { controllerId?: string; sessionId?: string; controllerType?: string } } };
+    expect(continuedPayload.data?.ownershipResumed).toBe(true);
+    expect(continuedPayload.data?.controllerSession?.controllerId).toBe(externalPrincipal);
+    expect(continuedPayload.data?.controllerSession?.sessionId).toBe(externalSession);
+    expect(continuedPayload.data?.controllerSession?.controllerType).toBe('codex');
+    const ownerAfterMcp = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'controller_get_owner', work_id: work.workId });
+    const ownerAfterMcpPayload = ownerAfterMcp?.structuredContent as { data?: { owner?: { controllerId?: string; sessionId?: string; controllerType?: string } } };
+    expect(ownerAfterMcpPayload.data?.owner?.controllerId).toBe(externalPrincipal);
+    expect(ownerAfterMcpPayload.data?.owner?.sessionId).toBe(externalSession);
+    expect(ownerAfterMcpPayload.data?.owner?.controllerType).toBe('codex');
+
+    const handedOff = await callRuntimeTool(externalCtx, 'rh_inbox', {
+      repo_id: fx.repository.repoId,
+      operation: 'create',
+      handoff_id: 'hnd-schedule-live-wake-yield',
+      work_id: work.workId,
+      title: 'Validation needs controller judgement',
+      reason: 'Bounded infrastructure blocker.',
+      summary: 'Yield control instead of retaining a stale owner lease.',
+      recommended_decision: 'Repair the blocker and resume later.',
+      recommended_prompt: 'Resume after the blocker is repaired.',
+    });
+    const handoffPayload = handedOff?.structuredContent as { data?: { ownershipReleased?: boolean } };
+    expect(handoffPayload.data?.ownershipReleased).toBe(true);
+    const ownerAfterHandoff = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'controller_get_owner', work_id: work.workId });
+    expect((ownerAfterHandoff?.structuredContent as { data?: { owner?: unknown } }).data?.owner).toBeUndefined();
   });
 
   test('continuation schedule disables itself instead of waking a terminal Work', async () => {

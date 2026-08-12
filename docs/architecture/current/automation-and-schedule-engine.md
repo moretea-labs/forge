@@ -166,6 +166,10 @@ The stable ChatGPT tool surface manages this policy through `rh_work` rather tha
 
 A Work continuation Schedule is acceptance-driven, not perpetual. Before every wake, Forge re-reads the bound Work. A missing Work pauses the Schedule; a terminal Work (`completed`, `cancelled`, or another terminal Work state) deterministically disables the Schedule and returns `nothing_to_do`. An active Controller lease also returns `nothing_to_do`. Therefore the recurring trigger is only a wake policy for unfinished bounded Work, never a forever-running agent.
 
+Thin Launcher does not pre-claim Controller ownership. It records a short Controller-Home launch reservation (configured with `launch_reservation_ms`) only to fence duplicate spawns while the provider starts. The external provider must connect to Forge MCP and call `rh_work continue` with its authenticated transport identity; that authenticated principal/session becomes the Work owner. This separation prevents the scheduler from impersonating ChatGPT/Codex/Claude and preserves the Controller-session identity fence. Detached CLI providers also use their non-interactive execution contracts (`codex ... exec` and `claude --print`) instead of launching interactive TUIs with ignored stdio.
+
+For Codex, Thin Launcher injects the currently ready Canonical Runtime MCP endpoint per invocation instead of mutating `~/.codex/config.toml`. The Runtime bearer token is passed only through the child environment (`FORGE_RUNTIME_MCP_TOKEN`); the temporary Codex MCP configuration references that environment variable and sends non-secret forwarded principal/session headers derived from the launch reservation. This makes a scheduled Codex self-contained while keeping authentication material out of argv, logs, and durable provider config. CLI providers without a safe Forge MCP bootstrap must fail closed rather than launch detached work that cannot report ownership/evidence back to Runtime.
+
 ## 9. Candidate Finding Governance
 
 Automation does not immediately convert every observation into an Issue.

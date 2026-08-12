@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'child_process';
+import { createHash } from 'crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { basename, join } from 'path';
@@ -13,6 +14,7 @@ import {
   snapshotControllerCheck,
 } from '../../src/cli/controller/check-runner';
 import { resolvePersistedCheckCliInvocation } from '../../src/runtime/gateway/mcp/persisted-check-process';
+import { runPersistedCheckSidecar } from '../../src/runtime/execution/process-runtime/check-runner-sidecar';
 
 const roots: string[] = [];
 
@@ -63,6 +65,22 @@ describe('controller check provenance and failure classification', () => {
     expect(snapshot.effects).toEqual(check?.effects);
     const tampered = { ...snapshot, effects: { ...snapshot.effects, cache: 'read' as const } };
     expect(() => runControllerCheck(repoRoot, 'effects', undefined, tampered)).toThrow(/CHECK_SNAPSHOT_INVALID/);
+  });
+
+  test('normalizes declared host service effects and rejects unusable keys', () => {
+    const repoRoot = fixture({ host_check: {
+      command: [process.execPath, '-e', 'process.exit(0)'],
+      effects: { reads: ['.'], hostServices: [' iOS Simulator Test ', 'ios-simulator-test'] },
+    } });
+    const check = snapshotControllerCheck(repoRoot, 'host_check');
+    expect(check.effects?.hostServices).toEqual(['ios-simulator-test']);
+
+    const invalidRoot = mkdtempSync(join(tmpdir(), 'forge-check-host-invalid-'));
+    roots.push(invalidRoot);
+    writeFileSync(join(invalidRoot, 'package.json'), '{"name":"fixture","version":"1.0.0"}');
+    mkdirSync(join(invalidRoot, '.forge'), { recursive: true });
+    writeFileSync(join(invalidRoot, '.forge', 'checks.json'), JSON.stringify({ version: 1, checks: { bad: { command: [process.execPath, '-e', 'process.exit(0)'], effects: { reads: ['.'], hostServices: ['!!!'] } } } }));
+    expect(() => snapshotControllerCheck(invalidRoot, 'bad')).toThrow(/invalid service key/);
   });
 
   test('infers read plus cache effects only for known static package checks', () => {
@@ -227,6 +245,31 @@ describe('controller check provenance and failure classification', () => {
     expect(basename(resolveSyncSupervisorBridgeRuntime('/opt/releases/forge.js', {
       FORGE_BUN_EXECUTABLE: '/custom/bun',
     }))).toBe(process.platform === 'win32' ? 'bun.exe' : 'bun');
+  });
+
+  test('persisted check sidecar uses bounded async supervision without the legacy TypeScript bridge', async () => {
+    const command = [process.execPath, '-e', 'process.exit(0)'];
+    const repoRoot = fixture({ persisted_no_bridge: { command } });
+    const snapshot = snapshotControllerCheck(repoRoot, 'persisted_no_bridge');
+    const fingerprint = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
+    const fakeRuntimeRoot = mkdtempSync(join(tmpdir(), 'forge-check-sidecar-no-bridge-'));
+    roots.push(fakeRuntimeRoot);
+    const fakeRuntime = join(fakeRuntimeRoot, 'fake-bun');
+    writeFileSync(fakeRuntime, '#!/bin/sh\necho legacy-bridge-must-not-run >&2\nexit 17\n');
+    chmodSync(fakeRuntime, 0o755);
+    const previousRuntime = process.env.FORGE_BUN_EXECUTABLE;
+    try {
+      process.env.FORGE_BUN_EXECUTABLE = fakeRuntime;
+      const code = await runPersistedCheckSidecar([
+        '--repo', repoRoot,
+        '--check-id', 'persisted_no_bridge',
+        '--expected-check-fingerprint', fingerprint,
+      ]);
+      expect(code).toBe(0);
+    } finally {
+      if (previousRuntime === undefined) delete process.env.FORGE_BUN_EXECUTABLE;
+      else process.env.FORGE_BUN_EXECUTABLE = previousRuntime;
+    }
   });
 
   test('launches persisted checks directly from standalone Bun releases', () => {

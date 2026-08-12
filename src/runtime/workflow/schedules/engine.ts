@@ -10,8 +10,9 @@ import {
   type RuntimeMaintenanceActionId,
 } from '../../recovery/maintenance-executor';
 import { listCandidateFindings } from '../findings/store';
-import { getControllerSession, getWorkContract, isTerminalWorkContractStatus } from '../../control-plane/facade';
+import { getControllerSession, getWorkContract, isTerminalWorkContractStatus, listHandoffItems } from '../../control-plane/facade';
 import { launchSuperController } from '../../control-plane/launcher/thin-launcher';
+import { getExternalControllerLaunchReservation } from '../../control-plane/launcher/launch-reservation-store';
 import {
   getOccurrence,
   getSchedule,
@@ -233,9 +234,34 @@ async function triggerDue(
   }
 }
 
+function continuationWorkId(schedule: RepositorySchedule): string | undefined {
+  if (schedule.action.operation !== EXTERNAL_CONTROLLER_WAKE_OPERATION) return undefined;
+  const value = schedule.action.arguments?.work_id;
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function executionJobBelongsToWork(job: ReturnType<typeof listExecutionJobs>[number], workId: string): boolean {
+  if (job.resourceClaims.some((claim) => claim.workId === workId)) return true;
+  const payload = job.payload as Record<string, unknown>;
+  const args = payload.arguments && typeof payload.arguments === 'object' && !Array.isArray(payload.arguments)
+    ? payload.arguments as Record<string, unknown>
+    : undefined;
+  return [payload.workId, payload.work_id, args?.workId, args?.work_id].some((value) => value === workId);
+}
+
 async function stopReason(controllerHome: string, schedule: RepositorySchedule): Promise<string | undefined> {
   const projection = readRepositoryProjection(controllerHome, schedule.repoId);
-  if (schedule.stopConditions.includes('human_review_required') && projection.currentAttention.length > 0) return 'Repository has jobs requiring human attention.';
+  const workId = continuationWorkId(schedule);
+  const work = workId ? getWorkContract({ controllerHome, repoId: schedule.repoId }, workId) : undefined;
+  if (schedule.stopConditions.includes('human_review_required')) {
+    if (workId) {
+      const activeHandoff = listHandoffItems({ controllerHome, repoId: schedule.repoId, status: 'active', limit: 100 })
+        .find((item) => item.workId === workId);
+      if (activeHandoff) return `Work ${workId} has active Handoff ${activeHandoff.id} requiring review.`;
+    } else if (projection.currentAttention.length > 0) {
+      return 'Repository has jobs requiring human attention.';
+    }
+  }
   if (schedule.stopConditions.includes('release_ready') && projection.releaseFrozen) return 'Repository is in release freeze.';
   if (schedule.stopConditions.includes('external_blocker')) {
     try {
@@ -246,6 +272,10 @@ async function stopReason(controllerHome: string, schedule: RepositorySchedule):
     }
     const recentInfrastructureFailure = listExecutionJobs(controllerHome, schedule.repoId, 20).find((job) => {
       if (!['failed', 'timed_out', 'orphaned'].includes(job.status) || !job.error) return false;
+      if (workId) {
+        if (!work || Date.parse(job.createdAt) < Date.parse(work.createdAt)) return false;
+        if (!executionJobBelongsToWork(job, workId)) return false;
+      }
       if (job.error.retryable) return true;
       return /(?:network|connection|upstream|external|remote|github|tunnel|502|503|timeout)/i.test(`${job.error.code} ${job.error.message}`);
     });
@@ -541,6 +571,11 @@ export async function evaluateSchedule(
       saveSchedule(controllerHome, { ...schedule, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
       return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} already has an active Controller ${existingOwner.controllerId}.`);
     }
+    const launchReservation = getExternalControllerLaunchReservation(workStore, workId);
+    if (launchReservation) {
+      saveSchedule(controllerHome, { ...schedule, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
+      return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} already has a pending external Controller launch ${launchReservation.reservationId}.`);
+    }
     const wakeDecision = decideOccurrence(
       controllerHome,
       schedule,
@@ -552,12 +587,6 @@ export async function evaluateSchedule(
     );
     try {
       const repository = getRepository(schedule.repoId, controllerHome, { includeRemoved: true });
-      const controllerId = typeof args.controller_id === 'string' && args.controller_id.trim()
-        ? args.controller_id.trim()
-        : `schedule:${schedule.scheduleId}:${controllerType}`;
-      const sessionId = typeof args.session_id === 'string' && args.session_id.trim()
-        ? args.session_id.trim()
-        : `${occurrence.occurrenceId}:${controllerType}`;
       const launched = launchSuperController({
         work: { controllerHome, repoId: schedule.repoId },
         handoff: { controllerHome, repoId: schedule.repoId },
@@ -566,12 +595,10 @@ export async function evaluateSchedule(
         executable: typeof args.executable === 'string' ? args.executable : undefined,
         args: Array.isArray(args.launch_args) ? args.launch_args.map(String) : [],
         workId,
-        controllerId,
-        sessionId,
-        leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
         handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
         browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
         conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
+        launchReservationMs: typeof args.launch_reservation_ms === 'number' ? args.launch_reservation_ms : typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
         continuationPrompt: typeof args.continuation_prompt === 'string'
           ? args.continuation_prompt
           : `Scheduled continuation ${occurrence.occurrenceId} from ${schedule.scheduleId}. Read current Forge state and continue only the bounded Work objective.`,

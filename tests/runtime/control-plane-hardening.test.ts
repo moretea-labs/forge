@@ -4,15 +4,18 @@ import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { readForgeRuntimeStatus, schedulerHeartbeatSnapshotHealthy } from '../../src/runtime/control-plane/runtime-status-client';
-import { createExecutionJob } from '../../src/runtime/execution/jobs/store';
+import { createExecutionJob, executionJobRoot } from '../../src/runtime/execution/jobs/store';
 import { operationReceiptMatchesJobOwnership, type OperationReceipt } from '../../src/runtime/execution/jobs/receipt-store';
 import { TERMINAL_JOB_STATUSES, type ExecutionJob } from '../../src/runtime/execution/jobs/types';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
+import { forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { getControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
+import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { evaluateSchedule } from '../../src/runtime/workflow/schedules/engine';
 import { createSchedule } from '../../src/runtime/workflow/schedules/store';
 
@@ -204,16 +207,55 @@ describe('control-plane hardening', () => {
 
 
 describe('scheduled external Controller wake', () => {
+  test('scopes continuation stop conditions to the target Work instead of historical repository noise', async () => {
+    const root = temp('forge-schedule-stop-scope-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'scope@example.test'], ['config', 'user.name', 'Scope Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'scope\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'schedule-stop-scope' });
+    const workId = 'WORK-SCHEDULE-STOP-SCOPE';
+    const work = createWorkContract({ controllerHome, repoId: repository.repoId }, { workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop', objective: 'Continue only this Work.', acceptanceCriteria: ['bounded continuation'], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running' });
+    const records = join(executionJobRoot(controllerHome, repository.repoId), 'records');
+    mkdirSync(records, { recursive: true });
+    const oldAt = new Date(Date.parse(work.createdAt) - 86_400_000).toISOString();
+    writeFileSync(join(records, 'OLD-UNRELATED.json'), JSON.stringify({ schemaVersion: 1, revision: 1, jobId: 'OLD-UNRELATED', repoId: repository.repoId, type: 'repository-tool', status: 'failed', priority: 'normal', requestId: 'old-unrelated', semanticKey: 'old-unrelated', payload: { operation: 'legacy' }, origin: { surface: 'system' }, resourceClaims: [], dependencies: [], leaseRefs: [], createdAt: oldAt, updatedAt: oldAt, queuedAt: oldAt, attempt: 1, maxAttempts: 1, error: { code: 'NETWORK_TIMEOUT', message: 'historical external timeout', retryable: true }, evidenceIds: [] }));
+    const schedule = createSchedule(controllerHome, { requestId: 'schedule-stop-scope-request', repoId: repository.repoId, name: 'scoped continuation', enabled: true, trigger: { type: 'manual' }, policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 0, dailyBudgetMinutes: 60, shadowMode: true }, action: { operation: 'external_controller_wake', target: 'runtime', arguments: { work_id: workId, controller_type: 'codex' } }, stopConditions: ['human_review_required', 'external_blocker'] });
+    const first = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'old-noise' });
+    expect(first?.decision).toBe('would_execute');
+
+    createHandoffItem({ controllerHome, repoId: repository.repoId }, { id: 'HND-WORK-SCOPE', repoId: repository.repoId, workId, title: 'Current Work needs review', severity: 'needs_review', creationReason: 'ambiguous_outcome', reason: 'Current Work is blocked.', summary: 'Bounded review required.', currentState: { repoId: repository.repoId, workId, statusSummary: 'blocked' }, attemptedActions: [], evidenceRefs: [], recommendedDecision: 'Review current Work.', recommendedPrompt: 'Review current Work.', suggestedNextActions: [] });
+    const second = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'current-handoff' });
+    expect(second).toMatchObject({ decision: 'stopped', status: 'skipped' });
+    expect(second?.reason).toContain('HND-WORK-SCOPE');
+  });
+
   test('launches one bounded Work and suppresses duplicate active ownership', async () => {
     const root = temp('forge-schedule-wake-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
     ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    const runtimeOwner = acquireRuntimeOwnership(controllerHome, 'runtime-schedule-wake');
+    const runtimeService = forgeRuntimeServicePaths(controllerHome);
+    mkdirSync(runtimeService.serviceRoot, { recursive: true });
+    const runtimeTokenPath = join(controllerHome, 'mcp', 'runtime-token');
+    mkdirSync(join(controllerHome, 'mcp'), { recursive: true });
+    writeFileSync(runtimeTokenPath, 'schedule-wake-token\n', { mode: 0o600 });
+    writeFileSync(runtimeService.configPath, JSON.stringify({ schemaVersion: 1, controllerHome, repositoryRoot: repoRoot, host: '127.0.0.1', port: 9876, authTokenFile: runtimeTokenPath }));
+    const runtimeObservedAt = new Date().toISOString();
+    writeRuntimeStatusSnapshot(controllerHome, {
+      schemaVersion: 1, runtimeInstanceId: runtimeOwner.record.runtimeInstanceId, pid: runtimeOwner.record.pid,
+      releaseId: 'release-schedule-wake', artifactIdentity: 'artifact-schedule-wake', endpoint: 'http://127.0.0.1:9876/mcp',
+      readiness: { ready: true, reasonCodes: [], diagnostics: passingDiagnostics(), observedAt: runtimeObservedAt },
+      startedAt: runtimeObservedAt, updatedAt: runtimeObservedAt,
+    });
     for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'wake@example.test'], ['config', 'user.name', 'Wake Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
     writeFileSync(join(repoRoot, 'README.md'), 'wake\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
     const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'schedule-wake' }), workId = 'WORK-SCHEDULE-WAKE';
     createWorkContract({ controllerHome, repoId: repository.repoId }, { workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop', objective: 'Continue a bounded goal from a scheduled external Controller wake.', acceptanceCriteria: ['external controller was launched'], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running' });
     const schedule = createSchedule(controllerHome, { requestId: 'schedule-wake-request', repoId: repository.repoId, name: 'continue bounded work', enabled: true, trigger: { type: 'manual' }, policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 0, dailyBudgetMinutes: 60, shadowMode: false }, action: { operation: 'external_controller_wake', target: 'runtime', arguments: { work_id: workId, controller_type: 'codex', executable: '/usr/bin/true' } }, stopConditions: [] });
     expect(await evaluateSchedule(controllerHome, schedule, true, { source: 'manual' })).toMatchObject({ status: 'succeeded', decision: 'execute' });
-    expect(getControllerSession({ controllerHome, repoId: repository.repoId }, workId)?.controllerType).toBe('codex');
-    const duplicate = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'second' }); expect(duplicate).toMatchObject({ decision: 'nothing_to_do' }); expect(duplicate?.reason).toContain('already has an active Controller');
+    expect(getControllerSession({ controllerHome, repoId: repository.repoId }, workId)).toBeUndefined();
+    expect(getExternalControllerLaunchReservation({ controllerHome, repoId: repository.repoId }, workId)?.controllerType).toBe('codex');
+    expect(await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'duplicate-wake' })).toMatchObject({ decision: 'nothing_to_do', status: 'skipped' });
+    const duplicate = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'second' }); expect(duplicate).toMatchObject({ decision: 'nothing_to_do' }); expect(duplicate?.reason).toContain('pending external Controller launch');
+    runtimeOwner.release();
   });
 });

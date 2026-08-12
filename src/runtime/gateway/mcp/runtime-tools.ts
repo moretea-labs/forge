@@ -302,7 +302,8 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     controller_id: { type: 'string', description: 'Stable external SuperController identity for controller_claim/release.' },
     controller_type: { type: 'string', enum: ['chatgpt', 'codex', 'grok', 'claude', 'human'], description: 'Controller kind for claims and launcher_start.' },
     session_id: { type: 'string', description: 'Controller-owned session identity used for an exclusive Work lease.' },
-    lease_ms: { type: 'number', description: 'Controller lease duration, bounded to one hour.' },
+    lease_ms: { type: 'number', description: 'Authenticated Controller ownership lease duration, bounded to one hour. Legacy launcher callers may still use this as a launch-reservation TTL.' },
+    launch_reservation_ms: { type: 'number', description: 'Short duplicate-spawn reservation TTL for launcher_start or schedule_create; does not grant Work ownership.' },
     executable: { type: 'string', description: 'External controller executable for launcher_start. This is owned by the Launcher, not the Kernel.' },
     launch_args: { type: 'array', items: { type: 'string' }, description: 'Provider-specific arguments for launcher_start.' },
     browser_session_id: { type: 'string', description: 'Saved Forge ChatGPT browser session to continue when controller_type=chatgpt.' },
@@ -1511,7 +1512,7 @@ function compactControllerContextSummaryPayload(payload: Record<string, unknown>
 function authenticatedFacadeControllerIdentity(
   ctx: MultiRepositoryMcpToolContext,
   args: Record<string, unknown>,
-): { controllerId: string; principalId: string; sessionId: string; controllerInstanceId: string } {
+): { controllerId: string; principalId: string; sessionId: string; controllerInstanceId: string; controllerType: 'chatgpt' | 'codex' | 'claude' | 'grok' | 'human' } {
   const principalId = ctx.principalId?.trim();
   const sessionId = ctx.sessionId?.trim();
   if (!principalId || !sessionId) {
@@ -1525,10 +1526,18 @@ function authenticatedFacadeControllerIdentity(
   if (requestedSessionId && requestedSessionId !== sessionId) {
     throw new Error('CONTROLLER_SESSION_CONTEXT_MISMATCH: session_id must match the authenticated MCP session');
   }
+  const requestedControllerType = typeof args.controller_type === 'string' && ['chatgpt', 'codex', 'claude', 'grok', 'human'].includes(args.controller_type)
+    ? args.controller_type as 'chatgpt' | 'codex' | 'claude' | 'grok' | 'human'
+    : undefined;
+  const transportControllerType = ctx.controllerType;
+  if (transportControllerType && requestedControllerType && requestedControllerType !== transportControllerType) {
+    throw new Error('CONTROLLER_TYPE_CONTEXT_MISMATCH: controller_type must match the authenticated transport provider');
+  }
   return {
     controllerId: principalId,
     principalId,
     sessionId,
+    controllerType: transportControllerType ?? requestedControllerType ?? 'chatgpt',
     controllerInstanceId: ctx.controllerInstanceId?.trim() || currentControllerInstanceId(),
   };
 }
@@ -2902,7 +2911,15 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             recommendedContinuationPrompt: typeof args.recommended_continuation_prompt === 'string' ? args.recommended_continuation_prompt : undefined,
             suggestedNextActions: [],
           });
-          return result(buildFacadeResult({ summary: `Created handoff ${item.id}.`, data: { item: summarizeHandoffItem(item) } }) as unknown as Record<string, unknown>);
+          let ownershipReleased = false;
+          if (item.workId && ctx.principalId?.trim() && ctx.sessionId?.trim()) {
+            const owner = getControllerSession(store, item.workId);
+            if (owner && owner.controllerId === ctx.principalId.trim() && owner.sessionId === ctx.sessionId.trim()) {
+              releaseControllerSession(store, item.workId, owner.controllerId);
+              ownershipReleased = true;
+            }
+          }
+          return result(buildFacadeResult({ summary: `Created handoff ${item.id}.`, data: { item: summarizeHandoffItem(item), ownershipReleased } }) as unknown as Record<string, unknown>);
         }
         // Default list: pending summary only.
         const items = listHandoffItems({ ...store, status: 'pending', limit: typeof args.limit === 'number' ? args.limit : 50 });
@@ -3240,11 +3257,9 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               const created = createWorkContinuationSchedule(ctx.controllerHome, repository.repoId, {
                 workId,
                 controllerType: controllerType as ContinuationControllerType,
-                controllerId: typeof args.controller_id === 'string' ? args.controller_id : undefined,
-                sessionId: typeof args.session_id === 'string' ? args.session_id : undefined,
                 executable: typeof args.executable === 'string' ? args.executable : undefined,
                 launchArgs: Array.isArray(args.launch_args) ? args.launch_args.map(String) : undefined,
-                leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
+                launchReservationMs: typeof args.launch_reservation_ms === 'number' ? args.launch_reservation_ms : typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
                 handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
                 browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
                 conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
@@ -3346,16 +3361,14 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               executable: typeof args.executable === 'string' && args.executable.trim() ? args.executable.trim() : undefined,
               args: Array.isArray(args.launch_args) ? args.launch_args.map(String) : [],
               workId: String(args.work_id ?? '').trim(),
-              controllerId: String(args.controller_id ?? '').trim(),
-              sessionId: String(args.session_id ?? '').trim(),
-              leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
+              launchReservationMs: typeof args.launch_reservation_ms === 'number' ? args.launch_reservation_ms : typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
               handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
               browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
               conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
               continuationPrompt: typeof args.continuation_prompt === 'string' ? args.continuation_prompt : undefined,
               cwd: repository.canonicalRoot,
             });
-            return result(buildFacadeResult({ summary: `Thin Launcher started ${launched.controllerType}.`, data: { pid: launched.pid, executable: launched.executable, workId: String(args.work_id ?? ''), controllerId: launched.controllerId, sessionId: launched.sessionId } }) as unknown as Record<string, unknown>);
+            return result(buildFacadeResult({ summary: `Thin Launcher started ${launched.controllerType}.`, data: { pid: launched.pid, executable: launched.executable, workId: String(args.work_id ?? ''), reservationId: launched.reservationId } }) as unknown as Record<string, unknown>);
           } catch (error) {
             return result(buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Launcher failed.', data: {} }) as unknown as Record<string, unknown>, true);
           }
@@ -3550,7 +3563,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               resumedControllerSession = resumeControllerSession(store, {
                 workId,
                 controllerId: identity.controllerId,
-                controllerType: currentOwner?.controllerType ?? 'chatgpt',
+                controllerType: identity.controllerType,
                 sessionId: identity.sessionId,
                 principalId: identity.principalId,
                 controllerInstanceId: identity.controllerInstanceId,
