@@ -11,6 +11,7 @@ describe('Desktop Operator trusted external registration', () => {
     expect(input.pluginId).toBe('desktop_operator');
     expect(input.providerPluginId).toBe('desktop_operator');
     expect(input.displayName).toBe('Forge Desktop Operator');
+    expect(input.pluginVersion).toBe('0.2.1');
     expect(input.capabilities.map((capability) => capability.capabilityId)).toEqual([
       'desktop.status',
       'desktop.permissions',

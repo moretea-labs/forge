@@ -384,7 +384,7 @@ export function createDesktopOperatorRegistrationInput(
     providerPluginId: 'desktop_operator',
     displayName: 'Forge Desktop Operator',
     provider: 'local-macos',
-    pluginVersion: options.pluginVersion ?? '0.1.0',
+    pluginVersion: options.pluginVersion ?? '0.2.1',
     protocolVersion: options.protocolVersion ?? '1.0',
     scope: 'controller',
     enabled: options.enabled !== false,
