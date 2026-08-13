@@ -97,6 +97,7 @@ interface RuntimeReleaseManifestRecord {
   controllerHome: string;
   artifactIdentity: string;
   arguments?: string[];
+  diagnosticEntrypoint?: string;
   browserAutomationHelperEntrypoint?: string;
   browserAutomationHelperArtifactIdentity?: string;
   browserAutomationHelperContractIdentity?: string;
@@ -178,6 +179,12 @@ export function activeRuntimeLaunchSpec(controllerHome: string): ActiveRuntimeLa
   if (!Array.isArray(manifestArguments) || !manifestArguments.every((argument) => typeof argument === 'string')) {
     throw new Error('FORGE_RUNTIME_RELEASE_ARGUMENTS_INVALID');
   }
+  const diagnosticEntrypoint = typeof active.manifest.diagnosticEntrypoint === 'string' && active.manifest.diagnosticEntrypoint.trim()
+    ? resolve(active.releaseRoot, active.manifest.diagnosticEntrypoint)
+    : undefined;
+  if (diagnosticEntrypoint && (!isInside(active.releaseRoot, diagnosticEntrypoint) || !existsSync(diagnosticEntrypoint))) {
+    throw new Error('FORGE_RUNTIME_RELEASE_DIAGNOSTIC_ENTRYPOINT_INVALID');
+  }
   return {
     args: [
       '--controller-home', home,
@@ -192,6 +199,7 @@ export function activeRuntimeLaunchSpec(controllerHome: string): ActiveRuntimeLa
     environment: {
       FORGE_CONTROLLER_HOME: home,
       FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT: active.releaseRoot,
+      ...(diagnosticEntrypoint ? { FORGE_CLI_EXECUTABLE: diagnosticEntrypoint } : {}),
       FORGE_RELEASE_PATH: active.releaseRoot,
       FORGE_RELEASE_ID: active.releaseId,
       FORGE_RELEASE_REVISION: active.manifest.releaseRevision ?? active.releaseId,

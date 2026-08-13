@@ -76,13 +76,16 @@ describe('Forge Runtime service', () => {
     const paths = forgeRuntimeServicePaths(fx.home);
     const releaseRoot = join(fx.home, 'runtime', 'releases', 'release-a');
     const entry = join(releaseRoot, 'forge-runtime');
+    const cliEntry = join(releaseRoot, 'forge-cli');
     const manifestPath = join(releaseRoot, 'manifest.json');
     mkdirSync(releaseRoot, { recursive: true });
     writeFileSync(entry, 'binary');
+    writeFileSync(cliEntry, 'cli');
     writeFileSync(manifestPath, `${JSON.stringify({
       schemaVersion: 1,
       releaseId: 'release-a',
       entrypoint: 'forge-runtime',
+      diagnosticEntrypoint: 'forge-cli',
       controllerHome: fx.home,
       artifactIdentity: 'sha256:test',
       releaseRevision: 'release-revision-a',
@@ -128,6 +131,8 @@ describe('Forge Runtime service', () => {
     expect(plist).toContain('<string>--exclusive-work-id</string>');
     expect(plist).toContain('<string>work-test</string>');
     expect(plist).toContain('<key>FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT</key>');
+    expect(plist).toContain('<key>FORGE_CLI_EXECUTABLE</key>');
+    expect(plist).toContain(`<string>${cliEntry}</string>`);
     expect(plist).toContain(`<string>${releaseRoot}</string>`);
     expect(plist).toContain('<key>FORGE_RELEASE_ID</key>');
     expect(plist).toContain('<string>release-a</string>');
