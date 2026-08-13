@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { closeSetupSession, openSetupSession, readSetupSession, type InitHookReport } from '../../src/cli/commands/init-hook';
-import { configureSetupProfile, type SetupPlatformSnapshot } from '../../src/cli/commands/setup-profile';
+import { configureSetupProfile, resolveTunnelGuidance, type SetupPlatformSnapshot } from '../../src/cli/commands/setup-profile';
 import { runMcpSetupChatgpt } from '../../src/cli/mcp/setup';
 
 const platform: SetupPlatformSnapshot = { platform: 'linux', arch: 'x64', environment: 'linux', serviceManager: 'systemd-user', commands: { brew: false, cloudflared: false, tailscale: false, tunnelClient: false, systemctl: true, winget: false } };
@@ -59,6 +59,39 @@ describe('Forge setup session', () => {
       expect(JSON.stringify(profile)).not.toContain('API_KEY');
       expect(JSON.stringify(profile)).not.toContain('sk-');
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test('accepts a healthy local alias that already owns the configured OpenAI tunnel id', () => {
+    const root = temp('forge-setup-openai-alias-');
+    try {
+      const tunnelId = 'tunnel_0123456789abcdef0123456789abcdef';
+      const binDir = join(root, 'bin');
+      mkdirSync(binDir, { recursive: true });
+      const tunnelClient = join(binDir, 'tunnel-client');
+      writeFileSync(tunnelClient, `#!/bin/sh
+if [ "$1" = "runtimes" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
+  echo '{"aliases":[{"alias":"forge-openai-test","tunnel_id":"${tunnelId}"}]}'
+  exit 0
+fi
+if [ "$1" = "runtimes" ] && [ "$2" = "status" ] && [ "$4" = "--json" ]; then
+  if [ "$3" = "forge-openai-test" ]; then
+    echo '{"process_running":true,"healthy":true,"ready":true,"tunnel_id":"${tunnelId}"}'
+  else
+    echo '{"process_running":false,"healthy":true,"ready":true,"tunnel_id":"${tunnelId}"}'
+  fi
+  exit 0
+fi
+exit 1
+`);
+      chmodSync(tunnelClient, 0o700);
+      const profile = configureSetupProfile({ setupRoot: root, controller: 'chatgpt', tunnel: 'openai', tunnelId });
+      const tunnelPlatform = { ...platform, commands: { ...platform.commands, tunnelClient: true } };
+      const guidance = resolveTunnelGuidance(profile, tunnelPlatform, { env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ''}` } });
+      expect(guidance).toMatchObject({ provider: 'openai', ready: true, title: 'OpenAI Secure MCP Tunnel' });
+      expect(guidance.detail).toContain('forge-openai-test');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test('closes only after the selected controller path is ready', () => {

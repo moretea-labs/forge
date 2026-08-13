@@ -319,7 +319,7 @@ export function resolveRuntimeGuidance(
 export function resolveTunnelGuidance(
   profile: SetupProfile | undefined,
   platform = detectSetupPlatform(),
-  options: { controllerHome?: string } = {},
+  options: { controllerHome?: string; env?: NodeJS.ProcessEnv } = {},
 ): TunnelGuidance {
   if (!profile || !setupNeedsRemoteAccess(profile)) {
     return { provider: 'none', ready: true, title: 'Remote controller connection', detail: 'Not required by the configured local controller set.' };
@@ -353,9 +353,22 @@ export function resolveTunnelGuidance(
         detail: 'Install the supported tunnel-client binary from OpenAI Platform Tunnels or the official openai/tunnel-client release. The runtime API key remains an environment/file reference owned by tunnel-client; Forge does not store it.',
       };
     }
-    const alias = 'forge';
-    const status = spawnSync('tunnel-client', ['runtimes', 'status', alias, '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000 });
-    if (status.status === 0) {
+    const preferredAlias = 'forge';
+    const aliases = [preferredAlias];
+    const listed = spawnSync('tunnel-client', ['runtimes', 'list', '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, env: options.env ?? process.env });
+    if (listed.status === 0) {
+      try {
+        const value = JSON.parse(listed.stdout || '{}') as { aliases?: Array<{ alias?: string; tunnel_id?: string }> };
+        for (const entry of value.aliases ?? []) {
+          if (entry.tunnel_id === profile.tunnel.tunnelId && entry.alias) aliases.push(entry.alias);
+        }
+      } catch {
+        // Older clients may not expose local aliases as JSON. Keep the preferred alias fallback.
+      }
+    }
+    for (const alias of Array.from(new Set(aliases))) {
+      const status = spawnSync('tunnel-client', ['runtimes', 'status', alias, '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, env: options.env ?? process.env });
+      if (status.status !== 0) continue;
       try {
         const value = JSON.parse(status.stdout || '{}') as { process_running?: boolean; healthy?: boolean; ready?: boolean; tunnel_id?: string };
         if (value.process_running === true && value.healthy === true && value.ready === true
@@ -369,6 +382,7 @@ export function resolveTunnelGuidance(
         // Treat malformed or older status output as not-ready instead of claiming success.
       }
     }
+    const alias = preferredAlias;
     const localConfig = loadMcpServiceLocalConfig(resolveControllerHome(options.controllerHome));
     const configuredPort = localConfig?.server?.port;
     const mcpPort = typeof configuredPort === 'number' && Number.isInteger(configuredPort) ? configuredPort : 8765;
