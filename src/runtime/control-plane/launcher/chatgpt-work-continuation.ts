@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { executeBrowserPluginAction, readBrowserPluginConfiguration } from '../../plugins/browser-adapter';
 import { controllerPluginRepository } from '../../plugins/store';
+import { getWorkContract } from '../facade/work-contract-store';
 import {
   bindChatgptWorkConversation,
   getChatgptWorkConversationBinding,
@@ -103,6 +104,10 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
   let binding: ChatgptWorkConversationBinding | undefined = existing;
 
   try {
+    const work = getWorkContract(store, input.workId);
+    if (!work || work.repoId !== input.repoId) {
+      throw new Error(`CHATGPT_WORK_CONTRACT_NOT_FOUND: ${input.repoId}:${input.workId}`);
+    }
     await ensureControllerChatgptBrowser(input.controllerHome, input.workId);
     if (seedUrl && !binding) {
       binding = bindChatgptWorkConversation(store, {

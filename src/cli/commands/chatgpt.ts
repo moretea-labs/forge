@@ -77,7 +77,7 @@ interface BrowserConsultOptions extends BrowserCommonOptions {
 }
 
 interface WorkChatgptContinueOptions extends BrowserCommonOptions {
-  controllerHome?: string;
+  controllerHome: string;
   repoId: string;
   workId: string;
   prompt: string;
@@ -379,7 +379,7 @@ export function buildChatgptCommand(): Command {
   const workContinue = new Command('work-continue')
     .description('Internal: continue one Forge Work in its bound ChatGPT Web conversation')
     .option('--repo <path>', 'Repository root for the Work browser session', '.')
-    .option('--controller-home <path>', 'Controller Home containing the Work conversation binding')
+    .requiredOption('--controller-home <path>', 'Explicit Controller Home containing the authoritative Work and conversation binding')
     .requiredOption('--repo-id <repo-id>', 'Stable Forge repository id')
     .requiredOption('--work-id <work-id>', 'Stable Forge Work id')
     .requiredOption('--prompt <text>', 'Bounded continuation prompt')

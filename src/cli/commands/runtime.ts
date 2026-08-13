@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
-import { resolveControllerHome } from '../repositories/controller-home';
+import { resolveControllerHome, resolveRepoPreferredControllerHome } from '../repositories/controller-home';
 import { findExecutionJob, listActiveExecutionJobs, listExecutionJobs } from '../../runtime/execution/jobs/store';
 import { readJobEvents } from '../../runtime/evidence/event-ledger';
 import { getRepository, listRepositories } from '../repositories/registry';
@@ -18,6 +18,10 @@ import { assertRuntimeReleaseFiles, stageRuntimeReleaseFromCandidateSource } fro
 
 function output(value: unknown, json = true): void {
   console.log(json ? JSON.stringify(value, null, 2) : String(value));
+}
+
+export function resolveRuntimeStateControllerHome(explicit?: string, cwd = process.cwd()): string {
+  return resolveRepoPreferredControllerHome(cwd, explicit);
 }
 
 export function buildRuntimeCommand(): Command {
@@ -163,7 +167,7 @@ export function buildRuntimeCommand(): Command {
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
     .option('--json', 'Output JSON')
     .action((opts: { controllerHome: string; json?: boolean }) => {
-      const home = resolveControllerHome(opts.controllerHome);
+      const home = resolveRuntimeStateControllerHome(opts.controllerHome);
       const runtime = observeRuntimeStatus(home);
       const repositories = listRepositories(home, { includeRemoved: true });
       const value = {
@@ -186,7 +190,7 @@ export function buildRuntimeCommand(): Command {
     .argument('<job-id>', 'Execution Job ID')
     .option('--controller-home <path>', 'Controller state root')
     .action((jobId: string, opts: { controllerHome?: string }) => {
-      const home = resolveControllerHome(opts.controllerHome);
+      const home = resolveRuntimeStateControllerHome(opts.controllerHome);
       const job = findExecutionJob(home, jobId);
       if (!job) throw new Error(`JOB_NOT_FOUND: ${jobId}`);
       output({ job, events: readJobEvents(home, job.repoId, job.jobId) });
@@ -198,7 +202,7 @@ export function buildRuntimeCommand(): Command {
     .option('--repo-id <id>', 'Repository id')
     .option('--limit <count>', 'Maximum records', '100')
     .action((opts: { controllerHome?: string; repoId?: string; limit?: string }) => {
-      const home = resolveControllerHome(opts.controllerHome);
+      const home = resolveRuntimeStateControllerHome(opts.controllerHome);
       if (opts.repoId) return output({ jobs: listExecutionJobs(home, opts.repoId, Number(opts.limit ?? 100)) });
       output({ jobs: listActiveExecutionJobs(home) });
     });
@@ -231,7 +235,7 @@ export function buildRuntimeCommand(): Command {
     .requiredOption('--repo-id <id>', 'Repository id')
     .option('--controller-home <path>', 'Controller state root')
     .action((opts: { controllerHome?: string; repoId: string }) => {
-      const home = resolveControllerHome(opts.controllerHome);
+      const home = resolveRuntimeStateControllerHome(opts.controllerHome);
       output({ schedules: listSchedules(home, opts.repoId), occurrences: listOccurrences(home, opts.repoId, undefined, 100) });
     });
 

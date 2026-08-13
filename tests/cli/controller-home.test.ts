@@ -10,6 +10,7 @@ import {
   resolveRepoPreferredControllerHome,
   rollbackStoppedRepoLocalControllerHomeStorage,
 } from '../../src/cli/repositories/controller-home';
+import { resolveRuntimeStateControllerHome } from '../../src/cli/commands/runtime';
 
 const roots: string[] = [];
 const originalControllerHome = process.env.FORGE_CONTROLLER_HOME;
@@ -84,6 +85,16 @@ describe('repo-preferred controller home', () => {
 
     expect(ensureControllerHomeStorage(logical, 'darwin')).toBe(resolve(logical));
     expect(lstatSync(logical).isDirectory()).toBe(true);
+  });
+
+
+  test('runtime state commands resolve the same explicit authoritative controller home', () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-controller-home-runtime-'));
+    const explicit = mkdtempSync(join(tmpdir(), 'forge-controller-home-runtime-explicit-'));
+    roots.push(repoRoot, explicit);
+    mkdirSync(join(repoRoot, '_ops', 'controller-home'), { recursive: true });
+
+    expect(resolveRuntimeStateControllerHome(explicit, repoRoot)).toBe(resolve(explicit));
   });
 
   test('keeps explicit controller home above repo-local discovery', () => {

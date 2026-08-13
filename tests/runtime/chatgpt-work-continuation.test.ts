@@ -9,6 +9,7 @@ import {
   getChatgptWorkConversationBinding,
   parseChatgptConversationIdentity,
 } from '../../src/runtime/control-plane/launcher/chatgpt-work-binding-store';
+import { runWorkChatgptContinuation } from '../../src/runtime/control-plane/launcher/chatgpt-work-continuation';
 
 const roots: string[] = [];
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
@@ -55,6 +56,24 @@ describe('ChatGPT Work conversation binding', () => {
     expect(chatgptBridgeTargetMatchesPage('https://chatgpt.com/c/target-id', 'https://chatgpt.com/c/other-id')).toBe(false);
     expect(chatgptBridgeTargetMatchesPage('https://chatgpt.com/', 'https://chatgpt.com/')).toBe(true);
     expect(chatgptBridgeTargetMatchesPage('https://chatgpt.com/', 'https://chatgpt.com/c/other-id')).toBe(false);
+  });
+
+
+  test('fails closed when the explicit controller home does not contain the requested WorkContract', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-work-authority-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    ensureControllerHome(controllerHome);
+
+    const result = await runWorkChatgptContinuation({
+      controllerHome,
+      repoId: 'repo-chatgpt-work',
+      repoRoot: root,
+      workId: 'WORK-missing',
+      prompt: 'continue',
+    });
+    expect(result.status).toBe('failed');
+    expect(result.error?.message).toContain('CHATGPT_WORK_CONTRACT_NOT_FOUND: repo-chatgpt-work:WORK-missing');
   });
 
   test('submits continuation from the stable prompt editor instead of a send-button selector', () => {
