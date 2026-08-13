@@ -20,7 +20,7 @@ See [Platform Support](../operations/platform-support.md) for the exact matrix.
 
 ## 2. Install Forge
 
-Release candidates use npm `next`:
+Stable releases use npm `latest`:
 
 ```bash
 npm install -g @moretea-labs/forge
@@ -38,7 +38,7 @@ npm ci --ignore-scripts --no-audit --no-fund
 npm install -g . --omit=optional --no-audit --no-fund
 ```
 
-The published package exposes `forge`, `forge-hook`, and `forge-runtime`. Normal package users do **not** need a Forge source checkout, Bun compilation, CodeGraph, or Standalone Recovery to start the user-level Runtime.
+The published package exposes `forge`, `forge-hook`, and `forge-runtime`. Normal package users do **not** need a Forge source checkout, Bun compilation, CodeGraph, or Standalone Recovery to start the user-level Runtime. To upgrade, run `npm install -g @moretea-labs/forge@latest`, verify `forge --version`, then run `forge setup next` so newer setup contracts can be reconciled without reinstalling from source.
 
 ## 3. Start guided setup
 
@@ -78,7 +78,7 @@ The setup session is stored below the user-level Forge directory, so you can clo
 
 1. controller registration;
 2. the packaged user-level Runtime;
-3. secure public HTTPS for a remote controller;
+3. remote connectivity — OpenAI Secure MCP Tunnel first for ChatGPT, with explicit HTTPS fallbacks;
 4. account/browser authentication that only you can complete;
 5. a connection verification.
 
@@ -89,6 +89,8 @@ The normal Runtime action is:
 ```bash
 forge runtime service install-package
 ```
+
+For ChatGPT setups this installs two local service boundaries together: the bearer-only Canonical Runtime and a separate loopback OAuth Gateway used by Secure Tunnel or HTTPS connectors. Users should follow the OAuth endpoint printed by setup instead of tunneling directly to the internal Runtime port.
 
 The older `forge runtime service install --repo ...` path builds an immutable Git/source Runtime and is an **advanced maintainer path**, not normal onboarding. Standalone Recovery is likewise optional advanced infrastructure.
 

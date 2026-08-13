@@ -64,6 +64,26 @@ describe('Forge setup session', () => {
   });
 
 
+  test('ChatGPT setup records a distinct loopback OAuth endpoint for remote connectors', () => {
+    const root = temp('forge-setup-oauth-endpoint-'); try {
+      const controllerHome = join(root, 'controller');
+      runMcpSetupChatgpt({ controllerHome, userLevel: true, port: '8765', localControllerPort: '8766' });
+      const localConfig = JSON.parse(require('fs').readFileSync(join(controllerHome, 'mcp', 'mcp.local.json'), 'utf8'));
+      expect(localConfig.server).toMatchObject({ host: '127.0.0.1', port: 8765 });
+      expect(localConfig.chatgpt.localEndpoint).toBe('http://127.0.0.1:8767/mcp');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test('auto remote access keeps OpenAI Secure MCP Tunnel first even when public tunnel CLIs are installed', () => {
+    const root = temp('forge-setup-openai-first-'); try {
+      const profile = configureSetupProfile({ setupRoot: root, controller: 'chatgpt', tunnel: 'auto' });
+      const publicTunnelPlatform = { ...platform, commands: { ...platform.commands, cloudflared: true, tailscale: true, tunnelClient: false } };
+      expect(resolveTunnelGuidance(profile, publicTunnelPlatform)).toMatchObject({
+        provider: 'openai', ready: false, title: 'Create an OpenAI Secure MCP Tunnel',
+      });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   test('stores only the non-secret OpenAI tunnel id and never an API key', () => {
     const root = temp('forge-setup-openai-tunnel-'); try {
       const tunnelId = 'tunnel_0123456789abcdef0123456789abcdef';

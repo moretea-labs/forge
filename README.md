@@ -44,9 +44,9 @@ forge setup configure --controller chatgpt --tunnel auto
 forge setup next
 ```
 
-Setup persists progress and guides the selected path through the user-level Package Runtime, remote connectivity, controller registration, and connection verification. For ChatGPT, prefer **OpenAI Secure MCP Tunnel** when your organization supports it; Cloudflare Tunnel, Tailscale Funnel, an existing HTTPS `/mcp` URL, or deferred remote access remain alternatives. Local Codex/Claude controllers do not need a tunnel.
+Setup persists progress and guides the selected path through the user-level Package Runtime, remote connectivity, controller registration, and connection verification. For ChatGPT, `--tunnel auto` now means **OpenAI Secure MCP Tunnel first**: Forge keeps the Canonical Runtime private, installs a loopback OAuth Gateway for ChatGPT, and lets the official `tunnel-client` carry MCP traffic outbound to OpenAI. Cloudflare Tunnel, Tailscale Funnel, an existing HTTPS `/mcp` URL, or deferred remote access remain explicit fallbacks when Secure Tunnel is unavailable. Local Codex/Claude controllers do not need a tunnel. The ChatGPT App/connector is the application identity; Secure Tunnel is only its network transport, so switching transport does not create a second Forge tool schema.
 
-Then follow [Install and start](docs/tutorials/01-install-and-start.md) and [Connect ChatGPT](docs/tutorials/02-connect-chatgpt.md). A repository is optional during initial setup; add one later with `forge adopt --repo /path/to/your-project`.
+Then follow [Install and start](docs/tutorials/01-install-and-start.md) and [Connect ChatGPT](docs/tutorials/02-connect-chatgpt.md). A repository is optional during initial setup; add one later with `forge adopt --repo /path/to/your-project`. Upgrade an existing install with `npm install -g @moretea-labs/forge@latest`, verify with `forge --version`, then run `forge setup next` to reconcile newer Runtime/connector setup contracts.
 
 For a reviewed source checkout: `git clone https://github.com/moretea-labs/forge.git && cd forge && npm ci --ignore-scripts --no-audit --no-fund && npm install -g . --omit=optional --no-audit --no-fund`.
 
@@ -101,9 +101,9 @@ forge setup configure --controller chatgpt --tunnel auto
 forge setup next     # 按每次显示的 Next 动作继续
 ```
 
-远程主控的 setup 会继续引导 Package Runtime、远程连接、主控配置和连接验证；ChatGPT 在组织支持时优先 **OpenAI Secure MCP Tunnel**，也可选 Cloudflare Tunnel、Tailscale Funnel、已有 HTTPS `/mcp`，或暂缓远程连接。本地 Codex/Claude 主控不需要 tunnel，也不会配置未选择的 CLI。
+远程主控的 setup 会继续引导 Package Runtime、远程连接、主控配置和连接验证；对 ChatGPT，`--tunnel auto` 现在明确表示 **优先 OpenAI Secure MCP Tunnel**。Forge 保持 Canonical Runtime 私有，并安装一个仅监听 loopback 的 OAuth Gateway，再由官方 `tunnel-client` 出站连接 OpenAI。只有 Secure Tunnel 不可用时才显式选择 Cloudflare Tunnel、Tailscale Funnel、已有 HTTPS `/mcp` 或暂缓远程连接。本地 Codex/Claude 主控不需要 tunnel。ChatGPT App/connector 是应用身份，Secure Tunnel 只是网络传输层，因此切换网络不会产生另一套 Forge 工具 schema。
 
-继续阅读[安装与启动](docs/tutorials/01-install-and-start.zh-CN.md)和[连接 ChatGPT](docs/tutorials/02-connect-chatgpt.zh-CN.md)。仓库不是首次 setup 的前置条件，需要开发能力时再运行 `forge adopt --repo /path/to/your-project`。源码安装：`git clone https://github.com/moretea-labs/forge.git && cd forge && npm ci --ignore-scripts --no-audit --no-fund && npm install -g . --omit=optional --no-audit --no-fund`。
+继续阅读[安装与启动](docs/tutorials/01-install-and-start.zh-CN.md)和[连接 ChatGPT](docs/tutorials/02-connect-chatgpt.zh-CN.md)。仓库不是首次 setup 的前置条件，需要开发能力时再运行 `forge adopt --repo /path/to/your-project`。已安装用户升级：`npm install -g @moretea-labs/forge@latest`，确认 `forge --version` 后运行 `forge setup next` 让新版 setup 自动补齐 Runtime/connector 配置。源码安装：`git clone https://github.com/moretea-labs/forge.git && cd forge && npm ci --ignore-scripts --no-audit --no-fund && npm install -g . --omit=optional --no-audit --no-fund`。
 
 Forge 内置本机、Browser、Desktop、iOS、GitHub、Gmail、Calendar、Tasks、App Store Connect、Resend 等类型化能力；公开 Provider 目录还有 **Forge Desktop Operator / Forge Design / Personal Knowledge Assistant**。详见[功能清单](docs/operations/features.zh-CN.md)与[插件管理](docs/forge-plugin-management.md)。
 

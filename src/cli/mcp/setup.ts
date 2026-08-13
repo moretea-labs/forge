@@ -303,6 +303,7 @@ export function runMcpSetupChatgpt(opts: {
   endpoint?: string;
   serverName?: string;
   localControllerPort?: string;
+  connectorPort?: string;
 }): McpSetupResult {
   const repoRoot = resolveMcpRepoRoot(opts.repo ?? ".");
   const controllerHome = opts.userLevel
@@ -319,6 +320,11 @@ export function runMcpSetupChatgpt(opts: {
     : existingConfig?.localController?.port ?? (parsedPort < 65_535 ? parsedPort + 1 : 8766);
   if (!Number.isInteger(localControllerPort) || localControllerPort < 1 || localControllerPort > 65_535) throw new Error(`forge mcp setup chatgpt: invalid Local Controller port ${opts.localControllerPort}`);
   if (localControllerPort === parsedPort) throw new Error('forge mcp setup chatgpt: Local Controller port must differ from MCP port');
+  const connectorPort = opts.connectorPort !== undefined
+    ? Number(opts.connectorPort)
+    : parsedPort <= 65_533 ? parsedPort + 2 : 8767;
+  if (!Number.isInteger(connectorPort) || connectorPort < 1 || connectorPort > 65_535) throw new Error(`forge mcp setup chatgpt: invalid connector port ${opts.connectorPort}`);
+  if (connectorPort === parsedPort || connectorPort === localControllerPort) throw new Error('forge mcp setup chatgpt: connector port must differ from Runtime and Local Controller ports');
   const existingServerName = existingConfig?.chatgpt?.serverName;
   const migratedServerName =
     existingServerName && !LEGACY_DEFAULT_SERVER_NAMES.has(existingServerName)
@@ -356,6 +362,7 @@ export function runMcpSetupChatgpt(opts: {
       ...existingConfig?.chatgpt,
       serverName,
       ...(endpoint ? { endpoint } : {}),
+      localEndpoint: `http://127.0.0.1:${connectorPort}/mcp`,
     },
     profile: existingConfig?.profile ?? "controller",
     toolset,
@@ -421,7 +428,8 @@ export function runMcpSetupChatgpt(opts: {
       "[forge mcp] Profile: controller",
       `[forge mcp] Toolset: ${config.toolset}`,
       `[forge mcp] ChatGPT MCP server name: ${serverName}`,
-      `[forge mcp] Local endpoint: http://${host}:${port}/mcp`,
+      `[forge mcp] Internal Runtime endpoint: http://${host}:${port}/mcp`,
+      `[forge mcp] ChatGPT local OAuth endpoint: http://127.0.0.1:${connectorPort}/mcp`,
       `[forge mcp] Local Controller: http://${config.localController.host}:${config.localController.port}/`,
       `[forge mcp] Optional external delegation: ${config.devMode.agentRunner ? `enabled (${config.devMode.allowedAgents.join(',') || 'none'})` : 'disabled'}`,
       endpoint

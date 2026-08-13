@@ -18,7 +18,7 @@ forge setup next
 
 ## 2. 按 Next 完成所选路径
 
-远程主控会继续配置 Package Runtime 和远程连接。有权限时优先 OpenAI Secure MCP Tunnel；也可以选择 Cloudflare Tunnel、Tailscale Funnel、已有 HTTPS `/mcp`，或暂缓远程连接。
+对 ChatGPT，`--tunnel auto` 会优先 OpenAI Secure MCP Tunnel，不会因为机器上恰好安装了 cloudflared/Tailscale 就静默改用公网入口。Package setup 会保持 bearer-only Canonical Runtime 私有，并管理一个独立的 loopback OAuth Gateway 供 ChatGPT App 使用。Cloudflare Tunnel、Tailscale Funnel、已有 HTTPS `/mcp` 或暂缓远程连接都是显式 fallback。已安装用户运行 `npm install -g @moretea-labs/forge@latest` 后再执行 `forge setup next`。
 
 普通 package Runtime 是 `forge runtime service install-package`。源码 immutable Runtime 与 Standalone Recovery 属于高级维护路径。
 

@@ -27,15 +27,39 @@ The Package Runtime does not require a Forge Git checkout, Bun compilation, Code
 
 ## Local boundaries
 
-Forge MCP remains loopback-only, normally at:
+Forge keeps two MCP boundaries on loopback by default:
 
 ```text
-http://127.0.0.1:8765/mcp
+ChatGPT OAuth Gateway: http://127.0.0.1:8767/mcp
+Canonical Runtime:      http://127.0.0.1:8765/mcp
 ```
+
+The OAuth Gateway is the endpoint for Secure Tunnel or HTTPS connectors. It proxies authenticated controller traffic to the bearer-only Canonical Runtime; remote clients should never target the internal Runtime directly. `forge mcp setup chatgpt --user-level` records the actual OAuth endpoint, so custom ports remain supported.
 
 Fresh user-level setup keeps the repository-centric Utility Console disabled until a repository/workbench target is configured. When enabled later it uses a separate loopback port (normally 8766). Never expose it to the internet.
 
 Service-level MCP configuration lives below `Controller Home/mcp/`. OAuth credentials and bearer fallback tokens are local secrets and must not be pasted into chat or committed. Repository-specific `.forge/mcp.policy.json` can narrow access when a repository is later adopted.
+
+## App identity vs. transport
+
+The ChatGPT App/connector is the application identity and owns the visible Forge tool schema. **Secure MCP Tunnel is the transport.** Switching an existing Forge App from a public HTTPS/Cloudflare route to Tunnel changes how commands reach Forge; it does not create a second Forge tool schema.
+
+Default path:
+
+```text
+ChatGPT App -> OpenAI Secure MCP Tunnel -> tunnel-client
+            -> Forge loopback OAuth Gateway -> Canonical Runtime
+```
+
+A fresh chat is useful for isolated A/B testing, but Forge does not require a new conversation merely because transport changed when the same App is already connected and its tool schema is unchanged. If published tool definitions change, use ChatGPT's current app refresh/re-publish workflow.
+
+Upgrade existing Forge installs with:
+
+```bash
+npm install -g @moretea-labs/forge@latest
+forge --version
+forge setup next
+```
 
 ## Remote controller connection
 
@@ -47,7 +71,7 @@ The setup profile owns the connection choice. Supported paths are:
 4. **Existing HTTPS** — user-managed reverse proxy/tunnel ending in `/mcp`.
 5. **None** — local setup only; remote connectivity can be configured later.
 
-For OpenAI Secure MCP Tunnel, setup uses the official supervised runtime surface and considers it ready only when `tunnel-client runtimes status forge --json` reports the runtime running, healthy, and ready.
+For OpenAI Secure MCP Tunnel, setup uses the official managed runtime surface and considers a matching local alias ready only when `tunnel-client` reports the configured `tunnel_id` running, healthy, and ready. Alias names are not tunnel identity.
 
 For public HTTPS paths, the configured connector URL is:
 

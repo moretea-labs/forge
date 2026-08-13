@@ -40,7 +40,7 @@ http://127.0.0.1:8765/mcp
 
 ### A. OpenAI Secure MCP Tunnel——有权限时优先
 
-Secure MCP Tunnel 通过出站连接把本机/private MCP 接到 OpenAI 托管产品，不要求给 Forge 开公网入站。详见 OpenAI 的 [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) 与官方 [`openai/tunnel-client`](https://github.com/openai/tunnel-client)。
+Secure MCP Tunnel 通过出站连接把本机/private MCP 接到 OpenAI 托管产品，不要求给 Forge 开公网入站。 `--tunnel auto` 会把它作为 ChatGPT 的第一优先传输，不会仅仅因为机器上装了 cloudflared/Tailscale 就静默改用公网方案。详见 OpenAI 的 [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) 与官方 [`openai/tunnel-client`](https://github.com/openai/tunnel-client)。
 
 需要先在 OpenAI Platform 获得 tunnel ID 和使用权限。Forge 只记录**非秘密**的 tunnel ID：
 
@@ -65,12 +65,18 @@ tunnel-client runtimes connect \
   --alias forge \
   --tunnel-id tunnel_0123456789abcdef0123456789abcdef \
   --runtime-api-key env:CONTROL_PLANE_API_KEY \
-  --mcp-server-url http://127.0.0.1:8765/mcp
+  --mcp-server-url http://127.0.0.1:8767/mcp
 
 tunnel-client runtimes status forge --json
 ```
 
 只有 tunnel-client 返回 `process_running + healthy + ready` 后，Forge 才把这个连接判为 ready。
+
+#### 地址到底变成什么？
+
+使用 Secure Tunnel 后，不再需要给 Forge 准备一个公网 `/mcp` 地址。ChatGPT App 选择 `tunnel_id`；本机 `tunnel-client` 把命令转发到 Forge 的 **loopback OAuth Gateway**（默认 `127.0.0.1:8767/mcp`），再由 Gateway 代理到内部 bearer-only Runtime（默认 `127.0.0.1:8765/mcp`）。如果改过端口，以 `forge mcp setup chatgpt --user-level` 输出的 OAuth endpoint 为准。
+
+App/connector 身份及 Forge 工具 schema 与网络传输层是两件事。Cloudflare/HTTPS 切到 Secure Tunnel 改变的是网络路径，不会生成另一套 19-tool Forge schema。同一个 App 已连接且 schema 没变化时，单纯切换网络不要求新开会话；新会话主要用于隔离 A/B 或排查客户端缓存。
 
 ### B. Cloudflare Tunnel
 

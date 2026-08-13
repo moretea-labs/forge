@@ -72,6 +72,7 @@ export function buildRuntimeCommand(): Command {
         },
         servicePath: result.servicePath,
         pid: result.pid,
+        connector: result.connector,
         warnings: result.warnings,
         next: `forge runtime status --controller-home ${home}`,
       });

@@ -206,6 +206,20 @@ export function detectSetupPlatform(options: { platform?: NodeJS.Platform; arch?
 }
 
 
+function isLoopbackMcpEndpoint(value: string | undefined): boolean {
+  if (!value) return false;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:'
+      && (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost' || parsed.hostname === '::1')
+      && parsed.pathname === '/mcp'
+      && !parsed.search
+      && !parsed.hash;
+  } catch {
+    return false;
+  }
+}
+
 export interface ControllerGuidance {
   controller: SetupControllerKind;
   ready: boolean;
@@ -244,8 +258,9 @@ export function resolveControllerGuidance(
       const localReady = localConfig?.profile === 'controller'
         && localConfig.server?.host === '127.0.0.1'
         && Number.isInteger(localConfig.server?.port);
+      const connectorReady = controller !== 'chatgpt' || isLoopbackMcpEndpoint(localConfig?.chatgpt?.localEndpoint);
       const endpointReady = !profile.tunnel.endpoint || localConfig?.chatgpt?.endpoint === profile.tunnel.endpoint;
-      if (!localReady || !endpointReady) {
+      if (!localReady || !connectorReady || !endpointReady) {
         const endpoint = profile.tunnel.endpoint ? ` --endpoint ${profile.tunnel.endpoint}` : '';
         return {
           controller,
@@ -329,15 +344,11 @@ export function resolveTunnelGuidance(
   }
   let provider = profile.tunnel.provider;
   if (provider === 'auto') {
-    if (platform.commands.tunnelClient) provider = 'openai';
-    else if (platform.commands.cloudflared) provider = 'cloudflare';
-    else if (platform.commands.tailscale) provider = 'tailscale';
-    else {
-      return {
-        provider: 'auto', ready: false, title: 'Choose secure remote access',
-        detail: 'For ChatGPT, prefer OpenAI Secure MCP Tunnel when your workspace/Platform organization supports it; otherwise choose Cloudflare Tunnel, Tailscale Funnel, an existing HTTPS endpoint, or defer remote access. Forge never requires public ingress when a private tunnel is available.',
-      };
-    }
+    // ChatGPT's private outbound path is the default. Do not silently choose a
+    // public ingress provider merely because cloudflared/tailscale happens to
+    // be installed; users without Secure Tunnel access can explicitly select a
+    // fallback provider.
+    provider = 'openai';
   }
   if (provider === 'openai') {
     if (!profile.tunnel.tunnelId) {
@@ -384,12 +395,18 @@ export function resolveTunnelGuidance(
     }
     const alias = preferredAlias;
     const localConfig = loadMcpServiceLocalConfig(resolveControllerHome(options.controllerHome));
-    const configuredPort = localConfig?.server?.port;
-    const mcpPort = typeof configuredPort === 'number' && Number.isInteger(configuredPort) ? configuredPort : 8765;
+    const localEndpoint = localConfig?.chatgpt?.localEndpoint;
+    if (!isLoopbackMcpEndpoint(localEndpoint)) {
+      return {
+        provider, ready: false, title: 'Prepare the local ChatGPT OAuth endpoint',
+        detail: 'Secure Tunnel must terminate at Forge’s loopback OAuth Gateway, not the bearer-only Canonical Runtime. Refresh the user-level ChatGPT MCP configuration first.',
+        command: 'forge mcp setup chatgpt --user-level',
+      };
+    }
     return {
       provider, ready: false, title: 'Connect OpenAI Secure MCP Tunnel',
-      detail: 'Create a supervised tunnel-client runtime and verify it with runtimes status. Set CONTROL_PLANE_API_KEY in the invoking environment; Forge passes only an env reference and never reads or stores the key.',
-      command: `tunnel-client runtimes connect --alias ${alias} --tunnel-id ${profile.tunnel.tunnelId} --runtime-api-key env:CONTROL_PLANE_API_KEY --mcp-server-url http://127.0.0.1:${mcpPort}/mcp`,
+      detail: 'Create a supervised tunnel-client runtime and verify it with runtimes status. Keep the runtime API key in an environment or file reference owned by tunnel-client; Forge never reads or stores the key.',
+      command: `tunnel-client runtimes connect --alias ${alias} --tunnel-id ${profile.tunnel.tunnelId} --runtime-api-key env:CONTROL_PLANE_API_KEY --mcp-server-url ${localEndpoint}`,
     };
   }
   if (provider === 'none') {

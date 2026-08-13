@@ -42,7 +42,7 @@ Run `forge setup next`. Forge supports these connection providers:
 
 ### A. OpenAI Secure MCP Tunnel — preferred when available
 
-Secure MCP Tunnel lets an OpenAI-hosted product reach the local MCP server through an outbound tunnel, without creating public inbound access. See OpenAI's [Secure MCP Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) and the official [`openai/tunnel-client`](https://github.com/openai/tunnel-client).
+Secure MCP Tunnel lets an OpenAI-hosted product reach the local MCP server through an outbound tunnel, without creating public inbound access. `--tunnel auto` treats this as the first-choice ChatGPT transport and does not silently choose Cloudflare/Tailscale merely because those CLIs are installed. See OpenAI's [Secure MCP Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) and the official [`openai/tunnel-client`](https://github.com/openai/tunnel-client).
 
 You need a tunnel ID and tunnel-use permission from OpenAI Platform. Record only the non-secret tunnel ID in Forge:
 
@@ -67,12 +67,18 @@ tunnel-client runtimes connect \
   --alias forge \
   --tunnel-id tunnel_0123456789abcdef0123456789abcdef \
   --runtime-api-key env:CONTROL_PLANE_API_KEY \
-  --mcp-server-url http://127.0.0.1:8765/mcp
+  --mcp-server-url http://127.0.0.1:8767/mcp
 
 tunnel-client runtimes status forge --json
 ```
 
 Forge reports this provider ready only when `tunnel-client` reports the managed runtime as running, healthy, and ready.
+
+#### What address changes?
+
+With Secure Tunnel there is no public Forge `/mcp` address to paste. The ChatGPT App selects the `tunnel_id`; `tunnel-client` forwards commands to Forge's **loopback OAuth Gateway** (default `127.0.0.1:8767/mcp`), which proxies to the internal bearer-only Runtime (default `127.0.0.1:8765/mcp`). If you customize ports, use the OAuth endpoint printed by `forge mcp setup chatgpt --user-level`.
+
+The App/connector identity and Forge tool schema are separate from the transport. Switching from Cloudflare/HTTPS to Secure Tunnel changes the network path, not the 19-tool Forge schema. A fresh chat is useful for isolated A/B testing, but it is not required merely because transport changed when the same App is already connected.
 
 ### B. Cloudflare Tunnel
 

@@ -50,6 +50,7 @@ interface McpSetupChatgptOptions {
   endpoint?: string;
   serverName?: string;
   localControllerPort?: string;
+  connectorPort?: string;
 }
 
 interface McpSetupLocalControllerOptions {
@@ -237,6 +238,7 @@ export function buildMcpCommand(): Command {
     .option('--host <host>', 'Local MCP HTTP bind host', '127.0.0.1')
     .option('--port <port>', 'Local MCP HTTP bind port', '8765')
     .option('--local-controller-port <port>', 'Local-only Utility Console port; defaults to MCP port + 1')
+    .option('--connector-port <port>', 'Loopback OAuth connector port for ChatGPT tunnels; defaults to MCP port + 2')
     .option('--endpoint <url>', 'Stable public HTTPS /mcp endpoint to store in ignored local config')
     .option('--server-name <name>', 'ChatGPT Connector/MCP server name to record in ignored local config')
     .action((rawOpts: McpSetupChatgptOptions) => {

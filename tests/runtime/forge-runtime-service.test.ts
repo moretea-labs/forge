@@ -13,6 +13,7 @@ import {
 } from '../../src/runtime/root/service';
 import { materializePackageRuntimeRelease } from '../../src/runtime/root/package-runtime-release';
 import { renderForgeRuntimeSystemdUserUnit } from '../../src/runtime/root/package-runtime-service';
+import { packageConnectorLaunchSpec, packageConnectorServicePaths, renderPackageConnectorLaunchAgent, renderPackageConnectorSystemdUserUnit } from '../../src/runtime/root/package-connector-service';
 
 const roots: string[] = [];
 function fixture(): { root: string; home: string; repo: string; token: string } {
@@ -175,6 +176,31 @@ describe('Forge Runtime service', () => {
     const manifest = JSON.parse(readFileSync(release.manifestPath, 'utf8')); expect(manifest.releaseRevision).toBe(`package:9.9.9-test:${release.packageFingerprint}`); expect(manifest.sourceCommit).toBeUndefined();
     writeFileSync(join(packageRoot, 'src', 'runtime.ts'), 'export const runtime = 2;\n');
     const rejected = spawnSync(release.entrypointPath, [], { encoding: 'utf8' }); expect(rejected.status).toBe(78); expect(rejected.stderr).toContain('FORGE_PACKAGE_RUNTIME_SOURCE_CHANGED');
+  });
+
+  test('renders a persistent OAuth connector separate from the bearer-only Runtime port', () => {
+    const fx = fixture(), packageRoot = join(fx.root, 'package');
+    for (const dir of ['src/cli', 'src/runtime/shared', 'bin', 'assets', 'scripts']) mkdirSync(join(packageRoot, dir), { recursive: true });
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' }));
+    writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(0);\n');
+    writeFileSync(join(packageRoot, 'src', 'cli', 'index.ts'), '');
+    writeFileSync(join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'), '');
+    const release = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'connector-test' });
+    const launch = packageConnectorLaunchSpec({ release, controllerHome: fx.home, endpoint: 'http://127.0.0.1:8767/mcp', executable: '/usr/local/bin/node' });
+    expect(launch.port).toBe(8767);
+    expect(launch.args.join(' ')).toContain('mcp serve');
+    expect(launch.args.join(' ')).toContain('--port 8767');
+    expect(launch.args.join(' ')).toContain('--auth oauth');
+    expect(launch.environment.FORGE_CONTROLLER_LIFECYCLE_OWNER).toBe('1');
+    const paths = packageConnectorServicePaths(fx.home, fx.root);
+    const plist = renderPackageConnectorLaunchAgent({ paths, launch });
+    expect(plist).toContain('<key>RunAtLoad</key>');
+    expect(plist).toContain('<key>KeepAlive</key>');
+    expect(plist).toContain('<string>8767</string>');
+    expect(plist).toContain('<string>oauth</string>');
+    const unit = renderPackageConnectorSystemdUserUnit({ launch });
+    expect(unit).toContain('Restart=on-failure');
+    expect(unit).toContain('8767');
   });
 
   test('renders a systemd user owner with restart and release environment', () => {

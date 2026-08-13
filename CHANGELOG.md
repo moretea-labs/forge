@@ -4,7 +4,12 @@ All notable public Forge changes are recorded here. Release entries are tied to 
 
 ## Unreleased
 
-No unreleased public changes are currently recorded.
+### ChatGPT Secure Tunnel and package setup
+
+- Make `--tunnel auto` prefer OpenAI Secure MCP Tunnel instead of silently selecting an installed public-ingress CLI. Cloudflare, Tailscale, existing HTTPS, and deferred remote access remain explicit fallbacks.
+- Add a package-managed loopback OAuth Gateway for ChatGPT alongside the bearer-only Canonical Runtime, and persist the local OAuth endpoint in user-level MCP configuration so Secure Tunnel never targets the internal Runtime directly.
+- Accept modern ChatGPT `server/discover` probing with the correct legacy fallback response, detect tunnel runtimes by `tunnel_id` rather than a hard-coded alias, and prefer an existing repository Controller Home during setup reconciliation.
+- Clarify that the ChatGPT App/connector owns application/tool identity while Secure Tunnel owns transport, document migration from Cloudflare/HTTPS, and add the supported npm update flow (`npm install -g @moretea-labs/forge@latest` then `forge setup next`).
 
 ## 1.5.0 - 2026-08-13
 

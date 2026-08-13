@@ -14,6 +14,8 @@ import {
   type ForgeRuntimeServiceConfig,
 } from './service';
 import { materializePackageRuntimeRelease, type PackageRuntimeRelease } from './package-runtime-release';
+import { loadMcpServiceLocalConfig } from '../../cli/mcp/auth';
+import { installPackageConnectorService, type PackageConnectorServiceResult } from './package-connector-service';
 
 export type PackageRuntimeServiceMode = 'launchd' | 'systemd-user' | 'portable';
 
@@ -26,6 +28,7 @@ export interface PackageRuntimeServiceInstallResult {
   servicePath?: string;
   pid?: number;
   warnings: string[];
+  connector?: PackageConnectorServiceResult;
 }
 
 export interface PackageRuntimeServiceOptions {
@@ -147,26 +150,36 @@ export async function installPackageRuntimeService(options: PackageRuntimeServic
     repositoryRoot: release.packageRoot,
     host: options.host ?? '127.0.0.1',
     port: options.port ?? 8765,
-    authTokenFile: resolve(options.authTokenFile),
+    authTokenFile: options.authTokenFile,
     ...(options.exclusiveWorkId?.trim() ? { exclusiveWorkId: options.exclusiveWorkId.trim() } : {}),
   };
   writeForgeRuntimeServiceConfig(config);
   syncForgeRuntimeActiveEntrypoint(controllerHome);
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
+
+  let base: PackageRuntimeServiceInstallResult;
   if (!options.forcePortable && platform === 'darwin') {
     const paths = await installForgeRuntimeService({ config, runnerPath: join(release.packageRoot, 'bin', 'forge-runtime-service.mjs'), nodeExecutable: process.execPath });
-    return { status: 'installed', mode: 'launchd', persistent: true, controllerHome, release, servicePath: paths.installedPlistPath, warnings: [] };
-  }
-  if (!options.forcePortable && platform === 'linux' && systemdUserAvailable(env)) {
+    base = { status: 'installed', mode: 'launchd', persistent: true, controllerHome, release, servicePath: paths.installedPlistPath, warnings: [] };
+  } else if (!options.forcePortable && platform === 'linux' && systemdUserAvailable(env)) {
     const unitPath = installSystemdUserService(controllerHome, env);
-    return { status: 'installed', mode: 'systemd-user', persistent: true, controllerHome, release, servicePath: unitPath, warnings: [] };
+    base = { status: 'installed', mode: 'systemd-user', persistent: true, controllerHome, release, servicePath: unitPath, warnings: [] };
+  } else {
+    const pid = startPortableRuntime(controllerHome, env);
+    base = {
+      status: 'installed', mode: 'portable', persistent: false, controllerHome, release, pid,
+      warnings: [platform === 'win32'
+        ? 'Native Windows is preview: Forge started detached Runtime and OAuth Gateway processes for this session; automatic login/reboot persistence is not yet claimed.'
+        : 'systemd --user is unavailable: Forge started detached Runtime and OAuth Gateway processes; enable a user service manager for reboot persistence.'],
+    };
   }
-  const pid = startPortableRuntime(controllerHome, env);
-  return {
-    status: 'installed', mode: 'portable', persistent: false, controllerHome, release, pid,
-    warnings: [platform === 'win32'
-      ? 'Native Windows is preview: Forge started a detached user process for this session; automatic login/reboot persistence is not yet claimed.'
-      : 'systemd --user is unavailable: Forge started a detached user process; enable a user service manager for reboot persistence.'],
-  };
+
+  const localConfig = loadMcpServiceLocalConfig(controllerHome);
+  const connectorEndpoint = localConfig?.chatgpt?.localEndpoint;
+  if (!connectorEndpoint) return base;
+  const connector = await installPackageConnectorService({
+    release, controllerHome, endpoint: connectorEndpoint, platform, env, forcePortable: options.forcePortable === true,
+  });
+  return { ...base, connector };
 }
