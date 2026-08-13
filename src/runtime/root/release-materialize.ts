@@ -29,6 +29,7 @@ export interface StagedRuntimeRelease {
   codeGraphNodeArtifactIdentity?: string;
   codeGraphSidecarArtifactIdentity?: string;
   codeGraphLibraryArtifactIdentity?: string;
+  controllerUiArtifactIdentity?: string;
   manifestSha256: string;
   sourceCommit: string;
 }
@@ -395,6 +396,17 @@ export function stageRuntimeRelease(input: {
     const codeGraphSidecarArtifactIdentity = `sha256:${sha256(codeGraphSidecarPath)}`;
     const codeGraphLibraryArtifactIdentity = `sha256:${sha256Directory(codeGraphLibraryPath)}`;
 
+    const controllerUiRoot = 'ui-dist' as const;
+    const sourceControllerUiPath = join(sourceRoot, 'src', 'cli', 'local-bridge', controllerUiRoot);
+    const sourceControllerUiJs = join(sourceControllerUiPath, 'app.js');
+    const sourceControllerUiCss = join(sourceControllerUiPath, 'app.css');
+    if (!existsSync(sourceControllerUiJs) || !existsSync(sourceControllerUiCss)) {
+      throw new Error(`RUNTIME_RELEASE_CONTROLLER_UI_SOURCE_MISSING: ${sourceControllerUiPath}`);
+    }
+    const controllerUiPath = join(staging, controllerUiRoot);
+    cpSync(sourceControllerUiPath, controllerUiPath, { recursive: true, force: false });
+    const controllerUiArtifactIdentity = `sha256:${sha256Directory(controllerUiPath)}`;
+
     const desktopHelperEntrypoint = 'forge-desktop-helper.mjs' as const;
     const sourceDesktopHelperPath = join(sourceRoot, 'bin', desktopHelperEntrypoint);
     if (!existsSync(sourceDesktopHelperPath)) {
@@ -429,6 +441,8 @@ export function stageRuntimeRelease(input: {
       codeGraphSidecarArtifactIdentity,
       codeGraphLibraryRoot,
       codeGraphLibraryArtifactIdentity,
+      controllerUiRoot,
+      controllerUiArtifactIdentity,
       arguments: [],
       configurationSchemaVersion: 1,
       controllerHome: resolve(input.controllerHome),
@@ -460,6 +474,7 @@ export function stageRuntimeRelease(input: {
       codeGraphNodeArtifactIdentity,
       codeGraphSidecarArtifactIdentity,
       codeGraphLibraryArtifactIdentity,
+      controllerUiArtifactIdentity,
       manifestSha256: createHash('sha256').update(`${JSON.stringify(manifest, null, 2)}\n`).digest('hex'),
       sourceCommit,
     };
@@ -505,5 +520,9 @@ export function assertRuntimeReleaseFiles(release: StagedRuntimeRelease): void {
   }
   if (release.codeGraphLibraryArtifactIdentity && !existsSync(join(release.releasePath, 'codegraph-lib', 'dist', 'index.js'))) {
     throw new Error(`RUNTIME_RELEASE_CODEGRAPH_LIBRARY_MISSING: ${join(release.releasePath, 'codegraph-lib', 'dist', 'index.js')}`);
+  }
+  if (release.controllerUiArtifactIdentity
+    && (!existsSync(join(release.releasePath, 'ui-dist', 'app.js')) || !existsSync(join(release.releasePath, 'ui-dist', 'app.css')))) {
+    throw new Error(`RUNTIME_RELEASE_CONTROLLER_UI_MISSING: ${join(release.releasePath, 'ui-dist')}`);
   }
 }

@@ -17,12 +17,15 @@ function sourceFixture() {
   const controllerHome = mkdtempSync(join(tmpdir(), 'forge-runtime-release-controller-'));
   roots.push(root, controllerHome);
   mkdirSync(join(root, 'src/runtime/plugins'), { recursive: true });
+  mkdirSync(join(root, 'src/cli/local-bridge/ui-dist'), { recursive: true });
   mkdirSync(join(root, 'bin'), { recursive: true });
   mkdirSync(join(root, 'scripts'), { recursive: true });
   writeFileSync(join(root, 'README.md'), 'fixture\n');
   writeFileSync(join(root, 'src/runtime/plugins/browser-node-bridge-host.ts'), 'console.log("host");\n');
   writeFileSync(join(root, 'src/runtime/plugins/browser-handoff-host.ts'), 'console.log("handoff");\n');
   writeFileSync(join(root, 'src/runtime/plugins/external-unix-socket-probe.cjs'), 'console.log("probe");\n');
+  writeFileSync(join(root, 'src/cli/local-bridge/ui-dist/app.js'), 'console.log("ui");\n');
+  writeFileSync(join(root, 'src/cli/local-bridge/ui-dist/app.css'), ':root { color-scheme: light; }\n');
   writeFileSync(join(root, 'bin/forge-desktop-helper.mjs'), '#!/usr/bin/env node\nconsole.log("desktop-helper");\n');
   writeFileSync(join(root, 'scripts/stage-runtime-release.ts'), '// candidate-owned stager fixture\n');
   spawnSync('git', ['init', '-b', 'main'], { cwd: root, stdio: 'ignore' });
@@ -48,6 +51,28 @@ function materializeFakeCodeGraphRuntime(input: {
 function sha256Text(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
+
+describe('compiled runtime UI assets', () => {
+  test('reads controller UI assets co-located with a Bun compiled executable', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-runtime-ui-compiled-'));
+    roots.push(root);
+    const uiRoot = join(root, 'ui-dist');
+    mkdirSync(uiRoot, { recursive: true });
+    writeFileSync(join(uiRoot, 'app.js'), 'compiled-ui-marker');
+    const entryPath = join(root, 'entry.ts');
+    const helperPath = join(import.meta.dir, '../../src/cli/local-bridge/console-assets.ts');
+    writeFileSync(entryPath, `import { readConsoleAsset } from ${JSON.stringify(helperPath)};\nprocess.stdout.write(readConsoleAsset("app.js"));\n`);
+    const executable = join(root, 'forge-runtime-ui-smoke');
+    const compile = spawnSync(process.execPath, ['build', entryPath, '--compile', '--outfile', executable], {
+      cwd: root,
+      encoding: 'utf8',
+    });
+    expect(compile.status).toBe(0);
+    const run = spawnSync(executable, [], { cwd: root, encoding: 'utf8' });
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe('compiled-ui-marker');
+  });
+});
 
 describe('runtime release materialization', () => {
   test('accepts a first-generation candidate release with a parent-unknown sidecar', () => {
@@ -159,6 +184,12 @@ describe('runtime release materialization', () => {
     expect(manifest.codeGraphSidecarArtifactIdentity).toBe(staged.codeGraphSidecarArtifactIdentity);
     expect(manifest.codeGraphLibraryRoot).toBe('codegraph-lib');
     expect(manifest.codeGraphLibraryArtifactIdentity).toBe(staged.codeGraphLibraryArtifactIdentity);
+    expect(existsSync(join(staged.releasePath, 'ui-dist', 'app.js'))).toBe(true);
+    expect(existsSync(join(staged.releasePath, 'ui-dist', 'app.css'))).toBe(true);
+    expect(readFileSync(join(staged.releasePath, 'ui-dist', 'app.js'), 'utf8')).toContain('console.log');
+    expect(staged.controllerUiArtifactIdentity).toMatch(/^sha256:/);
+    expect(manifest.controllerUiRoot).toBe('ui-dist');
+    expect(manifest.controllerUiArtifactIdentity).toBe(staged.controllerUiArtifactIdentity);
     expect(loadRuntimeReleaseManifest(staged.manifestPath, controllerHome)).toMatchObject({
       codeGraphNodeEntrypoint: 'codegraph-node',
       codeGraphNodeArtifactIdentity: staged.codeGraphNodeArtifactIdentity,

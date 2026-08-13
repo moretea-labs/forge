@@ -73,6 +73,7 @@ import {
   verifyEditSession,
 } from "../editing/edit-session";
 import { localBridgeDashboardHtml } from "./dashboard";
+import { readConsoleAsset, type ConsoleAssetName } from "./console-assets";
 import { applyConsoleAutomationAction, listConsoleAutomations, summarizeConsoleAutomations } from "./console-automations";
 import {
   ackConsoleHandoff,
@@ -994,7 +995,7 @@ export async function startLocalBridgeServer(
     if (asset !== "app.js" && asset !== "app.css") { response.status(404).end(); return; }
     response.setHeader("Cache-Control", "no-cache");
     response.type(asset.endsWith(".css") ? "text/css" : "application/javascript");
-    response.send(readFileSync(new URL(`./ui-dist/${asset}`, import.meta.url), "utf8"));
+    response.send(readConsoleAsset(asset as ConsoleAssetName));
   });
 
   app.get("/", (_request, response) => {
