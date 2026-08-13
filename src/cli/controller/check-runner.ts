@@ -363,7 +363,7 @@ function validateControllerCheckSnapshot(repoRoot: string, snapshot: ControllerC
   };
 }
 
-const CONTROLLER_CHECK_EXECUTION_IDENTITY_VERSION = 'controller-check-execution-v1';
+const CONTROLLER_CHECK_EXECUTION_IDENTITY_VERSION = 'controller-check-execution-v2';
 
 function checkEnvironmentFingerprint(check: ControllerCheck): string {
   const env = repositoryChildProcessEnvironment(process.env);
@@ -373,7 +373,10 @@ function checkEnvironmentFingerprint(check: ControllerCheck): string {
       arch: process.arch,
       node: process.version,
       bun: typeof Bun !== 'undefined' ? Bun.version : undefined,
-      execPath: process.execPath,
+      // Fingerprint the executable that the check actually runs, not the
+      // Controller launcher binary. Compiled Runtime uses active-forge-runtime
+      // for the parent and forge-check-runner for the sidecar; process.execPath
+      // therefore differs even though both execute the exact same check/toolchain.
       commandExecutable: check.command[0],
       path: env.PATH ?? '',
       home: env.HOME ?? env.USERPROFILE ?? '',

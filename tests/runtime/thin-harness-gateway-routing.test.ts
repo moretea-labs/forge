@@ -644,6 +644,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(record.origin?.workVerificationSnapshot).toBe(true);
     const receipt = readPersistedCheckResultReceipt(record.origin?.checkResultReceiptPath);
     expect(receipt).toEqual(expect.objectContaining({ checkId: 'isolated', ok: true, status: 0 }));
+    expect(receipt?.cacheKey).toBe(record.checkExecution?.cacheKey);
     const snapshotRoot = join(fx.controllerHome, 'repositories', fx.repository.repoId, 'verification-snapshots');
     const residualSnapshots = existsSync(snapshotRoot)
       ? require('fs').readdirSync(snapshotRoot).filter((name: string) => name.startsWith('snapshot-'))
