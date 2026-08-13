@@ -6,8 +6,8 @@ Homebrew is planned as a convenience layer after the first stable npm/GitHub rel
 
 Do not publish a formula until all of the following are true:
 
-- `@moretea-labs/forge@1.5.0` exists on npm;
-- Git tag and GitHub Release `v1.5.0` exist and point to the tested commit;
+- `@moretea-labs/forge@1.5.1` exists on npm;
+- Git tag and GitHub Release `v1.5.1` exist and point to the tested commit;
 - the npm tarball has an immutable checksum;
 - macOS installation and `forge --version` / `forge doctor` tests pass;
 - upgrade and uninstall behavior is documented.
