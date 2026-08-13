@@ -162,6 +162,18 @@ export function mcpSessionToolSurfaceFingerprintIsCurrent(
   return !sessionFingerprint || !currentFingerprint || sessionFingerprint === currentFingerprint;
 }
 
+export async function resolveMcpSessionCurrentFingerprint(
+  publishedFingerprint: string | undefined,
+  loadRuntimeFingerprint?: () => Promise<string | undefined>,
+): Promise<string | undefined> {
+  // Runtime status publishes the exact schema fingerprint observed at session
+  // initialization/cutover. Prefer that O(1) fence on the hot path. If the
+  // publication is temporarily unavailable, retain the previous fail-safe
+  // behavior by asking the Canonical Runtime directly.
+  if (publishedFingerprint) return publishedFingerprint;
+  return await loadRuntimeFingerprint?.();
+}
+
 function toolCallOutsideSessionSchema(body: unknown, toolNames: readonly string[] | undefined): boolean {
   if (!toolNames) return false;
   const messages = Array.isArray(body) ? body : [body];
@@ -744,8 +756,12 @@ async function handleMcpPost(
       registry.beginPost(sessionId);
       stats.activePosts += 1;
       try {
-        const runtimeSchema = await resolveRuntimeSchema?.(managed.toolContext);
-        const currentFingerprint = runtimeSchema?.fingerprint ?? currentToolSurfaceFingerprint();
+        const currentFingerprint = await resolveMcpSessionCurrentFingerprint(
+          currentToolSurfaceFingerprint(),
+          resolveRuntimeSchema
+            ? async () => (await resolveRuntimeSchema(managed.toolContext))?.fingerprint
+            : undefined,
+        );
         if (!mcpSessionToolSurfaceFingerprintIsCurrent(managed.toolSurfaceFingerprint, currentFingerprint)) {
           // Keep the transport/session alive long enough for the host to observe
           // the recoverable reset and issue a replacement initialize request.
@@ -795,8 +811,12 @@ async function handleMcpGet(
   req.once('aborted', releaseStream);
   res.once('close', releaseStream);
   try {
-    const runtimeSchema = await resolveRuntimeSchema?.(managed.toolContext);
-    const currentFingerprint = runtimeSchema?.fingerprint ?? currentToolSurfaceFingerprint();
+    const currentFingerprint = await resolveMcpSessionCurrentFingerprint(
+      currentToolSurfaceFingerprint(),
+      resolveRuntimeSchema
+        ? async () => (await resolveRuntimeSchema(managed.toolContext))?.fingerprint
+        : undefined,
+    );
     if (!mcpSessionToolSurfaceFingerprintIsCurrent(managed.toolSurfaceFingerprint, currentFingerprint)) {
       // Preserve the existing SSE transport while asking the host to
       // reinitialize. The replacement initialize owns supersession/cleanup.

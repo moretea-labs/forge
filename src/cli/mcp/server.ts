@@ -219,17 +219,12 @@ async function proxyRuntimeToolCall(
   ctx: MultiRepositoryMcpToolContext,
   name: string,
   args: Record<string, unknown>,
-  expectedSchema?: CanonicalRuntimeToolSchema,
 ): Promise<CallToolResult> {
   return withCanonicalRuntimeClient(ctx, async (client) => {
-    if (expectedSchema) {
-      const listed = await client.listTools();
-      const definitions = listed.tools as Tool[];
-      const fingerprint = forgeToolSurfaceFingerprint(definitions);
-      if (fingerprint !== expectedSchema.fingerprint || !definitions.some((tool) => tool.name === name)) {
-        return toolSurfaceMismatchResult();
-      }
-    }
+    // The outer Connector session is already bound to the Canonical Runtime
+    // schema and fenced by the Runtime-published fingerprint before dispatch.
+    // Re-listing tools here creates a second discovery round trip for every
+    // tool call without strengthening that fence.
     const response = await client.callTool({ name, arguments: args });
     return response as unknown as CallToolResult;
   });
@@ -309,7 +304,7 @@ export function createForgeMcpServerFromContext(
         // Gateway processes from acquiring Process Runtime leases or evaluating
         // Runtime source coherence against their own checkout.
         if (!getRuntimeWriteClaim()) {
-          if (runtimeSchema) return proxyRuntimeToolCall(ctx, name, args, runtimeSchema);
+          if (runtimeSchema) return proxyRuntimeToolCall(ctx, name, args);
           if (observeRuntimeStatus(ctx.controllerHome).ready) return proxyRuntimeToolCall(ctx, name, args);
         }
         const accessResult = callAccessTool(ctx, name, args);
