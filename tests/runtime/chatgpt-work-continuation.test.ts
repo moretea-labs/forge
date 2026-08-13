@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
@@ -55,5 +55,12 @@ describe('ChatGPT Work conversation binding', () => {
     expect(chatgptBridgeTargetMatchesPage('https://chatgpt.com/c/target-id', 'https://chatgpt.com/c/other-id')).toBe(false);
     expect(chatgptBridgeTargetMatchesPage('https://chatgpt.com/', 'https://chatgpt.com/')).toBe(true);
     expect(chatgptBridgeTargetMatchesPage('https://chatgpt.com/', 'https://chatgpt.com/c/other-id')).toBe(false);
+  });
+
+  test('submits continuation from the stable prompt editor instead of a send-button selector', () => {
+    const source = readFileSync(join(process.cwd(), 'src/runtime/control-plane/launcher/chatgpt-work-continuation.ts'), 'utf8');
+    expect(source).toContain("controllerBrowserAction(input.controllerHome, input.workId, 'press'");
+    expect(source).toContain('key: CHATGPT_SEND_KEY');
+    expect(source).not.toContain('[data-testid=\"send-button\"]');
   });
 });

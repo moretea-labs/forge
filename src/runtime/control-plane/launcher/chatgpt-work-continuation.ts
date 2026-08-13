@@ -9,7 +9,7 @@ import {
 
 const CONTROLLER_CHATGPT_SESSION_ID = 'forge-chatgpt-supercontroller';
 const CHATGPT_PROMPT_SELECTOR = '[name="prompt-textarea"]';
-const CHATGPT_SEND_SELECTOR = '[data-testid="send-button"]';
+const CHATGPT_SEND_KEY = 'Enter';
 const CHATGPT_ALLOWED_DOMAINS = ['chatgpt.com', 'www.chatgpt.com'];
 
 export interface WorkChatgptContinuationInput {
@@ -127,9 +127,10 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
       timeout_ms: input.timeoutMs ?? 60_000,
       post_action_wait_ms: 100,
     }, input.timeoutMs);
-    const sent = await controllerBrowserAction(input.controllerHome, input.workId, 'click', {
+    const sent = await controllerBrowserAction(input.controllerHome, input.workId, 'press', {
       session_id: sessionId,
-      selector: CHATGPT_SEND_SELECTOR,
+      selector: CHATGPT_PROMPT_SELECTOR,
+      key: CHATGPT_SEND_KEY,
       timeout_ms: input.timeoutMs ?? 60_000,
       post_action_wait_ms: 1_500,
     }, input.timeoutMs);
