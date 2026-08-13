@@ -17,6 +17,7 @@ import { Command } from 'commander';
 import { runDoctor, type CheckStatus, type DoctorReport } from './doctor';
 import { runStatus, type StatusReport } from './status';
 import { runMcpSetupChatgpt } from '../mcp/setup';
+import { resolveRepoPreferredControllerHome } from '../repositories/controller-home';
 import {
   configureSetupProfile,
   detectSetupPlatform,
@@ -790,7 +791,8 @@ export function openSetupSession(options: SetupSessionOptions = {}): SetupSessio
   const platform = options.platform ?? detectSetupPlatform({ env: options.env });
   const target = options.target ?? setupHostTarget(profile);
   const report = options.report ?? runInitHook({ ...options, target });
-  const nextAction = profileNextAction(profile, platform, { controllerHome: options.controllerHome, accountHome: options.accountHome }) ?? report.agent_actions[0];
+  const controllerHome = resolveRepoPreferredControllerHome(options.cwd ?? process.cwd(), options.controllerHome);
+  const nextAction = profileNextAction(profile, platform, { controllerHome, accountHome: options.accountHome }) ?? report.agent_actions[0];
   const now = (options.now ?? (() => new Date()))().toISOString();
   const reuse = previous && previous.status !== 'closed';
   return writeSetupSessionAt(path, {
