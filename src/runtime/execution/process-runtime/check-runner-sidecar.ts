@@ -1,16 +1,21 @@
 #!/usr/bin/env bun
 import { createHash } from 'crypto';
+import { rmSync } from 'fs';
 import { resolve } from 'path';
 import {
+  controllerCheckExecutionIdentity,
   runControllerCheckAsync,
   snapshotControllerCheck,
 } from '../../../cli/controller/check-runner';
+import { writePersistedCheckResultReceipt } from './check-result';
 
 interface ParsedArgs {
   repo: string;
   checkId: string;
   timeoutMs?: number;
   expectedCheckFingerprint: string;
+  resultReceiptPath?: string;
+  cleanupRoot?: string;
 }
 
 function requiredValue(argv: string[], flag: string): string {
@@ -31,21 +36,42 @@ function parseArgs(argv: string[]): ParsedArgs {
     checkId: requiredValue(argv, '--check-id'),
     timeoutMs,
     expectedCheckFingerprint: requiredValue(argv, '--expected-check-fingerprint'),
+    resultReceiptPath: argv.includes('--result-receipt') ? requiredValue(argv, '--result-receipt') : undefined,
+    cleanupRoot: argv.includes('--cleanup-root') ? requiredValue(argv, '--cleanup-root') : undefined,
   };
 }
 
 export async function runPersistedCheckSidecar(argv = process.argv.slice(2)): Promise<number> {
   const args = parseArgs(argv);
   const root = resolve(args.repo);
-  const snapshot = snapshotControllerCheck(root, args.checkId);
-  const actualFingerprint = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
-  if (actualFingerprint !== args.expectedCheckFingerprint) {
-    throw new Error('CHECK_SNAPSHOT_CHANGED: registered check changed before Process Runtime execution');
+  try {
+    const snapshot = snapshotControllerCheck(root, args.checkId);
+    const actualFingerprint = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
+    if (actualFingerprint !== args.expectedCheckFingerprint) {
+      throw new Error('CHECK_SNAPSHOT_CHANGED: registered check changed before Process Runtime execution');
+    }
+    const identity = controllerCheckExecutionIdentity(root, args.checkId, args.timeoutMs, snapshot);
+    const result = await runControllerCheckAsync(root, args.checkId, { requestedTimeoutMs: args.timeoutMs, snapshot });
+    if (args.resultReceiptPath) {
+      writePersistedCheckResultReceipt(args.resultReceiptPath, {
+        checkId: args.checkId,
+        cacheKey: identity.cacheKey,
+        ok: result.ok,
+        status: result.status,
+        timedOut: result.timedOut,
+        failureClass: result.failureClass,
+        validatedRevision: result.validatedRevision,
+        executedAt: result.executedAt,
+        originalExecutedAt: result.originalExecutedAt,
+        cacheHit: result.cacheHit,
+      });
+    }
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr.endsWith('\n') ? result.stderr : `${result.stderr}\n`);
+    return result.ok ? 0 : Math.max(1, result.status || 1);
+  } finally {
+    if (args.cleanupRoot) rmSync(resolve(args.cleanupRoot), { recursive: true, force: true });
   }
-  const result = await runControllerCheckAsync(root, args.checkId, { requestedTimeoutMs: args.timeoutMs, snapshot });
-  if (result.stdout) process.stdout.write(result.stdout);
-  if (result.stderr) process.stderr.write(result.stderr.endsWith('\n') ? result.stderr : `${result.stderr}\n`);
-  return result.ok ? 0 : Math.max(1, result.status || 1);
 }
 
 const direct = typeof process.argv[1] === 'string'

@@ -248,6 +248,10 @@ export interface ManagedProcessRecord {
     /** Optional durable task identity consuming the same receipt. */
     issueId?: string;
     taskId?: string;
+    /** Internal structured result written by the persisted Check sidecar. */
+    checkResultReceiptPath?: string;
+    /** True when this Check executed in a Work-owned verification snapshot. */
+    workVerificationSnapshot?: boolean;
   };
   error?: { code: string; message: string };
   /** Sidecar exit receipt path written by wrapper (survives controller restart). */

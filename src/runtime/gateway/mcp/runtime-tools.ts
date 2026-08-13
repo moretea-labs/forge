@@ -14,7 +14,7 @@ import { repositoryControllerRoot } from '../../../cli/repositories/controller-h
 import { cancelExecutionJob, findExecutionJob, getExecutionJob, getExecutionJobByRequestId, listExecutionJobs } from '../../execution/jobs/store';
 import { waitForExecutionJob } from '../../execution/jobs/wait';
 import type { ExecutionJob } from '../../execution/jobs/types';
-import { getProcessHandle, getProcessRecord, processCheckCompletionReceipt, processRuntimeResourceDiagnostics, runPersistedCheckViaProcessRuntime, waitForProcess } from '../../execution/process-runtime';
+import { getProcessHandle, getProcessRecord, processCheckCompletionReceipt, processRuntimeResourceDiagnostics, readPersistedCheckResultReceipt, runPersistedCheckViaProcessRuntime, waitForProcess } from '../../execution/process-runtime';
 import { buildJobOperationDigest } from '../../control-plane/facade/operation-digest';
 import { readWorkHandle, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
 import { executionIdentityForRepository } from '../../control-plane/execution/execution-identity';
@@ -2570,6 +2570,8 @@ async function runFacadeVerify(
       ? args.request_id.trim()
       : undefined;
     const observedGitHead = repositoryGitStatus(repository).head;
+    const workContract = workId ? getWorkContract(store, workId) : undefined;
+    if (workId && !workContract) throw new Error(`WORK_NOT_FOUND: ${workId}`);
     const executed = await runPersistedCheckViaProcessRuntime({
       controllerHome: ctx.controllerHome,
       repoId: repository.repoId,
@@ -2584,6 +2586,11 @@ async function runFacadeVerify(
       requestId,
       workId: workId || undefined,
       commandId: requestId,
+      verificationSnapshot: workContract ? {
+        workId: workContract.workId,
+        allowedPaths: workContract.allowedPaths,
+        forbiddenPaths: workContract.forbiddenPaths,
+      } : undefined,
     });
 
     if (executed.mode === 'durable') {
@@ -2634,6 +2641,7 @@ async function runFacadeVerify(
             semanticDeduplicated: handle.semanticDeduplicated === true,
             checkContentRevision,
             observedGitHead,
+            verificationIsolation: workContract ? 'work_snapshot' : 'shared_checkout',
             revisionSemantics: 'checkContentRevision is a content-bound Check identity; observedGitHead is Git HEAD and is not interchangeable.',
           },
         },
@@ -2660,16 +2668,28 @@ async function runFacadeVerify(
         },
       } : {}),
     });
-    const evidence = readLatestControllerCheckEvidence(repository.canonicalRoot, normalizedCheckId);
-    const evidenceMatchesProcess = Boolean(
-      evidence?.cacheKey
+    const structuredCheckResult = readPersistedCheckResultReceipt(record.origin?.checkResultReceiptPath);
+    const structuredResultMatchesProcess = Boolean(
+      structuredCheckResult
       && record.checkExecution?.cacheKey
-      && evidence.cacheKey === record.checkExecution.cacheKey,
+      && structuredCheckResult.checkId === normalizedCheckId
+      && structuredCheckResult.cacheKey === record.checkExecution.cacheKey,
     );
-    const failureClass = evidenceMatchesProcess ? evidence?.failureClass : undefined;
+    const legacyEvidence = record.origin?.checkResultReceiptPath
+      ? undefined
+      : readLatestControllerCheckEvidence(repository.canonicalRoot, normalizedCheckId);
+    const legacyEvidenceMatchesProcess = Boolean(
+      legacyEvidence?.cacheKey
+      && record.checkExecution?.cacheKey
+      && legacyEvidence.cacheKey === record.checkExecution.cacheKey,
+    );
+    const resultMatchesProcess = structuredResultMatchesProcess || legacyEvidenceMatchesProcess;
+    const failureClass = structuredResultMatchesProcess
+      ? structuredCheckResult?.failureClass
+      : legacyEvidenceMatchesProcess ? legacyEvidence?.failureClass : undefined;
     const infrastructureFailed = receipt.timedOut
       || receipt.cancelled
-      || !evidenceMatchesProcess
+      || !resultMatchesProcess
       || (!receipt.ok && failureClass !== 'acceptance_failure');
     const checkFailed = !receipt.ok && !infrastructureFailed;
     const boundedStatus = receipt.ok ? 'pass' : infrastructureFailed ? 'infrastructure_failure' : 'fail';
@@ -2691,8 +2711,10 @@ async function runFacadeVerify(
       checkContentRevision: receipt.checkRevision,
       observedGitHead,
       revisionSemantics: 'checkContentRevision is a content-bound Check identity; observedGitHead is Git HEAD and is not interchangeable.',
-      evidenceArtifactPath: receipt.artifactPath,
+      evidenceArtifactPath: record.origin?.workVerificationSnapshot ? undefined : receipt.artifactPath,
       evidenceReceiptId: receipt.receiptId,
+      checkResultReceiptId: structuredCheckResult?.receiptId,
+      verificationIsolation: record.origin?.workVerificationSnapshot ? 'work_snapshot' : 'shared_checkout',
       boundedStatus,
     };
 
@@ -2714,7 +2736,7 @@ async function runFacadeVerify(
           },
         },
         warnings: infrastructureFailed
-          ? [...facade.warnings, evidenceMatchesProcess ? 'infrastructure_failure is distinct from acceptance failure' : 'check evidence did not match the terminal Process semantic identity']
+          ? [...facade.warnings, resultMatchesProcess ? 'infrastructure_failure is distinct from acceptance failure' : 'check result receipt did not match the terminal Process semantic identity']
           : facade.warnings,
       } as unknown as Record<string, unknown>, facade.status === 'failed');
     }
@@ -2728,7 +2750,7 @@ async function runFacadeVerify(
           : `Check ${normalizedCheckId} failed acceptance.`,
       data: { verification: commonVerification },
       warnings: infrastructureFailed
-        ? [evidenceMatchesProcess ? 'infrastructure_failure is distinct from acceptance failure' : 'check evidence did not match the terminal Process semantic identity']
+        ? [resultMatchesProcess ? 'infrastructure_failure is distinct from acceptance failure' : 'check result receipt did not match the terminal Process semantic identity']
         : [],
       rawAvailable: false,
     }) as unknown as Record<string, unknown>, checkFailed);

@@ -52,6 +52,12 @@ export interface RunCheckFacadeInput {
     issueId?: string;
     taskId?: string;
   };
+  /** Work-scoped verification runs against HEAD plus only scope-owned dirty paths. */
+  verificationSnapshot?: {
+    workId: string;
+    allowedPaths: readonly string[];
+    forbiddenPaths: readonly string[];
+  };
 }
 
 export function processCheckSemanticScopeKey(

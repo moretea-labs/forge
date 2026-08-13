@@ -14,6 +14,7 @@ import {
   type CliRuntimeTarget,
 } from '../../../cli/runtime-invocation';
 import { readRuntimeGeneration, resolveControllerRuntimeSourceRoot } from '../../control-plane/runtime-generation';
+import { cleanupWorkVerificationSnapshot, materializeWorkVerificationSnapshot } from '../../control-plane/execution/work-verification-snapshot';
 import {
   checkRequiresDurableWorkflow,
   processCheckSemanticScopeKey,
@@ -23,6 +24,7 @@ import {
 } from './check-facade';
 import { claimsForCheck, toProcessClaims } from './resource-claims';
 import { spawnManagedProcess } from './runtime';
+import { allocatePersistedCheckResultReceiptPath } from './check-result';
 import { durationAwareInteractiveWaitMs } from './interactive-admission';
 const PERSISTED_CHECK_SOURCE_ENTRY = 'src/runtime/execution/process-runtime/check-runner-sidecar.ts';
 
@@ -122,8 +124,21 @@ export async function runPersistedCheckViaProcessRuntime(
     workerSpawnCount: 0,
     projectionUpdateCount: 0,
   };
-  const check = listControllerChecks(input.repoRoot).find((entry) => entry.id === input.checkId);
+  const verificationSnapshot = input.verificationSnapshot
+    ? materializeWorkVerificationSnapshot({
+        controllerHome: input.controllerHome,
+        repoId: input.repoId,
+        sourceRoot: input.repoRoot,
+        scope: input.verificationSnapshot,
+      })
+    : undefined;
+  const executionRoot = verificationSnapshot?.root ?? input.repoRoot;
+  const cleanupVerificationSnapshot = () => {
+    if (verificationSnapshot) cleanupWorkVerificationSnapshot(verificationSnapshot.root);
+  };
+  const check = listControllerChecks(executionRoot).find((entry) => entry.id === input.checkId);
   if (!check) {
+    cleanupVerificationSnapshot();
     return {
       mode: 'durable',
       checkId: input.checkId,
@@ -135,6 +150,7 @@ export async function runPersistedCheckViaProcessRuntime(
     };
   }
   if (input.forceDurable || checkRequiresDurableWorkflow(input.checkId, check)) {
+    cleanupVerificationSnapshot();
     return {
       mode: 'durable',
       checkId: input.checkId,
@@ -176,12 +192,12 @@ export async function runPersistedCheckViaProcessRuntime(
     executionIdentity.checkoutId,
     check.effects,
   );
-  const checkSnapshot = snapshotControllerCheck(input.repoRoot, input.checkId);
+  const checkSnapshot = snapshotControllerCheck(executionRoot, input.checkId);
   const checkFingerprint = createHash('sha256')
     .update(JSON.stringify(checkSnapshot))
     .digest('hex');
   const semanticCheck = controllerCheckExecutionIdentity(
-    input.repoRoot,
+    executionRoot,
     input.checkId,
     timeoutMs,
     checkSnapshot,
@@ -198,18 +214,24 @@ export async function runPersistedCheckViaProcessRuntime(
     scopeKey: persistedCheckSemanticScopeKey(input, semanticCheck.reuseScope),
   };
   const cliTarget = resolveRuntimeCliTarget(input.controllerHome);
+  const checkResultReceiptPath = allocatePersistedCheckResultReceiptPath(input.controllerHome, input.repoId);
   const checkArgs = [
     '--repo',
-    executionIdentity.canonicalRoot,
+    executionRoot,
     '--check-id',
     input.checkId,
     '--timeout-ms',
     String(timeoutMs),
     '--expected-check-fingerprint',
     checkFingerprint,
+    '--result-receipt',
+    checkResultReceiptPath,
+    ...(verificationSnapshot ? ['--cleanup-root', verificationSnapshot.root] : []),
   ];
   const invocation = resolvePersistedCheckProcessInvocation(cliTarget, checkArgs);
-  const handle = await spawnManagedProcess({
+  let handle;
+  try {
+    handle = await spawnManagedProcess({
     controllerHome: input.controllerHome,
     repoId: executionIdentity.repositoryId,
     checkoutId: executionIdentity.checkoutId,
@@ -238,9 +260,18 @@ export async function runPersistedCheckViaProcessRuntime(
       editRevision: input.verificationBinding?.editRevision,
       issueId: input.verificationBinding?.issueId,
       taskId: input.verificationBinding?.taskId,
+      checkResultReceiptPath,
+      workVerificationSnapshot: Boolean(verificationSnapshot),
     },
     signal: input.signal,
   });
+  } catch (error) {
+    cleanupVerificationSnapshot();
+    throw error;
+  }
+  if (verificationSnapshot && (handle.deduplicated === true || handle.semanticDeduplicated === true)) {
+    cleanupVerificationSnapshot();
+  }
 
   const mode: CheckExecutionMode = handle.completed ? 'direct' : 'managed';
   return {

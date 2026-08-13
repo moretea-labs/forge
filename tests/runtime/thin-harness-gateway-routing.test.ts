@@ -23,8 +23,11 @@ import { classifyRepositoryCommand } from '../../src/cli/repositories/command-cl
 import { classifyRepositoryCommandRoute } from '../../src/runtime/execution/process-runtime/command-facade';
 import { assessWorkMode } from '../../src/cli/controller/work-mode';
 import { routeExecution, isFastEligibleTool } from '../../src/runtime/execution/thin-harness';
-import { listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
+import { getProcessRecord, listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
 import { getProcessHandle, waitForProcess } from '../../src/runtime/execution/process-runtime/runtime';
+import { runPersistedCheckViaProcessRuntime } from '../../src/runtime/execution/process-runtime/persisted-check';
+import { readPersistedCheckResultReceipt } from '../../src/runtime/execution/process-runtime/check-result';
+import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import { runReadOnlyDiagnosticViaProcessRuntime } from '../../src/runtime/diagnostics/process-facade';
 import {
   applyEditOperations,
@@ -593,6 +596,96 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(artifact.revision).toBe(artifact.completedRevision);
     expect(artifact.validatedRevision).toBe(artifact.revision);
     expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
+  });
+
+
+  test('Work-scoped persisted verification excludes protected concurrent untracked files but keeps Work-owned untracked files fail-closed', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    writeFileSync(join(fx.repoRoot, '.forge', 'checks.json'), JSON.stringify({
+      version: 1,
+      checks: {
+        isolated: {
+          description: 'Work verification isolation fixture',
+          command: [process.execPath, '-e', [
+            'const fs = require("fs");',
+            'const owned = fs.existsSync("tests/owned-untracked.test.ts");',
+            'const protectedConcurrent = fs.existsSync("tests/protected-concurrent.test.ts");',
+            'process.exit(owned && !protectedConcurrent ? 0 : 7);',
+          ].join(' ')],
+          timeoutMs: 10_000,
+        },
+      },
+    }, null, 2));
+    mkdirSync(join(fx.repoRoot, 'tests'), { recursive: true });
+    writeFileSync(join(fx.repoRoot, 'tests', 'owned-untracked.test.ts'), 'owned\n');
+    writeFileSync(join(fx.repoRoot, 'tests', 'protected-concurrent.test.ts'), 'protected\n');
+
+    const run = await runPersistedCheckViaProcessRuntime({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      repoRoot: fx.repoRoot,
+      executionIdentity: executionIdentityForRepository(fx.repository, { workId: 'work-verification-isolation' }),
+      checkId: 'isolated',
+      interactiveWaitMs: 0,
+      workId: 'work-verification-isolation',
+      requestId: 'work-verification-isolation-pass',
+      verificationSnapshot: {
+        workId: 'work-verification-isolation',
+        allowedPaths: ['.forge/**', 'tests/owned-untracked.test.ts'],
+        forbiddenPaths: ['tests/protected-concurrent.test.ts'],
+      },
+    });
+    expect(run.process?.processId).toBeTruthy();
+    const completed = await waitForProcess(fx.controllerHome, fx.repository.repoId, run.process!.processId, { timeoutMs: 10_000 });
+    expect(completed.ok).toBe(true);
+    const record = getProcessRecord(fx.controllerHome, fx.repository.repoId, run.process!.processId)!;
+    expect(record.origin?.workVerificationSnapshot).toBe(true);
+    const receipt = readPersistedCheckResultReceipt(record.origin?.checkResultReceiptPath);
+    expect(receipt).toEqual(expect.objectContaining({ checkId: 'isolated', ok: true, status: 0 }));
+    const snapshotRoot = join(fx.controllerHome, 'repositories', fx.repository.repoId, 'verification-snapshots');
+    const residualSnapshots = existsSync(snapshotRoot)
+      ? require('fs').readdirSync(snapshotRoot).filter((name: string) => name.startsWith('snapshot-'))
+      : [];
+    expect(residualSnapshots).toEqual([]);
+
+    writeFileSync(join(fx.repoRoot, 'tests', 'owned-breakage.test.ts'), 'owned failure\n');
+    writeFileSync(join(fx.repoRoot, '.forge', 'checks.json'), JSON.stringify({
+      version: 1,
+      checks: {
+        isolated: {
+          description: 'Work verification isolation fixture',
+          command: [process.execPath, '-e', 'const fs=require("fs"); process.exit(fs.existsSync("tests/owned-breakage.test.ts") ? 9 : 0)'],
+          timeoutMs: 10_000,
+        },
+      },
+    }, null, 2));
+    const failedRun = await runPersistedCheckViaProcessRuntime({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      repoRoot: fx.repoRoot,
+      executionIdentity: executionIdentityForRepository(fx.repository, { workId: 'work-verification-isolation' }),
+      checkId: 'isolated',
+      interactiveWaitMs: 0,
+      workId: 'work-verification-isolation',
+      requestId: 'work-verification-isolation-fail',
+      verificationSnapshot: {
+        workId: 'work-verification-isolation',
+        allowedPaths: ['.forge/**', 'tests/owned-*.test.ts'],
+        forbiddenPaths: ['tests/protected-concurrent.test.ts'],
+      },
+    });
+    const failed = await waitForProcess(fx.controllerHome, fx.repository.repoId, failedRun.process!.processId, { timeoutMs: 10_000 });
+    expect(failed.ok).toBe(false);
+    const failedRecord = getProcessRecord(fx.controllerHome, fx.repository.repoId, failedRun.process!.processId)!;
+    expect(readPersistedCheckResultReceipt(failedRecord.origin?.checkResultReceiptPath)).toEqual(expect.objectContaining({
+      checkId: 'isolated',
+      ok: false,
+      status: 9,
+      failureClass: 'acceptance_failure',
+    }));
   });
 
   test('run_check Process status and persisted failure Artifact agree', async () => {
