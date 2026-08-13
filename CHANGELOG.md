@@ -6,6 +6,25 @@ All notable public Forge changes are recorded here. Release entries are tied to 
 
 No unreleased public changes are currently recorded.
 
+## 1.5.0 - 2026-08-13
+
+### Stable Runtime and recovery
+
+- Graduated the single Canonical Runtime plus independent Recovery architecture to the first stable Forge release.
+- Hardened whole-Runtime restart, rollback, source coherence, launcher resolution, process storage lifecycle, and recovery activation behavior.
+- Isolated Work verification snapshots from unrelated concurrent files and fixed persisted check semantic identity under compiled Runtime releases.
+
+### ChatGPT continuity and execution performance
+
+- Added bound ChatGPT work continuation across natural restarts with authenticated controller ownership and safer continuation activation.
+- Reduced avoidable MCP/reasoning round trips, composed direct edit validation, and kept short Process Runtime commands synchronous long enough to avoid unnecessary follow-up waits.
+- Removed redundant Runtime schema discovery round trips from the MCP hot path while retaining session schema fencing.
+
+### Product surface
+
+- Added the React-based local Forge utility workstation and continued consolidating retired controller/campaign compatibility surfaces.
+- Kept the stable ChatGPT MCP surface at 19 tools while preserving the official provider/plugin model introduced in the release candidate.
+
 ## 1.5.0-rc.1 - 2026-08-11
 
 ### Official plugin distribution

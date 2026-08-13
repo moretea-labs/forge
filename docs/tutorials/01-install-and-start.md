@@ -23,9 +23,9 @@ See [Platform Support](../operations/platform-support.md) for the exact matrix.
 Release candidates use npm `next`:
 
 ```bash
-npm install -g @moretea-labs/forge@next
+npm install -g @moretea-labs/forge
 # or
-bun add -g @moretea-labs/forge@next
+bun add -g @moretea-labs/forge
 forge --version
 ```
 

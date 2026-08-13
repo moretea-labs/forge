@@ -3,7 +3,7 @@
 <p align="center"><img src="docs/images/forge-banner-cn.svg" alt="Forge——ChatGPT 决策，Forge 执行" width="1280"></p>
 <p align="center"><strong>让 ChatGPT 真正、安全地操作你的电脑、代码、浏览器和外部服务。</strong></p>
 <p align="center"><a href="https://github.com/moretea-labs/forge#english">English</a> · <a href="https://github.com/moretea-labs/forge#zh-cn">仓库首页中文</a> · <a href="docs/README.zh-CN.md">中文文档</a> · <a href="docs/operations/features.zh-CN.md">功能清单</a> · <a href="https://github.com/moretea-labs/forge/releases">版本发布</a></p>
-<p align="center"><img alt="CI" src="https://github.com/moretea-labs/forge/actions/workflows/ci.yml/badge.svg"> <img alt="Release" src="https://img.shields.io/github/v/release/moretea-labs/forge?include_prereleases&sort=semver"> <img alt="npm next" src="https://img.shields.io/npm/v/%40moretea-labs%2Fforge?tag=next&label=npm%20next"> <img alt="License" src="https://img.shields.io/github/license/moretea-labs/forge"></p>
+<p align="center"><img alt="CI" src="https://github.com/moretea-labs/forge/actions/workflows/ci.yml/badge.svg"> <img alt="Release" src="https://img.shields.io/github/v/release/moretea-labs/forge?include_prereleases&sort=semver"> <img alt="npm latest" src="https://img.shields.io/npm/v/%40moretea-labs%2Fforge?tag=latest&label=npm%20latest"> <img alt="License" src="https://img.shields.io/github/license/moretea-labs/forge"></p>
 
 **Forge 自己没有 AI 大脑。** 每次语义决策都由一个外部主控负责，Forge 负责执行、持久状态、权限和恢复。默认推荐 ChatGPT，也可以明确选择 Codex、Claude 或其他 MCP 客户端；可以配置多个控制入口，但同一时刻只有一个主控拥有语义控制权。
 
@@ -45,7 +45,7 @@
 基础安装只需要 **Node.js 20.10+、npm（或 Bun）和可写用户目录**；Git 只在启用仓库/软件开发能力时需要，源码开发建议 Bun 1.0+。
 
 ```bash
-npm install -g @moretea-labs/forge@next
+npm install -g @moretea-labs/forge
 forge --version
 forge setup
 forge setup configure --controller chatgpt --tunnel auto
@@ -76,4 +76,4 @@ Forge 把读取、普通本地写入、远程操作、破坏性操作、工作�
 
 [中文文档中心](docs/README.zh-CN.md) · [Wiki](docs/wiki/Home.md) · [SUPPORT.md](SUPPORT.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md)
 
-当前 Release Candidate 是 `1.5.0-rc.1`，RC 的 npm 使用 `next`；首个稳定版发布后稳定通道使用 `latest`。
+当前稳定版本是 `1.5.0`，稳定安装使用 npm `latest`。

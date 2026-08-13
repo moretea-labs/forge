@@ -5,7 +5,7 @@
 ## 1. 安装并选择外部主控
 
 ```bash
-npm install -g @moretea-labs/forge@next
+npm install -g @moretea-labs/forge
 forge setup
 ```
 

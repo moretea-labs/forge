@@ -89,6 +89,8 @@ describe("public package release contract", () => {
   });
 
   test("documents source fallback and npm/Bun/Homebrew channels honestly", () => {
+    const pkg = JSON.parse(read("package.json")) as { version: string };
+    const installSpec = pkg.version.includes("-rc.") ? "@moretea-labs/forge@next" : "@moretea-labs/forge";
     for (const path of [
       "README.md",
       "README.zh-CN.md",
@@ -97,11 +99,11 @@ describe("public package release contract", () => {
     ]) {
       const content = read(path);
       expect(content).toContain("npm install -g .");
-      expect(content).toContain("@moretea-labs/forge@next");
+      expect(content).toContain(installSpec);
     }
     expect(read("docs/operations/releasing.md")).toContain("`next`");
     expect(read("docs/operations/releasing.md")).toContain("`latest`");
     expect(read("docs/operations/releasing.md")).toContain("Bun");
-    expect(read("docs/operations/homebrew.md")).toContain("after the first stable release");
+    expect(read("docs/operations/homebrew.md")).toContain(`@moretea-labs/forge@${pkg.version}`);
   });
 });

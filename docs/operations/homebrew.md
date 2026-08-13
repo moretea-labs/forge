@@ -1,13 +1,13 @@
 # Homebrew distribution plan
 
-Homebrew is planned as a convenience layer after the first stable release. It is not a separate implementation or version line.
+Homebrew is planned as a convenience layer after the first stable npm/GitHub release is published and verified. It is not a separate implementation or version line.
 
 ## Gate before creating a tap
 
 Do not publish a formula until all of the following are true:
 
-- `@moretea-labs/forge@1.4.0` exists on npm;
-- Git tag and GitHub Release `v1.4.0` exist and point to the tested commit;
+- `@moretea-labs/forge@1.5.0` exists on npm;
+- Git tag and GitHub Release `v1.5.0` exist and point to the tested commit;
 - the npm tarball has an immutable checksum;
 - macOS installation and `forge --version` / `forge doctor` tests pass;
 - upgrade and uninstall behavior is documented.

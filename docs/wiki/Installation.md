@@ -16,13 +16,13 @@ npm install -g . --omit=optional --no-audit --no-fund
 After the package is visibly published to npm:
 
 ```bash
-npm install -g @moretea-labs/forge@next
+npm install -g @moretea-labs/forge
 ```
 
 Bun installs the same npm artifact:
 
 ```bash
-bun add -g @moretea-labs/forge@next
+bun add -g @moretea-labs/forge
 ```
 
 Do not infer npm publication from a GitHub tag or prerelease alone.

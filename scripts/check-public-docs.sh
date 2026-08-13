@@ -4,6 +4,17 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+if [[ "$PACKAGE_VERSION" == *-rc.* ]]; then
+  INSTALL_SPEC='@moretea-labs/forge@next'
+  README_CHANNEL_EN='npm `next`'
+  README_CHANNEL_ZH='npm 使用 `next`'
+else
+  INSTALL_SPEC='@moretea-labs/forge'
+  README_CHANNEL_EN='npm `latest`'
+  README_CHANNEL_ZH='npm `latest`'
+fi
+
 required=(
   README.md README.en.md README.zh-CN.md
   CHANGELOG.md CONTRIBUTING.md SECURITY.md SUPPORT.md CODE_OF_CONDUCT.md
@@ -45,7 +56,7 @@ for path in README.md README.zh-CN.md; do
   fi
   grep -q 'Node.js 20.10' "$path" || { echo "[public-docs] missing Node baseline: $path" >&2; exit 1; }
   grep -q 'npm install -g \.' "$path" || { echo "[public-docs] missing verified source install: $path" >&2; exit 1; }
-  grep -q '@moretea-labs/forge@next' "$path" || { echo "[public-docs] missing upcoming RC install reference: $path" >&2; exit 1; }
+  grep -q "$INSTALL_SPEC" "$path" || { echo "[public-docs] missing package install reference for $PACKAGE_VERSION: $path" >&2; exit 1; }
   for link in SUPPORT.md SECURITY.md CONTRIBUTING.md CHANGELOG.md docs/wiki/Home.md; do
     grep -q "$link" "$path" || { echo "[public-docs] missing $link link: $path" >&2; exit 1; }
   done
@@ -57,14 +68,14 @@ done
 
 grep -q 'docs/tutorials/01-install-and-start.md' README.md || { echo "[public-docs] English README missing tutorial link" >&2; exit 1; }
 grep -q 'docs/tutorials/01-install-and-start.zh-CN.md' README.zh-CN.md || { echo "[public-docs] Chinese README missing tutorial link" >&2; exit 1; }
-grep -q 'npm `next`' README.md || { echo "[public-docs] English README must state the RC npm channel" >&2; exit 1; }
-grep -q 'npm 使用 `next`' README.zh-CN.md || { echo "[public-docs] Chinese README must state the RC npm channel" >&2; exit 1; }
+grep -q "$README_CHANNEL_EN" README.md || { echo "[public-docs] English README must state the npm channel for $PACKAGE_VERSION" >&2; exit 1; }
+grep -q "$README_CHANNEL_ZH" README.zh-CN.md || { echo "[public-docs] Chinese README must state the npm channel for $PACKAGE_VERSION" >&2; exit 1; }
 grep -q 'See \[README.md\](README.md)' README.en.md || { echo "[public-docs] README.en.md must point to the maintained English README" >&2; exit 1; }
 
 for path in docs/tutorials/01-install-and-start.md docs/tutorials/01-install-and-start.zh-CN.md; do
   grep -q 'Node.js 20.10' "$path" || { echo "[public-docs] missing Node baseline: $path" >&2; exit 1; }
   grep -q 'npm install -g \.' "$path" || { echo "[public-docs] missing source install: $path" >&2; exit 1; }
-  grep -q '@moretea-labs/forge@next' "$path" || { echo "[public-docs] missing upcoming package command: $path" >&2; exit 1; }
+  grep -q "$INSTALL_SPEC" "$path" || { echo "[public-docs] missing package command for $PACKAGE_VERSION: $path" >&2; exit 1; }
 done
 
 for path in docs/operations/releasing.md docs/operations/releasing.zh-CN.md; do
@@ -84,7 +95,7 @@ done
 grep -q 'npm.*primary package registry' docs/operations/releasing.md || { echo "[public-docs] npm primary registry role is unclear" >&2; exit 1; }
 grep -q 'GitHub Releases' docs/operations/releasing.md || { echo "[public-docs] GitHub Release role is unclear" >&2; exit 1; }
 grep -q 'publishConfig.provenance' docs/versioning.md || { echo "[public-docs] provenance contract is undocumented" >&2; exit 1; }
-grep -q 'after the first stable release' docs/operations/homebrew.md || { echo "[public-docs] Homebrew stable-only gate is unclear" >&2; exit 1; }
+grep -q 'stable npm/GitHub release' docs/operations/homebrew.md || { echo "[public-docs] Homebrew stable-only gate is unclear" >&2; exit 1; }
 grep -q 'WSL2' docs/operations/platform-support.md || { echo "[public-docs] platform matrix missing WSL2" >&2; exit 1; }
 grep -q 'Windows 原生' docs/operations/platform-support.zh-CN.md || { echo "[public-docs] Chinese platform matrix missing native Windows scope" >&2; exit 1; }
 grep -q 'rh_status' docs/tutorials/02-connect-chatgpt.md || { echo "[public-docs] connector tutorial missing facade verification" >&2; exit 1; }

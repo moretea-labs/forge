@@ -23,9 +23,9 @@ npm --version
 Release Candidate 使用 npm `next`：
 
 ```bash
-npm install -g @moretea-labs/forge@next
+npm install -g @moretea-labs/forge
 # 或
-bun add -g @moretea-labs/forge@next
+bun add -g @moretea-labs/forge
 forge --version
 ```
 

@@ -16,12 +16,12 @@ For every public release, these values must agree:
 
 ## Channels
 
-- `1.4.0-rc.N` publishes to npm dist-tag `next` and creates a GitHub prerelease.
-- `1.4.0` publishes to npm dist-tag `latest` and creates a stable GitHub Release.
+- `X.Y.Z-rc.N` publishes to npm dist-tag `next` and creates a GitHub prerelease.
+- `X.Y.Z` publishes to npm dist-tag `latest` and creates a stable GitHub Release.
 - `publishConfig.tag` is intentionally omitted so package metadata cannot silently force a stable package to `next` or an RC to `latest`.
 - `publishConfig.provenance` remains `true`; protected GitHub OIDC publishing is the normal provenance path after bootstrap.
 
-The current candidate is `1.4.0-rc.6`. The first stable target is `1.4.0`.
+The current stable release line is `1.5.0`. Future release candidates use the same `X.Y.Z-rc.N` → `next` contract before promotion to `latest`.
 
 ## Runtime compatibility
 

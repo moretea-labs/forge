@@ -3,7 +3,7 @@
 <p align="center"><img src="docs/images/forge-banner.svg" alt="Forge — ChatGPT decides, Forge acts" width="1280"></p>
 <p align="center"><strong>Give ChatGPT real, controlled hands on your computer, code, browser, and services.</strong></p>
 <p align="center"><a href="#english">English</a> · <a href="#zh-cn">简体中文</a> · <a href="docs/README.md">Docs</a> · <a href="docs/operations/features.md">Features</a> · <a href="docs/forge-plugin-management.md">Plugins</a> · <a href="https://github.com/moretea-labs/forge/releases">Releases</a></p>
-<p align="center"><img alt="CI" src="https://github.com/moretea-labs/forge/actions/workflows/ci.yml/badge.svg"> <img alt="Release" src="https://img.shields.io/github/v/release/moretea-labs/forge?include_prereleases&sort=semver"> <img alt="npm next" src="https://img.shields.io/npm/v/%40moretea-labs%2Fforge?tag=next&label=npm%20next"> <img alt="License" src="https://img.shields.io/github/license/moretea-labs/forge"></p>
+<p align="center"><img alt="CI" src="https://github.com/moretea-labs/forge/actions/workflows/ci.yml/badge.svg"> <img alt="Release" src="https://img.shields.io/github/v/release/moretea-labs/forge?include_prereleases&sort=semver"> <img alt="npm latest" src="https://img.shields.io/npm/v/%40moretea-labs%2Fforge?tag=latest&label=npm%20latest"> <img alt="License" src="https://img.shields.io/github/license/moretea-labs/forge"></p>
 
 **Forge has no internal AI brain.** One external controller owns semantic decisions; Forge provides the controlled execution, state, permissions, and recovery layer. ChatGPT is the recommended controller, but you can choose Codex, Claude, or another MCP client instead, and you may configure several controller entries while keeping one primary controller at a time.
 
@@ -37,7 +37,7 @@ Forge deliberately keeps the tool mechanics below the conversation. You describe
 Base install: **Node.js 20.10+, npm (or Bun), and a writable home directory**. Git is only required when you enable repository/software-work features; Codex and Claude are optional.
 
 ```bash
-npm install -g @moretea-labs/forge@next
+npm install -g @moretea-labs/forge
 forge setup
 # Recommended path; then follow one Next action at a time:
 forge setup configure --controller chatgpt --tunnel auto
@@ -58,7 +58,7 @@ Forge ships typed local/browser/desktop/iOS/GitHub/Gmail/Calendar/Tasks/App Stor
 
 Local read/write grants are explicit and expiring; remote or destructive effects are distinguished from ordinary local work; high-impact actions require stronger confirmation. Full Access reduces repetitive prompts for normal work without removing the hard boundaries around secrets, destructive actions, and outside-workspace access. See [Security](SECURITY.md) and the [Security Model](docs/wiki/Security-Model.md).
 
-**Docs:** [Wiki](docs/wiki/Home.md) · [Support](SUPPORT.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md). Current release candidate: `1.5.0-rc.1`; RCs use npm `next`. Stable releases use `latest` after a stable version exists.
+**Docs:** [Wiki](docs/wiki/Home.md) · [Support](SUPPORT.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md). Current stable release: `1.5.0`; stable installs use npm `latest`.
 
 ---
 <a id="zh-cn"></a>
@@ -95,7 +95,7 @@ Local read/write grants are explicit and expiring; remote or destructive effects
 基础安装只需要 **Node.js 20.10+、npm（或 Bun）和可写用户目录**。Git 只在启用仓库/软件开发能力时需要；Codex、Claude 都是可选项。
 
 ```bash
-npm install -g @moretea-labs/forge@next
+npm install -g @moretea-labs/forge
 forge setup
 forge setup configure --controller chatgpt --tunnel auto
 forge setup next     # 按每次显示的 Next 动作继续
@@ -109,4 +109,4 @@ Forge 内置本机、Browser、Desktop、iOS、GitHub、Gmail、Calendar、Tasks
 
 安全上，普通本地修改、远程影响、破坏性操作、密钥和工作区外访问是不同边界；Full Access 不会取消高风险确认。详见[安全说明](SECURITY.md)和[安全模型](docs/wiki/Security-Model.md)。
 
-**文档：** [Wiki](docs/wiki/Home.md) · [支持](SUPPORT.md) · [贡献](CONTRIBUTING.md) · [更新日志](CHANGELOG.md)。当前 RC 为 `1.5.0-rc.1`，RC 的 npm 使用 `next`；首个稳定版发布后稳定通道使用 `latest`。
+**文档：** [Wiki](docs/wiki/Home.md) · [支持](SUPPORT.md) · [贡献](CONTRIBUTING.md) · [更新日志](CHANGELOG.md)。当前稳定版为 `1.5.0`，稳定安装使用 npm `latest`。

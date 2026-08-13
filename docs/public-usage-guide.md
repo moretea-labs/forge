@@ -5,7 +5,7 @@ Use this page for the shortest current Forge path.
 ## 1. Install and choose the external controller
 
 ```bash
-npm install -g @moretea-labs/forge@next
+npm install -g @moretea-labs/forge
 forge setup
 ```
 

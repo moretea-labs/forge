@@ -1,8 +1,8 @@
 # Third-party notices
 
-This inventory covers the direct runtime and development dependencies declared by `@moretea-labs/forge@1.5.0-rc.1`.
+This inventory covers the direct runtime and development dependencies declared by `@moretea-labs/forge@1.5.0`.
 
-License values come from `package-lock.json` where available. For lock entries without a license field, the declared license was verified from package metadata during release-candidate preparation. This file is informational and does not replace the license text distributed by each dependency.
+License values come from `package-lock.json` where available. For lock entries without a license field, the declared license was verified from package metadata during release preparation. This file is informational and does not replace the license text distributed by each dependency.
 
 | Package | Version | Role | Declared license | Source |
 | --- | --- | --- | --- | --- |

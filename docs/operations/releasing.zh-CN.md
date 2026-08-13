@@ -72,13 +72,13 @@ Tag workflow 使用 GitHub OIDC，不需要 `NODE_AUTH_TOKEN` 或仓库内 npm t
 
 ## 稳定版要求
 
-发布 `1.4.0` 前：
+发布稳定版 `X.Y.Z` 前：
 
 - 在 macOS、Linux、WSL2 和已声明的 Windows 路径安装精确 packed artifact；
 - 验证 `forge install`、`forge doctor`、仓库注册/接入和 ChatGPT MCP 连接；
 - 确认稳定文档中没有 RC 专属警告或不稳定安装命令；
 - 把 `package.json` 从 RC 版本改为目标稳定版 `X.Y.Z`，package identity gate 会要求 `latest`；
-- 从受保护环境发布 tag `v1.4.0`；
+- 从受保护环境发布精确 tag `vX.Y.Z`；
 - 完成后才创建或更新 Homebrew tap formula。
 
 ## 回滚与事故规则
