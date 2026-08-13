@@ -177,6 +177,20 @@ describe('mcp http transport', () => {
         });
         expect(badJson.status).toBe(400);
 
+        const modernProbe = await fetch(`http://127.0.0.1:${port}/mcp`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 'discover-1', method: 'server/discover', params: {} }),
+        });
+        expect(modernProbe.status).toBe(404);
+        expect(await modernProbe.json()).toEqual({
+          jsonrpc: '2.0',
+          id: 'discover-1',
+          error: { code: -32601, message: 'Method not found' },
+        });
+        const postProbeHealth = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
+        expect(postProbeHealth.sessions.active).toBe(0);
+
         const initialized = await fetch(`http://127.0.0.1:${port}/mcp`, {
           method: 'POST',
           headers: {

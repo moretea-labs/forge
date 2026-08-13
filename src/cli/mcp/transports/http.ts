@@ -95,6 +95,24 @@ function isInitializeRequest(body: unknown): boolean {
   return typeof body === 'object' && body !== null && (body as Record<string, unknown>).method === 'initialize';
 }
 
+function isServerDiscoverRequest(body: unknown): boolean {
+  return typeof body === 'object' && body !== null && (body as Record<string, unknown>).method === 'server/discover';
+}
+
+function sendLegacyServerDiscoverUnsupported(res: Response, body: unknown): void {
+  const record = typeof body === 'object' && body !== null ? body as Record<string, unknown> : {};
+  const id = typeof record.id === 'string' || typeof record.id === 'number' || record.id === null ? record.id : null;
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(404).json({
+    jsonrpc: '2.0',
+    id,
+    error: {
+      code: -32601,
+      message: 'Method not found',
+    },
+  });
+}
+
 function initializeClientIdentity(req: Request, body: unknown, route: McpSessionRoute, principalId: string): string {
   const params = typeof body === 'object' && body !== null
     ? (body as { params?: { clientInfo?: { name?: unknown; version?: unknown } } }).params
@@ -676,6 +694,15 @@ async function handleMcpPost(
     return;
   }
   const sessionId = req.headers['mcp-session-id'] as string | undefined;
+  // MCP 2026-07-28 clients probe legacy servers with server/discover before
+  // falling back to the initialize-era protocol. Forge still serves the
+  // legacy stateful transport, so reject the unsupported modern RPC with the
+  // protocol-prescribed Method not found / HTTP 404 response instead of
+  // misclassifying it as a missing-session HTTP 400.
+  if (isServerDiscoverRequest(body)) {
+    sendLegacyServerDiscoverUnsupported(res, body);
+    return;
+  }
   if (isInitializeRequest(body)) {
     if (sessionId) {
       res.setHeader('Mcp-Session-Reset', 'reinitialized');
