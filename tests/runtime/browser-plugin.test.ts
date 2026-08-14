@@ -26,6 +26,7 @@ import {
 import {
   activateMacOsBrowserOwnedTab,
   discoverMacOsBrowserAttachment,
+  MacOsAppleEventsPage,
   resetMacOsBrowserRuntimeHooksForTest,
   setMacOsBrowserRuntimeHooksForTest,
 } from '../../src/runtime/plugins/browser-macos-bridge';
@@ -689,6 +690,30 @@ describe('browser plugin', () => {
       endpoint: 'ws://127.0.0.1:9223/devtools/browser/live',
       browserVersion: 'Chrome/140.0.0.0',
     });
+  });
+
+  test('already-loaded attached SPA tabs satisfy domcontentloaded from current readyState', async () => {
+    for (const readyState of ['interactive', 'complete']) {
+      const page = new MacOsAppleEventsPage({
+        metadata: {
+          product: 'chrome', appName: 'Google Chrome', bundleId: 'com.google.Chrome', frontmost: false,
+          url: 'https://chatgpt.com/g/g-123/settings', title: 'ChatGPT',
+          bounds: { x: 0, y: 0, width: 1200, height: 800 },
+        },
+        attempts: [],
+      }, 100, { windowId: '1', tabId: '2' });
+      Object.defineProperty(page, 'refreshMetadata', {
+        value: async () => ({
+          product: 'chrome', appName: 'Google Chrome', bundleId: 'com.google.Chrome', frontmost: false,
+          url: 'https://chatgpt.com/g/g-123/settings', title: 'ChatGPT',
+          bounds: { x: 0, y: 0, width: 1200, height: 800 }, windowId: '1', tabId: '2',
+        }),
+      });
+      Object.defineProperty(page, 'evaluate', { value: async () => readyState });
+      const started = performance.now();
+      await page.waitForLoadState('domcontentloaded', { timeout: 50 });
+      expect(performance.now() - started).toBeLessThan(50);
+    }
   });
 
   test('native owned-tab foregrounding activates the exact plugin-owned tab without launching another browser', async () => {
