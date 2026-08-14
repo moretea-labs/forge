@@ -218,9 +218,14 @@ Dark, persistent and quiet. It contains Forge identity, grouped navigation, and 
 ### Command bar
 Each route owns a compact command bar: eyebrow, title, one-line purpose, refreshed time and route actions. `Open ChatGPT` remains globally available but visually secondary.
 
+## Page composition rules
+Each workspace has **one dominant information region** and at most one contextual secondary region. Pages are not collections of cards; layout, typography, aligned columns, whitespace and hairlines establish hierarchy before enclosure.
+
+Collections use rows or tables. A selected entity uses one contextual detail pane. Configuration uses titled sections with field rows. Metrics stay inline or in compact definition rows unless direct metric comparison is the task. Normal state is visually neutral; semantic color is reserved for exceptions, attention and explicit interaction.
+
 ## Core component grammar
 ### Metric strip
-Overview may show at most four coarse operational facts in one horizontal strip. Metrics share one surface and divider rhythm; they are not separate cards.
+Metric strips are exceptional. Use them only when comparing coarse operational facts is itself useful; never make equal metric cards the default page composition.
 
 ### Data list
 Primary scanning surface for Work, Capabilities and Repositories. Rows use hairline separators and bounded one-line context.
@@ -236,7 +241,7 @@ Use a 7px dot plus short text. Filled badges are exceptional.
 
 ## Page grammar
 ### Overview
-Command bar, one four-column metric strip, a deduplicated attention list capped to actionable groups, and a compact persistent-goals summary. No prompt composer, run timeline or grid of equal cards.
+Overview is the repository portfolio home. Keep the command bar compact, then make **Repository activity** the dominant region: show the most recently active repositories, their open Work count, attention count, and at most two bounded Work titles. A narrow contextual rail may contain deduplicated Needs attention and coarse System facts. Healthy Runtime state never consumes a hero panel; Runtime becomes a compact context row and only expands into a banner when degraded. No prompt composer, run timeline, persistent-goal card wall, equal metric grid or decorative posture hero.
 
 ### Automations
 Use a configuration-first table with Name, Schedule, Scope, Delivery, Status, Last and Next; filters Enabled / Paused / Attention / All; selected detail pane with exact source and Run/Pause/Resume. Never duplicate report body.

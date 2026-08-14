@@ -1052,7 +1052,7 @@ describe("Local Execution Bridge", () => {
     expect(dashboard).not.toContain("?token=");
     for (const text of ["Forge · Utility Console", "正在读取 Forge 配置", "/console-assets/app.js"]) expect(dashboard).toContain(text); expect(dashboard).not.toContain("你想让它完成什么");
     const uiScriptResponse = await fetch(new URL("/console-assets/app.js", handle.url)); expect(uiScriptResponse.status).toBe(200); expect(uiScriptResponse.headers.get("content-type")).toContain("javascript"); const uiScript = await uiScriptResponse.text();
-    for (const text of ["Overview", "Work", "Automations", "Capabilities", "Repositories", "Settings", "System", "/api/console/command-center", "/api/console/requirements", "/api/console/work-portfolio", "/api/console/automations"]) expect(uiScript).toContain(text);
+    for (const text of ["Overview", "Repository activity", "Work", "Automations", "Capabilities", "Repositories", "Settings", "System", "/api/console/command-center", "/api/console/requirements", "/api/console/work-portfolio", "/api/console/automations"]) expect(uiScript).toContain(text);
     const auth = { "x-forge-local-token": handle.token };
     const trackedWork = await fetch(new URL("/api/console/requirements", handle.url), { headers: auth }).then((response) => response.json()); expect(Array.isArray(trackedWork.requirements)).toBe(true); expect(typeof trackedWork.requirementCount).toBe("number");
     const executionWork = await fetch(new URL("/api/console/work", handle.url), { headers: auth }).then((response) => response.json()); expect(Array.isArray(executionWork.items)).toBe(true);
