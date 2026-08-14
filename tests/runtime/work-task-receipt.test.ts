@@ -6,6 +6,7 @@ import { spawnSync } from 'child_process';
 import { bindTaskToWork, createIssue, getIssue, getIssueReadView, planIssue, updateTask } from '../../src/cli/controller/issue-store';
 import { createWorkContract, getWorkContract, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { projectControllerTaskFromWork } from '../../src/runtime/control-plane/facade/work-task-projection';
+import { finalizeGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import {
   acceptVerifiedTaskFromControllerWork,
@@ -309,6 +310,65 @@ describe('controller Work Task completion receipt', () => {
       workId: fx.workId,
     })).toThrow(/FINALIZATION_INCOMPLETE/);
     expect(getIssue(fx.repoRoot, fx.issueId).tasks[0]!.status).toBe('verified');
+  });
+
+  test('finalizes from a current pass while preserving an older failure for the same check', () => {
+    const fx = fixture();
+    const checkId = 'package:test';
+    const options = { controllerHome: fx.controllerHome, repoId: fx.repoId };
+    updateWorkContract(options, fx.workId, {
+      checks: [checkId],
+      checkRefs: [
+        {
+          checkId, outcome: 'valid_fail', summary: 'historical failure', recordedAt: '2026-08-11T00:00:00.000Z',
+          sourceRevision: fx.baseCommit,
+          verificationInputFingerprint: verificationInputFingerprint({ sourceRevision: fx.baseCommit, checkId, requestedChecks: [checkId] }),
+        },
+        {
+          checkId, outcome: 'valid_pass', summary: 'current pass', recordedAt: '2026-08-11T00:01:00.000Z',
+          sourceRevision: fx.expectedHead,
+          verificationInputFingerprint: verificationInputFingerprint({ sourceRevision: fx.expectedHead, checkId, requestedChecks: [checkId] }),
+        },
+      ],
+    });
+
+    const accepted = acceptVerifiedTaskFromControllerWork({
+      controllerHome: fx.controllerHome, repoId: fx.repoId, repoRoot: fx.repoRoot,
+      issueId: fx.issueId, taskId: 'T1', workId: fx.workId,
+    });
+    expect(accepted.receipt.targetRevision).toBe(fx.expectedHead);
+    const completed = getWorkContract(options, fx.workId)!;
+    expect(completed.status).toBe('completed');
+    expect(completed.checkRefs.map((record) => [record.outcome, record.sourceRevision])).toEqual([
+      ['valid_fail', fx.baseCommit],
+      ['valid_pass', fx.expectedHead],
+    ]);
+
+    const finalized = finalizeGoalWorkloop({
+      workStore: options,
+      handoffStore: options,
+      repoId: fx.repoId,
+      sourceRevision: fx.expectedHead,
+    }, { workId: fx.workId });
+    expect(finalized.status).toBe('ok');
+    expect((finalized.data as { finalStatus?: string }).finalStatus).toBe('completed');
+  });
+
+  test('does not let a current failure satisfy required finalization evidence', () => {
+    const fx = fixture();
+    const checkId = 'package:test';
+    updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
+      checks: [checkId],
+      checkRefs: [{
+        checkId, outcome: 'valid_fail', summary: 'current failure', recordedAt: new Date().toISOString(),
+        sourceRevision: fx.expectedHead,
+        verificationInputFingerprint: verificationInputFingerprint({ sourceRevision: fx.expectedHead, checkId, requestedChecks: [checkId] }),
+      }],
+    });
+    expect(() => acceptVerifiedTaskFromControllerWork({
+      controllerHome: fx.controllerHome, repoId: fx.repoId, repoRoot: fx.repoRoot,
+      issueId: fx.issueId, taskId: 'T1', workId: fx.workId,
+    })).toThrow(/CHECK_EVIDENCE_STALE/);
   });
 
   test('rejects a required check whose exact revision is stale', () => {
