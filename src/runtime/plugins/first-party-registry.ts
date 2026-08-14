@@ -6,6 +6,7 @@ import { googleCalendarPluginAdapter } from './google-calendar-adapter';
 import { googleTasksPluginAdapter } from './google-tasks-adapter';
 import { iosPluginAdapter } from './ios-adapter';
 import { localSystemPluginAdapter } from './local-system-adapter';
+import { pluginManagementAdapter } from './plugin-management-adapter';
 import { resendPluginAdapter } from './resend-adapter';
 import type { AssistantPluginAdapter } from './types';
 
@@ -19,6 +20,7 @@ const FIRST_PARTY_PLUGIN_ADAPTERS: readonly AssistantPluginAdapter[] = [
   googleTasksPluginAdapter,
   resendPluginAdapter,
   localSystemPluginAdapter,
+  pluginManagementAdapter,
 ];
 
 export function listFirstPartyPluginAdapters(): readonly AssistantPluginAdapter[] {

@@ -137,4 +137,6 @@ export interface AssistantPluginAdapter {
   executeAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>>;
   /** Defaults to true. External providers can defer routine health refresh until the normal manifest cache expires. */
   shouldRefreshManifestAfterAction?(actionId: string): boolean;
+  /** Other plugin manifests whose canonical authority changed as a side effect of this action. */
+  affectedPluginIdsAfterAction?(actionId: string, result: Record<string, unknown>): string[];
 }

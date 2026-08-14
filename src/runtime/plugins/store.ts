@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { join } from 'path';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { CONTROLLER_SCOPE_REPO_ID, controllerSystemRoot, ensureControllerHome, repositoryControllerRoot } from '../../cli/repositories/controller-home';
-import { existsSync, mkdirSync, readdirSync} from 'fs';
+import { existsSync, mkdirSync, readdirSync, rmSync } from 'fs';
 import type { ExecutionJob, ResourceClaimSpec } from '../execution/jobs/types';
 import { appendRuntimeEvent } from '../evidence/event-ledger';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
@@ -1055,6 +1055,16 @@ export async function executeAssistantPluginAction(
       args: normalizedArgs,
       providerIdentityPrevalidated: manifestLookup.providerIdentityPrevalidated,
     });
+    for (const affectedPluginId of adapter.affectedPluginIdsAfterAction?.(input.actionId, result) ?? []) {
+      if (!affectedPluginId || affectedPluginId === input.pluginId) continue;
+      invalidateAssistantPluginManifestCache(input.controllerHome, repository.repoId, affectedPluginId);
+      const affectedAdapter = resolvePluginAdapter(input.controllerHome, affectedPluginId);
+      if (affectedAdapter && adapterMatchesRepository(affectedAdapter, repository)) {
+        syncAssistantPluginManifest(input.controllerHome, repository, affectedPluginId);
+      } else {
+        rmSync(manifestPath(input.controllerHome, repository.repoId, affectedPluginId), { force: true });
+      }
+    }
     const refreshManifest = adapter.shouldRefreshManifestAfterAction?.(input.actionId) ?? true;
     const nextManifest = refreshManifest
       ? syncAssistantPluginManifest(input.controllerHome, repository, input.pluginId).manifest

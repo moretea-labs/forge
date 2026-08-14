@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, readdirSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, rmSync } from 'fs';
 import { isAbsolute, join } from 'path';
 import { controllerSystemRoot, ensureControllerHome } from '../../cli/repositories/controller-home';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
@@ -284,6 +284,34 @@ export function listExternalPluginRegistrations(controllerHome: string): Externa
     .sort((left, right) => left.pluginId.localeCompare(right.pluginId));
 }
 
+export interface ExternalPluginRegistrationPreview {
+  pluginId: string;
+  currentRevision: number;
+  nextRevision: number;
+  registrationFingerprint: string;
+  currentFingerprint?: string;
+  wouldChange: boolean;
+  registration: Omit<ExternalPluginRegistration, 'revision' | 'registrationFingerprint' | 'installedAt' | 'updatedAt'>;
+}
+
+export function previewExternalPluginRegistration(
+  controllerHome: string,
+  input: ExternalPluginRegistrationInput,
+): ExternalPluginRegistrationPreview {
+  const normalized = normalizeRegistrationInput(input);
+  const existing = getExternalPluginRegistration(controllerHome, normalized.pluginId);
+  const fingerprint = registrationFingerprint(normalized);
+  return {
+    pluginId: normalized.pluginId,
+    currentRevision: existing?.revision ?? 0,
+    nextRevision: existing && existing.registrationFingerprint === fingerprint ? existing.revision : (existing?.revision ?? 0) + 1,
+    registrationFingerprint: fingerprint,
+    currentFingerprint: existing?.registrationFingerprint,
+    wouldChange: existing?.registrationFingerprint !== fingerprint,
+    registration: normalized,
+  };
+}
+
 export function installExternalPluginRegistration(
   controllerHome: string,
   input: ExternalPluginRegistrationInput,
@@ -291,18 +319,69 @@ export function installExternalPluginRegistration(
 ): ExternalPluginRegistration {
   const normalized = normalizeRegistrationInput(input);
   const existing = getExternalPluginRegistration(controllerHome, normalized.pluginId);
-  if (options.expectedRevision !== undefined && existing?.revision !== options.expectedRevision) {
-    throw new Error(`EXTERNAL_PLUGIN_REGISTRATION_REVISION_CONFLICT: expected ${options.expectedRevision}, current ${existing?.revision ?? 0}`);
+  const fingerprint = registrationFingerprint(normalized);
+  // Identical desired state is idempotent, including a replay carrying the old
+  // expected revision after the first write committed.
+  if (existing?.registrationFingerprint === fingerprint) return existing;
+  const currentRevision = existing?.revision ?? 0;
+  if (options.expectedRevision !== undefined && currentRevision !== options.expectedRevision) {
+    throw new Error(`EXTERNAL_PLUGIN_REGISTRATION_REVISION_CONFLICT: expected ${options.expectedRevision}, current ${currentRevision}`);
   }
   const at = (options.now ?? new Date()).toISOString();
   const next: ExternalPluginRegistration = {
     ...normalized,
-    revision: (existing?.revision ?? 0) + 1,
-    registrationFingerprint: registrationFingerprint(normalized),
+    revision: currentRevision + 1,
+    registrationFingerprint: fingerprint,
     installedAt: existing?.installedAt ?? at,
     updatedAt: at,
   };
   mkdirSync(registrationRoot(controllerHome), { recursive: true, mode: 0o700 });
   writeJsonAtomic(externalPluginRegistrationPath(controllerHome, next.pluginId), next);
   return next;
+}
+
+function registrationInputFromStored(
+  registration: ExternalPluginRegistration,
+  patch: Partial<Pick<ExternalPluginRegistrationInput, 'enabled'>> = {},
+): ExternalPluginRegistrationInput {
+  return {
+    pluginId: registration.pluginId,
+    providerPluginId: registration.providerPluginId,
+    displayName: registration.displayName,
+    provider: registration.provider,
+    pluginVersion: registration.pluginVersion,
+    protocolVersion: registration.protocolVersion,
+    scope: registration.scope,
+    enabled: patch.enabled ?? registration.enabled,
+    transport: structuredClone(registration.transport),
+    lifecycle: registration.lifecycle ? structuredClone(registration.lifecycle) : undefined,
+    permissions: structuredClone(registration.permissions),
+    capabilities: structuredClone(registration.capabilities),
+    actions: structuredClone(registration.actions),
+    legacyIdentities: [...(registration.legacyIdentities ?? [])],
+  };
+}
+
+export function disableExternalPluginRegistration(
+  controllerHome: string,
+  pluginId: string,
+  options: { expectedRevision?: number; now?: Date } = {},
+): ExternalPluginRegistration {
+  const existing = getExternalPluginRegistration(controllerHome, pluginId);
+  if (!existing) throw new Error(`EXTERNAL_PLUGIN_REGISTRATION_NOT_FOUND: ${pluginId}`);
+  return installExternalPluginRegistration(controllerHome, registrationInputFromStored(existing, { enabled: false }), options);
+}
+
+export function removeExternalPluginRegistration(
+  controllerHome: string,
+  pluginId: string,
+  options: { expectedRevision?: number } = {},
+): ExternalPluginRegistration {
+  const existing = getExternalPluginRegistration(controllerHome, pluginId);
+  if (!existing) throw new Error(`EXTERNAL_PLUGIN_REGISTRATION_NOT_FOUND: ${pluginId}`);
+  if (options.expectedRevision !== undefined && existing.revision !== options.expectedRevision) {
+    throw new Error(`EXTERNAL_PLUGIN_REGISTRATION_REVISION_CONFLICT: expected ${options.expectedRevision}, current ${existing.revision}`);
+  }
+  rmSync(externalPluginRegistrationPath(controllerHome, existing.pluginId));
+  return existing;
 }

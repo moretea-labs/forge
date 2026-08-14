@@ -136,6 +136,82 @@ function resendAction(repoRoot: string, actionId: string, args: Record<string, u
   });
 }
 
+describe('plugin management external registration lifecycle', () => {
+  test('previews, installs, probes, executes, updates, disables, and removes through typed plugin actions', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-plugin-management-'));
+    roots.push(controllerHome);
+    const socketPath = join(controllerHome, 'provider.sock');
+    const logPath = join(controllerHome, 'provider.log');
+    await startExternalProviderFixture(controllerHome, socketPath, logPath);
+    const repository = controllerPluginRepository(controllerHome);
+    const registration = {
+      pluginId: 'desktop_operator', providerPluginId: 'desktop_operator', displayName: 'Forge Desktop Operator', provider: 'local-macos',
+      pluginVersion: '0.1.0', protocolVersion: '1.0', scope: 'controller' as const, enabled: true,
+      transport: { kind: 'unix_socket_jsonl' as const, socketPath, healthTimeoutMs: 1_000, actionTimeoutMs: 2_000 },
+      permissions: [{ scope: 'desktop.observe', mode: 'read' as const, description: 'Observe desktop.', granted: true, required: true }],
+      capabilities: [{ capabilityId: 'desktop-observe', title: 'Desktop observe', description: 'Observe desktop.', scopes: ['desktop.observe'], actions: ['desktop_status'] }],
+      actions: [{ actionId: 'desktop_status', title: 'Desktop status', description: 'Read status.', readOnly: true, risk: 'readonly' as const, confirmation: 'none' as const, defaultTimeoutMs: 500, cancellable: true, idempotent: true, scopes: ['desktop.observe'], resourceClaims: [], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } }],
+    };
+
+    const manager = getAssistantPluginManifest(controllerHome, repository, 'plugin_management');
+    expect(manager.health).toMatchObject({ state: 'ready', ready: true });
+    expect(manager.actions.map((action) => action.actionId)).toEqual(expect.arrayContaining([
+      'preview_registration', 'install_registration', 'list_registrations', 'get_registration', 'disable_registration', 'remove_registration',
+    ]));
+
+    const preview = await submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: 'plugin_management', actionId: 'preview_registration', requestId: 'plugin-management-preview', args: { registration }, origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect((preview.result!.result as Record<string, unknown>).preview).toMatchObject({ pluginId: 'desktop_operator', currentRevision: 0, nextRevision: 1, wouldChange: true });
+
+    const installed = await submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: 'plugin_management', actionId: 'install_registration', requestId: 'plugin-management-install', args: { registration, expected_revision: 0 },
+      confirmAuthorization: true, confirmationText: 'install external registration', origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect((installed.result!.result as Record<string, unknown>).registration).toMatchObject({ pluginId: 'desktop_operator', revision: 1, enabled: true });
+
+    const listed = await submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: 'plugin_management', actionId: 'list_registrations', requestId: 'plugin-management-list', args: {}, origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect(((listed.result!.result as Record<string, unknown>).registrations as Array<{ pluginId: string }>).map((entry) => entry.pluginId)).toContain('desktop_operator');
+    const externalManifest = getAssistantPluginManifest(controllerHome, repository, 'desktop_operator');
+    expect(externalManifest.health).toMatchObject({ state: 'ready', ready: true });
+    const action = await submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: 'desktop_operator', actionId: 'desktop_status', requestId: 'plugin-management-execute', args: {}, origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect(action.result!.result).toMatchObject({ observed: true });
+
+    const updatedRegistration = { ...registration, displayName: 'Forge Desktop Operator Updated' };
+    const updated = await submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: 'plugin_management', actionId: 'install_registration', requestId: 'plugin-management-update', args: { registration: updatedRegistration, expected_revision: 1 },
+      confirmAuthorization: true, confirmationText: 'update external registration', origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect((updated.result!.result as Record<string, unknown>).registration).toMatchObject({ revision: 2, displayName: 'Forge Desktop Operator Updated' });
+    await expect(submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: 'plugin_management', actionId: 'install_registration', requestId: 'plugin-management-stale-update',
+      args: { registration: { ...updatedRegistration, displayName: 'Stale writer' }, expected_revision: 1 },
+      confirmAuthorization: true, confirmationText: 'stale update', origin: { surface: 'mcp', actor: 'test' },
+    })).rejects.toThrow('EXTERNAL_PLUGIN_REGISTRATION_REVISION_CONFLICT');
+
+    const disabled = await submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: 'plugin_management', actionId: 'disable_registration', requestId: 'plugin-management-disable', args: { plugin_id: 'desktop_operator', expected_revision: 2 },
+      confirmAuthorization: true, confirmationText: 'disable external registration', origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect((disabled.result!.result as Record<string, unknown>).registration).toMatchObject({ revision: 3, enabled: false });
+    expect(getAssistantPluginManifest(controllerHome, repository, 'desktop_operator').enabled).toBe(false);
+
+    const removed = await submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: 'plugin_management', actionId: 'remove_registration', requestId: 'plugin-management-remove', args: { plugin_id: 'desktop_operator', expected_revision: 3 },
+      confirmAuthorization: true, confirmationText: 'remove-external-plugin-registration', origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect((removed.result!.result as Record<string, unknown>).removed).toMatchObject({ pluginId: 'desktop_operator', revision: 3 });
+    const after = await submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: 'plugin_management', actionId: 'list_registrations', requestId: 'plugin-management-list-after-remove', args: {}, origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect((after.result!.result as Record<string, unknown>).registrations).toEqual([]);
+  });
+});
+
 describe('external plugin store integration', () => {
   test('lists trusted external registrations through the existing plugin surface with truthful degraded health', () => {
     const fx = fixture();
