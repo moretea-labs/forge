@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
-import { installerNextSteps, officialPluginCatalogItems, pluginCatalogCompatibility } from '../../src/cli/commands/plugin';
+import { externalPluginListItem, installerNextSteps, officialPluginCatalogItems, pluginCatalogCompatibility } from '../../src/cli/commands/plugin';
 
 describe('official plugin catalog', () => {
   test('includes the pinned Forge Figma Bridge release', () => {
@@ -24,6 +24,23 @@ describe('official plugin catalog', () => {
     expect(desktop?.reason).toContain('catalog version 0.2.1');
     expect(desktop?.reason).toContain('provider version 0.2.0');
     expect(pluginCatalogCompatibility({ ...desktop!, providerVersion: '0.2.1' }, 'darwin')).toEqual({ compatible: true });
+  });
+
+  test('controller-level listing does not report repository-scoped plugins as missing', () => {
+    const item = externalPluginListItem('/tmp/forge-plugin-list-test', {
+      pluginId: 'repository_plugin',
+      pluginVersion: '1.0.0',
+      provider: 'test-provider',
+      enabled: true,
+      scope: 'repository',
+      transport: { kind: 'managed_cli', executable: '/usr/bin/false', args: [] },
+    } as never);
+    expect(item).toMatchObject({
+      pluginId: 'repository_plugin',
+      scope: 'repository',
+      healthScope: 'repository_context_required',
+    });
+    expect(item).not.toHaveProperty('health');
   });
 
   test('bounds installer follow-up instructions before printing them', () => {
