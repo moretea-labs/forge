@@ -364,7 +364,33 @@ function gmailActions(): AssistantPluginActionDescriptor[] {
   ];
 }
 
-function buildMimeMessage(args: Record<string, unknown>, config: GmailPluginConfig): string {
+export function encodeMimeHeaderValue(value: string): string {
+  if (/[\r\n]/.test(value)) {
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'MIME header values must not contain CR or LF.');
+  }
+  if (/^[\x00-\x7F]*$/.test(value)) return value;
+
+  // RFC 2047 encoded-words are limited to 75 characters including wrappers.
+  // 45 UTF-8 bytes encode to at most 60 Base64 characters, leaving room for
+  // the =?UTF-8?B?...?= wrapper. Split only at Unicode code-point boundaries.
+  const chunks: string[] = [];
+  let current = '';
+  for (const character of value) {
+    const candidate = `${current}${character}`;
+    if (current && Buffer.byteLength(candidate, 'utf8') > 45) {
+      chunks.push(current);
+      current = character;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks
+    .map((chunk) => `=?UTF-8?B?${Buffer.from(chunk, 'utf8').toString('base64')}?=`)
+    .join('\r\n ');
+}
+
+export function buildMimeMessage(args: Record<string, unknown>, config: GmailPluginConfig): string {
   const to = stringArray(args.to);
   const cc = stringArray(args.cc);
   const bcc = stringArray(args.bcc);
@@ -378,7 +404,7 @@ function buildMimeMessage(args: Record<string, unknown>, config: GmailPluginConf
     ...(cc ? [`Cc: ${cc.join(', ')}`] : []),
     ...(bcc ? [`Bcc: ${bcc.join(', ')}`] : []),
     ...(config.accountEmail ? [`From: ${config.accountEmail}`] : []),
-    `Subject: ${subject}`,
+    `Subject: ${encodeMimeHeaderValue(subject)}`,
     'Content-Type: text/plain; charset="UTF-8"',
     'MIME-Version: 1.0',
     '',
