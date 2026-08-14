@@ -2,9 +2,21 @@ import type { RepositoryRecord } from '../repositories/types';
 import { listAssistantRoutines } from '../../runtime/assistant/store';
 import { runAssistantRoutineNow } from '../../runtime/assistant/intent';
 import { getAssistantRoutineScheduleBinding, updateAssistantRoutineLifecycle } from '../../runtime/assistant/schedule-binding';
+import { getWorkContract } from '../../runtime/control-plane/facade';
 import { evaluateSchedule } from '../../runtime/workflow/schedules/engine';
 import { getSchedule, listOccurrences, listSchedules, saveSchedule } from '../../runtime/workflow/schedules/store';
 import type { RepositorySchedule, ScheduleOccurrence } from '../../runtime/workflow/schedules/types';
+
+export type ConsoleAutomationMode = 'browser_watch' | 'browser_keepalive' | 'continuation' | 'routine' | 'schedule';
+
+export interface ConsoleAutomationHistoryView {
+  id: string;
+  at: string;
+  result: string;
+  tone: 'green' | 'amber' | 'red' | 'blue' | 'gray';
+  reason?: string;
+  trigger?: string;
+}
 
 export interface ConsoleAutomationView {
   id: string;
@@ -17,23 +29,43 @@ export interface ConsoleAutomationView {
   schedule: string;
   timezone?: string;
   delivery?: string;
+  mode: ConsoleAutomationMode;
+  modeLabel: string;
+  live?: boolean;
+  targetLabel?: string;
+  boundWorkId?: string;
+  boundWorkObjective?: string;
+  observationStatus?: RepositorySchedule['lastObservationStatus'];
+  observationAt?: string;
+  failureCount?: number;
+  policySummary?: string;
   lastRunAt?: string;
   lastResult?: string;
   nextRunHint?: string;
   pausedReason?: string;
+  history: ConsoleAutomationHistoryView[];
   actions: Array<'run' | 'pause' | 'resume'>;
+}
+
+function dailyCronLabel(expression?: string): string | undefined {
+  const match = /^(\d{1,2})\s+(\d{1,2})\s+\*\s+\*\s+\*$/.exec(expression?.trim() ?? '');
+  if (!match) return undefined;
+  const minute = Number(match[1]);
+  const hour = Number(match[2]);
+  if (minute > 59 || hour > 23) return undefined;
+  return `每天 ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
 }
 
 function triggerLabel(schedule: RepositorySchedule): string {
   const trigger = schedule.trigger;
   switch (trigger.type) {
-    case 'interval': return `Every ${trigger.everyMinutes ?? '?'} min`;
-    case 'cron': return `Cron ${trigger.cronExpression ?? '—'}`;
-    case 'calendar': return trigger.calendarAt ? `At ${trigger.calendarAt}` : 'Calendar';
-    case 'condition': return `Watch ${trigger.condition?.kind ?? 'condition'}`;
-    case 'repository-event': return `On ${trigger.eventName ?? 'repository event'}`;
-    case 'dependency-checkpoint': return 'Dependency checkpoint';
-    case 'manual': return 'Manual';
+    case 'interval': return `每 ${trigger.everyMinutes ?? '?'} 分钟`;
+    case 'cron': return dailyCronLabel(trigger.cronExpression) ?? `Cron ${trigger.cronExpression ?? '—'}`;
+    case 'calendar': return trigger.calendarAt ? `单次 · ${trigger.calendarAt}` : '指定时间';
+    case 'condition': return `条件满足时 · ${trigger.condition?.kind ?? 'condition'}`;
+    case 'repository-event': return `仓库事件 · ${trigger.eventName ?? 'repository event'}`;
+    case 'dependency-checkpoint': return '依赖完成时';
+    case 'manual': return '仅手动运行';
   }
 }
 
@@ -45,11 +77,11 @@ function nextScheduleHint(schedule: RepositorySchedule): string | undefined {
     const base = Date.parse(schedule.lastTriggeredAt ?? schedule.createdAt);
     if (Number.isFinite(base)) {
       const next = base + schedule.trigger.everyMinutes * 60_000;
-      return next > Date.now() ? new Date(next).toISOString() : 'Due on next scheduler tick';
+      return next > Date.now() ? new Date(next).toISOString() : '下一次调度周期';
     }
   }
-  if (schedule.trigger.type === 'cron') return 'Scheduler-calculated';
-  if (schedule.trigger.type === 'condition') return 'When condition matches';
+  if (schedule.trigger.type === 'cron') return dailyCronLabel(schedule.trigger.cronExpression) ?? '由 Scheduler 计算';
+  if (schedule.trigger.type === 'condition') return '条件满足时';
   return undefined;
 }
 
@@ -60,11 +92,106 @@ function safeBoundSchedule(controllerHome: string, repoId: string, scheduleId?: 
 
 function occurrenceResult(occurrence?: ScheduleOccurrence): string | undefined {
   if (!occurrence) return undefined;
-  if (occurrence.decision === 'nothing_to_do') return 'No action needed';
-  if (occurrence.status === 'failed') return 'Failed';
-  if (occurrence.status === 'succeeded') return 'Succeeded';
-  if (occurrence.status === 'running' || occurrence.status === 'queued' || occurrence.status === 'created') return 'Running';
+  if (occurrence.decision === 'nothing_to_do') return '无变化';
+  if (occurrence.decision === 'would_execute') return '预演完成';
+  if (occurrence.decision === 'stopped') return '已停止';
+  if (occurrence.status === 'failed') return '失败';
+  if (occurrence.status === 'succeeded') return '执行成功';
+  if (occurrence.status === 'running' || occurrence.status === 'queued' || occurrence.status === 'created') return '运行中';
+  if (occurrence.status === 'skipped') return '已跳过';
   return occurrence.status;
+}
+
+function occurrenceTone(occurrence: ScheduleOccurrence): ConsoleAutomationHistoryView['tone'] {
+  if (occurrence.status === 'failed' || occurrence.decision === 'operation_blocked') return 'red';
+  if (occurrence.decision === 'stopped' || occurrence.decision === 'budget_exhausted') return 'amber';
+  if (occurrence.status === 'succeeded') return 'green';
+  if (occurrence.status === 'running' || occurrence.status === 'queued' || occurrence.status === 'created') return 'blue';
+  return 'gray';
+}
+
+function occurrenceHistory(occurrences: ScheduleOccurrence[]): ConsoleAutomationHistoryView[] {
+  return occurrences.slice(0, 8).map((occurrence) => ({
+    id: occurrence.occurrenceId,
+    at: occurrence.updatedAt,
+    result: occurrenceResult(occurrence) ?? '已记录',
+    tone: occurrenceTone(occurrence),
+    reason: occurrence.reason,
+    trigger: occurrence.triggerContext?.source === 'manual' ? '手动' : occurrence.triggerContext?.source === 'timer' ? '定时' : occurrence.triggerContext?.source,
+  }));
+}
+
+function scheduleMode(schedule: RepositorySchedule): ConsoleAutomationMode {
+  if (schedule.action.operation === 'external_controller_wake') return 'continuation';
+  if (schedule.action.operation === 'browser_probe') return schedule.action.arguments?.keepalive_only === true ? 'browser_keepalive' : 'browser_watch';
+  return 'schedule';
+}
+
+function modeLabel(mode: ConsoleAutomationMode): string {
+  if (mode === 'browser_watch') return '网页变更监听';
+  if (mode === 'browser_keepalive') return '登录保活';
+  if (mode === 'continuation') return '自动继续 Work';
+  if (mode === 'routine') return '助手例行任务';
+  return '自动任务';
+}
+
+function scheduleSummary(mode: ConsoleAutomationMode): string {
+  if (mode === 'browser_watch') return '静默观察目标页面；只有内容发生变化时才恢复 ChatGPT。';
+  if (mode === 'browser_keepalive') return '静默刷新登录态；正常时不打扰，认证失效时再恢复 ChatGPT。';
+  if (mode === 'continuation') return '按计划恢复绑定的 Work，让外部 Controller 继续未完成目标。';
+  return '由 Forge Schedule Engine 管理的持久自动任务。';
+}
+
+function scheduleDelivery(schedule: RepositorySchedule, mode: ConsoleAutomationMode): string | undefined {
+  const controller = typeof schedule.action.arguments?.controller_type === 'string' ? schedule.action.arguments.controller_type : 'chatgpt';
+  if (mode === 'browser_watch') return `变化时唤醒 ${controller === 'chatgpt' ? 'ChatGPT' : controller}`;
+  if (mode === 'browser_keepalive') return `登录失效时唤醒 ${controller === 'chatgpt' ? 'ChatGPT' : controller}`;
+  if (mode === 'continuation') return `恢复 ${controller === 'chatgpt' ? 'ChatGPT' : controller}`;
+  return undefined;
+}
+
+function scheduleTarget(schedule: RepositorySchedule, mode: ConsoleAutomationMode): string | undefined {
+  const args = schedule.action.arguments ?? {};
+  if (typeof args.probe_url === 'string') {
+    try { return new URL(args.probe_url).hostname; } catch { return '网页目标'; }
+  }
+  if (typeof args.probe_session_id === 'string') return mode === 'browser_keepalive' ? '已绑定登录会话' : '已绑定浏览器会话';
+  if (typeof args.browser_session_id === 'string') return '已绑定 ChatGPT 会话';
+  return undefined;
+}
+
+function observationResult(schedule: RepositorySchedule, fallback?: ScheduleOccurrence): string | undefined {
+  switch (schedule.lastObservationStatus) {
+    case 'baseline': return '已建立基线';
+    case 'unchanged': return '无变化';
+    case 'changed': return '检测到变化';
+    case 'keepalive': return '登录保持正常';
+    case 'auth_required': return '需要重新登录';
+    default: return occurrenceResult(fallback);
+  }
+}
+
+function scheduleNeedsAttention(schedule: RepositorySchedule): boolean {
+  if (schedule.lastObservationStatus === 'auth_required') return true;
+  if (schedule.consecutiveFailures >= schedule.policy.maxFailures) return true;
+  return Boolean(schedule.pausedReason && /(?:fail|error|auth|login|block|attention|maximum)/i.test(schedule.pausedReason));
+}
+
+function scheduleStatus(schedule: RepositorySchedule): ConsoleAutomationView['status'] {
+  if (schedule.enabled) return scheduleNeedsAttention(schedule) ? 'attention' : 'enabled';
+  return scheduleNeedsAttention(schedule) ? 'attention' : 'paused';
+}
+
+function workBinding(controllerHome: string, repoId: string, schedule: RepositorySchedule): { id?: string; objective?: string } {
+  const value = schedule.action.arguments?.work_id;
+  const workId = typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  if (!workId) return {};
+  const work = getWorkContract({ controllerHome, repoId }, workId);
+  return { id: workId, objective: work?.objective };
+}
+
+function policySummary(schedule: RepositorySchedule): string {
+  return `连续失败 ${schedule.consecutiveFailures}/${schedule.policy.maxFailures} · 冷却 ${schedule.policy.cooldownMinutes} 分钟 · 每日预算 ${schedule.policy.dailyBudgetMinutes} 分钟`;
 }
 
 export function listConsoleAutomations(controllerHome: string, repositories: RepositoryRecord[]): ConsoleAutomationView[] {
@@ -76,22 +203,36 @@ export function listConsoleAutomations(controllerHome: string, repositories: Rep
 
     for (const schedule of listSchedules(controllerHome, repository.repoId)) {
       if (boundScheduleIds.has(schedule.scheduleId)) continue;
-      const last = listOccurrences(controllerHome, repository.repoId, schedule.scheduleId, 1)[0];
-      const status: ConsoleAutomationView['status'] = schedule.enabled ? 'enabled' : schedule.pausedReason ? 'attention' : 'paused';
+      const occurrences = listOccurrences(controllerHome, repository.repoId, schedule.scheduleId, 8);
+      const last = occurrences[0];
+      const mode = scheduleMode(schedule);
+      const work = workBinding(controllerHome, repository.repoId, schedule);
       items.push({
         id: schedule.scheduleId,
         source: 'schedule',
         repoId: repository.repoId,
         repositoryName: repository.displayName,
         name: schedule.name,
-        summary: schedule.action.operation,
-        status,
+        summary: scheduleSummary(mode),
+        status: scheduleStatus(schedule),
         schedule: triggerLabel(schedule),
         timezone: schedule.trigger.timezone,
+        delivery: scheduleDelivery(schedule, mode),
+        mode,
+        modeLabel: modeLabel(mode),
+        live: !schedule.policy.shadowMode,
+        targetLabel: scheduleTarget(schedule, mode),
+        boundWorkId: work.id,
+        boundWorkObjective: work.objective,
+        observationStatus: schedule.lastObservationStatus,
+        observationAt: schedule.lastObservationAt,
+        failureCount: schedule.consecutiveFailures,
+        policySummary: policySummary(schedule),
         lastRunAt: last?.updatedAt ?? schedule.lastTriggeredAt,
-        lastResult: occurrenceResult(last),
+        lastResult: observationResult(schedule, last),
         nextRunHint: nextScheduleHint(schedule),
         pausedReason: schedule.pausedReason,
+        history: occurrenceHistory(occurrences),
         actions: schedule.enabled ? ['run', 'pause'] : ['resume'],
       });
     }
@@ -99,8 +240,9 @@ export function listConsoleAutomations(controllerHome: string, repositories: Rep
     for (const routine of routines) {
       const binding = bindings.get(routine.routineId);
       const boundSchedule = safeBoundSchedule(controllerHome, repository.repoId, binding?.scheduleId);
-      const last = boundSchedule ? listOccurrences(controllerHome, repository.repoId, boundSchedule.scheduleId, 1)[0] : undefined;
-      const scheduleAttention = routine.status === 'enabled' && boundSchedule && !boundSchedule.enabled && Boolean(boundSchedule.pausedReason);
+      const occurrences = boundSchedule ? listOccurrences(controllerHome, repository.repoId, boundSchedule.scheduleId, 8) : [];
+      const last = occurrences[0];
+      const scheduleAttention = routine.status === 'enabled' && boundSchedule && scheduleNeedsAttention(boundSchedule);
       const status: ConsoleAutomationView['status'] = scheduleAttention ? 'attention' : routine.status === 'enabled' ? 'enabled' : routine.status === 'paused' ? 'paused' : 'disabled';
       items.push({
         id: routine.routineId,
@@ -112,11 +254,19 @@ export function listConsoleAutomations(controllerHome: string, repositories: Rep
         status,
         schedule: routine.scheduleText,
         timezone: routine.timezone,
-        delivery: routine.output === 'assistant_inbox' ? 'Assistant inbox' : routine.output === 'gmail_draft' ? 'Gmail draft' : 'None',
+        delivery: routine.output === 'assistant_inbox' ? 'ChatGPT 助手收件箱' : routine.output === 'gmail_draft' ? 'Gmail 草稿' : '不外发',
+        mode: 'routine',
+        modeLabel: modeLabel('routine'),
+        live: boundSchedule ? !boundSchedule.policy.shadowMode : undefined,
+        observationStatus: boundSchedule?.lastObservationStatus,
+        observationAt: boundSchedule?.lastObservationAt,
+        failureCount: boundSchedule?.consecutiveFailures,
+        policySummary: boundSchedule ? policySummary(boundSchedule) : undefined,
         lastRunAt: last?.updatedAt ?? routine.lastRunAt,
-        lastResult: occurrenceResult(last) ?? (routine.lastRunAt ? 'Triggered' : undefined),
+        lastResult: boundSchedule ? observationResult(boundSchedule, last) : occurrenceResult(last) ?? (routine.lastRunAt ? '已触发' : undefined),
         nextRunHint: boundSchedule ? nextScheduleHint(boundSchedule) : routine.nextRunHint,
         pausedReason: boundSchedule?.pausedReason,
+        history: occurrenceHistory(occurrences),
         actions: scheduleAttention ? ['resume'] : routine.status === 'enabled' ? ['run', 'pause'] : routine.status === 'paused' ? ['resume'] : [],
       });
     }

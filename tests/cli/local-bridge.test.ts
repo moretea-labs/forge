@@ -38,6 +38,8 @@ import {
   type LocalBridgeServerHandle,
 } from "../../src/cli/local-bridge/server";
 import { isProcessAlive } from "../../src/runtime/shared/process-tree";
+import { loadRepositoryRegistry } from "../../src/cli/repositories/registry";
+import { createSchedule, saveOccurrence, saveSchedule } from "../../src/runtime/workflow/schedules/store";
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from "../runtime/process-hygiene";
 
 const roots: string[] = [];
@@ -703,6 +705,40 @@ describe("Local Execution Bridge", () => {
     expect(routines.routines.map((routine: { routineId: string }) => routine.routineId)).toContain(createdRoutine.routine.routineId);
     const consoleAutomations = await fetch(new URL("/api/console/automations", handle.url), { headers }).then((response) => response.json()), projectedRoutine = consoleAutomations.automations.filter((automation: { name: string }) => automation.name === "每日邮件整理");
     expect(projectedRoutine).toHaveLength(1); expect(projectedRoutine[0].source).toBe("routine"); expect(consoleAutomations.automations.some((automation: { name: string }) => automation.name === "Assistant Routine: 每日邮件整理")).toBe(false);
+
+    const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
+    const registeredRepository = loadRepositoryRegistry(controllerHome).repositories.find((repository) => realpathSync(repository.canonicalRoot) === realpathSync(root));
+    expect(registeredRepository).toBeTruthy();
+    const browserSchedule = createSchedule(controllerHome, {
+      requestId: "console-browser-watch",
+      repoId: registeredRepository!.repoId,
+      name: "Apple ICP · QQ Mail Watcher",
+      enabled: true,
+      trigger: { type: "cron", cronExpression: "0 20 * * *", timezone: "Asia/Shanghai" },
+      policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 60, dailyBudgetMinutes: 30, shadowMode: false },
+      action: { operation: "browser_probe", target: "runtime", arguments: { work_id: "WORK-ICP", controller_type: "chatgpt", probe_session_id: "browser-test", wake_on_change: true, keepalive_only: false } },
+      stopConditions: ["work_terminal", "external_blocker"],
+    });
+    saveSchedule(controllerHome, { ...browserSchedule, lastObservationStatus: "baseline", lastObservationAt: "2026-08-14T09:33:59.782Z" });
+    saveOccurrence(controllerHome, {
+      schemaVersion: 1,
+      revision: 0,
+      occurrenceId: "OCC-CONSOLE-BROWSER-WATCH",
+      scheduleId: browserSchedule.scheduleId,
+      repoId: registeredRepository!.repoId,
+      windowKey: "console-browser-watch",
+      status: "skipped",
+      decision: "nothing_to_do",
+      triggerContext: { source: "manual" },
+      createdAt: "2026-08-14T09:33:59.782Z",
+      updatedAt: "2026-08-14T09:33:59.782Z",
+      reason: "Browser watcher baseline recorded; no Controller wake was emitted.",
+    });
+    const consoleWithWatcher = await fetch(new URL("/api/console/automations", handle.url), { headers }).then((response) => response.json());
+    const projectedWatcher = consoleWithWatcher.automations.find((automation: { name: string }) => automation.name === "Apple ICP · QQ Mail Watcher");
+    expect(projectedWatcher).toMatchObject({ mode: "browser_watch", modeLabel: "网页变更监听", status: "enabled", schedule: "每天 20:00", delivery: "变化时唤醒 ChatGPT", live: true, targetLabel: "已绑定浏览器会话", boundWorkId: "WORK-ICP", observationStatus: "baseline", lastResult: "已建立基线" });
+    expect(projectedWatcher.history).toHaveLength(1);
+    expect(projectedWatcher.history[0]).toMatchObject({ result: "无变化", trigger: "手动", tone: "gray" });
     const memory = await fetch(new URL("/api/assistant/memory", handle.url), {
       method: "POST",
       headers,
