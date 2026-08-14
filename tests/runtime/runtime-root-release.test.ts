@@ -4,10 +4,18 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import { assertRuntimeReleaseFiles, stageRuntimeRelease, stageRuntimeReleaseFromCandidateSource } from '../../src/runtime/root/release-materialize';
+import { FORGE_MACOS_RUNTIME_SIGNING_IDENTIFIER, assertRuntimeReleaseFiles, stageRuntimeRelease, stageRuntimeReleaseFromCandidateSource, type MacOSRuntimeCodeSigning } from '../../src/runtime/root/release-materialize';
 import { loadRuntimeReleaseManifest } from '../../src/runtime/root/release-manifest';
 
 const roots: string[] = [];
+
+const STABLE_MACOS_SIGNING: MacOSRuntimeCodeSigning = {
+  identifier: FORGE_MACOS_RUNTIME_SIGNING_IDENTIFIER,
+  teamIdentifier: 'K848A29AJ5',
+  authority: 'Developer ID Application: Guilian Zhang (K848A29AJ5)',
+  designatedRequirement: 'identifier \"com.moretea.forge.runtime\" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = K848A29AJ5',
+};
+
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -84,7 +92,7 @@ describe('runtime release materialization', () => {
     const manifestPath = join(releasePath, 'manifest.json');
     const manifestText = `${JSON.stringify({ schemaVersion: 1, releaseId, artifactIdentity, entrypoint: 'forge-runtime', futureSidecarEntrypoint: 'future-sidecar-v2', arguments: [], configurationSchemaVersion: 1, controllerHome, databaseSchemaCompatibility: { minimum: 1, maximum: 1 }, workerProtocolVersion: 1, sourceCommit, createdAt: '2026-08-10T00:00:00.000Z' })}\n`;
     writeFileSync(manifestPath, manifestText);
-    const staged = stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root }, { runCandidateStager: (request) => {
+    const staged = stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root }, { platform: 'linux', runCandidateStager: (request) => {
       expect([request.scriptPath, request.sourceRoot, request.expectedHead]).toEqual([join(root, 'scripts', 'stage-runtime-release.ts'), root, sourceCommit]);
       return { ok: true, stdout: JSON.stringify({ schemaVersion: 1, releasePath, manifestPath, releaseId, artifactIdentity, manifestSha256: sha256Text(manifestText), sourceCommit, futureSidecarEntrypoint: 'future-sidecar-v2' }) };
     } });
@@ -107,6 +115,7 @@ describe('runtime release materialization', () => {
   test('stages and hashes browser/runtime sidecar artifacts beside immutable runtime executables', () => {
     const { root, controllerHome } = sourceFixture();
     const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+      platform: 'linux',
       now: () => 1_700_000_000_000,
       uuid: () => 'release-test',
       compileBinary: ({ outputPath, entryPath }) => {
@@ -197,6 +206,61 @@ describe('runtime release materialization', () => {
     assertRuntimeReleaseFiles(staged);
   });
 
+  test('signs macOS Runtime before hashing and preserves one stable code identity across changed releases', () => {
+    const { root, controllerHome } = sourceFixture();
+    let runtimeBuild = 0;
+    const materialize = (now: number) => stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+      platform: 'darwin',
+      now: () => now,
+      uuid: () => `signed-${now}`,
+      compileBinary: ({ outputPath, entryPath }) => {
+        const isRuntime = entryPath?.endsWith('src/runtime/root/entry.ts');
+        writeFileSync(outputPath, isRuntime ? `runtime-build-${++runtimeBuild}` : 'sidecar-binary');
+        return { ok: true };
+      },
+      signMacOSRuntime: ({ executable }) => {
+        writeFileSync(executable, `${readFileSync(executable, 'utf8')}|developer-id-signature`);
+        return STABLE_MACOS_SIGNING;
+      },
+      bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'node-host-bundle'); return { ok: true }; },
+      bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'process-runner-bundle'); return { ok: true }; },
+      materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
+    });
+
+    const first = materialize(1_700_000_000_001);
+    const second = materialize(1_700_000_000_002);
+    expect(first.macosCodeSigning).toEqual(STABLE_MACOS_SIGNING);
+    expect(second.macosCodeSigning).toEqual(STABLE_MACOS_SIGNING);
+    expect(first.macosCodeSigning?.designatedRequirement).toBe(second.macosCodeSigning?.designatedRequirement);
+    expect(first.artifactIdentity).toBe(`sha256:${sha256Text(readFileSync(join(first.releasePath, 'forge-runtime'), 'utf8'))}`);
+    expect(second.artifactIdentity).toBe(`sha256:${sha256Text(readFileSync(join(second.releasePath, 'forge-runtime'), 'utf8'))}`);
+    expect(first.artifactIdentity).not.toBe(second.artifactIdentity);
+    const firstManifest = JSON.parse(readFileSync(first.manifestPath, 'utf8'));
+    expect(firstManifest.macosCodeSigning).toEqual(STABLE_MACOS_SIGNING);
+    expect(firstManifest.artifactIdentity).toBe(first.artifactIdentity);
+
+    expect(() => assertRuntimeReleaseFiles(first, {
+      platform: 'darwin',
+      inspectMacOSRuntime: () => ({ ...STABLE_MACOS_SIGNING, teamIdentifier: 'AAAAAAAAAA', designatedRequirement: STABLE_MACOS_SIGNING.designatedRequirement.replaceAll('K848A29AJ5', 'AAAAAAAAAA') }),
+    })).toThrow('RUNTIME_RELEASE_MACOS_SIGNING_MISMATCH');
+  });
+
+  test('rejects a macOS candidate that omits the stable signing contract', () => {
+    const { root, controllerHome } = sourceFixture();
+    const sourceCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
+    const releaseId = `unsigned-${sourceCommit}`, releasePath = join(controllerHome, 'runtime', 'releases', releaseId);
+    const runtime = 'unsigned-runtime', artifactIdentity = `sha256:${sha256Text(runtime)}`;
+    mkdirSync(releasePath, { recursive: true });
+    writeFileSync(join(releasePath, 'forge-runtime'), runtime);
+    const manifestPath = join(releasePath, 'manifest.json');
+    const manifestText = `${JSON.stringify({ schemaVersion: 1, releaseId, artifactIdentity, entrypoint: 'forge-runtime', arguments: [], configurationSchemaVersion: 1, controllerHome, databaseSchemaCompatibility: { minimum: 1, maximum: 1 }, workerProtocolVersion: 1, sourceCommit, createdAt: '2026-08-14T00:00:00.000Z' })}\n`;
+    writeFileSync(manifestPath, manifestText);
+    expect(() => stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root }, {
+      platform: 'darwin',
+      runCandidateStager: () => ({ ok: true, stdout: JSON.stringify({ schemaVersion: 1, releasePath, manifestPath, releaseId, artifactIdentity, manifestSha256: sha256Text(manifestText), sourceCommit }) }),
+    })).toThrow('RUNTIME_RELEASE_CANDIDATE_MACOS_SIGNING_REQUIRED');
+  });
+
   test('keeps legacy Browser Automation helper fields parseable for rollback compatibility', () => {
     const { root, controllerHome } = sourceFixture();
     const manifestPath = join(root, 'legacy-browser-automation-helper-manifest.json');
@@ -256,6 +320,7 @@ describe('runtime release materialization', () => {
   test('release assertion fails closed when the declared Browser Node bridge host is missing', () => {
     const { root, controllerHome } = sourceFixture();
     const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+      platform: 'linux',
       compileBinary: ({ outputPath }) => {
         writeFileSync(outputPath, 'binary');
         return { ok: true };
@@ -277,6 +342,7 @@ describe('runtime release materialization', () => {
   test('release assertion fails closed when the declared Browser handoff host is missing', () => {
     const { root, controllerHome } = sourceFixture();
     const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+      platform: 'linux',
       compileBinary: ({ outputPath }) => {
         writeFileSync(outputPath, 'binary');
         return { ok: true };

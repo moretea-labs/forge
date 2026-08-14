@@ -14,6 +14,15 @@ import { CONTROL_PLANE_SCHEMA_VERSION } from '../control-plane/persistence/sqlit
  * `forge runtime service install` operation; staging alone never starts or
  * publishes anything.
  */
+export const FORGE_MACOS_RUNTIME_SIGNING_IDENTIFIER = 'com.moretea.forge.runtime';
+
+export interface MacOSRuntimeCodeSigning {
+  identifier: string;
+  teamIdentifier: string;
+  designatedRequirement: string;
+  authority: string;
+}
+
 export interface StagedRuntimeRelease {
   releasePath: string;
   manifestPath: string;
@@ -29,12 +38,15 @@ export interface StagedRuntimeRelease {
   codeGraphSidecarArtifactIdentity?: string;
   codeGraphLibraryArtifactIdentity?: string;
   controllerUiArtifactIdentity?: string;
+  macosCodeSigning?: MacOSRuntimeCodeSigning;
   manifestSha256: string;
   sourceCommit: string;
 }
 
 export interface RuntimeReleaseMaterializerDependencies {
   now?: () => number;
+  platform?: NodeJS.Platform;
+  signMacOSRuntime?: (input: { executable: string; controllerHome: string }) => MacOSRuntimeCodeSigning;
   uuid?: () => string;
   compileBinary?: (input: { sourceRoot: string; outputPath: string; entryPath?: string }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
   bundleNodeHost?: (input: { sourceRoot: string; outputPath: string; entryPath: string }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
@@ -58,6 +70,8 @@ export interface CandidateRuntimeStageReceiptV1 {
 }
 
 export interface CandidateRuntimeReleaseStagerDependencies {
+  platform?: NodeJS.Platform;
+  inspectMacOSRuntime?: (executable: string) => MacOSRuntimeCodeSigning;
   runCandidateStager?: (input: {
     bunExecutable: string;
     scriptPath: string;
@@ -75,6 +89,95 @@ function gitText(root: string, args: string[]): string {
 
 function sha256(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
+}
+
+function parseMacOSRuntimeCodeSigning(value: unknown, context: string): MacOSRuntimeCodeSigning | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${context}: macosCodeSigning must be an object`);
+  const record = value as Record<string, unknown>;
+  const field = (name: keyof MacOSRuntimeCodeSigning): string => {
+    const entry = record[name];
+    if (typeof entry !== 'string' || !entry.trim()) throw new Error(`${context}: macosCodeSigning.${name} is required`);
+    return entry.trim();
+  };
+  const signing = {
+    identifier: field('identifier'),
+    teamIdentifier: field('teamIdentifier'),
+    designatedRequirement: field('designatedRequirement'),
+    authority: field('authority'),
+  };
+  if (signing.identifier !== FORGE_MACOS_RUNTIME_SIGNING_IDENTIFIER) {
+    throw new Error(`${context}: macosCodeSigning.identifier must be ${FORGE_MACOS_RUNTIME_SIGNING_IDENTIFIER}`);
+  }
+  if (!/^[A-Z0-9]{10}$/.test(signing.teamIdentifier)) throw new Error(`${context}: macosCodeSigning.teamIdentifier is invalid`);
+  if (!signing.authority.startsWith('Developer ID Application: ')) throw new Error(`${context}: macosCodeSigning.authority must be Developer ID Application`);
+  if (!signing.designatedRequirement.includes(`identifier \"${FORGE_MACOS_RUNTIME_SIGNING_IDENTIFIER}\"`)
+    || !signing.designatedRequirement.includes('anchor apple generic')
+    || !signing.designatedRequirement.includes(`certificate leaf[subject.OU] = ${signing.teamIdentifier}`)) {
+    throw new Error(`${context}: macosCodeSigning.designatedRequirement is not the stable Developer ID contract`);
+  }
+  return signing;
+}
+
+function readActiveMacOSRuntimeTeam(controllerHome: string): string | undefined {
+  const authorityPath = join(resolve(controllerHome), 'runtime', 'releases', 'authority.json');
+  if (!existsSync(authorityPath)) return undefined;
+  try {
+    const authority = JSON.parse(readFileSync(authorityPath, 'utf8')) as { active?: { manifestPath?: string } };
+    if (!authority.active?.manifestPath || !existsSync(authority.active.manifestPath)) return undefined;
+    const manifest = JSON.parse(readFileSync(authority.active.manifestPath, 'utf8')) as Record<string, unknown>;
+    return parseMacOSRuntimeCodeSigning(manifest.macosCodeSigning, 'RUNTIME_RELEASE_ACTIVE_SIGNING_INVALID')?.teamIdentifier;
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('RUNTIME_RELEASE_ACTIVE_SIGNING_INVALID')) throw error;
+    return undefined;
+  }
+}
+
+function inspectMacOSRuntimeCodeSigning(executable: string): MacOSRuntimeCodeSigning {
+  const verify = runProcess('codesign', ['--verify', '--strict', executable], { timeoutMs: 30_000, maxOutputBytes: 64 * 1024 });
+  if (!verify.ok) throw new Error(`RUNTIME_RELEASE_MACOS_SIGNATURE_INVALID: ${verify.stderr || verify.stdout || verify.error}`.slice(0, 2_000));
+  const detail = runProcess('codesign', ['-dv', '--verbose=4', executable], { timeoutMs: 30_000, maxOutputBytes: 64 * 1024 });
+  if (!detail.ok) throw new Error(`RUNTIME_RELEASE_MACOS_SIGNATURE_INSPECTION_FAILED: ${detail.stderr || detail.stdout || detail.error}`.slice(0, 2_000));
+  const detailText = `${detail.stdout}\n${detail.stderr}`;
+  const identifier = detailText.match(/^Identifier=(.+)$/m)?.[1]?.trim() ?? '';
+  const teamIdentifier = detailText.match(/^TeamIdentifier=(.+)$/m)?.[1]?.trim() ?? '';
+  const authority = detailText.match(/^Authority=(Developer ID Application:.+)$/m)?.[1]?.trim() ?? '';
+  const requirementResult = runProcess('codesign', ['-d', '-r-', executable], { timeoutMs: 30_000, maxOutputBytes: 64 * 1024 });
+  if (!requirementResult.ok) throw new Error(`RUNTIME_RELEASE_MACOS_REQUIREMENT_INSPECTION_FAILED: ${requirementResult.stderr || requirementResult.stdout || requirementResult.error}`.slice(0, 2_000));
+  const requirementText = `${requirementResult.stdout}\n${requirementResult.stderr}`;
+  const designatedRequirement = requirementText.match(/^designated => (.+)$/m)?.[1]?.trim() ?? '';
+  return parseMacOSRuntimeCodeSigning({ identifier, teamIdentifier, authority, designatedRequirement }, 'RUNTIME_RELEASE_MACOS_SIGNATURE_INVALID')!;
+}
+
+function defaultSignMacOSRuntime(input: { executable: string; controllerHome: string }): MacOSRuntimeCodeSigning {
+  const identities = runProcess('security', ['find-identity', '-v', '-p', 'codesigning'], { timeoutMs: 30_000, maxOutputBytes: 128 * 1024 });
+  if (!identities.ok) throw new Error(`RUNTIME_RELEASE_MACOS_SIGNING_IDENTITY_LOOKUP_FAILED: ${identities.stderr || identities.stdout || identities.error}`.slice(0, 2_000));
+  const candidates = identities.stdout.split(/\r?\n/).flatMap((line) => {
+    const match = line.match(/^\s*\d+\)\s+([A-Fa-f0-9]{40})\s+\"(Developer ID Application: .+ \(([A-Z0-9]{10})\))\"/);
+    return match ? [{ hash: match[1]!, label: match[2]!, teamIdentifier: match[3]! }] : [];
+  });
+  const configured = process.env.FORGE_MACOS_RUNTIME_SIGNING_IDENTITY?.trim();
+  const expectedTeam = readActiveMacOSRuntimeTeam(input.controllerHome);
+  let selected = configured
+    ? candidates.find((candidate) => candidate.hash.toLowerCase() === configured.toLowerCase() || candidate.label === configured)
+    : undefined;
+  if (configured && !selected) throw new Error('RUNTIME_RELEASE_MACOS_SIGNING_IDENTITY_NOT_FOUND');
+  if (!selected) {
+    const eligible = expectedTeam ? candidates.filter((candidate) => candidate.teamIdentifier === expectedTeam) : candidates;
+    const teams = Array.from(new Set(eligible.map((candidate) => candidate.teamIdentifier)));
+    if (teams.length !== 1 || eligible.length === 0) {
+      throw new Error(expectedTeam ? 'RUNTIME_RELEASE_MACOS_SIGNING_IDENTITY_FOR_TEAM_REQUIRED' : 'RUNTIME_RELEASE_MACOS_SIGNING_IDENTITY_REQUIRED');
+    }
+    selected = eligible[0];
+  }
+  if (expectedTeam && selected.teamIdentifier !== expectedTeam) throw new Error('RUNTIME_RELEASE_MACOS_SIGNING_TEAM_CHANGED');
+  const signed = runProcess('codesign', [
+    '--force', '--sign', selected.hash, '--identifier', FORGE_MACOS_RUNTIME_SIGNING_IDENTIFIER, '--options', 'runtime', input.executable,
+  ], { timeoutMs: 120_000, maxOutputBytes: 128 * 1024 });
+  if (!signed.ok) throw new Error(`RUNTIME_RELEASE_MACOS_SIGNING_FAILED: ${signed.stderr || signed.stdout || signed.error}`.slice(0, 2_000));
+  const inspected = inspectMacOSRuntimeCodeSigning(input.executable);
+  if (inspected.teamIdentifier !== selected.teamIdentifier) throw new Error('RUNTIME_RELEASE_MACOS_SIGNING_TEAM_MISMATCH');
+  return inspected;
 }
 
 function sha256Directory(root: string): string {
@@ -202,12 +305,28 @@ export function stageRuntimeReleaseFromCandidateSource(input: {
   if (sha256(manifestPath) !== receipt.manifestSha256) {
     throw new Error('RUNTIME_RELEASE_CANDIDATE_MANIFEST_IDENTITY_MISMATCH');
   }
+  let rawManifest: Record<string, unknown>;
+  try { rawManifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>; }
+  catch (error) { throw new Error(`RUNTIME_RELEASE_CANDIDATE_MANIFEST_INVALID: ${error instanceof Error ? error.message : String(error)}`); }
+  const platform = dependencies.platform ?? process.platform;
+  const macosCodeSigning = parseMacOSRuntimeCodeSigning(rawManifest.macosCodeSigning, 'RUNTIME_RELEASE_CANDIDATE_SIGNING_INVALID');
+  if (platform === 'darwin') {
+    if (!macosCodeSigning) throw new Error('RUNTIME_RELEASE_CANDIDATE_MACOS_SIGNING_REQUIRED');
+    const actual = (dependencies.inspectMacOSRuntime ?? inspectMacOSRuntimeCodeSigning)(runtimePath);
+    if (actual.identifier !== macosCodeSigning.identifier
+      || actual.teamIdentifier !== macosCodeSigning.teamIdentifier
+      || actual.authority !== macosCodeSigning.authority
+      || actual.designatedRequirement !== macosCodeSigning.designatedRequirement) {
+      throw new Error('RUNTIME_RELEASE_CANDIDATE_MACOS_SIGNING_MISMATCH');
+    }
+  }
 
   return {
     releasePath,
     manifestPath,
     releaseId: receipt.releaseId,
     artifactIdentity: receipt.artifactIdentity,
+    ...(macosCodeSigning ? { macosCodeSigning } : {}),
     manifestSha256: receipt.manifestSha256,
     sourceCommit: receipt.sourceCommit,
   };
@@ -296,6 +415,14 @@ export function stageRuntimeRelease(input: {
       throw new Error(`RUNTIME_RELEASE_BUILD_FAILED: ${compile.stderr || compile.stdout || compile.error}`.slice(0, 2_000));
     }
     chmodSync(executable, 0o700);
+    const platform = dependencies.platform ?? process.platform;
+    const macosCodeSigning = platform === 'darwin'
+      ? (dependencies.signMacOSRuntime ?? defaultSignMacOSRuntime)({ executable, controllerHome: resolve(input.controllerHome) })
+      : undefined;
+    if (platform === 'darwin' && !macosCodeSigning) throw new Error('RUNTIME_RELEASE_MACOS_SIGNING_REQUIRED');
+    const normalizedMacOSCodeSigning = macosCodeSigning
+      ? parseMacOSRuntimeCodeSigning(macosCodeSigning, 'RUNTIME_RELEASE_MACOS_SIGNING_INVALID')
+      : undefined;
     const artifactIdentity = `sha256:${sha256(executable)}`;
 
     const diagnosticExecutable = join(staging, 'forge-cli');
@@ -411,6 +538,7 @@ export function stageRuntimeRelease(input: {
       releaseId,
       artifactIdentity,
       entrypoint: 'forge-runtime',
+      ...(normalizedMacOSCodeSigning ? { macosCodeSigning: normalizedMacOSCodeSigning } : {}),
       diagnosticEntrypoint: 'forge-cli',
       diagnosticArtifactIdentity,
       browserNodeBridgeEntrypoint,
@@ -452,6 +580,7 @@ export function stageRuntimeRelease(input: {
       manifestPath: join(releasePath, 'manifest.json'),
       releaseId,
       artifactIdentity,
+      ...(normalizedMacOSCodeSigning ? { macosCodeSigning: normalizedMacOSCodeSigning } : {}),
       diagnosticArtifactIdentity,
       browserNodeBridgeArtifactIdentity,
       browserHandoffArtifactIdentity,
@@ -471,12 +600,23 @@ export function stageRuntimeRelease(input: {
   }
 }
 
-export function assertRuntimeReleaseFiles(release: StagedRuntimeRelease): void {
+export function assertRuntimeReleaseFiles(release: StagedRuntimeRelease, dependencies: { platform?: NodeJS.Platform; inspectMacOSRuntime?: (executable: string) => MacOSRuntimeCodeSigning } = {}): void {
   if (!existsSync(release.releasePath) || !existsSync(release.manifestPath)) {
     throw new Error(`RUNTIME_RELEASE_FILES_MISSING: ${release.releasePath}`);
   }
-  if (!existsSync(join(release.releasePath, 'forge-runtime'))) {
-    throw new Error(`RUNTIME_RELEASE_ENTRYPOINT_MISSING: ${join(release.releasePath, 'forge-runtime')}`);
+  const runtimePath = join(release.releasePath, 'forge-runtime');
+  if (!existsSync(runtimePath)) {
+    throw new Error(`RUNTIME_RELEASE_ENTRYPOINT_MISSING: ${runtimePath}`);
+  }
+  const platform = dependencies.platform ?? process.platform;
+  if (platform === 'darwin' && release.macosCodeSigning) {
+    const actual = (dependencies.inspectMacOSRuntime ?? inspectMacOSRuntimeCodeSigning)(runtimePath);
+    if (actual.identifier !== release.macosCodeSigning.identifier
+      || actual.teamIdentifier !== release.macosCodeSigning.teamIdentifier
+      || actual.authority !== release.macosCodeSigning.authority
+      || actual.designatedRequirement !== release.macosCodeSigning.designatedRequirement) {
+      throw new Error('RUNTIME_RELEASE_MACOS_SIGNING_MISMATCH');
+    }
   }
   if (release.diagnosticArtifactIdentity && !existsSync(join(release.releasePath, 'forge-cli'))) {
     throw new Error(`RUNTIME_RELEASE_DIAGNOSTIC_ENTRYPOINT_MISSING: ${join(release.releasePath, 'forge-cli')}`);
