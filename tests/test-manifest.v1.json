@@ -23,9 +23,9 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 114,
+    "maxTestFiles": 115,
     "maxTestLines": 44154,
-    "maxPureFiles": 34,
+    "maxPureFiles": 35,
     "maxTempIsolatedFiles": 46,
     "maxProcessTreeFiles": 16,
     "maxGitWorktreeFiles": 15,
@@ -226,6 +226,10 @@
     "tests/cli/mcp-policy.test.ts": {
       "module": "controller",
       "resource": "temp-isolated"
+    },
+    "tests/cli/plugin-command.test.ts": {
+      "module": "core",
+      "resource": "pure"
     },
     "tests/cli/repository-command-entry.test.ts": {
       "module": "repository",
