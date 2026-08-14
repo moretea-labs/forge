@@ -80,6 +80,77 @@ function shellSegments(command: string): string[] {
   return segments;
 }
 
+function shellWordsPreservingQuotes(segment: string): string[] {
+  const words: string[] = [];
+  let current = '';
+  let quote: "'" | '"' | undefined;
+  let escaped = false;
+  const flush = () => {
+    if (current) words.push(current);
+    current = '';
+  };
+  for (let index = 0; index < segment.length; index += 1) {
+    const char = segment[index]!;
+    if (escaped) { current += char; escaped = false; continue; }
+    if (char === '\\' && quote !== "'") { escaped = true; continue; }
+    if (quote) {
+      if (char === quote) quote = undefined;
+      else current += char;
+      continue;
+    }
+    if (char === "'" || char === '"') { quote = char; continue; }
+    if (/\s/.test(char)) { flush(); continue; }
+    current += char;
+  }
+  flush();
+  return words;
+}
+
+const SAFE_SQLITE_READ_OPTIONS = new Set([
+  '-safe', '--safe', '-readonly', '--readonly', '-batch', '--batch',
+  '-header', '--header', '-noheader', '--noheader', '-json', '--json',
+  '-csv', '--csv', '-list', '--list', '-line', '--line', '-column', '--column',
+  '-tabs', '--tabs', '-table', '--table', '-box', '--box', '-markdown', '--markdown',
+  '-quote', '--quote', '-ascii', '--ascii',
+]);
+
+function isSingleReadOnlySql(sql: string): boolean {
+  const normalized = sql.trim();
+  if (!normalized || normalized.startsWith('.')) return false;
+  const withoutTrailingSemicolon = normalized.endsWith(';') ? normalized.slice(0, -1).trimEnd() : normalized;
+  if (withoutTrailingSemicolon.includes(';')) return false;
+  if (!/^(?:select\b|with\b)/i.test(withoutTrailingSemicolon)) return false;
+  return !/\b(?:insert|update|delete|replace|create|drop|alter|vacuum|attach|detach|reindex|analyze|pragma|begin|commit|rollback|savepoint|release)\b/i.test(withoutTrailingSemicolon);
+}
+
+function isSafeReadOnlySqliteWords(rawWords: string[]): boolean {
+  const words = rawWords.filter(Boolean);
+  const program = words[0]?.split(/[\\/]/).at(-1)?.toLowerCase();
+  if (program !== 'sqlite3') return false;
+  const args = words.slice(1);
+  if (args.some((word) => /^(?:--?nonce)(?:=|$)/i.test(word) || /^(?:--?unsafe-testing)(?:=|$)/i.test(word))) return false;
+  let safe = false;
+  let readonly = false;
+  let index = 0;
+  for (; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (!arg.startsWith('-')) break;
+    if (!SAFE_SQLITE_READ_OPTIONS.has(arg.toLowerCase())) return false;
+    if (arg === '-safe' || arg === '--safe') safe = true;
+    if (arg === '-readonly' || arg === '--readonly') readonly = true;
+  }
+  if (!safe || !readonly) return false;
+  const database = args[index];
+  const sql = args[index + 1];
+  if (!database || !sql || args.length !== index + 2) return false;
+  return isSingleReadOnlySql(sql);
+}
+
+function isSafeReadOnlySqliteSegment(segment: string): boolean {
+  const stripped = segment.replace(/^\s*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)*/, '');
+  return isSafeReadOnlySqliteWords(shellWordsPreservingQuotes(stripped));
+}
+
 function isSedInPlaceSegment(segment: string): boolean {
   const words = firstWords(segment);
   if (words[0]?.toLowerCase() !== 'sed') return false;
@@ -182,6 +253,7 @@ function isReadOnlySegment(segment: string): boolean {
   const program = words[0]?.toLowerCase();
   if (!program) return false;
   if (program === 'git') return readOnlyGitSegment(words, segment);
+  if (program === 'sqlite3') return isSafeReadOnlySqliteSegment(segment);
   if (program === 'find') return !/(?:-delete|-exec|-execdir|-ok|-okdir)\b/.test(segment);
   if (program === 'sed') return !isSedInPlaceSegment(segment);
   if (program === 'gh') {
@@ -439,6 +511,9 @@ function classifyArgvCommand(
   if (program === 'git' && subcommand === 'push') return { risk: 'remote_write', confirmation: 'authorization', reasons: ['writes Git refs to a remote'] };
   if (program === 'git' && isReadOnlyGitCommand(argv)) {
     return { risk: 'readonly', confirmation: 'none', reasons: ['the argv command is a recognized repository-local read operation'] };
+  }
+  if (program === 'sqlite3' && isSafeReadOnlySqliteWords(argv)) {
+    return { risk: 'readonly', confirmation: 'none', reasons: ['sqlite3 is constrained by safe mode, readonly database access, and one read-only SQL statement'] };
   }
   // Explicit shell wrappers are common in generated diagnostics. Re-classify
   // the fixed inner command instead of treating `sh -c` / `bash -lc` wrappers

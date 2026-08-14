@@ -991,6 +991,23 @@ describe('command classifier safe shell combinations', () => {
     expect(classifyRepositoryCommand(['node', '--version']).risk).toBe('readonly');
   });
 
+  test('keeps only mechanically constrained sqlite diagnostics on the readonly path', () => {
+    const typed = ['sqlite3', '--safe', '--readonly', '_ops/controller-home.noindex/control-plane.sqlite', 'SELECT count(*) FROM work_contracts;'];
+    const wrapped = ['bash', '-lc', "sqlite3 --safe --readonly _ops/controller-home.noindex/control-plane.sqlite 'SELECT work_id FROM work_contracts'"];
+    expect(classifyRepositoryCommand(typed).risk).toBe('readonly');
+    expect(classifyRepositoryCommand(wrapped).risk).toBe('readonly');
+    expect(claimsForRepositoryCommand(wrapped, 'repo1', 'co1')).toEqual([{ resourceKey: 'workspace:co1', mode: 'read' }]);
+
+    // -readonly alone does not constrain host-side sqlite CLI effects enough.
+    expect(classifyRepositoryCommand(['sqlite3', '-readonly', 'db.sqlite', 'SELECT 1']).risk).toBe('workspace_write');
+    // Safe-mode escape hatches and mutating/multi-statement SQL stay conservative.
+    expect(classifyRepositoryCommand(['sqlite3', '--safe', '--readonly', '--nonce', 'abc', 'db.sqlite', 'SELECT 1']).risk).toBe('workspace_write');
+    expect(classifyRepositoryCommand(['sqlite3', '--safe', '--readonly', 'db.sqlite', 'UPDATE t SET value = 1']).risk).toBe('workspace_write');
+    expect(classifyRepositoryCommand(['sqlite3', '--safe', '--readonly', 'db.sqlite', 'SELECT 1; DELETE FROM t;']).risk).toBe('workspace_write');
+    // Arbitrary interpreter scripts remain managed even when the caller intends diagnostics only.
+    expect(classifyRepositoryCommand(['bash', '-lc', "python3 - <<'PY'\nprint('read only')\nPY"]).risk).toBe('workspace_write');
+  });
+
   test('recognizes common wrapped and host observation commands as readonly', () => {
     expect(classifyRepositoryCommand(['git', 'check-ignore', '-q', '.codegraph']).risk).toBe('readonly');
     expect(classifyRepositoryCommand(['find', 'src', '-type', 'f']).risk).toBe('readonly');
