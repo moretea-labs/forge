@@ -258,8 +258,23 @@ function captureIdentity(pid: number | undefined): {
 } {
   if (!pid || pid <= 0) return {};
   const probe = defaultProcessIdentityProbe;
-  if (!probe.isAlive(pid)) return {};
+  // The combined inspect probe already proves the PID exists on the normal
+  // POSIX path. Avoid an immediately preceding ps(stat) child process; only
+  // fall back to the separate alive/command/start-time probes when the combined
+  // observation is unavailable or incomplete.
   const inspected = probe.inspect?.(pid);
+  if (inspected?.command && inspected.startTime) {
+    return {
+      identity: {
+        pid,
+        processStartTime: inspected.startTime,
+        executableFingerprint: executableFingerprint(inspected.command),
+        processGroupId: process.platform !== 'win32' ? pid : undefined,
+      },
+      identityUntrusted: false,
+    };
+  }
+  if (!probe.isAlive(pid)) return {};
   const command = inspected?.command ?? probe.command(pid);
   const startTime = inspected?.startTime ?? probe.startTime(pid);
   if (!command || !startTime) {

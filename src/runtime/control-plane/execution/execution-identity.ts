@@ -134,6 +134,53 @@ function gitPath(root: string, args: string[]): string | undefined {
   }
 }
 
+interface GitExecutionSnapshot {
+  topLevel?: string;
+  commonDirectory?: string;
+  branch?: string;
+  head?: string;
+}
+
+function resolvedGitPath(root: string, value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    return realpathSync(isAbsolute(value) ? value : resolve(root, value));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Read the checkout identity in one Git child process on the normal committed
+ * path. This preserves the same fail-closed fields as the former six probes;
+ * unborn repositories fall back to the individual observations because HEAD is
+ * intentionally absent there.
+ */
+function gitExecutionSnapshot(root: string): GitExecutionSnapshot {
+  const combined = gitText(root, ['rev-parse', '--show-toplevel', '--git-common-dir', 'HEAD', '--abbrev-ref', 'HEAD']);
+  if (combined) {
+    const lines = combined.split('\n').map((line) => line.trim());
+    if (lines.length >= 4) {
+      return {
+        topLevel: resolvedGitPath(root, lines[0]),
+        commonDirectory: resolvedGitPath(root, lines[1]),
+        head: lines[2] || undefined,
+        branch: lines[3] && lines[3] !== 'HEAD' ? lines[3] : undefined,
+      };
+    }
+  }
+  // Rare unborn/failure fallback keeps legacy behavior rather than turning a
+  // missing HEAD into a false workspace identity failure.
+  const topLevel = gitPath(root, ['rev-parse', '--show-toplevel']);
+  const commonDirectory = gitPath(root, ['rev-parse', '--git-common-dir']);
+  return {
+    topLevel,
+    commonDirectory,
+    branch: topLevel ? gitText(topLevel, ['branch', '--show-current']) : undefined,
+    head: topLevel ? gitText(topLevel, ['rev-parse', '--verify', 'HEAD']) : undefined,
+  };
+}
+
 export function classifyGitCommonDirectoryDrift(input: {
   repoId: string;
   checkoutId: string;
@@ -304,18 +351,15 @@ export function assertExecutionIdentity(input: {
         actual: resolvedCwd,
       });
     }
-    const gitTopLevel = gitPath(resolvedCwd, ['rev-parse', '--show-toplevel']);
-    const gitCommonDirectory = gitPath(resolvedCwd, ['rev-parse', '--git-common-dir']);
-    const currentBranch = gitTopLevel ? gitText(gitTopLevel, ['branch', '--show-current']) : undefined;
-    const currentHead = gitTopLevel ? gitText(gitTopLevel, ['rev-parse', '--verify', 'HEAD']) : undefined;
+    const gitSnapshot = gitExecutionSnapshot(resolvedCwd);
     return Object.freeze({
       ...identity,
       canonicalRoot: workspaceRoot,
       resolvedCwd,
-      gitTopLevel,
-      gitCommonDirectory,
-      currentBranch,
-      currentHead,
+      gitTopLevel: gitSnapshot.topLevel,
+      gitCommonDirectory: gitSnapshot.commonDirectory,
+      currentBranch: gitSnapshot.branch,
+      currentHead: gitSnapshot.head,
     });
   }
 
@@ -377,7 +421,8 @@ export function assertExecutionIdentity(input: {
     });
   }
 
-  const gitTopLevel = gitPath(resolvedCwd, ['rev-parse', '--show-toplevel']);
+  const gitSnapshot = gitExecutionSnapshot(resolvedCwd);
+  const gitTopLevel = gitSnapshot.topLevel;
   if (!gitTopLevel || !samePath(gitTopLevel, registeredRoot)) {
     fail('GIT_TOPLEVEL_MISMATCH', 'Git top-level differs from expected checkout root', {
       repoId: identity.repositoryId,
@@ -387,9 +432,15 @@ export function assertExecutionIdentity(input: {
     });
   }
 
-  const gitCommonDirectory = gitPath(resolvedCwd, ['rev-parse', '--git-common-dir']);
-  const registeredCommonDirectory = gitPath(registeredRoot, ['rev-parse', '--git-common-dir']);
-  const repositoryCommonDirectory = gitPath(registered.canonicalRoot, ['rev-parse', '--git-common-dir']);
+  const gitCommonDirectory = gitSnapshot.commonDirectory;
+  // Once the observed top-level is proven equal to registeredRoot, querying the
+  // same checkout again cannot add identity evidence. Only a linked worktree
+  // needs one extra canonical-repository common-dir observation.
+  const registeredCommonDirectory = gitCommonDirectory;
+  const repositoryRoot = realpathOrFail(registered.canonicalRoot, 'WORKTREE_MISSING', 'repository canonical root');
+  const repositoryCommonDirectory = samePath(repositoryRoot, registeredRoot)
+    ? gitCommonDirectory
+    : gitPath(repositoryRoot, ['rev-parse', '--git-common-dir']);
   const commonDirectoryDrift = classifyGitCommonDirectoryDrift({
     repoId: identity.repositoryId,
     checkoutId: identity.checkoutId,
@@ -423,8 +474,8 @@ export function assertExecutionIdentity(input: {
     });
   }
 
-  const currentBranch = gitText(registeredRoot, ['branch', '--show-current']);
-  const currentHead = gitText(registeredRoot, ['rev-parse', '--verify', 'HEAD']);
+  const currentBranch = gitSnapshot.branch;
+  const currentHead = gitSnapshot.head;
   if (identity.branch && currentBranch !== identity.branch) {
     fail('WORK_HANDLE_BRANCH_CHANGED', 'branch drifted from execution identity', {
       repoId: identity.repositoryId,
