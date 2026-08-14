@@ -9,7 +9,13 @@ import {
   getChatgptWorkConversationBinding,
   parseChatgptConversationIdentity,
 } from '../../src/runtime/control-plane/launcher/chatgpt-work-binding-store';
-import { runWorkChatgptContinuation } from '../../src/runtime/control-plane/launcher/chatgpt-work-continuation';
+import {
+  resolveChatgptWorkBrowserSessionId,
+  runWorkChatgptContinuation,
+  stableChatgptWorkBrowserSessionId,
+} from '../../src/runtime/control-plane/launcher/chatgpt-work-continuation';
+import { migrateChatgptAutomationSchedule } from '../../src/runtime/workflow/schedules/chatgpt-automation-migration';
+import type { RepositorySchedule } from '../../src/runtime/workflow/schedules/types';
 
 const roots: string[] = [];
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
@@ -51,6 +57,15 @@ describe('ChatGPT Work conversation binding', () => {
     })).toThrow('CHATGPT_WORK_CONVERSATION_REBIND_REQUIRED');
   });
 
+  test('uses a stable per-Work browser session and migrates away from the legacy global tab', () => {
+    const first = stableChatgptWorkBrowserSessionId('repo-1', 'WORK-1');
+    expect(first).toBe(stableChatgptWorkBrowserSessionId('repo-1', 'WORK-1'));
+    expect(first).not.toBe(stableChatgptWorkBrowserSessionId('repo-1', 'WORK-2'));
+    expect(resolveChatgptWorkBrowserSessionId({ repoId: 'repo-1', workId: 'WORK-1', boundSessionId: 'forge-chatgpt-supercontroller' })).toBe(first);
+    expect(resolveChatgptWorkBrowserSessionId({ repoId: 'repo-1', workId: 'WORK-1', boundSessionId: 'work-owned-session' })).toBe('work-owned-session');
+    expect(resolveChatgptWorkBrowserSessionId({ repoId: 'repo-1', workId: 'WORK-1', tabPolicy: 'new' })).toStartWith(`${first}-`);
+  });
+
   test('lets only the exact target ChatGPT conversation claim a bridge task', () => {
     expect(chatgptBridgeTargetMatchesPage('https://chatgpt.com/c/target-id', 'https://chatgpt.com/c/target-id?model=current')).toBe(true);
     expect(chatgptBridgeTargetMatchesPage('https://chatgpt.com/c/target-id', 'https://chatgpt.com/c/other-id')).toBe(false);
@@ -80,6 +95,23 @@ describe('ChatGPT Work conversation binding', () => {
     const source = readFileSync(join(process.cwd(), 'src/runtime/control-plane/launcher/chatgpt-work-continuation.ts'), 'utf8');
     expect(source).toContain("controllerBrowserAction(input.controllerHome, input.workId, 'press'");
     expect(source).toContain('key: CHATGPT_SEND_KEY');
+    expect(source).toContain("DEFAULT_CHATGPT_AUTOMATION_MODEL = 'gpt-5.6'");
+    expect(source).toContain("DEFAULT_CHATGPT_AUTOMATION_REASONING = 'high'");
+    expect(source).toContain('CHATGPT_REASONING_LABEL_SELECTOR');
     expect(source).not.toContain('[data-testid=\"send-button\"]');
+  });
+
+  test('migrates legacy ChatGPT schedules idempotently without changing task state', () => {
+    const base = {
+      schemaVersion: 1, revision: 1, scheduleId: 'SCH-1', requestId: 'req-1', repoId: 'repo-1', name: 'Test', enabled: true,
+      trigger: { type: 'interval', everyMinutes: 60 }, policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 1, dailyBudgetMinutes: 60, shadowMode: false },
+      stopConditions: [], consecutiveFailures: 0, createdAt: '2026-08-15T00:00:00.000Z', updatedAt: '2026-08-15T00:00:00.000Z',
+    } satisfies Omit<RepositorySchedule, 'action'>;
+    const migrated = migrateChatgptAutomationSchedule({ ...base, action: { operation: 'external_controller_wake', arguments: { work_id: 'WORK-1' } } });
+    expect(migrated.changed).toBe(true);
+    expect(migrated.schedule.enabled).toBe(true);
+    expect(migrated.schedule.action.arguments).toMatchObject({ work_id: 'WORK-1', controller_type: 'chatgpt', model: 'gpt-5.6', reasoning: 'high', tab_policy: 'auto', execution_profile: 'chatgpt_browser_v1' });
+    expect(migrateChatgptAutomationSchedule(migrated.schedule).changed).toBe(false);
+    expect(migrateChatgptAutomationSchedule({ ...base, action: { operation: 'external_controller_wake', arguments: { controller_type: 'codex' } } }).changed).toBe(false);
   });
 });

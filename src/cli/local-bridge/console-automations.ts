@@ -39,6 +39,9 @@ export interface ConsoleAutomationView {
   observationAt?: string;
   failureCount?: number;
   policySummary?: string;
+  agentModel?: string;
+  reasoningLevel?: string;
+  tabPolicy?: string;
   lastRunAt?: string;
   lastResult?: string;
   nextRunHint?: string;
@@ -161,6 +164,18 @@ function scheduleDelivery(schedule: RepositorySchedule, mode: ConsoleAutomationM
   return undefined;
 }
 
+function chatgptExecutionProfile(schedule: RepositorySchedule, mode: ConsoleAutomationMode): { agentModel?: string; reasoningLevel?: string; tabPolicy?: string } {
+  if (mode !== 'continuation') return {};
+  const args = schedule.action.arguments ?? {};
+  const controller = typeof args.controller_type === 'string' ? args.controller_type : 'chatgpt';
+  if (controller !== 'chatgpt') return {};
+  return {
+    agentModel: typeof args.model === 'string' && args.model.trim() ? args.model.trim() : 'gpt-5.6',
+    reasoningLevel: typeof args.reasoning === 'string' && args.reasoning.trim() ? args.reasoning.trim() : 'high',
+    tabPolicy: typeof args.tab_policy === 'string' && args.tab_policy.trim() ? args.tab_policy.trim() : 'auto',
+  };
+}
+
 function scheduleTarget(schedule: RepositorySchedule, mode: ConsoleAutomationMode): string | undefined {
   const args = schedule.action.arguments ?? {};
   if (typeof args.probe_url === 'string') {
@@ -218,6 +233,7 @@ export function listConsoleAutomations(controllerHome: string, repositories: Rep
       const last = occurrences[0];
       const mode = scheduleMode(schedule);
       const work = workBinding(controllerHome, repository.repoId, schedule);
+      const executionProfile = chatgptExecutionProfile(schedule, mode);
       items.push({
         id: schedule.scheduleId,
         source: 'schedule',
@@ -239,6 +255,7 @@ export function listConsoleAutomations(controllerHome: string, repositories: Rep
         observationAt: schedule.lastObservationAt,
         failureCount: schedule.consecutiveFailures,
         policySummary: policySummary(schedule),
+        ...executionProfile,
         lastRunAt: last?.updatedAt ?? schedule.lastTriggeredAt,
         lastResult: observationResult(schedule, last),
         nextRunHint: nextScheduleHint(schedule),

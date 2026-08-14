@@ -13,7 +13,11 @@ import {
 } from '../chatgpt-browser/engine';
 import type { BrowserProviderName, BrowserSessionStatus, NativeBrowserChannel, ThinkingLevel } from '../chatgpt-browser/types';
 import { durableControllerHome } from '../repositories/controller-home';
-import { runWorkChatgptContinuation } from '../../runtime/control-plane/launcher/chatgpt-work-continuation';
+import {
+  runWorkChatgptContinuation,
+  type ChatgptAutomationReasoning,
+  type ChatgptAutomationTabPolicy,
+} from '../../runtime/control-plane/launcher/chatgpt-work-continuation';
 
 interface BrowserCommonOptions {
   repo?: string;
@@ -84,6 +88,9 @@ interface WorkChatgptContinueOptions extends BrowserCommonOptions {
   title?: string;
   session?: string;
   conversationUrl?: string;
+  model?: string;
+  reasoning?: string;
+  tabPolicy?: string;
   timeoutMs?: string;
 }
 
@@ -107,6 +114,18 @@ interface BrowserFollowupOptions extends BrowserCommonOptions {
   keepBrowser?: boolean;
   headless?: boolean;
   oracleBin?: string;
+}
+
+function parseAutomationReasoning(value?: string): ChatgptAutomationReasoning | undefined {
+  if (value === undefined) return undefined;
+  if (value === 'medium' || value === 'high' || value === 'xhigh') return value;
+  throw new Error(`invalid --reasoning "${value}" (expected: medium, high, xhigh)`);
+}
+
+function parseAutomationTabPolicy(value?: string): ChatgptAutomationTabPolicy | undefined {
+  if (value === undefined) return undefined;
+  if (value === 'auto' || value === 'reuse' || value === 'new') return value;
+  throw new Error(`invalid --tab-policy "${value}" (expected: auto, reuse, new)`);
 }
 
 function parseProvider(value?: string): BrowserProviderName {
@@ -384,8 +403,11 @@ export function buildChatgptCommand(): Command {
     .requiredOption('--work-id <work-id>', 'Stable Forge Work id')
     .requiredOption('--prompt <text>', 'Bounded continuation prompt')
     .option('--title <title>', 'Human-readable local conversation alias')
-    .option('--session <session-id>', 'Legacy saved browser session to seed the binding')
+    .option('--session <session-id>', 'Saved browser session to seed or resume the Work binding')
     .option('--conversation-url <url>', 'Explicit ChatGPT conversation URL to seed the binding')
+    .option('--model <label>', 'Requested ChatGPT automation model', 'gpt-5.6')
+    .option('--reasoning <level>', 'Reasoning level: medium|high|xhigh', 'high')
+    .option('--tab-policy <policy>', 'Browser tab policy: auto|reuse|new', 'auto')
     .option('--timeout-ms <ms>', 'Assistant timeout in milliseconds')
     .action((rawOpts: WorkChatgptContinueOptions) => {
       void runChatgptAction(async () => {
@@ -398,6 +420,9 @@ export function buildChatgptCommand(): Command {
           title: rawOpts.title,
           browserSessionId: rawOpts.session,
           conversationUrl: rawOpts.conversationUrl,
+          model: rawOpts.model,
+          reasoning: parseAutomationReasoning(rawOpts.reasoning),
+          tabPolicy: parseAutomationTabPolicy(rawOpts.tabPolicy),
           timeoutMs: parsePositiveInteger('timeout-ms', rawOpts.timeoutMs),
         });
         console.log(JSON.stringify({
@@ -408,6 +433,10 @@ export function buildChatgptCommand(): Command {
           conversationId: result.conversationId,
           localAlias: result.localAlias,
           resumedFromBinding: result.resumedFromBinding,
+          model: result.model,
+          reasoning: result.reasoning,
+          tabPolicy: result.tabPolicy,
+          executionPreferenceVerified: result.executionPreferenceVerified,
           error: result.error,
         }, null, 2));
       });

@@ -32,6 +32,28 @@ function observationLabel(value?: AutomationView['observationStatus']): string |
   return undefined;
 }
 
+function reasoningLabel(value?: string): string {
+  if (value === 'high') return '高';
+  if (value === 'medium') return '中';
+  if (value === 'xhigh') return '超高';
+  return value ?? '—';
+}
+
+function tabPolicyLabel(value?: string): string {
+  if (value === 'auto') return '自动 · 同一 Work 优先复用';
+  if (value === 'reuse') return '始终复用已绑定会话';
+  if (value === 'new') return '每次新开标签页';
+  return value ?? '—';
+}
+
+function executionDetails(automation: AutomationView): Array<[string, string]> {
+  if (!automation.agentModel) return [];
+  return [
+    ['执行模型', `${automation.agentModel} · ${reasoningLabel(automation.reasoningLevel)}推理`],
+    ['浏览器会话', tabPolicyLabel(automation.tabPolicy)],
+  ];
+}
+
 function historyTone(tone: AutomationHistoryView['tone']): string {
   if (tone === 'green') return 'success';
   if (tone === 'amber') return 'warning';
@@ -105,10 +127,11 @@ export function AutomationsView({ data, busy, onRefresh, onAction }: {
             ['观察状态', observation ?? '—'],
             ['绑定 Work', selected.boundWorkObjective ? compact(selected.boundWorkObjective, 96) : selected.boundWorkId ?? '—'],
             ['运行模式', selected.live === undefined ? '—' : selected.live ? 'Live · 会产生实际动作' : 'Shadow · 只记录预演'],
+            ...executionDetails(selected),
             ['运行策略', selected.policySummary ?? '—'],
           ]} />
           {selected.pausedReason && <div className="detail-callout warning"><strong>暂停原因</strong><p>{selected.pausedReason}</p></div>}
-          <div className="detail-button-row">{selected.actions.map((action) => <Button key={action} disabled={busy} className={action === 'pause' ? 'danger-text' : ''} onClick={() => void onAction(selected, action)}>{action === 'run' ? '立即运行' : action === 'pause' ? '暂停' : '恢复'}</Button>)}</div>
+          <div className="detail-button-row">{selected.actions.map((action) => <Button key={action} disabled={busy} className={action === 'pause' ? 'danger-text' : ''} onClick={() => void onAction(selected, action)}>{action === 'run' ? '立即运行' : action === 'pause' ? '暂停任务' : '开启任务'}</Button>)}</div>
           <div className="automation-section-head"><div><span className="eyebrow">EXECUTION HISTORY</span><h3>最近执行</h3></div><span>{selected.history.length} 条</span></div>
           <History items={selected.history} />
           <details className="advanced automation-advanced"><summary>技术信息</summary><pre>{JSON.stringify({ scheduleId: selected.source === 'schedule' ? selected.id : undefined, workId: selected.boundWorkId, source: selected.source, next: selected.nextRunHint, failureCount: selected.failureCount }, null, 2)}</pre></details>

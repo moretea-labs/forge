@@ -10851,14 +10851,26 @@ function Jv(o) {
   if (o === "auth_required") return "需要重新登录";
 }
 function wv(o) {
+  return o === "high" ? "高" : o === "medium" ? "中" : o === "xhigh" ? "超高" : o ?? "—";
+}
+function $v(o) {
+  return o === "auto" ? "自动 · 同一 Work 优先复用" : o === "reuse" ? "始终复用已绑定会话" : o === "new" ? "每次新开标签页" : o ?? "—";
+}
+function Wv(o) {
+  return o.agentModel ? [
+    ["执行模型", `${o.agentModel} · ${wv(o.reasoningLevel)}推理`],
+    ["浏览器会话", $v(o.tabPolicy)]
+  ] : [];
+}
+function kv(o) {
   return o === "green" ? "success" : o === "amber" ? "warning" : o === "red" ? "danger" : o === "blue" ? "info" : "neutral";
 }
-function $v({ items: o }) {
+function Fv({ items: o }) {
   return o.length ? /* @__PURE__ */ c.jsx("div", { className: "automation-history", children: o.map((z) => /* @__PURE__ */ c.jsxs("div", { className: "automation-history-row", children: [
     /* @__PURE__ */ c.jsx("div", { className: `automation-history-mark ${z.tone}` }),
     /* @__PURE__ */ c.jsxs("div", { className: "automation-history-copy", children: [
       /* @__PURE__ */ c.jsxs("div", { className: "automation-history-top", children: [
-        /* @__PURE__ */ c.jsx(Zl, { label: z.result, tone: wv(z.tone) }),
+        /* @__PURE__ */ c.jsx(Zl, { label: z.result, tone: kv(z.tone) }),
         /* @__PURE__ */ c.jsx("time", { children: Ra(z.at) })
       ] }),
       z.reason && /* @__PURE__ */ c.jsx("p", { children: z.reason }),
@@ -10869,7 +10881,7 @@ function $v({ items: o }) {
     ] })
   ] }, z.id)) }) : /* @__PURE__ */ c.jsx("div", { className: "automation-history-empty", children: "还没有执行记录。" });
 }
-function Wv({ data: o, busy: z, onRefresh: _, onAction: r }) {
+function Iv({ data: o, busy: z, onRefresh: _, onAction: r }) {
   const H = o.automations.automations, [D, L] = bl.useState("enabled"), Z = bl.useMemo(() => H.filter((O) => D === "all" || (D === "paused" ? O.status === "paused" || O.status === "disabled" : O.status === D)), [H, D]), [N, p] = bl.useState(), M = (O) => `${O.source}:${O.repoId}:${O.id}`, b = Z.find((O) => M(O) === N) ?? Z[0], R = b ? Jv(b.observationStatus) : void 0;
   return /* @__PURE__ */ c.jsxs(c.Fragment, { children: [
     /* @__PURE__ */ c.jsx(we, { eyebrow: "AUTOMATION", title: "Automations", description: "查看长期任务如何触发、当前是否正常，以及每一次实际执行发生了什么。", refreshedAt: o.automations.generatedAt, busy: z, onRefresh: _ }),
@@ -10937,6 +10949,7 @@ function Wv({ data: o, busy: z, onRefresh: _, onAction: r }) {
           ["观察状态", R ?? "—"],
           ["绑定 Work", b.boundWorkObjective ? Et(b.boundWorkObjective, 96) : b.boundWorkId ?? "—"],
           ["运行模式", b.live === void 0 ? "—" : b.live ? "Live · 会产生实际动作" : "Shadow · 只记录预演"],
+          ...Wv(b),
           ["运行策略", b.policySummary ?? "—"]
         ] }),
         b.pausedReason && /* @__PURE__ */ c.jsxs("div", { className: "detail-callout warning", children: [
@@ -10945,7 +10958,7 @@ function Wv({ data: o, busy: z, onRefresh: _, onAction: r }) {
         ] }),
         /* @__PURE__ */ c.jsx("div", { className: "detail-button-row", children: b.actions.map((O) => /* @__PURE__ */ c.jsx(xe, { disabled: z, className: O === "pause" ? "danger-text" : "", onClick: () => {
           r(b, O);
-        }, children: O === "run" ? "立即运行" : O === "pause" ? "暂停" : "恢复" }, O)) }),
+        }, children: O === "run" ? "立即运行" : O === "pause" ? "暂停任务" : "开启任务" }, O)) }),
         /* @__PURE__ */ c.jsxs("div", { className: "automation-section-head", children: [
           /* @__PURE__ */ c.jsxs("div", { children: [
             /* @__PURE__ */ c.jsx("span", { className: "eyebrow", children: "EXECUTION HISTORY" }),
@@ -10956,7 +10969,7 @@ function Wv({ data: o, busy: z, onRefresh: _, onAction: r }) {
             " 条"
           ] })
         ] }),
-        /* @__PURE__ */ c.jsx($v, { items: b.history }),
+        /* @__PURE__ */ c.jsx(Fv, { items: b.history }),
         /* @__PURE__ */ c.jsxs("details", { className: "advanced automation-advanced", children: [
           /* @__PURE__ */ c.jsx("summary", { children: "技术信息" }),
           /* @__PURE__ */ c.jsx("pre", { children: JSON.stringify({ scheduleId: b.source === "schedule" ? b.id : void 0, workId: b.boundWorkId, source: b.source, next: b.nextRunHint, failureCount: b.failureCount }, null, 2) })
@@ -10966,14 +10979,14 @@ function Wv({ data: o, busy: z, onRefresh: _, onAction: r }) {
     ] })
   ] });
 }
-function kv(o) {
+function Pv(o) {
   return o.advanced?.status ?? "";
 }
 function Fn(o, z) {
-  const _ = kv(o);
+  const _ = Pv(o);
   return z === "all" ? !0 : z === "attention" ? _ === "blocked" || _ === "failed" : z === "completed" ? _ === "completed" || _ === "cancelled" : _ === "open" || _ === "running" || _ === "ready";
 }
-function Fv({ data: o, busy: z, onRefresh: _ }) {
+function ly({ data: o, busy: z, onRefresh: _ }) {
   const r = o.workPortfolio, H = r.items ?? [], [D, L] = bl.useState("open"), [Z, N] = bl.useState("all"), [p, M] = bl.useState(), b = bl.useMemo(() => H.filter((O) => Fn(O, D) && (Z === "all" || O.repoId === Z)), [H, D, Z]), R = b.find((O) => O.id === p) ?? b[0];
   return /* @__PURE__ */ c.jsxs(c.Fragment, { children: [
     /* @__PURE__ */ c.jsx(we, { eyebrow: "EXECUTION WORK", title: "Work", description: "查看所有已注册仓库的持久 Work；仓库是归属维度，默认聚合展示。", refreshedAt: r.generatedAt, busy: z, onRefresh: _ }),
@@ -11019,7 +11032,7 @@ function Mu(o) {
   const z = `${o.name} ${o.provider} ${(o.capabilityLabels ?? []).join(" ")}`.toLowerCase();
   return /gmail|calendar|github|google task|notion/.test(z) ? "services" : /browser|desktop|ios|repository|codegraph|local/.test(z) ? "execution" : "extensions";
 }
-function Iv({ data: o, busy: z, onRefresh: _ }) {
+function ty({ data: o, busy: z, onRefresh: _ }) {
   const r = o.commandCenter.plugins ?? [], H = o.automationSettings.providers ?? [], [D, L] = bl.useState("all"), [Z, N] = bl.useState(), p = bl.useMemo(() => r.filter((b) => D === "all" || D === "models" || Mu(b) === D), [r, D]), M = p.find((b) => b.id === Z) ?? p[0];
   return /* @__PURE__ */ c.jsxs(c.Fragment, { children: [
     /* @__PURE__ */ c.jsx(we, { eyebrow: "CAPABILITY CATALOG", title: "Capabilities", description: "从“Forge 能做什么”查看扩展、服务、执行能力和模型，而不是浏览 MCP tool 清单。", refreshedAt: o.generatedAt, busy: z, onRefresh: _ }),
@@ -11055,18 +11068,18 @@ function Iv({ data: o, busy: z, onRefresh: _ }) {
     ] })
   ] });
 }
-function Pv({ value: o, onChange: z, placeholder: _ = "Search…" }) {
+function ey({ value: o, onChange: z, placeholder: _ = "Search…" }) {
   return /* @__PURE__ */ c.jsxs("label", { className: "search-field", children: [
     /* @__PURE__ */ c.jsx(qv, {}),
     /* @__PURE__ */ c.jsx("input", { value: o, onChange: (r) => z(r.target.value), placeholder: _ })
   ] });
 }
-function ly({ data: o, busy: z, onRefresh: _, onRegister: r, onRemove: H }) {
+function ay({ data: o, busy: z, onRefresh: _, onRegister: r, onRemove: H }) {
   const D = o.commandCenter.repositories ?? [], [L, Z] = bl.useState(""), [N, p] = bl.useState(), [M, b] = bl.useState(""), [R, O] = bl.useState(""), [El, xl] = bl.useState(!1), Nl = bl.useMemo(() => D.filter((tl) => `${tl.name} ${tl.path} ${tl.branchLabel}`.toLowerCase().includes(L.toLowerCase())), [D, L]), cl = Nl.find((tl) => tl.id === N) ?? Nl[0];
   return /* @__PURE__ */ c.jsxs(c.Fragment, { children: [
     /* @__PURE__ */ c.jsx(we, { eyebrow: "CONTROLLER REGISTRY", title: "Repositories", description: "查看和管理 Forge 的持久化仓库边界；临时目录不需要出现在这里。", refreshedAt: o.generatedAt, busy: z, onRefresh: _, actions: /* @__PURE__ */ c.jsx(xe, { onClick: () => xl((tl) => !tl), "aria-expanded": El, children: El ? "Cancel" : "Add repository" }) }),
     /* @__PURE__ */ c.jsxs("div", { className: "repository-tools", children: [
-      /* @__PURE__ */ c.jsx(Pv, { value: L, onChange: Z, placeholder: "Search repositories…" }),
+      /* @__PURE__ */ c.jsx(ey, { value: L, onChange: Z, placeholder: "Search repositories…" }),
       /* @__PURE__ */ c.jsx("span", { className: "repository-count", children: Nl.length === D.length ? `${D.length} registered` : `${Nl.length} of ${D.length}` })
     ] }),
     El && /* @__PURE__ */ c.jsxs("form", { className: "repository-add-panel", onSubmit: (tl) => {
@@ -11111,7 +11124,7 @@ function ly({ data: o, busy: z, onRefresh: _, onRegister: r, onRemove: H }) {
     ] })
   ] });
 }
-function ty({ data: o, busy: z, onRefresh: _, onProviderAction: r, onProviderHealth: H, onToolAction: D, onToolHealth: L }) {
+function uy({ data: o, busy: z, onRefresh: _, onProviderAction: r, onProviderHealth: H, onToolAction: D, onToolHealth: L }) {
   const Z = o.automationSettings;
   return /* @__PURE__ */ c.jsxs(c.Fragment, { children: [
     /* @__PURE__ */ c.jsx(we, { eyebrow: "LONG-LIVED CONFIG", title: "Settings", description: "模型、Provider 与本地工具的长期默认配置。Automation 调度不在这里。", refreshedAt: o.generatedAt, busy: z, onRefresh: _ }),
@@ -11160,7 +11173,7 @@ function ty({ data: o, busy: z, onRefresh: _, onProviderAction: r, onProviderHea
     ] })
   ] });
 }
-function ey({ data: o, busy: z, onRefresh: _ }) {
+function ny({ data: o, busy: z, onRefresh: _ }) {
   const [r, H] = bl.useState(), D = o.commandCenter.readiness ?? {};
   return /* @__PURE__ */ c.jsxs(c.Fragment, { children: [
     /* @__PURE__ */ c.jsx(we, { eyebrow: "MAINTENANCE", title: "System", description: "低频工程维护入口。正常使用 Forge 不需要理解这里的运行时细节。", refreshedAt: o.generatedAt, busy: z, onRefresh: _ }),
@@ -11193,7 +11206,7 @@ async function Vr() {
   })]);
   return { commandCenter: o, work: z, workPortfolio: _, automations: r, automationSettings: H, connector: D, generatedAt: (/* @__PURE__ */ new Date()).toISOString() };
 }
-function ay() {
+function iy() {
   const [o, z] = bl.useState(Xr()), [_, r] = bl.useState(), [H, D] = bl.useState(!1), [L, Z] = bl.useState(""), N = bl.useCallback(async () => {
     D(!0), Z("");
     try {
@@ -11235,22 +11248,22 @@ function ay() {
   let b;
   switch (o) {
     case "automations":
-      b = /* @__PURE__ */ c.jsx(Wv, { ...M, onAction: (R, O) => p(() => at.automationAction(R.source, R.repoId, R.id, O)) });
+      b = /* @__PURE__ */ c.jsx(Iv, { ...M, onAction: (R, O) => p(() => at.automationAction(R.source, R.repoId, R.id, O)) });
       break;
     case "work":
-      b = /* @__PURE__ */ c.jsx(Fv, { ...M });
+      b = /* @__PURE__ */ c.jsx(ly, { ...M });
       break;
     case "capabilities":
-      b = /* @__PURE__ */ c.jsx(Iv, { ...M });
+      b = /* @__PURE__ */ c.jsx(ty, { ...M });
       break;
     case "repositories":
-      b = /* @__PURE__ */ c.jsx(ly, { ...M, onRegister: (R, O) => p(() => at.registerRepository(R, O)), onRemove: (R) => p(() => at.removeRepository(R)) });
+      b = /* @__PURE__ */ c.jsx(ay, { ...M, onRegister: (R, O) => p(() => at.registerRepository(R, O)), onRemove: (R) => p(() => at.removeRepository(R)) });
       break;
     case "settings":
-      b = /* @__PURE__ */ c.jsx(ty, { ...M, onProviderAction: (R, O) => p(() => at.providerAction(R.providerId, O)), onProviderHealth: (R) => p(() => at.providerHealth(R.providerId)), onToolAction: (R, O) => p(() => at.localToolAction(R.toolId, O)), onToolHealth: (R) => p(() => at.localToolHealth(R.toolId)) });
+      b = /* @__PURE__ */ c.jsx(uy, { ...M, onProviderAction: (R, O) => p(() => at.providerAction(R.providerId, O)), onProviderHealth: (R) => p(() => at.providerHealth(R.providerId)), onToolAction: (R, O) => p(() => at.localToolAction(R.toolId, O)), onToolHealth: (R) => p(() => at.localToolHealth(R.toolId)) });
       break;
     case "system":
-      b = /* @__PURE__ */ c.jsx(ey, { ...M });
+      b = /* @__PURE__ */ c.jsx(ny, { ...M });
       break;
     default:
       b = /* @__PURE__ */ c.jsx(Kv, { ...M });
@@ -11266,4 +11279,4 @@ function ay() {
 }
 const Jr = document.getElementById("app");
 if (!Jr) throw new Error("Forge console root missing");
-Ev.createRoot(Jr).render(/* @__PURE__ */ c.jsx(bl.StrictMode, { children: /* @__PURE__ */ c.jsx(ay, {}) }));
+Ev.createRoot(Jr).render(/* @__PURE__ */ c.jsx(bl.StrictMode, { children: /* @__PURE__ */ c.jsx(iy, {}) }));

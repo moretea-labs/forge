@@ -348,6 +348,20 @@ function decideOccurrence(
   return saveOccurrence(controllerHome, { ...occurrence, decision, decisionId, status, reason });
 }
 
+function externalControllerLaunchArgs(args: Record<string, unknown>, controllerType: string): string[] {
+  const launchArgs = Array.isArray(args.launch_args) ? args.launch_args.map(String) : [];
+  if (controllerType !== 'chatgpt') return launchArgs;
+  const explicit = new Set(launchArgs.filter((value) => value.startsWith('--')).map((value) => value.split('=', 1)[0]));
+  const add = (flag: string, value: unknown) => {
+    if (explicit.has(flag) || typeof value !== 'string' || !value.trim()) return;
+    launchArgs.push(flag, value.trim());
+  };
+  add('--model', args.model);
+  add('--reasoning', args.reasoning);
+  add('--tab-policy', args.tab_policy);
+  return launchArgs;
+}
+
 async function executeExternalControllerWake(
   controllerHome: string,
   schedule: RepositorySchedule,
@@ -391,7 +405,17 @@ async function executeExternalControllerWake(
     'execute',
     'running',
     'Deterministic external Controller wake is starting through Thin Launcher.',
-    occurrenceDecisionEvidence({ operation: schedule.action.operation, workId, controllerType, ...extraEvidence }),
+    occurrenceDecisionEvidence({
+      operation: schedule.action.operation,
+      workId,
+      controllerType,
+      ...(controllerType === 'chatgpt' ? {
+        model: typeof args.model === 'string' ? args.model : 'gpt-5.6',
+        reasoning: typeof args.reasoning === 'string' ? args.reasoning : 'high',
+        tabPolicy: typeof args.tab_policy === 'string' ? args.tab_policy : 'auto',
+      } : {}),
+      ...extraEvidence,
+    }),
   );
   try {
     const repository = getRepository(schedule.repoId, controllerHome, { includeRemoved: true });
@@ -401,7 +425,7 @@ async function executeExternalControllerWake(
     }, {
       controllerType: controllerType as 'chatgpt' | 'codex' | 'claude' | 'grok',
       executable: typeof args.executable === 'string' ? args.executable : undefined,
-      args: Array.isArray(args.launch_args) ? args.launch_args.map(String) : [],
+      args: externalControllerLaunchArgs(args, controllerType),
       workId,
       handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
       browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
