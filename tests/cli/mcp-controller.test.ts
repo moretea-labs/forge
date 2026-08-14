@@ -710,13 +710,22 @@ describe("MCP controller profile", () => {
       writeFileSync(screenshotPath, png);
 
       const imageContent = boundedPluginArtifactImageContent(controllerHome, repository.repoId, {
-        artifactCandidates: [{ kind: "ios_simulator_screenshot", mediaType: "image/png", path: screenshotPath }],
+        result: {
+          artifactCandidates: [{ kind: "ios_simulator_screenshot", mediaType: "image/png", path: screenshotPath }],
+        },
       });
       expect(imageContent).toEqual([{
         type: "image",
         mimeType: "image/png",
         data: png.toString("base64"),
       }]);
+      expect(boundedPluginArtifactImageContent(controllerHome, repository.repoId, {
+        artifactCandidates: [{ kind: "legacy_top_level_image", mediaType: "image/png", path: screenshotPath }],
+      })).toEqual(imageContent);
+      expect(boundedPluginArtifactImageContent(controllerHome, repository.repoId, {
+        artifactCandidates: [{ kind: "legacy_top_level_image", mediaType: "image/png", path: screenshotPath }],
+        result: { artifactCandidates: [{ kind: "nested_duplicate", mediaType: "image/png", path: screenshotPath }] },
+      })).toEqual(imageContent);
 
       const outsidePath = join(repoRoot, "outside.png");
       writeFileSync(outsidePath, png);

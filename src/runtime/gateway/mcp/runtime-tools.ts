@@ -1117,11 +1117,20 @@ export function boundedPluginArtifactImageContent(
   repoId: string,
   pluginResult: Record<string, unknown> | undefined,
 ): McpImageContent[] {
-  if (!pluginResult || !Array.isArray(pluginResult.artifactCandidates)) return [];
+  if (!pluginResult) return [];
+  const nestedResult = pluginResult.result && typeof pluginResult.result === 'object' && !Array.isArray(pluginResult.result)
+    ? pluginResult.result as Record<string, unknown>
+    : undefined;
+  const candidates = [
+    ...(Array.isArray(pluginResult.artifactCandidates) ? pluginResult.artifactCandidates : []),
+    ...(nestedResult && Array.isArray(nestedResult.artifactCandidates) ? nestedResult.artifactCandidates : []),
+  ];
+  if (candidates.length === 0) return [];
   const allowedRoot = resolve(repositoryControllerRoot(controllerHome, repoId));
   const images: McpImageContent[] = [];
+  const seenPaths = new Set<string>();
 
-  for (const candidate of pluginResult.artifactCandidates) {
+  for (const candidate of candidates) {
     if (images.length >= MAX_INLINE_PLUGIN_IMAGES) break;
     if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
     const record = candidate as Record<string, unknown>;
@@ -1130,6 +1139,7 @@ export function boundedPluginArtifactImageContent(
     if (!INLINE_PLUGIN_IMAGE_MEDIA_TYPES.has(mediaType) || !path) continue;
 
     const resolvedPath = resolve(path);
+    if (seenPaths.has(resolvedPath)) continue;
     const rel = relative(allowedRoot, resolvedPath);
     if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) continue;
     if (!existsSync(resolvedPath)) continue;
@@ -1142,6 +1152,7 @@ export function boundedPluginArtifactImageContent(
         data: readFileSync(resolvedPath).toString('base64'),
         mimeType: mediaType,
       });
+      seenPaths.add(resolvedPath);
     } catch {
       // The structured plugin result remains authoritative when an artifact cannot be inlined.
     }
