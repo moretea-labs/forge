@@ -23,11 +23,11 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 115,
+    "maxTestFiles": 114,
     "maxTestLines": 44154,
     "maxPureFiles": 34,
     "maxTempIsolatedFiles": 46,
-    "maxProcessTreeFiles": 17,
+    "maxProcessTreeFiles": 16,
     "maxGitWorktreeFiles": 15,
     "maxFixedPortFiles": 6,
     "maxRuntimeSingletonFiles": 6,
@@ -362,10 +362,6 @@
     "tests/runtime/controller-session-store.test.ts": {
       "module": "controller",
       "resource": "temp-isolated"
-    },
-    "tests/runtime/desktop-plugin.test.ts": {
-      "module": "controller",
-      "resource": "process-tree"
     },
     "tests/runtime/execution-identity-guard.test.ts": {
       "module": "process-runtime",
