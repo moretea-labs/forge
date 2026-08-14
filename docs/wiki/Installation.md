@@ -7,7 +7,7 @@
 This is the verified path while `@moretea-labs/forge` remains unpublished:
 
 ```bash
-npm ci --ignore-scripts --no-audit --no-fund
+bun install --frozen-lockfile
 npm install -g . --omit=optional --no-audit --no-fund
 ```
 

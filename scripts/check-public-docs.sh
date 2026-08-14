@@ -72,9 +72,22 @@ grep -q "$README_CHANNEL_EN" README.md || { echo "[public-docs] English README m
 grep -q "$README_CHANNEL_ZH" README.zh-CN.md || { echo "[public-docs] Chinese README must state the npm channel for $PACKAGE_VERSION" >&2; exit 1; }
 grep -q 'See \[README.md\](README.md)' README.en.md || { echo "[public-docs] README.en.md must point to the maintained English README" >&2; exit 1; }
 
+source_install_docs=(
+  README.md README.zh-CN.md
+  docs/tutorials/01-install-and-start.md docs/tutorials/01-install-and-start.zh-CN.md
+  docs/wiki/Quick-Start.md docs/wiki/Installation.md
+)
+for path in "${source_install_docs[@]}"; do
+  grep -q 'bun install --frozen-lockfile' "$path" || { echo "[public-docs] source checkout must use the CI-authoritative Bun frozen lock: $path" >&2; exit 1; }
+  grep -q 'npm install -g \.' "$path" || { echo "[public-docs] missing source package install: $path" >&2; exit 1; }
+done
+if git grep -n 'npm ci --ignore-scripts --no-audit --no-fund' -- "${source_install_docs[@]}" >/dev/null; then
+  echo "[public-docs] generic npm ci must not be advertised for Forge source checkouts" >&2
+  exit 1
+fi
+
 for path in docs/tutorials/01-install-and-start.md docs/tutorials/01-install-and-start.zh-CN.md; do
   grep -q 'Node.js 20.10' "$path" || { echo "[public-docs] missing Node baseline: $path" >&2; exit 1; }
-  grep -q 'npm install -g \.' "$path" || { echo "[public-docs] missing source install: $path" >&2; exit 1; }
   grep -q "$INSTALL_SPEC" "$path" || { echo "[public-docs] missing package command for $PACKAGE_VERSION: $path" >&2; exit 1; }
 done
 

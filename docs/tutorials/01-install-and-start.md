@@ -34,7 +34,7 @@ For Forge source development only:
 ```bash
 git clone https://github.com/moretea-labs/forge.git
 cd forge
-npm ci --ignore-scripts --no-audit --no-fund
+bun install --frozen-lockfile
 npm install -g . --omit=optional --no-audit --no-fund
 ```
 

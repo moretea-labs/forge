@@ -62,7 +62,7 @@ forge setup next     # 按每次显示的 Next 动作继续
 
 ```bash
 git clone https://github.com/moretea-labs/forge.git && cd forge
-npm ci --ignore-scripts --no-audit --no-fund
+bun install --frozen-lockfile
 npm install -g . --omit=optional --no-audit --no-fund
 ```
 
