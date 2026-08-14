@@ -258,6 +258,67 @@ describe('rh_work managed lifecycle closure', () => {
     expect(resumedPayload.data?.schedule?.pausedReason).toBeUndefined();
   });
 
+  test('rh_work creates a Work-bound browser watcher and stops it before browser access when Work is terminal', async () => {
+    const fx = fixture('schedule-browser-watch');
+    const work = await prepareManagedWork(fx, 'Wait for one external browser-visible dependency');
+
+    const created = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'schedule_create',
+      work_id: work.workId,
+      schedule_mode: 'browser_watch',
+      controller_type: 'chatgpt',
+      trigger_type: 'manual',
+      probe_url: 'https://example.invalid/external-dependency',
+      include_terms: ['Apple Support', 'CASE-12345'],
+      ignore_patterns: ['\\b\\d{1,2}:\\d{2}\\b'],
+      login_url_terms: ['/login'],
+      wake_on_first_observation: false,
+      shadow_mode: false,
+      schedule_request_id: 'schedule-browser-watch-stable',
+    });
+    expect(created?.isError).not.toBe(true);
+    const createdPayload = created?.structuredContent as { data?: { schedule?: { scheduleId?: string; action?: { operation?: string; arguments?: Record<string, unknown> } } } };
+    const scheduleId = createdPayload.data?.schedule?.scheduleId ?? '';
+    expect(scheduleId).toBeTruthy();
+    expect(createdPayload.data?.schedule?.action?.operation).toBe('browser_probe');
+    expect(createdPayload.data?.schedule?.action?.arguments).toMatchObject({
+      work_id: work.workId,
+      probe_url: 'https://example.invalid/external-dependency',
+      include_terms: ['Apple Support', 'CASE-12345'],
+      wake_on_change: true,
+      keepalive_only: false,
+    });
+
+    const stopped = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'stop',
+      work_id: work.workId,
+      reason: 'external dependency goal completed',
+    });
+    expect(stopped?.isError).not.toBe(true);
+
+    const triggered = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'schedule_trigger',
+      schedule_id: scheduleId,
+    });
+    expect(triggered?.isError).not.toBe(true);
+    const occurrence = (triggered?.structuredContent as { data?: { occurrence?: { decision?: string; status?: string; reason?: string } } })?.data?.occurrence;
+    expect(occurrence?.decision).toBe('nothing_to_do');
+    expect(occurrence?.status).toBe('skipped');
+    expect(occurrence?.reason).toContain('terminal');
+
+    const fetched = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'schedule_get',
+      schedule_id: scheduleId,
+    });
+    const fetchedSchedule = (fetched?.structuredContent as { data?: { schedule?: { enabled?: boolean; pausedReason?: string } } })?.data?.schedule;
+    expect(fetchedSchedule?.enabled).toBe(false);
+    expect(fetchedSchedule?.pausedReason).toContain('terminal');
+  });
+
   test('non-shadow continuation trigger reserves one launch while authenticated MCP retains Work ownership authority', async () => {
     const fx = fixture('schedule-live-wake');
     const work = await prepareManagedWork(fx, 'Wake one external Controller for this bounded Work');

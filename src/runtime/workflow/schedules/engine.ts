@@ -25,6 +25,7 @@ import {
   saveScheduleDecision,
 } from './store';
 import { applyScheduleFailure } from './settlement';
+import { classifyScheduledBrowserObservation, executeScheduledBrowserProbe } from './browser-probe';
 import type {
   RepositorySchedule,
   ScheduleDecisionType,
@@ -35,12 +36,14 @@ import type {
 const execFileAsync = promisify(execFile);
 const LIVE_MAINTENANCE_OPERATION = 'runtime_maintenance_apply';
 const EXTERNAL_CONTROLLER_WAKE_OPERATION = 'external_controller_wake';
+const BROWSER_PROBE_OPERATION = 'browser_probe';
 
 function isDeterministicSchedule(schedule: RepositorySchedule): boolean {
   // Kernel may execute only fully deterministic, allowlisted schedule operations.
   // Semantic / model-backed schedules remain external-controller handoffs.
   return schedule.action.operation === LIVE_MAINTENANCE_OPERATION
-    || schedule.action.operation === EXTERNAL_CONTROLLER_WAKE_OPERATION;
+    || schedule.action.operation === EXTERNAL_CONTROLLER_WAKE_OPERATION
+    || schedule.action.operation === BROWSER_PROBE_OPERATION;
 }
 
 function normalizedWindow(minutes: number, at = Date.now()): string {
@@ -344,6 +347,109 @@ function decideOccurrence(
   return saveOccurrence(controllerHome, { ...occurrence, decision, decisionId, status, reason });
 }
 
+async function executeExternalControllerWake(
+  controllerHome: string,
+  schedule: RepositorySchedule,
+  occurrence: ScheduleOccurrence,
+  timestamp: string,
+  args: Record<string, unknown>,
+  extraEvidence: Record<string, unknown> = {},
+): Promise<ScheduleOccurrence> {
+  const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+  const controllerType = typeof args.controller_type === 'string' ? args.controller_type.trim() : 'chatgpt';
+  if (!workId) {
+    return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', 'EXTERNAL_CONTROLLER_WAKE_WORK_ID_REQUIRED');
+  }
+  if (!['chatgpt', 'codex', 'claude', 'grok'].includes(controllerType)) {
+    return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', 'EXTERNAL_CONTROLLER_WAKE_TYPE_INVALID');
+  }
+  const workStore = { controllerHome, repoId: schedule.repoId };
+  const work = getWorkContract(workStore, workId);
+  if (!work) {
+    saveSchedule(controllerHome, { ...schedule, enabled: false, pausedReason: `Work ${workId} no longer exists.`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId });
+    return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', `EXTERNAL_CONTROLLER_WAKE_WORK_NOT_FOUND:${workId}`);
+  }
+  if (isTerminalWorkContractStatus(work.status)) {
+    saveSchedule(controllerHome, { ...schedule, enabled: false, pausedReason: `Work ${workId} is terminal (${work.status}).`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId });
+    return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} is terminal (${work.status}); automatic continuation stopped.`);
+  }
+  const existingOwner = getControllerSession(workStore, workId);
+  if (existingOwner) {
+    saveSchedule(controllerHome, { ...schedule, lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId });
+    return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} already has an active Controller ${existingOwner.controllerId}.`);
+  }
+  const launchReservation = getExternalControllerLaunchReservation(workStore, workId);
+  if (launchReservation) {
+    saveSchedule(controllerHome, { ...schedule, lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId });
+    return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} already has a pending external Controller launch ${launchReservation.reservationId}.`);
+  }
+  const wakeDecision = decideOccurrence(
+    controllerHome,
+    schedule,
+    occurrence,
+    'execute',
+    'running',
+    'Deterministic external Controller wake is starting through Thin Launcher.',
+    occurrenceDecisionEvidence({ operation: schedule.action.operation, workId, controllerType, ...extraEvidence }),
+  );
+  try {
+    const repository = getRepository(schedule.repoId, controllerHome, { includeRemoved: true });
+    const launched = launchSuperController({
+      work: { controllerHome, repoId: schedule.repoId },
+      handoff: { controllerHome, repoId: schedule.repoId },
+    }, {
+      controllerType: controllerType as 'chatgpt' | 'codex' | 'claude' | 'grok',
+      executable: typeof args.executable === 'string' ? args.executable : undefined,
+      args: Array.isArray(args.launch_args) ? args.launch_args.map(String) : [],
+      workId,
+      handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
+      browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
+      conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
+      launchReservationMs: typeof args.launch_reservation_ms === 'number' ? args.launch_reservation_ms : typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
+      continuationPrompt: typeof args.continuation_prompt === 'string'
+        ? args.continuation_prompt
+        : `Scheduled continuation ${occurrence.occurrenceId} from ${schedule.scheduleId}. Read current Forge state and continue only the bounded Work objective.`,
+      cwd: repository.canonicalRoot,
+    });
+    const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
+    saveSchedule(controllerHome, {
+      ...latest,
+      lastTriggeredAt: timestamp,
+      lastOccurrenceId: occurrence.occurrenceId,
+      consecutiveFailures: 0,
+      nextEligibleAt: undefined,
+      pausedReason: undefined,
+    });
+    return saveOccurrence(controllerHome, {
+      ...wakeDecision,
+      status: 'succeeded',
+      reason: `External Controller wake started ${launched.controllerType} pid=${String(launched.pid ?? 'unknown')} for Work ${workId}.`,
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    const failed = applyScheduleFailure(controllerHome, schedule.scheduleId, schedule.repoId, occurrence.occurrenceId, {
+      outcome: 'failed',
+      decision: 'execute',
+      reason,
+      handoff: {
+        title: `External Controller wake ${occurrence.occurrenceId} failed`,
+        summary: 'Forge recorded the schedule trigger but could not wake the configured external Controller.',
+        reason,
+        creationReason: 'repeated_infrastructure_failure',
+        blockingDecision: 'Repair the external Controller/browser launch path or update the saved session reference.',
+        recommendedDecision: 'Inspect launcher/browser readiness, then retrigger this bounded continuation.',
+        recommendedPrompt: `Resume Work ${workId} manually, inspect failed wake occurrence ${occurrence.occurrenceId}, and repair the configured external Controller launch path before unattended continuation resumes.`,
+        statusSummary: 'Scheduled external Controller wake failed.',
+        blockedBy: ['external_controller_wake_failed'],
+        attemptedActions: [`schedule:${schedule.scheduleId}`, `work:${workId}`, `controller:${controllerType}`],
+      },
+    });
+    const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
+    saveSchedule(controllerHome, { ...latest, lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId });
+    return failed.occurrence ?? saveOccurrence(controllerHome, { ...wakeDecision, status: 'failed', reason });
+  }
+}
+
 export async function evaluateSchedule(
   controllerHome: string,
   schedule: RepositorySchedule,
@@ -548,76 +654,113 @@ export async function evaluateSchedule(
 
   const args = schedule.action.arguments ?? {};
   if (schedule.action.operation === EXTERNAL_CONTROLLER_WAKE_OPERATION) {
+    return executeExternalControllerWake(controllerHome, schedule, occurrence, timestamp, args);
+  }
+
+  if (schedule.action.operation === BROWSER_PROBE_OPERATION) {
     const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-    const controllerType = typeof args.controller_type === 'string' ? args.controller_type.trim() : 'chatgpt';
     if (!workId) {
-      return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', 'EXTERNAL_CONTROLLER_WAKE_WORK_ID_REQUIRED');
-    }
-    if (!['chatgpt', 'codex', 'claude', 'grok'].includes(controllerType)) {
-      return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', 'EXTERNAL_CONTROLLER_WAKE_TYPE_INVALID');
+      return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', 'SCHEDULE_BROWSER_PROBE_WORK_ID_REQUIRED');
     }
     const workStore = { controllerHome, repoId: schedule.repoId };
     const work = getWorkContract(workStore, workId);
     if (!work) {
       saveSchedule(controllerHome, { ...schedule, enabled: false, pausedReason: `Work ${workId} no longer exists.`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
-      return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', `EXTERNAL_CONTROLLER_WAKE_WORK_NOT_FOUND:${workId}`);
+      return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', `SCHEDULE_BROWSER_PROBE_WORK_NOT_FOUND:${workId}`);
     }
     if (isTerminalWorkContractStatus(work.status)) {
       saveSchedule(controllerHome, { ...schedule, enabled: false, pausedReason: `Work ${workId} is terminal (${work.status}).`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
-      return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} is terminal (${work.status}); automatic continuation stopped.`);
+      return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} is terminal (${work.status}); browser watcher stopped before probing.`);
     }
-    const existingOwner = getControllerSession(workStore, workId);
-    if (existingOwner) {
-      saveSchedule(controllerHome, { ...schedule, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
-      return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} already has an active Controller ${existingOwner.controllerId}.`);
-    }
-    const launchReservation = getExternalControllerLaunchReservation(workStore, workId);
-    if (launchReservation) {
-      saveSchedule(controllerHome, { ...schedule, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
-      return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} already has a pending external Controller launch ${launchReservation.reservationId}.`);
-    }
-    const wakeDecision = decideOccurrence(
-      controllerHome,
-      schedule,
-      occurrence,
-      'execute',
-      'running',
-      'Deterministic external Controller wake is starting through Thin Launcher.',
-      occurrenceDecisionEvidence({ operation: schedule.action.operation, workId, controllerType }),
-    );
+
     try {
       const repository = getRepository(schedule.repoId, controllerHome, { includeRemoved: true });
-      const launched = launchSuperController({
-        work: { controllerHome, repoId: schedule.repoId },
-        handoff: { controllerHome, repoId: schedule.repoId },
-      }, {
-        controllerType: controllerType as 'chatgpt' | 'codex' | 'claude' | 'grok',
-        executable: typeof args.executable === 'string' ? args.executable : undefined,
-        args: Array.isArray(args.launch_args) ? args.launch_args.map(String) : [],
-        workId,
-        handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
-        browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
-        conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
-        launchReservationMs: typeof args.launch_reservation_ms === 'number' ? args.launch_reservation_ms : typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
-        continuationPrompt: typeof args.continuation_prompt === 'string'
-          ? args.continuation_prompt
-          : `Scheduled continuation ${occurrence.occurrenceId} from ${schedule.scheduleId}. Read current Forge state and continue only the bounded Work objective.`,
-        cwd: repository.canonicalRoot,
-      });
+      const probe = await executeScheduledBrowserProbe({ controllerHome, repository, occurrenceId, args });
       const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
-      saveSchedule(controllerHome, {
+      const observationEvidence = occurrenceDecisionEvidence({
+        probeStatus: probe.status,
+        url: probe.url,
+        projectedLineCount: probe.projectedLineCount,
+        observedChars: probe.observedChars,
+        truncated: probe.truncated,
+      });
+
+      if (probe.status === 'auth_required') {
+        const observedSchedule = saveSchedule(controllerHome, {
+          ...latest,
+          lastTriggeredAt: timestamp,
+          lastOccurrenceId: occurrenceId,
+          lastObservationAt: timestamp,
+          lastObservationStatus: 'auth_required',
+          consecutiveFailures: 0,
+          nextEligibleAt: undefined,
+          pausedReason: undefined,
+        });
+        if (args.wake_on_auth_required !== false) {
+          const wakeArgs = {
+            ...args,
+            continuation_prompt: typeof args.auth_required_prompt === 'string'
+              ? args.auth_required_prompt
+              : typeof args.continuation_prompt === 'string'
+                ? args.continuation_prompt
+                : `Scheduled browser watcher ${schedule.scheduleId} detected that authentication is required (${probe.authReason ?? 'login marker'}). Inspect the bound external dependency and request user login only if it cannot be restored safely.`,
+          };
+          return executeExternalControllerWake(controllerHome, observedSchedule, occurrence, timestamp, wakeArgs, { ...observationEvidence, authReason: probe.authReason });
+        }
+        return decideOccurrence(controllerHome, observedSchedule, occurrence, 'operation_blocked', 'skipped', `Browser watcher requires authentication: ${probe.authReason ?? 'login marker matched'}`, observationEvidence);
+      }
+
+      if (probe.status === 'keepalive') {
+        const observedSchedule = saveSchedule(controllerHome, {
+          ...latest,
+          lastTriggeredAt: timestamp,
+          lastOccurrenceId: occurrenceId,
+          lastObservationAt: timestamp,
+          lastObservationStatus: 'keepalive',
+          consecutiveFailures: 0,
+          consecutiveNoops: 0,
+          nextEligibleAt: undefined,
+          pausedReason: undefined,
+        });
+        return decideOccurrence(controllerHome, observedSchedule, occurrence, 'execute', 'succeeded', 'Browser session keepalive refreshed successfully.', observationEvidence);
+      }
+
+      const observation = classifyScheduledBrowserObservation(
+        latest.lastObservationFingerprint,
+        probe.fingerprint,
+        args.wake_on_first_observation === true,
+      );
+      const changed = observation.status === 'changed';
+      const shouldWake = args.wake_on_change !== false && observation.shouldWake;
+      const observationStatus: RepositorySchedule['lastObservationStatus'] = observation.status;
+      const observedSchedule = saveSchedule(controllerHome, {
         ...latest,
         lastTriggeredAt: timestamp,
         lastOccurrenceId: occurrenceId,
+        lastObservationAt: timestamp,
+        lastObservationFingerprint: probe.fingerprint,
+        lastObservationChangedAt: changed ? timestamp : latest.lastObservationChangedAt,
+        lastObservationStatus: observationStatus,
         consecutiveFailures: 0,
+        consecutiveNoops: shouldWake ? 0 : (latest.consecutiveNoops ?? 0) + 1,
         nextEligibleAt: undefined,
         pausedReason: undefined,
       });
-      return saveOccurrence(controllerHome, {
-        ...wakeDecision,
-        status: 'succeeded',
-        reason: `External Controller wake started ${launched.controllerType} pid=${String(launched.pid ?? 'unknown')} for Work ${workId}.`,
-      });
+
+      if (!shouldWake) {
+        const reason = observation.status === 'baseline'
+          ? 'Browser watcher baseline recorded; no Controller wake was emitted.'
+          : 'Browser watcher observation is unchanged; no Controller wake was emitted.';
+        return decideOccurrence(controllerHome, observedSchedule, occurrence, 'nothing_to_do', 'skipped', reason, { ...observationEvidence, observationStatus });
+      }
+
+      const wakeArgs = {
+        ...args,
+        continuation_prompt: typeof args.continuation_prompt === 'string'
+          ? args.continuation_prompt
+          : `Scheduled browser watcher ${schedule.scheduleId} detected a changed external observation. Read the current external state, correlate it with Work ${workId}, and continue only the bounded Work objective.`,
+      };
+      return executeExternalControllerWake(controllerHome, observedSchedule, occurrence, timestamp, wakeArgs, { ...observationEvidence, observationStatus });
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       const failed = applyScheduleFailure(controllerHome, schedule.scheduleId, schedule.repoId, occurrence.occurrenceId, {
@@ -625,21 +768,21 @@ export async function evaluateSchedule(
         decision: 'execute',
         reason,
         handoff: {
-          title: `External Controller wake ${occurrence.occurrenceId} failed`,
-          summary: 'Forge recorded the schedule trigger but could not wake the configured external Controller.',
+          title: `Browser watcher occurrence ${occurrence.occurrenceId} failed`,
+          summary: 'A bounded browser probe failed before Forge could compare the external observation.',
           reason,
           creationReason: 'repeated_infrastructure_failure',
-          blockingDecision: 'Repair the external Controller/browser launch path or update the saved session reference.',
-          recommendedDecision: 'Inspect launcher/browser readiness, then retrigger this bounded continuation.',
-          recommendedPrompt: `Resume Work ${workId} manually, inspect failed wake occurrence ${occurrence.occurrenceId}, and repair the configured external Controller launch path before unattended continuation resumes.`,
-          statusSummary: 'Scheduled external Controller wake failed.',
-          blockedBy: ['external_controller_wake_failed'],
-          attemptedActions: [`schedule:${schedule.scheduleId}`, `work:${workId}`, `controller:${controllerType}`],
+          blockingDecision: 'Repair browser/session readiness or update the watcher target before unattended probing resumes.',
+          recommendedDecision: 'Inspect the browser plugin/session and retrigger the watcher after the target is readable.',
+          recommendedPrompt: `Inspect browser watcher schedule ${schedule.scheduleId} for Work ${workId}, repair the failed browser probe, then retrigger one bounded occurrence.`,
+          statusSummary: 'Scheduled browser watcher failed.',
+          blockedBy: ['browser_probe_failed'],
+          attemptedActions: [`schedule:${schedule.scheduleId}`, `work:${workId}`, 'operation:browser_probe'],
         },
       });
       const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
       saveSchedule(controllerHome, { ...latest, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
-      return failed.occurrence ?? saveOccurrence(controllerHome, { ...wakeDecision, status: 'failed', reason });
+      return failed.occurrence ?? saveOccurrence(controllerHome, { ...occurrence, status: 'failed', decision: 'execute', reason });
     }
   }
 

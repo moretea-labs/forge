@@ -23,9 +23,9 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 114,
-    "maxTestLines": 44049,
-    "maxPureFiles": 33,
+    "maxTestFiles": 115,
+    "maxTestLines": 44154,
+    "maxPureFiles": 34,
     "maxTempIsolatedFiles": 46,
     "maxProcessTreeFiles": 17,
     "maxGitWorktreeFiles": 15,
@@ -595,6 +595,10 @@
     "tests/runtime/runtime-root-release.test.ts": {
       "module": "release",
       "resource": "git-worktree"
+    },
+    "tests/runtime/browser-schedule-probe.test.ts": {
+      "module": "workflow",
+      "resource": "pure"
     },
     "tests/runtime/chatgpt-work-continuation.test.ts": {
       "module": "controller",

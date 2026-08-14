@@ -296,7 +296,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
   }),
   definition('rh_work', 'Preferred ChatGPT facade: bounded planning, direct control, controller ownership, and external SuperController launch.', {
     repo_id: repoId,
-    operation: { type: 'string', enum: ['start', 'continue', 'verify', 'repair', 'finalize', 'stop', 'delegate', 'controller_claim', 'controller_release', 'controller_get_owner', 'launcher_start', 'plan_create', 'plan_get', 'plan_list', 'plan_approve', 'plan_supersede', 'schedule_create', 'schedule_list', 'schedule_get', 'schedule_pause', 'schedule_resume', 'schedule_trigger'], description: 'Defaults to start. Complex starts require plan_id and plan_step_id. schedule_* manages bounded external-controller continuation for existing Work.' },
+    operation: { type: 'string', enum: ['start', 'continue', 'verify', 'repair', 'finalize', 'stop', 'delegate', 'controller_claim', 'controller_release', 'controller_get_owner', 'launcher_start', 'plan_create', 'plan_get', 'plan_list', 'plan_approve', 'plan_supersede', 'schedule_create', 'schedule_list', 'schedule_get', 'schedule_pause', 'schedule_resume', 'schedule_trigger'], description: 'Defaults to start. Complex starts require plan_id and plan_step_id. schedule_* manages Work-bound continuation, browser watchers, and browser keepalive.' },
     objective: { type: 'string' },
     work_id: { type: 'string' },
     handoff_id: { type: 'string', description: 'Optional existing HandoffItem used to resume controller context.' },
@@ -313,6 +313,19 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     schedule_id: { type: 'string', description: 'Schedule identity for schedule_get/pause/resume/trigger.' },
     schedule_name: { type: 'string', description: 'Human-readable schedule name; defaults to Continue Work <work_id>.' },
     schedule_request_id: { type: 'string', description: 'Stable idempotency key for schedule_create.' },
+    schedule_mode: { type: 'string', enum: ['continuation', 'browser_watch', 'browser_keepalive'], description: 'Defaults to continuation. browser_watch compares a deterministic text fingerprint and wakes the bound Controller only on change; browser_keepalive only refreshes/checks auth.' },
+    probe_url: { type: 'string', description: 'Allowed URL to navigate or refresh for browser_watch/browser_keepalive.' },
+    probe_browser_session_id: { type: 'string', description: 'Existing Forge browser session used as the external observation target.' },
+    probe_selector: { type: 'string', description: 'Optional selector limiting text extraction for browser_watch.' },
+    probe_max_chars: { type: 'number', description: 'Bounded extracted text size for browser_watch.' },
+    probe_timeout_ms: { type: 'number', description: 'Bounded browser probe timeout.' },
+    include_terms: { type: 'array', items: { type: 'string' }, description: 'Optional case-insensitive terms; only matching normalized lines contribute to the observation fingerprint.' },
+    ignore_patterns: { type: 'array', items: { type: 'string' }, description: 'Optional regex patterns stripped before fingerprinting volatile text such as relative timestamps.' },
+    login_url_terms: { type: 'array', items: { type: 'string' }, description: 'Configured URL markers that classify the browser observation as authentication-required.' },
+    login_text_terms: { type: 'array', items: { type: 'string' }, description: 'Configured page-text markers that classify the browser observation as authentication-required.' },
+    wake_on_first_observation: { type: 'boolean', description: 'Defaults false so the first browser_watch occurrence records a silent baseline.' },
+    wake_on_auth_required: { type: 'boolean', description: 'Defaults true for Work-bound browser schedules.' },
+    auth_required_prompt: { type: 'string', description: 'Optional ChatGPT continuation instruction when the probe detects a login marker.' },
     trigger_type: { type: 'string', enum: ['interval', 'cron', 'calendar', 'condition', 'repository-event', 'dependency-checkpoint', 'manual'] },
     every_minutes: { type: 'number', description: 'Interval trigger cadence in minutes.' },
     cron_expression: { type: 'string' },
@@ -3385,8 +3398,11 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               const triggerType = ['interval', 'cron', 'calendar', 'condition', 'repository-event', 'dependency-checkpoint', 'manual'].includes(triggerTypeRaw)
                 ? triggerTypeRaw as 'interval' | 'cron' | 'calendar' | 'condition' | 'repository-event' | 'dependency-checkpoint' | 'manual'
                 : undefined;
+              const scheduleModeRaw = String(args.schedule_mode ?? 'continuation').trim();
+              if (!['continuation', 'browser_watch', 'browser_keepalive'].includes(scheduleModeRaw)) throw new Error('SCHEDULE_MODE_INVALID');
               const created = createWorkContinuationSchedule(ctx.controllerHome, repository.repoId, {
                 workId,
+                scheduleMode: scheduleModeRaw as 'continuation' | 'browser_watch' | 'browser_keepalive',
                 controllerType: controllerType as ContinuationControllerType,
                 executable: typeof args.executable === 'string' ? args.executable : undefined,
                 launchArgs: Array.isArray(args.launch_args) ? args.launch_args.map(String) : undefined,
@@ -3395,6 +3411,18 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
                 conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
                 continuationPrompt: typeof args.continuation_prompt === 'string' ? args.continuation_prompt : undefined,
+                probeUrl: typeof args.probe_url === 'string' ? args.probe_url : undefined,
+                probeBrowserSessionId: typeof args.probe_browser_session_id === 'string' ? args.probe_browser_session_id : undefined,
+                probeSelector: typeof args.probe_selector === 'string' ? args.probe_selector : undefined,
+                probeMaxChars: typeof args.probe_max_chars === 'number' ? args.probe_max_chars : undefined,
+                probeTimeoutMs: typeof args.probe_timeout_ms === 'number' ? args.probe_timeout_ms : undefined,
+                includeTerms: Array.isArray(args.include_terms) ? args.include_terms.map(String) : undefined,
+                ignorePatterns: Array.isArray(args.ignore_patterns) ? args.ignore_patterns.map(String) : undefined,
+                loginUrlTerms: Array.isArray(args.login_url_terms) ? args.login_url_terms.map(String) : undefined,
+                loginTextTerms: Array.isArray(args.login_text_terms) ? args.login_text_terms.map(String) : undefined,
+                wakeOnFirstObservation: args.wake_on_first_observation === true,
+                wakeOnAuthRequired: args.wake_on_auth_required !== false,
+                authRequiredPrompt: typeof args.auth_required_prompt === 'string' ? args.auth_required_prompt : undefined,
                 scheduleName: typeof args.schedule_name === 'string' ? args.schedule_name : undefined,
                 requestId: typeof args.schedule_request_id === 'string' ? args.schedule_request_id : undefined,
                 triggerType,
@@ -3414,7 +3442,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 backoffMaxMinutes: typeof args.backoff_max_minutes === 'number' ? args.backoff_max_minutes : undefined,
                 stopConditions: Array.isArray(args.stop_conditions) ? args.stop_conditions.map(String) : undefined,
               });
-              return result(buildFacadeResult({ summary: `Continuation schedule ${created.schedule.scheduleId} is configured for Work ${workId}.`, data: { schedule: created.schedule, work: buildWorkContinuationSnapshot(created.work) } }) as unknown as Record<string, unknown>);
+              return result(buildFacadeResult({ summary: `Work schedule ${created.schedule.scheduleId} is configured for Work ${workId}.`, data: { schedule: created.schedule, work: buildWorkContinuationSnapshot(created.work) } }) as unknown as Record<string, unknown>);
             }
             if (operation === 'schedule_list') {
               const listed = listWorkContinuationSchedules(ctx.controllerHome, repository.repoId, { workId: workId || undefined, includeOccurrences: args.include_occurrences === true });

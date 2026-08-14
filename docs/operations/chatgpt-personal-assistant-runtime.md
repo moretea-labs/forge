@@ -54,7 +54,15 @@ A routine stores the user's natural-language goal rather than a traditional GUI 
 }
 ```
 
-The first version stores the routine and can run it on demand. Automatic time-based scheduling should attach this store to the existing schedule engine in a later iteration.
+Routine execution and long-lived goal continuation use the existing Schedule Engine rather than a second assistant daemon. Semantic/model-backed routine logic remains external-controller-owned; the Kernel does not execute an unbounded model loop on a timer.
+
+For an accepted non-terminal Work, ChatGPT can create a bounded `rh_work.schedule_create` policy in one of three modes:
+
+- `continuation` — wake the bound ChatGPT/Codex/Claude/Grok Controller at the configured trigger;
+- `browser_watch` — silently refresh/read an allowed browser target, fingerprint a deterministic text projection, and wake the bound Controller only when the observation changes;
+- `browser_keepalive` — silently refresh an authenticated browser target and wake only when configured login markers indicate that user authentication is required.
+
+The first `browser_watch` observation is a silent baseline by default. Unchanged observations do not create a ChatGPT conversation turn. When the bound Work becomes terminal, Forge disables the Schedule before performing another external probe, so temporary watchers naturally disappear with the Goal they serve.
 
 ## Policy defaults
 
@@ -76,8 +84,10 @@ Requires human approval:
 
 ## Assistant Inbox
 
-Assistant Inbox is the user-facing result surface for routine outputs and intent execution records. ChatGPT can read it and then present the result conversationally, for example: "今天助理整理了什么？"
+Assistant Inbox is the user-facing result surface for meaningful routine outputs, approval/authentication needs, and intent execution records. A successful scheduled probe with no external change should remain silent rather than generating a daily "completed" notification. ChatGPT can read meaningful items and then present the result conversationally, for example: "今天助理整理了什么？"
 
 ## Current limitation
 
 The runtime does not embed a full NLP model. ChatGPT Actions should provide structure when precision matters. The local runtime includes conservative intent inference only for routine creation, reminders, and immediate mail-summary collection.
+
+`browser_watch` is a fallback observation source for services without a usable API or webhook; it depends on a live authenticated browser session and caller-supplied selectors/terms when the page contains unrelated or volatile content. Browser refresh can reduce inactivity-related logout but cannot override a provider's absolute session lifetime, security checks, or MFA policy. Provider-native APIs/events should replace browser probes when they are available and more reliable.

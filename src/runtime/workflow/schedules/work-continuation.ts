@@ -19,9 +19,11 @@ import type {
 } from './types';
 
 export type ContinuationControllerType = 'chatgpt' | 'codex' | 'claude' | 'grok';
+export type WorkScheduleMode = 'continuation' | 'browser_watch' | 'browser_keepalive';
 
 export interface WorkContinuationScheduleInput {
   workId: string;
+  scheduleMode?: WorkScheduleMode;
   controllerType?: ContinuationControllerType;
   executable?: string;
   launchArgs?: string[];
@@ -30,6 +32,18 @@ export interface WorkContinuationScheduleInput {
   browserSessionId?: string;
   conversationUrl?: string;
   continuationPrompt?: string;
+  probeUrl?: string;
+  probeBrowserSessionId?: string;
+  probeSelector?: string;
+  probeMaxChars?: number;
+  probeTimeoutMs?: number;
+  includeTerms?: string[];
+  ignorePatterns?: string[];
+  loginUrlTerms?: string[];
+  loginTextTerms?: string[];
+  wakeOnFirstObservation?: boolean;
+  wakeOnAuthRequired?: boolean;
+  authRequiredPrompt?: string;
   scheduleName?: string;
   requestId?: string;
   triggerType?: ScheduleTriggerType;
@@ -70,7 +84,7 @@ function activeWork(controllerHome: string, repoId: string, workId: string): Wor
 }
 
 function continuationSchedule(schedule: RepositorySchedule): RepositorySchedule {
-  if (schedule.action.operation !== 'external_controller_wake') {
+  if (!['external_controller_wake', 'browser_probe'].includes(schedule.action.operation)) {
     throw new Error(`SCHEDULE_NOT_WORK_CONTINUATION: ${schedule.scheduleId}`);
   }
   return schedule;
@@ -105,6 +119,29 @@ function wakeArguments(input: WorkContinuationScheduleInput, controllerType: Con
   };
 }
 
+function probeArguments(input: WorkContinuationScheduleInput, controllerType: ContinuationControllerType, keepaliveOnly: boolean): Record<string, unknown> {
+  if (!input.probeUrl?.trim() && !input.probeBrowserSessionId?.trim()) {
+    throw new Error('SCHEDULE_BROWSER_PROBE_TARGET_REQUIRED');
+  }
+  return {
+    ...wakeArguments(input, controllerType),
+    ...(input.probeUrl?.trim() ? { probe_url: input.probeUrl.trim() } : {}),
+    ...(input.probeBrowserSessionId?.trim() ? { probe_session_id: input.probeBrowserSessionId.trim() } : {}),
+    ...(input.probeSelector?.trim() ? { selector: input.probeSelector.trim() } : {}),
+    ...(input.probeMaxChars !== undefined ? { max_chars: Math.max(256, Math.min(Math.trunc(input.probeMaxChars), 100_000)) } : {}),
+    ...(input.probeTimeoutMs !== undefined ? { timeout_ms: Math.max(1_000, Math.min(Math.trunc(input.probeTimeoutMs), 120_000)) } : {}),
+    ...(input.includeTerms ? { include_terms: input.includeTerms.map(String).filter(Boolean) } : {}),
+    ...(input.ignorePatterns ? { ignore_patterns: input.ignorePatterns.map(String).filter(Boolean) } : {}),
+    ...(input.loginUrlTerms ? { login_url_terms: input.loginUrlTerms.map(String).filter(Boolean) } : {}),
+    ...(input.loginTextTerms ? { login_text_terms: input.loginTextTerms.map(String).filter(Boolean) } : {}),
+    ...(input.wakeOnFirstObservation === true ? { wake_on_first_observation: true } : {}),
+    ...(input.wakeOnAuthRequired === false ? { wake_on_auth_required: false } : {}),
+    ...(input.authRequiredPrompt?.trim() ? { auth_required_prompt: input.authRequiredPrompt.trim() } : {}),
+    keepalive_only: keepaliveOnly,
+    wake_on_change: !keepaliveOnly,
+  };
+}
+
 export function createWorkContinuationSchedule(
   controllerHome: string,
   repoId: string,
@@ -112,14 +149,22 @@ export function createWorkContinuationSchedule(
 ): { schedule: RepositorySchedule; work: WorkContract } {
   const work = activeWork(controllerHome, repoId, input.workId);
   const controllerType = input.controllerType ?? 'chatgpt';
+  const scheduleMode = input.scheduleMode ?? 'continuation';
   const trigger = normalizedTrigger(input);
-  const actionArguments = wakeArguments(input, controllerType);
-  assertAutomatedOperationAllowed('external_controller_wake', actionArguments);
-  const name = input.scheduleName?.trim() || `Continue Work ${work.workId}`;
+  const operation = scheduleMode === 'continuation' ? 'external_controller_wake' : 'browser_probe';
+  const actionArguments = scheduleMode === 'continuation'
+    ? wakeArguments(input, controllerType)
+    : probeArguments(input, controllerType, scheduleMode === 'browser_keepalive');
+  assertAutomatedOperationAllowed(operation, actionArguments);
+  const name = input.scheduleName?.trim()
+    || (scheduleMode === 'browser_watch' ? `Watch external state for Work ${work.workId}`
+      : scheduleMode === 'browser_keepalive' ? `Keep browser session alive for Work ${work.workId}`
+        : `Continue Work ${work.workId}`);
   const semantic = JSON.stringify({
     repoId,
     workId: work.workId,
     controllerType,
+    scheduleMode,
     trigger,
     name,
     actionArguments,
@@ -150,9 +195,9 @@ export function createWorkContinuationSchedule(
       backoffBaseMinutes: input.backoffBaseMinutes !== undefined ? Math.max(1, Math.trunc(input.backoffBaseMinutes)) : 5,
       backoffMaxMinutes: input.backoffMaxMinutes !== undefined ? Math.max(1, Math.trunc(input.backoffMaxMinutes)) : 24 * 60,
     },
-    // The schedule only wakes a Controller. The Controller acquires Work/resource
-    // ownership separately, so the wake itself must not claim repository writes.
-    action: { operation: 'external_controller_wake', target: 'runtime', arguments: actionArguments, resourceClaims: [] },
+    // Work-bound schedules only perform a deterministic wake or a bounded read-only
+    // browser probe. Controller/Work write ownership is acquired separately.
+    action: { operation, target: 'runtime', arguments: actionArguments, resourceClaims: [] },
     stopConditions: input.stopConditions ?? ['work_terminal', 'human_review_required', 'external_blocker'],
   });
   return { schedule, work };
@@ -164,7 +209,7 @@ export function listWorkContinuationSchedules(
   options: WorkContinuationScheduleListOptions = {},
 ): { schedules: RepositorySchedule[]; occurrences?: ScheduleOccurrence[] } {
   const schedules = listSchedules(controllerHome, repoId)
-    .filter((entry) => entry.action.operation === 'external_controller_wake')
+    .filter((entry) => ['external_controller_wake', 'browser_probe'].includes(entry.action.operation))
     .filter((entry) => !options.workId || entry.action.arguments?.work_id === options.workId);
   if (!options.includeOccurrences) return { schedules };
   const scheduleIds = new Set(schedules.map((entry) => entry.scheduleId));

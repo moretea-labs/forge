@@ -73,6 +73,11 @@ export interface RepositorySchedule {
   consecutiveNoops?: number;
   nextEligibleAt?: string;
   pausedReason?: string;
+  /** Last deterministic external observation for browser_watch/browser_keepalive. */
+  lastObservationAt?: string;
+  lastObservationFingerprint?: string;
+  lastObservationChangedAt?: string;
+  lastObservationStatus?: 'baseline' | 'unchanged' | 'changed' | 'keepalive' | 'auth_required';
 }
 
 export type ScheduleDecisionType =
