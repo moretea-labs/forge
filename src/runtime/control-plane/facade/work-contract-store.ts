@@ -32,6 +32,7 @@ import {
   type WorkPhaseEvidenceState,
   type WorkContractStore,
   isDirectEditWorkCompletionReceipt,
+  isRemoteEffectCompletionReceipt,
   isRepositoryCompletionReceipt,
   isTerminalWorkContractStatus,
 } from './types';
@@ -292,6 +293,12 @@ function validateWorkSemantics(contract: WorkContract): WorkContract {
       if (!['repository_change', 'completed_no_change'].includes(contract.workKind)) throw new Error('WORK_COMPLETION_RECEIPT_DIRECT_EDIT_KIND_REQUIRED');
       const expectedOutcome = contract.workKind === 'completed_no_change' ? 'completed_no_change' : 'completed_changed';
       if (contract.completionOutcome !== expectedOutcome) throw new Error('WORK_COMPLETION_RECEIPT_DIRECT_EDIT_OUTCOME_REQUIRED');
+    } else if (isRemoteEffectCompletionReceipt(receipt)) {
+      if (contract.workKind !== 'remote_effect') throw new Error('WORK_COMPLETION_RECEIPT_REMOTE_EFFECT_KIND_REQUIRED');
+      if (contract.completionOutcome !== 'completed_remote') throw new Error('WORK_COMPLETION_RECEIPT_REMOTE_EFFECT_OUTCOME_REQUIRED');
+      if (!receipt.pluginId.trim() || !receipt.actionId.trim() || !receipt.requestId.trim() || !receipt.semanticKey.trim() || !receipt.resultDigest.trim()) {
+        throw new Error('WORK_COMPLETION_RECEIPT_REMOTE_EFFECT_IDENTITY_REQUIRED');
+      }
     } else {
       if (contract.workKind !== 'local_effect') throw new Error('WORK_COMPLETION_RECEIPT_LOCAL_EFFECT_KIND_REQUIRED');
       if (contract.completionOutcome !== 'completed_local') throw new Error('WORK_COMPLETION_RECEIPT_LOCAL_EFFECT_OUTCOME_REQUIRED');
@@ -334,6 +341,9 @@ function validateWorkSemantics(contract: WorkContract): WorkContract {
   }
   if (outcome === 'completed_remote' && contract.workKind !== 'remote_effect') {
     throw new Error('WORK_SEMANTICS_INVALID: completed_remote requires remote_effect WorkKind');
+  }
+  if (outcome === 'completed_remote' && contract.completionReceipt?.source !== 'remote_effect') {
+    throw new Error('WORK_SEMANTICS_INVALID: completed_remote requires a remote_effect completion receipt');
   }
   if (outcome === 'superseded' && contract.workKind !== 'superseded') {
     throw new Error('WORK_SEMANTICS_INVALID: superseded requires superseded WorkKind');

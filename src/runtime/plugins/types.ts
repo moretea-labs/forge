@@ -100,6 +100,8 @@ export interface AssistantPluginActionRequest {
   pluginId: string;
   actionId: string;
   requestId: string;
+  /** Optional existing external-effect Work that owns this typed action receipt. */
+  workId?: string;
   args: Record<string, unknown>;
   timeoutMs?: number;
   signal?: AbortSignal;

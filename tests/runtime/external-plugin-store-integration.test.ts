@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { spawn, type ChildProcess } from 'child_process';
+import { spawn, spawnSync, type ChildProcess } from 'child_process';
 import { join } from 'path';
 import { installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
+import { registerRepository } from '../../src/cli/repositories/registry';
+import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { finalizeGoalWorkloop, startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { buildResendPluginManifest, executeResendPluginAction } from '../../src/runtime/plugins/resend-adapter';
 import { createFirstPartyPluginAdapterMap } from '../../src/runtime/plugins/first-party-registry';
 import { DEFAULT_REPORT_SINKS } from '../../src/runtime/personal-assistant/reporting-runtime';
@@ -22,6 +25,7 @@ import {
   executeAssistantPluginAction,
   getAssistantPluginManifest,
   listAssistantPluginManifests,
+  submitAssistantPluginAction,
 } from '../../src/runtime/plugins/store';
 
 const roots: string[] = [];
@@ -232,6 +236,93 @@ describe('external plugin store integration', () => {
 });
 
 describe('Resend first-party plugin', () => {
+  test('binds a successful typed remote-write receipt to an external-effect-only Work', async () => {
+    const repoRoot = resendFixture();
+    const controllerHome = join(repoRoot, '.controller');
+    const initialized = spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, encoding: 'utf8' });
+    expect(initialized.status).toBe(0);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'remote-effect-fixture' });
+    await executeResendPluginAction({
+      controllerHome, repoId: repository.repoId, repoRoot, pluginId: 'resend', actionId: 'configure', requestId: 'remote-effect-configure',
+      args: { enabled: true, provider: 'mock', from_email: 'forge@example.test', from_name: 'Forge' },
+      origin: { surface: 'mcp', actor: 'test' },
+    });
+
+    const started = startGoalWorkloop({
+      workStore: { controllerHome, repoId: repository.repoId },
+      handoffStore: { controllerHome, repoId: repository.repoId },
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+    }, {
+      objective: 'Send one remote-effect acceptance email.',
+      acceptanceCriteria: ['The typed remote email action succeeds.'],
+      allowedPaths: [], forbiddenPaths: [], checks: [],
+      modeInput: {
+        scopeClear: true, mutation: true, requiresExternalEffect: true, remoteWrite: true, risk: 'remote_write',
+        requiresRecovery: false, requiresWorker: false, requiresApproval: false,
+      },
+    });
+    const workId = String((started.data as { work?: { workId?: string } }).work?.workId ?? '');
+    expect(workId).toBeTruthy();
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)).toMatchObject({
+      status: 'running', workKind: 'remote_effect', checks: [],
+    });
+
+    const submitted = await submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: 'resend', actionId: 'send_email', requestId: 'remote-effect-send', workId,
+      args: { to: ['recipient@example.test'], subject: 'Remote effect receipt', text: 'receipt acceptance' },
+      confirmAuthorization: true, confirmationText: 'send-resend-email',
+      origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect(submitted.receipt).toMatchObject({ status: 'succeeded', workId });
+    expect(submitted.result?.work).toMatchObject({ workId, workKind: 'remote_effect', completionOutcome: 'completed_remote', status: 'completed' });
+    const completed = getWorkContract({ controllerHome, repoId: repository.repoId }, workId)!;
+    expect(completed).toMatchObject({
+      status: 'completed', workKind: 'remote_effect', completionOutcome: 'completed_remote', evidenceState: 'valid', dispatchState: 'terminal',
+      completionReceipt: { source: 'remote_effect', receiptId: submitted.receipt.receiptId, pluginId: 'resend', actionId: 'send_email' },
+    });
+    expect(completed.evidenceRefs.some((evidence) => evidence.evidenceId === submitted.receipt.receiptId)).toBe(true);
+    const finalized = finalizeGoalWorkloop({
+      workStore: { controllerHome, repoId: repository.repoId },
+      handoffStore: { controllerHome, repoId: repository.repoId },
+      repoId: repository.repoId,
+    }, { workId });
+    expect(finalized).toMatchObject({ status: 'ok', data: { finalStatus: 'completed', idempotent: true } });
+
+    const deduplicated = await submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: 'resend', actionId: 'send_email', requestId: 'remote-effect-send', workId,
+      args: { to: ['recipient@example.test'], subject: 'Remote effect receipt', text: 'receipt acceptance' },
+      confirmAuthorization: true, confirmationText: 'send-resend-email',
+      origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect(deduplicated.deduplicated).toBe(true);
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.evidenceRefs.filter((evidence) => evidence.evidenceId === submitted.receipt.receiptId)).toHaveLength(1);
+  });
+
+  test('refuses to bind a remote-write plugin receipt to a repository-change Work before the external effect runs', async () => {
+    const repoRoot = resendFixture();
+    const controllerHome = join(repoRoot, '.controller');
+    expect(spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, encoding: 'utf8' }).status).toBe(0);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'remote-effect-kind-guard' });
+    await executeResendPluginAction({
+      controllerHome, repoId: repository.repoId, repoRoot, pluginId: 'resend', actionId: 'configure', requestId: 'remote-effect-guard-configure',
+      args: { enabled: true, provider: 'mock', from_email: 'forge@example.test' }, origin: { surface: 'mcp', actor: 'test' },
+    });
+    const started = startGoalWorkloop({
+      workStore: { controllerHome, repoId: repository.repoId }, handoffStore: { controllerHome, repoId: repository.repoId }, repoId: repository.repoId, checkoutId: repository.activeCheckoutId,
+    }, {
+      objective: 'Repository-only Work must not be completed by a remote receipt.', acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
+      modeInput: { scopeClear: true, mutation: true, requiresExternalEffect: false, remoteWrite: false, requiresRecovery: false, requiresWorker: false, requiresApproval: false },
+    });
+    const workId = String((started.data as { work?: { workId?: string } }).work?.workId ?? '');
+    await expect(submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: 'resend', actionId: 'send_email', requestId: 'remote-effect-kind-guard-send', workId,
+      args: { to: ['recipient@example.test'], subject: 'must not send', text: 'guard' },
+      confirmAuthorization: true, confirmationText: 'send-resend-email', origin: { surface: 'mcp', actor: 'test' },
+    })).rejects.toThrow('WORK_PLUGIN_RECEIPT_BINDING_KIND_MISMATCH');
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.status).toBe('running');
+  });
+
   test('is registered with strongly confirmed delivery and environment-only credentials', () => {
     const repoRoot = resendFixture();
     const manifest = buildResendPluginManifest(0, undefined, repoRoot);

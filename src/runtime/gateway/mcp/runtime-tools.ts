@@ -728,6 +728,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     plugin_id: { type: 'string' },
     action_id: { type: 'string' },
     request_id: { type: 'string' },
+    work_id: { type: 'string', description: 'Optional existing remote-effect Work that should own the successful typed plugin receipt.' },
     arguments: { type: 'object' },
     timeout_ms: { type: 'number' },
     confirm_authorization: { type: 'boolean' },
@@ -5543,6 +5544,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           pluginId,
           actionId,
           requestId,
+          workId: typeof args.work_id === 'string' && args.work_id.trim() ? args.work_id.trim() : undefined,
           args: actionArguments,
           timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
           signal: ctx.signal,
@@ -5594,6 +5596,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           scope: repository.repoId === '__controller__' ? 'controller' : 'repository',
           receiptId: submitted.receipt.receiptId,
           requestId: submitted.receipt.requestId,
+          ...(submitted.receipt.workId ? { workId: submitted.receipt.workId } : {}),
           result: submitted.result,
           detail: {
             tool: 'rh_context',

@@ -156,6 +156,21 @@ export interface LocalEffectCompletionReceipt {
   recordedAt: string;
 }
 
+/** Durable completion authority for one typed remote plugin effect. */
+export interface RemoteEffectCompletionReceipt {
+  schemaVersion: 1;
+  /** Reuse the authoritative PLG-* receipt id rather than manufacturing parallel evidence. */
+  receiptId: string;
+  source: 'remote_effect';
+  workId: string;
+  pluginId: string;
+  actionId: string;
+  requestId: string;
+  semanticKey: string;
+  resultDigest: string;
+  recordedAt: string;
+}
+
 /**
  * Completion authority for a standalone Direct Edit that is not bound to the
  * retired Issue/Task completion model. The receipt proves that one finalized
@@ -179,12 +194,18 @@ export interface DirectEditWorkCompletionReceipt {
   recordedAt: string;
 }
 
-export type WorkCompletionReceipt = RepositoryCompletionReceipt | DirectEditWorkCompletionReceipt | LocalEffectCompletionReceipt;
+export type WorkCompletionReceipt = RepositoryCompletionReceipt | DirectEditWorkCompletionReceipt | LocalEffectCompletionReceipt | RemoteEffectCompletionReceipt;
 
 export function isRepositoryCompletionReceipt(
   receipt: WorkCompletionReceipt,
 ): receipt is RepositoryCompletionReceipt {
-  return receipt.source !== 'local_effect' && receipt.source !== 'direct_edit_work';
+  return receipt.source !== 'local_effect' && receipt.source !== 'remote_effect' && receipt.source !== 'direct_edit_work';
+}
+
+export function isRemoteEffectCompletionReceipt(
+  receipt: WorkCompletionReceipt,
+): receipt is RemoteEffectCompletionReceipt {
+  return receipt.source === 'remote_effect';
 }
 
 export function isDirectEditWorkCompletionReceipt(

@@ -485,6 +485,9 @@ export function startGoalWorkloop(
     acceptanceCriteria: input.acceptanceCriteria ?? [],
     constraints: input.constraints ?? { requireHandoffOnAmbiguity: true },
     risk: workRiskFor(input),
+    workKind: input.modeInput.requiresExternalEffect === true && input.modeInput.remoteWrite === true
+      ? 'remote_effect'
+      : undefined,
     status: 'running',
     phase: 'implementation',
     issueId: input.issueId,
