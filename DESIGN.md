@@ -241,7 +241,7 @@ Use a 7px dot plus short text. Filled badges are exceptional.
 
 ## Page grammar
 ### Overview
-Overview is the repository portfolio home. Keep the command bar compact, then make **Repository activity** the dominant region: show the most recently active repositories, their open Work count, attention count, and at most two bounded Work titles. A narrow contextual rail may contain deduplicated Needs attention and coarse System facts. Healthy Runtime state never consumes a hero panel; Runtime becomes a compact context row and only expands into a banner when degraded. No prompt composer, run timeline, persistent-goal card wall, equal metric grid or decorative posture hero.
+Overview is a **cross-workspace status and attention surface**, not a collection manager. Keep it single-column and lightweight: first surface a bounded, deduplicated Needs attention list across Work, Automations, Capabilities, Repositories and System; then show one compact Workspace summary row for each owning workspace. Overview does not enumerate ordinary Work, group content by repository, expose collection filters or open a detail pane. It routes the user to the owning workspace for management. Healthy state stays compact and neutral. Activity feeds require authoritative event semantics and must never be inferred from `updatedAt` or other incidental timestamps. No prompt composer, run timeline, repository portfolio, equal metric grid or decorative posture hero.
 
 ### Automations
 Use a configuration-first table with Name, Schedule, Scope, Delivery, Status, Last and Next; filters Enabled / Paused / Attention / All; selected detail pane with exact source and Run/Pause/Resume. Never duplicate report body.
