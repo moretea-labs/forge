@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
-import { installerNextSteps } from '../../src/cli/commands/plugin';
+import { installerNextSteps, officialPluginCatalogItems, pluginCatalogCompatibility } from '../../src/cli/commands/plugin';
 
 describe('official plugin catalog', () => {
   test('includes the pinned Forge Figma Bridge release', () => {
@@ -11,6 +11,19 @@ describe('official plugin catalog', () => {
       id: 'figma', version: '0.1.1', ref: 'v0.1.1', installer: 'forge-plugin-install.mjs',
       repository: 'https://github.com/moretea-labs/forge-figma-bridge.git', platforms: ['darwin'],
     });
+  });
+
+  test('does not advertise a pinned provider-version mismatch as compatible', () => {
+    const desktop = officialPluginCatalogItems('darwin').find((entry) => entry.id === 'desktop_operator');
+    expect(desktop).toMatchObject({
+      id: 'desktop_operator',
+      version: '0.2.1',
+      providerVersion: '0.2.0',
+      compatible: false,
+    });
+    expect(desktop?.reason).toContain('catalog version 0.2.1');
+    expect(desktop?.reason).toContain('provider version 0.2.0');
+    expect(pluginCatalogCompatibility({ ...desktop!, providerVersion: '0.2.1' }, 'darwin')).toEqual({ compatible: true });
   });
 
   test('bounds installer follow-up instructions before printing them', () => {

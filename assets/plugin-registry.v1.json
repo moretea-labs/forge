@@ -9,6 +9,8 @@
       "repository": "https://github.com/moretea-labs/forge-desktop-operator.git",
       "ref": "v0.2.1",
       "installer": "forge-plugin-install.mjs",
+      "providerVersion": "0.2.0",
+      "protocolVersion": "1.0",
       "platforms": [
         "darwin"
       ]

@@ -9,7 +9,7 @@ import { installExternalPluginRegistration, listExternalPluginRegistrations, typ
 import { createDesktopOperatorRegistrationInput } from '../../runtime/plugins/desktop-operator-registration';
 import { controllerPluginRepository, getAssistantPluginManifest, syncAssistantPluginRegistry } from '../../runtime/plugins/store';
 
-interface RegistryEntry { id:string; name:string; version:string; description:string; repository:string; ref:string; installer:string; platforms:NodeJS.Platform[]; }
+export interface RegistryEntry { id:string; name:string; version:string; description:string; repository:string; ref:string; installer:string; providerVersion?:string; protocolVersion?:string; platforms:NodeJS.Platform[]; }
 interface Registry { schemaVersion:1; plugins:RegistryEntry[]; }
 interface CliOptions { json?:boolean; controllerHome?:string; refresh?:boolean; }
 const packageRoot=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
@@ -24,11 +24,19 @@ function registry():Registry{
     if(!plugin.repository.startsWith('https://github.com/moretea-labs/')||!plugin.repository.endsWith('.git'))throw new Error(`PLUGIN_CATALOG_UNTRUSTED_REPOSITORY: ${plugin.id}`);
     if(!/^v\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(plugin.ref))throw new Error(`PLUGIN_CATALOG_UNPINNED_REF: ${plugin.id}`);
     if(plugin.installer!=='forge-plugin-install.mjs')throw new Error(`PLUGIN_CATALOG_INSTALLER_INVALID: ${plugin.id}`);
+    if(plugin.providerVersion!==undefined&&!/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(plugin.providerVersion))throw new Error(`PLUGIN_CATALOG_PROVIDER_VERSION_INVALID: ${plugin.id}`);
+    if(plugin.protocolVersion!==undefined&&!/^\d+\.\d+$/.test(plugin.protocolVersion))throw new Error(`PLUGIN_CATALOG_PROTOCOL_VERSION_INVALID: ${plugin.id}`);
     ids.add(plugin.id);
   }
   return value;
 }
 function within(root:string,relative:string):string{const target=resolve(root,relative);const base=`${resolve(root)}${sep}`;if(target!==resolve(root)&&!target.startsWith(base))throw new Error('PLUGIN_INSTALL_PATH_ESCAPE');return target;}
+export function pluginCatalogCompatibility(entry:RegistryEntry,platform:NodeJS.Platform=process.platform):{compatible:boolean;reason?:string}{
+  if(!entry.platforms.includes(platform))return{compatible:false,reason:`unsupported platform: ${platform}`};
+  if(entry.providerVersion&&entry.providerVersion!==entry.version)return{compatible:false,reason:`catalog version ${entry.version} does not match pinned provider version ${entry.providerVersion}`};
+  return{compatible:true};
+}
+export function officialPluginCatalogItems(platform:NodeJS.Platform=process.platform){return registry().plugins.map(entry=>({...entry,...pluginCatalogCompatibility(entry,platform)}));}
 function run(command:string,args:string[],cwd:string,timeoutMs=120000):string{
   const result=spawnSync(command,args,{cwd,encoding:'utf8',timeout:timeoutMs,maxBuffer:32*1024*1024,shell:false,windowsHide:true});
   if(result.error)throw new Error(`PLUGIN_INSTALL_COMMAND_FAILED: ${result.error.message}`);
@@ -52,13 +60,17 @@ function registrationFrom(result:Record<string,unknown>,entry:RegistryEntry):Ext
   if(result.registration){const input=result.registration as ExternalPluginRegistrationInput;if(input.pluginId!==entry.id)throw new Error('PLUGIN_INSTALLER_ID_MISMATCH');if(input.pluginVersion!==entry.version)throw new Error('PLUGIN_INSTALLER_VERSION_MISMATCH');return input;}
   const facts=result.providerInstall as Record<string,unknown>|undefined;
   if(!facts||facts.kind!=='desktop_operator'||entry.id!=='desktop_operator')throw new Error('PLUGIN_INSTALLER_REGISTRATION_MISSING');
-  if(facts.pluginVersion!==entry.version||facts.protocolVersion!=='1.0')throw new Error('PLUGIN_INSTALLER_PROVIDER_VERSION_MISMATCH');
+  const expectedProviderVersion=entry.providerVersion??entry.version;
+  const expectedProtocolVersion=entry.protocolVersion??'1.0';
+  if(facts.pluginVersion!==expectedProviderVersion)throw new Error(`PLUGIN_INSTALLER_PROVIDER_VERSION_MISMATCH: expected ${expectedProviderVersion} for ${entry.id}@${entry.version}, actual ${String(facts.pluginVersion??'missing')}`);
+  if(facts.protocolVersion!==expectedProtocolVersion)throw new Error(`PLUGIN_INSTALLER_PROTOCOL_VERSION_MISMATCH: expected ${expectedProtocolVersion} for ${entry.id}@${entry.version}, actual ${String(facts.protocolVersion??'missing')}`);
   const socketPath=typeof facts.socketPath==='string'?facts.socketPath:'';const launchAgentLabel=typeof facts.launchAgentLabel==='string'?facts.launchAgentLabel:'';const expectedProgramContains=typeof facts.expectedProgramContains==='string'?facts.expectedProgramContains:'';
   if(!isAbsolute(socketPath)||!launchAgentLabel||!expectedProgramContains)throw new Error('PLUGIN_INSTALLER_PROVIDER_FACTS_INVALID');
-  return createDesktopOperatorRegistrationInput({socketPath,launchAgentLabel,expectedProgramContains,pluginVersion:entry.version,protocolVersion:'1.0'});
+  return createDesktopOperatorRegistrationInput({socketPath,launchAgentLabel,expectedProgramContains,pluginVersion:expectedProviderVersion,protocolVersion:expectedProtocolVersion});
 }
 function install(entry:RegistryEntry,controllerHome:string):Record<string,unknown>{
-  if(!entry.platforms.includes(process.platform))throw new Error(`PLUGIN_PLATFORM_UNSUPPORTED: ${entry.id}/${process.platform}`);
+  const compatibility=pluginCatalogCompatibility(entry,process.platform);
+  if(!compatibility.compatible)throw new Error(`PLUGIN_CATALOG_INCOMPATIBLE: ${entry.id}@${entry.version}: ${compatibility.reason}`);
   const packagesRoot=join(controllerSystemRoot(controllerHome),'plugins','packages');mkdirSync(packagesRoot,{recursive:true,mode:0o700});
   const finalRoot=join(packagesRoot,entry.id),stage=join(packagesRoot,`.${entry.id}.${randomUUID()}.staging`),backup=join(packagesRoot,`.${entry.id}.${randomUUID()}.backup`);let backed=false;
   try{
@@ -75,7 +87,7 @@ function install(entry:RegistryEntry,controllerHome:string):Record<string,unknow
 }
 export function buildPluginCommand():Command{
   const root=new Command('plugin').description('Discover and install trusted Forge plugins');
-  root.command('catalog').description('List official plugins').option('--json','Output JSON').action((o:CliOptions)=>{const items=registry().plugins.map(x=>({...x,compatible:x.platforms.includes(process.platform)}));if(o.json)console.log(JSON.stringify({schemaVersion:1,platform:process.platform,plugins:items},null,2));else items.forEach(x=>console.log(`${x.id}\t${x.version}\t${x.compatible?'compatible':'unsupported'}\t${x.name}`));});
+  root.command('catalog').description('List official plugins').option('--json','Output JSON').action((o:CliOptions)=>{const items=officialPluginCatalogItems();if(o.json)console.log(JSON.stringify({schemaVersion:1,platform:process.platform,plugins:items},null,2));else items.forEach(x=>console.log(`${x.id}\t${x.version}\t${x.compatible?'compatible':`incompatible (${x.reason})`}\t${x.name}`));});
   root.command('list').description('List installed external plugins').option('--json','Output JSON').option('--controller-home <path>','Override Controller Home').option('--refresh','Probe providers').action((o:CliOptions)=>{const home=resolveControllerHome(o.controllerHome),repo=controllerPluginRepository(home);if(o.refresh)syncAssistantPluginRegistry(home,repo);const items=listExternalPluginRegistrations(home).map(r=>{let health:unknown;try{health=getAssistantPluginManifest(home,repo,r.pluginId).health;}catch(e){health={state:'error',message:e instanceof Error?e.message:String(e)};}return{pluginId:r.pluginId,version:r.pluginVersion,provider:r.provider,enabled:r.enabled,transport:r.transport.kind,health};});if(o.json)console.log(JSON.stringify({schemaVersion:1,plugins:items},null,2));else if(!items.length)console.log('No external Forge plugins installed.');else items.forEach(x=>console.log(`${x.pluginId}\t${x.version}\t${x.enabled?'enabled':'disabled'}\t${(x.health as {state?:string})?.state??'unknown'}`));});
   root.command('install <plugin-id>').description('Install/update an official plugin from a pinned public release').option('--json','Output JSON').option('--controller-home <path>','Override Controller Home').action((id:string,o:CliOptions)=>{const entry=registry().plugins.find(x=>x.id===id);if(!entry)throw new Error(`PLUGIN_NOT_IN_OFFICIAL_CATALOG: ${id}`);const result=install(entry,resolveControllerHome(o.controllerHome));if(o.json)console.log(JSON.stringify(result,null,2));else{console.log(`Installed ${entry.name} ${entry.version} (${(result.health as {state?:string})?.state??'unknown'}).`);for(const step of (result.nextSteps as string[]|undefined)??[])console.log(`- ${step}`);}});
   return root;
