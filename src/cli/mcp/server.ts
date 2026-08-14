@@ -253,19 +253,117 @@ export async function readCanonicalRuntimeToolSchema(
   };
 }
 
-async function proxyRuntimeToolCall(
-  ctx: MultiRepositoryMcpToolContext,
-  name: string,
-  args: Record<string, unknown>,
-): Promise<CallToolResult> {
-  return withCanonicalRuntimeClient(ctx, async (client) => {
-    // The outer Connector session is already bound to the Canonical Runtime
-    // schema and fenced by the Runtime-published fingerprint before dispatch.
-    // Re-listing tools here creates a second discovery round trip for every
-    // tool call without strengthening that fence.
-    const response = await client.callTool({ name, arguments: args });
-    return response as unknown as CallToolResult;
-  });
+interface CanonicalRuntimeProxyIdentity {
+  endpoint: URL;
+  token: string;
+  principalId: string;
+  sessionId: string;
+}
+
+function canonicalRuntimeProxyIdentity(ctx: MultiRepositoryMcpToolContext): CanonicalRuntimeProxyIdentity {
+  return {
+    endpoint: canonicalRuntimeEndpoint(ctx),
+    token: canonicalRuntimeToken(ctx),
+    principalId: ctx.principalId?.trim() ?? '',
+    sessionId: ctx.sessionId?.trim() ?? '',
+  };
+}
+
+function sameCanonicalRuntimeProxyIdentity(
+  left: CanonicalRuntimeProxyIdentity,
+  right: CanonicalRuntimeProxyIdentity,
+): boolean {
+  return left.endpoint.href === right.endpoint.href
+    && left.token === right.token
+    && left.principalId === right.principalId
+    && left.sessionId === right.sessionId;
+}
+
+function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext): {
+  callTool: (name: string, args: Record<string, unknown>) => Promise<CallToolResult>;
+  close: () => Promise<void>;
+} {
+  let current: { identity: CanonicalRuntimeProxyIdentity; client: Client } | undefined;
+  let connecting: Promise<{ identity: CanonicalRuntimeProxyIdentity; client: Client }> | undefined;
+
+  const closeCurrent = async (expectedClient?: Client): Promise<void> => {
+    if (!current || (expectedClient && current.client !== expectedClient)) return;
+    const closing = current.client;
+    current = undefined;
+    await closing.close().catch(() => undefined);
+  };
+
+  const connect = async (identity: CanonicalRuntimeProxyIdentity): Promise<{ identity: CanonicalRuntimeProxyIdentity; client: Client }> => {
+    const abort = new AbortController();
+    const timeout = setTimeout(() => abort.abort(new Error('CANONICAL_RUNTIME_TIMEOUT')), CANONICAL_RUNTIME_MCP_TIMEOUT_MS);
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${identity.token}`,
+    };
+    if (identity.principalId) headers['x-forge-forwarded-principal-id'] = identity.principalId;
+    if (identity.sessionId) headers['x-forge-forwarded-session-id'] = identity.sessionId;
+    const transport = new StreamableHTTPClientTransport(identity.endpoint, {
+      requestInit: { headers, signal: abort.signal },
+    });
+    const client = new Client({ name: 'forge-public-gateway-proxy', version: '1.0.0' });
+    try {
+      await client.connect(transport);
+      return { identity, client };
+    } catch (error) {
+      await client.close().catch(() => undefined);
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  const clientForCurrentRuntime = async (): Promise<Client> => {
+    const identity = canonicalRuntimeProxyIdentity(ctx);
+    if (current && sameCanonicalRuntimeProxyIdentity(current.identity, identity)) return current.client;
+
+    if (connecting) {
+      const pending = await connecting;
+      if (sameCanonicalRuntimeProxyIdentity(pending.identity, identity)) return pending.client;
+    }
+
+    await closeCurrent();
+    connecting = connect(identity);
+    try {
+      current = await connecting;
+      return current.client;
+    } finally {
+      connecting = undefined;
+    }
+  };
+
+  return {
+    async callTool(name, args) {
+      const client = await clientForCurrentRuntime();
+      try {
+        // The outer Connector session is already bound to the Canonical Runtime
+        // schema and fenced by the Runtime-published fingerprint before dispatch.
+        // Re-listing tools here creates a second discovery round trip for every
+        // tool call without strengthening that fence.
+        const response = await client.callTool(
+          { name, arguments: args },
+          undefined,
+          { timeout: CANONICAL_RUNTIME_MCP_TIMEOUT_MS },
+        );
+        return response as unknown as CallToolResult;
+      } catch (error) {
+        // A Runtime restart, token rotation, or broken HTTP session must never
+        // poison later calls. The next request reconnects against fresh identity.
+        await closeCurrent(client);
+        throw error;
+      }
+    },
+    async close() {
+      if (connecting) {
+        await connecting.catch(() => undefined);
+        connecting = undefined;
+      }
+      await closeCurrent();
+    },
+  };
 }
 
 function canonicalRuntimeSchemaMatchesGateway(ctx: MultiRepositoryMcpToolContext): boolean {
@@ -295,6 +393,12 @@ export function createForgeMcpServerFromContext(
     { name: 'forge-mcp', version: FORGE_VERSION },
     { capabilities: { tools: { listChanged: true } }, instructions: mcpServerInstructions(baseContext.policy.profile) },
   );
+  const runtimeProxy = isMultiRepositoryContext(baseContext) && !getRuntimeWriteClaim()
+    ? createCanonicalRuntimeProxy(baseContext)
+    : undefined;
+  server.onclose = () => {
+    void runtimeProxy?.close();
+  };
   // The connector process can outlive the canonical Runtime release it proxies.
   // Refresh tools after every MCP session initialization so clients do not keep
   // a stale schema when the bounded Runtime surface changes behind the gateway.
@@ -345,8 +449,8 @@ export function createForgeMcpServerFromContext(
           const forwardedArgs = typeof args.request_id === 'string' && args.request_id.trim()
             ? args
             : { ...args, request_id: requestId };
-          if (runtimeSchema) return proxyRuntimeToolCall(ctx, name, forwardedArgs);
-          if (observeRuntimeStatus(ctx.controllerHome).ready) return proxyRuntimeToolCall(ctx, name, forwardedArgs);
+          if (runtimeProxy && runtimeSchema) return runtimeProxy.callTool(name, forwardedArgs);
+          if (runtimeProxy && observeRuntimeStatus(ctx.controllerHome).ready) return runtimeProxy.callTool(name, forwardedArgs);
         }
         const accessResult = callAccessTool(ctx, name, args);
         if (accessResult) return accessResult;
