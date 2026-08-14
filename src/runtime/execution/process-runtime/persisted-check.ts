@@ -214,7 +214,11 @@ export async function runPersistedCheckViaProcessRuntime(
     scopeKey: persistedCheckSemanticScopeKey(input, semanticCheck.reuseScope),
   };
   const cliTarget = resolveRuntimeCliTarget(input.controllerHome);
-  const checkResultReceiptPath = allocatePersistedCheckResultReceiptPath(input.controllerHome, input.repoId);
+  const checkResultReceiptPath = allocatePersistedCheckResultReceiptPath(
+    input.controllerHome,
+    input.repoId,
+    input.requestId,
+  );
   const checkArgs = [
     '--repo',
     executionRoot,

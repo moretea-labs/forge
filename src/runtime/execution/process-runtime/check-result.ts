@@ -18,10 +18,18 @@ export interface PersistedCheckResultReceipt {
   cacheHit?: boolean;
 }
 
-export function allocatePersistedCheckResultReceiptPath(controllerHome: string, repoId: string): string {
+export function allocatePersistedCheckResultReceiptPath(
+  controllerHome: string,
+  repoId: string,
+  requestId?: string,
+): string {
   const root = join(processLogDir(controllerHome, repoId), 'check-results');
   mkdirSync(root, { recursive: true });
-  return join(root, `${randomUUID()}.json`);
+  const stableRequestId = requestId?.trim();
+  const receiptId = stableRequestId
+    ? `request-${createHash('sha256').update(stableRequestId).digest('hex').slice(0, 32)}`
+    : randomUUID();
+  return join(root, `${receiptId}.json`);
 }
 
 export function writePersistedCheckResultReceipt(path: string, input: Omit<PersistedCheckResultReceipt, 'schemaVersion' | 'receiptId'>): PersistedCheckResultReceipt {
