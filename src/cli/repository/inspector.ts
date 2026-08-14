@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from 'fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'fs';
 import { join } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { globMatches, resolveMcpPath } from '../mcp/paths';
@@ -347,10 +347,11 @@ export function searchRepositoryMany(
   let policyDeniedFiles = 0;
   let skippedLargeFiles = 0;
   let skippedBinaryFiles = 0;
+  const canonicalRepoRoot = realpathSync(repoRoot);
 
   for (const path of inventory.files) {
     if (needles.every(({ query }) => (counts.get(query) ?? 0) >= maxResultsPerQuery)) break;
-    const decision = resolveMcpPath(repoRoot, path, policy, 'read');
+    const decision = resolveMcpPath(repoRoot, path, policy, 'read', canonicalRepoRoot);
     if (!decision.ok || !decision.absolutePath) {
       policyDeniedFiles += 1;
       continue;

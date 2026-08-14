@@ -93,7 +93,13 @@ function nearestExistingPath(path: string): string | undefined {
   return current;
 }
 
-export function resolveMcpPath(repoRoot: string, inputPath: string, policy: McpPolicy, intent: McpPathIntent): McpPathDecision {
+export function resolveMcpPath(
+  repoRoot: string,
+  inputPath: string,
+  policy: McpPolicy,
+  intent: McpPathIntent,
+  canonicalRepoRoot?: string,
+): McpPathDecision {
   const normalized = normalizeMcpRelativePath(inputPath);
   if (!normalized.ok || !normalized.relativePath) return normalized;
 
@@ -107,7 +113,7 @@ export function resolveMcpPath(repoRoot: string, inputPath: string, policy: McpP
     return { ok: false, relativePath, reason: `path is not allowed for ${intent}: ${relativePath}` };
   }
 
-  const repoRealpath = realpathSync(repoRoot);
+  const repoRealpath = canonicalRepoRoot ?? realpathSync(repoRoot);
   const absolutePath = resolve(repoRealpath, relativePath);
   if (intent === 'read' && !existsSync(absolutePath)) {
     return { ok: false, relativePath, reason: `path does not exist: ${relativePath}` };
