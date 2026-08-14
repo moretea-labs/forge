@@ -68,7 +68,7 @@ function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'desktop_session_open',
       title: 'Open desktop session',
-      description: 'Launch or locate one application, optionally activate it, and create a bounded interaction session.',
+      description: 'Launch or locate one application in the background and create a bounded interaction session without stealing foreground focus.',
       readOnly: false,
       risk: 'workspace_write',
       confirmation: 'authorization',
@@ -83,7 +83,6 @@ function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
           bundle_id: { type: 'string' },
           app_name: { type: 'string' },
           launch: { type: 'boolean' },
-          activate: { type: 'boolean' },
         },
         anyOf: [{ required: ['bundle_id'] }, { required: ['app_name'] }],
         additionalProperties: false,
@@ -119,7 +118,7 @@ function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'desktop_press',
       title: 'Press desktop element',
-      description: 'Press one Accessibility element in an existing desktop interaction session.',
+      description: 'Press one Accessibility element semantically in the background; pointer/coordinate fallback is intentionally unavailable.',
       readOnly: false,
       risk: 'workspace_write',
       confirmation: 'authorization',
@@ -133,8 +132,6 @@ function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
         properties: {
           interaction_id: { type: 'string' },
           selector: SELECTOR_SCHEMA,
-          coordinate_fallback: { type: 'boolean' },
-          force_coordinate: { type: 'boolean' },
         },
         required: ['interaction_id', 'selector'],
         additionalProperties: false,
@@ -143,7 +140,7 @@ function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'desktop_type_text',
       title: 'Type desktop text',
-      description: 'Type text into one selected Accessibility element in an existing interaction session.',
+      description: 'Set text through Accessibility in the background without synthetic keyboard input or application activation.',
       readOnly: false,
       risk: 'workspace_write',
       confirmation: 'authorization',
@@ -167,7 +164,7 @@ function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'desktop_key',
       title: 'Press desktop keys',
-      description: 'Send one bounded key chord, optionally activating an existing interaction session first.',
+      description: 'Send one bounded key chord only when the explicit target session is already foreground; the operator never activates it.',
       readOnly: false,
       risk: 'workspace_write',
       confirmation: 'authorization',
@@ -182,7 +179,7 @@ function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
           interaction_id: { type: 'string' },
           keys: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string' } },
         },
-        required: ['keys'],
+        required: ['interaction_id', 'keys'],
         additionalProperties: false,
       },
     },
@@ -222,7 +219,7 @@ function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'desktop_copy',
       title: 'Copy from desktop session',
-      description: 'Activate one explicit desktop session and send Command+C. This foregrounds the target application by design.',
+      description: 'Send Command+C only when the explicit target session is already foreground; the operator never activates it.',
       readOnly: false,
       risk: 'workspace_write',
       confirmation: 'authorization',
@@ -241,7 +238,7 @@ function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'desktop_paste',
       title: 'Paste into desktop session',
-      description: 'Activate one explicit desktop session and send Command+V. This foregrounds the target application by design.',
+      description: 'Send Command+V only when the explicit target session is already foreground; the operator never activates it.',
       readOnly: false,
       risk: 'workspace_write',
       confirmation: 'authorization',
@@ -260,7 +257,7 @@ function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'desktop_open_url',
       title: 'Open desktop URL',
-      description: 'Open one absolute URL through macOS application routing.',
+      description: 'Open one absolute URL through macOS background routing without activating the destination application.',
       readOnly: false,
       risk: 'workspace_write',
       confirmation: 'authorization',

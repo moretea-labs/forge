@@ -26,7 +26,6 @@ function sourceFixture() {
   writeFileSync(join(root, 'src/runtime/plugins/external-unix-socket-probe.cjs'), 'console.log("probe");\n');
   writeFileSync(join(root, 'src/cli/local-bridge/ui-dist/app.js'), 'console.log("ui");\n');
   writeFileSync(join(root, 'src/cli/local-bridge/ui-dist/app.css'), ':root { color-scheme: light; }\n');
-  writeFileSync(join(root, 'bin/forge-desktop-helper.mjs'), '#!/usr/bin/env node\nconsole.log("desktop-helper");\n');
   writeFileSync(join(root, 'scripts/stage-runtime-release.ts'), '// candidate-owned stager fixture\n');
   spawnSync('git', ['init', '-b', 'main'], { cwd: root, stdio: 'ignore' });
   spawnSync('git', ['config', 'user.email', 'forge-test@example.invalid'], { cwd: root, stdio: 'ignore' });
@@ -105,7 +104,7 @@ describe('runtime release materialization', () => {
     expect(() => stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root }, { runCandidateStager: () => ({ ok: true, stdout: JSON.stringify({ schemaVersion: 1, releasePath, manifestPath: join(releasePath, 'manifest.json'), releaseId, artifactIdentity: `sha256:${'a'.repeat(64)}`, manifestSha256: 'c'.repeat(64), sourceCommit: wrongHead ? 'b'.repeat(40) : head }) }) })).toThrow(error);
   });
 
-  test('stages and hashes Browser and Desktop helper artifacts beside immutable runtime executables', () => {
+  test('stages and hashes browser/runtime sidecar artifacts beside immutable runtime executables', () => {
     const { root, controllerHome } = sourceFixture();
     const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
       now: () => 1_700_000_000_000,
@@ -147,10 +146,7 @@ describe('runtime release materialization', () => {
     expect(existsSync(externalPluginProbePath)).toBe(true);
     expect(readFileSync(externalPluginProbePath, 'utf8')).toContain('probe');
     expect(staged.externalPluginProbeArtifactIdentity).toMatch(/^sha256:/);
-    const desktopHelperPath = join(staged.releasePath, 'forge-desktop-helper.mjs');
-    expect(existsSync(desktopHelperPath)).toBe(true);
-    expect(readFileSync(desktopHelperPath, 'utf8')).toContain('desktop-helper');
-    expect(staged.desktopHelperArtifactIdentity).toMatch(/^sha256:/);
+    expect(existsSync(join(staged.releasePath, 'forge-desktop-helper.mjs'))).toBe(false);
     const processRunnerPath = join(staged.releasePath, 'process-runner.js');
     expect(existsSync(processRunnerPath)).toBe(true);
     expect(readFileSync(processRunnerPath, 'utf8')).toBe('process-runner-bundle');
@@ -164,8 +160,8 @@ describe('runtime release materialization', () => {
     expect(manifest.browserNodeBridgeArtifactIdentity).toBe(staged.browserNodeBridgeArtifactIdentity);
     expect(manifest.browserHandoffEntrypoint).toBe('browser-handoff-host.js');
     expect(manifest.browserHandoffArtifactIdentity).toBe(staged.browserHandoffArtifactIdentity);
-    expect(manifest.desktopHelperEntrypoint).toBe('forge-desktop-helper.mjs');
-    expect(manifest.desktopHelperArtifactIdentity).toBe(staged.desktopHelperArtifactIdentity);
+    expect(manifest.desktopHelperEntrypoint).toBeUndefined();
+    expect(manifest.desktopHelperArtifactIdentity).toBeUndefined();
     expect(manifest.processRunnerEntrypoint).toBe('process-runner.js');
     expect(manifest.processRunnerArtifactIdentity).toBe(staged.processRunnerArtifactIdentity);
     expect(manifest.checkRunnerEntrypoint).toBe('forge-check-runner');

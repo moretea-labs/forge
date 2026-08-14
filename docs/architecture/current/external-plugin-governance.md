@@ -71,7 +71,7 @@ Current source uses Forge authorities for active configuration:
 - GitHub: `.forge/plugins/github.json` plus Repository Registry GitHub identity;
 - Gmail/Calendar/Tasks: `.forge/plugins/...`, `FORGE_*_ACCESS_TOKEN`;
 - iOS: `.forge/plugins/ios.json`, `FORGE_IOS_DEVICE_RUNNER_URL` plus local Xcode/CoreDevice/agent-device facts;
-- Desktop: Controller Home `system/desktop/config.json`;
+- Desktop Operator: trusted external registration under Controller Home plus the stable signed macOS app identity;
 - Local System: Controller Home `system/local-system`.
 
 App Store Connect intentionally retains `.repo-harness/plugins/app-store-connect.json` as a named `legacy-read-fallback`. This is an acceptable migration pattern and must not become a new write authority.
@@ -326,7 +326,7 @@ Runtime/recovery/worktree directories are governed separately and are never trea
 7. Route a non-destructive status/observe action end-to-end.
 8. Add write action policy tests for press/type/screenshot/batch without bypassing normal Forge confirmation rules.
 9. Run real macOS E2E when the registered Desktop Operator build/service is available.
-10. Only then decide whether the bundled Desktop helper remains fallback or is retired.
+10. Retire the bundled Desktop helper after the external Desktop Operator is healthy; do not retain a second desktop authority.
 
 ### Phase 1 acceptance
 
@@ -368,7 +368,7 @@ Preserve its independent Git/product boundary. Integrate only through stable con
 Audit and close every built-in plugin:
 
 - Browser: Chrome/Vivaldi attach, ownership/reuse, DOM/native capability matrix, failure paths, real E2E.
-- Local System/Desktop: unregistered target operations, application control, external Desktop provider, destructive-path safeguards.
+- Local System/Desktop Operator: unregistered target operations, background-safe application control, external Desktop provider, destructive-path safeguards.
 - iOS: simulator, agent-device, CoreDevice, physical runner configuration/E2E.
 - App Store Connect: auth/read/preview/write policy and remote-write guarded E2E.
 - GitHub: canonical Forge remote identity after repository rename; issue/project read/write acceptance.

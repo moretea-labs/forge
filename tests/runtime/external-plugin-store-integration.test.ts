@@ -220,14 +220,14 @@ describe('external plugin store integration', () => {
   test('built-in adapters retain precedence over colliding external registration IDs in Phase 1', () => {
     const fx = fixture();
     installExternalPluginRegistration(fx.controllerHome, {
-      pluginId: 'desktop', providerPluginId: 'desktop_operator', displayName: 'External Collision', provider: 'local-macos', pluginVersion: '0.1.0', protocolVersion: '1.0', scope: 'controller',
+      pluginId: 'local_system', providerPluginId: 'desktop_operator', displayName: 'External Collision', provider: 'local-macos', pluginVersion: '0.1.0', protocolVersion: '1.0', scope: 'controller',
       transport: { kind: 'unix_socket_jsonl', socketPath: fx.socketPath, healthTimeoutMs: 100 },
       permissions: [], capabilities: [], actions: [],
     });
     const manifests = listAssistantPluginManifests(fx.controllerHome, fx.repository, { forceRefresh: true });
-    const desktop = manifests.find((manifest) => manifest.pluginId === 'desktop');
-    expect(desktop?.displayName).toBe('Forge Desktop');
-    expect(manifests.filter((manifest) => manifest.pluginId === 'desktop')).toHaveLength(1);
+    const localSystem = manifests.find((manifest) => manifest.pluginId === 'local_system');
+    expect(localSystem?.displayName).toBe('Local System Assistant');
+    expect(manifests.filter((manifest) => manifest.pluginId === 'local_system')).toHaveLength(1);
   });
 });
 

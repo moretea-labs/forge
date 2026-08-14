@@ -22,7 +22,6 @@ export interface StagedRuntimeRelease {
   diagnosticArtifactIdentity?: string;
   browserNodeBridgeArtifactIdentity?: string;
   browserHandoffArtifactIdentity?: string;
-  desktopHelperArtifactIdentity?: string;
   processRunnerArtifactIdentity?: string;
   checkRunnerArtifactIdentity?: string;
   externalPluginProbeArtifactIdentity?: string;
@@ -407,15 +406,6 @@ export function stageRuntimeRelease(input: {
     cpSync(sourceControllerUiPath, controllerUiPath, { recursive: true, force: false });
     const controllerUiArtifactIdentity = `sha256:${sha256Directory(controllerUiPath)}`;
 
-    const desktopHelperEntrypoint = 'forge-desktop-helper.mjs' as const;
-    const sourceDesktopHelperPath = join(sourceRoot, 'bin', desktopHelperEntrypoint);
-    if (!existsSync(sourceDesktopHelperPath)) {
-      throw new Error(`RUNTIME_RELEASE_DESKTOP_HELPER_SOURCE_MISSING: ${sourceDesktopHelperPath}`);
-    }
-    const desktopHelperPath = join(staging, desktopHelperEntrypoint);
-    copyFileSync(sourceDesktopHelperPath, desktopHelperPath);
-    chmodSync(desktopHelperPath, 0o700);
-    const desktopHelperArtifactIdentity = `sha256:${sha256(desktopHelperPath)}`;
     const manifest = {
       schemaVersion: 1,
       releaseId,
@@ -427,8 +417,6 @@ export function stageRuntimeRelease(input: {
       browserNodeBridgeArtifactIdentity,
       browserHandoffEntrypoint,
       browserHandoffArtifactIdentity,
-      desktopHelperEntrypoint,
-      desktopHelperArtifactIdentity,
       processRunnerEntrypoint,
       processRunnerArtifactIdentity,
       checkRunnerEntrypoint,
@@ -467,7 +455,6 @@ export function stageRuntimeRelease(input: {
       diagnosticArtifactIdentity,
       browserNodeBridgeArtifactIdentity,
       browserHandoffArtifactIdentity,
-      desktopHelperArtifactIdentity,
       processRunnerArtifactIdentity,
       checkRunnerArtifactIdentity,
       externalPluginProbeArtifactIdentity,
@@ -499,9 +486,6 @@ export function assertRuntimeReleaseFiles(release: StagedRuntimeRelease): void {
   }
   if (release.browserHandoffArtifactIdentity && !existsSync(join(release.releasePath, 'browser-handoff-host.js'))) {
     throw new Error(`RUNTIME_RELEASE_BROWSER_HANDOFF_HOST_MISSING: ${join(release.releasePath, 'browser-handoff-host.js')}`);
-  }
-  if (release.desktopHelperArtifactIdentity && !existsSync(join(release.releasePath, 'forge-desktop-helper.mjs'))) {
-    throw new Error(`RUNTIME_RELEASE_DESKTOP_HELPER_MISSING: ${join(release.releasePath, 'forge-desktop-helper.mjs')}`);
   }
   if (release.processRunnerArtifactIdentity && !existsSync(join(release.releasePath, 'process-runner.js'))) {
     throw new Error(`RUNTIME_RELEASE_PROCESS_RUNNER_MISSING: ${join(release.releasePath, 'process-runner.js')}`);

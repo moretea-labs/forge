@@ -597,46 +597,16 @@ describe("MCP controller profile", () => {
         toolset: "full"});
       const listed = await callRuntimeTool(runtimeCtx, "list_plugins", {});
       const listValue = JSON.parse(listed!.content[0].text);
-      expect(listValue.plugins.map((plugin: { pluginId: string }) => plugin.pluginId)).toEqual(expect.arrayContaining([
+      const pluginIds = listValue.plugins.map((plugin: { pluginId: string }) => plugin.pluginId);
+      expect(pluginIds).toEqual(expect.arrayContaining([
         "browser",
-        "desktop",
         "github",
         "gmail",
         "google_calendar",
         "google_tasks",
         "local_system",
       ]));
-
-      const desktopPlugin = await callRuntimeTool(runtimeCtx, "get_plugin", { plugin_id: "desktop" });
-      const desktopPluginValue = JSON.parse(desktopPlugin!.content[0].text);
-      expect(desktopPluginValue.scope).toBe("controller");
-      expect(desktopPluginValue.plugin.pluginId).toBe("desktop");
-      expect(desktopPluginValue.plugin.enabled).toBe(false);
-
-      const desktopConfigured = await callRuntimeTool(runtimeCtx, "plugin_action_execute", {
-        plugin_id: "desktop",
-        action_id: "configure",
-        request_id: "desktop-config-runtime-1",
-        arguments: { enabled: true },
-        confirm_authorization: true});
-      const desktopConfiguredValue = JSON.parse(desktopConfigured!.content[0].text);
-      expect(desktopConfiguredValue.accepted).toBe(true);
-      expect(desktopConfiguredValue.scope).toBe("controller");
-      expect(desktopConfiguredValue.detail).toEqual({
-        tool: "rh_context",
-        arguments: { capability_id: "plugin.desktop.configure", detail_level: "detail" }});
-
-      const desktopStatus = await callRuntimeTool(runtimeCtx, "plugin_action_execute", {
-        plugin_id: "desktop",
-        action_id: "status",
-        request_id: "desktop-status-runtime-1",
-        arguments: {}});
-      const desktopStatusValue = JSON.parse(desktopStatus!.content[0].text);
-      expect(desktopStatusValue.accepted).toBe(true);
-      expect(desktopStatusValue.direct).toBe(true);
-      expect(desktopStatusValue.scope).toBe("controller");
-      expect(desktopStatusValue.result).toBeTruthy();
-      expect(desktopStatusValue.error).toBeUndefined();
+      expect(pluginIds).not.toContain("desktop");
 
       const accepted = await callRuntimeTool(runtimeCtx, "plugin_action_execute", {
         plugin_id: "github",
@@ -1804,16 +1774,16 @@ describe("MCP controller profile", () => {
       expect(payload.data.capabilityLookup.pluginAction.argumentsSchema).toHaveProperty("type", "object");
 
       const controllerRaw = await callRuntimeTool(multi, "rh_context", {
-        capability_id: "plugin.desktop.status",
+        capability_id: "plugin.local_system.system_snapshot",
       });
       expect(controllerRaw).toBeTruthy();
       const controllerPayload = JSON.parse(controllerRaw!.content[0].text);
       expect(controllerPayload.data.capabilityLookup).toMatchObject({
-        requestedCapabilityId: "plugin.desktop.status",
+        requestedCapabilityId: "plugin.local_system.system_snapshot",
         found: true,
         pluginAction: {
-          pluginId: "desktop",
-          actionId: "status",
+          pluginId: "local_system",
+          actionId: "system_snapshot",
           executeWith: "plugin_action_execute",
         },
       });

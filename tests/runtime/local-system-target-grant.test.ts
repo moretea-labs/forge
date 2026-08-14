@@ -498,6 +498,25 @@ describe('workspace target grant authority', () => {
 });
 
 describe('local_system target adapter', () => {
+  test('opens applications with the macOS background flag', async () => {
+    const controllerHome = temp('forge-local-system-background-open-');
+    const commands: string[][] = [];
+    setLocalSystemPluginHooksForTest({
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        return { ok: true, status: 0, stdout: '', stderr: '', command: [command, ...args] };
+      },
+    });
+
+    await executeLocalSystemPluginAction(input(controllerHome, 'open_application', { bundle_id: 'com.example.App' }));
+    await executeLocalSystemPluginAction(input(controllerHome, 'open_application', { app_name: 'Example App' }));
+
+    expect(commands).toEqual([
+      ['open', '-g', '-b', 'com.example.App'],
+      ['open', '-g', '-a', 'Example App'],
+    ]);
+  });
+
   test('promotes Git-contained target authorization to the project root by default', async () => {
     const controllerHome = temp('forge-target-project-scope-controller-');
     const project = temp('forge-target-project-scope-root-');

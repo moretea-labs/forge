@@ -1,6 +1,5 @@
 import { appStoreConnectPluginAdapter } from './app-store-connect-adapter';
 import { browserPluginAdapter } from './browser-adapter';
-import { desktopPluginAdapter } from './desktop-adapter';
 import { githubPluginAdapter } from './github-adapter';
 import { gmailPluginAdapter } from './gmail-adapter';
 import { googleCalendarPluginAdapter } from './google-calendar-adapter';
@@ -20,7 +19,6 @@ const FIRST_PARTY_PLUGIN_ADAPTERS: readonly AssistantPluginAdapter[] = [
   googleTasksPluginAdapter,
   resendPluginAdapter,
   localSystemPluginAdapter,
-  desktopPluginAdapter,
 ];
 
 export function listFirstPartyPluginAdapters(): readonly AssistantPluginAdapter[] {
