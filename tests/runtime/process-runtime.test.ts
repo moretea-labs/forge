@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import {
   __resetLiveMonitorsForTests,
@@ -1897,6 +1897,54 @@ describe('Process Runtime real lease contention', () => {
 });
 
 describe('Process Runner exactly-once semantics', () => {
+  test('independent Runner exits promptly after writing a terminal receipt', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'process-runner-prompt-exit-'));
+    roots.push(root);
+    const descriptorPath = join(root, 'command.json');
+    const exitReceiptPath = join(root, 'exit.json');
+    const descriptor: ProcessCommandDescriptor = {
+      schemaVersion: 1,
+      processId: 'proc_runner_prompt_exit',
+      repoId: 'repo',
+      controllerHome: root,
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', `process.stdout.write('done'); process.exit(0)`],
+        cwd: root,
+      },
+      timeoutMs: 5_000,
+      maxStdoutBytes: 4_096,
+      maxStderrBytes: 4_096,
+      stdoutPath: join(root, 'out.log'),
+      stderrPath: join(root, 'err.log'),
+      exitReceiptPath,
+      startedAt: new Date().toISOString(),
+    };
+    writeFileSync(descriptorPath, `${JSON.stringify(descriptor)}\n`);
+    const runnerEntry = join(import.meta.dir, '../../src/runtime/execution/process-runtime/process-runner-entry.ts');
+    const runner = spawn(process.execPath, [runnerEntry, '--descriptor', descriptorPath], {
+      cwd: root,
+      stdio: 'ignore',
+    });
+    const runnerExit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+      runner.once('error', reject);
+      runner.once('exit', (code, signal) => resolve({ code, signal }));
+    });
+
+    const receiptDeadline = Date.now() + 3_000;
+    while (!existsSync(exitReceiptPath) && Date.now() < receiptDeadline) await Bun.sleep(10);
+    expect(existsSync(exitReceiptPath)).toBe(true);
+    const receipt = JSON.parse(readFileSync(exitReceiptPath, 'utf8')) as { exitCode?: number; runnerPid?: number };
+    expect(receipt).toMatchObject({ exitCode: 0, runnerPid: runner.pid });
+
+    const exited = await Promise.race([
+      runnerExit,
+      Bun.sleep(1_000).then(() => { throw new Error(`Runner ${runner.pid} stayed alive after terminal receipt`); }),
+    ]);
+    expect(exited).toEqual({ code: 0, signal: null });
+  }, 10_000);
+
   test('repository command environment strips runtime-private identity after descriptor overrides', async () => {
     const root = mkdtempSync(join(tmpdir(), 'process-runner-env-boundary-'));
     roots.push(root);
