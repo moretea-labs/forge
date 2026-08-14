@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -117,7 +117,8 @@ describe('Forge Runtime service', () => {
     expect(readlinkSync(paths.activeEntrypointPath)).toBe(entry);
     const ensured = ensureForgeRuntimeLaunchAgentContract({ controllerHome: fx.home });
     expect(ensured.mode).toBe('release');
-    const plist = readFileSync(paths.installedPlistPath, 'utf8');
+    expect(existsSync(paths.installedPlistPath)).toBe(false);
+    const plist = readFileSync(paths.sourcePlistPath, 'utf8');
     expect(plist).toContain(paths.activeEntrypointPath);
     expect(plist).toContain('<string>--repo</string>');
     expect(plist).toContain(`<string>${fx.repo}</string>`);
@@ -164,7 +165,8 @@ describe('Forge Runtime service', () => {
     mkdirSync(paths.serviceRoot, { recursive: true });
     writeFileSync(paths.configPath, `${JSON.stringify({ schemaVersion: 1, controllerHome: fx.home, repositoryRoot: fx.repo, host: '127.0.0.1', port: 8765, authTokenFile: fx.token })}\n`);
     expect(ensureForgeRuntimeLaunchAgentContract({ controllerHome: fx.home }).mode).toBe('release');
-    expect(readFileSync(paths.installedPlistPath, 'utf8')).not.toContain('browser-automation-helper');
+    expect(existsSync(paths.installedPlistPath)).toBe(false);
+    expect(readFileSync(paths.sourcePlistPath, 'utf8')).not.toContain('browser-automation-helper');
   });
 
   test('materializes an npm/package Runtime release without Git or Bun compilation and fences package drift', () => {

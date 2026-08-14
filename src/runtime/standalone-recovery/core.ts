@@ -1740,7 +1740,7 @@ export async function activateRuntimeRelease(
       return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: await verifyLocal(config) } satisfies RuntimeReleaseActivationResult;
     }
     try {
-      ensureForgeRuntimeLaunchAgentContract({ controllerHome: config.controllerHome });
+      ensureForgeRuntimeLaunchAgentContract({ controllerHome: config.controllerHome, installUserLaunchAgent: true });
     } catch (error) {
       const detail = `runtime launchd stable-release contract update failed: ${error instanceof Error ? error.message : String(error)}`;
       audit(config, 'runtime_release_activation_launchd_contract_failed', { serviceTarget: service.target, operationId, detail });
@@ -1821,7 +1821,7 @@ export async function activateRuntimeRelease(
             physicalHome: storageMigration.physicalHome,
           });
         }
-        ensureForgeRuntimeLaunchAgentContract({ controllerHome: config.controllerHome });
+        ensureForgeRuntimeLaunchAgentContract({ controllerHome: config.controllerHome, installUserLaunchAgent: true });
         const previousRevision = previousActive?.releaseId ?? '';
         const previousIdentity = previousActive?.artifactIdentity;
         if (

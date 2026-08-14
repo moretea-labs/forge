@@ -232,7 +232,7 @@ export function syncForgeRuntimeActiveEntrypoint(controllerHome: string): { path
 }
 
 export function ensureForgeRuntimeLaunchAgentContract(
-  input: { controllerHome: string; bootstrapNodeExecutable?: string; bootstrapRunnerPath?: string },
+  input: { controllerHome: string; bootstrapNodeExecutable?: string; bootstrapRunnerPath?: string; installUserLaunchAgent?: boolean },
 ): { paths: ForgeRuntimeServicePaths; mode: 'release' | 'bootstrap'; changed: boolean } {
   const paths = forgeRuntimeServicePaths(input.controllerHome);
   const active = activeRuntimeEntrypoint(input.controllerHome);
@@ -250,10 +250,12 @@ export function ensureForgeRuntimeLaunchAgentContract(
       : { nodeExecutable: input.bootstrapNodeExecutable!, runnerPath: input.bootstrapRunnerPath! }),
   });
   const existingSource = existsSync(paths.sourcePlistPath) ? readFileSync(paths.sourcePlistPath, 'utf8') : undefined;
-  const existingInstalled = existsSync(paths.installedPlistPath) ? readFileSync(paths.installedPlistPath, 'utf8') : undefined;
-  const changed = existingSource !== plist || existingInstalled !== plist;
+  const existingInstalled = input.installUserLaunchAgent && existsSync(paths.installedPlistPath)
+    ? readFileSync(paths.installedPlistPath, 'utf8')
+    : undefined;
+  const changed = existingSource !== plist || (input.installUserLaunchAgent === true && existingInstalled !== plist);
   if (existingSource !== plist) atomicWrite(paths.sourcePlistPath, plist);
-  if (existingInstalled !== plist) atomicWrite(paths.installedPlistPath, plist, 0o644);
+  if (input.installUserLaunchAgent === true && existingInstalled !== plist) atomicWrite(paths.installedPlistPath, plist, 0o644);
   return { paths, mode: useRelease ? 'release' : 'bootstrap', changed };
 }
 
