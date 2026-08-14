@@ -143,6 +143,36 @@ describe('CodeGraph read provider', () => {
     expect(pack.search.scannedFiles).toBe(1);
   });
 
+  test('scopes implementation lexical retrieval to exact known files', () => {
+    const root = contextRepo();
+    for (let index = 0; index < 30; index += 1) {
+      writeFileSync(join(root, `src/decoy-${index}.ts`), `export const runServiceDecoy${index} = true;\n`);
+    }
+    const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+      searchTerms: ['runService'],
+      knownPaths: ['src/service.ts'],
+      structuralContext: 'off',
+      retrievalMode: 'implementation',
+    });
+    expect(pack.files[0]?.path).toBe('src/service.ts');
+    expect(pack.files[0]?.reasons).toEqual(expect.arrayContaining(['explicit-known-path', 'search:runService']));
+    expect(pack.search.scannedFiles).toBe(2); // one known-path expansion + one targeted lexical read
+  });
+
+  test('keeps broad lexical discovery when an exact known file is paired with impact analysis', () => {
+    const root = contextRepo();
+    writeFileSync(join(root, 'src/reminder.ts'), 'export const scheduleReminder = true;\n');
+    const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+      searchTerms: ['runService'],
+      knownPaths: ['src/service.ts'],
+      impactDomains: ['scheduler'],
+      structuralContext: 'off',
+      retrievalMode: 'implementation',
+    });
+    expect(pack.search.scannedFiles).toBeGreaterThan(2);
+    expect(pack.files.some((file) => file.path === 'src/reminder.ts')).toBe(true);
+  });
+
   test('expands GPT-selected impact domains in one bounded lexical pass without claiming semantic completeness', () => {
     const root = contextRepo();
     writeFileSync(join(root, 'src/medication-plan.ts'), 'export const medicationPlan = { time: "09:30" };\n');

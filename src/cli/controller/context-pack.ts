@@ -536,10 +536,17 @@ export function buildControllerContextPack(
     }
   }
 
+  const exactKnownFiles: string[] = [];
+  let exactKnownFileScope = explicitKnownPaths.length > 0;
   for (const path of explicitKnownPaths) {
     const expanded = expandKnownPath(repoRoot, policy, path, Math.max(maxFiles * 4, 40));
     for (const file of expanded.files) {
       addReason(candidates, file, expanded.directory ? `explicit-known-directory:${expanded.directory}` : "explicit-known-path", 1);
+    }
+    if (!expanded.directory && expanded.files.length === 1 && expanded.denied.length === 0 && !expanded.truncated) {
+      exactKnownFiles.push(expanded.files[0]!);
+    } else {
+      exactKnownFileScope = false;
     }
     deniedPaths.push(...expanded.denied);
     scannedFiles += expanded.files.length;
@@ -550,16 +557,26 @@ export function buildControllerContextPack(
     if (!includeGlobs.includes(glob)) includeGlobs.push(glob);
   }
 
+  // Exact known files are already a caller-selected implementation scope. When
+  // no broader impact/structural/include scope was requested, search those files
+  // for useful hit lines instead of rereading the whole repository. Planning,
+  // debugging, directories and explicit broader scopes retain full discovery.
+  const scopedExactKnownFileSearch = exactKnownFileScope
+    && retrievalMode === "implementation"
+    && structuralMode === "off"
+    && impactDomains.length === 0
+    && searchIncludeGlobs.length === 0;
+
   // Lexical retrieval is one bounded pass across candidate files for all terms.
   // The old per-term loop reread the same source files up to 14 times even
   // though inventory itself was cached.
   if (searchQueries.length > 0 && candidates.size < maxFiles * 3) {
     const search = searchRepositoryMany(repoRoot, policy, {
       queries: searchQueries,
-      includeGlobs: searchIncludeGlobs,
+      includeGlobs: scopedExactKnownFileSearch ? exactKnownFiles : searchIncludeGlobs,
       excludeGlobs,
       maxResultsPerQuery: Math.max(maxFiles * 4, 12),
-      maxFiles: MAX_TOTAL_SEARCHED_FILES,
+      maxFiles: scopedExactKnownFileSearch ? exactKnownFiles.length : MAX_TOTAL_SEARCHED_FILES,
       caseSensitive: false,
       cacheKey: JSON.stringify({ head: git.head, status: git.status, diffStat: git.diffStat }),
     });
