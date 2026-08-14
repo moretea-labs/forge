@@ -20,7 +20,7 @@ import { getWorkContract, updateWorkContract } from "../../src/runtime/control-p
 import { createRequirement, updateRequirement } from "../../src/runtime/control-plane/persistence/requirement-store";
 import { terminateProcessTree } from "../../src/runtime/shared/process-tree";
 import { callExecutionTool } from "../../src/runtime/gateway/mcp/execution-tools";
-import { callRuntimeTool, controllerReadiness, controllerReadinessEvidence } from "../../src/runtime/gateway/mcp/runtime-tools";
+import { boundedPluginArtifactImageContent, callRuntimeTool, controllerReadiness, controllerReadinessEvidence } from "../../src/runtime/gateway/mcp/runtime-tools";
 import { getMcpPolicy } from "../../src/cli/mcp/policy";
 import { createMcpToolContext as createMultiRepositoryContext, parseMcpToolset } from "../../src/cli/mcp/multi-repository";
 import { callRepositoryTool } from "../../src/cli/mcp/repository-tools";
@@ -680,6 +680,36 @@ describe("MCP controller profile", () => {
       expect(dedupedValue.deduplicated).toBe(true);
       expect(dedupedValue.direct).toBe(true);
       expect(dedupedValue.receiptId || dedupedValue.result).toBeTruthy();
+    });
+  });
+
+  test("inlines only bounded plugin image artifacts from repository controller storage", async () => {
+    await withController(async (repoRoot) => {
+      const controllerHome = String(process.env.FORGE_CONTROLLER_HOME);
+      const repository = registerRepository({ path: repoRoot, controllerHome });
+      const png = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=",
+        "base64",
+      );
+      const artifactDir = join(repositoryControllerRoot(controllerHome, repository.repoId), "artifacts", "ios");
+      mkdirSync(artifactDir, { recursive: true });
+      const screenshotPath = join(artifactDir, "screenshot.png");
+      writeFileSync(screenshotPath, png);
+
+      const imageContent = boundedPluginArtifactImageContent(controllerHome, repository.repoId, {
+        artifactCandidates: [{ kind: "ios_simulator_screenshot", mediaType: "image/png", path: screenshotPath }],
+      });
+      expect(imageContent).toEqual([{
+        type: "image",
+        mimeType: "image/png",
+        data: png.toString("base64"),
+      }]);
+
+      const outsidePath = join(repoRoot, "outside.png");
+      writeFileSync(outsidePath, png);
+      expect(boundedPluginArtifactImageContent(controllerHome, repository.repoId, {
+        artifactCandidates: [{ kind: "ios_simulator_screenshot", mediaType: "image/png", path: outsidePath }],
+      })).toEqual([]);
     });
   });
 

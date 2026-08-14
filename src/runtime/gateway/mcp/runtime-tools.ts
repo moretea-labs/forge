@@ -1,8 +1,9 @@
 import { createHash } from 'crypto';
-import { existsSync } from 'fs';
-import { basename } from 'path';
+import { existsSync, readFileSync, statSync } from 'fs';
+import { basename, isAbsolute, relative, resolve, sep } from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import type { CallToolResult as SdkCallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { collectRuntimePerformanceDiagnostics, inferLocalControllerProcess } from '../../diagnostics/performance';
 import type { McpToolDefinition, CallToolResult } from '../../../cli/mcp/tools';
 import type { MultiRepositoryMcpToolContext } from '../../../cli/mcp/multi-repository';
@@ -1102,6 +1103,66 @@ async function callStandaloneRecoveryTool(
 function result(value: Record<string, unknown>, isError = false): CallToolResult {
   // Compact text channel by default (no pretty-print bloat).
   return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value, ...(isError ? { isError: true } : {}) };
+}
+
+const MAX_INLINE_PLUGIN_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_INLINE_PLUGIN_IMAGES = 4;
+const INLINE_PLUGIN_IMAGE_MEDIA_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+
+type McpImageContent = Extract<SdkCallToolResult['content'][number], { type: 'image' }>;
+
+export function boundedPluginArtifactImageContent(
+  controllerHome: string,
+  repoId: string,
+  pluginResult: Record<string, unknown> | undefined,
+): McpImageContent[] {
+  if (!pluginResult || !Array.isArray(pluginResult.artifactCandidates)) return [];
+  const allowedRoot = resolve(repositoryControllerRoot(controllerHome, repoId));
+  const images: McpImageContent[] = [];
+
+  for (const candidate of pluginResult.artifactCandidates) {
+    if (images.length >= MAX_INLINE_PLUGIN_IMAGES) break;
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+    const record = candidate as Record<string, unknown>;
+    const mediaType = typeof record.mediaType === 'string' ? record.mediaType : '';
+    const path = typeof record.path === 'string' ? record.path : '';
+    if (!INLINE_PLUGIN_IMAGE_MEDIA_TYPES.has(mediaType) || !path) continue;
+
+    const resolvedPath = resolve(path);
+    const rel = relative(allowedRoot, resolvedPath);
+    if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) continue;
+    if (!existsSync(resolvedPath)) continue;
+
+    try {
+      const stat = statSync(resolvedPath);
+      if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_INLINE_PLUGIN_IMAGE_BYTES) continue;
+      images.push({
+        type: 'image',
+        data: readFileSync(resolvedPath).toString('base64'),
+        mimeType: mediaType,
+      });
+    } catch {
+      // The structured plugin result remains authoritative when an artifact cannot be inlined.
+    }
+  }
+
+  return images;
+}
+
+function resultWithPluginArtifactImages(
+  value: Record<string, unknown>,
+  controllerHome: string,
+  repoId: string,
+  pluginResult: Record<string, unknown> | undefined,
+): CallToolResult {
+  const images = boundedPluginArtifactImageContent(controllerHome, repoId, pluginResult);
+  const richResult: SdkCallToolResult = {
+    content: [{ type: 'text', text: JSON.stringify(value) }, ...images],
+    structuredContent: value,
+  };
+  // The legacy internal facade intentionally types content as text-first for existing callers.
+  // The MCP wire contract supports additional SDK image blocks after that stable first text block.
+  return richResult as unknown as CallToolResult;
 }
 
 function repositoryRootForRepoId(controllerHome: string, repoId: string): string | undefined {
@@ -5493,7 +5554,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const action = manifest.actions.find((entry) => entry.actionId === actionId);
         if (action && isDirectPluginReadAction(action)) {
           const direct = await executeAssistantPluginReadDirect(ctx.controllerHome, repository, request);
-          return result({
+          const value = {
             accepted: true,
             direct: true,
             durable: false,
@@ -5514,10 +5575,11 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               },
             },
             next: 'Continue with the returned bounded result; use rh_context capability detail only when the typed action schema/policy is needed.',
-          });
+          };
+          return resultWithPluginArtifactImages(value, ctx.controllerHome, repository.repoId, direct.result);
         }
         const submitted = await submitAssistantPluginAction(ctx.controllerHome, repository, request);
-        return result({
+        const value = {
           accepted: true,
           deduplicated: submitted.deduplicated,
           direct: true,
@@ -5542,7 +5604,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             },
           },
           next: 'Continue with the returned bounded plugin result; use rh_context capability detail only when the typed action schema/policy is needed.',
-        });
+        };
+        return resultWithPluginArtifactImages(value, ctx.controllerHome, repository.repoId, submitted.result);
       }
       case 'toolchain_plugin_summary': {
         const pluginId = String(args.plugin_id ?? '').trim();
